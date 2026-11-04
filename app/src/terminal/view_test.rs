@@ -14693,6 +14693,59 @@ fn agent_view_ctrl_c_reaches_a_shell_reading_a_submitted_line() {
     }
 }
 
+/// #1625 / #850: in the agent view, an agent-requested command written to the shell but not yet
+/// preexeced owns the keys too: Ctrl-C interrupts it (^C to the pty) and the agent view stays.
+#[test]
+fn agent_view_ctrl_c_reaches_an_agent_command_in_flight() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.enter_agent_view_for_new_conversation(
+                None,
+                AgentViewEntryOrigin::Input {
+                    was_prompt_autodetected: false,
+                },
+                ctx,
+            );
+        });
+        pty_writes.borrow_mut().clear();
+
+        terminal.update(&mut app, |view, ctx| {
+            let conversation_id = view
+                .agent_view_controller()
+                .as_ref(ctx)
+                .agent_view_state()
+                .active_conversation_id()
+                .expect("the agent view is active");
+            {
+                let mut model = view.model.lock();
+                let active_block = model.block_list_mut().active_block_mut();
+                // What `start_command_execution_with_ai_metadata` does when the command is written.
+                active_block.start();
+                active_block.set_agent_interaction_mode_for_requested_command(
+                    AIAgentActionId::from("in-flight".to_owned()),
+                    None,
+                    conversation_id,
+                );
+                assert!(active_block.is_agent_requested_command_in_flight());
+            }
+            assert!(!view.should_ctrl_c_exit_agent_view(ctx));
+            view.handle_ctrl_c_input_event(0, ctx);
+            assert!(view.agent_view_controller().as_ref(ctx).is_active());
+        });
+
+        assert!(
+            pty_writes
+                .borrow()
+                .contains(&vec![escape_sequences::C0::ETX]),
+            "the ^C reached the shell"
+        );
+    });
+}
+
 /// #1625, the other side: at an idle prompt in the agent view (the editor owns input) the first
 /// Ctrl-C still arms "^C again to exit" and writes nothing to the pty. Legacy and Table.
 #[test]

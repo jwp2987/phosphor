@@ -960,53 +960,92 @@ fn reads_as_sentence_with_command_head(
 /// The endings of English contractions: `it's`, `don't`, `I'm`, `you're`, `I've`, `we'll`, `he'd`.
 const CONTRACTION_SUFFIXES: [&str; 7] = ["s", "t", "m", "re", "ve", "ll", "d"];
 
-/// #1624: whether `text` holds an English contraction: a `'` (or `’`) with only letters between
-/// it and the start of its word, followed by a [`CONTRACTION_SUFFIXES`] ending that closes the
-/// word, sentence punctuation aside (`it's short`, `don't.`, `I'm`). `s'/a/b/'`, `hello'world'`,
-/// `'quoted'` and `Josh's.txt` are not one.
-/// Linear in the text: each apostrophe looks back only to the previous non-letter.
-fn has_contraction(text: &str) -> bool {
-    text.char_indices().any(|(index, c)| {
+/// The English contractions in `text`, as `(ascii, typographic)`: a `'` (or `’`) outside a
+/// double-quoted or backtick span, with only letters between it and the start of its word,
+/// followed by a [`CONTRACTION_SUFFIXES`] ending that closes the word, sentence punctuation aside
+/// (`it's short`, `don't.`, `I'm`). `s'/a/b/'`, `hello'world'`, `'quoted'`, `Josh's.txt` and
+/// `"the team's notes.md"` (literal inside the quotes) are not one.
+/// Linear in the text: each apostrophe looks back only to the previous non-letter and forward
+/// only to the next one.
+fn contractions(text: &str) -> (bool, bool) {
+    let mut ascii = false;
+    let mut typographic = false;
+    let mut span: Option<char> = None;
+    let mut escaped = false;
+    for (index, c) in text.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if c == '\\' {
+            escaped = true;
+            continue;
+        }
+        if let Some(close) = span {
+            if c == close {
+                span = None;
+            }
+            continue;
+        }
+        if c == '"' || c == '`' {
+            span = Some(c);
+            continue;
+        }
         if c != '\'' && c != '’' {
-            return false;
+            continue;
         }
-        let before = &text[..index];
-        let stem_start = before
-            .char_indices()
-            .rev()
-            .take_while(|(_, c)| c.is_alphabetic())
-            .last()
-            .map(|(start, _)| start);
-        let Some(stem_start) = stem_start else {
-            return false;
-        };
-        if before[..stem_start]
+        if is_contraction_at(text, index, c) {
+            if c == '\'' {
+                ascii = true;
+            } else {
+                typographic = true;
+            }
+        }
+    }
+    (ascii, typographic)
+}
+
+/// Whether the apostrophe `c` at byte `index` of `text` closes a contraction (see
+/// [`contractions`]).
+fn is_contraction_at(text: &str, index: usize, c: char) -> bool {
+    let before = &text[..index];
+    let Some(stem_start) = before
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| c.is_alphabetic())
+        .last()
+        .map(|(start, _)| start)
+    else {
+        return false;
+    };
+    if before[..stem_start]
+        .chars()
+        .next_back()
+        .is_some_and(|c| !c.is_whitespace())
+    {
+        return false;
+    }
+    let after = &text[index + c.len_utf8()..];
+    let suffix_len = after
+        .char_indices()
+        .find(|(_, c)| !c.is_alphabetic())
+        .map_or(after.len(), |(end, _)| end);
+    suffix_len <= 2
+        && CONTRACTION_SUFFIXES.contains(&after[..suffix_len].to_lowercase().as_str())
+        && after[suffix_len..]
             .chars()
-            .next_back()
-            .is_some_and(|c| !c.is_whitespace())
-        {
-            return false;
-        }
-        let after = &text[index + c.len_utf8()..];
-        let suffix_len = after
-            .char_indices()
-            .find(|(_, c)| !c.is_alphabetic())
-            .map_or(after.len(), |(end, _)| end);
-        suffix_len <= 2
-            && CONTRACTION_SUFFIXES.contains(&after[..suffix_len].to_lowercase().as_str())
-            && after[suffix_len..]
-                .chars()
-                .take_while(|c| !c.is_whitespace())
-                .all(|c| matches!(c, ',' | '.' | '!' | '?' | ';' | ':'))
-    })
+            .take_while(|c| !c.is_whitespace())
+            .all(|c| matches!(c, ',' | '.' | '!' | '?' | ';' | ':'))
 }
 
 /// #1624: in a conversation, a command-headed line with an English contraction among its words
 /// (`what is in the file that I just mentioned, it's short`) is a sentence: no command line spells
-/// one, and the shell would only park the line at `PS2` on the open quote. Shell syntax still wins
-/// (#1560: a pipe, redirect, `$VAR`, `--` or a flag), and heads that carry English by design (a
-/// one-off keyword such as `echo`, a free-text head such as `git commit -m`, an explicit path) keep
-/// their existing route.
+/// one, and the shell would only park the line at `PS2` on the open quote. A typographic `’` is no
+/// shell quote, so it is also a possessive in a plain argument (`ls Josh’s`); it counts only with
+/// another prose word after the head (a function word or a [`STRONG_PROSE_WORDS`] member). Shell
+/// syntax still wins (#1560: a pipe, redirect, `$VAR`, `--` or a flag), and heads that carry
+/// English by design (a one-off keyword such as `echo`, a free-text head such as `git commit -m`,
+/// an explicit path) keep their existing route.
 fn contraction_reads_as_prose(text: &str, words: &[ShellWord], first_index: usize) -> bool {
     if has_shell_structure(text)
         || text.contains('$')
@@ -1014,8 +1053,22 @@ fn contraction_reads_as_prose(text: &str, words: &[ShellWord], first_index: usiz
             .split_whitespace()
             .skip(1)
             .any(|word| word.len() > 1 && word.starts_with('-'))
-        || !has_contraction(text)
     {
+        return false;
+    }
+    let (ascii, typographic) = contractions(text);
+    let prose_word = || {
+        words.iter().skip(first_index + 1).any(|word| {
+            is_function_word(word)
+                || (!word.quoted
+                    && STRONG_PROSE_WORDS.contains(
+                        &strip_sentence_punctuation(&word.text)
+                            .to_lowercase()
+                            .as_str(),
+                    ))
+        })
+    };
+    if !(ascii || (typographic && prose_word())) {
         return false;
     }
     !effective_head_chain(words, first_index)
