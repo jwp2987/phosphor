@@ -101,6 +101,13 @@ fn model_rwlock_nested_plain_read_panics() {
 /// abort. Both checkers' messages say "deadlock".
 #[test]
 #[should_panic(expected = "deadlock")]
+// loom reports the deadlock by panicking, and while that unwinds loom's own `Arc` drops and
+// panics again (`rt::thread::Set::active_mut` on a torn-down execution), which aborts the
+// process: `should_panic` cannot observe it under loom. Shuttle runs this test (r18u18).
+#[cfg_attr(
+    phosphor_loom,
+    ignore = "loom aborts on a reported deadlock (its Arc panics in Drop while unwinding); shuttle covers it"
+)]
 fn model_rwlock_cross_thread_deadlock_is_reported() {
     check(|| {
         let lock = Arc::new(RwLock::new(0u32));
