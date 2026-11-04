@@ -12,4 +12,10 @@
 
 ## Source changes
 
-None yet. Record every change to this copy here, with the issue number.
+Record every change to this copy here, with the issue number.
+
+- #1414 (2026-11-03) `src/platform_impl/linux/wayland/seat/mod.rs` `new_capability`: flush the connection right after
+  `wl_seat.get_keyboard`. Building the `KeyboardState` that follows (xkb context + the locale's Compose table) took ~2 ms
+  (~13 ms the first time) per keyboard-capability appearance in the CI wire trace, and the bind request sat in the client buffer
+  until the end of the dispatch; a key the compositor routed in that window reached no wl_keyboard of ours (the first character
+  of each line with a keyboard created per `wtype` call; foot, which binds at once, kept it). No behaviour change otherwise.

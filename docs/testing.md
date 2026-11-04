@@ -706,6 +706,11 @@ by exact PID in teardown. Clients bind `wl_keyboard` once, before any test key, 
 session). The session exports `APPCI_WL_INJECTOR=persistent|percall` (percall = holder failed to start, or `APPCI_WL_KBD_HOLD=0` forces the
 old behaviour for reproducing the artifact); `key_loss_control` reports it as `metrics.key_loss.injector_mode` and a note. With `persistent`,
 the "perline-unprimed" variant measures Phosphor with a stable keyboard and no priming; with `percall` it reproduces the artifact.
+The per-call race had a Phosphor-side part too: foot kept every first character with the same per-call stream (r18d2: foot 0/12,
+Phosphor 12/12), and the wire trace shows why -- winit queued `get_keyboard` and then built the keyboard's xkb context and Compose table
+(~2 ms) before the dispatch flushed it. The vendored winit now flushes right after `get_keyboard` (`lib/winit/CHANGES-PHOSPHOR.md`). To
+check it, run the Wayland job once with `APPCI_WL_KBD_HOLD=0 APPCI_CASES=key_loss_control`: "perline-unprimed" must lose no more first
+characters in Phosphor than in foot (the case's own Phosphor-vs-reference check); the default persistent session cannot show it.
 
 **Injector accounting, all keys (#1509).** Every case on Linux (wayland/x11) and macOS now ends with an informational note `injector accounting: injector sent N;
 app saw M; lost-before-app K (Enter: sent a, app saw b)` and a `metrics.injector` record. `sent` is the backend's own record of what it posted
