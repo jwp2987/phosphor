@@ -668,6 +668,13 @@ budget, previous build, baseline, verdict, n).
 - **Burst reference (Windows, #1583 W1).** After the per-key reference samples, `latency_enter` measures the conhost reference again with the stamp
   line delivered as one 0 ms burst then Enter (`reference_burst_enter_to_start_ms`, `reference_burst_minus_per_key_ms`). A burst median more than 5 ms above the
   per-key one is noted as "the gap is shell ingestion of a burst" (Phosphor also writes the line in one pty write). It does not change the verdict.
+- **Bootstrap-sourced reference (Windows Git Bash pane, #1583 G2).** After the plain reference, `latency_enter` opens a SECOND conhost whose bash sources the plain
+  reference rc and then Phosphor's own bash bootstrap (`bash.sh` with `bash_body.sh` included and its placeholders filled in, `profile.compose_bash_bootstrap`,
+  written as `<home>/.refboot.sh` + `.refrc_boot`) and measures the same stamp line (`reference_bootstrap_enter_to_start_ms`,
+  `reference_bootstrap_minus_plain_ms`): the cost of the pane's shell hooks alone, outside the app. Never a verdict input; a note when the assets are not next to the harness.
+- **Bracketed-paste cost (macOS zsh pane, terminal mode, #1583 M3).** After the Phosphor samples the case types `unset zle_bracketed_paste` (confirmed by a state
+  file), measures a second batch of the same stamp line (`unset_bracketed_paste_enter_to_start_ms`, `unset_bracketed_paste_minus_default_ms`) and puts the parameter back
+  (`zle_bracketed_paste=( $'\e[?2004h' $'\e[?2004l' )`, confirmed). Not a verdict input.
 - **Verdicts.** `PASS`, `FAIL`, `WARN`, or `NO-REFERENCE` when no reference could be measured the same way (never shown as pass).
   `latency_key_log` is `NO-REFERENCE` everywhere today: it reads the app's own `input_order` clock (keydown to first frame) and no
   reference terminal exposes a comparable one; absolute numbers and the old CI sanity bounds (p50 <= 20 ms, p99 <= 60 ms) still apply.

@@ -44,6 +44,32 @@ PROMPT_COMMAND="__pa_rec${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
 if [ -n "$APPCI_W" ]; then cd "$APPCI_W"; elif [ "$PWD" = "$HOME" ]; then cd "$HOME/w" 2>/dev/null; fi
 true
 '''
+BOOTSTRAP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "app", "assets", "bundled", "bootstrap")
+
+
+def compose_bash_bootstrap(conpty, session_id=1, bootdir=None):
+    """#1583 G2: Phosphor's bash bootstrap as ONE sourceable script: bash.sh with its `#include bundled/bootstrap/bash_body.sh` line replaced by the
+    body (what the app's `load_and_escape_script`/include step does), @@WARP_SESSION_ID@@ and @@USING_CON_PTY_BOOLEAN@@ filled in like
+    terminal/bootstrap.rs does (`conpty` is true for a Windows ConPTY pane). None when the assets are not in this checkout (a harness copied out of the repo)."""
+    d = bootdir or BOOTSTRAP_DIR
+    try:
+        head = open(os.path.join(d, "bash.sh"), encoding="utf-8").read()
+        body = open(os.path.join(d, "bash_body.sh"), encoding="utf-8").read()
+    except OSError:
+        return None
+    inc = "#include bundled/bootstrap/bash_body.sh"
+    if inc not in head:
+        return None
+    text = head.replace(inc, body.rstrip("\n"))
+    return text.replace("@@WARP_SESSION_ID@@", str(session_id)).replace("@@USING_CON_PTY_BOOLEAN@@", "true" if conpty else "false")
+
+
+def ref_boot_rc_text(ref_rc, boot_sh, conpty):
+    """the reference bash's rc for G2: the normal reference rc (prompt/command logging), then the same variables the InitShell script sets in the app,
+    then the bootstrap. The reference terminal's shell then carries the hooks Phosphor's pane has (bash-preexec DEBUG trap, precmd/preexec messages, title)."""
+    return '. "%s"\nWARP_SESSION_ID=1; WARP_USING_WINDOWS_CON_PTY=%s\n. "%s"\n' % (ref_rc, "true" if conpty else "false", boot_sh)
+
+
 BASH_PROFILE = '[ -f ~/.bashrc ] && . ~/.bashrc\n'
 ZSHRC = r'''# appci scratch rc (zsh): same log format as the bash rc
 zmodload zsh/datetime
@@ -105,6 +131,7 @@ class Profile:
         self.rctl = os.path.join(run, "rctl")          # the ssh "remote" side logs here
         self.refctl = os.path.join(run, "refctl")      # the Linux reference terminal logs here, never into ctl (#1500)
         self.ref_rc = os.path.join(self.home, ".refrc")
+        self.ref_boot_rc = os.path.join(self.home, ".refrc_boot")      # #1583 G2: ref_rc, then Phosphor's own bash bootstrap sourced (the shell hooks the pane has)
         self.ref_active = False                        # True while the reference terminal is the target: commands()/read() then read refctl
         self.rhome = os.path.join(run, "rhome")
         self.shots = os.path.join(run, "shots")
@@ -145,6 +172,12 @@ class Profile:
         _wr(h + "/.bashrc", BASHRC % {"ctl": self._c(self.ctl)})
         _wr(h + "/.bash_profile", BASH_PROFILE)
         _wr(self.ref_rc, BASHRC % {"ctl": self._c(self.refctl)})
+        boot = compose_bash_bootstrap(self.win)
+        if boot:
+            _wr(os.path.join(h, ".refboot.sh"), boot)
+            _wr(self.ref_boot_rc, ref_boot_rc_text(self._c(self.ref_rc), self._c(os.path.join(h, ".refboot.sh")), self.win))
+        elif os.path.exists(self.ref_boot_rc):
+            os.remove(self.ref_boot_rc)
         _wr(h + "/.zshrc", ZSHRC % {"ctl": self._c(self.ctl)})
         self.ref_zdot = os.path.join(h, ".refzdot")       # macOS reference zsh: its own ZDOTDIR so its hook writes refctl (#1550)
         _wr(os.path.join(self.ref_zdot, ".zshrc"), ZSHRC % {"ctl": self._c(self.refctl)})

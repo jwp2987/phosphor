@@ -1155,6 +1155,20 @@ def g11_windows_editor_handover_and_classification():
         assert winmap.skip_reason(n, "powershell") is None and winmap.skip_reason(n, "gitbash") is None, n
 
 
+@check
+def g11_bootstrap_reference_and_bracketed_paste_pieces():
+    """#1583 G2 / M3: Phosphor's bash bootstrap composes into one sourceable script with no placeholder left, the reference rc sources it after the plain rc,
+    and the M3 zsh commands are the ones whose state file the case reads back"""
+    boot = profile.compose_bash_bootstrap(True)
+    assert boot and "#include" not in boot and "@@" not in boot and "install_bashpreexec" in boot and "WARP_USING_WINDOWS_CON_PTY=true" in boot, (boot or "")[:200]
+    assert "WARP_USING_WINDOWS_CON_PTY=false" in profile.compose_bash_bootstrap(False)
+    assert profile.compose_bash_bootstrap(True, bootdir="/nonexistent") is None
+    rc = profile.ref_boot_rc_text("C:/h/.refrc", "C:/h/.refboot.sh", True)
+    assert rc.index('. "C:/h/.refrc"') < rc.index("WARP_SESSION_ID=1") < rc.index('. "C:/h/.refboot.sh"'), rc
+    assert "unset zle_bracketed_paste" in cases.M3_UNSET and "M3_$((${+zle_bracketed_paste}))" in cases.M3_UNSET
+    assert "2004h" in cases.M3_RESTORE and "${#zle_bracketed_paste}" in cases.M3_RESTORE
+
+
 def main():
     failed = 0
     for f in CHECKS:
