@@ -23,10 +23,8 @@ use super::history_model::{
     BlocklistAIHistoryEvent, BlocklistAIHistoryModel, ConversationStatusUpdate,
 };
 use crate::ai::agent::conversation::{AIConversationId, ConversationStatus};
-use crate::ai::agent::task::TaskId;
-use crate::ai::agent::{
-    AIAgentExchangeId, AIAgentInput, AIAgentOutputMessageType, LifecycleEventType,
-};
+
+use crate::ai::agent::{AIAgentExchangeId, AIAgentOutputMessageType};
 
 /// Stage associated with a lifecycle error detail.
 /// This keeps persisted/runtime metadata consistent across API payloads and DB rows.

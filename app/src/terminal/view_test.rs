@@ -20436,7 +20436,7 @@ fn ssh_line_typed_at_once_after_the_ssh_enter_is_held_and_delivered_once_to_the_
             );
             assert_eq!(*executed.borrow(), ["ssh fake".to_owned()]);
             // The ssh starts (preexec), still no output: the hold goes on.
-            terminal.update(&mut app, |view, ctx| {
+            terminal.update(&mut app, |view, _ctx| {
                 view.model
                     .lock()
                     .simulate_long_running_block("ssh fake", "");

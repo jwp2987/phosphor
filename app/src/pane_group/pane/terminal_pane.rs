@@ -3,8 +3,6 @@
 use crate::pane_group::CodeSource;
 use std::sync::mpsc::SyncSender;
 
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
-
 use warpui::{
     AppContext, EntityId, ModelHandle, SingletonEntity, ViewContext, ViewHandle, WindowId,
 };

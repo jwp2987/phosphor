@@ -1117,6 +1117,7 @@ impl BlocklistAIActionModel {
     /// confirmation-requiring actions surface as a pending permission prompt.
     /// Exposed for the `warp_tui` test suite via `tui_test_support`.
     #[cfg(any(test, feature = "test-util"))]
+    #[allow(dead_code)] // used by warp_tui tests via tui_test_support
     pub(crate) fn queue_action_for_test(
         &mut self,
         action: AIAgentAction,

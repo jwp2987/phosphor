@@ -264,9 +264,7 @@ impl ImportQueue {
         event: &UpdateManagerEvent,
         ctx: &mut ModelContext<Self>,
     ) {
-        let UpdateManagerEvent::ObjectOperationComplete { result } = event else {
-            return;
-        };
+        let UpdateManagerEvent::ObjectOperationComplete { result } = event;
 
         if matches!(&result.operation, ObjectOperation::Create { .. }) {
             let Some(client_id) = result.client_id else {

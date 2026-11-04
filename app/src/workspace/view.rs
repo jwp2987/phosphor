@@ -284,6 +284,7 @@ use crate::workspaces::user_workspaces::UserWorkspaces;
 use ::settings::{Setting, ToggleableSetting};
 use warp_core::features::FeatureFlag;
 
+use crate::ai::ask_ai::AskAIType;
 use crate::search::{self, QueryFilter};
 use crate::terminal::view::{
     NOTIFICATIONS_TROUBLESHOOT_URL, SyncEvent, SyncInputType, TerminalAction,
@@ -323,7 +324,6 @@ use crate::workspace::toast_stack::{
     ToastStack as WorkspaceToastStack, ToastStackEvent as WorkspaceToastStackEvent,
 };
 use crate::{GlobalResourceHandles, send_telemetry_from_ctx};
-use crate::{ai::ask_ai::AskAIType, settings, ui_components::blended_colors};
 
 use futures::Future;
 use itertools::Itertools;
@@ -344,7 +344,6 @@ use warpui::event::KeyState;
 use warpui::fonts::Weight;
 use warpui::modals::{AlertDialogWithCallbacks, AppModalCallback};
 
-use warp_core::user_preferences::GetUserPreferences as _;
 use warpui::clipboard::ClipboardContent;
 use warpui::elements::{
     CacheOption, DispatchEventResult, DraggableState, DropTarget, EventHandler, Image,
@@ -17278,9 +17277,7 @@ impl Workspace {
         event: &UpdateManagerEvent,
         ctx: &mut ViewContext<Self>,
     ) {
-        let UpdateManagerEvent::ObjectOperationComplete { result } = event else {
-            return;
-        };
+        let UpdateManagerEvent::ObjectOperationComplete { result } = event;
 
         let object_store_model = ObjectStoreModel::as_ref(ctx);
 

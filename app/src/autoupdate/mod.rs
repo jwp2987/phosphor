@@ -956,7 +956,7 @@ pub enum DownloadReady {
 /// ready to relaunch.
 pub enum ReadyForRelaunch {
     Yes,
-    #[cfg_attr(any(target_os = "macos", windows), allow(dead_code))]
+    #[allow(dead_code)] // constructed only on macOS and Windows
     No,
 }
 

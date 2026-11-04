@@ -2,8 +2,6 @@
 //! accepted range to the settings UI's (1..=120) and check that every
 //! out-of-range or non-finite value falls back to the default.
 
-use settings::Setting as _;
-
 use super::*;
 
 #[test]

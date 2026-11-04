@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-use warpui::{AppContext, SingletonEntity, ui_components::components::UiComponent};
+use warpui::{AppContext, SingletonEntity};
 
 use crate::{
     auth::UserUid, cloud_object::model::persistence::ObjectStoreModel, server::ids::ServerId,

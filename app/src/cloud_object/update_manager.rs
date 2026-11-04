@@ -34,7 +34,7 @@ use crate::{
 };
 use chrono::Utc;
 use futures::channel::oneshot::{self, Receiver};
-use itertools::Itertools;
+
 use lazy_static::lazy_static;
 use regex::Regex;
 use std::collections::HashSet;

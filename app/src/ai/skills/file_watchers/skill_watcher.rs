@@ -11,7 +11,7 @@ use super::{
     utils::{
         find_local_project_skill_files_on_filesystem, find_project_skill_files_in_tree,
         is_home_provider_path, is_home_skill_directory, is_skill_file,
-        read_skills_from_directories, read_skills_from_files,
+        read_skills_from_directories,
     },
 };
 use watcher::{BulkFilesystemWatcherEvent, HomeDirectoryWatcher, HomeDirectoryWatcherEvent};

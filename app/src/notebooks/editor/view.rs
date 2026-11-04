@@ -5,7 +5,7 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use markdown_parser::{FormattedText, parse_html, parse_markdown};
+use markdown_parser::{FormattedText, parse_html};
 use pathfinder_geometry::vector::vec2f;
 use string_offset::CharOffset;
 use warp_editor::{

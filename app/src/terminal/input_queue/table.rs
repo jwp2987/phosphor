@@ -62,8 +62,6 @@
 use super::facts::{FocusSnap, RouteFacts, SshPhase, Stamp, SubshellPhase};
 use super::{DestFacts, Destination, DropReason, EntryKind, GateKind, Origin, SignalKind};
 
-pub use super::gates::{GateSignalPlan, signal_plan};
-
 /// What kind of input is being decided. The class is the input's shape; where it came from is
 /// [`Intent::origin`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

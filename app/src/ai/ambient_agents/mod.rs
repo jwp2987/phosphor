@@ -13,7 +13,6 @@ pub mod task;
 
 pub use task::{
     AgentConfigSnapshot, AgentSource, AmbientAgentTask, AmbientAgentTaskState, AttachmentInput,
-    TaskStatusMessage,
 };
 
 /// JSON payload for starting an agent run. In Zap this is only used by local UI/CLI

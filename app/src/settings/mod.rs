@@ -197,7 +197,7 @@ use crate::{
 use lazy_static::lazy_static;
 use pathfinder_geometry::{rect::RectF, vector::Vector2F};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use settings::Setting as _;
 use std::{collections::HashMap, ops::Mul, path::PathBuf};
 use warp_core::features::FeatureFlag;

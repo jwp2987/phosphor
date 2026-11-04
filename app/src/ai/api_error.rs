@@ -1,5 +1,5 @@
 use crate::ai::byop_readiness::BlockedByopReadinessError;
-use anyhow::anyhow;
+
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use warp_core::errors::{AnyhowErrorExt, ErrorExt};

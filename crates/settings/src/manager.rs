@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::ops::Deref;
 
 use anyhow::{Result, anyhow};
-use warpui::{AppContext, Entity, ModelContext, SingletonEntity};
+use warpui::{AppContext, Entity, SingletonEntity};
 use warpui_extras::user_preferences::UserPreferences;
 
 use super::PrivatePreferences;

@@ -17,7 +17,7 @@ use crate::cloud_object::model::generic_string_model::{GenericStringModel, Gener
 use crate::cloud_object::model::view::EDITOR_TIMEOUT_DURATION_MINUTES;
 use crate::cloud_object::model::view::EditorState;
 use crate::cloud_object::model::view::ObjectStoreViewModel;
-use crate::cloud_object::model::view::UpdateTimestamp;
+
 use crate::drive::DriveIndexVariant;
 use crate::drive::folders::FolderObjectModel;
 use crate::features::FeatureFlag;

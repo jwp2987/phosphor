@@ -84,7 +84,7 @@ pub(crate) use queued_query::{
     AutofireAction, QueuedQuery, QueuedQueryId, QueuedQueryOrigin, is_lrc_auto_queue_active,
 };
 #[cfg_attr(not(feature = "tui"), allow(unused_imports))]
-pub use queued_query::{QueuedQueryEvent, QueuedQueryModel, RestoredQueueSession};
+pub use queued_query::{QueuedQueryEvent, QueuedQueryModel};
 pub(crate) use view_util::{
     ATTACH_AS_AGENT_MODE_CONTEXT_TEXT, CLAUDE_ORANGE, ai_brand_color, ai_indicator_height,
     get_ai_block_overflow_menu_element_position_id, get_attached_blocks_chip_element_position_id,

@@ -1,13 +1,11 @@
 use std::fmt::Display;
 use std::sync::Arc;
 
-use anyhow::Result;
 use regex::Regex;
 use warp_core::report_if_error;
 use warp_core::user_preferences::GetUserPreferences as _;
 use warpui::{AppContext, Entity, ModelContext, SingletonEntity, UpdateModel};
 
-use crate::ai::blocklist::telemetry_banner::should_collect_ai_ugc_telemetry;
 use crate::auth::AuthState;
 use crate::auth::AuthStateProvider;
 

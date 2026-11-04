@@ -1,9 +1,7 @@
 //! Stream-based API for spawning and monitoring ambient agents.
 #![cfg_attr(target_family = "wasm", expect(dead_code))]
 
-use futures::Stream;
-
-use super::{AmbientAgentTask, AmbientAgentTaskState};
+use super::AmbientAgentTask;
 
 /// Information about a session join link for an ambient agent task.
 #[derive(Clone, Debug, PartialEq, Eq)]

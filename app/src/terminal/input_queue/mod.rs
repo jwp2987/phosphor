@@ -176,8 +176,7 @@ pub use facts::{
     SshPhase, Stamp, SubshellPhase, destination_mode,
 };
 pub use gates::{
-    Gate, GateKind, GateSignalPlan, GateSpec, GateToken, SignalPlan, UNREADY_ENTER_KEY_FLAG,
-    is_unready_enter_key, signal_plan,
+    Gate, GateKind, GateSpec, GateToken, SignalPlan, UNREADY_ENTER_KEY_FLAG, is_unready_enter_key,
 };
 pub use pane::{
     Deferred, GateKeysThen, PaneQueue, PasteOwner, PowershellKeysThen, SshDropThen,

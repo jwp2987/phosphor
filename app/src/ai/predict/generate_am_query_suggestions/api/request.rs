@@ -5,5 +5,3 @@
 //!
 //! Documentation on the types here is directly borrowed from the documentation on the go schema;
 //! see the go schema for the source-of-truth.
-
-use serde::{Deserialize, Serialize};
