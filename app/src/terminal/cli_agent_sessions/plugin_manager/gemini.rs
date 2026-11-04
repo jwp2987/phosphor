@@ -31,10 +31,16 @@ const INSTALL_METADATA_FILE: &str = ".gemini-extension-install.json";
 
 static SOURCE_MIGRATION_CHECK: ConfigFileCheckCache = ConfigFileCheckCache::new();
 
-/// Set once this process has attempted the move (whatever the outcome), after
-/// which `needs_source_migration` stays `false`, so a failing move is not
-/// retried on every launch. A restart tries again.
+/// Set once this process has *completed* a move attempt (the pre-flight
+/// passed and the uninstall/install ran, whatever its outcome). After it,
+/// `needs_source_migration` stays `false`, so the move chip is not offered
+/// again in this process. A failed pre-flight does not set it.
 static SOURCE_MOVE_ATTEMPTED: AtomicBool = AtomicBool::new(false);
+
+/// Serialises this process's install, update and move; each re-checks its
+/// precondition once it holds the lock.
+static OPERATION_LOCK: LazyLock<futures::lock::Mutex<()>> =
+    LazyLock::new(|| futures::lock::Mutex::new(()));
 
 /// The env var Gemini CLI reads as its home directory
 /// (`packages/core/src/utils/paths.ts`), falling back to the user's home.
@@ -65,7 +71,7 @@ impl GeminiPluginManager {
     }
 
     async fn run_logged(&self, args: &[&str], log: &mut String) -> Result<(), PluginInstallError> {
-        self.runner.run("gemini", args, log).await
+        self.runner.run("gemini", args, &[], log).await
     }
 
     /// Moves an extension installed from Warp's GitHub to Phosphor's copy.
@@ -77,31 +83,29 @@ impl GeminiPluginManager {
     /// refuses an extension that "is already installed. Please uninstall it
     /// first." So: uninstall, then install from Phosphor's copy.
     ///
-    /// Nothing changes until Phosphor's copy answers the pre-flight. The
-    /// extension directory is copied aside first and put back if the
-    /// uninstall or the install fails, so a failed move leaves the working
-    /// Warp install in place. Attempted once per process.
+    /// The caller has passed the pre-flight. The extension directory is copied
+    /// to a fresh, uniquely named backup first and put back if the uninstall
+    /// or the install fails, so a failed move leaves the working Warp install
+    /// in place.
     async fn move_extension(
         &self,
         extensions_dir: &Path,
         log: &mut String,
     ) -> Result<(), PluginInstallError> {
-        SOURCE_MOVE_ATTEMPTED.store(true, Ordering::Relaxed);
-        if !plugin_source_reachable(&*self.runner, EXTENSION_REPO, log).await {
-            return Err(source_unreachable_error(log.clone()));
-        }
         let extension_dir = extensions_dir.join(EXTENSION_NAME);
-        let backup = extension_backup_dir();
-        if let Err(err) = back_up_dir(&extension_dir, &backup) {
-            log.push_str(&format!(
-                "Could not copy {} aside ({err}); left the extension as it is\n",
-                extension_dir.display()
-            ));
-            return Err(PluginInstallError {
-                message: "Could not back up the installed extension".to_owned(),
-                log: log.clone(),
-            });
-        }
+        let backup = match back_up_dir(&extension_dir) {
+            Ok(backup) => backup,
+            Err(err) => {
+                log.push_str(&format!(
+                    "Could not copy {} aside ({err}); left the extension as it is\n",
+                    extension_dir.display()
+                ));
+                return Err(PluginInstallError {
+                    message: "Could not back up the installed extension".to_owned(),
+                    log: log.clone(),
+                });
+            }
+        };
         let moved = match self
             .run_logged(&["extensions", "uninstall", EXTENSION_NAME], log)
             .await
@@ -158,9 +162,8 @@ impl CliAgentPluginManager for GeminiPluginManager {
         let Ok(extensions_dir) = gemini_extensions_dir() else {
             return false;
         };
-        // The source half goes through the cached trait method: this is asked
-        // from the footer's render path too.
-        plugin_is_outdated(&extensions_dir) || self.needs_source_migration()
+        // Version only: the move has its own chip.
+        plugin_is_outdated(&extensions_dir)
     }
 
     fn needs_source_migration(&self) -> bool {
@@ -180,7 +183,12 @@ impl CliAgentPluginManager for GeminiPluginManager {
     }
 
     async fn install(&self) -> Result<(), PluginInstallError> {
+        let _operation = OPERATION_LOCK.lock().await;
         let mut log = String::new();
+        if gemini_extensions_dir().is_ok_and(|dir| check_installed(&dir)) {
+            // Installed meanwhile (another install held the lock).
+            return Ok(());
+        }
         self.run_logged(
             &["extensions", "install", EXTENSION_REPO, "--consent"],
             &mut log,
@@ -189,18 +197,20 @@ impl CliAgentPluginManager for GeminiPluginManager {
         Ok(())
     }
 
+    /// Version update only: `extensions update` from the recorded source.
+    /// An extension installed from Warp's GitHub is updated from there; the
+    /// move chip moves it.
     async fn update(&self) -> Result<(), PluginInstallError> {
+        let _operation = OPERATION_LOCK.lock().await;
         let mut log = String::new();
-        let extensions_dir = gemini_extensions_dir().ok();
-        let move_from = extensions_dir
-            .as_deref()
-            .filter(|dir| installed_from_warp(dir));
-        if let Some(dir) = move_from {
-            self.move_extension(dir, &mut log).await?;
-        } else {
-            self.run_logged(&["extensions", "update", EXTENSION_NAME], &mut log)
-                .await?;
+        if gemini_extensions_dir()
+            .is_ok_and(|dir| check_installed(&dir) && !plugin_is_outdated(&dir))
+        {
+            // Updated meanwhile (another update held the lock).
+            return Ok(());
         }
+        self.run_logged(&["extensions", "update", EXTENSION_NAME], &mut log)
+            .await?;
 
         // Sanity check: verify the on-disk version actually changed.
         let still_outdated = gemini_extensions_dir()
@@ -218,6 +228,30 @@ impl CliAgentPluginManager for GeminiPluginManager {
         Ok(())
     }
 
+    /// Moves an extension installed from Warp's GitHub to Phosphor's copy
+    /// ([`Self::move_extension`]). Run only from the move chip.
+    async fn move_to_phosphor_source(&self) -> Result<(), PluginInstallError> {
+        let _operation = OPERATION_LOCK.lock().await;
+        let mut log = String::new();
+        let Some(extensions_dir) = gemini_extensions_dir()
+            .ok()
+            .filter(|dir| installed_from_warp(dir))
+        else {
+            // Moved meanwhile (another move held the lock), or nothing to move.
+            return Ok(());
+        };
+        if !plugin_source_reachable(&*self.runner, EXTENSION_REPO, &mut log).await {
+            return Err(source_unreachable_error(log));
+        }
+        let moved = self.move_extension(&extensions_dir, &mut log).await;
+        SOURCE_MOVE_ATTEMPTED.store(true, Ordering::Relaxed);
+        moved
+    }
+
+    fn move_success_message(&self) -> &'static str {
+        "Notification plugin moved to Phosphor's source. Please restart Gemini CLI to activate."
+    }
+
     fn install_success_message(&self) -> &'static str {
         "Notification plugin installed. Please restart Gemini CLI to activate."
     }
@@ -230,16 +264,15 @@ impl CliAgentPluginManager for GeminiPluginManager {
         &INSTALL_INSTRUCTIONS
     }
 
-    /// Uninstall-and-reinstall steps only for an extension installed from
-    /// Warp's GitHub: followed on a `local`/`link` install, the uninstall would
-    /// drop the developer's checkout, so everyone else keeps `extensions
-    /// update`.
     fn update_instructions(&self) -> &'static PluginInstructions {
-        if self.needs_source_migration() {
-            &MOVE_INSTRUCTIONS
-        } else {
-            &UPDATE_INSTRUCTIONS
-        }
+        &UPDATE_INSTRUCTIONS
+    }
+
+    /// Uninstall-and-reinstall steps, shown only by the move chip (which
+    /// appears only for an extension installed from Warp's GitHub, never for
+    /// a `local`/`link` install, which the uninstall would drop).
+    fn move_instructions(&self) -> &'static PluginInstructions {
+        &MOVE_INSTRUCTIONS
     }
 }
 
@@ -359,21 +392,36 @@ fn installed_version(extensions_dir: &Path) -> Option<String> {
     parsed.get("version")?.as_str().map(|s| s.to_owned())
 }
 
-/// Where an extension directory is copied aside during a move: outside the
-/// extensions directory, which Gemini CLI loads every subdirectory of.
-fn extension_backup_dir() -> PathBuf {
-    env::temp_dir().join(format!(
-        "phosphor-{EXTENSION_NAME}-backup-{}",
-        std::process::id()
-    ))
-}
-
-/// Copies `from` to a fresh `to`.
-fn back_up_dir(from: &Path, to: &Path) -> io::Result<()> {
-    if to.exists() {
-        fs::remove_dir_all(to)?;
+/// Copies `from` to a new, uniquely named directory under the temp dir
+/// (outside the extensions directory, which Gemini CLI loads every
+/// subdirectory of) and returns it. Never reuses or deletes an existing
+/// directory: `create_dir` fails on one that exists, and the next name is
+/// tried.
+fn back_up_dir(from: &Path) -> io::Result<PathBuf> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or_default();
+    for _ in 0..16 {
+        let candidate = env::temp_dir().join(format!(
+            "phosphor-{EXTENSION_NAME}-backup-{}-{nanos}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        match fs::create_dir(&candidate) {
+            Ok(()) => {
+                copy_dir_contents(from, &candidate)?;
+                return Ok(candidate);
+            }
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
+        }
     }
-    copy_dir_all(from, to)
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "no free backup directory name",
+    ))
 }
 
 /// Puts the copy at `backup` back at `to` (replacing whatever a failed
@@ -383,12 +431,13 @@ fn restore_dir(backup: &Path, to: &Path) -> io::Result<()> {
         fs::remove_dir_all(to)?;
     }
     copy_dir_all(backup, to)?;
+    // The backup is this move's own directory (see `back_up_dir`).
     let _ = fs::remove_dir_all(backup);
     Ok(())
 }
 
-fn copy_dir_all(from: &Path, to: &Path) -> io::Result<()> {
-    fs::create_dir_all(to)?;
+/// Copies the entries of `from` into the existing directory `to`.
+fn copy_dir_contents(from: &Path, to: &Path) -> io::Result<()> {
     for entry in fs::read_dir(from)? {
         let entry = entry?;
         let target = to.join(entry.file_name());
@@ -405,6 +454,11 @@ fn copy_dir_all(from: &Path, to: &Path) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+fn copy_dir_all(from: &Path, to: &Path) -> io::Result<()> {
+    fs::create_dir_all(to)?;
+    copy_dir_contents(from, to)
 }
 
 /// Returns the path to `<home>/.gemini/extensions`, where `<home>` is

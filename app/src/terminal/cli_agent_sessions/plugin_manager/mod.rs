@@ -14,6 +14,7 @@ use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use parking_lot::Mutex;
+use warp_util::path::ShellDialect;
 use warpui::r#async::Timer;
 
 use crate::features::FeatureFlag;
@@ -31,6 +32,8 @@ use opencode::OpenCodePluginManager;
 pub enum PluginModalKind {
     Install,
     Update,
+    /// Moving an install off Warp's source onto Phosphor's GitLab copy.
+    Move,
 }
 
 /// A single step in the plugin install/update instructions pane.
@@ -200,11 +203,14 @@ impl ConfigFileCheckCache {
 /// so `install()` / `update()` can be driven without running any CLI.
 #[async_trait]
 pub(crate) trait PluginCommandRunner: Send + Sync {
-    /// Runs `cli_name args...`, appending the command and its output to `log`.
+    /// Runs `cli_name args...` with `env` added to the environment, appending
+    /// the command and its output to `log`. Every argument reaches the CLI as
+    /// one word, whatever it contains.
     async fn run(
         &self,
         cli_name: &str,
         args: &[&str],
+        env: &[(&str, &str)],
         log: &mut String,
     ) -> Result<(), PluginInstallError>;
 }
@@ -213,6 +219,7 @@ pub(crate) trait PluginCommandRunner: Send + Sync {
 /// `PATH` when one was captured (nvm-installed CLIs are only on it there).
 pub(crate) struct ShellCommandRunner {
     executor: LocalCommandExecutor,
+    dialect: ShellDialect,
     path_env_var: Option<String>,
 }
 
@@ -225,6 +232,7 @@ impl ShellCommandRunner {
         let shell_type = shell_type.unwrap_or(ShellType::Bash);
         Self {
             executor: LocalCommandExecutor::new(shell_path, shell_type),
+            dialect: ShellDialect::from(shell_type),
             path_env_var,
         }
     }
@@ -236,13 +244,18 @@ impl PluginCommandRunner for ShellCommandRunner {
         &self,
         cli_name: &str,
         args: &[&str],
+        env: &[(&str, &str)],
         log: &mut String,
     ) -> Result<(), PluginInstallError> {
-        let env_vars = self
-            .path_env_var
-            .as_deref()
-            .map(|path| HashMap::from([("PATH".to_owned(), path.to_owned())]));
-        run_cli_command_logged(cli_name, args, &self.executor, env_vars, log).await
+        let mut env_vars: HashMap<String, String> = env
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .collect();
+        if let Some(path) = self.path_env_var.as_deref() {
+            env_vars.insert("PATH".to_owned(), path.to_owned());
+        }
+        let env_vars = (!env_vars.is_empty()).then_some(env_vars);
+        run_cli_command_logged(cli_name, args, self.dialect, &self.executor, env_vars, log).await
     }
 }
 
@@ -255,12 +268,12 @@ const SOURCE_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(20);
 /// answers `git ls-remote` from this machine, through the same runner (and so
 /// the same shell and `PATH`) the move itself would use.
 ///
-/// Every move removes or rewrites a working install before fetching the new
-/// one, and the background launch paths run it unattended, so a blocked or
-/// offline gitlab.com must stop it before anything changes: on `false` the
-/// caller leaves the current (Warp-sourced) install exactly as it is. The
-/// agents' own fetch also needs `git`, so a missing `git` correctly fails here
-/// too.
+/// Every move (and Claude's remove-and-re-add update) removes or rewrites a
+/// working install before fetching the new one, so a blocked or offline
+/// gitlab.com must stop it before anything changes: on `false` the caller
+/// leaves the current install exactly as it is. The agents' own fetch also
+/// needs `git`, so a missing `git` correctly fails here too.
+/// `GIT_TERMINAL_PROMPT=0` keeps git from ever waiting on a credential prompt.
 pub(crate) async fn plugin_source_reachable(
     runner: &dyn PluginCommandRunner,
     url: &str,
@@ -287,6 +300,7 @@ pub(crate) async fn plugin_source_reachable(
                             url,
                             "HEAD",
                         ],
+                        &[("GIT_TERMINAL_PROMPT", "0")],
                         log,
                     )
                     .await,
@@ -325,16 +339,29 @@ pub(crate) fn source_unreachable_error(log: String) -> PluginInstallError {
     }
 }
 
+/// The command line for `cli_name args...` in `dialect`, every argument
+/// escaped as one word. Restore arguments come from the user's own config
+/// (a recorded marketplace source, a path with spaces), so none is trusted
+/// to be a plain word.
+pub(crate) fn shell_command_line(cli_name: &str, args: &[&str], dialect: ShellDialect) -> String {
+    std::iter::once(cli_name)
+        .chain(args.iter().copied())
+        .map(|word| dialect.escape(word).into_owned())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Runs a CLI subcommand through [`LocalCommandExecutor`], appending the
 /// command and its output to `log`.
 pub(crate) async fn run_cli_command_logged(
     cli_name: &str,
     args: &[&str],
+    dialect: ShellDialect,
     executor: &LocalCommandExecutor,
     env_vars: Option<HashMap<String, String>>,
     log: &mut String,
 ) -> Result<(), PluginInstallError> {
-    let display_cmd = format!("{cli_name} {}", args.join(" "));
+    let display_cmd = shell_command_line(cli_name, args, dialect);
     log.push_str(&format!("$ {display_cmd}\n"));
     let result = executor
         .execute_local_command_in_login_shell(&display_cmd, None, env_vars)
@@ -397,14 +424,6 @@ pub(crate) trait CliAgentPluginManager: Send + Sync {
     /// When `false`, the footer always opens the manual instructions modal.
     fn can_auto_install(&self) -> bool;
 
-    /// Whether the update chip may run [`Self::update`] itself instead of
-    /// showing the manual instructions. Defaults to [`Self::can_auto_install`];
-    /// an agent can allow a user-requested update while declining unrequested
-    /// installs (the background launch paths ask `can_auto_install`).
-    fn can_auto_update(&self) -> bool {
-        self.can_auto_install()
-    }
-
     /// Whether the Zap notification plugin is installed.
     /// Default returns `false` (no filesystem check).
     fn is_installed(&self) -> bool {
@@ -418,14 +437,37 @@ pub(crate) trait CliAgentPluginManager: Send + Sync {
     }
 
     /// Whether the installed plugin is still registered from Warp's GitHub
-    /// repository rather than Phosphor's GitLab copy, so that it keeps taking
-    /// Warp's updates until it is re-registered. `update()` performs that move,
-    /// which is why every implementation also folds this into `needs_update()`;
-    /// it is asked separately by the footer, where a connected plugin reporting
-    /// a current version would otherwise never be offered the move.
-    /// Never true for a local-path override. Default returns `false`.
+    /// (or npm) source rather than Phosphor's GitLab copy, so that it keeps
+    /// taking Warp's updates until it is re-registered. Drives only the
+    /// footer's dedicated move chip; it is *not* part of `needs_update()`, so
+    /// the background launch paths never act on it. Implementations cache it
+    /// (the footer asks on render) and stop reporting it once this process has
+    /// completed a move attempt. Never true for a local-path override.
+    /// Default returns `false`.
     fn needs_source_migration(&self) -> bool {
         false
+    }
+
+    /// Moves an install registered from Warp's source onto Phosphor's GitLab
+    /// copy. Run only when the user clicks the move chip -- never from a
+    /// background path. Implementations take the agent's operation lock,
+    /// re-check that a move is still needed, change nothing unless Phosphor's
+    /// copy answers a pre-flight, and restore the previous source if the move
+    /// fails part-way. Default does nothing.
+    async fn move_to_phosphor_source(&self) -> Result<(), PluginInstallError> {
+        Ok(())
+    }
+
+    /// Toast message shown after a successful move.
+    fn move_success_message(&self) -> &'static str {
+        "Notification plugin moved to Phosphor's source. Please restart the session to activate."
+    }
+
+    /// Manual instructions for the move, shown when the move chip cannot run
+    /// it itself (remote or sandboxed session, custom command, earlier
+    /// failure). Defaults to [`Self::update_instructions`].
+    fn move_instructions(&self) -> &'static PluginInstructions {
+        self.update_instructions()
     }
 
     /// Whether the agent's plugin marketplace is currently overridden to a

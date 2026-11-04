@@ -475,6 +475,7 @@ fn warp_marketplace_without_installed_plugin_needs_no_migration() {
 #[test]
 #[serial_test::serial]
 fn needs_source_migration_via_trait_uses_claude_config_dir() {
+    reset_source_move_attempt();
     let dir = tempfile::tempdir().unwrap();
     write_installed_plugin_version(dir.path(), "2.4.0");
     write_known_marketplace_source(
@@ -496,7 +497,9 @@ fn needs_source_migration_via_trait_uses_claude_config_dir() {
     // TODO: Audit that the environment access only happens in single-threaded code.
     unsafe { std::env::remove_var("CLAUDE_CONFIG_DIR") };
 
-    assert_eq!(before, (true, true));
+    // `needs_update` is version-only (2.4.0 is current); the move has its own
+    // chip.
+    assert_eq!(before, (true, false));
     assert_eq!(after, (false, false));
 }
 
@@ -507,12 +510,12 @@ fn add_command(source: &str) -> String {
     format!("claude plugin marketplace add {source}")
 }
 
-/// A Claude config dir with the plugin current (2.4.0) and its marketplace
+/// A Claude config dir with the plugin at `version` and its marketplace
 /// registered from Warp's GitHub, as `claude plugin marketplace add
 /// warpdotdev/claude-code-warp` leaves it.
-fn warp_registered_claude_dir() -> tempfile::TempDir {
+fn warp_registered_claude_dir(version: &str) -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
-    write_installed_plugin_version(dir.path(), "2.4.0");
+    write_installed_plugin_version(dir.path(), version);
     write_known_marketplace_source(
         dir.path(),
         serde_json::json!({"source": "github", "repo": "warpdotdev/claude-code-warp"}),
@@ -520,33 +523,52 @@ fn warp_registered_claude_dir() -> tempfile::TempDir {
     dir
 }
 
+#[derive(Clone, Copy)]
+enum Operation {
+    Install,
+    Update,
+    Move,
+}
+
 /// Runs `operation` against a manager on `runner` with `CLAUDE_CONFIG_DIR`
-/// pointed at `dir`, returning its result and the manager's
-/// `needs_source_migration` afterwards.
-fn drive(dir: &Path, runner: &Arc<FakeRunner>, install: bool) -> (Result<(), String>, bool) {
+/// pointed at `dir` and the move-attempt flag reset, returning its result and
+/// the manager's `needs_source_migration` afterwards.
+fn drive(dir: &Path, runner: &Arc<FakeRunner>, operation: Operation) -> (Result<(), String>, bool) {
     reset_source_move_attempt();
     // TODO: Audit that the environment access only happens in single-threaded code.
     unsafe { std::env::set_var("CLAUDE_CONFIG_DIR", dir) };
     let manager = ClaudeCodePluginManager::with_runner(runner.clone());
-    let result = if install {
-        futures::executor::block_on(manager.install())
-    } else {
-        futures::executor::block_on(manager.update())
-    };
+    let result = futures::executor::block_on(async {
+        match operation {
+            Operation::Install => manager.install().await,
+            Operation::Update => manager.update().await,
+            Operation::Move => manager.move_to_phosphor_source().await,
+        }
+    });
     let needs_move = manager.needs_source_migration();
     // TODO: Audit that the environment access only happens in single-threaded code.
     unsafe { std::env::remove_var("CLAUDE_CONFIG_DIR") };
     (result.map_err(|err| err.message), needs_move)
 }
 
+/// A hook that does what `claude plugin install` does to the version record.
+fn installs_version(dir: &Path, version: &'static str) -> impl Fn(&str) + Send + Sync + 'static {
+    let dir = dir.to_owned();
+    move |command| {
+        if command == INSTALL {
+            write_installed_plugin_version(&dir, version);
+        }
+    }
+}
+
 #[test]
 #[serial_test::serial]
-fn update_changes_nothing_when_the_preflight_fails() {
-    let dir = warp_registered_claude_dir();
+fn move_changes_nothing_when_the_preflight_fails() {
+    let dir = warp_registered_claude_dir("2.4.0");
     let known = fs::read_to_string(dir.path().join("plugins/known_marketplaces.json")).unwrap();
     let runner = Arc::new(FakeRunner::new().failing("git "));
 
-    let (result, needs_move) = drive(dir.path(), &runner, false);
+    let (result, needs_move) = drive(dir.path(), &runner, Operation::Move);
 
     assert!(result.is_err());
     assert_eq!(runner.calls(), vec![preflight_command(MARKETPLACE_URL)]);
@@ -554,17 +576,17 @@ fn update_changes_nothing_when_the_preflight_fails() {
         fs::read_to_string(dir.path().join("plugins/known_marketplaces.json")).unwrap(),
         known
     );
-    // Attempted once: not retried on the next launch in this process.
-    assert!(!needs_move);
+    // Nothing was attempted, so the chip is still offered (B3).
+    assert!(needs_move);
 }
 
 #[test]
 #[serial_test::serial]
-fn update_restores_the_previous_source_when_the_add_fails() {
-    let dir = warp_registered_claude_dir();
+fn move_restores_the_previous_source_when_the_add_fails() {
+    let dir = warp_registered_claude_dir("2.4.0");
     let runner = Arc::new(FakeRunner::new().failing(&add_command(MARKETPLACE_URL)));
 
-    let (result, _) = drive(dir.path(), &runner, false);
+    let (result, needs_move) = drive(dir.path(), &runner, Operation::Move);
 
     assert!(result.is_err());
     assert_eq!(
@@ -578,15 +600,17 @@ fn update_restores_the_previous_source_when_the_add_fails() {
             INSTALL.to_owned(),
         ]
     );
+    // A completed attempt is not re-offered in this process.
+    assert!(!needs_move);
 }
 
 #[test]
 #[serial_test::serial]
-fn update_restores_the_previous_source_when_the_install_fails() {
-    let dir = warp_registered_claude_dir();
+fn move_restores_the_previous_source_when_the_install_fails() {
+    let dir = warp_registered_claude_dir("2.4.0");
     let runner = Arc::new(FakeRunner::new().failing(INSTALL));
 
-    let (result, _) = drive(dir.path(), &runner, false);
+    let (result, _) = drive(dir.path(), &runner, Operation::Move);
 
     assert!(result.is_err());
     let calls = runner.calls();
@@ -610,8 +634,8 @@ fn update_restores_the_previous_source_when_the_install_fails() {
 
 #[test]
 #[serial_test::serial]
-fn update_moves_the_marketplace_to_gitlab() {
-    let dir = warp_registered_claude_dir();
+fn move_reregisters_the_marketplace_from_gitlab() {
+    let dir = warp_registered_claude_dir("2.4.0");
     let claude_dir = dir.path().to_owned();
     let runner = Arc::new(FakeRunner::new().with_hook(move |command| {
         if command == add_command(MARKETPLACE_URL) {
@@ -622,7 +646,7 @@ fn update_moves_the_marketplace_to_gitlab() {
         }
     }));
 
-    let (result, needs_move) = drive(dir.path(), &runner, false);
+    let (result, needs_move) = drive(dir.path(), &runner, Operation::Move);
 
     assert_eq!(result, Ok(()));
     assert_eq!(
@@ -640,14 +664,13 @@ fn update_moves_the_marketplace_to_gitlab() {
 
 #[test]
 #[serial_test::serial]
-fn a_move_whose_record_stays_stale_is_not_repeated() {
-    // The CLI reported success but the record still names Warp (say, a
-    // settings scope Phosphor does not edit re-registered it): the chip must
-    // not come back and the move must not re-run in this process.
-    let dir = warp_registered_claude_dir();
+fn a_move_whose_record_stays_stale_is_not_reoffered() {
+    // The CLI reported success but the record still names Warp: the chip must
+    // not come back in this process.
+    let dir = warp_registered_claude_dir("2.4.0");
     let runner = Arc::new(FakeRunner::new());
 
-    let (result, needs_move) = drive(dir.path(), &runner, false);
+    let (result, needs_move) = drive(dir.path(), &runner, Operation::Move);
 
     assert_eq!(result, Ok(()));
     assert!(marketplace_registered_from_warp(dir.path()));
@@ -656,18 +679,138 @@ fn a_move_whose_record_stays_stale_is_not_repeated() {
 
 #[test]
 #[serial_test::serial]
-fn install_over_a_leftover_warp_marketplace_waits_for_the_preflight() {
+fn concurrent_moves_run_one_at_a_time_and_the_second_finds_nothing_to_move() {
+    let dir = warp_registered_claude_dir("2.4.0");
+    let claude_dir = dir.path().to_owned();
+    let runner = Arc::new(FakeRunner::new().with_hook(move |command| {
+        if command == add_command(MARKETPLACE_URL) {
+            write_known_marketplace_source(
+                &claude_dir,
+                serde_json::json!({"source": "git", "url": MARKETPLACE_URL}),
+            );
+        }
+    }));
+    reset_source_move_attempt();
+
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("CLAUDE_CONFIG_DIR", dir.path()) };
+    let first = ClaudeCodePluginManager::with_runner(runner.clone());
+    let second = ClaudeCodePluginManager::with_runner(runner.clone());
+    let (a, b) = futures::executor::block_on(futures::future::join(
+        first.move_to_phosphor_source(),
+        second.move_to_phosphor_source(),
+    ));
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var("CLAUDE_CONFIG_DIR") };
+
+    assert_eq!((a.is_ok(), b.is_ok()), (true, true));
+    // One move only: the second re-checked under the lock and stopped.
+    assert_eq!(
+        runner.calls(),
+        vec![
+            preflight_command(MARKETPLACE_URL),
+            REMOVE.to_owned(),
+            add_command(MARKETPLACE_URL),
+            INSTALL.to_owned(),
+        ]
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn update_never_moves_a_warp_registered_marketplace() {
+    // The background launch paths call update(); it must refresh in place.
+    let dir = warp_registered_claude_dir("1.5.0");
+    let runner = Arc::new(FakeRunner::new().with_hook(installs_version(dir.path(), "2.4.0")));
+
+    let (result, needs_move) = drive(dir.path(), &runner, Operation::Update);
+
+    assert_eq!(result, Ok(()));
+    assert_eq!(
+        runner.calls(),
+        vec![
+            "claude plugin marketplace update claude-code-warp".to_owned(),
+            INSTALL.to_owned(),
+        ]
+    );
+    assert!(marketplace_registered_from_warp(dir.path()));
+    assert!(needs_move, "still offered on the move chip");
+}
+
+#[test]
+#[serial_test::serial]
+fn update_of_a_current_plugin_does_nothing() {
+    let dir = warp_registered_claude_dir("2.4.0");
+    let runner = Arc::new(FakeRunner::new());
+
+    let (result, _) = drive(dir.path(), &runner, Operation::Update);
+
+    assert_eq!(result, Ok(()));
+    assert!(runner.calls().is_empty());
+}
+
+#[test]
+#[serial_test::serial]
+fn update_readds_phosphors_marketplace_after_the_preflight() {
+    let dir = tempfile::tempdir().unwrap();
+    write_installed_plugin_version(dir.path(), "1.5.0");
+    write_known_marketplace_source(
+        dir.path(),
+        serde_json::json!({"source": "git", "url": MARKETPLACE_URL}),
+    );
+    let runner = Arc::new(FakeRunner::new().with_hook(installs_version(dir.path(), "2.4.0")));
+
+    let (result, _) = drive(dir.path(), &runner, Operation::Update);
+
+    assert_eq!(result, Ok(()));
+    assert_eq!(
+        runner.calls(),
+        vec![
+            preflight_command(MARKETPLACE_URL),
+            REMOVE.to_owned(),
+            add_command(MARKETPLACE_URL),
+            INSTALL.to_owned(),
+        ]
+    );
+}
+
+/// Pre-existing bug, fixed on this branch: an override registered only in
+/// known_marketplaces.json (`claude plugin marketplace add ./checkout`) was
+/// invisible to the override check, so update() removed it and re-added the
+/// public repository.
+#[test]
+#[serial_test::serial]
+fn update_never_removes_a_local_override_registered_only_in_known_marketplaces() {
+    let dir = tempfile::tempdir().unwrap();
+    write_installed_plugin_version(dir.path(), "1.5.0");
+    write_known_marketplace_source(
+        dir.path(),
+        serde_json::json!({"source": "directory", "path": "/home/dev/claude-code-warp"}),
+    );
+    let runner = Arc::new(FakeRunner::new());
+
+    assert!(claude_code_marketplace_has_local_override(dir.path()));
+    let (result, needs_move) = drive(dir.path(), &runner, Operation::Update);
+
+    assert!(result.is_err());
+    assert!(runner.calls().is_empty());
+    assert!(!needs_move);
+}
+
+#[test]
+#[serial_test::serial]
+fn install_over_a_leftover_warp_marketplace_moves_nothing() {
     let dir = tempfile::tempdir().unwrap();
     write_known_marketplace_source(
         dir.path(),
         serde_json::json!({"source": "github", "repo": "warpdotdev/claude-code-warp"}),
     );
-    let runner = Arc::new(FakeRunner::new().failing("git "));
+    let runner = Arc::new(FakeRunner::new());
 
-    let (result, _) = drive(dir.path(), &runner, true);
+    let (result, _) = drive(dir.path(), &runner, Operation::Install);
 
-    assert!(result.is_err());
-    assert_eq!(runner.calls(), vec![preflight_command(MARKETPLACE_URL)]);
+    assert_eq!(result, Ok(()));
+    assert_eq!(runner.calls(), vec![INSTALL.to_owned()]);
 }
 
 #[test]
@@ -676,7 +819,7 @@ fn plain_install_runs_no_preflight() {
     let dir = tempfile::tempdir().unwrap();
     let runner = Arc::new(FakeRunner::new());
 
-    let (result, _) = drive(dir.path(), &runner, true);
+    let (result, _) = drive(dir.path(), &runner, Operation::Install);
 
     assert_eq!(result, Ok(()));
     assert_eq!(

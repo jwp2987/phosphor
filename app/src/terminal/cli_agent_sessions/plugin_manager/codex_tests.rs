@@ -114,10 +114,10 @@ fn update_instructions_has_marketplace_and_plugin_add_steps() {
 
 #[test]
 #[serial_test::serial]
-fn update_instructions_readd_marketplace_from_phosphor_source_when_registered_from_warp() {
+fn move_instructions_readd_marketplace_from_phosphor_source() {
     // `marketplace upgrade` would re-fetch from the recorded source (Warp's
-    // GitHub), so only then does the manual update re-register it; a local
-    // override keeps the upgrade steps above, which do not remove it.
+    // GitHub), so the move chip's manual steps re-register it; the update
+    // chip keeps the upgrade steps above, which never remove a local override.
     let _guard = FeatureFlag::CodexPlugin.override_enabled(true);
     let dir = tempfile::tempdir().unwrap();
     write_enabled_plugin_with_git_marketplace(
@@ -127,9 +127,15 @@ fn update_instructions_readd_marketplace_from_phosphor_source_when_registered_fr
     reset_source_move_attempt();
     // TODO: Audit that the environment access only happens in single-threaded code.
     unsafe { std::env::set_var("CODEX_HOME", dir.path()) };
-    let instructions = CodexPluginManager::new(None, None, None).update_instructions();
+    let manager = CodexPluginManager::new(None, None, None);
+    let instructions = manager.move_instructions();
+    let update_first_step = manager.update_instructions().steps[0].command;
     // TODO: Audit that the environment access only happens in single-threaded code.
     unsafe { std::env::remove_var("CODEX_HOME") };
+    assert_eq!(
+        update_first_step,
+        "codex plugin marketplace upgrade codex-warp"
+    );
     assert_eq!(
         instructions.steps[0].command,
         "codex plugin marketplace remove codex-warp"
@@ -490,8 +496,9 @@ fn warp_marketplace_without_enabled_plugin_needs_no_source_migration() {
 
 #[test]
 #[serial_test::serial]
-fn current_plugin_from_warp_marketplace_needs_update_via_trait() {
+fn current_plugin_from_warp_marketplace_needs_a_move_not_an_update_via_trait() {
     let _guard = FeatureFlag::CodexPlugin.override_enabled(true);
+    reset_source_move_attempt();
     let dir = tempfile::tempdir().unwrap();
     write_enabled_plugin_with_git_marketplace(
         dir.path(),
@@ -508,7 +515,9 @@ fn current_plugin_from_warp_marketplace_needs_update_via_trait() {
     // TODO: Audit that the environment access only happens in single-threaded code.
     unsafe { std::env::remove_var("CODEX_HOME") };
 
-    assert_eq!(before, (true, true));
+    // `needs_update` is version-only (0.4.0 is current); the move has its
+    // own chip.
+    assert_eq!(before, (true, false));
     assert_eq!(after, (false, false));
 }
 
@@ -539,15 +548,27 @@ fn add_command(source: &str) -> String {
     format!("codex plugin marketplace add {source}")
 }
 
-/// Runs `update()` on a manager backed by `runner` with `CODEX_HOME` at
-/// `dir`, returning its result and `needs_source_migration` afterwards.
-fn drive_update(dir: &Path, runner: &Arc<FakeRunner>) -> (Result<(), String>, bool) {
+#[derive(Clone, Copy)]
+enum Operation {
+    Update,
+    Move,
+}
+
+/// Runs `operation` on a manager backed by `runner` with `CODEX_HOME` at
+/// `dir` and the move-attempt flag reset, returning its result and
+/// `needs_source_migration` afterwards.
+fn drive(dir: &Path, runner: &Arc<FakeRunner>, operation: Operation) -> (Result<(), String>, bool) {
     let _guard = FeatureFlag::CodexPlugin.override_enabled(true);
     reset_source_move_attempt();
     // TODO: Audit that the environment access only happens in single-threaded code.
     unsafe { std::env::set_var("CODEX_HOME", dir) };
     let manager = CodexPluginManager::with_runner(runner.clone());
-    let result = futures::executor::block_on(manager.update());
+    let result = futures::executor::block_on(async {
+        match operation {
+            Operation::Update => manager.update().await,
+            Operation::Move => manager.move_to_phosphor_source().await,
+        }
+    });
     let needs_move = manager.needs_source_migration();
     // TODO: Audit that the environment access only happens in single-threaded code.
     unsafe { std::env::remove_var("CODEX_HOME") };
@@ -561,6 +582,16 @@ fn warp_registered_codex_home() -> tempfile::TempDir {
     dir
 }
 
+/// A hook that does what `codex plugin add` does to the plugin cache.
+fn caches_version(dir: &Path, version: &'static str) -> impl Fn(&str) + Send + Sync + 'static {
+    let dir = dir.to_owned();
+    move |command| {
+        if command == PLUGIN_ADD {
+            write_cache_manifest(&dir, super::PLUGIN_NAME, version);
+        }
+    }
+}
+
 #[test]
 #[serial_test::serial]
 fn move_changes_nothing_when_the_preflight_fails() {
@@ -568,7 +599,7 @@ fn move_changes_nothing_when_the_preflight_fails() {
     let config = fs::read_to_string(dir.path().join("config.toml")).unwrap();
     let runner = Arc::new(FakeRunner::new().failing("git "));
 
-    let (result, needs_move) = drive_update(dir.path(), &runner);
+    let (result, needs_move) = drive(dir.path(), &runner, Operation::Move);
 
     assert!(result.is_err());
     assert_eq!(runner.calls(), vec![preflight_command(MARKETPLACE_URL)]);
@@ -576,7 +607,8 @@ fn move_changes_nothing_when_the_preflight_fails() {
         fs::read_to_string(dir.path().join("config.toml")).unwrap(),
         config
     );
-    assert!(!needs_move, "attempted once, not retried every launch");
+    // Nothing was attempted, so the chip is still offered (B3).
+    assert!(needs_move);
 }
 
 #[test]
@@ -585,7 +617,7 @@ fn move_restores_the_recorded_source_when_the_add_fails() {
     let dir = warp_registered_codex_home();
     let runner = Arc::new(FakeRunner::new().failing(&add_command(MARKETPLACE_URL)));
 
-    let (result, _) = drive_update(dir.path(), &runner);
+    let (result, needs_move) = drive(dir.path(), &runner, Operation::Move);
 
     assert!(result.is_err());
     assert_eq!(
@@ -597,6 +629,7 @@ fn move_restores_the_recorded_source_when_the_add_fails() {
             add_command(WARP_URL),
         ]
     );
+    assert!(!needs_move, "a completed attempt is not re-offered");
 }
 
 #[test]
@@ -613,7 +646,7 @@ fn move_restore_keeps_the_recorded_ref_and_sparse_paths() {
     .unwrap();
     let runner = Arc::new(FakeRunner::new().failing(&add_command(MARKETPLACE_URL)));
 
-    let (result, _) = drive_update(dir.path(), &runner);
+    let (result, _) = drive(dir.path(), &runner, Operation::Move);
 
     assert!(result.is_err());
     assert_eq!(
@@ -633,7 +666,7 @@ fn move_reregisters_the_marketplace_from_gitlab() {
         }
     }));
 
-    let (result, needs_move) = drive_update(dir.path(), &runner);
+    let (result, needs_move) = drive(dir.path(), &runner, Operation::Move);
 
     assert_eq!(result, Ok(()));
     assert_eq!(
@@ -655,7 +688,7 @@ fn codex_without_marketplace_remove_fails_once_and_keeps_the_install() {
     let config = fs::read_to_string(dir.path().join("config.toml")).unwrap();
     let runner = Arc::new(FakeRunner::new().failing(REMOVE));
 
-    let (result, needs_move) = drive_update(dir.path(), &runner);
+    let (result, needs_move) = drive(dir.path(), &runner, Operation::Move);
 
     assert!(result.is_err());
     assert_eq!(
@@ -666,20 +699,58 @@ fn codex_without_marketplace_remove_fails_once_and_keeps_the_install() {
         fs::read_to_string(dir.path().join("config.toml")).unwrap(),
         config
     );
-    assert!(!needs_move);
+    assert!(
+        !needs_move,
+        "failed once, not offered again in this process"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn update_never_moves_a_warp_registered_marketplace() {
+    // The background launch paths call update(); it upgrades in place.
+    let dir = tempfile::tempdir().unwrap();
+    write_enabled_plugin_with_git_marketplace(dir.path(), WARP_URL);
+    write_cache_manifest(dir.path(), super::PLUGIN_NAME, "0.2.0");
+    let runner = Arc::new(FakeRunner::new().with_hook(caches_version(dir.path(), "0.4.0")));
+
+    let (result, needs_move) = drive(dir.path(), &runner, Operation::Update);
+
+    assert_eq!(result, Ok(()));
+    assert_eq!(
+        runner.calls(),
+        vec![
+            "codex plugin marketplace upgrade codex-warp".to_owned(),
+            PLUGIN_ADD.to_owned()
+        ]
+    );
+    assert!(needs_move, "still offered on the move chip");
+}
+
+#[test]
+#[serial_test::serial]
+fn update_of_a_current_plugin_does_nothing() {
+    let dir = warp_registered_codex_home();
+    let runner = Arc::new(FakeRunner::new());
+
+    let (result, _) = drive(dir.path(), &runner, Operation::Update);
+
+    assert_eq!(result, Ok(()));
+    assert!(runner.calls().is_empty());
 }
 
 #[test]
 #[serial_test::serial]
 fn update_adds_the_marketplace_when_none_is_configured() {
-    // E.g. an earlier move removed it and the add failed: the next update
-    // adds Phosphor's instead of running `upgrade` on nothing.
+    // E.g. an earlier move removed it and both the add and the restore
+    // failed: the next update adds Phosphor's instead of running `upgrade` on
+    // nothing.
     let dir = tempfile::tempdir().unwrap();
     write_plugin_config(dir.path(), super::PLUGIN_KEY, true);
-    write_cache_manifest(dir.path(), super::PLUGIN_NAME, "0.4.0");
-    let runner = Arc::new(FakeRunner::new());
+    write_cache_manifest(dir.path(), super::PLUGIN_NAME, "0.2.0");
+    let runner = Arc::new(FakeRunner::new().with_hook(caches_version(dir.path(), "0.4.0")));
 
-    let (result, _) = drive_update(dir.path(), &runner);
+    let (result, _) = drive(dir.path(), &runner, Operation::Update);
 
     assert_eq!(result, Ok(()));
     assert_eq!(
@@ -693,10 +764,10 @@ fn update_adds_the_marketplace_when_none_is_configured() {
 fn update_upgrades_a_marketplace_already_on_gitlab() {
     let dir = tempfile::tempdir().unwrap();
     write_enabled_plugin_with_git_marketplace(dir.path(), MARKETPLACE_URL);
-    write_cache_manifest(dir.path(), super::PLUGIN_NAME, "0.4.0");
-    let runner = Arc::new(FakeRunner::new());
+    write_cache_manifest(dir.path(), super::PLUGIN_NAME, "0.2.0");
+    let runner = Arc::new(FakeRunner::new().with_hook(caches_version(dir.path(), "0.4.0")));
 
-    let (result, _) = drive_update(dir.path(), &runner);
+    let (result, _) = drive(dir.path(), &runner, Operation::Update);
 
     assert_eq!(result, Ok(()));
     assert_eq!(

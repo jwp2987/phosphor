@@ -18163,6 +18163,7 @@ impl Workspace {
         let instructions = match kind {
             PluginModalKind::Install => manager.install_instructions(),
             PluginModalKind::Update => manager.update_instructions(),
+            PluginModalKind::Move => manager.move_instructions(),
         };
 
         // Read session metadata from the originating terminal before creating the instructions pane.

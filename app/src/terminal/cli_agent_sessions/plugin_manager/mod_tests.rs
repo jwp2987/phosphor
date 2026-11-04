@@ -6,9 +6,11 @@ use std::fs;
 use async_trait::async_trait;
 use parking_lot::Mutex;
 
+use warp_util::path::ShellDialect;
+
 use super::{
     ConfigFileCheckCache, PluginCommandRunner, PluginInstallError, compare_versions,
-    is_warp_plugin_source, plugin_manager_for, plugin_source_reachable,
+    is_warp_plugin_source, plugin_manager_for, plugin_source_reachable, shell_command_line,
 };
 use crate::terminal::CLIAgent;
 
@@ -177,6 +179,7 @@ type FakeHook = Box<dyn Fn(&str) + Send + Sync>;
 /// effect (what the real CLI would have written).
 pub(crate) struct FakeRunner {
     calls: Mutex<Vec<String>>,
+    envs: Mutex<Vec<Vec<(String, String)>>>,
     failing: Vec<String>,
     hook: Option<FakeHook>,
 }
@@ -185,6 +188,7 @@ impl FakeRunner {
     pub(crate) fn new() -> Self {
         Self {
             calls: Mutex::new(Vec::new()),
+            envs: Mutex::new(Vec::new()),
             failing: Vec::new(),
             hook: None,
         }
@@ -204,6 +208,11 @@ impl FakeRunner {
     pub(crate) fn calls(&self) -> Vec<String> {
         self.calls.lock().clone()
     }
+
+    /// The extra environment each call was given, in call order.
+    pub(crate) fn envs(&self) -> Vec<Vec<(String, String)>> {
+        self.envs.lock().clone()
+    }
 }
 
 #[async_trait]
@@ -212,11 +221,17 @@ impl PluginCommandRunner for FakeRunner {
         &self,
         cli_name: &str,
         args: &[&str],
+        env: &[(&str, &str)],
         log: &mut String,
     ) -> Result<(), PluginInstallError> {
         let command = format!("{cli_name} {}", args.join(" "));
         log.push_str(&format!("$ {command}\n"));
         self.calls.lock().push(command.clone());
+        self.envs.lock().push(
+            env.iter()
+                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+                .collect(),
+        );
         if self
             .failing
             .iter()
@@ -251,6 +266,75 @@ fn preflight_runs_git_ls_remote_through_the_runner() {
         &runner, url, &mut log
     )));
     assert_eq!(runner.calls(), vec![preflight_command(url)]);
+    // git must never wait on a credential prompt.
+    assert_eq!(
+        runner.envs(),
+        vec![vec![("GIT_TERMINAL_PROMPT".to_owned(), "0".to_owned())]]
+    );
+}
+
+/// Restore arguments come from the user's own config, so every argument is
+/// escaped as one word for the session's shell (B5).
+#[test]
+fn shell_command_line_keeps_each_argument_one_word() {
+    let posix = shell_command_line(
+        "claude",
+        &[
+            "plugin",
+            "marketplace",
+            "add",
+            "/home/dev/my plugins/claude code",
+        ],
+        ShellDialect::Posix,
+    );
+    assert_eq!(
+        posix,
+        "claude plugin marketplace add /home/dev/my\\ plugins/claude\\ code"
+    );
+    assert_eq!(
+        shell_words::split(&posix).unwrap(),
+        vec![
+            "claude",
+            "plugin",
+            "marketplace",
+            "add",
+            "/home/dev/my plugins/claude code"
+        ]
+    );
+
+    let hostile = shell_command_line("codex", &["a; rm -rf ~", "$(id)"], ShellDialect::Posix);
+    assert_eq!(
+        shell_words::split(&hostile).unwrap(),
+        vec!["codex", "a; rm -rf ~", "$(id)"]
+    );
+
+    let powershell = shell_command_line(
+        "gemini",
+        &["extensions", "install", "C:\\Users\\dev\\my ext"],
+        ShellDialect::PowerShell,
+    );
+    assert!(!powershell.contains("my ext"), "{powershell}");
+    assert!(
+        powershell.starts_with("gemini extensions install "),
+        "{powershell}"
+    );
+}
+
+#[test]
+fn shell_command_line_leaves_plain_words_alone() {
+    assert_eq!(
+        shell_command_line(
+            "codex",
+            &[
+                "plugin",
+                "marketplace",
+                "add",
+                "https://gitlab.com/winters-phosphor/codex-warp.git"
+            ],
+            ShellDialect::Posix,
+        ),
+        "codex plugin marketplace add https://gitlab.com/winters-phosphor/codex-warp.git"
+    );
 }
 
 #[test]

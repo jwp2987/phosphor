@@ -917,6 +917,7 @@ struct FakePluginManager {
     is_installed: bool,
     installs: AtomicUsize,
     updates: AtomicUsize,
+    moves: AtomicUsize,
 }
 
 impl FakePluginManager {
@@ -927,7 +928,13 @@ impl FakePluginManager {
             is_installed,
             installs: AtomicUsize::new(0),
             updates: AtomicUsize::new(0),
+            moves: AtomicUsize::new(0),
         }
+    }
+
+    /// Source moves observed so far.
+    fn moves(&self) -> usize {
+        self.moves.load(Ordering::SeqCst)
     }
 
     /// `(installs, updates)` observed so far.
@@ -971,6 +978,16 @@ impl CliAgentPluginManager for FakePluginManager {
 
     async fn update(&self) -> Result<(), PluginInstallError> {
         self.updates.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    /// Always due: the state that most invites a background path to move.
+    fn needs_source_migration(&self) -> bool {
+        true
+    }
+
+    async fn move_to_phosphor_source(&self) -> Result<(), PluginInstallError> {
+        self.moves.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 
@@ -1030,4 +1047,23 @@ async fn notification_plugin_setup_touches_nothing_when_the_plugin_is_current() 
     AgentDriver::setup_notification_plugin(&manager).await;
 
     assert_eq!(manager.calls(), (0, 0));
+}
+
+/// Moving an install off Warp's source runs only from the footer's move chip,
+/// when the user clicks it. A background launch path never moves anything,
+/// whatever the plugin's state, even with a move due.
+#[tokio::test]
+async fn notification_plugin_setup_never_moves_the_plugin_source() {
+    for (first, needs_update, is_installed) in [
+        (true, true, true),
+        (true, true, false),
+        (true, false, true),
+        (true, false, false),
+    ] {
+        let manager = FakePluginManager::new(first, needs_update, is_installed);
+
+        AgentDriver::setup_notification_plugin(&manager).await;
+
+        assert_eq!(manager.moves(), 0);
+    }
 }

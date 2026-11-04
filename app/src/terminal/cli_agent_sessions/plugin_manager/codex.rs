@@ -28,11 +28,17 @@ const MARKETPLACE_NAME: &str = "codex-warp";
 
 static SOURCE_MIGRATION_CHECK: ConfigFileCheckCache = ConfigFileCheckCache::new();
 
-/// Set once this process has attempted the move (whatever the outcome), after
-/// which `needs_source_migration` stays `false`: a Codex too old to have
-/// `marketplace remove`, or a move that failed, is not retried on every
-/// launch. A restart tries again.
+/// Set once this process has *completed* a move attempt (the pre-flight
+/// passed and the remove/add ran, whatever its outcome). After it,
+/// `needs_source_migration` stays `false`, so the move chip is not offered
+/// again in this process (a Codex too old to have `marketplace remove` fails
+/// once, not on every click). A failed pre-flight does not set it.
 static SOURCE_MOVE_ATTEMPTED: AtomicBool = AtomicBool::new(false);
+
+/// Serialises this process's install, update and move; each re-checks its
+/// precondition once it holds the lock.
+static OPERATION_LOCK: LazyLock<futures::lock::Mutex<()>> =
+    LazyLock::new(|| futures::lock::Mutex::new(()));
 
 const CODEX_CONFIG_DIR: &str = ".codex";
 const CODEX_HOME_ENV: &str = "CODEX_HOME";
@@ -62,17 +68,16 @@ impl CodexPluginManager {
     }
 
     async fn run_logged(&self, args: &[&str], log: &mut String) -> Result<(), PluginInstallError> {
-        self.runner.run("codex", args, log).await
+        self.runner.run("codex", args, &[], log).await
     }
 
     /// Ensures the codex-warp marketplace is registered and current, while
-    /// preserving a non-Git/local marketplace override:
+    /// preserving a non-Git/local marketplace override. Never moves a source:
     ///
     /// - no marketplace configured: add it from Phosphor's repository (also
     ///   the recovery when an earlier move removed it and the add failed);
-    /// - a Git marketplace still registered from Warp's GitHub: move it
-    ///   ([`Self::move_marketplace`]);
-    /// - any other Git marketplace: `marketplace upgrade`;
+    /// - a Git marketplace (Phosphor's, or still Warp's -- the move chip moves
+    ///   that one): `marketplace upgrade`;
     /// - a non-Git source: leave it alone.
     async fn ensure_marketplace(&self, log: &mut String) -> Result<(), PluginInstallError> {
         match codex_home_dir()
@@ -82,9 +87,6 @@ impl CodexPluginManager {
             None => {
                 self.run_logged(&["plugin", "marketplace", "add", MARKETPLACE_URL], log)
                     .await
-            }
-            Some(config) if config.is_registered_from_warp() => {
-                self.move_marketplace(&config, log).await
             }
             Some(config) if config.is_git() => {
                 self.run_logged(&["plugin", "marketplace", "upgrade", MARKETPLACE_NAME], log)
@@ -103,18 +105,14 @@ impl CodexPluginManager {
     /// `[plugins."warp@codex-warp"]` entry and the plugin cache stay, and the
     /// caller's `plugin add` refreshes the plugin.
     ///
-    /// Nothing is removed until Phosphor's copy answers the pre-flight, and if
-    /// the add fails the marketplace is re-added from `original`'s recorded
-    /// source (with its ref and sparse paths). Attempted once per process.
+    /// The caller has passed the pre-flight. If the add fails the marketplace
+    /// is re-added from `original`'s recorded source (with its ref and sparse
+    /// paths).
     async fn move_marketplace(
         &self,
         original: &CodexWarpMarketplaceConfig,
         log: &mut String,
     ) -> Result<(), PluginInstallError> {
-        SOURCE_MOVE_ATTEMPTED.store(true, Ordering::Relaxed);
-        if !plugin_source_reachable(&*self.runner, MARKETPLACE_URL, log).await {
-            return Err(source_unreachable_error(log.clone()));
-        }
         self.run_logged(&["plugin", "marketplace", "remove", MARKETPLACE_NAME], log)
             .await?;
         let Err(err) = self
@@ -178,10 +176,8 @@ impl CliAgentPluginManager for CodexPluginManager {
         if codex_warp_marketplace_config(&codex_dir).is_some_and(|config| !config.is_git()) {
             return false;
         }
-        // The source half goes through the cached trait method: this is asked
-        // from the footer's render path too.
+        // Version only: the move has its own chip.
         plugin_needs_update(&codex_dir, PLUGIN_NAME, PLUGIN_KEY, MINIMUM_PLUGIN_VERSION)
-            || self.needs_source_migration()
     }
 
     fn needs_source_migration(&self) -> bool {
@@ -207,7 +203,12 @@ impl CliAgentPluginManager for CodexPluginManager {
             return Ok(());
         }
         log::info!("[PLUGIN_INSTALL] updating codex plugin");
+        let _operation = OPERATION_LOCK.lock().await;
         let mut log = String::new();
+        if codex_home_dir().is_ok_and(|dir| check_installed(&dir)) {
+            // Installed meanwhile (another install held the lock).
+            return Ok(());
+        }
         ensure_codex_home_dir()?;
         self.ensure_marketplace(&mut log).await?;
         self.run_logged(&["plugin", "add", PLUGIN_KEY], &mut log)
@@ -219,7 +220,15 @@ impl CliAgentPluginManager for CodexPluginManager {
         if !FeatureFlag::CodexPlugin.is_enabled() {
             return Ok(());
         }
+        let _operation = OPERATION_LOCK.lock().await;
         let mut log = String::new();
+        if codex_home_dir().is_ok_and(|dir| {
+            check_installed(&dir)
+                && !plugin_needs_update(&dir, PLUGIN_NAME, PLUGIN_KEY, MINIMUM_PLUGIN_VERSION)
+        }) {
+            // Updated meanwhile (another update held the lock).
+            return Ok(());
+        }
         ensure_codex_home_dir()?;
         self.ensure_marketplace(&mut log).await?;
         self.run_logged(&["plugin", "add", PLUGIN_KEY], &mut log)
@@ -240,8 +249,39 @@ impl CliAgentPluginManager for CodexPluginManager {
         Ok(())
     }
 
+    /// Moves a Git marketplace registered from Warp's GitHub to Phosphor's
+    /// copy ([`Self::move_marketplace`]) and refreshes the plugin from it.
+    /// Run only from the move chip.
+    async fn move_to_phosphor_source(&self) -> Result<(), PluginInstallError> {
+        if !FeatureFlag::CodexPlugin.is_enabled() {
+            return Ok(());
+        }
+        let _operation = OPERATION_LOCK.lock().await;
+        let mut log = String::new();
+        let Some(config) = codex_home_dir()
+            .ok()
+            .and_then(|dir| codex_warp_marketplace_config(&dir))
+            .filter(CodexWarpMarketplaceConfig::is_registered_from_warp)
+        else {
+            // Moved meanwhile (another move held the lock), or nothing to move.
+            return Ok(());
+        };
+        if !plugin_source_reachable(&*self.runner, MARKETPLACE_URL, &mut log).await {
+            return Err(source_unreachable_error(log));
+        }
+        let moved = self.move_marketplace(&config, &mut log).await;
+        SOURCE_MOVE_ATTEMPTED.store(true, Ordering::Relaxed);
+        moved?;
+        self.run_logged(&["plugin", "add", PLUGIN_KEY], &mut log)
+            .await
+    }
+
     fn install_success_message(&self) -> &'static str {
         "Notification plugin installed. Please restart Codex to activate."
+    }
+
+    fn move_success_message(&self) -> &'static str {
+        "Notification plugin moved to Phosphor's source. Please restart Codex to activate."
     }
 
     fn update_success_message(&self) -> &'static str {
@@ -256,16 +296,22 @@ impl CliAgentPluginManager for CodexPluginManager {
         }
     }
 
-    /// Remove-and-re-add steps only for a marketplace registered from Warp's
-    /// GitHub: followed on a local override, `marketplace remove` would drop
-    /// the developer's entry, so everyone else keeps the `upgrade` steps.
     fn update_instructions(&self) -> &'static PluginInstructions {
-        if !FeatureFlag::CodexPlugin.is_enabled() {
+        if FeatureFlag::CodexPlugin.is_enabled() {
+            &PLUGIN_UPDATE_INSTRUCTIONS
+        } else {
             &EMPTY_INSTRUCTIONS
-        } else if self.needs_source_migration() {
+        }
+    }
+
+    /// Remove-and-re-add steps, shown only by the move chip (which appears
+    /// only for a marketplace registered from Warp's GitHub, never for a local
+    /// override, which `marketplace remove` would drop).
+    fn move_instructions(&self) -> &'static PluginInstructions {
+        if FeatureFlag::CodexPlugin.is_enabled() {
             &PLUGIN_MOVE_INSTRUCTIONS
         } else {
-            &PLUGIN_UPDATE_INSTRUCTIONS
+            &EMPTY_INSTRUCTIONS
         }
     }
 

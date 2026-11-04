@@ -1,7 +1,9 @@
 use std::env;
 use std::fs;
+use std::io::{self, Write};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
 
 use async_trait::async_trait;
@@ -50,6 +52,17 @@ const CONFIG_FILE_NAMES: [&str; 2] = ["opencode.json", "opencode.jsonc"];
 const MINIMUM_PLUGIN_VERSION: &str = "0.1.5";
 
 static SOURCE_MIGRATION_CHECK: ConfigFileCheckCache = ConfigFileCheckCache::new();
+/// `is_installed` is asked from the footer's render path too.
+static INSTALLED_CHECK: ConfigFileCheckCache = ConfigFileCheckCache::new();
+
+/// Set once this process has *completed* a move attempt (the pre-flight passed
+/// and the rewrite ran, whatever its outcome); after it the move chip is not
+/// offered again in this process. A failed pre-flight does not set it.
+static SOURCE_MOVE_ATTEMPTED: AtomicBool = AtomicBool::new(false);
+
+/// Serialises this process's moves; each re-checks once it holds the lock.
+static OPERATION_LOCK: LazyLock<futures::lock::Mutex<()>> =
+    LazyLock::new(|| futures::lock::Mutex::new(()));
 
 pub(super) struct OpenCodePluginManager {
     runner: Arc<dyn PluginCommandRunner>,
@@ -80,31 +93,26 @@ impl CliAgentPluginManager for OpenCodePluginManager {
     }
 
     /// Installing means adding an entry to the user's own config, which the
-    /// user does from the instructions; Phosphor does not add it unasked.
+    /// user does from the instructions; Phosphor does not add it unasked. A
+    /// version update is manual too (the instructions modal). Only the move
+    /// chip edits the config, when the user clicks it.
     fn can_auto_install(&self) -> bool {
         false
     }
 
-    /// The update chip rewrites a Warp-sourced entry in place, which the user
-    /// asks for by clicking it. Background launch paths key off
-    /// `can_auto_install` and stay declined.
-    fn can_auto_update(&self) -> bool {
-        true
-    }
-
     fn is_installed(&self) -> bool {
-        global_config_files()
-            .iter()
-            .any(|path| !plugin_entry_kinds_in_file(path).is_empty())
-    }
-
-    fn needs_update(&self) -> bool {
-        // No on-disk version to compare: OpenCode's install cache is keyed by a
-        // hash of the spec. The reported version covers the version case.
-        self.needs_source_migration()
+        let files = global_config_files();
+        INSTALLED_CHECK.get_or_compute(&files, || {
+            files
+                .iter()
+                .any(|path| !plugin_entry_kinds_in_file(path).is_empty())
+        })
     }
 
     fn needs_source_migration(&self) -> bool {
+        if SOURCE_MOVE_ATTEMPTED.load(Ordering::Relaxed) {
+            return false;
+        }
         let files = global_config_files();
         SOURCE_MIGRATION_CHECK.get_or_compute(&files, || {
             files.iter().any(|path| file_needs_source_migration(path))
@@ -112,52 +120,33 @@ impl CliAgentPluginManager for OpenCodePluginManager {
     }
 
     /// Rewrites every Warp-sourced entry in the global OpenCode config to
-    /// [`PLUGIN_SPEC`], in place: only that string literal changes, so the
-    /// user's other plugins, options, comments and formatting stay as they
-    /// were. A local `file://` or path entry is never touched.
+    /// [`PLUGIN_SPEC`] ([`migrate_plugin_entries`]): only that entry changes,
+    /// so the user's other plugins, options, comments and formatting stay as
+    /// they were. A local `file://` or path entry is never touched. Each file
+    /// is replaced atomically ([`write_config_atomically`]); if anything fails
+    /// the original is untouched.
     ///
     /// Only once Phosphor's repository answers the pre-flight: OpenCode
     /// fetches the new entry on its next start, and with gitlab.com blocked
     /// the plugin would stop loading where Warp's cached package still works.
-    async fn update(&self) -> Result<(), PluginInstallError> {
+    async fn move_to_phosphor_source(&self) -> Result<(), PluginInstallError> {
+        let _operation = OPERATION_LOCK.lock().await;
         let mut log = String::new();
+        let files = global_config_files();
+        if !files.iter().any(|path| file_needs_source_migration(path)) {
+            // Moved meanwhile (another move held the lock), or nothing to move.
+            return Ok(());
+        }
         if !plugin_source_reachable(&*self.runner, PREFLIGHT_URL, &mut log).await {
             return Err(source_unreachable_error(log));
         }
-        let mut changed = false;
-        for path in global_config_files() {
-            let Ok(text) = fs::read_to_string(&path) else {
-                continue;
-            };
-            let Some(updated) = migrate_plugin_entries(&text) else {
-                continue;
-            };
-            // Written in place rather than renamed over, so a symlinked
-            // (dotfile-managed) config stays a symlink.
-            fs::write(&path, updated).map_err(|err| PluginInstallError {
-                message: format!("Failed to write {}", path.display()),
-                log: format!("{log}write {}: {err}\n", path.display()),
-            })?;
-            log.push_str(&format!(
-                "Pointed the plugin entry in {} at {PLUGIN_SPEC}\n",
-                path.display()
-            ));
-            changed = true;
-        }
-        if !changed {
-            log.push_str(
-                "No @warp-dot-dev/opencode-warp entry found in the global OpenCode config\n",
-            );
-            return Err(PluginInstallError {
-                message: "No plugin entry to update in the global OpenCode config".to_owned(),
-                log,
-            });
-        }
-        Ok(())
+        let result = rewrite_config_files(&files, &mut log);
+        SOURCE_MOVE_ATTEMPTED.store(true, Ordering::Relaxed);
+        result.map_err(|message| PluginInstallError { message, log })
     }
 
-    fn update_success_message(&self) -> &'static str {
-        "Notification plugin updated. Please restart OpenCode to activate."
+    fn move_success_message(&self) -> &'static str {
+        "Notification plugin moved to Phosphor's source. Please restart OpenCode to activate."
     }
 
     fn install_instructions(&self) -> &'static PluginInstructions {
@@ -210,6 +199,54 @@ static UPDATE_INSTRUCTIONS: LazyLock<PluginInstructions> = LazyLock::new(|| Plug
         "cli-agent-plugin-opencode-restart-update-note"
     )],
 });
+
+/// Moves the Warp entries in each of `files`; `Err` carries the message for
+/// the toast (the details are in `log`).
+fn rewrite_config_files(files: &[PathBuf], log: &mut String) -> Result<(), String> {
+    for path in files {
+        let Ok(text) = fs::read_to_string(path) else {
+            continue;
+        };
+        let Some(updated) = migrate_plugin_entries(&text) else {
+            continue;
+        };
+        if let Err(err) = write_config_atomically(path, &updated) {
+            log.push_str(&format!(
+                "Could not write {} ({err}); it was left as it was\n",
+                path.display()
+            ));
+            return Err(format!("Failed to write {}", path.display()));
+        }
+        log.push_str(&format!(
+            "Pointed the plugin entry in {} at {PLUGIN_SPEC}\n",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+/// Replaces the file at `path` with `contents` atomically: a temporary file
+/// in the directory of the *resolved* target is written, synced and renamed
+/// over it, so a symlinked (dotfile-managed) config keeps its link and gets
+/// its target replaced, and the file keeps its permissions. If any step fails
+/// the temporary file is removed and the original is untouched.
+fn write_config_atomically(path: &Path, contents: &str) -> io::Result<()> {
+    let target = fs::canonicalize(path)?;
+    let directory = target.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "config file has no parent directory",
+        )
+    })?;
+    let mut temp = tempfile::NamedTempFile::new_in(directory)?;
+    temp.write_all(contents.as_bytes())?;
+    if let Ok(metadata) = fs::metadata(&target) {
+        temp.as_file().set_permissions(metadata.permissions())?;
+    }
+    temp.as_file().sync_all()?;
+    temp.persist(&target).map_err(|err| err.error)?;
+    Ok(())
+}
 
 /// What a `plugin` entry names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -284,10 +321,15 @@ fn file_needs_source_migration(path: &Path) -> bool {
 /// `text`, returning `None` when there is nothing to change or the text cannot
 /// be read as JSON(C).
 ///
-/// The first Warp entry's string literal becomes [`PLUGIN_SPEC`] (inside a
-/// `[spec, options]` tuple the options are kept); any further Warp entry, or
-/// every Warp entry when Phosphor's spec is already listed, is removed so the
-/// plugin is not loaded twice. Every other byte of the file is kept.
+/// Exactly one entry is kept for the plugin: the first `[spec, options]`
+/// tuple among the Warp and Phosphor entries (so the user's options survive),
+/// else an existing Phosphor entry, else the first Warp entry. A kept Warp
+/// entry has its spec string replaced by [`PLUGIN_SPEC`]. Every other plain
+/// string Warp or Phosphor entry is removed so the plugin is not loaded
+/// twice; another Warp *tuple* is rewritten rather than removed, so no options
+/// are ever dropped. A removal deletes only the entry, its comma and the
+/// indentation of its own line -- never a comment or any other text between
+/// entries. Every other byte of the file is kept.
 fn migrate_plugin_entries(text: &str) -> Option<String> {
     let elements = plugin_array_elements(text)?;
     let kinds: Vec<Option<PluginEntryKind>> = elements
@@ -303,46 +345,33 @@ fn migrate_plugin_entries(text: &str) -> Option<String> {
         return None;
     }
 
-    let mut have_phosphor = kinds.contains(&Some(PluginEntryKind::Phosphor));
-    let mut replace: Option<Range<usize>> = None;
-    let mut removed = vec![false; elements.len()];
-    for (index, kind) in kinds.iter().enumerate() {
-        if *kind != Some(PluginEntryKind::Warp) {
-            continue;
-        }
-        if have_phosphor {
-            removed[index] = true;
-        } else {
-            replace = elements[index].spec.as_ref().map(|(span, _)| span.clone());
-            have_phosphor = true;
-        }
-    }
+    let ours = |index: &usize| kinds[*index].is_some();
+    let keeper = (0..elements.len())
+        .filter(ours)
+        .find(|index| elements[*index].tuple)
+        .or_else(|| {
+            (0..elements.len()).find(|index| kinds[*index] == Some(PluginEntryKind::Phosphor))
+        })
+        .or_else(|| {
+            (0..elements.len()).find(|index| kinds[*index] == Some(PluginEntryKind::Warp))
+        })?;
 
-    // One edit per maximal run of removed elements, taking the separator on
-    // the side that still has a kept element, so no comma is left dangling.
+    let quoted_spec = serde_json::to_string(PLUGIN_SPEC).ok()?;
     let mut edits: Vec<(Range<usize>, String)> = Vec::new();
-    if let Some(span) = replace {
-        edits.push((span, serde_json::to_string(PLUGIN_SPEC).ok()?));
+    let mut removed = vec![false; elements.len()];
+    for index in (0..elements.len()).filter(ours) {
+        let element = &elements[index];
+        let rewrite =
+            kinds[index] == Some(PluginEntryKind::Warp) && (index == keeper || element.tuple);
+        if rewrite {
+            let (span, _) = element.spec.as_ref()?;
+            edits.push((span.clone(), quoted_spec.clone()));
+        } else if index != keeper && !element.tuple {
+            removed[index] = true;
+        }
     }
-    let mut index = 0;
-    while index < elements.len() {
-        if !removed[index] {
-            index += 1;
-            continue;
-        }
-        let first = index;
-        while index < elements.len() && removed[index] {
-            index += 1;
-        }
-        let last = index - 1;
-        let range = if let Some(next) = elements.get(index) {
-            elements[first].span.start..next.span.start
-        } else if first > 0 {
-            elements[first - 1].span.end..elements[last].span.end
-        } else {
-            elements[first].span.start..elements[last].span.end
-        };
-        edits.push((range, String::new()));
+    for index in (0..elements.len()).filter(|index| removed[*index]) {
+        edits.extend(removal_edits(text, &elements, &removed, index));
     }
 
     edits.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
@@ -353,6 +382,77 @@ fn migrate_plugin_entries(text: &str) -> Option<String> {
     Some(updated)
 }
 
+/// The deletions that remove element `index` and one separating comma.
+///
+/// An element alone on its line (only indentation before it) goes with that
+/// indentation and the line break before it, so no blank line is left. With
+/// a comma after it, that comma goes too (plus the spaces after it when the
+/// entry shares its line with others). The last element has no comma after
+/// it, so the comma after the nearest preceding *kept* element goes instead.
+/// Only whitespace is ever deleted besides the entry and the comma.
+fn removal_edits(
+    text: &str,
+    elements: &[PluginArrayElement],
+    removed: &[bool],
+    index: usize,
+) -> Vec<(Range<usize>, String)> {
+    let element = &elements[index];
+    let (start, own_line) = line_start_before(text, element.span.start);
+    let mut edits = Vec::new();
+    if let Some(comma) = &element.comma_after {
+        edits.push((start..element.span.end, String::new()));
+        let comma_end = if own_line {
+            comma.end
+        } else {
+            comma.end + leading_blanks(&text[comma.end..])
+        };
+        edits.push((comma.start..comma_end, String::new()));
+        return edits;
+    }
+    let previous_comma = (0..index)
+        .rev()
+        .find(|previous| !removed[*previous])
+        .and_then(|previous| elements[previous].comma_after.clone());
+    match previous_comma {
+        Some(comma) if text[comma.end..element.span.start].trim().is_empty() => {
+            edits.push((comma.start..element.span.end, String::new()));
+        }
+        Some(comma) => {
+            edits.push((comma, String::new()));
+            edits.push((start..element.span.end, String::new()));
+        }
+        None => edits.push((start..element.span.end, String::new())),
+    }
+    edits
+}
+
+/// Where a removal of the element starting at `start` should begin: the line
+/// break before it when only spaces or tabs precede it on its line (so the
+/// whole line goes), else `start` itself. The flag says which.
+fn line_start_before(text: &str, start: usize) -> (usize, bool) {
+    let line_begin = text[..start].rfind('\n').map_or(0, |newline| newline + 1);
+    let indentation_only = text[line_begin..start]
+        .bytes()
+        .all(|byte| byte == b' ' || byte == b'\t');
+    if line_begin == 0 || !indentation_only {
+        return (start, false);
+    }
+    let newline = line_begin - 1;
+    // Keep CRLF files CRLF: take the `\r` with its `\n`.
+    if newline > 0 && text.as_bytes()[newline - 1] == b'\r' {
+        (newline - 1, true)
+    } else {
+        (newline, true)
+    }
+}
+
+/// The number of spaces and tabs at the start of `text`.
+fn leading_blanks(text: &str) -> usize {
+    text.bytes()
+        .take_while(|byte| *byte == b' ' || *byte == b'\t')
+        .count()
+}
+
 /// One element of the top-level `plugin` array.
 struct PluginArrayElement {
     /// The whole element, from its first to its last byte.
@@ -360,6 +460,10 @@ struct PluginArrayElement {
     /// The spec string literal (quotes included) and its decoded value: the
     /// element itself, or the first item of a `[spec, options]` tuple.
     spec: Option<(Range<usize>, String)>,
+    /// Whether the element is a `[spec, options]` tuple.
+    tuple: bool,
+    /// The comma token that follows the element, if any.
+    comma_after: Option<Range<usize>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -512,6 +616,11 @@ fn plugin_array_elements(text: &str) -> Option<Vec<PluginArrayElement>> {
         let token = &tokens[index];
         match token.kind {
             TokenKind::Comma => {
+                if let Some(last) = elements.last_mut()
+                    && last.comma_after.is_none()
+                {
+                    last.comma_after = Some(token.span.clone());
+                }
                 index += 1;
             }
             TokenKind::String => {
@@ -519,6 +628,8 @@ fn plugin_array_elements(text: &str) -> Option<Vec<PluginArrayElement>> {
                 elements.push(PluginArrayElement {
                     span: token.span.clone(),
                     spec,
+                    tuple: false,
+                    comma_after: None,
                 });
                 index += 1;
             }
@@ -533,6 +644,8 @@ fn plugin_array_elements(text: &str) -> Option<Vec<PluginArrayElement>> {
                 elements.push(PluginArrayElement {
                     span: token.span.start..tokens[end].span.end,
                     spec,
+                    tuple: kind == b'[',
+                    comma_after: None,
                 });
                 index = end + 1;
             }
@@ -540,6 +653,8 @@ fn plugin_array_elements(text: &str) -> Option<Vec<PluginArrayElement>> {
                 elements.push(PluginArrayElement {
                     span: token.span.clone(),
                     spec: None,
+                    tuple: false,
+                    comma_after: None,
                 });
                 index += 1;
             }
@@ -571,6 +686,12 @@ fn global_config_files() -> Vec<PathBuf> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Forgets a move attempt, for tests that drive several in one process.
+#[cfg(test)]
+pub(super) fn reset_source_move_attempt() {
+    SOURCE_MOVE_ATTEMPTED.store(false, Ordering::Relaxed);
 }
 
 #[cfg(test)]

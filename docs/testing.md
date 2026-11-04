@@ -80,9 +80,14 @@ Hard rules:
   `.gemini-extension-install.json`, OpenCode `opencode.json(c)` `plugin` arrays with comments, tuples and other plugins,
   rewritten byte-for-byte except the one entry), local-path overrides never reported, and `is_warp_plugin_source` over every spelling
   the CLIs record (and the mirror/`file://` look-alikes it must reject). `install()` / `update()` are driven through
-  `FakeRunner` (`plugin_manager/mod_tests.rs`, a scripted `PluginCommandRunner` that records each command line, fails
-  chosen prefixes and applies a command's on-disk effect via a hook): pre-flight failure changes nothing, a failed
-  add/install restores the previous source, success moves it, and a move is attempted once per process. Pure file
+  `FakeRunner` (`plugin_manager/mod_tests.rs`, a scripted `PluginCommandRunner` that records each command line and its
+  extra env, fails chosen prefixes and applies a command's on-disk effect via a hook): `update()` never moves a
+  Warp-registered install, the move (`move_to_phosphor_source`) changes nothing on a failed pre-flight, restores the
+  previous source on a failed add/install, serialises concurrent moves, and is not re-offered after a completed attempt;
+  OpenCode's rewrite is atomic (read-only dir leaves the file untouched; a symlink keeps its link) and keeps comments.
+  `driver_tests.rs` and `local_harness_launch_tests.rs` assert the background paths never call the move;
+  `agent_input_footer/plugin_chip_tests.rs` pins the independent update/move dismissals; `shell_command_line` quoting
+  is tested in `mod_tests.rs`. Pure file
   fixtures in temp dirs; no agent CLI or `git` is run.
   `script/agent-cargo <name> nextest run -p warp --features gui plugin_manager`.
 - **warp_tui tests need the warp package in the same invocation** (feature unification of `test-util`):
