@@ -3030,6 +3030,30 @@ def key_frame_pairs(txt):
     return ds, cnt
 
 
+PTY_WRITE_RE = re.compile(r"input_order pty_write bytes=\d+ t=(\d+(?:\.\d+)?)")
+
+
+def key_write_pairs(txt):
+    """#1176: key -> the pty write(2) that carries it. Pairs every plain (no ctrl) `keydown` with the first `input_order pty_write bytes=N t=<ms>`
+    line after it (input_order::log_pty_write, logged on the pty event-loop thread right after the write; app/src/terminal/local_tty/event_loop.rs).
+    Keys that the event loop coalesces into one write all pair with that write; a key typed into the input editor (no pty write) pairs with the
+    next write that does happen, so callers only use this where every key goes to the pty (a running `cat`). Hop lines (`hop=pty_write_partial`,
+    `hop=ctrl_c_pty_write`) are not writes of this kind and are ignored. -> [ms]"""
+    pending, ds = [], []
+    for l in txt.splitlines():
+        m = KEYDOWN_RE.search(l)
+        if m:
+            if m.group(1) != "true":
+                pending.append(float(m.group(2)))
+            continue
+        m = PTY_WRITE_RE.search(l)
+        if m:
+            tw = float(m.group(1))
+            ds.extend(tw - t for t in pending if tw >= t)
+            pending = []
+    return ds
+
+
 @case("latency_key_log", order=42, gui=True)
 def c_lat_key(ctx, r):
     """key -> first frame after the echo, from the app's own input_order log (keydown ... pty_write -> pty_read -> frame);
@@ -3054,10 +3078,24 @@ def c_lat_key(ctx, r):
         ctx.reset()                  # Ctrl-C ends the cat
         ds, cnt = key_frame_pairs(txt)
         run_keys.counts = cnt
+        run_keys.txt = txt
         return ds[warm:], [(m.group(1), int(m.group(2))) for m in SLOW.finditer(txt)]
 
     ds, slow = run_keys(n + warm)
     r.metric("key_to_frame_ms", stats(ds))
+    # #1176 (owner 2026-11-03: measure first, then decide): the app's own key -> pty write(2) share, whose target is <= 1 ms median at idle
+    # (keys here are 80-180 ms apart), and the main-thread items >= 4 ms and model-lock holds >= 2 ms during the same typing. Informational:
+    # metrics and a note, never a check, until the owner sets the verdict from a real-GPU run.
+    txt = getattr(run_keys, "txt", "")
+    kw = key_write_pairs(txt)[warm:]
+    r.metric("key_to_pty_write_ms", stats(kw))
+    if kw:
+        kw50 = statistics.median(kw)
+        r.note("#1176 key -> pty write median %.2f ms (p95 %.2f, n=%d): %s the 1 ms target" % (kw50, pct(kw, 0.95), len(kw), "within" if kw50 <= 1.0 else "OVER"))
+    else:
+        r.note("#1176 key -> pty write: no keydown -> `input_order pty_write` pair in the measurement window (input-order logging off, or no key reached the pty)")
+    r.metric("typing_ui_items", ui_item_audit(txt))
+    r.metric("typing_lock_holds", lock_hold_audit(txt))
     if len(ds) < n * 0.5:
         cnt = getattr(run_keys, "counts", {})
         why = ("no keydown line at all: input_order logging off, wrong log path, or the keys never reached the app" if not cnt.get("keydown") else

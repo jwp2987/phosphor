@@ -127,6 +127,19 @@ def stamp_and_log_line_parsers():
     ds, cnt = cases.key_frame_pairs(txt)
     assert ds == [10.0, 8.0], ds
     assert cnt["keydown"] == 4 and cnt["keydown_ctrl"] == 1 and cnt["frame"] == 2 and cnt["pty_write"] == 1, cnt
+    # #1176: key -> pty write(2); the ctrl key, the untimed write line and hop lines never pair; two keys before one write both pair with it
+    kw = "\n".join([
+        "input_order keydown key=a ctrl=false alt=false shift=false cmd=false t=100.0 seq=1",
+        "input_order pty_write bytes=1 t=100.4",
+        "input_order keydown key=c ctrl=true alt=false shift=false cmd=false t=101.0 seq=2",
+        "input_order hop=ctrl_c_pty_write bytes=1 t=101.2",
+        "input_order keydown key=b ctrl=false alt=false shift=false cmd=false t=102.0 seq=3",
+        "input_order keydown key=d ctrl=false alt=false shift=false cmd=false t=102.5 seq=4",
+        "input_order hop=pty_write_partial wrote=1 of=2 t=102.6",
+        "input_order pty_write n=2",
+        "input_order pty_write bytes=2 t=103.0",
+        "input_order keydown key=z ctrl=false alt=false shift=false cmd=false t=130.0 seq=5"])
+    assert [round(x, 3) for x in cases.key_write_pairs(kw)] == [0.4, 1.0, 0.5], cases.key_write_pairs(kw)
 
 
 @check
