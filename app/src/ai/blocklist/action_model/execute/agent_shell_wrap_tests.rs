@@ -1723,13 +1723,15 @@ mod sourcing {
             ),
         ] {
             let wrapped = wrap_command_in(Some(shell), env, Some(cwd));
-            let script = format!("cd {cwd}\n{wrapped}\n{probe}");
+            // Quoted: on Windows the temp dir is `C:\Users\...`, whose backslashes an
+            // unquoted word loses in Git Bash.
+            let script = format!("cd '{cwd}'\n{wrapped}\n{probe}");
             let Some((out, _)) = run(shell, &script) else {
                 continue;
             };
             assert!(out.contains("pwd=/tmp foo=1"), "{shell:?}: {out}");
             let wrapped = wrap_command_in(Some(shell), exits, Some(cwd));
-            let script = format!("cd {cwd}\n{wrapped}\n{alive}");
+            let script = format!("cd '{cwd}'\n{wrapped}\n{alive}");
             let (out, _) = run(shell, &script).unwrap();
             assert!(
                 out.contains("before") && out.contains("ALIVE rc=3"),

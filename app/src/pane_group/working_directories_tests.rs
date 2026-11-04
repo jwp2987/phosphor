@@ -134,7 +134,9 @@ fn register_remote_repo_persists_across_local_refresh() {
         let host = HostId::new("host-1".to_string());
         let remote_root = LocalOrRemotePath::Remote(RemotePath::new(
             host,
-            StandardizedPath::from_local_absolute_unchecked(std::path::Path::new("/remote/proj")),
+            // A remote (unix) path, so it is parsed in its own encoding, not as a
+            // local path (which `/remote/proj` is not on Windows).
+            StandardizedPath::try_new("/remote/proj").expect("absolute unix path"),
         ));
 
         let temp_dir = tempfile::TempDir::new().expect("temp dir");

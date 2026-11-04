@@ -1670,6 +1670,9 @@ Thumbs.db
     // pre-existing call site here passes `false`, preserving this fork's prior
     // unconditionally-eager compute-phase behavior exactly.
 
+    // Needs a real symlink (the watcher classifies it as `BuildTreeError::Symlink`);
+    // Windows grants that only with Developer Mode, so this runs on unix.
+    #[cfg(unix)]
     #[test]
     fn added_symlinked_skill_directory_refreshes_provider_without_canonical_tree_mutation() {
         VirtualFS::test("added_symlinked_skill_directory", |dirs, mut vfs| {
@@ -1781,6 +1784,9 @@ Thumbs.db
     /// `handle_watcher_event` -> `compute_file_tree_mutations` treats the
     /// symlink as a `BuildTreeError::Symlink` and re-records the provider
     /// directory via `record_direct_project_skill_provider_child_change`.
+    // Needs a real symlink (the watcher classifies it as `BuildTreeError::Symlink`);
+    // Windows grants that only with Developer Mode, so this runs on unix.
+    #[cfg(unix)]
     #[test]
     fn added_external_target_skill_symlink_routes_to_lexical_repository() {
         VirtualFS::test(

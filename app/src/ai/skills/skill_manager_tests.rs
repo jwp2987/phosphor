@@ -35,8 +35,18 @@ fn list_skill_inventory_groups_same_name_skills_and_marks_default() {
         let handle = app.add_singleton_model(SkillManager::new);
 
         let repo = PathBuf::from("/repo");
-        let agents_path = repo.join(".agents/skills/deploy/SKILL.md");
-        let codex_path = repo.join(".codex/skills/deploy/SKILL.md");
+        // Joined per component: the local skill-path matcher expects the
+        // platform separator throughout, as real watcher paths have it.
+        let agents_path = repo
+            .join(".agents")
+            .join("skills")
+            .join("deploy")
+            .join("SKILL.md");
+        let codex_path = repo
+            .join(".codex")
+            .join("skills")
+            .join("deploy")
+            .join("SKILL.md");
 
         let agents_skill = ParsedSkill {
             name: "deploy".to_string(),

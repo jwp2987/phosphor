@@ -441,6 +441,11 @@ fn pause_and_reconstruct_cycles_do_not_leak_file_descriptors() {
 
 /// #911: a connection whose file is gone is closed (nothing to protect, no
 /// leak); one whose path now holds something else is left open on purpose.
+///
+/// Unix only: Windows refuses to delete a file SQLite holds open (it opens
+/// without `FILE_SHARE_DELETE`), so neither "gone" nor "replaced" can happen
+/// under a live connection there and the test cannot build either state.
+#[cfg(unix)]
 #[test]
 fn abandoned_connection_is_closed_when_the_path_is_empty_and_leaked_when_occupied() {
     use super::retire_abandoned_connection;
