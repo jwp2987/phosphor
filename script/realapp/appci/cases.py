@@ -3150,7 +3150,9 @@ def c_lat_key(ctx, r):
         run_keys.counts = cnt
         return ds[warm:], [(m.group(1), int(m.group(2))) for m in SLOW.finditer(txt)]
 
+    ui_off = ctx.log_size()          # the UI-work window: the typed keys of the first run (the `cat` start is a handful of items; the 5 % allowance covers it)
     ds, slow = run_keys(n + warm)
+    ui_txt = ctx.log_since(ui_off)       # the window ends here: lat.evaluate's remeasure below types more keys
     r.metric("key_to_frame_ms", stats(ds))
     if len(ds) < n * 0.5:
         cnt = getattr(run_keys, "counts", {})
@@ -3167,15 +3169,28 @@ def c_lat_key(ctx, r):
                        remeasure=lambda: run_keys(n + warm)[0], notes=["Phosphor-side keydown to first frame; no same-method reference exists"])
     r.metrics.setdefault("lat", {})["key_to_frame"] = rec
     lat_checks(r, rec, "key to frame")
-    # UI work: the app's slow-operation log (#1146) only emits >= 8 ms, so 'pass' means "nothing >= 8 ms"; >= 16 ms is a dropped frame (WARN)
-    worst_ms = max([m for _, m in slow], default=0)
+    # UI work (#1548): the app's `hop=ui_item` line (input_order::log_ui_item_if_over_budget, main thread, an event/action/frame at or over the 4 ms
+    # budget) is the real ≤4 ms line; the older slow-operation log (#1146) only emits >= 8 ms and stays as a second source. Judged over the typed keys of
+    # the FIRST run. `event` / `action` items are UI logic: more than max(2, 5 % of the keys) over 4 ms FAIL. `frame` items include rasterisation, which
+    # llvmpipe/Xvfb and a VM's software GL put over 4 ms by themselves (ui_item_metrics says so): they are WARN and a metric, never a failure.
+    items = ui_items(ui_txt)
+    logic = [ms for _, ms, k in items if k != "frame"]
+    frames = [ms for _, ms, k in items if k == "frame"]
+    worst_ms = max([m for _, m in slow] + [ms for _, ms, _ in items], default=0)
     r.metric("ui_slow_ops", dict(count=len(slow), worst_ms=worst_ms, ops=sorted({w for w, _ in slow})[:8]))
-    uiv = "warn" if worst_ms >= 16 else "pass"
-    r.metrics["lat"]["ui_work"] = dict(phosphor=dict(n=len(slow), p50=None, p95=None, max=float(worst_ms)), reference=None, budget_ms=4, budget_kind="slow-log",
+    allowed = max(2, int(0.05 * (n + warm)))
+    uiv = "fail" if len(logic) > allowed else ("warn" if items or worst_ms >= 16 else "pass")
+    r.metric("ui_items_over_4ms", dict(logic_count=len(logic), logic_max_ms=max(logic, default=0.0), frame_count=len(frames), frame_max_ms=max(frames, default=0.0),
+                                       allowed=allowed, source="hop=ui_item" if items else "none logged (nothing over 4 ms, or a build older than #1191)"))
+    r.metrics["lat"]["ui_work"] = dict(phosphor=dict(n=len(items), p50=None, p95=None, max=float(worst_ms)), reference=None, budget_ms=4, budget_kind="ui-item-log",
                                        overhead_ms=None, prev=None, baseline={"status": "n/a"}, budget_verdict=uiv, verdict=uiv,
-                                       notes=["slow-op logger floor is 8 ms: verdict pass = no UI work item >= 8 ms during typing; warn = >= 16 ms"])
+                                       notes=["hop=ui_item logs every main-thread item >= 4 ms: pass = none while typing; warn = frame items (raster-bound on software GL) or a few logic items; "
+                                              "fail = more than max(2, 5 %% of the keys) event/action items; >= 16 ms is a dropped frame"])
+    r.check(uiv != "fail", "UI work: %d event/action item(s) >= 4 ms during %d typed keys (allowed %d, worst %.1f ms)" % (len(logic), n + warm, allowed, max(logic, default=0.0)))
+    if frames:
+        r.note("UI work: %d frame item(s) >= 4 ms while typing (max %.1f ms); frame items include rasterisation, so this is a WARN on software GL" % (len(frames), max(frames)))
     if worst_ms >= 16:
-        r.note("WARN UI work: slow op(s) up to %d ms during typing: %s" % (worst_ms, ", ".join(sorted({w for w, _ in slow})[:5])))
+        r.note("WARN UI work: item(s) up to %.1f ms during typing (>= 16 ms drops a frame): %s" % (worst_ms, ", ".join(sorted({w for w, _ in slow})[:5]) or "see hop=ui_item lines"))
     p50, p99 = statistics.median(ds), pct(ds, 0.99)
     r.check(p50 <= 20, "key->frame p50 %.1f ms > 20 ms CI bound (owner target: next refresh, own work <= 2 ms; software GL here)" % p50)
     r.check(p99 <= 60, "key->frame p99 %.1f ms > 60 ms CI bound" % p99)

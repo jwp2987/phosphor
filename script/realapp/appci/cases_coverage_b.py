@@ -328,6 +328,20 @@ def _until_changed(ctx, before, tag, thresh, timeout):
     return None
 
 
+def ui_work_metric(ctx, r, off, label):
+    """#1548: the app's own `hop=ui_item` lines (main-thread items >= 4 ms, the owner's UI-work budget) written since log offset `off`: metric
+    `<label>_ui_work` {count, max_ms, kinds}; a note when an item reaches 16 ms (a dropped frame). Never a failure here (a new tab starts a shell and
+    paints a fresh surface; software GL puts frames over 4 ms by itself): latency_key_log judges the steady-typing window."""
+    if not getattr(ctx, "log_path", None):
+        return
+    time.sleep(0.3)
+    items = C.ui_items(ctx.log_since(off))
+    r.metric("%s_ui_work" % label, dict(count=len(items), max_ms=max([ms for _, ms, _ in items], default=0.0), kinds=sorted({k for _, _, k in items})))
+    worst = max([ms for _, ms, _ in items], default=0.0)
+    if worst >= 16:
+        r.note("WARN UI work: %s had a main-thread item of %.1f ms (>= 16 ms drops a frame)" % (label, worst))
+
+
 @case("cb_ui_action_latency", modes=("terminal",), order=93, gui=True)
 def c_ui_action_latency(ctx, r):
     """#1548: new tab, tab switch and the Tab completion menu are observed from screenshots (each costs 50-300 ms of its own, so the numbers are an
@@ -339,8 +353,10 @@ def c_ui_action_latency(ctx, r):
     ctx.reset()
     time.sleep(0.5)
     before = ctx.shot("cb_ui_new_before")
+    off_new = ctx.log_size()
     ctx.be.key(newtab)
     s = _until_changed(ctx, before, "cb_ui_new", 0.002, 6)
+    ui_work_metric(ctx, r, off_new, "new_tab")
     r.metric("new_tab_s", s if s is not None else -2)
     if s == -1.0:
         r.note("no Pillow: UI action timing needs python3-pil; screenshots only")
@@ -348,8 +364,10 @@ def c_ui_action_latency(ctx, r):
     r.check(s is not None and s <= limit, "new tab: first changed frame after %s s (bound %.1f s)" % (None if s is None else round(s, 2), limit))
     time.sleep(1.5)
     before = ctx.shot("cb_ui_switch_before")
+    off_sw = ctx.log_size()
     ctx.be.key(nexttab)
     s2 = _until_changed(ctx, before, "cb_ui_switch", 0.0005, 6)
+    ui_work_metric(ctx, r, off_sw, "tab_switch")
     r.metric("tab_switch_s", s2 if s2 is not None else -2)
     # the tab strip changes little when two identical shells swap; a missing change is a note, not a fail
     if s2 is None:
