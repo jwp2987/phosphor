@@ -7,6 +7,7 @@
 //! |---|---|
 //! | `Submitted` | `note_command_submitted_for_ssh_gate` (the user's Enter) |
 //! | `ConnectStart` | `refresh_ssh_connect_gate` arming the window for an ssh recognised at preexec only (run at the model event, `ssh_arm_gate_at_event`) |
+//! | `TtyReclaimed` | `ssh_apply_wrapper_announcement`: the wrapper announced itself after `TtyOwned` for the window (#1641) |
 //! | `TtyOwned` | `ssh_on_tty_owned`: `CommandBecameInteractive` for the window's block (ssh owns the tty; the held keys are delivered to it, or discarded by the termios guard, there) (#1611, #1612, #1621); under the ssh wrapper deferred to its `PlainSSHFallback` hook and never sent for a managed session (`ssh_on_wrapper_verdict`, #1641) |
 //! | `Observed` | [`TerminalView::ssh_observe`]: every model event and output wakeup while a window is open or a session is pending, the remote-setup `SessionsEvent`, and the choice dialog being added or removed |
 //! | `BlockCompleted` | `apply_block_completed_to_ssh_gate` |

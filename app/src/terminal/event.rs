@@ -82,6 +82,8 @@ pub enum Event {
     /// starts now), not for `PlainSSHFallback` (the user's plain ssh runs).
     SshWrapperVerdict {
         managed: bool,
+        /// The session of the shell that ran the wrapper (the hook's own id).
+        session_id: Option<SessionId>,
     },
     /// An indication that a successful SSH connection was initiated via the
     /// SSH wrapper.  The argument is the name of the remote shell.
@@ -627,9 +629,13 @@ impl Debug for Event {
             Event::Exit { reason } => write!(f, "Exit({reason:?})"),
             Event::CursorBlinkingChange(blinking) => write!(f, "CursorBlinking({blinking})"),
             Event::PreInteractiveSSHSession => write!(f, "Pre-Interactive SSH Session"),
-            Event::SshWrapperVerdict { managed } => {
-                write!(f, "SshWrapperVerdict(managed: {managed})")
-            }
+            Event::SshWrapperVerdict {
+                managed,
+                session_id,
+            } => write!(
+                f,
+                "SshWrapperVerdict(managed: {managed}, session: {session_id:?})"
+            ),
             Event::SSH(remote_shell) => write!(f, "SSH(remote shell: {remote_shell}"),
             Event::SSHControlMasterError => write!(f, "SSH ControlMaster error"),
             Event::InputBufferOverflow => write!(f, "Input buffer overflow"),

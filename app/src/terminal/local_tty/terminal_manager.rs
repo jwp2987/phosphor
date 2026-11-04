@@ -1094,6 +1094,12 @@ fn on_shell_determined<S: TerminalSurface>(
         model.lock().set_secret_read_probe(Arc::new(move || {
             super::terminal_attributes::tty_is_reading_secret(fd)
         }));
+        // #1641: the managed-ssh hold passes an echoing answer (a host-key yes/no, a 2FA prompt)
+        // to ssh while ssh is blocked reading the tty. Sampled at events and per key, only while
+        // that hold waits for the wrapper's verdict.
+        model.lock().set_tty_read_probe(Arc::new(move || {
+            super::terminal_attributes::foreground_reads_tty(fd)
+        }));
         manager.pty_controller.update(ctx, |controller, _| {
             controller.set_foreground_sigint(Arc::new(move || {
                 super::terminal_attributes::sigint_foreground_group(fd)

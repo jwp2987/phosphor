@@ -2792,34 +2792,48 @@ the window ends without ownership (#1292). The real-app case `ssh_failing_not_lo
 plain-terminal result: the line runs locally exactly once, exactly as typed, and only after the
 ssh failed.
 
-**Managed ssh is the one exception: the hold waits for the wrapper's word (#1641, owner
-decision 2026-11-04, option (b) "hold until the wrapper says").** Under the ssh wrapper (managed
-ssh, on by default) the first thing that owns the tty is the wrapper's ControlMaster login
-(`ssh -N -f`); keys released then sit in the tty queue and are read by the managed session, whose
-remote command is Phosphor's bootstrap payload, which eats them (r18u13 lost `echo T258_o`). So for
-a window where `PreInteractiveSSHSession` was seen, `CommandBecameInteractive` releases nothing
-(`TerminalView::ssh_on_tty_owned` defers it, `SshConnectGate::wrapper`). The wrapper announces what
-follows with two hooks of the same family, in bash_body.sh, zsh_body.sh and fish.sh:
+**Managed ssh is the one exception: the hold waits for the wrapper's word (#1641, owner decision
+2026-11-04, option (b) "hold until the wrapper says").** Under the ssh wrapper (managed ssh, on by
+default) the first thing that owns the tty is the wrapper's ControlMaster login (`ssh -N -f`);
+keys released then sit in the tty queue and are read by the managed session, whose remote command
+is Phosphor's bootstrap payload, which eats them (r18u13 lost `echo T258_o`). So for a window
+where `PreInteractiveSSHSession` was seen, `CommandBecameInteractive` releases nothing
+(`TerminalView::ssh_on_tty_owned` defers it, `SshConnectGate::wrapper`). The wrapper announces
+what follows with two hooks of the same family, in bash_body.sh, zsh_body.sh and fish.sh:
 `ManagedSSHSessionStarting` right before the managed session (after the master login succeeded):
 the keys stay held and the managed hold hands them over at the remote shell's first prompt, in
 order, once (#1572); `PlainSSHFallback` before every plain `command ssh` the wrapper runs instead
 (#1551 mux failure, MSYS2, a RemoteCommand, a busy socket, a non-POSIX remote, the wrapper turned
 off): the window becomes an unmanaged one and an ownership seen meanwhile applies at that moment
 (`ssh_on_wrapper_verdict`). An auth failure or Ctrl-C prints neither; the block's end hands the
-keys back as text (#1292). Password and passphrase reads keep the termios guard: while ssh owns the
-tty and it is canonical with echo off, what is held is discarded and the keys typed go to ssh
-(`ssh_wrapper_secret_pass_through`, a `tcgetattr` fact, never screen text); afterwards keys are held
-again. The host-key `yes/no` of a first connection is an echo-ON question, not a secret read, so
-its answer would stay held; the owner chose "master in strict host-key mode, retry" (2026-11-04):
-when the wrapper's one `ssh -G` reports the default `stricthostkeychecking ask`, the master runs
-with `StrictHostKeyChecking=yes` (not `BatchMode`: password and passphrase prompts still happen
-there; a user's `no` / `accept-new` / `yes` is left alone). If that master fails with 255 and the
-host is not in the known_hosts files `ssh -G` names (`ssh-keygen -F` under its HostKeyAlias or
-HostName, `[host]:port` off port 22; never ssh's message), the wrapper prints `PlainSSHFallback`
-and runs the user's plain ssh ONCE, where the question is asked and keys pass through as in plain
-ssh; a known host (auth failure, network) returns the status as before and never prompts again
-(#1626). An echoing OTP during the master login is still held until the 15 s give-up returns it as
-text. Unmanaged ssh (no announcement) and Windows (`TTY_OWNED_AT_ARM`) are unchanged.
+keys back as text (#1292). Password and passphrase reads keep the termios guard: while ssh owns
+the tty and it is canonical with echo off, what is held is discarded and the keys typed go to ssh
+(`ssh_wrapper_secret_pass_through`, a `tcgetattr` fact, never screen text); afterwards keys are
+held again. The host-key `yes/no` of a first connection is an echo-ON question, not a secret read,
+so its answer would stay held; the owner chose "master in strict host-key mode, retry"
+(2026-11-04): when the wrapper's one `ssh -G` reports the default `stricthostkeychecking ask`, the
+master runs with `StrictHostKeyChecking=yes` (not `BatchMode`: password and passphrase prompts
+still happen there; a user's `no` / `accept-new` / `yes` is left alone). If that master fails with
+255 and the host is not in the known_hosts files `ssh -G` names (`ssh-keygen -F` under its
+HostKeyAlias or HostName, `[host]:port` off port 22; never ssh's message), the wrapper prints
+`PlainSSHFallback` and runs the user's plain ssh ONCE, where the question is asked and keys pass
+through as in plain ssh; a known host (auth failure, network) returns the status as before and
+never prompts again (#1626). Echoing questions during the master login (a Duo "Passcode or
+option", a PAM question, an OTP) are answered the same way (owner, "detect tty read"): while the
+window waits for the verdict and the OS says ssh, the foreground group's leader, is blocked
+READING THE TTY (Linux: `/proc/<pid>/wchan` `n_tty_read`, or state `S` with `/proc/<pid>/syscall`
+a `read` on a tty fd; `terminal_attributes::foreground_reads_tty`), what is held is discarded
+(ssh's `readpassphrase` flushes) and the keys go to ssh; when it stops reading, keys are held
+again. macOS has no such probe yet (`libc` has no `kinfo_proc`, and the kernel does not report a
+wait message): there an echoing question's answer is held until the block ends, then handed back.
+The wait for the verdict has NO silence ceiling and no give-up timer (a slow password or a Duo
+push may take minutes): it ends at the verdict, the block's end, or a Ctrl-C (SIGINT to ssh, the
+hold flushed as the tty would). The managed verdict restarts the 15 s clock for the bootstrap, and
+one arriving with no window for the announced, still-running ssh re-arms a window. Only the first
+verdict, from the announcing shell's session, counts. An announcement seen before the window arms
+is remembered for its block and applied when it arms; one handled after the ownership event takes
+the window back (keys typed from then on are held; what the event already released went to ssh).
+Unmanaged ssh (no announcement) and Windows (`TTY_OWNED_AT_ARM`) are unchanged.
 
 **Windows: ssh.exe does not flush typeahead before a password prompt; accepted (owner,
 2026-11-04: "Accept, note it").** Under the same plain-terminal rule, text typed on Windows before

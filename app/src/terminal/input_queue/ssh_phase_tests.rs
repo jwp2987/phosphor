@@ -305,3 +305,18 @@ fn a_secret_read_under_the_wrapper_hold_passes_and_only_while_it_lasts() {
         "a live hold is never overtaken"
     );
 }
+
+/// #1641: the ownership edge overtook the wrapper's announcement; the announcement takes the tty
+/// back (the master login owns it), so keys are held again until the verdict.
+#[test]
+fn a_reclaimed_tty_holds_again() {
+    let mut m = owned();
+    assert_eq!(m.phase(false), SshPhase::Idle);
+    m.apply(SshEdge::TtyReclaimed);
+    assert!(!m.tty_owned());
+    assert_eq!(m.phase(false), SshPhase::Holding);
+    // An idle machine ignores it.
+    let mut idle = machine();
+    idle.apply(SshEdge::TtyReclaimed);
+    assert_eq!(idle.phase(false), SshPhase::Idle);
+}

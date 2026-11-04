@@ -309,8 +309,9 @@ pub trait Handler {
     /// Callback for the ssh wrapper's verdict after `pre_interactive_ssh_session` (#1641):
     /// `managed` is true for the `ManagedSSHSessionStarting` hook (the master login succeeded and
     /// the managed session, whose remote command is the bootstrap, starts now) and false for
-    /// `PlainSSHFallback` (the user's plain ssh runs instead).
-    fn ssh_wrapper_verdict(&mut self, _managed: bool) {}
+    /// `PlainSSHFallback` (the user's plain ssh runs instead). `session_id` is the shell's that
+    /// ran the wrapper.
+    fn ssh_wrapper_verdict(&mut self, _managed: bool, _session_id: Option<u64>) {}
 
     /// Callback for the Zap ssh hook - called once after successfully connecting to
     /// an SSH server

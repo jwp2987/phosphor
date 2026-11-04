@@ -299,6 +299,118 @@ pub fn tty_is_reading_secret(fd: RawFd) -> bool {
     fetch_termial_attributes(fd).is_ok_and(|termios| is_canonical_without_echo(termios.local_flags))
 }
 
+/// #1641: whether the pty's foreground process group is blocked READING THE TTY right now, an OS
+/// fact and never screen text. Under the ssh wrapper's hold this is ssh asking something that is
+/// not a secret (a host-key yes/no, a Duo "Passcode or option", a PAM question, an OTP: canonical
+/// with echo on), so the answer is passed to it like a password. The group leader is the process
+/// asked: the wrapper runs `command ssh` as its own job, so ssh is the leader. Linux reads
+/// `/proc/<pid>/wchan` and, where that says nothing conclusive (`wait_woken`, `0`, unreadable),
+/// the process state plus `/proc/<pid>/syscall` (a `read` on an fd that is a tty). Other
+/// platforms (macOS has no wait message it reports to user space through `libc`; ConPTY) answer
+/// `false`: no detection, the hold is unchanged. Cheap: three small reads of the leader's files.
+pub fn foreground_reads_tty(fd: RawFd) -> bool {
+    // SAFETY: `tcgetpgrp` only reads the terminal's foreground group id.
+    let pgid = unsafe { libc::tcgetpgrp(fd) };
+    if pgid <= 0 {
+        return false;
+    }
+    process_reads_tty(pgid)
+}
+
+#[cfg(target_os = "linux")]
+fn process_reads_tty(pid: libc::pid_t) -> bool {
+    let base = format!("/proc/{pid}");
+    let wchan = std::fs::read_to_string(format!("{base}/wchan")).ok();
+    if wchan.as_deref().is_some_and(wchan_is_tty_read) {
+        return true;
+    }
+    let state = std::fs::read_to_string(format!("{base}/stat"))
+        .ok()
+        .and_then(|stat| parse_proc_stat_state(&stat));
+    if state != Some('S') {
+        return false;
+    }
+    let Some(read_nr) = READ_SYSCALL else {
+        return false;
+    };
+    let Some(read_fd) = std::fs::read_to_string(format!("{base}/syscall"))
+        .ok()
+        .and_then(|line| syscall_read_fd(&line, read_nr))
+    else {
+        return false;
+    };
+    let target = std::fs::read_link(format!("{base}/fd/{read_fd}")).ok();
+    reads_tty_decision(
+        wchan.as_deref(),
+        state,
+        target
+            .as_ref()
+            .map(|path| path.to_string_lossy())
+            .as_deref(),
+    )
+}
+
+#[cfg(not(target_os = "linux"))]
+fn process_reads_tty(_pid: libc::pid_t) -> bool {
+    false
+}
+
+/// The `read` syscall number of this architecture, as `/proc/<pid>/syscall` reports it.
+#[cfg(target_os = "linux")]
+const READ_SYSCALL: Option<u64> = if cfg!(target_arch = "x86_64") {
+    Some(0)
+} else if cfg!(any(
+    target_arch = "aarch64",
+    target_arch = "riscv64",
+    target_arch = "loongarch64"
+)) {
+    Some(63)
+} else if cfg!(any(target_arch = "x86", target_arch = "arm")) {
+    Some(3)
+} else {
+    None
+};
+
+/// Whether a `/proc/<pid>/wchan` answer is the tty line discipline's read. `wait_woken` (where
+/// newer kernels report a blocked `n_tty_read`) is NOT enough alone: sockets and pipes wait there
+/// too, so it falls through to the syscall check.
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn wchan_is_tty_read(wchan: &str) -> bool {
+    let wchan = wchan.trim();
+    wchan.starts_with("n_tty_read") || wchan == "tty_read"
+}
+
+/// The fd of a blocked `read` from a `/proc/<pid>/syscall` line (`<nr> <arg0 hex> ...`), or
+/// `None` for another syscall, `running`, or a malformed line.
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn syscall_read_fd(line: &str, read_nr: u64) -> Option<i64> {
+    let mut fields = line.split_whitespace();
+    let nr: u64 = fields.next()?.parse().ok()?;
+    if nr != read_nr {
+        return None;
+    }
+    let fd = fields.next()?;
+    i64::from_str_radix(fd.strip_prefix("0x").unwrap_or(fd), 16).ok()
+}
+
+/// Whether an fd's `/proc/<pid>/fd` target is a terminal (`/dev/pts/N`, `/dev/tty`, `/dev/ttyX`).
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn path_is_tty(path: &str) -> bool {
+    path.starts_with("/dev/pts/") || path.starts_with("/dev/tty")
+}
+
+/// The decision of [`foreground_reads_tty`] on Linux from what was read: the line discipline's
+/// read in `wchan`, or an asleep process (`S`) in a `read` whose fd is a terminal.
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn reads_tty_decision(
+    wchan: Option<&str>,
+    state: Option<char>,
+    read_fd_target: Option<&str>,
+) -> bool {
+    wchan.is_some_and(wchan_is_tty_read)
+        || (state == Some('S') && read_fd_target.is_some_and(path_is_tty))
+}
+
 /// Shells, and programs that put a shell (possibly on another machine) behind the pty.
 pub(crate) fn is_shell_or_login_hop(comm: &str) -> bool {
     const NAMES: &[&str] = &[

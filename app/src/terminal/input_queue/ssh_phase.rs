@@ -13,6 +13,7 @@
 //! | [`SshEdge::Submitted`] | the user submitted a command (an interactive `ssh ...` arms the window) |
 //! | [`SshEdge::ConnectStart`] | the shell's preexec showed an ssh command running that nothing armed |
 //! | [`SshEdge::TtyOwned`] | `CommandBecameInteractive` for the window's block: ssh owns the tty (#1611, #1612, #1621). Under the ssh wrapper (`PreInteractiveSSHSession` seen) the view defers it to the wrapper's `PlainSSHFallback` hook and never sends it for a managed session (#1641) |
+//! | [`SshEdge::TtyReclaimed`] | `PreInteractiveSSHSession` handled after `TtyOwned` for the same window: the wrapper's master login owns the tty, so the hold resumes until the verdict (#1641) |
 //! | [`SshEdge::Observed`] | the published facts at a model event or output wakeup: a remote session announced (InitShell) or gone (Bootstrapped / exit), the ssh hook, the setup dialog and the remote-setup state (`SessionsEvent`) |
 //! | [`SshEdge::BlockCompleted`] | the ssh block ended (the remote shell's first precmd, or a failed connect) |
 //! | [`SshEdge::BootstrapFailed`] | the bootstrap-failed timer of the pending session (#1494's path) |
@@ -126,6 +127,10 @@ pub enum SshEdge {
     /// the shell is the foreground group, or the tty is raw / reading a secret). The pre-ownership
     /// hold ends here; the view delivers or discards what it held at this edge.
     TtyOwned,
+    /// #1641: the ssh wrapper announced itself after the ownership edge (the latch overtook the
+    /// announcement): ssh's tty is its ControlMaster login, so the window holds again until the
+    /// wrapper's verdict.
+    TtyReclaimed,
     /// The facts at an event.
     Observed(SshObservation),
     /// The armed ssh block completed. `clean` is whether it exited 0.
@@ -202,6 +207,11 @@ impl SshPhaseMachine {
             SshEdge::TtyOwned => {
                 if self.armed {
                     self.tty_owned = true;
+                }
+            }
+            SshEdge::TtyReclaimed => {
+                if self.armed {
+                    self.tty_owned = false;
                 }
             }
             SshEdge::Observed(observed) => {

@@ -19677,7 +19677,7 @@ fn managed_ssh_keys_are_held_through_the_master_login_and_delivered_after_the_bo
             );
             terminal.update(&mut app, |view, ctx| {
                 // The master login succeeded; the managed session (the bootstrap) starts.
-                view.handle_terminal_event(&ModelEvent::SshWrapperVerdict { managed: true }, ctx);
+                ssh_wrapper_verdict_for_test(view, true, ctx);
                 assert!(view.ssh_typeahead_holding, "{mode:?}: still held");
                 // The remote prints the ssh hook and announces its shell (InitShell).
                 simulate_ssh_hook(view);
@@ -19730,15 +19730,10 @@ fn managed_ssh_keys_are_held_through_the_master_login_and_delivered_after_the_bo
                 assert!(view.ssh_held_is_empty(), "{mode:?}");
             });
             let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
-            let written = String::from_utf8_lossy(&written).into_owned();
             assert_eq!(
-                written.matches("echo T258_ok").count(),
-                1,
-                "{mode:?}: delivered exactly once: {written:?}"
-            );
-            assert!(
-                written.starts_with("echo T258_ok\r"),
-                "{mode:?}: whole, in typed order, Enter last: {written:?}"
+                String::from_utf8_lossy(&written),
+                "echo T258_ok\r",
+                "{mode:?}: delivered exactly once, whole, in typed order, Enter last"
             );
         })
     }
@@ -19763,7 +19758,7 @@ fn managed_ssh_plain_fallback_releases_the_held_keys_at_ownership() {
             });
             assert!(pty_writes.borrow().is_empty(), "{mode:?}");
             terminal.update(&mut app, |view, ctx| {
-                view.handle_terminal_event(&ModelEvent::SshWrapperVerdict { managed: false }, ctx);
+                ssh_wrapper_verdict_for_test(view, false, ctx);
                 assert!(!view.ssh_typeahead_holding, "{mode:?}: the hold ended");
                 assert!(view.ssh_held_is_empty(), "{mode:?}: delivered to ssh");
                 assert!(
@@ -19903,7 +19898,7 @@ fn unannounced_ssh_still_releases_held_keys_at_ownership() {
                 view.warpify_state
                     .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
                 // A verdict without an announcement changes nothing.
-                view.handle_terminal_event(&ModelEvent::SshWrapperVerdict { managed: true }, ctx);
+                ssh_wrapper_verdict_for_test(view, true, ctx);
                 ssh_tty_owned_for_test(view, ctx);
                 assert!(
                     !view.ssh_typeahead_holding,
@@ -19916,6 +19911,385 @@ fn unannounced_ssh_still_releases_held_keys_at_ownership() {
             });
             let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
             assert_eq!(written, b"echo U", "{mode:?}: once, at ownership");
+        })
+    }
+}
+
+/// #1641: the wrapper's verdict hook as the parser delivers it (`ManagedSSHSessionStarting` when
+/// `managed`, else `PlainSSHFallback`), with no session id.
+fn ssh_wrapper_verdict_for_test(
+    view: &mut TerminalView,
+    managed: bool,
+    ctx: &mut ViewContext<TerminalView>,
+) {
+    view.handle_terminal_event(
+        &ModelEvent::SshWrapperVerdict {
+            managed,
+            session_id: None,
+        },
+        ctx,
+    );
+}
+
+/// #1641: a managed session after `ManagedSSHSessionStarting`, from the ssh hook to the remote
+/// shell's first prompt: the ssh hook, InitShell, the ssh block's clean end at the bootstrap's own
+/// precmd, Bootstrapped, then (a command in the foreground, so what is delivered goes to the pty)
+/// the first prompt's Precmd, where the managed hold hands over. Asserts nothing is held after it.
+fn managed_ssh_bootstrap_to_first_prompt_for_test(
+    view: &mut TerminalView,
+    armed: &BlockId,
+    ctx: &mut ViewContext<TerminalView>,
+) {
+    let remote_session = SessionId::from(167303092612202);
+    simulate_ssh_hook(view);
+    view.refresh_ssh_connect_gate();
+    view.ssh_observe(ctx);
+    view.model.lock().init_shell(InitShellValue {
+        session_id: remote_session,
+        shell: "bash".to_owned(),
+        user: "user".to_owned(),
+        hostname: "host".to_owned(),
+        ..Default::default()
+    });
+    assert!(view.refresh_ssh_connect_gate());
+    view.ssh_observe(ctx);
+    view.apply_block_completed_to_ssh_gate(armed, 0);
+    view.warpify_state.clear_pending_ssh_host();
+    view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+    view.model.lock().bootstrapped(BootstrappedValue {
+        shell: "bash".to_owned(),
+        ..Default::default()
+    });
+    view.handle_terminal_event(
+        &ModelEvent::Handler(AnsiHandlerEvent::Bootstrapped {
+            session_id: remote_session,
+            is_subshell: false,
+        }),
+        ctx,
+    );
+    view.model.lock().simulate_long_running_block("sleep 5", "");
+    view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+    assert!(
+        view.ssh_connect_gate.is_none(),
+        "the first prompt ends the window"
+    );
+    assert!(!view.ssh_typeahead_holding);
+    assert!(view.ssh_held_is_empty());
+}
+
+/// #1641 review: each verdict arriving BEFORE ssh is seen owning the tty. Managed: the ownership
+/// event that follows releases nothing, and the keys reach the remote once after the bootstrap.
+/// Fallback: the keys stay held until the ownership event, which delivers them once. Legacy and
+/// Table.
+#[test]
+fn managed_ssh_verdict_before_ownership_is_honoured_for_each_verdict() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        for managed in [true, false] {
+            App::test((), move |mut app| async move {
+                let _mode =
+                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+                initialize_app_for_terminal_view(&mut app);
+                app.add_singleton_model(|_| crate::workspace::ToastStack);
+                let terminal = add_window_with_terminal(&mut app, None);
+                let pty_writes = record_pty_writes(&mut app, &terminal);
+                terminal.update(&mut app, |view, ctx| {
+                    register_local_session_for_ssh_test(view, ctx);
+                    submit_command(view, "ssh host", ctx);
+                    view.typed_characters_on_terminal("echo V", ctx);
+                    view.model
+                        .lock()
+                        .simulate_long_running_block("ssh host", "");
+                    view.warpify_state
+                        .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
+                    view.handle_terminal_event(&ModelEvent::PreInteractiveSSHSession, ctx);
+                    ssh_wrapper_verdict_for_test(view, managed, ctx);
+                    assert!(view.ssh_typeahead_holding, "{mode:?}/{managed}: held");
+                    view.keydown_on_terminal("\r", ctx);
+                    ssh_tty_owned_for_test(view, ctx);
+                    if managed {
+                        assert!(
+                            view.ssh_typeahead_holding,
+                            "{mode:?}: a managed session's ownership releases nothing"
+                        );
+                        assert!(pty_writes.borrow().is_empty(), "{mode:?}");
+                        let armed = view
+                            .ssh_connect_gate
+                            .as_ref()
+                            .and_then(|g| g.block_id.clone())
+                            .unwrap();
+                        managed_ssh_bootstrap_to_first_prompt_for_test(view, &armed, ctx);
+                    } else {
+                        assert!(
+                            !view.ssh_typeahead_holding,
+                            "{mode:?}: after a fallback ownership releases"
+                        );
+                    }
+                });
+                let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+                assert_eq!(
+                    written, b"echo V\r",
+                    "{mode:?}/managed={managed}: once, in order"
+                );
+            })
+        }
+    }
+}
+
+/// #1641 review (3a): the ownership event overtook the wrapper's announcement. What was held
+/// before it went to ssh at that event (it is in ssh's tty queue: the event cannot be taken back);
+/// the announcement then takes the window back, so the keys typed AFTER it are held and reach the
+/// remote once, after the bootstrap. Legacy and Table.
+#[test]
+fn managed_ssh_ownership_before_the_announcement_holds_the_later_keys() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                submit_command(view, "ssh host", ctx);
+                view.typed_characters_on_terminal("a", ctx);
+                view.model
+                    .lock()
+                    .simulate_long_running_block("ssh host", "");
+                view.warpify_state
+                    .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
+                ssh_tty_owned_for_test(view, ctx);
+                assert!(
+                    !view.ssh_typeahead_holding,
+                    "{mode:?}: released at ownership"
+                );
+                view.handle_terminal_event(&ModelEvent::PreInteractiveSSHSession, ctx);
+                let gate = view.ssh_connect_gate.as_ref().unwrap();
+                assert_eq!(gate.wrapper, SshWrapperHold::AwaitingVerdict, "{mode:?}");
+                assert!(!gate.tty_owned && gate.tty_owned_deferred, "{mode:?}");
+                view.typed_characters_on_terminal("echo W", ctx);
+                view.keydown_on_terminal("\r", ctx);
+                assert!(view.ssh_typeahead_holding, "{mode:?}: held again");
+                ssh_wrapper_verdict_for_test(view, true, ctx);
+                let armed = view
+                    .ssh_connect_gate
+                    .as_ref()
+                    .and_then(|g| g.block_id.clone())
+                    .unwrap();
+                managed_ssh_bootstrap_to_first_prompt_for_test(view, &armed, ctx);
+            });
+            let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+            assert_eq!(
+                written, b"aecho W\r",
+                "{mode:?}: the early key at ownership, the rest after the bootstrap, once each"
+            );
+        })
+    }
+}
+
+/// #1641 review (3b): the announcement arrived before any connect window existed (an ssh the
+/// submit did not show, armed lazily). It is remembered for its block and applied when the window
+/// arms. Legacy and Table.
+#[test]
+fn managed_ssh_announcement_before_the_window_arms_is_applied_when_it_arms() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                view.model
+                    .lock()
+                    .simulate_long_running_block("ssh host", "");
+                view.warpify_state
+                    .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
+                view.ssh_connect_gate = None;
+                view.handle_terminal_event(&ModelEvent::PreInteractiveSSHSession, ctx);
+                assert!(view.ssh_wrapper_announced.is_some(), "{mode:?}: remembered");
+                assert!(view.refresh_ssh_connect_gate(), "{mode:?}: the window arms");
+                assert_eq!(
+                    view.ssh_connect_gate.as_ref().map(|g| g.wrapper),
+                    Some(SshWrapperHold::AwaitingVerdict),
+                    "{mode:?}: the remembered announcement applies"
+                );
+            });
+        })
+    }
+}
+
+/// #1641 review: Ctrl-C while the wrapper's master login runs is SIGINT to ssh (as before
+/// ownership) and flushes what was held, as the tty's own flush on ^C would; nothing typed is
+/// written, the window ends with the block, and nothing is left to hand back. Legacy and Table.
+#[test]
+fn managed_ssh_ctrl_c_while_awaiting_the_verdict_interrupts_and_flushes() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            let sigints = Rc::new(RefCell::new(0usize));
+            let counter = sigints.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                    if matches!(event, Event::SigintForegroundToPty) {
+                        *counter.borrow_mut() += 1;
+                    }
+                });
+            });
+            terminal.update(&mut app, |view, ctx| {
+                let armed = managed_ssh_held_through_the_master_login_for_test(view, ctx);
+                view.keydown_on_terminal("\u{3}", ctx);
+                assert!(!view.ssh_typeahead_holding, "{mode:?}: the hold is flushed");
+                assert!(view.ssh_held_is_empty(), "{mode:?}");
+                // ssh dies of the SIGINT; the wrapper returns 130 without a verdict.
+                view.apply_block_completed_to_ssh_gate(&armed, 130);
+                assert!(
+                    view.ssh_connect_gate.is_none(),
+                    "{mode:?}: the window ended"
+                );
+                view.deliver_ssh_typeahead_if_ready("test", ctx);
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "",
+                    "{mode:?}: nothing to hand back"
+                );
+            });
+            let writes = pty_writes.borrow();
+            assert!(
+                *sigints.borrow() == 1 || writes.iter().any(|w| w.as_slice() == b"\x03"),
+                "{mode:?}: Ctrl-C reaches ssh: {writes:?}"
+            );
+            assert!(
+                !writes
+                    .iter()
+                    .any(|w| String::from_utf8_lossy(w).contains("T258")),
+                "{mode:?}: nothing typed was written: {writes:?}"
+            );
+        })
+    }
+}
+
+/// #1641 review (finding 4): only the first verdict counts. A `PlainSSHFallback` after
+/// `ManagedSSHSessionStarting` (or any repeat) is ignored: the keys stay held for the remote, and
+/// the bootstrap still delivers them once. Legacy and Table.
+#[test]
+fn managed_ssh_a_second_verdict_is_ignored() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                let armed = managed_ssh_held_through_the_master_login_for_test(view, ctx);
+                ssh_wrapper_verdict_for_test(view, true, ctx);
+                ssh_wrapper_verdict_for_test(view, false, ctx);
+                assert_eq!(
+                    view.ssh_connect_gate.as_ref().map(|g| g.wrapper),
+                    Some(SshWrapperHold::Managed),
+                    "{mode:?}: the second verdict changed nothing"
+                );
+                assert!(view.ssh_typeahead_holding, "{mode:?}");
+                assert!(pty_writes.borrow().is_empty(), "{mode:?}: nothing released");
+                managed_ssh_bootstrap_to_first_prompt_for_test(view, &armed, ctx);
+            });
+            let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+            assert_eq!(
+                written, b"echo T258_ok\r",
+                "{mode:?}: once, after the bootstrap"
+            );
+        })
+    }
+}
+
+/// #1641 review (finding 1): the master login can take longer than the old 15 s silence ceiling
+/// (a slow password, a Duo push). While the window waits for the verdict no ceiling ends it and no
+/// give-up is armed; a verdict arriving after that point still holds the keys through the
+/// bootstrap and delivers them once. Legacy and Table.
+#[test]
+fn managed_ssh_verdict_after_the_old_ceiling_still_delivers_once() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                let armed = managed_ssh_held_through_the_master_login_for_test(view, ctx);
+                let gate = view.ssh_connect_gate.as_mut().unwrap();
+                gate.armed_at =
+                    Instant::now() - SSH_CONNECT_SILENCE_CEILING - Duration::from_secs(5);
+                assert_eq!(gate.give_up_deadline(false), None, "{mode:?}: no clock");
+                assert!(view.refresh_ssh_connect_gate(), "{mode:?}: still open");
+                assert!(view.ssh_typeahead_holding, "{mode:?}");
+                ssh_wrapper_verdict_for_test(view, true, ctx);
+                assert!(
+                    view.refresh_ssh_connect_gate(),
+                    "{mode:?}: the managed verdict restarted the clock"
+                );
+                managed_ssh_bootstrap_to_first_prompt_for_test(view, &armed, ctx);
+                assert_eq!(view.ssh_give_ups, 0, "{mode:?}: events only, no give-up");
+            });
+            let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+            assert_eq!(
+                written, b"echo T258_ok\r",
+                "{mode:?}: once, after the bootstrap"
+            );
+        })
+    }
+}
+
+/// #1641 (owner: "detect tty read"): an ECHOING question during the master login (a host-key
+/// yes/no, a Duo "Passcode or option") is not a secret read; the OS says ssh is blocked reading the
+/// tty (here a fake probe). What was held is discarded as ssh's `readpassphrase` flush would, the
+/// answer reaches ssh once, and once ssh stops reading, keys are held again. Legacy and Table.
+#[test]
+fn managed_ssh_an_echoing_question_during_the_master_login_gets_the_answer() {
+    use crate::terminal::input_queue::DestinationMode;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            let reading = Arc::new(AtomicBool::new(false));
+            terminal.update(&mut app, |view, ctx| {
+                let probe = reading.clone();
+                view.model
+                    .lock()
+                    .set_tty_read_probe(Arc::new(move || probe.load(Ordering::Relaxed)));
+                managed_ssh_held_through_the_master_login_for_test(view, ctx);
+                // ssh asks (echo on): it is blocked reading the tty; its output is the event.
+                reading.store(true, Ordering::Relaxed);
+                view.model
+                    .lock()
+                    .process_bytes("Are you sure you want to continue connecting (yes/no)? ");
+                view.model.lock().publish_key_facts();
+                view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+                assert!(!view.ssh_typeahead_holding, "{mode:?}: the hold ended");
+                view.typed_characters_on_terminal("yes", ctx);
+                view.keydown_on_terminal("\r", ctx);
+                assert!(!view.ssh_typeahead_holding, "{mode:?}: the answer passes");
+                reading.store(false, Ordering::Relaxed);
+                view.typed_characters_on_terminal("ls", ctx);
+                assert!(view.ssh_typeahead_holding, "{mode:?}: held again");
+            });
+            let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+            assert_eq!(written, b"yes\r", "{mode:?}: only the answer, once");
         })
     }
 }

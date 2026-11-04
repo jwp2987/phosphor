@@ -228,8 +228,8 @@ impl Handler for MockHandler {
             .push(DProtoHook::PreInteractiveSSHSession { value: data })
     }
 
-    fn ssh_wrapper_verdict(&mut self, managed: bool) {
-        let value = PreInteractiveSSHSessionValue::default();
+    fn ssh_wrapper_verdict(&mut self, managed: bool, session_id: Option<u64>) {
+        let value = PreInteractiveSSHSessionValue { session_id };
         self.d_proto_hooks.push(if managed {
             DProtoHook::ManagedSSHSessionStarting { value }
         } else {
@@ -2066,8 +2066,14 @@ fn parse_dcs_ssh_wrapper_verdict_hooks() {
         let payload = format!(r#"{{"hook":"{name}","value":{{"session_id":7}}}}"#);
         let (_, handler) = parse_bytes(&hex_encoded_dcs_string(&payload));
         match handler.d_proto_hooks.as_slice() {
-            [DProtoHook::ManagedSSHSessionStarting { .. }] => assert!(managed, "{name}"),
-            [DProtoHook::PlainSSHFallback { .. }] => assert!(!managed, "{name}"),
+            [DProtoHook::ManagedSSHSessionStarting { value }] => {
+                assert!(managed, "{name}");
+                assert_eq!(value.session_id, Some(7), "{name}");
+            }
+            [DProtoHook::PlainSSHFallback { value }] => {
+                assert!(!managed, "{name}");
+                assert_eq!(value.session_id, Some(7), "{name}");
+            }
             other => panic!("{name}: unexpected hooks {other:?}"),
         }
     }
