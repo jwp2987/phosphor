@@ -11,6 +11,7 @@ mod inline_agent_view_header;
 pub(crate) mod orchestration_avatar;
 // TODO: Move orchestration_conversation_links module import elsewhere.
 pub(crate) mod orchestration_conversation_links;
+pub mod orchestration_pill_bar;
 pub mod orchestration_pill_bar_model;
 pub mod shortcuts;
 mod zero_state_block;

@@ -1,0 +1,683 @@
+use super::*;
+
+// Traversal and canonical pill-order correctness are exercised in
+// `app/src/ai/blocklist/orchestration_topology_tests.rs`. These tests stay
+// focused on the pill bar's own dispatch behavior.
+
+#[test]
+fn pill_bar_scrollable_finite_under_capped_drag_preview() {
+    use pathfinder_geometry::vector::vec2f;
+    use warpui::elements::new_scrollable::{NewScrollable, SingleAxisConfig};
+    use warpui::elements::{
+        ClippedScrollStateHandle, ConstrainedBox, Container, CrossAxisAlignment, Fill, Flex,
+        MainAxisSize, ParentElement, Rect,
+    };
+    use warpui::platform::WindowStyle;
+    use warpui::{
+        App, Element, Entity, Presenter, TypedActionView, View, ViewContext, WindowInvalidation,
+    };
+
+    // Mirror of `PaneView::DRAG_PREVIEW_HEADER_MAX_WIDTH`; kept local so the test
+    // documents the finite cap the fix relies on.
+    const DRAG_PREVIEW_HEADER_MAX_WIDTH: f32 = 400.;
+
+    struct DragPreviewTestView {
+        scroll_state: ClippedScrollStateHandle,
+    }
+
+    impl DragPreviewTestView {
+        fn new(_ctx: &mut ViewContext<Self>) -> Self {
+            Self {
+                scroll_state: ClippedScrollStateHandle::new(),
+            }
+        }
+    }
+
+    impl Entity for DragPreviewTestView {
+        type Event = ();
+    }
+
+    impl View for DragPreviewTestView {
+        fn ui_name() -> &'static str {
+            "DragPreviewTestView"
+        }
+
+        fn render(&self, _app: &warpui::AppContext) -> Box<dyn Element> {
+            // Overflowing content so the clipped scrollable has something to clip.
+            let content = ConstrainedBox::new(Rect::new().finish())
+                .with_width(2000.)
+                .with_height(22.)
+                .finish();
+            let scrollable = NewScrollable::horizontal(
+                SingleAxisConfig::Clipped {
+                    handle: self.scroll_state.clone(),
+                    child: Container::new(content).finish(),
+                },
+                Fill::None,
+                Fill::None,
+                Fill::None,
+            )
+            .finish();
+            let bar = Container::new(scrollable).finish();
+            // The pane-header content column stretches the bar to the header width.
+            let header_column = Flex::column()
+                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                .with_main_axis_size(MainAxisSize::Min)
+                .with_child(bar)
+                .finish();
+            // The fix: the drag-preview column caps the header to a finite width.
+            let drag_preview = Flex::column()
+                .with_main_axis_size(MainAxisSize::Min)
+                .with_child(
+                    ConstrainedBox::new(header_column)
+                        .with_max_width(DRAG_PREVIEW_HEADER_MAX_WIDTH)
+                        .finish(),
+                )
+                .finish();
+            // Outer row hands the drag-preview column an unbounded max width.
+            Flex::row()
+                .with_main_axis_size(MainAxisSize::Min)
+                .with_child(drag_preview)
+                .finish()
+        }
+    }
+
+    impl TypedActionView for DragPreviewTestView {
+        type Action = ();
+    }
+
+    App::test((), |mut app| async move {
+        let (window_id, _view) =
+            app.add_window(WindowStyle::NotStealFocus, DragPreviewTestView::new);
+        let root_view_id = app
+            .root_view_id(window_id)
+            .expect("window should have a root view");
+
+        let mut presenter = Presenter::new(window_id);
+        let invalidation = WindowInvalidation {
+            updated: [root_view_id].into_iter().collect(),
+            ..Default::default()
+        };
+
+        app.update(move |ctx| {
+            presenter.invalidate(invalidation, ctx);
+            // Before the fix this panics in `Scene::validate_rect` while painting
+            // the scrollable at an infinite/NaN width.
+            let scene = presenter.build_scene(vec2f(400., 300.), 1., None, ctx);
+
+            // Every painted rect must have a finite size. Without the width cap,
+            // the clipped scrollable would paint an infinite/NaN-width rect.
+            for layer in scene.layers() {
+                for rect in &layer.rects {
+                    let size = rect.bounds.size();
+                    assert!(
+                        size.x().is_finite() && size.y().is_finite(),
+                        "painted rect should be finite under a capped drag preview, got {size:?}",
+                    );
+                }
+            }
+        });
+    });
+}
+
+/// The data layer that `OrchestrationPillBar::pill_specs` reads must
+/// surface restored orchestration children before any pane has been created.
+///
+/// `pill_specs` (defined privately on `OrchestrationPillBar`) walks the
+/// anchor's children — `child_conversations_in_pill_order`, which is
+/// `descendant_conversation_ids_in_spawn_order` restricted to one level —
+/// and then `filter_map(|id| history.conversation(&id))`. This test asserts
+/// against the underlying spawn-order walk, which both share. The
+/// `history.conversation(&id)` lookup must return `Some` for restored
+/// children even before the parent's hidden pane materializes, or the pill
+/// bar renders nothing. This test asserts both layers work after
+/// `BlocklistAIHistoryModel::new` runs, before any `restore_conversations` /
+/// pane materialization.
+#[test]
+fn pill_bar_data_layer_finds_restored_children_before_pane_creation() {
+    use chrono::Utc;
+    use uuid::Uuid;
+    use warpui::App;
+
+    use crate::ai::blocklist::BlocklistAIHistoryModel;
+    use crate::ai::blocklist::orchestration_topology::descendant_conversation_ids_in_spawn_order;
+    use crate::persistence::model::{
+        AgentConversation, AgentConversationData, AgentConversationRecord,
+    };
+
+    App::test((), |app| async move {
+        let parent_id = AIConversationId::new();
+        let child_id = AIConversationId::new();
+        let parent_run_id = Uuid::new_v4().to_string();
+        let child_run_id = Uuid::new_v4().to_string();
+        let now = Utc::now().naive_utc();
+
+        let conversations = vec![
+            AgentConversation {
+                conversation: AgentConversationRecord {
+                    id: 1,
+                    conversation_id: child_id.to_string(),
+                    conversation_data: serde_json::to_string(&AgentConversationData {
+                        server_conversation_token: Some("child-token".to_string()),
+                        conversation_usage_metadata: None,
+                        reverted_action_ids: None,
+                        forked_from_server_conversation_token: None,
+                        artifacts_json: None,
+                        parent_agent_id: Some(parent_run_id.clone()),
+                        agent_name: Some("Agent 1".to_string()),
+                        orchestration_harness_type: None,
+                        parent_conversation_id: Some(parent_id.to_string()),
+                        is_remote_child: false,
+                        root_task_is_optimistic: None,
+                        run_id: Some(child_run_id.clone()),
+                        autoexecute_override: None,
+                        last_event_sequence: None,
+                        pinned: false,
+                        compaction_state_json: None,
+                        byop_repair_state_json: None,
+                        cli_subagent_block_snapshots_json: None,
+                    })
+                    .expect("child conversation data should serialize"),
+                    last_modified_at: now,
+                    summary: None,
+                },
+                tasks: vec![agent_proto::Task {
+                    id: format!("task-{child_id}"),
+                    messages: vec![agent_proto::Message {
+                        fetched_memories: vec![],
+                        id: "child-msg".to_string(),
+                        task_id: format!("task-{child_id}"),
+                        server_message_data: String::new(),
+                        citations: vec![],
+                        message: Some(agent_proto::message::Message::UserQuery(
+                            agent_proto::message::UserQuery {
+                                query: "Child query".to_string(),
+                                context: None,
+                                referenced_attachments: Default::default(),
+                                mode: None,
+                                intended_agent: Default::default(),
+                            },
+                        )),
+                        request_id: "request-1".to_string(),
+                        timestamp: None,
+                    }],
+                    dependencies: None,
+                    description: "Child query".to_string(),
+                    summary: String::new(),
+                    server_data: String::new(),
+                }],
+            },
+            AgentConversation {
+                conversation: AgentConversationRecord {
+                    id: 2,
+                    conversation_id: parent_id.to_string(),
+                    conversation_data: serde_json::to_string(&AgentConversationData {
+                        server_conversation_token: Some("parent-token".to_string()),
+                        conversation_usage_metadata: None,
+                        reverted_action_ids: None,
+                        forked_from_server_conversation_token: None,
+                        artifacts_json: None,
+                        parent_agent_id: None,
+                        agent_name: None,
+                        orchestration_harness_type: None,
+                        parent_conversation_id: None,
+                        is_remote_child: false,
+                        root_task_is_optimistic: None,
+                        run_id: Some(parent_run_id.clone()),
+                        autoexecute_override: None,
+                        last_event_sequence: None,
+                        pinned: false,
+                        compaction_state_json: None,
+                        byop_repair_state_json: None,
+                        cli_subagent_block_snapshots_json: None,
+                    })
+                    .expect("parent conversation data should serialize"),
+                    last_modified_at: now - chrono::Duration::seconds(1),
+                    summary: None,
+                },
+                tasks: vec![agent_proto::Task {
+                    id: format!("task-{parent_id}"),
+                    messages: vec![agent_proto::Message {
+                        fetched_memories: vec![],
+                        id: "parent-msg".to_string(),
+                        task_id: format!("task-{parent_id}"),
+                        server_message_data: String::new(),
+                        citations: vec![],
+                        message: Some(agent_proto::message::Message::UserQuery(
+                            agent_proto::message::UserQuery {
+                                query: "Parent query".to_string(),
+                                context: None,
+                                referenced_attachments: Default::default(),
+                                mode: None,
+                                intended_agent: Default::default(),
+                            },
+                        )),
+                        request_id: "request-2".to_string(),
+                        timestamp: None,
+                    }],
+                    dependencies: None,
+                    description: "Parent query".to_string(),
+                    summary: String::new(),
+                    server_data: String::new(),
+                }],
+            },
+        ];
+
+        let history_model = app
+            .add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &conversations));
+
+        history_model.read(&app, |model, _| {
+            // The parent → children index `pill_specs` walks must be
+            // populated for restored children at app startup, before any pane
+            // materializes.
+            let descendants = descendant_conversation_ids_in_spawn_order(model, parent_id);
+            assert_eq!(
+                descendants,
+                vec![child_id],
+                "orchestration topology must surface restored children before any pane is created",
+            );
+
+            // pill_specs then collects pill specs via
+            // `children.into_iter().filter_map(|id| history.conversation(&id))`.
+            // The child must be hydrated eagerly so this lookup succeeds and
+            // the pill bar renders; otherwise the filter_map would drop the
+            // child (because `conversation(&child_id)` returned `None`) and
+            // `pill_specs` would return `None` from the
+            // `children.is_empty()` early-exit.
+            let resolved_children: Vec<&AIConversation> = descendants
+                .iter()
+                .filter_map(|id| model.conversation(id))
+                .collect();
+            assert_eq!(
+                resolved_children.len(),
+                1,
+                "restored child conversation must be available in conversations_by_id so \
+                 OrchestrationPillBar::pill_specs renders a child pill",
+            );
+            assert_eq!(resolved_children[0].id(), child_id);
+            assert_eq!(resolved_children[0].agent_name(), Some("Agent 1"));
+        });
+    });
+}
+
+#[test]
+fn navigation_action_for_child_pill_reveals_existing_child_pane() {
+    let conversation_id = AIConversationId::new();
+
+    assert!(matches!(
+        navigation_action_for_pill(PillKind::Child, conversation_id),
+        TerminalAction::RevealChildAgent {
+            conversation_id: actual_id,
+        } if actual_id == conversation_id
+    ));
+}
+
+#[test]
+fn navigation_action_for_orchestrator_pill_switches_in_place() {
+    let conversation_id = AIConversationId::new();
+
+    assert!(matches!(
+        navigation_action_for_pill(PillKind::Orchestrator, conversation_id),
+        TerminalAction::SwitchAgentViewToConversation {
+            conversation_id: actual_id,
+        } if actual_id == conversation_id
+    ));
+}
+
+// ---- Drill-down anchoring and breadcrumbs (`306257bfe`) --------------------
+//
+// Two of the pin's drill-down tests are not ported:
+//
+// * `breadcrumbs_resolve_token_only_parent_linkage_after_restore` exercises
+//   the legacy *server-token* parent fallback in
+//   `BlocklistAIHistoryModel::resolved_parent_conversation_id_from_refs`.
+//   This fork resolves parents through the run-id/agent-id index only — there
+//   are no server conversation tokens to fall back to — so the scenario the
+//   test constructs cannot occur here.
+// * `conversation_server_token_assignment_rerenders_the_pill_bar` covers the
+//   history subscription this port *does* carry (as
+//   `ConversationAgentIdAssigned`, the local equivalent of the pin's
+//   `ConversationServerTokenAssigned`). Its fixture needs a live
+//   `AgentViewController`, whose only construction pattern in this tree pulls
+//   in `crate::cloud_object::{model::persistence::ObjectStoreModel,
+//   update_manager::UpdateManager}` — a new import of a dropped-cloud module,
+//   which `script/check_cloud_boundary` rejects. Left untested rather than
+//   built on a cloud import; the subscription itself is a one-line arm.
+//
+//   UPDATE (this round): the second bullet's blocker no longer holds and the
+//   test is now ported, at the bottom of this file. `AgentViewController` does
+//   have a cloud-free construction path here —
+//   `test_util::terminal::initialize_app_for_terminal_view` +
+//   `add_window_with_terminal` register `ObjectStoreModel::mock` /
+//   `UpdateManager::mock` inside `test_util/terminal.rs`, whose imports are
+//   already on `script/cloud_boundary_allowlist.txt`, and hand back a real
+//   controller via `TerminalView::agent_view_controller()`. No new
+//   dropped-cloud import appears in this file, so the boundary guard is not
+//   widened. The first bullet is unaffected and still stands.
+
+/// Builds a 3-level tree (root → mid → grandchild) and returns the history
+/// handle plus the ids.
+fn build_three_level_tree(
+    app: &mut warpui::App,
+) -> (
+    ModelHandle<BlocklistAIHistoryModel>,
+    AIConversationId,
+    AIConversationId,
+    AIConversationId,
+) {
+    use warpui::EntityId;
+
+    let terminal_view_id = EntityId::new();
+    let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
+    let root_id = history_model.update(app, |history, ctx| {
+        history.start_new_conversation(terminal_view_id, false, false, ctx)
+    });
+    let mid_id = history_model.update(app, |history, ctx| {
+        history.start_new_child_conversation(
+            terminal_view_id,
+            "mid".to_string(),
+            root_id,
+            None,
+            ctx,
+        )
+    });
+    let grandchild_id = history_model.update(app, |history, ctx| {
+        history.start_new_child_conversation(
+            terminal_view_id,
+            "grandchild".to_string(),
+            mid_id,
+            None,
+            ctx,
+        )
+    });
+    (history_model, root_id, mid_id, grandchild_id)
+}
+
+#[test]
+fn breadcrumb_ids_show_only_root_when_parent_is_root() {
+    use warpui::App;
+
+    App::test((), |mut app| async move {
+        // `start_new_child_conversation` persists the new child conversation, which reads
+        // `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Register both so the persist path has the
+        // singletons it legitimately needs.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
+        let (history_model, root_id, mid_id, _grandchild_id) = build_three_level_tree(&mut app);
+        history_model.read(&app, |history, _| {
+            assert_eq!(breadcrumb_ids(history, mid_id), (Some(root_id), None));
+        });
+    });
+}
+
+#[test]
+fn breadcrumb_ids_show_root_and_parent_when_two_levels_deep() {
+    use warpui::App;
+
+    App::test((), |mut app| async move {
+        // `start_new_child_conversation` persists the new child conversation, which reads
+        // `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Register both so the persist path has the
+        // singletons it legitimately needs.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
+        let (history_model, root_id, mid_id, grandchild_id) = build_three_level_tree(&mut app);
+        history_model.read(&app, |history, _| {
+            assert_eq!(
+                breadcrumb_ids(history, grandchild_id),
+                (Some(root_id), Some(mid_id)),
+            );
+        });
+    });
+}
+
+#[test]
+fn breadcrumb_ids_are_empty_at_the_root() {
+    use warpui::App;
+
+    App::test((), |mut app| async move {
+        // `start_new_child_conversation` persists the new child conversation, which reads
+        // `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Register both so the persist path has the
+        // singletons it legitimately needs.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
+        let (history_model, root_id, _mid_id, _grandchild_id) = build_three_level_tree(&mut app);
+        history_model.read(&app, |history, _| {
+            assert_eq!(breadcrumb_ids(history, root_id), (None, None));
+        });
+    });
+}
+
+#[test]
+fn drill_down_anchor_is_the_parent_level_for_a_leaf() {
+    use warpui::App;
+
+    App::test((), |mut app| async move {
+        // `start_new_child_conversation` persists the new child conversation, which reads
+        // `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Register both so the persist path has the
+        // singletons it legitimately needs.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
+        let (_history_model, _root_id, mid_id, grandchild_id) = build_three_level_tree(&mut app);
+        app.read(|ctx| {
+            let grandchild = BlocklistAIHistoryModel::as_ref(ctx)
+                .conversation(&grandchild_id)
+                .expect("grandchild conversation exists");
+            assert_eq!(
+                drill_down_anchor_id(grandchild_id, grandchild, ctx),
+                mid_id,
+                "a leaf anchors its parent's level so sibling navigation stays symmetric",
+            );
+        });
+    });
+}
+
+#[test]
+fn drill_down_anchor_is_the_node_itself_when_it_has_children() {
+    use warpui::App;
+
+    App::test((), |mut app| async move {
+        // `start_new_child_conversation` persists the new child conversation, which reads
+        // `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Register both so the persist path has the
+        // singletons it legitimately needs.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
+        let (_history_model, root_id, mid_id, _grandchild_id) = build_three_level_tree(&mut app);
+        app.read(|ctx| {
+            let history = BlocklistAIHistoryModel::as_ref(ctx);
+            let root = history
+                .conversation(&root_id)
+                .expect("root conversation exists");
+            let mid = history
+                .conversation(&mid_id)
+                .expect("mid conversation exists");
+            assert_eq!(drill_down_anchor_id(root_id, root, ctx), root_id);
+            assert_eq!(
+                drill_down_anchor_id(mid_id, mid, ctx),
+                mid_id,
+                "a node with children anchors its own level",
+            );
+        });
+    });
+}
+
+/// With a single orchestration level the drill-down anchoring must match the
+/// historical root-anchored behavior exactly: both the root and its leaf
+/// children anchor the root's level.
+#[test]
+fn drill_down_anchor_matches_root_anchoring_at_depth_one() {
+    use warpui::{App, EntityId};
+
+    App::test((), |mut app| async move {
+        // `start_new_child_conversation` persists the new child conversation, which reads
+        // `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Register both so the persist path has the
+        // singletons it legitimately needs.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
+        let terminal_view_id = EntityId::new();
+        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
+        let root_id = history_model.update(&mut app, |history, ctx| {
+            history.start_new_conversation(terminal_view_id, false, false, ctx)
+        });
+        let child_id = history_model.update(&mut app, |history, ctx| {
+            history.start_new_child_conversation(
+                terminal_view_id,
+                "child".to_string(),
+                root_id,
+                None,
+                ctx,
+            )
+        });
+
+        app.read(|ctx| {
+            let history = BlocklistAIHistoryModel::as_ref(ctx);
+            let root = history
+                .conversation(&root_id)
+                .expect("root conversation exists");
+            let child = history
+                .conversation(&child_id)
+                .expect("child conversation exists");
+            assert_eq!(drill_down_anchor_id(root_id, root, ctx), root_id);
+            assert_eq!(drill_down_anchor_id(child_id, child, ctx), root_id);
+        });
+    });
+}
+
+/// Ported from the pin (`42effe840:app/src/ai/blocklist/agent_view/
+/// orchestration_pill_bar_tests.rs::conversation_server_token_assignment_rerenders_the_pill_bar`),
+/// adapted in two places:
+///
+/// * The event. The pin's `assign_run_id_for_conversation` emits
+///   `ConversationServerTokenAssigned`; this fork's (`history_model.rs:1343`)
+///   emits `ConversationAgentIdAssigned`, the local equivalent, and the pill
+///   bar subscribes to exactly that arm (`orchestration_pill_bar.rs:263`).
+///   Same trigger, local name.
+/// * The fixture. The pin hand-builds an `AgentViewController` from a
+///   `TerminalModel`; this fork's constructor additionally takes an
+///   `AmbientAgentViewModel`, and the assembled-by-hand pattern used elsewhere
+///   in the tree reaches for `ObjectStoreModel` / `UpdateManager` directly.
+///   Going through `initialize_app_for_terminal_view` +
+///   `add_window_with_terminal` instead yields a real, fully wired controller
+///   with those singletons registered inside `test_util/terminal.rs` — so this
+///   file takes on no `crate::cloud_object` import and
+///   `script/check_cloud_boundary` sees no new entry.
+///
+/// What is being pinned: a child's run-id linkage can land *after*
+/// `StartedNewConversation` (a restored or late-linked child), and every pill
+/// the bar draws is keyed on that linkage. If the assignment did not re-render,
+/// the bar would keep showing stale contents until some unrelated status event
+/// happened to fire. `mouse_states` is the observable proxy for "the bar
+/// refreshed", because `ensure_mouse_states` is what the subscription arm calls.
+#[test]
+fn conversation_agent_id_assignment_rerenders_the_pill_bar() {
+    use warpui::App;
+    use warpui::platform::WindowStyle;
+
+    use crate::ai::blocklist::agent_view::AgentViewEntryOrigin;
+    use crate::test_util::terminal::{add_window_with_terminal, initialize_app_for_terminal_view};
+
+    /// Hosts the pill bar without embedding it in the rendered element tree,
+    /// so the scene builds triggered by its notifications stay trivial — and,
+    /// more importantly, so `render`'s lazy mouse-state insertion cannot
+    /// populate the map behind the assertion below.
+    struct PillBarHost {
+        pill_bar: ViewHandle<OrchestrationPillBar>,
+    }
+
+    impl Entity for PillBarHost {
+        type Event = ();
+    }
+
+    impl View for PillBarHost {
+        fn ui_name() -> &'static str {
+            "PillBarHost"
+        }
+
+        fn render(&self, _app: &AppContext) -> Box<dyn Element> {
+            Empty::new().finish()
+        }
+    }
+
+    impl TypedActionView for PillBarHost {
+        type Action = ();
+    }
+
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        // `start_new_child_conversation` persists the new child conversation, which reads
+        // `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Must come AFTER the harness above: the helper
+        // guards on `has_singleton_model`, so calling it first would let that harness
+        // re-register the same singletons and trip the debug-assert.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let terminal_view_id = terminal.read(&app, |terminal, _| terminal.id());
+        let agent_view_controller =
+            terminal.read(&app, |terminal, _| terminal.agent_view_controller().clone());
+
+        let history_model = BlocklistAIHistoryModel::handle(&app);
+        let root_id = history_model.update(&mut app, |history, ctx| {
+            history.start_new_conversation(terminal_view_id, false, false, ctx)
+        });
+        let child_id = history_model.update(&mut app, |history, ctx| {
+            history.start_new_child_conversation(
+                terminal_view_id,
+                "child".to_string(),
+                root_id,
+                None,
+                ctx,
+            )
+        });
+
+        // Activate the agent view on the root BEFORE the pill bar exists so
+        // the entry events cannot populate its mouse-state cache; the only
+        // event the bar sees below is the agent-id assignment.
+        agent_view_controller.update(&mut app, |controller, ctx| {
+            controller
+                .try_enter_agent_view(
+                    Some(root_id),
+                    AgentViewEntryOrigin::ConversationSelector,
+                    ctx,
+                )
+                .expect("agent view entry should succeed");
+        });
+
+        let (_window_id, host) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            let controller = agent_view_controller.clone();
+            let pill_bar =
+                ctx.add_typed_action_view(move |ctx| OrchestrationPillBar::new(controller, ctx));
+            PillBarHost { pill_bar }
+        });
+        let pill_bar = host.read(&app, |host, _| host.pill_bar.clone());
+
+        pill_bar.read(&app, |bar, _| {
+            assert!(
+                bar.mouse_states.borrow().is_empty(),
+                "no history event has reached the pill bar yet",
+            );
+        });
+
+        // A real UUID rather than the pin's "run-123" label: this fork parses
+        // the run id into an `AmbientAgentTaskId` (`conversation.rs:986`) and
+        // drops an unparseable one with a warning. The emission itself is
+        // unconditional either way, but an id that actually lands keeps the
+        // fixture honest about what a run-id assignment looks like here.
+        history_model.update(&mut app, |history, ctx| {
+            history.assign_run_id_for_conversation(
+                child_id,
+                "9a7d1f2e-4c3b-4a5d-8e6f-0b1c2d3e4f50".to_string(),
+                None,
+                terminal_view_id,
+                ctx,
+            );
+        });
+
+        pill_bar.read(&app, |bar, _| {
+            let mouse_states = bar.mouse_states.borrow();
+            assert!(
+                mouse_states.contains_key(&root_id) && mouse_states.contains_key(&child_id),
+                "ConversationAgentIdAssigned must re-render the pill bar, refreshing \
+                 mouse states for the visible pills",
+            );
+        });
+    });
+}
