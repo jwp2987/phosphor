@@ -1366,20 +1366,46 @@ def g11_bootstrap_reference_and_bracketed_paste_pieces():
 
 
 @check
-def g11_enter_submit_paths():
-    """#1606: the app's `hop=enter_submit_path` lines are counted per path (and per reason when wrapped), from t0 on, and a build without the hop gives {}"""
-    lines = ["x [DEBUG] input_order hop=enter_submit_path path=raw bytes=6 t=999000.0",
-             "x [DEBUG] input_order hop=enter_submit_path path=raw bytes=6 t=1000001.0",
-             "x [DEBUG] input_order hop=enter_submit_path path=raw bytes=81 t=1000002.0",
-             "x [DEBUG] input_order hop=enter_submit_path path=wrapped reason=line_editor bytes=6 t=1000003.0",
-             "x [DEBUG] input_order hop=enter_submit_path path=wrapped reason=text bytes=12 t=1000004.0",
-             "x [DEBUG] input_order hop=enter_submit_path path=unbracketed t=1000005.0",
-             "x [DEBUG] input_order hop=enter_submit_done since_submit_ms=0.70 t=1000006.0"]
-    got = cases.enter_submit_paths(lines, 1000.0)
-    assert got == {"raw": 2, "wrapped:line_editor": 1, "wrapped:text": 1, "unbracketed": 1}, got
-    assert cases.enter_submit_paths(lines[-1:], 0.0) == {}
-    # the new hop does not disturb the Enter split: enter_submit_done is still matched only by its own name
-    assert "hop=enter_submit_done" not in lines[1]
+def g11_enter_rediag_1606():
+    """#1606 rediag: a macOS sample starts at the injector spawn (after the guard) unless APPCI_ENTER_T0=harness; a stale call record is never this
+    sample's; the guard cost is its own split key; the OS split joins the injector post, the ktap Return and the app's dequeue on one clock; an
+    M3 batch the app did not see is void"""
+    saved = os.environ.pop("APPCI_ENTER_T0", None)
+    try:
+        assert cases.enter_sample_start(100.0, 100.006) == 100.006 and cases.enter_sample_start(100.0, None) == 100.0
+        os.environ["APPCI_ENTER_T0"] = "harness"
+        assert cases.enter_sample_start(100.0, 100.006) == 100.0
+    finally:
+        os.environ.pop("APPCI_ENTER_T0", None)
+        if saved is not None:
+            os.environ["APPCI_ENTER_T0"] = saved
+    be = types.SimpleNamespace(calls=[dict(wall0=99.0, post_mach_ms=[5000.0], clock=(4000.0, 1000.0))])
+    ctx = types.SimpleNamespace(be=be)
+    assert cases.injector_start_wall(ctx, 100.0) is None                # recorded before t0: an older call
+    be.calls.append(dict(wall0=100.004, post_mach_ms=[5100.0], clock=(4000.0, 1000.0)))
+    assert cases.injector_start_wall(ctx, 100.0) == 100.004
+    assert cases.injector_post_mach(ctx) == (5100.0, (4000.0, 1000.0))
+    assert cases.injector_start_wall(types.SimpleNamespace(be=types.SimpleNamespace()), 1.0) is None
+    sp = cases.enter_split_summary([dict(t0=100.0, inj=100.005, post=100.025, lf=100.075, px=100.076, stamp=100.0765)])
+    assert sp["t0_to_inj_ms"] == 5.0 and sp["inj_to_post_ms"] == 20.0 and sp["t0_to_post_ms"] == 25.0 and sp["post_to_lf_ms"] == 50.0, sp
+    # one clock: uptime 4000 ms <-> epoch 1000 s. Post at uptime 5100 ms; the OS stamps the event at 5150 ms; ktap's callback at 5150.4 ms
+    # (epoch 1001.1504); the app dequeues it 0.9 ms after the stamp; zle-line-finish at uptime 5154 ms (epoch 1001.154)
+    kl = ["K down keycode=0 ts_ns=5090000000 target_pid=7 source_pid=1 wall=1001.0900",
+          "E down keycode=36 ts_ns=5150000000 target_pid=7 source_pid=1 wall=1001.150400",
+          "E up keycode=36 ts_ns=5151000000 target_pid=7 source_pid=1 wall=1001.151200"]
+    app = ["x input_order hop=mac_enter stage=app_send_event keycode=36 ts=5.150000000 age_ms=0.900 event_window=1 key_window=1 t=1001150.9"]
+    smp = [dict(post_mach_ms=5100.0, clock=(4000.0, 1000.0), lf=1001.154), dict(post_mach_ms=None, clock=None, lf=1.0)]
+    o = cases.enter_os_split(smp, kl, app)
+    assert o["n"] == 2 and o["n_matched"] == 1, o
+    assert o["post_to_evts_ms"] == 50.0 and o["evts_to_tap_ms"] == 0.4 and o["evts_to_app_ms"] == 0.9 and o["evts_to_lf_ms"] == 4.0, o
+    o = cases.enter_os_split(smp, kl)                                     # the reference: no app dequeue
+    assert "evts_to_app_ms" not in o and o["post_to_evts_ms"] == 50.0, o
+    assert cases.enter_os_split(smp, [])["n_matched"] == 0
+    L = ["x input_order hop=enter_begin deferred=false buffer=\"a\" input_type=Shell t=999000.0",
+         "x input_order hop=enter_begin deferred=false buffer=\"b\" input_type=Shell t=1000500.0",
+         "x input_order hop=enter_begin deferred=false buffer=\"c\" input_type=Shell t=1000600.0"]
+    assert cases.m3_app_enters(L, 1000.0) == 2 and cases.m3_app_enters(L, 0) == 3
+    assert cases.m3_void(0, 30) and cases.m3_void(29, 30) and not cases.m3_void(32, 30) and not cases.m3_void(0, 0)
 
 
 @check

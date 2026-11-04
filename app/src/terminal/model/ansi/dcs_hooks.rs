@@ -1174,19 +1174,12 @@ pub struct CommandFileFailedValue {
 /// "value": {"session_id": N, "seq": M}} BEL`. `seq` is the shell's per-session counter (see
 /// [`PromptMetadata::seq`]) as of the last Precmd or Preexec it sent, so the app can order the
 /// marker against the hooks it has parsed. `None` when a bootstrap omits it.
-///
-/// `typed_text_literal` (zsh's `LineEditorReading` only, #1606): the shell checked that printable
-/// ASCII typed at this line is inserted as itself (builtin self-insert, no binding reachable from
-/// a printable byte). `false` when absent, so every other shell and bootstrap keeps the
-/// bracketed-paste wrapper.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct LineEditorMarkerValue {
     #[serde(default)]
     pub session_id: HookSessionId,
     #[serde(default)]
     pub seq: Option<u64>,
-    #[serde(default)]
-    pub typed_text_literal: bool,
 }
 
 /// Custom serde deserializer that trims trailing null bytes.

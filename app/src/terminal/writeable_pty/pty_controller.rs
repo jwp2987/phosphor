@@ -123,38 +123,6 @@ pub(crate) fn line_editor_reading_activates_from(value: Option<&str>) -> bool {
     )
 }
 
-/// The #1606 kill switch: `PHOSPHOR_ENTER_BRACKETED_ALWAYS=1` (or on/true/yes) wraps every
-/// submitted command in bracketed paste again, as before #1606, so a plain one-line zsh command is
-/// never typed raw. Local shells inherit it and then skip their binding check too.
-fn enter_bracketed_always() -> bool {
-    static ALWAYS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ALWAYS.get_or_init(|| {
-        let always = enter_bracketed_always_from(
-            std::env::var("PHOSPHOR_ENTER_BRACKETED_ALWAYS")
-                .ok()
-                .as_deref(),
-        );
-        if always {
-            log::info!(
-                "PHOSPHOR_ENTER_BRACKETED_ALWAYS is on: every submitted command is written as a \
-                 bracketed paste"
-            );
-        }
-        always
-    })
-}
-
-/// [`enter_bracketed_always`] for a given value of its kill switch: `1`, `on`, `true` or `yes`
-/// (any case) turns the raw path off.
-pub(crate) fn enter_bracketed_always_from(value: Option<&str>) -> bool {
-    matches!(
-        value
-            .map(|value| value.trim().to_ascii_lowercase())
-            .as_deref(),
-        Some("1" | "on" | "true" | "yes")
-    )
-}
-
 /// Byte sequence to emulate the user pressing ENTER, used to execute a command in the shell.
 const COMMAND_ENTER: &[u8] = &[escape_sequences::C0::CR, escape_sequences::C0::LF];
 /// Used to let the shell know we are switching to the PS1 prompt via a bindkey \ep. This will
@@ -315,9 +283,6 @@ pub struct PtyController<T: EventLoopSender> {
     file_insert_block: Option<BlockId>,
     #[cfg(test)]
     fast_insert_off_for_test: bool,
-    /// The #1606 kill switch, per controller (tests flip it instead of the process environment).
-    #[cfg(test)]
-    enter_bracketed_always_for_test: bool,
     /// One-shot: the retype after `CommandFileFailed` must be typed, not sent as the chord again.
     force_typed_command: bool,
     tmux_control_mode: Option<TmuxControlMode>,
@@ -356,8 +321,6 @@ pub struct PtyController<T: EventLoopSender> {
     /// Where a key's write leaves its bookkeeping for the model (the typed-ahead record of its
     /// echo), applied before the model parses the next bytes.
     model_inbox: ModelInbox,
-    /// #1606: the model's `line_editor_literal_flag`, consumed here without the model's lock.
-    line_editor_types_literally: Arc<std::sync::atomic::AtomicBool>,
     /// Typeahead hand-off: the last request decision had to wait. Queued writes stay queued while
     /// the shell's line may hold user bytes, which a queued command's kill prefix would destroy.
     handoff_request_waiting: bool,
@@ -684,13 +647,9 @@ impl<T: EventLoopSender> PtyController<T> {
         );
 
         let write_queue = event_loop_tx.supports_write_queue() && write_queue_enabled();
-        let (handoff, model_inbox, line_editor_types_literally) = {
+        let (handoff, model_inbox) = {
             let model = terminal_model.lock();
-            (
-                model.pane_handoff(),
-                model.model_inbox(),
-                model.line_editor_literal_flag(),
-            )
+            (model.pane_handoff(), model.model_inbox())
         };
         Self {
             event_loop_tx,
@@ -714,8 +673,6 @@ impl<T: EventLoopSender> PtyController<T> {
             force_typed_command: false,
             #[cfg(test)]
             fast_insert_off_for_test: false,
-            #[cfg(test)]
-            enter_bracketed_always_for_test: false,
             tmux_control_mode: None,
             in_flight_native_completions_state: None,
             native_completions_generation: 0,
@@ -727,7 +684,6 @@ impl<T: EventLoopSender> PtyController<T> {
             handoff_bytes_after_command: Vec::new(),
             handoff,
             model_inbox,
-            line_editor_types_literally,
             handoff_request_waiting: false,
             handoff_held_command_pending: false,
             handoff_command_written_since_hold: false,
@@ -2385,16 +2341,6 @@ impl<T: EventLoopSender> PtyController<T> {
         TypedCommand::Line(command)
     }
 
-    /// The #1606 kill switch (`PHOSPHOR_ENTER_BRACKETED_ALWAYS=1`); tests flip it per controller
-    /// instead of through the process environment.
-    fn enter_bracketed_always(&self) -> bool {
-        #[cfg(test)]
-        if self.enter_bracketed_always_for_test {
-            return true;
-        }
-        enter_bracketed_always()
-    }
-
     /// The kill switch (`PHOSPHOR_PWSH_FAST_INSERT=0`); tests flip it per controller instead of
     /// through the process environment.
     #[cfg(not(target_family = "wasm"))]
@@ -2528,17 +2474,6 @@ impl<T: EventLoopSender> PtyController<T> {
         let is_paste = matches!(&write, PtyWrite::PasteBytes { .. });
         let is_agent_input = matches!(&write, PtyWrite::AgentInput { .. });
 
-        // #1606: bytes that can end the shell's line (Enter, ^C, ^D) end what the line editor's
-        // last marker vouched for, so the next command keeps the wrapper until a new marker.
-        if let PtyWrite::Bytes { bytes } | PtyWrite::PasteBytes { bytes } = &write
-            && bytes
-                .iter()
-                .any(|byte| matches!(byte, b'\r' | b'\n' | 0x03 | 0x04))
-        {
-            self.line_editor_types_literally
-                .store(false, std::sync::atomic::Ordering::SeqCst);
-        }
-
         let (bytes_to_write, is_for_command, on_write_fn, raw_tmux_command) = match write {
             PtyWrite::Command {
                 command,
@@ -2557,37 +2492,11 @@ impl<T: EventLoopSender> PtyController<T> {
                     in_band_command_id.is_none(),
                     session_id,
                 ) {
-                    TypedCommand::Line(line) => {
-                        // #1606: consumed by every command write, used or not (see
-                        // `TerminalModel::line_editor_literal_flag`).
-                        let line_editor_types_literally = self
-                            .line_editor_types_literally
-                            .swap(false, std::sync::atomic::Ordering::SeqCst);
-                        let path = enter_submit_path(
-                            line.as_str(),
-                            shell_type,
-                            EnterSubmitFacts {
-                                bracketed_paste_enabled: self.is_bracketed_paste_enabled,
-                                user_command: in_band_command_id.is_none(),
-                                line_editor_types_literally,
-                                tmux_control_mode: self.tmux_control_mode.is_some(),
-                                conpty: cfg!(windows),
-                                always_bracketed: self.enter_bracketed_always(),
-                            },
-                        );
-                        warpui::input_order::log_hop("enter_submit_path", || match path {
-                            EnterSubmitPath::Unbracketed => "path=unbracketed".to_owned(),
-                            EnterSubmitPath::Raw => format!("path=raw bytes={}", line.len()),
-                            EnterSubmitPath::Wrapped(reason) => {
-                                format!("path=wrapped reason={reason} bytes={}", line.len())
-                            }
-                        });
-                        Cow::Owned(bytes_to_execute_command(
-                            line.as_str(),
-                            shell_type,
-                            path.is_bracketed(),
-                        ))
-                    }
+                    TypedCommand::Line(line) => Cow::Owned(bytes_to_execute_command(
+                        line.as_str(),
+                        shell_type,
+                        self.is_bracketed_paste_enabled,
+                    )),
                     // Exactly the two chord bytes: no kill-buffer prefix (the handler reverts
                     // the line), no command text, no Enter.
                     #[cfg(not(target_family = "wasm"))]
@@ -2601,14 +2510,6 @@ impl<T: EventLoopSender> PtyController<T> {
             PtyWrite::AgentInput { bytes, mode } => {
                 let decorated_bytes =
                     mode.decorate_bytes(bytes.into_owned(), self.is_bracketed_paste_enabled);
-                // #1606: as for user bytes above; a Line-mode write ends in the CR it adds.
-                if decorated_bytes
-                    .iter()
-                    .any(|byte| matches!(byte, b'\r' | b'\n' | 0x03 | 0x04))
-                {
-                    self.line_editor_types_literally
-                        .store(false, std::sync::atomic::Ordering::SeqCst);
-                }
                 (decorated_bytes.into(), false, None, false)
             }
             PtyWrite::Bytes { bytes } | PtyWrite::PasteBytes { bytes } => {
@@ -2916,105 +2817,6 @@ pub(crate) fn command_is_sent_as_bracketed_paste(
     is_bracketed_paste_enabled && !command.is_empty()
 }
 
-/// The longest line [`line_is_plain_for_raw_submit`] accepts, in bytes. Under macOS's canonical
-/// input limit (1024 bytes with the kill byte and the newline), so even a line that reached the
-/// tty before the line editor took it out of canonical mode would arrive whole.
-pub(crate) const RAW_SUBMIT_MAX_BYTES: usize = 1000;
-
-/// #1606: whether `line` may be typed into a line editor key by key, with the same result as
-/// pasting it: one line (no CR or LF) of printable ASCII (0x20..=0x7e: no control byte, Tab (it
-/// completes), ESC or DEL, and nothing over 0x7f), at most [`RAW_SUBMIT_MAX_BYTES`], not empty
-/// (an empty command is typed as is anyway). History characters are kept out as well, as cheap
-/// extra margin: no `!` and no leading `^`. Bindings such as magic-space are not this
-/// predicate's business: that the line editor inserts printable bytes as themselves is the
-/// shell's to say (zsh's `typed_text_literal` binding check, then the literal keymap its `^P`
-/// chord enters); this looks at the text only.
-pub(crate) fn line_is_plain_for_raw_submit(line: &str) -> bool {
-    !line.is_empty()
-        && line.len() <= RAW_SUBMIT_MAX_BYTES
-        && !line.starts_with('^')
-        && line
-            .bytes()
-            .all(|byte| (0x20..=0x7e).contains(&byte) && byte != b'!')
-}
-
-/// What [`enter_submit_path`] decides from, besides the line and the shell.
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct EnterSubmitFacts {
-    /// The shell has bracketed paste on (`ESC [ ? 2004 h`).
-    pub bracketed_paste_enabled: bool,
-    /// A command the user submitted, not an in-band (generator) command.
-    pub user_command: bool,
-    /// The line editor's last marker said typed printable text is inserted literally, and nothing
-    /// has been written or parsed since that could end that line.
-    pub line_editor_types_literally: bool,
-    /// The pane is driven through tmux control mode.
-    pub tmux_control_mode: bool,
-    /// The pty is a Windows ConPTY (`cfg!(windows)`), which re-encodes what is written to it.
-    pub conpty: bool,
-    /// `PHOSPHOR_ENTER_BRACKETED_ALWAYS` is on.
-    pub always_bracketed: bool,
-}
-
-/// How a submitted command line is written (#1606).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum EnterSubmitPath {
-    /// The shell has bracketed paste off: typed as is, as always.
-    Unbracketed,
-    /// Bracketed paste is on, but the line is typed raw: kill-buffer chord, text, Enter. zsh's zle
-    /// takes ~15 ms longer over the paste wrapper on macOS (#1606).
-    Raw,
-    /// Wrapped in bracketed paste, as before #1606, for the reason named.
-    Wrapped(&'static str),
-}
-
-impl EnterSubmitPath {
-    /// Whether the line goes out as a bracketed paste.
-    pub(crate) fn is_bracketed(self) -> bool {
-        matches!(self, EnterSubmitPath::Wrapped(_))
-    }
-}
-
-/// #1606: decides how `line` is written. Raw only for a user command to zsh that vouched for its
-/// line (`typed_text_literal`), outside tmux control mode and off Windows (ConPTY re-encodes the
-/// input; the zle cost was measured on macOS, and nothing says it carries over), with the kill
-/// switch off, for a line [`line_is_plain_for_raw_submit`] accepts. Every other case keeps the wrapper: bash (history
-/// expansion, inputrc macros and `bind -x` on printable keys, and no fork-free way to check
-/// them), fish (abbreviations expand on a typed space), PowerShell and nushell (not measured;
-/// PowerShell never enables bracketed paste), and any shell whose bootstrap does not send the
-/// field.
-pub(crate) fn enter_submit_path(
-    line: &str,
-    shell_type: ShellType,
-    facts: EnterSubmitFacts,
-) -> EnterSubmitPath {
-    if !command_is_sent_as_bracketed_paste(facts.bracketed_paste_enabled, line) {
-        return EnterSubmitPath::Unbracketed;
-    }
-    if facts.always_bracketed {
-        return EnterSubmitPath::Wrapped("kill_switch");
-    }
-    if !facts.user_command {
-        return EnterSubmitPath::Wrapped("in_band");
-    }
-    if shell_type != ShellType::Zsh {
-        return EnterSubmitPath::Wrapped("shell");
-    }
-    if facts.tmux_control_mode {
-        return EnterSubmitPath::Wrapped("tmux");
-    }
-    if facts.conpty {
-        return EnterSubmitPath::Wrapped("conpty");
-    }
-    if !facts.line_editor_types_literally {
-        return EnterSubmitPath::Wrapped("line_editor");
-    }
-    if !line_is_plain_for_raw_submit(line) {
-        return EnterSubmitPath::Wrapped("text");
-    }
-    EnterSubmitPath::Raw
-}
-
 /// User writes at least this large are pastes, not keystrokes: they go out as
 /// [`PtyController::write_paste_bytes`], so a ^C cancels the part not yet written (#1255).
 pub(crate) const PASTE_WRITE_MIN_BYTES: usize = 32 * 1024;
@@ -3106,9 +2908,6 @@ pub trait EventLoopSender: 'static {
 #[cfg(test)]
 #[path = "pty_controller_command_bytes_tests.rs"]
 mod command_bytes_tests;
-#[cfg(test)]
-#[path = "pty_controller_enter_raw_tests.rs"]
-mod enter_raw_tests;
 #[cfg(test)]
 #[path = "pty_controller_lifecycle_tests.rs"]
 mod lifecycle_tests;

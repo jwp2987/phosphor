@@ -776,34 +776,6 @@ fn parse_osc_line_editor_markers_carry_session_and_sequence_number() {
     }
 }
 
-/// #1606: zsh's `LineEditorReading` says whether typed printable text is inserted literally. The
-/// bytes are what zsh_body.sh prints; a marker without the field (bash, PowerShell, an older
-/// bootstrap) reads as `false`.
-#[test]
-fn parse_osc_line_editor_reading_carries_typed_text_literal() {
-    for (literal, expected) in [("true", true), ("false", false)] {
-        let reading = format!(
-            "\x1b]9278;f;{{\"hook\": \"LineEditorReading\", \"value\": {{\"session_id\": 7, \"seq\": 12, \"typed_text_literal\": {literal}}}}}\x07"
-        );
-        let (_, handler) =
-            parse_bytes_with_registered_sessions(reading.as_bytes(), [SessionId::from(7)]);
-        match handler.d_proto_hooks.as_slice() {
-            [DProtoHook::LineEditorReading { value }] => {
-                assert_eq!(value.seq, Some(12));
-                assert_eq!(value.typed_text_literal, expected, "{literal}");
-            }
-            other => panic!("unexpected hooks {other:?}"),
-        }
-    }
-
-    let without = b"\x1b]9278;f;{\"hook\": \"LineEditorReading\", \"value\": {\"session_id\": 7, \"seq\": 12}}\x07";
-    let (_, handler) = parse_bytes_with_registered_sessions(without, [SessionId::from(7)]);
-    match handler.d_proto_hooks.as_slice() {
-        [DProtoHook::LineEditorReading { value }] => assert!(!value.typed_text_literal),
-        other => panic!("unexpected hooks {other:?}"),
-    }
-}
-
 /// A marker from a bootstrap without sequence numbers parses with `seq: None`, and a marker for a
 /// session this terminal did not register is dropped like every other hook.
 #[test]

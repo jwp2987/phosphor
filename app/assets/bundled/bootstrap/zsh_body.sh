@@ -113,10 +113,6 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
     if [[ -f $_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE ]]; then
       command -p rm $_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE
     fi
-    # #1606: the key-binding listing of _warp_check_typed_text_literal.
-    if [[ -n ${_WARP_KEYMAP_DUMP_TMP_FILE-} && -f $_WARP_KEYMAP_DUMP_TMP_FILE ]]; then
-      command -p rm $_WARP_KEYMAP_DUMP_TMP_FILE
-    fi
   }
   trap __warp_generator_pid_file_cleanup EXIT
 
@@ -370,31 +366,11 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
     # nounset, pipefail may turn an expected-failure probe into a dead shell or a lost widget.
     setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal
     zle kill-buffer
-    local warp_keymap=$KEYMAP
     if [[ $KEYMAP == vicmd ]]; then
       zle -K viins
-      warp_keymap=viins
-    fi
-    # Phosphor (#1606): when this prompt's marker told the app that typed text is literal, the
-    # app may type the command raw after this chord. A plugin loaded after zle-line-init (sched,
-    # zle -F, zinit turbo, zsh-defer) could have bound printable keys since, so the rest of the
-    # line is read in __warp_literal: printable bytes insert themselves, and the first other key
-    # (Enter, the ESC[200~ of a wrapped command) switches back and is read again in the user's
-    # keymap, exactly as without this.
-    if [[ ${__warp_typed_text_literal:-false} == true && -n ${keymaps[(r)__warp_literal]-} ]]; then
-      __warp_literal_prev=$warp_keymap
-      zle -K __warp_literal
     fi
   }
   zle -N warp_kill_buffer_and_reset_insert_mode
-  # #1606: leaves __warp_literal for the keymap the ^P chord came from and reads the key that
-  # ended the literal text again there.
-  __warp_literal_exit() {
-    zle -K "${__warp_literal_prev:-main}"
-    zle -U "$KEYS"
-  }
-  zle -N __warp_literal_exit
-  __warp_literal_prev=main
 
   # Phosphor (#855): an agent command typed by the app saves the pager variables, overrides
   # them for the command, and restores them itself. If it is interrupted (Ctrl-C) that restore
@@ -2135,147 +2111,11 @@ esac
   # and `select` have other contexts and are not the shell's line editor. `read -k`/`read -q` and
   # other builtins do not start ZLE, so they never send this: a Preexec with no LineEditorReading
   # after it is how the app tells a builtin raw read from the editor. builtin printf only.
-  #
-  # Phosphor (#1606): the marker also says whether printable ASCII typed at this line is inserted
-  # as itself (`typed_text_literal`). Only then may the app type a plain one-line command without
-  # the bracketed-paste wrapper, which zle handles ~15 ms slower on macOS. Typed text, unlike a
-  # paste, goes through the user's key bindings: zsh-autopair, zsh-abbr, globalias, magic-space,
-  # url-quote-magic or `bindkey jk vi-cmd-mode` would each change the command. So it is true only
-  # when the self-insert widget is the builtin one and every binding a printable byte can reach in
-  # the keymap this line starts in is a single-byte self-insert. Anything unrecognised: false.
-  __warp_typed_text_literal=false
-  _WARP_KEYMAP_DUMP_TMP_FILE=""
-  # Set when mktemp failed once: no retry on every prompt, the verdict stays false.
-  _warp_keymap_dump_unavailable=""
-  _warp_literal_dump_seen=""
-  _warp_literal_dump_verdict=false
-  # Sets REPLY to the inner text of the quoted key $1 starts with (the `bindkey` listing form:
-  # `"^X^B"`, `"\""`, `"\M-^@"`) and __warp_key_rest to what follows its closing quote.
-  _warp_bindkey_take_key() {
-    local s=$1
-    local -i i=2 n=${#1}
-    [[ ${s[1]} == '"' ]] || return 1
-    while (( i <= n )); do
-      case ${s[i]} in
-        ('\') (( i += 2 )) ;;
-        ('"') REPLY=${s[2,i-1]}; __warp_key_rest=${s[i+1,-1]}; return 0 ;;
-        (*) (( i++ )) ;;
-      esac
-    done
-    return 1
-  }
-  # REPLY: `print` (one printable byte), `ctl` (one byte below space), `del`, `ctlseq` (a longer
-  # key led by a control byte, ESC included), `meta` (led by a byte >= 0x80) or `printseq` (a
-  # longer key led by a printable byte). `bindkey` escapes a bare `"`, `\` and `^` key.
-  _warp_bindkey_key_class() {
-    case $1 in
-      ('\M-'*) REPLY=meta ;;
-      ('^?') REPLY=del ;;
-      ('^'?|'^\\\\') REPLY=ctl ;;
-      ('^'*) REPLY=ctlseq ;;
-      ('\"'|'\^'|'\\\\') REPLY=print ;;
-      ('\'*|'') REPLY=printseq ;;
-      (?) REPLY=print ;;
-      (*) REPLY=printseq ;;
-    esac
-  }
-  # The keymap warp_kill_buffer_and_reset_insert_mode enters for a raw line (see there): every
-  # printable byte is .self-insert (the builtin, which no plugin can redefine), every other key
-  # leaves it through __warp_literal_exit. Made once, on first use.
-  _warp_make_literal_keymap() {
-    [[ -n ${keymaps[(r)__warp_literal]-} ]] && return 0
-    builtin bindkey -N __warp_literal 2>/dev/null || return 1
-    builtin bindkey -M __warp_literal -R '^@-^?' __warp_literal_exit 2>/dev/null || return 1
-    builtin bindkey -M __warp_literal -R '\M-^@-\M-^?' __warp_literal_exit 2>/dev/null || return 1
-    builtin bindkey -M __warp_literal '^[[200~' __warp_literal_exit 2>/dev/null || return 1
-    builtin bindkey -M __warp_literal -R ' -~' .self-insert 2>/dev/null || return 1
-  }
-  # Whether one line of a `bindkey -M <keymap>` listing leaves typed printable ASCII literal.
-  _warp_bindkey_line_literal() {
-    local REPLY __warp_key_rest c1 c2="" widget range=""
-    _warp_bindkey_take_key "$1" || return 1
-    _warp_bindkey_key_class "$REPLY"; c1=$REPLY
-    if [[ $__warp_key_rest == '-"'* ]]; then
-      range=1
-      _warp_bindkey_take_key "${__warp_key_rest[2,-1]}" || return 1
-      _warp_bindkey_key_class "$REPLY"; c2=$REPLY
-    fi
-    [[ $__warp_key_rest == ' '?* ]] || return 1
-    widget=${__warp_key_rest[2,-1]}
-    if [[ $widget == self-insert ]]; then
-      # Single bytes inserting themselves, or keys no printable byte starts.
-      [[ $c1 != printseq && $c2 != printseq ]]
-    elif [[ -z $range ]]; then
-      [[ $c1 != print && $c1 != printseq ]]
-    else
-      # A range of single bytes covers every byte between its ends; a range of longer keys
-      # (`bindkey` lists them only when they share all but the last byte) only keys with that
-      # prefix.
-      [[ ( $c1 == ctl && $c2 == ctl ) || ( $c1 == meta && $c2 == meta ) ||
-         ( $c1 == ctlseq && $c2 == ctlseq ) ]]
-    fi
-  }
-  # Sets __warp_typed_text_literal (see above). Builtins only, apart from one mktemp per shell:
-  # the listing goes through a file because `$(bindkey)` would fork on every prompt (~1 ms). The
-  # verdict is cached against the listing it was made from. PHOSPHOR_ENTER_BRACKETED_ALWAYS=1 (the
-  # app's kill switch, inherited by local shells) skips the check.
-  _warp_check_typed_text_literal() {
-    setopt localoptions noerrreturn noerrexit unset nopipefail noksharrays nowarncreateglobal noxtrace noshwordsplit
-    __warp_typed_text_literal=false
-    [[ ${PHOSPHOR_ENTER_BRACKETED_ALWAYS:-0} != 1 ]] || return 0
-    [[ ${widgets[self-insert]-} == builtin ]] || return 0
-    local km=${KEYMAP:-main} dump line verdict=true saw_chord=""
-    # The ^P chord is looked up in vicmd and the text read in viins: not worth a second listing.
-    [[ $km == vicmd ]] && return 0
-    [[ -z $_warp_keymap_dump_unavailable ]] || return 0
-    _warp_make_literal_keymap || return 0
-    if [[ -z $_WARP_KEYMAP_DUMP_TMP_FILE || ! -f $_WARP_KEYMAP_DUMP_TMP_FILE ]]; then
-      _WARP_KEYMAP_DUMP_TMP_FILE="$(command -p mktemp 2>/dev/null)"
-      if [[ -z $_WARP_KEYMAP_DUMP_TMP_FILE ]]; then
-        _warp_keymap_dump_unavailable=1
-        return 0
-      fi
-    fi
-    builtin bindkey -M "$km" >| "$_WARP_KEYMAP_DUMP_TMP_FILE" 2>/dev/null || return 0
-    dump="$(<$_WARP_KEYMAP_DUMP_TMP_FILE)"
-    [[ -n $dump ]] || return 0
-    if [[ $dump == "$_warp_literal_dump_seen" ]]; then
-      __warp_typed_text_literal=$_warp_literal_dump_verdict
-      return 0
-    fi
-    for line in "${(@f)dump}"; do
-      # The chord itself must be Phosphor's, and no longer key may start with it: with
-      # `bindkey '^Pe' w` the raw `^P echo` would run w on `^Pe` (the wrapped command's
-      # `^P ESC[200~` has the same exposure, as before). A range of single bytes from ^P is fine.
-      if [[ $line == '"^P" warp_kill_buffer_and_reset_insert_mode' ]]; then
-        saw_chord=1
-        continue
-      fi
-      if [[ $line == '"^P'* && $line != '"^P"'* ]]; then
-        verdict=false
-        break
-      fi
-      # Fast path: one key led by a control byte (ESC and DEL included), not a range.
-      [[ $line == '"^'* && $line != *'"-"'* ]] && continue
-      [[ $line == '" "-"~" self-insert' ]] && continue
-      _warp_bindkey_line_literal "$line" || { verdict=false; break; }
-    done
-    [[ -n $saw_chord ]] || verdict=false
-    _warp_literal_dump_seen=$dump
-    _warp_literal_dump_verdict=$verdict
-    __warp_typed_text_literal=$verdict
-    return 0
-  }
   _warp_emit_line_editor_marker() {
     [[ -n ${WARP_SESSION_ID:-} && ${PHOSPHOR_LINE_EDITOR_MARKERS:-1} != 0 ]] || return 0
     case ${CONTEXT:-} in
-      start)
-        _warp_check_typed_text_literal
-        __warp_emit '\e]9278;f;{"hook": "LineEditorReading", "value": {"session_id": %s, "seq": %s, "typed_text_literal": %s}}\a' "$WARP_SESSION_ID" "${__warp_seq:-0}" "$__warp_typed_text_literal" ;;
-      cont)
-        # A continuation line is never typed raw (the app wraps it), so the chord leaves the keymap alone.
-        __warp_typed_text_literal=false
-        __warp_emit '\e]9278;f;{"hook": "ContinuationPrompt", "value": {"session_id": %s, "seq": %s}}\a' "$WARP_SESSION_ID" "${__warp_seq:-0}" ;;
+      start) __warp_emit '\e]9278;f;{"hook": "LineEditorReading", "value": {"session_id": %s, "seq": %s}}\a' "$WARP_SESSION_ID" "${__warp_seq:-0}" ;;
+      cont) __warp_emit '\e]9278;f;{"hook": "ContinuationPrompt", "value": {"session_id": %s, "seq": %s}}\a' "$WARP_SESSION_ID" "${__warp_seq:-0}" ;;
     esac
     return 0
   }
