@@ -10,6 +10,9 @@ use std::{
 use anyhow::{Result, anyhow};
 use itertools::Itertools;
 use markdown_parser::{Hyperlink, TableAlignment};
+// Only the cfg(test) PreciseDelta::resolved_length below uses it.
+#[cfg(test)]
+use num_traits::SaturatingSub;
 
 use rangemap::RangeSet;
 use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
