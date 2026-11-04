@@ -776,6 +776,39 @@ def ssh_trial_facts_name_the_issue():
 
 
 @check
+def bashrc_moves_a_profile_folder_start_to_the_work_dir():
+    """r18u13: Git Bash on Windows starts in %USERPROFILE% (not the scratch $HOME); the rc must move that start to $APPCI_W like a $HOME start,
+    and must leave any other start (a restored tab's cwd) alone. Runs the rendered rc in bash with a stand-in cygpath."""
+    bash = shutil.which("bash")
+    if not bash or os.name == "nt":
+        return
+    d = tempfile.mkdtemp()
+    try:
+        home, up, w, other, bin_ = (os.path.join(d, x) for x in ("home", "Users_me", "w", "restored", "bin"))
+        for x in (home, up, w, other, bin_, os.path.join(d, "ctl")):
+            os.makedirs(x)
+        rc = os.path.join(d, "rc")
+        open(rc, "w").write(profile.BASHRC % {"ctl": os.path.join(d, "ctl")})
+        cyg = os.path.join(bin_, "cygpath")
+        open(cyg, "w").write("#!/bin/sh\n[ \"$1\" = -u ] && printf '%s\\n' \"$2\"\n")
+        os.chmod(cyg, 0o755)
+
+        def start_in(cwd, userprofile):
+            env = dict(HOME=home, APPCI_W=w, PATH=bin_ + os.pathsep + os.environ.get("PATH", ""))
+            if userprofile:
+                env["USERPROFILE"] = userprofile
+            return subprocess.run([bash, "--norc", "--noprofile", "-c", '. "$1" >/dev/null 2>&1; pwd -P', "x", rc], cwd=cwd, env=env,
+                                  capture_output=True, text=True, timeout=30).stdout.strip()
+        real = lambda x: os.path.realpath(x)          # noqa: E731
+        assert start_in(up, up) == real(w), "a start in USERPROFILE is not moved to APPCI_W"
+        assert start_in(home, None) == real(w), "a start in HOME is not moved to APPCI_W"
+        assert start_in(other, up) == real(other), "a restored tab's cwd was moved"
+        assert start_in(up, None) == real(up), "without USERPROFILE a start outside HOME was moved"
+    finally:
+        shutil.rmtree(d)
+
+
+@check
 def profile_build_writes_every_file_in_a_fresh_dir():
     # r18d4 diag: #1550 wrote .refzdot/.zshrc into a directory nobody created; every pass crashed in prof.build. Build both modes offline.
 

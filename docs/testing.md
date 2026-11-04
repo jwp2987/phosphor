@@ -1605,3 +1605,14 @@ Every item below is a harness change; none touches app code. Anything not listed
   -> noref (platform, with the byte counts); conhost gets every byte -> the failure stands; no usable control (no reference window, or it received nothing) -> noref with the reason.
 - **Not changed, by design**: H7 (fake sshd ConPTY heredoc stall) and H8 (Git Bash pass opens PowerShell tabs/restored tabs) need run evidence the artifacts do not contain;
   `profile.gitbash_toml` already writes `startup_shell_override` and `new_session_shell_override` for that pass.
+
+## r18u13 harness fixes (Windows live run, 5e9dfbb71)
+
+- **Git Bash pane cwd** (regression from 70dd2f253): the scratch rc moves a shell to the work dir only when it starts in `$HOME` or `/`, so restored tabs keep
+  their cwd. On Windows the app starts Git Bash in the OS profile folder (`%USERPROFILE%`, `/c/Users/<user>`), not in the scratch `$HOME`, so the Git Bash pass
+  stayed there: every relative-path effect file (`cad.txt`, `alive_*.txt`, `ie_*.txt`, ...) landed in `C:\Users\<user>`, and from `cadence` on each case reported
+  0 lines and a `pane_wedged_after_*` row although the pane worked (screenshot: block header `/c/Users/Winters`; r18u8's showed `~/w`). The rc now also treats
+  `cygpath -u "$USERPROFILE"` as a start in home (only when `USERPROFILE` is set and `cygpath` exists, so Linux/macOS run no extra command).
+- **winit trace in the Windows app log** (#1629): `WindowsApp.env` adds `winit=info` to `RUST_LOG`. The vendored winit's keyboard-layout trace (WM_INPUTLANGCHANGE
+  enter/exit, `LAYOUT_CACHE` takes, layout-build timing; `lib/winit/CHANGES-PHOSPHOR.md`) logs at info, and under the bare `warn` base the r18u13 AltGr hang run
+  carried none of it. winit logs nothing else through `log`, so the line count does not change outside a layout switch.
