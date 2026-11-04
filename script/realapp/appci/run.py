@@ -259,7 +259,7 @@ def main():
                 ssh_why = sshd.WHY
                 print("no ssh test host on Windows, ssh cases will skip: %s" % ssh_why, flush=True)
             if ssh_info:
-                prof.build(mode, ollama_url, ollama_model or 'gpt-oss:20b', ssh_port=ssh_info["port"], ssh_ident=ssh_info["ident"])
+                prof.build(mode, ollama_url, ollama_model or 'gpt-oss:20b', ssh_port=ssh_info["port"], ssh_ident=ssh_info["ident"], ssh_pw=ssh_info.get("pwhost"))
                 ssh_why = prof.ssh_probe()
                 if ssh_why:
                     print("ssh probe failed, ssh cases will skip: %s" % ssh_why, flush=True)

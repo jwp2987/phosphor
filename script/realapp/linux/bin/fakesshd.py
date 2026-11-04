@@ -4,7 +4,8 @@
 # Prereqs: source ../config.example.sh values, ../env.sh; extracted release .deb; python3, xdotool, xwininfo.
 # Run: see ../h.sh (source it) and ../f.sh; most helpers take positional args documented in their first comment.
 # Restores: touches only $PHOSPHOR_LINUX_RUN and /tmp/phosphor-realapp; kills only exact PIDs it started.
-# Fake sshd on 127.0.0.1:PORT for the r18bi ssh-typing tests. Pubkey auth for clientkey only; passwords always rejected.
+# Fake sshd on 127.0.0.1:PORT for the r18bi ssh-typing tests. Pubkey auth for clientkey only; passwords always rejected, EXCEPT
+# when FAKE_PASSWORD is set: then user FAKE_PW_USER (default pwuser) with exactly that password logs in (#1535: a real password prompt, no account needed).
 import os; RUN=os.environ['PHOSPHOR_LINUX_RUN']
 import socket,threading,os,pty,select,subprocess,sys,struct,fcntl,termios,signal,time
 import paramiko
@@ -13,6 +14,7 @@ HK=paramiko.Ed25519Key(filename=D+'/fakessh/hostkey')
 CK=paramiko.Ed25519Key(filename=D+'/fakessh/clientkey')
 PORT=int(sys.argv[1]) if len(sys.argv)>1 else 2222
 DROP=float(os.environ.get('FAKE_DROP','0'))
+PW=os.environ.get('FAKE_PASSWORD',''); PWU=os.environ.get('FAKE_PW_USER','pwuser')
 LAT=float(os.environ.get('FAKE_LAT','0'))   # artificial connect delay before auth (s)
 LOG=open(D+'/raw/fakesshd.log','a',buffering=1)
 def log(*a): print(time.strftime('%H:%M:%S'),*a,file=LOG)
@@ -23,7 +25,10 @@ class Srv(paramiko.ServerInterface):
     def get_allowed_auths(s,u): return 'publickey,password'
     def check_auth_publickey(s,u,key):
         return paramiko.AUTH_SUCCESSFUL if key==CK else paramiko.AUTH_FAILED
-    def check_auth_password(s,u,p): log('password attempt rejected (len %d)'%len(p)); return paramiko.AUTH_FAILED
+    def check_auth_password(s,u,p):
+        ok=bool(PW) and u==PWU and p==PW
+        log('password attempt user=%s len %d -> %s'%(u,len(p),'ok' if ok else 'rejected'))
+        return paramiko.AUTH_SUCCESSFUL if ok else paramiko.AUTH_FAILED
     def check_channel_pty_request(s,ch,term,w,h,pw,ph,modes): s.ptys[ch.chanid]=(term.decode() if isinstance(term,bytes) else term,w,h); return True
     def check_channel_shell_request(s,ch): s.reqs[ch.chanid]=('shell',None); s.ev(ch).set(); return True
     def check_channel_exec_request(s,ch,cmd): s.reqs[ch.chanid]=('exec',cmd.decode()); s.ev(ch).set(); return True

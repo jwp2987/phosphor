@@ -119,7 +119,7 @@ class Profile:
         """a path as it goes INTO a shell rc file: C:/forward/slashes on Windows, unchanged elsewhere"""
         return _fwd(p) if self.win else p
 
-    def build(self, mode, ollama_url=None, ollama_model="gpt-oss:20b", ssh_port=None, ssh_ident=None):
+    def build(self, mode, ollama_url=None, ollama_model="gpt-oss:20b", ssh_port=None, ssh_ident=None, ssh_pw=None):
         for d in (self.home, self.ctl, self.rctl, self.refctl, self.rhome, self.shots):
             shutil.rmtree(d, ignore_errors=True) if d in (self.home, self.ctl, self.rctl, self.refctl, self.rhome) else None
             os.makedirs(d, exist_ok=True)
@@ -171,7 +171,7 @@ class Profile:
         open(t + "/zzcompl_alpha_unique.txt", "w").close()
         self.write_settings(mode, ollama_url, ollama_model)
         if ssh_port and self.win:
-            self.write_ssh_windows(ssh_port, ssh_ident)
+            self.write_ssh_windows(ssh_port, ssh_ident, ssh_pw)
         elif ssh_port:
             os.makedirs(h + "/.ssh", mode=0o700, exist_ok=True)
             _wr(h + "/.ssh/config", 
@@ -184,6 +184,8 @@ class Profile:
                     "\nHost fakepw\n  HostName 127.0.0.1\n  Port %d\n  User %s\n  IdentityFile %s\n  IdentitiesOnly yes\n"
                     "  StrictHostKeyChecking no\n  UserKnownHostsFile %s/.ssh/known_hosts\n  BatchMode no\n  NumberOfPasswordPrompts 1\n  LogLevel ERROR\n"
                     % (ssh_port, os.environ.get("USER", "runner"), pw, h))
+            if ssh_pw:
+                open(h + "/.ssh/config", "a").write("\n" + self.password_host_block(ssh_pw, h))
             self.write_ssh_wrappers()
             # the remote side (rhome, same machine) needs the same host entries and wrappers, or a NESTED `ssh fake` typed in the
             # remote shell cannot resolve (ssh_nested_typeahead, r18ck 2026-11-02)
@@ -193,10 +195,18 @@ class Profile:
             self.write_ssh_wrappers(self.rhome)
         return h
 
+    @staticmethod
+    def password_host_block(pw, home):
+        """ssh config for `ssh fakepass` (#1535): the harness fake sshd's one password user, password auth only, one attempt: ssh stops at its own
+        `pwuser@127.0.0.1's password:` prompt on the tty"""
+        return ("Host fakepass\n  HostName 127.0.0.1\n  Port %d\n  User %s\n  PreferredAuthentications password\n  PubkeyAuthentication no\n"
+                "  StrictHostKeyChecking no\n  UserKnownHostsFile %s/.ssh/known_hosts\n  BatchMode no\n  NumberOfPasswordPrompts 1\n  LogLevel ERROR\n"
+                % (pw["port"], pw["user"], _fwd(home)))
+
     TOOLS = ("ssh", "scp", "sftp")
     WIN_OPENSSH = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "OpenSSH")
 
-    def write_ssh_windows(self, port, ident):
+    def write_ssh_windows(self, port, ident, pwhost=None):
         """Windows: the PowerShell pane's client is the built-in Win32-OpenSSH (System32\\OpenSSH\\ssh.exe), which reads the user config from the PROFILE
         directory, not %HOME%; the Git Bash pane's is Git for Windows' own ssh (win_client). Either way `ssh fake` is resolved through wrappers in
         <home>/bin (first on the app's PATH) that pass `-F <home>/.ssh/config`:
@@ -208,6 +218,8 @@ class Profile:
         cfg = h + "/.ssh/config"
         blocks = ["Host fake\n  HostName 127.0.0.1\n  Port %d\n  User %s\n  IdentityFile %s\n  IdentitiesOnly yes\n"
                   "  StrictHostKeyChecking no\n  UserKnownHostsFile %s/.ssh/known_hosts\n  BatchMode yes\n  LogLevel ERROR\n" % (port, user, _fwd(ident), _fwd(h))]
+        if pwhost:
+            blocks.append(self.password_host_block(pwhost, h))
         _wr(cfg, "\n".join(blocks))
         for f in (cfg, ident):
             subprocess.run(["icacls", f, "/inheritance:r", "/grant:r", "%s:F" % user], capture_output=True)

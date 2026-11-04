@@ -559,68 +559,99 @@ def ps_has_port(port):
 
 
 def ps_has(host):
-    """is an ssh client for <host> running (Phosphor's ssh wrapper may add options, so match the args, not the typed text)"""
+    """is an ssh client for <host> running (Phosphor's ssh wrapper may add options, so match the args, not the typed text). Windows has no POSIX `ps`
+    in the harness's PATH: the command lines come from CIM (Win32_Process)."""
+    if os.name == "nt":
+        try:
+            out = subprocess.run(["powershell", "-NoProfile", "-Command", "Get-CimInstance Win32_Process -Filter \"Name='ssh.exe'\" | ForEach-Object { $_.CommandLine }"],
+                                 capture_output=True, text=True, timeout=30).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return any(re.search(r"\bssh(\.exe)?\"?\s.*\b%s\b" % re.escape(host), l) for l in out.splitlines())
     out = subprocess.run(["ps", "-eo", "args"], capture_output=True, text=True).stdout
     return any(re.match(r"(\S*/)?ssh\s.*\b%s\b" % re.escape(host), l) for l in out.splitlines())
 
 
+def password_variants(ctx):
+    """[(host, secret, prompt word, label)] of the secret prompts this ssh test host can give: the passphrase of a protected key (system OpenSSH sshd
+    only: `ssh fakepw`) and a REAL password (#1535: `ssh fakepass`, the harness fake sshd's one user; also on Windows). Empty -> the case skips."""
+    out = []
+    if ctx.ssh.get("pwident"):
+        out.append(("fakepw", ctx.ssh["passphrase"], "passphrase", "passphrase"))
+    pw = ctx.ssh.get("pwhost")
+    if pw and pw.get("password"):
+        out.append(("fakepass", pw["password"], "password", "password"))
+    return out
+
+
 @case("ssh_password_prompt", order=63)
 def c_ssh_password(ctx, r):
-    """The owner's rule for a password-style prompt: keys typed BEFORE the prompt are discarded (never sent to the prompt, never run in a shell),
-    keys typed AFTER it reach the prompt. The prompt is ssh's own `Enter passphrase for key` on the tty (host `fakepw`: a passphrase-protected
-    key the local sshd accepts, NumberOfPasswordPrompts 1, so one wrong try ends the ssh). Evidence: the correct passphrase typed after the prompt
-    logs in (junk typed before did not consume the single attempt), the junk and the passphrase are in no shell's rec.log, a wrong passphrase
-    returns to the LOCAL shell where the next command runs locally."""
+    """The owner's rule for a secret prompt: keys typed BEFORE the prompt are discarded (never sent to the prompt, never run in a shell), keys typed
+    AFTER it reach the prompt. Two prompts, each with ssh's own text on the tty: `Enter passphrase for key` (host `fakepw`: a passphrase-protected key
+    the system sshd accepts) and, since #1535, a real `pwuser@127.0.0.1's password:` (host `fakepass`: the harness fake sshd's one password user, so
+    no account or PAM is needed; Linux, macOS and the Windows ssh clients). NumberOfPasswordPrompts 1, so one wrong try ends the ssh. Evidence per
+    prompt: the correct secret typed after the prompt logs in (junk typed before did not consume the single attempt), the junk and the secret are in no
+    shell's rec.log, a wrong secret returns to the LOCAL shell where the next command runs locally."""
     need_ssh(ctx, r)
-    if not ctx.ssh.get("pwident"):
-        r.skip("the passphrase-key prompt needs the system OpenSSH sshd (apt: openssh-server); fakesshd.py cannot prompt")
-    pw = ctx.ssh["passphrase"]
-    f = "pw.txt"
+    variants = password_variants(ctx)
+    if not variants:
+        r.skip("no secret-prompt host: the passphrase prompt needs the system OpenSSH sshd (apt: openssh-server), the password prompt needs the paramiko fake sshd (pip/apt: python3-paramiko)")
+    kinds = {v[3] for v in variants}
+    if "password" not in kinds:
+        r.note("the real PASSWORD prompt was not exercised: no fake sshd with a password user (python3-paramiko missing?); only the passphrase prompt ran")
+    if "passphrase" not in kinds:
+        r.note("the key PASSPHRASE prompt was not exercised: it needs the system OpenSSH sshd; only the password prompt ran")
+    for host, secret, word, label in variants:
+        secret_prompt(ctx, r, host, secret, word, label)
+
+
+def secret_prompt(ctx, r, host, pw, word, label):
+    f = "pw_%s.txt" % label
     rm_remote(ctx, f)
     ctx.rm(f)
     lm, rm_ = ctx.cmd_mark(), len(ctx.prof.commands(remote=True))
     junk = "JUNKpre" + ctx.tok(5)
     before = rprompts(ctx)
-    ctx.be.type("ssh fakepw", 12, enter=True)
+    ctx.be.type("ssh %s" % host, 12, enter=True)
     time.sleep(0.1)
     ctx.be.type(junk, 15, enter=True)                  # impatient typing before the prompt exists
-    ctx.until(lambda: ps_has("fakepw"), 5, step=0.05)
-    time.sleep(2.0)                                    # the passphrase prompt is up
-    ctx.shot("pw_prompt")
-    txt = ctx.ocr("pw_prompt_ocr")
+    ctx.until(lambda: ps_has(host), 5, step=0.05)
+    time.sleep(2.0)                                    # the prompt is up
+    ctx.shot("pw_%s_prompt" % label)
+    txt = ctx.ocr("pw_%s_prompt_ocr" % label)
     if txt is not None:
-        r.check("passphrase" in txt.lower(), "OCR does not show the `Enter passphrase` prompt before the post-prompt keys are typed: ssh may have failed before prompting")
+        r.check(word in txt.lower(), "[%s] OCR does not show the `%s` prompt before the post-prompt keys are typed: ssh may have failed before prompting" % (label, word))
     ctx.be.type(pw, 15, enter=True)                    # after the prompt: must reach it
     ok = ctx.until(lambda: rprompts(ctx) > before, 30, step=0.1)
-    r.check(bool(ok), "keys typed AFTER the prompt did not reach it: no remote shell after typing the passphrase (junk typed before may have consumed the single attempt)")
-    ctx.shot("pw_after")
+    r.check(bool(ok), "[%s] keys typed AFTER the prompt did not reach it: no remote shell after typing the %s (junk typed before may have consumed the single attempt)" % (label, word))
+    ctx.shot("pw_%s_after" % label)
     if ok:
         tok = ctx.tok(8).lower()
         time.sleep(1.0)
         ctx.be.type("echo %s >> ~/%s" % (tok, f), 12, enter=True)
         ctx.until(lambda: ctx.lines(f, remote=True), 8)
-        exact(r, "remote command after the password login", [tok], ctx.lines(f, remote=True))
+        exact(r, "[%s] remote command after the %s login" % (label, word), [tok], ctx.lines(f, remote=True))
         leave(ctx)
     allcmds = [c for _, c in ctx.prof.commands()[lm:]] + [c for _, c in ctx.prof.commands(remote=True)[rm_:]]
-    r.check(not any(junk in c for c in allcmds), "the key burst typed BEFORE the prompt reached a shell instead of being discarded: %r" % [c for c in allcmds if junk in c])
-    r.check(not any(pw in c for c in allcmds), "the passphrase ended up in a shell's command history (it was typed into a shell, not the prompt)")
+    r.check(not any(junk in c for c in allcmds), "[%s] the key burst typed BEFORE the prompt reached a shell instead of being discarded: %r" % (label, [c for c in allcmds if junk in c]))
+    r.check(not any(pw in c for c in allcmds), "[%s] the %s ended up in a shell's command history (it was typed into a shell, not the prompt)" % (label, word))
     if txt is not None:
-        after = ctx.ocr("pw_after_ocr") or ""
-        r.check(pw not in after, "the passphrase is visible on screen (echoed)")
-    # wrong passphrase: ssh ends, the LOCAL shell is back and the next line runs locally
+        after = ctx.ocr("pw_%s_after_ocr" % label) or ""
+        r.check(pw not in after, "[%s] the %s is visible on screen (echoed)" % (label, word))
+    # wrong secret: ssh ends, the LOCAL shell is back and the next line runs locally
     ctx.reset()
     lm = ctx.cmd_mark()
-    ctx.be.type("ssh fakepw", 12, enter=True)
-    ctx.until(lambda: ps_has("fakepw"), 5, step=0.05)
+    ctx.be.type("ssh %s" % host, 12, enter=True)
+    ctx.until(lambda: ps_has(host), 5, step=0.05)
     time.sleep(2.0)
     ctx.be.type("wrong-" + ctx.tok(4), 15, enter=True)
-    ctx.until(lambda: not ps_has("fakepw"), 15, step=0.2)
+    ctx.until(lambda: not ps_has(host), 15, step=0.2)
     time.sleep(1.5)
     tok = ctx.tok(8).lower()
-    ctx.be.type("echo %s >> %s" % (tok, f), 12, enter=True)
+    ctx.be.type(ctx.append_cmd(ctx.pane_shell(), tok, f), 12, enter=True)
     ctx.until(lambda: ctx.lines(f), 8)
-    exact(r, "after a wrong passphrase the next command ran in the LOCAL shell", [tok], ctx.lines(f))
-    r.check(not any("wrong-" in c for _, c in ctx.prof.commands()[lm:]), "the wrong passphrase was run as a shell command")
+    exact(r, "[%s] after a wrong %s the next command ran in the LOCAL shell" % (label, word), [tok], ctx.lines(f))
+    r.check(not any("wrong-" in c for _, c in ctx.prof.commands()[lm:]), "[%s] the wrong %s was run as a shell command" % (label, word))
     ctx.reset()
 
 

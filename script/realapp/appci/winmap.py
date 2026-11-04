@@ -30,7 +30,7 @@ GITBASH_ONLY = {
     "remote_heredoc_paste": "POSIX here-doc / printf commands in the remote bash (#1129): runs in the Git Bash pane",
     "ssh_hanging_host_not_local": "Ctrl-C while ssh.cmd (a batch file) runs would ask 'Terminate batch job (Y/N)?': runs in the Git Bash pane",
     "latency_enter_ssh": "the plain-ssh control is the conhost reference running the pane's shell; a PowerShell reference's `ssh fake` path (ssh.cmd) differs from the pane's: runs in the Git Bash pane (#1532)",
-    "ssh_password_prompt": "needs the system sshd's passphrase-key prompt (fakesshd cannot prompt); skips itself with that reason",
+    "ssh_password_prompt": "`ssh fakepass` against fakesshd_win.py's password user (#1535) plus rec.log/prompt.log of the local shell: runs in the Git Bash pane (the passphrase half needs the system sshd and is noted as not run)",
     "paste_bracketed_off": "`cat > file` + Ctrl-D and the bracketed-paste printf: runs in the Git Bash pane (#1538)",
     "paste_agent_input": "reads the agent input from the app log and uses rec.log to prove nothing reached the shell: runs in the Git Bash pane (#1538)",
     "alt_screen_programs": "vim/less/htop/tmux with bash effect lines and rec.log: runs in the Git Bash pane; a program that is not installed makes the case unverifiable (#1537)",

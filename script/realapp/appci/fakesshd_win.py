@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # appci/fakesshd_win.py: the Windows twin of script/realapp/linux/bin/fakesshd.py (that one needs pty/fcntl/termios and /bin/bash).
 # A paramiko ssh server on 127.0.0.1:PORT for the ssh cases; NO OpenSSH Server service is involved. Public-key auth for the one scratch
-# client key only (passwords always rejected). A shell request gets a REAL pseudo console (ConPTY, CreatePseudoConsole through ctypes: the same
+# client key; passwords are rejected EXCEPT when FAKE_PASSWORD is set: then user FAKE_PW_USER (default pwuser) with exactly that password logs in
+# (#1535: a real password prompt for the Windows ssh clients, no account needed). A shell request gets a REAL pseudo console (ConPTY, CreatePseudoConsole through ctypes: the same
 # mechanism Windows' own sshd uses) running Git Bash with HOME = the scratch remote home and the scratch rc (--rcfile <rhome>/.bashrc), so the
 # remote side logs prompt.log / rec.log exactly like the POSIX sshd.py does. An exec request runs `bash -c <cmd>` on pipes.
 # usage: fakesshd_win.py PORT KEYDIR REMOTE_HOME BASH_EXE LOGFILE      (KEYDIR holds hostkey + clientkey)
@@ -18,6 +19,8 @@ from ctypes import wintypes as wt
 import paramiko
 
 PORT, KEYDIR, RHOME, BASH, LOGF = int(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+PW = os.environ.get("FAKE_PASSWORD", "")
+PWU = os.environ.get("FAKE_PW_USER", "pwuser")
 LAT = float(os.environ.get("FAKE_LAT", "0"))        # artificial connect delay before auth (s)
 LOG = open(LOGF, "a", buffering=1)
 
@@ -167,8 +170,9 @@ class Srv(paramiko.ServerInterface):
         return paramiko.AUTH_SUCCESSFUL if ok else paramiko.AUTH_FAILED
 
     def check_auth_password(s, u, p):
-        log("password attempt rejected (len %d)" % len(p))
-        return paramiko.AUTH_FAILED
+        ok = bool(PW) and u == PWU and p == PW
+        log("password attempt user=%s len %d -> %s" % (u, len(p), "ok" if ok else "rejected"))
+        return paramiko.AUTH_SUCCESSFUL if ok else paramiko.AUTH_FAILED
 
     def check_channel_pty_request(s, ch, term, w, h, pw, ph, modes):
         s.ptys[ch.chanid] = (term.decode() if isinstance(term, bytes) else term, w, h)

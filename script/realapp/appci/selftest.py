@@ -1128,6 +1128,25 @@ def g11_relaunch_cases_run_on_every_platform():
     cr.need_relaunch_app(types.SimpleNamespace(app=types.SimpleNamespace(start=1, stop=1)), "x")
 
 
+@check
+def g11_password_prompt_host_and_variants():
+    """#1535: the real-password ssh host is in the ssh config of both the POSIX and the Windows profile, and the case lists both secret prompts"""
+    import cases_caseremote as cr_
+    import sshd
+    pw = {"port": 2201, "user": sshd.PW_USER, "password": sshd.PW_PASSWORD}
+    blk = profile.Profile.password_host_block(pw, "/h")
+    assert "Host fakepass" in blk and "Port 2201" in blk and "User pwuser" in blk and "PreferredAuthentications password" in blk and "PubkeyAuthentication no" in blk, blk
+    assert "NumberOfPasswordPrompts 1" in blk and "BatchMode no" in blk and "known_hosts" in blk
+    both = types.SimpleNamespace(ssh={"pwident": "k", "passphrase": "pp", "pwhost": pw})
+    assert [v[0] for v in cr_.password_variants(both)] == ["fakepw", "fakepass"]
+    only_pw = types.SimpleNamespace(ssh={"pwhost": pw})
+    assert cr_.password_variants(only_pw) == [("fakepass", sshd.PW_PASSWORD, "password", "password")]
+    assert cr_.password_variants(types.SimpleNamespace(ssh={})) == []
+    for f in ("linux/bin/fakesshd.py", "appci/fakesshd_win.py"):
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", f.replace("appci/", ""))).read() if f.startswith("linux") else open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "fakesshd_win.py")).read()
+        assert "FAKE_PASSWORD" in src and "FAKE_PW_USER" in src, f
+
+
 def main():
     failed = 0
     for f in CHECKS:

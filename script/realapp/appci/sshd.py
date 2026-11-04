@@ -5,6 +5,10 @@
 import os, shutil, socket, subprocess, sys, time
 
 PW_PASSPHRASE = "ppCI-7431-test"       # protects ONLY the throw-away key below; it exists to give the ssh cases a real tty prompt (cases_caseremote.py)
+# #1535: a REAL password prompt ("pwuser@127.0.0.1's password:") without an account or PAM: the paramiko fake sshd accepts exactly this one user + password
+# (env FAKE_PW_USER / FAKE_PASSWORD) and nothing else. Throw-away values, valid only for the harness's own loopback server.
+PW_USER = "pwuser"
+PW_PASSWORD = "pwCI-9482-test"
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -38,11 +42,13 @@ def _start_windows(prof, run, d, port):
             paramiko.RSAKey.generate(2048).write_private_key_file(kp)
     log = os.path.join(d, "sshd.log")
     p = subprocess.Popen([sys.executable, os.path.join(HERE, "fakesshd_win.py"), str(port), d, prof.rhome, bash, log],
-                         stdout=subprocess.DEVNULL, stderr=open(os.path.join(d, "fakesshd.stderr"), "w"), stdin=subprocess.DEVNULL)
+                         stdout=subprocess.DEVNULL, stderr=open(os.path.join(d, "fakesshd.stderr"), "w"), stdin=subprocess.DEVNULL,
+                         env=dict(os.environ, FAKE_PASSWORD=PW_PASSWORD, FAKE_PW_USER=PW_USER))
     for _ in range(50):
         try:
             socket.create_connection(("127.0.0.1", port), 0.2).close()
-            return {"port": port, "ident": os.path.join(d, "clientkey"), "kind": "fakesshd-win", "popen": p}
+            return {"port": port, "ident": os.path.join(d, "clientkey"), "kind": "fakesshd-win", "popen": p,
+                    "pwhost": {"port": port, "user": PW_USER, "password": PW_PASSWORD}}      # the same server also takes the password login (#1535)
         except OSError:
             if p.poll() is not None:
                 break
@@ -101,12 +107,23 @@ def start(prof, run):
             p.kill()
         if p.poll() is None:
             return {"port": port, "ident": os.path.join(d, "clientkey"), "kind": "openssh", "popen": p,
-                    "pwident": os.path.join(d, "pwkey"), "passphrase": PW_PASSPHRASE}
+                    "pwident": os.path.join(d, "pwkey"), "passphrase": PW_PASSPHRASE, "pwhost": _pw_host(prof, run, kg, p)}
+    p, ident = _fakesshd_linux(prof, run, "fk", port, kg, PW_PASSWORD)       # this server takes the password login itself: no second one
+    if not p:
+        return None
+    return {"port": port, "ident": ident, "kind": "fakesshd", "popen": p, "pwhost": {"port": port, "user": PW_USER, "password": PW_PASSWORD}}
+
+
+def _fakesshd_linux(prof, run, sub, port, kg, password=None):
+    """start script/realapp/linux/bin/fakesshd.py (paramiko) on 127.0.0.1:port with its scratch keys under <run>/<sub>; -> (Popen, client key path) or (None, None).
+    `password`: the one password the server accepts for PW_USER (None = passwords always rejected)."""
     try:
         import paramiko  # noqa: F401
     except ImportError:
-        return None
-    fk = os.path.join(run, "fk"); os.makedirs(fk + "/fakessh", exist_ok=True); os.makedirs(fk + "/raw", exist_ok=True)
+        return None, None
+    if not kg:
+        return None, None
+    fk = os.path.join(run, sub); os.makedirs(fk + "/fakessh", exist_ok=True); os.makedirs(fk + "/raw", exist_ok=True)
     for k in ("hostkey", "clientkey"):
         if not os.path.exists(fk + "/fakessh/" + k):
             subprocess.run([kg, "-q", "-t", "ed25519", "-N", "", "-f", fk + "/fakessh/" + k], check=True)
@@ -115,15 +132,35 @@ def start(prof, run):
     else:
         os.symlink(prof.rhome, fk + "/remote_home")
     env = dict(os.environ, PHOSPHOR_LINUX_RUN=fk)
+    if password:
+        env.update(FAKE_PASSWORD=password, FAKE_PW_USER=PW_USER)
     p = subprocess.Popen([sys.executable, os.path.join(HERE, "..", "linux", "bin", "fakesshd.py"), str(port)], env=env,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     time.sleep(1.5)
     if p.poll() is not None:
+        return None, None
+    return p, fk + "/fakessh/clientkey"
+
+
+def _pw_host(prof, run, kg, main_popen):
+    """#1535: the password-prompt host next to the system OpenSSH sshd (pubkey only: no PAM and no account password as an unprivileged user): a second
+    paramiko fake sshd on its own port that accepts exactly PW_USER / PW_PASSWORD. None when paramiko is not importable (the case then covers only the
+    passphrase prompt). (The fallback fake sshd and the Windows one serve the password themselves.)"""
+    port = _free_port()
+    p, _ident = _fakesshd_linux(prof, run, "fkpw", port, kg, PW_PASSWORD)
+    if not p:
         return None
-    return {"port": port, "ident": fk + "/fakessh/clientkey", "kind": "fakesshd", "popen": p}
+    return {"port": port, "user": PW_USER, "password": PW_PASSWORD, "popen": p}
 
 
 def stop(info):
+    pw = (info or {}).get("pwhost") or {}
+    if pw.get("popen") and pw["popen"].poll() is None:      # the second (password) fake sshd of the system-sshd setup; exact PID, own session
+        pw["popen"].terminate()
+        try:
+            pw["popen"].wait(5)
+        except Exception:
+            pw["popen"].kill()
     if info and info.get("popen") and info["popen"].poll() is None:
         if os.name == "nt":      # taskkill /T also ends the ConPTY bash children of the fake server; exact PID only
             subprocess.run(["taskkill", "/PID", str(info["popen"].pid), "/T", "/F"], capture_output=True, timeout=30)
