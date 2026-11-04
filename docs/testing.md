@@ -955,6 +955,14 @@ an enter window, released by the latch.
 | view, Legacy and Table | `view_test.rs`: `an_interrupt_voids_a_kept_overdue_segment_and_only_the_signal_reaches_the_pty`, `a_hand_back_keeps_typed_order_across_editor_and_pty_entries`, `a_stale_prompt_hold_gate_hands_back_shell_routed_text`, `a_never_signalling_shell_hands_back_a_segment_with_an_enter`, `a_hold_whose_wait_a_preexec_cleared_is_released_by_the_latch`; model `a_preexec_turns_a_waiting_prompt_hold_into_an_enter_window` | ^C on a kept `ls\r`: the pty gets only `\x03`; `l`,`s`,editor `x`,` -a` → `lsx -a`; a stale gate's `ls` is shell-submitted; a never-signalling shell's `ls\rx` → editor `ls\nx`, nothing written; a preexec-cleared hold is released by the latch, once, in order |
 | view | `view_test.rs`: `a_signal_takes_the_keys_held_for_the_prompt_in_front_of_it` (^C voids, ^D follows), `the_queued_prompt_hold_gives_up_in_order_and_switches_itself_off`, `a_prompt_hold_cap_that_fires_while_the_queue_is_busy_still_releases_the_keys` | the give-up hands back to the editor (also from a busy queue), never writes; the never-signalling shell's next key goes by the live path |
 
+**Keys held behind an unsubmitted deferred Enter (#1189).** `release_held_keys` (a deferred Enter's `HandoffReport` gate closed and
+the Enter wrote no command) was the last release that wrote its keys to ConPTY as ONE write with the Enter(s) inside it -- the
+shape #1189 lost lines on. It now gets the keys one chunk per key entry and, on a ConPTY session, writes each as its own write, like
+every other release there (`TypeaheadHandoff::held_key_release_writes`; elsewhere still one write). In an app log the release is
+`hop=held_keys_release writes=N bytes=M`: on Windows N equals the number of keys. Test: `typeahead_handoff_tests.rs`
+`held_keys_released_after_an_unsubmitted_enter_keep_their_key_boundaries_on_conpty` (ConPTY: one write per key, empty chunks
+dropped; elsewhere: one write, typed order).
+
 ## 3. Real-app testing
 
 Automated tests do not catch lag, lost keys or broken flows; the owner feels those. Every release candidate

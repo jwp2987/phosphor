@@ -933,6 +933,21 @@ impl TypeaheadHandoff {
         self.conpty_input = conpty_input;
     }
 
+    /// The writes for keys a deferred Enter's gate held and now releases unrouted (the Enter
+    /// wrote no command; `TerminalView::release_held_keys`), one chunk per key event in typed
+    /// order. On a ConPTY session each key stays its own write, as every other release there
+    /// does (#1162, [`Self::route_expired_young_chunks`]): one write holding a line, its Enter
+    /// and the next line's keys is the shape ConPTY lost lines on (#1189). Elsewhere the keys go
+    /// out as one write, as before.
+    pub fn held_key_release_writes(&self, chunks: Vec<Vec<u8>>) -> Vec<Vec<u8>> {
+        let chunks: Vec<Vec<u8>> = chunks.into_iter().filter(|c| !c.is_empty()).collect();
+        if self.conpty_input || chunks.len() <= 1 {
+            chunks
+        } else {
+            vec![chunks.concat()]
+        }
+    }
+
     /// Declares whether `^U` kills the line in this session's shell (F7, #1595). `false` for
     /// PowerShell, whose PSReadLine does not bind it by default.
     pub fn set_ctrl_u_kills_line(&mut self, kills: bool) {
