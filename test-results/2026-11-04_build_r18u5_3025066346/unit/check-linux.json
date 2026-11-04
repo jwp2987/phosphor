@@ -1,0 +1,40 @@
+{
+ "warning_count": 181,
+ "warnings_by_crate": {
+  "yaml-rust (lib)": 10,
+  "markdown_parser (lib)": 1,
+  "font-kit (lib)": 3,
+  "arboard (lib)": 2,
+  "cosmic-text (lib)": 2,
+  "settings (lib)": 1,
+  "warp_editor (lib)": 3,
+  "ai (lib)": 6,
+  "difflib (lib)": 3,
+  "warp (lib)": 70,
+  "warp (lib test)": 80
+ },
+ "warning_lines_by_kind": {
+  "unused variable": 161,
+  "unused import": 91,
+  "use of deprecated constant": 39,
+  "unused imports": 23,
+  "use of deprecated method": 17,
+  "unexpected": 16,
+  "function": 12,
+  "use of deprecated struct": 12,
+  "use of deprecated type alias": 8,
+  "use of deprecated associated function": 8,
+  "use of deprecated module": 4,
+  "field": 4,
+  "hiding a lifetime that": 4,
+  "missing documentation for an associated function": 4,
+  "missing documentation for a method": 4,
+  "method": 4,
+  "variable does not need to be mutable": 4,
+  "unnecessary braces around block return value": 4,
+  "the following packages contain code that will be rejected by": 4
+ },
+ "errors": 0,
+ "status": "success",
+ "duration": 461.881705
+}
