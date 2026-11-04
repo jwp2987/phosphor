@@ -113,7 +113,6 @@ pub(crate) enum IconWithStatusVariant {
         /// ambient-purple background, see `warp_agent_circle_colors`) but is carried on the
         /// variant so cross-surface callers (`ui_components::agent_icon`) have a single
         /// consistent shape to construct regardless of which branch of the icon they render.
-        #[allow(dead_code)] // field: set at construction or persisted
         is_ambient: bool,
     },
 }
@@ -316,17 +315,13 @@ fn render_with_optional_status_badge(
 /// Brand-circle diameter as a fraction of `total_size`. `pub(crate)` so
 /// callers that pre-render their own avatar (e.g. the pill bar) can size it
 /// consistently with [`render_custom_avatar_with_status_badge`].
-#[allow(dead_code)] // used by sibling unused code or shared name
 pub(crate) const CIRCLE_RATIO: f32 = 0.76;
-#[allow(dead_code)] // used by sibling unused code or shared name
 const DEFAULT_BADGE_RATIO: f32 = 0.57;
-#[allow(dead_code)] // used by sibling unused code or shared name
 const DEFAULT_BADGE_ICON_RATIO: f32 = 0.34;
 
 /// Status-badge geometry override. Pass [`StatusBadgeStyle::DEFAULT`] for the
 /// standard look.
 #[derive(Clone, Copy)]
-#[allow(dead_code)] // persisted or derived enum
 pub(crate) struct StatusBadgeStyle {
     /// Cutout-ring diameter as a fraction of `total_size`.
     pub ring_ratio: f32,
@@ -336,17 +331,12 @@ pub(crate) struct StatusBadgeStyle {
 }
 
 #[derive(Clone, Copy)]
-#[allow(dead_code)] // used by sibling unused code or shared name
 pub(crate) enum BadgeInnerShape {
-    #[allow(dead_code)] // used by warp_tui (tui feature)
     Circle,
-    RoundedSquare {
-        radius_px: f32,
-    },
+    RoundedSquare { radius_px: f32 },
 }
 
 impl StatusBadgeStyle {
-    #[allow(dead_code)] // used by sibling unused code or shared name
     pub(crate) const DEFAULT: Self = Self {
         ring_ratio: DEFAULT_BADGE_RATIO,
         icon_ratio: DEFAULT_BADGE_ICON_RATIO,
@@ -364,26 +354,127 @@ impl StatusBadgeStyle {
 /// default overhang, so it does not want this ratio. Kept as the accessor for
 /// the default geometry, which `corner_overlay_offset` below still derives
 /// from `CIRCLE_RATIO`.
-#[allow(dead_code)] // used by sibling unused code or shared name
 pub(crate) fn circle_size(total: f32) -> f32 {
     total * CIRCLE_RATIO
 }
 
 /// Returns the diameter of the status badge's cutout ring, i.e. the badge's
 /// full painted footprint.
-#[allow(dead_code)] // used by sibling unused code or shared name
 fn badge_size(total: f32, style: StatusBadgeStyle) -> f32 {
     total * style.ring_ratio
 }
 
-#[allow(dead_code)] // used by sibling unused code or shared name
 fn badge_icon_size(total: f32, style: StatusBadgeStyle) -> f32 {
     total * style.icon_ratio
 }
 
-#[allow(dead_code)] // used by sibling unused code or shared name
 fn badge_padding(total: f32, style: StatusBadgeStyle) -> f32 {
     (badge_size(total, style) - badge_icon_size(total, style)) / 4.
+}
+
+/// Default overhang of the badge's BR past the circle's BR edge (toward the
+/// box's BR), as a fraction of `total_size`. Baked into
+/// `corner_overlay_offset` so most callers can just pass `0.0` for their
+/// `overlay_extra_overhang_ratio`.
+const DEFAULT_OVERLAY_OVERHANG_PAST_CIRCLE_EDGE: f32 = 0.19;
+
+/// Returns the pixel offset applied to the badge's `BottomRight -> BottomRight`
+/// anchor. Negative whenever the badge sits up-and-left of the box's BR
+/// (the only case rendered here).
+///
+/// `overlay_extra_overhang_ratio` is a signed fraction of `total` added to
+/// `DEFAULT_OVERLAY_OVERHANG_PAST_CIRCLE_EDGE`: `0.0` for the default
+/// position most callers want; positive pushes the badge further toward the
+/// box's BR; negative pulls it inward toward the circle's center.
+fn corner_overlay_offset(total: f32, overlay_extra_overhang_ratio: f32) -> f32 {
+    let total_overhang = DEFAULT_OVERLAY_OVERHANG_PAST_CIRCLE_EDGE + overlay_extra_overhang_ratio;
+    -((1.0 - CIRCLE_RATIO) - total_overhang) * total
+}
+
+/// Wraps a pre-rendered avatar with an optional status-badge cutout-ring
+/// overlay, derived proportionally from `total_size`.
+///
+/// The overlay is anchored to the `total_size` box's bottom-right corner
+/// however big `avatar` is, so pass either an avatar sized to
+/// [`circle_size`]`(total_size)` (to match the overhang of the sizing-based
+/// variants) or an element that already fills the `total_size` box and places
+/// its own artwork inside it.
+///
+/// `is_remote_child` is accepted for structural parity with the pin's
+/// `PillSpec` but is always effectively `false` in this fork -- see the
+/// module-level comment above this section.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn render_custom_avatar_with_status_badge(
+    avatar: Box<dyn Element>,
+    status: Option<&ConversationStatus>,
+    is_remote_child: bool,
+    total_size: f32,
+    overlay_extra_overhang_ratio: f32,
+    badge_style: StatusBadgeStyle,
+    theme: &WarpTheme,
+    status_container_background: WarpThemeFill,
+) -> Box<dyn Element> {
+    if is_remote_child {
+        log::warn!(
+            "render_custom_avatar_with_status_badge: is_remote_child was true, but this fork \
+             has no remote-worker execution path (is_remote_child is permanently false); \
+             rendering the standard badge anyway."
+        );
+    }
+    let Some(status) = status else {
+        // No status badge: still reserve the full `total_size` footprint the
+        // caller asked for, so badged and un-badged variants occupy identical
+        // space. `ConstrainedBox` only tightens constraints — it does not
+        // center — so an avatar smaller than `total_size` is painted at the
+        // box's top-left. Callers that need it centered must wrap it in
+        // `Align`.
+        return ConstrainedBox::new(avatar)
+            .with_width(total_size)
+            .with_height(total_size)
+            .finish();
+    };
+    let (icon, color) = status.status_icon_and_color(theme);
+    let badge_icon_diameter = badge_icon_size(total_size, badge_style);
+    let pad = badge_padding(total_size, badge_style);
+    let badge_icon = ConstrainedBox::new(icon.to_warpui_icon(WarpThemeFill::Solid(color)).finish())
+        .with_width(badge_icon_diameter)
+        .with_height(badge_icon_diameter)
+        .finish();
+    let inner_radius = match badge_style.inner_shape {
+        BadgeInnerShape::Circle => Radius::Percentage(50.),
+        BadgeInnerShape::RoundedSquare { radius_px } => Radius::Pixels(radius_px),
+    };
+    let badge = Container::new(badge_icon)
+        .with_uniform_padding(pad)
+        .with_corner_radius(CornerRadius::with_all(inner_radius))
+        .finish();
+    // Cutout ring around the badge; always circular (only the inner holder varies).
+    let badge_with_ring = Container::new(badge)
+        .with_uniform_padding(pad)
+        .with_background(status_container_background)
+        .with_corner_radius(CornerRadius::with_all(Radius::Percentage(50.)))
+        .finish();
+
+    let badge_corner_offset = corner_overlay_offset(total_size, overlay_extra_overhang_ratio);
+    let mut stack = Stack::new().with_child(
+        ConstrainedBox::new(avatar)
+            .with_width(total_size)
+            .with_height(total_size)
+            .finish(),
+    );
+    stack.add_positioned_child(
+        badge_with_ring,
+        OffsetPositioning::offset_from_parent(
+            vec2f(badge_corner_offset, badge_corner_offset),
+            ParentOffsetBounds::Unbounded,
+            ParentAnchor::BottomRight,
+            ChildAnchor::BottomRight,
+        ),
+    );
+    ConstrainedBox::new(stack.finish())
+        .with_width(total_size)
+        .with_height(total_size)
+        .finish()
 }
 
 #[cfg(test)]

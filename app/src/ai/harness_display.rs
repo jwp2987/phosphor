@@ -10,9 +10,9 @@ use warp_cli::agent::Harness;
 use crate::ai::agent::conversation::AIAgentHarness;
 use crate::ai::blocklist::CLAUDE_ORANGE;
 use crate::terminal::cli_agent::GEMINI_BLUE;
+use crate::ui_components::icons::Icon;
 
 /// User-visible display name for a [`Harness`].
-#[allow(dead_code)] // used by sibling unused code or shared name
 pub fn display_name(harness: Harness) -> &'static str {
     match harness {
         Harness::Oz => "Phosphor Agent",
@@ -24,9 +24,20 @@ pub fn display_name(harness: Harness) -> &'static str {
     }
 }
 
+/// Leading icon for a [`Harness`].
+pub fn icon_for(harness: Harness) -> Icon {
+    match harness {
+        Harness::Oz => Icon::Zap,
+        Harness::Claude => Icon::ClaudeLogo,
+        Harness::OpenCode => Icon::OpenCodeLogo,
+        Harness::Gemini => Icon::GeminiLogo,
+        Harness::Codex => Icon::OpenAILogo,
+        Harness::Unknown => Icon::HelpCircle,
+    }
+}
+
 /// Brand tint for a [`Harness`]'s icon. `None` means "use the surface's
 /// default foreground color".
-#[allow(dead_code)] // used by sibling unused code or shared name
 pub fn brand_color(harness: Harness) -> Option<ColorU> {
     match harness {
         Harness::Oz => None,
