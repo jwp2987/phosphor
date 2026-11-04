@@ -1734,7 +1734,7 @@ mod exited_shell_tests {
     /// The gate's count, as `SessionEndGate::should_keep_exited_pane` consumes it after a
     /// cancelled session end: one kept pane per counted exit.
     fn cancelled_gate(counted: &Cell<u32>) -> impl FnOnce() -> bool + '_ {
-        || {
+        move || {
             let had = counted.get();
             counted.set(had.saturating_sub(1));
             had > 0
