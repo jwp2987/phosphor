@@ -139,13 +139,19 @@ const PLUGIN_CHIP_DEBOUNCE: Duration = Duration::from_secs(3);
 enum PluginChipKind {
     Install,
     Update,
+    /// Move an install registered from Warp's source onto Phosphor's GitLab
+    /// copy. Offered only for a current plugin (a due version update takes
+    /// the chip slot first), only for an agent running on this machine, and
+    /// run only when clicked.
+    Move,
 }
 
 impl From<PluginChipKind> for PluginChipTelemetryKind {
     fn from(kind: PluginChipKind) -> Self {
         match kind {
             PluginChipKind::Install => PluginChipTelemetryKind::Install,
-            PluginChipKind::Update => PluginChipTelemetryKind::Update,
+            // Telemetry keeps its two kinds; a move is a kind of update.
+            PluginChipKind::Update | PluginChipKind::Move => PluginChipTelemetryKind::Update,
         }
     }
 }
@@ -157,6 +163,44 @@ fn plugin_chip_key(agent_prefix: &str, remote_host: &Option<String>) -> String {
         Some(host) => format!("{agent_prefix}@{host}"),
         None => agent_prefix.to_owned(),
     }
+}
+
+/// The dismissal key for the move chip (moving a plugin off Warp's GitHub/npm
+/// source). Kept apart from the version dismissal under `chip_key`, so a user
+/// who dismissed a version update at the current minimum still sees the move
+/// once, and dismissing the move never hides a version update. Stored in the
+/// same map; any non-empty value means dismissed.
+fn plugin_source_move_chip_key(chip_key: &str) -> String {
+    format!("{chip_key}#source-move")
+}
+
+/// Value recorded under [`plugin_source_move_chip_key`] when dismissed.
+const PLUGIN_SOURCE_MOVE_DISMISSED: &str = "gitlab";
+
+/// Whether a failed chip operation switches this session's chip to the
+/// manual instructions. Not when the pre-flight found Phosphor's source
+/// unreachable and nothing changed: the manual steps would run the same
+/// remove + add with no pre-flight, and the chip works again once the source
+/// answers.
+fn failure_turns_chip_manual(err: &PluginInstallError) -> bool {
+    !err.left_install_unchanged()
+}
+
+/// The chip for an installed plugin: a due version update first (its own
+/// dismissal), else the move off Warp's source (its own dismissal). The two
+/// dismissals are independent: a dismissed move never hides a version update,
+/// and a dismissed version update does not consult the move's state.
+/// `move_due` is only asked when its answer can matter.
+fn installed_plugin_chip(
+    version_update_due: bool,
+    version_update_dismissed: bool,
+    move_dismissed: bool,
+    move_due: impl FnOnce() -> bool,
+) -> Option<PluginChipKind> {
+    if version_update_due {
+        return (!version_update_dismissed).then_some(PluginChipKind::Update);
+    }
+    (!move_dismissed && move_due()).then_some(PluginChipKind::Move)
 }
 
 /// Footer control bar at the bottom of the agent input.
@@ -202,6 +246,8 @@ pub struct AgentInputFooter {
     plugin_instructions_button: ViewHandle<ActionButton>,
     update_plugin_button: ViewHandle<ActionButton>,
     update_instructions_button: ViewHandle<ActionButton>,
+    move_plugin_button: ViewHandle<ActionButton>,
+    move_instructions_button: ViewHandle<ActionButton>,
     dismiss_plugin_chip_button: ViewHandle<ActionButton>,
     plugin_operation_in_progress: bool,
     /// When `true`, the install chip is allowed to render.
@@ -436,6 +482,36 @@ impl AgentInputFooter {
             .with_adjoined_side(AdjoinedSide::Right)
             .on_click(|ctx| {
                 ctx.dispatch_typed_action(AgentInputFooterAction::OpenPluginUpdateInstructionsPane);
+            })
+        });
+
+        let move_plugin_button = ctx.add_typed_action_view(|_ctx| {
+            ActionButton::new(
+                crate::t!("ai-footer-move-plugin-source"),
+                InstallPluginButtonTheme,
+            )
+            .with_icon(Icon::Download)
+            .with_tooltip(crate::t!("ai-footer-move-plugin-source-tooltip"))
+            .with_size(cli_button_size)
+            .with_tooltip_alignment(TooltipAlignment::Left)
+            .with_adjoined_side(AdjoinedSide::Right)
+            .on_click(|ctx| {
+                ctx.dispatch_typed_action(AgentInputFooterAction::MovePlugin);
+            })
+        });
+
+        let move_instructions_button = ctx.add_typed_action_view(|_ctx| {
+            ActionButton::new(
+                crate::t!("ai-footer-move-plugin-instructions"),
+                InstallPluginButtonTheme,
+            )
+            .with_icon(Icon::Info)
+            .with_tooltip(crate::t!("ai-footer-move-plugin-instructions-tooltip"))
+            .with_size(cli_button_size)
+            .with_tooltip_alignment(TooltipAlignment::Left)
+            .with_adjoined_side(AdjoinedSide::Right)
+            .on_click(|ctx| {
+                ctx.dispatch_typed_action(AgentInputFooterAction::OpenPluginMoveInstructionsPane);
             })
         });
 
@@ -693,6 +769,8 @@ impl AgentInputFooter {
             plugin_instructions_button,
             update_plugin_button,
             update_instructions_button,
+            move_plugin_button,
+            move_instructions_button,
             dismiss_plugin_chip_button,
             plugin_operation_in_progress: false,
             plugin_chip_ready: false,
@@ -841,6 +919,19 @@ impl AgentInputFooter {
             let manager = plugin_manager_for(session.agent)?;
             let min_version = manager.minimum_plugin_version();
             let chip_key = plugin_chip_key(session.agent.command_prefix(), &session.remote_host);
+            let source_move_dismissed = !ai_settings
+                .plugin_update_chip_dismissed_version(&plugin_source_move_chip_key(&chip_key))
+                .is_empty();
+            let version_update_dismissed = {
+                let dismissed_version = ai_settings.plugin_update_chip_dismissed_version(&chip_key);
+                !dismissed_version.is_empty()
+                    && compare_versions(dismissed_version, min_version).is_ge()
+            };
+            // The source check reads the agent's config on this machine, so it
+            // only describes a session whose agent runs here: not a remote one,
+            // and not one inside a Docker sandbox (its agent reads the
+            // container's config, not the host's).
+            let source_checkable = !session.is_remote() && !self.is_docker_sandbox();
 
             // If the plugin is connected (listener present) and this agent supports
             // version-based updates, check the reported version.
@@ -850,17 +941,14 @@ impl AgentInputFooter {
                     None => true,
                     Some(v) => compare_versions(v, min_version).is_lt(),
                 };
-                if !needs_update {
-                    return None;
-                }
-                // Check update chip dismissal.
-                let dismissed_version = ai_settings.plugin_update_chip_dismissed_version(&chip_key);
-                if !dismissed_version.is_empty()
-                    && compare_versions(dismissed_version, min_version).is_ge()
-                {
-                    return None;
-                }
-                return Some(PluginChipKind::Update);
+                // A current plugin still installed from Warp's source keeps
+                // taking Warp's updates; the move chip offers to move it.
+                return installed_plugin_chip(
+                    needs_update,
+                    version_update_dismissed,
+                    source_move_dismissed,
+                    || source_checkable && manager.needs_source_migration(),
+                );
             }
 
             // For agents without auto-install, wait for the debounce timer
@@ -879,18 +967,14 @@ impl AgentInputFooter {
             if manager.is_installed() {
                 // Installed but no listener yet. Check the on-disk version as a fallback
                 // — the plugin may be too old to send structured events.
-                if manager.needs_update() {
-                    let dismissed_version =
-                        ai_settings.plugin_update_chip_dismissed_version(&chip_key);
-                    if !dismissed_version.is_empty()
-                        && compare_versions(dismissed_version, min_version).is_ge()
-                    {
-                        return None;
-                    }
-                    return Some(PluginChipKind::Update);
-                }
-                // Up to date on disk — wait for the listener to connect.
-                return None;
+                // Up to date on disk with nothing to move — wait for the
+                // listener to connect.
+                return installed_plugin_chip(
+                    manager.needs_update(),
+                    version_update_dismissed,
+                    source_move_dismissed,
+                    || source_checkable && manager.needs_source_migration(),
+                );
             }
 
             // Not installed locally.
@@ -899,7 +983,7 @@ impl AgentInputFooter {
     }
 
     /// Whether the chip should open the manual instructions modal instead of auto-operating.
-    fn should_use_manual_mode(&self, app: &AppContext) -> bool {
+    fn should_use_manual_mode(&self, chip_kind: PluginChipKind, app: &AppContext) -> bool {
         let sessions_model = CLIAgentSessionsModel::as_ref(app);
         let session = match sessions_model.session(self.terminal_view_id) {
             Some(s) => s,
@@ -913,7 +997,14 @@ impl AgentInputFooter {
         }
 
         if let Some(manager) = plugin_manager_for(session.agent) {
-            if !manager.can_auto_install() {
+            // Every manager that reports a move can run it (it is a
+            // user-clicked edit of this machine's agent config), so only
+            // install and update depend on the agent's auto-install support.
+            let can_auto = match chip_kind {
+                PluginChipKind::Install | PluginChipKind::Update => manager.can_auto_install(),
+                PluginChipKind::Move => true,
+            };
+            if !can_auto {
                 return true;
             }
         }
@@ -928,16 +1019,20 @@ impl AgentInputFooter {
         //
         // `ShellLaunchData` is only available on native builds; wasm builds
         // can't produce a `DockerSandbox` variant either way.
-        {
-            let shell_data = {
-                let model = self.terminal_model.lock();
-                model.active_shell_launch_data().cloned()
-            };
-            if matches!(shell_data, Some(ShellLaunchData::DockerSandbox { .. })) {
-                return true;
-            }
+        if self.is_docker_sandbox() {
+            return true;
         }
         sessions_model.has_plugin_auto_failed(session.agent, &session.remote_host)
+    }
+
+    /// Whether this terminal's active shell runs inside a Docker sandbox.
+    /// Locks the terminal model: never call it with that lock held.
+    fn is_docker_sandbox(&self) -> bool {
+        let model = self.terminal_model.lock();
+        matches!(
+            model.active_shell_launch_data(),
+            Some(ShellLaunchData::DockerSandbox { .. })
+        )
     }
 
     /// Records that the auto plugin operation could not start, shows an error toast,
@@ -1087,12 +1182,14 @@ impl AgentInputFooter {
                     let toast = match result {
                         Ok(()) => DismissibleToast::success(success_toast.clone()),
                         Err((err, log_path)) => {
-                            let remote_host = CLIAgentSessionsModel::as_ref(ctx)
-                                .session(me.terminal_view_id)
-                                .and_then(|s| s.remote_host.clone());
-                            CLIAgentSessionsModel::handle(ctx).update(ctx, |model, _| {
-                                model.record_plugin_auto_failure(agent, remote_host);
-                            });
+                            if failure_turns_chip_manual(&err) {
+                                let remote_host = CLIAgentSessionsModel::as_ref(ctx)
+                                    .session(me.terminal_view_id)
+                                    .and_then(|s| s.remote_host.clone());
+                                CLIAgentSessionsModel::handle(ctx).update(ctx, |model, _| {
+                                    model.record_plugin_auto_failure(agent, remote_host);
+                                });
+                            }
                             log::error!(
                                 "Failed plugin operation for {agent:?}: {err}\n{log}",
                                 log = err.log,
@@ -1152,6 +1249,24 @@ impl AgentInputFooter {
             success_msg,
             PluginChipTelemetryKind::Update,
             |manager| async move { manager.update().await },
+            ctx,
+        )
+    }
+
+    /// Runs the move chip's `move_to_phosphor_source()`, and only that.
+    fn handle_move_plugin(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        let success_msg = self
+            .cli_agent(ctx)
+            .and_then(plugin_manager_for)
+            .map(|m| m.move_success_message())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| crate::t!("ai-footer-plugin-updated-restart-session"));
+        self.handle_plugin_operation(
+            crate::t!("ai-footer-moving-plugin-source"),
+            crate::t!("ai-footer-failed-move-plugin-source"),
+            success_msg,
+            PluginChipTelemetryKind::Update,
+            |manager| async move { manager.move_to_phosphor_source().await },
             ctx,
         )
     }
@@ -1273,7 +1388,7 @@ impl AgentInputFooter {
         }
 
         if let Some(chip_kind) = self.plugin_chip_kind(app) {
-            let manual = self.should_use_manual_mode(app);
+            let manual = self.should_use_manual_mode(chip_kind, app);
             let chip = match (chip_kind, manual) {
                 (PluginChipKind::Install, false) => {
                     ChildView::new(&self.install_plugin_button).finish()
@@ -1286,6 +1401,10 @@ impl AgentInputFooter {
                 }
                 (PluginChipKind::Update, true) => {
                     ChildView::new(&self.update_instructions_button).finish()
+                }
+                (PluginChipKind::Move, false) => ChildView::new(&self.move_plugin_button).finish(),
+                (PluginChipKind::Move, true) => {
+                    ChildView::new(&self.move_instructions_button).finish()
                 }
             };
             let chip_with_dismiss = Flex::row()
@@ -2029,6 +2148,9 @@ pub enum AgentInputFooterAction {
     UpdatePlugin,
     OpenPluginInstallInstructionsPane,
     OpenPluginUpdateInstructionsPane,
+    /// Move the plugin off Warp's source (the move chip, clicked).
+    MovePlugin,
+    OpenPluginMoveInstructionsPane,
     DismissPluginChip,
     OpenCodingAgentSettings,
     ShowContextMenu {
@@ -2142,6 +2264,35 @@ impl TypedActionView for AgentInputFooter {
                     self.record_plugin_auto_failure_and_notify(ctx);
                 }
             }
+            AgentInputFooterAction::MovePlugin => {
+                if let Some(agent) = self.cli_agent(ctx) {
+                    send_telemetry_from_ctx!(
+                        TelemetryEvent::CLIAgentPluginChipClicked {
+                            cli_agent: agent.into(),
+                            action: PluginChipTelemetryAction::Update,
+                        },
+                        ctx
+                    );
+                }
+                if !self.handle_move_plugin(ctx) {
+                    self.record_plugin_auto_failure_and_notify(ctx);
+                }
+            }
+            AgentInputFooterAction::OpenPluginMoveInstructionsPane => {
+                if let Some(agent) = self.cli_agent(ctx) {
+                    send_telemetry_from_ctx!(
+                        TelemetryEvent::CLIAgentPluginChipClicked {
+                            cli_agent: agent.into(),
+                            action: PluginChipTelemetryAction::UpdateInstructions,
+                        },
+                        ctx
+                    );
+                    ctx.emit(AgentInputFooterEvent::OpenPluginInstructionsPane(
+                        agent,
+                        PluginModalKind::Move,
+                    ));
+                }
+            }
             AgentInputFooterAction::OpenPluginInstallInstructionsPane => {
                 if let Some(agent) = self.cli_agent(ctx) {
                     send_telemetry_from_ctx!(
@@ -2175,6 +2326,7 @@ impl TypedActionView for AgentInputFooter {
             AgentInputFooterAction::DismissPluginChip => {
                 let chip_kind = self.plugin_chip_kind(ctx);
                 let is_update = matches!(chip_kind, Some(PluginChipKind::Update));
+                let is_source_move = matches!(chip_kind, Some(PluginChipKind::Move));
                 if let Some(agent) = self.cli_agent(ctx) {
                     if let Some(kind) = chip_kind {
                         send_telemetry_from_ctx!(
@@ -2192,7 +2344,16 @@ impl TypedActionView for AgentInputFooter {
                 if let Some(session) = session {
                     let chip_key =
                         plugin_chip_key(session.agent.command_prefix(), &session.remote_host);
-                    if is_update {
+                    if is_source_move {
+                        let key = plugin_source_move_chip_key(&chip_key);
+                        AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                            settings.dismiss_plugin_update_chip(
+                                &key,
+                                PLUGIN_SOURCE_MOVE_DISMISSED.to_owned(),
+                                ctx,
+                            );
+                        });
+                    } else if is_update {
                         if let Some(manager) = plugin_manager_for(session.agent) {
                             let version = manager.minimum_plugin_version().to_owned();
                             AISettings::handle(ctx).update(ctx, |settings, ctx| {
@@ -2455,3 +2616,7 @@ impl ActionButtonTheme for NLDButtonTheme {
         true
     }
 }
+
+#[cfg(test)]
+#[path = "plugin_chip_tests.rs"]
+mod plugin_chip_tests;

@@ -52,14 +52,15 @@ pub(super) struct PreparedLocalHarnessLaunch {
 ///
 /// * **The notification plugin is a live, local, developer-modifiable surface.**
 ///   `ClaudeCodePluginManager::install` shells out to
-///   `claude plugin marketplace add warpdotdev/claude-code-warp` followed by
-///   `claude plugin install warp@claude-code-warp`. The plugin it installs only
+///   `claude plugin marketplace add https://gitlab.com/winters-phosphor/claude-code-warp.git`
+///   followed by `claude plugin install warp@claude-code-warp`. The plugin it installs only
 ///   emits OSC 9/777 sequences, which this app's own terminal parses (see
 ///   `terminal::model::ansi::handler`) into CLI-agent session notifications.
 ///   Nothing hosted sits in that loop, so it is a surface this fork can change.
 /// * **A local marketplace override is the only way to test such a change.**
-///   `warpdotdev/claude-code-warp` is an upstream third-party repository this
-///   fork cannot publish to. Pointing `extraKnownMarketplaces["claude-code-warp"]`
+///   The published marketplace (`winters-phosphor/claude-code-warp`, Phosphor's
+///   GitLab copy of Warp's repository) carries only what has been released.
+///   Pointing `extraKnownMarketplaces["claude-code-warp"]`
 ///   in `~/.claude/settings.json` at a local clone -- conventionally a checkout
 ///   named `claude-code-warp-internal` -- is the only route from an edited
 ///   plugin to a running Phosphor build. That is not hypothetical maintenance

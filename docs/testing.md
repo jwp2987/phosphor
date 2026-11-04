@@ -73,6 +73,23 @@ Hard rules:
 - **Code-editor memory accounting (#1607)**. `crates/editor/tests/editor_memory.rs` (its own test binary with a counting global allocator) loads a generated
   7 MB file with `Buffer::replace_all` and asserts the buffer retains nothing but its content tree (`Buffer::memory_stats`), no undo entry, a bounded transient peak
   and nothing after the drop; it prints the breakdown. `script/agent-cargo <name> nextest run -p warp_editor --test editor_memory --no-capture`.
+- **CLI-agent plugin source (GitLab move)**. `app/src/terminal/cli_agent_sessions/plugin_manager/{claude,codex,gemini,opencode,mod}_tests.rs`
+  pin the install/update commands to the `gitlab.com/winters-phosphor` URLs and cover the migration of installs registered
+  from `warpdotdev/` GitHub: fixtures written in each CLI's real on-disk shape (Claude `settings.json`
+  `extraKnownMarketplaces` and `plugins/known_marketplaces.json`, Codex `[marketplaces.codex-warp]` in `config.toml`, Gemini
+  `.gemini-extension-install.json`, OpenCode `opencode.json(c)` `plugin` arrays with comments, tuples and other plugins,
+  rewritten byte-for-byte except the one entry), local-path overrides never reported, and `is_warp_plugin_source` over every spelling
+  the CLIs record (and the mirror/`file://` look-alikes it must reject). `install()` / `update()` are driven through
+  `FakeRunner` (`plugin_manager/mod_tests.rs`, a scripted `PluginCommandRunner` that records each command line and its
+  extra env, fails chosen prefixes and applies a command's on-disk effect via a hook): `update()` never moves a
+  Warp-registered install, the move (`move_to_phosphor_source`) changes nothing on a failed pre-flight, restores the
+  previous source on a failed add/install, serialises concurrent moves, and is not re-offered after a completed attempt;
+  OpenCode's rewrite is atomic (read-only dir leaves the file untouched; a symlink keeps its link) and keeps comments.
+  `driver_tests.rs` and `local_harness_launch_tests.rs` assert the background paths never call the move;
+  `agent_input_footer/plugin_chip_tests.rs` pins the independent update/move dismissals; `shell_command_line` quoting
+  is tested in `mod_tests.rs`. Pure file
+  fixtures in temp dirs; no agent CLI or `git` is run.
+  `script/agent-cargo <name> nextest run -p warp --features gui plugin_manager`.
 - **warp_tui tests need the warp package in the same invocation** (feature unification of `test-util`):
 
       script/agent-cargo <name> nextest run -p warp -p warp_tui --lib --features warp/gui [filter]

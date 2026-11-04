@@ -18163,6 +18163,7 @@ impl Workspace {
         let instructions = match kind {
             PluginModalKind::Install => manager.install_instructions(),
             PluginModalKind::Update => manager.update_instructions(),
+            PluginModalKind::Move => manager.move_instructions(),
         };
 
         // Read session metadata from the originating terminal before creating the instructions pane.
@@ -23384,7 +23385,9 @@ impl TypedActionView for Workspace {
             }
             #[cfg(debug_assertions)]
             InstallOpenCodeWarpPlugin => {
-                let message = set_opencode_warp_plugin("github:warpdotdev/opencode-warp-internal");
+                let message = set_opencode_warp_plugin(
+                    crate::terminal::cli_agent_sessions::plugin_manager::opencode::PLUGIN_SPEC,
+                );
                 self.toast_stack.update(ctx, |view, ctx| {
                     view.add_ephemeral_toast(DismissibleToast::default(message), ctx);
                 });
