@@ -1159,8 +1159,8 @@ usage-test-macos:
       - appci-out/*/run/results.json
       - appci-out/*/run/summary.md
       - appci-out/*/run/junit.xml
-      - appci-out/*/run/shots/
-      - appci-out/*/run/logs/
+      - appci-out/*/run_slim/shots/
+      - appci-out/*/run_slim/logs/
       - appci-out/*/session.log
       - appci-out/*/results.jsonl
       - appci-out/*/run/results.jsonl
@@ -1189,6 +1189,7 @@ app-test-linux-wayland:
   after_script:
     - script/realapp/teardown.sh "$CI_PROJECT_DIR/appci-out/wayland" "$CI_PROJECT_DIR/appci-out/xwayland"
     - python3 script/ci/results_scrub.py --tree appci-out   # #1516: job artifacts are scrubbed too, not just the committed copy
+    - for d in appci-out/*/run; do [ -d "$d" ] && python3 script/ci/slim_appci_run.py "$d"; done   # r18u8: full shots hit 413 Payload Too Large
 
 # Private Xvfb (software GL), xdotool: the original X11 path.
 app-test-linux-x11:
@@ -1206,6 +1207,7 @@ app-test-linux-x11:
   after_script:
     - script/realapp/teardown.sh "$CI_PROJECT_DIR/appci-out/x11"
     - python3 script/ci/results_scrub.py --tree appci-out   # #1516: job artifacts are scrubbed too, not just the committed copy
+    - for d in appci-out/*/run; do [ -d "$d" ] && python3 script/ci/slim_appci_run.py "$d"; done   # r18u8: full shots hit 413 Payload Too Large
 
 # Mac runner. Needs a GUI (Aqua) session for gitrunner plus Accessibility + Screen Recording for the job's process
 # chain; the script probes that first and fails with exit 3 and the list of grants for the owner.
@@ -1226,6 +1228,7 @@ app-test-macos:
   after_script:
     - script/realapp/teardown.sh "$CI_PROJECT_DIR/appci-out/macos"
     - export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"; python3 script/ci/results_scrub.py --tree appci-out   # #1516
+    - export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"; python3 script/ci/slim_appci_run.py appci-out/macos/run   # r18u8: 413 Payload Too Large
   artifacts:
     name: appci-macos
     when: always
@@ -1234,8 +1237,8 @@ app-test-macos:
       - appci-out/macos/run/results.json
       - appci-out/macos/run/summary.md
       - appci-out/macos/run/junit.xml
-      - appci-out/macos/run/shots/
-      - appci-out/macos/run/logs/
+      - appci-out/macos/run_slim/shots/
+      - appci-out/macos/run_slim/logs/
       - appci-out/macos/NEEDS_OWNER.txt
       - appci-out/reused_build.json
     reports:
@@ -1265,6 +1268,7 @@ app-test-windows:
   after_script:
     - .\script\realapp\windows\ci\after_job.ps1 -Out appci-out\windows
     - '$py = Join-Path $env:LOCALAPPDATA "phosphor-ci\python312\python.exe"; if (Test-Path $py) { & $py script\ci\results_scrub.py --tree appci-out } else { Write-Host "results_scrub: VM python missing; artifacts NOT scrubbed" }'   # #1516
+    - '$py = Join-Path $env:LOCALAPPDATA "phosphor-ci\python312\python.exe"; if (Test-Path $py) { & $py script\ci\slim_appci_run.py appci-out\windows\run } else { Write-Host "slim: VM python missing; artifacts NOT slimmed" }'   # r18u8: 413 Payload Too Large
   artifacts:
     name: appci-windows
     when: always
@@ -1273,8 +1277,8 @@ app-test-windows:
       - appci-out/windows/run/results.json
       - appci-out/windows/run/summary.md
       - appci-out/windows/run/junit.xml
-      - appci-out/windows/run/shots/
-      - appci-out/windows/run/logs/
+      - appci-out/windows/run_slim/shots/
+      - appci-out/windows/run_slim/logs/
       - appci-out/windows/run/inject.log
       - appci-out/windows/install.log
       - appci-out/reused_build.json
@@ -1288,6 +1292,43 @@ app-test-windows:
 # jobs API with CI_JOB_TOKEN (script/ci/fetch_build.{sh,ps1}). Required play-time variable APPCI_BUILD_JOB_ID; the job
 # fails loudly without it or when the fetch fails (expired artifacts, 403), and records the tested build in results.json.
 # ---------------------------------------------------------------------------
+# Re-upload an app-test run that already finished but whose artifacts were rejected (r18u8: 413 Payload
+# Too Large). GIT_STRATEGY none: no fetch, no clean, so the previous job's appci-out is still there.
+# Manual, play it on the SAME runner right after the failed upload, before any other job checks out.
+.collect_run:
+  stage: apptest
+  when: manual
+  allow_failure: true
+  variables:
+    GIT_STRATEGY: none
+  timeout: 30m
+collect-macos-run:
+  extends: .collect_run
+  tags: [Mac]
+  resource_group: mac-gui
+  script:
+    # The checkout is the PREVIOUS job's commit, which may predate the script: fetch it for this commit (public repo).
+    - curl -fsSL "https://gitlab.com/winters-phosphor/phosphor/-/raw/$CI_COMMIT_SHA/script/ci/slim_appci_run.py" -o slim_appci_run.py
+    - export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"; ls -d appci-out/macos/run && python3 slim_appci_run.py appci-out/macos/run
+  artifacts:
+    name: appci-macos-collected
+    when: always
+    expire_in: 7 days
+    paths:
+      - appci-out/macos/run_slim/
+collect-windows-run:
+  extends: [.windows_job, .collect_run]
+  resource_group: windows-gui
+  script:
+    - 'Invoke-WebRequest -UseBasicParsing -Uri "https://gitlab.com/winters-phosphor/phosphor/-/raw/$env:CI_COMMIT_SHA/script/ci/slim_appci_run.py" -OutFile slim_appci_run.py'
+    - '$py = Join-Path $env:LOCALAPPDATA "phosphor-ci\python312\python.exe"; & $py slim_appci_run.py appci-out\windows\run'
+  artifacts:
+    name: appci-windows-collected
+    when: always
+    expire_in: 7 days
+    paths:
+      - appci-out/windows/run_slim/
+
 app-test-linux-wayland-reuse:
   extends: app-test-linux-wayland
   needs: []
@@ -1297,6 +1338,7 @@ app-test-linux-wayland-reuse:
     - python3 script/ci/record_reuse.py
     - script/realapp/teardown.sh "$CI_PROJECT_DIR/appci-out/wayland" "$CI_PROJECT_DIR/appci-out/xwayland"
     - python3 script/ci/results_scrub.py --tree appci-out   # #1516: job artifacts are scrubbed too, not just the committed copy
+    - for d in appci-out/*/run; do [ -d "$d" ] && python3 script/ci/slim_appci_run.py "$d"; done   # r18u8: full shots hit 413 Payload Too Large
 
 app-test-linux-x11-reuse:
   extends: app-test-linux-x11
@@ -1307,6 +1349,7 @@ app-test-linux-x11-reuse:
     - python3 script/ci/record_reuse.py
     - script/realapp/teardown.sh "$CI_PROJECT_DIR/appci-out/x11"
     - python3 script/ci/results_scrub.py --tree appci-out   # #1516: job artifacts are scrubbed too, not just the committed copy
+    - for d in appci-out/*/run; do [ -d "$d" ] && python3 script/ci/slim_appci_run.py "$d"; done   # r18u8: full shots hit 413 Payload Too Large
 
 app-test-macos-reuse:
   extends: app-test-macos
@@ -1318,6 +1361,7 @@ app-test-macos-reuse:
     - export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"; python3 script/ci/record_reuse.py
     - script/realapp/teardown.sh "$CI_PROJECT_DIR/appci-out/macos"
     - export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"; python3 script/ci/results_scrub.py --tree appci-out   # #1516
+    - export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"; python3 script/ci/slim_appci_run.py appci-out/macos/run   # r18u8: 413 Payload Too Large
 
 app-test-windows-reuse:
   extends: app-test-windows
@@ -1332,6 +1376,7 @@ app-test-windows-reuse:
     - .\script\ci\fetch_build.ps1 -Record
     - .\script\realapp\windows\ci\after_job.ps1 -Out appci-out\windows
     - '$py = Join-Path $env:LOCALAPPDATA "phosphor-ci\python312\python.exe"; if (Test-Path $py) { & $py script\ci\results_scrub.py --tree appci-out } else { Write-Host "results_scrub: VM python missing; artifacts NOT scrubbed" }'   # #1516
+    - '$py = Join-Path $env:LOCALAPPDATA "phosphor-ci\python312\python.exe"; if (Test-Path $py) { & $py script\ci\slim_appci_run.py appci-out\windows\run } else { Write-Host "slim: VM python missing; artifacts NOT slimmed" }'   # r18u8: 413 Payload Too Large
 
 # ===========================================================================
 # Release pipeline (ported from .github/workflows/phosphor_release.yml).

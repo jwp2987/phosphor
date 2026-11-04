@@ -1046,6 +1046,13 @@ adjacent plain-text keys (every byte >= 0x20, `is_plain_key_text` in `local_tty/
 dropped; elsewhere: one write, typed order) and `view_test.rs` `a_deferred_enter_gate_release_on_conpty_writes_one_key_per_write`
 (`ls`, `\r`, `x` held behind the gate and released: ConPTY writes `ls` / `\r` / `x`, otherwise one `ls\rx`).
 
+**App-test artifacts are slimmed before upload (r18u8).** The macOS run's 467 PNG shots + 102 logs were rejected by GitLab
+(`413 Payload Too Large`) and the run's evidence was lost. Every app-test job's `after_script` now runs `script/ci/slim_appci_run.py`
+on its run dir, which writes `run_slim/` (shots as JPEG q60 at most 1600 px via Pillow or macOS `sips`, logs over 16 MiB gzipped,
+results/summary/junit as is), and the artifacts are taken from `run_slim/`. When an upload still fails, play `collect-macos-run` /
+`collect-windows-run` (manual, `GIT_STRATEGY: none`, same resource group) on that runner BEFORE any other job checks out there: it
+re-slims the run left on disk and uploads it.
+
 ### 2.14 Coverage-gap cases (`appci/cases_coverage_b.py`, #1542-#1548, #1460, #1463)
 
 Full tier only (none is in `SMOKE`). Same rules as 3.1: exact bytes from `rec.log` / the app log's `hop=enter_begin` line, 10-25 ms/key, instant Enter, a screenshot per step.
