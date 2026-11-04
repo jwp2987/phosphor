@@ -280,6 +280,10 @@ fn hostile_sources() -> Vec<String> {
         "graph TD\n".to_string() + &"A".repeat(100_000),
         format!("graph TD\nA[{}] --> B\n", "x".repeat(50_000)),
         "graph TD\n".to_string() + &"subgraph s\n".repeat(200) + "A --> B\n" + &"end\n".repeat(200),
+        // #1622: a subgraph id reused inside itself, never closed (hung the renderer), and an
+        // A > B > A reuse (overflowed the renderer's stack).
+        "flowchart LR\n".to_string() + &"subgraph Backend\n  N --> B\n".repeat(48),
+        "flowchart LR\n".to_string() + &"subgraph A\n  X\nsubgraph B\n  Y\n".repeat(12),
         "sequenceDiagram\n".to_string() + &"A->>B: m\n".repeat(2000),
         "pie\n".to_string() + &"\"k\" : 1\n".repeat(2000),
         "\0\0\0".to_string(),
@@ -404,4 +408,26 @@ fn large_sequence_diagram_renders_within_bound() {
     let svg = app_render(&src).expect("400-message sequence renders");
     assert!(text_labels(&svg).iter().any(|l| l.contains("message 199")));
     assert!(start.elapsed() < Duration::from_secs(60));
+}
+
+/// #1622: two nested `subgraph Backend` blocks, left unclosed by a typo (`nd` for `end`), made
+/// the renderer loop forever (the inner one became its own parent); the fuzz target timed out
+/// and the app's 8 s worker budget (#1479) was all that stopped it. It now renders in
+/// milliseconds. The bound sits well under the worker budget, so a regression fails here as a
+/// timeout rather than passing as the budget's error.
+#[test]
+fn issue_1622_unclosed_subgraph_reuse_renders_quickly() {
+    let src = fixture("issue_1622_unclosed_subgraph_reuse.mmd");
+    let start = Instant::now();
+    let svg = app_render(&src).expect("the #1622 flowchart renders");
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "#1622 flowchart took {elapsed:?}"
+    );
+    assert!(is_nonblank_svg(&svg));
+    let labels = text_labels(&svg);
+    for want in ["Client App", "API Gateway", "Auth", "Backend"] {
+        assert!(labels.iter().any(|l| l == want), "label {want} missing");
+    }
 }
