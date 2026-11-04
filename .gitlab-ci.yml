@@ -402,7 +402,7 @@ test-windows:
     WIN_TEST_FILTER: "test(conpty) or test(windows) or test(pwsh) or test(powershell)"
     WIN_TEST_FULL: "0"
   script:
-    - foreach ($t in "cargo","rustc","perl","cmake","cargo-nextest") { if (-not (Get-Command $t -ErrorAction SilentlyContinue)) { Write-Error "$t is missing on this runner; install it by hand (cargo-nextest: cargo install cargo-nextest --locked); not done automatically"; exit 1 } }
+    - foreach ($t in "cargo","rustc","perl","cmake","cargo-nextest") { if (-not (Get-Command $t -ErrorAction SilentlyContinue)) { Write-Error "$t is missing on this runner; install it by hand (cargo-nextest via cargo install cargo-nextest --locked); not done automatically"; exit 1 } }
     - if (-not (Test-Path "$env:PROTOC")) { Write-Error "PROTOC is not set to an existing protoc.exe on this runner"; exit 1 }
     - |
       $filter = @(); if ($env:WIN_TEST_FULL -ne "1" -and $env:WIN_TEST_FILTER) { $filter = @("-E", $env:WIN_TEST_FILTER) }
