@@ -2415,7 +2415,7 @@ impl AppContext {
         keystroke: &Keystroke,
         is_composing: bool,
     ) -> Result<bool> {
-        bump_key_dispatch_seq();
+        let dispatch_seq = bump_key_dispatch_seq();
         // #1482: an Enter that dies somewhere in the keystroke matcher leaves no `keydown` line, so
         // every step of its walk is logged.
         let is_enter = matches!(keystroke.key.as_str(), "enter" | "numpadenter");
@@ -2484,6 +2484,23 @@ impl AppContext {
                         crate::input_order::log_enter("core_enter", "action_handled", || {
                             format!("step={i} action_type={action_type_name} handled={handled}")
                         });
+                    } else if handled {
+                        // #1127: a key a binding takes never reaches the `keydown` line (that is
+                        // logged on the unbound path), so a typed key a binding swallowed looked
+                        // like a key the app never received. Named here, with the action.
+                        let action_ref: &dyn Action = action.as_ref();
+                        let action_type_name = action_ref.type_name();
+                        crate::input_order::log_hop("keydown_keybound", || {
+                            format!(
+                                "dispatch_seq={dispatch_seq} key={} ctrl={} alt={} shift={} \
+                                 cmd={} step={i} action_type={action_type_name}",
+                                crate::input_order::describe_key(&keystroke.key),
+                                keystroke.ctrl,
+                                keystroke.alt,
+                                keystroke.shift,
+                                keystroke.cmd
+                            )
+                        });
                     }
                     handled
                 }
@@ -2501,6 +2518,20 @@ impl AppContext {
         if is_enter {
             crate::input_order::log_enter("core_enter", "dispatch_result", || {
                 format!("handled={pending} pending={pending}")
+            });
+        } else if pending {
+            // #1127: a key taken as the first of a pending multi-key binding is consumed here and
+            // never reaches the `keydown` line either.
+            crate::input_order::log_hop("keydown_keybound", || {
+                format!(
+                    "dispatch_seq={dispatch_seq} key={} ctrl={} alt={} shift={} cmd={} \
+                     pending_chord=true",
+                    crate::input_order::describe_key(&keystroke.key),
+                    keystroke.ctrl,
+                    keystroke.alt,
+                    keystroke.shift,
+                    keystroke.cmd
+                )
             });
         }
         Ok(pending)

@@ -4606,6 +4606,15 @@ impl PaneGroup {
 
         // If this is a parent with child agents, discard the children first.
         if let Some(terminal_view) = self.terminal_view_from_pane_id(pane_id, ctx) {
+            // #1290: an agent tab vanished in the ssh matrix with its approval card pending and no
+            // close reason in the log. A close that takes a pending card with it is named here.
+            // Only a log line: `try_as_ref`, so a view mid-update can never make it panic.
+            if terminal_view
+                .try_as_ref(ctx)
+                .is_some_and(|view| view.has_pending_agent_action(ctx))
+            {
+                log::warn!("Closing pane {pane_id:?} while its agent approval card is pending");
+            }
             self.remove_child_agent_panes(terminal_view.id(), ctx);
         }
 

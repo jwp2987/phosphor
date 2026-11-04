@@ -4184,6 +4184,77 @@ fn an_enter_typed_into_an_ssh_is_delivered_by_the_foreground_facts_not_a_flag() 
     assert_eq!(local.on_user_bytes(b"\r"), UserBytesRoute::Held);
 }
 
+/// #1615 (measurement only): an Enter delivered because the group in front is not the sampled shell
+/// (a warpified ssh's remote shell, an inner shell) while a line is unanswered is followed through
+/// the hooks after it, so a run can tell the remote #933 race (the delivered line ran as a shell
+/// command at the next prompt) from an Enter the running command took. No decision changes: the
+/// Enter is delivered, no hold, no timer.
+#[test]
+fn an_enter_delivered_past_an_unsampled_group_is_followed_through_the_next_hooks() {
+    // The remote #933 shape: the remote command ends, its Precmd is on its way, the user's line
+    // is delivered and the remote shell then runs it itself.
+    let mut remote = seq_after_submit(ShellPromptFact::Unknown);
+    type_and_flush(&mut remote, b"foo");
+    assert!(
+        !remote.follows_unsampled_enter(),
+        "only an Enter is followed"
+    );
+    assert_eq!(remote.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
+    remote.on_user_write_flushed();
+    assert_eq!(remote.take_young_hold_started(), None, "no hold, no timer");
+    assert!(remote.follows_unsampled_enter());
+    remote.on_precmd();
+    assert!(
+        remote.follows_unsampled_enter(),
+        "the Precmd after the Enter is noted, the line's fate is the next hook's"
+    );
+    remote.on_preexec(true);
+    assert!(
+        !remote.follows_unsampled_enter(),
+        "settled: the delivered line ran as a shell command"
+    );
+
+    // The running command took the Enter: its Precmd, then the next prompt's Precmd with no
+    // command between, settles it.
+    let mut consumed = seq_after_submit(ShellPromptFact::Unknown);
+    type_and_flush(&mut consumed, b"y");
+    type_and_flush(&mut consumed, b"\r");
+    assert!(consumed.follows_unsampled_enter());
+    consumed.on_precmd();
+    consumed.on_precmd();
+    assert!(!consumed.follows_unsampled_enter());
+
+    // The editor's next command settles it as well.
+    let mut next = seq_after_submit(ShellPromptFact::Unknown);
+    type_and_flush(&mut next, b"y");
+    type_and_flush(&mut next, b"\r");
+    assert!(next.follows_unsampled_enter());
+    next.on_command_written();
+    assert!(!next.follows_unsampled_enter());
+
+    // ... and a new session (the remote shell of the ssh the Enter was typed into).
+    let mut session = seq_after_submit(ShellPromptFact::Unknown);
+    type_and_flush(&mut session, b"y");
+    type_and_flush(&mut session, b"\r");
+    assert!(session.follows_unsampled_enter());
+    session.on_new_session();
+    assert!(!session.follows_unsampled_enter());
+
+    // Not followed: an Enter on an empty line, a hold the sample decides (the shell's own line
+    // editor reads), and a platform that samples nothing (its window hold decides).
+    let mut empty = seq_after_submit(ShellPromptFact::Unknown);
+    assert_eq!(empty.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
+    assert!(!empty.follows_unsampled_enter());
+    let mut local = seq_after_submit(ShellPromptFact::LineEditorReading);
+    type_and_flush(&mut local, b"foo");
+    local.on_user_bytes(b"\r");
+    assert!(!local.follows_unsampled_enter());
+    let mut unsampled = young_after_submit();
+    type_and_flush(&mut unsampled, b"foo");
+    assert_eq!(unsampled.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    assert!(!unsampled.follows_unsampled_enter());
+}
+
 // ---- #1614: the young hold engages on positive evidence and names its release -----------------
 
 /// The macOS r18e4 `read_x` shape: `read x` was written, the token line's Enter went to the pty and
