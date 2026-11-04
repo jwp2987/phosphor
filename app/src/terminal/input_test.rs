@@ -7975,6 +7975,15 @@ fn test_enter_on_oversized_buffer_waits_for_its_background_verdict_and_runs_the_
                 "the Enter started the classification job"
             );
         });
+        // The route is what this test proves, not the box's speed: the wall-clock give-up nets
+        // (the 100 ms large-paste floor, the backstop) are disarmed, so a loaded box cannot hand
+        // the line back before its verdict lands (r18u19). The give-up has its own test below.
+        input.update(&mut app, |input, _| input.disarm_hold_give_ups_for_test());
+        wait_until(&app, |app| {
+            input.read(app, |input, _| input.verdict_wait.is_none())
+        })
+        .await;
+        // As long as before for anything the submit started (a second submit included) to land.
         warpui::r#async::Timer::after(Duration::from_millis(500)).await;
         assert_eq!(
             executed.borrow().as_slice(),
@@ -7995,11 +8004,15 @@ fn test_enter_on_oversized_buffer_waits_for_its_background_verdict_and_runs_the_
 /// #1174 -> #1604: a 21k-char single-line paste of words is over the parse cap (chars and tokens),
 /// so no completer parse runs; the Enter still gets a verdict, from the routing rules on the text
 /// in the background, and is never swallowed. The text reads as a request to the agent, so in
-/// agent mode it goes to the agent, once, and never to the shell; the Enter is released within
-/// the budget the text's size earns it.
+/// agent mode it goes to the agent, once, and never to the shell; the Enter's give-up budget is
+/// the one the text's size earns it (the large-paste floor), and the Enter is released by the
+/// verdict itself. The give-up nets are disarmed: they are wall-clock, and on a loaded box the
+/// job overran the floor (r18u19, 122 ms) and the app rightly handed the paste back, which is
+/// `test_second_enter_after_a_give_up_on_an_over_cap_shell_line_runs_it_in_the_shell`'s case.
 #[test]
 fn test_enter_on_20k_char_paste_is_classified_without_a_parse_and_never_swallowed() {
     use crate::ai::blocklist::InputConfig;
+    use crate::ai::blocklist::input_model::LARGE_PASTE_VERDICT_FLOOR;
 
     App::test((), |mut app| async move {
         let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
@@ -8060,13 +8073,25 @@ fn test_enter_on_20k_char_paste_is_classified_without_a_parse_and_never_swallowe
                 "no completer parse for a buffer over the parse cap"
             );
         });
-        input.update(&mut app, |input, ctx| input.input_enter(ctx));
-        input.read(&app, |input, _| {
-            assert!(
-                input.verdict_wait.is_some(),
-                "the Enter waits for the background verdict"
+        input.update(&mut app, |input, ctx| {
+            input.input_enter(ctx);
+            let wait = input
+                .verdict_wait
+                .as_ref()
+                .expect("the Enter waits for the background verdict");
+            assert_eq!(
+                wait.hold.compute_cap(wait.text.len()),
+                LARGE_PASTE_VERDICT_FLOOR,
+                "a 21 KB paste's Enter allows the classifier the large-paste floor"
             );
+            // The route is what this test proves, not the box's speed (see the doc comment).
+            input.disarm_hold_give_ups_for_test();
         });
+        wait_until(&app, |app| {
+            input.read(app, |input, _| input.verdict_wait.is_none())
+        })
+        .await;
+        // As long as before for anything the submit started (a second submit included) to land.
         warpui::r#async::Timer::after(Duration::from_millis(500)).await;
         assert!(
             executed.borrow().is_empty(),
@@ -13920,7 +13945,18 @@ fn ready_paste_then_enter_run(text: String) -> ReadyPasteOutcome {
                 ctx,
             );
             input.input_enter(ctx);
+            // The verdict's route is what these cases prove, not the box's speed: a held Enter's
+            // wall-clock give-up nets are disarmed, so a loaded box cannot hand the paste back
+            // before its verdict lands (r18u19). Lines the Enter-time rules decide never wait.
+            input.disarm_hold_give_ups_for_test();
         });
+        wait_until(&app, |app| {
+            input.read(app, |input, ctx| {
+                input.verdict_wait.is_none() && !input.detection_pending_for_buffer(ctx)
+            })
+        })
+        .await;
+        // As long as before for anything the submit started (a second submit included) to land.
         warpui::r#async::Timer::after(Duration::from_millis(500)).await;
         let (input_type, last_enter_submitted_ai_query, released) =
             input.read(&app, |input, ctx| {
@@ -14630,11 +14666,15 @@ fn test_enter_queue_keys_typed_behind_a_verdict_held_enter_keep_order_at_10ms_pe
         });
 
         // The classification job is parked on the gate while it counts as running, so on the real
-        // clock its compute would reach the cap during the typing below and submit the Enter by
-        // itself. Give the wait an idle clock that has spent nothing: the cap timer re-checks it,
-        // finds it not running, and leaves the wait to the explicit give-up further down.
+        // clock its compute would reach the cap during the typing below and give the Enter up by
+        // itself; and the 250 ms backstop, armed at the Enter, is wall-clock too: on Windows the
+        // 10 ms sleeps below round up to the ~15.6 ms timer tick, and in r18u19 it fired while
+        // the test was still typing, handing everything back before the stall's check. Both nets
+        // are disarmed (an idle clock, a new watch epoch), so the wait is left to the explicit
+        // give-up further down.
         input.update(&mut app, |input, _| {
-            input.verdict_wait.as_mut().expect("waiting").compute = ComputeClock::default();
+            assert!(input.verdict_wait.is_some(), "waiting");
+            input.disarm_hold_give_ups_for_test();
         });
 
         // Typed straight after the Enter at 10 ms per key, an Enter, then more.
