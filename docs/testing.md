@@ -194,7 +194,7 @@ pin protocol behaviour. Skips are reported as SKIPPED, never silent. A Skip rais
 
 | script | checks |
 |---|---|
-| `test_bash_bootstrap_nounset`, `test_zsh_bootstrap_strict_options` | hooks survive `set -u` / `err_return` / failing user precmd (#825, #836, #844); a detached HEAD under strict options reports git's hash every prompt (#1616); zsh's `LineEditorReading` marker carries the right `typed_text_literal` for default/vi bindings, magic-space, a redefined self-insert and a binding added at a prompt (#1606) |
+| `test_bash_bootstrap_nounset`, `test_zsh_bootstrap_strict_options` | hooks survive `set -u` / `err_return` / failing user precmd (#825, #836, #844); a detached HEAD under strict options reports git's hash every prompt (#1616); zsh's `LineEditorReading` marker carries the right `typed_text_literal` for default/vi bindings, magic-space, a redefined self-insert and a binding added at a prompt (#1606); the raw and wrapped bytes of one line run the same command, also with keys bound by a `sched` job after zle-line-init (#1606) |
 | `test_fish_bootstrap` | fish hooks fire end to end in a pty (#829, #879) |
 | `test_bootstrap_hook_equivalence` (bash/zsh/fish), `test_nu_bootstrap_hook_equivalence`, `test_pwsh_hook_equivalence` (+ `testdata/pwsh_hooks_golden.json`) | fork-free hook helpers emit byte-identical DCS payloads to the old forking code (#1170, #1233, #1231); a detached HEAD runs git once per directory and HEAD commit, a moved HEAD is seen at the next prompt, `PHOSPHOR_GIT_HEAD_CACHE=0` restores git per prompt (#1616) |
 | `test_bash_bootstrap_builtins` | fork-free `sort -V`/os-release/`shopt` replacements match the commands (#1164) |
@@ -711,6 +711,9 @@ budget, previous build, baseline, verdict, n).
   batch above compares raw with raw (expect ~0); `PHOSPHOR_ENTER_BRACKETED_ALWAYS=1` restores the wrapper to measure the old path. Unit
   tests: `pty_controller_enter_raw_tests.rs` (exact bytes in both `DestinationMode`s, the predicate, the reasons, the kill switch),
   `terminal_model_test.rs` (the marker flag's lifetime) and `ansi/mod_test.rs` (the marker field); self-test `g11_enter_submit_paths`.
+  `script/test_zsh_bootstrap_strict_options` drives a real zsh: the marker per binding set, and end to end the raw and the wrapped
+  bytes of one line must run exactly that line (default, vi, keys bound by a `sched` job after zle-line-init; `bindkey '^Pe'` and
+  startup magic-space turn the marker off). The `^P` chord reads a vouched raw line in the `__warp_literal` keymap.
 - **Shell-side split for bash/zsh panes (#1492), opt-in.** The appci bash rc appends to `PS0` (`PS0+=`, so a system PS0 is kept) a
   no-fork record of when readline accepted the line (`$__pa_lf`, integer microseconds, bash >= 5.0; the zsh rc already records
   zle-line-finish). With `APPCI_ENTER_SPLIT=1`, in a Git Bash pane or a Linux pane identified as bash/zsh, the stamp line becomes

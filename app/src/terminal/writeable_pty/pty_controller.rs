@@ -2601,6 +2601,14 @@ impl<T: EventLoopSender> PtyController<T> {
             PtyWrite::AgentInput { bytes, mode } => {
                 let decorated_bytes =
                     mode.decorate_bytes(bytes.into_owned(), self.is_bracketed_paste_enabled);
+                // #1606: as for user bytes above; a Line-mode write ends in the CR it adds.
+                if decorated_bytes
+                    .iter()
+                    .any(|byte| matches!(byte, b'\r' | b'\n' | 0x03 | 0x04))
+                {
+                    self.line_editor_types_literally
+                        .store(false, std::sync::atomic::Ordering::SeqCst);
+                }
                 (decorated_bytes.into(), false, None, false)
             }
             PtyWrite::Bytes { bytes } | PtyWrite::PasteBytes { bytes } => {
@@ -2916,10 +2924,11 @@ pub(crate) const RAW_SUBMIT_MAX_BYTES: usize = 1000;
 /// #1606: whether `line` may be typed into a line editor key by key, with the same result as
 /// pasting it: one line (no CR or LF) of printable ASCII (0x20..=0x7e: no control byte, Tab (it
 /// completes), ESC or DEL, and nothing over 0x7f), at most [`RAW_SUBMIT_MAX_BYTES`], not empty
-/// (an empty command is typed as is anyway). History characters are kept out as well: no `!`
-/// and no leading `^`, which a user's `magic-space`-style binding would expand while it is typed.
-/// That the line editor inserts printable bytes as themselves is the shell's to say (zsh's
-/// `typed_text_literal`); this looks at the text only.
+/// (an empty command is typed as is anyway). History characters are kept out as well, as cheap
+/// extra margin: no `!` and no leading `^`. Bindings such as magic-space are not this
+/// predicate's business: that the line editor inserts printable bytes as themselves is the
+/// shell's to say (zsh's `typed_text_literal` binding check, then the literal keymap its `^P`
+/// chord enters); this looks at the text only.
 pub(crate) fn line_is_plain_for_raw_submit(line: &str) -> bool {
     !line.is_empty()
         && line.len() <= RAW_SUBMIT_MAX_BYTES

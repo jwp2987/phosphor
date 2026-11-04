@@ -328,6 +328,34 @@ fn a_line_ending_user_write_uses_up_the_marker() {
                 vec![raw_off_windows(b"\x10ls\n", "ls")],
                 "{mode:?}"
             );
+
+            // An agent's Line-mode write ends in the Enter it adds; a Raw-mode one without an
+            // Enter does not end the line.
+            for (agent_mode, ends_line) in [
+                (AIAgentPtyWriteMode::Line, true),
+                (AIAgentPtyWriteMode::Raw, false),
+            ] {
+                rig.mark(true);
+                rig.controller.update(&mut app, |controller, ctx| {
+                    controller.send_write_to_event_loop(
+                        PtyWrite::AgentInput {
+                            bytes: Cow::Owned(b"y".to_vec()),
+                            mode: agent_mode,
+                        },
+                        ctx,
+                    );
+                });
+                let expected = if ends_line {
+                    wrapped("ls", ShellType::Zsh)
+                } else {
+                    raw_off_windows(b"\x10ls\n", "ls")
+                };
+                assert_eq!(
+                    rig.submit(&mut app, "ls", ShellType::Zsh, None),
+                    vec![expected],
+                    "{mode:?} {agent_mode:?}"
+                );
+            }
         });
     }
 }
