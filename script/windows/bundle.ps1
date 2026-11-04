@@ -291,9 +291,29 @@ if ($SIGN_TOOL_CMD) {
     $ISCC_ARGS += '/DSIGN_TOOL=1'
     $ISCC_ARGS += "/Scodesign=$SIGN_TOOL_CMD"
 }
-& ISCC @ISCC_ARGS
-if (-Not $?) {
-    Write-Error "Failed to build $APP_NAME installer"
+# #1602: ISCC once printed nothing after its last "Compressing:" line for ~1.5 h and the job only
+# ended when it was cancelled. Run it under a watchdog (default 25 min; a good run is ~85 s) so a
+# hang fails the job with a diagnosis, kills the whole ISCC process tree (it may hold
+# Output\PhosphorSetup.exe and block the next build) and does not occupy the Windows VM for hours.
+$ISCC_TIMEOUT_MIN = if ($env:PHOSPHOR_ISCC_TIMEOUT_MIN) { [int]$env:PHOSPHOR_ISCC_TIMEOUT_MIN } else { 25 }
+$isccExe = (Get-Command ISCC -ErrorAction Stop).Source
+$isccQuoted = ($ISCC_ARGS | ForEach-Object { '"' + ($_ -replace '"', '\"') + '"' }) -join ' '
+$isccProc = Start-Process -FilePath $isccExe -ArgumentList $isccQuoted -NoNewWindow -PassThru
+$isccHandle = $isccProc.Handle   # keep the handle so ExitCode is readable after exit
+if (-not $isccProc.WaitForExit($ISCC_TIMEOUT_MIN * 60 * 1000)) {
+    Write-Host "ISCC did not finish within $ISCC_TIMEOUT_MIN min (pid $($isccProc.Id)); diagnosing, then killing the process tree"
+    Get-CimInstance Win32_Process -Filter "ParentProcessId=$($isccProc.Id)" -ErrorAction SilentlyContinue |
+        ForEach-Object { Write-Host ("  child: pid {0} {1}" -f $_.ProcessId, $_.Name) }
+    Get-PSDrive -PSProvider FileSystem | ForEach-Object { Write-Host ("  drive {0}: free {1:N1} GB" -f $_.Name, ($_.Free / 1GB)) }
+    Get-ChildItem "$WINDOWS_INSTALLER_DIR\Output" -ErrorAction SilentlyContinue |
+        ForEach-Object { Write-Host ("  Output\{0} {1} bytes, written {2:o}" -f $_.Name, $_.Length, $_.LastWriteTimeUtc) }
+    & taskkill.exe /PID $isccProc.Id /T /F | Out-Host
+    Write-Error "ISCC hung for more than $ISCC_TIMEOUT_MIN min building the $APP_NAME installer (#1602)"
+    exit 1
+}
+$isccProc.WaitForExit()
+if ($isccProc.ExitCode -ne 0) {
+    Write-Error "Failed to build $APP_NAME installer (ISCC exit $($isccProc.ExitCode))"
     exit 1
 }
 
