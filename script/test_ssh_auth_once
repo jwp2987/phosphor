@@ -15,6 +15,19 @@ This cuts the real `warp_ssh_helper` out of bash_body.sh, zsh_body.sh and fish.s
     for Windows' ssh.exe does before "Failed to connect to new control master") -> the #1551
     fallback still runs the user's plain ssh, exactly once more, with exactly their arguments.
 
+r18u13: the same where $HOME is NOT the passwd home (an isolated CI home deep in a build dir).
+The app used to export the literal `~/.ssh` there ($HOME too long for a socket path); ssh expands
+that `~` from the passwd entry (the fake ssh does the same from $PWHOME) while the wrapper's socket
+test expanded it from $HOME, so the wrapper never saw its own master: a successful login was
+followed by a SECOND login ("ControlSocket ... already exists"; a second passphrase prompt in
+ssh_password_prompt), and a mux failure no longer reached the #1551 fallback. The app now exports
+the passwd home's absolute `.ssh` instead (shell_tests.rs,
+ssh_socket_dir_falls_back_to_the_passwd_home); these cases run the wrapper with that export:
+
+  * login succeeds (`ok`)       -> the wrapper owns its master: ONE `ControlMaster=yes` login,
+    and the session multiplexes over it (`ControlMaster=no ... -t`), no second login;
+  * auth failure / mux failure  -> as above.
+
 Needs python3 and at least one of bash/zsh/fish (missing shells are SKIPPED). No cargo.
 Usage: script/test_ssh_auth_once
 """
@@ -29,18 +42,26 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BOOT = os.path.join(ROOT, "app/assets/bundled/bootstrap")
 
 # Records each non -G call as one line of its arguments. -N (the master) behaves per $MASTER.
+# Like ssh, a leading `~` in ControlPath is the PASSWD home ($PWHOME here), never $HOME.
 FAKE_SSH = r"""#!/bin/sh
-[ "$1" = "-G" ] && { printf 'user u\nhostname h\nport 22\n'; exit 0; }
-printf '%s\n' "$*" >> "$CALLS"
 p=
 for a in "$@"; do case "$a" in ControlPath=*) p="${a#ControlPath=}";; esac; done
+case "$p" in "~"*) p="${PWHOME:-$HOME}${p#\~}";; esac
 case " $* " in
+  *" -G "*) printf 'user u\nhostname h\nport 22\n'
+            [ -n "$p" ] && printf 'controlpath %s\n' "$p"
+            exit 0;;
+esac
+printf '%s\n' "$*" >> "$CALLS"
+case " $* " in
+  *" -O "*) exit 255;;
   *" -N "*)
     case "$MASTER" in
       authfail) echo "user@host: Permission denied (publickey,password)." >&2; exit 255;;
       interrupt) exit 130;;
       muxfail) python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$p"
                echo "Failed to connect to new control master" >&2; exit 255;;
+      ok) python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$p"; exit 0;;
     esac;;
 esac
 exit 0
@@ -53,22 +74,43 @@ SHELLS = [
     ("fish", "fish.sh", "    function warp_ssh_helper", "\n    function ssh\n"),
 ]
 
-# (master behaviour, expected status, expected connecting ssh calls, expected stderr)
+# (master behaviour, $HOME is not the passwd home, expected status, expected connecting ssh calls
+# (None: checked by `owns_master`), expected stderr)
 CASES = [
-    ("authfail", 255, 1, "user@host: Permission denied (publickey,password).\n"),
-    ("interrupt", 130, 1, ""),
-    ("muxfail", 0, 2, "Failed to connect to new control master\n"),
+    ("authfail", False, 255, 1, "user@host: Permission denied (publickey,password).\n"),
+    ("interrupt", False, 130, 1, ""),
+    ("muxfail", False, 0, 2, "Failed to connect to new control master\n"),
+    ("authfail", True, 255, 1, "user@host: Permission denied (publickey,password).\n"),
+    ("muxfail", True, 0, 2, "Failed to connect to new control master\n"),
+    ("ok", True, 0, None, ""),
 ]
 
 
-def run(shell, function, master):
+def owns_master(made):
+    """The wrapper used the master it started: one login (ControlMaster=yes), and a session over
+    it (ControlMaster=no ... -t) -- not a second `ControlMaster=yes` login."""
+    problems = []
+    logins = [c for c in made if "ControlMaster=yes" in c]
+    if len(logins) != 1:
+        problems.append("%d ControlMaster=yes logins, want 1: %r" % (len(logins), logins))
+    if not any("ControlMaster=no" in c and " -t " in " %s " % c for c in made):
+        problems.append("no session over the master (ControlMaster=no ... -t): %r" % [c[:100] for c in made if "ControlMaster" in c])
+    return problems
+
+
+def run(shell, function, master, isolated):
     d = tempfile.mkdtemp(prefix="ssh_auth_once_")
     try:
         ssh = os.path.join(d, "ssh")
         open(ssh, "w").write(FAKE_SSH)
         os.chmod(ssh, os.stat(ssh).st_mode | stat.S_IXUSR)
+        os.mkdir(os.path.join(d, "socks"))
+        # isolated: $HOME is another directory than the passwd home (d); SSH_SOCKET_DIR is the
+        # passwd home's absolute directory, as the app exports it (r18u13).
+        home = os.path.join(d, "home") if isolated else d
+        if isolated:
+            os.mkdir(home)
         socks = os.path.join(d, "socks")
-        os.mkdir(socks)
         calls = os.path.join(d, "calls")
         if shell == "fish":
             prelude = (
@@ -87,7 +129,8 @@ def run(shell, function, master):
         script = "%s\n%s\nwarp_ssh_helper -p 22 user@host\nexit %s" % (prelude, function, status)
         env = dict(os.environ)
         env["PATH"] = d + ":" + env["PATH"]
-        env["HOME"] = d
+        env["HOME"] = home
+        env["PWHOME"] = d
         env["CALLS"] = calls
         env["MASTER"] = master
         r = subprocess.run(argv + [script], env=env, capture_output=True, text=True,
@@ -108,13 +151,15 @@ def main():
         text = open(os.path.join(BOOT, fname)).read()
         a = text.index(start)
         function = text[a : a + text[a:].index(end)]
-        for master, want_rc, want_calls, want_err in CASES:
+        for master, isolated, want_rc, want_calls, want_err in CASES:
             ran += 1
-            rc, made, out, err = run(shell, function, master)
+            rc, made, out, err = run(shell, function, master, isolated)
             problems = []
             if rc != want_rc:
                 problems.append("status %d, want %d" % (rc, want_rc))
-            if len(made) != want_calls:
+            if want_calls is None:
+                problems += owns_master(made)
+            elif len(made) != want_calls:
                 problems.append("%d connecting ssh calls, want %d" % (len(made), want_calls))
             elif want_calls == 2 and made[1] != "-p 22 user@host":
                 problems.append("fallback ssh must carry exactly the user's arguments: %r" % made[1])
@@ -122,7 +167,8 @@ def main():
                 problems.append("first call is not the master: %r" % made[:1])
             if err != want_err or out:
                 problems.append("output changed: stdout %r stderr %r" % (out, err))
-            print("%s %s: %s" % ("FAIL" if problems else "ok  ", shell, master))
+            label = master + (" ($HOME is not the passwd home)" if isolated else "")
+            print("%s %s: %s" % ("FAIL" if problems else "ok  ", shell, label))
             for p in problems:
                 print("     " + p)
             failures += bool(problems)

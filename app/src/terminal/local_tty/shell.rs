@@ -859,12 +859,58 @@ fn absolute_ssh_socket_dir(literal: &str, home: Option<&std::path::Path>) -> Str
     if safe { absolute } else { literal.to_owned() }
 }
 
+/// [`absolute_ssh_socket_dir`] from `home` (the app's `$HOME`), else from `passwd_home` (the
+/// passwd database's home, which is where ssh itself expands a literal `~`).
+///
+/// r18u13: a `$HOME` too long for a socket path (an isolated test home deep in a CI build dir)
+/// used to leave the literal `~/.ssh`. ssh then expanded `~` from the passwd entry while the
+/// wrapper's socket test expanded it from `$HOME`, so the wrapper never saw the master it had just
+/// started: the session ran with `ControlMaster=yes` on the master's live socket ("ControlSocket
+/// ... already exists, disabling multiplexing"), as a SECOND connection that authenticated again
+/// (a second password / passphrase prompt), and the next ssh within `ControlPersist` turned its
+/// own master into a plain background connection that never exits. The passwd home is exactly
+/// the directory ssh used for the literal, so the sockets stay where they were; only the name
+/// becomes absolute, which every reader agrees on.
+///
+/// `passwd_home` is only asked when `home` cannot be used.
+fn absolute_ssh_socket_dir_or_passwd(
+    literal: &str,
+    home: Option<&std::path::Path>,
+    passwd_home: impl FnOnce() -> Option<std::path::PathBuf>,
+) -> String {
+    let dir = absolute_ssh_socket_dir(literal, home);
+    if dir.starts_with('~') {
+        absolute_ssh_socket_dir(literal, passwd_home().as_deref())
+    } else {
+        dir
+    }
+}
+
+/// The current user's home from the passwd database (cached; see `resolve_current_user`).
+#[cfg(unix)]
+fn passwd_home_dir() -> Option<std::path::PathBuf> {
+    super::unix::resolve_current_user()
+        .map(|user| user.dir)
+        .filter(|dir| !dir.is_empty())
+        .map(std::path::PathBuf::from)
+}
+
+#[cfg(not(unix))]
+fn passwd_home_dir() -> Option<std::path::PathBuf> {
+    None
+}
+
 /// The `SSH_SOCKET_DIR` to export to unix shells: [`ssh_socket_dir`] made absolute from the home
-/// the app uses (#1035). The directory is created if missing (ssh does not create the parent of a
-/// ControlPath, and an isolated `$HOME` may have no `.ssh`). A created directory is private (0700),
-/// as ssh itself creates `~/.ssh`; an existing one is left as it is.
+/// the app uses (#1035), or from the passwd home when that one cannot name a socket (r18u13, see
+/// [`absolute_ssh_socket_dir_or_passwd`]). The directory is created if missing (ssh does not create
+/// the parent of a ControlPath, and an isolated `$HOME` may have no `.ssh`). A created directory is
+/// private (0700), as ssh itself creates `~/.ssh`; an existing one is left as it is.
 pub fn ssh_socket_dir_absolute() -> String {
-    let dir = absolute_ssh_socket_dir(&ssh_socket_dir(), dirs::home_dir().as_deref());
+    let dir = absolute_ssh_socket_dir_or_passwd(
+        &ssh_socket_dir(),
+        dirs::home_dir().as_deref(),
+        passwd_home_dir,
+    );
     if dir.starts_with('/') && !std::path::Path::new(&dir).is_dir() {
         let mut builder = std::fs::DirBuilder::new();
         builder.recursive(true);
