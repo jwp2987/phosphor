@@ -255,6 +255,14 @@ pub(crate) trait CliAgentPluginManager: Send + Sync {
     /// When `false`, the footer always opens the manual instructions modal.
     fn can_auto_install(&self) -> bool;
 
+    /// Whether the update chip may run [`Self::update`] itself instead of
+    /// showing the manual instructions. Defaults to [`Self::can_auto_install`];
+    /// an agent can allow a user-requested update while declining unrequested
+    /// installs (the background launch paths ask `can_auto_install`).
+    fn can_auto_update(&self) -> bool {
+        self.can_auto_install()
+    }
+
     /// Whether the Zap notification plugin is installed.
     /// Default returns `false` (no filesystem check).
     fn is_installed(&self) -> bool {

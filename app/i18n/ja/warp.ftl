@@ -2896,11 +2896,11 @@ cli-agent-plugin-gemini-restart-update-note = 更新を有効化するため Gem
 cli-agent-plugin-opencode-install-title = OpenCode 用通知プラグインをインストール
 cli-agent-plugin-opencode-install-subtitle = OpenCode の設定にプラグインを追加し、OpenCode を再起動してください。
 cli-agent-plugin-opencode-open-config-step = opencode.json を開くか作成します。プロジェクトルートまたはグローバル設定パスに配置できます:
-cli-agent-plugin-opencode-add-plugin-step = トップレベル JSON オブジェクトの "plugin" 配列に "@warp-dot-dev/opencode-warp" を追加します:
+cli-agent-plugin-opencode-add-plugin-step = トップレベル JSON オブジェクトの "plugin" 配列にプラグインの git 指定を追加します:
 cli-agent-plugin-opencode-restart-note = プラグインを有効化するため OpenCode を再起動します。
 cli-agent-plugin-opencode-update-title = OpenCode 用通知プラグインを更新
-cli-agent-plugin-opencode-update-subtitle = opencode.json でプラグインを最新バージョンにピン留めします。OpenCode はバージョン指定ごとにプラグインをキャッシュするため、ピンを変更すると再起動時に再取得されます。
-cli-agent-plugin-opencode-replace-plugin-step = "plugin" 配列の既存の "@warp-dot-dev/opencode-warp" エントリを明示的なバージョン指定に置き換えます:
+cli-agent-plugin-opencode-update-subtitle = opencode.json でプラグインを Phosphor のコピーに向け、最新のリリースタグにピン留めします。OpenCode は指定ごとにプラグインをキャッシュするため、ピンを変更すると再起動時にプラグインが再取得されます。
+cli-agent-plugin-opencode-replace-plugin-step = "plugin" 配列の既存の "@warp-dot-dev/opencode-warp" (または古い git) エントリをこの指定に置き換えます:
 cli-agent-plugin-opencode-restart-update-note = 更新されたプラグインを読み込むため OpenCode を再起動します。
 
 # Remaining visible UI strings

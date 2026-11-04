@@ -96,7 +96,7 @@
 # "Warp marketplace", plus the ja/zh forms). It existed to protect the CLI
 # agent notification plugins, which Warp wrote and named (claude-code-warp,
 # codex-warp, gemini-cli-warp, @warp-dot-dev/opencode-warp; Phosphor now
-# fetches the first three from its GitLab copies under winters-phosphor/) and
+# fetches all four from its GitLab copies under winters-phosphor/) and
 # which really do still work in this fork -- they speak the local OSC 777
 # `warp://cli-agent` protocol, not any Warp server. See the DECLINED.md row "CLI
 # agent notification plugins".

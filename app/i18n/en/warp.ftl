@@ -3253,11 +3253,11 @@ cli-agent-plugin-gemini-restart-update-note = Restart Gemini CLI to activate the
 cli-agent-plugin-opencode-install-title = Install Notification Plugin for OpenCode
 cli-agent-plugin-opencode-install-subtitle = Add the plugin to your OpenCode configuration, then restart OpenCode.
 cli-agent-plugin-opencode-open-config-step = Open or create your opencode.json. This can be in your project root, or the global config path:
-cli-agent-plugin-opencode-add-plugin-step = Add "@warp-dot-dev/opencode-warp" to the "plugin" array in the top-level JSON object:
+cli-agent-plugin-opencode-add-plugin-step = Add the plugin's git spec to the "plugin" array in the top-level JSON object:
 cli-agent-plugin-opencode-restart-note = Restart OpenCode to activate the plugin.
 cli-agent-plugin-opencode-update-title = Update Notification Plugin for OpenCode
-cli-agent-plugin-opencode-update-subtitle = Pin the plugin to the latest version in your opencode.json. OpenCode caches plugins per version spec, so changing the pin forces it to re-fetch on restart.
-cli-agent-plugin-opencode-replace-plugin-step = Replace the existing "@warp-dot-dev/opencode-warp" entry in the "plugin" array with the explicit version:
+cli-agent-plugin-opencode-update-subtitle = Point the plugin at Phosphor's copy, pinned to its latest release tag, in your opencode.json. OpenCode caches plugins per spec, so changing the pin makes it fetch the plugin again on restart.
+cli-agent-plugin-opencode-replace-plugin-step = Replace the existing "@warp-dot-dev/opencode-warp" (or older git) entry in the "plugin" array with this spec:
 cli-agent-plugin-opencode-restart-update-note = Restart OpenCode to load the updated plugin.
 
 # Remaining visible UI strings

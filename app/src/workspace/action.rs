@@ -675,7 +675,7 @@ pub enum WorkspaceAction {
     /// Reset the Zap launch modal dismissed state (for debugging)
     #[cfg(debug_assertions)]
     ResetZapLaunchModalState,
-    /// Install the opencode-warp plugin from GitHub into the global opencode config.
+    /// Install the opencode-warp plugin from Phosphor's GitLab copy into the global opencode config.
     #[cfg(debug_assertions)]
     InstallOpenCodeWarpPlugin,
     /// Use a local checkout of the opencode-warp plugin (for testing/development).

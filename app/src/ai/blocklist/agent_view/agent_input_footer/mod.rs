@@ -905,7 +905,7 @@ impl AgentInputFooter {
     }
 
     /// Whether the chip should open the manual instructions modal instead of auto-operating.
-    fn should_use_manual_mode(&self, app: &AppContext) -> bool {
+    fn should_use_manual_mode(&self, chip_kind: PluginChipKind, app: &AppContext) -> bool {
         let sessions_model = CLIAgentSessionsModel::as_ref(app);
         let session = match sessions_model.session(self.terminal_view_id) {
             Some(s) => s,
@@ -919,7 +919,11 @@ impl AgentInputFooter {
         }
 
         if let Some(manager) = plugin_manager_for(session.agent) {
-            if !manager.can_auto_install() {
+            let can_auto = match chip_kind {
+                PluginChipKind::Install => manager.can_auto_install(),
+                PluginChipKind::Update => manager.can_auto_update(),
+            };
+            if !can_auto {
                 return true;
             }
         }
@@ -1279,7 +1283,7 @@ impl AgentInputFooter {
         }
 
         if let Some(chip_kind) = self.plugin_chip_kind(app) {
-            let manual = self.should_use_manual_mode(app);
+            let manual = self.should_use_manual_mode(chip_kind, app);
             let chip = match (chip_kind, manual) {
                 (PluginChipKind::Install, false) => {
                     ChildView::new(&self.install_plugin_button).finish()

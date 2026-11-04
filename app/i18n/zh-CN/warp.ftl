@@ -2901,11 +2901,11 @@ cli-agent-plugin-gemini-restart-update-note = 重启 Gemini CLI 以启用更新�
 cli-agent-plugin-opencode-install-title = 安装 OpenCode 的通知插件
 cli-agent-plugin-opencode-install-subtitle = 将插件加入 OpenCode 配置，然后重启 OpenCode。
 cli-agent-plugin-opencode-open-config-step = 打开或创建你的 opencode.json。它可以位于项目根目录，也可以位于全局配置路径：
-cli-agent-plugin-opencode-add-plugin-step = 将 "@warp-dot-dev/opencode-warp" 添加到顶层 JSON 对象的 "plugin" 数组中：
+cli-agent-plugin-opencode-add-plugin-step = 将插件的 git 规格添加到顶层 JSON 对象的 "plugin" 数组中：
 cli-agent-plugin-opencode-restart-note = 重启 OpenCode 以启用插件。
 cli-agent-plugin-opencode-update-title = 更新 OpenCode 的通知插件
-cli-agent-plugin-opencode-update-subtitle = 在 opencode.json 中将插件固定到最新版本。OpenCode 会按版本规格缓存插件，修改固定版本会强制它在重启时重新拉取。
-cli-agent-plugin-opencode-replace-plugin-step = 将 "plugin" 数组中现有的 "@warp-dot-dev/opencode-warp" 条目替换为显式版本：
+cli-agent-plugin-opencode-update-subtitle = 在 opencode.json 中将插件指向 Phosphor 的副本，并固定到最新发布标签。OpenCode 会按规格缓存插件，修改固定值会让它在重启时重新拉取插件。
+cli-agent-plugin-opencode-replace-plugin-step = 将 "plugin" 数组中现有的 "@warp-dot-dev/opencode-warp"（或旧的 git）条目替换为以下规格：
 cli-agent-plugin-opencode-restart-update-note = 重启 OpenCode 以加载更新后的插件。
 
 # Remaining visible UI strings
