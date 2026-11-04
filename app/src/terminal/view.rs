@@ -12743,6 +12743,20 @@ impl TerminalView {
     /// the pty takes the typed characters, otherwise it submits the editor.
     fn replay_after_deferred_enter(&mut self, ctx: &mut ViewContext<Self>) {
         // The keys wait behind the Enter's queue gate; the events of `settle_enter_queue` close it.
+        if self.input.as_ref(ctx).enter_queue_awaits_pty() {
+            // #1630: the Enter's command is still on its way to the pty controller: this request
+            // is handled in the same flush as the input's `ExecuteCommand`, ahead of the view's
+            // own `ExecuteCommand` (and of the focus change before it, whose drain delivers what a
+            // closed gate let go). Settled now, the keys were routed while the hand-off had not
+            // seen the command and went to the pty raw, ahead of a command the controller then
+            // parked (the PowerShell pipe path waits for the line editor). Decided after that
+            // flush, the controller has taken the command: its `TypeaheadHandoffChanged` settles
+            // the gate first and the keys follow it (`handoff_bytes_after_command`). Not a timer:
+            // the same decision, after the effects queued before it. A gate already settled by
+            // then finds nothing to do.
+            ctx.spawn(async {}, |me, _, ctx| me.settle_enter_queue(ctx));
+            return;
+        }
         self.settle_enter_queue(ctx);
     }
 

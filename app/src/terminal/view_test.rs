@@ -14888,6 +14888,84 @@ fn typeahead_handoff_not_engaged_releases_the_keys_waiting_for_the_route() {
     })
 }
 
+/// #1630: the Enter's own replay request arrives in the flush that carries its command to the pty
+/// controller, ahead of it. Even when the pane's facts already say the pty takes keys (here a
+/// block that is running; at a PowerShell start it was the bootstrap's), that request does not
+/// release the keys typed behind the Enter: they are routed once the controller has taken the
+/// command (its event, simulated here), so they reach the pty after the command, in order.
+fn keys_behind_a_run_enter_follow_its_command_in(mode: DestMode) {
+    App::test((), move |mut app| async move {
+        let _mode = force_dest_mode(mode);
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(false);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            view.model
+                .lock()
+                .simulate_long_running_block("sleep 100", "");
+            view.input.update(ctx, |input, ctx| {
+                input.open_submitted_enter_gate_for_test(
+                    vec![
+                        AfterEnterInput::Text("ls".to_string()),
+                        AfterEnterInput::Enter,
+                    ],
+                    true,
+                    ctx,
+                )
+            });
+            // The Enter has run: its replay request, in the flush its command is still in.
+            view.replay_after_deferred_enter(ctx);
+        });
+        terminal.read(&app, |view, ctx| {
+            assert!(
+                view.input.as_ref(ctx).enter_queue_awaits_pty(),
+                "{mode:?}: the Enter's own request does not release the keys behind it"
+            );
+        });
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "{mode:?}: nothing ahead of the command: {:?}",
+            pty_writes.borrow()
+        );
+        // The controller takes the command (written, or parked behind the line editor): its event.
+        terminal.update(&mut app, |view, ctx| {
+            pty_writes.borrow_mut().push(b"<command>".to_vec());
+            view.settle_enter_queue(ctx);
+        });
+        for _ in 0..200 {
+            let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+            if written.ends_with(b"\r") {
+                break;
+            }
+            warpui::r#async::Timer::after(std::time::Duration::from_millis(5)).await;
+        }
+        let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+        assert_eq!(
+            String::from_utf8_lossy(&written),
+            "<command>ls\r",
+            "{mode:?}: the command first, then the keys typed behind its Enter, once, in order"
+        );
+        terminal.read(&app, |view, ctx| {
+            assert!(
+                !view.input.as_ref(ctx).enter_queue_holds_keys(ctx),
+                "{mode:?}: released"
+            );
+        });
+    })
+}
+
+#[test]
+fn keys_behind_a_run_enter_follow_its_command_legacy() {
+    keys_behind_a_run_enter_follow_its_command_in(DestMode::Legacy);
+}
+
+#[test]
+fn keys_behind_a_run_enter_follow_its_command_table() {
+    keys_behind_a_run_enter_follow_its_command_in(DestMode::Table);
+}
+
 /// Ctrl-D at the prompt with nothing typed would exit the shell; it is not written.
 #[test]
 fn typeahead_handoff_ctrl_d_on_an_empty_shell_line_is_not_written() {
