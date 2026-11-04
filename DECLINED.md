@@ -2779,4 +2779,16 @@ has no ownership event and a timer must never write to a pty, so a window there 
 to `ssh.exe`. Do not reintroduce prompt or question classification, in any form, for the ssh
 connect; the `unterminated_since_gen` fact that remains serves the subshell setup's "the shell
 asks for an answer" rule (#1032) and the ssh ^D rule (#1111), not the typeahead's destination.
+
+**A FAILING ssh behaves like a plain terminal too (owner, 2026-11-04: "I am ok to allow this
+through if that's how iterm would allow it").** Keys typed after ssh owns the tty are in ssh's tty
+queue; if ssh then exits (connect timeout, refused, dropped connection) the local shell reads them
+and the line runs LOCALLY, once, as typed, exactly as in iTerm2 / Terminal.app / xterm. This
+replaces the earlier #983/#1292 rule "a line typed behind a failing ssh is never run locally".
+Do NOT add a tty drain on ssh exit 255 (one was written and withdrawn the same night) or any other
+mechanism that discards or diverts that text: the plain-terminal behaviour is the decision.
+Keys still HELD (typed before ssh owned the tty) are still handed back to the editor as text when
+the window ends without ownership (#1292). The real-app case `ssh_failing_not_local` checks the
+plain-terminal result: the line runs locally exactly once, exactly as typed, and only after the
+ssh failed.
 <!-- markers: sym:ssh_prompt_has_arrived sym:discard_ssh_typeahead_on_prompt sym:discard_held_ssh_typeahead_for_prompt sym:ssh_prompt_is_unmanaged_shell_prompt sym:output_tail_is_shell_prompt sym:StaleBeforePrompt keep:ssh_on_tty_owned keep:tty_is_reading_secret -->

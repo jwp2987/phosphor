@@ -626,8 +626,8 @@ SKIP on macOS/Windows (Cmd-Q is forbidden by the Mac safety rules; the editor op
   never a verdict against a reference measured after Phosphor. Every latency record now carries `per_side` (n and the bootstrap SE of each side's median) next
   to `overhead_se_ms`. `latency_first_key_after_idle` passes `implausible_neg_ms` (`APPCI_IMPLAUSIBLE_NEG_MS`, default 5): Phosphor more than that many ms FASTER than
   Terminal.app beyond 2 SE (r18e0: -23.7 / -36.8 ms) is a mis-measured reference, reported NOREF (`implausible: true`), never PASS.
-- **A pass rests on the claimed evidence.** `Result.unverifiable()` (status `noref`) is used when the evidence is missing. `ssh_failing_not_local` with no `kh_hold_entry`
-  after the first MUSTNOT key is UNVERIFIABLE (the note says whether other `input_order` lines exist, i.e. whether the key trace is on). The trace itself is enabled by
+- **A pass rests on the claimed evidence.** `Result.unverifiable()` (status `noref`) is used when the evidence is missing. (`ssh_failing_not_local` no longer needs a
+  `kh_hold_entry`: since 2026-11-04 a key typed after ssh owns the tty is not held.) The trace itself is enabled by
   `RUST_LOG=warp::input_order=debug` + `WARP_INPUT_ORDER_LOG_TEXT=1`, set by `app.py` (`MacApp.start` passes them through `open --env`, `WindowsApp.env`, Linux `App`).
   `ssh_hanging_host_not_local` polls the ssh client by `-p <port>` and logs ssh first-seen / exit time next to the first and last MUSTNOT key: a line typed after the ssh
   already exited (a refused host) is UNVERIFIABLE (running locally is correct), a line typed while it was alive is judged, and no `kh_hold_*` line after it is UNVERIFIABLE too.
@@ -786,7 +786,7 @@ fails on a real loss or on an extra/doubled key. (4) Injector health (Wayland): 
 still there (sway's keyboard-input count; the holder's own log `<out>/kbd-holder.log`), and if not it restarts one (stderr in `logs/kbd-holder-restart.log`) and
 adds the note `injector died: ... (key loss in this case is the INJECTOR's, not the app's)` to the case, so a dead injector is never read as app key loss.
 
-**`ssh_failing_not_local` (r18d8).** The target is a local TCP listener that accepts and never speaks (`cases.HangingTcpServer`), so the ssh is provably still
+**`ssh_failing_not_local` (r18d8; expectation changed 2026-11-04).** Since the plain-terminal ssh pass-through (DECLINED.md, "A FAILING ssh behaves like a plain terminal too") the case asserts the iTerm2 / plain-terminal result: `MUSTNOT` typed behind the failing ssh runs locally EXACTLY ONCE, exactly as typed, and only after the ssh failed (file mtime >= the failure); no hold hop is expected. Before, it asserted the line never ran locally. The target is a local TCP listener that accepts and never speaks (`cases.HangingTcpServer`), so the ssh is provably still
 CONNECTING (TCP accepted, connection open; ConnectTimeout 6 s) when `MUSTNOT` is typed and fails only afterwards (`Connection timed out during banner
 exchange`). The old `.invalid` host could fail in tens of ms, before the first typed key, when running the line locally is correct. The case fails as a HARNESS
 problem if the ssh was not connecting at that moment, and notes the app's `kh_hold_entry` line for the first MUSTNOT key (`holding=...`, `gate_drops=...`), the

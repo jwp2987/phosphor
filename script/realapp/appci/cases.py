@@ -2160,7 +2160,9 @@ SSH_GATE_RX = re.compile(r"hop=kh_hold_(?:entry|exit)\b|hop=kh_iq_(?:hold|releas
 
 @case("ssh_failing_not_local", order=31, gui=True)
 def c_ssh_fail(ctx, r):
-    """#983/#1292: text typed while an ssh is CONNECTING and then FAILS is never run locally (the app hands it back unexecuted). The target is a local listener
+    """Text typed while an ssh is CONNECTING and then FAILS behaves like a plain terminal (owner decision 2026-11-04: "I am ok to allow this through if that's how
+    iterm would allow it"): the keys went to ssh's tty, so when ssh exits the local shell reads them and the line runs locally ONCE, exactly as typed, and only after
+    the ssh failed. (Before 2026-11-04 the app held the line and handed it back unexecuted, #983/#1292; the plain-terminal ssh pass-through replaced that.) The target is a local listener
     that accepts and never speaks, so the ssh is provably still connecting (TCP accepted, connection open) when the line is typed and fails only after its
     ConnectTimeout; the case checks that proof first (a harness failure if the ssh was not connecting), and logs the app's ssh gate state / release time next to
     the first MUSTNOT key so a pass or a fail is unambiguous."""
@@ -2194,15 +2196,18 @@ def c_ssh_fail(ctx, r):
         r.note("ssh gate at the first MUSTNOT key: %s; first gate release/exit after it: %s; ssh failed (connection closed) %.2f s after typing began; listener-side typing window %.2f s" % (
             ("t=+%.3fs %s" % (first[0] - t_type, first[1]) if first else "no kh_hold_entry logged (app key trace off or rotated)"),
             ("t=+%.3fs %s" % (rel[0][0] - t_type, rel[0][1]) if rel else "none logged"), t_failed - t_type, t_typed - t_type))
-        if not first:
-            alive_trace = bool(ctx.app_hop_lines(re.compile(r"input_order "), t_type - 0.5))
-            r.unverifiable("ssh_failing_not_local: no kh_hold_entry in the app log after the first MUSTNOT key (%s; log %s): the ssh gate was not observed, so \"the line did not run locally\" "
-                           "is not shown to be the app's hold; ssh started +%.2f s before the key, connection closed +%.2f s after typing began" % (
-                               "input_order trace is ON (other lines present) but the gate hop is absent" if alive_trace else "NO input_order lines at all: the key trace is OFF",
-                               ctx.log_path, t_type - t_ssh, t_failed - t_type))
+        # No hold hop is expected: since the 2026-11-04 plain-terminal pass-through a key typed after ssh owns the tty goes straight to it.
         r.check(connecting, "HARNESS: the ssh connection was already closed when MUSTNOT was typed (not connecting): the case proves nothing; ssh gate: %s" % (first[1] if first else "n/a"))
-        r.check(not ctx.lines("sf.txt"), "line typed behind a FAILING ssh ran locally: %r (ssh was connecting when typed: %s; ssh gate at first key: %s)" % (
-            ctx.lines("sf.txt"), connecting, first[1] if first else "not logged"))
+        got = ctx.lines("sf.txt")
+        # Plain-terminal behaviour: exactly one local run of exactly the typed line, after the ssh failed (never lost, doubled or garbled).
+        r.check(got == ["MUSTNOT"], "line typed behind a FAILING ssh: a plain terminal runs it locally exactly once after ssh exits; got %r (ssh was connecting when typed: %s; ssh gate at first key: %s)" % (
+            got, connecting, first[1] if first else "not logged"))
+        try:
+            ran_at = os.path.getmtime(os.path.join(ctx.W, "sf.txt"))
+        except OSError:
+            ran_at = None
+        if ran_at is not None and got:
+            r.check(ran_at >= t_failed - 1.0, "the line ran locally %.2f s BEFORE the ssh failed: it must reach the local shell only after ssh exits" % (t_failed - ran_at))
     finally:
         srv.close()
         ctx.reset()
