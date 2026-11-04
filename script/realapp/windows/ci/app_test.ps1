@@ -12,7 +12,7 @@
 #   * only the PID the Python harness started is ever stopped (it uses taskkill /PID <pid> /T); the GitLab runner process is never touched;
 #   * keys are only sent while Phosphor is the foreground window (the backend's guard), otherwise the case fails instead of typing elsewhere.
 # APPCI_WIN_BAK=<backup dir> tells the Python harness where to write kbd_pre.json (the keyboard snapshot restore.ps1 verifies).
-# Env that selects the run is unchanged: APPCI_TIER (smoke = the shared fix-tier list), APPCI_WIN_SHELLS (default "powershell,gitbash").
+# Env that selects the run is unchanged: APPCI_TIER (smoke = the shared fix-tier list), APPCI_WIN_SHELLS (default "powershell,gitbash"; add "pwsh7" and/or "cmd" for the startup_shell_override passes of #1534: PowerShell 7 / cmd.exe chosen through the app's own session.startup_shell_override, cases from winmap.VARIANT_CASES; a missing shell makes that pass a skip row, nothing is installed).
 # Results: Out\run\results.jsonl, results.json, junit.xml, summary.md, shots\*.png, logs\ (written by the Python harness, plus the `restore` row below).
 param([Parameter(Mandatory)][string]$Dist, [Parameter(Mandatory)][string]$Out, [string]$Modes = "terminal,agent")
 $ErrorActionPreference = "Stop"

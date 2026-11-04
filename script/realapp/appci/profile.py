@@ -124,6 +124,7 @@ def history_lines(n=2200, seed=1):
 class Profile:
     def __init__(self, run, shell_home_name="home", pane=None):
         self.win = os.name == "nt"
+        self.variant = None     # #1534: "pwsh7" | "cmd" for a startup_shell_override pass (run.py sets it together with pane = its family), else None
         self.pane = pane or ("powershell" if self.win else None)   # Windows pane shell: powershell | gitbash (docs/testing.md 2.8); None = POSIX bash/zsh
         self.run = run
         self.home = os.path.join(run, shell_home_name)
@@ -140,7 +141,7 @@ class Profile:
     def local_prompts(self):
         """False when the pane's shell cannot run the rc hook that writes prompt.log / rec.log: the app starts PowerShell with -NoProfile, so a
         PowerShell pane has neither (cases fall back to effect files and fixed waits and say so)"""
-        return not (self.win and self.pane == "powershell")
+        return not (self.win and self.pane in ("powershell", "cmd"))        # cmd.exe and pwsh 7 (family "powershell") have no rc hook either
 
     def _c(self, p):
         """a path as it goes INTO a shell rc file: C:/forward/slashes on Windows, unchanged elsewhere"""
@@ -366,15 +367,27 @@ class Profile:
         return os.environ.get("APPCI_OWNER_SETTINGS") or self.OWNER_SEED
 
     def gitbash_toml(self, new_session=False):
-        """TOML value of Git for Windows' bash.exe for a Windows Git Bash pane, else None. startup_shell_override is a plain string (StartupShell: a custom
-        path); new_session_shell_override is an enum, so its TOML is the inline table `{ executable = "<path>" }` (r18co: a bare string made the app show
-        'Invalid value for new_session_shell_override' and use the default for new tabs)."""
-        if not (self.win and self.pane == "gitbash"):
+        """TOML value of the shell a Windows pane is started with through session.startup_shell_override, else None: Git for Windows' bash.exe for the Git
+        Bash pane, and for a #1534 startup_shell_override pass PowerShell 7's pwsh.exe (variant "pwsh7") or cmd.exe (variant "cmd"). startup_shell_override
+        is a plain string (StartupShell: a custom path); new_session_shell_override is an enum, so its TOML is the inline table `{ executable = "<path>" }`
+        (r18co: a bare string made the app show 'Invalid value for new_session_shell_override' and use the default for new tabs)."""
+        if not self.win:
             return None
         import winapi
-        b = winapi.git_bash()
-        if not b:
-            raise RuntimeError("Git for Windows (bash.exe) not found: the Git Bash pane cannot start")
+        if self.variant == "pwsh7":
+            b = winapi.pwsh7()
+            if not b:
+                raise RuntimeError("PowerShell 7 (pwsh.exe) not found: the pwsh7 pane cannot start")
+        elif self.variant == "cmd":
+            b = winapi.cmd_exe()
+            if not b:
+                raise RuntimeError("cmd.exe not found: the cmd pane cannot start")
+        elif self.pane == "gitbash":
+            b = winapi.git_bash()
+            if not b:
+                raise RuntimeError("Git for Windows (bash.exe) not found: the Git Bash pane cannot start")
+        else:
+            return None
         return '{ executable = "%s" }' % _fwd(b) if new_session else '"%s"' % _fwd(b)
 
     def write_settings(self, mode, ollama_url=None, ollama_model="gpt-oss:20b"):

@@ -14,6 +14,7 @@ BOTH = {
     "paste_multiline_prompt", "intl_wide_type", "intl_wide_paste", "intl_wide_edit", "intl_altgr_bash", "intl_altgr_ps",
     "cb_no_autoupdate", "approval_card_pause", "md_viewer", "md_viewer_big", "md_viewer_ai_answer", "agent_code_recycle", "editor_memory_7mb", "gitbash_subshell",
     "editor_edit_save", "editor_paste",         # #1544: phosphor.exe <file URL> reaches the running instance over its named pipe (cases.open_file_in_windows_app)
+    "startup_shell_pane",                    # #1534: itself skips outside a startup_shell_override pass
     "crash_kill9_restore", "crash_corrupt_db",       # #1541: taskkill /F /T + relaunch on the same profile (cases_robust.hard_kill; state under %LOCALAPPDATA%\\phosphor)
 }
 # POSIX syntax / rec.log / readline-style editing in the case: Git Bash pane only. Reason shown for the PowerShell pane.
@@ -82,6 +83,22 @@ NOT_WINDOWS = {
     "cb_ui_action_latency": "needs Pillow screenshot diffs of new-tab/switch chords not mapped in the Windows backend",
     "cb_editor_mac": "macOS-only case (Linux and Windows have editor_edit_save / editor_paste)",
 }
+
+
+# #1534: the startup_shell_override passes (APPCI_WIN_SHELLS="pwsh7,cmd", never in the default list: cmd.exe and pwsh 7 are not installed on every VM).
+# The pane's shell is chosen through the app's `session.startup_shell_override` (a custom shell path, profile.Profile.gitbash_toml), not by the harness. Only the
+# cases below run in a variant pass, each with the reason it is safe in that shell; a pass lists NO skip rows for the other cases (they are the PowerShell/Git Bash
+# panes' job). pwsh 7 is the PowerShell family (Add-Content, PSReadLine, `;`), cmd.exe has its own effect-file syntax (Ctx.append_cmd 'cmd').
+VARIANT_FAMILY = {"pwsh7": "powershell", "cmd": "cmd"}
+VARIANT_CASES = {
+    "pwsh7": ("mode_proof", "startup_shell_pane", "fast_typing", "paste_instant_enter", "tab_enter", "ctrl_c_d"),
+    "cmd": ("mode_proof", "startup_shell_pane"),
+}
+
+
+def variant_cases(variant):
+    """case names that run in the startup_shell_override pass `variant`, in SMOKE-independent registry order (run.py sorts by case order)"""
+    return VARIANT_CASES[variant]
 
 
 def skip_reason(name, pane):

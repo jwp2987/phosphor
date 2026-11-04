@@ -405,13 +405,14 @@ def age_stats(ages):
 
 
 class Ctx:
-    def __init__(self, be, prof, app, run, mode, seed=1, ssh=None, ollama=False, log_path=None, ssh_why=None, pane=None):
+    def __init__(self, be, prof, app, run, mode, seed=1, ssh=None, ollama=False, log_path=None, ssh_why=None, pane=None, variant=None):
         self.be, self.prof, self.app, self.run, self.mode = be, prof, app, run, mode
-        self.pane = pane                      # Windows only: the shell of the app's pane, 'powershell' | 'gitbash' (None = the POSIX bash/zsh harness)
+        self.pane = pane                      # Windows only: the shell of the app's pane, 'powershell' | 'gitbash' | 'cmd' (None = the POSIX bash/zsh harness)
+        self.variant = variant                # #1534: 'pwsh7' | 'cmd' in a startup_shell_override pass (pane is then its family: pwsh 7 is 'powershell', cmd.exe 'cmd'), else None
         self.win = pane is not None
         # label = the mode column of results.json / junit and the id prefix of latency records: 'terminal' everywhere except a non-default
         # Windows pane ('terminal@gitbash'), so the two panes' numbers and previous-build comparisons never mix
-        self.label = mode if pane in (None, "powershell") else "%s@%s" % (mode, pane)
+        self.label = mode if (pane in (None, "powershell") and not variant) else "%s@%s" % (mode, variant or pane)
         self.t_case0 = time.time()
         self.rng = random.Random(seed)
         self.ssh, self.ollama, self.log_path = ssh, ollama, log_path
@@ -481,11 +482,13 @@ class Ctx:
             return '"%s\\n" | save --append %s' % (tok, fname)     # nu's save --append adds no newline: give each line one
         if shell == "pwsh":      # PowerShell: `>>` would write UTF-16 in 5.1; Add-Content writes ASCII lines
             return "Add-Content %s %s" % (fname, tok)
+        if shell == "cmd":       # cmd.exe: no space before `>>` (it would end up in the line); #1534
+            return "echo %s>>%s" % (tok, fname)
         return "echo %s >> %s" % (tok, fname)
 
     def pane_shell(self):
-        """the shell name append_cmd() takes for the app's own pane: 'pwsh' in a Windows PowerShell pane, else 'bash'"""
-        return "pwsh" if self.pane == "powershell" else "bash"
+        """the shell name append_cmd() takes for the app's own pane: 'pwsh' in a Windows PowerShell pane (and pwsh 7), 'cmd' in a cmd.exe pane, else 'bash'"""
+        return "pwsh" if self.pane == "powershell" else ("cmd" if self.pane == "cmd" else "bash")
 
     def which(self, name):
         """shutil.which, on Windows against the PATH the app gets (Git for Windows' bin + usr/bin appended; never WSL's System32 bash.exe)"""
@@ -962,7 +965,7 @@ class Ctx:
         if not (self.mode == "agent" and recent):
             self.be.key("ctrl+c")
         time.sleep(0.25)
-        self.be.key("ctrl+u")
+        self.be.key("Escape" if getattr(self, "pane", None) == "cmd" else "ctrl+u")      # cmd.exe's line editor has no Ctrl-U; Escape clears its line
         time.sleep(0.15)
 
     def shot(self, tag):
@@ -4354,3 +4357,4 @@ import cases_caseremote  # noqa: E402,F401  (issue #1464: remote work over ssh +
 import cases_caseintl  # noqa: E402,F401  (group 8: international input, #1466)
 import cases_coverage_a  # noqa: E402,F401  (#1535-#1541: paste, alt-screen programs, sudo/su, ssh drop+reconnect, kill -9 + corrupt-db restore)
 import cases_coverage_b  # noqa: E402,F401  (g10: CI-review coverage gaps #1542-#1548: agent pickers, settings UI/migration, state relaunch, no-autoupdate, UI-action budgets, mac editor)
+import cases_shells  # noqa: E402,F401  (#1534: startup_shell_override passes: cmd.exe and pwsh 7 as the pane shell)

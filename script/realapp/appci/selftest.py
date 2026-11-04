@@ -1169,6 +1169,31 @@ def g11_bootstrap_reference_and_bracketed_paste_pieces():
     assert "2004h" in cases.M3_RESTORE and "${#zle_bracketed_paste}" in cases.M3_RESTORE
 
 
+@check
+def g11_startup_shell_passes():
+    """#1534: the cmd / pwsh7 passes: settings TOML names the shell, the family drives the helpers, the case list and effect syntax are right"""
+    import cases_shells
+    assert winmap.VARIANT_FAMILY == {"pwsh7": "powershell", "cmd": "cmd"}
+    for v, names in winmap.VARIANT_CASES.items():
+        assert "startup_shell_pane" in names and "mode_proof" in names, v
+        reg = {c["name"] for c in cases.CASES}
+        assert set(names) <= reg, (v, set(names) - reg)
+        for n in names:
+            assert winmap.skip_reason(n, winmap.VARIANT_FAMILY[v]) is None or n in ("fast_typing",), (v, n)
+    cx = types.SimpleNamespace(pane="cmd")
+    assert cases.Ctx.append_cmd(cx, "cmd", "tok1", "f.txt") == "echo tok1>>f.txt"
+    assert cases.Ctx.pane_shell(cx) == "cmd" and cases.Ctx.pane_shell(types.SimpleNamespace(pane="powershell")) == "pwsh"
+    assert cases_shells.identity_ok("pwsh7", ["PS7_Core"]) and not cases_shells.identity_ok("pwsh7", ["PS5_Desktop"])
+    assert cases_shells.identity_ok("cmd", ["CMDOK_CMD.EXE"]) and not cases_shells.identity_ok("cmd", ["CMDOK_%COMSPEC:~-7%"])
+    pr = profile.Profile(tempfile.mkdtemp(), pane="cmd")
+    pr.win, pr.variant = True, "cmd"
+    assert pr.local_prompts is False
+    pr.pane, pr.variant = "powershell", "pwsh7"
+    assert pr.local_prompts is False
+    pr.win, pr.pane, pr.variant = False, None, None
+    assert pr.gitbash_toml() is None
+
+
 def main():
     failed = 0
     for f in CHECKS:
