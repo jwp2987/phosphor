@@ -2,12 +2,14 @@ use pathfinder_geometry::vector::vec2f;
 use warp_core::ui::{color::coloru_with_opacity, theme::Fill};
 use warpui::{
     AppContext, Element, Entity, SingletonEntity, TypedActionView, View, ViewContext,
+    WeakViewHandle,
     elements::{
         Align, ChildAnchor, Container, CrossAxisAlignment, Flex, Hoverable, MouseStateHandle,
         OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds, Stack, Text,
     },
     fonts::Weight,
     keymap::{FixedBinding, Keystroke},
+    pane_key::{PaneKey, PaneKeyContext, PaneKeyKind, PaneKeyOutcome},
     platform::Cursor,
     ui_components::{
         button::ButtonVariant,
@@ -17,6 +19,8 @@ use warpui::{
 
 use crate::{
     appearance::Appearance,
+    editor::{EditorAction, HeldPasteKey},
+    terminal::input::Input,
     ui_components::dialog::{Dialog, dialog_styles},
 };
 
@@ -44,6 +48,9 @@ pub struct MultilineSubmitConfirmationDialog {
     confirm_mouse_state: MouseStateHandle,
     /// Lines in the buffer being submitted; shown in the dialog text.
     line_count: usize,
+    /// The input that asked (#1652): the keys typed while the dialog has focus are held in its
+    /// editor's hold and delivered to it once the dialog is answered.
+    asking_input: Option<WeakViewHandle<Input>>,
 }
 
 impl Default for MultilineSubmitConfirmationDialog {
@@ -58,7 +65,16 @@ impl MultilineSubmitConfirmationDialog {
             cancel_mouse_state: Default::default(),
             confirm_mouse_state: Default::default(),
             line_count: 0,
+            asking_input: None,
         }
+    }
+
+    /// Sets the input the dialog answers (#1652), returning the one it replaces.
+    pub fn set_asking_input(
+        &mut self,
+        input: Option<WeakViewHandle<Input>>,
+    ) -> Option<WeakViewHandle<Input>> {
+        std::mem::replace(&mut self.asking_input, input)
     }
 
     /// Sets the count shown and schedules a re-render: without the notify the dialog's cached
@@ -84,6 +100,40 @@ impl View for MultilineSubmitConfirmationDialog {
 
     fn on_focus(&mut self, _focus_ctx: &warpui::FocusContext, ctx: &mut ViewContext<Self>) {
         ctx.focus_self();
+    }
+
+    /// #1652: while the dialog has focus it is the key sink, so a key its own bindings (Enter,
+    /// Escape) do not take is never dropped: it is held for the asking input's editor and
+    /// delivered there, in typed order, once the dialog is answered.
+    fn is_pane_key_sink(&self) -> bool {
+        true
+    }
+
+    fn on_pane_key(
+        &mut self,
+        key: &PaneKey,
+        _key_ctx: &PaneKeyContext,
+        ctx: &mut ViewContext<Self>,
+    ) -> PaneKeyOutcome {
+        let Some(held) = dialog_held_key(&key.kind) else {
+            return PaneKeyOutcome::NotMine;
+        };
+        let Some(input) = self
+            .asking_input
+            .as_ref()
+            .and_then(|input| input.upgrade(ctx))
+        else {
+            return PaneKeyOutcome::NotMine;
+        };
+        let hold = input.as_ref(ctx).multiline_dialog_key_hold(ctx);
+        warpui::input_order::log_key_hop("kh_multiline_dialog_hold", || {
+            format!("seq={} kind={held:?}", key.seq)
+        });
+        if hold.modal_hold_push(held) {
+            PaneKeyOutcome::Consumed
+        } else {
+            PaneKeyOutcome::NotMine
+        }
     }
 
     fn render(&self, app: &AppContext) -> Box<dyn Element> {
@@ -218,6 +268,35 @@ impl View for MultilineSubmitConfirmationDialog {
             .with_background_color(Fill::blur().into())
             .with_corner_radius(app.windows().window_corner_radius())
             .finish()
+    }
+}
+
+/// #1652: what a key that reaches the dialog's sink is held as, or `None` for a key the dialog
+/// leaves alone (it continues to the elements, as before). Typed text (and an IME commit) is held as
+/// text. A key down is held when it is one of the editor's fixed editing keys (the binding it would
+/// have had in the editor, so it does there what it would have done); a printable key down is left
+/// alone because its typed event follows and is the key. Enter and Escape never get here: the
+/// dialog's own bindings take them first.
+pub(crate) fn dialog_held_key(kind: &PaneKeyKind) -> Option<HeldPasteKey> {
+    match kind {
+        PaneKeyKind::Typed { chars, .. } if !chars.is_empty() => {
+            Some(HeldPasteKey::Text(chars.clone()))
+        }
+        PaneKeyKind::KeyDown { keystroke, .. } => {
+            let action = match keystroke.normalized().as_str() {
+                "backspace" => EditorAction::Backspace,
+                "delete" => EditorAction::Delete,
+                "left" => EditorAction::Left,
+                "right" => EditorAction::Right,
+                "up" => EditorAction::Up,
+                "down" => EditorAction::Down,
+                "tab" => EditorAction::Tab,
+                "shift-tab" => EditorAction::ShiftTab,
+                _ => return None,
+            };
+            Some(HeldPasteKey::Action(action))
+        }
+        _ => None,
     }
 }
 

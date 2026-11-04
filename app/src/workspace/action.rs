@@ -696,6 +696,9 @@ pub enum WorkspaceAction {
     /// Ask before running a long multi-line buffer one line at a time (#1046).
     ShowMultilineSubmitConfirmationDialog {
         line_count: usize,
+        /// The input that asked: it gets the answer and the keys typed while the dialog is open,
+        /// whichever tab is active when the user answers (#1652).
+        input: warpui::WeakViewHandle<crate::terminal::input::Input>,
     },
     /// Execute the actual rewind after confirmation
     ExecuteRewindAIConversation {

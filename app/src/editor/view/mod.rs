@@ -3111,6 +3111,34 @@ impl EditorView {
         }
     }
 
+    /// #1652: delivers the keys held while the multi-line submit dialog was open, in typed order,
+    /// exactly as if they had just been typed here (the display-map rule of
+    /// [`Self::apply_held_paste_key`] included). The hold is closed first, so none is held again.
+    pub fn deliver_modal_held_keys(
+        &mut self,
+        keys: Vec<HeldPasteKey>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let _ = self.paste_hold.end_modal_hold();
+        if keys.is_empty() {
+            return;
+        }
+        warpui::input_order::log_hop("modal_hold_deliver", || format!("keys={}", keys.len()));
+        let vim = self.vim_mode(ctx).is_some();
+        for key in keys {
+            let key = match key {
+                HeldPasteKey::Text(text) if vim => {
+                    HeldPasteKey::Action(EditorAction::VimUserInsert(UserInput::new(text)))
+                }
+                HeldPasteKey::Action(EditorAction::Backspace) if vim => {
+                    HeldPasteKey::Action(EditorAction::VimBackspace)
+                }
+                key => key,
+            };
+            self.apply_held_paste_key(key, ctx);
+        }
+    }
+
     fn schedule_held_replay(&mut self, ctx: &mut ViewContext<Self>) {
         if self.paste_hold.replay_mark_scheduled() {
             ctx.dispatch_typed_action_deferred(EditorAction::ReplayHeldKeys);
@@ -3163,6 +3191,25 @@ impl EditorView {
     /// pasted text, in order (#1300). Ctrl-C cancels the paste: what was typed before it is
     /// applied first and the Ctrl-C then acts normally.
     fn hold_key_for_paste(&mut self, action: &EditorAction, ctx: &mut ViewContext<Self>) -> bool {
+        // #1652: the multi-line submit dialog is open. A key that reaches the editor meanwhile
+        // (focus is here, not on the dialog, or a key replayed from behind the Enter that opened
+        // it) belongs after the answer: held with the keys the dialog took, in typed order, and
+        // never applied to the buffer that waits for the answer. An Enter is held too, so it can
+        // neither confirm the dialog nor submit that buffer again.
+        if self.paste_hold.modal_hold_open() {
+            let held = match action {
+                EditorAction::VimUserInsert(text) => Some(HeldPasteKey::Text(String::clone(text))),
+                EditorAction::VimBackspace => Some(HeldPasteKey::Action(EditorAction::Backspace)),
+                EditorAction::ReplayHeldKeys => None,
+                _ => paste_hold::held_form(action),
+            };
+            if let Some(key) = held {
+                warpui::input_order::log_hop("modal_hold_key", || {
+                    format!("source=editor kind={key:?}")
+                });
+                return self.paste_hold.modal_hold_push(key);
+            }
+        }
         // Replayed keys still waiting for the display map (#1389): a key typed now goes behind
         // them; one that acts at once (Ctrl-C, scrolling) sees them applied first.
         if self.paste_hold.replay_pending()
