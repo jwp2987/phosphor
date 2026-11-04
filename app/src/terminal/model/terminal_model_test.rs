@@ -3630,18 +3630,15 @@ fn line_editor_markers_become_terminal_events_in_order() {
     terminal.line_editor_reading(LineEditorMarkerValue {
         session_id: Some(5),
         seq: Some(3),
-        typed_text_literal: false,
     });
     terminal.continuation_prompt(LineEditorMarkerValue {
         session_id: Some(5),
         seq: Some(3),
-        typed_text_literal: false,
     });
     // No session: nothing can be attributed, nothing is sent.
     terminal.line_editor_reading(LineEditorMarkerValue {
         session_id: None,
         seq: Some(4),
-        typed_text_literal: false,
     });
 
     let events: Vec<_> = std::iter::from_fn(|| event_rx.try_recv().ok()).collect();
@@ -3664,57 +3661,6 @@ fn line_editor_markers_become_terminal_events_in_order() {
     );
 }
 
-/// #1606: zsh's reading marker says whether typed printable text is inserted literally; the
-/// model keeps that only until anything says the line editor stopped reading that line (any
-/// shell hook, a continuation prompt) and only for an attributable marker. The pty controller
-/// shares the cell and consumes it.
-#[test]
-fn line_editor_reading_vouches_for_literal_typing_until_the_next_hook() {
-    use std::sync::atomic::Ordering;
-    let mut terminal = TerminalModel::mock(None, None);
-    let flag = terminal.line_editor_literal_flag();
-    let marker = |session_id, typed_text_literal| LineEditorMarkerValue {
-        session_id,
-        seq: Some(1),
-        typed_text_literal,
-    };
-    assert!(!flag.load(Ordering::SeqCst));
-
-    terminal.line_editor_reading(marker(Some(5), true));
-    assert!(flag.load(Ordering::SeqCst));
-    terminal.preexec(PreexecValue {
-        command: "ls".to_owned(),
-        session_id: Some(5),
-    });
-    assert!(!flag.load(Ordering::SeqCst), "a Preexec ends the line");
-
-    terminal.line_editor_reading(marker(Some(5), true));
-    terminal.continuation_prompt(marker(Some(5), false));
-    assert!(
-        !flag.load(Ordering::SeqCst),
-        "a continuation line is not that line"
-    );
-
-    terminal.line_editor_reading(marker(Some(5), true));
-    terminal.line_editor_reading(marker(Some(5), false));
-    assert!(!flag.load(Ordering::SeqCst), "the newest marker decides");
-
-    terminal.line_editor_reading(marker(None, true));
-    assert!(
-        !flag.load(Ordering::SeqCst),
-        "an unattributable marker vouches for nothing"
-    );
-
-    // The cell is shared, not copied: what the controller swaps out is gone here too.
-    terminal.line_editor_reading(marker(Some(5), true));
-    assert!(
-        terminal
-            .line_editor_literal_flag()
-            .swap(false, Ordering::SeqCst)
-    );
-    assert!(!flag.load(Ordering::SeqCst));
-}
-
 /// #1390, #1391: the markers also update the typeahead hand-off's own account of the shell, on the
 /// thread that parses them and in the order the shell sent them. A marker without a session is
 /// not attributable and changes nothing.
@@ -3734,14 +3680,12 @@ fn line_editor_markers_update_the_handoffs_account_in_stream_order() {
     terminal.line_editor_reading(LineEditorMarkerValue {
         session_id: None,
         seq: Some(4),
-        typed_text_literal: false,
     });
     assert!(!terminal.typeahead_handoff().line_editor_markers_live());
 
     terminal.line_editor_reading(LineEditorMarkerValue {
         session_id: Some(5),
         seq: Some(3),
-        typed_text_literal: false,
     });
     assert_eq!(
         terminal.typeahead_handoff().shell_activity(),
@@ -3752,7 +3696,6 @@ fn line_editor_markers_update_the_handoffs_account_in_stream_order() {
     terminal.continuation_prompt(LineEditorMarkerValue {
         session_id: Some(5),
         seq: Some(3),
-        typed_text_literal: false,
     });
     assert_eq!(
         terminal.typeahead_handoff().shell_activity(),
