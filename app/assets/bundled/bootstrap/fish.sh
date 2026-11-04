@@ -216,10 +216,15 @@ end
 # directory). Returns 1, leaving the answer to git exactly as before, for anything it cannot
 # answer with certainty: GIT_* variables that change discovery, a .git file (worktree, submodule),
 # a bare repo or the .git directory itself, a repo owned by someone else (git refuses it), reftable
-# (HEAD is `refs/heads/.invalid`), a detached HEAD (needs an abbreviated hash), and a branch whose
-# short name git would qualify because a tag of the same name exists (a packed one is checked with
-# git once per directory and branch). The walk up uses `..` instead of trimming $PWD, so a
-# symlinked directory is followed the way git (which uses the physical path) follows it.
+# (HEAD is `refs/heads/.invalid`), and a branch whose short name git would qualify because a tag of
+# the same name exists (a packed one is checked with git once per directory and branch). The walk
+# up uses `..` instead of trimming $PWD, so a symlinked directory is followed the way git (which
+# uses the physical path) follows it.
+# A detached HEAD (#1616) needs git's abbreviated hash: `git rev-parse --short HEAD` runs once per
+# directory and HEAD commit and its answer is reused until either changes (a rebase, a bisect or a
+# checkout rewrites .git/HEAD). The one difference: git can lengthen an abbreviation as the object
+# count grows, and a reused one keeps its old length until HEAD or the directory changes.
+# PHOSPHOR_GIT_HEAD_CACHE=0 turns the reuse off (two git processes per prompt, as before).
 function __warp_git_head_fast
     for v in GIT_DIR GIT_WORK_TREE GIT_CEILING_DIRECTORIES GIT_DISCOVERY_ACROSS_FILESYSTEM GIT_NAMESPACE GIT_COMMON_DIR
         set -q $v; and return 1
@@ -252,7 +257,18 @@ function __warp_git_head_fast
         case 'ref: refs/heads/*'
             set line (string replace 'ref: refs/heads/' '' -- "$line")
         case '*'
-            return 1
+            # Detached: HEAD holds a full SHA-1 (40) or SHA-256 (64) object name.
+            test "$PHOSPHOR_GIT_HEAD_CACHE" != 0; or return 1
+            string match -qr '^([0-9a-f]{40}|[0-9a-f]{64})$' -- "$line"; or return 1
+            if test "$__warp_git_detached_key" != "$PWD|$line"; or test -z "$__warp_git_detached_short"
+                set -l short (warp_git rev-parse --short HEAD 2> /dev/null)
+                test -n "$short"; or return 1
+                set -g __warp_git_detached_key "$PWD|$line"
+                set -g __warp_git_detached_short "$short"
+            end
+            set -g __warp_git_branch ""
+            set -g __warp_git_head "$__warp_git_detached_short"
+            return 0
     end
     test -n "$line"; or return 1
     if test -e "$gd/$line"; or test -e "$gd/refs/$line"; or test -e "$gd/refs/tags/$line"

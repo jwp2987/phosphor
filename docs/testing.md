@@ -182,7 +182,7 @@ pin protocol behaviour. Skips are reported as SKIPPED, never silent. A Skip rais
 |---|---|
 | `test_bash_bootstrap_nounset`, `test_zsh_bootstrap_strict_options` | hooks survive `set -u` / `err_return` / failing user precmd (#825, #836, #844) |
 | `test_fish_bootstrap` | fish hooks fire end to end in a pty (#829, #879) |
-| `test_bootstrap_hook_equivalence` (bash/zsh/fish), `test_nu_bootstrap_hook_equivalence`, `test_pwsh_hook_equivalence` (+ `testdata/pwsh_hooks_golden.json`) | fork-free hook helpers emit byte-identical DCS payloads to the old forking code (#1170, #1233, #1231) |
+| `test_bootstrap_hook_equivalence` (bash/zsh/fish), `test_nu_bootstrap_hook_equivalence`, `test_pwsh_hook_equivalence` (+ `testdata/pwsh_hooks_golden.json`) | fork-free hook helpers emit byte-identical DCS payloads to the old forking code (#1170, #1233, #1231); a detached HEAD runs git once per directory and HEAD commit, a moved HEAD is seen at the next prompt, `PHOSPHOR_GIT_HEAD_CACHE=0` restores git per prompt (#1616) |
 | `test_bash_bootstrap_builtins` | fork-free `sort -V`/os-release/`shopt` replacements match the commands (#1164) |
 | `test_bash_preexec_large_command` | Preexec escaping of a 3 MB command is linear (#1255) |
 | `test_init_shell_escaping` | InitShell JSON round-trips hostile user/host values (#879) |
@@ -283,6 +283,7 @@ claims (#1353, #1404); only a doc comment in `app/src/terminal/input_queue/mod.r
 | `PHOSPHOR_SYNC_REFILTER=1` | always filter completion menus inline |
 | `PHOSPHOR_NO_ALIAS_LOOKUP_CACHE=1`, `PHOSPHOR_NO_BRANCH_LIST_CACHE=1` | disable the alias-lookup / git-branch-list caches |
 | `PHOSPHOR_GIT_REFRESH_ALWAYS=1` | git status refresh after every block |
+| `PHOSPHOR_GIT_HEAD_CACHE=0` | shell bootstrap (bash/zsh/fish; read by the shell at every prompt, so it can be exported in a running session): a detached HEAD asks git twice on every prompt instead of once per directory and HEAD commit (#1616) |
 | `PHOSPHOR_COPY_INLINE=1` | selection copy on the UI thread instead of off-thread (#1304) |
 | `PHOSPHOR_SYNC_CLIPBOARD_WRITE=1` | synchronous clipboard writes instead of the serial owner thread (#1307) |
 | `PHOSPHOR_CLIPBOARD_TARGETS_QUERY=0` | no X11 targets-based availability query (#1306) |
