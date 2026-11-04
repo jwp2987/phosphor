@@ -65,10 +65,19 @@ pub struct MessageAsKeyEvent {
 pub struct KeyEventBuilder {
     event_info: Mutex<Option<PartialKeyEventInfo>>,
     pending: PendingEventQueue<MessageAsKeyEvent>,
+    /// Phosphor #1632: a UTF-16 high surrogate that ended a keypress's WM_CHAR text, kept so it
+    /// can be joined with the low surrogate that starts the next keypress's text. Unicode input
+    /// (`SendInput` with `KEYEVENTF_UNICODE`: on-screen keyboards, remote desktop, injectors)
+    /// delivers a character outside the BMP as two VK_PACKET keypresses, one code unit each.
+    pending_high_surrogate: Mutex<Option<u16>>,
 }
 impl Default for KeyEventBuilder {
     fn default() -> Self {
-        KeyEventBuilder { event_info: Mutex::new(None), pending: Default::default() }
+        KeyEventBuilder {
+            event_info: Mutex::new(None),
+            pending: Default::default(),
+            pending_high_surrogate: Mutex::new(None),
+        }
     }
 }
 impl KeyEventBuilder {
@@ -224,6 +233,13 @@ impl KeyEventBuilder {
                                 return MatchResult::TokenToRemove(pending_token);
                             },
                         };
+                        // Phosphor #1632: pair UTF-16 surrogates that arrived in separate
+                        // keypresses, and never let a lone surrogate reach `finalize` (where it
+                        // made the whole text fail to decode, dropping the character).
+                        {
+                            let mut carry = self.pending_high_surrogate.lock().unwrap();
+                            join_utf16_surrogates(&mut carry, &mut event_info.utf16parts);
+                        }
                         let mut layouts = LAYOUT_CACHE.lock().unwrap();
                         // It's okay to call `ToUnicode` here, because at this point the dead key
                         // is already consumed by the character.
@@ -852,6 +868,51 @@ impl<T> PendingEventQueue<T> {
 impl<T> Default for PendingEventQueue<T> {
     fn default() -> Self {
         PendingEventQueue { pending: Mutex::new(Vec::new()), next_id: AtomicU32::new(0) }
+    }
+}
+
+/// Phosphor #1632: makes `parts` (the UTF-16 code units of one keypress's WM_CHAR messages) valid
+/// UTF-16, carrying surrogates across keypresses in `carry`.
+///
+/// - A high surrogate kept from the previous keypress is put in front of `parts` when `parts`
+///   starts with a low surrogate (the pair `SendInput(KEYEVENTF_UNICODE)` delivers as two VK_PACKET
+///   keypresses); otherwise it was malformed input and is dropped with a log line.
+/// - A high surrogate at the end of `parts` is moved into `carry`: the keypress that carries it
+///   reports no text, and the next keypress reports the whole character.
+/// - Any other lone surrogate is dropped with a log line, keeping the rest of the text. Never
+///   panics.
+fn join_utf16_surrogates(carry: &mut Option<u16>, parts: &mut Vec<u16>) {
+    let is_high = |u: u16| (0xd800..=0xdbff).contains(&u);
+    let is_low = |u: u16| (0xdc00..=0xdfff).contains(&u);
+
+    if let Some(high) = carry.take() {
+        if parts.first().is_some_and(|&u| is_low(u)) {
+            parts.insert(0, high);
+        } else {
+            log::warn!(
+                "winit keyboard: dropped a lone UTF-16 high surrogate {high:#06x} (the next \
+                 keypress did not start with a low surrogate)"
+            );
+        }
+    }
+    if parts.last().is_some_and(|&u| is_high(u)) {
+        *carry = parts.pop();
+    }
+    if parts.iter().any(|&u| is_high(u) || is_low(u)) {
+        let mut valid = Vec::with_capacity(parts.len());
+        for decoded in char::decode_utf16(parts.iter().copied()) {
+            match decoded {
+                Ok(ch) => {
+                    let mut buf = [0u16; 2];
+                    valid.extend_from_slice(ch.encode_utf16(&mut buf));
+                },
+                Err(err) => log::warn!(
+                    "winit keyboard: dropped a lone UTF-16 surrogate {:#06x} from typed text",
+                    err.unpaired_surrogate()
+                ),
+            }
+        }
+        *parts = valid;
     }
 }
 
