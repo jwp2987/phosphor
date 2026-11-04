@@ -5,10 +5,19 @@ use super::*;
 
 #[test]
 fn uri_percent_encodes_spaces_and_unicode() {
-    assert_eq!(
-        file_manager_uri(Path::new("/home/u/my docs/résumé #1.txt")).unwrap(),
-        "file:///home/u/my%20docs/r%C3%A9sum%C3%A9%20%231.txt"
+    // An absolute path in the local OS's form: `/home/...` has no drive on Windows, so it is
+    // relative there and (correctly) has no `file://` URI.
+    #[cfg(not(windows))]
+    let (path, uri) = (
+        "/home/u/my docs/résumé #1.txt",
+        "file:///home/u/my%20docs/r%C3%A9sum%C3%A9%20%231.txt",
     );
+    #[cfg(windows)]
+    let (path, uri) = (
+        r"C:\Users\u\my docs\résumé #1.txt",
+        "file:///C:/Users/u/my%20docs/r%C3%A9sum%C3%A9%20%231.txt",
+    );
+    assert_eq!(file_manager_uri(Path::new(path)).unwrap(), uri);
 }
 
 #[test]

@@ -1689,3 +1689,10 @@ host (now portable, or gated with the reason) or a Windows app defect (fixed, te
 - **Gated, with the reason in the test.** The relative-symlink publish case is skipped at run time where only a
   junction can be made; the #911 abandoned-connection test and two `repo_metadata` symlink tests are `#[cfg(unix)]`
   (Windows cannot delete a file SQLite holds open; the symlink tests need a real symlink).
+
+## r18u18 Windows workspace-rest fixes (job 17744882175)
+
+The four Windows-only `test-workspace-rest-windows` failures were tests that assumed a unix host; the app was right in each:
+`is_unsafe_watch_root` rejects home's own root (`C:\` on Windows, where a bare `/` is not an ancestor of `C:\Users\...`); a remote
+repo root in `repositories_tests.rs` is parsed with `StandardizedPath::try_new`; nushell double quotes process `\` escapes, so the
+quoted Windows home is expected with doubled backslashes (`path_test.rs`); the reveal URI test uses a Windows absolute path on Windows.
