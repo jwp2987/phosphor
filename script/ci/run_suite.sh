@@ -116,7 +116,8 @@ case "$suite" in
     ;;
   bench)
     # == bench: criterion benches, then the order-of-magnitude gate.
-    CARGO_TARGET_DIR="target/ci-bench" ./script/agent-cargo ci-bench bench -p warp --features dev-support --bench key_path_bench --bench ansi_bench --bench routing_bench
+    # Absolute: criterion resolves CARGO_TARGET_DIR from the bench binary's cwd (the package dir), so a relative path put its output under app/target (r18u12 bench-macos).
+    CARGO_TARGET_DIR="$PWD/target/ci-bench" ./script/agent-cargo ci-bench bench -p warp --features dev-support --bench key_path_bench --bench ansi_bench --bench routing_bench
     mkdir -p bench-results
     cp -r target/ci-bench/criterion bench-results/ 2>/dev/null || { echo "no criterion output found under target/ci-bench" >&2; exit 1; }
     "$PY" script/bench_gate.py target/ci-bench/criterion
