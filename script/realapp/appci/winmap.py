@@ -11,7 +11,7 @@ BOTH = {
     "mode_proof", "cadence", "fast_typing", "rollover", "keydown_count", "paste_instant_enter", "arrows_behind_paste", "tab_enter", "ctrl_c_d",
     "ssh_connect_typing", "ssh_enter_then_immediate_command", "ssh_nested_typeahead", "ssh_failing_not_local",
     "idle_cpu", "enter_loss_control", "latency_enter", "latency_paint", "tabs_two_windows", "tabs_streaming",
-    "intl_wide_type", "intl_wide_paste", "intl_wide_edit", "intl_altgr_bash", "intl_altgr_ps",
+    "paste_multiline_prompt", "intl_wide_type", "intl_wide_paste", "intl_wide_edit", "intl_altgr_bash", "intl_altgr_ps",
     "approval_card_pause", "md_viewer", "md_viewer_big", "md_viewer_ai_answer", "agent_code_recycle", "editor_memory_7mb", "gitbash_subshell",
 }
 # POSIX syntax / rec.log / readline-style editing in the case: Git Bash pane only. Reason shown for the PowerShell pane.
@@ -30,6 +30,9 @@ GITBASH_ONLY = {
     "ssh_hanging_host_not_local": "Ctrl-C while ssh.cmd (a batch file) runs would ask 'Terminate batch job (Y/N)?': runs in the Git Bash pane",
     "latency_enter_ssh": "the plain-ssh control is the conhost reference running the pane's shell; a PowerShell reference's `ssh fake` path (ssh.cmd) differs from the pane's: runs in the Git Bash pane (#1532)",
     "ssh_password_prompt": "needs the system sshd's passphrase-key prompt (fakesshd cannot prompt); skips itself with that reason",
+    "paste_bracketed_off": "`cat > file` + Ctrl-D and the bracketed-paste printf: runs in the Git Bash pane (#1538)",
+    "paste_agent_input": "reads the agent input from the app log and uses rec.log to prove nothing reached the shell: runs in the Git Bash pane (#1538)",
+    "alt_screen_programs": "vim/less/htop/tmux with bash effect lines and rec.log: runs in the Git Bash pane; a program that is not installed makes the case unverifiable (#1537)",
     "shell_zsh": "zsh as a subshell of bash: Git Bash pane only (skips itself when not installed)",
     "shell_fish": "fish as a subshell of bash: Git Bash pane only (skips itself when not installed)",
     "shell_nu": "nu as a subshell of bash: Git Bash pane only (skips itself when not installed)",
@@ -68,6 +71,11 @@ NOT_WINDOWS = {
     "editor_edit_save": "not yet ported: Linux D-Bus URL forward opens the file",
     "editor_paste": "not yet ported: Linux D-Bus URL forward opens the file",
     "soak": "not yet ported: samples /proc",
+    "alt_screen_mouse_reporting": "no pointer synthesis in the Windows backend yet, and the receiving program needs python3 termios (#1537)",
+    "sudo_su_real_shell": "sudo/su/ksu do not exist in a Windows pane (#1536)",
+    "ssh_drop_reconnect": "not yet ported: the `~.` escape and `kill -9 $$` need verifying against the msys/Win32 ssh clients (#1535)",
+    "crash_kill9_restore": "not yet ported: needs the Linux quit key + SIGKILL of the app pid (#1541)",
+    "crash_corrupt_db": "not yet ported: needs the Linux quit key and the scratch-home warp.sqlite path (#1541)",
 }
 
 
