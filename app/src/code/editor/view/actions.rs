@@ -403,6 +403,23 @@ pub fn init(app: &mut AppContext) {
         )
         .with_context_predicate(text_entry.clone())
         .with_key_binding("cmdorctrl-down"),
+        // #1634: ctrl-home / ctrl-end move to the document start / end on Linux and Windows, as
+        // in the input editor (`editor_view:cmd_up` / `cmd_down`) and VSCode. macOS keeps
+        // cmd-up / cmd-down above.
+        EditableBinding::new(
+            "editor_view:ctrl_home_to_buffer_start",
+            crate::t!("keybinding-desc-editor-cursor-at-buffer-start"),
+            CodeEditorViewAction::CursorAtBufferStart,
+        )
+        .with_context_predicate(text_entry.clone())
+        .with_linux_or_windows_key_binding("ctrl-home"),
+        EditableBinding::new(
+            "editor_view:ctrl_end_to_buffer_end",
+            crate::t!("keybinding-desc-editor-cursor-at-buffer-end"),
+            CodeEditorViewAction::CursorAtBufferEnd,
+        )
+        .with_context_predicate(text_entry.clone())
+        .with_linux_or_windows_key_binding("ctrl-end"),
     ]);
 
     // Editable selection keybindings:
