@@ -14422,6 +14422,21 @@ fn test_enter_on_the_at_picker_in_agent_mode_never_submits() {
                     ctx,
                 );
             });
+            // The picker gets the typed filter the way the app hands it over on every edit
+            // (`handle_ai_context_menu_search` sets the mode AND the menu's query). Without it the
+            // picker still showed the unfiltered category list, the Enter selected its first
+            // category and that cleared the filter to `@`: a picker accept, not a submit, but in
+            // a state the app never reaches.
+            let editor = input.editor().clone();
+            editor.update(ctx, |editor, ctx| {
+                let menu = editor
+                    .ai_context_menu()
+                    .expect("agent mode has an @ picker")
+                    .clone();
+                menu.update(ctx, |menu, ctx| {
+                    menu.update_search_query("cbmention_x".to_string(), ctx);
+                });
+            });
             assert!(input.ai_input_model().as_ref(ctx).is_ai_input_enabled());
             input.input_enter(ctx);
         });
@@ -14430,6 +14445,17 @@ fn test_enter_on_the_at_picker_in_agent_mode_never_submits() {
                 input.buffer_text(ctx),
                 "@cbmention_x",
                 "the Enter submitted the @ line instead of going to the picker"
+            );
+            // The Enter is the picker's: it waits for the typed query's results (#1365).
+            let menu = input
+                .editor()
+                .as_ref(ctx)
+                .ai_context_menu()
+                .expect("agent mode has an @ picker")
+                .clone();
+            assert!(
+                menu.as_ref(ctx).has_deferred_select(),
+                "the Enter did not reach the @ picker"
             );
         });
         assert!(executed.borrow().is_empty(), "the @ line reached the shell");

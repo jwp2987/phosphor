@@ -699,6 +699,13 @@ impl AIContextMenu {
         }
     }
 
+    /// Whether an Enter is waiting for the typed query's results (`select_current_item` deferred
+    /// it). Tests use it to tell an Enter the picker took from one that went anywhere else.
+    #[cfg(test)]
+    pub fn has_deferred_select(&self) -> bool {
+        self.query_gate.select_waiting()
+    }
+
     /// Runs the Enter that `select_current_item` deferred, once the results are current.
     fn run_deferred_select_if_ready(&mut self, ctx: &mut ViewContext<Self>) {
         if !self.query_gate.select_waiting() {
