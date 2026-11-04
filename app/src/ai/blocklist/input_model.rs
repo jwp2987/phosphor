@@ -2562,9 +2562,21 @@ pub fn large_text_compute_allowance(text_len: usize) -> Duration {
     )
 }
 
-/// [`ENTER_VERDICT_BUDGET`] plus the large-text allowance for a buffer of `text_len` bytes.
+/// The least compute an Enter allows the classifier for a buffer over [`MAX_SYNC_ROUTING_BYTES`]
+/// (owner 2026-11-04: "100ms on a large paste is reasonable"). The linear allowance alone gave a
+/// 21 KB paste 24 ms, which its classification met exactly under a loaded test run (r18u4) and
+/// handed the paste back. A typed line keeps [`ENTER_VERDICT_BUDGET`].
+pub const LARGE_PASTE_VERDICT_FLOOR: Duration = Duration::from_millis(100);
+
+/// [`ENTER_VERDICT_BUDGET`] plus the large-text allowance for a buffer of `text_len` bytes, and at
+/// least [`LARGE_PASTE_VERDICT_FLOOR`] once the buffer is over the sync routing cap.
 pub fn enter_verdict_budget_for(text_len: usize) -> Duration {
-    ENTER_VERDICT_BUDGET + large_text_compute_allowance(text_len)
+    let budget = ENTER_VERDICT_BUDGET + large_text_compute_allowance(text_len);
+    if text_len > MAX_SYNC_ROUTING_BYTES {
+        budget.max(LARGE_PASTE_VERDICT_FLOOR)
+    } else {
+        budget
+    }
 }
 
 #[cfg(test)]

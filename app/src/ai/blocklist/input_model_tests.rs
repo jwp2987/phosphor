@@ -1806,6 +1806,13 @@ fn enter_verdict_budget_grows_with_the_text() {
         large_text_compute_allowance(MAX_SYNC_ROUTING_BYTES + 4096),
         Duration::from_millis(1)
     );
+    // A paste over the sync cap gets at least the large-paste floor (owner 2026-11-04), from its
+    // first byte over the cap up to the size where the linear allowance passes it.
+    assert_eq!(
+        enter_verdict_budget_for(MAX_SYNC_ROUTING_BYTES + 1),
+        LARGE_PASTE_VERDICT_FLOOR
+    );
+    assert_eq!(enter_verdict_budget_for(21_600), LARGE_PASTE_VERDICT_FLOOR);
     let one_mb = 1024 * 1024;
     assert_eq!(
         enter_verdict_budget_for(one_mb),

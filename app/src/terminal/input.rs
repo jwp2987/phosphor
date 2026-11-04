@@ -483,7 +483,9 @@ fn log_late_enter_verdict(text: &str, classifier_compute: std::time::Duration) {
     log::info!(
         "Enter submitted without its input-type verdict: classifier compute {} ms (cap {} ms, {} chars)",
         classifier_compute.as_millis(),
-        crate::ai::blocklist::input_model::ENTER_VERDICT_BUDGET.as_millis(),
+        // The cap this Enter actually had: the base budget plus the large-text allowance (#1604).
+        // It used to print only the base, so a 21 KB paste's 24 ms cap read as "cap 20 ms".
+        crate::ai::blocklist::input_model::enter_verdict_budget_for(text.len()).as_millis(),
         text.chars().count()
     );
 }
