@@ -14861,6 +14861,22 @@ impl Input {
             .should_run_input_autodetection(ctx)
     }
 
+    /// Test-only: the give-up nets of the current wait can no longer fire. Its compute cap and
+    /// backstop are wall-clock (the cap counts the job's running time, descheduled time
+    /// included), so on a loaded test box they overrun and the app hands the text back, which
+    /// is right but not what a test of the verdict's route or of the queue's order is about
+    /// (r18u19: a 21 KB paste's job ran 122 ms against its 100 ms cap; a Windows backstop fired
+    /// at 250 ms while the test was still typing). The wait gets an idle clock (the cap timer
+    /// finds it not running) and a new watch epoch (the armed timers find the wait is not theirs),
+    /// so it ends only on its result event or an explicit give-up the test calls.
+    #[cfg(test)]
+    pub(crate) fn disarm_hold_give_ups_for_test(&mut self) {
+        if let Some(wait) = self.verdict_wait.as_mut() {
+            wait.compute = ComputeClock::default();
+            wait.watch_epoch = wait.watch_epoch.wrapping_add(1);
+        }
+    }
+
     /// #1577: the Enter held for its verdict / Tab completion is given up by a timer: the wait is
     /// dropped (nothing will submit it) and its completion is cancelled. The caller hands the line
     /// back to the editor.
