@@ -64,7 +64,7 @@ e.g. renamed). The limits are the header budgets with generous headroom for the 
 catches, not baselines). To update: run the `bench` job or `cargo bench ...` locally, run
 `python3 script/bench_gate.py target/criterion --suggest` to see medians and a 10x suggestion, then edit
 `max_ns` in the same commit as the code change that justifies it (and add an entry when you add a bench).
-Never raise a limit just to go green. For a tighter local A/B use `-- --save-baseline before` / `-- --baseline before`.
+Never raise a limit just to go green. For a tighter local A/B use `-- --save-baseline before` / `-- --baseline before`. On Windows every limit is scaled by `platform_factor.windows` (2.0, owner 2026-11-04: the test VM runs ~1.75x the Linux box); Linux and macOS use `max_ns` as written.
 
 Budget notes are in each file's header. Owner budget: key-to-paint Phosphor overhead <= 2 ms,
 Enter <= 2 ms, UI work <= 4 ms per event; the pure parts here should each be microseconds. HTML

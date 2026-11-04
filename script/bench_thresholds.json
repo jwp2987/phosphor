@@ -1,5 +1,9 @@
 {
   "_doc": "Max allowed MEDIAN time per iteration, in nanoseconds, per criterion benchmark id. Checked by script/bench_gate.py after the manual `bench` CI job. These are the budgets from the bench file headers (app/benches/*.rs) with generous headroom for a noisy shared build box, NOT measured baselines: they catch order-of-magnitude regressions. To update: run the `bench` job (or `script/bench_gate.py --suggest` on a local `cargo bench` run), look at the measured medians, and edit max_ns here in the same commit as the code change that justifies it. Never raise a limit just to go green.",
+  "_platform_doc": "platform_factor multiplies every max_ns on that platform (sys.platform: win32 -> windows, darwin -> macos, else linux). Windows is 2.0 (owner 2026-11-04): the Windows test VM measured ~1.75x the Linux box on the same commit (r18u16: ansi/mixed_1mb_in_4k_reads 129 ms vs 74 ms, routing/route_10mb_line 2.67 s vs 1.50 s). A real regression still fails on every platform. Recalibrate if the VM changes; never raise a factor to hide a regression.",
+  "platform_factor": {
+    "windows": 2.0
+  },
   "max_ns": {
     "pane_queue/idle_key": 20000,
     "pane_queue/gate_open_offer_drain": 1000000,

@@ -59,7 +59,12 @@ def main(argv):
         print(f"bench_gate: no criterion results under {args[0]}", file=sys.stderr)
         return 1
     with open(THRESHOLDS) as f:
-        limits = json.load(f)["max_ns"]
+        cfg = json.load(f)
+    plat = "windows" if sys.platform == "win32" else "macos" if sys.platform == "darwin" else "linux"
+    factor = float(cfg.get("platform_factor", {}).get(plat, 1.0))
+    limits = {k: int(v * factor) for k, v in cfg["max_ns"].items()}
+    if factor != 1.0:
+        print(f"bench_gate: {plat} limits scaled x{factor:g} (platform_factor in bench_thresholds.json)")
     bad = 0
     for bid in sorted(set(results) | set(limits)):
         got, lim = results.get(bid), limits.get(bid)
