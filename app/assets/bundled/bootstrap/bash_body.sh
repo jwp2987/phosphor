@@ -1609,16 +1609,19 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
                 command ssh ${warp_ipqos_args[@]+"${warp_ipqos_args[@]}"} -o ControlMaster=yes -o ControlPath="$control_path" -o ControlPersist=10 -o ClearAllForwardings=yes -N -f "${@:1}"
                 local warp_master_rc=$?
                 if [[ $warp_master_rc -ne 0 ]]; then
-                    # #1551: the master step failed. It ran with -N, so no remote command (and no session) ever
-                    # existed: ssh only authenticates, then forks. Re-running as a plain ssh therefore cannot
-                    # execute anything twice. An interrupt (rc > 128 other than ssh's own 255) is the
-                    # user's Ctrl-C and is respected; any other failure (e.g. a ssh that cannot multiplex,
-                    # as Git for Windows' ssh.exe) falls back to the user's plain ssh, which reports its own errors.
-                    if [[ $warp_master_rc -gt 128 && $warp_master_rc -ne 255 ]]; then
-                        return $warp_master_rc
+                    # #1626: plain ssh asks for credentials ONCE per invocation. The master step was the
+                    # user's one attempt (host key, password, passphrase, Ctrl-C), and ssh already printed
+                    # why it failed, so its status is returned as is. #1551: the one exception is a ssh
+                    # that authenticated but cannot multiplex (Git for Windows' ssh.exe: "Failed to
+                    # connect to new control master", 255). ssh creates the ControlPath socket only
+                    # AFTER authenticating, and the path was verified empty above, so something there
+                    # now means authentication succeeded and only multiplexing failed: then the user's
+                    # plain ssh runs. It ran with -N, so no remote command ever ran and none runs twice.
+                    if [[ -e "${control_path/#\~/$HOME}" || -L "${control_path/#\~/$HOME}" ]]; then
+                        command ssh "${@:1}"
+                        return
                     fi
-                    command ssh "${@:1}"
-                    return
+                    return $warp_master_rc
                 fi
                 # Own it only if a master really answers there. #1172: the socket we just waited for IS the proof: the
                 # path was verified empty above, so a socket there can only be this master's, and `-f` returns only after

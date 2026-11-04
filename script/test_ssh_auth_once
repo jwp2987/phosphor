@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+"""#1626: a failed ssh login asks for credentials ONCE, like plain ssh.
+
+The wrapper's ControlMaster step (`ssh ... -N -f`) is where the user authenticates. When it
+failed, the #1551 fallback ran `command ssh "$@"` again, so a failed login showed a SECOND
+password / passphrase prompt and the user's next local command was typed into it.
+
+This cuts the real `warp_ssh_helper` out of bash_body.sh, zsh_body.sh and fish.sh, puts a fake
+`ssh` on PATH that counts every connecting invocation, and checks:
+
+  * auth failure (255, no control socket created)   -> ssh runs ONCE, status 255, its own
+    "Permission denied" message reaches stderr unchanged, nothing extra is printed;
+  * Ctrl-C at the prompt (130)                     -> ssh runs ONCE, status 130;
+  * mux failure (255 AFTER authenticating: the master created its ControlPath socket, as Git
+    for Windows' ssh.exe does before "Failed to connect to new control master") -> the #1551
+    fallback still runs the user's plain ssh, exactly once more, with exactly their arguments.
+
+Needs python3 and at least one of bash/zsh/fish (missing shells are SKIPPED). No cargo.
+Usage: script/test_ssh_auth_once
+"""
+import os
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BOOT = os.path.join(ROOT, "app/assets/bundled/bootstrap")
+
+# Records each non -G call as one line of its arguments. -N (the master) behaves per $MASTER.
+FAKE_SSH = r"""#!/bin/sh
+[ "$1" = "-G" ] && { printf 'user u\nhostname h\nport 22\n'; exit 0; }
+printf '%s\n' "$*" >> "$CALLS"
+p=
+for a in "$@"; do case "$a" in ControlPath=*) p="${a#ControlPath=}";; esac; done
+case " $* " in
+  *" -N "*)
+    case "$MASTER" in
+      authfail) echo "user@host: Permission denied (publickey,password)." >&2; exit 255;;
+      interrupt) exit 130;;
+      muxfail) python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$p"
+               echo "Failed to connect to new control master" >&2; exit 255;;
+    esac;;
+esac
+exit 0
+"""
+
+# (shell, file, function start marker, end marker)
+SHELLS = [
+    ("bash", "bash_body.sh", "        function warp_ssh_helper() {", "\n        function __warp_ssh_impl"),
+    ("zsh", "zsh_body.sh", "      function warp_ssh_helper() {", "\n      function ssh() {"),
+    ("fish", "fish.sh", "    function warp_ssh_helper", "\n    function ssh\n"),
+]
+
+# (master behaviour, expected status, expected connecting ssh calls, expected stderr)
+CASES = [
+    ("authfail", 255, 1, "user@host: Permission denied (publickey,password).\n"),
+    ("interrupt", 130, 1, ""),
+    ("muxfail", 0, 2, "Failed to connect to new control master\n"),
+]
+
+
+def run(shell, function, master):
+    d = tempfile.mkdtemp(prefix="ssh_auth_once_")
+    try:
+        ssh = os.path.join(d, "ssh")
+        open(ssh, "w").write(FAKE_SSH)
+        os.chmod(ssh, os.stat(ssh).st_mode | stat.S_IXUSR)
+        socks = os.path.join(d, "socks")
+        os.mkdir(socks)
+        calls = os.path.join(d, "calls")
+        if shell == "fish":
+            prelude = (
+                "function warp_init_shell; end; function warp_send_json_message; end; "
+                "set -g SSH_SOCKET_DIR '%s'; set -g WARP_SESSION_ID 77;" % socks
+            )
+            status = "$status"
+            argv = [shell, "--no-config", "-c"]
+        else:
+            prelude = (
+                "init_shell_hook(){ :; }; warp_send_json_message(){ :; }; __warp_hex_encode_to(){ __warp_hex=; }; "
+                "SSH_SOCKET_DIR='%s'; WARP_SESSION_ID=77;" % socks
+            )
+            status = "$?"
+            argv = [shell, "-c"]
+        script = "%s\n%s\nwarp_ssh_helper -p 22 user@host\nexit %s" % (prelude, function, status)
+        env = dict(os.environ)
+        env["PATH"] = d + ":" + env["PATH"]
+        env["HOME"] = d
+        env["CALLS"] = calls
+        env["MASTER"] = master
+        r = subprocess.run(argv + [script], env=env, capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL, timeout=60)
+        made = open(calls).read().splitlines() if os.path.exists(calls) else []
+        return r.returncode, made, r.stdout, r.stderr
+    finally:
+        shutil.rmtree(d)
+
+
+def main():
+    failures = 0
+    ran = 0
+    for shell, fname, start, end in SHELLS:
+        if not shutil.which(shell):
+            print("SKIPPED %s (not installed)" % shell)
+            continue
+        text = open(os.path.join(BOOT, fname)).read()
+        a = text.index(start)
+        function = text[a : a + text[a:].index(end)]
+        for master, want_rc, want_calls, want_err in CASES:
+            ran += 1
+            rc, made, out, err = run(shell, function, master)
+            problems = []
+            if rc != want_rc:
+                problems.append("status %d, want %d" % (rc, want_rc))
+            if len(made) != want_calls:
+                problems.append("%d connecting ssh calls, want %d" % (len(made), want_calls))
+            elif want_calls == 2 and made[1] != "-p 22 user@host":
+                problems.append("fallback ssh must carry exactly the user's arguments: %r" % made[1])
+            if not made or " -N " not in " %s " % made[0]:
+                problems.append("first call is not the master: %r" % made[:1])
+            if err != want_err or out:
+                problems.append("output changed: stdout %r stderr %r" % (out, err))
+            print("%s %s: %s" % ("FAIL" if problems else "ok  ", shell, master))
+            for p in problems:
+                print("     " + p)
+            failures += bool(problems)
+    if ran == 0:
+        print("SKIPPED: no shell available")
+    sys.exit(1 if failures else 0)
+
+
+main()
