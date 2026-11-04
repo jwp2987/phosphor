@@ -48,7 +48,8 @@ PROMPT_COMMAND="__pa_rec${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
 # PS0+= keeps whatever PS0 the system already set (systemd's OSC 3008 hook, say); [^0-9], not [!0-9]: in POSIX mode bash expands `!` in
 # prompt strings to the history number.
 if [ -n "${EPOCHREALTIME:-}" ]; then PS0+='${__pa_q[__pa_lf=${EPOCHREALTIME//[^0-9]/}]-}'; fi
-if [ -n "$APPCI_W" ]; then cd "$APPCI_W"; elif [ "$PWD" = "$HOME" ]; then cd "$HOME/w" 2>/dev/null; fi
+# Only a shell that starts in $HOME or / is moved to the work dir: a restored tab starts in its saved cwd and keeps it (r18u8 session_restore).
+if [ "$PWD" = "$HOME" ] || [ "$PWD" = / ]; then if [ -n "$APPCI_W" ]; then cd "$APPCI_W"; else cd "$HOME/w" 2>/dev/null; fi; fi
 true
 '''
 BOOTSTRAP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "app", "assets", "bundled", "bootstrap")
@@ -103,7 +104,8 @@ __pa_pxh() { __pa_px=$EPOCHREALTIME }
 preexec_functions+=(__pa_pxh)
 __pa_lfw() { __pa_lf=$EPOCHREALTIME }
 zle -N zle-line-finish __pa_lfw 2>/dev/null
-if [[ -n $APPCI_W ]]; then cd $APPCI_W; elif [[ $PWD == $HOME ]]; then cd $HOME/w; fi
+# Only a shell that starts in $HOME or / is moved to the work dir: a restored tab keeps its saved cwd (r18u8 session_restore).
+if [[ $PWD == $HOME || $PWD == / ]]; then if [[ -n $APPCI_W ]]; then cd $APPCI_W; else cd $HOME/w; fi; fi
 '''
 FISH = '''# appci scratch config (fish)
 set -gx PA_CTL "%(ctl)s"
