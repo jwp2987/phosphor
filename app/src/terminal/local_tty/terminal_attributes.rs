@@ -290,6 +290,15 @@ pub(crate) fn is_canonical_without_echo(flags: termios::LocalFlags) -> bool {
     flags.contains(termios::LocalFlags::ICANON) && !flags.contains(termios::LocalFlags::ECHO)
 }
 
+/// Whether the tty is canonical with echo off right now: a program is reading a secret (`ssh`'s
+/// password prompt, `sudo`, `read -s`). The termios guard of the ssh typeahead release (#1611,
+/// #1612, #1621): the keys held before ssh owned the tty are discarded then, as the kernel's
+/// `TCSAFLUSH` discards a plain terminal's typeahead, instead of being written into the password.
+/// A failed query reads as `false` (the keys are delivered; nothing is guessed from text).
+pub fn tty_is_reading_secret(fd: RawFd) -> bool {
+    fetch_termial_attributes(fd).is_ok_and(|termios| is_canonical_without_echo(termios.local_flags))
+}
+
 /// Shells, and programs that put a shell (possibly on another machine) behind the pty.
 pub(crate) fn is_shell_or_login_hop(comm: &str) -> bool {
     const NAMES: &[&str] = &[

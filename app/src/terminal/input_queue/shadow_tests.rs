@@ -119,27 +119,6 @@ fn a_signal_held_in_the_ssh_setup_window_is_tagged_od5() {
 }
 
 #[test]
-fn a_key_stamped_before_the_ssh_prompt_is_tagged_od7() {
-    let intent = kb(Class::Typed).stamped(Stamp {
-        facts_gen: 3,
-        ..Stamp::UNSTAMPED
-    });
-    let facts = RouteFacts {
-        ssh: SshPhase::PromptUp { prompt_gen: 5 },
-        ..running()
-    };
-    let plan = decide(&intent, &facts, None);
-    assert_eq!(plan.row, Row::H4);
-    // Legacy delivered it to the prompt.
-    let disagreement = compare(&intent, &plan, &facts, DestClass::Pty).expect("they differ");
-    assert_eq!(
-        (disagreement.table, disagreement.expected),
-        (DestClass::Dropped, Some("OD7"))
-    );
-    assert!(disagreement.flags.starts_with("ssh=prompt"));
-}
-
-#[test]
 fn a_silent_drop_of_hidden_input_is_tagged_b3() {
     // The agent still owns the command, the box is hidden: the table drops with a reason where
     // legacy lost the text without one.
@@ -337,11 +316,7 @@ fn a_legacy_that_mirrors_the_table_reports_zero_disagreements_over_the_facts() {
     let mut compared = 0u32;
     let mut disagreed = 0u32;
     for facts in [at_prompt(), running(), RouteFacts::default()] {
-        for ssh in [
-            SshPhase::Idle,
-            SshPhase::Holding,
-            SshPhase::PromptUp { prompt_gen: 3 },
-        ] {
+        for ssh in [SshPhase::Idle, SshPhase::Holding] {
             for mask in [0u16, 1, 1 << 4, 1 << 10, (1 << 12) - 1] {
                 let mut facts = facts;
                 facts.ssh = ssh;

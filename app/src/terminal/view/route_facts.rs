@@ -13,7 +13,9 @@
 //! * It reads the legacy ssh / subshell / PowerShell fields as they stand and DERIVES the phases
 //!   ([`SshPhase`], [`SubshellPhase`], [`PsPhase`]) from them. It does not run the legacy
 //!   refreshers (`refresh_ssh_connect_gate`, `ssh_connect_gate_drops_keys`, ...): those mutate
-//!   view state. Each has a read-only, non-blocking counterpart here. The ssh phase has a second
+//!   view state. Each has a read-only, non-blocking counterpart here. Nothing about the ssh
+//!   connect is read from the screen (#1611, #1612, #1621): the gate's ownership of the tty is
+//!   an event it recorded. The ssh phase has a second
 //!   source since design step 7, the edge-driven machine (`view/ssh_edges.rs`): in `table` mode
 //!   the facts carry the machine's phase and the key path runs no ssh refresher at all; in
 //!   `shadow` mode the derivation is carried and a difference is reported.
@@ -30,7 +32,7 @@ use warpui::pane_key::PaneKeyContext;
 
 use super::{
     PowerShellSetupHold, SSH_BOOTSTRAP_SWALLOW_CEILING, SUBSHELL_BOOTSTRAP_STALL_CEILING,
-    SUBSHELL_SETUP_TYPED_HOLD_LIMIT, SshBootstrapInterruptRoute, SshConnectGate, TerminalView,
+    SUBSHELL_SETUP_TYPED_HOLD_LIMIT, SshBootstrapInterruptRoute, TerminalView,
     ssh_pre_init_abort_bytes, subshell_bootstrap_key_forwarded,
 };
 use crate::features::FeatureFlag;
@@ -96,22 +98,13 @@ impl TerminalView {
         self.warpify_state.get_pending_ssh_host().is_some() && snapshot.is_long_running()
     }
 
-    /// `ssh_connect_gate_drops_keys` read-only and non-blocking: the sticky "visible text seen"
-    /// comes from the snapshot, the alt screen from the facts. `false` without a gate.
-    fn ssh_connect_gate_drops_keys_in(
-        &self,
-        alt_screen: bool,
-        snapshot: &KeyModelSnapshot,
-    ) -> bool {
-        self.ssh_connect_gate.as_ref().is_some_and(|gate| {
-            gate.drops_keys_with(alt_screen, self.gate_output_seen(gate, snapshot))
-        })
-    }
-
-    /// The gate's `output_seen` as `ssh_connect_gate_drops_keys` would leave it: sticky, set when
-    /// the block shows visible text before it ended.
-    fn gate_output_seen(&self, gate: &SshConnectGate, snapshot: &KeyModelSnapshot) -> bool {
-        gate.output_seen || (!gate.block_done && snapshot.visible_text_seen)
+    /// `ssh_connect_gate_drops_keys` read-only: the gate's own state (ownership of the tty is an
+    /// event the gate recorded, nothing is read from the screen) and the alt screen from the
+    /// facts. `false` without a gate.
+    fn ssh_connect_gate_drops_keys_in(&self, alt_screen: bool) -> bool {
+        self.ssh_connect_gate
+            .as_ref()
+            .is_some_and(|gate| gate.drops_keys(alt_screen))
     }
 
     /// `subshell_bootstrap_announced_age_in` is already pure; the PowerShell hold is read from the
@@ -229,7 +222,7 @@ impl TerminalView {
         let pending_now = snapshot.pending_session_id;
         let has_pending_ssh_command = self.has_pending_ssh_command_in(snapshot);
         let gate = self.ssh_connect_gate.as_ref();
-        let drops_keys = self.ssh_connect_gate_drops_keys_in(alt_screen, snapshot);
+        let drops_keys = self.ssh_connect_gate_drops_keys_in(alt_screen);
         let pending_sid = if gate.is_some() || has_pending_ssh_command {
             pending_now
         } else {
@@ -256,20 +249,16 @@ impl TerminalView {
             && (ssh_interrupt_must_wait
                 || (pending_now.is_none()
                     && (snapshot.has_pending_ssh_session || drops_keys || !awaits_an_answer)));
-        // `ssh_prompt_has_arrived`: visible, unterminated text on an unmanaged connect.
-        let prompt_up = !drops_keys
-            && gate.is_some_and(|g| {
-                self.gate_output_seen(g, snapshot) && !g.block_done && !g.managed && !g.saw_pending
-            });
         // Keys are held while a hold exists, and from the first key of a connect: the gate drops
-        // keys (silent connect, bootstrap swallow, remote setup) with nothing held yet. Legacy
-        // `hold_input_during_ssh_connect` holds on `gate_drops || holding`; the dialog swallows
-        // instead (row H2 comes first, so it never reaches the hold).
+        // keys (ssh does not own the tty yet, bootstrap swallow, remote setup) with nothing held
+        // yet. Legacy `hold_input_during_ssh_connect` holds on `gate_drops || holding`; the
+        // dialog swallows instead (row H2 comes first, so it never reaches the hold). No prompt
+        // phase: nothing about the connect is read from the screen (#1611, #1612, #1621).
         let gate_drops = ssh_setup_in_flight || ssh_bootstrapping || ssh_connecting_silently;
-        let derived_ssh = match unterminated {
-            Some(prompt_gen) if prompt_up => SshPhase::PromptUp { prompt_gen },
-            _ if self.ssh_typeahead_holding || (!ssh_dialog_up && gate_drops) => SshPhase::Holding,
-            _ => SshPhase::Idle,
+        let derived_ssh = if self.ssh_typeahead_holding || (!ssh_dialog_up && gate_drops) {
+            SshPhase::Holding
+        } else {
+            SshPhase::Idle
         };
         // #1424 step 7: `table` mode carries the edge-driven machine's phase; `shadow` carries
         // the derivation above and reports a difference (`kh_ssh_phase_disagree`).
@@ -280,8 +269,6 @@ impl TerminalView {
             SshObservation {
                 pending_session: pending_now.is_some(),
                 hook_seen: snapshot.has_pending_ssh_session,
-                visible_text: snapshot.visible_text_seen,
-                unterminated_since: snapshot.unterminated_since_gen,
                 dialog_up: ssh_dialog_up,
                 setup_in_flight: ssh_setup_in_flight,
             },
@@ -347,8 +334,6 @@ impl TerminalView {
                 pending_now.is_some(),
             )
             .is_some(),
-            // Latched by the pty reader at publish; no grid read, no lock here.
-            ssh_prompt_is_shell: snapshot.unterminated_is_shell,
             ssh_sigint_applies: !snapshot.has_pending_ssh_session
                 && pending_now.is_none()
                 && gate.is_some_and(|g| !g.block_done),

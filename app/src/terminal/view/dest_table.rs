@@ -15,8 +15,8 @@
 //! ..., which could hold the input AGAIN from inside the delivery and recover through the
 //! `delivering` / `requeue_request` plumbing). [`TerminalView::deliver_via_table`] builds the
 //! facts of THIS moment (since step 7 the ssh refreshers are gone from the key path: the edge-driven
-//! `SshPhase` of `view/ssh_edges.rs` carries the connect state, and a prompt that appeared
-//! discards what was held), decides ONCE with `table::decide` (the entry's own
+//! `SshPhase` of `view/ssh_edges.rs` carries the connect state; nothing about the connect is read
+//! from the screen, #1611, #1612, #1621), decides ONCE with `table::decide` (the entry's own
 //! stamp, no gate behind it: the queue delivered it, so none covers it) and executes the plan with
 //! the same leaf writers legacy ends in. A plan that holds the input behind the ssh connect
 //! requeues it exactly as `ssh_hold_push` always did mid-drain.
@@ -73,7 +73,7 @@ use crate::terminal::input_queue::table::{
 };
 use crate::terminal::input_queue::{
     Deferred, DestinationMode, EntryKind, GateKind, HELD_KEY, HELD_PASTE, HELD_SEQ, HELD_SIGNAL,
-    HELD_TYPED, Origin, QueueFacts, RouteFacts, SignalKind, SshPhase, Stamp, destination_mode,
+    HELD_TYPED, Origin, QueueFacts, RouteFacts, SignalKind, Stamp, destination_mode,
 };
 
 /// What the table decided at the top of a legacy entry point, kept until its leaf is known.
@@ -265,55 +265,6 @@ impl TerminalView {
         self.deliver_via_table(input, Origin::Held, stamp, ctx);
     }
 
-    /// The facts of this moment, after the prompt rule of the ssh hold: a host-key / password
-    /// prompt appeared while keys were held, so what was typed before it may be a password and is
-    /// discarded (the event-time rule, #1113); the keys after it go to the prompt. The facts are
-    /// built again when the hold was discarded. A signal never discards (it is judged by its own
-    /// rows).
-    fn facts_after_prompt_discard(
-        &mut self,
-        queue: QueueFacts,
-        signal: bool,
-        ctx: &mut ViewContext<Self>,
-    ) -> RouteFacts {
-        let facts = self.build_route_facts(queue, ctx);
-        // The machine says a prompt is up (a host-key / password prompt before any remote
-        // session): what was held may be a password typed blind. `PromptUp` implies the gate
-        // drops nothing (no pending session, no setup, a seen line of text).
-        let prompt_up = matches!(facts.ssh, SshPhase::PromptUp { .. });
-        if self.ssh_typeahead_holding && prompt_up && !signal {
-            if self.paste_queue.queue.is_draining() {
-                // Mid-drain (#1575): this input joins the hold; the hand-over runs on the next
-                // turn, out of any key, so the held line is not split from the input being
-                // delivered.
-                if !self.ssh_prompt_handover_scheduled {
-                    self.ssh_prompt_handover_scheduled = true;
-                    ctx.spawn(async {}, |me, _, ctx| {
-                        me.ssh_prompt_handover_scheduled = false;
-                        if me.ssh_typeahead_holding && !me.paste_queue.queue.is_draining() {
-                            let still_prompt = matches!(
-                                me.build_route_facts(QueueFacts::default(), ctx).ssh,
-                                SshPhase::PromptUp { .. }
-                            );
-                            if still_prompt {
-                                me.discard_held_ssh_typeahead_for_prompt(ctx);
-                            } else {
-                                me.deliver_ssh_typeahead_if_ready("prompt_after_drain", ctx);
-                            }
-                        }
-                    });
-                }
-                let mut facts = facts;
-                // H3: held behind the connect gate, requeued mid-drain (#1415).
-                facts.ssh = SshPhase::Holding;
-                return facts;
-            }
-            self.discard_held_ssh_typeahead_for_prompt(ctx);
-            return self.build_route_facts(queue, ctx);
-        }
-        facts
-    }
-
     /// Decides ONE delivered input with the table and executes the plan. `origin` is how the
     /// entry is judged (`Replay` for text / an Enter typed behind an Enter that waited, `Held` for
     /// an ssh-held input), `stamp` what it got at its sink. Must be called from a delivery (the
@@ -346,13 +297,11 @@ impl TerminalView {
             self.reprobe_interactive_latch_on_key();
         }
         // Step 7: no ssh refresher runs here. The gate is armed, released and handed over by the
-        // events (`view/ssh_edges.rs`), and the facts carry the edge-driven machine's phase.
-        // The entry was delivered by the queue, so no gate covers it: the facts carry none.
-        let facts = self.facts_after_prompt_discard(
-            QueueFacts::default(),
-            matches!(input, Replayed::Signal(_)),
-            ctx,
-        );
+        // events (`view/ssh_edges.rs`), and the facts carry the edge-driven machine's phase. No
+        // prompt rule either: a held input reaching the pty is ssh's, whatever the screen shows
+        // (#1611, #1612, #1621). The entry was delivered by the queue, so no gate covers it: the
+        // facts carry none.
+        let facts = self.build_route_facts(QueueFacts::default(), ctx);
         let intent = Intent::new(input.class(), origin)
             .stamped(stamp)
             .delivering();
@@ -424,9 +373,7 @@ impl TerminalView {
                 true
             }
             Outcome::Drop(why) => {
-                // Counts and reasons only, never the text. A key stamped before the ssh prompt
-                // (H4, OD-7) is dropped here even though it reaches the main thread after the
-                // prompt was published.
+                // Counts and reasons only, never the text.
                 log::info!(
                     "input queue: a delivered input was dropped: row={} why={why:?}",
                     plan.row.name()
@@ -793,7 +740,7 @@ impl TerminalView {
     /// Decides a live input with the table and executes the plan. See the section comment.
     pub(super) fn arrive_via_table(&mut self, arrival: Arrival<'_>, ctx: &mut ViewContext<Self>) {
         note_table_arrival();
-        // First: what the key saw when it reached the sink (H4 judges a key by it).
+        // First: what the key saw when it reached the sink (the focus rows judge a key by it).
         let stamp = self.paste_queue.queue.stamp_now();
         let _key_path = KeyPathScope::enter(&self.key_path_depth);
         let class = arrival.class();
@@ -821,7 +768,7 @@ impl TerminalView {
             let _ = self.prepare_subshell_gates(text.as_bytes(), ctx);
         }
         let queue_facts = self.paste_queue.queue.try_queue_facts().unwrap_or_default();
-        let facts = self.facts_after_prompt_discard(queue_facts, is_signal, ctx);
+        let facts = self.build_route_facts(queue_facts, ctx);
         let intent = Intent::new(class, origin).stamped(stamp);
         let plan = table::decide(&intent, &facts, None);
         warpui::input_order::log_key_hop("kh_table_decide", || {

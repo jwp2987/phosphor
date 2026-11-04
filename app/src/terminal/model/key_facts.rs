@@ -233,22 +233,13 @@ pub struct KeyModelSnapshot {
     pub is_bootstrapped: bool,
     /// `model.needs_bracketed_paste()`.
     pub needs_bracketed_paste: bool,
-    /// The active block's output has had visible text at some point (sticky for the block: it
-    /// never goes back to false while the block is active). Replaces the blocking
-    /// `contents_to_string` lock of `ssh_connect_gate_drops_keys` (#1424).
-    pub visible_text_seen: bool,
     /// The gen at which the active block's output last BECAME unterminated text (visible text
-    /// with the cursor parked after it on its row: the shape of a prompt), `None` while it is not.
-    /// The ssh password-prompt rule (H4) compares a key's stamp with this: a key stamped before
-    /// it was typed blind. Exact for the last `OUTPUT_TAIL_ROWS` rows, like the view's own
-    /// `active_output_ends_in_unterminated_text`.
+    /// with the cursor parked after it on its row: the shape of a line waiting for an answer),
+    /// `None` while it is not. Read by the subshell setup's "the shell asks for an answer" rule
+    /// (#1032, `subshell_awaiting_answer`) and the ssh ^D rule (#1111); the ssh connect itself
+    /// reads nothing from the screen (#1611, #1612, #1621). Exact for the last `OUTPUT_TAIL_ROWS`
+    /// rows, like the view's own `active_output_ends_in_unterminated_text`.
     pub unterminated_since_gen: Option<u64>,
-    /// While `unterminated_since_gen` is `Some`: the unterminated line LOOKED like a shell's own
-    /// prompt (not a credential-style one) when the episode began, and stays so until it ends,
-    /// whatever is typed after it (the inner shell's echo of a delivered line, `inner$ echo B`,
-    /// must not turn it into "not a prompt"). Latched by the pty reader at publish, read without
-    /// the model's lock by row H4's shell-prompt exemption (#1575).
-    pub unterminated_is_shell: bool,
 }
 
 /// The terminal modes `KeystrokeWithDetails::to_escape_sequence` asks about (application cursor
@@ -319,7 +310,7 @@ pub fn output_has_visible_text(output: &str) -> bool {
 }
 
 /// What the model remembers about the active block's output between publications, so the
-/// snapshot's sticky bits cost nothing once they are set (see [`KeyModelSnapshot::visible_text_seen`]).
+/// sticky "visible text seen" bit (which gates the unterminated scan) costs nothing once it is set.
 /// A leaf lock inside the model's: held for a few field writes plus the scans below, taken only
 /// by whoever holds the model.
 #[derive(Debug, Default)]
@@ -328,8 +319,6 @@ pub struct StickyOutput {
     visible_seen: bool,
     unterminated: bool,
     unterminated_since: u64,
-    /// Latched for the unterminated episode (see [`KeyModelSnapshot::unterminated_is_shell`]).
-    unterminated_is_shell: bool,
 }
 
 impl StickyOutput {
@@ -356,27 +345,14 @@ impl StickyOutput {
             if !self.unterminated {
                 self.unterminated = true;
                 self.unterminated_since = facts_gen;
-                self.unterminated_is_shell = false;
             }
         } else {
             self.unterminated = false;
-            self.unterminated_is_shell = false;
         }
         (
             self.visible_seen,
             self.unterminated.then_some(self.unterminated_since),
         )
-    }
-}
-
-impl StickyOutput {
-    /// Latches "the unterminated line is a shell's prompt" for the open episode: `scan` (the tail
-    /// test) runs only while an episode is open and the latch is not set. Call after `observe`.
-    fn observe_shell(&mut self, scan: impl FnOnce() -> bool) -> bool {
-        if self.unterminated && !self.unterminated_is_shell {
-            self.unterminated_is_shell = scan();
-        }
-        self.unterminated && self.unterminated_is_shell
     }
 }
 
@@ -399,17 +375,6 @@ pub fn output_tail_is_input_prompt(output: &str) -> bool {
         || ["password", "passphrase", "passcode", "secret"]
             .iter()
             .any(|word| lower.contains(word))
-}
-
-/// Whether the last line of `output` has the shape of a shell's own prompt: it ends in `$`, `#`,
-/// `%`, `>` or the chevron `❯` (after the prompt's trailing space). Callers check that the line is
-/// unterminated and not a credential-style prompt (`output_tail_is_input_prompt`) (#1561).
-pub fn output_tail_is_shell_prompt(output: &str) -> bool {
-    let Some(line) = output.trim_end_matches('\n').rsplit('\n').next() else {
-        return false;
-    };
-    let line = line.trim_end();
-    output_has_visible_text(line) && line.ends_with(['$', '#', '%', '>', '\u{276f}'])
 }
 
 /// The cheap model facts behind "is the input box visible", so the key path can answer it from
@@ -468,7 +433,7 @@ impl KeyModelSnapshot {
             && interactive_prompt_candidate(active_block.output_grid().grid_handler()).is_none();
         let active_block_hash = block_id_hash(model.active_block_id());
         let facts_gen = model.facts_gen();
-        let (visible_text_seen, unterminated_since_gen) = model.sticky_output().lock().observe(
+        let (_visible_text_seen, unterminated_since_gen) = model.sticky_output().lock().observe(
             active_block_hash,
             facts_gen,
             || output_has_visible_text(&active_block.output_grid().contents_to_string(false, None)),
@@ -480,12 +445,6 @@ impl KeyModelSnapshot {
                     )
             },
         );
-        let unterminated_is_shell = model.sticky_output().lock().observe_shell(|| {
-            let tail = active_block
-                .output_grid()
-                .contents_to_string(false, Some(OUTPUT_TAIL_ROWS));
-            output_tail_is_shell_prompt(&tail) && !output_tail_is_input_prompt(&tail)
-        });
         Self {
             read_only: model.is_read_only(),
             shared_session_executor: model.shared_session_status().is_executor(),
@@ -519,9 +478,7 @@ impl KeyModelSnapshot {
             facts_gen,
             is_bootstrapped: model.block_list().is_bootstrapped(),
             needs_bracketed_paste: model.needs_bracketed_paste_shared(),
-            visible_text_seen,
             unterminated_since_gen,
-            unterminated_is_shell,
         }
     }
 

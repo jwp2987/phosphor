@@ -12,7 +12,7 @@
 //!   view and read by anyone (the editor's deferred offers stamp from it).
 //! * [`Stamp`]: what was true when a key reached the pane's sink. It travels with the entry
 //!   (`InputEntry::stamp`, `Deferred::Offer`), so a key that waited in the mailbox keeps the
-//!   classification it had when the user pressed it (the password rule, H4).
+//!   classification it had when the user pressed it (the focus rows H1, D1, D9).
 //! * [`SshPhase`], [`SubshellPhase`], [`PsPhase`]: DERIVED, read-only, from the legacy fields. The
 //!   ssh phase has a second source since step 7, the edge-driven machine (`ssh_phase.rs`), which
 //!   the facts carry in `table` mode (no ssh refresher runs on the key path).
@@ -139,19 +139,12 @@ pub struct Stamp {
 }
 
 impl Stamp {
-    /// Not stamped by a sink (tests, internal entries): gen 0, so it is "before" every prompt.
+    /// Not stamped by a sink (tests, internal entries): gen 0, the oldest possible publication.
     pub const UNSTAMPED: Stamp = Stamp {
         facts_gen: 0,
         focus: FocusSnap::Other,
         epoch: 0,
     };
-
-    /// The key was stamped before publication `prompt_gen`: it was typed before the prompt
-    /// existed, so it may be a password typed blind (H4). Strictly before: a key stamped AT the
-    /// prompt's gen saw the prompt in its facts.
-    pub fn is_before(&self, prompt_gen: u64) -> bool {
-        self.facts_gen < prompt_gen
-    }
 }
 
 /// A set of open gate kinds, one bit per [`GateKind`] (the queue's `gate_mask`).
@@ -193,18 +186,18 @@ impl GateMask {
     }
 }
 
-/// Where the ssh connect typeahead stands. DERIVED from the legacy fields (`ssh_typeahead_holding`,
-/// the connect gate, the prompt test), never set by an event yet.
+/// Where the ssh connect typeahead stands: the edge-driven machine's phase (`ssh_phase.rs`) in
+/// `table` mode, derived from the legacy fields (`ssh_typeahead_holding`, the connect gate) in
+/// `shadow`. There is no prompt phase: nothing about the ssh connect is read from the screen
+/// (#1611, #1612, #1621).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SshPhase {
     /// No ssh connect holds keys.
     #[default]
     Idle,
-    /// Keys are being held until the remote shell shows its first prompt.
+    /// Keys are being held: until ssh owns the tty, or until the managed remote shell shows its
+    /// first prompt.
     Holding,
-    /// A host-key / password prompt is up (unterminated text before any remote session), first
-    /// published at `prompt_gen`. A key stamped before it may be a password typed blind (H4).
-    PromptUp { prompt_gen: u64 },
 }
 
 /// The subshell (`su -`, `sudo -i`) setup, derived from the open gates and the announcement.
@@ -319,12 +312,6 @@ pub struct RouteFacts {
     pub ssh_pre_init_abort: bool,
     /// A ^C applies as SIGINT to the foreground group (`ssh_connect_sigint_applies`).
     pub ssh_sigint_applies: bool,
-    /// While `ssh` is `PromptUp`: the unterminated line is a SHELL's prompt (ends in `$ # % >`,
-    /// not credential-shaped), e.g. a nested `ssh` into a host that is not bootstrapped. Keys held
-    /// for the connect that handed over to it belong to that shell (#1561, #1575), so H4 does not
-    /// drop them as a possible password. Latched by the pty reader for the whole unterminated episode
-    /// (the inner shell's echo of a delivered line does not unlatch it); meaningful only in `PromptUp`.
-    pub ssh_prompt_is_shell: bool,
 
     // ---- focus, cards, editor ----
     pub focus: FocusSnap,
@@ -523,20 +510,6 @@ mod tests {
             DestinationMode::parse(Some(" table ")),
             DestinationMode::Table
         );
-    }
-
-    #[test]
-    fn a_stamp_is_before_a_prompt_only_when_strictly_older() {
-        let stamp = Stamp {
-            facts_gen: 5,
-            ..Stamp::UNSTAMPED
-        };
-        assert!(stamp.is_before(6));
-        assert!(
-            !stamp.is_before(5),
-            "a key stamped at the prompt's gen saw it"
-        );
-        assert!(!stamp.is_before(4));
     }
 
     #[test]

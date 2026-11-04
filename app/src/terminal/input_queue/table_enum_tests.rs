@@ -34,14 +34,13 @@ use crate::terminal::input_queue::{
 };
 
 /// Every row of the table, in declaration order.
-const ALL_ROWS: [Row; 36] = [
+const ALL_ROWS: [Row; 35] = [
     Row::OSynced,
     Row::OCliSubmit,
     Row::H1,
     Row::H2,
     Row::H3,
     Row::H3b,
-    Row::H4,
     Row::H5,
     Row::H6,
     Row::H7,
@@ -109,10 +108,9 @@ fn all_origins() -> [Origin; 11] {
 }
 
 fn ssh_of(index: usize) -> SshPhase {
-    match index % 3 {
+    match index % 2 {
         0 => SshPhase::Idle,
-        1 => SshPhase::Holding,
-        _ => SshPhase::PromptUp { prompt_gen: 3 },
+        _ => SshPhase::Holding,
     }
 }
 
@@ -172,7 +170,6 @@ fn check(intent: &Intent, facts: &RouteFacts, pin: Option<Destination>) -> Plan 
     // Every drop names its reason, and the reason names a row that can drop for it.
     if let Outcome::Drop(why) = plan.outcome {
         let allowed: &[Row] = match why {
-            DropWhy::StaleBeforePrompt => &[Row::H4],
             DropWhy::AgentRefusedSetup => &[Row::D13],
             DropWhy::AgentControl => &[Row::D2b, Row::D3, Row::D5],
             DropWhy::NotLongRunning => &[Row::D10, Row::OSynced],
@@ -349,15 +346,11 @@ fn random_facts(rng: &mut Rng) -> RouteFacts {
     f.subshell_awaiting_answer = rng.flag();
     f.subshell_bootstrap_stalled = rng.flag();
     f.ps = ps_of(rng.below(5));
-    f.ssh = match rng.below(3) {
+    f.ssh = match rng.below(2) {
         0 => SshPhase::Idle,
-        1 => SshPhase::Holding,
-        _ => SshPhase::PromptUp {
-            prompt_gen: generation,
-        },
+        _ => SshPhase::Holding,
     };
     f.ssh_dialog_up = rng.flag();
-    f.ssh_prompt_is_shell = rng.flag();
     f.ssh_setup_in_flight = rng.flag();
     f.ssh_bootstrapping = rng.flag();
     f.ssh_connecting_silently = rng.flag();
@@ -572,36 +565,35 @@ fn row_names_are_unique_and_the_list_is_complete() {
             Row::H2 => 3,
             Row::H3 => 4,
             Row::H3b => 5,
-            Row::H4 => 6,
-            Row::H5 => 7,
-            Row::H6 => 8,
-            Row::H7 => 9,
-            Row::H7b => 10,
-            Row::H8 => 11,
-            Row::H8Queue => 12,
-            Row::H10 => 13,
-            Row::P1a => 14,
-            Row::P1b => 15,
-            Row::P1c => 16,
-            Row::P1d => 17,
-            Row::P1e => 18,
-            Row::P1f => 19,
-            Row::P2 => 20,
-            Row::D1 => 21,
-            Row::D1Replay => 22,
-            Row::D2 => 23,
-            Row::D2b => 24,
-            Row::D3 => 25,
-            Row::D4 => 26,
-            Row::D5 => 27,
-            Row::D6 => 28,
-            Row::D7 => 29,
-            Row::D9 => 30,
-            Row::D10 => 31,
-            Row::D11 => 32,
-            Row::D12 => 33,
-            Row::D13 => 34,
-            Row::Pin => 35,
+            Row::H5 => 6,
+            Row::H6 => 7,
+            Row::H7 => 8,
+            Row::H7b => 9,
+            Row::H8 => 10,
+            Row::H8Queue => 11,
+            Row::H10 => 12,
+            Row::P1a => 13,
+            Row::P1b => 14,
+            Row::P1c => 15,
+            Row::P1d => 16,
+            Row::P1e => 17,
+            Row::P1f => 18,
+            Row::P2 => 19,
+            Row::D1 => 20,
+            Row::D1Replay => 21,
+            Row::D2 => 22,
+            Row::D2b => 23,
+            Row::D3 => 24,
+            Row::D4 => 25,
+            Row::D5 => 26,
+            Row::D6 => 27,
+            Row::D7 => 28,
+            Row::D9 => 29,
+            Row::D10 => 30,
+            Row::D11 => 31,
+            Row::D12 => 32,
+            Row::D13 => 33,
+            Row::Pin => 34,
         }
     }
     for (position, row) in ALL_ROWS.iter().enumerate() {
@@ -670,7 +662,7 @@ fn stamp_of(index: usize) -> Stamp {
     }
 }
 
-/// Every dimension the table can branch on: all 43 boolean facts, the four enum facts, the 12 gate
+/// Every dimension the table can branch on: all 42 boolean facts, the four enum facts, the 12 gate
 /// bits, the five intent flags and the stamp.
 fn all_dims() -> Vec<Dim> {
     let mut dims: Vec<Dim> = Vec::new();
@@ -705,7 +697,6 @@ fn all_dims() -> Vec<Dim> {
         ssh_route_forward,
         ssh_pre_init_abort,
         ssh_sigint_applies,
-        ssh_prompt_is_shell,
         approval_card,
         ai_awaiting_confirmation,
         settled_ai_target,
@@ -721,7 +712,7 @@ fn all_dims() -> Vec<Dim> {
         agent_write_gate_closed,
     ]);
     dims.push(Dim {
-        values: 3,
+        values: 2,
         set: |p, v| p.facts.ssh = ssh_of(v),
     });
     dims.push(Dim {

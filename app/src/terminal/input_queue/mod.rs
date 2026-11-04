@@ -52,8 +52,8 @@
 //!    both, a reader retry until they agree), the pane's [`PaneRouteState`] and live reads. Every
 //!    entry carries a [`Stamp`] taken at the sink (`on_pane_key_event`) -- the model gen it saw, the
 //!    focus chain, the focus epoch -- through the deferred mailbox (`Deferred::Offer { .. stamp }`)
-//!    and follow-ups, so a key judged later still has the classification it had when typed (the ssh
-//!    password rule, H4). [`SshPhase`], [`SubshellPhase`] and [`PsPhase`] are DERIVED read-only
+//!    and follow-ups, so a key judged later still has the classification it had when typed (the
+//!    focus rows). [`SshPhase`], [`SubshellPhase`] and [`PsPhase`] are DERIVED read-only
 //!    from the legacy fields; no refresher moved off the key path.
 //!  - SHADOW (step 3, `shadow.rs`, `view/dest_table.rs`): in `shadow` mode the legacy entry points
 //!    (`typed_characters_on_terminal`, `keydown_on_terminal`, `control_sequence_on_terminal`, the
@@ -61,7 +61,7 @@
 //!    of the same moment, BEFORE the legacy chain runs; the chain notes the destination class it
 //!    reached at its leaf; a difference is logged as `kh_dest_disagree row=.. legacy=.. table=..
 //!    flags=..` (`input_order` target, debug, counts and flags only, never text), tagged
-//!    `expected=OD1|OD5|OD7|B3|B7|B13|B14` where the cause is a known bug or a deliberate change.
+//!    `expected=OD1|OD5|B3|B7|B13|B14` where the cause is a known bug or a deliberate change.
 //!    Shadow proves DESTINATIONS only and changes no behaviour. It runs when the mode is `shadow`
 //!    and `RUST_LOG=warp::input_order=debug` is on.
 //!  - DELIVERY THROUGH THE TABLE (step 4, the #1415 fix, `view/dest_table.rs`, ONLY in `table`
@@ -69,12 +69,12 @@
 //!    `Enter`) and every ssh-held input (`EntryKind::Held`, all five classes) are no longer
 //!    delivered by calling the legacy chain (`typed_characters_on_terminal` & co., which could hold
 //!    the input again from inside the delivery). `TerminalView::deliver_via_table` runs the legacy
-//!    ssh refreshers (the lazy arming of the connect gate, the prompt discard), builds the facts of
+//!    ssh refreshers (the lazy arming of the connect gate), builds the facts of
 //!    that moment (no gate covers a delivered entry), decides ONCE with the entry's own stamp, and
 //!    executes the plan with the leaf writers legacy ended in (`write_user_bytes_to_pty_after_paste_
 //!    stage`, the editor's insert / Enter, a requeue under the `SshConnect` gate for a hold).
 //!    A `HELD_SIGNAL` entry is executed (the signal goes to the pty through the leaf, after the
-//!    keys typed before it); the H4 drop is carried (`kh_table_drop`).
+//!    keys typed before it).
 //!  - ARRIVAL OF TERMINAL KEYS (step 5, `view/dest_table.rs`, ONLY in `table` mode): the three
 //!    entry points a live key arrives at (`typed_characters_on_terminal`, `keydown_on_terminal`,
 //!    `control_sequence_on_terminal`) hand the input to `TerminalView::arrive_via_table`. It takes
@@ -107,8 +107,9 @@
 //!    coarse routing (which host drains an entry), not the destination decision, so the hosts'
 //!    constant facts are not the table's facts.
 //!  - DELIBERATE CHANGES encoded in the table, effective in `table` mode for the paths above (the
-//!    owner's decisions OD-1, OD-5, OD-7): a key stamped before the ssh prompt was published is
-//!    dropped even if it is processed later (H4); a held signal is delivered to the REMOTE shell.
+//!    owner's decisions OD-1, OD-5): a held signal is delivered to the REMOTE shell. (OD-7, the
+//!    H4 drop of a key stamped before an ssh prompt, is gone with the prompt latch: #1611, #1612,
+//!    #1621; the ssh connect reads nothing from the screen, see `DECLINED.md`.)
 //!    The ARRIVAL side (step 5): ^Z and ^\ jump the queue like ^C; a signal typed in the ssh setup
 //!    window is held instead of dropped.
 //!  - STEP 7 (edge-driven ssh phase): [`SshPhaseMachine`] (`ssh_phase.rs`) is fed by the events that
@@ -182,7 +183,7 @@ pub use pane::{
     Deferred, GateKeysThen, PaneQueue, PasteOwner, PowershellKeysThen, SshDropThen,
     is_editor_paste_id,
 };
-pub use ssh_phase::{SshEdge, SshObservation, SshPhaseMachine, SshRelease};
+pub use ssh_phase::{SshEdge, SshObservation, SshPhaseMachine, SshRelease, TTY_OWNED_AT_ARM};
 
 /// Monotonic id assigned at arrival; it is the entry's position in the one order.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -408,7 +409,7 @@ pub struct InputEntry {
     pub origin: Origin,
     /// What was true when the key reached the pane's sink (#1424): the model gen it saw, the
     /// focus chain, the focus epoch. Created at the sink and carried through the deferred
-    /// mailbox; a decision made later still judges the key by it (H4).
+    /// mailbox; a decision made later still judges the key by it (the focus rows).
     pub stamp: Stamp,
 }
 
@@ -1373,7 +1374,7 @@ impl InputQueue {
         for item in follow.items {
             match item {
                 Follow::Offer(kind) => {
-                    // A follow-up takes the stamp of the entry it follows (H4).
+                    // A follow-up takes the stamp of the entry it follows (the focus rows).
                     let entry = self.make_entry(kind, Origin::Replay(from), stamp);
                     self.entries.push_back(entry);
                 }

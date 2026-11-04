@@ -53,6 +53,11 @@ pub enum TerminalOwner {
 /// Reads the pty's current owner. Cheap (`tcgetpgrp` + `tcgetattr`); must not block.
 pub type InteractiveProbe = Arc<dyn Fn() -> TerminalOwner + Send + Sync>;
 
+/// Reads whether the pty is canonical with echo off right now: a program is reading a secret
+/// (`terminal_attributes::tty_is_reading_secret`). The termios guard of the ssh typeahead release
+/// (#1611, #1612, #1621) samples it at the ownership event. Cheap (`tcgetattr`); must not block.
+pub type SecretReadProbe = Arc<dyn Fn() -> bool + Send + Sync>;
+
 /// Why the latch was set, for the log.
 #[derive(Clone, Copy, Debug)]
 pub enum LatchReason {

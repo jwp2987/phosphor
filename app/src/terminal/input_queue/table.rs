@@ -25,7 +25,6 @@
 //! | `D13` | agent write, setup gate or ssh remote setup | `Drop(AgentRefusedSetup)`, else `Pty(Agent)` |
 //! | `OCliSubmit` | origin CliSubmit (#1601b, see [`decide_cli_submit`]): PACED (a `CliSubmit` gate is open): held only by the PowerShell setup (`H6`); UNPACED: also held as any key is by the Enter-verdict / tab-completion gates (`H5`), the subshell gates (`H7`), any other gate but an ssh-only set (`H8`) and the queue (`H8-queue`) | `Pty(CliSubmit)` + `CONSULT_ORACLE`, or `Drop(AgentControl)` |
 //! | `H1` | Typed/Paste, stamped focus is the ssh choice card | `Hint` |
-//! | `H4` | ssh prompt up, the stamp is older than `prompt_gen` (OD-7) | `Drop(StaleBeforePrompt)` |
 //! | `H2` | Typed/Enter/Control/Paste, the ssh setup dialog is up | `Swallow(SshDialogOpen)` |
 //! | `H3b` | an SshConnect gate is open but the phase is not Holding | effect only: `SSH_HOLD_DETACHED` |
 //! | `H3` | the ssh phase is Holding (editor keys too) | `Hold(SshConnect)` |
@@ -96,7 +95,7 @@ impl Class {
         matches!(self, Class::Signal(_))
     }
 
-    /// The classes the ssh rows (H1-H4) judge.
+    /// The classes the ssh rows (H1-H3) judge.
     fn is_ssh_judged(self) -> bool {
         matches!(
             self,
@@ -110,7 +109,7 @@ impl Class {
 pub struct Intent {
     pub class: Class,
     pub origin: Origin,
-    /// What was true when the key reached the sink (H4, D1, H1).
+    /// What was true when the key reached the sink (D1, H1).
     pub stamp: Stamp,
     /// Keyboard-driven bytes take agent control of an alt-screen program (D4); pointer-driven
     /// bytes (mouse, wheel) do not.
@@ -196,9 +195,6 @@ pub enum DropWhy {
     RefusedHiddenInput,
     /// The agent's write met a setup gate (D13).
     AgentRefusedSetup,
-    /// The key was stamped before the ssh prompt was published (H4, OD-7): it may be a password
-    /// typed blind.
-    StaleBeforePrompt,
 }
 
 /// What the plan does with the input.
@@ -354,7 +350,6 @@ pub enum Row {
     H3,
     #[allow(dead_code)] // used by sibling unused code or shared name
     H3b,
-    H4,
     H5,
     H6,
     H7,
@@ -398,7 +393,6 @@ impl Row {
             Row::H2 => "H2",
             Row::H3 => "H3",
             Row::H3b => "H3b",
-            Row::H4 => "H4",
             Row::H5 => "H5",
             Row::H6 => "H6",
             Row::H7 => "H7",
@@ -719,17 +713,9 @@ fn decide_content(i: &Intent, f: &RouteFacts) -> Plan {
     if matches!(class, Class::Typed | Class::Paste) && i.stamp.focus == FocusSnap::SshChoiceCard {
         return Plan::new(Outcome::Hint, Row::H1, Effects::NOTE_CHOICE_CARD_HINT);
     }
-    if ssh_judged
-        && matches!(i.origin, Origin::Keyboard | Origin::Editor | Origin::Held)
-        && let SshPhase::PromptUp { prompt_gen } = f.ssh
-        && i.stamp.is_before(prompt_gen)
-        // A held input reaching a SHELL's prompt (a nested ssh whose inner shell came up while
-        // the hand-over drained, #1575) was held for exactly that shell: delivered, not dropped.
-        // A credential-shaped prompt still drops it (it may be a password typed blind).
-        && !(i.origin == Origin::Held && f.ssh_prompt_is_shell)
-    {
-        return drop_plan(DropWhy::StaleBeforePrompt, Row::H4, Effects::NONE);
-    }
+    // No H4: the ssh connect reads nothing from the screen, so there is no "prompt up" to judge a
+    // stamp against (#1611, #1612, #1621; `DECLINED.md`). What was typed before ssh owned the tty
+    // is delivered to ssh, or discarded by the termios guard, at the ownership event.
     if matches!(
         class,
         Class::Typed | Class::Enter | Class::Paste | Class::Control
