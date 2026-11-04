@@ -23,8 +23,9 @@ script pins that, with no build (python3 and the shells under test):
      control characters, invalid UTF-8, unicode, repos, worktrees, a symlinked cwd, detached
      HEAD, a tag with the branch's name, packed refs, bare and empty .git) against the real
      `git` the old code called. GIT_TRACE counts git processes, which proves the fast path
-     is taken where it must be (plain directory, branch checked out, subdirectory, symlink)
-     and that git is still called where the in-shell answer would not be certain.
+     is taken where it must be (plain directory, branch checked out, subdirectory, symlink,
+     a detached HEAD after its first prompt: #1616) and that git is still called where the
+     in-shell answer would not be certain.
   3. fish only: the user's fish_prompt runs once per prompt, not twice, when the user's
      prompt is honored.
 
@@ -346,7 +347,8 @@ def make_tree(R):
             "subdirectory with a tab": ("repo/ctl\ttab", True, False),
             "symlinked cwd": ("link", True, False),
             "worktree": ("wt", False, True),
-            "detached HEAD": ("detached", False, True),
+            # #1616: git runs once for a detached HEAD in a directory; later prompts reuse its answer
+            "detached HEAD": ("detached", True, False),
             "tag named like the branch": ("tagclash", False, True),
             "packed refs": ("packed", False, True),
             "branch with a quote": ("quoted", True, False),
@@ -394,7 +396,7 @@ def typed_cd(shell, path):
 
 
 class Shell:
-    def __init__(self, kind, home, cwd, path_env, honor="0", rc_extra="", git_trace=None):
+    def __init__(self, kind, home, cwd, path_env, honor="0", rc_extra="", git_trace=None, env_extra=None):
         self.kind = kind
         self.home = home
         env = {"HOME": home, "USER": os.environ.get("USER", "user"), "PATH": path_env, "TERM": "xterm-256color",
@@ -402,6 +404,7 @@ class Shell:
                "WARP_PROMPT_NODE_VERSION_ENABLED": "0", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
         if git_trace:
             env["GIT_TRACE"] = git_trace  # one "built-in: git ..." line per git process the shell starts
+        env.update(env_extra or {})
         sid = "4242"
         if kind == "bash":
             init = read("bash_init_shell.sh").replace("@@WARP_SESSION_ID@@", sid).replace("@@USING_CON_PTY_BOOLEAN@@", "false")
@@ -564,6 +567,70 @@ def e2e(kind):
         shutil.rmtree(base, ignore_errors=True)
 
 
+def detached_cache(kind):
+    """#1616: a detached HEAD runs `git rev-parse --short HEAD` once per directory and HEAD commit, not
+    twice per prompt; a new HEAD (checkout, rebase, bisect step) is seen at the next prompt; and
+    PHOSPHOR_GIT_HEAD_CACHE=0 restores the old two-git-processes-per-prompt behaviour."""
+    if not GIT:
+        return
+    base = tempfile.mkdtemp(prefix="phosphor-1616-")
+    R = os.path.realpath(base)
+    try:
+        env = {**os.environ, "GIT_AUTHOR_NAME": "a", "GIT_AUTHOR_EMAIL": "a@b", "GIT_COMMITTER_NAME": "a",
+               "GIT_COMMITTER_EMAIL": "a@b", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
+        for k in ("GIT_DIR", "GIT_WORK_TREE", "GIT_CEILING_DIRECTORIES", "GIT_NAMESPACE", "GIT_COMMON_DIR"):
+            env.pop(k, None)
+        subprocess.run("git init -q -b main d && cd d && git commit -q --allow-empty -m one && git commit -q --allow-empty -m two",
+                       shell=True, cwd=R, check=True, env=env,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        repo = os.path.join(R, "d").encode()
+        path_env = "/usr/local/bin:/usr/bin:/bin"
+        extra = "function fish_prompt\n  echo -n '> '\nend\n" if kind == "fish" else ""
+        print("%s detached HEAD cache (#1616)" % kind)
+        for switch in ("default", "0"):
+            subprocess.run("git checkout -q --detach main", shell=True, cwd=repo.decode(), check=True, env=env,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            home = os.path.join(base, "home-" + switch)
+            os.makedirs(home)
+            log = os.path.join(base, "git-%s.log" % switch)
+            sh = Shell(kind, home, R, path_env, rc_extra=extra, git_trace=log,
+                       env_extra={"PHOSPHOR_GIT_HEAD_CACHE": "0"} if switch == "0" else None)
+            try:
+                check(not sh.broken, "%s (PHOSPHOR_GIT_HEAD_CACHE=%s): bootstraps" % (kind, switch))
+                pre = [v for h, v in sh.cycle(typed_cd(kind, repo)) if h == "Precmd"]
+                want = git_expect(repo)
+                check(pre and (pre[-1].get("git_branch"), pre[-1].get("git_head")) == want,
+                      "%s (%s): detached head after cd is %r" % (kind, switch, want), repr(pre[-1:]))
+                for i in range(3):
+                    before = count_git(log)
+                    pre = [v for h, v in sh.cycle(b"true") if h == "Precmd"]
+                    calls = count_git(log) - before
+                    check(pre and (pre[-1].get("git_branch"), pre[-1].get("git_head")) == want,
+                          "%s (%s): prompt %d keeps the detached head %r" % (kind, switch, i, want), repr(pre[-1:]))
+                    if switch == "0":
+                        check(calls >= 2, "%s (kill switch): git still runs every prompt (saw %d)" % (kind, calls))
+                    else:
+                        check(calls == 0, "%s: no git process on a repeated detached prompt (saw %d)" % (kind, calls))
+                # move the detached HEAD to the parent commit outside the shell; the next prompt must show it
+                subprocess.run("git checkout -q --detach HEAD~1", shell=True, cwd=repo.decode(), check=True, env=env,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                want2 = git_expect(repo)
+                check(want2 != want, "%s (%s): test setup moved HEAD" % (kind, switch))
+                pre = [v for h, v in sh.cycle(b"true") if h == "Precmd"]
+                check(pre and (pre[-1].get("git_branch"), pre[-1].get("git_head")) == want2,
+                      "%s (%s): a moved detached HEAD is seen at the next prompt (%r)" % (kind, switch, want2), repr(pre[-1:]))
+                # back on a branch: the branch fast path answers, not the cached hash
+                subprocess.run("git checkout -q main", shell=True, cwd=repo.decode(), check=True, env=env,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                pre = [v for h, v in sh.cycle(b"true") if h == "Precmd"]
+                check(pre and (pre[-1].get("git_branch"), pre[-1].get("git_head")) == ("main", "main"),
+                      "%s (%s): a branch checkout after a detached HEAD reports the branch" % (kind, switch), repr(pre[-1:]))
+            finally:
+                sh.close()
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
 def fish_prompt_runs():
     """With the user's prompt honored, fish_prompt must run once per prompt (it used to run twice)."""
     base = tempfile.mkdtemp(prefix="phosphor-1170-")
@@ -671,6 +738,7 @@ if SHELLS["zsh"]:
 for kind in ("bash", "zsh", "fish"):
     if SHELLS[kind]:
         e2e(kind)
+        detached_cache(kind)
 if SHELLS["fish"]:
     fish_prompt_runs()
 

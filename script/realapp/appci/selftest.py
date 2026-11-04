@@ -127,6 +127,19 @@ def stamp_and_log_line_parsers():
     ds, cnt = cases.key_frame_pairs(txt)
     assert ds == [10.0, 8.0], ds
     assert cnt["keydown"] == 4 and cnt["keydown_ctrl"] == 1 and cnt["frame"] == 2 and cnt["pty_write"] == 1, cnt
+    # #1176: key -> pty write(2); the ctrl key, the untimed write line and hop lines never pair; two keys before one write both pair with it
+    kw = "\n".join([
+        "input_order keydown key=a ctrl=false alt=false shift=false cmd=false t=100.0 seq=1",
+        "input_order pty_write bytes=1 t=100.4",
+        "input_order keydown key=c ctrl=true alt=false shift=false cmd=false t=101.0 seq=2",
+        "input_order hop=ctrl_c_pty_write bytes=1 t=101.2",
+        "input_order keydown key=b ctrl=false alt=false shift=false cmd=false t=102.0 seq=3",
+        "input_order keydown key=d ctrl=false alt=false shift=false cmd=false t=102.5 seq=4",
+        "input_order hop=pty_write_partial wrote=1 of=2 t=102.6",
+        "input_order pty_write n=2",
+        "input_order pty_write bytes=2 t=103.0",
+        "input_order keydown key=z ctrl=false alt=false shift=false cmd=false t=130.0 seq=5"])
+    assert [round(x, 3) for x in cases.key_write_pairs(kw)] == [0.4, 1.0, 0.5], cases.key_write_pairs(kw)
 
 
 @check
@@ -373,6 +386,30 @@ def enter_split_attributes_every_hop():
     assert sp["post_to_lf_ms"] == 2.0 and sp["lf_to_px_ms"] == 1.0 and sp["px_to_stamp_ms"] == 0.5 and sp["post_to_stamp_ms"] == 3.5, sp
     assert round(sp["t0_to_post_ms"]) == 200 and sp["n"] == 2, sp
     assert cases.enter_split_summary([dict(t0=1.0, post=None, lf=None, px=None, stamp=1.2)]) == {"n": 1}
+    # #1492: no injector post time (Windows, Linux): harness Return -> line accepted, and line accepted -> stamp, from the bash PS0 time
+    sp = cases.enter_split_summary([dict(t0=1793758441.0, post=None, lf=cases._epoch_s(1793758441030000.0), px=None, stamp=1793758441.0335)])
+    assert round(sp["t0_to_lf_ms"], 2) == 30.0 and round(sp["lf_to_stamp_ms"], 2) == 3.5 and "post_to_lf_ms" not in sp, sp
+    assert cases._epoch_s(1793758441853045.0) == 1793758441.853045 and cases._epoch_s(1793758441.85) == 1793758441.85 and cases._epoch_s(None) is None
+    # the split stamp line is opt-in (APPCI_ENTER_SPLIT=1); the default line is the old one, byte for byte
+    gb = types.SimpleNamespace(pane="gitbash", be=types.SimpleNamespace(name="windows"))
+    saved = os.environ.pop("APPCI_ENTER_SPLIT", None)
+    try:
+        assert cases.stamp_line(gb) == "date +%%s.%%N > lat_%d", cases.stamp_line(gb)
+        os.environ["APPCI_ENTER_SPLIT"] = "1"
+        line = cases.stamp_line(gb)
+        assert line == "date +%%s.%%N > lat_%d;echo $__pa_lf>>lat_%d" and line % ((3,) * line.count("%d")) == "date +%s.%N > lat_3;echo $__pa_lf>>lat_3", line
+    finally:
+        os.environ.pop("APPCI_ENTER_SPLIT", None)
+        if saved is not None:
+            os.environ["APPCI_ENTER_SPLIT"] = saved
+    d = tempfile.mkdtemp()
+    try:
+        f = os.path.join(d, "lat_0")
+        assert cases._read_fields(f) == []
+        open(f, "w").write("1793758441.853 \x00\n1793758441850000\n")
+        assert cases._read_fields(f) == ["1793758441.853", "1793758441850000"]
+    finally:
+        shutil.rmtree(d)
     # `${__pa_px:-0}`: a hook that never ran prints 0, which is "no value", never a time
     assert cases._float_or_none(["1.5", "0", "x"], 1) is None and cases._float_or_none(["1.5", "0", "x"], 2) is None
     assert cases._float_or_none(["1.5", "2.25"], 1) == 2.25 and cases._float_or_none(["1.5"], 1) is None

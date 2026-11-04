@@ -2724,6 +2724,14 @@ def stamp_line(ctx):
             # #1606: the rc's preexec / zle-line-finish times follow the stamp (enter_to_start reads the first field as the stamp)
             return "zmodload zsh/datetime; print -r -- $EPOCHREALTIME ${__pa_px:-0} ${__pa_lf:-0} > lat_%d"
         return "perl -MTime::HiRes=time -e 'printf \"%%.6f\\n\", time' > lat_%d"
+    # #1492, OPT-IN (APPCI_ENTER_SPLIT=1): in a bash/zsh pane (Git Bash, or a Linux pane already identified by pane_shell) the rc's
+    # line-accepted time ($__pa_lf: bash PS0, in integer microseconds; zsh zle-line-finish, in seconds) is appended after the stamp. This is
+    # NOT free: the line is 23 characters longer, and Phosphor writes the whole line in one burst at Enter, so the shell's ingest of those
+    # characters falls INSIDE Phosphor's Enter -> start interval (the reference ingested them key by key before Enter). Samples taken with
+    # it are therefore not comparable with the default line or older baselines; the default stays the old line.
+    sh = "bash" if ctx.pane == "gitbash" else lat.shell_base(getattr(ctx, "_pane_shell", None) or None)
+    if sh in ("bash", "zsh") and os.environ.get("APPCI_ENTER_SPLIT", "0") == "1":
+        return "date +%%s.%%N > lat_%d;echo $__pa_lf>>lat_%d"
     return "date +%%s.%%N > lat_%d"
 
 
@@ -2742,18 +2750,24 @@ def enter_to_start(ctx, n, budget_s=None, key_delay_ms=12, stamp=None, d=None, s
             os.remove(f)
         stamp = stamp or stamp_line(ctx)
         ctx.be.guard_ref()
-        ctx.be.type(stamp % i, key_delay_ms)
+        ctx.be.type(stamp % ((i,) * stamp.count("%d")), key_delay_ms)       # #1492: the bash/zsh line names its file twice
         time.sleep(0.3)
         t0 = time.time()
         ctx.be.key("Return")
         ctx.until(lambda: os.path.exists(f) and os.path.getsize(f) > 5, 3, step=0.001)
+        if "__pa_lf>>" in stamp:
+            # #1492 split line: `date` and the `echo` append are separate writes (and Git Bash reaps `date` slowly), so wait briefly for the
+            # second field; a sample without it keeps its stamp and is counted (ctx.lf_missing -> metric lf_missing), never silently dropped
+            if not ctx.until(lambda: len(_read_fields(f)) >= 2, 1.0, step=0.002):
+                ctx.lf_missing = getattr(ctx, "lf_missing", 0) + 1
         try:
-            fields = open(f, errors="replace").read().replace("\x00", "").split()
+            fields = _read_fields(f)
             v = float(fields[0])
             ds.append(((v / 1000.0 if v > 1e11 else v) - t0) * 1000)       # PowerShell stamps UTC milliseconds
             if split is not None:
-                split.append(dict(t0=t0, stamp=v / 1000.0 if v > 1e11 else v, post=injector_post_wall(ctx), px=_float_or_none(fields, 1),
-                                  lf=_float_or_none(fields, 2)))
+                # zsh (macOS): stamp px lf; bash/zsh stamp_line (#1492): stamp lf
+                px, lf = (None, _float_or_none(fields, 1)) if len(fields) == 2 else (_float_or_none(fields, 1), _float_or_none(fields, 2))
+                split.append(dict(t0=t0, stamp=v / 1000.0 if v > 1e11 else v, post=injector_post_wall(ctx), px=_epoch_s(px), lf=_epoch_s(lf)))
         except Exception:
             pass
         if i == 2 and not ds:
@@ -2765,6 +2779,14 @@ def enter_to_start(ctx, n, budget_s=None, key_delay_ms=12, stamp=None, d=None, s
     return ds
 
 
+def _read_fields(f):
+    """whitespace-separated fields of a stamp file (NULs from a UTF-16 PowerShell write removed); [] when it cannot be read yet"""
+    try:
+        return open(f, errors="replace").read().replace("\x00", "").split()
+    except OSError:
+        return []
+
+
 def _float_or_none(fields, i):
     """fields[i] as a float; None when it is missing, not a number, or 0 (the stamp line's `${__pa_px:-0}` for a hook that never ran)"""
     try:
@@ -2772,6 +2794,13 @@ def _float_or_none(fields, i):
     except (IndexError, ValueError):
         return None
     return v or None
+
+
+def _epoch_s(v):
+    """a shell time as epoch seconds: bash's PS0 time (#1492) is integer microseconds (> 1e14), zsh's $EPOCHREALTIME is already seconds"""
+    if v is None:
+        return None
+    return v / 1e6 if v > 1e14 else v
 
 
 def injector_post_wall(ctx):
@@ -2798,12 +2827,16 @@ def enter_split_summary(samples):
                         sends the Preexec message; none in the reference). Phosphor's title hook runs AFTER it and lands in px_to_stamp
       px_to_stamp       the rc's preexec hook -> the stamp: any later preexec hook (Phosphor's title hook) and the command itself
       post_to_stamp     the whole of it without the input-tool spawn
+      t0_to_lf          (#1492, every platform with a bash/zsh pane, no injector post time needed) harness Return -> the line accepted: key
+                        delivery, the terminal's work, the pty write and the line editor ingesting the line (a burst in Phosphor)
+      lf_to_stamp       the line accepted -> the stamp: every preexec hook (Phosphor's DEBUG-trap preexec and title hook in bash; none in
+                        the reference) and the `date` start
     A key is absent when no sample had both ends (no post time off macOS, no lf/px from a non-zsh shell)."""
     def d(a, b):
         return [(x[b] - x[a]) * 1000.0 for x in samples if x.get(a) is not None and x.get(b) is not None and 0 <= x[b] - x[a] < 1]
     out = {"n": len(samples)}
     for k, a, b in (("t0_to_post_ms", "t0", "post"), ("post_to_lf_ms", "post", "lf"), ("lf_to_px_ms", "lf", "px"), ("px_to_stamp_ms", "px", "stamp"),
-                    ("post_to_stamp_ms", "post", "stamp"), ("post_to_px_ms", "post", "px")):
+                    ("post_to_stamp_ms", "post", "stamp"), ("post_to_px_ms", "post", "px"), ("t0_to_lf_ms", "t0", "lf"), ("lf_to_stamp_ms", "lf", "stamp")):
         v = _med(d(a, b))
         if v is not None:
             out[k] = v
@@ -2949,6 +2982,8 @@ def c_lat_enter(ctx, r):
     n, warm = ctx.count_lat(60), lat.warmup()      # 60: the SE of a 30-sample median difference (~2.3 ms) is larger than the 2 ms budget
     pane_sh = pane_shell_id(ctx)        # asked once, before the first sample (Linux/macOS), so the stamp line below is chosen for the right shell
     r.metric("pane_shell", pane_sh or "unknown")
+    r.metric("stamp_line", stamp_line(ctx))       # #1492: which stamp line ran (APPCI_ENTER_SPLIT=1 opts into the split line)
+    ctx.lf_missing = 0
     r.metric("host_load", host_load())          # #1583 W4
     if ctx.win and ctx.pane == "gitbash":
         fk = gitbash_fork_ms()                   # #1583 G1
@@ -3073,6 +3108,8 @@ def c_lat_enter(ctx, r):
             r.note("NO-COMPARE: pane shell %s != reference shell %s; the overhead is not judged" % (pane_sh, ctx.ref_shell))
     else:
         r.note("no reference terminal available (need xterm+DISPLAY / foot / Terminal.app)%s" % (": " + ctx.ref_reason if getattr(ctx, "ref_reason", None) else ""))
+    if "__pa_lf>>" in stamp_line(ctx):
+        r.metric("lf_missing", getattr(ctx, "lf_missing", 0))     # #1492: split-line samples (both sides) whose line-accepted time never arrived
     record_enter_split(r, splits, segs)
     if ds:
         rec = lat.evaluate("%s/latency_enter/enter_to_start" % ctx.label, ds, rs, float(os.environ.get("APPCI_ENTER_BUDGET_MS", "2")), "overhead", plat(),
@@ -3127,6 +3164,30 @@ def key_frame_pairs(txt):
     return ds, cnt
 
 
+PTY_WRITE_RE = re.compile(r"input_order pty_write bytes=\d+ t=(\d+(?:\.\d+)?)")
+
+
+def key_write_pairs(txt):
+    """#1176: key -> the pty write(2) that carries it. Pairs every plain (no ctrl) `keydown` with the first `input_order pty_write bytes=N t=<ms>`
+    line after it (input_order::log_pty_write, logged on the pty event-loop thread right after the write; app/src/terminal/local_tty/event_loop.rs).
+    Keys that the event loop coalesces into one write all pair with that write; a key typed into the input editor (no pty write) pairs with the
+    next write that does happen, so callers only use this where every key goes to the pty (a running `cat`). Hop lines (`hop=pty_write_partial`,
+    `hop=ctrl_c_pty_write`) are not writes of this kind and are ignored. -> [ms]"""
+    pending, ds = [], []
+    for l in txt.splitlines():
+        m = KEYDOWN_RE.search(l)
+        if m:
+            if m.group(1) != "true":
+                pending.append(float(m.group(2)))
+            continue
+        m = PTY_WRITE_RE.search(l)
+        if m:
+            tw = float(m.group(1))
+            ds.extend(tw - t for t in pending if tw >= t)
+            pending = []
+    return ds
+
+
 @case("latency_key_log", order=42, gui=True)
 def c_lat_key(ctx, r):
     """key -> first frame after the echo, from the app's own input_order log (keydown ... pty_write -> pty_read -> frame);
@@ -3151,12 +3212,26 @@ def c_lat_key(ctx, r):
         ctx.reset()                  # Ctrl-C ends the cat
         ds, cnt = key_frame_pairs(txt)
         run_keys.counts = cnt
+        run_keys.txt = txt
         return ds[warm:], [(m.group(1), int(m.group(2))) for m in SLOW.finditer(txt)]
 
     ui_off = ctx.log_size()          # the UI-work window: the typed keys of the first run (the `cat` start is a handful of items; the 5 % allowance covers it)
     ds, slow = run_keys(n + warm)
     ui_txt = ctx.log_since(ui_off)       # the window ends here: lat.evaluate's remeasure below types more keys
     r.metric("key_to_frame_ms", stats(ds))
+    # #1176 (owner 2026-11-03: measure first, then decide): the app's own key -> pty write(2) share, whose target is <= 1 ms median at idle
+    # (keys here are 80-180 ms apart), and the main-thread items >= 4 ms and model-lock holds >= 2 ms during the same typing. Informational:
+    # metrics and a note, never a check, until the owner sets the verdict from a real-GPU run.
+    txt = getattr(run_keys, "txt", "")
+    kw = key_write_pairs(txt)[warm:]
+    r.metric("key_to_pty_write_ms", stats(kw))
+    if kw:
+        kw50 = statistics.median(kw)
+        r.note("#1176 key -> pty write median %.2f ms (p95 %.2f, n=%d): %s the 1 ms target" % (kw50, pct(kw, 0.95), len(kw), "within" if kw50 <= 1.0 else "OVER"))
+    else:
+        r.note("#1176 key -> pty write: no keydown -> `input_order pty_write` pair in the measurement window (input-order logging off, or no key reached the pty)")
+    r.metric("typing_ui_items", ui_item_audit(txt))
+    r.metric("typing_lock_holds", lock_hold_audit(txt))
     if len(ds) < n * 0.5:
         cnt = getattr(run_keys, "counts", {})
         why = ("no keydown line at all: input_order logging off, wrong log path, or the keys never reached the app" if not cnt.get("keydown") else

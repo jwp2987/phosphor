@@ -600,6 +600,42 @@ def scenario_terminal_replies_in_typeahead():
         sh.close()
 
 
+def scenario_detached_head_under_strict_options():
+    """#1616: the detached-HEAD branch of __warp_git_head_fast (git once, then the cached answer) under `set -euo pipefail`: every
+    prompt still ends in a Precmd carrying git's own abbreviated hash, nothing is unbound, and the user's options survive."""
+    import subprocess
+    git = shutil.which("git")
+    if not git:
+        print("  SKIPPED detached HEAD under strict options: no git")
+        return
+    sh = Shell(home_prefix="phosphor-1616-")
+    try:
+        repo = os.path.join(sh.home, "det")
+        genv = {**os.environ, "GIT_AUTHOR_NAME": "a", "GIT_AUTHOR_EMAIL": "a@b", "GIT_COMMITTER_NAME": "a", "GIT_COMMITTER_EMAIL": "a@b",
+                "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
+        for k in ("GIT_DIR", "GIT_WORK_TREE", "GIT_CEILING_DIRECTORIES", "GIT_NAMESPACE", "GIT_COMMON_DIR"):
+            genv.pop(k, None)
+        subprocess.run([git, "init", "-q", "-b", "main", repo], check=True, env=genv)
+        subprocess.run([git, "-C", repo, "commit", "-q", "--allow-empty", "-m", "i"], check=True, env=genv)
+        subprocess.run([git, "-C", repo, "checkout", "-q", "--detach"], check=True, env=genv)
+        want = subprocess.run([git, "-C", repo, "rev-parse", "--short", "HEAD"], check=True, env=genv, capture_output=True,
+                              text=True).stdout.strip()
+        check(sh.wait_bootstrapped(), "bootstraps", sh)
+        check(sh.run("set -euo pipefail"), "the `set -euo pipefail` block finishes (Precmd)", sh)
+        check(sh.run("cd det"), "cd into a detached-HEAD repo finishes (Precmd)", sh)
+        for i in range(2):
+            check(sh.run("echo det$((%d+1))" % (40 + i), r"det%d" % (41 + i)), "prompt %d in the repo finishes (Precmd)" % i, sh)
+            pre = sh.hook_jsons("Precmd")
+            got = pre[-1]["value"].get("git_head") if pre else None
+            check(got == want and pre[-1]["value"].get("git_branch") == "",
+                  "prompt %d reports the detached head %r (got %r)" % (i, want, got), sh)
+        check(not has(sh, r"unbound variable"), "nothing is unbound in the hooks", sh)
+        check(sh.run('[[ $- == *u* && $- == *e* ]] && echo opts-$((2+5))-on || echo opts-$((2+5))-off', r"opts-7-o"), "option probe finishes", sh)
+        check(has(sh, r"opts-7-on"), "errexit and nounset are still on for the user", sh)
+    finally:
+        sh.close()
+
+
 def main():
     print(f"bash: {BASH}")
     scenario_terminal_replies_in_typeahead()
@@ -616,6 +652,7 @@ def main():
     scenario_return_trap_in_rcfile_function()
     scenario_noclobber()
     scenario_options_untouched_without_set_u()
+    scenario_detached_head_under_strict_options()
     if failures:
         print(f"\ntest_bash_bootstrap_nounset: {len(failures)} check(s) FAILED")
         return 1
