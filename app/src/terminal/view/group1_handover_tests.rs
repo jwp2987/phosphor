@@ -110,11 +110,12 @@ fn an_agent_write_after_a_silent_release_schedules_the_handover() {
     })
 }
 
-/// #1575: the inner shell's prompt appears while the hand-over drain is yielded after the nested
-/// `ssh other` Enter. The input delivered next (`echo B`) must not split from the held line: it
-/// joins the hold, and the hand-over runs on the next turn, in typed order. The line reaches the
-/// inner shell once and never the editor or a local run. Legacy runs only to prove it does not
-/// panic.
+/// #1575, redone by #1611/#1612/#1621: the inner ssh takes the tty while the hand-over drain is
+/// yielded after the nested `ssh other` Enter. The input delivered next (`echo B`) must not split
+/// from the held line: it joins the nested connect's hold, and the ownership event hands it over
+/// (deferred to the drain's next operation when the queue is busy), in typed order. The line reaches
+/// the inner shell once and never the editor or a local run; what the inner shell prints decides
+/// nothing. Legacy runs only to prove it does not panic.
 #[test]
 fn nested_prompt_during_the_handover_drain_delivers_the_line_to_the_inner_shell() {
     for mode in [DestinationMode::Table, DestinationMode::Legacy] {
@@ -148,28 +149,21 @@ fn nested_prompt_during_the_handover_drain_delivers_the_line_to_the_inner_shell(
                 release_ssh_gate_for_test(view);
                 view.deliver_ssh_typeahead_if_ready("precmd", ctx);
             });
-            // The inner prompt becomes visible while the drain is yielded after the `ssh other`
-            // Enter: in a SECOND consecutive update (no await between), so the effects of the
-            // first one (the Enter's ExecuteCommand, which arms the nested connect window) are
-            // applied before the prompt is observed, as in production, and the spawned drain
-            // continuation has not run yet. In one update the prompt was observed before the
-            // nested window existed and nothing observed it afterwards.
+            // The inner ssh takes the tty while the drain is yielded after the `ssh other` Enter:
+            // in a SECOND consecutive update (no await between), so the effects of the first one
+            // (the Enter's ExecuteCommand, which arms the nested connect window) are applied
+            // before the ownership event, as in production, and the spawned drain continuation
+            // has not run yet.
             terminal.update(&mut app, |view, ctx| {
-                // The nested ssh starts running (its preexec), as in production: the inner
-                // shell's prompt is output of that running block, which is what opens the
-                // window's "a prompt is up" reading. Without a running block the text landed
-                // outside any command's output and the window never saw a prompt.
+                // The nested ssh starts running (its preexec), then the latch's ownership event
+                // for it. The inner shell's prompt is output like any other and decides nothing.
                 view.model
                     .lock()
                     .simulate_long_running_block("ssh other", "");
                 view.model.lock().process_bytes("inner$ ");
-                // The pty reader publishes the key facts after each parse (as the sibling
-                // `ssh_shell_prompt_of_an_unbootstrapped_inner_host_receives_the_held_keys`).
                 view.model.lock().publish_key_facts();
-                // The output wakeup the parse ends with: it observes the prompt AND judges the
-                // held line (`deliver_ssh_typeahead_if_ready("output")`), as in production. Only
-                // observing left the hand-over with no event to run on.
                 view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+                ssh_tty_owned_for_test(view, ctx);
             });
             for _ in 0..16 {
                 futures_lite::future::yield_now().await;
@@ -197,14 +191,14 @@ fn nested_prompt_during_the_handover_drain_delivers_the_line_to_the_inner_shell(
                     let in_editor = buffer.contains("echo B");
                     let ran_locally = executed.borrow().iter().any(|c| c.contains("echo B"));
                     let verdict = if still_queued {
-                        "STILL QUEUED (the hand-over never ran: nothing observed the inner prompt \
-                         after the nested window was armed)"
+                        "STILL QUEUED (the hand-over never ran after the nested window's \
+                         ownership event)"
                     } else if in_editor || ran_locally {
                         "WENT TO THE WRONG DESTINATION (editor / local run)"
                     } else {
-                        "DROPPED: not queued, not written, not in the editor (possible #1575 \
-                         product bug: table row H4 StaleBeforePrompt dropping a queued Held line \
-                         after reset_ssh_typeahead)"
+                        "DROPPED: not queued, not written, not in the editor (a held line must \
+                         never be dropped on the way to the inner shell; the H4 row that once \
+                         did, #1575, is gone with the screen latch, #1611/#1612/#1621)"
                     };
                     panic!(
                         "echo B was written {} time(s), expected 1: {verdict}; writes={writes:?} \
@@ -271,32 +265,18 @@ fn nested_prompt_then_the_inner_echo_still_delivers_the_line_to_the_inner_shell(
                 release_ssh_gate_for_test(view);
                 view.deliver_ssh_typeahead_if_ready("precmd", ctx);
             });
-            // The inner prompt becomes visible while the drain is yielded after the `ssh other`
-            // Enter: in a SECOND consecutive update (no await between), so the effects of the
-            // first one (the Enter's ExecuteCommand, which arms the nested connect window) are
-            // applied before the prompt is observed, as in production, and the spawned drain
-            // continuation has not run yet. In one update the prompt was observed before the
-            // nested window existed and nothing observed it afterwards.
+            // As above, with the inner shell's echo of the line arriving after the ownership
+            // event: output before or after it never holds the line again or delivers it twice.
             terminal.update(&mut app, |view, ctx| {
-                // The nested ssh starts running (its preexec), as in production: the inner
-                // shell's prompt is output of that running block, which is what opens the
-                // window's "a prompt is up" reading. Without a running block the text landed
-                // outside any command's output and the window never saw a prompt.
                 view.model
                     .lock()
                     .simulate_long_running_block("ssh other", "");
                 view.model.lock().process_bytes("inner$ ");
                 view.model.lock().publish_key_facts();
-                // The inner shell echoes the line it was handed: the tail is `inner$ echo B`,
-                // no longer a prompt-shaped line, yet the episode is still the shell's prompt
-                // (the latch is published by the reader, not read from the grid at the decision).
+                view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+                ssh_tty_owned_for_test(view, ctx);
                 view.model.lock().process_bytes("echo B");
-                // The pty reader publishes the key facts after each parse (as the sibling
-                // `ssh_shell_prompt_of_an_unbootstrapped_inner_host_receives_the_held_keys`).
                 view.model.lock().publish_key_facts();
-                // The output wakeup the parse ends with: it observes the prompt AND judges the
-                // held line (`deliver_ssh_typeahead_if_ready("output")`), as in production. Only
-                // observing left the hand-over with no event to run on.
                 view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
             });
             for _ in 0..16 {
@@ -325,14 +305,14 @@ fn nested_prompt_then_the_inner_echo_still_delivers_the_line_to_the_inner_shell(
                     let in_editor = buffer.contains("echo B");
                     let ran_locally = executed.borrow().iter().any(|c| c.contains("echo B"));
                     let verdict = if still_queued {
-                        "STILL QUEUED (the hand-over never ran: nothing observed the inner prompt \
-                         after the nested window was armed)"
+                        "STILL QUEUED (the hand-over never ran after the nested window's \
+                         ownership event)"
                     } else if in_editor || ran_locally {
                         "WENT TO THE WRONG DESTINATION (editor / local run)"
                     } else {
-                        "DROPPED: not queued, not written, not in the editor (possible #1575 \
-                         product bug: table row H4 StaleBeforePrompt dropping a queued Held line \
-                         after reset_ssh_typeahead)"
+                        "DROPPED: not queued, not written, not in the editor (a held line must \
+                         never be dropped on the way to the inner shell; the H4 row that once \
+                         did, #1575, is gone with the screen latch, #1611/#1612/#1621)"
                     };
                     panic!(
                         "echo B was written {} time(s), expected 1: {verdict}; writes={writes:?} \

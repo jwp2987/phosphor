@@ -126,110 +126,10 @@ fn h1_the_ssh_choice_card_shows_its_hint_for_typed_text_and_pastes_only() {
     );
 }
 
-#[test]
-fn h4_a_key_stamped_before_the_prompt_is_dropped_and_one_at_or_after_it_goes_on() {
-    let prompt = RouteFacts {
-        ssh: SshPhase::PromptUp { prompt_gen: 5 },
-        ..running()
-    };
-    for class in [
-        Class::Typed,
-        Class::Enter,
-        Class::Control,
-        Class::Seq,
-        Class::Paste,
-    ] {
-        for origin in [Origin::Keyboard, Origin::Editor, Origin::Held] {
-            let before = plan(
-                from(class, origin).stamped(at(4, FocusSnap::Terminal)),
-                prompt,
-            );
-            assert_eq!(
-                (before.outcome, before.row),
-                (drop_of(DropWhy::StaleBeforePrompt), Row::H4),
-                "{class:?}/{origin:?} stamped before the prompt"
-            );
-            for generation in [5, 6, 100] {
-                let after = plan(
-                    from(class, origin).stamped(at(generation, FocusSnap::Terminal)),
-                    prompt,
-                );
-                assert_ne!(
-                    after.row,
-                    Row::H4,
-                    "{class:?}/{origin:?} stamped at gen {generation} saw the prompt"
-                );
-            }
-        }
-    }
-    // A replayed follow-up takes its parent's stamp and was already judged; a signal is not a
-    // password character.
-    assert_ne!(
-        plan(
-            from(Class::Typed, Origin::Replay(EntryId(1))).stamped(at(1, FocusSnap::Terminal)),
-            prompt
-        )
-        .row,
-        Row::H4
-    );
-    assert_ne!(
-        plan(
-            kb(Class::Signal(SignalKind::Interrupt)).stamped(at(1, FocusSnap::Terminal)),
-            prompt
-        )
-        .row,
-        Row::H4
-    );
-    // Not while no prompt is up.
-    assert_ne!(
-        plan(
-            kb(Class::Typed).stamped(at(0, FocusSnap::Terminal)),
-            running()
-        )
-        .row,
-        Row::H4
-    );
-}
-
-#[test]
-fn h4_a_held_input_reaching_a_shell_prompt_is_delivered_not_dropped() {
-    // #1575: a nested ssh's inner shell comes up while the hand-over drains; what was held for
-    // that connect belongs to that shell. Only HELD inputs are exempt, and only for a shell prompt.
-    let shell_prompt = RouteFacts {
-        ssh: SshPhase::PromptUp { prompt_gen: 5 },
-        ssh_prompt_is_shell: true,
-        ..running()
-    };
-    let credential_prompt = RouteFacts {
-        ssh_prompt_is_shell: false,
-        ..shell_prompt
-    };
-    for class in [Class::Typed, Class::Enter, Class::Seq, Class::Paste] {
-        let held = from(class, Origin::Held).stamped(at(4, FocusSnap::Terminal));
-        let delivered = plan(held, shell_prompt);
-        assert_ne!(delivered.row, Row::H4, "{class:?} held for the shell");
-        assert!(
-            !matches!(delivered.outcome, Outcome::Drop(_)),
-            "{class:?}: {:?}",
-            delivered.outcome
-        );
-        // A credential-shaped prompt still drops it (a password typed blind).
-        let dropped = plan(held, credential_prompt);
-        assert_eq!(
-            (dropped.outcome, dropped.row),
-            (drop_of(DropWhy::StaleBeforePrompt), Row::H4),
-            "{class:?} held for a credential prompt"
-        );
-        // Live keys stamped before a shell prompt are still stale.
-        for origin in [Origin::Keyboard, Origin::Editor] {
-            let live = plan(
-                from(class, origin).stamped(at(4, FocusSnap::Terminal)),
-                shell_prompt,
-            );
-            assert_eq!(live.row, Row::H4, "{class:?}/{origin:?}");
-        }
-    }
-}
+// No H4 test: the row (a key stamped before an ssh prompt is dropped as a possible password, and
+// its #1575 shell-prompt exemption) is gone with the screen-reading prompt latch (#1611, #1612,
+// #1621; `DECLINED.md`). The ssh connect reads nothing from the screen: what was held before ssh
+// owned the tty is delivered to ssh, or discarded by the termios guard, at the ownership event.
 
 #[test]
 fn h2_the_setup_dialog_swallows_typing_but_not_sequences() {
@@ -296,17 +196,6 @@ fn h3b_a_stale_ssh_gate_does_not_hold_and_asks_for_the_segment_to_be_dropped() {
         ..running()
     };
     let p = plan(kb(Class::Typed), stale);
-    assert_eq!(p.outcome, Outcome::Pty(PtyWrite::Typed), "{p:?}");
-    assert!(p.effects.contains(Effects::SSH_HOLD_DETACHED));
-    // A prompt up is not Holding either.
-    let prompt_up = RouteFacts {
-        ssh: SshPhase::PromptUp { prompt_gen: 2 },
-        ..stale
-    };
-    let p = plan(
-        kb(Class::Typed).stamped(at(2, FocusSnap::Terminal)),
-        prompt_up,
-    );
     assert_eq!(p.outcome, Outcome::Pty(PtyWrite::Typed), "{p:?}");
     assert!(p.effects.contains(Effects::SSH_HOLD_DETACHED));
 }
@@ -1856,7 +1745,7 @@ fn arb_facts() -> impl Strategy<Value = RouteFacts> {
     (
         any::<[bool; 32]>(),
         any::<[bool; 16]>(),
-        0usize..3,
+        0usize..2,
         0usize..4,
         0usize..5,
         0u16..(1 << 14),
@@ -1896,13 +1785,7 @@ fn arb_facts() -> impl Strategy<Value = RouteFacts> {
                 PsPhase::LineRunning,
                 PsPhase::AfterAbort,
             ][ps],
-            ssh: [
-                SshPhase::Idle,
-                SshPhase::Holding,
-                SshPhase::PromptUp {
-                    prompt_gen: generation,
-                },
-            ][ssh],
+            ssh: [SshPhase::Idle, SshPhase::Holding][ssh],
             ssh_dialog_up: a[19],
             ssh_setup_in_flight: a[20],
             ssh_bootstrapping: a[21],
@@ -1914,7 +1797,6 @@ fn arb_facts() -> impl Strategy<Value = RouteFacts> {
             ssh_route_forward: a[27],
             ssh_pre_init_abort: a[28],
             ssh_sigint_applies: a[29],
-            ssh_prompt_is_shell: a[30],
             focus: focus_of(b[0] as usize),
             approval_card: b[1],
             ai_awaiting_confirmation: b[2],
@@ -1980,7 +1862,6 @@ proptest! {
         let plan = decide(&i, &f, pin);
         if let Outcome::Drop(why) = plan.outcome {
             let allowed: &[Row] = match why {
-                DropWhy::StaleBeforePrompt => &[Row::H4],
                 DropWhy::AgentRefusedSetup => &[Row::D13],
                 DropWhy::AgentControl => &[Row::D2b, Row::D3, Row::D5],
                 DropWhy::NotLongRunning => &[Row::D10, Row::OSynced],
@@ -2020,35 +1901,6 @@ proptest! {
                 );
             }
             Class::Signal(_) | Class::Raw | Class::AgentWrite | Class::EditKey => {}
-        }
-    }
-
-    /// The password rule: a key stamped before the prompt is never delivered (to the prompt, a
-    /// pty, an editor or a gate) while the prompt is up, and one at or after it is never dropped
-    /// for being early. The one exemption (#1575): an input held for the connect reaching a
-    /// shell's prompt, which is never dropped by H4.
-    #[test]
-    fn a_key_stamped_before_the_prompt_is_never_delivered(i in arb_intent(), mut f in arb_facts(), prompt_gen in 1u64..8) {
-        f.ssh = SshPhase::PromptUp { prompt_gen };
-        let judged = matches!(
-            i.class,
-            Class::Typed | Class::Enter | Class::Control | Class::Seq | Class::Paste
-        ) && matches!(i.origin, Origin::Keyboard | Origin::Editor | Origin::Held);
-        // H1 (the choice card's hint) is asked before H4, for typed text and pastes only.
-        let hint = matches!(i.class, Class::Typed | Class::Paste)
-            && i.stamp.focus == FocusSnap::SshChoiceCard;
-        // #1575 (bbfe42460, 83c451b97): an input HELD for the connect that reaches a SHELL's
-        // prompt (a nested ssh's inner shell) is that shell's, not a possible password: delivered.
-        // Live keys at a shell prompt, and held keys at a credential prompt, still drop.
-        let held_for_shell = i.origin == Origin::Held && f.ssh_prompt_is_shell;
-        let plan = decide(&i, &f, None);
-        if judged && !hint && i.stamp.facts_gen < prompt_gen && !held_for_shell {
-            prop_assert_eq!(plan.outcome, Outcome::Drop(DropWhy::StaleBeforePrompt));
-        } else if judged && !hint && held_for_shell {
-            prop_assert_ne!(plan.row, Row::H4);
-            prop_assert_ne!(plan.outcome, Outcome::Drop(DropWhy::StaleBeforePrompt));
-        } else {
-            prop_assert_ne!(plan.row, Row::H4);
         }
     }
 
@@ -2193,9 +2045,10 @@ fn enum_facts(bits: u32, ssh: u8, gate: u8) -> RouteFacts {
         agent_write_gate_closed: b(8),
         ..RouteFacts::default()
     };
+    // State 2 was the prompt phase, gone with the screen latch (#1611, #1612, #1621); it now
+    // repeats the idle state.
     match ssh {
         1 => facts.ssh = SshPhase::Holding,
-        2 => facts.ssh = SshPhase::PromptUp { prompt_gen: 5 },
         3 => facts.ssh_dialog_up = true,
         _ => {}
     }
@@ -2354,7 +2207,6 @@ fn enumerated_facts_make_decide_total_and_reach_every_row_and_outcome() {
         Row::H2,
         Row::H3,
         Row::H3b,
-        Row::H4,
         Row::H5,
         Row::H6,
         Row::H7,

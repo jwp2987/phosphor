@@ -501,7 +501,7 @@ use crate::terminal::model::grid::text_snapshot::{BoundedSelection, SelectionPar
 use crate::terminal::model::index::{Point, Side};
 use crate::terminal::model::key_facts::{
     InputBoxFacts, KeyFacts, KeyFactsCell, KeyModelCell, KeyModelSnapshot, ModelCommand,
-    ModelInbox, block_id_hash, output_tail_is_input_prompt, output_tail_is_shell_prompt,
+    ModelInbox, block_id_hash, output_tail_is_input_prompt,
 };
 use crate::terminal::model::mouse::MouseState;
 use crate::terminal::model::selection::{SelectAction, SelectionDirection};
@@ -3291,7 +3291,6 @@ pub struct TerminalView {
     /// any hand-over run (`deliver_ssh_typeahead_if_ready`).
     ssh_handover_after_release: bool,
     /// #1575: a next-turn hand-over for a shell prompt that appeared mid-drain is scheduled.
-    ssh_prompt_handover_scheduled: bool,
     /// #1579: the origin of the last command submitted from this pane (`Some(true)`: the user's
     /// own submit), until the block it started is seen starting.
     ssh_submit_user_origin: Option<bool>,
@@ -5190,7 +5189,6 @@ impl TerminalView {
             ssh_interrupt_held_notified: None,
             ssh_connect_gate_released_at: None,
             ssh_handover_after_release: false,
-            ssh_prompt_handover_scheduled: false,
             ssh_submit_user_origin: None,
             running_block_user_submitted: false,
             young_enter_released: true,
@@ -11202,19 +11200,16 @@ impl TerminalView {
             &mut self.ssh_bootstrap_swallow_started,
             Instant::now(),
         );
-        // #983 / #976: before the remote shell announces itself there is no pending session, and
-        // the ssh process owns the pty. While it has printed nothing at all it is still
-        // connecting and anything typed would reach the tty ahead of the bootstrap and be split
-        // from the rest of the line. Drop the whole run. Every prompt (host key, password, 2FA)
-        // is output, so its answers -- including a bare Enter -- are never held here.
+        // #983 / #976: before the remote shell announces itself there is no pending session. Until
+        // ssh OWNS the tty (`CommandBecameInteractive` for the window's block, #1611, #1612,
+        // #1621) a key written to the pty could reach the local shell's line editor, so the whole
+        // run is held; at the ownership event the held keys go to ssh (or the termios guard
+        // discards them) and every later key passes straight through, as in a plain terminal.
+        // Nothing here reads the screen: a prompt's answers reach ssh because ssh owns the tty,
+        // not because the prompt was recognised.
         let ssh_connecting_silently = pending_now.is_none() && self.ssh_connect_gate_drops_keys();
         let gate_drops =
             dialog_up || setup_in_flight || ssh_bootstrapping || ssh_connecting_silently;
-        // A host-key / password prompt appeared while keys were held: what was typed before it
-        // existed may be a password, so it is discarded, never shown or delivered (#1113).
-        if self.ssh_typeahead_holding && !gate_drops {
-            self.discard_ssh_typeahead_on_prompt(ctx);
-        }
         self.log_ssh_drop_state(if gate_drops {
             "key_gate_holds"
         } else {
@@ -11225,13 +11220,11 @@ impl TerminalView {
             format!(
                 "gate_drops={gate_drops} dialog_up={dialog_up} holding={} held_bytes={} \
                  control_sequence={control_sequence} gate_armed={gate_armed} \
-                 pending_session={} output_seen={}",
+                 pending_session={} tty_owned={}",
                 self.ssh_typeahead_holding,
                 self.ssh_held_bytes(),
                 pending_now.is_some(),
-                self.ssh_connect_gate
-                    .as_ref()
-                    .is_some_and(|g| g.output_seen),
+                self.ssh_connect_gate.as_ref().is_some_and(|g| g.tty_owned),
             )
         });
         if dialog_up {
@@ -11261,8 +11254,8 @@ impl TerminalView {
             return false;
         }
         // #1292: hold the key. Once anything is held every later key is held too, even where the
-        // gate alone would let it through (a banner before the remote shell is up), so order is
-        // kept; the held keys go to the remote shell once it shows its first prompt.
+        // gate alone would let it through, so order is kept; the held keys go to ssh once it owns
+        // the tty, or to the managed remote shell once it shows its first prompt.
         // Keys the editor offered came before this one: they are already in the queue.
         self.set_ssh_typeahead_holding(true);
         match characters {
@@ -11329,114 +11322,112 @@ impl TerminalView {
         self.start_async_paste_read(kind, false, true, shell_dialect, ctx);
     }
 
-    /// True while a host-key / password / 2FA prompt is showing before any remote session exists:
-    /// visible text ending mid-line on an unmanaged connect. Keys then belong to ssh (#983).
-    fn ssh_prompt_has_arrived(&mut self) -> bool {
-        if self.ssh_connect_gate_drops_keys() {
-            return false;
-        }
-        // Only an UNTERMINATED line of text is a prompt (cursor parked after text on its row:
-        // "password: ", "(yes/no)? "). A newline-terminated banner / MOTD is also visible text
-        // and opens the gate, but is not a prompt.
-        self.ssh_connect_gate
-            .as_ref()
-            .is_some_and(|g| g.output_seen && !g.block_done && !g.managed && !g.saw_pending)
-            && self.active_output_ends_in_unterminated_text()
-    }
-
-    /// Discards the held keys when a prompt has arrived (they may be a password typed blind).
-    /// The notice does not echo them.
-    fn discard_ssh_typeahead_on_prompt(&mut self, ctx: &mut ViewContext<Self>) -> bool {
-        if !self.ssh_typeahead_holding || !self.ssh_prompt_has_arrived() {
-            return false;
-        }
-        self.discard_held_ssh_typeahead_for_prompt(ctx);
-        true
-    }
-
-    /// What happens to the held keys once a prompt is known to be up (the legacy probe above, or
-    /// the edge machine's `PromptUp` in `table` mode) (#1348, #1561).
+    /// ssh owns the tty (#1611, #1612, #1621): `CommandBecameInteractive` for the connect window's
+    /// block, from `terminal_attributes::terminal_owner` (`tcgetpgrp` + `tcgetattr`): a program
+    /// other than the shell is the foreground group, or the tty is raw or reading a secret. This
+    /// is the plain terminal's rule for the typeahead of an ssh connect, and it replaces the
+    /// screen-reading prompt latch (`ssh_prompt_has_arrived` & co., four rounds of which failed
+    /// review; `DECLINED.md`): the keys typed since the submit are ssh's, delivered to it once and
+    /// in order, and the remote side decides what becomes of them (a shell reads them, a password
+    /// read's `TCSAFLUSH` discards them). Every later key passes straight through. Nothing here
+    /// reads the screen.
     ///
-    /// A credential prompt (password, passphrase, host-key question, a request for a code) or any
-    /// line that is not recognisably a shell's prompt: what was typed before it existed may be a
-    /// password typed blind, so it is discarded, never shown or delivered, as ssh's own tty flush
-    /// would. A line of a shell prompt's shape (ends in `$ # % >`, not credential-style: a nested
-    /// `ssh` into a host that is not bootstrapped): plain ssh would have the keys read by that
-    /// shell, so they are delivered to the pty, in order, exactly once (hold, don't drop). When delivery
-    /// is impossible right now (the queue is mid-drain) they are handed back to the editor as
-    /// text instead. Neither path is silent.
-    fn discard_held_ssh_typeahead_for_prompt(&mut self, ctx: &mut ViewContext<Self>) {
-        let had_keys = !self.ssh_held_is_empty();
-        if had_keys && self.ssh_prompt_is_unmanaged_shell_prompt() {
-            if self.paste_queue.queue.is_draining() {
-                log::warn!(
-                    "ssh typeahead: unexpected since #1575: a shell prompt is up but the input queue \
-                     is mid-drain; handing {} held input(s) back to the editor as text (#1561)",
-                    self.ssh_held_count()
-                );
-                self.ssh_remote_prompt_seen = false;
-            } else {
-                log::info!(
-                    "ssh typeahead: a shell prompt (not a credential prompt) is up; delivering {} \
-                     held input(s), {} byte(s), to it like plain ssh (#1561)",
-                    self.ssh_held_count(),
-                    self.ssh_held_bytes()
-                );
-                self.ssh_remote_prompt_seen = true;
-                // The shell prompt ends the connect window (an event): the machine leaves
-                // `PromptUp` BEFORE the delivery, else the table's H4 row drops every held
-                // input as "stamped before the prompt" (a password typed blind), the very
-                // keys this branch hands to the shell (#1561, r18cx). The hold ends first so
-                // the release does not leave the phase at `Holding`.
-                self.set_ssh_typeahead_holding(false);
-                self.ssh_connect_gate = None;
-                self.ssh_connect_gate_released_at = Some(Local::now());
-                self.note_ssh_gate_released(input_queue::SshRelease::ShellPrompt);
-            }
-            self.finish_ssh_typeahead(ctx);
+    /// The one guard is a termios read, not text: if the tty is canonical with echo off at this
+    /// moment (ssh already reads a password; under the ssh wrapper ssh can be first seen late), the
+    /// held keys are discarded, never shown or delivered, as the kernel flushed the typeahead a
+    /// plain terminal had queued.
+    ///
+    /// A managed remote keeps its own holds after this: the announced session's bootstrap, the
+    /// post-block wait and the stretch to its first prompt are events of their own (#1572, #1494)
+    /// and hand over at the first prompt, not here. Both destination modes run this (the gate's
+    /// flag is the legacy fact, the edge is the machine's).
+    fn ssh_on_tty_owned(&mut self, block_id: &BlockId, ctx: &mut ViewContext<Self>) {
+        let applies = self.ssh_connect_gate.as_ref().is_some_and(|gate| {
+            !gate.tty_owned && gate.block_id.as_ref().is_none_or(|id| id == block_id)
+        });
+        if !applies {
             return;
         }
+        if let Some(gate) = self.ssh_connect_gate.as_mut() {
+            gate.tty_owned = true;
+        }
+        self.ssh_edge(input_queue::SshEdge::TtyOwned);
+        self.log_ssh_pty_owner(true, "tty_owned");
+        if !self.ssh_typeahead_holding {
+            return;
+        }
+        // The gate still holds (a managed remote's post-block or post-bootstrap wait): the
+        // hand-over is the first prompt's (#1572), not this event's.
+        if self.ssh_connect_gate_drops_keys() {
+            return;
+        }
+        if self.ssh_tty_reading_secret() {
+            self.discard_held_ssh_typeahead_for_secret_read(ctx);
+            return;
+        }
+        self.deliver_held_ssh_typeahead_to_tty_owner(ctx);
+    }
+
+    /// Whether the pty is canonical with echo off right now (a program is reading a secret), from
+    /// the model's termios probe. `false` without one (ConPTY; a test that installed none).
+    fn ssh_tty_reading_secret(&self) -> bool {
+        self.model.lock().tty_reading_secret()
+    }
+
+    /// The termios guard of the ownership release: ssh is reading a secret, so the keys held since
+    /// the submit are discarded, never shown or delivered, as the tty's `TCSAFLUSH` discarded the
+    /// typeahead a plain terminal had queued. The hold ends here, so every key typed afterwards
+    /// passes straight to ssh.
+    fn discard_held_ssh_typeahead_for_secret_read(&mut self, ctx: &mut ViewContext<Self>) {
+        let had_keys = !self.ssh_held_is_empty();
         if had_keys {
             log::info!(
-                "ssh typeahead: a credential prompt is up; discarding {} held input(s), {} byte(s) \
-                 (#1113)",
+                "ssh typeahead: ssh owns the tty and is reading a secret (canonical, echo off); \
+                 discarding {} held input(s), {} byte(s), as the tty's flush would (#1611)",
                 self.ssh_held_count(),
                 self.ssh_held_bytes()
             );
         }
-        // #1348: an event rule, no timing. Everything held when the prompt appeared goes; the hold
-        // ends here, so every key typed afterwards passes straight to the prompt, as in plain ssh.
+        warpui::input_order::log_key_hop("kh_finish_begin", || {
+            format!(
+                "tty_owned=true secret_read=true discarded_bytes={}",
+                self.ssh_held_bytes()
+            )
+        });
         self.reset_ssh_typeahead();
         if had_keys {
             self.show_ssh_typing_toast(
-                "Text typed before the SSH prompt appeared was discarded",
+                "Text typed before ssh asked for a secret was discarded, as the terminal would",
                 ctx,
             );
         }
     }
 
-    /// Whether the unterminated line in front of the keys is the prompt of a shell (a nested
-    /// `ssh` into a host that is not bootstrapped): a line of the shape
-    /// `output_tail_is_shell_prompt` reads that is not a credential-style prompt
-    /// (`output_tail_is_input_prompt`). Anything else (a host-key question, a request for a code,
-    /// ssh's own text, a line of unknown shape) keeps the #1113 rule: the keys may be a password
-    /// typed blind, so they are discarded. Never waits for the pty reader (#1440): a busy model,
-    /// or no readable tail, answers no, the conservative side.
-    fn ssh_prompt_is_unmanaged_shell_prompt(&self) -> bool {
-        let model = if !crate::terminal::model_lock_trace::key_path_uses_model_lock() {
-            match self.model.try_lock() {
-                Some(model) => model,
-                None => return false,
-            }
-        } else {
-            self.model.lock()
-        };
-        let tail = model
-            .block_list()
-            .active_block()
-            .output_grid()
-            .contents_to_string(false, Some(OUTPUT_TAIL_ROWS));
-        !output_tail_is_input_prompt(&tail) && output_tail_is_shell_prompt(&tail)
+    /// The ownership release: the keys held since the submit go to ssh now, once, in typed order
+    /// (closing the queue's `SshConnect` gate is the delivery; the drain routes each input from the
+    /// facts of its own delivery, where the gate no longer holds). Focus follows in the same step
+    /// so the next key is routed live, never into a gap. The connect window stays open: the
+    /// managed holds and the give-up nets are untouched.
+    fn deliver_held_ssh_typeahead_to_tty_owner(&mut self, ctx: &mut ViewContext<Self>) {
+        warpui::profiling::zone!("typeahead_handoff");
+        warpui::input_order::log_hop("ssh_held_delivery", || {
+            format!("source=tty_owned held_bytes={}", self.ssh_held_bytes())
+        });
+        warpui::input_order::log_key_hop("kh_finish_begin", || {
+            format!("tty_owned=true held_bytes={}", self.ssh_held_bytes())
+        });
+        self.set_ssh_typeahead_holding(false);
+        self.ssh_paste_to_hold = false;
+        self.ssh_typeahead_precmd_wait_since = None;
+        if self.ssh_held_is_empty() {
+            self.ssh_hold_clear();
+            warpui::input_order::log_key_hop("kh_finish_end", || "delivered=none".to_owned());
+            return;
+        }
+        self.log_ssh_typeahead_delivery(self.ssh_held_count());
+        self.ssh_hold_deliver(ctx);
+        self.redetermine_terminal_focus(ctx);
+        warpui::input_order::log_key_hop("kh_finish_end", || "delivered=tty_owner".to_owned());
     }
 
     fn set_ssh_typeahead_holding(&mut self, holding: bool) {
@@ -11467,15 +11458,15 @@ impl TerminalView {
         self.ssh_typeahead_precmd_wait_since = None;
     }
 
-    /// The single place the held keys are handed over (#1348), driven by events: the remote
-    /// shell's first `Precmd` (after the input was reset for the new prompt), the end of a failed
-    /// ssh block, the session being registered, output that shows a prompt, a key arriving after
-    /// the gate released. There is no poll: nothing here asks "is it ready yet" on a clock.
+    /// The place the held keys are handed over at the END of the window (#1348), driven by
+    /// events: the remote shell's first `Precmd` (after the input was reset for the new prompt),
+    /// the end of a failed ssh block, the session being registered, a key arriving after the gate
+    /// released. There is no poll: nothing here asks "is it ready yet" on a clock.
     ///
-    /// Discards the held keys if output shows a host-key / password prompt; delivers them (or
-    /// returns them to the input as text if the connect ended without a remote shell) once the
-    /// gate has released; else leaves them held. `source` names the signal for the log.
-    /// Returns whether the hand-over ran.
+    /// Delivers the held keys (or returns them to the input as text if the connect ended without
+    /// a remote shell) once the gate has released; else leaves them held. `source` names the
+    /// signal for the log. Returns whether the hand-over ran. (The keys held before ssh owned the
+    /// tty are delivered at the ownership event instead, `ssh_on_tty_owned`.)
     fn deliver_ssh_typeahead_if_ready(
         &mut self,
         source: &'static str,
@@ -11486,9 +11477,6 @@ impl TerminalView {
             return false;
         }
         self.refresh_ssh_connect_gate();
-        if self.discard_ssh_typeahead_on_prompt(ctx) {
-            return false;
-        }
         if self.ssh_connect_gate.is_some() {
             self.schedule_ssh_typeahead_give_up(ctx);
             return false;
@@ -12030,8 +12018,8 @@ impl TerminalView {
         if pending || !self.refresh_ssh_connect_gate() {
             return false;
         }
-        // Also the silent stretch AFTER a prompt was answered (`output_seen` is sticky, so the
-        // gate no longer drops keys): only a prompt that is waiting for an answer takes Ctrl-D.
+        // Also the stretch AFTER ssh owns the tty (`tty_owned` is sticky, so the gate no longer
+        // drops keys): only a prompt that is waiting for an answer takes Ctrl-D (#1111).
         hook_seen || self.ssh_connect_gate_drops_keys() || !self.active_output_awaits_an_answer()
     }
 
@@ -12089,7 +12077,6 @@ impl TerminalView {
         if !self.ssh_connect_gate.as_ref().is_some_and(applies) {
             return;
         }
-        self.ssh_connect_gate_drops_keys();
         self.refresh_ssh_connect_gate();
         if let Some(gate) = self.ssh_connect_gate.as_mut() {
             gate.note_block_completed(Instant::now(), exit_code == 0);
@@ -12103,9 +12090,9 @@ impl TerminalView {
         self.refresh_ssh_connect_gate();
     }
 
-    /// The pre-session half of the gate: true while the user has submitted ssh, nothing visible
-    /// has been printed and the session is not up. Visible text (a banner, a host-key, password
-    /// or passphrase prompt) ends it for good; escape sequences and bare CR/LF do not (#983).
+    /// The pre-session half of the gate: true while the user has submitted ssh, ssh does not own
+    /// the tty yet and the session is not up. The ownership event (`ssh_on_tty_owned`) ends it
+    /// for good; output of any shape does not (#983, #1611, #1612, #1621). Reads no grid.
     fn ssh_connect_gate_drops_keys(&mut self) -> bool {
         let Some(gate) = self.ssh_connect_gate.as_ref() else {
             return false;
@@ -12115,25 +12102,6 @@ impl TerminalView {
         } else {
             self.model.lock().is_alt_screen_active()
         };
-        // The output is read (under the model's lock: this is the one read of the ssh connect
-        // window that needs the grid) only while nothing visible has been seen, which ends for
-        // good with the first banner or prompt.
-        let visible = if !gate.output_seen && !gate.block_done {
-            let model = self.model.lock();
-            output_has_visible_text(
-                &model
-                    .block_list()
-                    .active_block()
-                    .output_grid()
-                    .contents_to_string(false, None),
-            )
-        } else {
-            false
-        };
-        let gate = self.ssh_connect_gate.as_mut().expect("checked above");
-        if visible {
-            gate.output_seen = true;
-        }
         gate.drops_keys(alt_screen)
     }
 
@@ -17470,9 +17438,6 @@ impl TerminalView {
                 gate.first_prompt_seen = true;
                 self.ssh_remote_prompt_seen = true;
             }
-            // A prompt that arrived discards the held keys before the gate can release in this
-            // very refresh (they may be a password typed blind).
-            self.discard_ssh_typeahead_on_prompt(ctx);
             self.refresh_ssh_connect_gate();
         }
         // #1292 / #1348: the held keys go out once the connect is over, in the handler of the
@@ -18650,6 +18615,11 @@ impl TerminalView {
             ModelEvent::CommandBecameInteractive { block_id } => {
                 // A program took over the terminal (#1373): the event the "long running"
                 // consumers used to wait 50 ms for.
+                // #1611/#1612/#1621: for the ssh connect window's block this is "ssh owns the
+                // tty": the keys held since the submit go to ssh (or the termios guard discards
+                // them) and every later key passes straight through. Before the young hold below:
+                // the connect hold is older than anything the hand-off holds.
+                self.ssh_on_tty_owned(block_id, ctx);
                 // #1614: the keys typed into that command are its, not a line at a prompt: the
                 // hand-off delivers an Enter typed now, and a young hold live at this moment is
                 // written as typeahead by this event. Only for the block still running (a late
@@ -38406,14 +38376,17 @@ const TYPEAHEAD_REPORT_PATIENCE: Duration = Duration::from_secs(3);
 /// only bounds a remote whose prompt never comes, so it cannot own the keyboard.
 const SSH_CONNECT_FIRST_PROMPT_GRACE: Duration = Duration::from_secs(2);
 
-/// State of one ssh connect window (#983). Pure so the transitions are unit-testable.
+/// State of one ssh connect window (#983). Pure so the transitions are unit-testable. Nothing in
+/// it is read from the screen (#1611, #1612, #1621).
 #[derive(Debug, Clone)]
 struct SshConnectGate {
     armed_at: Instant,
     /// A remote session has been announced (pending) at some point in this window.
     saw_pending: bool,
-    /// Visible text (not escape sequences) has been printed: the user is being asked something.
-    output_seen: bool,
+    /// ssh owns the tty: `CommandBecameInteractive` for this window's block (`ssh_on_tty_owned`).
+    /// Born set where the platform has no ownership event (`TTY_OWNED_AT_ARM`, ConPTY), so keys
+    /// go to the pty in order from the submit there, as a plain console gives them to ssh.exe.
+    tty_owned: bool,
     /// The ssh block ended cleanly on a managed remote; the bootstrap is expected to follow.
     block_done: bool,
     block_done_at: Option<Instant>,
@@ -38443,7 +38416,7 @@ impl SshConnectGate {
         Self {
             armed_at,
             saw_pending: false,
-            output_seen: false,
+            tty_owned: input_queue::TTY_OWNED_AT_ARM,
             block_done: false,
             block_done_at: None,
             failed: false,
@@ -38529,20 +38502,13 @@ impl SshConnectGate {
         Some(by_state.map_or(ceiling, |at| at.min(ceiling)))
     }
 
-    /// The no-session half: hold keys until something visible was printed, for the whole
-    /// post-block bootstrap wait, and from the end of the remote bootstrap to its first prompt
-    /// (#1085). Full-screen programs never hold.
+    /// The no-session half: hold keys until ssh owns the tty, for the whole post-block bootstrap
+    /// wait, and from the end of the remote bootstrap to its first prompt (#1085). Full-screen
+    /// programs never hold. Read-only (the route facts call it too, #1424).
     fn drops_keys(&self, alt_screen: bool) -> bool {
-        self.drops_keys_with(alt_screen, self.output_seen)
-    }
-
-    /// [`Self::drops_keys`] with `output_seen` given: the read-only form the route facts use
-    /// (#1424), where the sticky "visible text seen" comes from the published snapshot instead of
-    /// a scan of the grid under the model's lock.
-    fn drops_keys_with(&self, alt_screen: bool, output_seen: bool) -> bool {
         !alt_screen
             && !self.failed
-            && (self.block_done || !output_seen || self.bootstrap_done_at.is_some())
+            && (self.block_done || !self.tty_owned || self.bootstrap_done_at.is_some())
     }
 }
 

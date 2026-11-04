@@ -1,6 +1,9 @@
 //! Tests of the edge-driven ssh phase (#1424, step 7): each edge moves the phase the way the
-//! legacy derivation (the connect gate's `drops_keys`, `ssh_prompt_has_arrived`, the swallow
-//! window) did, and nothing but an edge moves it.
+//! connect gate's `drops_keys` and the swallow window do, and nothing but an edge moves it. The
+//! pre-ownership hold ends at [`SshEdge::TtyOwned`] (#1611, #1612, #1621), never at anything read
+//! from the screen; the tests of the old prompt latch (a banner opening the gate, an unterminated
+//! line being a prompt, a managed remote never being a password prompt) were removed with it,
+//! which is the owner's decision applied, not a weakened test.
 
 use super::*;
 
@@ -11,6 +14,13 @@ fn machine() -> SshPhaseMachine {
 fn armed() -> SshPhaseMachine {
     let mut m = machine();
     m.apply(SshEdge::Submitted { ssh: true });
+    m
+}
+
+/// An armed window whose ssh owns the tty (the common state after the 50 ms settle).
+fn owned() -> SshPhaseMachine {
+    let mut m = armed();
+    m.apply(SshEdge::TtyOwned);
     m
 }
 
@@ -36,11 +46,37 @@ fn a_non_ssh_command_leaves_the_machine_idle() {
 }
 
 #[test]
-fn submitting_ssh_holds_through_the_silent_connect() {
-    // Nothing printed yet: the gate drops keys, the phase holds (legacy `ssh_connecting_silently`).
-    let m = armed();
+fn submitting_ssh_holds_until_ssh_owns_the_tty() {
+    // Nothing owns the tty yet: the gate drops keys, the phase holds (legacy
+    // `ssh_connecting_silently`). Output of any shape changes nothing: only the ownership edge
+    // ends the pre-ownership hold.
+    let mut m = armed();
     assert!(m.armed());
+    assert!(!m.tty_owned());
     assert_eq!(m.phase(false), SshPhase::Holding);
+    m.apply(observed(|_| {}));
+    assert_eq!(m.phase(false), SshPhase::Holding);
+    m.apply(SshEdge::TtyOwned);
+    assert!(m.tty_owned());
+    assert_eq!(m.phase(false), SshPhase::Idle);
+}
+
+#[test]
+fn a_window_is_born_unowned_under_test_on_every_platform() {
+    // On a shipped Windows build `TTY_OWNED_AT_ARM` is true (no ownership event on ConPTY, and a
+    // timer never puts keys into a pty: keys go to the pty in order from the submit, as a plain
+    // console gives them to ssh.exe); the tests drive the edge by hand everywhere.
+    assert!(!TTY_OWNED_AT_ARM);
+}
+
+#[test]
+fn ownership_before_the_window_is_not_remembered() {
+    // The edge belongs to a window; an idle machine ignores it and a later window starts unowned.
+    let mut m = machine();
+    m.apply(SshEdge::TtyOwned);
+    assert!(!m.is_active());
+    m.apply(SshEdge::Submitted { ssh: true });
+    assert!(!m.tty_owned());
 }
 
 #[test]
@@ -50,10 +86,8 @@ fn a_full_screen_program_never_holds() {
 }
 
 #[test]
-fn a_banner_opens_the_gate_and_the_phase_is_idle_until_a_key_is_held() {
-    let mut m = armed();
-    m.apply(observed(|o| o.visible_text = true));
-    // Visible text, terminated: not a prompt, and the silent stretch is over.
+fn an_owned_tty_opens_the_gate_and_the_phase_is_idle_until_a_key_is_held() {
+    let mut m = owned();
     assert_eq!(m.phase(false), SshPhase::Idle);
     m.apply(SshEdge::HoldStarted);
     // Once anything is held every later key is held too (#1292).
@@ -63,44 +97,18 @@ fn a_banner_opens_the_gate_and_the_phase_is_idle_until_a_key_is_held() {
 }
 
 #[test]
-fn an_unterminated_line_is_a_prompt_with_the_gen_it_became_one() {
-    let mut m = armed();
-    m.apply(observed(|o| {
-        o.visible_text = true;
-        o.unterminated_since = Some(7);
-    }));
-    assert_eq!(m.phase(false), SshPhase::PromptUp { prompt_gen: 7 });
-    // The answer was sent and the line ended: not a prompt any more.
-    m.apply(observed(|o| o.visible_text = true));
-    assert_eq!(m.phase(false), SshPhase::Idle);
-}
-
-#[test]
-fn visible_text_is_sticky_even_if_a_later_observation_does_not_repeat_it() {
-    let mut m = armed();
-    m.apply(observed(|o| o.visible_text = true));
+fn ownership_is_sticky_for_the_window() {
+    let mut m = owned();
     m.apply(observed(|_| {}));
-    assert_eq!(m.phase(false), SshPhase::Idle);
-}
-
-#[test]
-fn a_managed_remote_is_never_a_password_prompt() {
-    let mut m = armed();
-    m.apply(observed(|o| {
-        o.visible_text = true;
-        o.hook_seen = true;
-        o.unterminated_since = Some(3);
-    }));
+    m.apply(observed(|o| o.hook_seen = true));
+    assert!(m.tty_owned());
     assert_eq!(m.phase(false), SshPhase::Idle);
 }
 
 #[test]
 fn the_announced_session_holds_through_its_bootstrap() {
-    let mut m = armed();
-    m.apply(observed(|o| {
-        o.visible_text = true;
-        o.pending_session = true;
-    }));
+    let mut m = owned();
+    m.apply(observed(|o| o.pending_session = true));
     assert_eq!(m.phase(false), SshPhase::Holding);
 }
 
@@ -139,11 +147,8 @@ fn the_setup_state_event_holds_even_before_the_gate_is_armed() {
 
 #[test]
 fn the_bootstrap_failure_ends_the_swallow() {
-    let mut m = armed();
-    m.apply(observed(|o| {
-        o.visible_text = true;
-        o.pending_session = true;
-    }));
+    let mut m = owned();
+    m.apply(observed(|o| o.pending_session = true));
     assert_eq!(m.phase(false), SshPhase::Holding);
     m.apply(SshEdge::BootstrapFailed);
     assert_eq!(m.phase(false), SshPhase::Idle);
@@ -151,18 +156,15 @@ fn the_bootstrap_failure_ends_the_swallow() {
 
 #[test]
 fn the_swallow_give_up_ends_the_swallow() {
-    let mut m = armed();
-    m.apply(observed(|o| {
-        o.visible_text = true;
-        o.pending_session = true;
-    }));
+    let mut m = owned();
+    m.apply(observed(|o| o.pending_session = true));
     m.apply(SshEdge::SwallowGiveUp);
     assert_eq!(m.phase(false), SshPhase::Idle);
 }
 
 #[test]
 fn a_new_announcement_swallows_again() {
-    let mut m = armed();
+    let mut m = owned();
     m.apply(observed(|o| o.pending_session = true));
     m.apply(SshEdge::BootstrapFailed);
     m.apply(observed(|_| {}));
@@ -172,14 +174,11 @@ fn a_new_announcement_swallows_again() {
 
 #[test]
 fn bootstrapped_holds_until_the_first_prompt() {
-    let mut m = armed();
-    m.apply(observed(|o| {
-        o.visible_text = true;
-        o.pending_session = true;
-    }));
+    let mut m = owned();
+    m.apply(observed(|o| o.pending_session = true));
     // Bootstrapped: the session is no longer pending. The remote bootstrap is finishing; keys
     // written now became remote typeahead the shell handed back in pieces (#1085).
-    m.apply(observed(|o| o.visible_text = true));
+    m.apply(observed(|_| {}));
     assert!(m.bootstrap_done());
     assert_eq!(m.phase(false), SshPhase::Holding);
     // The first prompt: the window is released by the event.
@@ -191,11 +190,8 @@ fn bootstrapped_holds_until_the_first_prompt() {
 
 #[test]
 fn a_clean_block_end_on_a_managed_remote_keeps_holding_for_the_bootstrap() {
-    let mut m = armed();
-    m.apply(observed(|o| {
-        o.visible_text = true;
-        o.hook_seen = true;
-    }));
+    let mut m = owned();
+    m.apply(observed(|o| o.hook_seen = true));
     m.apply(SshEdge::BlockCompleted { clean: true });
     assert_eq!(m.phase(false), SshPhase::Holding);
 }
@@ -214,8 +210,7 @@ fn a_failed_block_ends_the_gate_and_the_hold_stays_until_it_is_handed_over() {
 
 #[test]
 fn a_clean_block_end_with_no_managed_remote_is_a_failure_of_the_window() {
-    let mut m = armed();
-    m.apply(observed(|o| o.visible_text = true));
+    let mut m = owned();
     m.apply(SshEdge::BlockCompleted { clean: true });
     assert_eq!(m.phase(false), SshPhase::Idle);
 }
@@ -225,24 +220,23 @@ fn preexec_arms_a_window_nothing_armed() {
     let mut m = machine();
     m.apply(SshEdge::ConnectStart);
     assert!(m.armed());
+    assert!(!m.tty_owned());
     assert_eq!(m.phase(false), SshPhase::Holding);
     // A second start changes nothing.
-    m.apply(observed(|o| o.visible_text = true));
+    m.apply(SshEdge::TtyOwned);
     m.apply(SshEdge::ConnectStart);
+    assert!(m.tty_owned());
     assert_eq!(m.phase(false), SshPhase::Idle);
 }
 
 #[test]
 fn a_submit_ends_the_previous_window_and_its_hold() {
-    let mut m = armed();
+    let mut m = owned();
     m.apply(SshEdge::HoldStarted);
-    m.apply(observed(|o| {
-        o.visible_text = true;
-        o.unterminated_since = Some(4);
-    }));
     m.apply(SshEdge::Submitted { ssh: false });
     assert!(!m.armed());
     assert!(!m.holding());
+    assert!(!m.tty_owned());
     assert_eq!(m.phase(false), SshPhase::Idle);
 }
 
@@ -252,7 +246,6 @@ fn every_give_up_is_named_and_only_the_timers_are_give_ups() {
         SshRelease::FirstPrompt,
         SshRelease::Failed,
         SshRelease::OtherCommand,
-        SshRelease::ShellPrompt,
     ] {
         assert!(!how.is_give_up(), "{} is an event", how.name());
     }
@@ -280,8 +273,7 @@ fn a_release_keeps_the_session_and_the_hold_it_does_not_own() {
 
 #[test]
 fn nothing_moves_the_phase_but_an_edge() {
-    let mut m = armed();
-    m.apply(observed(|o| o.visible_text = true));
+    let mut m = owned();
     let before = m.phase(false);
     // Reading the phase any number of times, with any alt-screen flag, changes nothing.
     let _ = m.phase(true);

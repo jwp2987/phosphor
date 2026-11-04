@@ -16374,41 +16374,8 @@ fn input_prompt_detection_and_deferred_setup_readiness() {
     ] {
         assert!(!output_tail_is_input_prompt(not_prompt), "{not_prompt:?}");
     }
-    // #1561: only a line of a shell prompt's shape that is not credential-style is delivered to;
-    // a question, a request for a code, ssh's own text or an unknown shape keeps the discard.
-    for shell_prompt in [
-        "bash-5.1$ ",
-        "me@host ~ % ",
-        "~/src \u{276f} ",
-        "user@fake:~$ ",
-        "root@fake:/# ",
-        "banner\nuser@fake:~$ ",
-    ] {
-        assert!(
-            output_tail_is_shell_prompt(shell_prompt),
-            "{shell_prompt:?}"
-        );
-        assert!(
-            !output_tail_is_input_prompt(shell_prompt),
-            "{shell_prompt:?}"
-        );
-    }
-    for not_shell_prompt in [
-        "",
-        "\n",
-        "Password: ",
-        "Continue connecting (yes/no/[fingerprint])? ",
-        "Press ENTER to continue",
-        "Last login: Mon",
-        "Warning: Permanently added 'h' (ED25519) to the list of known hosts.\n",
-        "Verification code: ",
-        "banner line\n",
-    ] {
-        assert!(
-            !output_tail_is_shell_prompt(not_shell_prompt),
-            "{not_shell_prompt:?}"
-        );
-    }
+    // (The #1561 shell-prompt shape test is gone with the ssh prompt latch, #1611/#1612/#1621:
+    // the ssh connect reads nothing from the screen. This helper serves the subshell setup only.)
     let quiet = SUBSHELL_SETUP_DEFER_QUIET;
     assert!(
         !subshell_setup_defer_ready(true, false, quiet * 10),
@@ -17844,24 +17811,32 @@ fn plain_enter_always_reaches_the_pty() {
     })
 }
 
-/// #983: the gate's pure transitions. Visible text ends the silent phase, a clean block end keeps
-/// holding for the bootstrap grace, a failure or a session that came up releases.
+/// #983: the gate's pure transitions. ssh owning the tty ends the pre-ownership hold (#1611,
+/// #1612, #1621; nothing read from the screen does), a clean block end keeps holding for the
+/// bootstrap grace, a failure or a session that came up releases.
 #[test]
 fn ssh_connect_gate_transitions() {
     let t0 = Instant::now();
     let mut gate = SshConnectGate::new(t0);
+    assert_eq!(
+        gate.tty_owned,
+        crate::terminal::input_queue::TTY_OWNED_AT_ARM
+    );
     assert!(gate.drops_keys(false));
     assert!(!gate.drops_keys(true), "full-screen programs never hold");
     assert!(!gate.should_release(t0, false));
-    gate.output_seen = true;
-    assert!(!gate.drops_keys(false), "a prompt must get its answers");
+    gate.tty_owned = true;
+    assert!(
+        !gate.drops_keys(false),
+        "ssh owns the tty: its prompts get their answers"
+    );
     // A clean block end of an unmanaged / short session (no remote ever announced) releases.
     let mut unmanaged = SshConnectGate::new(t0);
     unmanaged.note_block_completed(t0, true);
     assert!(!unmanaged.drops_keys(false));
     assert!(unmanaged.should_release(t0, false));
     // A clean block end of a managed remote re-holds (the bootstrap is coming) even after
-    // visible output.
+    // ssh owned the tty.
     gate.managed = true;
     gate.note_block_completed(t0, true);
     assert!(gate.drops_keys(false));
@@ -17873,10 +17848,10 @@ fn ssh_connect_gate_transitions() {
     let mut gate = SshConnectGate::new(t0);
     assert!(!gate.should_release(t0, true));
     assert!(!gate.should_release(t0, false));
-    gate.output_seen = true;
+    gate.tty_owned = true;
     assert!(
         gate.drops_keys(false),
-        "the bootstrap tail drops keys even after the MOTD was printed"
+        "the bootstrap tail drops keys even after ssh owned the tty"
     );
     assert!(!gate.drops_keys(true), "full-screen programs never hold");
     gate.first_prompt_seen = true;
@@ -17989,10 +17964,12 @@ fn ssh_keys_before_pending_state_is_set_are_dropped_whole() {
     })
 }
 
-/// #983 window 2: output that is only escape sequences and CR/LF (hooks, a newline echo) does
-/// not mean "the user is being asked something"; typing is still dropped whole.
+/// #983 window 2, redone by #1611/#1612/#1621: output of ANY shape (hooks, a newline echo, a
+/// password prompt) does not open the gate; nothing about the connect is read from the screen.
+/// Typing is held whole until ssh owns the tty, then delivered to it once, in order, and later
+/// keys pass straight through.
 #[test]
-fn ssh_control_only_output_does_not_open_the_gate() {
+fn ssh_output_of_any_shape_does_not_open_the_gate_ownership_does() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
@@ -18009,12 +17986,23 @@ fn ssh_control_only_output_does_not_open_the_gate() {
             view.keydown_on_terminal("\r", ctx);
         });
         assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
-        // A real prompt ends it.
+        // A prompt's text is output like any other: still held.
         terminal.update(&mut app, |view, ctx| {
             view.model.lock().process_bytes("host's password: ");
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            view.keydown_on_terminal("\r", ctx);
+            assert!(view.ssh_typeahead_holding, "output opens nothing");
+        });
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+        // ssh owns the tty: the held keys go to it, in order, and the next key passes live.
+        terminal.update(&mut app, |view, ctx| {
+            ssh_tty_owned_for_test(view, ctx);
+            assert!(!view.ssh_typeahead_holding);
+            assert!(view.ssh_held_is_empty());
             view.keydown_on_terminal("\r", ctx);
         });
-        assert!(pty_writes.borrow().iter().any(|w| w.as_slice() == b"\r"));
+        let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+        assert_eq!(written, b"echo hi\r\r\r", "once, in typed order, then live");
     })
 }
 
@@ -18054,7 +18042,11 @@ fn ssh_keys_after_ssh_block_ends_before_remote_session_are_dropped() {
             view.refresh_ssh_connect_gate();
             view.ssh_observe(ctx);
             assert!(view.ssh_connect_gate.as_ref().is_some_and(|g| g.managed));
-            // The ssh block completes cleanly and the pending ssh state is cleared with it.
+            // ssh owned the tty (nothing was held): the gate is open for live keys...
+            ssh_tty_owned_for_test(view, ctx);
+            assert!(!view.ssh_connect_gate_drops_keys());
+            // ...until the ssh block completes cleanly on the managed remote (the pending ssh
+            // state is cleared with it): the bootstrap is coming, so typing is held again.
             let armed = view.model.lock().active_block_id().clone();
             view.apply_block_completed_to_ssh_gate(&armed, 0);
             view.warpify_state.clear_pending_ssh_host();
@@ -18707,10 +18699,31 @@ fn release_ssh_gate_for_test(view: &mut TerminalView) {
     view.ssh_connect_gate = None;
     view.ssh_connect_gate_released_at = Some(chrono::Local::now());
     // Every release in production tells the edge-driven ssh phase (`refresh_ssh_connect_gate`
-    // releasing, `discard_held_ssh_typeahead_for_prompt` delivering). Without the edge the machine
-    // keeps the window open in `table` mode (the default), its phase stays `Holding`, and the
-    // keys this release hands over are held again instead of reaching their destination.
+    // releasing). Without the edge the machine keeps the window open in `table` mode (the
+    // default), its phase stays `Holding`, and the keys this release hands over are held again
+    // instead of reaching their destination.
     view.note_ssh_gate_released(crate::terminal::input_queue::SshRelease::FirstPrompt);
+}
+
+/// ssh owns the tty (#1611, #1612, #1621): the `CommandBecameInteractive` event for the connect
+/// window's block, as the interactive latch sends it from its `tcgetpgrp` / `tcgetattr` probe. The
+/// keys held since the submit are delivered to ssh here (or discarded when the termios guard says a
+/// secret is being read, [`set_tty_reading_secret_for_test`]); later keys pass straight through.
+fn ssh_tty_owned_for_test(view: &mut TerminalView, ctx: &mut ViewContext<TerminalView>) {
+    let block_id = view
+        .ssh_connect_gate
+        .as_ref()
+        .and_then(|gate| gate.block_id.clone())
+        .unwrap_or_else(|| view.model.lock().active_block_id().clone());
+    view.handle_terminal_event(&ModelEvent::CommandBecameInteractive { block_id }, ctx);
+}
+
+/// What the termios guard reads at the ownership release: whether the pty is canonical with echo
+/// off (a password being read). A test without this call has no probe, which reads as `false`.
+fn set_tty_reading_secret_for_test(view: &TerminalView, reading: bool) {
+    view.model
+        .lock()
+        .set_secret_read_probe(std::sync::Arc::new(move || reading));
 }
 
 /// #1292 / #1348: typing that crosses the gate release is neither split, reordered nor run on the
@@ -19090,10 +19103,10 @@ fn ssh_editor_enter_during_hold_is_held_not_submitted() {
     })
 }
 
-/// #1292: keys queued by the editor are discarded with the hold when a prompt arrives (they may
-/// be a password typed blind).
+/// #1292: keys queued by the editor are discarded with the hold when ssh owns the tty while
+/// reading a secret (the termios guard: they may be a password typed blind).
 #[test]
-fn ssh_prompt_arrival_discards_editor_queued_keys() {
+fn ssh_secret_read_at_ownership_discards_editor_queued_keys() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
@@ -19103,7 +19116,9 @@ fn ssh_prompt_arrival_discards_editor_queued_keys() {
             submit_command(view, "ssh host", ctx);
             view.typed_characters_on_terminal("pa", ctx);
             editor_text(view, "ss", ctx);
-            view.reset_ssh_typeahead();
+            set_tty_reading_secret_for_test(view, true);
+            ssh_tty_owned_for_test(view, ctx);
+            assert!(!view.ssh_typeahead_holding);
             assert!(view.ssh_held_is_empty());
             assert!(ssh_queue_is_idle(view));
         });
@@ -19152,10 +19167,12 @@ fn ssh_paste_across_gate_release_is_never_run_locally() {
     })
 }
 
-/// #983 / #1292: visible prompt text arriving discards what was typed blind (it may be a
-/// password) and ends the hold, so a `yes` + Enter typed at a host-key prompt is delivered.
+/// #983 / #1292, redone by #1611/#1612/#1621: ssh owning the tty ends the hold. With the tty
+/// cooked (a host-key question is a plain read) the keys typed blind are delivered to ssh, in
+/// order, as a plain terminal's tty queue would have given them to it; the Enter typed next passes
+/// live behind them. The prompt's text itself decides nothing.
 #[test]
-fn ssh_prompt_arrival_discards_held_keys_and_answers_pass() {
+fn ssh_ownership_delivers_the_held_keys_and_answers_pass() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
@@ -19174,27 +19191,28 @@ fn ssh_prompt_arrival_discards_held_keys_and_answers_pass() {
             view.model
                 .lock()
                 .process_bytes("Are you sure you want to continue connecting (yes/no)? ");
-            view.keydown_on_terminal("\r", ctx);
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            assert!(
+                view.ssh_typeahead_holding,
+                "the question's text opens nothing"
+            );
+            ssh_tty_owned_for_test(view, ctx);
             assert!(!view.ssh_typeahead_holding);
-            assert!(view.ssh_held_is_empty(), "the blind text is gone");
+            assert!(view.ssh_held_is_empty(), "delivered to ssh");
+            view.keydown_on_terminal("\r", ctx);
         });
-        let writes = pty_writes.borrow();
-        assert!(
-            writes.iter().any(|w| w.as_slice() == b"\r"),
-            "the answer must reach ssh: {writes:?}"
-        );
-        assert!(
-            !writes.iter().any(|w| w.as_slice() == b"blind"),
-            "the blind text must never reach ssh: {writes:?}"
+        let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+        assert_eq!(
+            written, b"blind\r",
+            "the blind text reaches ssh once, the answer behind it"
         );
     })
 }
 
-/// #1561: typeahead held for a NESTED ssh whose inner shell is not bootstrapped. The first thing
-/// the inner host shows is its shell's own prompt (unterminated text, no remote session), which
-/// the #1113 rule read as a password prompt: the whole held line was discarded at the first
-/// prompt. A shell prompt is not a credential prompt; plain ssh has that shell read the keys, so
-/// they are delivered to the pty, once, in order (legacy chain and table alike).
+/// #1561, redone by #1611/#1612/#1621: typeahead held for a NESTED ssh whose inner shell is not
+/// bootstrapped. The line is delivered to the pty once, in order, when ssh owns the tty (legacy
+/// chain and table alike); the inner shell reads it like plain ssh. What the inner host prints
+/// (a MOTD, its prompt) decides nothing.
 #[test]
 fn ssh_shell_prompt_of_an_unbootstrapped_inner_host_receives_the_held_keys() {
     use crate::terminal::input_queue::DestinationMode;
@@ -19217,28 +19235,24 @@ fn ssh_shell_prompt_of_an_unbootstrapped_inner_host_receives_the_held_keys() {
                 assert!(view.ssh_typeahead_holding, "{mode:?}: held");
                 view.model.lock().process_bytes("Last login: Mon\r\n");
                 view.model.lock().process_bytes("user@fake:~$ ");
-                // The pty reader publishes the key facts after each parse; without this the
-                // table never saw the prompt, so the H4 row (a key stamped before the prompt is
-                // a password typed blind) could not fire, and this test passed while the app
-                // lost the keys (#1561, r18cx: `row=H4 why=StaleBeforePrompt` x16).
                 view.model.lock().publish_key_facts();
                 view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+                assert!(view.ssh_typeahead_holding, "{mode:?}: output opens nothing");
+                ssh_tty_owned_for_test(view, ctx);
                 assert!(!view.ssh_typeahead_holding, "{mode:?}: the hold ended");
                 assert!(view.ssh_held_is_empty(), "{mode:?}: nothing left held");
                 assert!(
-                    view.ssh_connect_gate.is_none(),
-                    "{mode:?}: the shell prompt ended the connect window"
+                    view.ssh_connect_gate.as_ref().is_some_and(|g| g.tty_owned),
+                    "{mode:?}: the window stays open, owned by ssh"
                 );
-                assert!(
-                    !matches!(
-                        view.build_route_facts(
-                            crate::terminal::input_queue::QueueFacts::default(),
-                            ctx
-                        )
-                        .ssh,
-                        crate::terminal::input_queue::SshPhase::PromptUp { .. }
-                    ),
-                    "{mode:?}: the phase left PromptUp"
+                assert_eq!(
+                    view.build_route_facts(
+                        crate::terminal::input_queue::QueueFacts::default(),
+                        ctx
+                    )
+                    .ssh,
+                    crate::terminal::input_queue::SshPhase::Idle,
+                    "{mode:?}: later keys pass straight through"
                 );
             });
             let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
@@ -19252,10 +19266,11 @@ fn ssh_shell_prompt_of_an_unbootstrapped_inner_host_receives_the_held_keys() {
     }
 }
 
-/// #1561: the control for the test above: a password prompt still discards what was typed blind,
-/// in both modes, and nothing of it reaches the pty.
+/// #1561: the control for the test above: ssh first seen owning the tty while it reads a password
+/// (canonical, echo off: the termios guard) discards what was typed blind, in both modes, and
+/// nothing of it reaches the pty. The prompt's text is not what decides.
 #[test]
-fn ssh_password_prompt_still_discards_the_held_keys_in_both_modes() {
+fn ssh_secret_read_at_ownership_still_discards_the_held_keys_in_both_modes() {
     use crate::terminal::input_queue::DestinationMode;
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
@@ -19277,6 +19292,9 @@ fn ssh_password_prompt_still_discards_the_held_keys_in_both_modes() {
                 view.model.lock().process_bytes("user@fake's password: ");
                 view.model.lock().publish_key_facts();
                 view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+                assert!(view.ssh_typeahead_holding, "{mode:?}: output opens nothing");
+                set_tty_reading_secret_for_test(view, true);
+                ssh_tty_owned_for_test(view, ctx);
                 assert!(!view.ssh_typeahead_holding, "{mode:?}: the hold ended");
                 assert!(view.ssh_held_is_empty(), "{mode:?}: the blind text is gone");
             });
@@ -19345,11 +19363,9 @@ fn ssh_keys_typed_in_the_agent_view_editor_during_connect_are_held_and_handed_ov
                     pty_writes.borrow().is_empty(),
                     "{mode:?}: nothing written yet"
                 );
-                // The remote shell shows its first prompt.
-                view.model.lock().process_bytes("Last login: Mon\r\n");
-                view.model.lock().process_bytes("user@fake:~$ ");
-                view.model.lock().publish_key_facts();
-                view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+                // ssh owns the tty: the held line goes to it (the unmanaged remote shell reads
+                // it like plain ssh).
+                ssh_tty_owned_for_test(view, ctx);
                 assert!(!view.ssh_typeahead_holding, "{mode:?}: the hold ended");
                 assert!(view.ssh_held_is_empty(), "{mode:?}: nothing left held");
             });
@@ -19498,11 +19514,8 @@ fn ssh_window_armed_at_preexec_for_a_users_submit_holds_the_agent_view_editor_ke
                     pty_writes.borrow().is_empty(),
                     "{mode:?}: nothing written yet"
                 );
-                // The remote shell shows its first prompt.
-                view.model.lock().process_bytes("Last login: Mon\r\n");
-                view.model.lock().process_bytes("user@fake:~$ ");
-                view.model.lock().publish_key_facts();
-                view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+                // ssh owns the tty: the held line goes to it.
+                ssh_tty_owned_for_test(view, ctx);
                 assert!(view.ssh_held_is_empty(), "{mode:?}: nothing left held");
             });
             let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
@@ -19832,11 +19845,9 @@ fn nested_ssh_with_late_readiness_runs_each_line_once_in_order_in_the_right_shel
                     "{mode:?}: nothing typed reached the tty before the inner prompt: {:?}",
                     pty_writes.borrow()
                 );
-                // The inner (unmanaged) shell's prompt: the #1561 rule delivers the held line.
-                view.model.lock().process_bytes("Last login: Mon\r\n");
-                view.model.lock().process_bytes("user@fake:~$ ");
-                view.model.lock().publish_key_facts();
-                view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+                // The inner ssh owns the tty: the held line goes to it (#1561 by ownership,
+                // #1611/#1612/#1621; the inner shell's prompt text decides nothing).
+                ssh_tty_owned_for_test(view, ctx);
                 assert!(view.ssh_held_is_empty(), "{mode:?}: handed over");
             });
             let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
@@ -19979,14 +19990,19 @@ fn ssh_in_the_agent_view_on_an_unready_shell_is_routed_to_the_shell_and_held_not
     }
 }
 
-/// #1348: no timing. Keys held when a password / host-key prompt appears are discarded; keys typed
-/// after it (even the very next instant, which the old 200 ms burst rule dropped as a "tail")
-/// go straight to the prompt, like plain ssh. Replaces `ssh_prompt_mid_burst_discards_the_tail_too`.
+/// #1348: no timing. The keys held when ssh owns the tty are discarded if it is reading a secret
+/// (the termios guard) and delivered to it otherwise; keys typed after the event (even the very
+/// next instant, which the old 200 ms burst rule dropped as a "tail") go straight to ssh, like
+/// plain ssh. Replaces `ssh_prompt_mid_burst_discards_the_tail_too`.
 #[test]
-fn ssh_keys_after_a_prompt_reach_it_with_no_burst_window() {
-    for prompt in [
-        "Password: ",
-        "Are you sure you want to continue connecting (yes/no)? ",
+fn ssh_keys_after_ownership_reach_ssh_with_no_burst_window() {
+    for (prompt, reading_secret, expected) in [
+        ("Password: ", true, &b"yes\r"[..]),
+        (
+            "Are you sure you want to continue connecting (yes/no)? ",
+            false,
+            &b"blindyes\r"[..],
+        ),
     ] {
         App::test((), move |mut app| async move {
             initialize_app_for_terminal_view(&mut app);
@@ -20003,7 +20019,9 @@ fn ssh_keys_after_a_prompt_reach_it_with_no_burst_window() {
                     .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
                 view.typed_characters_on_terminal("blind", ctx);
                 view.model.lock().process_bytes(prompt);
-                // Immediately after the prompt: old code discarded this as the burst's tail.
+                set_tty_reading_secret_for_test(view, reading_secret);
+                ssh_tty_owned_for_test(view, ctx);
+                // Immediately after the event: old code discarded this as the burst's tail.
                 view.typed_characters_on_terminal("yes", ctx);
                 view.keydown_on_terminal("\r", ctx);
                 assert!(view.ssh_held_is_empty());
@@ -20012,17 +20030,17 @@ fn ssh_keys_after_a_prompt_reach_it_with_no_burst_window() {
             });
             let writes: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
             assert_eq!(
-                writes, b"yes\r",
-                "{prompt:?}: only post-prompt keys reach it"
+                writes, expected,
+                "{prompt:?}: the keys after the event reach ssh at once, in order"
             );
         })
     }
 }
 
-/// #1292: a newline-terminated banner / MOTD is visible text but not a prompt: the keys stay
-/// held (in order) even though the gate itself opened on the banner.
+/// #1292 / #1611: output of any shape (a banner, a MOTD) does not end the hold; the keys stay
+/// held in order until ssh owns the tty, then reach it once, in order.
 #[test]
-fn ssh_banner_does_not_end_the_hold() {
+fn ssh_output_does_not_end_the_hold_ownership_does() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
@@ -20039,32 +20057,37 @@ fn ssh_banner_does_not_end_the_hold() {
             view.typed_characters_on_terminal("echo QW", ctx);
             assert!(view.ssh_typeahead_holding);
             view.model.lock().process_bytes("Welcome to Ubuntu\r\n");
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
             view.typed_characters_on_terminal("ERTY", ctx);
             view.keydown_on_terminal("\r", ctx);
-            assert!(view.ssh_typeahead_holding, "a banner is not a prompt");
-            assert_eq!(
-                view.ssh_hold_take(),
-                vec![
-                    HeldInput::Typed("echo QWERTY".to_owned()),
-                    HeldInput::Key("\r".to_owned())
-                ]
-            );
+            assert!(view.ssh_typeahead_holding, "output ends nothing");
+            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+            ssh_tty_owned_for_test(view, ctx);
+            assert!(!view.ssh_typeahead_holding);
+            assert!(view.ssh_held_is_empty());
         });
-        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+        let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+        assert_eq!(written, b"echo QWERTY\r", "once, in typed order");
     })
 }
 
-/// #983 / #1292: password and host-key prompts (unterminated lines) discard the held keys and end the hold.
+/// #983 / #1292, redone by #1611/#1612/#1621: ssh owning the tty ends the hold whatever it
+/// printed. Reading a secret (canonical, echo off) discards the held keys as the tty's flush would;
+/// a cooked read (the host-key question) gets them.
 #[test]
-fn ssh_password_and_hostkey_prompts_end_the_hold() {
-    for prompt in [
-        "winters@box's password: ",
-        "Are you sure you want to continue connecting (yes/no/[fingerprint])? ",
+fn ssh_ownership_ends_the_hold_a_secret_read_discards_a_cooked_read_gets_the_keys() {
+    for (prompt, reading_secret) in [
+        ("winters@box's password: ", true),
+        (
+            "Are you sure you want to continue connecting (yes/no/[fingerprint])? ",
+            false,
+        ),
     ] {
         App::test((), move |mut app| async move {
             initialize_app_for_terminal_view(&mut app);
             app.add_singleton_model(|_| crate::workspace::ToastStack);
             let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
             terminal.update(&mut app, |view, ctx| {
                 register_local_session_for_ssh_test(view, ctx);
                 submit_command(view, "ssh host", ctx);
@@ -20077,10 +20100,20 @@ fn ssh_password_and_hostkey_prompts_end_the_hold() {
                 assert!(view.ssh_typeahead_holding);
                 view.model.lock().process_bytes("banner\r\n");
                 view.model.lock().process_bytes(prompt);
-                view.typed_characters_on_terminal("x", ctx);
+                view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+                assert!(
+                    view.ssh_typeahead_holding,
+                    "{prompt:?}: output ends nothing"
+                );
+                set_tty_reading_secret_for_test(view, reading_secret);
+                ssh_tty_owned_for_test(view, ctx);
                 assert!(!view.ssh_typeahead_holding, "{prompt:?}");
                 assert!(view.ssh_held_is_empty(), "{prompt:?}");
+                view.typed_characters_on_terminal("x", ctx);
             });
+            let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+            let expected: &[u8] = if reading_secret { b"x" } else { b"blindx" };
+            assert_eq!(written, expected, "{prompt:?}");
         })
     }
 }
@@ -20450,11 +20483,10 @@ fn ssh_line_typed_at_once_after_the_ssh_enter_is_held_and_delivered_once_to_the_
                 "{mode:?}: still nothing local: {:?}",
                 pty_writes.borrow()
             );
-            // The remote (unmanaged) shell's prompt: the held line goes to it, once.
+            // ssh owns the tty: the held line goes to it (the unmanaged remote shell reads it),
+            // once.
             terminal.update(&mut app, |view, ctx| {
-                view.model.lock().process_bytes("user@fake:~$ ");
-                view.model.lock().publish_key_facts();
-                view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+                ssh_tty_owned_for_test(view, ctx);
                 assert!(view.ssh_held_is_empty(), "{mode:?}: handed over");
             });
             let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
@@ -20739,7 +20771,7 @@ fn ssh_repeated_connects_in_one_tab_each_hand_over_once() {
 /// old code only a later key or the 100 ms poll noticed, and the editor kept queueing keys meant
 /// for the prompt.
 #[test]
-fn ssh_password_prompt_output_discards_the_held_keys_without_a_key() {
+fn ssh_secret_read_at_ownership_discards_the_held_keys_without_a_key() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
@@ -20756,6 +20788,9 @@ fn ssh_password_prompt_output_discards_the_held_keys_without_a_key() {
             assert!(view.ssh_typeahead_holding);
             view.model.lock().process_bytes("Password: ");
             view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            assert!(view.ssh_typeahead_holding, "output opens nothing");
+            set_tty_reading_secret_for_test(view, true);
+            ssh_tty_owned_for_test(view, ctx);
             assert!(view.ssh_held_is_empty());
             assert!(!view.ssh_typeahead_holding);
             assert!(!view.paste_queue.queue.ssh_hold_active());
@@ -20818,10 +20853,10 @@ fn ssh_gate_give_up_deadline_mirrors_its_time_conditions() {
     );
 }
 
-/// #1113: text typed blind before a prompt appears (it could be a password) is discarded when
-/// the prompt arrives, never shown in the editor later.
+/// #1113: text typed blind before ssh reads a password (it could be the password) is discarded
+/// when ssh is seen owning the tty in that state, never shown in the editor later.
 #[test]
-fn ssh_text_typed_before_a_prompt_is_not_shown_later() {
+fn ssh_text_typed_before_a_secret_read_is_not_shown_later() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
@@ -20841,6 +20876,8 @@ fn ssh_text_typed_before_a_prompt_is_not_shown_later() {
             );
             view.typed_characters_on_terminal("hunter2", ctx);
             view.model.lock().process_bytes("Password: ");
+            set_tty_reading_secret_for_test(view, true);
+            ssh_tty_owned_for_test(view, ctx);
             view.keydown_on_terminal("\r", ctx);
             assert!(view.ssh_held_is_empty());
             assert!(!view.ssh_typeahead_holding);
@@ -20878,6 +20915,8 @@ fn ssh_ctrl_d_is_held_during_a_silent_connect() {
             pty_writes.borrow()
         );
         terminal.update(&mut app, |view, ctx| {
+            // ssh owns the tty and asks something (an unterminated line, #1111's own test).
+            ssh_tty_owned_for_test(view, ctx);
             view.model.lock().process_bytes("Password: ");
             view.keydown_on_terminal("\u{4}", ctx);
             // The EOT that passes while the gate is armed must not make the app ignore the
@@ -20893,15 +20932,15 @@ fn ssh_ctrl_d_is_held_during_a_silent_connect() {
 }
 
 /// #1111: after a password prompt was answered and before the ssh hook, the connect is silent
-/// again; Ctrl-D there is held too (the gate's `output_seen` stays set, so the key drop alone
+/// again; Ctrl-D there is held too (the gate's `tty_owned` stays set, so the key drop alone
 /// would let it through).
 #[test]
 fn ssh_ctrl_d_is_held_after_a_prompt_was_answered() {
     App::test((), |mut app| async move {
-        // Reads the legacy gate's own sticky `output_seen`, which the key path's refreshers set;
-        // in `table` mode (the default) the events own the gate and the machine holds the same
-        // fact, so this runs on the legacy path (the kill switch, still shipped). The table
-        // twin of the rule is `ssh_phase_tests` and the `table_mode_a_*` tests.
+        // Reads the legacy gate's own sticky `tty_owned`; in `table` mode (the default) the
+        // events own the gate and the machine holds the same fact, so this runs on the legacy
+        // path (the kill switch, still shipped). The table twin of the rule is
+        // `ssh_phase_tests` and the `table_mode_a_*` tests.
         let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(
             crate::terminal::input_queue::DestinationMode::Legacy,
         );
@@ -20917,13 +20956,10 @@ fn ssh_ctrl_d_is_held_after_a_prompt_was_answered() {
                 .simulate_long_running_block("ssh host", "");
             view.warpify_state
                 .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
+            ssh_tty_owned_for_test(view, ctx);
             view.model.lock().process_bytes("Password: ");
             view.keydown_on_terminal("\r", ctx);
-            assert!(
-                view.ssh_connect_gate
-                    .as_ref()
-                    .is_some_and(|g| g.output_seen)
-            );
+            assert!(view.ssh_connect_gate.as_ref().is_some_and(|g| g.tty_owned));
             view.model.lock().process_bytes("\r\n");
             view.keydown_on_terminal("\u{4}", ctx);
             view.ctrl_d(ctx);
@@ -20936,11 +20972,11 @@ fn ssh_ctrl_d_is_held_after_a_prompt_was_answered() {
     })
 }
 
-/// #1113 (password leak): `hunter2` + Enter typed blind during the silent connect, THEN the
-/// prompt appears. The held line must be discarded as soon as output is seen, so releasing the
-/// gate never puts it in the editor in cleartext.
+/// #1113 (password leak): `hunter2` + Enter typed blind during the silent connect, THEN ssh is
+/// seen owning the tty while it reads the password. The held line is discarded at that event, so
+/// releasing the gate never puts it in the editor in cleartext.
 #[test]
-fn ssh_line_with_enter_typed_before_a_prompt_is_never_shown() {
+fn ssh_line_with_enter_typed_before_a_secret_read_is_never_shown() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
@@ -20958,10 +20994,11 @@ fn ssh_line_with_enter_typed_before_a_prompt_is_never_shown() {
             view.keydown_on_terminal("\r", ctx);
             assert!(!view.ssh_held_is_empty());
             view.model.lock().process_bytes("Password: ");
-            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+            set_tty_reading_secret_for_test(view, true);
+            ssh_tty_owned_for_test(view, ctx);
             assert!(
                 view.ssh_held_is_empty(),
-                "discarded when the prompt appeared"
+                "discarded when ssh was seen reading a secret"
             );
             release_ssh_gate_for_test(view);
             view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
@@ -20970,9 +21007,9 @@ fn ssh_line_with_enter_typed_before_a_prompt_is_never_shown() {
     })
 }
 
-/// #1113: a newline-terminated banner, THEN a blind password + Enter, THEN the "Password: "
-/// prompt. The prompt discards what was held, so it is never shown or delivered, even once the
-/// gate releases.
+/// #1113: a newline-terminated banner, THEN a blind password + Enter, THEN ssh is seen owning the
+/// tty while it reads the password. The termios guard discards what was held, so it is never shown
+/// or delivered, even once the gate releases.
 #[test]
 fn ssh_blind_password_after_a_banner_is_never_shown() {
     App::test((), |mut app| async move {
@@ -20993,9 +21030,10 @@ fn ssh_blind_password_after_a_banner_is_never_shown() {
             view.model.lock().process_bytes("Authorized users only\r\n");
             view.keydown_on_terminal("\r", ctx);
             assert!(!view.ssh_held_is_empty());
-            // The prompt discards it, however it got there.
+            // The secret read at ownership discards it, however it got there.
             view.model.lock().process_bytes("Password: ");
-            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+            set_tty_reading_secret_for_test(view, true);
+            ssh_tty_owned_for_test(view, ctx);
             assert!(view.ssh_held_is_empty());
             release_ssh_gate_for_test(view);
             view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
@@ -21294,8 +21332,8 @@ fn first_precmd_processed_for_test(view: &TerminalView, ctx: &mut ViewContext<Te
         .set_session_id(session_id);
 }
 
-/// #976: while an ssh command runs with no remote session pending and a prompt (here the
-/// host-key question) is showing, a plain Enter and typed answers reach the pty.
+/// #976: while an ssh command runs with no remote session pending and ssh owns the tty (here
+/// asking the host-key question), a plain Enter and typed answers reach the pty.
 #[test]
 fn ssh_prompt_before_remote_session_receives_enter_and_typed_text() {
     App::test((), |mut app| async move {
@@ -21313,6 +21351,10 @@ fn ssh_prompt_before_remote_session_receives_enter_and_typed_text() {
                 Some("host".to_owned()),
             );
             assert!(view.has_pending_ssh_command());
+            // The preexec event armed the window; the latch's event says ssh owns the tty.
+            view.arm_ssh_connect_gate_at_preexec(ctx);
+            assert!(view.ssh_connect_gate.is_some());
+            ssh_tty_owned_for_test(view, ctx);
             view.keydown_on_terminal("\r", ctx);
             view.typed_characters_on_terminal("yes", ctx);
             view.keydown_on_terminal("\r", ctx);
@@ -21327,10 +21369,11 @@ fn ssh_prompt_before_remote_session_receives_enter_and_typed_text() {
     })
 }
 
-/// #983 / #1292: text typed while ssh is still silently connecting is held whole (never partly
-/// written to the tty), and keys flow again as soon as ssh prints a prompt.
+/// #983 / #1292: text typed before ssh owns the tty is held whole (never partly written to the
+/// tty); ssh first seen owning it while reading a password discards the held run (the termios
+/// guard, as the tty's flush would), and keys flow again from that event.
 #[test]
-fn ssh_silent_connect_holds_typed_runs_whole_then_prompt_gets_keys() {
+fn ssh_silent_connect_holds_typed_runs_whole_then_ownership_at_a_secret_read_passes_keys() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         // The dropped-typing notice is a toast; the real app always has a toast stack.
@@ -21355,19 +21398,27 @@ fn ssh_silent_connect_holds_typed_runs_whole_then_prompt_gets_keys() {
         );
         terminal.update(&mut app, |view, ctx| {
             view.model.lock().process_bytes("host's password: ");
+            set_tty_reading_secret_for_test(view, true);
+            ssh_tty_owned_for_test(view, ctx);
             view.typed_characters_on_terminal("pw", ctx);
             view.keydown_on_terminal("\r", ctx);
         });
         let writes = pty_writes.borrow();
         assert!(writes.iter().any(|w| w.as_slice() == b"pw"), "{writes:?}");
         assert!(writes.iter().any(|w| w.as_slice() == b"\r"), "{writes:?}");
+        assert!(
+            !writes
+                .iter()
+                .any(|w| w.as_slice() == b"echo typed-" || w.as_slice() == b"during-connect"),
+            "the blind run never reaches ssh: {writes:?}"
+        );
     })
 }
 
-/// #983: output that does not look like a prompt (a MOTD, a banner ending in a newline) still
-/// ends the silent connect phase for good: later typing, including a bare Enter, reaches the pty.
+/// #983: once ssh owns the tty the gate is open for good, whatever is printed afterwards (a
+/// MOTD, a banner ending in a newline): later typing, including a bare Enter, reaches the pty.
 #[test]
-fn ssh_gate_never_rearms_after_any_output() {
+fn ssh_gate_never_rearms_after_ownership() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         let terminal = add_window_with_terminal(&mut app, None);
@@ -21379,6 +21430,8 @@ fn ssh_gate_never_rearms_after_any_output() {
                 .simulate_long_running_block("ssh host", "motd\n");
             view.warpify_state
                 .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
+            view.arm_ssh_connect_gate_at_preexec(ctx);
+            ssh_tty_owned_for_test(view, ctx);
             view.typed_characters_on_terminal("cat", ctx);
             view.keydown_on_terminal("\r", ctx);
         });
@@ -23072,7 +23125,7 @@ fn ssh_queue_key_queued_in_the_prompt_turn_lands_after_the_held_keys() {
     ssh_key_queued_in_the_prompt_turn_lands_after_the_held_keys();
 }
 
-fn ssh_password_prompt_discards_held_keys_and_next_key_reaches_the_pty() {
+fn ssh_secret_read_at_ownership_discards_held_keys_and_next_key_reaches_the_pty() {
     App::test((), move |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
@@ -23090,10 +23143,12 @@ fn ssh_password_prompt_discards_held_keys_and_next_key_reaches_the_pty() {
             assert!(view.ssh_typeahead_holding);
             assert!(ssh_gate_open(view));
             view.model.lock().process_bytes("Password: ");
+            set_tty_reading_secret_for_test(view, true);
+            ssh_tty_owned_for_test(view, ctx);
             view.typed_characters_on_terminal("hunter2", ctx);
             assert!(!view.ssh_typeahead_holding);
             assert!(view.ssh_held_is_empty());
-            assert!(!ssh_gate_open(view), "the prompt event dropped the gate");
+            assert!(!ssh_gate_open(view), "the ownership event dropped the gate");
             assert!(ssh_queue_is_idle(view));
         });
         // The pty write is an event: it is observed once the update that emitted it ends.
@@ -23106,8 +23161,8 @@ fn ssh_password_prompt_discards_held_keys_and_next_key_reaches_the_pty() {
 }
 
 #[test]
-fn ssh_queue_password_prompt_discards_held_keys_and_next_key_reaches_the_pty() {
-    ssh_password_prompt_discards_held_keys_and_next_key_reaches_the_pty();
+fn ssh_queue_secret_read_at_ownership_discards_held_keys_and_next_key_reaches_the_pty() {
+    ssh_secret_read_at_ownership_discards_held_keys_and_next_key_reaches_the_pty();
 }
 
 fn ssh_failed_connect_returns_the_text_to_the_input() {
@@ -26221,38 +26276,6 @@ fn a_held_signal_is_discarded_when_the_connect_ends_without_a_remote_shell() {
     });
 }
 
-/// The H4 drop is executed (OD-7): a delivered input the table drops as stamped before the ssh
-/// prompt is neither written nor inserted.
-#[test]
-fn table_mode_executes_the_h4_drop_for_a_key_stamped_before_the_prompt() {
-    use crate::terminal::input_queue::QueueFacts;
-    use crate::terminal::input_queue::table::{DropWhy, Effects, OnRefused, Outcome, Plan, Row};
-    App::test((), |mut app| async move {
-        initialize_app_for_terminal_view(&mut app);
-        let terminal = add_window_with_terminal(&mut app, None);
-        let pty_writes = record_pty_writes(&mut app, &terminal);
-        terminal.update(&mut app, |view, ctx| {
-            let facts = view.build_route_facts(QueueFacts::default(), ctx);
-            let plan = Plan {
-                outcome: Outcome::Drop(DropWhy::StaleBeforePrompt),
-                effects: Effects::NONE,
-                on_refused: OnRefused::NotApplicable,
-                row: Row::H4,
-            };
-            for input in [
-                dest_table::Replayed::Typed("hunter2"),
-                dest_table::Replayed::Key("\r"),
-                dest_table::Replayed::Seq("\u{1b}[A"),
-                dest_table::Replayed::Paste("hunter2"),
-            ] {
-                view.execute_table_plan(input, &plan, &facts, ctx);
-            }
-            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
-            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
-        });
-    });
-}
-
 /// Lock order: facts for a table decision never wait for the typeahead hand-off's lock (the
 /// model's parse takes it while holding the model lock, so a delivery that waited for it while
 /// holding anything the parse needs could deadlock). With the hand-off write-locked the build
@@ -27383,7 +27406,7 @@ fn table_mode_the_agents_write_is_refused_during_a_setup_and_goes_out_otherwise(
 // event-driven hand-over from one a safety net made: every timer-made release adds to it.
 
 /// `shadow`: the machine and the legacy derivation give the same phase through a silent connect
-/// and a password prompt, so `kh_ssh_phase_disagree` stays quiet.
+/// and ssh taking the tty, so `kh_ssh_phase_disagree` stays quiet.
 #[test]
 fn shadow_mode_the_ssh_phase_machine_agrees_with_the_derivation_through_a_connect() {
     use crate::terminal::input_queue::{QueueFacts, SshPhase};
@@ -27412,12 +27435,19 @@ fn shadow_mode_the_ssh_phase_machine_agrees_with_the_derivation_through_a_connec
                 view.build_route_facts(QueueFacts::default(), ctx).ssh,
                 SshPhase::Holding
             );
-            // A password prompt: unterminated text before any remote session.
+            // Output of any shape changes nothing; ssh owning the tty opens the gate.
             view.model.lock().process_bytes("Password: ");
             view.model.lock().publish_key_facts();
             view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
-            let prompt = view.build_route_facts(QueueFacts::default(), ctx).ssh;
-            assert!(matches!(prompt, SshPhase::PromptUp { .. }), "{prompt:?}");
+            assert_eq!(
+                view.build_route_facts(QueueFacts::default(), ctx).ssh,
+                SshPhase::Holding
+            );
+            ssh_tty_owned_for_test(view, ctx);
+            assert_eq!(
+                view.build_route_facts(QueueFacts::default(), ctx).ssh,
+                SshPhase::Idle
+            );
             assert_eq!(
                 ssh_edges::ssh_phase_disagreements(),
                 before,
@@ -27543,10 +27573,11 @@ fn table_mode_the_give_up_ends_a_window_nothing_is_held_behind() {
     });
 }
 
-/// A password prompt: the OUTPUT event discards what was held, and the next key reaches the prompt,
-/// with no timing involved (#1348, owner rule 2026-11-01).
+/// A password read: the OWNERSHIP event, with the termios guard saying a secret is being read,
+/// discards what was held, and the next key reaches ssh, with no timing involved (#1348, owner
+/// rule 2026-11-01; #1611/#1612/#1621: the prompt's text decides nothing).
 #[test]
-fn table_mode_a_password_prompt_discards_the_held_keys_and_the_next_key_reaches_it() {
+fn table_mode_a_secret_read_at_ownership_discards_the_held_keys_and_the_next_key_reaches_it() {
     App::test((), |mut app| async move {
         let _mode = force_dest_mode(DestMode::Table);
         initialize_app_for_terminal_view(&mut app);
@@ -27566,7 +27597,16 @@ fn table_mode_a_password_prompt_discards_the_held_keys_and_the_next_key_reaches_
             view.model.lock().process_bytes("Password: ");
             view.model.lock().publish_key_facts();
             view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
-            assert!(view.ssh_held_is_empty(), "the output event discarded them");
+            assert!(
+                view.ssh_typeahead_holding,
+                "the output event opened nothing"
+            );
+            set_tty_reading_secret_for_test(view, true);
+            ssh_tty_owned_for_test(view, ctx);
+            assert!(
+                view.ssh_held_is_empty(),
+                "the ownership event discarded them"
+            );
             assert!(!view.ssh_typeahead_holding);
             view.typed_characters_on_terminal("hunter2", ctx);
             assert_eq!(view.ssh_give_ups, 0);

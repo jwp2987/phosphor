@@ -524,6 +524,10 @@ pub struct TerminalModel {
     /// Asks the pty who owns the terminal; see `block::interactive_latch`. None where the
     /// platform has no such API (ConPTY).
     interactive_probe: Option<super::block::interactive_latch::InteractiveProbe>,
+    /// Asks the pty whether a secret is being read (canonical, echo off): the termios guard of the
+    /// ssh typeahead release (#1611, #1612, #1621). None where the platform has no termios
+    /// (ConPTY) and in tests that install none.
+    secret_read_probe: Option<super::block::interactive_latch::SecretReadProbe>,
 
     /// Stack of saved window titles. When a title is popped from this stack, the `title` for the
     /// term is set.
@@ -1275,6 +1279,7 @@ impl TerminalModel {
             blocklist_has_been_cleared: false,
             alt_screen_active: false,
             interactive_probe: None,
+            secret_read_probe: None,
             title_stack: Vec::new(),
             title: None,
             custom_title: None,
@@ -1969,6 +1974,22 @@ impl TerminalModel {
         probe: super::block::interactive_latch::InteractiveProbe,
     ) {
         self.interactive_probe = Some(probe);
+    }
+
+    /// Installs the termios probe behind [`Self::tty_reading_secret`] (unix local ptys; a test
+    /// installs a closure of its own).
+    pub fn set_secret_read_probe(
+        &mut self,
+        probe: super::block::interactive_latch::SecretReadProbe,
+    ) {
+        self.secret_read_probe = Some(probe);
+    }
+
+    /// Whether the pty is canonical with echo off right now (a program reads a secret); `false`
+    /// without a probe. Read at the ssh typeahead's ownership release (#1611, #1612, #1621), never
+    /// on a timer.
+    pub fn tty_reading_secret(&self) -> bool {
+        self.secret_read_probe.as_ref().is_some_and(|probe| probe())
     }
 
     /// Exclusive access to the typeahead hand-off (its own leaf lock; see [`PaneHandoff`]).

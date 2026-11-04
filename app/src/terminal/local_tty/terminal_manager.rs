@@ -1088,6 +1088,12 @@ fn on_shell_determined<S: TerminalSurface>(
         model.lock().set_interactive_probe(Arc::new(move || {
             super::terminal_attributes::terminal_owner(fd, pid as i32)
         }));
+        // #1611/#1612/#1621: the termios guard of the ssh typeahead release: a secret being read
+        // when ssh is first seen owning the tty discards the keys held before it, as the tty
+        // would. Sampled at that event only.
+        model.lock().set_secret_read_probe(Arc::new(move || {
+            super::terminal_attributes::tty_is_reading_secret(fd)
+        }));
         manager.pty_controller.update(ctx, |controller, _| {
             controller.set_foreground_sigint(Arc::new(move || {
                 super::terminal_attributes::sigint_foreground_group(fd)

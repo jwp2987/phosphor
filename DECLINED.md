@@ -2749,3 +2749,34 @@ editor for classification) is off after any command that ran longer than 50 ms; 
 after such a command runs in the shell unclassified. The price of fixing the Windows ssh Enter loss
 (#1609, #1614: the same latch is what says an `ssh` owns the pty there). Revisit when ConPTY gets a
 probe. Owner decision 2026-11-03. <!-- markers: keep:note_command_interactive -->
+
+
+## ssh connect typeahead: no screen-text prompt latch — DECIDED 2026-11-04 (#1611, #1612, #1621; also #1561, #1575)
+
+Four rounds of classifying the remote screen during an ssh connect as "shell prompt vs
+credential prompt" failed review (#1611, #1612, #1621). The owner replaced the approach with the
+plain terminal's rule, and that rule is final: nothing about an ssh connect is read from the
+screen. The keys typed since the submit are held until ssh OWNS THE TTY (the block latch's
+`CommandBecameInteractive` for the connect window's block, from `tcgetpgrp` / `tcgetattr`;
+`TerminalView::ssh_on_tty_owned`, `SshEdge::TtyOwned`), then delivered to ssh once, in typed order,
+and every later key passes straight through; the remote side decides what becomes of them, exactly
+as a tty queue would (a shell prompt reads them, a password read's `TCSAFLUSH` discards them). The
+one guard at that release is a termios read, not text: a tty that is canonical with echo off is a
+secret being read, and what is held is discarded as the kernel flush would have discarded it
+(`TerminalModel::tty_reading_secret`, `terminal_attributes::tty_is_reading_secret`), with a toast.
+Deleted with the latch: `ssh_prompt_has_arrived`, `discard_ssh_typeahead_on_prompt`,
+`discard_held_ssh_typeahead_for_prompt`, `ssh_prompt_is_unmanaged_shell_prompt`, the gate's
+`output_seen` and the grid scan behind it, `SshRelease::ShellPrompt`, `SshPhase::PromptUp`, the
+table's H4 row (`DropWhy::StaleBeforePrompt`, owner decision OD-7, now withdrawn),
+`RouteFacts::ssh_prompt_is_shell`, the published `visible_text_seen` / `unterminated_is_shell`
+facts, `output_tail_is_shell_prompt` and `StickyOutput::observe_shell`. Kept: the hold before
+ownership (#1565/#1579 arming), the 64 KiB cap, the #1292 hand-back as text when the window ends
+without ownership, Ctrl-C before ownership as SIGINT (after it, the byte), the managed holds (the
+announced session's bootstrap, the post-block wait, the first-prompt hand-over of #1572/#1494: all
+events), and the give-up nets (timers that only ever hand text back to the editor). Windows/ConPTY
+has no ownership event and a timer must never write to a pty, so a window there is born owned
+(`TTY_OWNED_AT_ARM`): keys go to the pty in order from the submit, as a plain console gives them
+to `ssh.exe`. Do not reintroduce prompt or question classification, in any form, for the ssh
+connect; the `unterminated_since_gen` fact that remains serves the subshell setup's "the shell
+asks for an answer" rule (#1032) and the ssh ^D rule (#1111), not the typeahead's destination.
+<!-- markers: sym:ssh_prompt_has_arrived sym:discard_ssh_typeahead_on_prompt sym:discard_held_ssh_typeahead_for_prompt sym:ssh_prompt_is_unmanaged_shell_prompt sym:output_tail_is_shell_prompt sym:StaleBeforePrompt keep:ssh_on_tty_owned keep:tty_is_reading_secret -->

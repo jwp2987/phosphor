@@ -122,12 +122,9 @@ fn facts(u: &mut Unstructured) -> RouteFacts {
         PsPhase::LineRunning,
         PsPhase::AfterAbort,
     ][pick(u, 5)];
-    f.ssh = match pick(u, 3) {
+    f.ssh = match pick(u, 2) {
         0 => SshPhase::Idle,
-        1 => SshPhase::Holding,
-        _ => SshPhase::PromptUp {
-            prompt_gen: u.arbitrary::<u64>().unwrap_or(0),
-        },
+        _ => SshPhase::Holding,
     };
     f.ssh_dialog_up = flag(u);
     f.ssh_setup_in_flight = flag(u);
@@ -140,7 +137,6 @@ fn facts(u: &mut Unstructured) -> RouteFacts {
     f.ssh_route_forward = flag(u);
     f.ssh_pre_init_abort = flag(u);
     f.ssh_sigint_applies = flag(u);
-    f.ssh_prompt_is_shell = flag(u);
     f.focus = focus(u);
     f.approval_card = flag(u);
     f.ai_awaiting_confirmation = flag(u);
@@ -180,7 +176,6 @@ fuzz_target!(|data: &[u8]| {
 
     if let Outcome::Drop(why) = plan.outcome {
         let allowed: &[Row] = match why {
-            DropWhy::StaleBeforePrompt => &[Row::H4],
             DropWhy::AgentRefusedSetup => &[Row::D13],
             DropWhy::AgentControl => &[Row::D2b, Row::D3, Row::D5],
             DropWhy::NotLongRunning => &[Row::D10, Row::OSynced],

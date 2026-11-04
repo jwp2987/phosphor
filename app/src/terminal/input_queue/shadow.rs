@@ -13,7 +13,7 @@
 //! Nothing here logs typed text: a line carries the row, the two destination classes and a few
 //! boolean/enum facts. Known differences are tagged `expected=..` so the log stays quiet about
 //! them: `OD1` (^Z / ^\\ are signals now), `OD5` (a signal in the ssh setup window is held, not
-//! dropped), `OD7` (a key stamped before the ssh prompt is dropped), `B3` (the table logs a drop
+//! dropped), `B3` (the table logs a drop
 //! legacy did silently), `B7` (the published agent flag was one publication old), `B13` (a control
 //! key reaches the pty while the agent owns it, through the hand-off), `B14` (legacy put text for
 //! the editor past the gates that hold every other key; the table holds it, strict FIFO). (`B15`,
@@ -87,7 +87,7 @@ pub struct Disagreement {
     pub legacy: DestClass,
     pub table: DestClass,
     pub flags: String,
-    /// A known cause (`OD1`, `OD5`, `OD7`, `B3`, `B7`, `B13`): expected, not a regression.
+    /// A known cause (`OD1`, `OD5`, `B3`, `B7`, `B13`): expected, not a regression.
     pub expected: Option<&'static str>,
 }
 
@@ -120,9 +120,6 @@ pub fn expected_tag(intent: &Intent, plan: &Plan, f: &RouteFacts) -> Option<&'st
     if matches!(plan.row, Row::P1a | Row::P1f) {
         return Some("OD5");
     }
-    if plan.row == Row::H4 {
-        return Some("OD7");
-    }
     if matches!(plan.outcome, Outcome::Drop(DropWhy::RefusedHiddenInput)) {
         return Some("B3");
     }
@@ -146,7 +143,6 @@ pub fn flags(f: &RouteFacts) -> String {
         match f.ssh {
             super::SshPhase::Idle => "idle",
             super::SshPhase::Holding => "holding",
-            super::SshPhase::PromptUp { .. } => "prompt",
         },
         u8::from(f.long_running),
         u8::from(f.active_block_started),

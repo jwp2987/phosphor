@@ -7,6 +7,7 @@
 //! |---|---|
 //! | `Submitted` | `note_command_submitted_for_ssh_gate` (the user's Enter) |
 //! | `ConnectStart` | `refresh_ssh_connect_gate` arming the window for an ssh recognised at preexec only (run at the model event, `ssh_arm_gate_at_event`) |
+//! | `TtyOwned` | `ssh_on_tty_owned`: `CommandBecameInteractive` for the window's block (ssh owns the tty; the held keys are delivered to it, or discarded by the termios guard, there) (#1611, #1612, #1621) |
 //! | `Observed` | [`TerminalView::ssh_observe`]: every model event and output wakeup while a window is open or a session is pending, the remote-setup `SessionsEvent`, and the choice dialog being added or removed |
 //! | `BlockCompleted` | `apply_block_completed_to_ssh_gate` |
 //! | `BootstrapFailed` | `on_bootstrap_failed_timer_complete` (#1494's path) |
@@ -30,6 +31,10 @@
 //!  * the bootstrap-failed timer (`on_bootstrap_failed_timer_complete`, #1494);
 //!  * the first-Precmd wait cap (`SSH_TYPEAHEAD_PRECMD_WAIT_CAP`).
 //! Never logged: the text of a key. Counts and reasons only.
+//!
+//! Nothing here reads the screen: no edge is "visible text was printed" or "the line looks like a
+//! prompt" any more (the latch those fed failed review four times, #1611, #1612, #1621; see
+//! `DECLINED.md`).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -175,8 +180,6 @@ impl TerminalView {
         let observation = SshObservation {
             pending_session: pending.is_some(),
             hook_seen: read.snapshot.has_pending_ssh_session,
-            visible_text: read.snapshot.visible_text_seen,
-            unterminated_since: read.snapshot.unterminated_since_gen,
             dialog_up: self.ssh_dialog_up_in(pending, ctx),
             setup_in_flight: self.ssh_setup_in_flight_in(pending, ctx),
         };
@@ -391,11 +394,10 @@ impl TerminalView {
     }
 }
 
-/// A phase for the log (the generation of a prompt is not secret, but is not needed either).
+/// A phase for the log.
 fn phase_name(phase: SshPhase) -> &'static str {
     match phase {
         SshPhase::Idle => "idle",
         SshPhase::Holding => "holding",
-        SshPhase::PromptUp { .. } => "prompt",
     }
 }
