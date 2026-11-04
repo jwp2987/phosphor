@@ -24746,6 +24746,41 @@ fn a_deferred_enter_gate_take_under_a_busy_queue_releases_the_keys_in_order() {
     }
 }
 
+/// #1189: keys held behind a deferred Enter's HandoffReport gate, released because the Enter
+/// wrote no command, go to a ConPTY session one write per key, so no write carries an Enter with
+/// the next line's keys behind it; elsewhere they are one write, in typed order, as before.
+#[test]
+fn a_deferred_enter_gate_release_on_conpty_writes_one_key_per_write() {
+    use crate::terminal::input_queue::{GateKeysThen, GateKind};
+    for conpty in [true, false] {
+        App::test((), move |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                view.model
+                    .lock()
+                    .typeahead_handoff_mut()
+                    .set_conpty_input(conpty);
+                let queue = view.paste_queue.queue.clone();
+                view.hold_deferred_key_in_queue(7, b"ls".to_vec(), true, ctx);
+                view.hold_deferred_key_in_queue(7, b"\r".to_vec(), true, ctx);
+                view.hold_deferred_key_in_queue(7, b"x".to_vec(), true, ctx);
+                assert!(queue.borrow().has_gate(GateKind::HandoffReport, 7));
+                view.take_deferred_gate_keys_then(7, GateKeysThen::Release, ctx);
+                assert!(!queue.borrow().has_gate(GateKind::HandoffReport, 7));
+            });
+            let expected = if conpty {
+                vec![b"ls".to_vec(), b"\r".to_vec(), b"x".to_vec()]
+            } else {
+                vec![b"ls\rx".to_vec()]
+            };
+            assert_eq!(*pty_writes.borrow(), expected, "conpty={conpty}");
+        });
+    }
+}
+
 /// #1446: dropping the ssh gate under a busy queue detaches the view's state at once and drops
 /// the queue's gate (and what it held) when the queue is free; the gate is not left set.
 #[test]

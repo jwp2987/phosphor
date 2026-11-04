@@ -4995,3 +4995,43 @@ fn every_hold_names_a_release_that_is_satisfiable_when_it_engages() {
     }
     assert!(held > 0 && held < cases, "{held} of {cases} held");
 }
+
+/// #1189: keys held behind a deferred Enter that wrote no command are released to the pty one
+/// write per key event on ConPTY, so no write carries an Enter with the next line's keys behind
+/// it; elsewhere they go out as one write, in typed order, as before.
+#[test]
+fn held_keys_released_after_an_unsubmitted_enter_keep_their_key_boundaries_on_conpty() {
+    let keys = || {
+        vec![
+            b"e".to_vec(),
+            b"c".to_vec(),
+            Vec::new(),
+            b"\r".to_vec(),
+            b"\x1b[A".to_vec(),
+            b"x".to_vec(),
+            b"\r".to_vec(),
+        ]
+    };
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.set_conpty_input(true);
+    assert_eq!(
+        handoff.held_key_release_writes(keys()),
+        vec![
+            b"e".to_vec(),
+            b"c".to_vec(),
+            b"\r".to_vec(),
+            b"\x1b[A".to_vec(),
+            b"x".to_vec(),
+            b"\r".to_vec(),
+        ]
+    );
+    let plain = TypeaheadHandoff::default();
+    assert_eq!(
+        plain.held_key_release_writes(keys()),
+        vec![b"ec\r\x1b[Ax\r".to_vec()]
+    );
+    assert_eq!(
+        plain.held_key_release_writes(Vec::new()),
+        Vec::<Vec<u8>>::new()
+    );
+}

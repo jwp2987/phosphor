@@ -14445,11 +14445,28 @@ impl TerminalView {
     /// Releases the keys held behind a deferred Enter whose submit wrote no command: shell lines
     /// (an Enter among them) go to the pty as typed, never into the editor, where the next Enter
     /// would submit them as one multi-line buffer -- to the agent, if natural-language detection
-    /// took it for a query (#826 N1); one unfinished line goes back into the editor.
-    fn release_held_keys(&mut self, held: Vec<u8>, ctx: &mut ViewContext<Self>) {
-        if held.iter().any(|byte| matches!(byte, b'\r' | b'\n')) {
-            self.write_to_pty(held, ctx);
+    /// took it for a query (#826 N1); one unfinished line goes back into the editor. `held` is
+    /// one chunk per key entry, in typed order: on ConPTY each key is its own write, so no write
+    /// carries an Enter with the next line's keys behind it (#1189).
+    fn release_held_keys(&mut self, held: Vec<Vec<u8>>, ctx: &mut ViewContext<Self>) {
+        let has_enter = held
+            .iter()
+            .any(|chunk| chunk.iter().any(|byte| matches!(byte, b'\r' | b'\n')));
+        if has_enter {
+            let writes = self.handoff.read().held_key_release_writes(held);
+            // #1189: how keys held behind an unsubmitted deferred Enter went out. Counts only.
+            warpui::input_order::log_hop("held_keys_release", || {
+                format!(
+                    "writes={} bytes={}",
+                    writes.len(),
+                    writes.iter().map(Vec::len).sum::<usize>()
+                )
+            });
+            for bytes in writes {
+                self.write_to_pty(bytes, ctx);
+            }
         } else {
+            let held = held.concat();
             let text = text_for_editor(&held);
             self.input.update(ctx, |input, ctx| {
                 if forces_shell_submit(&text) {

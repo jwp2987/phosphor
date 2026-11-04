@@ -72,7 +72,7 @@ impl SeatHandler for WinitState {
 
     fn new_capability(
         &mut self,
-        _: &Connection,
+        connection: &Connection,
         queue_handle: &QueueHandle<Self>,
         seat: WlSeat,
         capability: SeatCapability,
@@ -91,6 +91,12 @@ impl SeatHandler for WinitState {
             },
             SeatCapability::Keyboard if seat_state.keyboard_state.is_none() => {
                 let keyboard = seat.get_keyboard(queue_handle, KeyboardData::new(seat.clone()));
+                // Phosphor #1414: send the bind now. `KeyboardState::new` below builds an xkb
+                // context and loads the locale's Compose table (~2 ms, ~13 ms the first time),
+                // and the request otherwise waits in the buffer for the end of this dispatch: a
+                // key the compositor routes in that window has no wl_keyboard of ours to go to.
+                // An error (or WouldBlock) is left to the event loop's own flush.
+                let _ = connection.flush();
                 seat_state.keyboard_state =
                     Some(KeyboardState::new(keyboard, self.loop_handle.clone()));
             },

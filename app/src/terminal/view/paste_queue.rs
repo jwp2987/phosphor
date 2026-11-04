@@ -1567,28 +1567,33 @@ impl TerminalView {
         }
     }
 
-    /// The continuation of [`Self::take_deferred_gate_keys_then`].
+    /// The continuation of [`Self::take_deferred_gate_keys_then`]. `held` is one chunk per key
+    /// entry, in typed order: a release to the pty keeps the key boundaries (ConPTY, #1189); the
+    /// editor hand-backs take the keys as one text.
     fn finish_taken_gate_keys(
         &mut self,
-        held: Vec<u8>,
+        held: Vec<Vec<u8>>,
         then: GateKeysThen,
         ctx: &mut ViewContext<Self>,
     ) {
         match then {
             GateKeysThen::Release => self.release_held_keys(held, ctx),
-            GateKeysThen::GiveUpToEditor => self.give_up_deferred_enter_keys_to_editor(held, ctx),
+            GateKeysThen::GiveUpToEditor => {
+                self.give_up_deferred_enter_keys_to_editor(held.concat(), ctx)
+            }
             GateKeysThen::GiveUpHandBack(why) => {
-                self.hand_back_deferred_enter_keys_to_editor(held, why, ctx)
+                self.hand_back_deferred_enter_keys_to_editor(held.concat(), why, ctx)
             }
         }
     }
 
-    /// The take itself; `None` when the queue could not be locked (nothing was changed).
+    /// The take itself, one chunk per key entry in typed order; `None` when the queue could not
+    /// be locked (nothing was changed).
     fn take_deferred_gate_bytes_now(
         &mut self,
         gate_id: u64,
         ctx: &mut ViewContext<Self>,
-    ) -> Option<Vec<u8>> {
+    ) -> Option<Vec<Vec<u8>>> {
         let queue = self.paste_queue.queue.clone();
         let entries = {
             let mut guard = queue.try_lock()?;
@@ -1604,7 +1609,7 @@ impl TerminalView {
             }
             entries
         };
-        Some(self.pty_bytes_of_taken_entries(entries, ctx).concat())
+        Some(self.pty_bytes_of_taken_entries(entries, ctx))
     }
 
     /// As [`Self::bytes_of_taken_entries`], for keys that go to the pty as typed or come back as

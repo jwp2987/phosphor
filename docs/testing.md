@@ -723,6 +723,11 @@ by exact PID in teardown. Clients bind `wl_keyboard` once, before any test key, 
 session). The session exports `APPCI_WL_INJECTOR=persistent|percall` (percall = holder failed to start, or `APPCI_WL_KBD_HOLD=0` forces the
 old behaviour for reproducing the artifact); `key_loss_control` reports it as `metrics.key_loss.injector_mode` and a note. With `persistent`,
 the "perline-unprimed" variant measures Phosphor with a stable keyboard and no priming; with `percall` it reproduces the artifact.
+The per-call race had a Phosphor-side part too: foot kept every first character with the same per-call stream (r18d2: foot 0/12,
+Phosphor 12/12), and the wire trace shows why -- winit queued `get_keyboard` and then built the keyboard's xkb context and Compose table
+(~2 ms) before the dispatch flushed it. The vendored winit now flushes right after `get_keyboard` (`lib/winit/CHANGES-PHOSPHOR.md`). To
+check it, run the Wayland job once with `APPCI_WL_KBD_HOLD=0 APPCI_CASES=key_loss_control`: "perline-unprimed" must lose no more first
+characters in Phosphor than in foot (the case's own Phosphor-vs-reference check); the default persistent session cannot show it.
 
 **Injector accounting, all keys (#1509).** Every case on Linux (wayland/x11) and macOS now ends with an informational note `injector accounting: injector sent N;
 app saw M; lost-before-app K (Enter: sent a, app saw b)` and a `metrics.injector` record. `sent` is the backend's own record of what it posted
@@ -971,6 +976,17 @@ an enter window, released by the latch.
 | view, Legacy and Table | `view_test.rs`: `a_prompt_hold_past_its_cap_hands_its_keys_back_to_the_editor_and_writes_nothing`, `a_held_segment_with_an_enter_past_the_cap_stays_held_until_the_signal` | no signal past the cap: `ls -l` in the editor, editor owns input, zero pty writes; `ls\rx` past the cap (twice): still held, nothing written, then the signal writes it once, in order |
 | view, Legacy and Table | `view_test.rs`: `an_interrupt_voids_a_kept_overdue_segment_and_only_the_signal_reaches_the_pty`, `a_hand_back_keeps_typed_order_across_editor_and_pty_entries`, `a_stale_prompt_hold_gate_hands_back_shell_routed_text`, `a_never_signalling_shell_hands_back_a_segment_with_an_enter`, `a_hold_whose_wait_a_preexec_cleared_is_released_by_the_latch`; model `a_preexec_turns_a_waiting_prompt_hold_into_an_enter_window` | ^C on a kept `ls\r`: the pty gets only `\x03`; `l`,`s`,editor `x`,` -a` → `lsx -a`; a stale gate's `ls` is shell-submitted; a never-signalling shell's `ls\rx` → editor `ls\nx`, nothing written; a preexec-cleared hold is released by the latch, once, in order |
 | view | `view_test.rs`: `a_signal_takes_the_keys_held_for_the_prompt_in_front_of_it` (^C voids, ^D follows), `the_queued_prompt_hold_gives_up_in_order_and_switches_itself_off`, `a_prompt_hold_cap_that_fires_while_the_queue_is_busy_still_releases_the_keys` | the give-up hands back to the editor (also from a busy queue), never writes; the never-signalling shell's next key goes by the live path |
+
+**Keys held behind an unsubmitted deferred Enter (#1189).** `release_held_keys` (a deferred Enter's `HandoffReport` gate closed and
+the Enter wrote no command) was the last release that wrote its keys to ConPTY as ONE write with the Enter(s) inside it -- the
+shape #1189 lost lines on. It now gets the keys one chunk per key entry and, on a ConPTY session, writes each as its own write, like
+every other release there (`TypeaheadHandoff::held_key_release_writes`; elsewhere still one write). In an app log the release is
+`hop=held_keys_release writes=N bytes=M`: on Windows N equals the number of keys handed to the event loop, which may still merge
+adjacent plain-text keys (every byte >= 0x20, `is_plain_key_text` in `local_tty/event_loop.rs`) into fewer pty writes
+(`hop=pty_write_coalesced`); a CR or an ESC sequence always ends a write. Tests: `typeahead_handoff_tests.rs`
+`held_keys_released_after_an_unsubmitted_enter_keep_their_key_boundaries_on_conpty` (ConPTY: one write per key, empty chunks
+dropped; elsewhere: one write, typed order) and `view_test.rs` `a_deferred_enter_gate_release_on_conpty_writes_one_key_per_write`
+(`ls`, `\r`, `x` held behind the gate and released: ConPTY writes `ls` / `\r` / `x`, otherwise one `ls\rx`).
 
 ### 2.14 Coverage-gap cases (`appci/cases_coverage_b.py`, #1542-#1548, #1460, #1463)
 
