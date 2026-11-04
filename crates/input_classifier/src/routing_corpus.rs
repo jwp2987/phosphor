@@ -1177,6 +1177,54 @@ pub(crate) const CASES: &[Case] = &[
     )
     .shell(Shell::Fish)
     .expect(Expect::Agent),
+    // -- #1624: an English contraction makes a command-headed line a sentence in a conversation.
+    // macOS has `/usr/bin/what`; the `'` of `it's` made the quoting unsafe, which the evidence and
+    // sentence tests read as "no verdict" and "a quoted argument", so the line ran in the shell.
+    Case::cmd(
+        "what is in the file that I just mentioned T169_6rjko, it's short",
+        "#1624",
+    )
+    .in_conversation()
+    .expect(Expect::Agent)
+    .v1_xfail(
+        "#1624: Enter before the parse with AI inherited takes the installed head as a command",
+    ),
+    Case::cmd(
+        "what is in the file that I just mentioned T169_6rjko, it\u{2019}s short",
+        "#1624 (typographic apostrophe)",
+    )
+    .in_conversation()
+    .expect(Expect::Agent)
+    .v1_xfail(
+        "#1624: Enter before the parse with AI inherited takes the installed head as a command",
+    ),
+    Case::cmd("what is this file", "#1624")
+        .in_conversation()
+        .expect(Expect::Agent),
+    Case::cmd("what does it do", "#1624")
+        .in_conversation()
+        .expect(Expect::Agent),
+    // Shell syntax still wins (#1560): a flag after the installed head is a command line.
+    Case::cmd("what -s file.c", "#1624 (guard)")
+        .in_conversation()
+        .v1_xfail(
+            "#1624: the conversation's one-off `what` shortcut ran before any command evidence",
+        ),
+    // The plain terminal is unchanged: an installed head runs in the shell (#964 owner decision).
+    Case::cmd(
+        "what is in the file that I just mentioned T169_6rjko, it's short",
+        "#1624 (guard)",
+    ),
+    // A one-off keyword carries English by design; #1624 leaves its route alone.
+    Case::cmd("echo it's done", "#1624 (one-off keyword head)").in_conversation(),
+    // An apostrophe inside double quotes is literal, not a contraction: the line is a command.
+    Case::cmd(
+        "mv \"the team's notes.md\" and the backup",
+        "#1624 (guard: quoted apostrophe)",
+    )
+    .in_conversation(),
+    // A typographic apostrophe with no other prose word is a possessive in an argument.
+    Case::cmd("ls Josh\u{2019}s", "#1624 (guard: typographic possessive)").in_conversation(),
     // -- #1234: remote shells whose installed commands differ from the local machine's.
     Case::cmd(
         "apt list --installed",

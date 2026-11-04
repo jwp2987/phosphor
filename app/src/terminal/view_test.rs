@@ -14633,6 +14633,170 @@ fn without_typeahead_handoff_keys_of_a_fast_command_keep_the_old_routing() {
     })
 }
 
+/// #1625: in the agent view, a submitted line the shell is still reading (zsh at `quote>` after an
+/// unbalanced quote: started, never a preexec, so not long running; the hand-off is `PtyOwned`)
+/// owns the keys. Ctrl-C reaches the pty as ^C and the agent view stays, with no "^C again to
+/// exit" armed. Legacy and Table.
+#[test]
+fn agent_view_ctrl_c_reaches_a_shell_reading_a_submitted_line() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+
+            terminal.update(&mut app, |view, ctx| {
+                view.enter_agent_view_for_new_conversation(
+                    None,
+                    AgentViewEntryOrigin::Input {
+                        was_prompt_autodetected: false,
+                    },
+                    ctx,
+                );
+                assert!(view.agent_view_controller().as_ref(ctx).is_active());
+            });
+            // Only what the Ctrl-C writes is checked.
+            pty_writes.borrow_mut().clear();
+
+            terminal.update(&mut app, |view, ctx| {
+                {
+                    let mut model = view.model.lock();
+                    // `echo "unbalanced` submitted: the block started, the shell parks at PS2.
+                    model.start_command_execution();
+                    model.typeahead_handoff_mut().on_command_written();
+                    let active_block = model.block_list().active_block();
+                    assert!(active_block.started(), "{mode:?}");
+                    assert!(!active_block.is_active_and_long_running(), "{mode:?}");
+                    assert!(model.typeahead_handoff().is_pty_owned(), "{mode:?}");
+                }
+                assert!(!view.should_ctrl_c_exit_agent_view(ctx), "{mode:?}");
+                view.handle_ctrl_c_input_event(0, ctx);
+                let controller = view.agent_view_controller().as_ref(ctx);
+                assert!(controller.is_active(), "{mode:?}: the agent view stays");
+                assert_eq!(
+                    controller.pending_exit_confirmation_conversation_id(),
+                    None,
+                    "{mode:?}: no exit was armed"
+                );
+            });
+
+            assert_eq!(
+                *pty_writes.borrow(),
+                vec![vec![escape_sequences::C0::ETX]],
+                "{mode:?}: the ^C reached the shell"
+            );
+        });
+    }
+}
+
+/// #1625 / #850: in the agent view, an agent-requested command written to the shell but not yet
+/// preexeced owns the keys too: Ctrl-C interrupts it (^C to the pty) and the agent view stays.
+#[test]
+fn agent_view_ctrl_c_reaches_an_agent_command_in_flight() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.enter_agent_view_for_new_conversation(
+                None,
+                AgentViewEntryOrigin::Input {
+                    was_prompt_autodetected: false,
+                },
+                ctx,
+            );
+        });
+        pty_writes.borrow_mut().clear();
+
+        terminal.update(&mut app, |view, ctx| {
+            let conversation_id = view
+                .agent_view_controller()
+                .as_ref(ctx)
+                .agent_view_state()
+                .active_conversation_id()
+                .expect("the agent view is active");
+            {
+                let mut model = view.model.lock();
+                let active_block = model.block_list_mut().active_block_mut();
+                // What `start_command_execution_with_ai_metadata` does when the command is written.
+                active_block.start();
+                active_block.set_agent_interaction_mode_for_requested_command(
+                    AIAgentActionId::from("in-flight".to_owned()),
+                    None,
+                    conversation_id,
+                );
+                assert!(active_block.is_agent_requested_command_in_flight());
+            }
+            assert!(!view.should_ctrl_c_exit_agent_view(ctx));
+            view.handle_ctrl_c_input_event(0, ctx);
+            assert!(view.agent_view_controller().as_ref(ctx).is_active());
+        });
+
+        assert!(
+            pty_writes
+                .borrow()
+                .contains(&vec![escape_sequences::C0::ETX]),
+            "the ^C reached the shell"
+        );
+    });
+}
+
+/// #1625, the other side: at an idle prompt in the agent view (the editor owns input) the first
+/// Ctrl-C still arms "^C again to exit" and writes nothing to the pty. Legacy and Table.
+#[test]
+fn agent_view_ctrl_c_at_an_idle_prompt_still_arms_the_exit() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+
+            terminal.update(&mut app, |view, ctx| {
+                view.enter_agent_view_for_new_conversation(
+                    None,
+                    AgentViewEntryOrigin::Input {
+                        was_prompt_autodetected: false,
+                    },
+                    ctx,
+                );
+            });
+            // Only what the Ctrl-C writes is checked.
+            pty_writes.borrow_mut().clear();
+
+            terminal.update(&mut app, |view, ctx| {
+                assert!(
+                    !view.model.lock().typeahead_handoff().routes_keys_to_pty(),
+                    "{mode:?}"
+                );
+                assert!(view.should_ctrl_c_exit_agent_view(ctx), "{mode:?}");
+                view.handle_ctrl_c_input_event(0, ctx);
+                let controller = view.agent_view_controller().as_ref(ctx);
+                assert!(controller.is_active(), "{mode:?}");
+                assert!(
+                    controller
+                        .pending_exit_confirmation_conversation_id()
+                        .is_some(),
+                    "{mode:?}: the first ^C arms the exit"
+                );
+            });
+
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{mode:?}: nothing reached the pty"
+            );
+        });
+    }
+}
+
 /// Keys typed after an Enter that waits for the shell's typeahead report are held, in order, so
 /// they can follow the deferred command instead of landing in it or being dropped.
 #[test]

@@ -10385,7 +10385,8 @@ impl TerminalView {
     /// This is true when:
     /// - Agent view feature is enabled
     /// - Agent view is active and can be exited
-    /// - No long-running command
+    /// - The pty does not own the keys: no long-running command, no agent-requested command in
+    ///   flight (#850), and the typeahead hand-off does not route keys to the pty (#1625)
     /// - Conversation is not in progress and not blocked
     fn should_ctrl_c_exit_agent_view(&self, app: &AppContext) -> bool {
         if !FeatureFlag::AgentView.is_enabled() {
@@ -10405,8 +10406,18 @@ impl TerminalView {
             return false;
         }
 
-        // Cannot use ctrl-c to exit agent view if there's a long-running command.
-        if self.read_key_snapshot().active_and_long_running {
+        // Cannot use ctrl-c to exit agent view while the pty owns the keys: a long-running
+        // command, an agent command written before its preexec (#850), or a submitted line the
+        // shell is still reading (#1625: zsh at `quote>` after an unbalanced quote never sends a
+        // preexec, so the block is not long running, but the hand-off is `PtyOwned`). The ^C is
+        // the shell's then. These are three of the facts `ctrl_c` counts as long running; it also
+        // counts an armed ssh connect gate (`refresh_ssh_connect_gate`, #1001), which needs
+        // `&mut self` and is not read here.
+        let snapshot = self.read_key_snapshot();
+        if snapshot.active_and_long_running
+            || snapshot.agent_requested_command_in_flight
+            || self.typeahead_handoff_routes_keys_to_pty()
+        {
             return false;
         }
 
