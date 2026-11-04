@@ -12,4 +12,11 @@
 
 ## Source changes
 
-None yet. Record every change to this copy here, with the issue number.
+- 2026-11-04, workflows/build.rs + workflows/src/lib.rs: the generated workflows go to
+  `$OUT_DIR/generated_workflows/` instead of `src/generated_workflows/`, and lib.rs includes
+  them from there (each `pub mod x { include!(...) }`). Writing into the source tree broke a
+  cached rebuild of a fresh checkout: CI's r18u4 retry failed with E0583 (`generated_workflows`
+  not found) because cargo considered the build script up to date while the checkout's clean
+  had removed its output. Upstream's `cargo fmt -p warp-workflows` step inside build.rs is
+  removed: it reformatted the vendored tree as a side effect of building. Checked with
+  `cargo check -p warp-workflows` on the box. Re-pin: re-apply both.

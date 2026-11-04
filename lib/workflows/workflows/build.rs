@@ -3,7 +3,7 @@ use convert_case::{Case, Casing};
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::Write;
-use std::process::Command;
+use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 use warp_workflows_types::Workflow;
 
@@ -13,8 +13,12 @@ use warp_workflows_types::Workflow;
 fn main() -> Result<()> {
     println!("cargo:rerun-if-changed=../specs");
 
-    std::fs::create_dir_all("src/generated_workflows")?;
-    let parent_module = std::fs::File::create("src/generated_workflows/mod.rs")?;
+    // Phosphor: generate into OUT_DIR, never into src/. Writing into the source tree broke a
+    // cached rebuild of a fresh checkout (CI r18u4 retry: E0583 `generated_workflows` not found,
+    // because cargo saw the build script as up to date while `git clean` had removed its output).
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR")?).join("generated_workflows");
+    std::fs::create_dir_all(&out_dir)?;
+    let parent_module = std::fs::File::create(out_dir.join("mod.rs"))?;
 
     let mut workflows_added = Vec::new();
 
@@ -48,18 +52,21 @@ fn main() -> Result<()> {
             // Create a module for each Workflow within the parent module.
             workflows_added.push(file_name.clone());
 
-            write_workflow(workflow, file_name.as_str())?;
+            write_workflow(workflow, &out_dir, file_name.as_str())?;
 
-            writeln!(&parent_module, "pub mod {file_name};")?;
+            // `pub mod x;` inside an include!d file would resolve next to src/lib.rs, so each
+            // module includes its generated file from OUT_DIR explicitly.
+            writeln!(
+                &parent_module,
+                "pub mod {file_name} {{ include!(concat!(env!(\"OUT_DIR\"), \"/generated_workflows/{file_name}.rs\")); }}"
+            )?;
         }
     }
 
     write_workflows_function(parent_module, &mut workflows_added)?;
 
-    println!("running cargo fmt...");
-    Command::new("cargo")
-        .args(["fmt", "-p", "warp-workflows"])
-        .output()?;
+    // Phosphor: upstream ran `cargo fmt -p warp-workflows` here to tidy the generated files. It
+    // formatted the vendored source tree as a build side effect and has no effect on the code.
 
     Ok(())
 }
@@ -92,7 +99,7 @@ fn write_workflows_function(
     Ok(())
 }
 
-/// Writes a Workflow into the path at `src/generated_workflows/<file_name>.rs`. The generated Rust
+/// Writes a Workflow into `$OUT_DIR/generated_workflows/<file_name>.rs`. The generated Rust
 /// will look like:
 /// ```ignore
 /// use warp_workflows_metadata::*;
@@ -102,8 +109,8 @@ fn write_workflows_function(
 ///    }
 /// }
 /// ```
-fn write_workflow(workflow: Workflow, file_name: &str) -> Result<()> {
-    let module = std::fs::File::create(format!("src/generated_workflows/{file_name}.rs"))?;
+fn write_workflow(workflow: Workflow, out_dir: &Path, file_name: &str) -> Result<()> {
+    let module = std::fs::File::create(out_dir.join(format!("{file_name}.rs")))?;
 
     writeln!(&module, "use warp_workflows_types::*;")?;
     writeln!(&module, r#"pub fn workflow() -> Workflow {{"#)?;
