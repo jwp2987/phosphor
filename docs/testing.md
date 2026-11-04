@@ -531,6 +531,7 @@ the Python harness reads files with `Ctx.lines`/`stamps`, which cannot have that
 bash stamps `date +%s.%N`; both are judged on OVERHEAD over the same typing into the reference console, exactly like Linux/macOS (budget `APPCI_CTRLC_MAX_MS`, 20 ms;
 no reference = `no reference: absolute only`). A Ctrl-C miss in the PowerShell pane is followed by two more Ctrl-C so the next sample is not queued behind a 30 s sleep.
 The old "try the other injectors" diagnostic is now the delivery proof's job (VK then Unicode).
+**Linux reference terminal and `/tmp/.X11-unix` (#1567).** XWayland refuses to start when `/tmp/.X11-unix` is not owned by root, so the session has no `DISPLAY`, no xterm reference, and every Linux latency row is NOREF. `wayland_session.sh` logs a WARNING with the owner fix, and `ref_terminal` puts the same reason in `ctx.ref_reason` (`x11_dir_problem`). The harness never changes the box: the owner runs `sudo chown root: /tmp/.X11-unix && sudo chmod 1777 /tmp/.X11-unix`, or installs `foot`.
 
 **UI cases (`script/realapp/appci/cases_ui.py`, #1462; all full-tier, none in SMOKE, Linux + macOS python harness only).**
 Keys: Linux ctrl-shift-X, macOS cmd-X (`app/src/util/bindings.rs`). Every case verifies the shell's own `rec.log` and an effect file.

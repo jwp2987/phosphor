@@ -2358,6 +2358,18 @@ def pane_shell_id(ctx):
         return None
 
 
+def x11_dir_problem():
+    """#1567: ' (/tmp/.X11-unix is owned by uid N, not root: XWayland refuses to start; the owner must `sudo chown root: /tmp/.X11-unix && sudo chmod 1777 /tmp/.X11-unix`, or install foot)'
+    when that directory has the wrong owner, else ''. Never changes the box."""
+    try:
+        st = os.stat("/tmp/.X11-unix")
+    except OSError:
+        return ""
+    if st.st_uid in (0, os.getuid()):
+        return ""
+    return " (/tmp/.X11-unix is owned by uid %d, not root: XWayland refuses to start; the owner must chown it to root with mode 1777, or install foot)" % st.st_uid
+
+
 def ref_terminal(ctx):
     """Linux: foot (Wayland) when installed, else xterm (via XWayland under the Wayland session, native under X11).
     macOS: Terminal.app, driven by the same cliclick/osascript path as Phosphor. None when there is no reference."""
@@ -2445,6 +2457,8 @@ def ref_terminal(ctx):
         name = "xterm (via XWayland)" if wl and ctx.be.name == "wayland" else "xterm"
         names = {"xterm"}
     else:
+        # #1567: say WHY (the box's /tmp/.X11-unix not being root-owned stops XWayland, so no DISPLAY and no foot = no reference)
+        ctx.ref_reason = ("no reference terminal: no foot and %s%s" % ("no xterm" if not shutil.which("xterm") else "no DISPLAY (XWayland did not start)", x11_dir_problem()))
         return None
     proc = subprocess.Popen(argv, env=env, cwd=ctx.W, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     ctx.ref_shell = "bash"

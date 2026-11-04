@@ -188,6 +188,10 @@ else
   BACKEND=wayland APPDISP=wayland; [ "$MODE" = xwayland ] && APPDISP=x11
   [ "$MODE" = xwayland ] && [ -z "${DISPLAY:-}" ] && { log "XWayland DISPLAY was not published by sway"; exit 2; }
 fi
+if [ "$MODE" != x11 ] && [ -z "${DISPLAY:-}" ] && [ -d /tmp/.X11-unix ] && [ "$(stat -c %u /tmp/.X11-unix 2>/dev/null)" != 0 ] && [ "$(stat -c %u /tmp/.X11-unix 2>/dev/null)" != "$(id -u)" ]; then
+  # #1567: XWayland refuses a socket dir that is not root-owned. Not changed here (box environment, owner only): no DISPLAY means no xterm reference unless foot is installed.
+  log "WARNING /tmp/.X11-unix is owned by uid $(stat -c %u /tmp/.X11-unix), not root: XWayland cannot start, so no xterm reference (latency rows become NOREF unless foot is installed). Owner fix: sudo chown root: /tmp/.X11-unix; sudo chmod 1777 /tmp/.X11-unix"
+fi
 log "session up: renderer=$RENDERER WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-} DISPLAY=${DISPLAY:-} app-display=$APPDISP"
 { echo "== uname"; uname -srm; echo "== dri"; ls -l /dev/dri 2>&1; echo "== vulkan"; vulkaninfo --summary 2>&1 | head -20; } > "$OUT/gpu.txt" 2>&1
 
