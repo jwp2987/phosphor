@@ -1140,6 +1140,13 @@ def coverage_b_pure_helpers():
     assert cb.startup_log_problems("INFO all fine\n") == []
     assert cb.autoupdate_lines("INFO a\nWARN Checking for updates now\nDEBUG GET https://x/releases/latest\n") != [] and cb.autoupdate_lines("INFO nothing\n") == []
     assert cb.picker_verdict(0.05, 0.001)[0] is True
+    # #1633: an Enter the @ picker took is not a submit; one without enter_menu_accept is.
+    took = 'hop=enter_begin deferred=false buffer="@cbm" input_type=AI t=1\nhop=kh_focus_input\nhop=enter_menu_accept menu=ai_context cli_agent=false t=2\n'
+    sent = 'hop=enter_begin deferred=false buffer="hello there" input_type=AI t=3\nhop=kh_iq_queue gate_open kind=enter_verdict\n'
+    shell = 'hop=enter_begin deferred=false buffer="ls" input_type=Shell t=4\n'
+    assert cb.ai_submits(took) == [], cb.ai_submits(took)
+    assert cb.ai_submits(took + sent + shell) == [("hello there", "AI")], cb.ai_submits(took + sent + shell)
+    assert cb.ai_submits(sent + took) == [("hello there", "AI")]
     assert cb.picker_verdict(0.0005, 0.0)[0] is False and cb.picker_verdict(0.05, 0.04)[0] is False and cb.picker_verdict(None, 0.0)[0] is None
     reg = {c["name"]: c for c in cases.CASES}
     for n in ("cb_agent_pickers", "cb_agent_file_mention", "cb_settings_ui_open", "cb_settings_migration", "cb_state_relaunch", "cb_no_autoupdate", "cb_ui_action_latency", "cb_editor_mac"):

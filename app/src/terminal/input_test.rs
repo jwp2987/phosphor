@@ -14377,6 +14377,65 @@ fn test_at_picker_still_opens_in_agent_mode() {
     });
 }
 
+/// #1633: in agent mode an Enter while the @ picker is open goes to the picker (it accepts the
+/// highlighted row, or waits for the typed query's results) and never submits the `@...` line to
+/// the agent or runs it in the shell.
+#[test]
+fn test_enter_on_the_at_picker_in_agent_mode_never_submits() {
+    let _ai_context_menu_enabled = FeatureFlag::AIContextMenuEnabled.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        let executed = Rc::new(RefCell::new(Vec::<String>::new()));
+        {
+            let executed = executed.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| {
+                    if let super::Event::ExecuteCommand(event) = event {
+                        executed.borrow_mut().push(event.command.clone());
+                    }
+                });
+            });
+        }
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(
+                    InputConfig {
+                        input_type: InputType::AI,
+                        is_locked: true,
+                    },
+                    true, /* is_input_buffer_empty */
+                    ctx,
+                );
+            });
+        });
+        input.update(&mut app, |input, ctx| {
+            input.replace_buffer_content("@cbmention_x", ctx);
+            input.suggestions_mode_model().update(ctx, |model, ctx| {
+                model.set_mode(
+                    InputSuggestionsMode::AIContextMenu {
+                        filter_text: "cbmention_x".to_string(),
+                        at_symbol_position: 0,
+                    },
+                    ctx,
+                );
+            });
+            assert!(input.ai_input_model().as_ref(ctx).is_ai_input_enabled());
+            input.input_enter(ctx);
+        });
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                "@cbmention_x",
+                "the Enter submitted the @ line instead of going to the picker"
+            );
+        });
+        assert!(executed.borrow().is_empty(), "the @ line reached the shell");
+    });
+}
+
 #[test]
 fn debounce_channel_is_bounded_and_hands_the_overflow_back() {
     let (tx, rx) = async_channel::bounded::<u32>(2);

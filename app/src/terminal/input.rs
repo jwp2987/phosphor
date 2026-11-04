@@ -13666,6 +13666,10 @@ impl Input {
                 self.suggestions_mode_model.as_ref(ctx).mode(),
                 InputSuggestionsMode::AIContextMenu { .. }
             ) {
+                // #1633: `enter_begin` is logged for every Enter; this says it went to the picker.
+                warpui::input_order::log_hop("enter_menu_accept", || {
+                    "menu=ai_context cli_agent=true".to_owned()
+                });
                 self.editor.update(ctx, |editor, ctx| {
                     if let Some(ai_context_menu) = editor.ai_context_menu() {
                         ai_context_menu.update(ctx, |ai_context_menu, ctx| {
@@ -13797,6 +13801,11 @@ impl Input {
             self.suggestions_mode_model.as_ref(ctx).mode(),
             InputSuggestionsMode::AIContextMenu { .. }
         ) {
+            // #1633: `enter_begin` above is logged for every Enter, including one the @ picker
+            // takes; this line says the Enter accepted the picker's row and submitted nothing.
+            warpui::input_order::log_hop("enter_menu_accept", || {
+                "menu=ai_context cli_agent=false".to_owned()
+            });
             self.editor.update(ctx, |editor, ctx| {
                 if let Some(ai_context_menu) = editor.ai_context_menu() {
                     ai_context_menu.update(ctx, |ai_context_menu, ctx| {
