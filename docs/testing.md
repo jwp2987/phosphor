@@ -1029,6 +1029,15 @@ bootstrapped included, so its counted session-end exit is consumed and a later o
 |---|---|---|
 | pane | `terminal_pane.rs` `exited_shell_tests`: `an_unbootstrapped_exit_consumes_its_session_end_count`, `a_counted_exit_of_a_bootstrapped_shell_keeps_its_pane_once` | the gate is asked for an unbootstrapped exit and its count is gone; the next ordinary exit closes |
 
+**#1438 (PowerShell abort settle).** After a Ctrl-C skips a PowerShell setup, the shell's read marker is the only release that writes
+the held keys. A setup with no marker token (`PHOSPHOR_BOOTSTRAP_TIMED=1`, or markers that never came) has no event, so
+`POWERSHELL_ABORT_SETTLE` is a give-up that hands the held keys back to the editor (`abort_settle_give_up`), never writes them.
+
+| layer | test | asserts |
+|---|---|---|
+| view, Legacy and Table | `group2_timer_tests.rs`: `powershell_abort_settle_without_a_marker_hands_the_held_keys_back` | no token: the held `ls` is in the editor with the Enter guard armed, nothing written; a stale generation does nothing |
+| view | `view_test.rs`: `powershell_abort_settle_ends_on_the_read_marker_not_the_clock` (existing) | the marker after the Ctrl-C writes the held keys; time and line markers do not |
+
 ## 3. Real-app testing
 
 Automated tests do not catch lag, lost keys or broken flows; the owner feels those. Every release candidate

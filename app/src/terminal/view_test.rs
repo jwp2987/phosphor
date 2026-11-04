@@ -16161,7 +16161,8 @@ fn ctrl_c_after_a_stalled_powershell_profile_stops_it_and_keeps_the_keys_held() 
 /// #1048 / #1014: Ctrl-C after a PowerShell setup stalled before its script ran skips setup: the
 /// ^C reaches the shell first. The Windows console flushes its pending input as it processes a
 /// Ctrl-C, so the keys held meanwhile -- and keys typed right after -- follow only once the
-/// settle time has passed, in order, and nothing is held afterwards.
+/// shell's read marker ends the wait (`end_powershell_abort_wait`; #1372, #1438), in order, and
+/// nothing is held afterwards.
 /// Not compiled/run when written (no builds in the fix pass).
 #[test]
 fn ctrl_c_skips_a_powershell_setup_and_releases_the_held_keys_after_it() {

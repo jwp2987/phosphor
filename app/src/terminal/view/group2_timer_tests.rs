@@ -430,6 +430,45 @@ fn powershell_abort_marker_give_up_hands_the_held_keys_back() {
     }
 }
 
+/// #1438: after a Ctrl-C skipped a PowerShell setup that has no read marker (the timed setup),
+/// the settle timer is a give-up: it hands the held keys back to the editor, never writes them.
+#[test]
+fn powershell_abort_settle_without_a_marker_hands_the_held_keys_back() {
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let delivered = collect_delivered_input(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                announce_powershell_setup(view);
+                assert!(
+                    view.powershell_setup_marker_token.is_none(),
+                    "a timed setup"
+                );
+                view.hold_powershell_keys(b"ls".to_vec(), true, ctx);
+                view.powershell_setup_hold = PowerShellSetupHold::AfterAbort { generation: 1 };
+                // A stale firing for an earlier wait changes nothing.
+                view.give_up_unmarked_powershell_abort_wait(0, ctx);
+                assert_eq!(
+                    view.powershell_setup_hold,
+                    PowerShellSetupHold::AfterAbort { generation: 1 }
+                );
+                view.give_up_unmarked_powershell_abort_wait(1, ctx);
+                assert_eq!(view.powershell_setup_hold, PowerShellSetupHold::Off);
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls");
+                assert!(view.input.as_ref(ctx).ssh_handover_enter_guard_armed());
+            });
+            assert!(
+                delivered.borrow().is_empty(),
+                "the settle give-up wrote: {:?}",
+                delivered.borrow()
+            );
+        });
+    }
+}
+
 /// A10 (#1577): the stall ceiling (a subshell setup that never finishes) hands the keys held
 /// through it back to the editor as text, resets the setup state and the waiting notice, and
 /// writes nothing into the abandoned shell. (The Precmd event of a setup that does finish still

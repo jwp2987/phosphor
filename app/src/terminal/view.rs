@@ -977,10 +977,11 @@ const SUBSHELL_SETUP_TYPED_HOLD_LIMIT: Duration = Duration::from_secs(90);
 /// then is slow or interactive. #1577: firing only tells the user the input waits (log + toast);
 /// the keys are released by the command's prompt or by it becoming interactive, never this timer.
 const POWERSHELL_HELD_LINE_GRACE: Duration = Duration::from_secs(2);
-/// How long after a Ctrl-C that skips a PowerShell subshell setup the keys held behind it wait
-/// (#1048): the Windows console flushes its input buffer as it processes the Ctrl-C, and keys
-/// written right behind the ^C were lost with it. Only the legacy timed setup
-/// (`PHOSPHOR_BOOTSTRAP_TIMED`, a kill switch) is paced by this; a marker-paced setup is not.
+/// The give-up net after a Ctrl-C that skips a PowerShell subshell setup with no marker token (the
+/// timed setup: `PHOSPHOR_BOOTSTRAP_TIMED`, or a host whose markers never came) (#1048, #1438).
+/// The Windows console flushes its input buffer as it processes the Ctrl-C, so keys written right
+/// behind the ^C are lost, and without the marker the shell sends nothing that says it has been
+/// processed: the held keys are handed back to the editor as text after this, never written.
 const POWERSHELL_ABORT_SETTLE: Duration = Duration::from_millis(500);
 /// The give-up net behind the marker that ends the settle after a Ctrl-C skipped a marker-paced
 /// PowerShell setup (#1372): the shell prints the marker when PSReadLine is about to read again;
@@ -2971,8 +2972,9 @@ enum PowerShellSetupHold {
     /// tells the user the input waits (#1577).
     LineRunning { generation: u64 },
     /// Ctrl-C skipped the setup. The Windows console discards its pending input when it processes
-    /// a Ctrl-C, so the keys held meanwhile (and any typed now) go out only once
-    /// `POWERSHELL_ABORT_SETTLE` has passed, behind the ^C.
+    /// a Ctrl-C, so the keys held meanwhile (and any typed now) go out behind the ^C only once the
+    /// shell's read marker says PSReadLine reads again; with no marker to wait for, they come back
+    /// to the editor after `POWERSHELL_ABORT_SETTLE` (#1438).
     AfterAbort { generation: u64 },
 }
 
@@ -3431,7 +3433,8 @@ pub struct TerminalView {
     powershell_setup_hold_generation: u64,
     /// The token of the marker-paced PowerShell setup (#1372), `None` for a timed one (kill
     /// switch, give-up). A Ctrl-C that skips the setup ends its settle on that token's
-    /// "PSReadLine is about to read" marker instead of `POWERSHELL_ABORT_SETTLE`.
+    /// "PSReadLine is about to read" marker; without one, `POWERSHELL_ABORT_SETTLE` hands the held
+    /// keys back.
     powershell_setup_marker_token: Option<u64>,
     /// The model's setup-marker count when the Ctrl-C was written: only a marker that arrives
     /// after it is the shell's answer to it.
@@ -13323,20 +13326,10 @@ impl TerminalView {
             } else {
                 // A timed setup (the kill switch, or a host whose markers never came) has no
                 // marker token, so the shell sends nothing that says its console has processed
-                // the Ctrl-C. The settle timer is the only release there is, and it is a logged
-                // give-up like every other (#1438); a marker-paced setup never gets here.
+                // the Ctrl-C, and keys written before it has are flushed. With no event to release
+                // them, the timer is a give-up that hands them back to the editor (#1438, #1577).
                 ctx.spawn(Timer::after(POWERSHELL_ABORT_SETTLE), move |me, _, ctx| {
-                    if me.powershell_setup_hold == (PowerShellSetupHold::AfterAbort { generation })
-                    {
-                        // #1577: the legacy (kill-switch, timed-setup) path: the only release there
-                        // is, and a timer write by design. Marker-paced setups never get here.
-                        log::warn!(
-                            "PowerShell setup has no read marker to wait for after the Ctrl-C; \
-                             releasing the held keys after the settle give-up (legacy timed \
-                             setup, PHOSPHOR_BOOTSTRAP_TIMED; #1577)"
-                        );
-                    }
-                    me.end_powershell_abort_wait(generation, ctx)
+                    me.give_up_unmarked_powershell_abort_wait(generation, ctx)
                 });
             }
             return written;
@@ -21945,12 +21938,30 @@ impl TerminalView {
         }
     }
 
-    /// The Ctrl-C that skipped a PowerShell setup (#1048) has had `POWERSHELL_ABORT_SETTLE` to be
-    /// processed: the keys held behind it are written to the pty now, in order. Nothing happens if
-    /// a later Ctrl-C restarted the wait.
+    /// The shell's read marker says the Ctrl-C that skipped a PowerShell setup (#1048, #1372) has
+    /// been processed: the keys held behind it are written to the pty now, in order. Nothing
+    /// happens if a later Ctrl-C restarted the wait.
     fn end_powershell_abort_wait(&mut self, generation: u64, ctx: &mut ViewContext<Self>) {
         if self.powershell_setup_hold == (PowerShellSetupHold::AfterAbort { generation }) {
             self.release_subshell_setup_held_bytes(ctx);
+        }
+    }
+
+    /// #1438: a Ctrl-C skipped a PowerShell setup that has no read marker, and
+    /// `POWERSHELL_ABORT_SETTLE` passed. Nothing says the console has processed the ^C, so the held
+    /// keys come back to the editor as text rather than risk the console flushing them. Nothing
+    /// happens if a later Ctrl-C restarted the wait.
+    fn give_up_unmarked_powershell_abort_wait(
+        &mut self,
+        generation: u64,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if self.powershell_setup_hold == (PowerShellSetupHold::AfterAbort { generation }) {
+            log::warn!(
+                "PowerShell setup has no read marker to wait for after the Ctrl-C; handing the \
+                 held keys back after the settle give-up (timed setup; #1438)"
+            );
+            self.give_up_setup_gates_to_editor("abort_settle_give_up", ctx);
         }
     }
 
