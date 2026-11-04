@@ -29,3 +29,11 @@ Record every change to this copy here, with the issue number.
   (checked at 7ed7c203, 2026-11-03) has the same per-keypress code and the same defect. New dependency: `log = "0.4"` (Windows
   only; already in Phosphor's lock), plus "log" in winit's entry in Phosphor's Cargo.lock -- `tracing` is muted in Phosphor's
   log by a `NoSubscriber`, so winit's own `tracing` lines never reach the log file.
+- #1629 (2026-11-04) `src/platform_impl/windows/event_loop.rs`: WM_INPUTLANGCHANGE refreshes the layout cache, then defers to
+  `DefWindowProc` -- a port of rust-windowing/winit fb78ecb ("windows: fix freeze on keyboard layout switch", minidump-verified
+  upstream for a switch made by Punto Switcher). Our hang (a per-window switch to German via WM_INPUTLANGCHANGEREQUEST) is not
+  proven to be the same one, so diagnostics were added with it, all through the `log` crate (Phosphor's log file; `tracing` is
+  muted there): WM_INPUTLANGCHANGEREQUEST / WM_INPUTLANGCHANGE entry and exit; a layout change starts a trace of the next 256
+  window-procedure calls and event-loop waits (enter/exit, message, depth, thread id); a new layout's preparation is timed
+  (`keyboard_layout.rs`); and every `LAYOUT_CACHE` lock goes through `lock_layout_cache(site)`, which logs when the lock is
+  already held (so a same-thread re-entry, which never returns, is the last line).

@@ -31,7 +31,7 @@ use crate::event::{ElementState, KeyEvent};
 use crate::keyboard::{Key, KeyCode, KeyLocation, NamedKey, NativeKey, NativeKeyCode, PhysicalKey};
 use crate::platform_impl::platform::event_loop::ProcResult;
 use crate::platform_impl::platform::keyboard_layout::{
-    Layout, LayoutCache, WindowsModifiers, LAYOUT_CACHE,
+    lock_layout_cache, Layout, LayoutCache, WindowsModifiers,
 };
 use crate::platform_impl::platform::{loword, primarylangid, KeyEventExtra};
 
@@ -123,7 +123,7 @@ impl KeyEventBuilder {
 
                     let next_msg = next_kbd_msg(hwnd);
 
-                    let mut layouts = LAYOUT_CACHE.lock().unwrap();
+                    let mut layouts = lock_layout_cache("WM_KEYDOWN");
                     let mut finished_event_info = Some(PartialKeyEventInfo::from_message(
                         wparam,
                         lparam,
@@ -240,7 +240,7 @@ impl KeyEventBuilder {
                             let mut carry = self.pending_high_surrogate.lock().unwrap();
                             join_utf16_surrogates(&mut carry, &mut event_info.utf16parts);
                         }
-                        let mut layouts = LAYOUT_CACHE.lock().unwrap();
+                        let mut layouts = lock_layout_cache("WM_CHAR");
                         // It's okay to call `ToUnicode` here, because at this point the dead key
                         // is already consumed by the character.
                         let kbd_state = get_kbd_state();
@@ -278,7 +278,7 @@ impl KeyEventBuilder {
                     let pending_token = self.pending.add_pending();
                     *result = ProcResult::Value(0);
 
-                    let mut layouts = LAYOUT_CACHE.lock().unwrap();
+                    let mut layouts = lock_layout_cache("WM_KEYUP");
                     let event_info = PartialKeyEventInfo::from_message(
                         wparam,
                         lparam,
@@ -293,7 +293,7 @@ impl KeyEventBuilder {
                     let next_msg = next_kbd_msg(hwnd);
                     let mut valid_event_info = Some(event_info);
                     if let Some(next_msg) = next_msg {
-                        let mut layouts = LAYOUT_CACHE.lock().unwrap();
+                        let mut layouts = lock_layout_cache("WM_KEYUP is_current_fake");
                         let (_, layout) = layouts.get_current_layout();
                         let is_fake = {
                             let event_info = valid_event_info.as_ref().unwrap();
@@ -332,7 +332,7 @@ impl KeyEventBuilder {
     ) -> Vec<MessageAsKeyEvent> {
         let mut key_events = Vec::new();
 
-        let mut layouts = LAYOUT_CACHE.lock().unwrap();
+        let mut layouts = lock_layout_cache("synthesize_kbd_state");
         let (locale_id, _) = layouts.get_current_layout();
 
         macro_rules! is_key_pressed {
