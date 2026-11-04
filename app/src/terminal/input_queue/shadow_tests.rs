@@ -315,11 +315,19 @@ fn a_legacy_that_mirrors_the_table_reports_zero_disagreements_over_the_facts() {
     let _ = take_recorded();
     let mut compared = 0u32;
     let mut disagreed = 0u32;
+    // The ssh dimension is the phase (idle / holding) and the setup dialog (row H2): the prompt
+    // phase that was the third value here is gone with the screen latch (#1611, #1612, #1621),
+    // and the dialog keeps the fact space as wide as the `compared > 1000` floor demands.
     for facts in [at_prompt(), running(), RouteFacts::default()] {
-        for ssh in [SshPhase::Idle, SshPhase::Holding] {
+        for (ssh, dialog_up) in [
+            (SshPhase::Idle, false),
+            (SshPhase::Holding, false),
+            (SshPhase::Idle, true),
+        ] {
             for mask in [0u16, 1, 1 << 4, 1 << 10, (1 << 12) - 1] {
                 let mut facts = facts;
                 facts.ssh = ssh;
+                facts.ssh_dialog_up = dialog_up;
                 facts.gates = GateMask(mask);
                 for class in [
                     Class::Typed,

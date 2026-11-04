@@ -17967,7 +17967,11 @@ fn ssh_keys_before_pending_state_is_set_are_dropped_whole() {
 /// #983 window 2, redone by #1611/#1612/#1621: output of ANY shape (hooks, a newline echo, a
 /// password prompt) does not open the gate; nothing about the connect is read from the screen.
 /// Typing is held whole until ssh owns the tty, then delivered to it once, in order, and later
-/// keys pass straight through.
+/// keys pass straight through. Two held Enters: the drain yields after the first one it writes
+/// (#1421, `Host::yield_after`: an Enter may have submitted a command whose gate is armed by the
+/// event it emits) and the waker continues it on the next turn, so the test gives it those turns
+/// before judging, as production does; a live key typed while the drain is yielded queues behind
+/// the held ones (FIFO) and goes out with them.
 #[test]
 fn ssh_output_of_any_shape_does_not_open_the_gate_ownership_does() {
     App::test((), |mut app| async move {
@@ -18000,6 +18004,13 @@ fn ssh_output_of_any_shape_does_not_open_the_gate_ownership_does() {
             assert!(!view.ssh_typeahead_holding);
             assert!(view.ssh_held_is_empty());
             view.keydown_on_terminal("\r", ctx);
+        });
+        // The yielded drain's waker runs on a later turn (#1421); nothing else delivers it.
+        for _ in 0..16 {
+            futures_lite::future::yield_now().await;
+        }
+        terminal.read(&app, |view, _| {
+            assert!(ssh_queue_is_idle(view), "nothing left queued");
         });
         let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
         assert_eq!(written, b"echo hi\r\r\r", "once, in typed order, then live");
