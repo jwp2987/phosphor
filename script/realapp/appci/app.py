@@ -19,7 +19,7 @@ exec "%(bin)s" >> "%(run)s/app.stdout" 2>&1
 
 # #1532: environment variables that must reach the app under test even where the launcher does not inherit os.environ (macOS `open --env`).
 # Linux and Windows pass the whole environment. APPCI_APP_ENV="K=V,K2=V2" (run.py) sets more of them for one run.
-PASSTHROUGH_ENV = ("PHOSPHOR_QUEUE_DESTINATION", "PHOSPHOR_CONPTY_ENTER_HOLD", "PHOSPHOR_EDITOR_TRIM_AFTER_OPEN", "PHOSPHOR_HEAP_TRIM")  # the last two: editor_memory_7mb trim A/B (#1607)
+PASSTHROUGH_ENV = ("PHOSPHOR_QUEUE_DESTINATION", "PHOSPHOR_CONPTY_ENTER_HOLD", "PHOSPHOR_EDITOR_TRIM_AFTER_OPEN", "PHOSPHOR_HEAP_TRIM", "PHOSPHOR_HEAP_TRIM_ON_CLOSE")  # the last three: editor_memory_7mb trim A/B and the close-trim kill switch (#1607)
 
 
 def passthrough_env(environ=None):

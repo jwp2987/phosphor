@@ -419,6 +419,106 @@ fn dropped_buffer_is_pruned_on_drop_and_reopen_registers_afresh() {
     })
 }
 
+/// Waits (event-driven drop callback; the timer only paces the polling) until `n` drop events
+/// were seen, then returns their trim verdicts.
+#[cfg(feature = "local_fs")]
+async fn wait_for_drops(
+    app: &mut App,
+    handle: &ModelHandle<GlobalBufferModel>,
+    n: usize,
+) -> Vec<(warp_util::file::FileId, bool)> {
+    for _ in 0..1000 {
+        if app.read(|ctx| handle.as_ref(ctx).dropped_with_trim.len() >= n) {
+            break;
+        }
+        warpui::r#async::Timer::after(std::time::Duration::from_millis(10)).await;
+    }
+    app.read(|ctx| handle.as_ref(ctx).dropped_with_trim.clone())
+}
+
+/// #1607 / #1407: a tab close unregisters its buffer (`close_buffer`) BEFORE the editor that
+/// holds it is dropped, then asks for a trim on the buffer's drop. The trim request must survive
+/// the unregistration: it used to be pruned against `buffers`, so every closed tab's drop logged
+/// `trim=false` and no trim ran after the memory was really freed.
+#[cfg(feature = "local_fs")]
+#[test]
+fn a_closed_tab_buffer_is_trimmed_on_its_drop_after_close_buffer() {
+    use super::BufferLocation;
+
+    App::test((), |mut app| async move {
+        init_app(&mut app);
+        app.add_singleton_model(GlobalBufferModel::new);
+
+        let dir = std::env::temp_dir().join(format!("gbm-trim-close-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("big.txt");
+        std::fs::write(&path, "line\n".repeat(100)).unwrap();
+
+        let state = gbm(&app).update(&mut app, |gbm, ctx| {
+            gbm.open(BufferLocation::Local(path.clone()), ctx)
+        });
+        let file_id = state.file_id;
+        let handle = gbm(&app);
+
+        // The tab-close order (CodeView::remove_tab_data_index_inner): close, then sweep + trim.
+        gbm(&app).update(&mut app, |gbm, ctx| {
+            gbm.close_buffer(file_id, ctx);
+            gbm.sweep_deallocated_buffers_when_idle(vec![file_id], ctx);
+        });
+        app.read(|ctx| {
+            assert!(!handle.as_ref(ctx).buffers.contains_key(&file_id));
+            assert!(handle.as_ref(ctx).trim_on_drop_of.contains(&file_id));
+        });
+
+        drop(state);
+        let drops = wait_for_drops(&mut app, &handle, 1).await;
+        assert_eq!(drops, vec![(file_id, true)]);
+        app.read(|ctx| {
+            // Consumed: one close, one trim; nothing left to go stale.
+            assert!(handle.as_ref(ctx).trim_on_drop_of.is_empty());
+            assert!(handle.as_ref(ctx).drop_watched.is_empty());
+        });
+
+        let _ = std::fs::remove_dir_all(&dir);
+    })
+}
+
+/// A drop nobody asked a trim for stays `trim=false`, and a request for an id whose buffer
+/// already dropped (no drop event will come) is not kept.
+#[cfg(feature = "local_fs")]
+#[test]
+fn trim_is_only_requested_for_buffers_whose_drop_is_still_pending() {
+    use super::BufferLocation;
+
+    App::test((), |mut app| async move {
+        init_app(&mut app);
+        app.add_singleton_model(GlobalBufferModel::new);
+
+        let dir = std::env::temp_dir().join(format!("gbm-trim-none-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("small.txt");
+        std::fs::write(&path, "line\n".repeat(10)).unwrap();
+
+        let state = gbm(&app).update(&mut app, |gbm, ctx| {
+            gbm.open(BufferLocation::Local(path.clone()), ctx)
+        });
+        let file_id = state.file_id;
+        let handle = gbm(&app);
+
+        drop(state);
+        let drops = wait_for_drops(&mut app, &handle, 1).await;
+        assert_eq!(drops, vec![(file_id, false)]);
+
+        // Too late: the buffer is gone, so the request must not linger.
+        gbm(&app).update(&mut app, |gbm, ctx| {
+            gbm.sweep_deallocated_buffers_when_idle(vec![file_id], ctx);
+        });
+        app.read(|ctx| assert!(handle.as_ref(ctx).trim_on_drop_of.is_empty()));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    })
+}
+
 /// #1329: once the last strong handle to a buffer is dropped (the editor closed),
 /// `remove_deallocated_buffers` must drop the model's bookkeeping for it, so the file's content
 /// is not kept alive by `GlobalBufferModel`.

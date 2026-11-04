@@ -1088,7 +1088,7 @@ def editor_memory_breakdown_close_and_cycles():
         br = cases.editor_mem_log(c, 0)
         assert br["open"][0]["text_bytes"] == 7340032 and br["open"][0]["parked_chunks"] == 360, br
         assert br["dropped"][0]["registered"] == 0 and br["dropped"][0]["trim"] == "true", br
-        assert cases.editor_mem_log(c, os.path.getsize(log)) == {"open": [], "dropped": []}
+        assert cases.editor_mem_log(c, os.path.getsize(log)) == {"open": [], "dropped": [], "trim": []}
         assert cases.editor_cycle_growth([100.0, 104.0, 131.0]) == 31.0 and cases.editor_cycle_growth([5.0]) == 0.0
         if sys.platform != "darwin":
             assert cases.mac_footprint_kib(os.getpid()) is None
@@ -1145,6 +1145,60 @@ def editor_memory_breakdown_close_and_cycles():
                     os.environ.pop(k, None)
                 else:
                     os.environ[k] = v
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@check
+def editor_memory_close_trim_and_accepted_open_cost():
+    """#1607: the heap_trim / buffer_dropped log lines parse (signed freed_estimate); a reopen into reused heap counts as opened when the app
+    logged its open line; the open-cost budget is KNOWN (numbers printed, not a failure) only while the ACCEPTED_FOR_RELEASE release has not been
+    passed, fails past it and fails closed on an unreadable version; and the acceptance has not outlived v0.1.17 in this tree."""
+    tmp = tempfile.mkdtemp()
+    try:
+        log = os.path.join(tmp, "app.log")
+        with open(log, "w") as f:
+            f.write("2026 DEBUG editor_memory editor_memory buffer_dropped file_id=FileId(2) registered=0 trim=true\n"
+                    "2026 DEBUG editor_memory editor_memory heap_trim why=close ms=3.25 freed_estimate=-4096\n"
+                    "2026 DEBUG editor_memory editor_memory heap_trim why=close ms=1.00 freed_estimate=104857600\n"
+                    "z input_order hop=heap_trim why=close ms=1.00 freed_estimate=104857600 t=1000.000\n")
+        c = _ctx(tmp, log_path=log)
+        br = cases.editor_mem_log(c, 0)
+        assert br["dropped"][0]["trim"] == "true" and br["dropped"][0]["file_id"] == "FileId(2)", br
+        assert [t["freed_estimate"] for t in br["trim"]] == [-4096, 104857600], br["trim"]
+        assert br["trim"][0]["why"] == "close" and br["trim"][0]["ms"] == "3.25", br["trim"]
+        assert cases.editor_wait_close_trim(c, 0, timeout=0)[-1]["freed_estimate"] == 104857600
+        assert cases.heap_trims(open(log).read()) == [(1.0, 1.0, "close")]     # the hop regex still reads the line with freed_estimate
+        assert not cases.editor_opened(-5.5, []) and cases.editor_opened(-5.5, [{"text_bytes": 1}]) and cases.editor_opened(9.0, [])
+        # versions and the acceptance window
+        assert cases.version_tuple("v0.1.17") == (0, 1, 17) and cases.version_tuple("0.1.9") < cases.version_tuple("0.1.17")
+        assert cases.version_tuple("") is None and cases.version_tuple("x") is None
+        acc = cases.ACCEPTED_FOR_RELEASE["editor_open_cost"]
+        assert acc["issue"] == 1607 and acc["release"] == "0.1.17", acc
+        assert cases.accepted_for_release("editor_open_cost", "0.1.16") and cases.accepted_for_release("editor_open_cost", "0.1.17")
+        assert cases.accepted_for_release("editor_open_cost", "0.1.18") is None
+        assert cases.accepted_for_release("editor_open_cost", "garbage") is None       # fail closed
+        assert cases.accepted_for_release("no_such_key", "0.1.16") is None
+        v = cases.app_version()
+        assert v and cases.version_tuple(v), "app/Cargo.toml [package] version unreadable: %r" % v
+        assert cases.version_tuple(v) <= cases.version_tuple(acc["release"]), (
+            "ACCEPTED_FOR_RELEASE editor_open_cost (#1607) was for v%s; app/Cargo.toml is now %s: re-decide it with the owner (remove the entry or "
+            "renew it with a new decision), do not just bump the release" % (acc["release"], v))
+        # within the window: over budget is KNOWN with the numbers and the marker, never a failure
+        orig = cases.app_version
+        try:
+            cases.app_version = lambda repo=None: "0.1.17"
+            r = cases.Result("t", "terminal")
+            assert not cases.mem_judge_known(r, {"rss": 201.0, "phys_footprint": 50.0}, {"rss": 0.0, "phys_footprint": 0.0}, 100, "cost %.0f MB of %s",
+                                             "editor_open_cost")
+            assert not r.fails and len(r.notes) == 1, (r.fails, r.notes)
+            assert r.notes[0].startswith("KNOWN: cost 201 MB of rss") and "ACCEPTED_FOR_RELEASE #1607 v0.1.17" in r.notes[0], r.notes
+            cases.app_version = lambda repo=None: "0.1.18"
+            r = cases.Result("t", "terminal")
+            assert not cases.mem_judge_known(r, {"rss": 201.0}, {"rss": 0.0}, 100, "cost %.0f MB of %s", "editor_open_cost")
+            assert r.fails == ["cost 201 MB of rss"] and not r.notes, (r.fails, r.notes)
+        finally:
+            cases.app_version = orig
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
