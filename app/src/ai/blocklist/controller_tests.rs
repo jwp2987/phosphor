@@ -3004,8 +3004,10 @@ mod remote_home_1288 {
     fn remote_session_path_rules_follow_the_remote_os() {
         use crate::ai::paths::PathHost;
         let mut session = SessionContext::new_remote_with_home_for_test(None, "/home/u");
-        // OS not reported yet: previous (local) behaviour.
-        assert_eq!(session.path_host(), PathHost::Local);
+        // OS not reported yet: the rules follow the shape of the remote's paths (#1647), so a
+        // `/home/u` home is unix; before #1647 this fell back to the local OS's rules, which on a
+        // Windows client built `\home\u\...` paths for a Linux remote.
+        assert_eq!(session.path_host(), PathHost::RemoteUnix);
         session.remote_os_category = Some("Windows".to_owned());
         assert_eq!(session.path_host(), PathHost::RemoteWindows);
         session.remote_os_category = Some("Linux".to_owned());
