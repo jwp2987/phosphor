@@ -10405,8 +10405,16 @@ impl TerminalView {
             return false;
         }
 
-        // Cannot use ctrl-c to exit agent view if there's a long-running command.
-        if self.read_key_snapshot().active_and_long_running {
+        // Cannot use ctrl-c to exit agent view while the pty owns the keys: a long-running
+        // command, an agent command written before its preexec (#850), or a submitted line the
+        // shell is still reading (#1625: zsh at `quote>` after an unbalanced quote never sends a
+        // preexec, so the block is not long running, but the hand-off is `PtyOwned`). The ^C is
+        // the shell's then, by the same test `ctrl_c` uses to send it there.
+        let snapshot = self.read_key_snapshot();
+        if snapshot.active_and_long_running
+            || snapshot.agent_requested_command_in_flight
+            || self.typeahead_handoff_routes_keys_to_pty()
+        {
             return false;
         }
 
