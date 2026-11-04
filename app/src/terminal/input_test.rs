@@ -12115,6 +12115,31 @@ fn multiline_confirmation_follows_the_pty_flag_not_the_grid_mode() {
     });
 }
 
+/// r18u19 (#1129): a bash command over the wrapper size goes to the shell as ONE base64 line that
+/// bash decodes and sources, so the "runs each line as a separate command" question is not asked
+/// even without bracketed paste (macOS `/bin/bash` 3.2 over ssh stopped a 600 KB here-doc behind
+/// it). Below the wrapper size the question stands
+/// (`long_multiline_submit_without_bracketed_paste_asks_before_writing`). The test session's
+/// shell is bash on unix.
+#[cfg(unix)]
+#[test]
+fn multiline_submit_does_not_ask_when_bash_gets_the_wrapper_line() {
+    App::test((), |mut app| async move {
+        let text = (0..MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD + 10)
+            .map(|i| format!("# line {i} {}", "x".repeat(2500)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.len() >= 128 * 1024, "{}", text.len());
+        let (input, _) = multiline_submit_fixture(&mut app, &text, false).await;
+        let small = comment_lines(MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD + 10);
+        input.read(&app, |input, ctx| {
+            assert!(!input.multiline_submit_needs_confirmation(&text, ctx));
+            // The same session and line count under the wrapper size still asks.
+            assert!(input.multiline_submit_needs_confirmation(&small, ctx));
+        });
+    });
+}
+
 /// The other way round: grid mode set, controller flag clear.
 #[test]
 fn multiline_confirmation_ignores_a_set_grid_mode_when_the_pty_flag_is_clear() {

@@ -186,6 +186,11 @@ def c_agent_file_mention(ctx, r):
 SETTINGS_KEY = {"linux": "ctrl+comma", "mac": "cmd+,"}     # the backends spell the comma differently (xdotool/wtype keysym vs the macOS key table)
 
 
+def probe_landed(lines, n):
+    """whether the shell ran settings probe `n` (its own line `probe<n>` is in the probe file), whatever earlier probes did"""
+    return ("probe%d" % n) in [l.strip() for l in lines]
+
+
 @case("cb_settings_ui_open", order=87, gui=True)
 def c_settings_ui_open(ctx, r):
     """#1545: the settings page opens from its shortcut (Ctrl-, / Cmd-,): the screen changes and, with OCR, shows the page; it is closed again with
@@ -221,8 +226,11 @@ def c_settings_ui_open(ctx, r):
     ctx.rm(probe_f)
 
     def shell_in_front(n):
+        # r18u19 (Mac): probe 1 went to the still-open settings page (as designed: it is in front), probe 2 ran in the shell after the palette
+        # close, and the old `>= n lines` test still said "did not take typing" because the file held one line, not two. Each probe is judged by
+        # its own line.
         ctx.be.type(ctx.append_cmd(ctx.pane_shell(), "probe%d" % n, probe_f), 12, enter=True)
-        return bool(ctx.until(lambda: len(ctx.lines(probe_f)) >= n, 3))
+        return bool(ctx.until(lambda: probe_landed(ctx.lines(probe_f), n), 3))
     # agent mode: a probe line would be submitted as an agent request, so there the screen diff decides (closing only a page that is visibly still open)
     still_open = (cd is not None and cd > 0.02) if ctx.mode == "agent" else not shell_in_front(1)
     if still_open:

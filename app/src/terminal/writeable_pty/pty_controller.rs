@@ -2817,6 +2817,19 @@ pub(crate) fn command_is_sent_as_bracketed_paste(
     is_bracketed_paste_enabled && !command.is_empty()
 }
 
+/// Whether `command` reaches `shell_type` as ONE line however many lines it has: bash gets a
+/// command over the wrapper size as a single base64 line that it decodes and sources
+/// (`PtyController::command_to_type`, #1129, #1255), so its lines are not run one by one even
+/// without bracketed paste.
+pub(crate) fn command_is_sent_as_one_wrapped_line(
+    shell_type: ShellType,
+    is_bracketed_paste_enabled: bool,
+    command: &str,
+) -> bool {
+    shell_type == ShellType::Bash
+        && posix_long_command::needs_wrapper_for(command, is_bracketed_paste_enabled)
+}
+
 /// User writes at least this large are pastes, not keystrokes: they go out as
 /// [`PtyController::write_paste_bytes`], so a ^C cancels the part not yet written (#1255).
 pub(crate) const PASTE_WRITE_MIN_BYTES: usize = 32 * 1024;

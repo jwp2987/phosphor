@@ -69,8 +69,12 @@ def need_pillow(r):
         r.skip(PILLOW_MSG)
 
 
-def img_diff(a, b):
-    """fraction of pixels that differ noticeably between two screenshots; None without Pillow (python3-pil)"""
+def img_diff(a, b, color=False):
+    """fraction of pixels that differ noticeably between two screenshots; None without Pillow (python3-pil). Default: the grey level of the
+    per-pixel difference above 24. color=True: the largest of the three channel differences above 8 (COLOR_DELTA), for a change of COLOUR
+    (a theme) or of anti-aliased glyphs (a font size). r18u19 (Mac): a dark theme swapped for another dark theme recoloured the whole window
+    and the grey-level test saw 0.3 % of it (a background (30,32,46) -> (10,25,15) differs by ~14 grey levels); the channel test saw 18-67 %
+    with two identical screenshots at 0.03 %."""
     try:
         from PIL import Image, ImageChops
     except ImportError:
@@ -81,9 +85,17 @@ def img_diff(a, b):
         return None
     if A.size != B.size:
         return 1.0
-    d = ImageChops.difference(A, B).convert("L").point(lambda v: 255 if v > 24 else 0)
+    diff = ImageChops.difference(A, B)
+    if color:
+        r, g, bl = diff.split()
+        d = ImageChops.lighter(ImageChops.lighter(r, g), bl).point(lambda v: 255 if v > COLOR_DELTA else 0)
+    else:
+        d = diff.convert("L").point(lambda v: 255 if v > 24 else 0)
     hist = d.histogram()
     return hist[255] / float(A.size[0] * A.size[1])
+
+
+COLOR_DELTA = 8
 
 
 def sha(path):
@@ -93,8 +105,8 @@ def sha(path):
         return None
 
 
-def shot_changed(a, b, thresh):
-    d = img_diff(a, b)
+def shot_changed(a, b, thresh, color=False):
+    d = img_diff(a, b, color)
     if d is None:
         return (sha(a) != sha(b)), None
     return d >= thresh, d
@@ -673,8 +685,9 @@ def c_startup(ctx, r):
         shutil.copyfile(lp, os.path.join(d, "phosphor.startup.log"))
 
 
-def settle_change(ctx, before, tag, thresh, timeout=10):
-    """poll screenshots until one differs from `before` by >= thresh; -> (path, diff|None) or (None, last diff)"""
+def settle_change(ctx, before, tag, thresh, timeout=10, color=False):
+    """poll screenshots until one differs from `before` by >= thresh (img_diff's colour test with color=True); -> (path, diff|None) or
+    (None, last diff)"""
     t = time.time()
     last = None
     i = 0
@@ -682,7 +695,7 @@ def settle_change(ctx, before, tag, thresh, timeout=10):
         i += 1
         p = ctx.shot("%s_%d" % (tag, i))
         if p:
-            ch, d = shot_changed(before, p, thresh)
+            ch, d = shot_changed(before, p, thresh, color)
             last = d
             if ch:
                 time.sleep(0.8)                                       # let the relayout finish
@@ -700,11 +713,13 @@ def c_settings(ctx, r):
     if not os.path.isfile(p):
         r.skip("settings file %s not found" % p)
     orig = open(p, "rb").read()
-    steps = [("theme", "appearance.themes", "theme", ['"phosphor_green"', '"tokyo_night"'], 0.10),
-             ("font", "appearance.text", "font_size", ["22.0", "11.0"], 0.02),
-             ("vtabs", "appearance.vertical_tabs", "enabled", ["false", "true"], 0.004)]
+    # r18u19 (Mac): the theme and font changes WERE applied (shots set_theme_*/set_font_* show the green theme and the doubled font) but the
+    # grey-level diff read 0.3 % / 1.5 %; theme and font are judged with img_diff's colour test (same thresholds; identical shots read 0.03 %).
+    steps = [("theme", "appearance.themes", "theme", ['"phosphor_green"', '"tokyo_night"'], 0.10, True),
+             ("font", "appearance.text", "font_size", ["22.0", "11.0"], 0.02, True),
+             ("vtabs", "appearance.vertical_tabs", "enabled", ["false", "true"], 0.004, False)]
     try:
-        for name, table, key, vals, thresh in steps:
+        for name, table, key, vals, thresh, color in steps:
             if name == "theme":
                 # r18u13 (Mac): the owner's settings follow the system theme (`appearance.themes.system_theme = true`), and then `theme` is not the
                 # theme on screen (settings/theme.rs: the selected system themes are), so writing it changed nothing (diff 0.001 / 0.0 with Pillow;
@@ -718,7 +733,7 @@ def c_settings(ctx, r):
             for i, v in enumerate(vals):
                 before = ctx.shot("set_%s_%d_before" % (name, i))
                 set_setting(ctx, table, key, v)
-                after, d = settle_change(ctx, before, "set_%s_%d_after" % (name, i), thresh)
+                after, d = settle_change(ctx, before, "set_%s_%d_after" % (name, i), thresh, color=color)
                 r.metric("%s_%d_diff" % (name, i), d if d is not None else -1)
                 if not r.check(after is not None, "%s = %s: the screen did not change (diff %s < %s) within 10 s of the file write (live reload failed?)" % (name, v, d, thresh)):
                     continue

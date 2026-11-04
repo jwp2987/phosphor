@@ -44,9 +44,20 @@ pub fn now_ms() -> String {
     )
 }
 
-/// Describes `text` for the log: the text itself only when the tester opted in.
+/// Text longer than this is logged by its count even when the tester opted in. r18u19 (macOS
+/// `remote_heredoc_paste`): with a 600 KB here-doc in the editor every key logged the whole
+/// buffer, ~50 MB of log in 13 s, and the rotation deleted the five minutes that showed what
+/// happened to the paste. The count form is the one the harness already parses.
+pub const MAX_LOGGED_TEXT_BYTES: usize = 64 * 1024;
+
+/// Describes `text` for the log: the text itself only when the tester opted in (and it is at most
+/// [`MAX_LOGGED_TEXT_BYTES`] long).
 pub fn describe_text(text: &str) -> String {
-    if text_opted_in() {
+    describe_text_with(text, text_opted_in())
+}
+
+fn describe_text_with(text: &str, opted_in: bool) -> String {
+    if opted_in && text.len() <= MAX_LOGGED_TEXT_BYTES {
         format!("{text:?}")
     } else {
         format!("<{} chars>", text.chars().count())
@@ -58,7 +69,7 @@ pub fn describe_text(text: &str) -> String {
 /// bytes themselves only when the tester opted in with `WARP_INPUT_ORDER_LOG_TEXT=1`, else only
 /// their count (#1444).
 pub fn describe_bytes(bytes: &[u8]) -> String {
-    if text_opted_in() {
+    if text_opted_in() && bytes.len() <= MAX_LOGGED_TEXT_BYTES {
         format!("{bytes:?}")
     } else {
         format!("<{} bytes>", bytes.len())
@@ -69,7 +80,7 @@ pub fn describe_bytes(bytes: &[u8]) -> String {
 /// `WARP_INPUT_ORDER_LOG_TEXT=1`, else only their count (#1490). The exact bytes of a pty write,
 /// readable next to the shell's own record of the line.
 pub fn describe_bytes_escaped(bytes: &[u8]) -> String {
-    if text_opted_in() {
+    if text_opted_in() && bytes.len() <= MAX_LOGGED_TEXT_BYTES {
         format!("\"{}\"", bytes.escape_ascii())
     } else {
         format!("<{} bytes>", bytes.len())
@@ -454,6 +465,24 @@ mod tests {
         for label in ["precmd", "preexec", "ready", "request", "report"] {
             assert!(ages.contains(&format!("since_{label}_ms=")), "{ages}");
         }
+    }
+
+    /// r18u19: an opted-in log still gives a huge buffer by its count, the form the harness
+    /// parses (`buffer=<N chars>`), so one key cannot write the whole of a 600 KB paste.
+    #[test]
+    fn opted_in_text_over_the_cap_is_logged_by_count() {
+        assert_eq!(describe_text_with("a\"b", true), "\"a\\\"b\"");
+        assert_eq!(describe_text_with("hunter2", false), "<7 chars>");
+        let at_cap = "x".repeat(MAX_LOGGED_TEXT_BYTES);
+        assert_eq!(
+            describe_text_with(&at_cap, true).len(),
+            MAX_LOGGED_TEXT_BYTES + 2
+        );
+        let over = "é".repeat(MAX_LOGGED_TEXT_BYTES / 2 + 1);
+        assert_eq!(
+            describe_text_with(&over, true),
+            format!("<{} chars>", MAX_LOGGED_TEXT_BYTES / 2 + 1)
+        );
     }
 
     #[test]

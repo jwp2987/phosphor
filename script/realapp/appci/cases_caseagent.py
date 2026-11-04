@@ -379,11 +379,15 @@ AMBIGUOUS_LINES = ["find the bug in main.rs", "make a PR", "cat the error log an
 #   * "find the bug in main.rs": `main.rs` is a data-shaped word (interior dot, util.rs is_data_shaped_word) = command evidence, so it runs in the
 #     shell on both surfaces (routing_corpus.rs: Case::cmd "#964 / #906"); the log says evidence-in-conversation (#1183) when it does
 #   * "make a PR": `make` + words that are not common make targets = no evidence in a conversation (no-evidence-in-conversation) -> agent
-#   * "cat the error log and tell me what is wrong": request shape (#834/#965) -> agent in a conversation
+#   * "cat the error log and tell me what is wrong": request shape (#834/#965: `tell me what` is a request addressed to someone) -> agent on
+#     BOTH surfaces. r18u19: the plain-terminal half was unpinned, so the surface fallback below said shell; until then the line had only ever
+#     been typed inside a conversation (r18u8/r18u13 logged AgentConversation). The routing corpus pins the plain terminal as Agent too
+#     (routing_corpus.rs: `sudo rm the old logs for me` "#1291 (plain terminal unchanged)", `find the process that is eating my memory`
+#     #834, and this exact line): the owner's installed-head rule (#964) covers English-looking arguments, not a sentence addressed to someone.
 AMBIGUOUS_EXPECT = {
     "find the bug in main.rs": ("shell", "shell"),
     "make a PR": (None, "agent"),
-    "cat the error log and tell me what is wrong": (None, "agent"),
+    "cat the error log and tell me what is wrong": ("agent", "agent"),
 }
 
 
