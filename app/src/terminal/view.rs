@@ -3354,6 +3354,12 @@ pub struct TerminalView {
     /// recorded when the hold opens. The kept-text banner is shown only over that block, so a late
     /// hand-back can never attach it to another (local) command.
     ssh_hold_block_id: Option<BlockId>,
+    /// #1641 (owner, after r18u16): the ssh block ended while the hold waited for the wrapper (no
+    /// verdict, or a managed verdict whose session never took over): the hand-over writes the held
+    /// keys to the pty for the LOCAL shell, once and in typed order, as a plain terminal leaves
+    /// them in the tty queue when ssh exits. Set at the block's completion, consumed by the
+    /// hand-over that follows it; a give-up timer never writes (it hands back text instead).
+    ssh_release_held_locally: bool,
 
     /// The [`EntityId`] for this terminal view.
     view_id: EntityId,
@@ -5218,6 +5224,7 @@ impl TerminalView {
             ssh_phase: input_queue::SshPhaseMachine::default(),
             ssh_give_ups: 0,
             ssh_hold_block_id: None,
+            ssh_release_held_locally: false,
             view_id: ctx.view_id(),
             current_state: TerminalViewStateChange::default(),
             did_notify_long_running: false,
@@ -11722,6 +11729,7 @@ impl TerminalView {
 
     /// Forgets every held key and the hold itself (an interrupt, a new command, a prompt).
     fn reset_ssh_typeahead(&mut self) {
+        self.ssh_release_held_locally = false;
         self.ssh_hold_clear();
         self.set_ssh_typeahead_holding(false);
         self.ssh_paste_to_hold = false;
@@ -11901,6 +11909,9 @@ impl TerminalView {
     /// shown in the input editor as text, never run, so nothing executes on the wrong host.
     fn finish_ssh_typeahead(&mut self, ctx: &mut ViewContext<Self>) {
         warpui::profiling::zone!("typeahead_handoff");
+        // #1641: set by the ssh block's completion under the wrapper's hold; a timer never writes.
+        let release_locally =
+            std::mem::take(&mut self.ssh_release_held_locally) && !self.ssh_give_up_in_progress;
         warpui::input_order::log_key_hop("kh_finish_begin", || {
             format!(
                 "remote_prompt_seen={} held_bytes={} view_precmds_pending={}",
@@ -11915,6 +11926,18 @@ impl TerminalView {
         if self.ssh_held_is_empty() {
             self.ssh_hold_clear();
             warpui::input_order::log_key_hop("kh_finish_end", || "delivered=none".to_owned());
+            return;
+        }
+        if release_locally && !self.ssh_remote_prompt_seen {
+            warpui::input_order::log_hop("ssh_held_delivery", || {
+                format!(
+                    "source=local_after_ssh_exit held_bytes={}",
+                    self.ssh_held_bytes()
+                )
+            });
+            self.log_ssh_typeahead_delivery(self.ssh_held_count());
+            self.ssh_hold_clear_gate_to_local_pty(ctx);
+            warpui::input_order::log_key_hop("kh_finish_end", || "delivered=local_pty".to_owned());
             return;
         }
         if self.ssh_remote_prompt_seen && self.ssh_give_up_in_progress {
@@ -12356,6 +12379,15 @@ impl TerminalView {
         self.refresh_ssh_connect_gate();
         if let Some(gate) = self.ssh_connect_gate.as_mut() {
             gate.note_block_completed(Instant::now(), exit_code == 0);
+            // #1641 (owner, after r18u16): the wrapper's hold ended with the block and no remote
+            // session is coming (a failed master login, a managed ssh that failed before its remote
+            // shell announced itself, any exit with no verdict): the held keys go to the LOCAL
+            // shell, written once after this completion, as plain ssh in iTerm2 leaves them in the
+            // tty. A clean end after the ssh hook (`managed`) still waits for the bootstrap.
+            let local = gate.wrapper.defers_ownership() && !gate.saw_pending && gate.failed;
+            if local && self.ssh_typeahead_holding {
+                self.ssh_release_held_locally = true;
+            }
             // Deliberately no change to the held keys, whatever ssh did: the hand-over delivers
             // them to the remote shell, or shows them unexecuted if ssh failed (#1292).
             self.ssh_edge(input_queue::SshEdge::BlockCompleted {

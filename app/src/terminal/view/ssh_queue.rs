@@ -428,6 +428,33 @@ impl TerminalView {
                     log::info!("ssh hold: discarded {} held input(s)", held.len());
                 }
             }
+            SshDropThen::WriteToLocalPty => {
+                // #1641: one write, in typed order, for the local shell (the bytes a plain terminal
+                // would have left in the tty when ssh exited). A paste goes as its text: it was
+                // pasted while ssh, not the shell's line editor, had the terminal.
+                let mut merged = SshTypeahead::default();
+                for input in held {
+                    merged.push(input);
+                }
+                let mut bytes = String::new();
+                for input in merged.take() {
+                    match input {
+                        HeldInput::Typed(text)
+                        | HeldInput::Key(text)
+                        | HeldInput::Paste(text)
+                        | HeldInput::Seq(text) => bytes.push_str(&text),
+                    }
+                }
+                if !bytes.is_empty() {
+                    log::info!(
+                        "ssh typeahead: the managed ssh ended without a remote shell; writing {} \
+                         held byte(s) to the local shell, as a plain terminal would (#1641)",
+                        bytes.len()
+                    );
+                    self.report_possible_typeahead(&bytes);
+                    self.write_user_bytes_to_pty(bytes.into_bytes(), ctx);
+                }
+            }
             SshDropThen::HandBackText => {
                 // Adjacent printable runs are one input.
                 let mut merged = SshTypeahead::default();
@@ -467,6 +494,13 @@ impl TerminalView {
     /// is busy this is a deferred operation, so the text is never lost.
     pub(super) fn ssh_hold_hand_back_unexecuted_text(&mut self, ctx: &mut ViewContext<Self>) {
         self.ssh_hold_clear_gate(SshDropThen::HandBackText, Some(ctx));
+    }
+
+    /// #1641: a managed ssh ended without a remote shell: the held keys are written to the pty
+    /// once, in typed order, for the local shell (consumes the hold). When the queue is busy this
+    /// is a deferred operation, run when it frees (never a timer).
+    pub(super) fn ssh_hold_clear_gate_to_local_pty(&mut self, ctx: &mut ViewContext<Self>) {
+        self.ssh_hold_clear_gate(SshDropThen::WriteToLocalPty, Some(ctx));
     }
 
     /// Number of inputs held (for the log line, never content).
