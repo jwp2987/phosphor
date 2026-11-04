@@ -357,14 +357,6 @@ mod model {
 
     impl<T> Drop for RwLockReadGuard<'_, T> {
         fn drop(&mut self) {
-            // Under loom a checker failure (e.g. a reported deadlock) unwinds after the execution is
-            // torn down; touching the model's lock or condvar then panics again inside this `Drop`
-            // and aborts the process, so `should_panic` tests cannot see the report. Nothing can
-            // observe the release once the checker has failed, so skip it while unwinding.
-            #[cfg(phosphor_loom)]
-            if std::thread::panicking() {
-                return;
-            }
             let mut state = self.lock.state();
             state.remove_reader(self.reader);
             drop(state);
@@ -389,14 +381,6 @@ mod model {
 
     impl<T> Drop for RwLockWriteGuard<'_, T> {
         fn drop(&mut self) {
-            // Under loom a checker failure (e.g. a reported deadlock) unwinds after the execution is
-            // torn down; touching the model's lock or condvar then panics again inside this `Drop`
-            // and aborts the process, so `should_panic` tests cannot see the report. Nothing can
-            // observe the release once the checker has failed, so skip it while unwinding.
-            #[cfg(phosphor_loom)]
-            if std::thread::panicking() {
-                return;
-            }
             let mut state = self.lock.state();
             state.writer = None;
             drop(state);
