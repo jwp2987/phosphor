@@ -14887,6 +14887,7 @@ fn typeahead_handoff_not_engaged_releases_the_keys_waiting_for_the_route() {
         });
     })
 }
+
 /// Ctrl-D at the prompt with nothing typed would exit the shell; it is not written.
 #[test]
 fn typeahead_handoff_ctrl_d_on_an_empty_shell_line_is_not_written() {
@@ -24082,6 +24083,89 @@ fn a_hold_whose_wait_a_preexec_cleared_is_released_by_the_latch() {
                 "{mode:?}: once, in order"
             );
         })
+    }
+}
+
+/// #1628: a pasted command, an Enter pressed while the clipboard was still being read, then a
+/// second paste and Enter, all held for the prompt (ConPTY). The Enter behind the first paste is
+/// queued in the destination mode's own form (the table offers an `Enter` entry, the legacy chain
+/// pty bytes) and is swept under the prompt hold's gate with the paste in front of it; at the
+/// line editor's signal it goes out once, in its place: two commands, never one merged line.
+/// `direct` offers the table's `Enter` entry itself, so the release is covered whatever the
+/// table decided for the keydown.
+fn paste_enter_during_read_then_paste_enter_in(mode: DestMode, direct: bool) {
+    App::test((), move |mut app| async move {
+        let _mode = force_dest_mode(mode);
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            conpty_prompt_hold_setup(view);
+            for line in ["echo a", "echo b"] {
+                let id = view.paste_queue.next_paste_id();
+                let queue = view.paste_queue.queue.clone();
+                {
+                    let mut host = paste_queue::PtyQueueHost::new(view, ctx);
+                    queue.borrow_mut().offer_gated(
+                        &mut host,
+                        crate::terminal::input_queue::EntryKind::Paste {
+                            paste_id: id,
+                            payload: None,
+                        },
+                        crate::terminal::input_queue::GateSpec::new(
+                            crate::terminal::input_queue::GateKind::PasteReading,
+                            id,
+                        )
+                        .with_cap(None),
+                    );
+                }
+                // The Enter arrives while the clipboard is being read.
+                if direct {
+                    let mut host = paste_queue::PtyQueueHost::new(view, ctx);
+                    queue
+                        .borrow_mut()
+                        .offer(&mut host, crate::terminal::input_queue::EntryKind::Enter);
+                } else {
+                    view.keydown_on_terminal("\r", ctx);
+                }
+                view.finish_queued_background_paste(id, Ok(line.as_bytes().to_vec()), ctx);
+            }
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{mode:?} direct={direct}: held for the prompt: {:?}",
+                pty_writes.borrow()
+            );
+            assert!(prompt_gate_open(view), "{mode:?} direct={direct}");
+            line_editor_signal(view, ctx);
+            assert!(
+                view.paste_queue.queue.borrow().is_idle(),
+                "{mode:?} direct={direct}: everything released"
+            );
+        });
+        let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+        assert_eq!(
+            String::from_utf8_lossy(&written),
+            "echo a\recho b\r",
+            "{mode:?} direct={direct}: each command once, in order"
+        );
+    })
+}
+
+#[test]
+fn an_enter_held_behind_a_paste_read_is_released_with_the_prompt_hold_legacy() {
+    paste_enter_during_read_then_paste_enter_in(DestMode::Legacy, false);
+}
+
+#[test]
+fn an_enter_held_behind_a_paste_read_is_released_with_the_prompt_hold_table() {
+    paste_enter_during_read_then_paste_enter_in(DestMode::Table, false);
+}
+
+#[test]
+fn an_enter_entry_in_a_prompt_hold_is_released_as_its_byte_in_both_modes() {
+    for mode in [DestMode::Legacy, DestMode::Table] {
+        paste_enter_during_read_then_paste_enter_in(mode, true);
     }
 }
 

@@ -1796,11 +1796,22 @@ impl TerminalView {
     /// One entry taken out of a hand-off gate: an entry of the editor side that ended up in this
     /// gate's segment (the queue is shared with the editor) is delivered to the editor now, never
     /// lost, and gives `None`; a pty entry gives its bytes.
+    ///
+    /// #1628: a destination-neutral `Text` / `Enter` entry (a key the table held behind a pty
+    /// paste being read, or one typed behind an Enter that waited) that ends up in a hand-off
+    /// gate's segment follows the line it was typed into: the hold is the pty's, so it is the
+    /// pty's bytes, in its place. The input's host never delivers these kinds, so handing them to
+    /// the editor side dropped them (an Enter between two pasted commands merged the commands).
     fn take_entry_bytes(
         &mut self,
         entry: InputEntry,
         ctx: &mut ViewContext<Self>,
     ) -> Option<Vec<u8>> {
+        match &entry.kind {
+            EntryKind::Enter => return Some(b"\r".to_vec()),
+            EntryKind::Text(text) => return Some(text.clone().into_bytes()),
+            _ => {}
+        }
         if !is_pty_entry(&entry.kind) {
             // The gate this entry waited behind is gone, so it must not wait for anything else
             // either: `flushing_now` applies a key that reads the display map at once instead of
