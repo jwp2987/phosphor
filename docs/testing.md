@@ -964,9 +964,12 @@ an enter window, released by the latch.
 the Enter wrote no command) was the last release that wrote its keys to ConPTY as ONE write with the Enter(s) inside it -- the
 shape #1189 lost lines on. It now gets the keys one chunk per key entry and, on a ConPTY session, writes each as its own write, like
 every other release there (`TypeaheadHandoff::held_key_release_writes`; elsewhere still one write). In an app log the release is
-`hop=held_keys_release writes=N bytes=M`: on Windows N equals the number of keys. Test: `typeahead_handoff_tests.rs`
+`hop=held_keys_release writes=N bytes=M`: on Windows N equals the number of keys handed to the event loop, which may still merge
+adjacent plain-text keys (every byte >= 0x20, `is_plain_key_text` in `local_tty/event_loop.rs`) into fewer pty writes
+(`hop=pty_write_coalesced`); a CR or an ESC sequence always ends a write. Tests: `typeahead_handoff_tests.rs`
 `held_keys_released_after_an_unsubmitted_enter_keep_their_key_boundaries_on_conpty` (ConPTY: one write per key, empty chunks
-dropped; elsewhere: one write, typed order).
+dropped; elsewhere: one write, typed order) and `view_test.rs` `a_deferred_enter_gate_release_on_conpty_writes_one_key_per_write`
+(`ls`, `\r`, `x` held behind the gate and released: ConPTY writes `ls` / `\r` / `x`, otherwise one `ls\rx`).
 
 ## 3. Real-app testing
 
