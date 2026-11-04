@@ -779,6 +779,9 @@ test-shuttle-loom:
     - './script/agent-cargo ci-shuttle test -p warpui_core --lib --release -- model_tests::'
     - './script/agent-cargo ci-shuttle test -p warp --features gui --lib --release -- model_tests::'
     - 'export RUSTFLAGS="--cfg phosphor_loom"'
+    # Exhaustive loom on the warp model tests never finished in 150 min (r18u19); explore every
+    # schedule with up to 2 forced preemptions, the bound loom's docs recommend. Raise it locally to dig.
+    - 'export LOOM_MAX_PREEMPTIONS="${LOOM_MAX_PREEMPTIONS:-2}"'
     - './script/agent-cargo ci-loom test -p warpui_core --lib --release -- model_tests::'
     - './script/agent-cargo ci-loom test -p warp --features gui --lib --release -- model_tests::'
 

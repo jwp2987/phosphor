@@ -18,6 +18,7 @@ RUSTFLAGS="--cfg shuttle" cargo test -p warp --lib --features warp/gui --release
 # every schedule (tiny bodies only)
 RUSTFLAGS="--cfg phosphor_loom" cargo test -p warpui_core --lib --release -- model_tests::
 RUSTFLAGS="--cfg phosphor_loom" cargo test -p warp --lib --features warp/gui --release -- model_tests::
+# CI bounds loom to LOOM_MAX_PREEMPTIONS=2 (the unbounded warp model tests never finished in 150 min, r18u19); set it higher to dig.
 ```
 
 Use a separate `CARGO_TARGET_DIR` (the cfg changes every crate's build). Model builds do not
