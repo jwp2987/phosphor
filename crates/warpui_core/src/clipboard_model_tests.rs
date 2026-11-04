@@ -13,8 +13,10 @@ use super::*;
 use crate::sync_shim::atomic::{AtomicUsize, Ordering};
 use crate::sync_shim::{Arc, check, thread};
 
-fn text(s: &str) -> Arc<ClipboardContent> {
-    Arc::new(ClipboardContent::plain_text(s.to_owned()))
+// The copied content is a plain value handed to `PendingWrites::add` (a `std::sync::Arc`), not a
+// primitive under test, so it is a std `Arc` even when the model's `Arc` is loom's.
+fn text(s: &str) -> std::sync::Arc<ClipboardContent> {
+    std::sync::Arc::new(ClipboardContent::plain_text(s.to_owned()))
 }
 
 /// The quit path: `wait_until_idle` must wake when the last pending copy lands, whichever side

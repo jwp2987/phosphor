@@ -32,7 +32,7 @@ fn model_rwlock_nested_recursive_reads_with_a_waiting_writer() {
 
 /// Writers in [`model_rwlock_writers_serialize_and_exclude_readers`]: loom explores every
 /// schedule, so it gets one writer (against the reader) to stay tractable; shuttle gets two.
-const WRITERS: u32 = if cfg!(loom) { 1 } else { 2 };
+const WRITERS: u32 = if cfg!(phosphor_loom) { 1 } else { 2 };
 
 /// Writers exclude each other and readers: every increment lands, and a reader never sees a
 /// value no writer produced.

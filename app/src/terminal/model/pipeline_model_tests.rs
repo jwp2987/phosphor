@@ -24,7 +24,7 @@
 //! The owner's invariants, asserted by every model: no key is lost, duplicated or reordered, and
 //! no key is delivered to two destinations.
 //!
-//! Loom explores every schedule, so its bodies are sized down with `cfg!(loom)`.
+//! Loom explores every schedule, so its bodies are sized down with `cfg!(phosphor_loom)`.
 
 use std::collections::VecDeque;
 
@@ -38,7 +38,7 @@ use crate::terminal::model::typeahead_handoff::{PaneHandoff, UserBytesRoute};
 
 /// Keys per producer: loom walks every schedule, shuttle samples them.
 fn keys_per_producer() -> u32 {
-    if cfg!(loom) { 1 } else { 2 }
+    if cfg!(phosphor_loom) { 1 } else { 2 }
 }
 
 // ---- 1. the pane queue: drain versus the deferred mailbox ---------------------------------------
@@ -165,7 +165,7 @@ fn model_pane_queue_drain_never_loses_reorders_or_duplicates_a_key() {
                 }
             }));
         }
-        if !cfg!(loom) {
+        if !cfg!(phosphor_loom) {
             let flipper = pane.clone();
             handles.push(thread::spawn(move || {
                 flipper.lock().pty_takes = false;
@@ -303,7 +303,7 @@ fn model_ssh_hand_over_keeps_every_held_key_in_order_and_delivers_it_once() {
             let ssh = ssh.clone();
             thread::spawn(move || ssh_hand_over(&ssh))
         };
-        let dropper = if cfg!(loom) {
+        let dropper = if cfg!(phosphor_loom) {
             None
         } else {
             let ssh = ssh.clone();
@@ -504,7 +504,7 @@ fn model_the_decision_is_never_older_than_the_stamp_it_follows() {
             thread::spawn(move || {
                 publish(&facts, &model, 1);
                 publish(&facts, &model, 2);
-                if !cfg!(loom) {
+                if !cfg!(phosphor_loom) {
                     publish(&facts, &model, 3);
                 }
             })
