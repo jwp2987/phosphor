@@ -3111,34 +3111,6 @@ impl EditorView {
         }
     }
 
-    /// #1652: delivers the keys held while the multi-line submit dialog was open, in typed order,
-    /// exactly as if they had just been typed here (the display-map rule of
-    /// [`Self::apply_held_paste_key`] included). The hold is closed first, so none is held again.
-    pub fn deliver_modal_held_keys(
-        &mut self,
-        keys: Vec<HeldPasteKey>,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        let _ = self.paste_hold.end_modal_hold();
-        if keys.is_empty() {
-            return;
-        }
-        warpui::input_order::log_hop("modal_hold_deliver", || format!("keys={}", keys.len()));
-        let vim = self.vim_mode(ctx).is_some();
-        for key in keys {
-            let key = match key {
-                HeldPasteKey::Text(text) if vim => {
-                    HeldPasteKey::Action(EditorAction::VimUserInsert(UserInput::new(text)))
-                }
-                HeldPasteKey::Action(EditorAction::Backspace) if vim => {
-                    HeldPasteKey::Action(EditorAction::VimBackspace)
-                }
-                key => key,
-            };
-            self.apply_held_paste_key(key, ctx);
-        }
-    }
-
     fn schedule_held_replay(&mut self, ctx: &mut ViewContext<Self>) {
         if self.paste_hold.replay_mark_scheduled() {
             ctx.dispatch_typed_action_deferred(EditorAction::ReplayHeldKeys);
@@ -3191,25 +3163,6 @@ impl EditorView {
     /// pasted text, in order (#1300). Ctrl-C cancels the paste: what was typed before it is
     /// applied first and the Ctrl-C then acts normally.
     fn hold_key_for_paste(&mut self, action: &EditorAction, ctx: &mut ViewContext<Self>) -> bool {
-        // #1652: the multi-line submit dialog is open. A key that reaches the editor meanwhile
-        // (focus is here, not on the dialog, or a key replayed from behind the Enter that opened
-        // it) belongs after the answer: held with the keys the dialog took, in typed order, and
-        // never applied to the buffer that waits for the answer. An Enter is held too, so it can
-        // neither confirm the dialog nor submit that buffer again.
-        if self.paste_hold.modal_hold_open() {
-            let held = match action {
-                EditorAction::VimUserInsert(text) => Some(HeldPasteKey::Text(String::clone(text))),
-                EditorAction::VimBackspace => Some(HeldPasteKey::Action(EditorAction::Backspace)),
-                EditorAction::ReplayHeldKeys => None,
-                _ => paste_hold::held_form(action),
-            };
-            if let Some(key) = held {
-                warpui::input_order::log_hop("modal_hold_key", || {
-                    format!("source=editor kind={key:?}")
-                });
-                return self.paste_hold.modal_hold_push(key);
-            }
-        }
         // Replayed keys still waiting for the display map (#1389): a key typed now goes behind
         // them; one that acts at once (Ctrl-C, scrolling) sees them applied first.
         if self.paste_hold.replay_pending()
@@ -3332,16 +3285,25 @@ impl EditorView {
         // it are the editor keys below.)
         {
             use crate::terminal::input_queue::GateKind;
-            let (behind_enter, behind_unready_enter) =
-                queue.try_peek().map_or((false, false), |held| {
+            let (behind_enter, behind_unready_enter, behind_dialog) =
+                queue.try_peek().map_or((false, false, false), |held| {
                     let behind = (held.has_gate_kind(GateKind::EnterVerdict)
                         || held.has_gate_kind(GateKind::TabCompletion))
                         && !held.has_editor_paste_reading();
-                    (behind, behind && held.has_unready_enter_gate())
+                    (
+                        behind,
+                        behind && held.has_unready_enter_gate(),
+                        behind && held.has_multiline_dialog_gate(),
+                    )
                 });
             if behind_enter {
                 let kind = match action {
                     EditorAction::UserInsert(text) => EntryKind::Text(String::clone(text)),
+                    // #1652: vim's typed text too, behind the dialog's Enter (it is routed as typed
+                    // text after the answer, where vim takes it again).
+                    EditorAction::VimUserInsert(text) if behind_dialog => {
+                        EntryKind::Text(String::clone(text))
+                    }
                     EditorAction::Enter => EntryKind::Enter,
                     // #1571: behind an Enter the shell could not take yet, the line it holds was
                     // submitted: an editing key belongs to the NEXT line, as on a tty. It waits in
@@ -3350,6 +3312,15 @@ impl EditorView {
                     // edits the held line. A key with no such form acts at once, as before.
                     _ if behind_unready_enter => match held_form_of_editor_key(action) {
                         Some((class, text)) => EntryKind::Held { class, text },
+                        // #1652: behind the Enter that waits for the multi-line dialog every key
+                        // counts: one with no tty form waits as an editor key, in order, and acts
+                        // on the editor after the answer (never on the waiting buffer).
+                        None if behind_dialog && paste_hold::held_form(action).is_some() => {
+                            match paste_hold::held_form(action) {
+                                Some(key) => EntryKind::EditorKey(EditorKeyPayload::new(key)),
+                                None => return false,
+                            }
+                        }
                         // #1586: navigation and editing keys with no tty form carry no text; the
                         // held line must not change, so they are swallowed.
                         None if matches!(

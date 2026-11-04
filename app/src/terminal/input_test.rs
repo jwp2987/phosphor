@@ -11970,6 +11970,9 @@ async fn multiline_submit_fixture_with_terminal(
     });
     input.update(app, |input, ctx| {
         input.replace_buffer_content(text, ctx);
+        // #1652: a test window has no workspace to show the dialog; it counts as shown (the
+        // Enter only waits for an answer once the dialog is on screen).
+        input.set_multiline_dialog_shown_for_test(true);
     });
     (terminal, input, executed)
 }
@@ -12156,7 +12159,10 @@ fn multiline_confirmation_ignores_a_set_grid_mode_when_the_pty_flag_is_clear() {
     });
 }
 
-/// #1652: a typed key as the multi-line submit dialog's key sink receives it.
+type MultilineDialog =
+    crate::workspace::multiline_submit_confirmation_dialog::MultilineSubmitConfirmationDialog;
+
+/// #1652: a typed key as the multi-line dialog's key sink receives it while it has focus.
 fn dialog_typed(chars: &str) -> warpui::pane_key::PaneKey {
     warpui::pane_key::PaneKey {
         seq: 0,
@@ -12167,13 +12173,13 @@ fn dialog_typed(chars: &str) -> warpui::pane_key::PaneKey {
     }
 }
 
-/// #1652: a key down as the multi-line submit dialog's key sink receives it.
-fn dialog_key_down(key: &str) -> warpui::pane_key::PaneKey {
+/// #1652: a key down as the multi-line dialog's key sink receives it while it has focus.
+fn dialog_key_down(key: &str, chars: &str) -> warpui::pane_key::PaneKey {
     warpui::pane_key::PaneKey {
         seq: 0,
         kind: warpui::pane_key::PaneKeyKind::KeyDown {
             keystroke: warpui::keymap::Keystroke::parse(key).expect("valid keystroke"),
-            chars: String::new(),
+            chars: chars.to_owned(),
             is_composing: false,
             will_type: false,
             key_without_modifiers: None,
@@ -12181,34 +12187,47 @@ fn dialog_key_down(key: &str) -> warpui::pane_key::PaneKey {
     }
 }
 
-/// #1652: the multi-line submit dialog of `input`, answering it, in the input's window, with its
-/// key bindings registered (the workspace registers them in the app).
-fn multiline_dialog_for(
+/// #1652: a session whose input holds `text` (more lines than the dialog's threshold), locked to
+/// the shell so an Enter routes by the shell rules alone, with the multi-line dialog in its window
+/// (bindings registered) answering it. The window has no workspace, so the input is told the
+/// dialog was shown.
+async fn multiline_dialog_fixture(
     app: &mut App,
-    terminal: &ViewHandle<TerminalView>,
-    input: &ViewHandle<Input>,
-) -> ViewHandle<
-    crate::workspace::multiline_submit_confirmation_dialog::MultilineSubmitConfirmationDialog,
-> {
-    use crate::workspace::multiline_submit_confirmation_dialog::{
-        MultilineSubmitConfirmationDialog, init,
-    };
-    app.update(init);
+    text: &str,
+) -> (
+    ViewHandle<TerminalView>,
+    ViewHandle<Input>,
+    ViewHandle<MultilineDialog>,
+    Rc<RefCell<Vec<String>>>,
+) {
+    let (terminal, input, executed) =
+        multiline_submit_fixture_with_terminal(app, text, false).await;
+    input.update(app, |input, ctx| {
+        input.ai_input_model().update(ctx, |ai_input, ctx| {
+            ai_input.set_input_config(
+                InputConfig {
+                    input_type: InputType::Shell,
+                    is_locked: true,
+                },
+                false,
+                ctx,
+            );
+        });
+    });
+    app.update(crate::workspace::multiline_submit_confirmation_dialog::init);
     let window_id = terminal.read(app, |_, ctx| terminal.window_id(ctx));
-    let dialog = app.add_typed_action_view(window_id, |_| MultilineSubmitConfirmationDialog::new());
+    let dialog = app.add_typed_action_view(window_id, |_| MultilineDialog::new());
     let asking = input.downgrade();
     dialog.update(app, |dialog, _| {
         dialog.set_asking_input(Some(asking));
     });
-    dialog
+    (terminal, input, dialog, executed)
 }
 
 /// #1652: offers `key` to the dialog's key sink, as the window does while the dialog has focus.
 fn offer_to_dialog(
     app: &mut App,
-    dialog: &ViewHandle<
-        crate::workspace::multiline_submit_confirmation_dialog::MultilineSubmitConfirmationDialog,
-    >,
+    dialog: &ViewHandle<MultilineDialog>,
     key: warpui::pane_key::PaneKey,
 ) -> warpui::pane_key::PaneKeyOutcome {
     dialog.update(app, |dialog, ctx| {
@@ -12221,158 +12240,220 @@ fn offer_to_dialog(
     })
 }
 
-/// #1652: waits (bounded) until the input's buffer satisfies `done`.
-async fn wait_for_buffer(app: &mut App, input: &ViewHandle<Input>, done: impl Fn(&str) -> bool) {
+/// #1652: an Enter typed while the input's editor has focus (not the dialog): the real keystroke
+/// dispatch on the editor's responder chain.
+fn enter_in_editor(app: &mut App, terminal: &ViewHandle<TerminalView>, input: &ViewHandle<Input>) {
+    let window_id = terminal.read(app, |_, ctx| terminal.window_id(ctx));
+    let editor = input.read(app, |input, _| input.editor().clone());
+    let _ = app
+        .dispatch_keystroke(
+            window_id,
+            &[terminal.id(), input.id(), editor.id()],
+            &warpui::keymap::Keystroke::parse("enter").unwrap(),
+            false,
+        )
+        .unwrap();
+}
+
+/// #1652: waits (bounded; the drain's continuation runs on the executor) until `done` holds.
+async fn wait_for_input(
+    app: &mut App,
+    input: &ViewHandle<Input>,
+    done: impl Fn(&Input, &AppContext) -> bool,
+) {
     for _ in 0..400 {
-        if input.read(app, |input, ctx| done(&input.buffer_text(ctx))) {
+        if input.read(app, |input, ctx| done(input, ctx)) {
             return;
         }
         warpui::r#async::Timer::after(Duration::from_millis(5)).await;
     }
 }
 
-/// #1652: the dialog's key sink holds typed text and the editor's fixed editing keys; Enter and
-/// Escape are never its (the dialog's own bindings take them first) and neither is any other key.
+/// #1652: the dialog takes focus, so a key its own bindings do not take used to be dropped
+/// (`live_focus=no accepted=false`). Now every key typed while it is open, whether the dialog has
+/// focus (its key sink hands the key to the input's editor) or the editor does, waits behind the
+/// Enter that asked, in typed order, and nothing touches the waiting buffer. An Enter typed in
+/// the editor neither answers the dialog nor submits the buffer. Cancel then releases the keys to
+/// the editor: the held Enter acts after the text before it ONLY (it asks again about the buffer
+/// with that text), and the text after it waits behind THAT Enter. Both destination modes (the
+/// release goes through `route_after_enter_input` in Legacy and the table in Table; the result is
+/// the same by design).
 #[test]
-fn multiline_dialog_holds_text_and_editing_keys_only() {
-    use crate::workspace::multiline_submit_confirmation_dialog::dialog_held_key;
-    let held = |key: warpui::pane_key::PaneKey| dialog_held_key(&key.kind);
-    assert!(matches!(held(dialog_typed("ab")), Some(HeldPasteKey::Text(text)) if text == "ab"));
-    assert!(held(dialog_typed("")).is_none());
-    for (key, expected) in [
-        ("backspace", "Backspace"),
-        ("delete", "Delete"),
-        ("left", "Left"),
-        ("right", "Right"),
-        ("up", "Up"),
-        ("down", "Down"),
-        ("tab", "Tab"),
-        ("shift-tab", "ShiftTab"),
-    ] {
-        match held(dialog_key_down(key)) {
-            Some(HeldPasteKey::Action(action)) => {
-                assert_eq!(format!("{action:?}"), expected, "{key}")
-            }
-            other => panic!("{key}: {other:?}"),
-        }
-    }
-    for key in ["enter", "escape", "ctrl-c", "cmd-v", "a"] {
-        assert!(held(dialog_key_down(key)).is_none(), "{key}");
-    }
-}
-
-/// #1652: keys typed while the dialog is open (to the dialog's sink, and to the editor when focus
-/// is there instead) never touch the waiting buffer and are not lost: cancelling puts them in the
-/// editor behind the buffer, in typed order, exactly once. Both destination modes.
-#[test]
-fn keys_typed_while_the_multiline_dialog_is_open_follow_a_cancel() {
+fn multiline_dialog_holds_keys_behind_its_enter_and_cancel_replays_them_in_order() {
     use crate::terminal::input_queue::DestinationMode;
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
             let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
             let text = comment_lines(MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD + 1);
-            let (terminal, input, executed) =
-                multiline_submit_fixture_with_terminal(&mut app, &text, false).await;
-            let dialog = multiline_dialog_for(&mut app, &terminal, &input);
-            let editor = input.read(&app, |input, _| input.editor().clone());
+            let (terminal, input, dialog, executed) =
+                multiline_dialog_fixture(&mut app, &text).await;
             input.update(&mut app, |input, ctx| {
-                input.input_enter_as_shell_command(ctx)
+                input.input_enter_as_shell_command(ctx);
             });
             input.read(&app, |input, _| {
-                assert!(input.awaiting_multiline_submit_confirmation, "{mode:?}")
+                assert!(input.awaiting_multiline_submit_confirmation, "{mode:?}");
+                assert!(
+                    input.multiline_dialog_gate_open(),
+                    "{mode:?}: the Enter gates"
+                );
             });
 
-            // The dialog has focus: "ab", Backspace, "c".
-            for key in [
-                dialog_typed("ab"),
-                dialog_key_down("backspace"),
-                dialog_typed("c"),
-            ] {
-                assert_eq!(
-                    offer_to_dialog(&mut app, &dialog, key),
-                    warpui::pane_key::PaneKeyOutcome::Consumed,
-                    "{mode:?}"
-                );
-            }
-            // Then focus is in the editor: "d" reaches it directly.
-            editor.update(&mut app, |editor, ctx| {
-                editor.handle_action(&EditorAction::UserInsert(UserInput::new("d")), ctx);
-            });
+            assert_eq!(
+                offer_to_dialog(&mut app, &dialog, dialog_typed("ls")),
+                warpui::pane_key::PaneKeyOutcome::Consumed,
+                "{mode:?}"
+            );
+            enter_in_editor(&mut app, &terminal, &input);
+            assert_eq!(
+                offer_to_dialog(&mut app, &dialog, dialog_typed("pwd")),
+                warpui::pane_key::PaneKeyOutcome::Consumed,
+                "{mode:?}"
+            );
+            assert!(executed.borrow().is_empty(), "{mode:?}: nothing ran");
             input.read(&app, |input, ctx| {
+                assert_eq!(input.buffer_text(ctx), text, "{mode:?}: the waiting buffer");
+                assert!(input.awaiting_multiline_submit_confirmation, "{mode:?}");
                 assert_eq!(
-                    input.buffer_text(ctx),
-                    text,
-                    "{mode:?}: the waiting buffer changed"
+                    input.enter_gate_held_for_test(ctx),
+                    vec![
+                        AfterEnterInput::Text("ls".to_string()),
+                        AfterEnterInput::Enter,
+                        AfterEnterInput::Text("pwd".to_string()),
+                    ],
+                    "{mode:?}: typed order, behind the Enter"
                 );
             });
-            assert!(executed.borrow().is_empty(), "{mode:?}");
 
+            // Cancel: "ls" joins the buffer, the held Enter asks again about that buffer, and
+            // "pwd" waits behind the new question.
             input.update(&mut app, |input, ctx| input.cancel_multiline_submit(ctx));
-            let expected = format!("{text}acd");
-            wait_for_buffer(&mut app, &input, |buffer| buffer == expected).await;
+            let with_ls = format!("{text}ls");
+            wait_for_input(&mut app, &input, |input, ctx| {
+                input.buffer_text(ctx) == with_ls
+                    && input.multiline_dialog_gate_open()
+                    && input.enter_gate_held_for_test(ctx)
+                        == vec![AfterEnterInput::Text("pwd".to_string())]
+            })
+            .await;
+            assert!(executed.borrow().is_empty(), "{mode:?}: still nothing ran");
+            input.read(&app, |input, ctx| {
+                assert_eq!(input.buffer_text(ctx), with_ls, "{mode:?}");
+                assert!(
+                    input.awaiting_multiline_submit_confirmation,
+                    "{mode:?}: asked again"
+                );
+                assert_eq!(
+                    input.enter_gate_held_for_test(ctx),
+                    vec![AfterEnterInput::Text("pwd".to_string())],
+                    "{mode:?}: the text after the held Enter waits behind it"
+                );
+            });
+
+            // Cancel again: the rest follows, exactly once.
+            input.update(&mut app, |input, ctx| input.cancel_multiline_submit(ctx));
+            let expected = format!("{text}lspwd");
+            wait_for_input(&mut app, &input, |input, ctx| {
+                input.buffer_text(ctx) == expected && !input.enter_queue_holds_keys(ctx)
+            })
+            .await;
             input.read(&app, |input, ctx| {
                 assert_eq!(input.buffer_text(ctx), expected, "{mode:?}");
-                assert!(!input.awaiting_multiline_submit_confirmation);
+                assert!(!input.awaiting_multiline_submit_confirmation, "{mode:?}");
+                assert!(!input.enter_queue_holds_keys(ctx), "{mode:?}: released");
             });
             assert!(executed.borrow().is_empty(), "{mode:?}");
-            // The hold is closed: a key typed now edits the buffer at once.
-            editor.update(&mut app, |editor, ctx| {
-                editor.handle_action(&EditorAction::UserInsert(UserInput::new("e")), ctx);
-            });
-            input.read(&app, |input, ctx| {
-                assert_eq!(input.buffer_text(ctx), format!("{expected}e"), "{mode:?}");
-            });
-            assert_eq!(
-                offer_to_dialog(&mut app, &dialog, dialog_typed("f")),
-                warpui::pane_key::PaneKeyOutcome::NotMine,
-                "{mode:?}: a closed dialog holds nothing"
-            );
         });
     }
 }
 
-/// #1652: keys typed while the dialog is open, then the dialog confirmed: the run is the waiting
-/// buffer alone, and the held text follows it into the editor as the next line's (the text newer
-/// than the submission, which the block's completion keeps, #934). Both destination modes.
+/// #1652: Confirm runs the waiting buffer alone, exactly once, and what was typed while the dialog
+/// was open (text, an Enter, more text) follows it the way keys typed after any submitted Enter
+/// do: it waits until the pty has taken the command, then goes to the running command. With the
+/// typeahead hand-off on. The buffer never gets the held text glued to it. Both modes.
 #[test]
-fn keys_typed_while_the_multiline_dialog_is_open_follow_the_confirmed_run() {
-    use super::newer_than_submission;
+fn multiline_dialog_confirm_runs_the_buffer_then_the_held_keys_follow_it() {
     use crate::terminal::input_queue::DestinationMode;
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
             let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            let _handoff = FeatureFlag::TypeaheadHandoff.override_enabled(true);
             let text = comment_lines(MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD + 1);
-            let (terminal, input, executed) =
-                multiline_submit_fixture_with_terminal(&mut app, &text, false).await;
-            let dialog = multiline_dialog_for(&mut app, &terminal, &input);
-            input.update(&mut app, |input, ctx| {
-                input.input_enter_as_shell_command(ctx)
+            let (terminal, input, dialog, executed) =
+                multiline_dialog_fixture(&mut app, &text).await;
+            let writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+            let sink = writes.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&terminal, move |_, event, _| match event {
+                    crate::terminal::view::Event::WriteBytesToPty { bytes }
+                    | crate::terminal::view::Event::WriteHandoffUserBytesToPty { bytes } => {
+                        sink.borrow_mut().push(bytes.to_vec());
+                    }
+                    _ => {}
+                });
             });
-            for key in [dialog_typed("l"), dialog_typed("s")] {
-                assert_eq!(
-                    offer_to_dialog(&mut app, &dialog, key),
-                    warpui::pane_key::PaneKeyOutcome::Consumed,
-                    "{mode:?}"
-                );
-            }
+            input.update(&mut app, |input, ctx| {
+                input.input_enter_as_shell_command(ctx);
+            });
+            offer_to_dialog(&mut app, &dialog, dialog_typed("ls"));
+            enter_in_editor(&mut app, &terminal, &input);
+            offer_to_dialog(&mut app, &dialog, dialog_typed("pwd"));
             assert!(executed.borrow().is_empty(), "{mode:?}");
 
             input.update(&mut app, |input, ctx| input.confirm_multiline_submit(ctx));
             assert_eq!(
                 executed.borrow().as_slice(),
                 [text.clone()],
-                "{mode:?}: the run is the waiting buffer, without the held keys"
+                "{mode:?}: the run is the waiting buffer alone"
             );
-            wait_for_buffer(&mut app, &input, |buffer| {
-                newer_than_submission(Some(text.as_str()), buffer) == Some("ls")
-            })
-            .await;
+            // Whatever the submit itself wrote is not what this test is about.
+            writes.borrow_mut().clear();
             input.read(&app, |input, ctx| {
-                let buffer = input.buffer_text(ctx);
                 assert_eq!(
-                    newer_than_submission(Some(text.as_str()), &buffer),
-                    Some("ls"),
-                    "{mode:?}: the held keys are not the next line's: {buffer:?}"
+                    input.buffer_text(ctx),
+                    text,
+                    "{mode:?}: nothing glued to it"
+                );
+                assert!(!input.awaiting_multiline_submit_confirmation, "{mode:?}");
+                assert!(
+                    input.enter_queue_awaits_pty(),
+                    "{mode:?}: the keys wait for the pty to take the command"
+                );
+                assert_eq!(
+                    input.enter_gate_held_for_test(ctx),
+                    vec![
+                        AfterEnterInput::Text("ls".to_string()),
+                        AfterEnterInput::Enter,
+                        AfterEnterInput::Text("pwd".to_string()),
+                    ],
+                    "{mode:?}"
+                );
+            });
+
+            // The command runs (the pty has it): the keys follow it, to the running command.
+            terminal.read(&app, |view, _| {
+                view.model
+                    .lock()
+                    .simulate_long_running_block("bash -c script", "");
+            });
+            for _ in 0..400 {
+                let written: Vec<u8> = writes.borrow().iter().flatten().copied().collect();
+                let released = input.read(&app, |input, ctx| !input.enter_queue_holds_keys(ctx));
+                if released && written.ends_with(b"pwd") {
+                    break;
+                }
+                warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+            }
+            let written: Vec<u8> = writes.borrow().iter().flatten().copied().collect();
+            assert_eq!(
+                String::from_utf8_lossy(&written),
+                "ls\rpwd",
+                "{mode:?}: once, in typed order, after the command"
+            );
+            input.read(&app, |input, ctx| {
+                assert_eq!(
+                    input.buffer_text(ctx),
+                    text,
+                    "{mode:?}: not into the editor"
                 );
             });
             assert_eq!(executed.borrow().len(), 1, "{mode:?}: run exactly once");
@@ -12380,62 +12461,157 @@ fn keys_typed_while_the_multiline_dialog_is_open_follow_the_confirmed_run() {
     }
 }
 
-/// #1652: an Enter that reaches the editor while the dialog is open (focus is in the editor, not
-/// on the dialog) neither confirms the dialog nor submits the waiting buffer: it is held with the
-/// other keys. Cancelling delivers it as a fresh Enter, which runs nothing unasked. Both
-/// destination modes.
+/// #1652: keys with no binding the dialog knows count too. Ctrl-W pressed on the dialog goes
+/// through the real keystroke dispatch on the editor's responder chain (its binding: cut the word
+/// left), a paste on the dialog is the editor's paste; both wait behind the Enter with the text
+/// typed before them, the waiting buffer untouched, and act in typed order after Cancel.
 #[test]
-fn an_enter_outside_the_multiline_dialog_does_not_confirm_it() {
+fn multiline_dialog_holds_unmapped_keys_and_a_paste_in_order() {
     use crate::terminal::input_queue::DestinationMode;
+    use crate::workspace::multiline_submit_confirmation_dialog::MultilineSubmitConfirmationAction;
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
             let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
             let text = comment_lines(MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD + 1);
-            let (terminal, input, executed) =
-                multiline_submit_fixture_with_terminal(&mut app, &text, false).await;
-            let _dialog = multiline_dialog_for(&mut app, &terminal, &input);
-            let editor = input.read(&app, |input, _| input.editor().clone());
-            let window_id = terminal.read(&app, |_, ctx| terminal.window_id(ctx));
+            let (_terminal, input, dialog, executed) =
+                multiline_dialog_fixture(&mut app, &text).await;
+            app.update(|ctx| {
+                ctx.clipboard()
+                    .write(ClipboardContent::plain_text("P".to_string()));
+            });
             input.update(&mut app, |input, ctx| {
-                input.input_enter_as_shell_command(ctx)
+                input.input_enter_as_shell_command(ctx);
             });
-
-            let focus_path = [terminal.id(), input.id(), editor.id()];
-            let _ = app
-                .dispatch_keystroke(
-                    window_id,
-                    &focus_path,
-                    &warpui::keymap::Keystroke::parse("enter").unwrap(),
-                    false,
-                )
-                .unwrap();
-            assert!(
-                executed.borrow().is_empty(),
-                "{mode:?}: the Enter ran the buffer"
+            offer_to_dialog(&mut app, &dialog, dialog_typed(" foo"));
+            assert_eq!(
+                offer_to_dialog(&mut app, &dialog, dialog_key_down("ctrl-w", "\u{17}")),
+                warpui::pane_key::PaneKeyOutcome::Consumed,
+                "{mode:?}: the editor's binding took ctrl-w"
             );
+            dialog.update(&mut app, |dialog, ctx| {
+                dialog.handle_action(&MultilineSubmitConfirmationAction::PasteIntoInput, ctx)
+            });
             input.read(&app, |input, ctx| {
-                assert!(input.awaiting_multiline_submit_confirmation, "{mode:?}");
-                assert_eq!(input.buffer_text(ctx), text, "{mode:?}");
+                assert_eq!(input.buffer_text(ctx), text, "{mode:?}: the waiting buffer");
+                assert!(input.enter_queue_holds_keys(ctx), "{mode:?}");
             });
 
-            // Cancel: the held Enter is delivered to the editor as a fresh Enter. The buffer still
-            // needs the question, so nothing runs without an answer.
             input.update(&mut app, |input, ctx| input.cancel_multiline_submit(ctx));
+            let expected = format!("{text} P");
+            wait_for_input(&mut app, &input, |input, ctx| {
+                input.buffer_text(ctx) == expected && !input.enter_queue_holds_keys(ctx)
+            })
+            .await;
+            input.read(&app, |input, ctx| {
+                assert_eq!(
+                    input.buffer_text(ctx),
+                    expected,
+                    "{mode:?}: \" foo\", then ctrl-w cut \"foo\", then the paste"
+                );
+            });
             assert!(executed.borrow().is_empty(), "{mode:?}");
         });
     }
 }
 
-/// #1652: the dialog's own keys are unchanged: Enter confirms and Escape cancels (its bindings),
-/// with nothing held.
+/// #1652: ^C while the dialog waits voids the waiting Enter (as the tty flushes typed-ahead input
+/// on INTR): what was typed behind it goes with it, nothing runs, and the input is free.
+#[test]
+fn ctrl_c_voids_the_enter_waiting_for_the_multiline_dialog() {
+    App::test((), |mut app| async move {
+        let text = comment_lines(MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD + 1);
+        let (_terminal, input, dialog, executed) = multiline_dialog_fixture(&mut app, &text).await;
+        let editor = input.read(&app, |input, _| input.editor().clone());
+        input.update(&mut app, |input, ctx| {
+            input.input_enter_as_shell_command(ctx);
+        });
+        offer_to_dialog(&mut app, &dialog, dialog_typed("ls"));
+        editor.update(&mut app, |editor, ctx| {
+            editor.handle_action(&EditorAction::CtrlC, ctx);
+        });
+        input.read(&app, |input, ctx| {
+            assert!(!input.awaiting_multiline_submit_confirmation);
+            assert!(!input.multiline_dialog_gate_open());
+            assert!(!input.enter_queue_holds_keys(ctx));
+            assert!(
+                !input.buffer_text(ctx).contains("ls"),
+                "the typed-ahead text went"
+            );
+        });
+        assert!(executed.borrow().is_empty());
+        // A stray answer after that does nothing.
+        input.update(&mut app, |input, ctx| input.confirm_multiline_submit(ctx));
+        assert!(executed.borrow().is_empty());
+    });
+}
+
+/// #1652 (F9): no workspace showed the dialog (or it refused: one is already open), so the Enter
+/// does not wait for an answer that cannot come: nothing runs, nothing is held, the text stays,
+/// and a key typed next edits it as usual.
+#[test]
+fn an_unshown_multiline_dialog_holds_nothing() {
+    App::test((), |mut app| async move {
+        let text = comment_lines(MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD + 1);
+        let (input, executed) = multiline_submit_fixture(&mut app, &text, false).await;
+        input.update(&mut app, |input, ctx| {
+            input.set_multiline_dialog_shown_for_test(false);
+            input.input_enter_as_shell_command(ctx);
+        });
+        assert!(executed.borrow().is_empty());
+        let editor = input.read(&app, |input, _| input.editor().clone());
+        editor.update(&mut app, |editor, ctx| {
+            editor.handle_action(&EditorAction::UserInsert(UserInput::new("x")), ctx);
+        });
+        input.read(&app, |input, ctx| {
+            assert!(!input.awaiting_multiline_submit_confirmation);
+            assert!(!input.multiline_dialog_gate_open());
+            assert_eq!(input.buffer_text(ctx), format!("{text}x"));
+        });
+    });
+}
+
+/// #1652 (F6): when the input that asked is gone, the answer goes to nobody (never to another
+/// input); while it exists, to it.
+#[test]
+fn the_multiline_dialog_answers_only_the_input_that_asked() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (closed_window_id, closed_terminal) =
+            add_window_with_bootstrapped_terminal_and_window_id(&mut app, None, None).await;
+        let closed_input = closed_terminal.read(&app, |terminal, _| terminal.input().clone());
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        let window_id = terminal.read(&app, |_, ctx| terminal.window_id(ctx));
+        let dialog = app.add_typed_action_view(window_id, |_| MultilineDialog::new());
+
+        let asking = input.downgrade();
+        let target = dialog.update(&mut app, |dialog, ctx| {
+            dialog.set_asking_input(Some(asking));
+            dialog.take_answer_target(ctx).map(|target| target.id())
+        });
+        assert_eq!(target, Some(input.id()));
+
+        let gone = closed_input.downgrade();
+        drop(closed_input);
+        drop(closed_terminal);
+        app.update(|ctx| ctx.simulate_window_closed(closed_window_id));
+        let target = dialog.update(&mut app, |dialog, ctx| {
+            dialog.set_asking_input(Some(gone));
+            dialog.take_answer_target(ctx).map(|target| target.id())
+        });
+        assert_eq!(target, None, "the asker is gone: the answer goes nowhere");
+        dialog.read(&app, |dialog, _| assert_eq!(dialog.asking_input_id(), None));
+    });
+}
+
+/// #1652 (F7, by design): the dialog's own keys are unchanged: Enter confirms and Escape cancels
+/// (its bindings, ahead of its key sink).
 #[test]
 fn multiline_dialog_enter_confirms_and_escape_cancels() {
     use crate::workspace::multiline_submit_confirmation_dialog::MultilineSubmitConfirmationEvent;
     App::test((), |mut app| async move {
         let text = comment_lines(MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD + 1);
-        let (terminal, input, executed) =
-            multiline_submit_fixture_with_terminal(&mut app, &text, false).await;
-        let dialog = multiline_dialog_for(&mut app, &terminal, &input);
+        let (terminal, _input, dialog, _executed) = multiline_dialog_fixture(&mut app, &text).await;
         let window_id = terminal.read(&app, |_, ctx| terminal.window_id(ctx));
         let answers = Rc::new(RefCell::new(Vec::<&'static str>::new()));
         let answers_for_subscription = answers.clone();
@@ -12450,33 +12626,19 @@ fn multiline_dialog_enter_confirms_and_escape_cancels() {
                 },
             );
         });
-        let press = |app: &mut App, key: &str| {
-            app.dispatch_keystroke(
-                window_id,
-                &[dialog.id()],
-                &warpui::keymap::Keystroke::parse(key).unwrap(),
-                false,
-            )
-            .unwrap()
-        };
-
-        input.update(&mut app, |input, ctx| {
-            input.input_enter_as_shell_command(ctx)
-        });
-        assert!(press(&mut app, "escape"));
-        assert_eq!(answers.borrow().as_slice(), ["cancel"]);
-        // What the workspace does with the answer.
-        input.update(&mut app, |input, ctx| input.cancel_multiline_submit(ctx));
-        assert!(executed.borrow().is_empty());
-        input.read(&app, |input, ctx| assert_eq!(input.buffer_text(ctx), text));
-
-        input.update(&mut app, |input, ctx| {
-            input.input_enter_as_shell_command(ctx)
-        });
-        assert!(press(&mut app, "enter"));
+        for key in ["escape", "enter"] {
+            assert!(
+                app.dispatch_keystroke(
+                    window_id,
+                    &[dialog.id()],
+                    &warpui::keymap::Keystroke::parse(key).unwrap(),
+                    false,
+                )
+                .unwrap(),
+                "{key}"
+            );
+        }
         assert_eq!(answers.borrow().as_slice(), ["cancel", "confirm"]);
-        input.update(&mut app, |input, ctx| input.confirm_multiline_submit(ctx));
-        assert_eq!(executed.borrow().as_slice(), [text.clone()]);
     });
 }
 

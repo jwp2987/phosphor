@@ -106,11 +106,6 @@ pub struct EditorPasteHold {
     map_fresh: Cell<bool>,
     /// Pokes the owner of the replay step (the terminal input) after this update's effects flush.
     display_step_waker: RefCell<Option<async_channel::Sender<()>>>,
-    /// #1652: keys typed while the input's multi-line submit dialog is open, in typed order
-    /// (`Some` while it is open). The dialog's own key sink and the editor (when focus is in it
-    /// instead of the dialog) both push here, so the order is one order whichever had focus; the
-    /// input delivers them to the editor, exactly once, when the dialog is answered.
-    modal_hold: RefCell<Option<Vec<HeldPasteKey>>>,
 }
 
 /// What delivering a held editor key does about the display map.
@@ -136,42 +131,11 @@ impl Default for EditorPasteHold {
             next_display_gate: Cell::new(0),
             map_fresh: Cell::new(false),
             display_step_waker: RefCell::new(None),
-            modal_hold: RefCell::new(None),
         }
     }
 }
 
 impl EditorPasteHold {
-    /// #1652: opens the hold for the keys typed while the multi-line submit dialog is open. Opening
-    /// it again while it is open keeps what it holds.
-    pub fn begin_modal_hold(&self) {
-        let mut hold = self.modal_hold.borrow_mut();
-        if hold.is_none() {
-            *hold = Some(Vec::new());
-        }
-    }
-
-    /// The multi-line submit dialog's hold is open.
-    pub fn modal_hold_open(&self) -> bool {
-        self.modal_hold.borrow().is_some()
-    }
-
-    /// Holds `key` behind the open dialog; false (the key is not taken) when no dialog hold is open.
-    pub fn modal_hold_push(&self, key: HeldPasteKey) -> bool {
-        match self.modal_hold.borrow_mut().as_mut() {
-            Some(held) => {
-                held.push(key);
-                true
-            }
-            None => false,
-        }
-    }
-
-    /// Closes the dialog's hold and returns what it held, in typed order (empty when none was open).
-    pub fn end_modal_hold(&self) -> Vec<HeldPasteKey> {
-        self.modal_hold.borrow_mut().take().unwrap_or_default()
-    }
-
     /// Replayed keys are waiting for the display map (see [`needs_fresh_display_map`]).
     pub fn replay_pending(&self) -> bool {
         !self.replay.borrow().is_empty()

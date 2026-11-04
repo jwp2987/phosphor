@@ -696,8 +696,15 @@ pub enum WorkspaceAction {
     /// Ask before running a long multi-line buffer one line at a time (#1046).
     ShowMultilineSubmitConfirmationDialog {
         line_count: usize,
-        /// The input that asked: it gets the answer and the keys typed while the dialog is open,
-        /// whichever tab is active when the user answers (#1652).
+        /// The input that asked: the answer goes to it and to nothing else (#1652).
+        input: warpui::WeakViewHandle<crate::terminal::input::Input>,
+        /// Set by the workspace when it showed the dialog for `input` (not while another one is
+        /// open): only then does the asking Enter wait for an answer (#1652).
+        shown: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    },
+    /// Closes the multi-line dialog `input` asked, unanswered: its waiting Enter was voided by ^C
+    /// (#1652).
+    DismissMultilineSubmitConfirmationDialog {
         input: warpui::WeakViewHandle<crate::terminal::input::Input>,
     },
     /// Execute the actual rewind after confirmation
@@ -1038,6 +1045,7 @@ impl WorkspaceAction {
             | OpenAIDocumentPane { .. }
             | ShowRewindConfirmationDialog { .. }
             | ShowMultilineSubmitConfirmationDialog { .. }
+            | DismissMultilineSubmitConfirmationDialog { .. }
             | ExecuteRewindAIConversation { .. }
             | ExecuteDeleteConversation { .. }
             | ExecuteDeleteAllConversations

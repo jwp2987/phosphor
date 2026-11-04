@@ -44,7 +44,7 @@ use super::{AfterEnterInput, Event, Input};
 use crate::editor::HeldPasteKey;
 use crate::terminal::input_queue::{
     EditorKeyPayload, EntryKind, GateKind, GateSpec, HELD_KEY, HELD_PASTE, HELD_SEQ, HELD_TYPED,
-    InputEntry, PaneQueue, UNREADY_ENTER_KEY_FLAG,
+    InputEntry, MULTILINE_DIALOG_KEY_FLAG, PaneQueue, UNREADY_ENTER_KEY_FLAG,
 };
 use crate::view_components::DismissibleToast;
 use crate::workspace::ToastStack;
@@ -72,6 +72,11 @@ pub(super) struct EnterGate {
     /// readiness event runs it ([`Input::release_unready_enter_gate_after_run`]); it is never
     /// released by the Enter's own submit.
     pub(super) held_unready: bool,
+    /// #1652: the Enter asked the multi-line submit dialog and waits for its answer. Everything
+    /// typed after it (into the editor, or to the dialog, which hands its keys to the editor) is
+    /// held behind this gate in typed order; only the answer ends it
+    /// ([`Input::release_multiline_dialog_gate`], [`Input::cancel_multiline_dialog`]).
+    pub(super) held_for_dialog: bool,
 }
 
 /// #1571: the give-up net of an Enter held because the shell was not ready. The readiness events
@@ -326,6 +331,7 @@ impl Input {
             awaits_pty: false,
             route_cap_armed: false,
             held_unready: false,
+            held_for_dialog: false,
         });
     }
 
@@ -359,6 +365,7 @@ impl Input {
         };
         if let Some(gate) = self.enter_gate.as_mut() {
             gate.held_unready = true;
+            gate.held_for_dialog = false;
             gate.submitted = false;
             gate.awaits_pty = false;
         }
@@ -426,6 +433,110 @@ impl Input {
     /// An Enter held because the shell was not ready gates the queue (#1571).
     pub(crate) fn unready_enter_gate_open(&self) -> bool {
         self.enter_gate.is_some_and(|gate| gate.held_unready)
+    }
+
+    /// #1652: an Enter that asked the multi-line submit dialog gates the queue until the answer.
+    pub(crate) fn multiline_dialog_gate_open(&self) -> bool {
+        self.enter_gate.is_some_and(|gate| gate.held_for_dialog)
+    }
+
+    /// #1652: the Enter asked the multi-line submit dialog (the workspace showed it). Its gate holds
+    /// everything typed after it, in typed order, until the answer: the gate of an Enter held for
+    /// an unready shell in all but its ending (the same key flag, so the editor holds its editing
+    /// keys as keys of the NEXT line and an Enter as an entry of its own, never a submit of the
+    /// waiting buffer). A deferred Enter's open gate (verdict / completion) is turned into this one
+    /// in place, so the typeahead already behind it stays behind it. No timer: the dialog is on
+    /// screen and only its answer ends the gate (or ^C, which voids the Enter).
+    pub(super) fn gate_enter_for_multiline_dialog(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.multiline_dialog_gate_open() {
+            return;
+        }
+        self.next_verdict_wait_id = self.next_verdict_wait_id.wrapping_add(1);
+        let flags = UNREADY_ENTER_KEY_FLAG | MULTILINE_DIALOG_KEY_FLAG;
+        let key = flags | (self.next_verdict_wait_id & !flags);
+        // No cap: a queue give-up would RELEASE the keys behind the waiting buffer.
+        let spec = GateSpec::new(GateKind::EnterVerdict, key).with_cap(None);
+        let gated = match self.enter_gate {
+            Some(gate) => self.retag_enter_gate(gate, spec, ctx),
+            None => {
+                self.open_enter_gate_with(spec, ctx);
+                true
+            }
+        };
+        if let Some(gate) = self.enter_gate.as_mut() {
+            gate.held_for_dialog = true;
+            gate.held_unready = false;
+            gate.submitted = false;
+            gate.awaits_pty = false;
+        }
+        let held_behind = self.enter_gate_held_len(ctx);
+        warpui::input_order::log_hop("enter_dialog_gate", || {
+            format!("gated={gated} held_behind={held_behind}")
+        });
+    }
+
+    /// #1652: the dialog was answered. The gate becomes that of an Enter that ran (`awaits_pty`:
+    /// the confirmed buffer was submitted as a shell command) or of one that did not (cancelled,
+    /// or a confirmed submit that wrote nothing): what waited behind it is released, in order, by the same route as the keys
+    /// typed after any Enter (`ReplayAfterDeferredEnter`, settled by the view): after a shell
+    /// command once the pty has taken it, to the pty or the editor as the hand-off decides; after
+    /// a cancel at once, to the editor, where a held Enter is a typed Enter after the keys before
+    /// it only. A submit that was refused for an unready shell turned the gate into that hold.
+    pub(super) fn release_multiline_dialog_gate(
+        &mut self,
+        awaits_pty: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(gate) = self.enter_gate.as_mut() else {
+            return;
+        };
+        if !gate.held_for_dialog {
+            return;
+        }
+        gate.held_for_dialog = false;
+        let held_behind = self.enter_gate_held_len(ctx);
+        warpui::input_order::log_hop("enter_dialog_answered", || {
+            format!("held_behind={held_behind} awaits_pty={awaits_pty}")
+        });
+        if self.finish_enter_gate_after_submit(awaits_pty, ctx) {
+            self.emit_replay_after_deferred_enter(ctx);
+        }
+    }
+
+    /// #1652: ^C met the Enter that waits for the dialog: the Enter is void and what was typed
+    /// behind it goes with it (the tty flushes typed-ahead input on INTR), as for an Enter held for
+    /// an unready shell. The dialog is closed. Returns whether a dialog gate was open.
+    pub(crate) fn cancel_multiline_dialog(
+        &mut self,
+        why: &'static str,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        let Some(gate) = self.enter_gate.filter(|gate| gate.held_for_dialog) else {
+            return false;
+        };
+        warpui::input_order::log_hop("enter_dialog_cancelled", || format!("by={why}"));
+        self.enter_gate = None;
+        let queue = self.enter_queue_handle(ctx);
+        match queue.try_lock_ordered() {
+            Some(mut guard) => {
+                let mut host = InputQueueHost::new(self, ctx);
+                let dropped = guard
+                    .close_gate_taking(&mut host, gate.kind, gate.key)
+                    .len();
+                if dropped > 0 {
+                    log::info!(
+                        "input queue: {dropped} entr(ies) typed behind an Enter waiting for the \
+                         multi-line dialog were dropped with it by ^C (#1652)"
+                    );
+                }
+            }
+            None => queue.defer(crate::terminal::input_queue::Deferred::VoidEnterGate {
+                kind: gate.kind,
+                key: gate.key,
+            }),
+        }
+        self.end_multiline_dialog_wait(ctx);
+        true
     }
 
     /// #1571: the held line has run. The gate is now that of an Enter that ran: the keys behind it
@@ -514,6 +625,15 @@ impl Input {
         };
         if gate.held_unready {
             self.give_up_unready_enter(why, ctx);
+            return;
+        }
+        if gate.held_for_dialog {
+            // #1652: the dialog is on screen and its answer ends this gate. A net that fires here
+            // (the verdict gate's, kept when its retag found the queue busy) must not hand the
+            // keys back into the buffer the dialog asks about.
+            log::warn!(
+                "input: an Enter gate net fired while the multi-line dialog waits ({why}); kept (#1652)"
+            );
             return;
         }
         let held_behind = self.enter_gate_held_len(ctx);
@@ -815,9 +935,10 @@ impl Input {
         awaits_pty: bool,
         ctx: &mut ViewContext<Self>,
     ) -> bool {
-        if self.unready_enter_gate_open() {
+        if self.unready_enter_gate_open() || self.multiline_dialog_gate_open() {
             // #1571: the Enter did not run (the shell was not ready): its gate waits for the
-            // readiness event, not for this submit's route.
+            // readiness event, not for this submit's route. #1652: the Enter asked the multi-line
+            // dialog: its gate waits for the answer.
             return false;
         }
         if self.enter_gate_held_len(ctx) == 0 {
@@ -877,6 +998,11 @@ impl Input {
         if self.unready_enter_gate_open() {
             // #1571: the held line goes with what was typed behind it.
             self.cancel_unready_enter("terminal_interrupt", ctx);
+            return;
+        }
+        if self.multiline_dialog_gate_open() {
+            // #1652: as for the unready line: the waiting Enter is void, with what followed it.
+            self.cancel_multiline_dialog("terminal_interrupt", ctx);
             return;
         }
         let queue = self.enter_queue_handle(ctx);

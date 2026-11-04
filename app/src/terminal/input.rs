@@ -2214,6 +2214,9 @@ pub struct Input {
     /// Where the view records the entries it routes after an Enter that waited, for tests.
     #[cfg(test)]
     replayed_sink_for_test: Option<Rc<std::cell::RefCell<Vec<AfterEnterInput>>>>,
+    /// Test-only: a window without a workspace shows no multi-line dialog; treat it as shown.
+    #[cfg(test)]
+    multiline_dialog_shown_for_test: bool,
     /// #1181: macOS activity assertion held while an Enter is deferred (App Nap and timer
     /// coalescing stranded the backstop timers on a late wake).
     deferred_enter_activity: DeferredEnterActivity,
@@ -3995,6 +3998,8 @@ impl Input {
             stashed_gate: None,
             #[cfg(test)]
             replayed_sink_for_test: None,
+            #[cfg(test)]
+            multiline_dialog_shown_for_test: false,
             deferred_enter_activity: DeferredEnterActivity::default(),
             handoff_enter_started: None,
             running_deferred_enter: false,
@@ -6957,53 +6962,44 @@ impl Input {
         !wrapped
     }
 
-    /// The user chose to run the waiting multi-line buffer line by line. The keys typed while the
-    /// dialog was open go to the editor after the run is queued, so they land in the next line
-    /// (#1652).
+    /// The user chose to run the waiting multi-line buffer line by line. The submit is the waiting
+    /// Enter's own (it is not queued behind its own gate); what was typed while the dialog was
+    /// open then follows it like the keys typed after any submitted Enter (#1652).
     pub(crate) fn confirm_multiline_submit(&mut self, ctx: &mut ViewContext<Self>) {
-        // Closed before the submit, so nothing the submit does to the editor is held.
-        let held = self.editor.as_ref(ctx).paste_hold().end_modal_hold();
         if !std::mem::take(&mut self.awaiting_multiline_submit_confirmation) {
-            self.deliver_multiline_dialog_held_keys(held, ctx);
             return;
         }
         self.multiline_submit_confirmed = true;
-        self.input_enter_as_shell_command(ctx);
+        let was_deferred = std::mem::replace(&mut self.running_deferred_enter, true);
+        let submitted = self.input_enter_as_shell_command(ctx);
+        self.running_deferred_enter = was_deferred;
         self.multiline_submit_confirmed = false;
-        self.deliver_multiline_dialog_held_keys(held, ctx);
+        self.release_multiline_dialog_gate(submitted, ctx);
     }
 
-    /// The user declined: the text stays in the input exactly as it was, and the keys typed while
-    /// the dialog was open follow it in typed order (#1652).
+    /// The user declined: the text stays in the input exactly as it was, and what was typed while
+    /// the dialog was open is released to it in typed order, an Enter among it acting as a typed
+    /// Enter after the keys before it (#1652).
     pub(crate) fn cancel_multiline_submit(&mut self, ctx: &mut ViewContext<Self>) {
         self.awaiting_multiline_submit_confirmation = false;
-        let held = self.editor.as_ref(ctx).paste_hold().end_modal_hold();
         ctx.focus(&self.editor);
-        self.deliver_multiline_dialog_held_keys(held, ctx);
+        self.release_multiline_dialog_gate(false, ctx);
     }
 
-    /// #1652: the keys held while the multi-line submit dialog was open, to the editor, in typed
-    /// order, exactly once. Event-driven: only the dialog's answer calls this.
-    fn deliver_multiline_dialog_held_keys(
-        &mut self,
-        held: Vec<crate::editor::HeldPasteKey>,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        if held.is_empty() {
-            return;
-        }
-        self.editor.update(ctx, |editor, ctx| {
-            editor.deliver_modal_held_keys(held, ctx);
+    /// #1652: the Enter that waited for the dialog was voided (^C): nothing waits for an answer
+    /// any more and the dialog is closed.
+    pub(super) fn end_multiline_dialog_wait(&mut self, ctx: &mut ViewContext<Self>) {
+        self.awaiting_multiline_submit_confirmation = false;
+        let input = ctx.handle();
+        ctx.dispatch_typed_action(&WorkspaceAction::DismissMultilineSubmitConfirmationDialog {
+            input,
         });
     }
 
-    /// #1652: the hold the multi-line submit dialog's key sink pushes the keys it takes into (the
-    /// same one the editor holds into, so the order is one order).
-    pub(crate) fn multiline_dialog_key_hold(
-        &self,
-        ctx: &AppContext,
-    ) -> Rc<crate::editor::EditorPasteHold> {
-        self.editor.as_ref(ctx).paste_hold()
+    /// Test-only: whether the multi-line dialog counts as shown (a test window has no workspace).
+    #[cfg(test)]
+    pub(crate) fn set_multiline_dialog_shown_for_test(&mut self, shown: bool) {
+        self.multiline_dialog_shown_for_test = shown;
     }
 
     pub fn try_execute_command(&mut self, command: &str, ctx: &mut ViewContext<Self>) -> bool {
@@ -10943,6 +10939,8 @@ impl Input {
             EditorEvent::CtrlC { cleared_buffer_len } => {
                 // #1571: ^C voids an Enter held for an unready shell (never run later).
                 self.cancel_unready_enter("editor_interrupt", ctx);
+                // #1652: and one waiting for the multi-line dialog (the dialog closes).
+                self.cancel_multiline_dialog("editor_interrupt", ctx);
                 self.close_input_suggestions(/*should_focus_input=*/ true, ctx);
 
                 self.ai_input_model.update(ctx, |ai_input_model, ctx| {
@@ -13774,6 +13772,20 @@ impl Input {
         // #1571: an Enter is held because the shell was not ready, and the buffer still shows its
         // line: this Enter belongs to the line typed AFTER it. It never submits the buffer (that
         // ran `ssh fakeecho ...`); it queues behind the held one, in order.
+        // #1652: an Enter waits for the multi-line dialog's answer: this one (typed into the editor
+        // while the dialog is open) neither answers it nor submits the waiting buffer; it queues
+        // behind it, in order, and acts after the answer.
+        if !self.running_deferred_enter && self.multiline_dialog_gate_open() {
+            if self.queue_behind_enter(AfterEnterInput::Enter, ctx) {
+                warpui::input_order::log_hop("enter_queued_behind_dialog", String::new);
+            } else {
+                log::error!(
+                    "input queue: an Enter met the multi-line dialog's gate but could not queue \
+                     behind it; not submitted (#1652)"
+                );
+            }
+            return;
+        }
         if !self.running_deferred_enter && self.unready_enter_gate_open() {
             if self.queue_behind_enter(AfterEnterInput::Enter, ctx) {
                 warpui::input_order::log_hop("enter_queued_behind_held", String::new);
@@ -14141,16 +14153,31 @@ impl Input {
                 && self.multiline_submit_needs_confirmation(&command, ctx)
             {
                 // Nothing is written and the text stays in the editor until the user answers.
-                self.awaiting_multiline_submit_confirmation = true;
-                // #1652: keys typed while the dialog is open are held, then delivered after the
-                // answer (`deliver_multiline_dialog_held_keys`).
-                self.editor.as_ref(ctx).paste_hold().begin_modal_hold();
+                // #1652: the workspace says whether it showed the dialog for this input (it
+                // refuses a second while one is open); only then does this Enter wait for the
+                // answer, holding everything typed after it behind its gate.
+                let shown = Arc::new(AtomicBool::new(false));
+                let input = ctx.handle();
                 ctx.dispatch_typed_action(
                     &WorkspaceAction::ShowMultilineSubmitConfirmationDialog {
                         line_count: submitted_line_count(&command),
-                        input: ctx.handle(),
+                        input,
+                        shown: shown.clone(),
                     },
                 );
+                #[cfg(test)]
+                let shown_for_test = self.multiline_dialog_shown_for_test;
+                #[cfg(not(test))]
+                let shown_for_test = false;
+                if shown.load(Ordering::SeqCst) || shown_for_test {
+                    self.awaiting_multiline_submit_confirmation = true;
+                    self.gate_enter_for_multiline_dialog(ctx);
+                } else {
+                    log::warn!(
+                        "input: the multi-line submit dialog was not shown; nothing is run and the \
+                         text stays in the input (#1652)"
+                    );
+                }
                 return;
             }
             warpui::input_order::log_submit(&command);

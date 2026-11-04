@@ -2863,3 +2863,27 @@ else is editor text, in order. `~~` stays editor text (ssh makes the one `~` of 
 is sent); `~^Z` is not passed (Ctrl-Z is an editor binding). A line locked to the agent, a local
 session and a mid-line `~` are unchanged. The appci `ssh_drop_reconnect` escape arm runs by default.
 <!-- markers: sym:ssh_prompt_has_arrived sym:discard_ssh_typeahead_on_prompt sym:discard_held_ssh_typeahead_for_prompt sym:ssh_prompt_is_unmanaged_shell_prompt sym:output_tail_is_shell_prompt sym:StaleBeforePrompt keep:ssh_on_tty_owned keep:tty_is_reading_secret keep:ssh_escape_typed_at_line_start keep:ssh_on_wrapper_verdict keep:ssh_wrapper_secret_pass_through -->
+
+## Keys typed while the multi-line submit dialog is open wait behind its Enter — DECIDED 2026-11-04 (#1652)
+
+The "Run N lines one at a time?" dialog takes focus. Owner decision: hold, deliver after. The Enter
+that asked is a GATE on the pane queue (`Input::gate_enter_for_multiline_dialog`, an `EnterVerdict`
+gate keyed with `UNREADY_ENTER_KEY_FLAG | MULTILINE_DIALOG_KEY_FLAG`, no cap), the gate of an Enter
+held for an unready shell (#1571) in all but its ending. Everything typed after it waits there in
+typed order: keys pressed on the dialog are handed to the asking input's editor (typed text as typed
+text, a key down dispatched on the editor's responder chain, so its own bindings decide), keys typed
+in the editor queue the same way, and an Enter is an entry, never an answer or a submit of the
+waiting buffer. Only the answer ends the gate: Confirm runs the buffer as the Enter's own submit and
+then releases the gate exactly as after any submitted Enter (the view's after-Enter route, the
+hand-off decides pty or editor); Cancel releases it to the editor at once, where a held Enter acts
+after the keys before it only. Decided with it, do not reopen without the owner:
+- **The dialog's own Enter and Escape answer it** while it has focus, even after typed text (F7, by
+  design).
+- **^C voids the waiting Enter** and drops what was typed behind it, as a tty flushes typeahead on
+  INTR; the dialog closes unanswered (`Input::cancel_multiline_dialog`).
+- **A second ask while the dialog is open is refused** (`Workspace::show_multiline_submit_confirmation_dialog`
+  returns false): the first input keeps its question; the second's Enter runs nothing and holds
+  nothing, its text stays.
+- **The answer goes to the asking input only**; if it is gone, to nobody (never the focused one).
+- **No timer.** The dialog is on screen; the gate has no queue cap, and a stray net on it is ignored.
+<!-- markers: keep:gate_enter_for_multiline_dialog keep:release_multiline_dialog_gate keep:cancel_multiline_dialog keep:MULTILINE_DIALOG_KEY_FLAG keep:take_answer_target -->
