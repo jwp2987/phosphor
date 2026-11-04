@@ -1401,13 +1401,17 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
               command ssh "${warp_ipqos_args[@]}" -o ControlMaster=yes -o ControlPath="$control_path" -o ControlPersist=10 -o ClearAllForwardings=yes -N -f "${@:1}"
               local warp_master_rc=$?
               if [[ $warp_master_rc -ne 0 ]]; then
-                  # #1551: the master (-N, authenticate-only) failed, so no remote command ever ran
-                  # and a plain ssh cannot double-execute. A Ctrl-C (rc > 128, not ssh's own 255) is respected.
-                  if [[ $warp_master_rc -gt 128 && $warp_master_rc -ne 255 ]]; then
-                      return $warp_master_rc
+                  # #1626: plain ssh asks for credentials ONCE. The master step was the user's one
+                  # attempt (ssh already printed why it failed, or the user pressed Ctrl-C), so its
+                  # status is returned. #1551: ssh creates the ControlPath socket only AFTER
+                  # authenticating and the path was verified empty above, so something there means
+                  # only multiplexing failed (e.g. "Failed to connect to new control master"): then
+                  # the user's plain ssh runs. -N: no remote command ever ran, none runs twice.
+                  if [[ -e "${control_path/#\~/$HOME}" || -L "${control_path/#\~/$HOME}" ]]; then
+                      command ssh "${@:1}"
+                      return
                   fi
-                  command ssh "${@:1}"
-                  return
+                  return $warp_master_rc
               fi
               # Own it only if a master really answers there. #1172: the socket we just waited for IS the proof: the
               # path was verified empty above, so a socket there can only be this master's, and `-f` returns only after

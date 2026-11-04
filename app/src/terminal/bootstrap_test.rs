@@ -1533,12 +1533,27 @@ fn ssh_wrapper_decides_after_connecting_over_one_master() {
             pre: "",
             exit_fails: false,
         },
-        // #1551: the master step failed (ssh already printed why; -N, so no remote command ever
-        // ran). The user's own plain ssh runs instead -- once, with exactly the user's arguments
-        // -- and its status is the helper's status. Nothing else (no probe, no -O exit) runs.
+        // #1626: authentication failed (ssh already printed why). Plain ssh asks for credentials
+        // once per invocation, so ssh's status comes back and NOTHING else runs: no second ssh
+        // whose password prompt would eat the user's next command. (#1551 expected a plain-ssh
+        // retry here; that was the #1626 defect.)
         Case {
             name: "auth-failure",
             master: "fail255",
+            probe: "",
+            session: "none",
+            status: 255,
+            extra: &[],
+            pre: "",
+            exit_fails: false,
+        },
+        // #1551: ssh authenticated (its ControlPath socket exists) but cannot multiplex ("Failed to
+        // connect to new control master", 255). The user's own plain ssh runs instead -- once,
+        // with exactly the user's arguments -- and its status is the helper's status. Nothing
+        // else (no probe, no -O exit) runs.
+        Case {
+            name: "mux-failure",
+            master: "muxfail255",
             probe: "",
             session: "fallback",
             status: 0,
@@ -1768,7 +1783,8 @@ case " $* " in
   *" -O exit "*) test -n "$EXIT_FAILS" && exit 255; python3 "$MUX" exit "$p"; exit $?;;
   *" -N "*)
     case "$MASTER" in
-      fail255) echo "ssh: connect to host failed" >&2; exit 255;;
+      fail255) echo "user@host: Permission denied (publickey,password)." >&2; exit 255;;
+      muxfail255) python3 "$MUX" serve "$p"; echo "Failed to connect to new control master" >&2; exit 255;;
       fail130) exit 130;;
     esac
     python3 "$MUX" serve "$p"

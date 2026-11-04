@@ -966,13 +966,17 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
             command ssh $warp_ipqos_args -o ControlMaster=yes -o ControlPath="$control_path" -o ControlPersist=10 -o ClearAllForwardings=yes -N -f $argv
             set -l warp_master_rc $status
             if test $warp_master_rc -ne 0
-                # #1551: the master (-N, authenticate-only) failed, so no remote command ever ran and a
-                # plain ssh cannot double-execute. A Ctrl-C (rc > 128, not ssh's own 255) is respected.
-                if test $warp_master_rc -gt 128; and test $warp_master_rc -ne 255
-                    return $warp_master_rc
+                # #1626: plain ssh asks for credentials ONCE. The master step was the user's one
+                # attempt (ssh already printed why it failed, or the user pressed Ctrl-C), so its
+                # status is returned. #1551: ssh creates the ControlPath socket only AFTER
+                # authenticating and the path was verified empty above, so something there means
+                # only multiplexing failed (e.g. "Failed to connect to new control master"): then
+                # the user's plain ssh runs. -N: no remote command ever ran, none runs twice.
+                if test -e "$warp_socket_file"; or test -L "$warp_socket_file"
+                    command ssh $argv
+                    return
                 end
-                command ssh $argv
-                return
+                return $warp_master_rc
             end
             # Own it only if a master really answers there. #1172: the socket we just waited for IS the proof: the
             # path was verified empty above, so a socket there can only be this master's, and `-f` returns only
