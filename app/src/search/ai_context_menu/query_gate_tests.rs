@@ -93,3 +93,41 @@ fn give_up_unsticks_missing_results_signal() {
     assert!(gate.give_up(id));
     assert!(!gate.is_stale(), "later Enters must not be blocked forever");
 }
+
+/// #1633: the editor re-reports an unchanged filter (an edit's event handled after the Enter that
+/// followed it). That is not typing: the waiting Enter survives and fires once the results come.
+#[test]
+fn the_same_query_again_keeps_the_waiting_enter() {
+    let mut gate = QueryGate::default();
+    gate.request("fo".into());
+    gate.defer_select();
+    gate.request("fo".into());
+    assert!(gate.select_waiting(), "the waiting Enter was cancelled");
+    gate.applied("fo", true);
+    gate.results_reported();
+    assert!(gate.take_ready_select(false));
+}
+
+/// An unchanged filter re-reported after its results arrived does not make them stale: an Enter
+/// then acts at once instead of waiting for a debounce that brings nothing new.
+#[test]
+fn the_same_query_again_after_its_results_is_not_stale() {
+    let mut gate = QueryGate::default();
+    gate.request("fo".into());
+    gate.applied("fo", true);
+    gate.results_reported();
+    gate.request("fo".into());
+    assert!(!gate.is_stale());
+}
+
+/// After a reset (the menu closed) the same text is a new query again.
+#[test]
+fn a_reset_forgets_the_latest_query() {
+    let mut gate = QueryGate::default();
+    gate.request("fo".into());
+    gate.applied("fo", true);
+    gate.results_reported();
+    gate.reset();
+    gate.request("fo".into());
+    assert!(gate.is_stale());
+}
