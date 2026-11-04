@@ -240,6 +240,9 @@ impl ActionSearcher for FuzzyActionSearcher {
     }
 }
 
+// The schema macro generates a config and doc type this unused searcher is the only user of
+// (#1467); attributes cannot go inside the macro call.
+#[allow(dead_code)]
 mod full_text_searcher {
     use crate::define_search_schema;
     use crate::search::action::{
@@ -258,9 +261,7 @@ mod full_text_searcher {
 
     define_search_schema!(
         schema_name: ACTION_SEARCH_SCHEMA,
-        #[allow(dead_code)] // used by sibling unused code or shared name
         config_name: ActionSearchConfig,
-        #[allow(dead_code)] // used by sibling unused code or shared name
         search_doc: ActionDocument,
         identifying_doc: ActionIdDocument,
         search_fields: [action: 1.0],
