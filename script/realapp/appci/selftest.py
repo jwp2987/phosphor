@@ -382,6 +382,26 @@ def enter_split_attributes_every_hop():
     sp = cases.enter_split_summary([dict(t0=1793758441.0, post=None, lf=cases._epoch_s(1793758441030000.0), px=None, stamp=1793758441.0335)])
     assert round(sp["t0_to_lf_ms"], 2) == 30.0 and round(sp["lf_to_stamp_ms"], 2) == 3.5 and "post_to_lf_ms" not in sp, sp
     assert cases._epoch_s(1793758441853045.0) == 1793758441.853045 and cases._epoch_s(1793758441.85) == 1793758441.85 and cases._epoch_s(None) is None
+    # the split stamp line is opt-in (APPCI_ENTER_SPLIT=1); the default line is the old one, byte for byte
+    gb = types.SimpleNamespace(pane="gitbash", be=types.SimpleNamespace(name="windows"))
+    saved = os.environ.pop("APPCI_ENTER_SPLIT", None)
+    try:
+        assert cases.stamp_line(gb) == "date +%%s.%%N > lat_%d", cases.stamp_line(gb)
+        os.environ["APPCI_ENTER_SPLIT"] = "1"
+        line = cases.stamp_line(gb)
+        assert line == "date +%%s.%%N > lat_%d;echo $__pa_lf>>lat_%d" and line % ((3,) * line.count("%d")) == "date +%s.%N > lat_3;echo $__pa_lf>>lat_3", line
+    finally:
+        os.environ.pop("APPCI_ENTER_SPLIT", None)
+        if saved is not None:
+            os.environ["APPCI_ENTER_SPLIT"] = saved
+    d = tempfile.mkdtemp()
+    try:
+        f = os.path.join(d, "lat_0")
+        assert cases._read_fields(f) == []
+        open(f, "w").write("1793758441.853 \x00\n1793758441850000\n")
+        assert cases._read_fields(f) == ["1793758441.853", "1793758441850000"]
+    finally:
+        shutil.rmtree(d)
     # `${__pa_px:-0}`: a hook that never ran prints 0, which is "no value", never a time
     assert cases._float_or_none(["1.5", "0", "x"], 1) is None and cases._float_or_none(["1.5", "0", "x"], 2) is None
     assert cases._float_or_none(["1.5", "2.25"], 1) == 2.25 and cases._float_or_none(["1.5"], 1) is None

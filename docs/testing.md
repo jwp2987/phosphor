@@ -180,7 +180,7 @@ pin protocol behaviour. Skips are reported as SKIPPED, never silent. A Skip rais
 
 | script | checks |
 |---|---|
-| `test_bash_bootstrap_nounset`, `test_zsh_bootstrap_strict_options` | hooks survive `set -u` / `err_return` / failing user precmd (#825, #836, #844) |
+| `test_bash_bootstrap_nounset`, `test_zsh_bootstrap_strict_options` | hooks survive `set -u` / `err_return` / failing user precmd (#825, #836, #844); a detached HEAD under strict options reports git's hash every prompt (#1616) |
 | `test_fish_bootstrap` | fish hooks fire end to end in a pty (#829, #879) |
 | `test_bootstrap_hook_equivalence` (bash/zsh/fish), `test_nu_bootstrap_hook_equivalence`, `test_pwsh_hook_equivalence` (+ `testdata/pwsh_hooks_golden.json`) | fork-free hook helpers emit byte-identical DCS payloads to the old forking code (#1170, #1233, #1231); a detached HEAD runs git once per directory and HEAD commit, a moved HEAD is seen at the next prompt, `PHOSPHOR_GIT_HEAD_CACHE=0` restores git per prompt (#1616) |
 | `test_bash_bootstrap_builtins` | fork-free `sort -V`/os-release/`shopt` replacements match the commands (#1164) |
@@ -651,13 +651,16 @@ budget, previous build, baseline, verdict, n).
 - **Burst reference (Windows, #1583 W1).** After the per-key reference samples, `latency_enter` measures the conhost reference again with the stamp
   line delivered as one 0 ms burst then Enter (`reference_burst_enter_to_start_ms`, `reference_burst_minus_per_key_ms`). A burst median more than 5 ms above the
   per-key one is noted as "the gap is shell ingestion of a burst" (Phosphor also writes the line in one pty write). It does not change the verdict.
-- **Shell-side split for bash/zsh panes (#1492).** The appci bash rc sets `PS0` to record, with no fork, when readline accepted the line
-  (`$__pa_lf`, integer microseconds, bash >= 5.0; the zsh rc already records zle-line-finish). In a Git Bash pane, or a Linux pane identified as
-  bash/zsh, the stamp line becomes `date +%s.%N > lat_N;echo $__pa_lf>>lat_N` (`date` still runs first), and `metrics.enter_split_ms` gains
-  `t0_to_lf_ms` (harness Return to line accepted: delivery, terminal, pty write, line ingest) and `lf_to_stamp_ms` (line accepted to the stamp:
-  the preexec hooks and the `date` start) for Phosphor, the reference, and their `delta`. That decides whether the Windows Git Bash gap is the
-  burst ingest or Phosphor's hooks. `metrics.stamp_line` records the line used; `APPCI_ENTER_SPLIT=0` restores the old, 23-character-shorter
-  line (compare builds across this change with that in mind).
+- **Shell-side split for bash/zsh panes (#1492), opt-in.** The appci bash rc appends to `PS0` (`PS0+=`, so a system PS0 is kept) a
+  no-fork record of when readline accepted the line (`$__pa_lf`, integer microseconds, bash >= 5.0; the zsh rc already records
+  zle-line-finish). With `APPCI_ENTER_SPLIT=1`, in a Git Bash pane or a Linux pane identified as bash/zsh, the stamp line becomes
+  `date +%s.%N > lat_N;echo $__pa_lf>>lat_N`, and `metrics.enter_split_ms` gains `t0_to_lf_ms` (harness Return to line accepted: delivery,
+  terminal, pty write, line ingest) and `lf_to_stamp_ms` (line accepted to the stamp: the preexec hooks and the `date` start) for Phosphor,
+  the reference, and their `delta`; it decides whether the Windows Git Bash gap is burst ingest or Phosphor's hooks. It is OFF by default
+  because the line is 23 characters longer and Phosphor writes the whole line at Enter, so the extra ingest lands inside Phosphor's
+  Enter->start samples: split runs are not comparable with default runs or baselines. The two fields are separate writes, so each sample
+  waits up to 1 s for the second; samples without it keep their stamp and are counted in `metrics.lf_missing`. `metrics.stamp_line`
+  records the line used.
 - **Verdicts.** `PASS`, `FAIL`, `WARN`, or `NO-REFERENCE` when no reference could be measured the same way (never shown as pass).
   `latency_key_log` is `NO-REFERENCE` everywhere today: it reads the app's own `input_order` clock (keydown to first frame) and no
   reference terminal exposes a comparable one; absolute numbers and the old CI sanity bounds (p50 <= 20 ms, p99 <= 60 ms) still apply.

@@ -45,7 +45,9 @@ PROMPT_COMMAND="__pa_rec${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
 # before anything runs (the DEBUG trap, Phosphor's preexec, the command). The latency_enter stamp line prints it after its stamp, so
 # Enter -> command start splits into key delivery + line ingest (Phosphor writes the whole line at Enter; a plain terminal's shell already
 # has it) and the hooks + command, the same way in Phosphor and in the reference. Expands to nothing, no fork; needs bash >= 5.0.
-if [ -n "${EPOCHREALTIME:-}" ]; then PS0='${__pa_q[__pa_lf=${EPOCHREALTIME//[!0-9]/}]-}'; fi
+# PS0+= keeps whatever PS0 the system already set (systemd's OSC 3008 hook, say); [^0-9], not [!0-9]: in POSIX mode bash expands `!` in
+# prompt strings to the history number.
+if [ -n "${EPOCHREALTIME:-}" ]; then PS0+='${__pa_q[__pa_lf=${EPOCHREALTIME//[^0-9]/}]-}'; fi
 if [ -n "$APPCI_W" ]; then cd "$APPCI_W"; elif [ "$PWD" = "$HOME" ]; then cd "$HOME/w" 2>/dev/null; fi
 true
 '''

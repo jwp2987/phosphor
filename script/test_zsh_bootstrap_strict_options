@@ -39,6 +39,7 @@ import re
 import select
 import shlex
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -323,6 +324,39 @@ def scenario_clear_hook_arrays_at_prompt():
         sh.close()
 
 
+def scenario_detached_head_strict():
+    """#1616: the detached-HEAD branch of __warp_git_head_fast (git once, then the cached answer) under the strictest user options:
+    every prompt still ends in Precmd with git's own abbreviated hash and no unbound/parameter-not-set noise."""
+    git = shutil.which("git")
+    print("setopt errexit err_return warn_create_global nounset ksh_arrays + a detached HEAD (#1616)")
+    if not git:
+        print("  SKIPPED: no git")
+        return
+    sh = Shell("setopt errexit err_return warn_create_global nounset ksh_arrays")
+    try:
+        repo = os.path.join(sh.home, "det")
+        genv = {**os.environ, "GIT_AUTHOR_NAME": "a", "GIT_AUTHOR_EMAIL": "a@b", "GIT_COMMITTER_NAME": "a", "GIT_COMMITTER_EMAIL": "a@b",
+                "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
+        for k in ("GIT_DIR", "GIT_WORK_TREE", "GIT_CEILING_DIRECTORIES", "GIT_NAMESPACE", "GIT_COMMON_DIR"):
+            genv.pop(k, None)
+        subprocess.run([git, "init", "-q", "-b", "main", repo], check=True, env=genv)
+        subprocess.run([git, "-C", repo, "commit", "-q", "--allow-empty", "-m", "i"], check=True, env=genv)
+        subprocess.run([git, "-C", repo, "checkout", "-q", "--detach"], check=True, env=genv)
+        want = subprocess.run([git, "-C", repo, "rev-parse", "--short", "HEAD"], check=True, env=genv, capture_output=True,
+                              text=True).stdout.strip()
+        check(sh.bootstrap(), "bootstraps", sh)
+        check_cycle(sh, "cd " + shlex.quote(repo), 0)
+        for i in range(2):
+            got = sh.cycle("true") or []
+            pre = [v for n, v in got if n == "Precmd"]
+            head = pre[-1].get("git_head") if pre else None
+            check(head == want and pre[-1].get("git_branch") == "", "prompt %d reports the detached head %r (got %r)" % (i, want, head), sh)
+        check(not sh.dead, "the shell is still alive", sh)
+        check(NOISE_RE.search(sh.text()) is None, "no 'parameter not set' / unbound noise is printed", sh)
+    finally:
+        sh.close()
+
+
 def scenario_err_exit():
     print("setopt err_exit in .zshrc")
     sh = Shell("setopt err_exit")
@@ -475,6 +509,7 @@ def main():
     scenario("precmd_functions=() in .zshrc (#926)", "precmd_functions=()")
     scenario_clear_hook_arrays_at_prompt()
     scenario_err_exit()
+    scenario_detached_head_strict()
     scenario_errexit_repair_agent_rc()
     scenario_hostile_home()
     scenario_print_exit_value_and_user_preexec_output()

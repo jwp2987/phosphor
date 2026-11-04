@@ -2705,11 +2705,13 @@ def stamp_line(ctx):
             # #1606: the rc's preexec / zle-line-finish times follow the stamp (enter_to_start reads the first field as the stamp)
             return "zmodload zsh/datetime; print -r -- $EPOCHREALTIME ${__pa_px:-0} ${__pa_lf:-0} > lat_%d"
         return "perl -MTime::HiRes=time -e 'printf \"%%.6f\\n\", time' > lat_%d"
-    # #1492: in a bash/zsh pane (Git Bash, or a Linux pane already identified by pane_shell) the rc's line-accepted time ($__pa_lf: bash PS0, in
-    # integer microseconds; zsh zle-line-finish, in seconds) follows the stamp; `date` still runs first, so the stamped interval is unchanged.
-    # APPCI_ENTER_SPLIT=0 keeps the old line (the line is 23 characters longer, which the shell ingests in Phosphor's one-write burst).
+    # #1492, OPT-IN (APPCI_ENTER_SPLIT=1): in a bash/zsh pane (Git Bash, or a Linux pane already identified by pane_shell) the rc's
+    # line-accepted time ($__pa_lf: bash PS0, in integer microseconds; zsh zle-line-finish, in seconds) is appended after the stamp. This is
+    # NOT free: the line is 23 characters longer, and Phosphor writes the whole line in one burst at Enter, so the shell's ingest of those
+    # characters falls INSIDE Phosphor's Enter -> start interval (the reference ingested them key by key before Enter). Samples taken with
+    # it are therefore not comparable with the default line or older baselines; the default stays the old line.
     sh = "bash" if ctx.pane == "gitbash" else lat.shell_base(getattr(ctx, "_pane_shell", None) or None)
-    if sh in ("bash", "zsh") and os.environ.get("APPCI_ENTER_SPLIT", "1") != "0":
+    if sh in ("bash", "zsh") and os.environ.get("APPCI_ENTER_SPLIT", "0") == "1":
         return "date +%%s.%%N > lat_%d;echo $__pa_lf>>lat_%d"
     return "date +%%s.%%N > lat_%d"
 
@@ -2734,8 +2736,13 @@ def enter_to_start(ctx, n, budget_s=None, key_delay_ms=12, stamp=None, d=None, s
         t0 = time.time()
         ctx.be.key("Return")
         ctx.until(lambda: os.path.exists(f) and os.path.getsize(f) > 5, 3, step=0.001)
+        if "__pa_lf>>" in stamp:
+            # #1492 split line: `date` and the `echo` append are separate writes (and Git Bash reaps `date` slowly), so wait briefly for the
+            # second field; a sample without it keeps its stamp and is counted (ctx.lf_missing -> metric lf_missing), never silently dropped
+            if not ctx.until(lambda: len(_read_fields(f)) >= 2, 1.0, step=0.002):
+                ctx.lf_missing = getattr(ctx, "lf_missing", 0) + 1
         try:
-            fields = open(f, errors="replace").read().replace("\x00", "").split()
+            fields = _read_fields(f)
             v = float(fields[0])
             ds.append(((v / 1000.0 if v > 1e11 else v) - t0) * 1000)       # PowerShell stamps UTC milliseconds
             if split is not None:
@@ -2751,6 +2758,14 @@ def enter_to_start(ctx, n, budget_s=None, key_delay_ms=12, stamp=None, d=None, s
             break
         time.sleep(0.2)
     return ds
+
+
+def _read_fields(f):
+    """whitespace-separated fields of a stamp file (NULs from a UTF-16 PowerShell write removed); [] when it cannot be read yet"""
+    try:
+        return open(f, errors="replace").read().replace("\x00", "").split()
+    except OSError:
+        return []
 
 
 def _float_or_none(fields, i):
@@ -2874,7 +2889,8 @@ def c_lat_enter(ctx, r):
     n, warm = ctx.count_lat(60), lat.warmup()      # 60: the SE of a 30-sample median difference (~2.3 ms) is larger than the 2 ms budget
     pane_sh = pane_shell_id(ctx)        # asked once, before the first sample (Linux/macOS), so the stamp line below is chosen for the right shell
     r.metric("pane_shell", pane_sh or "unknown")
-    r.metric("stamp_line", stamp_line(ctx))       # #1492: which stamp line ran (APPCI_ENTER_SPLIT), so a build-to-build change can be attributed
+    r.metric("stamp_line", stamp_line(ctx))       # #1492: which stamp line ran (APPCI_ENTER_SPLIT=1 opts into the split line)
+    ctx.lf_missing = 0
     r.metric("host_load", host_load())          # #1583 W4
     if ctx.win and ctx.pane == "gitbash":
         fk = gitbash_fork_ms()                   # #1583 G1
@@ -2995,6 +3011,8 @@ def c_lat_enter(ctx, r):
             r.note("NO-COMPARE: pane shell %s != reference shell %s; the overhead is not judged" % (pane_sh, ctx.ref_shell))
     else:
         r.note("no reference terminal available (need xterm+DISPLAY / foot / Terminal.app)%s" % (": " + ctx.ref_reason if getattr(ctx, "ref_reason", None) else ""))
+    if "__pa_lf>>" in stamp_line(ctx):
+        r.metric("lf_missing", getattr(ctx, "lf_missing", 0))     # #1492: split-line samples (both sides) whose line-accepted time never arrived
     record_enter_split(r, splits, segs)
     if ds:
         rec = lat.evaluate("%s/latency_enter/enter_to_start" % ctx.label, ds, rs, float(os.environ.get("APPCI_ENTER_BUDGET_MS", "2")), "overhead", plat(),
