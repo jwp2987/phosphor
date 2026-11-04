@@ -113,6 +113,7 @@ pub(crate) enum IconWithStatusVariant {
         /// ambient-purple background, see `warp_agent_circle_colors`) but is carried on the
         /// variant so cross-surface callers (`ui_components::agent_icon`) have a single
         /// consistent shape to construct regardless of which branch of the icon they render.
+        #[allow(dead_code)] // carried for callers; not read for CLI agents
         is_ambient: bool,
     },
 }
@@ -316,11 +317,8 @@ fn render_with_optional_status_badge(
 /// callers that pre-render their own avatar (e.g. the pill bar) can size it
 /// consistently with [`render_custom_avatar_with_status_badge`].
 pub(crate) const CIRCLE_RATIO: f32 = 0.76;
-const DEFAULT_BADGE_RATIO: f32 = 0.57;
-const DEFAULT_BADGE_ICON_RATIO: f32 = 0.34;
 
-/// Status-badge geometry override. Pass [`StatusBadgeStyle::DEFAULT`] for the
-/// standard look.
+/// Status-badge geometry override.
 #[derive(Clone, Copy)]
 pub(crate) struct StatusBadgeStyle {
     /// Cutout-ring diameter as a fraction of `total_size`.
@@ -332,30 +330,7 @@ pub(crate) struct StatusBadgeStyle {
 
 #[derive(Clone, Copy)]
 pub(crate) enum BadgeInnerShape {
-    Circle,
     RoundedSquare { radius_px: f32 },
-}
-
-impl StatusBadgeStyle {
-    pub(crate) const DEFAULT: Self = Self {
-        ring_ratio: DEFAULT_BADGE_RATIO,
-        icon_ratio: DEFAULT_BADGE_ICON_RATIO,
-        inner_shape: BadgeInnerShape::Circle,
-    };
-}
-
-/// Returns the brand-circle diameter for a given `total_size`. Callers that
-/// pre-render their own avatar (to pass into
-/// [`render_custom_avatar_with_status_badge`]) can size it to this so the
-/// badge's overhang matches the sizing-based variants above.
-///
-/// Currently unused: the only pre-rendering caller (the orchestration pill
-/// bar) sizes its disc to an absolute design value instead and cancels the
-/// default overhang, so it does not want this ratio. Kept as the accessor for
-/// the default geometry, which `corner_overlay_offset` below still derives
-/// from `CIRCLE_RATIO`.
-pub(crate) fn circle_size(total: f32) -> f32 {
-    total * CIRCLE_RATIO
 }
 
 /// Returns the diameter of the status badge's cutout ring, i.e. the badge's
@@ -396,7 +371,7 @@ fn corner_overlay_offset(total: f32, overlay_extra_overhang_ratio: f32) -> f32 {
 ///
 /// The overlay is anchored to the `total_size` box's bottom-right corner
 /// however big `avatar` is, so pass either an avatar sized to
-/// [`circle_size`]`(total_size)` (to match the overhang of the sizing-based
+/// `CIRCLE_RATIO * total_size` (to match the overhang of the sizing-based
 /// variants) or an element that already fills the `total_size` box and places
 /// its own artwork inside it.
 ///
@@ -441,7 +416,6 @@ pub(crate) fn render_custom_avatar_with_status_badge(
         .with_height(badge_icon_diameter)
         .finish();
     let inner_radius = match badge_style.inner_shape {
-        BadgeInnerShape::Circle => Radius::Percentage(50.),
         BadgeInnerShape::RoundedSquare { radius_px } => Radius::Pixels(radius_px),
     };
     let badge = Container::new(badge_icon)

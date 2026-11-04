@@ -1,3 +1,8 @@
+#[cfg(test)]
+use crate::ai::agent::ReceivedMessageInput;
+#[cfg(test)]
+use crate::ai::agent_events::AgentRunEvent;
+
 /// Zap's local build no longer fetches message bodies from the cloud mailbox or sends delivered receipts.
 /// This type is kept for its no-op-compatible call surface, to bridge the local harness.
 #[derive(Clone)]

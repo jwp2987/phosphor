@@ -15,7 +15,6 @@ use parking_lot::Mutex;
 use pathfinder_geometry::vector::{Vector2F, vec2f};
 
 use anyhow::Result;
-use core::f32;
 use instant::Instant;
 use rayon::prelude::*;
 use std::borrow::Cow;

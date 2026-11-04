@@ -25,6 +25,8 @@ use warpui::{AppContext, Entity, ModelContext, SingletonEntity, Tracked};
 use crate::workspaces::workspace::{BillingMetadata, WorkspaceMember, WorkspaceSettings};
 
 #[cfg(test)]
+use super::team::MembershipRole;
+#[cfg(test)]
 use super::workspace::WorkspaceMemberUsageInfo;
 
 #[derive(Debug)]

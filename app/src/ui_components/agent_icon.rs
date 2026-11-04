@@ -22,6 +22,8 @@ use warp_cli::agent::Harness;
 
 use crate::ai::agent::conversation::ConversationStatus;
 
+#[cfg(test)]
+use crate::ai::conversation_entry::AgentConversationEntry;
 use crate::terminal::CLIAgent;
 use crate::ui_components::icon_with_status::IconWithStatusVariant;
 
