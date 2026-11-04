@@ -1252,6 +1252,30 @@ pub enum Event {
     /// The Enter has now run; its gate on the pane queue holds the keys typed behind it until the
     /// pty route is settled (`TerminalView::settle_enter_queue`).
     ReplayAfterDeferredEnter,
+    /// #1638: `~` and one of ssh's escape characters were typed as the first two characters of an
+    /// empty line in a managed ssh session. The editor has been cleared; the view writes these
+    /// two bytes to the pty, where the local ssh client reads its escape, as plain ssh would.
+    SshEscapeToPty {
+        bytes: [u8; 2],
+    },
+}
+
+/// The escape characters ssh acts on after `~` (`ssh(1)`, ESCAPE CHARACTERS) that this editor
+/// passes through (#1638). `~~` is not among them: ssh turns it into a literal `~` for the
+/// remote, and the editor line `~~...` reaches ssh as typed when it is submitted, so ssh makes
+/// the same `~` of it there; writing `~~` at once would instead leave a `~` in the remote line
+/// that the editor does not show. `~^Z` is not either: Ctrl-Z is an editor key binding, not
+/// typed text.
+const SSH_ESCAPE_CHARS: [u8; 9] = [b'.', b'?', b'C', b'R', b'V', b'v', b'#', b'&', b'B'];
+
+/// #1638: `Some(b"~X")` when an edit turned `before` into exactly `~X`, `X` an ssh escape
+/// character, by inserting at the end of an empty line: `before` is empty (both keys in one
+/// edit) or the lone `~`.
+fn ssh_escape_bytes(before: &str, after: &str) -> Option<[u8; 2]> {
+    let &[b'~', escape] = after.as_bytes() else {
+        return None;
+    };
+    (matches!(before, "" | "~") && SSH_ESCAPE_CHARS.contains(&escape)).then_some([b'~', escape])
 }
 
 /// One piece of input the user typed after an Enter that is waiting for a classification verdict
@@ -6581,6 +6605,45 @@ impl Input {
         is_bootstrapped && (is_history_queryable || model.shared_session_status().is_executor())
     }
 
+    /// #1638: the two bytes of an ssh escape the user just typed at the start of an empty line of
+    /// a managed (warpified) ssh session, if that is what this edit is. A plain terminal sends
+    /// every key to ssh and ssh takes `~X` right after a newline; here the editor owns the line,
+    /// and an empty editor is exactly "nothing sent since the last newline" (a command is written
+    /// with its newline, Backspaces never reached the remote). Not for a line meant for the agent
+    /// (the input locked to AI: agent view, a running agent's steer, #851) or for a shared-session
+    /// viewer, whose keys are not the pty's.
+    ///
+    /// Decided only by the key that follows the `~` (no timer): while the `~` is alone it stays in
+    /// the editor, and `~` followed by anything else stays editor text, in order.
+    fn ssh_escape_typed_at_line_start(
+        &self,
+        edit_origin: &EditOrigin,
+        ctx: &AppContext,
+    ) -> Option<[u8; 2]> {
+        if *edit_origin != EditOrigin::UserTyped {
+            return None;
+        }
+        let editor = self.editor.as_ref(ctx);
+        // Cheap checks first: this runs on every typed key.
+        if editor.buffer_size(ctx).as_usize() != 2
+            || editor.get_last_action(ctx) != Some(PlainTextEditorViewAction::InsertChar)
+        {
+            return None;
+        }
+        let bytes = ssh_escape_bytes(editor.last_buffer_text(ctx), &editor.buffer_text(ctx))?;
+        let ai_input = self.ai_input_model.as_ref(ctx);
+        if ai_input.is_ai_input_enabled() && ai_input.is_input_type_locked() {
+            return None;
+        }
+        let is_managed_ssh = self
+            .active_session(ctx)
+            .is_some_and(|s| matches!(s.session_type(), SessionType::WarpifiedRemote { .. }));
+        if !is_managed_ssh || self.model.lock().shared_session_status().is_viewer() {
+            return None;
+        }
+        Some(bytes)
+    }
+
     /// Returns `true` if the active session is a bootstrapped warpified remote session that is
     /// registered with the Sessions model, which is enough to offer Tab completions even though
     /// [`Self::can_query_history`] is still false.
@@ -9902,6 +9965,18 @@ impl Input {
 
         match event {
             EditorEvent::Edited(edit_origin) => {
+                // #1638: `~X` at the start of an empty line of a managed ssh session is ssh's
+                // escape, not editor text. Decided by the second key, never by a timer: until it
+                // arrives the `~` stays in the editor.
+                if let Some(bytes) = self.ssh_escape_typed_at_line_start(edit_origin, ctx) {
+                    warpui::input_order::log_hop("ssh_escape_to_pty", || {
+                        format!("char={:?}", bytes[1] as char)
+                    });
+                    self.clear_buffer_and_reset_undo_stack(ctx);
+                    ctx.emit(Event::SshEscapeToPty { bytes });
+                    return;
+                }
+
                 // We should ideally be handling all `Edited` events, not just those that are
                 // marked EditOrigin. However, we receive the notification that the block has
                 // completed, in the same event we clear the input box per-command. Due to how

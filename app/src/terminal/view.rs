@@ -30558,6 +30558,11 @@ impl TerminalView {
             InputEvent::ReplayAfterDeferredEnter => {
                 self.replay_after_deferred_enter(ctx);
             }
+            InputEvent::SshEscapeToPty { bytes } => {
+                // #1638: the ssh client's escape, typed at the start of an empty line. Through
+                // the pane queue like any typed key, so it stays behind keys the queue holds.
+                self.write_user_bytes_to_pty(bytes.to_vec(), ctx);
+            }
             #[cfg(not(target_family = "wasm"))]
             InputEvent::OpenPluginInstructionsPane(agent, kind) => {
                 ctx.emit(Event::OpenPluginInstructionsPane(*agent, *kind));

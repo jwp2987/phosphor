@@ -1587,8 +1587,9 @@ Every item below is a harness change; none touches app code. Anything not listed
 - **`session_restore` / `crash_kill9_restore`**: the app's own bootstrap line (`command -p stty -echo; WARP_BOOTSTRAP_VAR=...`) that a restored zsh pane logs to rec.log is not a
   replayed user command (`Ctx.APP_BOOTSTRAP_RE`, excluded from `cmds_since` and the setup comparison). The restored-cwd mismatch (all tabs `~`) is NOT changed here. On the
   PowerShell pane (no prompt hook) the "a shell started" prompt-count check is replaced by a note (H10).
-- **`ssh_drop_reconnect`**: the `<Enter>~.` escape variant is UNVERIFIABLE (noref) until the owner decides whether a managed session's editor should pass the ssh escape through
-  (`APPCI_SSH_ESCAPE_THROUGH=1` runs it); the `kill -9 $$` variant runs.
+- **`ssh_drop_reconnect`**: since #1638 (owner, 2026-11-04) a managed session passes `~X` typed at the start of an empty line to ssh, so the `<Enter>~.` escape variant runs
+  by default, next to the `kill -9 $$` variant. `APPCI_SSH_ESCAPE_THROUGH=0` opts out (a build from before #1638): the escape arm is then UNVERIFIABLE (noref).
+  Unit tests: `input_test.rs` `test_ssh_escape_*` / `test_tilde_and_a_non_escape_key_*` (Legacy and Table; shell, autodetected-agent and locked-agent input).
 - **Logs**: `run.save_old_rotations` also saves every `<log>.old.N` (plain or .gz, redacted, decompressed) next to `phosphor.log` / `phosphor.<n>.log`; the `.in_session.N` chunks were
   already folded in.
 - **Injector accounting**: the macOS and Windows injector records carry `ref=True` for keys aimed at the reference terminal (as Linux did), so interleaved latency cases stop
