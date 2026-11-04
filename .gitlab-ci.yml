@@ -42,13 +42,8 @@ variables:
   GITHUB_OUTPUT: "$CI_PROJECT_DIR/.ci/github_output"
   GITHUB_PATH: "$CI_PROJECT_DIR/.ci/github_path"
   GITHUB_ENV: "$CI_PROJECT_DIR/.ci/github_env"
-  # #1613: mermaid_to_svg comes from our PRIVATE fork (winters-phosphor/mermaid-to-svg, deterministic layout).
-  # Cargo fetches git deps with the git CLI (.cargo/config.toml git-fetch-with-cli), so git's env config rewrites
-  # that one URL to carry the job token; the fork's job-token allowlist admits this project. Every runner
-  # (box, Mac, Windows) reads these. Nothing else is rewritten.
-  GIT_CONFIG_COUNT: "1"
-  GIT_CONFIG_KEY_0: "url.https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.com/winters-phosphor/mermaid-to-svg.git.insteadOf"
-  GIT_CONFIG_VALUE_0: "https://gitlab.com/winters-phosphor/mermaid-to-svg.git"
+  # #1613: mermaid_to_svg comes from our fork winters-phosphor/mermaid-to-svg, which is public, so
+  # cargo clones it without credentials (the job-token URL rewrite that the private fork needed is gone).
 
 .shim_github_env:
   before_script:
