@@ -480,7 +480,86 @@ fn unknown_head_with_paths_and_a_closing_please_goes_to_the_agent() {
     assert_eq!(decision.route, Route::Undecided, "{}", decision.rule);
 }
 
-/// #1344: `@(1,2,3)` / `@{a=1}` are PowerShell literals only in a PowerShell session; everywhere
+/// #1290 (owner, 2026-11-03: "an unknown word autodetected as shell" in agent mode): inside an
+/// agent conversation a lone word nothing on the session answers to -- not installed, no shell
+/// syntax, not a known command word or a path -- is a message to the agent, whether the session
+/// knows the word is absent or cannot say, at the keystroke and at Enter, in every shell family,
+/// in a fresh conversation (no agent block yet) and after an agent turn. The other direction
+/// holds on the same facts: an installed lone word and an explicit path are commands, and clear
+/// shell structure around an unknown head runs in the shell (#1560, owner decision).
+#[test]
+fn lone_unknown_word_in_a_conversation_goes_to_the_agent() {
+    fn route_for(case: &Case, at_enter: bool, follow_up: bool) -> routing::Decision {
+        let mut context = routing_context(case, at_enter);
+        context.is_agent_follow_up = follow_up;
+        routing::route(&snapshot(case, !at_enter), &context)
+    }
+    let shells = [Shell::Posix, Shell::Fish, Shell::PowerShell, Shell::Nu];
+    for line in ["XTOOLS", "frobxone", "zzqx", "my_tool2", "foo-bar"] {
+        for shell in shells {
+            for follow_up in [false, true] {
+                for at_enter in [false, true] {
+                    for head in [Head::Absent, Head::Unknown] {
+                        let case = Case::prose(line, "#1290")
+                            .in_conversation()
+                            .head(head)
+                            .shell(shell);
+                        let decision = route_for(&case, at_enter, follow_up);
+                        assert_eq!(
+                            decision.route,
+                            Route::Agent,
+                            "{} (follow-up {follow_up}, {}): {}",
+                            describe(&case),
+                            if at_enter { "Enter" } else { "keystroke" },
+                            decision.rule
+                        );
+                    }
+                    // Installed, the same word is a command.
+                    let case = Case::cmd(line, "#1290").in_conversation().shell(shell);
+                    let decision = route_for(&case, at_enter, follow_up);
+                    assert_eq!(
+                        decision.route,
+                        Route::Shell,
+                        "{} (follow-up {follow_up}, {}): {}",
+                        describe(&case),
+                        if at_enter { "Enter" } else { "keystroke" },
+                        decision.rule
+                    );
+                }
+            }
+        }
+    }
+    for (line, shells) in [
+        ("./xtools", &shells[..]),
+        ("XTOOLS --json --quiet", &shells[..2]),
+        ("XTOOLS > out.txt", &shells[..2]),
+        ("XTOOLS $HOME/x", &shells[..2]),
+    ] {
+        for &shell in shells {
+            for follow_up in [false, true] {
+                for at_enter in [false, true] {
+                    for head in [Head::Absent, Head::Unknown] {
+                        let case = Case::model(line, "#1290")
+                            .in_conversation()
+                            .head(head)
+                            .shell(shell);
+                        let decision = route_for(&case, at_enter, follow_up);
+                        assert_eq!(
+                            decision.route,
+                            Route::Shell,
+                            "{} (follow-up {follow_up}, {}): {}",
+                            describe(&case),
+                            if at_enter { "Enter" } else { "keystroke" },
+                            decision.rule
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// #1344:`@(1,2,3)` / `@{a=1}` are PowerShell literals only in a PowerShell session; everywhere
 /// else, and for the `@` context mention (`@agent please help`, `@file.rs explain this`), the
 /// line never takes the shell-syntax route. Checked against `route` directly: stage 1 replays the
 /// corpus against the pre-#1234 procedure, where a Shell-voting model decides mentions.

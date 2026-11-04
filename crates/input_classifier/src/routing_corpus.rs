@@ -795,6 +795,23 @@ pub(crate) const CASES: &[Case] = &[
     Case::cmd("deploy", "#935 (a user function)")
         .in_conversation()
         .v1_xfail("#1185: at a fast Enter no parse describes `deploy`, so it lacks evidence"),
+    // -- #1290: the ssh-matrix's unknown word (`XTOOLS`, a scripted-proxy trigger, no command
+    // anywhere) in agent mode. Alone it is a message to the agent whether the session knows it is
+    // absent or cannot say; installed, it is a command; outside a conversation the classifier
+    // decides, as for `frobxone`.
+    Case::prose("XTOOLS", "#1290")
+        .in_conversation()
+        .v1_xfail("#935: fast Enter has no prose evidence and keeps an inherited Shell"),
+    Case::prose("frobxone", "#1290 (the session cannot say)")
+        .in_conversation()
+        .head(Head::Unknown)
+        .v1_xfail("#935: fast Enter has no prose evidence and keeps an inherited Shell"),
+    Case::cmd("XTOOLS", "#1290 (installed: a command)").in_conversation(),
+    Case::model(
+        "XTOOLS",
+        "#1290 (outside a conversation the classifier decides)",
+    )
+    .head(Head::Absent),
     // -- #964: pronoun arguments to installed commands.
     Case::cmd("ls this that it", "#964"),
     Case::cmd("ls that is it", "#964"),
