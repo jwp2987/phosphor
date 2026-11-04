@@ -324,6 +324,17 @@ def c_ctrl_r(ctx, r):
     ctx.shot("ctrl_r_done")
 
 
+PALETTE_FRAME_RE = re.compile(r'frame \d+: updated=\[[^\]]*"CommandPaletteView"')
+
+
+def palette_rendered(text):
+    """True if an app-log excerpt has a frame that rendered CommandPaletteView; None if it has no `frame N: updated=[...]` line at all (a log level
+    without frame lines: no evidence either way); else False"""
+    if PALETTE_FRAME_RE.search(text):
+        return True
+    return False if re.search(r"frame \d+: updated=\[", text) else None
+
+
 @case("ui_palette", order=63)
 def c_palette(ctx, r):
     """command palette: opens (OCR 'Search for a command' when tesseract exists), a nonsense filter shows 'No results', filter 'split pane
@@ -345,14 +356,23 @@ def c_palette(ctx, r):
     # r18e9 (macOS): the caret overlays the first letter of the placeholder, so OCR read "earch for a command" and the exact-phrase check failed on a palette that WAS
     # open (shots/agent_palette_open.png). Match the placeholder's tail; the palette's own command rows are the second, independent proof it opened.
     cmd_names = ("split pane", "new tab", "new window", "open settings", "keybinding", "zoom", "reload")
+    # r18u13 (Mac agent pass): the palette WAS open (shots/agent_palette_open.png: placeholder, filter chips, Suggested rows) but the dim placeholder
+    # did not OCR and the unfiltered palette lists filter chips, not commands. Two more independent proofs: >= 3 of the palette's own filter chips
+    # (white text, OCRs well), and the app log: a frame that rendered `CommandPaletteView` after the reopen key (the view is drawn only while open).
+    chip_names = ("workflows", "prompts", "notebooks", "environment variables", "launch configurations", "conversations")
+    rendered = palette_rendered(ctx.log_since(ui_off))
     if t is not None:
         flat = " ".join(t.lower().split())
         shown = [n for n in cmd_names if n in flat]
-        opened = bool(re.search(r"\w{0,3}earch for a comm|for a command", flat)) or len(shown) >= 3
-        r.metric("palette_open_markers", dict(placeholder=bool(re.search(r"for a command", flat)), command_rows=shown))
-        r.check(opened, "palette did not open: neither 'Search for a command' (tail) nor >=3 command rows %s on screen (see shots/*palette_open.png)" % (list(cmd_names),))
+        chips = [n for n in chip_names if n in flat]
+        opened = bool(re.search(r"\w{0,3}earch for a comm|for a command", flat)) or len(shown) >= 3 or len(chips) >= 3 or rendered
+        r.metric("palette_open_markers", dict(placeholder=bool(re.search(r"for a command", flat)), command_rows=shown, filter_chips=chips, log_rendered=rendered))
+        r.check(opened, "palette did not open: neither 'Search for a command' (tail), >=3 command rows %s, >=3 filter chips %s on screen, nor a "
+                "CommandPaletteView frame in the app log (see shots/*palette_open.png)" % (list(cmd_names), list(chip_names)))
     else:
         shown = []
+        r.metric("palette_open_markers", dict(log_rendered=rendered))
+        r.check(rendered is not False, "palette did not open: no frame rendered CommandPaletteView after the palette key (app log)")
     ctx.be.type("zzqqxxnothing", 15)
     time.sleep(0.6)
     t2 = ctx.ocr("palette_noresults")
@@ -685,6 +705,16 @@ def c_settings(ctx, r):
              ("vtabs", "appearance.vertical_tabs", "enabled", ["false", "true"], 0.004)]
     try:
         for name, table, key, vals, thresh in steps:
+            if name == "theme":
+                # r18u13 (Mac): the owner's settings follow the system theme (`appearance.themes.system_theme = true`), and then `theme` is not the
+                # theme on screen (settings/theme.rs: the selected system themes are), so writing it changed nothing (diff 0.001 / 0.0 with Pillow;
+                # the hash-only run before Pillow "passed" on the caret). Following the system theme is switched off first and the screen allowed to
+                # settle, so the two writes below are judged on `theme` alone. The finally block restores the original file.
+                set_setting(ctx, "appearance.themes", "system_theme", "false")
+                time.sleep(2.5)
+                cur = T.get_key(open(p, encoding="utf-8", errors="replace").read(), table, key) or ""
+                if vals[0] in cur:                       # the first write must be a change from what is set now
+                    vals = list(reversed(vals))
             for i, v in enumerate(vals):
                 before = ctx.shot("set_%s_%d_before" % (name, i))
                 set_setting(ctx, table, key, v)

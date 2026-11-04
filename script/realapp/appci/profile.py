@@ -86,11 +86,17 @@ export PATH="$HOME/bin:$PATH"
 PS1='%%~%%# '
 HISTFILE=$HOME/.zsh_history; HISTSIZE=200000; SAVEHIST=200000
 __pa_n=0
+# r18u13 (Mac agent routing_table): a line the history drops (Phosphor's _warp_zshaddhistory returns 1 for the agent-command wrapper, #904;
+# hist_ignore_space for a space-led line) lingers in the history until the next line, then vanishes, and the NEXT line reuses its event
+# number. Keyed on $HISTCMD alone, that next line (`ls -la` right after an agent command) was never logged. __pa_pxh (preexec) sets
+# __pa_ran, so a line the shell ran is logged even when its number was reused; a precmd with neither (an empty Enter, ^C at the prompt) logs nothing.
+__pa_ran=
 __pa_rec() {
   local c; c=${history[$((HISTCMD-1))]};   # raw history text: `fc -l` prints a ZWJ / unprintable as the TEXT \\u200d (r18e4)
   [[ -n $c ]] || c=$(fc -ln -1 2>/dev/null)
   c=${c#"${c%%%%[![:space:]]*}"}; c=${c//$'\n'/\\n}
-  if [[ $HISTCMD != $__pa_n ]]; then __pa_n=$HISTCMD; print -r -- "C"$'\t'"$EPOCHREALTIME"$'\t'"$c" >> "$PA_CTL/rec.log"; fi
+  if [[ $HISTCMD != $__pa_n || -n $__pa_ran ]]; then __pa_n=$HISTCMD; print -r -- "C"$'\t'"$EPOCHREALTIME"$'\t'"$c" >> "$PA_CTL/rec.log"; fi
+  __pa_ran=
   print -r -- "P"$'\t'"$EPOCHREALTIME" >> "$PA_CTL/prompt.log"
 }
 precmd_functions+=(__pa_rec)
@@ -100,7 +106,7 @@ precmd_functions+=(__pa_rec)
 # its stamp, so Enter -> command start splits into ZLE ingest/accept, warp_preexec, and the title hook + the command, the same way in
 # Phosphor and in the reference terminal. Variables only, no I/O.
 __pa_px=; __pa_lf=
-__pa_pxh() { __pa_px=$EPOCHREALTIME }
+__pa_pxh() { __pa_px=$EPOCHREALTIME; __pa_ran=1 }
 preexec_functions+=(__pa_pxh)
 __pa_lfw() { __pa_lf=$EPOCHREALTIME }
 zle -N zle-line-finish __pa_lfw 2>/dev/null

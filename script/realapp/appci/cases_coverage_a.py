@@ -30,13 +30,15 @@ def exact_lines(r, label, exp, got):
     return ok
 
 
-def local_cmd_exact(ctx, r, label):
-    """one typed line to the LOCAL shell (10-25 ms/key, instant Enter): the exact line must be what rec.log / the effect file shows"""
+def local_cmd_exact(ctx, r, label, absolute=False):
+    """one typed line to the LOCAL shell (10-25 ms/key, instant Enter): the exact line must be what rec.log / the effect file shows.
+    absolute=True names the effect file by its absolute path: a restored pane starts in its SAVED cwd, not the work dir (r18u13 Mac crash_kill9_restore:
+    the shell received `echo TOK >> ca_local_ck_after.txt` exactly and wrote it into ck_dir_2, where the harness did not look)."""
     tok = ctx.tok(6).lower()
     f = "ca_local_%s.txt" % label
     ctx.rm(f)
     mark = ctx.cmd_mark()
-    line = ctx.append_cmd(ctx.pane_shell(), tok, f)
+    line = ctx.append_cmd(ctx.pane_shell(), tok, R.fwd(os.path.join(ctx.W, f)) if absolute else f)
     ctx.be.type(line, ctx.rng.randint(10, 25), enter=True)
     ctx.until(lambda: ctx.lines(f), 8)
     exact_lines(r, "%s: the local shell's effect file" % label, [tok], ctx.lines(f))
@@ -466,7 +468,7 @@ def c_crash_kill9(ctx, r):
             r.note("no prompt hook in this pane (PowerShell): `a shell started` rests on the window, the key proof and the exact typing below, not on a prompt count")
         else:
             r.check(newp >= 1, "no shell started after the crash (prompts +%d)" % newp)
-        local_cmd_exact(ctx, r, "ck_after")
+        local_cmd_exact(ctx, r, "ck_after", absolute=True)
     finally:
         R.fresh_app(ctx, r, "ck")
 
@@ -511,6 +513,6 @@ def c_crash_corrupt_db(ctx, r):
         aside = [p for db in dbs for p in glob.glob(db + ".corrupt-*")]
         r.check(bool(aside), "the garbage warp.sqlite was not moved aside (no warp.sqlite.corrupt-* next to %r)" % dbs)
         r.check(ctx.app.alive(), "the app died after the corrupt-database launch")
-        local_cmd_exact(ctx, r, "cd_after")
+        local_cmd_exact(ctx, r, "cd_after", absolute=True)
     finally:
         R.fresh_app(ctx, r, "cd")

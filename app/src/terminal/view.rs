@@ -10341,7 +10341,15 @@ impl TerminalView {
         conversation_id_to_stop: Option<AIConversationId>,
         ctx: &mut ViewContext<Self>,
     ) {
+        // r18u13: which way the ^C went, so a real-app run can tell "the stream was cancelled"
+        // from "the ^C reached the pty" without reading pixels. Route names only.
+        let log_route = |route: &'static str| {
+            warpui::input_order::log_hop("ctrl_c_route", || {
+                format!("route={route} long_running={is_long_running}")
+            });
+        };
         if is_agent_in_control_of_command {
+            log_route("agent_takeover");
             self.cli_subagent_controller.update(ctx, |controller, ctx| {
                 controller.switch_control_to_user(
                     // A live Ctrl-C keeps the conversation alive so it resumes once the
@@ -10356,21 +10364,26 @@ impl TerminalView {
             || self.ssh_gate_holds_interrupt()
         {
             // #1001: not while the remote bootstrap script is being fed (see the route's docs).
+            log_route("ssh_held");
             self.note_ssh_interrupt_held(ctx);
         } else if !is_long_running
             && self.ssh_bootstrap_interrupt_route() == Some(SshBootstrapInterruptRoute::Forward)
         {
             // #1001: a stuck remote bootstrap leaves no running block; the user's ^C must still
             // reach the remote shell instead of vanishing into the hidden input.
+            log_route("pty_ssh_bootstrap");
             self.user_write_ctrl_c_to_pty(ctx);
         } else if is_long_running {
             // A second Ctrl+C after Stop takeover should cancel both the command and conversation.
             if let Some(conversation_id) = conversation_id_to_stop {
+                log_route("stop_conversation_and_command");
                 self.stop_local_agent_conversation(conversation_id, ctx);
             } else if self.read_key_snapshot().agent_requested_command_in_flight {
                 // The agent's command may not have reached the shell yet (#850).
+                log_route("interrupt_agent_command");
                 self.interrupt_agent_command(ctx);
             } else {
+                log_route("pty");
                 self.user_write_ctrl_c_to_pty(ctx);
                 if FeatureFlag::TypeaheadHandoff.is_enabled() {
                     self.handle_typeahead_handoff_interrupt(ctx);
@@ -10454,12 +10467,17 @@ impl TerminalView {
     /// TODO(CORE-3415): We should probably remove the FixedBindings for ctrl-c
     /// in the SSH warpification blocks and handle them here as well.
     fn maybe_handle_ctrl_c_in_rich_content_block(&mut self, ctx: &mut ViewContext<Self>) {
+        let log_route = |route: &'static str| {
+            warpui::input_order::log_hop("ctrl_c_route", || format!("route={route}"));
+        };
         if self.active_ai_block(ctx).is_some() {
+            log_route("cancel_conversation");
             self.cancel_active_conversation_via_status_bar(ctx);
         } else if BlocklistAIHistoryModel::as_ref(ctx)
             .active_conversation(self.view_id)
             .is_some_and(|c| c.status().is_in_progress())
         {
+            log_route("cancel_conversation");
             // No unfinished AI block, but the conversation is still in progress.
             // This happens when a server-side subagent (e.g., conversation search)
             // is running — the parent AI block is already finished but the response
@@ -10472,11 +10490,15 @@ impl TerminalView {
             .is_passive_code_diff_being_generated()
         {
             // Handle Ctrl-C for passive code generation blocks ("Generating fix..." state)
+            log_route("passive_code_diff");
             self.abort_prompt_and_code_suggestions(ctx);
         } else if let Some(active_env_var_block) = self.active_env_var_collection_block(ctx) {
+            log_route("env_var_block");
             active_env_var_block.update(ctx, |env_var_block, ctx| {
                 env_var_block.handle_ctrl_c(ctx);
             });
+        } else {
+            log_route("none");
         }
     }
 

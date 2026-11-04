@@ -564,14 +564,14 @@ Keys: Linux ctrl-shift-X, macOS cmd-X (`app/src/util/bindings.rs`). Every case v
 - `ui_tab_menu`: Tab on an ambiguous path completes the common prefix and opens the menu with nothing highlighted (#1452; owner decision on #1610, keep as built). Tab then Return runs exactly the typed line once (token in `tc/menuzz_` only); Tab, Down, Return accepts one candidate without running, the next Return runs exactly that candidate's full command (one trailing space allowed), token in that file only, no prefix-named file.
 - `ui_ghost_accept`: type a prefix of an earlier command, Right (default binding) + instant Enter, fast and slow: the shell gets the full earlier command. End is probed and recorded (`end_key_accepts_ghost`), not failed.
 - `ui_ctrl_r`: Ctrl-R, a unique fragment, accept: the shell receives exactly the earlier command (one extra Enter allowed, both flows handled), effect file shows it ran twice.
-- `ui_palette`: palette opens ('Search for a command'), nonsense filter shows 'No results', 'split pane right' + Enter makes a new pane (new shell prompt in `prompt.log`), typing there is exact, `exit` closes it.
+- `ui_palette`: palette opens ('Search for a command', >= 3 filter chips, or a `CommandPaletteView` frame in the app log), nonsense filter shows 'No results', 'split pane right' + Enter makes a new pane (new shell prompt in `prompt.log`), typing there is exact, `exit` closes it.
 - `ui_mouse_select_copy`: print a token absent from the command line, find it by tesseract word box, double-click then copy: the PRIVATE clipboard (wl-paste / xsel of the job's display, pre-set to a sentinel) holds exactly the token; a drag selection contains it. Skips on macOS (no pointer tool) and without tesseract.
 - `ui_right_click_paste` (terminal mode only): right-click in the input, click 'Paste' (OCR), Enter: the shell receives exactly the clipboard command.
 - `ui_drag_drop_file` (terminal only): file name with a space dropped onto the terminal; the shell must see ONE argument equal to the path. Skips unless X11 with `dragon-drop` installed (no tool synthesizes a drag source on Wayland/macOS).
 - `ui_resize_typing`: window small, large, back (xdotool windowsize / sway floating resize / System Events); typing exact at each size, a wrapping 150-char command byte-exact; skips if the screenshot does not change (resize ignored).
 - `ui_split_panes`: split right and down by key, new shell per pane, focus moved with next/prev pane keys, typing exact in both panes, `exit` closes the new pane.
 - `ui_startup_time`: launch to first prompt (metrics `cold_s` with state dirs wiped, `warm_s` three relaunches; OS page cache is not dropped, that needs root); fails at no prompt in 90 s or warm median over `APPCI_STARTUP_MAX` (20 s); typing exact after each launch.
-- `ui_settings_live`: theme, font size, `appearance.vertical_tabs.enabled` changed by writing the settings file (hot reload); each must visibly change the screen (Pillow diff, else hash) and typing stays exact; the original file is restored. The settings page is not clicked.
+- `ui_settings_live`: theme (with `system_theme = false` written first), font size, `appearance.vertical_tabs.enabled` changed by writing the settings file (hot reload); each must visibly change the screen (Pillow diff, else hash) and typing stays exact; the original file is restored. The settings page is not clicked.
 Packages the box needs for the full set: `tesseract-ocr` (positions), `python3-pil` (optional, stronger diff), `dragon-drop` (DnD only). The panes/palette/mouse/settings cases are not run in the sim backend.
 Coverage-gap cases (`appci/cases_coverage_a.py`, #1534-#1541; all FULL tier, none in SMOKE; registered by the last import line of `cases.py`; every one
 types at 10-25 ms/key with an instant Enter, judges the EXACT line/bytes the program received, saves screenshots at each decisive step, and ends with a
@@ -1582,7 +1582,7 @@ Every item below is a harness change; none touches app code. Anything not listed
 - **`subshells`**: nu appends with `| save --append` (`>>` is a nushell parse error). **`remote_session_*`**: the clean-env subshell quotes `PATH="$PATH"` (a Mac PATH with
   spaces split the words); on Windows that step is NOT RUN (noref): `env -i` under msys ends the fake sshd session (H6).
 - **`flood_scrollback_find`**: Find is Cmd-Shift-F on macOS (`bindings.rs CustomAction::Find`); the marker is typed split by an empty string (`ABC""DEF`) because Phosphor
-  keeps the running command's text as the block header, which kept the control "marker not on screen" from ever holding.
+  keeps the running command's text as the block header, which kept the control "marker not on screen" from ever holding. (Both superseded in r18u13 below: Cmd-F, reversed marker.)
 - **`remote_heredoc_paste`**: a remote shell without bracketed paste makes the app ask `Run N lines one at a time?`; the case answers it with Run (OCR-detected, noted).
   Without OCR nothing is pressed and the note says a timeout may be that dialog.
 - **`session_restore` / `crash_kill9_restore`**: the app's own bootstrap line (`command -p stty -echo; WARP_BOOTSTRAP_VAR=...`) that a restored zsh pane logs to rec.log is not a
@@ -1607,3 +1607,29 @@ Every item below is a harness change; none touches app code. Anything not listed
   -> noref (platform, with the byte counts); conhost gets every byte -> the failure stands; no usable control (no reference window, or it received nothing) -> noref with the reason.
 - **Not changed, by design**: H7 (fake sshd ConPTY heredoc stall) and H8 (Git Bash pass opens PowerShell tabs/restored tabs) need run evidence the artifacts do not contain;
   `profile.gitbash_toml` already writes `startup_shell_override` and `new_session_shell_override` for that pass.
+
+## r18u13 harness fixes (macOS live run, 5e9dfbb71)
+
+Harness changes, plus one app LOG line (no behaviour change). `run.py --self-test` covers each (`r18u13_mac_harness_fixes`, `keydown_audit_counts_plain_keys_and_flags_doubles`).
+
+- **`flood_scrollback_find`**: the terminal Find on macOS is Cmd-F (`terminal:find` = `cmd_or_ctrl_shift("f")`, which is `cmd-f` there). The r18u8 entry above was wrong:
+  Cmd-Shift-F is the workspace's global search (`OpenGlobalSearch`); the marker went into it, the panel kept the focus after Escape, and the next case's `ssh fake` + Enter
+  were typed into that search field (`remote_heredoc_paste` "no remote shell prompt" in both modes, and its `pane_not_local_after_...` cascade). The marker is now typed
+  REVERSED and printed through `rev`: OCR dropped the `""` of the split marker in the block header and read the joined marker there (the control failed).
+- **zsh rec.log hook** (`profile.ZSHRC`): a line the history drops (`_warp_zshaddhistory` returns 1 for the agent-command wrapper; `hist_ignore_space`) lingers until the next
+  line and that next line reuses its event number, so a `$HISTCMD`-only test never logged it (agent `routing_table`: `ls -la` right after an agent command, "LOST or
+  unproven" although the app wrote it and zsh ran it). The rc's preexec hook now sets `__pa_ran`; a prompt logs the line when the number changed OR a command ran.
+- **`crash_kill9_restore` / `crash_corrupt_db`**: the post-restore exactness line names its effect file by absolute path (`local_cmd_exact(..., absolute=True)`): a restored
+  pane starts in its saved cwd, so the relative file landed in `ck_dir_N`.
+- **`keydown_count`**: a same-key pair under 2 ms on a key the typed text has doubled (`>>`), with exactly as many presses of that key logged as sent, is a `burst` (note +
+  metric `same_key_bursts`), not a dup: macOS handed both `>` to the app 0.97 ms apart (OS stamps 0.23 ms apart, both ~5 ms old) and the buffer went `>` then `>>`. An extra
+  press of that key, or a fast pair on a key never typed doubled, is still a dup.
+- **`ui_palette`**: two more proofs the palette opened: >= 3 of its filter chips (workflows, prompts, notebooks, ...) by OCR, or an app-log frame that rendered
+  `CommandPaletteView` after the reopen key (`cases_ui.palette_rendered`). The dim placeholder did not OCR on the Mac agent pass while the palette was open.
+- **`ui_settings_live`**: the owner's settings follow the system theme (`appearance.themes.system_theme = true`), so writing `theme` changed nothing (diff 0.001 / 0.0 with
+  Pillow; the hash-only terminal pass before Pillow "passed" on the caret). The theme step first writes `system_theme = false` and lets the screen settle; the first `theme`
+  write is always a change from the current value. The original file is restored as before.
+- **`agent_stream_cancel`**: the app now logs where every ^C went (`input_order hop=ctrl_c_route route=<name>`, `TerminalView::ctrl_c_to_active_block` and
+  `maybe_handle_ctrl_c_in_rich_content_block`; names only). The case fails if a ^C while the reply streams went to the pty, or if the first press that logged a route did not
+  cancel the conversation (#851). Without Pillow a "still changing" screen is UNVERIFIABLE (noref), not a fail: md5 can prove a still screen, never a moving one (r18u13 Mac:
+  3 distinct hashes from the caret and the menu-bar capture indicator, while the app log showed the 120 fps stream redraw stopping at the first ^C).
