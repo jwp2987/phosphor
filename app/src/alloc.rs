@@ -122,6 +122,38 @@ pub(crate) fn trim_free_memory() {
     log::debug!(target: "editor_memory", "malloc_zone_pressure_relief released {released} bytes");
 }
 
+/// Windows (#1607): Rust's system allocator there is `HeapAlloc` on the process heap
+/// (`GetProcessHeap`), and the UCRT's `malloc` uses the same heap, so `_heapmin` would only repeat
+/// this call. The NT heap keeps freed segments committed; `HeapCompact` coalesces the free blocks
+/// and decommits the large free ones, which is what lets the working set and private bytes fall
+/// after a 7 MB file's editor is dropped. Only the process heap is compacted: another heap in the
+/// process may have been created with `HEAP_NO_SERIALIZE`, and compacting it from this worker
+/// would race its owner. Same callers and rules as the other arms: a worker, after a large release.
+#[cfg(all(
+    target_os = "windows",
+    not(feature = "jemalloc"),
+    not(feature = "dhat_heap_profiling")
+))]
+pub(crate) fn trim_free_memory() {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetProcessHeap() -> *mut std::ffi::c_void;
+        fn HeapCompact(heap: *mut std::ffi::c_void, flags: u32) -> usize;
+    }
+    if !heap_trim_enabled() {
+        return;
+    }
+    // SAFETY: `GetProcessHeap` returns the process heap's handle (never closed); the process heap
+    // is serialized, so `HeapCompact` takes its lock and only touches blocks that are free.
+    let heap = unsafe { GetProcessHeap() };
+    if heap.is_null() {
+        return;
+    }
+    // SAFETY: as above; flags 0 = serialized access.
+    let largest_free = unsafe { HeapCompact(heap, 0) };
+    log::debug!(target: "editor_memory", "HeapCompact largest free block {largest_free} bytes");
+}
+
 /// No-op elsewhere: jemalloc and the remaining platforms' allocators return memory on their own.
 #[cfg(not(any(
     all(
@@ -134,23 +166,150 @@ pub(crate) fn trim_free_memory() {
         target_os = "macos",
         not(feature = "jemalloc"),
         not(feature = "dhat_heap_profiling")
+    ),
+    all(
+        target_os = "windows",
+        not(feature = "jemalloc"),
+        not(feature = "dhat_heap_profiling")
     )
 )))]
 pub(crate) fn trim_free_memory() {}
 
-/// [`trim_free_memory`] plus one `input_order hop=heap_trim why=<why> ms=<ms> t=<end>` line (only while
-/// input-order logging is on), so the appci editor_memory trim A/B can judge the UI items that ran
-/// DURING the trim (#1607). `why` is `open` (after a file-sized layout) or `close`.
+/// [`trim_free_memory`] plus one `input_order hop=heap_trim why=<why> ms=<ms> freed_estimate=<bytes>
+/// t=<end>` line (only while input-order logging is on), so the appci editor_memory trim A/B can judge
+/// the UI items that ran DURING the trim, and one `editor_memory heap_trim why=<why> ms=<ms>
+/// freed_estimate=<bytes>` line (target `editor_memory`, debug) that the case reads next to
+/// `buffer_dropped` (#1607). `why` is `open` (after a file-sized layout) or `close`.
+/// `freed_estimate` is the process footprint (macOS phys_footprint, Linux RSS + swap, Windows
+/// private bytes) before minus after the trim: other threads allocate meanwhile, so it is an
+/// estimate and can be negative. Nothing is logged when `PHOSPHOR_HEAP_TRIM=0` turned trims off.
 pub(crate) fn trim_free_memory_timed(why: &'static str) {
+    if !heap_trim_enabled() {
+        return;
+    }
+    let before = footprint_bytes();
     let start = std::time::Instant::now();
     trim_free_memory();
     let ms = start.elapsed().as_secs_f64() * 1000.0;
-    warpui::input_order::log_hop("heap_trim", || format!("why={why} ms={ms:.2}"));
+    let freed_estimate = before as i128 - footprint_bytes() as i128;
+    warpui::input_order::log_hop("heap_trim", || {
+        format!("why={why} ms={ms:.2} freed_estimate={freed_estimate}")
+    });
+    log::debug!(
+        target: "editor_memory",
+        "editor_memory heap_trim why={why} ms={ms:.2} freed_estimate={freed_estimate}"
+    );
+}
+
+/// The process footprint in bytes (0 where it cannot be read), for `freed_estimate`.
+fn footprint_bytes() -> u64 {
+    #[cfg(not(target_family = "wasm"))]
+    {
+        crate::system::memory_footprint::memory_footprint_bytes()
+    }
+    #[cfg(target_family = "wasm")]
+    {
+        0
+    }
+}
+
+/// Folds the close trims of a burst of closes into at most one running pass plus one follow-up
+/// pass (#1607). A pass that is already running may have walked the heap before the latest drop
+/// freed its memory, so a request that arrives while one runs schedules exactly one more pass
+/// after it; any further requests in that window ride on that same follow-up. Event-driven: no
+/// timer, the drop event is the trigger.
+pub(crate) struct TrimCoalescer(std::sync::atomic::AtomicU8);
+
+const TRIM_IDLE: u8 = 0;
+const TRIM_RUNNING: u8 = 1;
+const TRIM_RERUN: u8 = 2;
+
+impl TrimCoalescer {
+    pub(crate) const fn new() -> Self {
+        Self(std::sync::atomic::AtomicU8::new(TRIM_IDLE))
+    }
+
+    /// Registers a request. `true`: nothing was running, so the caller must start a worker that
+    /// runs passes until [`Self::finish_pass`] returns `false`. `false`: folded into the running
+    /// worker's follow-up pass.
+    pub(crate) fn request(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        let mut current = self.0.load(Ordering::Acquire);
+        loop {
+            let next = if current == TRIM_IDLE {
+                TRIM_RUNNING
+            } else {
+                TRIM_RERUN
+            };
+            match self
+                .0
+                .compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return current == TRIM_IDLE,
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
+    /// Called by the worker after each pass: `true` when a request arrived during the pass and
+    /// one more pass must run, `false` when the worker is done (the state is idle again).
+    pub(crate) fn finish_pass(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        let mut current = self.0.load(Ordering::Acquire);
+        loop {
+            let (next, again) = if current == TRIM_RERUN {
+                (TRIM_RUNNING, true)
+            } else {
+                (TRIM_IDLE, false)
+            };
+            match self
+                .0
+                .compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return again,
+                Err(actual) => current = actual,
+            }
+        }
+    }
+}
+
+static CLOSE_TRIMS: TrimCoalescer = TrimCoalescer::new();
+
+/// Asks for one heap trim after a large editor buffer was really dropped (#1407, #1607). Returns
+/// `true` when the caller must run [`run_close_trims`] on a background worker (never the UI
+/// thread); `false` when the close trim is switched off or a running trim will make one more pass
+/// for it. Kill switches: `PHOSPHOR_HEAP_TRIM_ON_CLOSE=0` (this trim only) or `PHOSPHOR_HEAP_TRIM=0`
+/// (every trim).
+pub(crate) fn request_close_trim() -> bool {
+    if !close_trim_enabled() {
+        log::debug!(target: "editor_memory", "editor_memory heap_trim why=close skipped=kill_switch");
+        return false;
+    }
+    CLOSE_TRIMS.request()
+}
+
+/// The worker body for [`request_close_trim`]: trims until no request is pending.
+pub(crate) fn run_close_trims() {
+    loop {
+        trim_free_memory_timed("close");
+        if !CLOSE_TRIMS.finish_pass() {
+            break;
+        }
+    }
+}
+
+/// Kill switch for the close trim alone (#1607): `PHOSPHOR_HEAP_TRIM_ON_CLOSE=0` turns it off,
+/// default on. `PHOSPHOR_HEAP_TRIM=0` also turns it off. Read once.
+pub(crate) fn close_trim_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        heap_trim_enabled()
+            && env_flag_enabled(std::env::var("PHOSPHOR_HEAP_TRIM_ON_CLOSE").ok().as_deref())
+    })
 }
 
 /// Kill switch for [`trim_free_memory`]: `PHOSPHOR_HEAP_TRIM=0` turns every heap trim off (close
 /// and open alike). Read once.
-#[allow(dead_code)]
 fn heap_trim_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| env_flag_enabled(std::env::var("PHOSPHOR_HEAP_TRIM").ok().as_deref()))
@@ -219,7 +378,42 @@ mod tests;
 
 #[cfg(test)]
 mod switch_tests {
-    use super::{env_flag_enabled, env_flag_opted_in};
+    use super::{TrimCoalescer, env_flag_enabled, env_flag_opted_in};
+
+    #[test]
+    fn close_trim_starts_one_worker_and_folds_a_burst_into_one_more_pass() {
+        let gate = TrimCoalescer::new();
+        // The first drop starts the worker.
+        assert!(gate.request());
+        // Three more drops while it runs: none starts a second worker.
+        assert!(!gate.request());
+        assert!(!gate.request());
+        assert!(!gate.request());
+        // They are folded into exactly one follow-up pass, after which the worker stops.
+        assert!(gate.finish_pass());
+        assert!(!gate.finish_pass());
+        // Idle again: the next close starts a fresh worker.
+        assert!(gate.request());
+        assert!(!gate.finish_pass());
+    }
+
+    #[test]
+    fn close_trim_without_a_request_during_the_pass_runs_once() {
+        let gate = TrimCoalescer::new();
+        assert!(gate.request());
+        assert!(!gate.finish_pass());
+    }
+
+    #[test]
+    fn a_request_during_the_follow_up_pass_gets_its_own_pass() {
+        let gate = TrimCoalescer::new();
+        assert!(gate.request());
+        assert!(!gate.request());
+        assert!(gate.finish_pass()); // follow-up pass starts
+        assert!(!gate.request()); // a drop during the follow-up
+        assert!(gate.finish_pass()); // is not lost
+        assert!(!gate.finish_pass());
+    }
 
     #[test]
     fn trim_switches_default_on_and_turn_off_only_on_an_explicit_off() {

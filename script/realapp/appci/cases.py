@@ -60,6 +60,10 @@ class Result:
     def metric(self, k, v):
         self.metrics[k] = round(v, 3) if isinstance(v, float) else v
 
+    def known(self, msg):
+        """an owner-accepted shortfall (ACCEPTED_FOR_RELEASE below): reported with its numbers, never a pass reason and never a FAIL"""
+        self.notes.append("KNOWN: " + msg)
+
     def skip(self, msg):
         raise Skip(msg)
 
@@ -3969,19 +3973,98 @@ def editor_open(ctx, palette, path):
     ctx.be.key("Return")   # the keysym name every backend maps (wtype refused "enter": r18e0)
 
 
+# ACCEPTED_FOR_RELEASE: owner decision 2026-11-04 (#1607): the cost of OPENING a big file in the code editor is accepted for v0.1.17 ONLY;
+# what must hold is that the memory is given back after close (that check is unchanged). While the app version under test (app/Cargo.toml)
+# is at or below `release`, the open-cost budget is reported as KNOWN with its numbers instead of failing. Past it the budget FAILS again, and
+# the offline self-test fails as soon as app/Cargo.toml moves past `release`, so the acceptance cannot silently become permanent: re-decide it.
+ACCEPTED_FOR_RELEASE = {"editor_open_cost": {"issue": 1607, "release": "0.1.17", "why": "owner 2026-11-04: open cost accepted, release after close required"}}
+_REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
+
+
+def version_tuple(v):
+    """'0.1.17' / 'v0.1.17' -> (0, 1, 17); None when it is not a dotted version"""
+    m = re.match(r"v?(\d+(?:\.\d+)*)$", (v or "").strip())
+    return tuple(int(x) for x in m.group(1).split(".")) if m else None
+
+
+def app_version(repo=_REPO):
+    """the version in app/Cargo.toml's [package] (the release the tree is heading for is the next one), or None when unreadable"""
+    try:
+        with open(os.path.join(repo, "app", "Cargo.toml"), encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("["):
+                    if line.strip() != "[package]":
+                        break
+                    continue
+                m = re.match(r'version\s*=\s*"([^"]+)"', line)
+                if m:
+                    return m.group(1)
+    except OSError:
+        pass
+    return None
+
+
+def accepted_for_release(key, version=None):
+    """the ACCEPTED_FOR_RELEASE entry for `key` while `version` (default: app/Cargo.toml) is at or below its release, else None. An unreadable
+    version is NOT accepted (fail closed)."""
+    entry = ACCEPTED_FOR_RELEASE.get(key)
+    v = version_tuple(version if version is not None else app_version())
+    if not entry or v is None:
+        return None
+    return entry if v <= version_tuple(entry["release"]) else None
+
+
+def mem_judge_known(r, sample, base, limit, what, key):
+    """mem_judge, except that while `key` is ACCEPTED_FOR_RELEASE an over-budget figure is reported as KNOWN (numbers printed) instead of a
+    failure. Returns whether every figure was within the budget."""
+    acc = accepted_for_release(key)
+    if not acc:
+        return mem_judge(r, sample, base, limit, what)
+    ok = True
+    for k, v in sample.items():
+        if k in base and v - base[k] > limit:
+            ok = False
+            r.known("%s [ACCEPTED_FOR_RELEASE #%d v%s: %s]" % (what % (v - base[k], k), acc["issue"], acc["release"], acc["why"]))
+    return ok
+
+
+def _log_value(v):
+    """a key=value value from an app log line: int when it is one (signed: freed_estimate can be negative), else the string"""
+    return int(v) if re.fullmatch(r"-?\d+", v) else v
+
+
 def editor_mem_log(ctx, off):
-    """the app's own breakdown lines (target editor_memory, debug: app/src/code/editor/model.rs after_large_layout and the buffer-drop log in
-    global_buffer_model.rs) written since log offset `off`, as {'open': [dict...], 'dropped': [dict...]}"""
-    out = {"open": [], "dropped": []}
+    """the app's own breakdown lines (target editor_memory, debug: app/src/code/editor/model.rs after_large_layout, the buffer-drop log in
+    global_buffer_model.rs and the heap-trim log of app/src/alloc.rs trim_free_memory_timed) written since log offset `off`, as
+    {'open': [dict...], 'dropped': [dict...], 'trim': [dict...]}"""
+    out = {"open": [], "dropped": [], "trim": []}
     if not getattr(ctx, "log_path", None):
         return out
+    kinds = {"open": "open", "buffer_dropped": "dropped", "heap_trim": "trim"}
     for line in ctx.log_since(off).splitlines():
-        m = re.search(r"editor_memory (open|buffer_dropped) (.*)$", line)
+        m = re.search(r"editor_memory (open|buffer_dropped|heap_trim) (.*)$", line)
         if not m:
             continue
         kv = dict(re.findall(r"(\w+)=(\S+)", m.group(2)))
-        out["open" if m.group(1) == "open" else "dropped"].append({k: (int(v) if v.isdigit() else v) for k, v in kv.items()})
+        out[kinds[m.group(1)]].append({k: _log_value(v) for k, v in kv.items()})
     return out
+
+
+def editor_opened(grew_mb, app_open_lines):
+    """whether the file opened: memory grew by 8 MB or more, OR the app logged its own `editor_memory open` line. A reopen can reuse the heap
+    the previous close freed and grow by almost nothing (macOS r18u13 txt_c3: -5.5 MB) while the editor IS open; calling that 'did not open'
+    pressed Escape and left the 7 MB editor open under the next measurements."""
+    return grew_mb >= 8 or bool(app_open_lines)
+
+
+def editor_wait_close_trim(ctx, off, timeout=15.0):
+    """the `editor_memory heap_trim why=close` lines since `off`, waiting up to `timeout` for the first (logged when the worker's trim ends)"""
+    t0 = time.time()
+    while True:
+        t = [x for x in editor_mem_log(ctx, off)["trim"] if x.get("why") == "close"]
+        if t or time.time() - t0 >= timeout:
+            return t
+        time.sleep(0.5)
 
 
 def ui_items(text):
@@ -4059,7 +4142,7 @@ def editor_wait_dropped(ctx, off, timeout=15.0):
 def editor_mem_relaunch(ctx, env):
     """restart the app with `env` set ({} restores the default): Linux/Windows inherit os.environ, macOS gets the keys through
     app.PASSTHROUGH_ENV. Returns whether the new instance reached a prompt."""
-    for k in ("PHOSPHOR_EDITOR_TRIM_AFTER_OPEN", "PHOSPHOR_HEAP_TRIM"):
+    for k in ("PHOSPHOR_EDITOR_TRIM_AFTER_OPEN", "PHOSPHOR_HEAP_TRIM", "PHOSPHOR_HEAP_TRIM_ON_CLOSE"):
         os.environ.pop(k, None)
     os.environ.update(env)
     n = ctx.prompts()
@@ -4177,7 +4260,10 @@ def c_editor_mem(ctx, r):
             ctx.shot("editor_mem_%s_open" % tag)
             mem_metrics(r, "%s_rss_open" % tag, opened, pre)
             grew = max(opened[k] - pre[k] for k in opened if k in pre)
-            if grew < 8:
+            app_opens = editor_mem_log(ctx, off)["open"]
+            if grew < 8 and app_opens:
+                r.note("%s: memory grew only %.1f MB but the app logged 'editor_memory open': the file opened into reused heap" % (tag, grew))
+            if not editor_opened(grew, app_opens):
                 msg = "%s: memory grew only %.1f MB after opening %s through the palette (%s): the file did not open; set APPCI_KEY_PALETTE" % (tag, grew, path, palette)
                 if strict:
                     r.check(False, msg)
@@ -4189,7 +4275,8 @@ def c_editor_mem(ctx, r):
             opened_any = True
             opens.append(opened)
             if cyc == 0:
-                mem_judge(r, opened, pre, limits[kind], "%s: opening a %d MB file cost %%.0f MB of %%s (> %.0f MB target)" % (kind, size >> 20, limits[kind]))
+                mem_judge_known(r, opened, pre, limits[kind], "%s: opening a %d MB file cost %%.0f MB of %%s (> %.0f MB target)" % (kind, size >> 20, limits[kind]),
+                                "editor_open_cost")
             how = editor_close(ctx, r)
             if not how:
                 r.note("%s: release on close NOT MEASURED: no close key and no command-palette close on this platform (APPCI_KEY_CLOSE / APPCI_KEY_CMD_PALETTE empty)" % kind)
@@ -4210,6 +4297,21 @@ def c_editor_mem(ctx, r):
                 r.metric("%s_app_breakdown_open" % tag, br["open"][-1])
             if dropped:
                 r.metric("%s_app_buffer_dropped" % tag, dropped[-1])
+                # #1607: a large buffer's drop starts (trim=true) or joins (coalesced) one heap trim on a worker; its line carries freed_estimate
+                if str(dropped[-1].get("trim")) in ("true", "coalesced"):
+                    trims = editor_wait_close_trim(ctx, off)
+                    if trims:
+                        r.metric("%s_app_heap_trim_close" % tag, trims[-1])
+                        fe = trims[-1].get("freed_estimate")
+                        if isinstance(fe, int):
+                            r.metric("%s_app_heap_trim_freed_mb" % tag, fe / 1048576.0)
+                    else:
+                        r.check(False, "%s: the buffer drop asked for a heap trim (trim=%s) but no 'editor_memory heap_trim why=close' line followed (#1607)" % (
+                            tag, dropped[-1].get("trim")))
+                elif str(dropped[-1].get("trim")) == "false":
+                    r.check(False, "%s: the closed 7 MB editor's buffer dropped with trim=false: no heap trim after close (#1607)" % tag)
+                else:
+                    r.note("%s: close trim not run (trim=%s: a PHOSPHOR_HEAP_TRIM* kill switch)" % (tag, dropped[-1].get("trim")))
             ctx.reset()
         if not opens or not how:
             continue

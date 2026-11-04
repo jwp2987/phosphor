@@ -320,10 +320,17 @@ pub struct CharOffsetEdit {
 pub struct GlobalBufferModel {
     location_to_id: BiMap<BufferLocation, FileId>,
     buffers: HashMap<FileId, InternalBufferState>,
-    /// Buffers a closing editor asked to trim the heap after (#1407). Its sweep can run before the
-    /// buffer is actually dropped (#1478), so the trim is repeated on THAT buffer's drop event,
-    /// when its own tree has really been freed.
+    /// Buffers a closing editor asked to trim the heap after (#1407, #1607). The trim runs on THAT
+    /// buffer's drop event, when its tree (and the editor that held it) has really been freed.
     trim_on_drop_of: HashSet<FileId>,
+    /// How many live buffers per `FileId` still have a drop watcher pending
+    /// ([`Self::watch_buffer_drop`]). A closing tab unregisters its buffer from `buffers` BEFORE
+    /// the buffer is dropped (`close_buffer`), so registration cannot tell whether a drop event is
+    /// still coming; this can. Entries leave on the drop event.
+    drop_watched: HashMap<FileId, usize>,
+    /// The `trim` verdicts of the drop events, in order (for tests).
+    #[cfg(test)]
+    pub(crate) dropped_with_trim: Vec<(FileId, bool)>,
 }
 
 impl GlobalBufferModel {
@@ -354,6 +361,9 @@ impl GlobalBufferModel {
             location_to_id: BiMap::new(),
             buffers: HashMap::new(),
             trim_on_drop_of: HashSet::new(),
+            drop_watched: HashMap::new(),
+            #[cfg(test)]
+            dropped_with_trim: Vec::new(),
         }
     }
 
@@ -473,34 +483,53 @@ impl GlobalBufferModel {
     /// the caller returns, so a scan made inline still sees their buffers alive and leaves their
     /// file watcher and LSP document registered (#1407). Event-driven: the future completes on
     /// the next executor turn; there is no timer. A singleton, so the scan runs even when the
-    /// caller's own view has been dropped by then. With a non-empty `trim_for` (the files of the
-    /// large editors the caller released), the freed heap is then handed back to the OS on a
-    /// worker, and again when each of those buffers is really dropped.
+    /// caller's own view has been dropped by then. `trim_for` (the files of the large editors the
+    /// caller released) asks for one heap trim when each of those buffers is really dropped.
     pub fn sweep_deallocated_buffers_when_idle(
         &mut self,
         trim_for: Vec<FileId>,
         ctx: &mut ModelContext<Self>,
     ) {
-        let trim = !trim_for.is_empty();
-        self.trim_on_drop_of.extend(trim_for);
+        self.request_trim_on_drop(trim_for);
         ctx.spawn(async {}, move |me, _, ctx| {
             me.remove_deallocated_buffers(ctx);
-            // A FileId whose buffer is already unregistered will never see its drop event here
-            // (it was pruned above, or never loaded): forget it so the set cannot grow stale.
-            let registered = &me.buffers;
-            me.trim_on_drop_of.retain(|id| registered.contains_key(id));
-            if trim {
-                ctx.background_executor()
-                    .spawn(async { crate::alloc::trim_free_memory_timed("close") })
-                    .detach();
-            }
         });
+    }
+
+    /// Records that the heap should be trimmed once each of `file_ids`' buffers is dropped
+    /// (#1407, #1607). Kept only for ids whose drop event is still pending: an id with no live
+    /// watched buffer would never see one, so the set cannot grow stale.
+    ///
+    /// This used to keep only ids still in `buffers`. A tab close calls `close_buffer` first,
+    /// which unregisters the buffer while the editor still holds it, so every closed tab's id was
+    /// discarded here and its drop logged `trim=false`: the only trim then ran on the idle sweep,
+    /// before the buffer was freed, and released nothing (appci editor_memory_7mb r18u13: 75-144
+    /// MB still held 75 s after close on macOS).
+    fn request_trim_on_drop(&mut self, file_ids: Vec<FileId>) {
+        for file_id in file_ids {
+            if self.drop_watched.contains_key(&file_id) {
+                self.trim_on_drop_of.insert(file_id);
+            }
+        }
+    }
+
+    /// The drop event of one of `file_id`'s buffers: whether a heap trim was asked for it. The
+    /// request is consumed, so one close gives at most one trim.
+    fn take_trim_on_drop(&mut self, file_id: FileId) -> bool {
+        if let Some(count) = self.drop_watched.get_mut(&file_id) {
+            *count -= 1;
+            if *count == 0 {
+                self.drop_watched.remove(&file_id);
+            }
+        }
+        self.trim_on_drop_of.remove(&file_id)
     }
 
     /// Prunes the registry when `buffer` is actually dropped. The buffer carries a channel sender
     /// that closes with it, so the sweep runs on the drop event itself. The idle sweep a closing
     /// pane requests can run before the editors are freed (#1478), leaving the weak entry
-    /// registered. Event-driven; no timer.
+    /// registered. Event-driven; no timer. When the closing editor asked for it, the drop also
+    /// hands the freed heap back to the OS on a worker ([`crate::alloc::request_close_trim`]).
     fn watch_buffer_drop(
         &mut self,
         buffer: &ModelHandle<Buffer>,
@@ -509,6 +538,7 @@ impl GlobalBufferModel {
     ) {
         let (tx, rx) = async_channel::bounded::<()>(1);
         buffer.update(ctx, |buffer, _| buffer.set_drop_notifier(tx));
+        *self.drop_watched.entry(file_id).or_insert(0) += 1;
         log::debug!(
             target: "code::buffer_lifecycle",
             "register: registered={}",
@@ -520,17 +550,28 @@ impl GlobalBufferModel {
             move |me, ctx| {
                 log::debug!(target: "code::buffer_lifecycle", "buffer dropped; pruning");
                 me.remove_deallocated_buffers(ctx);
-                let trim = me.trim_on_drop_of.remove(&file_id);
+                let requested = me.take_trim_on_drop(file_id);
+                #[cfg(test)]
+                me.dropped_with_trim.push((file_id, requested));
+                // `trim=true`: a worker was started for this drop; `coalesced`: a running trim
+                // makes one more pass for it; `off`: a kill switch; `false`: not asked for.
+                let trim = if !requested {
+                    "false"
+                } else if crate::alloc::request_close_trim() {
+                    ctx.background_executor()
+                        .spawn(async { crate::alloc::run_close_trims() })
+                        .detach();
+                    "true"
+                } else if crate::alloc::close_trim_enabled() {
+                    "coalesced"
+                } else {
+                    "off"
+                };
                 log::debug!(
                     target: "editor_memory",
                     "editor_memory buffer_dropped file_id={file_id:?} registered={} trim={trim}",
                     me.buffers.len(),
                 );
-                if trim {
-                    ctx.background_executor()
-                        .spawn(async { crate::alloc::trim_free_memory_timed("close") })
-                        .detach();
-                }
             },
         );
     }
