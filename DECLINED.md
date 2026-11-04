@@ -2545,8 +2545,14 @@ takes ~15 ms longer over that wrapper on macOS (r18u13 `latency_enter` M3 contro
 (`_warp_check_typed_text_literal` in zsh_body.sh: `self-insert` is the builtin widget and no binding
 in the starting keymap is reachable from a printable byte, which rules out zsh-autopair, zsh-abbr,
 globalias, magic-space, url-quote-magic, `bindkey jk vi-cmd-mode`, and also zsh-autosuggestions /
-zsh-syntax-highlighting, which wrap `self-insert`). One marker vouches for one command write; any
-shell hook, continuation prompt or user write carrying Enter/^C/^D ends it. Bash, fish, nushell,
+zsh-syntax-highlighting, which wrap `self-insert`; also any key longer than `^P` that starts with
+it, and a `^P` not bound to Phosphor's chord). Because a plugin loaded after zle-line-init (sched,
+`zle -F`, zinit turbo, zsh-defer, z4h) can bind keys within the same prompt, the `^P` chord
+(`warp_kill_buffer_and_reset_insert_mode`) then reads the rest of the line in a private keymap,
+`__warp_literal`: printable bytes are `.self-insert`, and the first other key (Enter, or the
+`ESC[200~` of a wrapped write) switches back and is read again in the user's keymap
+(`__warp_literal_exit`, `zle -U`), so a wrapped write behaves as before. One marker vouches for one
+command write; any shell hook, continuation prompt, or user or agent write carrying Enter/^C/^D ends it. Bash, fish, nushell,
 PowerShell, tmux control mode, Windows (ConPTY), in-band commands and every other line keep the
 wrapper exactly as before. Kill switch: `PHOSPHOR_ENTER_BRACKETED_ALWAYS=1`. Reverse only with a
 measurement showing zle's paste cost gone.
