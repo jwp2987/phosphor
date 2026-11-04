@@ -461,8 +461,14 @@ ALTGR = [(0x51, 0x40), (0x45, 0x20AC), (0x37, 0x7B), (0x38, 0x5B), (0x39, 0x5D),
 _kbd_snapped = []
 
 
+# The unshifted key after the AltGr string, by virtual-key code: German (KBDGR) puts \u00fc on VK_OEM_1, US English ';'. r18u13: it was
+# VK_Y expecting 'z' ("the Y key types z" holds for the physical key, scancode 0x15, which KBDGR reports as VK_Z; VK_Y itself types 'y' on
+# both layouts), so the run that got every AltGr character right still failed on 'y' and the key proved nothing about the layout.
+PLAIN_GERMAN = (0xBA, "\u00fc")
+
+
 def altgr_expected():
-    return "".join(chr(c) for _, c in ALTGR) + "z"
+    return "".join(chr(c) for _, c in ALTGR) + PLAIN_GERMAN[1]
 
 
 def kbd_snapshot(ctx):
@@ -551,7 +557,7 @@ def altgr_string(ctx):
     for vk, _ in ALTGR:
         ctx.be.altgr(vk)
         time.sleep(ctx.rng.randint(10, 25) / 1000)
-    ctx.be.plain_vk(0x59)             # the Y key on a German layout types z
+    ctx.be.plain_vk(PLAIN_GERMAN[0])  # VK_OEM_1: \u00fc on the German layout (';' on US English), so a layout that did not switch fails here
     time.sleep(0.02)
 
 

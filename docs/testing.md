@@ -1620,3 +1620,6 @@ Every item below is a harness change; none touches app code. Anything not listed
   never-pumped WGL instance thread (hidden top-level window). The app no longer initializes the GL backend on Windows by default
   (`crates/warpui/src/rendering/wgpu/mod.rs` `default_backends`, kill switch `PHOSPHOR_WGPU_WINDOWS_GL=1`); `rendering/wgpu/mod_tests.rs` pins the
   default set per platform. `intl_altgr_ps` / `intl_altgr_bash` are the real-app check.
+- **`intl_altgr_*` final key**: the unshifted layout probe after the AltGr string is VK_OEM_1 (`ü` on German, `;` on US English). It was VK_Y expecting `z`;
+  VK_Y types `y` on both layouts (the "Y key types z" rule is the physical key, which KBDGR reports as VK_Z), so a run that got every AltGr character
+  right failed on the last byte. Verified on the VM: with GL left out (`WGPU_BACKEND=dx12,vulkan` on the r18u13 build) both cases PASS.
