@@ -80,6 +80,40 @@ def frame_paths(ctx, tag, n, step):
     return out
 
 
+CTRL_C_ROUTE_RE = re.compile(r"hop=ctrl_c_route route=(\w+)")
+CANCEL_ROUTES = ("cancel_conversation", "stop_conversation_and_command")
+
+
+def ctrl_c_routes(text):
+    """the `hop=ctrl_c_route route=<name>` names in an app-log excerpt, in order ([] on a build without the hop)"""
+    return CTRL_C_ROUTE_RE.findall(text)
+
+
+def cancel_route_error(routes):
+    """routes = per Ctrl-C press, the routes the app logged. Owner rule (#851): while an agent reply runs, Ctrl-C stops the reply. So the first press
+    that logged a route must have cancelled the conversation, and no press may have sent the ^C to the pty. None = fine, or nothing logged (old build)."""
+    logged = [(i + 1, rs) for i, rs in enumerate(routes) if rs]
+    if not logged:
+        return None
+    for press, rs in logged:
+        if "pty" in rs:
+            return "Ctrl-C #%d while the reply streamed went to the pty (app route %s), not to the conversation (#851: Ctrl-C stops the reply)" % (press, ",".join(rs))
+    press, rs = logged[0]
+    if not any(x in CANCEL_ROUTES for x in rs):
+        return "Ctrl-C #%d while the reply streamed did not cancel the conversation (app route %s; #851: Ctrl-C stops the reply)" % (press, ",".join(rs))
+    return None
+
+
+def frames_judged_by_pixels():
+    import cases_ui as U
+    return U.have_pillow()
+
+
+def U_PILLOW_MSG():
+    import cases_ui as U
+    return U.PILLOW_MSG
+
+
 def frames_settled(paths):
     """(settled, distinct): is the screen still? r18u8 (Windows H18): a blinking caret produced 3 distinct md5s in 5 frames and the old `<= 2 distinct` rule called a
     stopped stream 'still changing'. With Pillow the frames are compared by changed-pixel fraction (a caret is ~0.00002, a streaming reply far above CARET_DIFF);
@@ -221,19 +255,33 @@ def c_agent_stream_cancel(ctx, r):
         # and requires the end state: stream stopped AND typed text gone, nothing at the shell.
         def screen_settled(tag):
             return frames_settled(frame_paths(ctx, tag, 5, 1.2))
-        stopped, nframes, cleared = False, -1, None
+        # r18u13: the app logs where each ^C went (`hop=ctrl_c_route route=<name>`, view.rs ctrl_c_to_active_block); a build without the hop logs none.
+        stopped, nframes, cleared, routes = False, -1, None, []
         for press in (1, 2):
+            press_off = ctx.log_size()
             ctx.be.key("ctrl+c")
             time.sleep(1.5)
             ctx.shot("after_ctrl_c_%d" % press)
             cleared = ocr_has(ctx, "after_ctrl_c_%d_ocr" % press, typed)
             stopped, nframes = screen_settled("post_cancel_%d" % press)
-            r.note("Ctrl-C #%d: stream %s (%d distinct frames in 5), typed text %s" % (
-                press, "stopped" if stopped else "still changing", nframes, "not checkable (no OCR)" if cleared is None else ("still in the input" if cleared else "gone")))
+            routes.append(ctrl_c_routes(ctx.log_since(press_off)))
+            r.note("Ctrl-C #%d: stream %s (%d distinct frames in 5), typed text %s, app route %s" % (
+                press, "stopped" if stopped else "still changing", nframes, "not checkable (no OCR)" if cleared is None else ("still in the input" if cleared else "gone"),
+                ",".join(routes[-1]) or "not logged"))
             if stopped and cleared is not True:
                 break
         r.metric("distinct_frames_after_cancel", nframes)
-        r.check(stopped, "the screen kept changing after two Ctrl-C presses (%d distinct frames in 5): the stream did not stop" % nframes)
+        r.metric("ctrl_c_routes", routes)
+        err = cancel_route_error(routes)
+        if err:
+            r.check(False, err)
+        if not stopped and frames_judged_by_pixels():
+            r.check(False, "the screen kept changing after two Ctrl-C presses (%d distinct frames in 5): the stream did not stop" % nframes)
+        elif not stopped:
+            # r18u13 (Mac): without Pillow the frames are compared by md5, and a full-screen capture has more than the caret blinking (the menu-bar capture
+            # indicator): 3 distinct hashes on a stopped stream (the app log showed the 120 fps stream redraw ending at the first ^C). md5 can prove a still
+            # screen (<= 2 hashes), never a moving one: no verdict.
+            r.unverifiable("stream stop not judged: %d distinct md5 frames in 5 and no Pillow to measure how much changed (%s)" % (nframes, U_PILLOW_MSG()))
         if cleared is True:
             r.check(False, "the typed text (%r) is still in the input after two Ctrl-C presses: the second press did not clear it" % typed)
         r.check(not [c for c in ctx.cmds_since(mark) if "bicycle" in c or typed in c], "agent text or the typed text reached the shell")

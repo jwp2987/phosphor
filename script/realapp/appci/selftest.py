@@ -652,6 +652,17 @@ def keydown_audit_counts_plain_keys_and_flags_doubles():
     assert a["count"] == 4 and a["dups"] == [], a            # ctrl press and the bare Shift are not typed keys
     d = cases.keydown_audit(ln("a", 1000.0) + ln("a", 1000.4) + ln("b", 1030.0) + ln("b", 1060.0))   # 0.4 ms apart = the #1159 signature; 30 ms apart = a real repeat
     assert d["count"] == 4 and d["dups"] == [("a", 1000.4, 0.4)], d
+    # r18u13: a key the text has doubled (`>>`), handled < 2 ms apart, with exactly as many presses logged as sent = an OS burst, not a dup
+    q = lambda c: '"%s"' % c
+    b = cases.keydown_audit(ln(q("o"), 990.0) + ln(q(">"), 1000.0) + ln(q(">"), 1000.97) + ln(q("k"), 1030.0), sent_text="o >> k")
+    assert b["dups"] == [] and b["bursts"] == [('">"', 1000.97, 0.97)], b
+    # ... but an EXTRA press of that key (three logged, two sent) is a dup
+    e = cases.keydown_audit(ln(q(">"), 1000.0) + ln(q(">"), 1000.5) + ln(q(">"), 1030.0), sent_text="o >> k")
+    assert e["dups"] == [('">"', 1000.5, 0.5)] and e["bursts"] == [], e
+    # ... and so is a fast pair on a key the text never has doubled, and any pair when the sent text is not given
+    f = cases.keydown_audit(ln(q("a"), 1000.0) + ln(q("a"), 1000.4), sent_text="a b a")
+    assert f["dups"] == [('"a"', 1000.4, 0.4)], f
+    assert cases.keydown_audit(ln(q(">"), 1000.0) + ln(q(">"), 1000.97))["dups"] == [('">"', 1000.97, 0.97)]
 
 
 @check
@@ -1356,6 +1367,44 @@ def g11_remote_server_bench_encoding_and_loop():
     assert sz["binary_bytes"] > 0 and sz["gzip9_bytes"] > 0
     d = rb.delta(dict(size=dict(gzip9_bytes=100), rtt_ms=dict(p50=2.0, p95=3.0, p99=4.0)), dict(size=dict(gzip9_bytes=125), rtt_ms=dict(p50=1.5, p95=2.0, p99=5.0)))
     assert d["gzip9_bytes_ratio"] == 1.25 and d["rtt_ms_p50_delta"] == -0.5 and d["rtt_ms_p99_delta"] == 1.0, d
+
+
+@check
+def r18u13_mac_harness_fixes():
+    # agent_stream_cancel: the app's ^C route is read from the log; a ^C sent to the pty while the reply streams, or a first press that did not cancel, fails
+    log = ("x input_order hop=ctrl_c_keydown powershell_setup_hold=Off t=1\n"
+           "x input_order hop=ctrl_c_route route=cancel_conversation t=2\n")
+    assert ca.ctrl_c_routes(log) == ["cancel_conversation"]
+    assert ca.cancel_route_error([["cancel_conversation"], []]) is None
+    assert ca.cancel_route_error([[], []]) is None                                   # a build without the hop: no verdict from it
+    assert "went to the pty" in ca.cancel_route_error([["pty"]])
+    assert "did not cancel" in ca.cancel_route_error([["none"], ["cancel_conversation"]])
+    assert ca.cancel_route_error([["stop_conversation_and_command"]]) is None
+    # zsh rc: a line that reuses a dropped line's history number is still logged (preexec flag), and the flag is cleared at every prompt
+    assert "__pa_ran=1" in profile.ZSHRC and "|| -n $__pa_ran" in profile.ZSHRC and "\n  __pa_ran=\n" in profile.ZSHRC
+    # ui_palette: a frame that rendered CommandPaletteView proves the palette opened; no frame lines at all is no evidence
+    import cases_ui as _U
+    assert _U.palette_rendered('[DEBUG] frame 1: updated=["Workspace", "CommandPaletteView", "Menu"] removed=0') is True
+    assert _U.palette_rendered('[DEBUG] frame 1: updated=["Workspace", "Menu"] removed=0') is False
+    assert _U.palette_rendered("no frames here") is None
+    # flood_scrollback_find: the typed command carries the marker reversed (never the marker itself); macOS Find is Cmd-F (Cmd-Shift-F = global search)
+    import inspect, cases_robust as _R
+    src = inspect.getsource(_R.c_flood_find)
+    assert "marker[::-1]" in src and "| rev" in src and '"cmd+f" if ctx.be.name == "mac"' in src and "cmd+shift+f" not in src.split("APPCI_KEY_FIND")[1][:80]
+    # crash_kill9_restore / crash_corrupt_db: the post-restore line names its effect file absolutely (a restored pane keeps its saved cwd)
+    import cases_coverage_a as _A
+    assert 'local_cmd_exact(ctx, r, "ck_after", absolute=True)' in inspect.getsource(_A.c_crash_kill9)
+    assert 'local_cmd_exact(ctx, r, "cd_after", absolute=True)' in inspect.getsource(_A.c_crash_corrupt_db)
+    sent = []
+    fake = types.SimpleNamespace(tok=lambda n: "tok123", rm=lambda *a: None, cmd_mark=lambda: 0, pane_shell=lambda: "bash", W="/w/dir",
+                                 append_cmd=lambda sh, t, f: "echo %s >> %s" % (t, f), be=types.SimpleNamespace(type=lambda line, d, enter: sent.append(line)),
+                                 rng=types.SimpleNamespace(randint=lambda a, b: a), until=lambda f, t: None, lines=lambda f: ["tok123"],
+                                 prof=types.SimpleNamespace(commands=lambda: []))
+    _A.local_cmd_exact(fake, cases.Result("x", "terminal"), "ck_after", absolute=True)
+    _A.local_cmd_exact(fake, cases.Result("x", "terminal"), "ck_after")
+    assert sent == ["echo tok123 >> /w/dir/ca_local_ck_after.txt", "echo tok123 >> ca_local_ck_after.txt"], sent
+    # ui_settings_live: the theme step switches following the system theme off before it writes `theme`
+    assert '"system_theme", "false"' in inspect.getsource(_U.c_settings)
 
 
 def main():

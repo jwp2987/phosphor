@@ -3508,18 +3508,36 @@ KEYDOWN_KEY_RE = re.compile(r"input_order keydown key=(\S+) ctrl=(true|false) al
 MODIFIER_KEYS = {"shift", "control", "ctrl", "alt", "option", "meta", "super", "command", "cmd", "capslock", "fn"}
 
 
-def keydown_audit(txt, dup_ms=2.0):
-    """#1159: the app log's own count of plain key presses. -> dict(count, dups): `count` = `input_order keydown` lines without ctrl/alt/cmd and not for a
-    bare modifier key (Shift of a capital is not a typed key); `dups` = [(key, t_ms, dt_ms)] consecutive presses of the SAME key less than `dup_ms`
-    apart (the #1159 signature: the extra keydown arrived ~0.4 ms after the real one; a human or injector at >= 12 ms/key never repeats a key that fast)."""
+def _key_char(key):
+    """the character of a logged key name: `">"` (the app quotes printable keys) -> '>'; an unquoted name (escape, a selftest's a) as is"""
+    return key[1:-1] if len(key) >= 3 and key[0] == key[-1] == '"' else key
+
+
+def keydown_audit(txt, dup_ms=2.0, sent_text=None):
+    """#1159: the app log's own count of plain key presses. -> dict(count, dups, bursts): `count` = `input_order keydown` lines without ctrl/alt/cmd and
+    not for a bare modifier key (Shift of a capital is not a typed key); `dups` = [(key, t_ms, dt_ms)] consecutive presses of the SAME key less than
+    `dup_ms` apart (the #1159 signature: the extra keydown arrived ~0.4 ms after the real one; a human or injector at >= 12 ms/key never repeats a key
+    that fast). The times are when the app HANDLED the key, not when it was pressed.
+    r18u13 (Mac agent keydown_count): `echo TOK >> kd.txt` types `>` twice; macOS handed both to the app 0.97 ms apart (their OS stamps were 0.23 ms
+    apart, both 5 ms old: the window server delivered a burst), the buffer went `>` then `>>`, and the key count matched what was sent. With
+    `sent_text` (what the injector typed), a same-key pair is a `burst`, not a dup, only when the text really has that key doubled AND the app logged
+    exactly as many presses of it as were sent; an extra press of that key, or a pair on a key never typed doubled, stays a dup."""
     ks = []
     for m in KEYDOWN_KEY_RE.finditer(txt):
         key, ctrl, alt, _shift, cmd, t = m.groups()
         if ctrl == "true" or alt == "true" or cmd == "true" or key.lower() in MODIFIER_KEYS:
             continue
         ks.append((key, float(t)))
-    dups = [(k2, t2, round(t2 - t1, 2)) for (k1, t1), (k2, t2) in zip(ks, ks[1:]) if k1 == k2 and 0 <= t2 - t1 < dup_ms]
-    return dict(count=len(ks), dups=dups)
+    pairs = [(k2, t2, round(t2 - t1, 2)) for (k1, t1), (k2, t2) in zip(ks, ks[1:]) if k1 == k2 and 0 <= t2 - t1 < dup_ms]
+    dups, bursts = [], []
+    for p in pairs:
+        ch = _key_char(p[0])
+        logged = sum(1 for k, _ in ks if k == p[0])
+        if sent_text is not None and len(ch) == 1 and ch * 2 in sent_text and logged == sent_text.count(ch):
+            bursts.append(p)
+        else:
+            dups.append(p)
+    return dict(count=len(ks), dups=dups, bursts=bursts)
 
 
 _UI_ITEM_RE = re.compile(r"input_order hop=ui_item kind=(\w+) ms=(\d+(?:\.\d+)?)")
@@ -3633,7 +3651,7 @@ def c_keydown_count(ctx, r):
     time.sleep(1.0)
     got = ctx.lines(fname)
     logtxt = ctx.log_since(off)
-    aud = keydown_audit(logtxt)                 # dups: consecutive same-key keydowns < 2 ms apart
+    aud = keydown_audit(logtxt, sent_text="\n".join(cmds))   # dups: consecutive same-key keydowns < 2 ms apart that are not a doubled key of the text
     ev = key_event_audit(logtxt)               # count: what the app logs per key, whichever way it arrives (see key_event_audit)
     aud["count"] = ev["count"]
     r.metric("keys_sent", sent)
@@ -3647,6 +3665,10 @@ def c_keydown_count(ctx, r):
             aud["count"], sent, aud["count"] - sent, ev["keydown"], ev["typed_only"], ev["enter_only"],
             "EXTRA key events (the #1159 doubled-delivery signature)" if aud["count"] > sent else "keys missing from the app log (lost before the app)"))
     r.check(not aud["dups"], "same key pressed twice < 2 ms apart %d time(s): %s" % (len(aud["dups"]), aud["dups"][:5]))
+    if aud["bursts"]:
+        r.note("a doubled key of the typed text (e.g. `>>`) was handled twice < 2 ms apart %d time(s), with exactly as many presses of it logged as sent "
+               "(OS delivered a burst; not a duplicate): %s" % (len(aud["bursts"]), aud["bursts"][:5]))
+        r.metric("same_key_bursts", len(aud["bursts"]))
     r.check(got == exp, "received text not exact: %d/%d lines; first mismatch %s" % (
         len(got), n, next(((a, b) for a, b in zip(exp + [None], got + [None]) if a != b), None)))
     if ctx.prof.commands():

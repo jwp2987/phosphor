@@ -502,7 +502,7 @@ def c_flood_lat(ctx, r):
 
 @case("flood_scrollback_find", order=62, gui=True)
 def c_flood_find(ctx, r):
-    """MARKER is the first output line of a flood; after the flood, Find (ctrl+shift+f) for it must bring it on screen (OCR of the
+    """MARKER is the first output line of a flood; after the flood, Find (ctrl+shift+f; Cmd-F on macOS) for it must bring it on screen (OCR of the
     screenshot; before the Find the marker is NOT on screen: control). Needs tesseract (package tesseract-ocr)."""
     if ctx.ocr("find_probe") is None:
         raise cases.Skip("no OCR engine (install tesseract-ocr): the marker can only be verified on the screenshot")
@@ -513,10 +513,10 @@ def c_flood_find(ctx, r):
     touch(ctx, "ff_stop.txt")       # the producer runs until n lines AND 3 s have passed (a fast machine used to finish 300k lines before the screen had scrolled)
     mark = ctx.cmd_mark()
     # r18u8 (Mac): Phosphor keeps the running command's text as the block header, so a marker typed in the command line stays visible however far the output
-    # scrolls and the control "marker not on screen" could never hold. The marker is typed split by an empty string (`ABC""DEF`): the shell prints it joined, the
-    # command text (and its header) never contains the joined marker, so only the OUTPUT line can match the Find.
-    split_marker = marker[:7] + '""' + marker[7:]
-    ctx.be.type("echo %s; %s; %s >> ff_end.txt" % (split_marker, endless_flood("seq", "ff_stop.txt", n, 3), now), 12, enter=True)
+    # scrolls and the control "marker not on screen" could never hold. r18u13 (Mac): splitting it with an empty string (`ABC""DEF`) was not enough, OCR
+    # drops the thin quotes and read the header as the joined marker. The command now carries the marker REVERSED and `rev` prints it: the header (and
+    # the tab title) never contain the marker in any OCR reading, so only the OUTPUT line can match the control and the Find.
+    ctx.be.type("echo %s | rev; %s; %s >> ff_end.txt" % (marker[::-1], endless_flood("seq", "ff_stop.txt", n, 3), now), 12, enter=True)
     ctx.until(lambda: os.path.exists(os.path.join(ctx.W, "ff_end.txt")), 200, step=0.5)
     time.sleep(1.0)
     r.check(os.path.exists(os.path.join(ctx.W, "ff_end.txt")), "the flood did not finish")
@@ -525,8 +525,12 @@ def c_flood_find(ctx, r):
     r.metric("marker_visible_before_find", on_screen_before)
     r.check(not on_screen_before, "control: the marker is already visible before the Find (the flood did not scroll it away; the producer runs >= n lines and >= 3 s)")
     ctx.be.guard()
-    # r18u8 (Mac): the Find shortcut is Cmd-Shift-F there (bindings.rs CustomAction::Find = cmd_or_ctrl_shift("f")); ctrl+shift+f did nothing and the marker + Enter were typed into the shell
-    ctx.be.key(os.environ.get("APPCI_KEY_FIND", "cmd+shift+f" if ctx.be.name == "mac" else "ctrl+shift+f"))
+    # r18u8 (Mac): ctrl+shift+f did nothing there and the marker + Enter were typed into the shell. The terminal Find is `terminal:find` =
+    # cmd_or_ctrl_shift("f") (terminal/view/init.rs), which is Cmd-F on macOS (util/bindings.rs: cmd-{key}), ctrl-shift-F elsewhere. r18u13 (Mac): the
+    # r18u8 fix sent Cmd-Shift-F, which is the workspace's GLOBAL SEARCH (workspace/mod.rs OpenGlobalSearch, mac binding cmd-shift-F): the app log has
+    # "GlobalSearch: starting warp_ripgrep CLI search with pattern=<marker>", the panel kept the focus after Escape, and the next case's `ssh fake` +
+    # Enter went into that search field too (remote_heredoc_paste "no remote shell prompt", both modes).
+    ctx.be.key(os.environ.get("APPCI_KEY_FIND", "cmd+f" if ctx.be.name == "mac" else "ctrl+shift+f"))
     time.sleep(0.8)
     ctx.be.type(marker, 20, enter=True)
     time.sleep(1.5)
