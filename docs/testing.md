@@ -651,6 +651,13 @@ budget, previous build, baseline, verdict, n).
 - **Burst reference (Windows, #1583 W1).** After the per-key reference samples, `latency_enter` measures the conhost reference again with the stamp
   line delivered as one 0 ms burst then Enter (`reference_burst_enter_to_start_ms`, `reference_burst_minus_per_key_ms`). A burst median more than 5 ms above the
   per-key one is noted as "the gap is shell ingestion of a burst" (Phosphor also writes the line in one pty write). It does not change the verdict.
+- **Shell-side split for bash/zsh panes (#1492).** The appci bash rc sets `PS0` to record, with no fork, when readline accepted the line
+  (`$__pa_lf`, integer microseconds, bash >= 5.0; the zsh rc already records zle-line-finish). In a Git Bash pane, or a Linux pane identified as
+  bash/zsh, the stamp line becomes `date +%s.%N > lat_N;echo $__pa_lf>>lat_N` (`date` still runs first), and `metrics.enter_split_ms` gains
+  `t0_to_lf_ms` (harness Return to line accepted: delivery, terminal, pty write, line ingest) and `lf_to_stamp_ms` (line accepted to the stamp:
+  the preexec hooks and the `date` start) for Phosphor, the reference, and their `delta`. That decides whether the Windows Git Bash gap is the
+  burst ingest or Phosphor's hooks. `metrics.stamp_line` records the line used; `APPCI_ENTER_SPLIT=0` restores the old, 23-character-shorter
+  line (compare builds across this change with that in mind).
 - **Verdicts.** `PASS`, `FAIL`, `WARN`, or `NO-REFERENCE` when no reference could be measured the same way (never shown as pass).
   `latency_key_log` is `NO-REFERENCE` everywhere today: it reads the app's own `input_order` clock (keydown to first frame) and no
   reference terminal exposes a comparable one; absolute numbers and the old CI sanity bounds (p50 <= 20 ms, p99 <= 60 ms) still apply.

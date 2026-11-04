@@ -378,6 +378,10 @@ def enter_split_attributes_every_hop():
     assert sp["post_to_lf_ms"] == 2.0 and sp["lf_to_px_ms"] == 1.0 and sp["px_to_stamp_ms"] == 0.5 and sp["post_to_stamp_ms"] == 3.5, sp
     assert round(sp["t0_to_post_ms"]) == 200 and sp["n"] == 2, sp
     assert cases.enter_split_summary([dict(t0=1.0, post=None, lf=None, px=None, stamp=1.2)]) == {"n": 1}
+    # #1492: no injector post time (Windows, Linux): harness Return -> line accepted, and line accepted -> stamp, from the bash PS0 time
+    sp = cases.enter_split_summary([dict(t0=1793758441.0, post=None, lf=cases._epoch_s(1793758441030000.0), px=None, stamp=1793758441.0335)])
+    assert round(sp["t0_to_lf_ms"], 2) == 30.0 and round(sp["lf_to_stamp_ms"], 2) == 3.5 and "post_to_lf_ms" not in sp, sp
+    assert cases._epoch_s(1793758441853045.0) == 1793758441.853045 and cases._epoch_s(1793758441.85) == 1793758441.85 and cases._epoch_s(None) is None
     # `${__pa_px:-0}`: a hook that never ran prints 0, which is "no value", never a time
     assert cases._float_or_none(["1.5", "0", "x"], 1) is None and cases._float_or_none(["1.5", "0", "x"], 2) is None
     assert cases._float_or_none(["1.5", "2.25"], 1) == 2.25 and cases._float_or_none(["1.5"], 1) is None

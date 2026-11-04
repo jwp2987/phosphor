@@ -2705,6 +2705,12 @@ def stamp_line(ctx):
             # #1606: the rc's preexec / zle-line-finish times follow the stamp (enter_to_start reads the first field as the stamp)
             return "zmodload zsh/datetime; print -r -- $EPOCHREALTIME ${__pa_px:-0} ${__pa_lf:-0} > lat_%d"
         return "perl -MTime::HiRes=time -e 'printf \"%%.6f\\n\", time' > lat_%d"
+    # #1492: in a bash/zsh pane (Git Bash, or a Linux pane already identified by pane_shell) the rc's line-accepted time ($__pa_lf: bash PS0, in
+    # integer microseconds; zsh zle-line-finish, in seconds) follows the stamp; `date` still runs first, so the stamped interval is unchanged.
+    # APPCI_ENTER_SPLIT=0 keeps the old line (the line is 23 characters longer, which the shell ingests in Phosphor's one-write burst).
+    sh = "bash" if ctx.pane == "gitbash" else lat.shell_base(getattr(ctx, "_pane_shell", None) or None)
+    if sh in ("bash", "zsh") and os.environ.get("APPCI_ENTER_SPLIT", "1") != "0":
+        return "date +%%s.%%N > lat_%d;echo $__pa_lf>>lat_%d"
     return "date +%%s.%%N > lat_%d"
 
 
@@ -2723,7 +2729,7 @@ def enter_to_start(ctx, n, budget_s=None, key_delay_ms=12, stamp=None, d=None, s
             os.remove(f)
         stamp = stamp or stamp_line(ctx)
         ctx.be.guard_ref()
-        ctx.be.type(stamp % i, key_delay_ms)
+        ctx.be.type(stamp % ((i,) * stamp.count("%d")), key_delay_ms)       # #1492: the bash/zsh line names its file twice
         time.sleep(0.3)
         t0 = time.time()
         ctx.be.key("Return")
@@ -2733,8 +2739,9 @@ def enter_to_start(ctx, n, budget_s=None, key_delay_ms=12, stamp=None, d=None, s
             v = float(fields[0])
             ds.append(((v / 1000.0 if v > 1e11 else v) - t0) * 1000)       # PowerShell stamps UTC milliseconds
             if split is not None:
-                split.append(dict(t0=t0, stamp=v / 1000.0 if v > 1e11 else v, post=injector_post_wall(ctx), px=_float_or_none(fields, 1),
-                                  lf=_float_or_none(fields, 2)))
+                # zsh (macOS): stamp px lf; bash/zsh stamp_line (#1492): stamp lf
+                px, lf = (None, _float_or_none(fields, 1)) if len(fields) == 2 else (_float_or_none(fields, 1), _float_or_none(fields, 2))
+                split.append(dict(t0=t0, stamp=v / 1000.0 if v > 1e11 else v, post=injector_post_wall(ctx), px=_epoch_s(px), lf=_epoch_s(lf)))
         except Exception:
             pass
         if i == 2 and not ds:
@@ -2753,6 +2760,13 @@ def _float_or_none(fields, i):
     except (IndexError, ValueError):
         return None
     return v or None
+
+
+def _epoch_s(v):
+    """a shell time as epoch seconds: bash's PS0 time (#1492) is integer microseconds (> 1e14), zsh's $EPOCHREALTIME is already seconds"""
+    if v is None:
+        return None
+    return v / 1e6 if v > 1e14 else v
 
 
 def injector_post_wall(ctx):
@@ -2779,12 +2793,16 @@ def enter_split_summary(samples):
                         sends the Preexec message; none in the reference). Phosphor's title hook runs AFTER it and lands in px_to_stamp
       px_to_stamp       the rc's preexec hook -> the stamp: any later preexec hook (Phosphor's title hook) and the command itself
       post_to_stamp     the whole of it without the input-tool spawn
+      t0_to_lf          (#1492, every platform with a bash/zsh pane, no injector post time needed) harness Return -> the line accepted: key
+                        delivery, the terminal's work, the pty write and the line editor ingesting the line (a burst in Phosphor)
+      lf_to_stamp       the line accepted -> the stamp: every preexec hook (Phosphor's DEBUG-trap preexec and title hook in bash; none in
+                        the reference) and the `date` start
     A key is absent when no sample had both ends (no post time off macOS, no lf/px from a non-zsh shell)."""
     def d(a, b):
         return [(x[b] - x[a]) * 1000.0 for x in samples if x.get(a) is not None and x.get(b) is not None and 0 <= x[b] - x[a] < 1]
     out = {"n": len(samples)}
     for k, a, b in (("t0_to_post_ms", "t0", "post"), ("post_to_lf_ms", "post", "lf"), ("lf_to_px_ms", "lf", "px"), ("px_to_stamp_ms", "px", "stamp"),
-                    ("post_to_stamp_ms", "post", "stamp"), ("post_to_px_ms", "post", "px")):
+                    ("post_to_stamp_ms", "post", "stamp"), ("post_to_px_ms", "post", "px"), ("t0_to_lf_ms", "t0", "lf"), ("lf_to_stamp_ms", "lf", "stamp")):
         v = _med(d(a, b))
         if v is not None:
             out[k] = v
@@ -2856,6 +2874,7 @@ def c_lat_enter(ctx, r):
     n, warm = ctx.count_lat(60), lat.warmup()      # 60: the SE of a 30-sample median difference (~2.3 ms) is larger than the 2 ms budget
     pane_sh = pane_shell_id(ctx)        # asked once, before the first sample (Linux/macOS), so the stamp line below is chosen for the right shell
     r.metric("pane_shell", pane_sh or "unknown")
+    r.metric("stamp_line", stamp_line(ctx))       # #1492: which stamp line ran (APPCI_ENTER_SPLIT), so a build-to-build change can be attributed
     r.metric("host_load", host_load())          # #1583 W4
     if ctx.win and ctx.pane == "gitbash":
         fk = gitbash_fork_ms()                   # #1583 G1
