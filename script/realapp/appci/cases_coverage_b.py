@@ -55,6 +55,23 @@ def autoupdate_lines(text):
     return [l.strip()[:200] for l in text.splitlines() if AUTOUPDATE_RE.search(AUTOUPDATE_OFF_RE.sub("", l))]
 
 
+def ai_submits(log_text):
+    """The `hop=enter_begin` rows (buffer, input_type) of an app-log excerpt that SUBMITTED to the agent: input type AI and not taken by a menu.
+    The app logs enter_begin for every Enter, including one the @ picker takes; that Enter is followed (before the next Enter) by
+    `hop=enter_menu_accept` (#1633). Counting every enter_begin as a submit failed an Enter that had accepted the picker row."""
+    out = []
+    begins = [m.start() for m in re.finditer(r"hop=enter_begin\b", log_text)] + [len(log_text)]
+    for i in range(len(begins) - 1):
+        seg = log_text[begins[i]:begins[i + 1]]
+        rows = CA.enter_buffers(seg)
+        if not rows or rows[0][1] != "AI":
+            continue
+        if re.search(r"hop=enter_menu_accept\b", seg):
+            continue
+        out.append(rows[0])
+    return out
+
+
 def picker_verdict(open_diff, closed_diff, min_open=0.004):
     """(ok, why) for a picker that must appear on `/` or `@` and be gone after Escape. open_diff = fraction of changed pixels against the screenshot
     before the key, closed_diff = the same after Escape. None (no Pillow) is 'cannot judge'. The menu must change the screen by at least min_open and
@@ -126,7 +143,7 @@ def c_agent_pickers(ctx, r):
 @case("cb_agent_file_mention", modes=("agent",), order=52, gui=True)
 def c_agent_file_mention(ctx, r):
     """#1542 (attachments): `@<prefix of a real file>` lists that file in the picker (OCR when an engine exists); Enter accepts the row
-    WITHOUT submitting (no hop=enter_begin line of an AI submit, nothing at the shell); the file's name is then in the input; the line is
+    WITHOUT submitting (every AI hop=enter_begin is followed by hop=enter_menu_accept, #1633; nothing at the shell); the file's name is then in the input; the line is
     cleared and a following prose line still arrives exactly. The agent request itself is not sent (no model needed)."""
     if not ctx.log_path or not os.path.exists(ctx.log_path):
         r.skip("no app log at %s" % ctx.log_path)
@@ -149,8 +166,7 @@ def c_agent_file_mention(ctx, r):
     ctx.be.key("Return")                       # accept the highlighted row; a picker must consume this Enter
     time.sleep(0.8)
     ctx.shot("cb_mention_accepted")
-    rows = CA.enter_buffers(ctx.log_since(off))
-    submitted = [b for b, t in rows if t == "AI"]
+    submitted = [b for b, _t in ai_submits(ctx.log_since(off))]
     r.check(not submitted, "Enter on a picker row SUBMITTED to the agent instead of accepting the row: %r" % submitted[:1])
     r.check(not ctx.cmds_since(mark), "Enter on a picker row reached the shell: %r" % ctx.cmds_since(mark)[:2])
     kept = CA.ocr_has(ctx, "cb_mention_input_ocr", tok)

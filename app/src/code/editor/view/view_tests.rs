@@ -145,3 +145,49 @@ fn test_ctrl_v_pastes_in_the_code_editor() {
         assert!(bound, "ctrl-v must be bound in CodeEditorView");
     });
 }
+
+/// #1634: on Linux and Windows ctrl-home / ctrl-end move to the document start / end in the code
+/// editor, as they do in the input editor; cmdorctrl-up / -down keep working.
+#[test]
+#[cfg(any(windows, target_os = "linux"))]
+fn test_ctrl_home_and_ctrl_end_move_to_the_document_ends() {
+    use warpui::keymap::{Keystroke, Trigger};
+
+    App::test((), |mut app| async move {
+        app.update(super::init);
+        let (_window, editor_view) = initialize_editor(&mut app);
+
+        editor_view.read(&app, |_view, app| {
+            let window_id = editor_view.window_id(app);
+            let view_id = editor_view.id();
+            let resolve = |keystroke: &str| -> Vec<String> {
+                let keystroke = Keystroke::parse(keystroke).expect("valid keystroke");
+                app.key_bindings_for_view(window_id, view_id)
+                    .into_iter()
+                    .filter(|binding| {
+                        matches!(
+                            &binding.trigger,
+                            Trigger::Keystrokes(keystrokes)
+                                if keystrokes.len() == 1 && keystrokes[0] == keystroke
+                        )
+                    })
+                    .filter_map(|binding| {
+                        binding
+                            .action
+                            .as_any()
+                            .downcast_ref::<CodeEditorViewAction>()
+                            .map(|action| format!("{action:?}"))
+                    })
+                    .collect()
+            };
+
+            assert_eq!(
+                resolve("ctrl-home"),
+                vec!["CursorAtBufferStart".to_string()]
+            );
+            assert_eq!(resolve("ctrl-end"), vec!["CursorAtBufferEnd".to_string()]);
+            assert_eq!(resolve("ctrl-up"), vec!["CursorAtBufferStart".to_string()]);
+            assert_eq!(resolve("ctrl-down"), vec!["CursorAtBufferEnd".to_string()]);
+        });
+    });
+}

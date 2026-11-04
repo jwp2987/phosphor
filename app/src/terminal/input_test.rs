@@ -14377,6 +14377,65 @@ fn test_at_picker_still_opens_in_agent_mode() {
     });
 }
 
+/// #1633: in agent mode an Enter while the @ picker is open goes to the picker (it accepts the
+/// highlighted row, or waits for the typed query's results) and never submits the `@...` line to
+/// the agent or runs it in the shell.
+#[test]
+fn test_enter_on_the_at_picker_in_agent_mode_never_submits() {
+    let _ai_context_menu_enabled = FeatureFlag::AIContextMenuEnabled.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        let executed = Rc::new(RefCell::new(Vec::<String>::new()));
+        {
+            let executed = executed.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| {
+                    if let super::Event::ExecuteCommand(event) = event {
+                        executed.borrow_mut().push(event.command.clone());
+                    }
+                });
+            });
+        }
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(
+                    InputConfig {
+                        input_type: InputType::AI,
+                        is_locked: true,
+                    },
+                    true, /* is_input_buffer_empty */
+                    ctx,
+                );
+            });
+        });
+        input.update(&mut app, |input, ctx| {
+            input.replace_buffer_content("@cbmention_x", ctx);
+            input.suggestions_mode_model().update(ctx, |model, ctx| {
+                model.set_mode(
+                    InputSuggestionsMode::AIContextMenu {
+                        filter_text: "cbmention_x".to_string(),
+                        at_symbol_position: 0,
+                    },
+                    ctx,
+                );
+            });
+            assert!(input.ai_input_model().as_ref(ctx).is_ai_input_enabled());
+            input.input_enter(ctx);
+        });
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                "@cbmention_x",
+                "the Enter submitted the @ line instead of going to the picker"
+            );
+        });
+        assert!(executed.borrow().is_empty(), "the @ line reached the shell");
+    });
+}
+
 #[test]
 fn debounce_channel_is_bounded_and_hands_the_overflow_back() {
     let (tx, rx) = async_channel::bounded::<u32>(2);
@@ -14977,6 +15036,74 @@ fn test_shared_queue_display_map_gate_replays_cursor_keys_in_order() {
                     "the gate was closed by the replay step"
                 );
             }
+        });
+    });
+}
+
+/// #1631 on the pane's shared queue (the production `EditorDisplayMap` gate path): a closing quote
+/// typed while a paste is read overtypes the auto-inserted closer AFTER the pasted text, as if it
+/// had been typed once the paste landed. Replayed in the paste's own update it read the pre-paste
+/// display map and the rest of the line landed inside the pasted text.
+#[test]
+fn test_shared_queue_closing_quote_typed_during_a_paste_overtypes_after_it() {
+    use warpui::clipboard::{BackgroundTextRead, BackgroundTextReader};
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        let editor = input.read(&app, |input, _| input.editor().clone());
+        let gate_path = editor.read(&app, |editor, _| editor.paste_hold().display_gate_enabled());
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+        });
+        // The opening quote auto-pairs: `'|'`.
+        editor.update(&mut app, |editor, ctx| editor.user_insert("'", ctx));
+        input.read(&app, |input, ctx| assert_eq!(input.buffer_text(ctx), "''"));
+
+        let (release, parked) = std::sync::mpsc::channel::<()>();
+        let reader: BackgroundTextReader = Box::new(move || {
+            let _ = parked.recv_timeout(Duration::from_secs(20));
+            BackgroundTextRead::Content(ClipboardContent::plain_text("PASTE".to_string()))
+        });
+        input.update(&mut app, |input, ctx| {
+            input.start_background_paste(reader, ctx)
+        });
+        editor.update(&mut app, |editor, ctx| {
+            editor.handle_action(&EditorAction::UserInsert(UserInput::new("'")), ctx);
+            editor.handle_action(&EditorAction::UserInsert(UserInput::new("x")), ctx);
+        });
+        input.read(&app, |input, ctx| assert_eq!(input.buffer_text(ctx), "''"));
+
+        release.send(()).unwrap();
+        for _ in 0..1000 {
+            let pending = editor.read(&app, |editor, _| editor.paste_hold().has_pending());
+            if !pending {
+                break;
+            }
+            warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+        }
+        for _ in 0..1000 {
+            let idle = editor.read(&app, |editor, _| {
+                let hold = editor.paste_hold();
+                hold.queue().peek().is_idle() && !hold.replay_pending()
+            });
+            if idle {
+                break;
+            }
+            warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+        }
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                "'PASTE'x",
+                "the closing quote overtypes after the paste (gate path: {gate_path})"
+            );
+        });
+        editor.read(&app, |editor, _| {
+            let hold = editor.paste_hold();
+            assert!(!hold.replay_pending());
+            assert!(hold.queue().peek().is_idle());
         });
     });
 }

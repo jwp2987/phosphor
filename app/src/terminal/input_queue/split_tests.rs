@@ -568,6 +568,9 @@ fn a_key_that_reads_the_display_map_says_so_until_it_is_delivered() {
     assert!(motion.needs_fresh_display_map());
     assert!(!text.needs_fresh_display_map());
     assert!(!enter.needs_fresh_display_map());
+    // #1631: a typed closer may overtype an auto-inserted one through the display map.
+    let closer = EditorKeyPayload::new(HeldPasteKey::Text("'".to_owned()));
+    assert!(closer.needs_fresh_display_map());
     motion.take();
     assert!(
         !motion.needs_fresh_display_map(),

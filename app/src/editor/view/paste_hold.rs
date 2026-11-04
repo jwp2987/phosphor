@@ -42,7 +42,8 @@ pub enum HeldPasteKey {
 impl HeldPasteKey {
     /// Applying this key reads the display map (cursor motion, deletion by display position), so
     /// it must wait until the edits applied before it have reached the map (#1389). Typed text and
-    /// the Enter family read the buffer, not the map.
+    /// the Enter family read the buffer, not the map, except a closing quote or bracket, which may
+    /// overtype an auto-inserted closer through the map (#1631).
     pub fn needs_fresh_display_map(&self) -> bool {
         needs_fresh_display_map(self)
     }
@@ -438,10 +439,13 @@ impl Host for EditorQueueHost<'_, '_> {
 /// Whether replaying `key` reads the display map (cursor motion, deletion by display position), so
 /// it must wait until the edits replayed before it have reached the map (#1389). The map follows
 /// buffer edits only when the update's effects flush, which cannot happen inside one replay.
-/// Typed text and the Enter family read the buffer, not the map, and apply at once.
+/// Typed text and the Enter family read the buffer, not the map, and apply at once, except a
+/// typed closing quote or bracket: it may overtype an auto-inserted closer, which moves the cursor
+/// through the map. Applied in the same update as the paste before it, it read the pre-paste map
+/// and landed inside the pasted text (#1631).
 pub(super) fn needs_fresh_display_map(key: &HeldPasteKey) -> bool {
     match key {
-        HeldPasteKey::Text(_) => false,
+        HeldPasteKey::Text(text) => super::model::typed_text_may_overtype_closer(text),
         HeldPasteKey::Action(action) => !matches!(
             action,
             EditorAction::Enter

@@ -13120,6 +13120,21 @@ impl Input {
 
     /// If the open completion menu is stale (#1355), closes it so the action that follows (Tab,
     /// Enter, a click) behaves exactly as if no menu were open. True if it was closed.
+    /// The `enter_menu_accept` hop's detail (#1633): whether the editor has a picker view to hand
+    /// the Enter to, and whether it shows a row the Enter would select for the typed filter.
+    fn ai_context_menu_enter_detail(&self, cli_agent: bool, ctx: &AppContext) -> String {
+        let filter = match self.suggestions_mode_model.as_ref(ctx).mode() {
+            InputSuggestionsMode::AIContextMenu { filter_text, .. } => filter_text.clone(),
+            _ => String::new(),
+        };
+        let menu = self.editor.as_ref(ctx).ai_context_menu();
+        let rows = menu.is_some_and(|menu| menu.as_ref(ctx).has_selectable_item(&filter, ctx));
+        format!(
+            "menu=ai_context cli_agent={cli_agent} menu_present={} rows={rows}",
+            menu.is_some()
+        )
+    }
+
     fn drop_stale_completion_menu(&mut self, ctx: &mut ViewContext<Self>) -> bool {
         if !self.completion_menu_stale && !self.as_you_type_menu_lags_buffer(ctx) {
             return false;
@@ -13666,6 +13681,10 @@ impl Input {
                 self.suggestions_mode_model.as_ref(ctx).mode(),
                 InputSuggestionsMode::AIContextMenu { .. }
             ) {
+                // #1633: `enter_begin` is logged for every Enter; this says it went to the picker.
+                warpui::input_order::log_hop("enter_menu_accept", || {
+                    self.ai_context_menu_enter_detail(true, ctx)
+                });
                 self.editor.update(ctx, |editor, ctx| {
                     if let Some(ai_context_menu) = editor.ai_context_menu() {
                         ai_context_menu.update(ctx, |ai_context_menu, ctx| {
@@ -13797,6 +13816,11 @@ impl Input {
             self.suggestions_mode_model.as_ref(ctx).mode(),
             InputSuggestionsMode::AIContextMenu { .. }
         ) {
+            // #1633: `enter_begin` above is logged for every Enter, including one the @ picker
+            // takes; this line says the Enter accepted the picker's row and submitted nothing.
+            warpui::input_order::log_hop("enter_menu_accept", || {
+                self.ai_context_menu_enter_detail(false, ctx)
+            });
             self.editor.update(ctx, |editor, ctx| {
                 if let Some(ai_context_menu) = editor.ai_context_menu() {
                     ai_context_menu.update(ctx, |ai_context_menu, ctx| {
