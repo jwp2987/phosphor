@@ -204,7 +204,7 @@ pin protocol behaviour. Skips are reported as SKIPPED, never silent. A Skip rais
 | `test_line_editor_markers` | `LineEditorReading` / `ContinuationPrompt` OSC markers and `seq` per Precmd (#1390-#1392) |
 | `test_local_counted_bootstrap` | counted-read bootstrap behaves identically to the here-doc form (#1226) |
 | `test_ssh_keepalive`, `test_ssh_probe_cache`, `test_ssh_wrapper_forks`, `test_ssh_raw_bootstrap_hook` | ssh wrapper options, probe cache, fork budget, `raw_bootstrap` hook (#1171, #1136, #1172, #1243) |
-| `test_ssh_auth_once` | a failed ssh login (master step 255, no control socket) or a Ctrl-C at its prompt runs ssh ONCE and returns its status, so no second password prompt eats the next command (#1626); a ssh that authenticated but cannot multiplex (socket created, then 255) still falls back to the user's plain ssh once (#1551); bash/zsh/fish |
+| `test_ssh_auth_once` | a failed ssh login (master step 255, no control socket) or a Ctrl-C at its prompt runs ssh ONCE and returns its status, so no second password prompt eats the next command (#1626); a ssh that authenticated but cannot multiplex (socket created, then 255) still falls back to the user's plain ssh once (#1551); r18u13: the same, plus a successful login, with a `$HOME` that is not the passwd home and the absolute passwd-home SSH_SOCKET_DIR the app now exports there (the fake ssh expands `~` from `$PWHOME`, as ssh does from the passwd entry; the old literal `~/.ssh` export made the wrapper miss its own master and log in twice): the wrapper logs in ONCE and multiplexes the session over its master; bash/zsh/fish |
 | `test_pwsh_git_head.ps1` | pwsh in-process git head equals `git` (#1163) |
 | `test_warpctrl_early_dispatch` | the app binary honours `--warpctrl` before GUI startup (needs a built binary, else SKIPPED) |
 | `macos/test_create_warpctrl_wrapper` | macOS wrapper packaging |
@@ -799,7 +799,8 @@ adds the note `injector died: ... (key loss in this case is the INJECTOR's, not 
 
 **`ssh_failing_not_local` (r18d8; expectation changed 2026-11-04).** Since the plain-terminal ssh pass-through (DECLINED.md, "A FAILING ssh behaves like a plain terminal too") the case asserts the iTerm2 / plain-terminal result: `MUSTNOT` typed behind the failing ssh runs locally EXACTLY ONCE, exactly as typed, and only after the ssh failed (file mtime >= the failure); no hold hop is expected. Before, it asserted the line never ran locally. The target is a local TCP listener that accepts and never speaks (`cases.HangingTcpServer`), so the ssh is provably still
 CONNECTING (TCP accepted, connection open; ConnectTimeout 6 s) when `MUSTNOT` is typed and fails only afterwards (`Connection timed out during banner
-exchange`). The old `.invalid` host could fail in tens of ms, before the first typed key, when running the line locally is correct. The case fails as a HARNESS
+exchange`). r18u13: the listener READS (and drops) what ssh sends; it used to `MSG_PEEK`, which kept seeing ssh's unread banner after ssh had closed the
+connection, so the failure time was the wait's 14 s timeout and a line that ran after ssh exited was reported as running ~9 s BEFORE it. The old `.invalid` host could fail in tens of ms, before the first typed key, when running the line locally is correct. The case fails as a HARNESS
 problem if the ssh was not connecting at that moment, and notes the app's `kh_hold_entry` line for the first MUSTNOT key (`holding=...`, `gate_drops=...`), the
 first `kh_hold_exit` / `kh_iq_release Q7_ssh_typeahead` after it and the time the ssh failed. The enforced claim: text typed while an ssh connects and then
 fails is NEVER run locally (handed back unexecuted, #983/#1292).

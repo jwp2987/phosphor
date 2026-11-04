@@ -303,3 +303,50 @@ fn ssh_socket_dir_is_exported_absolute() {
     let dir = absolute_ssh_socket_dir("~/.ssh", Some(Path::new("/Users/winters")));
     assert!(dir.len() + 1 + 20 + 17 < 104);
 }
+
+/// r18u13: a `$HOME` too long for a socket path (an isolated CI home) falls back to the passwd
+/// home, the directory ssh itself expands a literal `~` to, so the wrapper's socket test and ssh
+/// name the same file. A usable `$HOME` wins and the passwd lookup is not even made.
+#[test]
+fn ssh_socket_dir_falls_back_to_the_passwd_home() {
+    use std::path::{Path, PathBuf};
+    let long = format!(
+        "/home/gitlab-runner/builds/r_hQtIdMf/1/{}/appci-out/wayland/run/home",
+        "winters-phosphor/phosphor"
+    );
+    assert_eq!(
+        absolute_ssh_socket_dir_or_passwd("~/.ssh", Some(Path::new(&long)), || Some(
+            PathBuf::from("/home/gitlab-runner")
+        )),
+        "/home/gitlab-runner/.ssh"
+    );
+    // No $HOME at all: the passwd home.
+    assert_eq!(
+        absolute_ssh_socket_dir_or_passwd("~/.ssh", None, || Some(PathBuf::from("/Users/me"))),
+        "/Users/me/.ssh"
+    );
+    // A usable $HOME wins, and the passwd database is not consulted.
+    assert_eq!(
+        absolute_ssh_socket_dir_or_passwd("~/.ssh", Some(Path::new("/tmp/h")), || {
+            panic!("the passwd home must not be looked up when $HOME is usable")
+        }),
+        "/tmp/h/.ssh"
+    );
+    // Neither usable: the literal stays (ssh and the wrapper then still agree only when $HOME is
+    // the passwd home; nothing better can be named).
+    assert_eq!(
+        absolute_ssh_socket_dir_or_passwd("~/.ssh", Some(Path::new(&long)), || Some(
+            PathBuf::from(long.clone())
+        )),
+        "~/.ssh"
+    );
+    assert_eq!(
+        absolute_ssh_socket_dir_or_passwd("~/.ssh", Some(Path::new(&long)), || None),
+        "~/.ssh"
+    );
+    // Already absolute (Integration channel): untouched either way.
+    assert_eq!(
+        absolute_ssh_socket_dir_or_passwd("/abs/.ssh", None, || Some(PathBuf::from("/h"))),
+        "/abs/.ssh"
+    );
+}

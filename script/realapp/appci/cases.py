@@ -2203,10 +2203,15 @@ class HangingTcpServer:
         self.srv.setblocking(False)
         self.port = self.srv.getsockname()[1]
         self.conns, self.accepted_at = [], []
+        self.closed = set()     # indexes of connections whose peer (ssh) closed them
 
     def poll(self):
-        """accept anything pending; -> (connections accepted so far, connections still open: the peer (ssh) has not closed them)"""
-        import socket
+        """accept anything pending; -> (connections accepted so far, connections still open: the peer (ssh) has not closed them).
+
+        r18u13: the data the peer sent is READ (and dropped), not peeked. ssh sends its own banner at once; a MSG_PEEK saw that unread banner on every
+        poll, so a connection ssh had long closed still counted as open, the wait for the failure ran its full ct + 8 s, and the case reported the
+        line as having run locally "8.77 s BEFORE the ssh failed" when it had run after ssh exited. A connection is closed once recv returns b""
+        (end of stream, after any data) or fails."""
         while True:
             try:
                 c, _ = self.srv.accept()
@@ -2216,14 +2221,25 @@ class HangingTcpServer:
             self.conns.append(c)
             self.accepted_at.append(time.time())
         alive = 0
-        for c in self.conns:
-            try:
-                if c.recv(1, socket.MSG_PEEK) != b"":
-                    alive += 1          # the peer sent something: still a live conversation
-            except BlockingIOError:
-                alive += 1              # nothing to read and not closed: open
-            except OSError:
-                pass
+        for i, c in enumerate(self.conns):
+            if i in self.closed:
+                continue
+            open_ = True
+            while True:
+                try:
+                    data = c.recv(4096)
+                except BlockingIOError:
+                    break               # nothing (more) to read and not closed: open
+                except OSError:
+                    open_ = False       # reset by the peer
+                    break
+                if data == b"":
+                    open_ = False       # end of stream: the peer closed it
+                    break
+            if open_:
+                alive += 1
+            else:
+                self.closed.add(i)
         return len(self.conns), alive
 
     def close(self):
