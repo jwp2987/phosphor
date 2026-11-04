@@ -7,7 +7,7 @@ use warpui::{AppContext, ModelHandle, SingletonEntity, ViewContext, ViewHandle};
 use crate::{
     app_state::{LeafContents, NotebookPaneSnapshot},
     cloud_object::Space,
-    drive::{items::WarpDriveItemId, ObjectTypeAndId, ZapDriveObjectSettings},
+    drive::{ObjectTypeAndId, ZapDriveObjectSettings, items::WarpDriveItemId},
     notebooks::{
         link::{LinkEvent, NotebookLinks},
         manager::{NotebookManager, NotebookSource},
@@ -20,9 +20,9 @@ use crate::{
 
 use super::{
     super::{DefaultSessionModeBehavior, Direction},
-    view::PaneView,
     DetachType, PaneConfiguration, PaneContent, PaneGroup, PaneId, ShareableLink,
     ShareableLinkError,
+    view::PaneView,
 };
 
 pub struct NotebookPane {

@@ -3,9 +3,9 @@ use std::{borrow::Cow, str::FromStr};
 use serde::{Deserialize, Serialize};
 use warp_core::ui::appearance::Appearance;
 use warpui::{
+    AppContext, SingletonEntity,
     color::ColorU,
     ui_components::components::{UiComponent, UiComponentStyles},
-    AppContext, SingletonEntity,
 };
 
 use crate::{
@@ -118,7 +118,6 @@ impl TeamKind {
 }
 
 impl Subject {
-
     pub fn user_uid(&self) -> Option<UserUid> {
         match self {
             Subject::User(user_kind) => match user_kind {

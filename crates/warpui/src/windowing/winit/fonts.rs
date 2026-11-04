@@ -16,10 +16,10 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::ops::{DerefMut, Range};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use bimap::BiMap;
 use pathfinder_geometry::{
     rect::{RectF, RectI},
@@ -33,12 +33,12 @@ use cosmic_text::{
     Align, Attrs, AttrsList, AttrsOwned, BidiParagraphs, LayoutGlyph, LayoutLine, ShapeLine,
     Shaping, Wrap,
 };
-use dashmap::{mapref::entry::Entry, DashMap};
+use dashmap::{DashMap, mapref::entry::Entry};
 use fontdb::Source;
 use itertools::Itertools;
 use lazy_static::lazy_static;
 use parking_lot::RwLock;
-use pathfinder_geometry::vector::{vec2f, vec2i, Vector2I};
+use pathfinder_geometry::vector::{Vector2I, vec2f, vec2i};
 
 use self::font_handle::{FontData, FontHandle};
 use self::str_index_map::StrIndexMap;
@@ -48,8 +48,8 @@ use crate::platform::{self};
 use crate::text_layout::{CaretPosition, TextAlignment};
 use crate::{
     fonts::{
-        canvas::RasterFormat, FamilyId, FontId, GlyphId, Properties, RasterizedGlyph,
-        SubpixelAlignment,
+        FamilyId, FontId, GlyphId, Properties, RasterizedGlyph, SubpixelAlignment,
+        canvas::RasterFormat,
     },
     platform::LineStyle,
     rendering::GlyphConfig,
@@ -592,22 +592,30 @@ impl TextLayoutSystem {
                         let internal_font_id = *internal_font_id;
                         let panic_font_data =
                             self.read_font_face_panic_data(font_id, Some(internal_font_id));
-                        let panic_message = match self.font_store.read().db().face_source(internal_font_id)
-                    {
-                        None => {
-                            format!("does not have an internal font source for id {internal_font_id}")
-                        }
-                        Some((source, idx)) => format!(
-                            "was unable to load font source ({source:?}, {idx}) for id {internal_font_id}"
-                        )
-                    };
+                        let panic_message = match self
+                            .font_store
+                            .read()
+                            .db()
+                            .face_source(internal_font_id)
+                        {
+                            None => {
+                                format!(
+                                    "does not have an internal font source for id {internal_font_id}"
+                                )
+                            }
+                            Some((source, idx)) => format!(
+                                "was unable to load font source ({source:?}, {idx}) for id {internal_font_id}"
+                            ),
+                        };
                         log::warn!(
                             "Tried to load font data {panic_font_data}, but {panic_message}"
                         );
                     }
                     None => {
                         let panic_font_data = self.read_font_face_panic_data(font_id, None);
-                        log::warn!("Tried to load font data {panic_font_data}, but no corresponding internal id exists");
+                        log::warn!(
+                            "Tried to load font data {panic_font_data}, but no corresponding internal id exists"
+                        );
                     }
                 };
                 panic!("Tried to load font data. No font source");

@@ -84,8 +84,8 @@ use super::{
 use super::element::{CursorData, RenderContext};
 
 pub mod bounds;
-pub(crate) mod debug;
 mod char_cell_display;
+pub(crate) mod debug;
 pub use self::char_cell_display::{DisplayLattice, DisplayRow, DisplayRowKind};
 pub(crate) mod hydration;
 mod location;
@@ -3068,9 +3068,7 @@ impl RenderState {
                 let text_index = char_cell.text_index.borrow();
                 blocks
                     .into_iter()
-                    .map(|block| {
-                        CharCellTemporaryBlock::from_temporary_block(block, &text_index)
-                    })
+                    .map(|block| CharCellTemporaryBlock::from_temporary_block(block, &text_index))
                     .collect()
             };
             char_cell.set_temporary_blocks(ghosts);
@@ -4549,7 +4547,10 @@ impl Positioned<'_, BlockItem> {
                     .cell_at_offset(relative_offset)
                     .map(|c| c.row)
                     .unwrap_or(0);
-                SoftWrapPoint::new(self.start_line.as_u32() + row as u32, ColumnUnit::pixels_zero())
+                SoftWrapPoint::new(
+                    self.start_line.as_u32() + row as u32,
+                    ColumnUnit::pixels_zero(),
+                )
             }
         }
     }

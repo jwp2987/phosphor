@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use chrono::DateTime;
 use cocoa::base::id;
 use objc2_foundation::NSUInteger;

@@ -1,9 +1,9 @@
 use std::iter::Peekable;
 
 use anyhow::Result;
-use itertools::{peek_nth, Either, PeekNth};
+use itertools::{Either, PeekNth, peek_nth};
 use string_offset::CharOffset;
-use warpui::text::{words::is_default_word_boundary, TextBuffer};
+use warpui::text::{TextBuffer, words::is_default_word_boundary};
 
 use crate::vim::{Direction, WordBound, WordType};
 

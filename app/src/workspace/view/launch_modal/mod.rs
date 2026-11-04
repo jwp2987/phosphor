@@ -5,7 +5,7 @@ use crate::ui_components::blended_colors;
 use crate::ui_components::icons::Icon;
 use crate::view_components::action_button::{ActionButton, PrimaryTheme, SecondaryTheme};
 use crate::workspace::view::launch_modal::cta_button::{CTAButton, CTAButtonAction};
-use markdown_parser::{parse_markdown, FormattedText, FormattedTextLine};
+use markdown_parser::{FormattedText, FormattedTextLine, parse_markdown};
 use pathfinder_color::ColorU;
 use std::collections::HashMap;
 use warp_core::ui::appearance::Appearance;
@@ -348,7 +348,9 @@ impl<S: Slide> LaunchModal<S> {
                                             .content_hyperlink
                                             .clone(),
                                     )
-                                    .with_heading_to_font_size_multipliers(appearance.heading_font_size_multipliers().clone())
+                                    .with_heading_to_font_size_multipliers(
+                                        appearance.heading_font_size_multipliers().clone(),
+                                    )
                                     .with_hyperlink_font_color(theme.accent().into_solid())
                                     .register_default_click_handlers_with_action_support(
                                         |hyperlink_lens, _event, ctx| {
@@ -520,7 +522,9 @@ impl<S: Slide> View for LaunchModal<S> {
                                 blended_colors::text_main(theme, blended_colors::neutral_1(theme)),
                                 Default::default(), // no hyperlink highlighting needed
                             )
-                            .with_heading_to_font_size_multipliers(appearance.heading_font_size_multipliers().clone())
+                            .with_heading_to_font_size_multipliers(
+                                appearance.heading_font_size_multipliers().clone(),
+                            )
                             .disable_mouse_interaction()
                             .finish();
 

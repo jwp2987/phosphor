@@ -7,9 +7,9 @@ use crate::{
 };
 
 use std::mem::ManuallyDrop;
-use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::sync::mpsc::Sender;
 use std::thread;
 
 use super::event_loop::AppEvent;

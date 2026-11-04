@@ -1,27 +1,27 @@
 //! Shared agent-event stream utilities used by third-party harness bridges.
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 
 mod driver;
 mod family;
 mod message_hydrator;
 
+pub(crate) use driver::{
+    AgentEventConsumer, AgentEventConsumerControlFlow, AgentEventDriverConfig, AgentEventSource,
+    AgentEventSourceItem, run_agent_event_driver,
+};
 #[cfg(test)]
 pub(crate) use driver::{
-    agent_event_backoff, agent_event_failures_exceeded_threshold, AgentEventDriverState,
-    DEFAULT_AGENT_EVENT_FAILURES_BEFORE_ERROR_LOG, DEFAULT_AGENT_EVENT_RECONNECT_BACKOFF_STEPS,
-    DEFAULT_PERMANENT_ERROR_BACKOFF_STEPS,
+    AgentEventDriverState, DEFAULT_AGENT_EVENT_FAILURES_BEFORE_ERROR_LOG,
+    DEFAULT_AGENT_EVENT_RECONNECT_BACKOFF_STEPS, DEFAULT_PERMANENT_ERROR_BACKOFF_STEPS,
+    agent_event_backoff, agent_event_failures_exceeded_threshold,
 };
-pub(crate) use driver::{
-    run_agent_event_driver, AgentEventConsumer, AgentEventConsumerControlFlow,
-    AgentEventDriverConfig, AgentEventSource, AgentEventSourceItem,
-};
-pub(crate) use family::{classify_family_event, FamilyEvent, EVENT_NEW_MESSAGE};
 #[cfg(test)]
 pub(crate) use family::{
-    lifecycle_event_type_from_wire, EVENT_CHILD_AGENT_STARTED, EVENT_RUN_SESSION_LINKED,
+    EVENT_CHILD_AGENT_STARTED, EVENT_RUN_SESSION_LINKED, lifecycle_event_type_from_wire,
 };
+pub(crate) use family::{EVENT_NEW_MESSAGE, FamilyEvent, classify_family_event};
 pub(crate) use message_hydrator::MessageHydrator;
 
 /// Entry point for the local agent event stream. Zap keeps the interface to support local driver injection; the default implementation disables cloud RTC.

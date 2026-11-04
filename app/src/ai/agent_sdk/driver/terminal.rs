@@ -11,23 +11,23 @@ use std::{
 use futures::channel::oneshot;
 use warp_core::command::ExitCode;
 use warp_util::path::ShellDialect;
-use warpui::{r#async::FutureExt, AppContext, Entity, ModelContext, ModelHandle, ViewHandle};
+use warpui::{AppContext, Entity, ModelContext, ModelHandle, ViewHandle, r#async::FutureExt};
 
 use crate::ai::agent::redaction::redact_secrets;
 
 use crate::{
     ai::ambient_agents::AmbientAgentTaskId,
     pane_group::NewTerminalOptions,
-    root_view::{open_new_with_workspace_source, NewWorkspaceSource},
+    root_view::{NewWorkspaceSource, open_new_with_workspace_source},
     terminal::{
+        TerminalView,
+        model::RespectObfuscatedSecrets,
         model::block::{BlockId, SerializedBlock},
         model::find::RegexDFAs,
         model::grid::{Dimensions, RespectDisplayedOutput},
         model::index::Point,
-        model::RespectObfuscatedSecrets,
         shared_session::IsSharedSessionCreator,
         shell::ShellType,
-        TerminalView,
     },
     util::sync::Condition,
 };
@@ -310,8 +310,10 @@ impl TerminalDriver {
         &mut self,
         command: &str,
         ctx: &mut ModelContext<Self>,
-    ) -> Result<impl Future<Output = Result<CommandHandle, AgentDriverError>> + use<>, AgentDriverError>
-    {
+    ) -> Result<
+        impl Future<Output = Result<CommandHandle, AgentDriverError>> + use<>,
+        AgentDriverError,
+    > {
         // The shell process has exited, so no further commands can run in
         // this session. Fail fast with the shell-exit error so callers
         // (e.g. environment setup) report the failure instead of waiting
@@ -380,8 +382,10 @@ impl TerminalDriver {
         &mut self,
         target: &str,
         ctx: &mut ModelContext<Self>,
-    ) -> Result<impl Future<Output = Result<CommandHandle, AgentDriverError>> + use<>, AgentDriverError>
-    {
+    ) -> Result<
+        impl Future<Output = Result<CommandHandle, AgentDriverError>> + use<>,
+        AgentDriverError,
+    > {
         let cd_command = self.build_cd_command(target, ctx);
         self.execute_command(&cd_command, ctx)
     }

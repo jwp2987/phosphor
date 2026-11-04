@@ -745,10 +745,7 @@ fn auto_select_falls_back_to_top_level_page_when_no_subpages_match() {
         MatchData::Countable(0),
     );
 
-    let pages_visible = vec![
-        (SettingsSection::About, true),
-        (SettingsSection::AI, false),
-    ];
+    let pages_visible = vec![(SettingsSection::About, true), (SettingsSection::AI, false)];
 
     // Nav order includes top-level About before the AI subpages.
     let nav_order = vec![
@@ -886,10 +883,7 @@ fn collapsed_umbrella_is_a_single_nav_stop() {
         stops[2],
         NavStop::Section(SettingsSection::Appearance)
     ));
-    assert!(matches!(
-        stops[6],
-        NavStop::Section(SettingsSection::About)
-    ));
+    assert!(matches!(stops[6], NavStop::Section(SettingsSection::About)));
 }
 
 #[test]

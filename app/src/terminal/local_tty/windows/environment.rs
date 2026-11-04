@@ -8,16 +8,16 @@ use itertools::Itertools;
 use warp_core::channel::ChannelState;
 use warp_core::cli_agent_protocol::{WARP_CLI_AGENT_PROTOCOL_VERSION_ENV, WARP_CLIENT_VERSION_ENV};
 use warp_core::features::FeatureFlag;
-use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::System::Environment::ExpandEnvironmentStringsW;
+use windows::core::{HSTRING, PCWSTR};
 use winreg::types::FromRegValue;
 use winreg::{
-    enums::{RegType, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE},
     RegKey, RegValue,
+    enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RegType},
 };
 
 use crate::safe_info;
-use crate::terminal::local_tty::{shell::ShellStarter, PtyOptions};
+use crate::terminal::local_tty::{PtyOptions, shell::ShellStarter};
 
 const HONOR_PS1_NAME: &str = "WARP_HONOR_PS1";
 const PROMPT_NODE_VERSION_ENABLED_NAME: &str = "WARP_PROMPT_NODE_VERSION_ENABLED";

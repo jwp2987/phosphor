@@ -1,11 +1,11 @@
 use super::*;
 use crate::{
-    elements::Empty, platform::WindowStyle, App, AppContext, Element, Entity, ModelHandle,
-    TypedActionView, View,
+    App, AppContext, Element, Entity, ModelHandle, TypedActionView, View, elements::Empty,
+    platform::WindowStyle,
 };
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 
 #[derive(Default)]

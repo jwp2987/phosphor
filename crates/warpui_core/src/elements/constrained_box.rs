@@ -1,6 +1,6 @@
 use crate::{
     event::DispatchedEvent,
-    text::{word_boundaries::WordBoundariesPolicy, IsRect, SelectionDirection, SelectionType},
+    text::{IsRect, SelectionDirection, SelectionType, word_boundaries::WordBoundariesPolicy},
 };
 use pathfinder_geometry::rect::RectF;
 

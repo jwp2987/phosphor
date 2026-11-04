@@ -11,12 +11,12 @@ use crate::terminal::shell::ShellType;
 use crate::terminal::warpify;
 use crate::terminal::warpify::render::ssh_docs_url;
 use crate::ui_components::icons::Icon as UiIcon;
+use warpui::AppContext;
 use warpui::elements::{HighlightedHyperlink, Hoverable, Icon, MouseStateHandle};
 use warpui::keymap::FixedBinding;
-use warpui::AppContext;
 use warpui::{
-    elements::{Border, Container, CrossAxisAlignment, Flex, ParentElement},
     Element, Entity, SingletonEntity, TypedActionView, View, ViewContext,
+    elements::{Border, Container, CrossAxisAlignment, Flex, ParentElement},
 };
 
 #[derive(Debug, Clone)]
@@ -80,7 +80,7 @@ pub fn warpify_description(
 
     let description = FormattedText::new(vec![FormattedTextLine::Line(vec![
         FormattedTextFragment::plain_text(
-            "Bring Phosphor's features to your remote session. Blocks, full text editing, auto-complete, Phosphor Agent, and more. "
+            "Bring Phosphor's features to your remote session. Blocks, full text editing, auto-complete, Phosphor Agent, and more. ",
         ),
         FormattedTextFragment::hyperlink(crate::t!("common-learn-more"), ssh_docs_url()),
     ])]);

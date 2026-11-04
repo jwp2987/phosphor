@@ -130,7 +130,10 @@ impl ModelTokenTotals {
 ///
 /// Reuses [`AIConversation::context_window_usage`] — the same 0.0–1.0 fraction the GUI usage
 /// footer and the TUI statusline already display — rather than recomputing occupancy.
-pub fn context_usage_report(conversation: Option<&AIConversation>, ctx: &AppContext) -> UsageCostOutcome {
+pub fn context_usage_report(
+    conversation: Option<&AIConversation>,
+    ctx: &AppContext,
+) -> UsageCostOutcome {
     let Some(conversation) = conversation else {
         return UsageCostOutcome::Unavailable(
             "Cannot show context usage: no active conversation".to_owned(),
@@ -161,7 +164,10 @@ pub fn format_context_usage_report(
 ) -> UsageCostOutcome {
     let suffix = match (model_label, context_window) {
         (Some(label), Some(window)) => {
-            format!(" — {label}, {} token context window", thousands(window as u64))
+            format!(
+                " — {label}, {} token context window",
+                thousands(window as u64)
+            )
         }
         (Some(label), None) => format!(" — {label}"),
         (None, Some(window)) => format!(" — {} token context window", thousands(window as u64)),
@@ -277,7 +283,10 @@ pub fn format_cost_report(totals: &[ModelTokenTotals]) -> UsageCostOutcome {
         .iter()
         .filter(|total| total.price.is_none())
         .collect();
-    let cache_caveat = if totals.iter().any(ModelTokenTotals::used_input_rate_for_cache) {
+    let cache_caveat = if totals
+        .iter()
+        .any(ModelTokenTotals::used_input_rate_for_cache)
+    {
         " Cached tokens were billed at the plain input rate: no cache rate is configured, so this over-reports on providers that discount cache reads."
     } else {
         ""

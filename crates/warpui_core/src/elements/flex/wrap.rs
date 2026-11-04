@@ -1,8 +1,7 @@
+use crate::ClipBounds;
 use crate::elements::AxisOrientation;
 use crate::event::DispatchedEvent;
-use crate::ClipBounds;
 
-use super::cross_axis_size;
 use super::AppContext;
 use super::Axis;
 use super::CrossAxisAlignment;
@@ -14,11 +13,12 @@ use super::PaintContext;
 use super::Point;
 use super::SizeConstraint;
 use super::Vector2FExt;
-use crate::elements::flex::{main_axis_size, size_along_axis, LayoutState};
+use super::cross_axis_size;
 use crate::elements::MainAxisAlignment;
+use crate::elements::flex::{LayoutState, main_axis_size, size_along_axis};
 use ordered_float::OrderedFloat;
 use pathfinder_geometry::rect::RectF;
-use pathfinder_geometry::vector::{vec2f, Vector2F};
+use pathfinder_geometry::vector::{Vector2F, vec2f};
 
 /// An element that positions its children in horizontal or vertical runs, leaving space in between
 /// each run.

@@ -2,6 +2,7 @@ use warp_core::semantic_selection::SemanticSelection;
 use warpui::App;
 
 use crate::terminal::{
+    GridType, SizeInfo, SizeUpdate, SizeUpdateReason, TerminalModel,
     block_filter::BlockFilterQuery,
     event_listener::ChannelEventListener,
     model::{
@@ -11,7 +12,6 @@ use crate::terminal::{
         terminal_model::WithinBlock,
     },
     shared_session::tests::terminal_model_for_viewer,
-    GridType, SizeInfo, SizeUpdate, SizeUpdateReason, TerminalModel,
 };
 use warpui::text::SelectionType;
 

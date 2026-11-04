@@ -61,8 +61,8 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -75,21 +75,21 @@ use warp_managed_secrets::ManagedSecretValue;
 use warpui::{App, SingletonEntity as _};
 
 use super::{
-    build_secret_env_vars, AgentDriver, IdleTimeoutSender,
-    LEGACY_OZ_PARENT_LISTENER_MANAGED_EXTERNALLY_ENV, LEGACY_OZ_PARENT_STATE_ROOT_ENV,
-    OZ_MESSAGE_LISTENER_MANAGED_EXTERNALLY_ENV, OZ_MESSAGE_LISTENER_STATE_ROOT_ENV,
+    AgentDriver, IdleTimeoutSender, LEGACY_OZ_PARENT_LISTENER_MANAGED_EXTERNALLY_ENV,
+    LEGACY_OZ_PARENT_STATE_ROOT_ENV, OZ_MESSAGE_LISTENER_MANAGED_EXTERNALLY_ENV,
+    OZ_MESSAGE_LISTENER_STATE_ROOT_ENV, build_secret_env_vars,
 };
 use crate::ai::agent::{AIAgentOutput, AIAgentOutputMessage, ArtifactCreatedData, MessageId};
 use crate::ai::agent_sdk::driver::harness::task_env_vars;
 use crate::ai::ambient_agents::AmbientAgentTaskId;
-use crate::ai::mcp::parsing::normalize_mcp_json;
 use crate::ai::mcp::JSONTransportType;
+use crate::ai::mcp::parsing::normalize_mcp_json;
 use crate::ai::skills::SkillManager;
-use crate::test_util::add_window_with_terminal;
-use crate::test_util::terminal::initialize_app_for_terminal_view;
 use crate::terminal::cli_agent_sessions::plugin_manager::{
     CliAgentPluginManager, PluginInstallError, PluginInstructions,
 };
+use crate::test_util::add_window_with_terminal;
+use crate::test_util::terminal::initialize_app_for_terminal_view;
 
 #[test]
 fn test_normalize_single_cli_server() {
@@ -330,9 +330,11 @@ fn task_env_vars_include_parent_run_id_when_present() {
         )),
         Some(&OsString::from("1"))
     );
-    assert!(env_vars
-        .get(&OsString::from(OZ_CLI_ENV))
-        .is_some_and(|value| !value.is_empty()));
+    assert!(
+        env_vars
+            .get(&OsString::from(OZ_CLI_ENV))
+            .is_some_and(|value| !value.is_empty())
+    );
 }
 
 #[test]

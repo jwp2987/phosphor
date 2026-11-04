@@ -1,4 +1,5 @@
 use warpui::{
+    AppContext, Element, Entity, SingletonEntity, TypedActionView, View, ViewContext,
     elements::MouseStateHandle,
     fonts::Weight,
     platform::Cursor,
@@ -6,12 +7,11 @@ use warpui::{
         button::ButtonVariant,
         components::{Coords, UiComponent, UiComponentStyles},
     },
-    AppContext, Element, Entity, SingletonEntity, TypedActionView, View, ViewContext,
 };
 
 use crate::{
     appearance::Appearance,
-    ui_components::dialog::{dialog_styles, Dialog},
+    ui_components::dialog::{Dialog, dialog_styles},
 };
 
 // This follows our new design standard for confirmation dialogs (e.g. used in the session sharing dialog)

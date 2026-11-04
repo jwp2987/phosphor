@@ -1,13 +1,13 @@
-use warpui::fonts::FamilyId;
 use warpui::SingletonEntity as _;
+use warpui::fonts::FamilyId;
 use warpui::{
+    AppContext, Element, Entity, TypedActionView, View, ViewContext,
     color::ColorU,
     elements::{
-        resizable_state_handle, Container, CrossAxisAlignment, DragBarSide, Flex,
-        MainAxisAlignment, MainAxisSize, ParentElement, Rect, Resizable, ResizableStateHandle,
-        Shrinkable, Stack, Text,
+        Container, CrossAxisAlignment, DragBarSide, Flex, MainAxisAlignment, MainAxisSize,
+        ParentElement, Rect, Resizable, ResizableStateHandle, Shrinkable, Stack, Text,
+        resizable_state_handle,
     },
-    AppContext, Element, Entity, TypedActionView, View, ViewContext,
 };
 
 pub struct RootView {

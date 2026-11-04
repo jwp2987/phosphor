@@ -19,48 +19,48 @@ use std::num::NonZeroUsize;
 use std::ops::{Range, RangeInclusive};
 use std::sync::Arc;
 use std::{
-    cmp::{min, Ordering},
+    cmp::{Ordering, min},
     mem,
 };
 
 use bounded_vec_deque::BoundedVecDeque;
 use itertools::Itertools;
 use lazy_static::lazy_static;
-use unicode_general_category::{get_general_category, GeneralCategory};
+use unicode_general_category::{GeneralCategory, get_general_category};
 use unicode_width::UnicodeWidthChar;
 use urlocator::{UrlLocation, UrlLocator};
 use warp_core::features::FeatureFlag;
-use warp_core::semantic_selection::{SemanticSelection, SMART_SELECT_MATCH_WINDOW_LIMIT};
+use warp_core::semantic_selection::{SMART_SELECT_MATCH_WINDOW_LIMIT, SemanticSelection};
 use warp_core::{safe_assert, safe_assert_eq};
+pub use warp_terminal::model::TermMode;
 use warp_terminal::model::grid::CellType;
 use warp_terminal::model::grid::FlatStorage;
 use warp_terminal::model::grid::{HyperlinkId, HyperlinkRegistry};
-pub use warp_terminal::model::TermMode;
 
 pub use image::ImagePlacement;
 use warp_terminal::model::{KeyboardModes, KeyboardModesApplyBehavior};
 use warp_util::path::CleanPathResult;
 use warpui::color::ColorU;
 
+use crate::terminal::SizeInfo;
 use crate::terminal::event_listener::ChannelEventListener;
 use crate::terminal::model::ansi::{self, Color, CursorStyle, Handler, NamedColor};
-use crate::terminal::model::cell::{Cell, Flags, LineLength, DEFAULT_CHAR};
+use crate::terminal::model::cell::{Cell, DEFAULT_CHAR, Flags, LineLength};
 use crate::terminal::model::char_or_str::{CharOrStr, PushCharOrStr};
 use crate::terminal::model::grid::{Dimensions, GridStorage};
 use crate::terminal::model::image_map::ImageMap;
 use crate::terminal::model::index::{IndexRange, Point, VisibleRow};
 use crate::terminal::model::secrets::{ObfuscateSecrets, SecretMap};
-use crate::terminal::SizeInfo;
 use crate::util::extensions::TrimStringExt;
 
 use crate::terminal::model::grid::RespectDisplayedOutput;
 use crate::terminal::model::secrets::RespectObfuscatedSecrets;
 use crate::terminal::model::terminal_model::RangeInModel;
+use crate::terminal::model::{Secret, SecretHandle};
 use crate::terminal::model::{
     find::{Match, RegexDFAs},
     index::Direction,
 };
-use crate::terminal::model::{Secret, SecretHandle};
 
 use super::displayed_output::DisplayedOutput;
 use super::grapheme_cursor::{self, GraphemeCursor};
@@ -1171,7 +1171,9 @@ impl GridHandler {
 
         match (color_sequence, style_sequence) {
             (Some(color_sequence), Some(style_sequence)) => {
-                format!("{CSI_START}{color_sequence};{style_sequence}m{cell_content}{SGR_RESET_ATTRIBUTES}")
+                format!(
+                    "{CSI_START}{color_sequence};{style_sequence}m{cell_content}{SGR_RESET_ATTRIBUTES}"
+                )
             }
             (color_sequence, style_sequence) => {
                 let color_sequence = color_sequence.unwrap_or_default();

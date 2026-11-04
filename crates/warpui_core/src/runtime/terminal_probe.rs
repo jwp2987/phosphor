@@ -428,9 +428,7 @@ fn classify_probe_read(replies: &[u8], background_known: bool) -> ProbeRead {
     if contains_da1_reply(replies) {
         return ProbeRead::Sentinel;
     }
-    if !background_known
-        && let Some(rgb) = parse_complete_background_reply(replies)
-    {
+    if !background_known && let Some(rgb) = parse_complete_background_reply(replies) {
         return ProbeRead::Background(rgb);
     }
     ProbeRead::Pending

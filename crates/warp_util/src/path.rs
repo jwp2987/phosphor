@@ -685,14 +685,14 @@ pub fn convert_msys2_to_windows_native_path(
         [TypedComponent::Unix(UnixComponent::Normal(component)), ..] if *component == b"~" => {
             unix_path.with_windows_encoding()
         }
-        [TypedComponent::Windows(WindowsComponent::Prefix(prefix)), ..]
-            if is_wsl_unc_prefix(prefix) =>
-        {
-            unix_path.to_path_buf()
-        }
-        [TypedComponent::Unix(UnixComponent::RootDir), TypedComponent::Unix(UnixComponent::Normal(bytes))]
-            if DIRS_IN_MSYS2_ROOT.contains(bytes) =>
-        {
+        [
+            TypedComponent::Windows(WindowsComponent::Prefix(prefix)),
+            ..,
+        ] if is_wsl_unc_prefix(prefix) => unix_path.to_path_buf(),
+        [
+            TypedComponent::Unix(UnixComponent::RootDir),
+            TypedComponent::Unix(UnixComponent::Normal(bytes)),
+        ] if DIRS_IN_MSYS2_ROOT.contains(bytes) => {
             let mut windows_path = msys2_root.to_typed_path_buf();
             for component in unix_path.with_windows_encoding().components().skip(1) {
                 windows_path.push(component.as_bytes());
@@ -701,9 +701,10 @@ pub fn convert_msys2_to_windows_native_path(
         }
         // Check if the prefix is "/c/" or similar, which is how MSYS2 refers to Windows drive
         // "C:\". Valid drive names are single ASCII letters, in either case.
-        [TypedComponent::Unix(UnixComponent::RootDir), TypedComponent::Unix(UnixComponent::Normal(bytes))]
-            if bytes.len() == 1 && bytes[0].is_ascii_alphabetic() =>
-        {
+        [
+            TypedComponent::Unix(UnixComponent::RootDir),
+            TypedComponent::Unix(UnixComponent::Normal(bytes)),
+        ] if bytes.len() == 1 && bytes[0].is_ascii_alphabetic() => {
             let mut windows_path = TypedPathBuf::new(PathType::Windows);
             windows_path.push([*bytes, b":\\"].concat());
             for component in unix_path.with_windows_encoding().components().skip(2) {
@@ -713,9 +714,11 @@ pub fn convert_msys2_to_windows_native_path(
         }
         // WSL paths from within MSYS2, e.g. you can do `ls //wsl$/Ubuntu/home`. The 2 slashes
         // in the beginning are required.
-        [TypedComponent::Unix(UnixComponent::RootDir), TypedComponent::Unix(UnixComponent::Normal(bytes))]
-            if String::from_utf8(bytes.to_vec())
-                .is_ok_and(|s| s.to_lowercase().starts_with("wsl")) =>
+        [
+            TypedComponent::Unix(UnixComponent::RootDir),
+            TypedComponent::Unix(UnixComponent::Normal(bytes)),
+        ] if String::from_utf8(bytes.to_vec())
+            .is_ok_and(|s| s.to_lowercase().starts_with("wsl")) =>
         {
             let mut windows_path = TypedPathBuf::new(PathType::Windows);
             windows_path.push([b"\\\\", *bytes].concat());
@@ -769,9 +772,11 @@ pub fn convert_wsl_to_windows_host_path(
     match prefix.as_slice() {
         // Check if the prefix is "/mnt/c/" or similar, which is how WSL refers to Windows drive
         // "C:\". Valid drive names are single ASCII letters, in either case.
-        [TypedComponent::Unix(UnixComponent::RootDir), TypedComponent::Unix(UnixComponent::Normal(b"mnt")), TypedComponent::Unix(UnixComponent::Normal(bytes))]
-            if bytes.len() == 1 && bytes[0].is_ascii_alphabetic() =>
-        {
+        [
+            TypedComponent::Unix(UnixComponent::RootDir),
+            TypedComponent::Unix(UnixComponent::Normal(b"mnt")),
+            TypedComponent::Unix(UnixComponent::Normal(bytes)),
+        ] if bytes.len() == 1 && bytes[0].is_ascii_alphabetic() => {
             windows_path.push([*bytes, b":\\"].concat());
             for component in unix_path.with_windows_encoding().components().skip(3) {
                 windows_path.push(component.as_bytes());
@@ -1323,7 +1328,9 @@ pub fn executable_file_names_in_path(
     let _ = pathext;
     #[cfg(windows)]
     let extensions: Vec<String> = {
-        let configured = pathext.map(|e| e.to_string_lossy().into_owned()).unwrap_or_default();
+        let configured = pathext
+            .map(|e| e.to_string_lossy().into_owned())
+            .unwrap_or_default();
         let configured = if configured.trim().is_empty() {
             ".COM;.EXE;.BAT;.CMD".to_owned()
         } else {

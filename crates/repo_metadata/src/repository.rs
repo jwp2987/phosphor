@@ -11,19 +11,19 @@ use futures::future::ready;
 #[cfg(feature = "local_fs")]
 use ignore::gitignore::Gitignore;
 use warp_util::standardized_path::StandardizedPath;
-use warpui::r#async::{BoxFuture, SpawnedFutureHandle};
 #[cfg(feature = "local_fs")]
 use warpui::SingletonEntity;
+use warpui::r#async::{BoxFuture, SpawnedFutureHandle};
 use warpui::{Entity, ModelContext, ModelHandle};
 
 #[cfg(feature = "local_fs")]
 use crate::watcher::DirectoryWatcher;
+use crate::{RepoMetadataError, RepositoryUpdate, watcher::TaskQueue};
 #[cfg(feature = "local_fs")]
 use crate::{
     entry::{matches_gitignores, should_ignore_git_path},
     gitignores_for_directory,
 };
-use crate::{watcher::TaskQueue, RepoMetadataError, RepositoryUpdate};
 
 /// Trait for entities that want to subscribe to repository file changes.
 pub trait RepositorySubscriber: Send + Sync {
@@ -318,8 +318,8 @@ impl Repository {
     /// upstream-ref lookup this needs.
     #[cfg(feature = "local_fs")]
     async fn run_upstream_ref_command(repo_path: &Path) -> anyhow::Result<String> {
-        use command::r#async::Command;
         use command::Stdio;
+        use command::r#async::Command;
 
         let mut cmd = Command::new("git");
         cmd.args(["rev-parse", "--symbolic-full-name", "@{u}"])
@@ -550,13 +550,14 @@ impl Repository {
         subscriber_id: SubscriberId,
         ctx: &mut ModelContext<Self>,
     ) -> Option<Pin<Box<dyn Future<Output = ()> + Send + 'static>>> {
-        match self.subscribers.remove(&subscriber_id) { Some(mut subscription) => {
-            let future = subscription.subscriber.on_scan(self, ctx);
-            self.subscribers.insert(subscriber_id, subscription);
-            Some(future)
-        } _ => {
-            None
-        }}
+        match self.subscribers.remove(&subscriber_id) {
+            Some(mut subscription) => {
+                let future = subscription.subscriber.on_scan(self, ctx);
+                self.subscribers.insert(subscriber_id, subscription);
+                Some(future)
+            }
+            _ => None,
+        }
     }
 
     /// Notifies a specific subscriber about file changes.
@@ -567,13 +568,14 @@ impl Repository {
         update: &RepositoryUpdate,
         ctx: &mut ModelContext<Self>,
     ) -> Option<Pin<Box<dyn Future<Output = ()> + Send + 'static>>> {
-        match self.subscribers.remove(&subscriber_id) { Some(mut subscription) => {
-            let future = subscription.subscriber.on_files_updated(self, update, ctx);
-            self.subscribers.insert(subscriber_id, subscription);
-            Some(future)
-        } _ => {
-            None
-        }}
+        match self.subscribers.remove(&subscriber_id) {
+            Some(mut subscription) => {
+                let future = subscription.subscriber.on_files_updated(self, update, ctx);
+                self.subscribers.insert(subscriber_id, subscription);
+                Some(future)
+            }
+            _ => None,
+        }
     }
 
     /// Returns updates filtered for each subscriber's watch mode.

@@ -6,8 +6,8 @@ use async_trait::async_trait;
 use smol_str::SmolStr;
 use warp_completer::completer::{CommandExitStatus, CommandOutput};
 use warpui::{
-    elements::Empty, platform::WindowStyle, App, AppContext, Element, Entity, ModelHandle,
-    TypedActionView, View, ViewContext,
+    App, AppContext, Element, Entity, ModelHandle, TypedActionView, View, ViewContext,
+    elements::Empty, platform::WindowStyle,
 };
 
 use crate::terminal::shell::{Shell, ShellType};
@@ -339,10 +339,12 @@ fn deferred_function_names_are_merged_without_duplicating_the_bootstrap_set() {
         assert!(sorted(session.top_level_commands()).contains(&"Invoke-Custom"));
         assert_eq!(
             executor.recorded(),
-            vec![ShellType::PowerShell
-                .shell_command_to_get_all_functions()
-                .expect("PowerShell enumerates functions asynchronously")
-                .to_owned()]
+            vec![
+                ShellType::PowerShell
+                    .shell_command_to_get_all_functions()
+                    .expect("PowerShell enumerates functions asynchronously")
+                    .to_owned()
+            ]
         );
     });
 }
@@ -364,10 +366,12 @@ fn deferred_builtin_names_are_merged_without_duplicating_the_bootstrap_set() {
         assert!(sorted(session.top_level_commands()).contains(&"Get-Custom"));
         assert_eq!(
             executor.recorded(),
-            vec![ShellType::PowerShell
-                .shell_command_to_get_all_builtins()
-                .expect("PowerShell enumerates builtins asynchronously")
-                .to_owned()]
+            vec![
+                ShellType::PowerShell
+                    .shell_command_to_get_all_builtins()
+                    .expect("PowerShell enumerates builtins asynchronously")
+                    .to_owned()
+            ]
         );
     });
 }
@@ -915,7 +919,9 @@ fn git_corrections_skipped_only_for_existing_dirs_outside_a_repo() {
     assert!(!super::local_dir_is_outside_git_repo(&wt));
 
     // Paths we can't inspect fall back to running git.
-    assert!(!super::local_dir_is_outside_git_repo(&tmp.path().join("missing")));
+    assert!(!super::local_dir_is_outside_git_repo(
+        &tmp.path().join("missing")
+    ));
 }
 
 /// #1203: nushell's sqlite history (its default `file_format`) is read as the shell wrote it,
@@ -964,7 +970,9 @@ fn deferred_name_enumeration_is_redundant_only_for_a_local_powershell_session() 
             let info = SessionInfo::new_for_test().with_shell_type(shell_type);
             Session::new(
                 info,
-                Arc::new(super::command_executor::LocalCommandExecutor::new(None, shell_type)),
+                Arc::new(super::command_executor::LocalCommandExecutor::new(
+                    None, shell_type,
+                )),
             )
         };
         assert!(local(ShellType::PowerShell).deferred_name_enumeration_is_redundant());
@@ -1037,10 +1045,19 @@ mod subshell_remote_host {
         let sessions = sessions();
         assert_eq!(sessions.inherited_remote_host_id(Some(SSH.into())), None);
 
-        sessions.get(SSH.into()).unwrap().set_remote_host_id(Some(host()));
+        sessions
+            .get(SSH.into())
+            .unwrap()
+            .set_remote_host_id(Some(host()));
         // The direct child and the grandchild both resolve to the ssh session's host.
-        assert_eq!(sessions.inherited_remote_host_id(Some(SSH.into())), Some(host()));
-        assert_eq!(sessions.inherited_remote_host_id(Some(SUDO.into())), Some(host()));
+        assert_eq!(
+            sessions.inherited_remote_host_id(Some(SSH.into())),
+            Some(host())
+        );
+        assert_eq!(
+            sessions.inherited_remote_host_id(Some(SUDO.into())),
+            Some(host())
+        );
         // No chain, or a chain that leads to a session without a host, resolves to nothing.
         assert_eq!(sessions.inherited_remote_host_id(None), None);
         assert_eq!(sessions.inherited_remote_host_id(Some(OTHER.into())), None);
@@ -1090,7 +1107,10 @@ fn remote_history_is_read_as_a_bounded_tail() {
 
     assert_eq!(remote_history_max_lines_from_env(None), Some(50_000));
     assert_eq!(remote_history_max_lines_from_env(Some("abc")), Some(50_000));
-    assert_eq!(remote_history_max_lines_from_env(Some(" 1000 ")), Some(1000));
+    assert_eq!(
+        remote_history_max_lines_from_env(Some(" 1000 ")),
+        Some(1000)
+    );
     assert_eq!(remote_history_max_lines_from_env(Some("0")), None);
 
     // The path is passed through already quoted; the command never re-interprets it.

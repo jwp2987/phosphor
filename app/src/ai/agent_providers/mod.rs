@@ -255,7 +255,10 @@ mod extra_header_tests {
     #[test]
     fn surrounding_whitespace_is_trimmed_not_rejected() {
         let headers = vec![pair("  X-Key ", " secret ")];
-        assert_eq!(usable_extra_headers(&headers), vec![pair("X-Key", "secret")]);
+        assert_eq!(
+            usable_extra_headers(&headers),
+            vec![pair("X-Key", "secret")]
+        );
     }
 
     #[test]
@@ -276,7 +279,10 @@ mod extra_header_tests {
 
     #[test]
     fn check_reports_each_problem() {
-        assert_eq!(check_extra_header("", ""), Err(ExtraHeaderProblem::EmptyName));
+        assert_eq!(
+            check_extra_header("", ""),
+            Err(ExtraHeaderProblem::EmptyName)
+        );
         assert_eq!(
             check_extra_header("a b", "v"),
             Err(ExtraHeaderProblem::InvalidName)

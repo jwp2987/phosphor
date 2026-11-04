@@ -75,11 +75,11 @@ fn failed_take_does_not_consume_the_restore_opportunity() {
 /// empty optimistic root instead of reading the persisted task.
 #[cfg(feature = "local_fs")]
 mod startup_restore {
+    use agent_proto as api;
     use diesel::{
         Connection as _, ExpressionMethods as _, QueryDsl as _, RunQueryDsl as _, SqliteConnection,
     };
     use diesel_migrations::MigrationHarness as _;
-    use agent_proto as api;
 
     use super::*;
     use crate::ai::agent::{AIAgentActionResultType, AIAgentInput};

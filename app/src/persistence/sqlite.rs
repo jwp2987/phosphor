@@ -13,16 +13,16 @@ use std::{
 };
 
 use ai::project_context::model::ProjectRulePath;
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Utc};
+use diesel::migration::MigrationSource;
 use diesel::{
+    BelongingToDsl, BoolExpressionMethods, Connection, ExpressionMethods, GroupedBy,
+    OptionalExtension, QueryDsl, RunQueryDsl, SelectableHelper,
     connection::{DefaultLoadingMode, SimpleConnection},
     result::Error,
     sqlite::SqliteConnection,
-    BelongingToDsl, BoolExpressionMethods, Connection, ExpressionMethods, GroupedBy,
-    OptionalExtension, QueryDsl, RunQueryDsl, SelectableHelper,
 };
-use diesel::migration::MigrationSource;
 use diesel_migrations::MigrationHarness;
 use instant::Instant;
 use itertools::Itertools;
@@ -44,14 +44,13 @@ use super::block_list::{
     upsert_ai_query,
 };
 use super::model::{
-    self, ActiveMCPServer, CurrentUserInformation, MCPEnvironmentVariables, NewActiveMCPServer,
-    NewApp, NewCommand, NewFolder, NewNotebook, NewTab, NewTabGroup, NewTeam,
-    NewWindow, NewWorkspace, NewWorkspaceMetadata, NewWorkspaceTeam, ObjectMetadata,
-    ObjectPermissions, Project, Tab, TabGroup, Window,
-    WorkspaceMetadata as WorkspaceMetadataModel,
-    AI_DOCUMENT_PANE_KIND, AI_FACT_PANE_KIND, CODE_PANE_KIND, ENV_VAR_COLLECTION_PANE_KIND,
-    EXECUTION_PROFILE_EDITOR_PANE_KIND, MCP_SERVER_PANE_KIND, NOTEBOOK_PANE_KIND,
-    SETTINGS_PANE_KIND, TERMINAL_PANE_KIND, WELCOME_PANE_KIND, WORKFLOW_PANE_KIND,
+    self, AI_DOCUMENT_PANE_KIND, AI_FACT_PANE_KIND, ActiveMCPServer, CODE_PANE_KIND,
+    CurrentUserInformation, ENV_VAR_COLLECTION_PANE_KIND, EXECUTION_PROFILE_EDITOR_PANE_KIND,
+    MCP_SERVER_PANE_KIND, MCPEnvironmentVariables, NOTEBOOK_PANE_KIND, NewActiveMCPServer, NewApp,
+    NewCommand, NewFolder, NewNotebook, NewTab, NewTabGroup, NewTeam, NewWindow, NewWorkspace,
+    NewWorkspaceMetadata, NewWorkspaceTeam, ObjectMetadata, ObjectPermissions, Project,
+    SETTINGS_PANE_KIND, TERMINAL_PANE_KIND, Tab, TabGroup, WELCOME_PANE_KIND, WORKFLOW_PANE_KIND,
+    Window, WorkspaceMetadata as WorkspaceMetadataModel,
 };
 use super::schema;
 use super::{
@@ -65,10 +64,10 @@ use crate::ai::execution_profiles::{AIExecutionProfileObject, AIExecutionProfile
 use crate::ai::facts::{AIFactObject, AIFactObjectModel};
 use crate::ai::mcp::templatable::{TemplatableMCPServerObject, TemplatableMCPServerObjectModel};
 use crate::ai::mcp::templatable_installation::VariableValue;
-use crate::ai::persisted_workspace::EnablementState;
 use crate::ai::mcp::{
     MCPServerObject, MCPServerObjectModel, TemplatableMCPServer, TemplatableMCPServerInstallation,
 };
+use crate::ai::persisted_workspace::EnablementState;
 use crate::app_state::{
     AIFactPaneSnapshot, AmbientAgentPaneSnapshot, CodeReviewPaneSnapshot,
     EnvVarCollectionPaneSnapshot, LeftPanelSnapshot, RightPanelSnapshot, SettingsPaneSnapshot,
@@ -80,24 +79,26 @@ use crate::auth::UserUid;
 use crate::cloud_object::model::actions::{ObjectAction, ObjectActionSubtype};
 use crate::cloud_object::model::generic_string_model::{GenericStringObjectId, StoredStringObject};
 use crate::cloud_object::{
-    JsonObjectType, ObjectIdType, ObjectType, Owner, StoredObject, GENERIC_STRING_OBJECT_PREFIX,
-    JSON_OBJECT_PREFIX,
+    GENERIC_STRING_OBJECT_PREFIX, JSON_OBJECT_PREFIX, JsonObjectType, ObjectIdType, ObjectType,
+    Owner, StoredObject,
 };
 use crate::code::buffer_location::RemotePath;
 use crate::code::editor_management::CodeSource;
-use crate::drive::folders::{FolderId, FolderObject, FolderObjectModel};
 use crate::drive::ZapDriveObjectSettings;
+use crate::drive::folders::{FolderId, FolderObject, FolderObjectModel};
 use crate::env_vars::{EnvVarCollectionObject, EnvVarCollectionObjectModel};
 use crate::features::FeatureFlag;
 use crate::notebooks::{NotebookId, NotebookObject};
-use crate::persistence::agent::{backfill_conversation_summaries, read_agent_conversation_metadata};
+use crate::persistence::agent::{
+    backfill_conversation_summaries, read_agent_conversation_metadata,
+};
 use crate::persistence::block_list::{
     get_all_restored_blocks, process_ai_queries_for_nld_history_match,
     process_ai_queries_for_uparrow_prompt, read_recent_ai_queries,
 };
 use crate::persistence::model::{
-    NewGenericStringObject, NewObjectStoreRefresh, NewPersistedObjectAction, NewTeamSettings,
-    ProjectRules, UserProfile, CODE_REVIEW_PANE_KIND, GET_STARTED_PANE_KIND,
+    CODE_REVIEW_PANE_KIND, GET_STARTED_PANE_KIND, NewGenericStringObject, NewObjectStoreRefresh,
+    NewPersistedObjectAction, NewTeamSettings, ProjectRules, UserProfile,
 };
 use crate::server::ids::{ClientId, HashableId, ServerId, SyncId, ToServerId};
 use crate::server::telemetry::TelemetryEvent;
@@ -105,8 +106,8 @@ use crate::server_time::ServerTimestamp;
 use crate::settings_view::SettingsSection;
 use crate::suggestions::ignored_suggestions_model::SuggestionType;
 use crate::tab::SelectedTabColor;
-use crate::terminal::history::PersistedCommand;
 use crate::terminal::ShellLaunchData;
+use crate::terminal::history::PersistedCommand;
 use crate::themes::theme::AnsiColorIdentifier;
 use crate::workflows::workflow_enum::{WorkflowEnumObject, WorkflowEnumObjectModel};
 use crate::workflows::{WorkflowId, WorkflowObject};
@@ -415,7 +416,7 @@ fn drain_retry_queue(
 const LOCK_NOTICE_THRESHOLD: u32 = 3;
 const COMMANDS_COUNT_LIMIT: i64 = 10000;
 
-use crate::persistence::cloud_objects::{upsert_stored_object, StoredObjectId};
+use crate::persistence::cloud_objects::{StoredObjectId, upsert_stored_object};
 
 const WARP_SQLITE_FILE_NAME: &str = "warp.sqlite";
 const ZAP_APP_GROUP_SQLITE_MIGRATION_MARKER: &str = ".zap-app-group-sqlite-migrated";
@@ -1188,79 +1189,81 @@ fn sqlite_log_level(err_code: i32) -> log::Level {
 /// ## Safety
 /// Setting up SQLite logging is not thread-safe. No other SQLite calls may be made while this
 /// function is running.
-unsafe fn init_logging() { unsafe {
-    use std::ffi::{c_char, c_int, c_void, CStr};
-    use std::panic;
-    use std::ptr;
+unsafe fn init_logging() {
+    unsafe {
+        use std::ffi::{CStr, c_char, c_int, c_void};
+        use std::panic;
+        use std::ptr;
 
-    extern "C-unwind" fn log_callback(_data: *mut c_void, err_code: c_int, msg: *const c_char) {
-        // `err_code` is an extended error code (https://www.sqlite.org/rescode.html#primary_result_codes_versus_extended_result_codes).
-        // In general, the least-significant byte of an extended error code is the primary error
-        // code it belongs to. Each primary error code can also be used where an extended error
-        // code is expected (for example, `SQLITE_SCHEMA` has no extended error codes).
-        let primary_error_code = err_code & 0xFF;
-        let level = sqlite_log_level(err_code);
+        extern "C-unwind" fn log_callback(_data: *mut c_void, err_code: c_int, msg: *const c_char) {
+            // `err_code` is an extended error code (https://www.sqlite.org/rescode.html#primary_result_codes_versus_extended_result_codes).
+            // In general, the least-significant byte of an extended error code is the primary error
+            // code it belongs to. Each primary error code can also be used where an extended error
+            // code is expected (for example, `SQLITE_SCHEMA` has no extended error codes).
+            let primary_error_code = err_code & 0xFF;
+            let level = sqlite_log_level(err_code);
 
-        // Safety: the message pointer came from the SQLite library, which promises that it's a
-        // valid C string pointer.
-        let msg = unsafe { CStr::from_ptr(msg) };
-        let err_message = String::from_utf8_lossy(msg.to_bytes());
-        // The writer ends diesel's transaction count with a `COMMIT` SQLite has to refuse
-        // after a raw one succeeded (`commit_open_transaction`, #1297); that is routine.
-        let level = if primary_error_code == sqlite3::SQLITE_ERROR
-            && err_message.contains("no transaction is active")
-        {
-            log::Level::Debug
-        } else {
-            level
-        };
-        // The local logging path shouldn't panic, but still guard against
-        // unwinding across the FFI boundary.
-        // Damage makes every statement fail the same way; log each code once
-        // a minute instead of 10-30 times in a row (#911).
-        if matches!(
-            primary_error_code,
-            sqlite3::SQLITE_CORRUPT | sqlite3::SQLITE_NOTADB | sqlite3::SQLITE_READONLY
-        ) || (primary_error_code == sqlite3::SQLITE_ERROR
-            && err_message.contains("no such table"))
-        {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_secs());
-            if !super::database_notice::sqlite_error_should_log(primary_error_code, now) {
-                return;
+            // Safety: the message pointer came from the SQLite library, which promises that it's a
+            // valid C string pointer.
+            let msg = unsafe { CStr::from_ptr(msg) };
+            let err_message = String::from_utf8_lossy(msg.to_bytes());
+            // The writer ends diesel's transaction count with a `COMMIT` SQLite has to refuse
+            // after a raw one succeeded (`commit_open_transaction`, #1297); that is routine.
+            let level = if primary_error_code == sqlite3::SQLITE_ERROR
+                && err_message.contains("no transaction is active")
+            {
+                log::Level::Debug
+            } else {
+                level
+            };
+            // The local logging path shouldn't panic, but still guard against
+            // unwinding across the FFI boundary.
+            // Damage makes every statement fail the same way; log each code once
+            // a minute instead of 10-30 times in a row (#911).
+            if matches!(
+                primary_error_code,
+                sqlite3::SQLITE_CORRUPT | sqlite3::SQLITE_NOTADB | sqlite3::SQLITE_READONLY
+            ) || (primary_error_code == sqlite3::SQLITE_ERROR
+                && err_message.contains("no such table"))
+            {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs());
+                if !super::database_notice::sqlite_error_should_log(primary_error_code, now) {
+                    return;
+                }
             }
+            let _ = panic::catch_unwind(|| {
+                // openWarp only writes local logs; the error code/description still retain diagnostic value.
+                log::log!(
+                    level,
+                    "SQLite error {} ({}): {}",
+                    err_code,
+                    sqlite3::code_to_str(err_code),
+                    err_message
+                );
+            });
         }
-        let _ = panic::catch_unwind(|| {
-            // openWarp only writes local logs; the error code/description still retain diagnostic value.
-            log::log!(
-                level,
-                "SQLite error {} ({}): {}",
-                err_code,
-                sqlite3::code_to_str(err_code),
-                err_message
+
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            let null: *const c_void = ptr::null();
+            // Diesel doesn't expose SQLite's logging/tracing APIs, but the FFI bindings do.
+            let status = sqlite3::sqlite3_config(
+                sqlite3::SQLITE_CONFIG_LOG,
+                log_callback as extern "C-unwind" fn(_, _, _),
+                null,
             );
+
+            if status != sqlite3::SQLITE_OK {
+                log::error!(
+                    "Error setting up SQLite logging: {}",
+                    sqlite3::code_to_str(status)
+                );
+            }
         });
     }
-
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        let null: *const c_void = ptr::null();
-        // Diesel doesn't expose SQLite's logging/tracing APIs, but the FFI bindings do.
-        let status = sqlite3::sqlite3_config(
-            sqlite3::SQLITE_CONFIG_LOG,
-            log_callback as extern "C-unwind" fn(_, _, _),
-            null,
-        );
-
-        if status != sqlite3::SQLITE_OK {
-            log::error!(
-                "Error setting up SQLite logging: {}",
-                sqlite3::code_to_str(status)
-            );
-        }
-    });
-}}
+}
 
 /// Determines the db path, establishes a connection and runs any migrations.
 pub(super) fn init_db() -> Result<SqliteConnection> {
@@ -1311,8 +1314,10 @@ pub(super) fn init_db() -> Result<SqliteConnection> {
 
                 if let Err(err) = std::fs::rename(&old_wal, &new_wal) {
                     if err.kind() != std::io::ErrorKind::NotFound {
-                        report_error!(anyhow::Error::new(err)
-                            .context("Failed to migrate SQLite WAL into application container"));
+                        report_error!(
+                            anyhow::Error::new(err)
+                                .context("Failed to migrate SQLite WAL into application container")
+                        );
                     }
                 } else {
                     log::info!("Migrated SQLite WAL into application container");
@@ -1320,16 +1325,20 @@ pub(super) fn init_db() -> Result<SqliteConnection> {
 
                 if let Err(err) = std::fs::rename(&old_shm, &new_shm) {
                     if err.kind() != std::io::ErrorKind::NotFound {
-                        report_error!(anyhow::Error::new(err)
-                            .context("Failed to migrate SQLite SHM into application container"));
+                        report_error!(
+                            anyhow::Error::new(err)
+                                .context("Failed to migrate SQLite SHM into application container")
+                        );
                     }
                 } else {
                     log::info!("Migrated SQLite shared memory file into application container");
                 }
             }
             Err(err) => {
-                report_error!(anyhow::Error::new(err)
-                    .context("Failed to migrate SQLite database into application container"));
+                report_error!(
+                    anyhow::Error::new(err)
+                        .context("Failed to migrate SQLite database into application container")
+                );
             }
         }
     }
@@ -1651,7 +1660,9 @@ fn diesel_database_error_message(err: &Error) -> String {
 static FRESH_DATABASES: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 
 fn mark_database_fresh(db_path: &Path) {
-    if let Ok(mut fresh) = FRESH_DATABASES.lock() && !fresh.iter().any(|p| p == db_path) {
+    if let Ok(mut fresh) = FRESH_DATABASES.lock()
+        && !fresh.iter().any(|p| p == db_path)
+    {
         fresh.push(db_path.to_path_buf());
     }
 }
@@ -2184,15 +2195,19 @@ pub(super) fn remove(sender: SyncSender<ModelEvent>) {
     // Ideally, we'd drop any other events in the channel, but it's not worth the complexity right
     // now. Having the writer thread remove the database file prevents race conditions if the
     // thread is in the middle of another update.
-    report_if_error!(sender
-        .send(ModelEvent::PauseAndRemoveDatabase)
-        .context("Error requesting database deletion"));
+    report_if_error!(
+        sender
+            .send(ModelEvent::PauseAndRemoveDatabase)
+            .context("Error requesting database deletion")
+    );
 }
 
 pub(super) fn reconstruct(sender: SyncSender<ModelEvent>) {
-    report_if_error!(sender
-        .send(ModelEvent::ReconstructAndResume)
-        .context("Error resuming SQLite thread"));
+    report_if_error!(
+        sender
+            .send(ModelEvent::ReconstructAndResume)
+            .context("Error resuming SQLite thread")
+    );
 }
 
 fn reconstruct_database(path: &Path) -> Result<SqliteConnection> {
@@ -4243,13 +4258,15 @@ fn get_all_project_rules(
 ) -> Result<Vec<ProjectRulePath>, diesel::result::Error> {
     use schema::project_rules::dsl::*;
 
-    Ok(collect_rows(project_rules.load_iter::<ProjectRules, DefaultLoadingMode>(conn)?)?
-        .into_iter()
-        .map(|rule| ProjectRulePath {
-            path: PathBuf::from(rule.path),
-            project_root: PathBuf::from(rule.project_root),
-        })
-        .collect_vec())
+    Ok(
+        collect_rows(project_rules.load_iter::<ProjectRules, DefaultLoadingMode>(conn)?)?
+            .into_iter()
+            .map(|rule| ProjectRulePath {
+                path: PathBuf::from(rule.path),
+                project_root: PathBuf::from(rule.project_root),
+            })
+            .collect_vec(),
+    )
 }
 
 fn upsert_project_rules(
@@ -4342,7 +4359,9 @@ fn get_all_mcp_server_installations(
 
     let improper_rows = rows_len - result.len();
     if improper_rows > 0 {
-        log::warn!("Skipping {improper_rows} rows from mcp_server_installations table due to malformation.");
+        log::warn!(
+            "Skipping {improper_rows} rows from mcp_server_installations table due to malformation."
+        );
     }
 
     Ok(result)
@@ -5377,179 +5396,182 @@ fn read_sqlite_data_counting(
         .enumerate()
         .zip(db_tabs)
         .zip(db_tab_groups)
-        .map(|(((idx, window), tabs_for_window), tab_groups_for_window)| {
-            // Mint a fresh `TabGroupId` per row and build a `row id -> TabGroupId`
-            // map so tabs can be reattached to their group below.
-            let mut tab_group_id_by_row_id: HashMap<i32, TabGroupId> = HashMap::new();
-            let mut tab_groups_snapshots: Vec<TabGroupSnapshot> = Vec::new();
-            for group in tab_groups_for_window {
-                let tab_group_id = TabGroupId::new();
-                tab_group_id_by_row_id.insert(group.id, tab_group_id);
-                let color = group
-                    .color
-                    .as_deref()
-                    .and_then(|s| serde_yaml::from_str::<SelectedTabColor>(s).ok())
-                    .unwrap_or_default();
-                tab_groups_snapshots.push(TabGroupSnapshot {
-                    id: tab_group_id,
-                    name: group.name,
-                    color,
-                    collapsed: group.collapsed,
-                    pinned: group.pinned,
-                });
-            }
-            let saved_tabs: Vec<_> = tabs_for_window
-                .into_iter()
-                .filter_map(|tab| {
-                    if unusable_read.get() {
-                        return None;
-                    }
-                    let root = match read_root_node(conn, tab.id) {
-                        Ok(root) => root,
-                        Err(err) => {
-                            if error_means_unusable_database(&underlying_error_message(&err)) {
-                                // Damaged pages, not a tab that merely lacks
-                                // rows: stop reading and let the caller move
-                                // the file aside instead of limping on (#1010).
-                                unusable_read.set(true);
-                            }
-                            skipped_tabs.set(skipped_tabs.get() + 1);
+        .map(
+            |(((idx, window), tabs_for_window), tab_groups_for_window)| {
+                // Mint a fresh `TabGroupId` per row and build a `row id -> TabGroupId`
+                // map so tabs can be reattached to their group below.
+                let mut tab_group_id_by_row_id: HashMap<i32, TabGroupId> = HashMap::new();
+                let mut tab_groups_snapshots: Vec<TabGroupSnapshot> = Vec::new();
+                for group in tab_groups_for_window {
+                    let tab_group_id = TabGroupId::new();
+                    tab_group_id_by_row_id.insert(group.id, tab_group_id);
+                    let color = group
+                        .color
+                        .as_deref()
+                        .and_then(|s| serde_yaml::from_str::<SelectedTabColor>(s).ok())
+                        .unwrap_or_default();
+                    tab_groups_snapshots.push(TabGroupSnapshot {
+                        id: tab_group_id,
+                        name: group.name,
+                        color,
+                        collapsed: group.collapsed,
+                        pinned: group.pinned,
+                    });
+                }
+                let saved_tabs: Vec<_> = tabs_for_window
+                    .into_iter()
+                    .filter_map(|tab| {
+                        if unusable_read.get() {
                             return None;
                         }
-                    };
-                    let group_id = tab
-                        .tab_group_id
-                        .and_then(|row_id| tab_group_id_by_row_id.get(&row_id).copied());
-                    let panel = db_panels.get(&tab.id);
+                        let root = match read_root_node(conn, tab.id) {
+                            Ok(root) => root,
+                            Err(err) => {
+                                if error_means_unusable_database(&underlying_error_message(&err)) {
+                                    // Damaged pages, not a tab that merely lacks
+                                    // rows: stop reading and let the caller move
+                                    // the file aside instead of limping on (#1010).
+                                    unusable_read.set(true);
+                                }
+                                skipped_tabs.set(skipped_tabs.get() + 1);
+                                return None;
+                            }
+                        };
+                        let group_id = tab
+                            .tab_group_id
+                            .and_then(|row_id| tab_group_id_by_row_id.get(&row_id).copied());
+                        let panel = db_panels.get(&tab.id);
 
-                    let left_panel = panel
-                        .and_then(|p| p.left_panel.as_ref())
-                        .and_then(|s| serde_json::from_str::<LeftPanelSnapshot>(s).ok());
+                        let left_panel = panel
+                            .and_then(|p| p.left_panel.as_ref())
+                            .and_then(|s| serde_json::from_str::<LeftPanelSnapshot>(s).ok());
 
-                    let right_panel = panel
-                        .and_then(|p| p.right_panel.as_ref())
-                        .and_then(|s| serde_json::from_str::<RightPanelSnapshot>(s).ok());
+                        let right_panel = panel
+                            .and_then(|p| p.right_panel.as_ref())
+                            .and_then(|s| serde_json::from_str::<RightPanelSnapshot>(s).ok());
 
-                    Some(TabSnapshot {
-                        root,
-                        custom_title: tab.custom_title,
-                        default_directory_color: None,
-                        selected_color: tab
-                            .color
-                            .as_deref()
-                            .and_then(|s| {
-                                serde_yaml::from_str::<SelectedTabColor>(s)
-                                    .ok()
-                                    .or_else(|| {
-                                        // Fall back to the old format which stored a bare AnsiColorIdentifier
-                                        serde_yaml::from_str::<AnsiColorIdentifier>(s)
-                                            .ok()
-                                            .map(SelectedTabColor::Color)
-                                    })
-                            })
-                            .unwrap_or_default(),
-                        left_panel,
-                        right_panel,
-                        group_id,
-                        pinned: tab.pinned,
+                        Some(TabSnapshot {
+                            root,
+                            custom_title: tab.custom_title,
+                            default_directory_color: None,
+                            selected_color: tab
+                                .color
+                                .as_deref()
+                                .and_then(|s| {
+                                    serde_yaml::from_str::<SelectedTabColor>(s)
+                                        .ok()
+                                        .or_else(|| {
+                                            // Fall back to the old format which stored a bare AnsiColorIdentifier
+                                            serde_yaml::from_str::<AnsiColorIdentifier>(s)
+                                                .ok()
+                                                .map(SelectedTabColor::Color)
+                                        })
+                                })
+                                .unwrap_or_default(),
+                            left_panel,
+                            right_panel,
+                            group_id,
+                            pinned: tab.pinned,
+                        })
                     })
-                })
-                .collect();
+                    .collect();
 
-            if active_window_id
-                .map(|window_id| window.id == window_id)
-                .unwrap_or(false)
-            {
-                active_window_index = Some(idx);
-            }
-
-            // Default active tab index to 0 if we overflow when converting.
-            let tab_index: usize = window.active_tab_index.try_into().unwrap_or(0);
-
-            let fullscreen_state_val =
-                FullscreenState::from_i32(window.fullscreen_state).unwrap_or_default();
-
-            // The origin and size of the bound should be all null or all non-null.
-            // Reject bounds smaller than the platform minimum window size so users
-            // with an already-corrupted warp.sqlite (see GH#10083) restore to
-            // default geometry instead of a sliver.
-            let bounds = match (
-                window.window_width,
-                window.window_height,
-                window.origin_x,
-                window.origin_y,
-            ) {
-                (Some(mut width), Some(mut height), Some(x), Some(y))
-                    if width >= MIN_WINDOW_WIDTH && height >= MIN_WINDOW_HEIGHT =>
+                if active_window_id
+                    .map(|window_id| window.id == window_id)
+                    .unwrap_or(false)
                 {
-                    // When fullscreen or maximized, the `inner_size` we snapshotted will be the
-                    // size of the full screen. This will cause problems with winit. When you set
-                    // maximized/fullscreen, setting the inner_size will by the size the window
-                    // takes _after_ the user toggles _out_ of fullscreen/maximized. Therefore, we
-                    // don't want to set the size to take the full screen because the window will
-                    // appear to remain in maximized/fullscreen. We multiply each dimension by 0.8
-                    // to prevent taking the full screen while choosing a reasonable size.
-                    if !cfg!(target_os = "macos") && fullscreen_state_val != FullscreenState::Normal
-                    {
-                        width *= 0.8;
-                        height *= 0.8;
-                    }
-                    Some(RectF::new(
-                        Vector2F::new(x, y),
-                        Vector2F::new(width, height),
-                    ))
+                    active_window_index = Some(idx);
                 }
-                _ => None,
-            };
 
-            let left_panel_width: Option<f32> = saved_tabs.get(tab_index).and_then(|tab| match tab
-                .left_panel
-                .as_ref()
-            {
-                Some(LeftPanelSnapshot { width, .. }) => Some(*width as f32),
-                _ => None,
-            });
+                // Default active tab index to 0 if we overflow when converting.
+                let tab_index: usize = window.active_tab_index.try_into().unwrap_or(0);
 
-            let right_panel_width: Option<f32> =
-                saved_tabs
-                    .get(tab_index)
-                    .and_then(|tab| match tab.right_panel.as_ref() {
-                        Some(RightPanelSnapshot { width, .. }) => Some(*width as f32),
-                        _ => None,
-                    });
+                let fullscreen_state_val =
+                    FullscreenState::from_i32(window.fullscreen_state).unwrap_or_default();
 
-            let window_left_panel_open = window.left_panel_open.unwrap_or_else(|| {
-                saved_tabs
-                    .get(tab_index)
-                    .and_then(|tab| tab.left_panel.as_ref())
-                    .is_some()
-            });
+                // The origin and size of the bound should be all null or all non-null.
+                // Reject bounds smaller than the platform minimum window size so users
+                // with an already-corrupted warp.sqlite (see GH#10083) restore to
+                // default geometry instead of a sliver.
+                let bounds = match (
+                    window.window_width,
+                    window.window_height,
+                    window.origin_x,
+                    window.origin_y,
+                ) {
+                    (Some(mut width), Some(mut height), Some(x), Some(y))
+                        if width >= MIN_WINDOW_WIDTH && height >= MIN_WINDOW_HEIGHT =>
+                    {
+                        // When fullscreen or maximized, the `inner_size` we snapshotted will be the
+                        // size of the full screen. This will cause problems with winit. When you set
+                        // maximized/fullscreen, setting the inner_size will by the size the window
+                        // takes _after_ the user toggles _out_ of fullscreen/maximized. Therefore, we
+                        // don't want to set the size to take the full screen because the window will
+                        // appear to remain in maximized/fullscreen. We multiply each dimension by 0.8
+                        // to prevent taking the full screen while choosing a reasonable size.
+                        if !cfg!(target_os = "macos")
+                            && fullscreen_state_val != FullscreenState::Normal
+                        {
+                            width *= 0.8;
+                            height *= 0.8;
+                        }
+                        Some(RectF::new(
+                            Vector2F::new(x, y),
+                            Vector2F::new(width, height),
+                        ))
+                    }
+                    _ => None,
+                };
 
-            WindowSnapshot {
-                tabs: saved_tabs,
-                active_tab_index: tab_index,
-                quake_mode: window.quake_mode,
-                bounds,
-                universal_search_width: window.universal_search_width,
-                warp_ai_width: window.warp_ai_width,
-                voltron_width: window.voltron_width,
-                warp_drive_index_width: window.warp_drive_index_width,
-                left_panel_open: window_left_panel_open,
-                vertical_tabs_panel_open: window.vertical_tabs_panel_open.unwrap_or(false),
-                fullscreen_state: fullscreen_state_val,
-                left_panel_width,
-                right_panel_width,
-                cli_subagent_width: window.cli_subagent_width,
-                cli_subagent_height: window.cli_subagent_height,
-                agent_management_filters: window
-                    .agent_management_filters
-                    .and_then(|s| serde_json::from_str(&s).ok()),
-                theme_override: window
-                    .theme_override
-                    .and_then(|s| serde_json::from_str(&s).ok()),
-                tab_groups: tab_groups_snapshots,
-            }
-        })
+                let left_panel_width: Option<f32> =
+                    saved_tabs
+                        .get(tab_index)
+                        .and_then(|tab| match tab.left_panel.as_ref() {
+                            Some(LeftPanelSnapshot { width, .. }) => Some(*width as f32),
+                            _ => None,
+                        });
+
+                let right_panel_width: Option<f32> =
+                    saved_tabs
+                        .get(tab_index)
+                        .and_then(|tab| match tab.right_panel.as_ref() {
+                            Some(RightPanelSnapshot { width, .. }) => Some(*width as f32),
+                            _ => None,
+                        });
+
+                let window_left_panel_open = window.left_panel_open.unwrap_or_else(|| {
+                    saved_tabs
+                        .get(tab_index)
+                        .and_then(|tab| tab.left_panel.as_ref())
+                        .is_some()
+                });
+
+                WindowSnapshot {
+                    tabs: saved_tabs,
+                    active_tab_index: tab_index,
+                    quake_mode: window.quake_mode,
+                    bounds,
+                    universal_search_width: window.universal_search_width,
+                    warp_ai_width: window.warp_ai_width,
+                    voltron_width: window.voltron_width,
+                    warp_drive_index_width: window.warp_drive_index_width,
+                    left_panel_open: window_left_panel_open,
+                    vertical_tabs_panel_open: window.vertical_tabs_panel_open.unwrap_or(false),
+                    fullscreen_state: fullscreen_state_val,
+                    left_panel_width,
+                    right_panel_width,
+                    cli_subagent_width: window.cli_subagent_width,
+                    cli_subagent_height: window.cli_subagent_height,
+                    agent_management_filters: window
+                        .agent_management_filters
+                        .and_then(|s| serde_json::from_str(&s).ok()),
+                    theme_override: window
+                        .theme_override
+                        .and_then(|s| serde_json::from_str(&s).ok()),
+                    tab_groups: tab_groups_snapshots,
+                }
+            },
+        )
         .collect();
 
     if unusable_read.get() {
@@ -5912,7 +5934,7 @@ fn read_sqlite_data_counting(
     )?
     .into_iter()
     .map(UserProfileWithUID::from)
-        .collect();
+    .collect();
 
     let object_actions: Vec<ObjectAction> = collect_rows(
         schema::object_actions::dsl::object_actions
@@ -5920,7 +5942,7 @@ fn read_sqlite_data_counting(
     )? // parse into PersistedObjectAction
     .into_iter()
     .filter_map(|action| action.try_into().ok())
-        .collect();
+    .collect();
 
     let restored_blocks = get_all_restored_blocks(conn)?;
 

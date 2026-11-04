@@ -5,14 +5,14 @@ use super::{
 };
 pub use crate::scene::{Border, CornerRadius, Radius};
 use crate::{
-    event::DispatchedEvent,
-    text::{word_boundaries::WordBoundariesPolicy, IsRect, SelectionDirection, SelectionType},
     ClipBounds, Gradient,
+    event::DispatchedEvent,
+    text::{IsRect, SelectionDirection, SelectionType, word_boundaries::WordBoundariesPolicy},
 };
 use pathfinder_color::ColorU;
 use pathfinder_geometry::{
     rect::RectF,
-    vector::{vec2f, Vector2F},
+    vector::{Vector2F, vec2f},
 };
 
 pub struct Container {

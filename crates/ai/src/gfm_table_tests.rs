@@ -119,12 +119,11 @@ fn a_row_with_a_code_span_pipe_no_longer_ends_the_table() {
         "| **Check host disk usage** | `df -h` | Look for the filesystem. |",
     ];
     let mut rest = lines.into_iter().peekable();
-    let collected = super::maybe_collect_gfm_table_lines(
-        "| Step | Command / Tool | Why |",
-        &mut rest,
-        |_| false,
-    )
-    .expect("header + separator form a table");
+    let collected =
+        super::maybe_collect_gfm_table_lines("| Step | Command / Tool | Why |", &mut rest, |_| {
+            false
+        })
+        .expect("header + separator form a table");
 
     assert_eq!(
         collected.len(),
@@ -144,12 +143,20 @@ fn an_unterminated_backtick_falls_back_to_the_naive_split() {
 
 #[test]
 fn a_line_that_is_not_pipe_delimited_still_ends_the_table() {
-    let lines = ["| --- | --- |", "| 1 | 2 |", "Ordinary prose after the table"];
+    let lines = [
+        "| --- | --- |",
+        "| 1 | 2 |",
+        "Ordinary prose after the table",
+    ];
     let mut rest = lines.into_iter().peekable();
     let collected = super::maybe_collect_gfm_table_lines("| A | B |", &mut rest, |_| false)
         .expect("header + separator form a table");
 
-    assert_eq!(collected.len(), 3, "header, separator, one row: {collected:?}");
+    assert_eq!(
+        collected.len(),
+        3,
+        "header, separator, one row: {collected:?}"
+    );
     assert_eq!(
         rest.next(),
         Some("Ordinary prose after the table"),

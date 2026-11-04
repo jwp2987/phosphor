@@ -20,9 +20,8 @@ use warp::tui_export::{
     AskUserQuestionItem, AskUserQuestionOption, AskUserQuestionType, BlockPadding, BlockType,
     BlocklistAIHistoryEvent, BlocklistAIHistoryModel, ConversationStatus, Harness, InputType,
     LLMId, LLMPreferences, LongRunningCommandControlState, MessageId, OutputStatusUpdateCallback,
-    PtyIntent, PtyIntentEvent, ServerOutputId, Session, Shared, ShellCommandExecutorEvent, SizeInfo,
-    SizeUpdate,
-    SlashCommandKind, TaskId, TerminalSurface, TuiMcpAction, TuiMcpServerId,
+    PtyIntent, PtyIntentEvent, ServerOutputId, Session, Shared, ShellCommandExecutorEvent,
+    SizeInfo, SizeUpdate, SlashCommandKind, TaskId, TerminalSurface, TuiMcpAction, TuiMcpServerId,
     TuiUpArrowHistoryItemKind, UserTakeOverReason, WarpConfig, WarpConfigUpdateEvent,
     export_conversation_markdown, queue_tui_permission_action,
     register_tui_session_view_test_singletons, slash_commands,
@@ -33,12 +32,12 @@ use warpui::platform::WindowStyle;
 use warpui::{
     AddWindowOptions, EntityIdMap, ModelHandle, ReadModel, SingletonEntity, UpdateModel, ViewHandle,
 };
+use warpui_core::r#async::Timer;
 use warpui_core::elements::tui::{
     Color, TuiBuffer, TuiBufferExt, TuiConstrainedBox, TuiConstraint, TuiContainer, TuiElement,
     TuiEvent, TuiEventContext, TuiLayoutContext, TuiPaintContext, TuiPaintSurface, TuiPoint,
     TuiRect, TuiScene, TuiScreenPosition, TuiSize, TuiStyle, TuiText, TuiViewportPosition,
 };
-use warpui_core::r#async::Timer;
 use warpui_core::event::ModifiersState;
 use warpui_core::keymap::{Context, Keystroke, Trigger};
 use warpui_core::presenter::tui::{TuiFrame, TuiPresenter};
@@ -57,16 +56,15 @@ use super::{
     COST_CONVERSATION_IN_PROGRESS_HINT, COST_EMPTY_CONVERSATION_HINT,
     COST_NO_ACTIVE_CONVERSATION_HINT, CTRL_C_EXIT_HINT, CTRL_C_KILL_CHILD_HINT,
     ConversationRestoreState, DETACH_AGENT_FROM_RUNNING_COMMAND_BINDING_NAME,
-    INLINE_MENU_TOP_PADDING_ROWS, LOADING_CONVERSATION_HINT, mcp_primary_action_hint,
-    render_mcp_menu_footer,
-    LOG_BUNDLE_FAILED_HINT, ORCHESTRATE_REQUIRES_CONVERSATION_HINT,
-    ORCHESTRATE_REQUIRES_TASK_HINT, ORCHESTRATION_TAB_BAR_FOCUSED_FLAG,
-    RUNNING_COMMAND_DETACH_HINT, SESSION_CAN_ATTACH_AGENT_TO_RUNNING_COMMAND_FLAG,
+    INLINE_MENU_TOP_PADDING_ROWS, LOADING_CONVERSATION_HINT, LOG_BUNDLE_FAILED_HINT,
+    ORCHESTRATE_REQUIRES_CONVERSATION_HINT, ORCHESTRATE_REQUIRES_TASK_HINT,
+    ORCHESTRATION_TAB_BAR_FOCUSED_FLAG, RUNNING_COMMAND_DETACH_HINT,
+    SESSION_CAN_ATTACH_AGENT_TO_RUNNING_COMMAND_FLAG,
     SESSION_CAN_DETACH_AGENT_FROM_RUNNING_COMMAND_FLAG, SHELL_MODE_HINT,
     THEME_INVALID_ARGUMENT_HINT, TuiConversationRestoreOrigin, TuiQueuedFollowUp,
     TuiTerminalSessionAction, TuiTerminalSessionEvent, TuiTerminalSessionView,
     cost_command_unavailable_hint, export_file_success_message, log_bundle_success_message,
-    raw_prompt_if_not_blank,
+    mcp_primary_action_hint, raw_prompt_if_not_blank, render_mcp_menu_footer,
 };
 use crate::agent_block::{TuiAIBlock, TuiBlockingChild};
 use crate::autoupdate::TuiAutoupdater;
@@ -3033,7 +3031,9 @@ fn footer_renders_bash_sections_without_model_or_usage() {
 
             assert_eq!(
                 lines,
-                vec![format!("{SHELL_MODE_HINT} /home/user/warp ↬ main | ☰ 2 • +3 -1")],
+                vec![format!(
+                    "{SHELL_MODE_HINT} /home/user/warp ↬ main | ☰ 2 • +3 -1"
+                )],
                 "bash footer leads with the shell-mode indicator and hides model/usage"
             );
             assert!(
@@ -4717,7 +4717,9 @@ fn footer_renders_shell_mode_sections_without_model_or_usage() {
 
             assert_eq!(
                 lines,
-                vec![format!("{SHELL_MODE_HINT} /home/user/warp ↬ main | ☰ 2 • +3 -1")],
+                vec![format!(
+                    "{SHELL_MODE_HINT} /home/user/warp ↬ main | ☰ 2 • +3 -1"
+                )],
                 "shell footer leads with the shell-mode indicator and hides model/usage"
             );
             assert!(
@@ -6041,7 +6043,6 @@ fn mcp_primary_action_hints_match_available_actions() {
     );
     assert_eq!(mcp_primary_action_hint(TuiMcpAction::LogOut(id)), None);
 }
-
 
 // --- `/copy-debugging-id` (upstream b4070d6a9) ---
 

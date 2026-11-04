@@ -8,10 +8,10 @@
 //! (`LongRunningShellCommandSnapshot.command_id`). The model needs to see a
 //! long-running shell snapshot to obtain the id before calling these.
 
+use agent_proto as api;
 use anyhow::Result;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use agent_proto as api;
 
 use super::OpenAiTool;
 

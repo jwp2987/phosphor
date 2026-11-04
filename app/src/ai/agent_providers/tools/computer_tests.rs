@@ -15,9 +15,8 @@
 // constructing one in a test cannot avoid naming them.
 #![allow(deprecated)]
 
-
-use ai::agent::action::UseComputerRequest;
 use agent_proto as api;
+use ai::agent::action::UseComputerRequest;
 
 use super::*;
 use crate::ai::agent::AIAgentActionType;
@@ -790,8 +789,9 @@ fn outgoing_request_computer_use_replay_round_trips_through_from_args() {
 // Screenshot delivery
 // ---------------------------------------------------------------------------
 
-fn use_computer_success(screenshot: Option<api::RawImage>) -> api::message::tool_call_result::Result
-{
+fn use_computer_success(
+    screenshot: Option<api::RawImage>,
+) -> api::message::tool_call_result::Result {
     api::message::tool_call_result::Result::UseComputer(api::UseComputerResult {
         result: Some(api::use_computer_result::Result::Success(
             api::use_computer_result::Success {
@@ -805,19 +805,21 @@ fn use_computer_success(screenshot: Option<api::RawImage>) -> api::message::tool
 }
 
 fn approved(screenshot: Option<api::RawImage>) -> api::message::tool_call_result::Result {
-    api::message::tool_call_result::Result::RequestComputerUseResult(api::RequestComputerUseResult {
-        result: Some(api::request_computer_use_result::Result::Approved(
-            api::request_computer_use_result::Approved {
-                screen_dimensions: Some(api::ScreenDimensions {
-                    width_px: 2560,
-                    height_px: 1440,
-                }),
-                initial_screenshot: screenshot,
-                platform: api::request_computer_use_result::approved::Platform::LinuxX11.into(),
-                windows: vec![],
-            },
-        )),
-    })
+    api::message::tool_call_result::Result::RequestComputerUseResult(
+        api::RequestComputerUseResult {
+            result: Some(api::request_computer_use_result::Result::Approved(
+                api::request_computer_use_result::Approved {
+                    screen_dimensions: Some(api::ScreenDimensions {
+                        width_px: 2560,
+                        height_px: 1440,
+                    }),
+                    initial_screenshot: screenshot,
+                    platform: api::request_computer_use_result::approved::Platform::LinuxX11.into(),
+                    windows: vec![],
+                },
+            )),
+        },
+    )
 }
 
 /// Every delivery outcome must be legible both to a parser (`delivery`) and to the model
@@ -826,7 +828,11 @@ fn approved(screenshot: Option<api::RawImage>) -> api::message::tool_call_result
 fn annotate_screenshot_delivery_rewrites_attached_delivery_and_note() {
     let result = use_computer_success(Some(raw_image()));
     let cases = [
-        (ScreenshotDelivery::Attached, true, "attached_to_following_user_message"),
+        (
+            ScreenshotDelivery::Attached,
+            true,
+            "attached_to_following_user_message",
+        ),
         (
             ScreenshotDelivery::ModelCannotSeeImages,
             false,
@@ -872,12 +878,18 @@ fn annotate_screenshot_delivery_is_inert_without_a_capture() {
         .expect("use_computer result without a screenshot");
     let before = json.clone();
     annotate_screenshot_delivery(&mut json, ScreenshotDelivery::Attached);
-    assert_eq!(json, before, "a result with no capture must not be rewritten");
+    assert_eq!(
+        json, before,
+        "a result with no capture must not be rewritten"
+    );
 
     let mut unrelated = serde_json::json!({"status": "ok", "stdout": "hi"});
     let before = unrelated.clone();
     annotate_screenshot_delivery(&mut unrelated, ScreenshotDelivery::Attached);
-    assert_eq!(unrelated, before, "another tool's payload must be untouched");
+    assert_eq!(
+        unrelated, before,
+        "another tool's payload must be untouched"
+    );
 }
 
 /// `screenshot_of` doubles as the "is this a computer-use result carrying an image?" test in
@@ -907,7 +919,10 @@ fn screenshot_of_covers_both_descriptors_and_nothing_else() {
 /// every click by that ratio.
 #[test]
 fn captured_surface_px_reads_window_then_screen() {
-    assert_eq!(captured_surface_px(&approved(Some(raw_image()))), Some((2560, 1440)));
+    assert_eq!(
+        captured_surface_px(&approved(Some(raw_image()))),
+        Some((2560, 1440))
+    );
 
     let windowed = api::message::tool_call_result::Result::UseComputer(api::UseComputerResult {
         result: Some(api::use_computer_result::Result::Success(
@@ -927,7 +942,10 @@ fn captured_surface_px_reads_window_then_screen() {
 
     // A full-screen capture has no surface size of its own; the caller substitutes the screen
     // size remembered from the approval.
-    assert_eq!(captured_surface_px(&use_computer_success(Some(raw_image()))), None);
+    assert_eq!(
+        captured_surface_px(&use_computer_success(Some(raw_image()))),
+        None
+    );
 }
 
 /// A sighted model must not be told it is blind — that stops it looking at an image it was

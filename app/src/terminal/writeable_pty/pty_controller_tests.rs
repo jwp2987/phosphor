@@ -146,10 +146,12 @@ fn queue_in_band_command_marks_block_list_as_writing_in_band_command() {
         });
         let (cancel_tx, _cancel_rx) = async_channel::unbounded();
 
-        assert!(!model
-            .lock()
-            .block_list()
-            .is_writing_or_executing_in_band_command());
+        assert!(
+            !model
+                .lock()
+                .block_list()
+                .is_writing_or_executing_in_band_command()
+        );
 
         let sent = controller.update(&mut app, |controller, ctx| {
             controller.queue_in_band_command(
@@ -167,10 +169,12 @@ fn queue_in_band_command_marks_block_list_as_writing_in_band_command() {
         });
         assert!(sent);
 
-        assert!(model
-            .lock()
-            .block_list()
-            .is_writing_or_executing_in_band_command());
+        assert!(
+            model
+                .lock()
+                .block_list()
+                .is_writing_or_executing_in_band_command()
+        );
 
         drop(model_events_tx);
     });
@@ -613,7 +617,10 @@ fn paced_write_controller(
     app: &mut App,
     model: Arc<FairMutex<TerminalModel>>,
     sender: &TestEventLoopSender,
-) -> (ModelHandle<PtyController<TestEventLoopSender>>, impl Sized + use<>) {
+) -> (
+    ModelHandle<PtyController<TestEventLoopSender>>,
+    impl Sized + use<>,
+) {
     let (model_events_tx, model_events_rx) = async_channel::unbounded();
     let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
     let sessions = app.add_model(|_| Sessions::new_for_test());
@@ -2895,7 +2902,13 @@ mod typeahead_handoff {
                 .lock()
                 .typeahead_handoff_mut()
                 .note_untracked_line_bytes();
-            assert!(!harness.model.lock().typeahead_handoff().untracked_bytes_requested());
+            assert!(
+                !harness
+                    .model
+                    .lock()
+                    .typeahead_handoff()
+                    .untracked_bytes_requested()
+            );
 
             line_editor_becomes_active(&mut app, &harness);
             assert_eq!(

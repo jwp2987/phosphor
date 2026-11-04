@@ -2,21 +2,21 @@ use crate::ai::blocklist::{BlocklistAIContextEvent, BlocklistAIContextModel};
 use pathfinder_color::ColorU;
 use warp_core::ui::appearance::Appearance;
 use warp_core::ui::theme::Fill;
+use warpui::ModelHandle;
+use warpui::SingletonEntity;
 use warpui::elements::{
     ClippedScrollStateHandle, ClippedScrollable, Dismiss, Empty, Expanded, ParentElement,
     SavePosition, ScrollTarget, ScrollToPositionMode, ScrollbarWidth, Shrinkable,
 };
 use warpui::fonts::FamilyId;
-use warpui::ModelHandle;
-use warpui::SingletonEntity;
 use warpui::{
+    AppContext, Element, Entity, EntityId, TypedActionView, View, ViewContext,
     elements::{
         Border, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, DropShadow, Flex,
         MainAxisSize, Radius, Text,
     },
     fonts::{Properties, Weight},
     keymap::FixedBinding,
-    AppContext, Element, Entity, EntityId, TypedActionView, View, ViewContext,
 };
 
 use crate::ai::agent::icons::{in_progress_icon, pending_icon, succeeded_icon};

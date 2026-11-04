@@ -14,11 +14,11 @@ use arborium::tree_sitter::{InputEdit, Parser, Tree};
 use futures::stream::AbortHandle;
 use queries::{
     highlight_query::{HighlightQuery, InjectionHighlightQuery},
-    indent_query::{indentation_delta, IndentDelta},
+    indent_query::{IndentDelta, indentation_delta},
 };
 use rangemap::{RangeMap, RangeSet};
 use string_offset::{ByteOffset, CharOffset};
-use warpui::{color::ColorU, AppContext, Entity, ModelContext, WeakModelHandle};
+use warpui::{AppContext, Entity, ModelContext, WeakModelHandle, color::ColorU};
 
 use warp_editor::{
     content::{

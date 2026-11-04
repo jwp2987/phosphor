@@ -3,10 +3,12 @@ use std::{borrow::Cow, collections::VecDeque, sync::Arc, time::Duration};
 use async_channel::{Receiver, Sender};
 use parking_lot::FairMutex;
 use thiserror::Error;
-use warpui::r#async::{block_on, Timer};
+use warpui::r#async::{Timer, block_on};
 use warpui::{Entity, ModelContext, ModelHandle, SingletonEntity};
 
+use crate::SessionSettings;
 use crate::ai::agent::AIAgentPtyWriteMode;
+use crate::features::FeatureFlag;
 use crate::terminal::input::CommandExecutionSource;
 use crate::terminal::model::block::BlockId;
 use crate::terminal::model::completions::ShellCompletion;
@@ -25,13 +27,13 @@ use crate::terminal::model::typeahead_handoff::{
 use crate::terminal::model_events::AnsiHandlerEvent;
 use crate::terminal::view::LINEFEED_REGEX;
 #[cfg(not(target_family = "wasm"))]
-use crate::terminal::writeable_pty::bootstrap_file::{permanent_bootstrap_file, TempBootstrapFile};
+use crate::terminal::writeable_pty::bootstrap_file::{TempBootstrapFile, permanent_bootstrap_file};
 use crate::terminal::writeable_pty::command_pipe;
 #[cfg(not(target_family = "wasm"))]
 use crate::terminal::writeable_pty::long_command_file;
 use crate::terminal::writeable_pty::posix_long_command;
 use crate::terminal::{
-    bootstrap,
+    SizeUpdate, TerminalModel, bootstrap,
     line_editor_status::{LineEditorStatus, LineEditorStatusEvent},
     model::{
         ansi::Handler,
@@ -40,10 +42,7 @@ use crate::terminal::{
     },
     model_events::{ModelEvent, ModelEventDispatcher},
     shell::ShellType,
-    SizeUpdate, TerminalModel,
 };
-use crate::SessionSettings;
-use crate::features::FeatureFlag;
 use crate::view_components::DismissibleToast;
 use crate::workspace::ToastStack;
 

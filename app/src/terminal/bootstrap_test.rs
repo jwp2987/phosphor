@@ -3601,9 +3601,8 @@ fn bash_counted_read_bootstrap_applies_to_the_bundled_bash_script() {
 
 #[test]
 fn strip_local_only_block_drops_exactly_the_marked_lines() {
-    let script: Cow<'static, [u8]> = Cow::Borrowed(
-        b" a\n : __warp_local_only_begin\n ssh()\n : __warp_local_only_end\n b\n",
-    );
+    let script: Cow<'static, [u8]> =
+        Cow::Borrowed(b" a\n : __warp_local_only_begin\n ssh()\n : __warp_local_only_end\n b\n");
     assert_eq!(&*strip_local_only_block(script), &b" a\n b\n"[..]);
     // A missing, doubled or reversed marker leaves the script alone.
     for bad in [
@@ -4261,7 +4260,10 @@ fn test_zsh_env_script_hex_constants_decode_to_the_script() {
     let head = decode(&constant(&zsh, "zsh_env_head"));
     let tail = decode(&constant(&zsh, "zsh_env_tail"));
     assert_eq!(head, "unsetopt ZLE RCS GLOBAL_RCS; WARP_SESSION_ID=");
-    assert!(tail.starts_with("_hostname=$(command -pv hostname"), "{tail}");
+    assert!(
+        tail.starts_with("_hostname=$(command -pv hostname"),
+        "{tail}"
+    );
     assert!(
         tail.ends_with("unset _hostname _user _msg _ju _jh"),
         "{tail}"

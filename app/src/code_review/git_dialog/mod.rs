@@ -15,6 +15,8 @@ use pathfinder_geometry::vector::vec2f;
 use warp_core::features::FeatureFlag;
 use warp_core::ui::appearance::Appearance;
 use warpui::{
+    AppContext, Entity, FocusContext, ModelHandle, SingletonEntity, TypedActionView, View,
+    ViewContext, ViewHandle,
     elements::{
         Align, Border, ChildAnchor, ChildView, ClippedScrollStateHandle, ClippedScrollable,
         ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Element, Flex, Hoverable,
@@ -24,8 +26,6 @@ use warpui::{
     keymap::{self, FixedBinding},
     platform::Cursor,
     ui_components::components::{Coords, UiComponent, UiComponentStyles},
-    AppContext, Entity, FocusContext, ModelHandle, SingletonEntity, TypedActionView, View,
-    ViewContext, ViewHandle,
 };
 
 #[cfg(feature = "local_tty")]
@@ -36,13 +36,13 @@ use crate::{
     code_review::diff_state::DiffStateModel,
     settings::AISettings,
     ui_components::{
-        dialog::{dialog_styles, Dialog},
+        dialog::{Dialog, dialog_styles},
         icons::Icon,
     },
-    util::git::{is_gh_auth_error, Commit, FileChangeEntry},
+    util::git::{Commit, FileChangeEntry, is_gh_auth_error},
     view_components::{
-        action_button::{ActionButton, ButtonSize, NakedTheme, SecondaryTheme},
         DismissibleToast,
+        action_button::{ActionButton, ButtonSize, NakedTheme, SecondaryTheme},
     },
     workspace::ToastStack,
     workspaces::user_workspaces::UserWorkspaces,
@@ -64,7 +64,9 @@ pub use push::{PushState, PushSubAction};
 #[derive(Clone, Copy, Debug)]
 pub enum GitDialogKind {
     Commit,
-    Push { publish: bool },
+    Push {
+        publish: bool,
+    },
     CreatePr,
     /// Fast-forward-only pull (git-pull Stage 1). Merging pull is a separate,
     /// later item — see the task doc comment on `pull::start_confirm`.

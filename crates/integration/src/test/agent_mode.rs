@@ -4,9 +4,10 @@
 use std::{collections::HashMap, path::PathBuf, time::Duration};
 
 use super::new_builder;
-use crate::{util::skip_if_powershell_core_2303, Builder};
+use crate::{Builder, util::skip_if_powershell_core_2303};
+use agent_proto as api;
 use lazy_static::lazy_static;
-use pathfinder_geometry::vector::{vec2f, Vector2F};
+use pathfinder_geometry::vector::{Vector2F, vec2f};
 use settings::{Setting, ToggleableSetting};
 use warp::{
     cmd_or_ctrl_shift,
@@ -22,8 +23,7 @@ use warp::{
     },
     settings::SelectionSettings,
 };
-use agent_proto as api;
-use warpui::{async_assert, integration::TestStep, text::SelectionType, Event, SingletonEntity};
+use warpui::{Event, SingletonEntity, async_assert, integration::TestStep, text::SelectionType};
 
 cfg_if::cfg_if! {
     if #[cfg(any(target_os = "linux", target_os = "freebsd"))] {

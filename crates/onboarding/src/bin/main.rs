@@ -13,14 +13,14 @@ use warp_core::ui::{appearance::Appearance, theme::WarpTheme};
 use warpui::assets::asset_cache::AssetSource;
 use warpui::platform;
 use warpui::{
+    AddWindowOptions, AppContext, AssetProvider, Element, Entity, SingletonEntity as _,
+    TypedActionView, View, ViewContext, ViewHandle,
     elements::{
         Container, CrossAxisAlignment, Flex, MainAxisAlignment, MainAxisSize, ParentElement,
     },
     fonts::{Cache, FamilyId, Weight},
     presenter::ChildView,
     ui_components::components::{UiComponent as _, UiComponentStyles},
-    AddWindowOptions, AppContext, AssetProvider, Element, Entity, SingletonEntity as _,
-    TypedActionView, View, ViewContext, ViewHandle,
 };
 
 #[derive(Clone, Copy, RustEmbed)]

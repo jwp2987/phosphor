@@ -1,9 +1,8 @@
 use settings::Setting as _;
 use warpui::{
-    async_assert, async_assert_eq,
+    AppContext, SingletonEntity, WindowId, async_assert, async_assert_eq,
     integration::{AssertionCallback, AssertionOutcome},
     units::{IntoPixels, Lines},
-    AppContext, SingletonEntity, WindowId,
 };
 
 use crate::{
@@ -18,7 +17,7 @@ use crate::{
 };
 use crate::{
     settings::InputModeSettings,
-    terminal::{heights_approx_eq, model::terminal_model::BlockIndex, TerminalModel, TerminalView},
+    terminal::{TerminalModel, TerminalView, heights_approx_eq, model::terminal_model::BlockIndex},
 };
 
 /// Specifies a block position either directly by index, or by whether it's first or

@@ -3,6 +3,7 @@ use pathfinder_geometry::vector::Vector2F;
 use warp_core::ui::appearance::Appearance;
 use warp_core::ui::theme::Fill;
 use warpui::{
+    AppContext, Element, EventContext, SingletonEntity,
     elements::{
         ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Empty, Expanded, Flex,
         Hoverable, MainAxisSize, MouseStateHandle, ParentElement, Radius, Shrinkable, Text,
@@ -10,7 +11,6 @@ use warpui::{
     fonts::{Properties, Weight::Bold},
     platform::Cursor,
     text_layout::ClipConfig,
-    AppContext, Element, EventContext, SingletonEntity,
 };
 
 use crate::ui_components::{blended_colors, icons::Icon};

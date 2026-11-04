@@ -2,13 +2,13 @@
 
 use warp_core::features::FeatureFlag;
 use warpui::{
+    AppContext, Element, SingletonEntity,
     elements::{
         Container, CrossAxisAlignment, Flex, Highlight, MainAxisAlignment, MainAxisSize,
         MouseStateHandle, ParentElement, Shrinkable,
     },
     platform::Cursor,
     ui_components::components::{UiComponent, UiComponentStyles},
-    AppContext, Element, SingletonEntity,
 };
 
 use crate::{
@@ -20,14 +20,14 @@ use crate::{
     drive::sharing::ContentEditability,
     notebooks::{active_notebook_data::Mode, styles},
     ui_components::{
-        breadcrumb::{render_breadcrumbs, BreadcrumbState},
+        breadcrumb::{BreadcrumbState, render_breadcrumbs},
         buttons::{accent_icon_button, icon_button},
         icons::Icon,
     },
     workspaces::user_profiles::UserProfiles,
 };
 
-use super::{super::active_notebook_data::ActiveNotebookData, NotebookAction, EDIT_BUTTON_MARGIN};
+use super::{super::active_notebook_data::ActiveNotebookData, EDIT_BUTTON_MARGIN, NotebookAction};
 
 /// Component to show details about a notebook:
 /// * Interactive breadcrumbs for its location within Zap Drive

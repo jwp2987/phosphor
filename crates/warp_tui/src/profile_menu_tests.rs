@@ -19,9 +19,8 @@ fn new_menu_is_closed() {
             add_test_semantic_selection(ctx);
             let editor = ctx.add_model(|ctx| CodeEditorModel::new_tui(80, ctx));
             let mode = ctx.add_model(|_| TuiInputSuggestionsModeModel::new());
-            let menu = ctx.add_model(|ctx| {
-                TuiProfileMenuModel::new(editor, mode, EntityId::new(), ctx)
-            });
+            let menu =
+                ctx.add_model(|ctx| TuiProfileMenuModel::new(editor, mode, EntityId::new(), ctx));
             assert!(!menu.as_ref(ctx).is_open(ctx));
             assert!(menu.as_ref(ctx).snapshot(ctx).is_none());
         });

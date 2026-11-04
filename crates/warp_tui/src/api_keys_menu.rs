@@ -101,7 +101,9 @@ impl TuiApiKeysMenuModel {
             // Only `List` treats the input buffer as a live filter query; `EnteringKey` leaves
             // it alone there -- the buffer *is* the key being typed, not a search term, and
             // re-filtering rows out from under an in-progress key entry would be actively wrong.
-            if model.is_list_open(ctx) && matches!(event, CodeEditorModelEvent::ContentChanged { .. }) {
+            if model.is_list_open(ctx)
+                && matches!(event, CodeEditorModelEvent::ContentChanged { .. })
+            {
                 model.refresh_rows(ctx);
             }
         });

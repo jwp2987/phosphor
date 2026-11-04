@@ -1,7 +1,7 @@
 mod selection;
 
 use super::block::TranscriptScope;
-use crate::ai::agent::{conversation::AIConversationId, AIAgentActionId};
+use crate::ai::agent::{AIAgentActionId, conversation::AIConversationId};
 use crate::ai::blocklist::SerializedBlockListItem;
 use crate::terminal::block_filter::BlockFilterQuery;
 
@@ -14,14 +14,13 @@ use crate::terminal::model::ansi::{
     CursorShape, CursorStyle, LineClearMode, Mode, PrecmdValue, PreexecValue, Processor,
     PromptMetadata, StandardCharset, TabulationClearMode,
 };
-use crate::terminal::model::block::{
-    AgentViewVisibility, Block, InteractionMode, SerializedBlock,
-};
+use crate::terminal::model::block::{AgentViewVisibility, Block, InteractionMode, SerializedBlock};
 use crate::terminal::model::bootstrap::BootstrapStage;
 use crate::terminal::model::index::{Point, VisibleRow};
 use crate::terminal::model::iterm_image::ITermImage;
 use crate::terminal::view::SeparatorId;
 use crate::terminal::view::WithinBlockBanner;
+use crate::terminal::{BlockPadding, ShellHost, SizeInfo, SizeUpdate};
 use crate::terminal::{
     event::{
         BlockType, Event as TerminalEvent,
@@ -29,7 +28,6 @@ use crate::terminal::{
     },
     view::{InlineBannerId, InlineBannerItem},
 };
-use crate::terminal::{BlockPadding, ShellHost, SizeInfo, SizeUpdate};
 use anyhow::anyhow;
 use chrono::{DateTime, Local};
 use instant::SystemTime;
@@ -40,29 +38,29 @@ use std::sync::Arc;
 use std::time::Duration;
 use sum_tree::{Dimension, Item, SeekBias, SumTree};
 use warp_core::features::FeatureFlag;
-use warpui::color::ColorU;
 use warpui::r#async::executor::Background;
+use warpui::color::ColorU;
 use warpui::record_trace_event;
 
 use std::collections::{HashMap, HashSet};
 use warpui::{
-    units::{IntoLines, IntoPixels, Lines},
     AppContext, EntityId, ViewHandle,
+    units::{IntoLines, IntoPixels, Lines},
 };
 
 use super::block::{BlockId, BlockSize, BlockState};
-use super::lifecycle::NextBlockIdDisposition;
-use warp_core::command::ExitCode;
 use super::early_output::EarlyOutput;
-use super::typed_echo::{EchoGrid, EchoMatch, EchoPoint, EchoRun, TypedEcho};
-use super::grid::grid_handler::{FragmentBoundary, GridHandler, PossiblePath};
 use super::grid::RespectDisplayedOutput;
+use super::grid::grid_handler::{FragmentBoundary, GridHandler, PossiblePath};
 use super::image_map::StoredImageMetadata;
 use super::key_facts::KeyModelCell;
 use super::kitty::{KittyAction, KittyResponse};
+use super::lifecycle::NextBlockIdDisposition;
 use super::rich_content::RichContentType;
 use super::secrets::RespectObfuscatedSecrets;
+use super::typed_echo::{EchoGrid, EchoMatch, EchoPoint, EchoRun, TypedEcho};
 use super::{ansi::InputBufferValue, block::SerializedAIMetadata};
+use warp_core::command::ExitCode;
 
 use super::selection::ScrollDelta;
 use super::terminal_model::RangeInModel;
@@ -1145,7 +1143,9 @@ impl BlockList {
                 self.finish_active_block_before_followup_append();
                 self.restore_block(block, BootstrapStage::PostBootstrapPrecmd, &mut processor);
             } else {
-                log::warn!("A non-active follow-up scrollback block was either not started or not completed");
+                log::warn!(
+                    "A non-active follow-up scrollback block was either not started or not completed"
+                );
             }
         }
 
@@ -2241,7 +2241,11 @@ impl BlockList {
     /// An inline conversation keeps `Terminal` scope -- it renders in the
     /// terminal transcript, not a conversation-scoped one.
     #[cfg(test)]
-    pub fn enter_conversation_context(&mut self, conversation_id: AIConversationId, is_inline: bool) {
+    pub fn enter_conversation_context(
+        &mut self,
+        conversation_id: AIConversationId,
+        is_inline: bool,
+    ) {
         if !self.active_block().finished() {
             if is_inline {
                 self.active_block_mut()
@@ -4309,9 +4313,7 @@ impl BlockList {
     /// completion records that execution occurred. Used by completion recovery, when a completion
     /// arrives for a block whose `Preexec` was never observed.
     pub(super) fn ensure_active_block_executing_for_completion(&mut self) {
-        if self.active_block().finished()
-            || self.active_block().state() == BlockState::Executing
-        {
+        if self.active_block().finished() || self.active_block().state() == BlockState::Executing {
             return;
         }
         // Captured before either call below starts the block lazily; see
@@ -4606,7 +4608,10 @@ impl BlockList {
 
         if block.did_execute {
             let command = self.active_block_mut().command_to_string();
-            self.preexec(PreexecValue { command, session_id: None });
+            self.preexec(PreexecValue {
+                command,
+                session_id: None,
+            });
         }
 
         if parse_now && (block.did_execute || block.is_background) {
@@ -5171,7 +5176,9 @@ impl BlockList {
 
 impl ansi::Handler for BlockList {
     fn set_title(&mut self, _: Option<String>) {
-        log::error!("Handler method BlockList::set_title should never be called. This should be handled by TerminalModel.");
+        log::error!(
+            "Handler method BlockList::set_title should never be called. This should be handled by TerminalModel."
+        );
     }
 
     fn set_cursor_style(&mut self, style: Option<CursorStyle>) {
@@ -5496,11 +5503,15 @@ impl ansi::Handler for BlockList {
     }
 
     fn push_title(&mut self) {
-        log::error!("Handler method BlockList::push_title should never be called. This should be handled by TerminalModel.");
+        log::error!(
+            "Handler method BlockList::push_title should never be called. This should be handled by TerminalModel."
+        );
     }
 
     fn pop_title(&mut self) {
-        log::error!("Handler method BlockList::pop_title should never be called. This should be handled by TerminalModel.");
+        log::error!(
+            "Handler method BlockList::pop_title should never be called. This should be handled by TerminalModel."
+        );
     }
 
     fn text_area_size_pixels<W: io::Write>(&mut self, writer: &mut W) {

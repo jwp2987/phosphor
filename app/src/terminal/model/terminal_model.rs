@@ -1,5 +1,5 @@
-use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::agent::AIAgentActionId;
+use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::ambient_agents::AmbientAgentTaskId;
 use crate::ai::blocklist::SerializedBlockListItem;
 use crate::terminal::block_list_element::GridType;
@@ -18,9 +18,9 @@ use crate::terminal::model::index::VisibleRow;
 use crate::terminal::model::iterm_image::{ITermImage, ITermImageMetadata};
 use crate::terminal::shared_session::SharedSessionStatus;
 use crate::terminal::ssh::util::{InteractiveSshCommand, SshLoginState};
-use crate::terminal::{block_filter::BlockFilterQuery, model::ansi::Handler};
-use crate::terminal::{color, ssh, BlockPadding, ShellHost, SizeUpdate, SizeUpdateReason};
+use crate::terminal::{BlockPadding, ShellHost, SizeUpdate, SizeUpdateReason, color, ssh};
 use crate::terminal::{ShellLaunchData, ShellLaunchState};
+use crate::terminal::{block_filter::BlockFilterQuery, model::ansi::Handler};
 use crate::util::AsciiDebug;
 
 pub use crate::terminal::history::HistoryEntry;
@@ -35,6 +35,7 @@ use super::block::{
 };
 use super::blockgrid::{BlockGrid, SshLoginScanCursor};
 use super::blocks::ActiveBlockCompletion;
+use super::early_output::TypeaheadMode;
 use super::grid::grid_handler::{
     ContainsPoint, FragmentBoundary, GridHandler, Link, PossiblePath, TermMode,
 };
@@ -45,37 +46,36 @@ use super::key_facts::{
     PublishedKeyModes,
 };
 use super::kitty::{
-    create_kitty_error_reply, create_kitty_ok_reply, DeletionType, KittyAction, KittyChunk,
-    KittyDecodeError, KittyError, KittyMessage, KittyResponse, PendingKittyMessage,
-    MAX_KITTY_BASE64_BYTES, MAX_KITTY_IMAGE_BYTES,
+    DeletionType, KittyAction, KittyChunk, KittyDecodeError, KittyError, KittyMessage,
+    KittyResponse, MAX_KITTY_BASE64_BYTES, MAX_KITTY_IMAGE_BYTES, PendingKittyMessage,
+    create_kitty_error_reply, create_kitty_ok_reply,
 };
 use super::lifecycle::{
     BlockLifecycleCoordinator, CommandStartKind, IgnoreReason, LifecycleAction, LifecycleInput,
     LifecyclePhase, LifecycleSnapshot, LifecycleTransition, PreexecObservation,
     StartCommandOutcome,
 };
+use super::pty_stream_barrier::PtyStreamBarrier;
+use super::reply_ledger::SharedReplyLedger;
 use super::secrets::{RespectObfuscatedSecrets, SecretAndHandle};
 use super::selection::ScrollDelta;
 use super::session::{InBandCommandOutputReceiver, SessionId};
-use super::tmux::commands::TmuxCommand;
-use super::early_output::TypeaheadMode;
-use super::pty_stream_barrier::PtyStreamBarrier;
-use super::reply_ledger::SharedReplyLedger;
 use super::setup_echo_filter::SetupEchoFilter;
+use super::tmux::commands::TmuxCommand;
 use super::typeahead_handoff::{PaneHandoff, ParsedShellHook, StreamApplied, TypeaheadHandoff};
 use super::{
     super::{AltScreen, BlockList},
     ansi::BootstrappedValue,
 };
-use super::{tmux, Secret, SecretHandle};
+use super::{Secret, SecretHandle, tmux};
 use crate::terminal::model::ansi::{
     ClearValue, CommandFileFailedValue, CommandFinishedValue, CompletionMetadata, ExitShellValue,
     InitShellValue, InitSshValue, InitSubshellValue, LineEditorMarkerValue,
     PreInteractiveSSHSessionValue, PrecmdValue, PreexecValue, PromptMetadata, SSHValue,
     SourcedRcFileForWarpValue,
 };
-use crate::terminal::model::grid::text_snapshot::{BoundedSelection, SelectionParts};
 use crate::terminal::model::grid::IndexRegion;
+use crate::terminal::model::grid::text_snapshot::{BoundedSelection, SelectionParts};
 use crate::terminal::model::session::SessionInfo;
 use crate::terminal::shell::{ShellName, ShellType};
 
@@ -104,9 +104,9 @@ use warp_core::features::FeatureFlag;
 use warp_core::semantic_selection::SemanticSelection;
 pub use warp_terminal::model::BlockIndex;
 use warp_terminal::model::{KeyboardModes, KeyboardModesApplyBehavior};
-use warpui::image_cache::ImageType;
-use warpui::r#async::executor::Background;
 use warpui::AppContext;
+use warpui::r#async::executor::Background;
+use warpui::image_cache::ImageType;
 
 /// Max size of the window title stack.
 const TITLE_STACK_MAX_DEPTH: usize = 4096;
@@ -1852,7 +1852,9 @@ impl TerminalModel {
     }
 
     /// Shared access to the typeahead hand-off (its own leaf lock; see [`PaneHandoff`]).
-    pub fn typeahead_handoff(&self) -> warpui_core::sync_shim::RwLockReadGuard<'_, TypeaheadHandoff> {
+    pub fn typeahead_handoff(
+        &self,
+    ) -> warpui_core::sync_shim::RwLockReadGuard<'_, TypeaheadHandoff> {
         self.typeahead_handoff.read()
     }
 
@@ -1969,7 +1971,9 @@ impl TerminalModel {
     }
 
     /// Exclusive access to the typeahead hand-off (its own leaf lock; see [`PaneHandoff`]).
-    pub fn typeahead_handoff_mut(&mut self) -> warpui_core::sync_shim::RwLockWriteGuard<'_, TypeaheadHandoff> {
+    pub fn typeahead_handoff_mut(
+        &mut self,
+    ) -> warpui_core::sync_shim::RwLockWriteGuard<'_, TypeaheadHandoff> {
         self.typeahead_handoff.write()
     }
 
@@ -2318,7 +2322,9 @@ impl TerminalModel {
         inverted_blocklist: bool,
     ) -> bool {
         if self.alt_screen_active {
-            self.alt_screen.selection_range(semantic_selection).is_some()
+            self.alt_screen
+                .selection_range(semantic_selection)
+                .is_some()
         } else {
             self.block_list
                 .has_renderable_selection(semantic_selection, inverted_blocklist)
@@ -2493,7 +2499,8 @@ impl TerminalModel {
         self.shared_session_status = shared_session_status;
         // Block indices are shared with peers, so never evict from a shared session (#889).
         let suppress = self.shared_session_status.is_sharer_or_viewer();
-        self.block_list_mut().set_block_eviction_suppressed(suppress);
+        self.block_list_mut()
+            .set_block_eviction_suppressed(suppress);
     }
 
     /// Returns whether this terminal is viewing a shared session.
@@ -4270,7 +4277,9 @@ impl ansi::Handler for TerminalModel {
                 // every command it writes, purely to make sure nothing is left open, so
                 // "not receiving" is the normal case there and not worth a warning.
                 if from_osc_sequence {
-                    log::warn!("Received 'end_in_band_command_output' while not expecting to read in-band command output.");
+                    log::warn!(
+                        "Received 'end_in_band_command_output' while not expecting to read in-band command output."
+                    );
                 } else {
                     log::debug!("No in-band command output was open when a command was written.");
                 }
@@ -4306,8 +4315,8 @@ impl ansi::Handler for TerminalModel {
         let bytes = input.bytes();
 
         // Send a copy of the bytes to subscribers.
-        let countable = !self.is_receiving_in_band_command_output()
-            && self.is_active_block_bootstrapped();
+        let countable =
+            !self.is_receiving_in_band_command_output() && self.is_active_block_bootstrapped();
         self.event_proxy.send_pty_read_event(bytes, countable);
 
         // Send a copy of the bytes for the active shared session, if applicable.
@@ -4454,7 +4463,9 @@ impl ansi::Handler for TerminalModel {
                 if let Some(last_item) = output.last_mut() {
                     last_item.update(completion_update);
                 } else {
-                    log::warn!("Received update last completion result OSC before any completion results have been received");
+                    log::warn!(
+                        "Received update last completion result OSC before any completion results have been received"
+                    );
                 }
             }
             IsReceivingCompletionsOutput::Yes {
@@ -4523,7 +4534,9 @@ impl ansi::Handler for TerminalModel {
                 self.handle_completed_iterm_image(pending);
             }
             IsReceivingITermImageData::No => {
-                log::warn!("Received 'end_iterm_image_receiving' while not expecting to read iTerm image chunks.")
+                log::warn!(
+                    "Received 'end_iterm_image_receiving' while not expecting to read iTerm image chunks."
+                )
             }
         }
     }
@@ -4595,7 +4608,9 @@ impl ansi::Handler for TerminalModel {
             ..
         } = is_receiving_kitty_image_data
         else {
-            log::warn!("Received 'end_kitty_action_receiving' while not expecting to read kitty image chunks.");
+            log::warn!(
+                "Received 'end_kitty_action_receiving' while not expecting to read kitty image chunks."
+            );
             return;
         };
 
@@ -4616,7 +4631,9 @@ impl ansi::Handler for TerminalModel {
                 limit: MAX_KITTY_IMAGE_BYTES,
             });
             log::warn!("{err:?}");
-            if let Some(message_id) = message_id && verbosity.send_error() {
+            if let Some(message_id) = message_id
+                && verbosity.send_error()
+            {
                 let _ = writer.write_all(&create_kitty_error_reply(message_id, err));
             }
             return;
@@ -4887,7 +4904,9 @@ enum InBandCommandOutputDecodingError {
     NoContentLengthHeader,
     #[error("DCS content length header is corrupted: {0:?}")]
     ContentLengthHeaderCorrupted(ParseIntError),
-    #[error("Content length header does not match length of received content. Actual: {actual_length}, expected: {expected_length}")]
+    #[error(
+        "Content length header does not match length of received content. Actual: {actual_length}, expected: {expected_length}"
+    )]
     ContentLengthMismatch {
         actual_length: usize,
         expected_length: usize,

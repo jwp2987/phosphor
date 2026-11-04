@@ -15,11 +15,15 @@ use warpui::{App, EntityId, ModelHandle};
 use super::{BlocklistAIContextModel, PendingAttachment, PendingFile};
 use crate::ai::agent::conversation::{AIConversationAutoexecuteMode, AIConversationId};
 use crate::ai::agent::{AIAgentAttachment, ImageContext};
+#[cfg(feature = "local_fs")]
+use crate::ai::agent::{AIAgentContext, AnyFileContent, FileContext};
 use crate::ai::blocklist::agent_view::conversation_selection::AgentViewConversationSelection;
 use crate::ai::blocklist::agent_view::{
     AgentViewController, AgentViewEntryOrigin, EnterAgentViewError, EphemeralMessageModel,
 };
-use crate::ai::blocklist::conversation_selection::{ConversationSelection, ConversationSelectionEvent};
+use crate::ai::blocklist::conversation_selection::{
+    ConversationSelection, ConversationSelectionEvent,
+};
 use crate::ai::blocklist::{
     BlocklistAIHistoryEvent, BlocklistAIHistoryModel, QueuedQuery, QueuedQueryModel,
     QueuedQueryOrigin,
@@ -27,21 +31,19 @@ use crate::ai::blocklist::{
 use crate::ai::conversation_entry::{
     AgentConversationEntry, AgentConversationListEntryState, AgentConversationListPolicy,
 };
-use crate::global_resource_handles::{GlobalResourceHandles, GlobalResourceHandlesProvider};
-use crate::test_util::settings::initialize_settings_for_tests;
 use crate::cloud_object::model::persistence::ObjectStoreModel;
 use crate::cloud_object::update_manager::UpdateManager;
+#[cfg(feature = "local_fs")]
+use crate::code_review::git_status_update::GitRepoStatusModel;
+#[cfg(feature = "local_fs")]
+use crate::code_review::github_repo_model::GitHubRepoModel;
+use crate::global_resource_handles::{GlobalResourceHandles, GlobalResourceHandlesProvider};
 use crate::terminal::color::{self, Colors};
 use crate::terminal::event_listener::ChannelEventListener;
 use crate::terminal::model::test_utils::block_size;
 use crate::terminal::model::{BlockId, TerminalModel};
 use crate::terminal::view::ambient_agent::AmbientAgentViewModel;
-#[cfg(feature = "local_fs")]
-use crate::ai::agent::{AIAgentContext, AnyFileContent, FileContext};
-#[cfg(feature = "local_fs")]
-use crate::code_review::git_status_update::GitRepoStatusModel;
-#[cfg(feature = "local_fs")]
-use crate::code_review::github_repo_model::GitHubRepoModel;
+use crate::test_util::settings::initialize_settings_for_tests;
 #[cfg(feature = "local_fs")]
 use crate::util::git::{PrInfo, RepositoryInfo};
 #[cfg(feature = "local_fs")]
@@ -272,9 +274,10 @@ fn retain_at_context_attachments_in_query_drops_deleted_prefix_reference() {
 
         model.read(&app, |m, _| {
             assert!(!m.pending_at_context_attachments().contains_key("@commit"));
-            assert!(m
-                .pending_at_context_attachments()
-                .contains_key("@commit (4)"));
+            assert!(
+                m.pending_at_context_attachments()
+                    .contains_key("@commit (4)")
+            );
         });
     });
 }

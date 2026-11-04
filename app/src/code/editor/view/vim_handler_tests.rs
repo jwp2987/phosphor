@@ -12,6 +12,10 @@ use crate::{
     workspace::sync_inputs::SyncedInputState,
     workspaces::user_workspaces::UserWorkspaces,
 };
+use std::cell::RefCell;
+use std::collections::HashSet;
+use std::rc::Rc;
+use std::time::Duration;
 use unindent::Unindent;
 use vim::vim::{MotionType, VimMode};
 use warp_core::{features::FeatureFlag, settings::Setting, ui::appearance::Appearance};
@@ -22,17 +26,13 @@ use warp_editor::{
     render::model::viewport::SizeInfo,
 };
 use warp_util::user_input::UserInput;
-use std::cell::RefCell;
-use std::collections::HashSet;
-use std::rc::Rc;
-use std::time::Duration;
-use warpui::geometry::vector::{vec2f, Vector2F};
 use warpui::r#async::Timer;
+use warpui::geometry::vector::{Vector2F, vec2f};
 use warpui::text::point::Point;
 use warpui::units::IntoPixels;
 use warpui::{
-    keymap::Keystroke, platform::WindowStyle, App, EntityId, Event, Presenter, SingletonEntity,
-    TypedActionView, UpdateModel, ViewHandle, WindowId, WindowInvalidation,
+    App, EntityId, Event, Presenter, SingletonEntity, TypedActionView, UpdateModel, ViewHandle,
+    WindowId, WindowInvalidation, keymap::Keystroke, platform::WindowStyle,
 };
 
 use crate::code::editor::find::view::CodeEditorFind;
@@ -1836,7 +1836,6 @@ fn test_vim_visual_linewise_delete_first_line_does_not_panic() {
     });
 }
 
-
 #[test]
 fn test_vim_zz_in_normal_mode_preserves_cursor_and_mode() {
     let _feature_flag_guard = FeatureFlag::VimCodeEditor.override_enabled(true);
@@ -2478,7 +2477,11 @@ fn test_find_goto_and_comment_subviews_are_created_lazily() {
             view.handle_action(&CodeEditorViewAction::ShowFindBar, ctx);
         });
         editor.read(&app, |view, ctx| {
-            assert!(view.find_bar.as_ref().is_some_and(|bar| bar.as_ref(ctx).is_open()));
+            assert!(
+                view.find_bar
+                    .as_ref()
+                    .is_some_and(|bar| bar.as_ref(ctx).is_open())
+            );
             assert!(view.goto_line_dialog.is_none());
         });
     });

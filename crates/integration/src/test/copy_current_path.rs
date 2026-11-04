@@ -11,12 +11,11 @@ use warp::{
     workspace::WorkspaceAction,
 };
 use warpui::{
-    async_assert_eq,
+    App, async_assert_eq,
     integration::{AssertionOutcome, TestStep},
-    App,
 };
 
-use super::{new_builder, Builder};
+use super::{Builder, new_builder};
 use crate::util::write_all_rc_files_for_test;
 
 fn open_file_tree_panel(app: &mut App) {

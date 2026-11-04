@@ -1,7 +1,7 @@
 pub use crate::util::openable_file_type::EditorLayout;
 use serde::{Deserialize, Deserializer, Serialize};
 use settings::{
-    macros::define_settings_group, RespectUserSyncSetting, SupportedPlatforms, SyncToCloud,
+    RespectUserSyncSetting, SupportedPlatforms, SyncToCloud, macros::define_settings_group,
 };
 
 #[derive(

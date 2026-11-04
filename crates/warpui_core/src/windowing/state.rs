@@ -5,11 +5,11 @@ use std::{
 };
 
 use crate::{
+    DisplayId, DisplayIdx, Entity, ModelContext, OptionalPlatformWindow, SingletonEntity, WindowId,
     geometry,
     platform::{self, FullscreenState, TerminationMode, WindowFocusBehavior},
     scene::{CornerRadius, Radius},
-    windowing, DisplayId, DisplayIdx, Entity, ModelContext, OptionalPlatformWindow,
-    SingletonEntity, WindowId,
+    windowing,
 };
 
 use super::WindowCallbacks;

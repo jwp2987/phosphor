@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::parse_skill::{parse_skill, ParsedSkill};
+use super::parse_skill::{ParsedSkill, parse_skill};
 use super::skill_provider::SkillScope;
 
 /// The environment variable that specifies extra skill directories to index at

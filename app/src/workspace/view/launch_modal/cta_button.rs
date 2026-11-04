@@ -50,7 +50,6 @@ impl<S: Slide> CTAButton<S> {
             telemetry_event: None,
         }
     }
-
 }
 
 pub enum CTAButtonAction<S: Slide> {

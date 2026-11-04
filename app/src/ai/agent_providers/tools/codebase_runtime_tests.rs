@@ -20,11 +20,36 @@ fn args(query: &str, max_results: Option<usize>) -> SearchCodebaseArgs {
 
 fn sample() -> Vec<CodebaseSymbol> {
     vec![
-        sym("run_search_codebase", Some("fn "), "src/tools/codebase_runtime.rs", 82),
-        sym("collect_codebase_symbols", Some("fn "), "src/tools/codebase_runtime.rs", 160),
-        sym("CodebaseSymbol", Some("struct "), "src/tools/codebase_runtime.rs", 29),
-        sym("run_websearch", Some("fn "), "src/tools/web_runtime.rs", 649),
-        sym("build_ssrf_safe_client", Some("fn "), "src/tools/web_runtime.rs", 227),
+        sym(
+            "run_search_codebase",
+            Some("fn "),
+            "src/tools/codebase_runtime.rs",
+            82,
+        ),
+        sym(
+            "collect_codebase_symbols",
+            Some("fn "),
+            "src/tools/codebase_runtime.rs",
+            160,
+        ),
+        sym(
+            "CodebaseSymbol",
+            Some("struct "),
+            "src/tools/codebase_runtime.rs",
+            29,
+        ),
+        sym(
+            "run_websearch",
+            Some("fn "),
+            "src/tools/web_runtime.rs",
+            649,
+        ),
+        sym(
+            "build_ssrf_safe_client",
+            Some("fn "),
+            "src/tools/web_runtime.rs",
+            227,
+        ),
     ]
 }
 
@@ -55,7 +80,10 @@ fn matches_are_found_and_ranked() {
     assert!(out.matches[0].score > 0);
     // Scores are sorted descending.
     for pair in out.matches.windows(2) {
-        assert!(pair[0].score >= pair[1].score, "matches must be sorted by score desc");
+        assert!(
+            pair[0].score >= pair[1].score,
+            "matches must be sorted by score desc"
+        );
     }
 }
 
@@ -71,7 +99,11 @@ fn no_matching_symbol_reports_no_matches() {
 #[test]
 fn max_results_is_respected_and_clamped() {
     let out = run_search_codebase(args("run", Some(1)), &sample());
-    assert_eq!(out.matches.len(), 1, "max_results must cap the result count");
+    assert_eq!(
+        out.matches.len(),
+        1,
+        "max_results must cap the result count"
+    );
 
     // 0 clamps up to 1 (never returns an unbounded / empty-by-clamp set).
     let out0 = run_search_codebase(args("run", Some(0)), &sample());
@@ -126,7 +158,10 @@ fn malformed_args_error_is_recognizable_as_invalid_arguments() {
     assert_eq!(v["_byop_intercepted"], true);
     assert_eq!(v["error"], "invalid_arguments");
     assert_eq!(v["tool"], "search_codebase");
-    assert!(v.get("status").is_none(), "must not also carry the old status:error shape");
+    assert!(
+        v.get("status").is_none(),
+        "must not also carry the old status:error shape"
+    );
     assert!(
         v["detail"].as_str().unwrap().contains("query"),
         "detail should surface the underlying parse error, got {v:?}"
@@ -138,7 +173,9 @@ fn malformed_args_error_is_recognizable_as_invalid_arguments() {
 /// cased. This guards against the prefix sniff in `error_to_json` over-firing.
 #[test]
 fn non_parse_error_keeps_status_error_shape() {
-    let v = error_to_json(&anyhow::anyhow!("codebase_context_enabled is disabled for this profile"));
+    let v = error_to_json(&anyhow::anyhow!(
+        "codebase_context_enabled is disabled for this profile"
+    ));
     assert_eq!(v["_byop_intercepted"], true);
     assert_eq!(v["status"], "error");
     assert!(v.get("error").is_none());
@@ -149,7 +186,12 @@ fn non_parse_error_keeps_status_error_shape() {
 fn default_max_results_applies() {
     let mut symbols = Vec::new();
     for i in 0..50 {
-        symbols.push(sym(&format!("run_thing_{i}"), Some("fn "), "src/a.rs", i + 1));
+        symbols.push(sym(
+            &format!("run_thing_{i}"),
+            Some("fn "),
+            "src/a.rs",
+            i + 1,
+        ));
     }
     let out = run_search_codebase(args("run", None), &symbols);
     assert_eq!(out.matches.len(), DEFAULT_MAX_RESULTS);

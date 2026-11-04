@@ -1,10 +1,10 @@
 use warp_core::ui::appearance::Appearance;
 use warpui::{
+    Element,
     elements::{
         Align, ClippedScrollStateHandle, ClippedScrollable, Container, CrossAxisAlignment, Flex,
         MainAxisSize, ParentElement, ScrollbarWidth, Shrinkable,
     },
-    Element,
 };
 
 pub fn onboarding_slide_content(

@@ -1,8 +1,9 @@
 use ai::LLMId;
-use onboarding::slides::{AgentAutonomy, AgentDevelopmentSettings};
 use onboarding::SelectedSettings;
+use onboarding::slides::{AgentAutonomy, AgentDevelopmentSettings};
 use warpui::{App, SingletonEntity};
 
+use crate::LaunchMode;
 use crate::ai::execution_profiles::profiles::AIExecutionProfilesModel;
 use crate::ai::execution_profiles::{
     AIExecutionProfile, AIExecutionProfileObject, AIExecutionProfileObjectModel, ActionPermission,
@@ -14,10 +15,9 @@ use crate::cloud_object::update_manager::UpdateManager;
 use crate::cloud_object::{StoredObjectMetadata, StoredObjectPermissions};
 use crate::network::NetworkStatus;
 use crate::server::ids::{ServerId, SyncId};
-use crate::settings::{apply_onboarding_settings, PrivacySettings};
+use crate::settings::{PrivacySettings, apply_onboarding_settings};
 use crate::test_util::settings::initialize_settings_for_tests;
 use crate::workspaces::user_workspaces::UserWorkspaces;
-use crate::LaunchMode;
 
 /// Regression test for: "Logging in to an existing user at the end of
 /// onboarding should preserve the user's cloud-stored default execution

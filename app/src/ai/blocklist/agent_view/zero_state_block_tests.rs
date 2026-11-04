@@ -1,20 +1,22 @@
-use super::{display_working_directory, format_session_location, history_event_rerenders_zero_state};
-use crate::ai::agent::conversation::AIConversationId;
+use super::{
+    display_working_directory, format_session_location, history_event_rerenders_zero_state,
+};
 use crate::ai::agent::AIAgentExchangeId;
-use crate::ai::blocklist::history_model::BlocklistAIHistoryEvent;
-use warpui::EntityId;
+use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::blocklist::agent_view::zero_state_block::current_working_directory_for_zero_state;
+use crate::ai::blocklist::history_model::BlocklistAIHistoryEvent;
 use crate::features::FeatureFlag;
 use crate::terminal::model::ansi::{
     CompletionMetadata, Handler, InitShellValue, PrecmdValue, PromptMetadata, SSHValue,
 };
 use crate::terminal::model::test_utils::block_size;
-use crate::terminal::model::{session::Session, TerminalModel};
+use crate::terminal::model::{TerminalModel, session::Session};
 use crate::terminal::{
     color::{self, Colors},
     event_listener::ChannelEventListener,
 };
 use std::{path::PathBuf, sync::Arc};
+use warpui::EntityId;
 use warpui::r#async::executor::Background;
 
 fn terminal_with_startup_path(startup_path: Option<&str>) -> TerminalModel {

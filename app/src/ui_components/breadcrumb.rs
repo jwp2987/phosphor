@@ -2,12 +2,12 @@ use std::fmt::Debug;
 
 use itertools::{Itertools, Position};
 use warpui::{
+    AppContext, Element, EventContext,
     elements::{
         CrossAxisAlignment, Flex, Hoverable, MainAxisSize, MouseStateHandle, ParentElement,
         Shrinkable,
     },
     ui_components::components::{UiComponent, UiComponentStyles},
-    AppContext, Element, EventContext,
 };
 
 use crate::appearance::Appearance;

@@ -4,8 +4,8 @@ use pathfinder_geometry::vector::Vector2F;
 
 use super::{Point, SelectableElement};
 use crate::{
-    event::DispatchedEvent, AfterLayoutContext, AppContext, Element, EventContext, LayoutContext,
-    PaintContext, SizeConstraint,
+    AfterLayoutContext, AppContext, Element, EventContext, LayoutContext, PaintContext,
+    SizeConstraint, event::DispatchedEvent,
 };
 
 /// A wrapper element that triggers periodic repaints at a fixed interval.

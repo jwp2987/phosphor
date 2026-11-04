@@ -47,8 +47,8 @@ use pathfinder_geometry::vector::vec2f;
 use regex::Regex;
 use settings::Setting as _;
 use warp_core::features::FeatureFlag;
-use warp_core::ui::theme::color::internal_colors;
 use warp_core::ui::theme::WarpTheme;
+use warp_core::ui::theme::color::internal_colors;
 use warpui::r#async::{SpawnedFutureHandle, Timer};
 use warpui::elements::{
     Align, ChildAnchor, ChildView, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment,
@@ -63,17 +63,17 @@ use warpui::ui_components::button::{ButtonVariant, TextAndIcon, TextAndIconAlign
 use warpui::ui_components::components::{Coords, UiComponent, UiComponentStyles};
 use warpui::ui_components::switch::{SwitchStateHandle, TooltipConfig};
 use warpui::{
-    Action, AppContext, Element, Entity, ModelHandle, SingletonEntity, TypedActionView, UpdateModel,
-    View, ViewContext, ViewHandle,
+    Action, AppContext, Element, Entity, ModelHandle, SingletonEntity, TypedActionView,
+    UpdateModel, View, ViewContext, ViewHandle,
 };
 
 use super::privacy::{AddRegexModal, AddRegexModalEvent, AddRegexModalViewState};
 use super::settings_page::{
-    render_body_item, render_sub_header, LocalOnlyIconState, MatchData, PageType, SettingsPageMeta,
-    SettingsPageViewHandle, SettingsWidget, ToggleState, HEADER_PADDING,
-    TOGGLE_BUTTON_RIGHT_PADDING,
+    HEADER_PADDING, LocalOnlyIconState, MatchData, PageType, SettingsPageMeta,
+    SettingsPageViewHandle, SettingsWidget, TOGGLE_BUTTON_RIGHT_PADDING, ToggleState,
+    render_body_item, render_sub_header,
 };
-use super::{flags, SettingsAction, SettingsSection, ToggleSettingActionPair};
+use super::{SettingsAction, SettingsSection, ToggleSettingActionPair, flags};
 use crate::appearance::Appearance;
 use crate::channel::ChannelState;
 use crate::modal::{Modal, ModalEvent, ModalViewState};
@@ -83,8 +83,8 @@ use crate::server::telemetry::TelemetryEvent;
 use crate::settings::{CustomSecretRegex, PrivacySettings, RegexDisplayInfo};
 use crate::settings_view::render_body_item_label;
 use crate::terminal::safe_mode_settings::{
-    get_effective_secret_display_mode, SafeModeEnabled, SafeModeSettings, SecretDisplayMode,
-    SecretDisplayModeSetting,
+    SafeModeEnabled, SafeModeSettings, SecretDisplayMode, SecretDisplayModeSetting,
+    get_effective_secret_display_mode,
 };
 use crate::ui_components::buttons::icon_button;
 use crate::ui_components::icons::Icon;
@@ -223,7 +223,10 @@ impl PrivacyPageView {
             Box::new(CrashReportsWidget::default()),
             Box::new(PrivacyPolicyWidget::default()),
         ];
-        PageType::new_uncategorized(widgets, Some(crate::t_static!("settings-privacy-page-title")))
+        PageType::new_uncategorized(
+            widgets,
+            Some(crate::t_static!("settings-privacy-page-title")),
+        )
     }
 
     fn update_button_states(
@@ -249,7 +252,11 @@ impl PrivacyPageView {
         );
 
         ctx.update_model(&safe_mode_settings, move |safe_mode_settings, ctx| {
-            report_if_error!(safe_mode_settings.safe_mode_enabled.set_value(new_value, ctx));
+            report_if_error!(
+                safe_mode_settings
+                    .safe_mode_enabled
+                    .set_value(new_value, ctx)
+            );
         });
         ctx.notify();
     }
@@ -264,9 +271,11 @@ impl PrivacyPageView {
         };
 
         ctx.update_model(&safe_mode_settings, move |safe_mode_settings, ctx| {
-            report_if_error!(safe_mode_settings
-                .hide_secrets_in_block_list
-                .set_value(new_value, ctx));
+            report_if_error!(
+                safe_mode_settings
+                    .hide_secrets_in_block_list
+                    .set_value(new_value, ctx)
+            );
         });
         ctx.notify();
     }
@@ -767,9 +776,13 @@ impl SecretRedactionWidget {
 
     /// Renders a section title with consistent styling
     fn render_section_title(&self, title: String, appearance: &Appearance) -> Box<dyn Element> {
-        Text::new_inline(title, appearance.ui_font_family(), appearance.ui_font_body())
-            .with_color(appearance.theme().active_ui_text_color().into())
-            .finish()
+        Text::new_inline(
+            title,
+            appearance.ui_font_family(),
+            appearance.ui_font_body(),
+        )
+        .with_color(appearance.theme().active_ui_text_color().into())
+        .finish()
     }
 
     /// Renders a description paragraph with consistent styling

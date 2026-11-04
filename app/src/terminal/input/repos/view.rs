@@ -11,8 +11,8 @@ use crate::search::data_source::{Query, QueryFilter};
 use crate::search::mixer::{AddAsyncSourceOptions, SearchMixer};
 use crate::terminal::input::buffer_model::{InputBufferModel, InputBufferUpdateEvent};
 use crate::terminal::input::inline_menu::{InlineMenuEvent, InlineMenuPositioner, InlineMenuView};
-use crate::terminal::input::repos::data_source::RepoMenuDataSource;
 use crate::terminal::input::repos::AcceptRepo;
+use crate::terminal::input::repos::data_source::RepoMenuDataSource;
 use crate::terminal::input::suggestions_mode_model::{
     InputSuggestionsModeEvent, InputSuggestionsModeModel,
 };

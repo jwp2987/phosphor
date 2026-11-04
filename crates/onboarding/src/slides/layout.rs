@@ -1,5 +1,7 @@
-use pathfinder_geometry::vector::{vec2f, Vector2F};
+use pathfinder_geometry::vector::{Vector2F, vec2f};
 use warpui::{
+    AfterLayoutContext, AppContext, Element, EventContext, LayoutContext, PaintContext,
+    SizeConstraint,
     assets::asset_cache::AssetSource,
     elements::{
         Align, CacheOption, Clipped, ConstrainedBox, Container, CrossAxisAlignment, Empty,
@@ -7,8 +9,6 @@ use warpui::{
         SizeConstraintCondition, SizeConstraintSwitch, Stack,
     },
     event::DispatchedEvent,
-    AfterLayoutContext, AppContext, Element, EventContext, LayoutContext, PaintContext,
-    SizeConstraint,
 };
 
 // Onboarding images live under `app/assets/async/` so they are excluded from the WASM

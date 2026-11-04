@@ -1,8 +1,8 @@
 //! Conversions from application types to MAA API types (still used by BYOP tool plumbing).
 
+use agent_proto as api;
 use ai::agent::convert::ConvertToAPITypeError;
 use chrono::{DateTime, Local};
-use agent_proto as api;
 
 use crate::ai::{
     agent::{AIAgentActionResult, AIAgentActionResultType},

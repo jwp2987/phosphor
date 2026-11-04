@@ -7,7 +7,7 @@ use std::ops::Range;
 use std::path::Path;
 
 use super::parser::parse_markdown_content;
-use super::skill_provider::{get_provider_for_path, get_scope_for_path, SkillProvider, SkillScope};
+use super::skill_provider::{SkillProvider, SkillScope, get_provider_for_path, get_scope_for_path};
 use thiserror::Error;
 use warp_util::local_or_remote_path::LocalOrRemotePath;
 

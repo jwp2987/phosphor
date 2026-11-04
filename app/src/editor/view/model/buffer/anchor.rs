@@ -1,4 +1,4 @@
-use super::{time, Buffer};
+use super::{Buffer, time};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;

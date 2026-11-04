@@ -14,12 +14,12 @@ use std::mem::ManuallyDrop;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 use crate::notification::RequestPermissionsOutcome;
 
-use draw_retry::{is_slow_frame, DrawRetryState, MinimizedRedrawGate, RateLimitedSummary};
+use draw_retry::{DrawRetryState, MinimizedRedrawGate, RateLimitedSummary, is_slow_frame};
 use futures_util::future::LocalBoxFuture;
 use futures_util::stream::AbortHandle;
 use instant::{Duration, Instant};
 use pathfinder_geometry::rect::RectF;
-use pathfinder_geometry::vector::{vec2f, Vector2F};
+use pathfinder_geometry::vector::{Vector2F, vec2f};
 use winit::dpi::{LogicalPosition, LogicalSize, PhysicalPosition};
 use winit::event::Ime as ImeEvent;
 use winit::event_loop::EventLoopProxy;
@@ -30,29 +30,28 @@ use winit::{
     event_loop::{ActiveEventLoop, ControlFlow},
 };
 
+use crate::Event::{ClearMarkedText, SetMarkedText, TypedCharacters};
+use crate::r#async::Timer;
 use crate::event::ModifiersState;
 use crate::platform::NotificationInfo;
 use crate::platform::OperatingSystem;
 use crate::platform::{
-    self,
+    self, TerminationMode, WindowContext,
     app::{AppCallbackDispatcher, ApproveTerminateResult},
-    TerminationMode, WindowContext,
 };
-use crate::r#async::Timer;
 use crate::windowing::winit::app::RequestPermissionsCallback;
 use crate::windowing::winit::window::MIN_WINDOW_SIZE;
-use crate::Event::{ClearMarkedText, SetMarkedText, TypedCharacters};
 use crate::{AppContext, WindowId};
 
-use super::window::DEFAULT_TITLEBAR_HEIGHT;
 use super::CustomEvent;
+use super::window::DEFAULT_TITLEBAR_HEIGHT;
 
 #[cfg(windows)]
-use super::windows::{add_network_connection_listener, WindowsNetworkConnectionPoint};
+use super::windows::{WindowsNetworkConnectionPoint, add_network_connection_listener};
 
 use self::key_events::{
-    convert_keyboard_input_event, text_fallback_event_for_unconverted_key,
-    typed_characters_follow_keydown, KeyConversion,
+    KeyConversion, convert_keyboard_input_event, text_fallback_event_for_unconverted_key,
+    typed_characters_follow_keydown,
 };
 
 /// At most one WARN summary of transiently skipped frames per this interval.
@@ -81,7 +80,7 @@ const LONG_PRESS_DURATION: Duration = Duration::from_millis(500);
 const MOMENTUM_DECAY: f32 = 0.968; // Every interval, velocity is multiplied by this factor.
 const MOMENTUM_DECAY_INTERVAL: f32 = 0.008; // Time period (seconds) over which MOMENTUM_DECAY is applied
 const MOMENTUM_FRAME_INTERVAL: Duration = Duration::from_millis(8); //Controls how often the momentum scroll tick fires.
-                                                                    // Higher values means it fires less often (choppier)
+// Higher values means it fires less often (choppier)
 const MOMENTUM_THRESHOLD: f32 = 50.0; // Min-velocity to start momentum scroll, Android standards
 const MOMENTUM_MIN_VELOCITY: f32 = 1.0; // When velocity falls below this, scrolling stops. 1.0 is subpixel
 const MOMENTUM_MAX_VELOCITY: f32 = 2000.0; // Hard cap on momentum initial velocity (px/s)
@@ -1308,7 +1307,10 @@ impl EventLoop {
         // A minimized window cannot show a frame: skip the scene build, the texture acquire and
         // the retry timer. The next event after it is restored requests the redraw again.
         if let Some(state) = self.state.windows.get_mut(&winit_window_id) {
-            if state.minimized_gate.should_skip_redraw(window.is_minimized()) {
+            if state
+                .minimized_gate
+                .should_skip_redraw(window.is_minimized())
+            {
                 state.redraw_retry_at = None;
                 return;
             }
@@ -1316,7 +1318,9 @@ impl EventLoop {
 
         #[cfg(any(target_os = "linux", target_os = "freebsd"))]
         if crate::windowing::winit::linux::take_encountered_bad_match_from_dri3_fence_from_fd() {
-            log::warn!("Encountered a DRI3FenceFromFd error, forcing use of the NVIDIA GPU and recreating resources...");
+            log::warn!(
+                "Encountered a DRI3FenceFromFd error, forcing use of the NVIDIA GPU and recreating resources..."
+            );
             self.downrank_non_nvidia_vulkan_adapters = true;
 
             self.ui_app.update(|ctx| {

@@ -1,26 +1,26 @@
 use itertools::{Either, Itertools};
 use warp_editor::editor::NavigationKey;
-use warpui::elements::ConstrainedBox;
 use warpui::FocusContext;
+use warpui::elements::ConstrainedBox;
 
 use std::collections::HashSet;
 
 use warpui::fonts::FamilyId;
 use warpui::{
+    Action, AppContext, Element, Entity, ModelContext, ModelHandle, SingletonEntity,
+    TypedActionView, View, ViewContext, ViewHandle,
     accessibility::{AccessibilityContent, WarpA11yRole},
     elements::{Clipped, Container, CrossAxisAlignment, Flex, ParentElement, Shrinkable, Text},
     fonts::{Properties, Style, Weight},
     presenter::ChildView,
-    Action, AppContext, Element, Entity, ModelContext, ModelHandle, SingletonEntity,
-    TypedActionView, View, ViewContext, ViewHandle,
 };
 
 use crate::editor::AutosuggestionType;
+use crate::search::QueryFilter;
 use crate::search::data_source::{Query, QueryResult};
 use crate::search::mixer::SearchMixer;
 use crate::search::result_renderer::QueryResultIndex;
 use crate::search::result_renderer::QueryResultRenderer;
-use crate::search::QueryFilter;
 
 use crate::ui_components::blended_colors;
 use crate::ui_components::icons::Icon;

@@ -2,7 +2,7 @@ use std::{marker::PhantomData, sync::Arc};
 
 use async_trait::async_trait;
 
-use crate::{protocol::Message, Client, ClientError};
+use crate::{Client, ClientError, protocol::Message};
 
 pub(crate) type ServiceId = String;
 

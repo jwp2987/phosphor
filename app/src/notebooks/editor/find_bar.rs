@@ -7,6 +7,8 @@ use warp_editor::{
     search::{SearchEvent, Searcher},
 };
 use warpui::{
+    AppContext, BlurContext, Element, Entity, FocusContext, ModelHandle, SingletonEntity,
+    TypedActionView, View, ViewContext, ViewHandle,
     accessibility::{AccessibilityContent, ActionAccessibilityContent, WarpA11yRole},
     elements::{
         Border, ChildAnchor, Clipped, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment,
@@ -20,8 +22,6 @@ use warpui::{
         components::{Coords, UiComponent, UiComponentStyles},
         toggle_button::ToggleButton,
     },
-    AppContext, BlurContext, Element, Entity, FocusContext, ModelHandle, SingletonEntity,
-    TypedActionView, View, ViewContext, ViewHandle,
 };
 
 use crate::{

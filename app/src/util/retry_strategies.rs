@@ -1,7 +1,7 @@
 use std::future::Future;
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use thiserror::Error;
 use warp_core::errors::ErrorExt;
 use warp_core::register_error;

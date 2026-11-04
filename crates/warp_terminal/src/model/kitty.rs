@@ -7,7 +7,7 @@ use std::cmp::min;
 use std::io::Read;
 #[cfg(feature = "local_fs")]
 use std::{env, fs, path::Path, str};
-use warpui::image_cache::{resize_dimensions, FitType};
+use warpui::image_cache::{FitType, resize_dimensions};
 use warpui::{
     image_cache::{CustomHeaderCreationError, CustomImageFormat, CustomImageHeader, ImageType},
     util::{parse_i32, parse_u32},
@@ -890,8 +890,8 @@ fn read_file_with_timeout(
     is_temp: bool,
     timeout: std::time::Duration,
 ) -> Result<Vec<u8>, InvalidKittyPayload> {
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     if IN_FLIGHT_FILE_READS.load(Ordering::Acquire) >= MAX_IN_FLIGHT_FILE_READS {
         return Err(InvalidKittyPayload::FileError(FileError::FileReadError(
@@ -943,7 +943,7 @@ fn read_file_blocking(
         Err(err) => {
             return Err(InvalidKittyPayload::FileError(FileError::FileReadError(
                 err.to_string(),
-            )))
+            )));
         }
     };
 
@@ -1084,7 +1084,7 @@ fn read_shared_memory(
         Err(err) => {
             return Err(InvalidKittyPayload::ShmError(ShmError::ObjectOpenError(
                 err.to_string(),
-            )))
+            )));
         }
     };
 
@@ -1104,7 +1104,7 @@ fn read_from_shared_memory_fd(
     size: Option<usize>,
 ) -> Result<Vec<u8>, InvalidKittyPayload> {
     use nix::sys::{
-        mman::{mmap, MapFlags, ProtFlags},
+        mman::{MapFlags, ProtFlags, mmap},
         stat::fstat,
     };
     use std::num::NonZero;
@@ -1114,7 +1114,7 @@ fn read_from_shared_memory_fd(
         Err(err) => {
             return Err(InvalidKittyPayload::ShmError(ShmError::FileStatError(
                 err.to_string(),
-            )))
+            )));
         }
     };
 

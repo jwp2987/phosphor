@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 use crate::ai::agent::ProgrammingLanguage;
-use crate::ai::blocklist::code_block::{render_runnable_code_snippet, CodeSnippetButtonHandles};
+use crate::ai::blocklist::code_block::{CodeSnippetButtonHandles, render_runnable_code_snippet};
 use crate::appearance::Appearance;
 use crate::terminal::model::terminal_model::SubshellInitializationInfo;
 use crate::terminal::shell::{Shell, ShellType};
@@ -19,13 +19,13 @@ use warpui::elements::{
 };
 use warpui::ui_components::components::{UiComponent, UiComponentStyles};
 use warpui::{
-    elements::{Border, Container, Flex, ParentElement},
     AppContext, Element, Entity, SingletonEntity, TypedActionView, View, ViewContext,
+    elements::{Border, Container, Flex, ParentElement},
 };
 
-use super::render::{ssh_docs_url, subshell_docs_url, HORIZONTAL_TEXT_MARGIN};
+use super::render::{HORIZONTAL_TEXT_MARGIN, ssh_docs_url, subshell_docs_url};
 use super::settings::WarpifySettings;
-use super::{render, subshell_bootstrap_success_block_bytes, WarpificationSource};
+use super::{WarpificationSource, render, subshell_bootstrap_success_block_bytes};
 
 const VERTICAL_TEXT_MARGIN: f32 = 16.;
 

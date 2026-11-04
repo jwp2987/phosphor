@@ -1,12 +1,12 @@
-use super::{action_log, overlay, TestSetupUtils};
+use super::{TestSetupUtils, action_log, overlay};
 use crate::keymap::PerPlatformKeystroke;
 use crate::platform::OperatingSystem;
 use crate::{
+    App, WindowId,
+    r#async::Timer,
     event::{Event, KeyEventDetails},
     keymap::Keystroke,
     platform::Window,
-    r#async::Timer,
-    App, WindowId,
 };
 use instant::Instant;
 use std::{

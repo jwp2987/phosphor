@@ -1,6 +1,6 @@
 use crate::banner::BannerState;
 use settings::{
-    macros::define_settings_group, RespectUserSyncSetting, SupportedPlatforms, SyncToCloud,
+    RespectUserSyncSetting, SupportedPlatforms, SyncToCloud, macros::define_settings_group,
 };
 
 // This isn't exactly a setting, but rather a record of a

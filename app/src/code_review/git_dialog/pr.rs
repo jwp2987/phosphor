@@ -8,19 +8,19 @@ use std::path::Path;
 
 use warp_core::ui::appearance::Appearance;
 use warpui::{
+    SingletonEntity, ViewContext,
     elements::{
         ClippedScrollStateHandle, Container, Element, Flex, MouseStateHandle, ParentElement, Text,
     },
-    SingletonEntity, ViewContext,
 };
 
 use crate::{
     code_review::git_dialog::{
-        interactive_path_future, render_branch_section, render_file_changes_box, show_toast,
-        user_facing_git_error, GitDialog, GitDialogAction, GitDialogEvent, GitDialogMode,
+        GitDialog, GitDialogAction, GitDialogEvent, GitDialogMode, interactive_path_future,
+        render_branch_section, render_file_changes_box, show_toast, user_facing_git_error,
     },
     ui_components::icons::Icon,
-    util::git::{create_pr, get_branch_diff_entries, FileChangeEntry, PrInfo},
+    util::git::{FileChangeEntry, PrInfo, create_pr, get_branch_diff_entries},
     view_components::{DismissibleToast, ToastLink},
     workspace::ToastStack,
 };

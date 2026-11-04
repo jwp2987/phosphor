@@ -8,7 +8,7 @@ use crate::terminal::model::{
     index::{Point, VisiblePoint, VisibleRow},
 };
 
-use super::{grid_handler::GridHandler, GridStorage};
+use super::{GridStorage, grid_handler::GridHandler};
 
 pub(in crate::terminal::model) trait ConvertToAbsolute {
     type Output;

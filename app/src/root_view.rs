@@ -16,8 +16,8 @@ use crate::interval_timer::IntervalTimer;
 use crate::launch_configs::launch_config;
 use crate::linear::LinearIssueWork;
 use crate::notebooks::manager::NotebookSource;
-use crate::settings::apply_onboarding_settings;
 use crate::settings::AISettings;
+use crate::settings::apply_onboarding_settings;
 use onboarding::{
     AgentOnboardingEvent, AgentOnboardingView, OnboardingIntention, SelectedSettings,
 };
@@ -29,9 +29,9 @@ use crate::server::ids::SyncId;
 use crate::server::telemetry::LaunchConfigUiLocation;
 use crate::settings::QuakeModeSettings;
 use crate::settings::ThemeSettings;
+use crate::settings_view::SettingsSection;
 use crate::settings_view::flags;
 use crate::settings_view::mcp_servers_page::MCPServersSettingsPage;
-use crate::settings_view::SettingsSection;
 use crate::terminal::available_shells::AvailableShell;
 use crate::terminal::general_settings::GeneralSettings;
 use crate::terminal::keys_settings::KeysSettings;
@@ -41,13 +41,16 @@ use crate::themes::onboarding_theme_picker_themes;
 use crate::themes::theme::{AnsiColorIdentifier, Blend, ThemeKind, WarpThemeConfig};
 use crate::uri::OpenMCPSettingsArgs;
 use crate::util::bindings::{self, is_binding_pty_compliant};
-use crate::util::traffic_lights::{traffic_light_data, TrafficLightData, TrafficLightMouseStates};
+use crate::util::traffic_lights::{TrafficLightData, TrafficLightMouseStates, traffic_light_data};
 use crate::view_components::DismissibleToast;
 use crate::window_settings::WindowSettings;
-use crate::workspace::hoa_onboarding::mark_hoa_onboarding_completed;
 use crate::workspace::WorkspaceAction;
+use crate::workspace::hoa_onboarding::mark_hoa_onboarding_completed;
 use crate::workspaces::user_workspaces::{UserWorkspaces, UserWorkspacesEvent};
+use crate::{ChannelState, features::FeatureFlag};
+use crate::{GlobalResourceHandles, GlobalResourceHandlesProvider, send_telemetry_from_app_ctx};
 use crate::{
+    UpdateQuakeModeEventArg,
     app_state::{AppState, PaneUuid, WindowSnapshot},
     autoupdate::{RequestType, UpdateReady},
     changelog_model::ChangelogRequestType,
@@ -55,26 +58,23 @@ use crate::{
     send_telemetry_from_ctx,
     server::telemetry::TelemetryEvent,
     server_time::ServerTime,
-    UpdateQuakeModeEventArg,
 };
 use crate::{
     auth::{AuthOverrideWarningModal, AuthOverrideWarningModalEvent},
     auth::{AuthView, AuthViewVariant},
-    workspace::{view::OnboardingTutorial, PaneViewLocator, Workspace, WorkspaceRegistry},
+    workspace::{PaneViewLocator, Workspace, WorkspaceRegistry, view::OnboardingTutorial},
 };
-use crate::{features::FeatureFlag, ChannelState};
-use crate::{send_telemetry_from_app_ctx, GlobalResourceHandles, GlobalResourceHandlesProvider};
 use anyhow::Result;
 use cfg_if::cfg_if;
 use lazy_static::lazy_static;
 use parking_lot::Mutex;
 use pathfinder_geometry::rect::RectF;
-use pathfinder_geometry::vector::{vec2f, Vector2F};
+use pathfinder_geometry::vector::{Vector2F, vec2f};
 use serde::{Deserialize, Serialize};
 use settings::Setting as _;
 use std::path::Path;
-use std::sync::mpsc::SyncSender;
 use std::sync::Arc;
+use std::sync::mpsc::SyncSender;
 use std::{collections::HashMap, path::PathBuf};
 use warp_core::context_flag::ContextFlag;
 use warp_core::user_preferences::GetUserPreferences as _;
@@ -84,13 +84,16 @@ use warpui::windowing::WindowManager;
 use crate::ai::llms::{LLMPreferences, LLMPreferencesEvent};
 use crate::ai::onboarding::build_onboarding_models;
 
-use warpui::elements::{ChildAnchor, OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds, Stack};
+use warpui::elements::{
+    ChildAnchor, OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds, Stack,
+};
 use warpui::rendering::OnGPUDeviceSelected;
-use warpui::{id, AddWindowOptions, DisplayId, SingletonEntity};
+use warpui::{AddWindowOptions, DisplayId, SingletonEntity, id};
 use warpui::{
+    AppContext, Element, Entity, EntityId, TypedActionView, View, ViewContext, ViewHandle,
+    WindowId,
     platform::{WindowBounds, WindowStyle},
     presenter::ChildView,
-    AppContext, Element, Entity, EntityId, TypedActionView, View, ViewContext, ViewHandle, WindowId,
 };
 use warpui::{FocusContext, NextNewWindowsHasThisWindowsBoundsUponClose};
 
@@ -472,13 +475,16 @@ fn open_launch_config(arg: &OpenLaunchConfigArg, ctx: &mut AppContext) {
 }
 
 fn send_feedback(_: &(), ctx: &mut AppContext) {
-    match active_workspace(ctx) { Some(workspace) => {
-        workspace.update(ctx, |workspace, ctx| {
-            workspace.handle_action(&WorkspaceAction::SendFeedback, ctx);
-        });
-    } _ => {
-        ctx.open_url(&crate::util::links::feedback_form_url());
-    }}
+    match active_workspace(ctx) {
+        Some(workspace) => {
+            workspace.update(ctx, |workspace, ctx| {
+                workspace.handle_action(&WorkspaceAction::SendFeedback, ctx);
+            });
+        }
+        _ => {
+            ctx.open_url(&crate::util::links::feedback_form_url());
+        }
+    }
 }
 
 /// Creates a new window with the transferred pane group.
@@ -543,13 +549,16 @@ pub fn create_transferred_window(
     let pane_group_id = transferred_tab.pane_group.id();
     ctx.transfer_view_tree_to_window(pane_group_id, source_window_id, new_window_id);
 
-    match WorkspaceRegistry::as_ref(ctx).get(new_window_id, ctx) { Some(new_workspace) => {
-        new_workspace.update(ctx, |workspace, ctx| {
-            workspace.adopt_transferred_pane_group(transferred_tab.pane_group.clone(), ctx);
-        });
-    } _ => {
-        log::warn!("Failed to find workspace in newly created window {new_window_id:?}");
-    }}
+    match WorkspaceRegistry::as_ref(ctx).get(new_window_id, ctx) {
+        Some(new_workspace) => {
+            new_workspace.update(ctx, |workspace, ctx| {
+                workspace.adopt_transferred_pane_group(transferred_tab.pane_group.clone(), ctx);
+            });
+        }
+        _ => {
+            log::warn!("Failed to find workspace in newly created window {new_window_id:?}");
+        }
+    }
     new_window_id
 }
 
@@ -1585,10 +1594,7 @@ impl RootView {
         result: &Result<UpdateReady>,
         ctx: &mut ViewContext<Self>,
     ) {
-        if let Ok(UpdateReady::Yes {
-            new_version, ..
-        }) = result
-        {
+        if let Ok(UpdateReady::Yes { new_version, .. }) = result {
             log::info!("Update ready for channel version {new_version:?}");
             if new_version.update_by.is_some() {
                 log::info!("Update ready, there is an update-by time, checking local time.");
@@ -1805,9 +1811,11 @@ impl RootView {
                 // auto-opened for discoverability.
                 if matches!(selected_settings, SelectedSettings::Terminal { .. }) {
                     AISettings::handle(ctx).update(ctx, |settings, ctx| {
-                        report_if_error!(settings
-                            .has_auto_opened_conversation_list
-                            .set_value(true, ctx));
+                        report_if_error!(
+                            settings
+                                .has_auto_opened_conversation_list
+                                .set_value(true, ctx)
+                        );
                     });
                 }
 

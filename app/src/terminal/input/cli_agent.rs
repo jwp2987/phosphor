@@ -1,8 +1,8 @@
 use super::{
-    common::{add_input_suggestions_overlays, wrap_input_with_terminal_padding_and_focus_handler},
-    Input, InputAction, InputDropTargetData, CLI_AGENT_RICH_INPUT_EDITOR_BOTTOM_PADDING,
-    CLI_AGENT_RICH_INPUT_EDITOR_MAX_HEIGHT, CLI_AGENT_RICH_INPUT_EDITOR_TOP_PADDING,
+    CLI_AGENT_RICH_INPUT_EDITOR_BOTTOM_PADDING, CLI_AGENT_RICH_INPUT_EDITOR_MAX_HEIGHT,
+    CLI_AGENT_RICH_INPUT_EDITOR_TOP_PADDING, Input, InputAction, InputDropTargetData,
     TERMINAL_VIEW_PADDING_LEFT,
+    common::{add_input_suggestions_overlays, wrap_input_with_terminal_padding_and_focus_handler},
 };
 use crate::{
     appearance::Appearance,
@@ -14,16 +14,16 @@ use crate::{
     },
 };
 use warp_core::ui::{
-    color::{contrast::MinimumAllowedContrast, ContrastingColor},
+    color::{ContrastingColor, contrast::MinimumAllowedContrast},
     theme::color::internal_colors,
 };
 use warpui::{
+    AppContext, SingletonEntity as _, ViewContext,
     elements::{
         Border, Clipped, ConstrainedBox, Container, DispatchEventResult, DropTarget, Element,
         EventHandler, Flex, Hoverable, ParentElement, SavePosition, Stack,
     },
     presenter::ChildView,
-    AppContext, SingletonEntity as _, ViewContext,
 };
 
 impl Input {

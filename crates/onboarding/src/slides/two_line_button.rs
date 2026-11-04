@@ -3,9 +3,10 @@ use pathfinder_geometry::vector::vec2f;
 use warp_core::ui::{
     appearance::Appearance,
     icons::Icon,
-    theme::{color::internal_colors, Fill},
+    theme::{Fill, color::internal_colors},
 };
 use warpui::{
+    Element,
     elements::{
         Align, Border, ChildAnchor, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment,
         Flex, Hoverable, MainAxisSize, MouseStateHandle, OffsetPositioning, ParentAnchor,
@@ -13,7 +14,6 @@ use warpui::{
     },
     fonts::{Properties, Weight},
     platform::Cursor,
-    Element,
 };
 
 pub(super) struct TwoLineButtonSpec {

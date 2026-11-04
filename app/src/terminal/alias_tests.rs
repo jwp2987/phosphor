@@ -2,7 +2,7 @@ use smol_str::SmolStr;
 
 use super::*;
 use crate::terminal::model::session::{
-    command_executor::testing::TestCommandExecutor, SessionInfo,
+    SessionInfo, command_executor::testing::TestCommandExecutor,
 };
 use std::collections::HashMap;
 

@@ -14,9 +14,9 @@ use warp::{
     },
     settings::{CodeSettings, DebugSettings, FontSettings},
 };
-use warpui::{async_assert, async_assert_eq, integration::TestStep, SingletonEntity};
+use warpui::{SingletonEntity, async_assert, async_assert_eq, integration::TestStep};
 
-use super::{new_builder, Builder};
+use super::{Builder, new_builder};
 
 /// Helper: read the TOML settings file from disk and return its contents.
 /// Returns an empty string if the file does not exist.

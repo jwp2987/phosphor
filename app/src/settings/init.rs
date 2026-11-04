@@ -1,6 +1,6 @@
 use settings::{Setting as _, SettingsManager};
 use warp_core::features::FeatureFlag;
-use warpui::{rendering::GPUPowerPreference, AppContext, SingletonEntity};
+use warpui::{AppContext, SingletonEntity, rendering::GPUPowerPreference};
 use warpui_extras::user_preferences;
 
 use crate::{
@@ -11,6 +11,7 @@ use crate::{
     resource_center::TipsCompleted,
     search::command_search::settings::CommandSearchSettings,
     terminal::{
+        BlockListSettings,
         alt_screen_reporting::AltScreenReporting,
         general_settings::GeneralSettings,
         keys_settings::KeysSettings,
@@ -20,7 +21,6 @@ use crate::{
         settings::TerminalSettings,
         shared_session::settings::SharedSessionSettings,
         warpify::settings::WarpifySettings,
-        BlockListSettings,
     },
     undo_close::UndoCloseSettings,
     window_settings::WindowSettings,
@@ -31,16 +31,15 @@ use crate::{
 use warp_core::semantic_selection::SemanticSelection;
 
 use super::{
-    app_icon::AppIconSettings, app_installation_detection::UserAppInstallDetectionSettings,
-    initializer::SettingsInitializer,
-    language::LanguageSettings, native_preference::NativePreferenceSettings,
-    network::NetworkSettings, AISettings, AISettingsChangedEvent, AccessibilitySettings,
-    AliasExpansionSettings,
+    AISettings, AISettingsChangedEvent, AccessibilitySettings, AliasExpansionSettings,
     AppEditorSettings, AutoupdateSettings, BlockVisibilitySettings, CodeSettings, DebugSettings,
     EmacsBindingsSettings, FontSettings, FontSettingsChangedEvent, GPUSettings, InputBoxType,
     InputModeSettings, InputSettings, LocalControlSettings, PaneSettings, ScrollSettings,
     SelectionSettings, SshSettings, ThemeSettings, TuiAutoupdateSettings, TuiThemeSettings,
-    TuiZeroStateSettings, VimBannerSettings, WarpDrivePrivacySettings,
+    TuiZeroStateSettings, VimBannerSettings, WarpDrivePrivacySettings, app_icon::AppIconSettings,
+    app_installation_detection::UserAppInstallDetectionSettings, initializer::SettingsInitializer,
+    language::LanguageSettings, native_preference::NativePreferenceSettings,
+    network::NetworkSettings,
 };
 
 pub struct UserDefaultsOnStartup {
@@ -445,7 +444,10 @@ pub(crate) fn reapply_network_settings_preserving_password(ctx: &mut AppContext)
     // The keychain read is deferred until a custom proxy could actually use the password
     // (#1164 item 6). Switching mode to Custom re-enters here via the NetworkSettings
     // subscription, which loads it then.
-    if matches!(*NetworkSettings::as_ref(ctx).proxy_mode.value(), ProxyMode::Custom) {
+    if matches!(
+        *NetworkSettings::as_ref(ctx).proxy_mode.value(),
+        ProxyMode::Custom
+    ) {
         ProxyCredentials::handle(ctx).update(ctx, |creds, ctx| creds.ensure_loaded(ctx));
     }
     let password = ProxyCredentials::as_ref(ctx).password().to_string();
@@ -740,16 +742,19 @@ fn migrate_native_settings_to_settings_file(ctx: &mut AppContext) {
         ))));
     }
 
-    log::info!("Settings file migration complete — migrated {migrated_count} settings, {failed_count} failed");
+    log::info!(
+        "Settings file migration complete — migrated {migrated_count} settings, {failed_count} failed"
+    );
 
     // Record the migration so it won't re-run if the user deletes the TOML
     // file. This marker is written unconditionally — for new users the native
     // store is empty so the migration is a no-op, but the marker still gets
     // written to indicate that migration was attempted.
-    report_if_error!(ctx
-        .private_user_preferences()
-        .write_value(SETTINGS_FILE_MIGRATION_COMPLETE_KEY, "true".to_owned())
-        .map_err(|err| anyhow::anyhow!(err)));
+    report_if_error!(
+        ctx.private_user_preferences()
+            .write_value(SETTINGS_FILE_MIGRATION_COMPLETE_KEY, "true".to_owned())
+            .map_err(|err| anyhow::anyhow!(err))
+    );
 }
 
 #[cfg(any(test, feature = "test-util"))]

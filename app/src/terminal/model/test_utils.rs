@@ -14,12 +14,13 @@ use warpui::r#async::executor::Background;
 
 use crate::ai::blocklist::SerializedBlockListItem;
 use crate::terminal::{
+    BlockPadding, SizeInfo,
     color::{self, Colors},
     event_listener::ChannelEventListener,
-    BlockPadding, SizeInfo,
 };
 
 use super::{
+    ObfuscateSecrets, TerminalModel,
     ansi::{
         CommandFinishedValue, CompletionMetadata, Handler, PrecmdValue, PreexecValue, Processor,
         PromptMetadata,
@@ -34,7 +35,6 @@ use super::{
         KittyTransmissionMedium, StoreAndDisplay, StoreOnly,
     },
     terminal_model::BlockIndex,
-    ObfuscateSecrets, TerminalModel,
 };
 
 pub fn test_iterm_image(image_id: u32) -> ITermImage {

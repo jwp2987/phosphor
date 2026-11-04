@@ -6,18 +6,18 @@ use warp_core::SessionId;
 use warpui::{App, AppContext, EntityId, SingletonEntity};
 
 // NOTE(adapted): fork renamed these `_terminal_surface` APIs to `_terminal_view`.
-use super::{prompt_history_for_terminal_view, UpArrowHistoryConfig};
-use crate::ai::agent::conversation::AIConversationId;
+use super::{UpArrowHistoryConfig, prompt_history_for_terminal_view};
 use crate::ai::agent::AIAgentExchangeId;
+use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::blocklist::history_model::AIQueryHistoryOutputStatus;
 use crate::ai::blocklist::{BlocklistAIHistoryModel, PersistedAIInput, PersistedAIInputType};
 use crate::ai::llms::LLMId;
 use crate::input_suggestions::HistoryInputSuggestion;
 use crate::settings::AISettings;
 use crate::suggestions::ignored_suggestions_model::{IgnoredSuggestionsModel, SuggestionType};
+use crate::terminal::history::LinkedWorkflowData;
 use crate::terminal::model::session::command_executor::NoOpCommandExecutor;
 use crate::terminal::model::session::{Session, SessionInfo};
-use crate::terminal::history::LinkedWorkflowData;
 use crate::terminal::{History, HistoryEntry};
 use crate::test_util::settings::initialize_settings_for_tests;
 

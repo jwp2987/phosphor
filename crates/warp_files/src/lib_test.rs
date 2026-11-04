@@ -1,5 +1,5 @@
-use async_channel::{unbounded, Receiver};
-use warpui::{r#async::block_on, App, ModelHandle};
+use async_channel::{Receiver, unbounded};
+use warpui::{App, ModelHandle, r#async::block_on};
 
 // lib_tests.rs
 use super::*;
@@ -715,7 +715,12 @@ fn an_unreadable_file_is_never_treated_as_safe_to_overwrite() {
         PreWriteVerdict::Refuse(_)
     ));
     assert!(matches!(
-        check_pre_image(path, &ExpectedDiskState::Absent, denied(), Some(GUARD_ACCEPTED)),
+        check_pre_image(
+            path,
+            &ExpectedDiskState::Absent,
+            denied(),
+            Some(GUARD_ACCEPTED)
+        ),
         PreWriteVerdict::Refuse(_),
     ));
 
@@ -877,8 +882,13 @@ fn the_remote_guard_refuses_on_mismatch_and_on_unverifiable_content() {
         .is_some()
     );
     assert!(
-        remote_pre_image_refusal("/tmp/a.rs", &ExpectedDiskState::Absent, Err("no route"), accepted)
-            .is_none(),
+        remote_pre_image_refusal(
+            "/tmp/a.rs",
+            &ExpectedDiskState::Absent,
+            Err("no route"),
+            accepted
+        )
+        .is_none(),
         "documented exception: remote creation cannot be blocked by an unreadable probe"
     );
 }
@@ -892,7 +902,10 @@ fn the_remote_guard_refuses_on_mismatch_and_on_unverifiable_content() {
 #[test]
 fn normalisation_only_touches_line_endings() {
     assert_eq!(normalize_to_lf("a\r\nb\rc\nd"), "a\nb\nc\nd");
-    assert_eq!(normalize_to_lf("no carriage returns"), "no carriage returns");
+    assert_eq!(
+        normalize_to_lf("no carriage returns"),
+        "no carriage returns"
+    );
     assert_ne!(normalize_to_lf("a\r\nb"), normalize_to_lf("a\r\nB"));
 
     // All three of these normalise to the same bytes. That is exactly why

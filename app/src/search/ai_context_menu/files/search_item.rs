@@ -12,7 +12,7 @@ use warpui::elements::{ConstrainedBox, Container, Icon};
 use warpui::{AppContext, Element};
 
 use crate::search::files::icon::icon_from_file_path;
-use crate::ui_components::render_file_search_row::{render_file_search_row, FileSearchRowOptions};
+use crate::ui_components::render_file_search_row::{FileSearchRowOptions, render_file_search_row};
 
 #[derive(Debug)]
 pub struct FileSearchItem {

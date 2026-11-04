@@ -85,8 +85,10 @@ fn read_local_control_mode_from_secure_storage(
         Ok(value) => value,
         Err(secure_storage::Error::NotFound) => return None,
         Err(err) => {
-            report_error!(anyhow::Error::new(err)
-                .context("Failed to read local control mode from secure storage"));
+            report_error!(
+                anyhow::Error::new(err)
+                    .context("Failed to read local control mode from secure storage")
+            );
             return None;
         }
     };

@@ -1,19 +1,20 @@
 use std::{cmp::max, fmt::Debug, mem, ops::RangeInclusive};
 
 use sum_tree::SeekBias;
-use vec1::{vec1, Vec1};
+use vec1::{Vec1, vec1};
 use warp_core::semantic_selection::SemanticSelection;
 use warp_terminal::model::grid::CellType;
 use warpui::{
+    AppContext, EntityId, ViewAsRef as _,
     text::{IsRect, SelectionType},
     units::{IntoLines as _, Lines},
-    AppContext, EntityId, ViewAsRef as _,
 };
 
 use crate::{
     ai::blocklist::AIBlock,
     env_vars::env_var_collection_block::EnvVarCollectionBlock,
     terminal::{
+        GridType,
         event::Event as TerminalEvent,
         model::{
             block::BlockSection,
@@ -22,7 +23,6 @@ use crate::{
             terminal_model::{BlockIndex, WithinBlock},
         },
         warpify::success_block::WarpifySuccessBlock,
-        GridType,
     },
 };
 

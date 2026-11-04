@@ -522,7 +522,10 @@ fn only_a_real_cancellation_switches_input_to_shell() {
             is_for_same_conversation: true,
         }
     ));
-    assert!(!switches(false, CancellationReason::OptimisticCLISubagentCompletion));
+    assert!(!switches(
+        false,
+        CancellationReason::OptimisticCLISubagentCompletion
+    ));
     assert!(!switches(false, CancellationReason::Reverted));
     assert!(!switches(false, CancellationReason::AgentExitedShell));
 
@@ -986,8 +989,8 @@ fn byop_conversation_awaiting_tool_result(
     crate::ai::agent::conversation::AIConversationId,
     super::RequestInput,
 ) {
-    use settings::Setting as _;
     use agent_proto as api;
+    use settings::Setting as _;
 
     use crate::ai::agent_providers::llm_id;
     use crate::settings::{AISettings, AgentProvider, AgentProviderApiType, AgentProviderModel};
@@ -1819,8 +1822,8 @@ fn drive_tool_loop_through_the_byop_path(outcome: SummaryStreamOutcome) {
     use crate::ai::llms::LLMPreferences;
     use crate::features::FeatureFlag;
     use crate::settings::{AISettings, AgentProvider, AgentProviderApiType, AgentProviderModel};
-    use settings::Setting;
     use agent_proto as api;
+    use settings::Setting;
 
     const PROVIDER_ID: &str = "tool-loop-provider";
     const MODEL_ID: &str = "tool-loop-model";
@@ -2358,9 +2361,7 @@ fn drive_tool_loop_through_the_byop_path(outcome: SummaryStreamOutcome) {
 
 /// #1178: the facts under which a finished monitored command is reported to the model.
 mod monitored_completion {
-    use super::super::{
-        MonitoredCompletionDecision, MonitoredCompletionFacts, silent_stop_reason,
-    };
+    use super::super::{MonitoredCompletionDecision, MonitoredCompletionFacts, silent_stop_reason};
     use super::*;
 
     fn idle_after_text_reply() -> MonitoredCompletionFacts {
@@ -2390,35 +2391,45 @@ mod monitored_completion {
     fn guarded_cases_send_nothing() {
         let base = idle_after_text_reply();
         // The model is mid-turn (a new user turn, or it polled the output itself).
-        assert!(!MonitoredCompletionFacts {
-            stream_in_flight: true,
-            ..base
-        }
-        .should_follow_up());
+        assert!(
+            !MonitoredCompletionFacts {
+                stream_in_flight: true,
+                ..base
+            }
+            .should_follow_up()
+        );
         // The user stopped the conversation, it failed, or a new turn is in progress.
-        assert!(!MonitoredCompletionFacts {
-            last_turn_succeeded: false,
-            ..base
-        }
-        .should_follow_up());
+        assert!(
+            !MonitoredCompletionFacts {
+                last_turn_succeeded: false,
+                ..base
+            }
+            .should_follow_up()
+        );
         // The pane is closed.
-        assert!(!MonitoredCompletionFacts {
-            suspended_for_close: true,
-            ..base
-        }
-        .should_follow_up());
+        assert!(
+            !MonitoredCompletionFacts {
+                suspended_for_close: true,
+                ..base
+            }
+            .should_follow_up()
+        );
         // A compaction is under way.
-        assert!(!MonitoredCompletionFacts {
-            mid_compaction: true,
-            ..base
-        }
-        .should_follow_up());
+        assert!(
+            !MonitoredCompletionFacts {
+                mid_compaction: true,
+                ..base
+            }
+            .should_follow_up()
+        );
         // Results are on their way to the model already.
-        assert!(!MonitoredCompletionFacts {
-            has_unsent_actions: true,
-            ..base
-        }
-        .should_follow_up());
+        assert!(
+            !MonitoredCompletionFacts {
+                has_unsent_actions: true,
+                ..base
+            }
+            .should_follow_up()
+        );
     }
 
     fn result_of(
@@ -2854,14 +2865,20 @@ mod finished_batch {
     }
 
     fn cancelled_read() -> Arc<AIAgentActionResult> {
-        result_of(AIAgentActionResultType::ReadFiles(ReadFilesResult::Cancelled))
+        result_of(AIAgentActionResultType::ReadFiles(
+            ReadFilesResult::Cancelled,
+        ))
     }
 
     /// A finished command -- succeeded, failed, or exited 130 on its own -- goes back to the
     /// model; the turn is not over.
     #[test]
     fn a_finished_result_sends_an_automatic_follow_up() {
-        for result in [completed(0, false), completed(2, false), completed(130, false)] {
+        for result in [
+            completed(0, false),
+            completed(2, false),
+            completed(130, false),
+        ] {
             let plan = plan_finished_batch(None, &[result], false, false);
             assert_eq!(plan.follow_up, Some(FollowUpTrigger::Auto));
         }

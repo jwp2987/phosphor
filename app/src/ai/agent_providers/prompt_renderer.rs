@@ -98,7 +98,10 @@ const EMBEDDED: &[(&str, &str)] = &[
         include_str!("prompts/commands/init_project.j2"),
     ),
     // System
-    ("system/default.j2", include_str!("prompts/system/default.j2")),
+    (
+        "system/default.j2",
+        include_str!("prompts/system/default.j2"),
+    ),
     (
         "system/anthropic.j2",
         include_str!("prompts/system/anthropic.j2"),
@@ -108,7 +111,10 @@ const EMBEDDED: &[(&str, &str)] = &[
     ("system/codex.j2", include_str!("prompts/system/codex.j2")),
     ("system/gemini.j2", include_str!("prompts/system/gemini.j2")),
     ("system/kimi.j2", include_str!("prompts/system/kimi.j2")),
-    ("system/trinity.j2", include_str!("prompts/system/trinity.j2")),
+    (
+        "system/trinity.j2",
+        include_str!("prompts/system/trinity.j2"),
+    ),
     ("system/local.j2", include_str!("prompts/system/local.j2")),
     ("system/lean.j2", include_str!("prompts/system/lean.j2")),
     (
@@ -273,8 +279,7 @@ pub fn tool_description(tool_name: &str, fallback: &'static str) -> Cow<'static,
 /// Get the system prompt used for conversation-title generation (`tasks/title_system.md`).
 /// The built-in version lives in [`EMBEDDED_RAW`], so callers don't need to pass a fallback.
 pub fn title_system_prompt() -> Cow<'static, str> {
-    raw_asset("tasks/title_system.md")
-        .expect("tasks/title_system.md is registered in EMBEDDED_RAW")
+    raw_asset("tasks/title_system.md").expect("tasks/title_system.md is registered in EMBEDDED_RAW")
 }
 
 /// Get the system prompt used for AI commit-message generation
@@ -440,7 +445,10 @@ fn build_env_from_dir(dir: &Path) -> Environment<'static> {
             Ok(s) => Some(s),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
             Err(e) => {
-                log::warn!("[byop prompt] read {} failed: {e} — using built-in version", path.display());
+                log::warn!(
+                    "[byop prompt] read {} failed: {e} — using built-in version",
+                    path.display()
+                );
                 None
             }
         };
@@ -510,13 +518,19 @@ pub fn set_override_dir(dir: Option<PathBuf>) {
         Ok(mut slot) => {
             if *slot != dir {
                 match &dir {
-                    Some(p) => log::info!("[byop prompt] template hot-reload dir → {}", p.display()),
-                    None => log::info!("[byop prompt] template hot-reload disabled, using built-in templates"),
+                    Some(p) => {
+                        log::info!("[byop prompt] template hot-reload dir → {}", p.display())
+                    }
+                    None => log::info!(
+                        "[byop prompt] template hot-reload disabled, using built-in templates"
+                    ),
                 }
                 *slot = dir;
             }
         }
-        Err(e) => log::error!("[byop prompt] OVERRIDE_DIR lock poisoned, ignoring this update: {e}"),
+        Err(e) => {
+            log::error!("[byop prompt] OVERRIDE_DIR lock poisoned, ignoring this update: {e}")
+        }
     }
 }
 
@@ -595,7 +609,9 @@ fn env() -> EnvHandle {
                 env: Arc::clone(&env),
             })
         }
-        Err(e) => log::error!("[byop prompt] template cache lock poisoned, skipping cache this time: {e}"),
+        Err(e) => {
+            log::error!("[byop prompt] template cache lock poisoned, skipping cache this time: {e}")
+        }
     }
     EnvHandle::Cached(env)
 }
@@ -1237,7 +1253,10 @@ mod tests {
             .render(Value::from_serialize(&PromptContext::default()))
             .unwrap();
 
-        assert!(out.contains("run_shell_command"), "should fall back to the built-in local.j2: {out}");
+        assert!(
+            out.contains("run_shell_command"),
+            "should fall back to the built-in local.j2: {out}"
+        );
     }
 
     #[test]
@@ -1309,7 +1328,10 @@ mod tests {
             .position(|(n, _)| *n == "system/local.j2")
             .unwrap();
 
-        assert!(stamps[idx].is_some(), "a written template should have an mtime");
+        assert!(
+            stamps[idx].is_some(),
+            "a written template should have an mtime"
+        );
         assert_eq!(
             stamps.iter().filter(|s| s.is_some()).count(),
             1,
@@ -1337,7 +1359,10 @@ mod tests {
     fn tool_description_without_override_borrows_fallback() {
         let out = tool_description("grep", "FALLBACK");
         assert_eq!(out, "FALLBACK");
-        assert!(matches!(out, Cow::Borrowed(_)), "the default path should not allocate");
+        assert!(
+            matches!(out, Cow::Borrowed(_)),
+            "the default path should not allocate"
+        );
     }
 
     #[test]
@@ -1362,7 +1387,10 @@ mod tests {
     #[test]
     fn raw_asset_unregistered_name_is_none() {
         assert!(raw_asset("tool_descriptions/not_a_tool.md").is_none());
-        assert!(raw_asset("system/local.j2").is_none(), "templates are not in the RAW table");
+        assert!(
+            raw_asset("system/local.j2").is_none(),
+            "templates are not in the RAW table"
+        );
     }
 
     #[test]
@@ -1381,7 +1409,12 @@ mod tests {
             .join("src/ai/agent_providers/prompts/tool_descriptions");
         let mut on_disk: Vec<String> = std::fs::read_dir(&root)
             .unwrap()
-            .map(|e| format!("tool_descriptions/{}", e.unwrap().file_name().to_string_lossy()))
+            .map(|e| {
+                format!(
+                    "tool_descriptions/{}",
+                    e.unwrap().file_name().to_string_lossy()
+                )
+            })
             .filter(|n| n.ends_with(".md"))
             .collect();
         on_disk.sort();
@@ -1393,7 +1426,10 @@ mod tests {
             .collect();
         registered.sort();
 
-        assert_eq!(on_disk, registered, "tool_descriptions/ and EMBEDDED_RAW disagree");
+        assert_eq!(
+            on_disk, registered,
+            "tool_descriptions/ and EMBEDDED_RAW disagree"
+        );
     }
 
     #[test]
@@ -1457,7 +1493,11 @@ mod tests {
             std::fs::read_to_string(tmp.path().join("system/local.j2")).unwrap(),
             "MINE"
         );
-        assert_eq!(n, EMBEDDED.len() + EMBEDDED_RAW.len() - 1, "only fills in the missing ones");
+        assert_eq!(
+            n,
+            EMBEDDED.len() + EMBEDDED_RAW.len() - 1,
+            "only fills in the missing ones"
+        );
     }
 
     #[test]
@@ -1500,8 +1540,8 @@ mod tests {
     /// `system/` pulls in the footer, whatever selects it.
     #[test]
     fn every_system_template_includes_the_footer() {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("src/ai/agent_providers/prompts/system");
+        let dir =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ai/agent_providers/prompts/system");
         let mut checked = 0;
         for entry in std::fs::read_dir(&dir).unwrap() {
             let path = entry.unwrap().path();
@@ -1517,7 +1557,10 @@ mod tests {
             );
             checked += 1;
         }
-        assert!(checked >= 11, "expected every system template to be checked, saw {checked}");
+        assert!(
+            checked >= 11,
+            "expected every system template to be checked, saw {checked}"
+        );
     }
 
     /// #1063: Phosphor never emits `<system-reminder>` tags, so the only place one can appear
@@ -1836,9 +1879,9 @@ mod tests {
 
         let skill_path = "/home/user/.agents/skills/open-browser-use/SKILL.md";
         let skill = SkillDescriptor {
-            reference: SkillReference::Path(warp_util::local_or_remote_path::LocalOrRemotePath::Local(
-                skill_path.into(),
-            )),
+            reference: SkillReference::Path(
+                warp_util::local_or_remote_path::LocalOrRemotePath::Local(skill_path.into()),
+            ),
             name: "open-browser-use".into(),
             description: "Automates Chrome browser operations.".into(),
             scope: SkillScope::Project,
@@ -1988,7 +2031,10 @@ mod tests {
             &[],
             Some(&PromptSource::Builtin("default".into())),
         );
-        assert_ne!(auto, forced_default, "overriding to default should change the output");
+        assert_ne!(
+            auto, forced_default,
+            "overriding to default should change the output"
+        );
     }
 
     #[test]
@@ -2025,7 +2071,10 @@ mod tests {
             ..Default::default()
         };
         let out = render_custom_file_from(&env, tmp.path(), "mine.j2", &ctx).unwrap();
-        assert!(out.starts_with("CUSTOM my-model"), "the custom body should take effect: {out}");
+        assert!(
+            out.starts_with("CUSTOM my-model"),
+            "the custom body should take effect: {out}"
+        );
         // footer.j2's content should be included (sharing that partial with the built-in default render).
         let footer = env
             .get_template("partials/footer.j2")
@@ -2296,7 +2345,10 @@ mod tests {
             out.contains("# User rules"),
             "the user rules block should render: {out}"
         );
-        assert!(out.contains("## My rule"), "should contain the rule name: {out}");
+        assert!(
+            out.contains("## My rule"),
+            "should contain the rule name: {out}"
+        );
         assert!(
             out.contains("Always use snake_case in Rust."),
             "should contain the rule content: {out}"
@@ -2311,7 +2363,10 @@ mod tests {
         // `troubleshooting.j2` are the other two registered system templates and no model id
         // selects either -- they are reachable only through a `PromptSource::Builtin` override --
         // so `every_system_template_includes_the_footer` covers all eleven at the source level.
-        let rules = vec![(Some("family override".to_string()), "snake_case only.".to_string())];
+        let rules = vec![(
+            Some("family override".to_string()),
+            "snake_case only.".to_string(),
+        )];
         // Ollama is listed as an explicit (api_type, id) pair because `pick_template` routes every
         // Ollama model to `system/local.j2` regardless of id -- a loop that only passes `OpenAi`
         // can never reach that template, which is how issue #627 (local.j2 missing footer.j2) survived.
@@ -2366,7 +2421,10 @@ mod tests {
         let pos_r1 = out.find("first content").expect("R1 content not found");
         let pos_r2 = out.find("## R2").expect("R2 heading not found");
         let pos_r3 = out.find("## R3").expect("R3 heading not found");
-        assert!(pos_r1 < pos_r2 && pos_r2 < pos_r3, "ordering should be preserved: {out}");
+        assert!(
+            pos_r1 < pos_r2 && pos_r2 < pos_r3,
+            "ordering should be preserved: {out}"
+        );
         let between_r1_r2 = &out[pos_r1 + "first content".len()..pos_r2];
         let between_r2_r3 = &out[pos_r2..pos_r3];
         assert!(
@@ -2457,7 +2515,9 @@ mod tests {
         let pos_thinking = out
             .find("# Thinking language")
             .expect("should contain thinking_language");
-        let pos_tools = out.find("# Available Tools").expect("should contain tool_aliases");
+        let pos_tools = out
+            .find("# Available Tools")
+            .expect("should contain tool_aliases");
         assert!(
             pos_thinking < pos_tools,
             "thinking_language should come before tool_aliases: thinking={pos_thinking}, tools={pos_tools}\n{out}"
@@ -2476,9 +2536,9 @@ mod tests {
         let skill_path = "/home/user/.agents/skills/open-browser-use/SKILL.md";
         let ctx = vec![AIAgentContext::Skills {
             skills: vec![SkillDescriptor {
-                reference: SkillReference::Path(warp_util::local_or_remote_path::LocalOrRemotePath::Local(
-                    skill_path.into(),
-                )),
+                reference: SkillReference::Path(
+                    warp_util::local_or_remote_path::LocalOrRemotePath::Local(skill_path.into()),
+                ),
                 name: "open-browser-use".into(),
                 description: "Automates Chrome browser operations.".into(),
                 scope: SkillScope::Project,
@@ -2486,7 +2546,10 @@ mod tests {
                 icon_override: None,
             }],
         }];
-        let rules = vec![(Some("My rule".to_string()), "Always use snake_case in Rust.".to_string())];
+        let rules = vec![(
+            Some("My rule".to_string()),
+            "Always use snake_case in Rust.".to_string(),
+        )];
         let out = render_system(
             AgentProviderApiType::Ollama,
             &LLMId::from("byop:p:qwen2.5-coder"),
@@ -2504,8 +2567,14 @@ mod tests {
             "local.j2's own tool guidance should still render: {out}"
         );
         // Everything footer.j2 provides.
-        assert!(out.contains("# Thinking language"), "thinking_language missing: {out}");
-        assert!(out.contains("# Available Tools"), "tool_aliases missing: {out}");
+        assert!(
+            out.contains("# Thinking language"),
+            "thinking_language missing: {out}"
+        );
+        assert!(
+            out.contains("# Available Tools"),
+            "tool_aliases missing: {out}"
+        );
         assert!(out.contains("<env>"), "env missing: {out}");
         assert!(
             out.contains("open-browser-use") && out.contains(skill_path),
@@ -2515,7 +2584,10 @@ mod tests {
             out.contains("# User rules") && out.contains("Always use snake_case in Rust."),
             "user rules must render for Ollama: {out}"
         );
-        assert!(out.contains("Plan Mode (Read-Only)"), "plan_mode missing: {out}");
+        assert!(
+            out.contains("Plan Mode (Read-Only)"),
+            "plan_mode missing: {out}"
+        );
 
         // footer.j2 already includes env.j2; local.j2 must not include it a second time.
         assert_eq!(

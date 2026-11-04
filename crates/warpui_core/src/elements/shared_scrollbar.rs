@@ -1,6 +1,6 @@
 use pathfinder_geometry::{
     rect::RectF,
-    vector::{vec2f, Vector2F},
+    vector::{Vector2F, vec2f},
 };
 
 use crate::units::{IntoPixels, Pixels};

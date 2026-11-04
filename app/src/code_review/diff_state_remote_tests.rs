@@ -682,10 +682,12 @@ fn apply_metadata_branch_change_updates_branch() {
 // nothing to assert survives into the model's state or a per-file event.
 
 fn file_delta(repo_relative_path: &str, diff: Option<FileDiff>) -> proto::DiffStateFileDelta {
-    let diff = diff.map(|file_diff| crate::code_review::diff_state::FileDiffAndContent {
-        file_diff,
-        content_at_head: None,
-    });
+    let diff = diff.map(
+        |file_diff| crate::code_review::diff_state::FileDiffAndContent {
+            file_diff,
+            content_at_head: None,
+        },
+    );
     crate::remote_server::diff_state_proto::build_diff_state_file_delta(
         TEST_REPO_PATH,
         &DiffMode::Head,
@@ -731,7 +733,10 @@ fn apply_file_delta_adds_file() {
         });
         let delta = file_delta("src/new.rs", Some(simple_file_diff("src/new.rs")));
         handle.update(&mut app, |m, ctx| m.apply_file_delta(&delta, ctx));
-        assert!(matches!(handle.read(&app, |m, _| m.get()), DiffState::Loaded(_)));
+        assert!(matches!(
+            handle.read(&app, |m, _| m.get()),
+            DiffState::Loaded(_)
+        ));
     });
 }
 

@@ -204,7 +204,7 @@ fn parse_openable(uri: &str) -> Result<Url, BlockedContentLink> {
 
 #[cfg(test)]
 mod tests {
-    use super::{openable_app_content_url, openable_untrusted_content_url, BlockedContentLink};
+    use super::{BlockedContentLink, openable_app_content_url, openable_untrusted_content_url};
     use crate::ChannelState;
 
     fn own(path: &str) -> String {

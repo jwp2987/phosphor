@@ -7,8 +7,8 @@ use warp::{
             assert_notebook_contents, assert_notebook_id, assert_notebook_not_open,
             assert_notebook_open, assert_notebook_renders_mermaid_diagram,
             assert_open_in_warp_banner_open, create_a_personal_notebook,
-            enter_notebook_edit_mode_and_set_markdown, set_notebook_mermaid_display_rendered, move_notebook_cursor_to_offset,
-            open_notebook,
+            enter_notebook_edit_mode_and_set_markdown, move_notebook_cursor_to_offset,
+            open_notebook, set_notebook_mermaid_display_rendered,
         },
         step::new_step_with_default_assertions,
         tab::{assert_pane_title, assert_tab_title},
@@ -22,7 +22,7 @@ use warp::{
 };
 use warpui::integration::TestStep;
 
-use super::{new_builder, Builder};
+use super::{Builder, new_builder};
 
 pub fn test_notebook_pane_tracking() -> Builder {
     new_builder()

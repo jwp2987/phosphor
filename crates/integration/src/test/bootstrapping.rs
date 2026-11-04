@@ -16,7 +16,7 @@ use warp::{
             assert_long_running_block_executing_for_single_terminal_in_tab,
             clear_blocklist_to_remove_bootstrapped_blocks,
             execute_command_for_single_terminal_in_tab,
-            util::{current_shell_starter_and_version, ExpectedExitStatus},
+            util::{ExpectedExitStatus, current_shell_starter_and_version},
             wait_until_bootstrapped_single_pane_for_tab,
         },
         view_getters::{single_input_view_for_tab, single_terminal_view_for_tab},
@@ -31,9 +31,9 @@ use warpui::{
     integration::{AssertionCallback, TestStep},
 };
 
-use crate::util::{write_all_rc_files_for_test, write_rc_files_for_test, ShellRcType};
+use crate::util::{ShellRcType, write_all_rc_files_for_test, write_rc_files_for_test};
 
-use super::{new_builder, Builder};
+use super::{Builder, new_builder};
 
 /// Ensures that config files are only sourced once when bootstrapping a new session.
 pub fn test_rc_files_only_sourced_once_during_bootstrapping() -> Builder {

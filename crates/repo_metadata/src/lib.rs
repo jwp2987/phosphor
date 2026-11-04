@@ -50,8 +50,8 @@ pub mod watcher;
 pub mod wrapper_model;
 
 pub use entry::{
-    gitignores_for_directory, matches_gitignores, path_passes_filters, should_ignore_git_path,
-    BuildTreeError, DirectoryEntry, Entry, FileId, FileMetadata,
+    BuildTreeError, DirectoryEntry, Entry, FileId, FileMetadata, gitignores_for_directory,
+    matches_gitignores, path_passes_filters, should_ignore_git_path,
 };
 
 // Re-export the local model's event under its original name for backward compatibility.
@@ -79,10 +79,10 @@ pub use local_model::{LocalRepoMetadataModel, RepoContent, RepoContents};
 // New types.
 pub use file_tree_update::RepoMetadataUpdate;
 pub use remote_model::RemoteRepoMetadataModel;
+pub use repository_identifier::{RemoteRepositoryIdentifier, RepositoryIdentifier};
 pub use standing_queries::{
     StandingQueryContent, StandingQueryDefinitions, StandingQueryResults, StandingQueryResultsDelta,
 };
-pub use repository_identifier::{RemoteRepositoryIdentifier, RepositoryIdentifier};
 pub use wrapper_model::{RepoMetadataEvent, RepoMetadataModel};
 
 /// A wrapper around PathBuf that ensures the path is canonicalized.

@@ -10,8 +10,8 @@ use ordered_float::OrderedFloat;
 use warpui::elements::Highlight;
 use warpui::fonts::{Properties, Weight};
 use warpui::{
-    elements::{ConstrainedBox, Container, CrossAxisAlignment, Flex, Icon, ParentElement, Text},
     AppContext, Element, SingletonEntity,
+    elements::{ConstrainedBox, Container, CrossAxisAlignment, Flex, Icon, ParentElement, Text},
 };
 
 use chrono::{DateTime, Local};

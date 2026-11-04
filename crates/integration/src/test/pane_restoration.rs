@@ -1,7 +1,7 @@
 //! Integration tests for pane restoration functionality.
 //! Tests the ability to restore closed panes using cmd+shift+t.
 
-use super::{new_builder, Builder};
+use super::{Builder, new_builder};
 use std::{collections::HashMap, time::Duration};
 use warp::{
     cmd_or_ctrl_shift,

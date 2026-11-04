@@ -12,12 +12,12 @@ use std::future::Future;
 
 #[cfg(any(target_family = "wasm", not(feature = "local_fs")))]
 use futures::future::ready;
+#[cfg(feature = "local_fs")]
+use repo_metadata::repositories::DetectedRepositories;
 use repo_metadata::repositories::RepoDetectionSource;
 use warp_core::SessionId;
 use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warpui::AppContext;
-#[cfg(feature = "local_fs")]
-use repo_metadata::repositories::DetectedRepositories;
 #[cfg(feature = "local_fs")]
 use warpui::SingletonEntity;
 
@@ -40,10 +40,11 @@ pub fn detect_possible_git_repo(
     ctx: &mut AppContext,
 ) -> impl Future<Output = Option<LocalOrRemotePath>> + use<> {
     let local_fut = match session_type {
-        RepoDetectionSessionType::Local => Some(DetectedRepositories::handle(ctx).update(
-            ctx,
-            |repos, ctx| repos.detect_possible_git_repo(active_directory, source, ctx),
-        )),
+        RepoDetectionSessionType::Local => {
+            Some(DetectedRepositories::handle(ctx).update(ctx, |repos, ctx| {
+                repos.detect_possible_git_repo(active_directory, source, ctx)
+            }))
+        }
         // Zap's DetectedRepositories has no remote-detection path; the TUI only
         // uses Local. Remote sessions resolve to None (no misclassification).
         RepoDetectionSessionType::Remote { .. } => None,

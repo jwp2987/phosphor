@@ -69,12 +69,12 @@
 /// ```
 /// View transfers between windows are handled by `transfer_view_tree_to_window`.
 use crate::tab::tab_position_id;
-use crate::workspace::view::{tab_bar_rects_for_window, TransferredTab, TAB_BAR_POSITION_ID};
 use crate::workspace::WorkspaceRegistry;
+use crate::workspace::view::{TAB_BAR_POSITION_ID, TransferredTab, tab_bar_rects_for_window};
 use pathfinder_geometry::rect::RectF;
 use std::collections::HashSet;
 use warpui::elements::DraggableState;
-use warpui::geometry::vector::{vec2f, Vector2F};
+use warpui::geometry::vector::{Vector2F, vec2f};
 use warpui::platform::TerminationMode;
 use warpui::windowing::WindowManager;
 use warpui::{AppContext, Entity, ModelContext, SingletonEntity, WindowId};
@@ -1991,17 +1991,16 @@ fn compute_insertion_index_for_window(
         }
     }
 
-    match WorkspaceRegistry::as_ref(ctx).get(target_window_id, ctx) { Some(ws) => {
-        ws.read(ctx, |workspace, ctx| {
+    match WorkspaceRegistry::as_ref(ctx).get(target_window_id, ctx) {
+        Some(ws) => ws.read(ctx, |workspace, ctx| {
             workspace.tab_insertion_index_for_cursor(
                 target_window_id,
                 cursor_position_on_screen,
                 ctx,
             )
-        })
-    } _ => {
-        0
-    }}
+        }),
+        _ => 0,
+    }
 }
 
 #[cfg(test)]

@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use std::path::Path;
+use std::sync::Arc;
 
 use diesel::SqliteConnection;
 use parking_lot::Mutex;
@@ -14,6 +14,7 @@ use warp_editor::{
     content::buffer::InitialBufferState, render::element::VerticalExpansionBehavior,
 };
 use warpui::{
+    AppContext, Element, Entity, SingletonEntity, TypedActionView, View, ViewContext, ViewHandle,
     elements::{
         Border, ChildAnchor, ChildView, Container, CornerRadius, CrossAxisAlignment, Flex,
         MainAxisAlignment, MainAxisSize, MouseStateHandle, OffsetPositioning, ParentAnchor,
@@ -21,38 +22,38 @@ use warpui::{
     },
     platform::Cursor,
     ui_components::components::UiComponent,
-    AppContext, Element, Entity, SingletonEntity, TypedActionView, View, ViewContext, ViewHandle,
 };
 
 use crate::{
     ai::{
         blocklist::secret_redaction::find_secrets_in_text,
         mcp::{
-            parsing::{prettify_json, resolve_json, ParsedTemplatableMCPServerResult},
+            TemplatableMCPServer, TemplatableMCPServerInstallation, TemplatableMCPServerManager,
+            parsing::{ParsedTemplatableMCPServerResult, prettify_json, resolve_json},
             templatable::TemplatableMCPServerObject,
-            TemplatableMCPServer, TemplatableMCPServerInstallation,
-            TemplatableMCPServerManager, },
+        },
     },
     banner::{Banner, BannerTextContent},
-    cloud_object::{update_manager::InitiatedBy, Space, StoredObject},
+    cloud_object::{Space, StoredObject, update_manager::InitiatedBy},
     code::editor::view::{CodeEditorRenderOptions, CodeEditorView},
     server::telemetry::{MCPTemplateCreationSource, TelemetryEvent},
     settings::PrivacySettings,
     settings_view::mcp_servers::{
+        ServerCardItemId,
         destructive_mcp_confirmation_dialog::{
             DestructiveMCPConfirmationDialog, DestructiveMCPConfirmationDialogEvent,
             DestructiveMCPConfirmationDialogVariant,
         },
-        style, ServerCardItemId,
+        style,
     },
     terminal::safe_mode_settings::SafeModeSettings,
     ui_components::{buttons::icon_button, icons::Icon},
     view_components::{
-        action_button::{ActionButton, DangerSecondaryTheme, PrimaryTheme},
         DismissibleToast,
+        action_button::{ActionButton, DangerSecondaryTheme, PrimaryTheme},
     },
     workspace::ToastStack,
-    };
+};
 
 const DEFAULT_JSON_TEXT: &str = r#"{
     "": {
@@ -469,8 +470,7 @@ impl MCPServersEditPageView {
         let enterprise_enforced =
             PrivacySettings::as_ref(ctx).is_enterprise_secret_redaction_enabled();
 
-        if should_block_save_for_secrets(safe_mode_enabled, enterprise_enforced, contains_secrets)
-        {
+        if should_block_save_for_secrets(safe_mode_enabled, enterprise_enforced, contains_secrets) {
             let window_id = ctx.window_id();
             ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
                 toast_stack.add_ephemeral_toast(

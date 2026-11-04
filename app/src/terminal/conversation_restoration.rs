@@ -178,7 +178,8 @@ mod tests {
         let command_blocks = vec![(BlockIndex(0), ts(10)), (BlockIndex(1), ts(20))];
         let exchange_timestamps = vec![ts(10), ts(10)];
 
-        let result = find_block_indices_for_exchange_timestamps(&command_blocks, &exchange_timestamps);
+        let result =
+            find_block_indices_for_exchange_timestamps(&command_blocks, &exchange_timestamps);
 
         assert_eq!(result, vec![Some(BlockIndex(1)), Some(BlockIndex(1))]);
     }
@@ -190,7 +191,8 @@ mod tests {
         let command_blocks = vec![(BlockIndex(0), ts(5)), (BlockIndex(1), ts(15))];
         let exchange_timestamps = vec![ts(10)];
 
-        let result = find_block_indices_for_exchange_timestamps(&command_blocks, &exchange_timestamps);
+        let result =
+            find_block_indices_for_exchange_timestamps(&command_blocks, &exchange_timestamps);
 
         assert_eq!(result, vec![Some(BlockIndex(1))]);
     }
@@ -298,10 +300,7 @@ mod tests {
         ];
         let exchanges = vec![ts(5), ts(15), ts(35), ts(45), ts(55)];
         let result = find_block_indices_for_exchange_timestamps(&blocks, &exchanges);
-        assert_eq!(
-            result,
-            vec![Some(bi(2)), Some(bi(3)), None, None, None]
-        );
+        assert_eq!(result, vec![Some(bi(2)), Some(bi(3)), None, None, None]);
     }
 
     // Edge cases.
@@ -325,4 +324,3 @@ mod tests {
     // NOTE: Warp's `single_block_at_same_time_as_exchange` (exchange ts == block ts)
     // is intentionally NOT ported — same strict-`>` tie-breaking divergence as above.
 }
-

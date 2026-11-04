@@ -3,15 +3,15 @@ use std::collections::HashMap;
 use std::fs;
 
 use super::super::proto::{
-    list_directory_response, read_file_chunk_response, resolve_path_response, server_message,
-    write_file_chunk_response, write_file_response, Authenticate, CreateDirectory, Initialize,
-    ListDirectory, ReadFileChunk, ResolvePath, ServerMessage, WriteFileChunk, WriteFileResponse,
-    WriteFileSuccess,
+    Authenticate, CreateDirectory, Initialize, ListDirectory, ReadFileChunk, ResolvePath,
+    ServerMessage, WriteFileChunk, WriteFileResponse, WriteFileSuccess, list_directory_response,
+    read_file_chunk_response, resolve_path_response, server_message, write_file_chunk_response,
+    write_file_response,
 };
 #[cfg(feature = "local_fs")]
 use super::super::proto::{
-    remote_skill_proto, BundledSkillMetadata, HomeSkillMetadata, RemoteContextFileProto,
-    RemoteSkillProto,
+    BundledSkillMetadata, HomeSkillMetadata, RemoteContextFileProto, RemoteSkillProto,
+    remote_skill_proto,
 };
 use super::super::protocol::RequestId;
 #[cfg(feature = "local_fs")]
@@ -1032,7 +1032,11 @@ fn pending_open_buffer_connections_are_excluded_from_the_update_broadcast() {
         requester,
         PendingBufferRequestKind::SaveBuffer,
     );
-    assert!(other.pending_connections_for_open_buffer(&file_id).is_empty());
+    assert!(
+        other
+            .pending_connections_for_open_buffer(&file_id)
+            .is_empty()
+    );
 
     // Once the response is sent the exclusion lifts.
     tracker.take_pending_by_kind(&file_id, PendingBufferRequestKind::OpenBuffer);

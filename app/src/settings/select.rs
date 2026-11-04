@@ -1,8 +1,7 @@
-
 use serde::{Deserialize, Serialize};
 use warpui::{
-    clipboard::{ClipboardContent, ClipboardTarget, WriteOutcome},
     AppContext,
+    clipboard::{ClipboardContent, ClipboardTarget, WriteOutcome},
 };
 
 /// Writes `content` to `target` off the UI thread when the platform allows it (#1307), else
@@ -27,7 +26,7 @@ pub fn write_clipboard_nonblocking(
 }
 
 use settings::{
-    macros::define_settings_group, RespectUserSyncSetting, Setting, SupportedPlatforms, SyncToCloud,
+    RespectUserSyncSetting, Setting, SupportedPlatforms, SyncToCloud, macros::define_settings_group,
 };
 
 /// What a bare (unmodified) right-click does in the terminal.

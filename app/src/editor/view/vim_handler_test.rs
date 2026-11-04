@@ -7884,8 +7884,8 @@ fn test_vim_goto_line_number() {
             bbb
             ccc
             ddd"
-                .unindent()
-                .as_str(),
+            .unindent()
+            .as_str(),
             &mut app,
         );
 

@@ -28,8 +28,8 @@ use super::Input;
 use warp_completer::util::parse_current_commands_and_tokens_cancellable;
 
 pub use warp_completer::{
-    completer::SuggestionTypeName, util::parse_current_commands_and_tokens, ParsedTokenData,
-    ParsedTokensSnapshot,
+    ParsedTokenData, ParsedTokensSnapshot, completer::SuggestionTypeName,
+    util::parse_current_commands_and_tokens,
 };
 
 /// Input buffers with more chars than this get no background *completer parse*: no syntax
@@ -240,8 +240,8 @@ impl Input {
             while let Some(relative_start) = buffer_text[search_start..].find(&reference) {
                 let start_byte = search_start + relative_start;
                 let end_byte = start_byte + reference.len();
-                let start_char =
-                    chars_before_search_start + buffer_text[search_start..start_byte].chars().count();
+                let start_char = chars_before_search_start
+                    + buffer_text[search_start..start_byte].chars().count();
                 let end_char = start_char + reference_chars;
                 ranges.push(CharOffset::from(start_char)..CharOffset::from(end_char));
                 search_start = end_byte;
@@ -518,8 +518,7 @@ impl Input {
         let buffer_text = self.editor.as_ref(ctx).buffer_text(ctx);
         {
             let model = self.ai_input_model.as_ref(ctx);
-            if !model.is_detection_requested_for(&buffer_text) || model.detection_job_in_flight()
-            {
+            if !model.is_detection_requested_for(&buffer_text) || model.detection_job_in_flight() {
                 return;
             }
         }

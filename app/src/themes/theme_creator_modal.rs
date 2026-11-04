@@ -7,12 +7,12 @@ use crate::view_components::DismissibleToast;
 use crate::workspace::ToastStack;
 use std::default::Default;
 use std::path::PathBuf;
+use warpui::ViewHandle;
 use warpui::fonts::Weight;
 use warpui::keymap::FixedBinding;
 use warpui::platform::{FilePickerConfiguration, FileType};
 use warpui::presenter::ChildView;
 use warpui::ui_components::components::{Coords, UiComponentStyles};
-use warpui::ViewHandle;
 use warpui::{AppContext, SingletonEntity as _};
 use warpui::{Element, Entity, TypedActionView, View, ViewContext};
 

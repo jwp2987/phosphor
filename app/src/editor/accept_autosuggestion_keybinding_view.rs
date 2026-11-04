@@ -14,21 +14,21 @@ use crate::workspace::WorkspaceAction;
 use lazy_static::lazy_static;
 use pathfinder_geometry::vector::vec2f;
 use warp_core::ui::theme::Fill;
+use warpui::ViewContext;
 use warpui::elements::{Border, ChildView, Flex, ParentElement};
 use warpui::elements::{
-    ConstrainedBox, Container, CrossAxisAlignment, Radius, DEFAULT_UI_LINE_HEIGHT_RATIO,
+    ConstrainedBox, Container, CrossAxisAlignment, DEFAULT_UI_LINE_HEIGHT_RATIO, Radius,
 };
 use warpui::keymap::Keystroke;
 use warpui::platform::Cursor;
 use warpui::ui_components::components::{UiComponent, UiComponentStyles};
 use warpui::ui_components::keyboard_shortcut::KeyboardShortcut;
-use warpui::ViewContext;
 use warpui::{
+    AppContext, SingletonEntity,
     elements::{
         ChildAnchor, CornerRadius, Element, Hoverable, MouseStateHandle, OffsetPositioning,
         ParentAnchor, ParentOffsetBounds, Stack,
     },
-    AppContext, SingletonEntity,
 };
 use warpui::{Entity, TypedActionView, View, ViewHandle};
 

@@ -4,13 +4,13 @@ use warpui::platform::OperatingSystem;
 
 use crate::{
     completer::suggest::MatchRequirement,
-    meta::{floor_char_boundary, HasSpan, Span, Spanned},
+    meta::{HasSpan, Span, Spanned, floor_char_boundary},
 };
 use crate::{meta::SpannedItem, parsers::simple::command_at_cursor_position};
 
-use super::suggest::{suggestions, CompleterOptions, CompletionsFallbackStrategy, SuggestionType};
-use super::{context::CompletionContext, get_path_separators};
+use super::suggest::{CompleterOptions, CompletionsFallbackStrategy, SuggestionType, suggestions};
 use super::{Match, MatchStrategy};
+use super::{context::CompletionContext, get_path_separators};
 
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub struct Description {

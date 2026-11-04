@@ -1,7 +1,7 @@
 //! Supporting types for persisting cloud objects to SQLite.
 
 use anyhow::anyhow;
-use diesel::{result::Error, SqliteConnection};
+use diesel::{SqliteConnection, result::Error};
 use serde::{Deserialize, Serialize};
 use warp_core::features::FeatureFlag;
 

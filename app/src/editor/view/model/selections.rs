@@ -4,18 +4,18 @@ use pathfinder_geometry::vector::Vector2F;
 use serde::{Deserialize, Serialize};
 use string_offset::{ByteOffset, CharOffset};
 use vec1::Vec1;
-use warpui::text::point::Point;
 use warpui::AppContext;
+use warpui::text::point::Point;
 
 use super::{
+    DisplayPoint, ReplicaId,
     buffer::{Anchor, Buffer, LamportValue, ToBufferOffset, ToCharOffset, ToPoint},
     display_map::{DisplayMap, ToDisplayPoint},
-    DisplayPoint, ReplicaId,
 };
 use crate::{
     editor::{
-        soft_wrap::{ClampDirection, DisplayPointAndClampDirection},
         CursorColors, RangeExt,
+        soft_wrap::{ClampDirection, DisplayPointAndClampDirection},
     },
     ui_components::avatar::Avatar,
 };

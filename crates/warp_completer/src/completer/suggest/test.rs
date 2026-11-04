@@ -10,20 +10,20 @@ use crate::completer::testing::{
     FakeCompletionContext, MockGeneratorContext, MockPathCompletionContext,
 };
 use crate::meta::Span;
+use crate::signatures::CommandRegistry;
 use crate::signatures::testing::{
     cd_signature, create_test_command_registry, fuzzy_signature, git_signature, java_signature,
     ls_signature, npm_signature, signature_with_empty_positional, test_signature,
 };
-use crate::signatures::CommandRegistry;
 
 use super::CompleterOptions;
 use super::{
-    open_quote, requote_nu_path_replacement, suggestions, CompletionsFallbackStrategy,
-    SuggestionResults, SuggestionType,
+    CompletionsFallbackStrategy, SuggestionResults, SuggestionType, open_quote,
+    requote_nu_path_replacement, suggestions,
 };
 
-use std::collections::HashSet;
 use crate::signatures::testing::{add_content_signature, enum_then_path_option_signature};
+use std::collections::HashSet;
 
 #[cfg(windows)]
 mod windows_constants {
@@ -950,7 +950,9 @@ pub fn test_equal_sign_flag_does_not_bleed_variadic_suggestions() {
     eq_results.sort();
     assert_eq!(
         eq_results,
-        vec!["eight", "five", "four", "nine", "one", "seven", "six", "three", "two"]
+        vec![
+            "eight", "five", "four", "nine", "one", "seven", "six", "three", "two"
+        ]
     );
 }
 

@@ -22,7 +22,7 @@
 //! [`super::AboutPageWidget`].
 
 use crate::appearance::Appearance;
-use crate::autoupdate::{self, gitlab, AutoupdateStage};
+use crate::autoupdate::{self, AutoupdateStage, gitlab};
 use warpui::elements::{
     Container, CrossAxisAlignment, Element, Flex, MainAxisAlignment, ParentElement,
 };
@@ -48,7 +48,9 @@ impl AboutPageWidget {
         // - UpdateReady / UpdatedPendingRestart: ready to install + "Install now" button
         // - UnableTo*: automatic install failed + "Download from GitLab" fallback link
         let stage = autoupdate::get_update_state(app);
-        let progress = autoupdate::AutoupdateState::as_ref(app).download_progress().cloned();
+        let progress = autoupdate::AutoupdateState::as_ref(app)
+            .download_progress()
+            .cloned();
 
         let (status_text, action) = match &stage {
             AutoupdateStage::CheckingForUpdate => (

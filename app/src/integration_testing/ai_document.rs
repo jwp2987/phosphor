@@ -1,8 +1,7 @@
 use chrono::Local;
 use warpui::{
-    async_assert,
+    App, SingletonEntity, TypedActionView, ViewHandle, WindowId, async_assert,
     integration::{AssertionCallback, TestStep},
-    App, SingletonEntity, TypedActionView, ViewHandle, WindowId,
 };
 
 use crate::{

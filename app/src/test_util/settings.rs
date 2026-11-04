@@ -36,7 +36,6 @@ pub fn initialize_history_persistence_for_tests(app: &mut App) {
         let global_resource_handles = GlobalResourceHandles::mock(app);
         app.add_singleton_model(|_| GlobalResourceHandlesProvider::new(global_resource_handles));
     }
-
 }
 
 #[cfg(test)]
@@ -49,21 +48,21 @@ pub fn initialize_settings_for_tests_with_mode(
         drive::settings::WarpDriveSettings,
         search::command_search::settings::CommandSearchSettings,
         settings::{
-            app_icon::AppIconSettings, app_installation_detection::UserAppInstallDetectionSettings,
-            init_and_register_user_preferences, manager::SettingsManager, AISettings,
-            AccessibilitySettings, AliasExpansionSettings, AppEditorSettings,
+            AISettings, AccessibilitySettings, AliasExpansionSettings, AppEditorSettings,
             BlockVisibilitySettings, CodeSettings, DebugSettings, EmacsBindingsSettings,
             FontSettings, GPUSettings, InputModeSettings, InputSettings, LocalControlSettings,
-            NativePreferenceSettings, PaneSettings, ScrollSettings,
-            SelectionSettings, SshSettings, ThemeSettings, TuiAutoupdateSettings,
-            TuiThemeSettings, TuiZeroStateSettings, VimBannerSettings, WarpDrivePrivacySettings,
+            NativePreferenceSettings, PaneSettings, ScrollSettings, SelectionSettings, SshSettings,
+            ThemeSettings, TuiAutoupdateSettings, TuiThemeSettings, TuiZeroStateSettings,
+            VimBannerSettings, WarpDrivePrivacySettings, app_icon::AppIconSettings,
+            app_installation_detection::UserAppInstallDetectionSettings,
+            init_and_register_user_preferences, manager::SettingsManager,
         },
         terminal::{
-            alt_screen_reporting::AltScreenReporting, general_settings::GeneralSettings,
-            keys_settings::KeysSettings, ligature_settings::LigatureSettings,
-            safe_mode_settings::SafeModeSettings, session_settings::SessionSettings,
-            settings::TerminalSettings, shared_session::settings::SharedSessionSettings,
-            warpify::settings::WarpifySettings, BlockListSettings,
+            BlockListSettings, alt_screen_reporting::AltScreenReporting,
+            general_settings::GeneralSettings, keys_settings::KeysSettings,
+            ligature_settings::LigatureSettings, safe_mode_settings::SafeModeSettings,
+            session_settings::SessionSettings, settings::TerminalSettings,
+            shared_session::settings::SharedSessionSettings, warpify::settings::WarpifySettings,
         },
         undo_close::UndoCloseSettings,
         user_config::WarpConfig,

@@ -13,7 +13,7 @@ use string_offset::{ByteOffset, CharOffset};
 use vec1::vec1;
 use warp_core::features::FeatureFlag;
 use warp_editor::content::buffer::{Buffer, ToBufferCharOffset};
-use warp_editor::content::diff::{text_diff, TextDiff};
+use warp_editor::content::diff::{TextDiff, text_diff};
 use warp_editor::content::edit::PreciseDelta;
 use warp_editor::content::version::BufferVersion;
 use warp_util::content_version::ContentVersion;
@@ -2335,7 +2335,9 @@ impl GlobalBufferModel {
             .get_by_right(&file_id)
             .and_then(|loc| loc.local_path().map(|p| p.to_path_buf()))
         else {
-            return Err(format!("force_reload: no local path for file_id={file_id:?}"));
+            return Err(format!(
+                "force_reload: no local path for file_id={file_id:?}"
+            ));
         };
         // Capture the current client version before the reload so it can go in
         // the `ServerLocalBufferUpdated` event.

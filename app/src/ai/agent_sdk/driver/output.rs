@@ -11,6 +11,7 @@ pub mod text {
     use itertools::Itertools;
 
     use crate::{
+        AIAgentActionResultType,
         ai::agent::{
             AIAgentActionType, AIAgentInput, AIAgentOutput, AIAgentOutputMessageType, AIAgentTodo,
             ArtifactCreatedData, CallMCPToolResult, FileGlobResult, FileGlobV2Result, GrepResult,
@@ -19,7 +20,6 @@ pub mod text {
             TodoOperation, WebFetchStatus, WebSearchStatus, WriteToLongRunningShellCommandResult,
             rejected_tool_call_text,
         },
-        AIAgentActionResultType,
     };
 
     /// Format an agent input as a human-readable string. For action results, it's assumed that
@@ -454,7 +454,11 @@ pub mod text {
                     writeln!(w, "Received {} agent events", event_ids.len())?;
                 }
                 AIAgentOutputMessageType::RejectedToolCall { tool, detail, kind } => {
-                    writeln!(w, "{}", rejected_tool_call_text(tool.as_deref(), detail, *kind))?;
+                    writeln!(
+                        w,
+                        "{}",
+                        rejected_tool_call_text(tool.as_deref(), detail, *kind)
+                    )?;
                 }
             }
         }
@@ -515,6 +519,7 @@ pub mod text {
 
 pub mod json {
     use crate::{
+        AIAgentActionResultType,
         ai::agent::{
             AIAgentActionType, AIAgentInput, AIAgentOutput, AIAgentOutputMessage,
             AIAgentOutputMessageType, AIAgentTodo, ArtifactCreatedData, CallMCPToolResult,
@@ -523,7 +528,6 @@ pub mod json {
             RequestFileEditsResult, SubagentCall, TodoOperation,
             WriteToLongRunningShellCommandResult, rejected_tool_call_text,
         },
-        AIAgentActionResultType,
     };
 
     use crate::ai::agent::comment::ReviewComment;

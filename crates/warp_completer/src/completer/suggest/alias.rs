@@ -5,9 +5,9 @@ use itertools::Itertools;
 
 use crate::completer::{CompletionContext, TopLevelCommandCaseSensitivity};
 use crate::meta::Span;
-use crate::parsers::simple::parse_for_completions;
 use crate::parsers::SignatureAtTokenIndex;
-use crate::parsers::{classify_command, ClassifiedCommand};
+use crate::parsers::simple::parse_for_completions;
+use crate::parsers::{ClassifiedCommand, classify_command};
 
 /// This is used to limit how many times we re-run the completer once we
 /// evaluate an alias to prevent infinite recursion.

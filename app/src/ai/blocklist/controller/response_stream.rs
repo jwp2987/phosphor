@@ -12,9 +12,9 @@ use warpui::{Entity, ModelContext};
 use super::project_rules_wait;
 use crate::{
     ai::agent::{
+        AIAgentInput, AIIdentifiers, CancellationReason,
         api::{self, ConvertToAPITypeError},
         conversation::AIConversationId,
-        AIAgentInput, AIIdentifiers, CancellationReason,
     },
     ai::blocklist::BlocklistAIHistoryModel,
     ai::byop_readiness::BlockedByopReadinessError,
@@ -530,8 +530,7 @@ fn byop_dispatch_info(
         // and with no title model of its own, the model this request is already on) --
         // not the default profile's base model.
         let terminal_view_id = history.terminal_view_id_for_conversation(conversation_id);
-        let title_id =
-            llm_prefs.get_title_model_for_request(ctx, terminal_view_id, &params.model);
+        let title_id = llm_prefs.get_title_model_for_request(ctx, terminal_view_id, &params.model);
         // The profile's per-prompt override for the title system prompt.
         let title_prompt_override = {
             use warpui::SingletonEntity;
@@ -1210,7 +1209,9 @@ impl ResponseStream {
                             // Emit retry success telemetry on successful completion
                             if matches!(
                                 finished_event.reason,
-                                Some(agent_proto::response_event::stream_finished::Reason::Done(_)) | None
+                                Some(agent_proto::response_event::stream_finished::Reason::Done(
+                                    _
+                                )) | None
                             ) {
                                 // Emit retry success telemetry if this was a successful completion after retries
                                 if self.retries_sent > 0 {

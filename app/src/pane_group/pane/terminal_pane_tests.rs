@@ -106,7 +106,9 @@ fn finish_spawning_local_child_agent_wires_the_child_into_the_topology() {
                 .get(&child_id)
                 .expect("child_agent_panes has an entry for the spawned child");
             assert!(
-                group.terminal_view_from_pane_id(child_pane_id, ctx).is_some(),
+                group
+                    .terminal_view_from_pane_id(child_pane_id, ctx)
+                    .is_some(),
                 "the child pane's terminal view must exist"
             );
         });
@@ -167,16 +169,46 @@ fn should_upsert_ai_query_writes_streaming_exchange_once_per_status() {
     let mut persisted = Default::default();
     let id = AIAgentExchangeId::new();
     // AppendedExchange always writes.
-    assert!(should_upsert_ai_query(&mut persisted, id, &Pending, 1, false));
+    assert!(should_upsert_ai_query(
+        &mut persisted,
+        id,
+        &Pending,
+        1,
+        false
+    ));
     // Every later delta of the same Pending exchange is identical: skipped.
     for _ in 0..50 {
-        assert!(!should_upsert_ai_query(&mut persisted, id, &Pending, 1, true));
+        assert!(!should_upsert_ai_query(
+            &mut persisted,
+            id,
+            &Pending,
+            1,
+            true
+        ));
     }
     // A change in the persisted inputs writes again.
-    assert!(should_upsert_ai_query(&mut persisted, id, &Pending, 2, true));
+    assert!(should_upsert_ai_query(
+        &mut persisted,
+        id,
+        &Pending,
+        2,
+        true
+    ));
     // The terminal status is always written, and forgets the entry.
-    assert!(should_upsert_ai_query(&mut persisted, id, &Completed, 2, true));
+    assert!(should_upsert_ai_query(
+        &mut persisted,
+        id,
+        &Completed,
+        2,
+        true
+    ));
     assert!(persisted.is_empty());
     // A first delta with nothing cached (e.g. restored mid-stream) still writes.
-    assert!(should_upsert_ai_query(&mut persisted, id, &Pending, 2, true));
+    assert!(should_upsert_ai_query(
+        &mut persisted,
+        id,
+        &Pending,
+        2,
+        true
+    ));
 }

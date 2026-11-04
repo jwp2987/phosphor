@@ -1,8 +1,10 @@
 use crate::{
+    AccessibilityData, AddSingletonModel, Clipboard, Scene, ZoomFactor,
     assets::{
-        asset_cache::{AssetCache, AssetHandle, AssetSource, AssetState},
         AssetProvider,
+        asset_cache::{AssetCache, AssetHandle, AssetSource, AssetState},
     },
+    r#async::{SpawnableOutput, Timer, block_on},
     event::KeyState,
     fonts::FallbackFontModel,
     image_cache::{self, ImageCache},
@@ -10,17 +12,15 @@ use crate::{
         AlertDialog, AlertDialogWithCallbacks, AppModalCallback, ModalId, PlatformModalResponseData,
     },
     platform::{
+        FullscreenState, MicrophoneAccessState, SaveFilePickerConfiguration, SystemTheme,
+        TerminationMode, WindowContext,
         app::TerminationResult,
         file_picker::{FilePickerConfiguration, FilePickerError},
         keyboard::KeyCode,
-        FullscreenState, MicrophoneAccessState, SaveFilePickerConfiguration, SystemTheme,
-        TerminationMode, WindowContext,
     },
-    r#async::{block_on, SpawnableOutput, Timer},
     windowing::{self, WindowCallbacks, WindowManager},
-    AccessibilityData, AddSingletonModel, Clipboard, Scene, ZoomFactor,
 };
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use chrono::Utc;
 use futures::{future::join_all, prelude::*};
 use instant::Instant;
@@ -38,15 +38,25 @@ use std::{
     pin::pin,
     rc::{self, Rc},
     sync::{
-        atomic::{AtomicI64, Ordering},
         Arc, OnceLock,
+        atomic::{AtomicI64, Ordering},
     },
 };
 
 use crate::{
+    Action, AddWindowOptions, AnyModel, AnyModelHandle, AnyView, ApplicationBundleInfo,
+    CurrentRenderWindowGuard, CursorInfo, Effect, Element, Entity, EntityId, Event,
+    GetSingletonModelHandle, ModelAsRef, ModelContext, ModelHandle,
+    NextNewWindowsHasThisWindowsBoundsUponClose, Presenter, ReadModel, ReadView, SingletonEntity,
+    SpawnedFuture, TaskId, TypedActionView, UpdateModel, UpdateView, View, ViewAsRef, ViewContext,
+    ViewHandle, ViewUpdateError, WindowId, WindowInvalidation,
     accessibility::{AccessibilityVerbosity, ActionAccessibilityContent},
     actions::StandardAction,
     assets,
+    r#async::{
+        FutureId,
+        executor::{self, Background, Foreground, ForegroundTask},
+    },
     core::{ActionType, Window},
     fonts::{self, ExternalFontFamily, RequestedFallbackFontSource},
     keymap::{
@@ -56,24 +66,14 @@ use crate::{
     notification::{NotificationSendError, RequestPermissionsOutcome, UserNotification},
     platform::{self, Cursor, WindowBounds, WindowOptions, WindowStyle},
     presenter::{CursorUpdate, DispatchedActionKind},
-    r#async::{
-        executor::{self, Background, Foreground, ForegroundTask},
-        FutureId,
-    },
     rendering,
     util::post_inc,
-    Action, AddWindowOptions, AnyModel, AnyModelHandle, AnyView, ApplicationBundleInfo, CursorInfo,
-    CurrentRenderWindowGuard, Effect, Element, Entity, EntityId, Event, GetSingletonModelHandle,
-    ModelAsRef, ModelContext, ModelHandle, NextNewWindowsHasThisWindowsBoundsUponClose, Presenter,
-    ReadModel, ReadView, SingletonEntity, SpawnedFuture, TaskId, TypedActionView, UpdateModel,
-    UpdateView, View, ViewAsRef, ViewContext, ViewHandle, ViewUpdateError, WindowId,
-    WindowInvalidation,
 };
 
 use super::{
-    autotracking, ActionCallback, BlurContext, FocusContext, GlobalActionCallback, GlobalShortcut,
+    ActionCallback, BlurContext, FocusContext, GlobalActionCallback, GlobalShortcut,
     InvalidationCallback, Observation, PendingUnsubscribes, RefCounts, Subscription, TaskCallback,
-    TypedActionCallback, ViewType,
+    TypedActionCallback, ViewType, autotracking,
 };
 
 // TUI AppContext extensions (add_tui_view / render_tui_view / …), feature-gated.
@@ -1833,7 +1833,13 @@ impl AppContext {
                 let view_type = ViewType(view.as_any().type_id());
                 let found = match handlers.get_mut(&view_type) {
                     Some(handler) => {
-                        handler(view.as_any_mut(), action.as_any(), self, window_id, *view_id);
+                        handler(
+                            view.as_any_mut(),
+                            action.as_any(),
+                            self,
+                            window_id,
+                            *view_id,
+                        );
                         true
                     }
                     None => false,
@@ -1853,7 +1859,13 @@ impl AppContext {
                 let view_type = ViewType(view.as_any().type_id());
                 let found = match handlers.get_mut(&view_type) {
                     Some(handler) => {
-                        handler(view.as_any_mut(), action.as_any(), self, window_id, *view_id);
+                        handler(
+                            view.as_any_mut(),
+                            action.as_any(),
+                            self,
+                            window_id,
+                            *view_id,
+                        );
                         true
                     }
                     None => false,
@@ -1897,7 +1909,10 @@ impl AppContext {
         arg: &dyn Any,
     ) {
         if let Some((name, mut handlers)) = self.global_actions.remove_entry(name) {
-            if matches!(name.as_str(), "workspace:save_app" | "root_view:update_quake_mode_state") {
+            if matches!(
+                name.as_str(),
+                "workspace:save_app" | "root_view:update_quake_mode_state"
+            ) {
                 log::debug!("dispatching global action for {}", &name);
             } else {
                 log::info!("dispatching global action for {}", &name);
@@ -3026,20 +3041,21 @@ impl AppContext {
                     _ => (),
                 };
 
-                match ctx.presenter(window_id) { Some(presenter) => {
-                    ctx.handle_window_event(event, window_id, presenter)
-                } _ => {
-                    if let Event::KeyDown { keystroke, .. } = &event {
-                        if matches!(keystroke.key.as_str(), "enter" | "numpadenter") {
-                            crate::input_order::log_enter(
-                                "core_enter",
-                                "no_presenter",
-                                String::new,
-                            );
+                match ctx.presenter(window_id) {
+                    Some(presenter) => ctx.handle_window_event(event, window_id, presenter),
+                    _ => {
+                        if let Event::KeyDown { keystroke, .. } = &event {
+                            if matches!(keystroke.key.as_str(), "enter" | "numpadenter") {
+                                crate::input_order::log_enter(
+                                    "core_enter",
+                                    "no_presenter",
+                                    String::new,
+                                );
+                            }
                         }
+                        crate::windowing::EventDispatchResult::default()
                     }
-                    crate::windowing::EventDispatchResult::default()
-                }}
+                }
             }),
             resize_callback: Box::new(move |window, ctx| {
                 let origin = window.origin();
@@ -3627,22 +3643,23 @@ impl AppContext {
         let view_id = EntityId::new();
         self.pending_flushes += 1;
         let mut ctx = ViewContext::new(self, window_id, view_id);
-        let handle = match build_view(&mut ctx) { Some(view) => {
-            if let Some(window) = self.windows.get_mut(&window_id) {
-                window.views.insert(view_id, Box::new(view));
-            } else {
-                panic!("Window does not exist");
+        let handle = match build_view(&mut ctx) {
+            Some(view) => {
+                if let Some(window) = self.windows.get_mut(&window_id) {
+                    window.views.insert(view_id, Box::new(view));
+                } else {
+                    panic!("Window does not exist");
+                }
+                self.view_to_window.insert(view_id, window_id);
+                self.window_invalidations
+                    .entry(window_id)
+                    .or_default()
+                    .updated
+                    .insert(view_id);
+                Some(ViewHandle::new(window_id, view_id, &self.ref_counts))
             }
-            self.view_to_window.insert(view_id, window_id);
-            self.window_invalidations
-                .entry(window_id)
-                .or_default()
-                .updated
-                .insert(view_id);
-            Some(ViewHandle::new(window_id, view_id, &self.ref_counts))
-        } _ => {
-            None
-        }};
+            _ => None,
+        };
         self.flush_effects();
         handle
     }
@@ -4023,7 +4040,11 @@ impl AppContext {
     /// path (`record_view_parent` / `report_view_embeddings`, both
     /// `#[cfg(feature = "tui")]`), so this is a no-op for pure-GUI builds —
     /// safe to call unconditionally.
-    fn view_parents_descendants(&self, window_id: WindowId, root_view_id: EntityId) -> Vec<EntityId> {
+    fn view_parents_descendants(
+        &self,
+        window_id: WindowId,
+        root_view_id: EntityId,
+    ) -> Vec<EntityId> {
         let Some(parents) = self.view_parents.get(&window_id) else {
             return Vec::new();
         };
@@ -4228,7 +4249,10 @@ impl AppContext {
     /// for it. See issue #805.
     fn prepare_window_invalidations(&mut self, window_id: WindowId) -> bool {
         let autotracked = autotracking::take_invalidations_for_window(window_id);
-        let mut invalidation = self.window_invalidations.remove(&window_id).unwrap_or_default();
+        let mut invalidation = self
+            .window_invalidations
+            .remove(&window_id)
+            .unwrap_or_default();
         invalidation.updated.extend(autotracked);
         if let Some(presenter) = self.presenter(window_id) {
             // No known caller reaches here while the presenter is borrowed (the
@@ -4987,13 +5011,14 @@ impl AppContext {
             for mut subscription in subscriptions {
                 let alive = match &mut subscription {
                     Subscription::FromModel { model_id, callback } => {
-                        match self.models.remove(model_id) { Some(mut model) => {
-                            callback(model.as_any_mut(), payload.as_ref(), self, *model_id);
-                            self.models.insert(*model_id, model);
-                            true
-                        } _ => {
-                            false
-                        }}
+                        match self.models.remove(model_id) {
+                            Some(mut model) => {
+                                callback(model.as_any_mut(), payload.as_ref(), self, *model_id);
+                                self.models.insert(*model_id, model);
+                                true
+                            }
+                            _ => false,
+                        }
                     }
                     Subscription::FromView {
                         window_id: stored_window_id,
@@ -5104,13 +5129,14 @@ impl AppContext {
                 for mut observation in observations {
                     let alive = match &mut observation {
                         Observation::FromModel { model_id, callback } => {
-                            match self.models.remove(model_id) { Some(mut model) => {
-                                callback(model.as_any_mut(), observed_id, self, *model_id);
-                                self.models.insert(*model_id, model);
-                                true
-                            } _ => {
-                                false
-                            }}
+                            match self.models.remove(model_id) {
+                                Some(mut model) => {
+                                    callback(model.as_any_mut(), observed_id, self, *model_id);
+                                    self.models.insert(*model_id, model);
+                                    true
+                                }
+                                _ => false,
+                            }
                         }
                         Observation::FromView {
                             window_id: stored_window_id,
@@ -5126,53 +5152,56 @@ impl AppContext {
                                 .windows
                                 .get_mut(&current_window_id)
                                 .and_then(|w| w.views.remove(view_id))
-                            { Some(mut view) => {
-                                callback(
-                                    view.as_any_mut(),
-                                    observed_id,
-                                    self,
-                                    current_window_id,
-                                    *view_id,
-                                );
-                                if let Some(window) = self.windows.get_mut(&current_window_id) {
-                                    window.views.insert(*view_id, view);
+                            {
+                                Some(mut view) => {
+                                    callback(
+                                        view.as_any_mut(),
+                                        observed_id,
+                                        self,
+                                        current_window_id,
+                                        *view_id,
+                                    );
+                                    if let Some(window) = self.windows.get_mut(&current_window_id) {
+                                        window.views.insert(*view_id, view);
+                                    }
+                                    true
                                 }
-                                true
-                            } _ => {
-                                // Zap TUI view observer (lives in `tui_views`). Without this
-                                // branch the callback never fires and the observation is
-                                // dropped, so a TUI view observing a model stops re-rendering
-                                // permanently. Twin of the `Subscription::FromView` fallback
-                                // in `emit_event`.
-                                #[cfg(feature = "tui")]
-                                {
-                                    if let Some(mut view) = self
-                                        .windows
-                                        .get_mut(&current_window_id)
-                                        .and_then(|w| w.tui_views.remove(view_id))
+                                _ => {
+                                    // Zap TUI view observer (lives in `tui_views`). Without this
+                                    // branch the callback never fires and the observation is
+                                    // dropped, so a TUI view observing a model stops re-rendering
+                                    // permanently. Twin of the `Subscription::FromView` fallback
+                                    // in `emit_event`.
+                                    #[cfg(feature = "tui")]
                                     {
-                                        callback(
-                                            view.as_any_mut(),
-                                            observed_id,
-                                            self,
-                                            current_window_id,
-                                            *view_id,
-                                        );
-                                        if let Some(window) =
-                                            self.windows.get_mut(&current_window_id)
+                                        if let Some(mut view) = self
+                                            .windows
+                                            .get_mut(&current_window_id)
+                                            .and_then(|w| w.tui_views.remove(view_id))
                                         {
-                                            window.tui_views.insert(*view_id, view);
+                                            callback(
+                                                view.as_any_mut(),
+                                                observed_id,
+                                                self,
+                                                current_window_id,
+                                                *view_id,
+                                            );
+                                            if let Some(window) =
+                                                self.windows.get_mut(&current_window_id)
+                                            {
+                                                window.tui_views.insert(*view_id, view);
+                                            }
+                                            true
+                                        } else {
+                                            false
                                         }
-                                        true
-                                    } else {
+                                    }
+                                    #[cfg(not(feature = "tui"))]
+                                    {
                                         false
                                     }
                                 }
-                                #[cfg(not(feature = "tui"))]
-                                {
-                                    false
-                                }
-                            }}
+                            }
                         }
                         Observation::FromApp { callback } => {
                             callback(observed_id, self);
@@ -5516,18 +5545,21 @@ impl AppContext {
                 loop {
                     match stream.next().await {
                         Some(item) => {
-                            match app.upgrade() { Some(app) => {
-                                let mut app = app.borrow_mut();
+                            match app.upgrade() {
+                                Some(app) => {
+                                    let mut app = app.borrow_mut();
 
-                                // If the entity that spawned the stream no longer exists, terminate
-                                // the stream.
-                                if app.relay_task_output(task_id, Box::new(item)).is_err() {
-                                    app.stream_completed(task_id);
+                                    // If the entity that spawned the stream no longer exists, terminate
+                                    // the stream.
+                                    if app.relay_task_output(task_id, Box::new(item)).is_err() {
+                                        app.stream_completed(task_id);
+                                        break;
+                                    }
+                                }
+                                _ => {
                                     break;
                                 }
-                            } _ => {
-                                break;
-                            }}
+                            }
                         }
                         None => {
                             if let Some(app) = app.upgrade() {
@@ -5602,9 +5634,9 @@ impl AppContext {
     pub fn open_file_picker(
         &mut self,
         callback: impl FnOnce(Result<Vec<String>, FilePickerError>, &mut AppContext)
-            + Send
-            + Sync
-            + 'static,
+        + Send
+        + Sync
+        + 'static,
         config: FilePickerConfiguration,
     ) {
         self.platform_delegate
@@ -5690,14 +5722,17 @@ impl AppContext {
                 mut on_item,
                 on_done,
             } => {
-                match self.models.remove(&model_id) { Some(mut model) => {
-                    on_item(model.as_any_mut(), output, self, model_id);
-                    self.models.insert(model_id, model);
-                } _ => {
-                    result = Err(anyhow!(
-                        "Unable to retrieve model when relaying task output from stream"
-                    ));
-                }}
+                match self.models.remove(&model_id) {
+                    Some(mut model) => {
+                        on_item(model.as_any_mut(), output, self, model_id);
+                        self.models.insert(model_id, model);
+                    }
+                    _ => {
+                        result = Err(anyhow!(
+                            "Unable to retrieve model when relaying task output from stream"
+                        ));
+                    }
+                }
                 // Streams go through different code paths compared to Futures.
                 // Even if the stream halts after this call, we still need to
                 // refer to the task callback in stream completed.

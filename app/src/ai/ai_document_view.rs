@@ -2,6 +2,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::BlocklistAIHistoryModel;
 use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::blocklist::agent_view::AgentViewEntryOrigin;
 use crate::ai::document::ai_document_model::{AIDocumentSaveStatus, AIDocumentUserEditStatus};
@@ -9,23 +10,22 @@ use crate::appearance::Appearance;
 use crate::drive::items::WarpDriveItemId;
 use crate::notebooks::editor::view::RichTextEditorConfig;
 use crate::pane_group::focus_state::PaneFocusHandle;
+use crate::pane_group::pane::view::header::PaneHeaderAction;
 use crate::pane_group::pane::view::header::components::{
-    render_pane_header_buttons, render_pane_header_title_text, render_three_column_header,
-    CenteredHeaderEdgeWidth,
+    CenteredHeaderEdgeWidth, render_pane_header_buttons, render_pane_header_title_text,
+    render_three_column_header,
 };
 use crate::pane_group::pane::view::header::toolbelt_button_position_id;
-use crate::pane_group::pane::view::header::PaneHeaderAction;
 use crate::send_telemetry_from_ctx;
 use crate::settings::FontSettings;
 use crate::terminal::input::MenuPositioning;
 use crate::terminal::view::TerminalView;
 use crate::util::bindings::keybinding_name_to_keystroke;
+use crate::view_components::DismissibleToast;
 use crate::view_components::action_button::{
     ButtonSize, NakedTheme, SecondaryTheme, TooltipAlignment,
 };
-use crate::view_components::DismissibleToast;
 use crate::workspace::ToastStack;
-use crate::BlocklistAIHistoryModel;
 use crate::{
     ai::document::ai_document_model::{
         AIDocumentId, AIDocumentInstance, AIDocumentModel, AIDocumentModelEvent,
@@ -41,7 +41,7 @@ use crate::{
         },
         link::{NotebookLinks, SessionSource},
     },
-    pane_group::{pane::view, BackingView, PaneConfiguration, PaneEvent},
+    pane_group::{BackingView, PaneConfiguration, PaneEvent, pane::view},
     server::telemetry::TelemetryEvent,
     ui_components::icons::Icon,
     view_components::action_button::{ActionButton, PrimaryTheme},
@@ -60,14 +60,14 @@ use warpui::keymap::FixedBinding;
 use warpui::text_layout::ClipConfig;
 use warpui::ui_components::components::UiComponent;
 use warpui::{
+    AppContext, Element, Entity, ModelHandle, SingletonEntity, TypedActionView, View, ViewContext,
+    ViewHandle,
     elements::{
         ChildView, ConstrainedBox, Container, Empty, Flex, Hoverable, MouseStateHandle,
         OffsetPositioning, ParentElement, SavePosition, Stack,
     },
-    AppContext, Element, Entity, ModelHandle, SingletonEntity, TypedActionView, View, ViewContext,
-    ViewHandle,
 };
-use warpui::{id, EntityId};
+use warpui::{EntityId, id};
 
 pub fn init(app: &mut AppContext) {
     app.register_editable_bindings([EditableBinding::new(
@@ -373,7 +373,9 @@ impl AIDocumentView {
         let save_action = keybinding_name_to_keystroke(SAVE_FILE_BINDING_NAME, ctx)
             .map(|k| k.displayed())
             .unwrap_or("Click".to_string());
-        let tooltip_text = format!("This plan has changes the agent isn't aware of. {save_action} to stop the agent's current task and send the updated plan");
+        let tooltip_text = format!(
+            "This plan has changes the agent isn't aware of. {save_action} to stop the agent's current task and send the updated plan"
+        );
         let update_plan_button = ctx.add_typed_action_view(|_ctx| {
             ActionButton::new(crate::t!("ai-document-update-agent"), PrimaryTheme)
                 .with_size(ButtonSize::Small)

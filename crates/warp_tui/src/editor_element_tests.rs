@@ -72,8 +72,7 @@ fn multiple_selection_ranges_highlight_every_span_in_a_row() {
             let mut element = TuiEditorElement::new(&model, ctx);
             // Two disjoint selections on the same display row: "a" and "cd".
             // Both must be highlighted, not just the first one found.
-            element.selection_ranges =
-                vec![CharOffset::range(0..1), CharOffset::range(2..4)];
+            element.selection_ranges = vec![CharOffset::range(0..1), CharOffset::range(2..4)];
             let buffer = render_buffer(ctx, element, 10, 1);
 
             let selection_bg = TuiUiBuilder::from_app(ctx).selection_style().bg;

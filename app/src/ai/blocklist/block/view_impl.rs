@@ -43,34 +43,34 @@ use warpui::elements::{
     SavePosition, SelectableArea,
 };
 use warpui::{
-    elements::{Border, Container, Flex, ParentElement},
     AppContext, Element, SingletonEntity,
+    elements::{Border, Container, Flex, ParentElement},
 };
 use warpui::{View, ViewContext};
 
 use crate::ai::agent::AIAgentCitation;
 use crate::ai::agent::AIAgentInput;
 use crate::ai::blocklist::block::view_impl::header::{
-    render_overflow_menu_button, OVERFLOW_BUTTON_SIZE,
+    OVERFLOW_BUTTON_SIZE, render_overflow_menu_button,
 };
 use crate::ai::blocklist::inline_action::inline_action_icons::icon_size;
 use crate::ai::blocklist::model::AIBlockModelHelper;
 use crate::appearance::Appearance;
 use crate::settings::{AISettings, InputModeSettings, InputSettings};
+use crate::terminal::TerminalView;
 use crate::terminal::model::blocks::{BlockHeightItem, RemovableBlocklistItem, RichContentItem};
 use crate::terminal::model::rich_content::RichContentType;
-use crate::terminal::TerminalView;
 use crate::util::truncation::truncate_from_end;
 
 use super::secret_redaction::SecretRedactionState;
 use super::{
-    attachment_names, AIBlock, AIBlockAction, DISPATCHED_REQUESTED_EDIT_KEYMAP_CONTEXT,
-    HAS_PENDING_ACTION, RICH_CONTENT_SECRET_FIRST_CHAR_POSITION_ID,
+    AIBlock, AIBlockAction, DISPATCHED_REQUESTED_EDIT_KEYMAP_CONTEXT, HAS_PENDING_ACTION,
+    RICH_CONTENT_SECRET_FIRST_CHAR_POSITION_ID, attachment_names,
 };
 
 use super::TextLocation;
-use crate::ai::blocklist::block::view_impl::comments::address_comment_chips;
 use crate::ai::blocklist::block::DetectedLinksState;
+use crate::ai::blocklist::block::view_impl::comments::address_comment_chips;
 use crate::ai::blocklist::history_model::BlocklistAIHistoryModel;
 use crate::cloud_object::model::persistence::ObjectStoreModel;
 
@@ -85,10 +85,10 @@ use crate::ui_components::icons::Icon;
 use crate::util::link_detection::DetectedLinkType;
 use crate::workspace::WorkspaceAction;
 use itertools::Itertools;
-use warp_core::ui::color::contrast::{
-    foreground_color_with_minimum_contrast, MinimumAllowedContrast,
-};
 use warp_core::ui::color::Rgb;
+use warp_core::ui::color::contrast::{
+    MinimumAllowedContrast, foreground_color_with_minimum_contrast,
+};
 use warp_core::ui::theme::{Fill, WarpTheme};
 use warpui::elements::{Highlight, HighlightedRange, Text};
 use warpui::fonts::Properties;

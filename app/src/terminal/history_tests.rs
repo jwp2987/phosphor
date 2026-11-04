@@ -1,6 +1,7 @@
 use crate::{
     ai::agent::conversation::AIConversationId,
     terminal::{
+        History,
         model::{
             block::{AgentInteractionMetadata, SerializedAIMetadata, SerializedBlock},
             bootstrap::BootstrapStage,
@@ -9,13 +10,12 @@ use crate::{
             test_utils::TestBlockBuilder,
         },
         shell::ShellType,
-        History,
     },
     test_util::{Stub, VirtualFS},
 };
 use chrono::Local;
-use futures::future::join_all;
 use futures::Future;
+use futures::future::join_all;
 use futures_lite::StreamExt;
 use itertools::Itertools;
 use warp_core::command::ExitCode;
@@ -1473,7 +1473,12 @@ fn ran_before_follows_the_newest_recorded_exit_code() {
         initialize_history_for_testing(
             &mut history_handle,
             session.clone(),
-            async move { vec!["git log --since yesterday".to_owned(), "say hello".to_owned()] },
+            async move {
+                vec![
+                    "git log --since yesterday".to_owned(),
+                    "say hello".to_owned(),
+                ]
+            },
             vec![],
             &mut app,
         )

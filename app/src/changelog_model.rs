@@ -2,11 +2,11 @@ use std::{collections::HashMap, fmt, sync::Arc};
 
 use channel_versions::{Changelog, MarkdownSection};
 use itertools::Itertools;
-use markdown_parser::{parse_markdown, FormattedText};
+use markdown_parser::{FormattedText, parse_markdown};
 use warpui::{
+    Entity, ModelContext, SingletonEntity,
     assets::asset_cache::{AssetCache, AssetSource},
     image_cache::ImageType,
-    Entity, ModelContext, SingletonEntity,
 };
 
 use crate::{

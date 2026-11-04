@@ -12,9 +12,7 @@ use super::PseudoConsoleChild;
 use super::{PtyOptions, PtySpawnResult};
 #[cfg(unix)]
 use {
-    crate::report_error,
-    crate::terminal::local_tty::server::TerminalServer,
-    anyhow::Context,
+    crate::report_error, crate::terminal::local_tty::server::TerminalServer, anyhow::Context,
     std::process::Child,
 };
 /// A handle that can be used to interact with a pty process.

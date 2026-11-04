@@ -21,22 +21,23 @@ use crate::code_review::git_status_update::{GitRepoStatusModel, GitStatusMetadat
 use crate::context_chips::display_chip::GitBranchTrackingStatus;
 #[cfg(windows)]
 use crate::system::SystemInfo;
+use crate::terminal::CLIAgent;
 use crate::terminal::cli_agent_sessions::{
     CLIAgentInputState, CLIAgentSession, CLIAgentSessionContext, CLIAgentSessionStatus,
     CLIAgentSessionsModel,
 };
-use crate::terminal::CLIAgent;
 use crate::{
     auth::{AuthManager, AuthStateProvider},
     context_chips::{
+        ChipAvailability, ChipDisabledReason, ContextChipKind,
         context_chip::{Environment, PromptGenerator},
         prompt::Prompt,
-        ChipAvailability, ChipDisabledReason, ContextChipKind,
     },
     features::FeatureFlag,
     menu::MenuItem,
     settings::WarpPromptSeparator,
     terminal::{
+        History,
         model::{
             block::BlockMetadata,
             session::{CommandExecutor, ExecuteCommandOptions, SessionId, SessionInfo, Sessions},
@@ -47,7 +48,6 @@ use crate::{
         },
         shell::Shell,
         view::PromptPosition,
-        History,
     },
 };
 #[cfg(feature = "local_fs")]
@@ -55,8 +55,8 @@ use repo_metadata::DirectoryWatcher;
 use warp_completer::completer::{CommandExitStatus, CommandOutput};
 
 use super::{
-    effective_command_timeout, next_poll_delay, poll_decision, ActiveChipSurfaces, ChipState,
-    ChipUpdateStatus, CurrentPrompt, PollDecision, PromptContext, DEFAULT_CHIP_COMMAND_TIMEOUT,
+    ActiveChipSurfaces, ChipState, ChipUpdateStatus, CurrentPrompt, DEFAULT_CHIP_COMMAND_TIMEOUT,
+    PollDecision, PromptContext, effective_command_timeout, next_poll_delay, poll_decision,
 };
 #[cfg(feature = "local_fs")]
 use crate::code_review::github_repo_model::GitHubRepoModel;

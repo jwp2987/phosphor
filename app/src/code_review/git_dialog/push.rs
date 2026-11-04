@@ -9,21 +9,21 @@ use std::collections::HashMap;
 
 use warp_core::ui::appearance::Appearance;
 use warpui::{
+    ViewContext,
     elements::{
         Border, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox, Container,
         CornerRadius, CrossAxisAlignment, Element, Flex, Hoverable, MainAxisAlignment,
         MainAxisSize, MouseStateHandle, ParentElement, Radius, ScrollbarWidth, Text,
     },
     platform::Cursor,
-    ViewContext,
 };
 
 use crate::{
     code::editor::{add_color, remove_color},
     code_review::git_dialog::{
-        interactive_path_future, render_branch_section, render_chevron_icon, render_file_list,
-        show_toast, user_facing_git_error, GitDialog, GitDialogAction, GitDialogEvent,
-        GitDialogMode,
+        GitDialog, GitDialogAction, GitDialogEvent, GitDialogMode, interactive_path_future,
+        render_branch_section, render_chevron_icon, render_file_list, show_toast,
+        user_facing_git_error,
     },
     ui_components::icons::Icon,
     util::git::{Commit, FileChangeEntry},

@@ -18,14 +18,14 @@ use crate::{
     },
     settings_view::SettingsView,
     settings_view::keybindings::KeybindingsView,
-    terminal::{input::Input, TerminalView},
+    terminal::{TerminalView, input::Input},
     themes::theme_chooser::ThemeChooser,
     view_components::find::Find,
-    workflows::{workflow_view::WorkflowView, CategoriesView},
+    workflows::{CategoriesView, workflow_view::WorkflowView},
     workspace::Workspace,
 };
 use warpui::Entity;
-use warpui::{async_assert, integration::AssertionCallback, App, View, ViewHandle, WindowId};
+use warpui::{App, View, ViewHandle, WindowId, async_assert, integration::AssertionCallback};
 
 /// This identifier is useful when you'd like to weakly identify a terminal view
 /// without actually grabbing a handle to it. Often useful when writing reusable assertions.
@@ -273,6 +273,9 @@ fn singleton_view_of_type<T: View>(app: &App, window_id: WindowId) -> ViewHandle
         .views_of_type(window_id)
         .expect("there's at least one view of type");
     let num_views_of_type = views_of_type.len();
-    assert_eq!(num_views_of_type, 1, "window_id={window_id} doesn't have a single view of type T. Has {num_views_of_type} views instead");
+    assert_eq!(
+        num_views_of_type, 1,
+        "window_id={window_id} doesn't have a single view of type T. Has {num_views_of_type} views instead"
+    );
     views_of_type.first().unwrap().clone()
 }

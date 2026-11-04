@@ -4,20 +4,20 @@ use instant::Instant;
 
 use parking_lot::FairMutex;
 use warp_core::ui::appearance::Appearance;
-use warpui::keymap::Keystroke;
 use warpui::AppContext;
+use warpui::keymap::Keystroke;
 use warpui::{
-    r#async::SpawnedFutureHandle, Entity, EntityId, ModelContext, ModelHandle, SingletonEntity,
+    Entity, EntityId, ModelContext, ModelHandle, SingletonEntity, r#async::SpawnedFutureHandle,
 };
 
 use crate::terminal::input::message_bar::{Message, MessageItem};
-use crate::terminal::model::block::TranscriptScope;
 use crate::terminal::input::slash_commands::SlashCommandTrigger;
+use crate::terminal::model::block::TranscriptScope;
 use crate::util::bindings::keybinding_name_to_keystroke;
 use crate::{
-    ai::agent::conversation::AIConversationId,
-    terminal::{view::ambient_agent::AmbientAgentViewModel, TerminalModel},
     BlocklistAIHistoryModel,
+    ai::agent::conversation::AIConversationId,
+    terminal::{TerminalModel, view::ambient_agent::AmbientAgentViewModel},
 };
 
 use super::{DismissalStrategy, EphemeralMessage, EphemeralMessageModel};

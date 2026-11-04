@@ -4,27 +4,27 @@ use warpui::{App, ModelHandle};
 
 use crate::ai::facts::{AIFact, AIFactObject, AIFactObjectModel, AIMemory};
 use crate::auth::AuthManager;
-use crate::server_time::ServerTimestamp;
 use crate::auth::AuthStateProvider;
-use crate::auth::UserUid;
 use crate::auth::TEST_USER_UID;
-use crate::cloud_object::model::actions::ObjectActions;
-use crate::cloud_object::model::generic_string_model::{GenericStringModel, GenericStringObjectId};
-use crate::cloud_object::model::view::EditorState;
-use crate::cloud_object::model::view::ObjectStoreViewModel;
-use crate::cloud_object::model::view::UpdateTimestamp;
-use crate::cloud_object::model::view::EDITOR_TIMEOUT_DURATION_MINUTES;
+use crate::auth::UserUid;
 use crate::cloud_object::Owner;
 use crate::cloud_object::StoredObjectMetadata;
 use crate::cloud_object::StoredObjectPermissions;
 use crate::cloud_object::StoredObjectStatuses;
 use crate::cloud_object::StoredObjectSyncStatus;
-use crate::drive::folders::FolderObjectModel;
+use crate::cloud_object::model::actions::ObjectActions;
+use crate::cloud_object::model::generic_string_model::{GenericStringModel, GenericStringObjectId};
+use crate::cloud_object::model::view::EDITOR_TIMEOUT_DURATION_MINUTES;
+use crate::cloud_object::model::view::EditorState;
+use crate::cloud_object::model::view::ObjectStoreViewModel;
+use crate::cloud_object::model::view::UpdateTimestamp;
 use crate::drive::DriveIndexVariant;
+use crate::drive::folders::FolderObjectModel;
 use crate::features::FeatureFlag;
 use crate::notebooks::NotebookObjectModel;
 use crate::server::ids::ClientId;
 use crate::server::ids::ServerId;
+use crate::server_time::ServerTimestamp;
 use crate::settings::init_and_register_user_preferences;
 use crate::system::SystemStats;
 use crate::workspaces::team::Team;
@@ -32,9 +32,9 @@ use crate::workspaces::user_profiles::UserProfiles;
 use crate::workspaces::user_workspaces::UserWorkspaces;
 use crate::workspaces::workspace::Workspace;
 
-use crate::workspaces::workspace::WorkspaceUid;
 use crate::NetworkStatus;
 use crate::UpdateManager;
+use crate::workspaces::workspace::WorkspaceUid;
 
 use super::*;
 
@@ -751,15 +751,19 @@ fn test_shared_object_in_unshared_folder() {
             assert!(!notebook.is_trashed(object_store_model));
 
             // Check that iteration APIs include the notebook where it's expected.
-            assert!(object_store_model
-                .active_cloud_objects_in_space(Space::Shared, ctx)
-                .any(|obj| obj.uid() == notebook.uid()));
-            assert!(object_store_model
-                .active_cloud_objects_in_location_without_descendents(
-                    StoredObjectLocation::Space(Space::Shared),
-                    ctx
-                )
-                .any(|obj| obj.uid() == notebook.uid()));
+            assert!(
+                object_store_model
+                    .active_cloud_objects_in_space(Space::Shared, ctx)
+                    .any(|obj| obj.uid() == notebook.uid())
+            );
+            assert!(
+                object_store_model
+                    .active_cloud_objects_in_location_without_descendents(
+                        StoredObjectLocation::Space(Space::Shared),
+                        ctx
+                    )
+                    .any(|obj| obj.uid() == notebook.uid())
+            );
             assert_eq!(
                 object_store_model
                     .trashed_cloud_objects_in_space(Space::Shared, ctx)

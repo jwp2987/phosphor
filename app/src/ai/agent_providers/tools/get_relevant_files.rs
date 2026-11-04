@@ -17,9 +17,9 @@
 //! `None`; the real work runs in `get_relevant_files_runtime::run_get_relevant_files`,
 //! invoked directly by `chat_stream::dispatch_byop_get_relevant_files_tool`.
 
-use anyhow::{anyhow, Result};
-use serde_json::{json, Value};
 use agent_proto as api;
+use anyhow::{Result, anyhow};
+use serde_json::{Value, json};
 
 use super::OpenAiTool;
 

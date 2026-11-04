@@ -6,13 +6,13 @@ use pathfinder_geometry::{rect::RectF, vector::Vector2F};
 use crate::scene::ClipBounds;
 use crate::units::{IntoPixels, Pixels};
 use crate::{
-    event::DispatchedEvent, AfterLayoutContext, AppContext, Element, EventContext, LayoutContext,
-    PaintContext, SizeConstraint,
+    AfterLayoutContext, AppContext, Element, EventContext, LayoutContext, PaintContext,
+    SizeConstraint, event::DispatchedEvent,
 };
 
 use super::{
-    new_scrollable::util::scroll_delta_for_axis, Axis, F32Ext, Fill, Point, ScrollData,
-    ScrollStateHandle, Scrollable, ScrollableElement, ScrollbarWidth, Selection, Vector2FExt,
+    Axis, F32Ext, Fill, Point, ScrollData, ScrollStateHandle, Scrollable, ScrollableElement,
+    ScrollbarWidth, Selection, Vector2FExt, new_scrollable::util::scroll_delta_for_axis,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -2,9 +2,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::settings::{AISettings, InputSettings, TerminalSpacing};
 use settings::{
-    macros::define_settings_group, RespectUserSyncSetting, SupportedPlatforms, SyncToCloud,
+    RespectUserSyncSetting, SupportedPlatforms, SyncToCloud, macros::define_settings_group,
 };
-use warpui::{units::Pixels, AppContext, SingletonEntity};
+use warpui::{AppContext, SingletonEntity, units::Pixels};
 
 #[derive(
     Clone,

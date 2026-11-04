@@ -4,7 +4,7 @@ use vec1::vec1;
 use warp_editor::content::buffer::{InitialBufferState, SelectionOffsets};
 use warp_editor::multiline::MultilineString;
 use warp_util::content_version::ContentVersion;
-use warpui::{text::point::Point, App};
+use warpui::{App, text::point::Point};
 
 use crate::{
     code::editor::line::EditorLineLocation, code::editor::view::code_text_styles,
@@ -1340,8 +1340,7 @@ fn an_editor_without_a_diff_base_has_none_to_compute_against() {
         // `reset_content` always sets the loaded text as the base, so an editor with nothing to
         // diff against is one that was only constructed (the mock helpers all reset its content).
         let editor = app.add_model(|ctx| {
-            let styles =
-                code_text_styles(Appearance::as_ref(ctx), FontSettings::as_ref(ctx), None);
+            let styles = code_text_styles(Appearance::as_ref(ctx), FontSettings::as_ref(ctx), None);
             CodeEditorModel::new(styles, None, false, None, ctx)
         });
         editor.read(&app, |editor, ctx| {

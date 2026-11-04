@@ -26,9 +26,9 @@ use crate::terminal::event::AfterBlockCompletedEvent;
 use crate::terminal::model::block::InteractivePromptCandidate;
 use crate::terminal::model::completions::ShellCompletion;
 use crate::terminal::model::session::Sessions;
-use crate::terminal::model::terminal_model::TerminalModel;
 #[cfg(unix)]
 use crate::terminal::model::terminal_model::BlockIndex;
+use crate::terminal::model::terminal_model::TerminalModel;
 use crate::terminal::model_events::ModelEventDispatcher;
 use crate::terminal::view::ExecuteCommandEvent;
 use crate::terminal::{ShellLaunchData, SizeInfo, SizeUpdate};

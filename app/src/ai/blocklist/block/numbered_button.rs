@@ -2,16 +2,16 @@ use crate::context_chips::spacing;
 use warp_core::ui::appearance::Appearance;
 use warp_core::ui::theme::color::internal_colors;
 use warpui::{
+    AppContext, Element, SingletonEntity, ViewHandle,
     elements::{
-        Border, Container, CornerRadius, CrossAxisAlignment, Expanded, Flex, FormattedTextElement,
-        MainAxisSize, MouseStateHandle, ParentElement, Radius, Shrinkable, Text,
-        DEFAULT_UI_LINE_HEIGHT_RATIO,
+        Border, Container, CornerRadius, CrossAxisAlignment, DEFAULT_UI_LINE_HEIGHT_RATIO,
+        Expanded, Flex, FormattedTextElement, MainAxisSize, MouseStateHandle, ParentElement,
+        Radius, Shrinkable, Text,
     },
     ui_components::{
         button::{Button, ButtonVariant},
         components::{UiComponent, UiComponentStyles},
     },
-    AppContext, Element, SingletonEntity, ViewHandle,
 };
 
 use super::compact_agent_input::CompactAgentInput;
@@ -132,9 +132,8 @@ pub(super) fn build_text_button_content(
     let font_size = appearance.monospace_font_size();
     let text_color = theme.foreground().into();
 
-    let label_element = match (use_markdown, markdown_parser::parse_markdown(text_label))
-    { (true, Ok(formatted_text)) => {
-        FormattedTextElement::new(
+    let label_element = match (use_markdown, markdown_parser::parse_markdown(text_label)) {
+        (true, Ok(formatted_text)) => FormattedTextElement::new(
             formatted_text,
             font_size,
             appearance.ui_font_family(),
@@ -145,17 +144,16 @@ pub(super) fn build_text_button_content(
         .with_heading_to_font_size_multipliers(appearance.heading_font_size_multipliers().clone())
         .with_line_height_ratio(DEFAULT_UI_LINE_HEIGHT_RATIO)
         .disable_mouse_interaction()
-        .finish()
-    } _ => {
-        Text::new(
+        .finish(),
+        _ => Text::new(
             text_label.to_string(),
             appearance.ui_font_family(),
             font_size,
         )
         .soft_wrap(true)
         .with_color(text_color)
-        .finish()
-    }};
+        .finish(),
+    };
 
     if !recommended {
         return label_element;

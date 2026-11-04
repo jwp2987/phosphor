@@ -6,8 +6,8 @@ use crate::{
 };
 
 use super::{
-    view::PaneView, DetachType, PaneConfiguration, PaneContent, PaneGroup, PaneId, ShareableLink,
-    ShareableLinkError,
+    DetachType, PaneConfiguration, PaneContent, PaneGroup, PaneId, ShareableLink,
+    ShareableLinkError, view::PaneView,
 };
 
 pub struct AIFactPane {

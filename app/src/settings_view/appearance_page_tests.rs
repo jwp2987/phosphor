@@ -1,10 +1,10 @@
 use regex::Regex;
 
 use super::{
-    fallback_font_dropdown_should_include_font, host_footer_color_rules_contains_duplicate,
-    is_valid_host_footer_color_rule_pattern, FontType,
+    FontType, fallback_font_dropdown_should_include_font,
+    host_footer_color_rules_contains_duplicate, is_valid_host_footer_color_rule_pattern,
 };
-use crate::settings::{MonospaceFallbackFontName, DEFAULT_MONOSPACE_FONT_NAME};
+use crate::settings::{DEFAULT_MONOSPACE_FONT_NAME, MonospaceFallbackFontName};
 use crate::workspace::tab_settings::HostFooterColorRule;
 use settings::Setting as _;
 use warp_core::ui::theme::AnsiColorIdentifier;

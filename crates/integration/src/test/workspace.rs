@@ -5,29 +5,31 @@ use std::time::Duration;
 
 use pathfinder_geometry::{
     rect::RectF,
-    vector::{vec2f, Vector2F},
+    vector::{Vector2F, vec2f},
 };
 use settings::Setting as _;
 use warp::features::FeatureFlag;
 use warp::integration_testing::clipboard::assert_clipboard_contains_string;
+use warp::integration_testing::command_palette::assert_command_palette_is_closed;
 use warp::integration_testing::terminal::util::current_shell_starter_and_version;
 use warp::integration_testing::terminal::{
     assert_command_executed_for_single_terminal_in_tab, assert_focused_editor_in_tab,
     assert_input_editor_contents, assert_long_running_block_executing_for_single_terminal_in_tab,
 };
-use warp::search::command_palette::mixer::CommandPaletteItemAction;
-use warp::terminal::shell::ShellType;
-use warp::themes::theme::AnsiColorIdentifier;
-use warp::workspace::tab_settings::{TabSettings, VerticalTabsDisplayGranularity};
-use warp::workspace::WorkspaceAction;
-use warp::integration_testing::command_palette::assert_command_palette_is_closed;
-use warp::integration_testing::view_getters::{command_palette_view, terminal_view, workspace_view};
+use warp::integration_testing::view_getters::{
+    command_palette_view, terminal_view, workspace_view,
+};
 use warp::integration_testing::window::{
     add_and_save_window, assert_num_windows_open, save_active_window_id,
 };
 use warp::integration_testing::workspace::{
     assert_focused_tab_index, assert_tab_count, press_native_modal_button,
 };
+use warp::search::command_palette::mixer::CommandPaletteItemAction;
+use warp::terminal::shell::ShellType;
+use warp::themes::theme::AnsiColorIdentifier;
+use warp::workspace::WorkspaceAction;
+use warp::workspace::tab_settings::{TabSettings, VerticalTabsDisplayGranularity};
 use warp::{
     cmd_or_ctrl_shift,
     integration_testing::{
@@ -43,15 +45,14 @@ use warp::{
     workspace::NEW_TAB_BUTTON_POSITION_ID,
 };
 use warpui::{
-    async_assert, async_assert_eq,
+    EntityId, SingletonEntity, TypedActionView, WindowId, async_assert, async_assert_eq,
     event::{Event, ModifiersState},
     integration::{AssertionCallback, AssertionOutcome, StepDataMap, TestStep},
     keymap::DescriptionContext,
     windowing::WindowManager,
-    EntityId, SingletonEntity, TypedActionView, WindowId,
 };
 
-use crate::{util::skip_if_powershell_core_2303, Builder};
+use crate::{Builder, util::skip_if_powershell_core_2303};
 
 use super::new_builder;
 

@@ -6,6 +6,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 
 use super::{
+    SettingsSection,
     about_page::AboutPageView,
     ai_page::{AISettingsPageAction, AISettingsPageView},
     appearance_page::AppearanceSettingsPageView,
@@ -18,7 +19,6 @@ use super::{
     scripting_page::ScriptingSettingsPageView,
     warp_drive_page::WarpDriveSettingsPageView,
     warpify_page::WarpifyPageView,
-    SettingsSection,
 };
 use crate::{
     appearance::Appearance,
@@ -29,13 +29,14 @@ use crate::{
 use settings::Setting;
 use warp_core::ui::{color::blend::Blend, theme::color::internal_colors};
 use warpui::{
+    Action, AppContext, SingletonEntity, ViewContext, ViewHandle,
     elements::{
-        new_scrollable::{ClippedAxisConfiguration, DualAxisConfig, SingleAxisConfig},
         Align, Border, ChildView, ClippedScrollStateHandle, ConstrainedBox, Container,
         CornerRadius, CrossAxisAlignment, Element, Empty, Expanded, Flex, Hoverable,
         MainAxisAlignment, MainAxisSize, MouseStateHandle, NewScrollable, ParentElement, Radius,
         SavePosition, ScrollTarget, ScrollToPositionMode, Shrinkable, SizeConstraintCondition,
         SizeConstraintSwitch, Text,
+        new_scrollable::{ClippedAxisConfiguration, DualAxisConfig, SingleAxisConfig},
     },
     fonts::{Properties, Weight},
     platform::Cursor,
@@ -44,7 +45,6 @@ use warpui::{
         components::{Coords, UiComponent, UiComponentStyles},
     },
     units::Pixels,
-    Action, AppContext, SingletonEntity, ViewContext, ViewHandle,
 };
 
 pub const TOGGLE_BUTTON_RIGHT_PADDING: f32 = 5.;
@@ -278,10 +278,14 @@ pub fn build_sub_header(
     let color = color_override.unwrap_or(appearance.theme().active_ui_text_color());
     Container::new(
         Align::new(
-            Text::new_inline(text_name, appearance.ui_font_family(), appearance.ui_font_heading_3())
-                .with_style(Properties::default().weight(Weight::Bold))
-                .with_color(color.into())
-                .finish(),
+            Text::new_inline(
+                text_name,
+                appearance.ui_font_family(),
+                appearance.ui_font_heading_3(),
+            )
+            .with_style(Properties::default().weight(Weight::Bold))
+            .with_color(color.into())
+            .finish(),
         )
         .left()
         .finish(),
@@ -299,9 +303,13 @@ pub fn render_sub_header_with_description(
             .with_child(build_sub_header(appearance, text_name, None).finish())
             .with_child(
                 Align::new(
-                    Text::new(description, appearance.ui_font_family(), appearance.ui_font_body())
-                        .with_color(appearance.theme().nonactive_ui_text_color().into())
-                        .finish(),
+                    Text::new(
+                        description,
+                        appearance.ui_font_family(),
+                        appearance.ui_font_body(),
+                    )
+                    .with_color(appearance.theme().nonactive_ui_text_color().into())
+                    .finish(),
                 )
                 .left()
                 .finish(),
@@ -320,10 +328,14 @@ pub fn render_sub_sub_header(
     let mut sub_sub_header = Flex::row().with_child(
         Container::new(
             Align::new(
-                Text::new_inline(text_name, appearance.ui_font_family(), appearance.ui_font_body())
-                    .with_style(Properties::default().weight(Weight::Semibold))
-                    .with_color(appearance.theme().active_ui_text_color().into())
-                    .finish(),
+                Text::new_inline(
+                    text_name,
+                    appearance.ui_font_family(),
+                    appearance.ui_font_body(),
+                )
+                .with_style(Properties::default().weight(Weight::Semibold))
+                .with_color(appearance.theme().active_ui_text_color().into())
+                .finish(),
             )
             .left()
             .finish(),
@@ -477,11 +489,7 @@ pub enum ToggleState {
 
 impl From<bool> for ToggleState {
     fn from(value: bool) -> Self {
-        if value {
-            Self::Enabled
-        } else {
-            Self::Disabled
-        }
+        if value { Self::Enabled } else { Self::Disabled }
     }
 }
 
@@ -613,8 +621,12 @@ pub fn render_body_item_label_internal<T: Clone + Action>(
             ToggleState::Disabled => appearance.theme().disabled_ui_text_color(),
         },
     };
-    let label_text = Text::new_inline(label_text, appearance.ui_font_family(), appearance.ui_font_body())
-        .with_color(label_color.into());
+    let label_text = Text::new_inline(
+        label_text,
+        appearance.ui_font_family(),
+        appearance.ui_font_body(),
+    )
+    .with_color(label_color.into());
     if let Some(icon) = label_icon {
         label.add_child(
             Container::new(
@@ -804,13 +816,17 @@ pub fn render_dropdown_item_label(
     color_override: Option<Fill>,
     appearance: &Appearance,
 ) -> Box<dyn Element> {
-    let label = Text::new(label_text, appearance.ui_font_family(), appearance.ui_font_body())
-        .with_color(
-            color_override
-                .unwrap_or(appearance.theme().active_ui_text_color())
-                .into(),
-        )
-        .finish();
+    let label = Text::new(
+        label_text,
+        appearance.ui_font_family(),
+        appearance.ui_font_body(),
+    )
+    .with_color(
+        color_override
+            .unwrap_or(appearance.theme().active_ui_text_color())
+            .into(),
+    )
+    .finish();
     let label = if let Some(secondary_text) = secondary_text {
         let warp_theme = appearance.theme();
         let secondary_text_child = appearance
@@ -918,16 +934,18 @@ pub(crate) fn render_settings_info_banner(
     .finish();
 
     let text = {
-        let mut children = vec![Container::new(
-            Text::new(
-                text.to_string(),
-                appearance.ui_font_family(),
-                appearance.ui_font_size(),
+        let mut children = vec![
+            Container::new(
+                Text::new(
+                    text.to_string(),
+                    appearance.ui_font_family(),
+                    appearance.ui_font_size(),
+                )
+                .with_color(appearance.theme().active_ui_text_color().into())
+                .finish(),
             )
-            .with_color(appearance.theme().active_ui_text_color().into())
             .finish(),
-        )
-        .finish()];
+        ];
 
         if let Some(subtext) = subtext {
             children.push(

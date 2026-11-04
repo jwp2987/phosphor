@@ -3,20 +3,20 @@ use std::{
     pin::Pin,
     rc::Rc,
     sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicUsize, Ordering},
     },
     task::{Context, Poll},
 };
 
 use async_executor::LocalExecutor;
 use futures::{
-    future::{BoxFuture, LocalBoxFuture},
     Future, FutureExt,
+    future::{BoxFuture, LocalBoxFuture},
 };
 use futures_util::future::{AbortHandle, Abortable};
 
-use crate::{platform, r#async::executor::Error};
+use crate::{r#async::executor::Error, platform};
 
 pub type ForegroundTask = async_task::Task<()>;
 

@@ -2,7 +2,7 @@ use super::{
     BindingLens, Context, CustomTag, EditableBinding, EditableBindingLens, FixedBinding, Keymap,
     Keystroke, Trigger,
 };
-use crate::{actions::StandardAction, Action, EntityId};
+use crate::{Action, EntityId, actions::StandardAction};
 use itertools::Either;
 use std::{collections::HashMap, sync::Arc};
 

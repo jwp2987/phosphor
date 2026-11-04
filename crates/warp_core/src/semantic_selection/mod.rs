@@ -2,13 +2,13 @@ use std::{collections::HashSet, ops::Range};
 
 use lazy_static::lazy_static;
 use regex::Regex;
-use settings::{macros::define_settings_group, Setting, SupportedPlatforms, SyncToCloud};
+use settings::{Setting, SupportedPlatforms, SyncToCloud, macros::define_settings_group};
 use string_offset::ByteOffset;
 use warpui::elements::SmartSelectFn;
 
 use warpui::text::{
     word_boundaries::WordBoundariesPolicy,
-    words::{is_default_word_boundary, DEFAULT_WORD_BOUNDARY_CHARS},
+    words::{DEFAULT_WORD_BOUNDARY_CHARS, is_default_word_boundary},
 };
 
 /// Upper limit for how many characters in either direction we'll search for patterns. Need to

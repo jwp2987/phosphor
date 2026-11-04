@@ -1,4 +1,4 @@
-use crate::keyboard::{PersistedTrigger, UserDefinedKeybinding, REMOVED_KEYBINDING_SERIALIZATION};
+use crate::keyboard::{PersistedTrigger, REMOVED_KEYBINDING_SERIALIZATION, UserDefinedKeybinding};
 use anyhow::{Ok, Result};
 use vec1::vec1;
 

@@ -2,7 +2,7 @@ pub mod alias;
 #[path = "legacy.rs"]
 mod imp;
 mod priority;
-use alias::{expand_command_aliases, AliasExpansionResult};
+use alias::{AliasExpansionResult, expand_command_aliases};
 pub use priority::Priority;
 
 use imp::*;
@@ -20,15 +20,15 @@ use warp_command_signatures::IconType;
 use warp_util::path::ShellDialect;
 
 use crate::parsers::simple::parse_for_completions;
-use crate::{completer::describe::OptionCaseSensitivity, parsers::classify_command};
 use crate::{completer::TopLevelCommandCaseSensitivity, meta::Span};
+use crate::{completer::describe::OptionCaseSensitivity, parsers::classify_command};
 
 use super::engine::{self, completion_location};
 use super::{
+    EngineFileType,
     coalesce::coalesce_completion_results,
     context::CompletionContext,
     matchers::{Match, MatchStrategy, MatchType},
-    EngineFileType,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]

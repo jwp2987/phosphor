@@ -9,7 +9,9 @@ use super::{SurfaceDestination, surface_unavailable_reason};
 fn agent_management_surface_is_unconditionally_unavailable() {
     warpui::App::test((), |mut app| async move {
         assert_eq!(
-            app.update(|ctx| { surface_unavailable_reason(SurfaceDestination::AgentManagement, ctx) }),
+            app.update(|ctx| {
+                surface_unavailable_reason(SurfaceDestination::AgentManagement, ctx)
+            }),
             Some("agent management is not available in this build")
         );
     });

@@ -3,10 +3,9 @@ use warp_util::path::EscapeChar;
 
 use crate::{
     parsers::{
-        classify_command,
+        ClassifiedCommand, classify_command,
         hir::{CommandCallInfo, Flags, ShellCommand},
         simple::parse_for_completions,
-        ClassifiedCommand,
     },
     signatures::testing::{create_test_command_registry, test_signature},
 };

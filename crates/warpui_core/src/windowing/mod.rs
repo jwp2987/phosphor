@@ -9,8 +9,8 @@ pub use state::{State, StateEvent, WindowManager};
 pub use system::{CreateWindowingSystemError, System};
 
 use crate::{
-    actions::StandardAction, platform::WindowContext, AppContext, AppContextRefMut, CursorInfo,
-    Event, Scene,
+    AppContext, AppContextRefMut, CursorInfo, Event, Scene, actions::StandardAction,
+    platform::WindowContext,
 };
 
 /// Result of dispatching an event through the UI framework.

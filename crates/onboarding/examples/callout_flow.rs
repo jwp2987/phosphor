@@ -1,8 +1,8 @@
 use anyhow::Result;
+use onboarding::OnboardingIntention;
 use onboarding::callout::{
     OnboardingCalloutView, OnboardingCalloutViewEvent, OnboardingKeybindings,
 };
-use onboarding::OnboardingIntention;
 use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::vec2f;
 use rust_embed::RustEmbed;
@@ -13,14 +13,14 @@ use warpui::fonts::{Cache, FamilyId, Weight};
 use warpui::platform;
 use warpui::prelude::CrossAxisAlignment;
 use warpui::{
+    AddWindowOptions, AppContext, AssetProvider, Element, Entity, SingletonEntity as _,
+    TypedActionView, View, ViewContext, ViewHandle,
     elements::{
         ChildAnchor, ChildView, ConstrainedBox, Container, Flex, MainAxisAlignment, MainAxisSize,
         OffsetPositioning, ParentElement, PositionedElementAnchor, PositionedElementOffsetBounds,
         Rect, SavePosition, Stack,
     },
     ui_components::components::UiComponent,
-    AddWindowOptions, AppContext, AssetProvider, Element, Entity, SingletonEntity as _,
-    TypedActionView, View, ViewContext, ViewHandle,
 };
 
 #[derive(Clone, Copy, RustEmbed)]

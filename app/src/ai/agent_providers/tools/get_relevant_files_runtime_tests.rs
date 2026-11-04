@@ -38,7 +38,10 @@ fn output_json_carries_intercepted_sentinel_and_fields() {
     assert_eq!(v["query"], "q");
     assert_eq!(v["status"], "ok");
     assert_eq!(v["total_candidates"], 3);
-    assert_eq!(v["relevant_files"], serde_json::json!(["src/a.rs", "src/b.rs"]));
+    assert_eq!(
+        v["relevant_files"],
+        serde_json::json!(["src/a.rs", "src/b.rs"])
+    );
     assert_eq!(v["sources"], serde_json::json!(["repo_outline"]));
 }
 
@@ -196,7 +199,10 @@ fn malformed_args_error_is_recognizable_as_invalid_arguments() {
     assert_eq!(v["_byop_intercepted"], serde_json::json!(true));
     assert_eq!(v["error"], "invalid_arguments");
     assert_eq!(v["tool"], "get_relevant_files");
-    assert!(v.get("status").is_none(), "must not also carry the old status:error shape");
+    assert!(
+        v.get("status").is_none(),
+        "must not also carry the old status:error shape"
+    );
     assert!(
         v["detail"].as_str().unwrap().contains("query"),
         "detail should surface the underlying parse error, got {v:?}"
@@ -208,7 +214,9 @@ fn malformed_args_error_is_recognizable_as_invalid_arguments() {
 /// cased. This guards against the prefix sniff in `error_to_json` over-firing.
 #[test]
 fn non_parse_error_keeps_status_error_shape() {
-    let v = error_to_json(&anyhow::anyhow!("codebase_context_enabled is disabled for this profile"));
+    let v = error_to_json(&anyhow::anyhow!(
+        "codebase_context_enabled is disabled for this profile"
+    ));
     assert_eq!(v["_byop_intercepted"], serde_json::json!(true));
     assert_eq!(v["status"], "error");
     assert!(v.get("error").is_none());

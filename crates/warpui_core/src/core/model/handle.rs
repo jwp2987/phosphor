@@ -1,5 +1,5 @@
 use std::{
-    any::{type_name, TypeId},
+    any::{TypeId, type_name},
     fmt::{self, Debug},
     hash::{Hash, Hasher},
     marker::PhantomData,
@@ -8,7 +8,7 @@ use std::{
 
 use parking_lot::Mutex;
 
-use crate::{core::RefCounts, AppContext, Entity, EntityId, EntityLocation, Handle, ModelContext};
+use crate::{AppContext, Entity, EntityId, EntityLocation, Handle, ModelContext, core::RefCounts};
 
 /// A strong reference to a particular [`Entity`] instance within the application.
 ///

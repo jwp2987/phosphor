@@ -3,6 +3,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use warp_editor::content::text::BufferBlockItem;
 use warpui::{
+    AppContext, Element, SingletonEntity, ViewContext, ViewHandle,
     elements::{
         AnchorPair, Border, Container, CornerRadius, MouseStateHandle, OffsetPositioning,
         OffsetType, PositionedElementOffsetBounds, PositioningAxis, Radius, SavePosition, Stack,
@@ -13,12 +14,11 @@ use warpui::{
         button::ButtonTooltipPosition,
         components::{UiComponent, UiComponentStyles},
     },
-    AppContext, Element, SingletonEntity, ViewContext, ViewHandle,
 };
 
 use crate::{
     appearance::Appearance,
-    cloud_object::{model::persistence::ObjectStoreModel, ObjectIdType, Space},
+    cloud_object::{ObjectIdType, Space, model::persistence::ObjectStoreModel},
     drive::ObjectTypeAndId,
     menu::{self, Menu, MenuItemFields},
     notebooks::telemetry::EmbeddedObjectInfo,
@@ -32,9 +32,9 @@ use crate::{
 };
 
 use super::{
+    BlockType,
     embedded_item::EmbeddedWorkflow,
     view::{EditorViewAction, EditorViewEvent, RichTextEditorView},
-    BlockType,
 };
 
 /// The saved position ID for the block insertion button.

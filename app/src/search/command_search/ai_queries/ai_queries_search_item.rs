@@ -1,19 +1,19 @@
 use crate::{
     ai::blocklist::AIQueryHistoryOutputStatus,
-    terminal::rich_history::{render_row_with_icon_and_paragraph, DETAILS_PARAGRAPH_SPACING},
+    terminal::rich_history::{DETAILS_PARAGRAPH_SPACING, render_row_with_icon_and_paragraph},
     util::time_format::format_approx_duration_from_now,
 };
 use chrono::{DateTime, Local};
 use ordered_float::OrderedFloat;
 use warp_core::ui::builder::MIN_FONT_SIZE;
 use warpui::{
+    AppContext, Element, SingletonEntity,
     elements::{
         Align, ConstrainedBox, Container, CrossAxisAlignment, Flex, Highlight, Icon,
         MainAxisAlignment, MainAxisSize, ParentElement, Shrinkable, Text,
     },
     fonts::{Properties, Weight},
     ui_components::components::{Coords, UiComponent, UiComponentStyles},
-    AppContext, Element, SingletonEntity,
 };
 
 use crate::ui_components::icons::Icon as UiIcon;

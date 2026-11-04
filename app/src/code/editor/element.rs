@@ -4,8 +4,8 @@ pub use gutter_button::{AddAsContextButton, CommentButton, RevertHunkButton, Sta
 use std::{
     ops::Range,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
 };
 
@@ -13,37 +13,37 @@ use parking_lot::Mutex;
 use pathfinder_color::ColorU;
 use pathfinder_geometry::{
     rect::RectF,
-    vector::{vec2f, Vector2F},
+    vector::{Vector2F, vec2f},
 };
 use warp_core::ui::{
     appearance::Appearance,
-    theme::{color::internal_colors, Fill},
+    theme::{Fill, color::internal_colors},
 };
 use warp_editor::{
     editor::EditorView,
     render::{
         element::{
-            lens_element::RichTextElementLens, RenderableBlock, RichTextElement,
-            VerticalExpansionBehavior,
+            RenderableBlock, RichTextElement, VerticalExpansionBehavior,
+            lens_element::RichTextElementLens,
         },
         model::{
-            gutter_expansion_button_types, BlockLocation, ExpansionType, LineCount, RenderState,
+            BlockLocation, ExpansionType, LineCount, RenderState, gutter_expansion_button_types,
         },
     },
 };
 use warpui::{
+    AfterLayoutContext, AppContext, ClipBounds, Element, Event, EventContext, LayoutContext,
+    ModelHandle, PaintContext, SingletonEntity, SizeConstraint,
     elements::{
-        new_scrollable::{NewScrollableElement, ScrollableAxis},
         Align, Axis, Border, ChildAnchor, ConstrainedBox, Container, CornerRadius, Empty, F32Ext,
         Flex, MainAxisSize, OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds,
         Point, Radius, ScrollData, Stack, Text, ZIndex,
+        new_scrollable::{NewScrollableElement, ScrollableAxis},
     },
     event::DispatchedEvent,
     fonts::FamilyId,
     ui_components::components::UiComponent,
     units::{IntoPixels, Pixels},
-    AfterLayoutContext, AppContext, ClipBounds, Element, Event, EventContext, LayoutContext,
-    ModelHandle, PaintContext, SingletonEntity, SizeConstraint,
 };
 
 use super::diff::{DiffHunkDisplay, DiffStatus};

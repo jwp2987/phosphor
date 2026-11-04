@@ -1,9 +1,11 @@
 use std::{collections::HashMap, path::PathBuf};
 
-use warp_core::ui::theme::color::internal_colors;
 use warp_core::ui::Icon;
+use warp_core::ui::theme::color::internal_colors;
 use warp_editor::editor::NavigationKey;
 use warpui::{
+    AppContext, Element, Entity, FocusContext, SingletonEntity, TypedActionView, View, ViewContext,
+    ViewHandle,
     elements::{
         Border, ChildView, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox, Container,
         CornerRadius, CrossAxisAlignment, Fill, Flex, Hoverable, MainAxisAlignment, MainAxisSize,
@@ -11,11 +13,9 @@ use warpui::{
         ScrollToPositionMode, ScrollbarWidth, Shrinkable, Text,
     },
     fonts::{Properties, Weight},
-    keymap::{macros::*, FixedBinding, Keystroke},
+    keymap::{FixedBinding, Keystroke, macros::*},
     platform::Cursor,
     ui_components::components::UiComponent,
-    AppContext, Element, Entity, FocusContext, SingletonEntity, TypedActionView, View, ViewContext,
-    ViewHandle,
 };
 
 use crate::{
@@ -26,9 +26,9 @@ use crate::{
     },
     modal::ModalAction,
     tab_configs::{
+        PickerStyle, TabConfig, TabConfigParam, TabConfigParamType,
         branch_picker::BranchPicker,
         repo_picker::{RepoPicker, RepoPickerEvent},
-        PickerStyle, TabConfig, TabConfigParam, TabConfigParamType,
     },
     view_components::action_button::{
         ActionButton, DisabledTheme, KeystrokeSource, NakedTheme, PrimaryTheme,

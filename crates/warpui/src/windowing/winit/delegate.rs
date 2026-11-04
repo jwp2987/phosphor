@@ -18,32 +18,31 @@ use parking_lot::Mutex;
 use serde::de::IntoDeserializer;
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 
+use crate::Effect::Event;
 use crate::platform::MicrophoneAccessState;
 use crate::platform::{
+    Cursor, RequestNotificationPermissionsCallback, SendNotificationErrorCallback,
     file_picker::{
         FilePickerCallback, FilePickerError, SaveFilePickerCallback, SaveFilePickerConfiguration,
     },
-    Cursor, RequestNotificationPermissionsCallback, SendNotificationErrorCallback,
 };
-use crate::windowing::winit::app::CustomEvent::UpdateUIApp;
 use crate::windowing::WindowManager;
-use crate::Effect::Event;
+use crate::windowing::winit::app::CustomEvent::UpdateUIApp;
 use crate::{
-    accessibility,
+    AppContext, ApplicationBundleInfo, Clipboard, DisplayId, DisplayIdx, WindowId, accessibility,
     clipboard::{self, ClipboardContent, InMemoryClipboard},
     geometry, keymap,
     modals::{AlertDialog, ModalId},
     notification, platform,
     platform::file_picker::{FilePickerConfiguration, FileType},
     windowing::{self, WindowCallbacks},
-    AppContext, ApplicationBundleInfo, Clipboard, DisplayId, DisplayIdx, WindowId,
 };
 use crate::{
     notification::{NotificationSendError, RequestPermissionsOutcome},
     platform::TerminationMode,
 };
 
-use super::{notifications, CustomEvent};
+use super::{CustomEvent, notifications};
 
 use self::global_hotkey::GlobalHotKeyHandler;
 

@@ -3,16 +3,17 @@
 use crate::pane_group::CodeSource;
 use std::sync::mpsc::SyncSender;
 
-use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 
 use warpui::{
     AppContext, EntityId, ModelHandle, SingletonEntity, ViewContext, ViewHandle, WindowId,
 };
 
 use crate::{
+    AIExecutionProfilesModel,
     ai::{
         agent::conversation::AIConversationId,
-        blocklist::{agent_view::AgentViewControllerEvent, BlocklistAIHistoryModel},
+        blocklist::{BlocklistAIHistoryModel, agent_view::AgentViewControllerEvent},
         llms::LLMPreferences,
     },
     app_state::{AmbientAgentPaneSnapshot, LeafContents, TerminalPaneSnapshot},
@@ -21,12 +22,11 @@ use crate::{
     session_management::SessionNavigationData,
     terminal::cli_agent_sessions::CLIAgentSessionsModel,
     terminal::{
-        general_settings::GeneralSettings, shared_session::SharedSessionStatus, view::Event,
-        TerminalManager, TerminalView,
+        TerminalManager, TerminalView, general_settings::GeneralSettings,
+        shared_session::SharedSessionStatus, view::Event,
     },
     view_components::ToastFlavor,
-    workspace::{sync_inputs::SyncedInputState, PaneViewLocator, WorkspaceRegistry},
-    AIExecutionProfilesModel,
+    workspace::{PaneViewLocator, WorkspaceRegistry, sync_inputs::SyncedInputState},
 };
 
 #[cfg(feature = "local_fs")]
@@ -1387,7 +1387,9 @@ fn spawn_local_child_agents(
     // Structural context inheritance: same shell and working directory as
     // the pane `/orchestrate` was typed in. See `compose_child_agent_prompt`
     // for why the prompt text itself carries nothing beyond the task.
-    let shell_type = base_terminal_view.as_ref(ctx).active_session_shell_type(ctx);
+    let shell_type = base_terminal_view
+        .as_ref(ctx)
+        .active_session_shell_type(ctx);
     let startup_directory =
         group.startup_path_for_new_session(base_pane_id.as_terminal_pane_id(), ctx);
     let parent_run_id = BlocklistAIHistoryModel::as_ref(ctx)

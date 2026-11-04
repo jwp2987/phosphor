@@ -3,8 +3,7 @@ use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warpui::{AppContext, Entity, ModelContext, SingletonEntity};
 
 use crate::ai::skills::{
-    ActiveSkillLookupError, SkillDescriptor, SkillInventoryItem, SkillManagerEvent,
-    SkillPathQuery,
+    ActiveSkillLookupError, SkillDescriptor, SkillInventoryItem, SkillManagerEvent, SkillPathQuery,
 };
 
 pub struct SkillManager {}

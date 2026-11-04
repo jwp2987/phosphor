@@ -9,7 +9,7 @@ use agent_proto as api;
 
 use crate::ai::agent::conversation::AIConversation;
 
-use super::algorithm::{prune_decisions, select, MessageRef};
+use super::algorithm::{MessageRef, prune_decisions, select};
 use super::config::CompactionConfig;
 use super::message_view::{WarpMessageView, build_tool_name_lookup, project};
 use super::overflow::ModelLimit;

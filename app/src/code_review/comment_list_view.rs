@@ -3,12 +3,12 @@ use std::borrow::Cow;
 use crate::ai::AIRequestUsageModel;
 use crate::code::editor::comment_editor::DEFAULT_COMMENT_MAX_WIDTH;
 use crate::code::editor::view::{CodeEditorEvent, CodeEditorView};
+use crate::code_review::CodeReviewTelemetryEvent;
 use crate::code_review::comment_rendering::CommentViewCard;
 use crate::code_review::comments::{
     AttachedReviewComment, AttachedReviewCommentTarget, CommentId, CommentOrigin,
     ReviewCommentBatch, ReviewCommentBatchEvent,
 };
-use crate::code_review::CodeReviewTelemetryEvent;
 use crate::menu::{Event, Menu, MenuItem, MenuItemFields};
 use crate::notebooks::editor::view::{EditorViewEvent, RichTextEditorView};
 use crate::send_telemetry_from_ctx;
@@ -30,22 +30,24 @@ use warp_core::features::FeatureFlag;
 use warp_core::ui::color::blend::Blend;
 use warp_editor::model::CoreEditorModel;
 
+use warp_core::ui::theme::Fill;
 use warp_core::ui::theme::color::internal_colors::{
     accent_overlay_2, accent_overlay_3, neutral_1, neutral_3, neutral_4, neutral_6, text_main,
     text_sub,
 };
-use warp_core::ui::theme::Fill;
 use warpui::{
+    AppContext, Entity, EntityId, ModelHandle, SingletonEntity, TypedActionView, View, ViewContext,
+    ViewHandle, WeakViewHandle,
     clipboard::ClipboardContent,
     elements::{
-        new_scrollable::{NewScrollable, ScrollableAppearance, SingleAxisConfig},
-        resizable::{resizable_state_handle, DragBarSide, Resizable, ResizableStateHandle},
         Border, ChildAnchor, ChildView, Clipped, ClippedScrollStateHandle, ConstrainedBox,
         Container, CornerRadius, CrossAxisAlignment, Dismiss, DispatchEventResult, Element, Empty,
         EventHandler, Expanded, Flex, Hoverable, MainAxisAlignment, MainAxisSize, MouseStateHandle,
         OffsetPositioning, ParentElement, PositionedElementAnchor, PositionedElementOffsetBounds,
         Radius, SavePosition, ScrollTarget, ScrollToPositionMode, ScrollbarWidth, Shrinkable,
         Stack, Text,
+        new_scrollable::{NewScrollable, ScrollableAppearance, SingleAxisConfig},
+        resizable::{DragBarSide, Resizable, ResizableStateHandle, resizable_state_handle},
     },
     platform::Cursor,
     ui_components::{
@@ -53,8 +55,6 @@ use warpui::{
         components::{UiComponent, UiComponentStyles},
     },
     units::Pixels,
-    AppContext, Entity, EntityId, ModelHandle, SingletonEntity, TypedActionView, View, ViewContext,
-    ViewHandle, WeakViewHandle,
 };
 
 /// Header text for the outdated section when there is exactly one outdated comment.
@@ -367,47 +367,52 @@ impl CommentListView {
         for comment in comments {
             let id = comment.id;
 
-            let entry = match self.comments_by_id.shift_remove(&id) { Some(mut existing) => {
-                existing
-                    .card
-                    .update_source(comment, Some(&self.repo_path), ctx);
-                existing
-            } _ => {
-                let card = CommentViewCard::new(
-                    comment,
-                    false, /* always_use_static_diff */
-                    false, /* disable_scrolling */
-                    Some(Pixels::new(DEFAULT_COMMENT_MAX_WIDTH)),
-                    Some(&self.repo_path),
-                    ctx,
-                );
-
-                ctx.subscribe_to_view(
-                    card.comment_editor(),
-                    Self::handle_comment_editor_selection_events,
-                );
-                if let Some(diff_editor) = card.static_diff_editor() {
-                    ctx.subscribe_to_view(
-                        diff_editor,
-                        Self::handle_static_diff_editor_selection_events,
+            let entry = match self.comments_by_id.shift_remove(&id) {
+                Some(mut existing) => {
+                    existing
+                        .card
+                        .update_source(comment, Some(&self.repo_path), ctx);
+                    existing
+                }
+                _ => {
+                    let card = CommentViewCard::new(
+                        comment,
+                        false, /* always_use_static_diff */
+                        false, /* disable_scrolling */
+                        Some(Pixels::new(DEFAULT_COMMENT_MAX_WIDTH)),
+                        Some(&self.repo_path),
+                        ctx,
                     );
-                }
 
-                let comment_id = id;
-                let action_button = ActionButton::new("", NakedTheme)
-                    .with_icon(Icon::DotsVertical)
-                    .with_size(ButtonSize::Small)
-                    .on_click(move |ctx| {
-                        ctx.dispatch_typed_action(CommentListAction::ShowOverflow { comment_id })
-                    });
-                let action_button = ctx.add_view(|_| action_button);
+                    ctx.subscribe_to_view(
+                        card.comment_editor(),
+                        Self::handle_comment_editor_selection_events,
+                    );
+                    if let Some(diff_editor) = card.static_diff_editor() {
+                        ctx.subscribe_to_view(
+                            diff_editor,
+                            Self::handle_static_diff_editor_selection_events,
+                        );
+                    }
 
-                CommentDisplayState {
-                    card,
-                    icon_button: action_button,
-                    mouse_state: Default::default(),
+                    let comment_id = id;
+                    let action_button = ActionButton::new("", NakedTheme)
+                        .with_icon(Icon::DotsVertical)
+                        .with_size(ButtonSize::Small)
+                        .on_click(move |ctx| {
+                            ctx.dispatch_typed_action(CommentListAction::ShowOverflow {
+                                comment_id,
+                            })
+                        });
+                    let action_button = ctx.add_view(|_| action_button);
+
+                    CommentDisplayState {
+                        card,
+                        icon_button: action_button,
+                        mouse_state: Default::default(),
+                    }
                 }
-            }};
+            };
 
             new_comments_by_id.insert(id, entry);
         }
@@ -1077,10 +1082,12 @@ impl CommentListView {
         html_url: Option<&str>,
         appearance: &Appearance,
     ) -> Vec<MenuItem<CommentListAction>> {
-        let mut items = vec![MenuItemFields::new(crate::t!("code-review-copy-text"))
-            .with_icon(Icon::Copy)
-            .with_on_select_action(CommentListAction::CopyCommentText)
-            .into_item()];
+        let mut items = vec![
+            MenuItemFields::new(crate::t!("code-review-copy-text"))
+                .with_icon(Icon::Copy)
+                .with_on_select_action(CommentListAction::CopyCommentText)
+                .into_item(),
+        ];
 
         let mut edit_item = MenuItemFields::new(crate::t!("common-edit"))
             .with_icon(Icon::Pencil)

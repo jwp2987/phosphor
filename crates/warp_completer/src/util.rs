@@ -6,10 +6,10 @@ use std::{
 };
 
 use crate::{
-    completer::{describe_given_token, CompletionContext},
-    meta::{HasSpan as _, Span, SpannedItem},
-    parsers::{simple::all_parsed_commands, LiteCommand},
     ParsedCommandsSnapshot, ParsedTokenData, ParsedTokensSnapshot,
+    completer::{CompletionContext, describe_given_token},
+    meta::{HasSpan as _, Span, SpannedItem},
+    parsers::{LiteCommand, simple::all_parsed_commands},
 };
 
 /// How many tokens are described between cooperative yield points.

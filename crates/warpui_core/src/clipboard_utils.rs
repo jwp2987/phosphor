@@ -314,7 +314,9 @@ pub fn read_images_from_clipboard(
             match process_clipboard_image(&arboard_image, filename) {
                 Some(image_data) => Some(vec![image_data]),
                 None => {
-                    log::warn!("Failed to process clipboard image: format detection and conversion both failed");
+                    log::warn!(
+                        "Failed to process clipboard image: format detection and conversion both failed"
+                    );
                     // Fall through to Windows custom-format fallback below.
                     #[cfg(target_os = "windows")]
                     {
@@ -366,7 +368,7 @@ pub fn read_images_from_clipboard(
 fn try_read_image_via_custom_windows_formats(
     filename: Option<String>,
 ) -> Option<crate::clipboard::ImageData> {
-    use clipboard_win::{raw, Clipboard, EnumFormats};
+    use clipboard_win::{Clipboard, EnumFormats, raw};
 
     // RAII OpenClipboard / CloseClipboard. arboard has already released the
     // clipboard by the time we get here (its `get().image()` call returned).

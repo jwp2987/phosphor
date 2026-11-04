@@ -1,7 +1,7 @@
 use std::io::Write;
 use std::path::PathBuf;
 
-use anyhow::{bail, Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use channel_versions::VersionInfo;
 use instant::Duration;
 use warp_core::channel::{Channel, ChannelState};
@@ -134,18 +134,12 @@ mod appimage {
             if downloaded - last_reported >= REPORT_BYTES_THRESHOLD
                 || last_reported_at.elapsed() >= REPORT_TIME_THRESHOLD
             {
-                on_progress(DownloadProgress {
-                    downloaded,
-                    total,
-                });
+                on_progress(DownloadProgress { downloaded, total });
                 last_reported = downloaded;
                 last_reported_at = Instant::now();
             }
         }
-        on_progress(DownloadProgress {
-            downloaded,
-            total,
-        });
+        on_progress(DownloadProgress { downloaded, total });
 
         // openWarp: verify the temp file's SHA-256 before overwriting the
         // original AppImage, to guard against a CDN man-in-the-middle / network
@@ -417,9 +411,7 @@ impl PackageManager {
             .output();
         let output = match output {
             Ok(o) => o,
-            Err(err) => {
-                return Err(err).context("Failed to run package manager detection script")
-            }
+            Err(err) => return Err(err).context("Failed to run package manager detection script"),
         };
 
         // exit 1 = this candidate name wasn't recognized by any PM; not an error, try the next candidate.
@@ -454,13 +446,19 @@ impl PackageManager {
                 )
             }
             Self::Yum { package_name } => {
-                format!("Please run: download the .rpm, then `sudo yum install ./{package_name}-*.rpm`")
+                format!(
+                    "Please run: download the .rpm, then `sudo yum install ./{package_name}-*.rpm`"
+                )
             }
             Self::Dnf { package_name } => {
-                format!("Please run: download the .rpm, then `sudo dnf install ./{package_name}-*.rpm`")
+                format!(
+                    "Please run: download the .rpm, then `sudo dnf install ./{package_name}-*.rpm`"
+                )
             }
             Self::Zypper { package_name } => {
-                format!("Please run: download the .rpm, then `sudo zypper install ./{package_name}-*.rpm`")
+                format!(
+                    "Please run: download the .rpm, then `sudo zypper install ./{package_name}-*.rpm`"
+                )
             }
             Self::PacmanOfficial { package_name } => {
                 format!("Please run: `sudo pacman -Syu {package_name}`")

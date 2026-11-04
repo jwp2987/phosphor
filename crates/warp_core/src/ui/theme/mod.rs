@@ -1,16 +1,17 @@
 pub mod color;
-pub mod ui_colors;
 pub mod phenomenon;
+pub mod ui_colors;
 
 use std::path::PathBuf;
 
 use crate::paths::themes_dir;
 
 use super::color::{
+    ContrastingColor, OPAQUE, Opacity,
     blend::Blend,
     coloru_with_opacity,
-    contrast::{pick_best_foreground_color, MinimumAllowedContrast},
-    hex_color, mid_coloru, ContrastingColor, Opacity, OPAQUE,
+    contrast::{MinimumAllowedContrast, pick_best_foreground_color},
+    hex_color, mid_coloru,
 };
 
 // Import relative_luminance from contrast module for brightness calculation

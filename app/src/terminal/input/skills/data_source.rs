@@ -1,5 +1,5 @@
 use ai::skills::{SkillProvider, SkillReference, SkillScope};
-use fuzzy_match::{match_indices_case_insensitive, FuzzyMatchResult};
+use fuzzy_match::{FuzzyMatchResult, match_indices_case_insensitive};
 use ordered_float::OrderedFloat;
 use warp_core::ui::icons::Icon;
 use warp_core::ui::theme::Fill;
@@ -23,7 +23,7 @@ use crate::search::{SearchItem, SyncDataSource};
 use crate::terminal::cli_agent_sessions::{CLIAgentInputState, CLIAgentSessionsModel};
 use crate::terminal::input::inline_menu::styles as inline_styles;
 use crate::terminal::input::inline_menu::{
-    default_navigation_message_items, InlineMenuAction, InlineMenuMessageArgs, InlineMenuType,
+    InlineMenuAction, InlineMenuMessageArgs, InlineMenuType, default_navigation_message_items,
 };
 use crate::terminal::input::message_bar::{Message, MessageItem};
 use crate::terminal::model::session::active_session::{ActiveSession, ActiveSessionEvent};
@@ -83,8 +83,7 @@ pub fn query_selectable_skills(
             let (name_match_result, score) = if query_text.is_empty() {
                 (None, OrderedFloat(f64::MIN))
             } else {
-                let match_result =
-                    match_indices_case_insensitive(skill.name.as_str(), query_text)?;
+                let match_result = match_indices_case_insensitive(skill.name.as_str(), query_text)?;
                 if query_text.len() > 1 && match_result.score < 10 {
                     return None;
                 }

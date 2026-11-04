@@ -68,19 +68,16 @@ fn is_phosphor_powershell_bootstrap_line(line: &str) -> bool {
     sourced.ends_with("Phosphor/pwsh.ps1")
         || sourced.ends_with("Phosphor\\pwsh.ps1")
         || (sourced.ends_with(".ps1")
-            && sourced
-                .rsplit(['/', '\\'])
-                .next()
-                .is_some_and(|name| {
-                    name.strip_prefix(".tmp").is_some_and(|rest| {
-                        rest.len() == "XXXXXX.ps1".len()
-                            && rest.ends_with(".ps1")
-                            && rest
-                                .trim_end_matches(".ps1")
-                                .chars()
-                                .all(|c| c.is_ascii_alphanumeric())
-                    })
-                }))
+            && sourced.rsplit(['/', '\\']).next().is_some_and(|name| {
+                name.strip_prefix(".tmp").is_some_and(|rest| {
+                    rest.len() == "XXXXXX.ps1".len()
+                        && rest.ends_with(".ps1")
+                        && rest
+                            .trim_end_matches(".ps1")
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric())
+                })
+            }))
 }
 
 /// We avoid using a regex here in favor of simple string manipulation for better performance in this
@@ -403,10 +400,12 @@ impl ShellType {
             }
             #[cfg(windows)]
             ShellType::PowerShell => {
-                vec![base_config_dir()
-                    .join("Microsoft/Windows/PowerShell/PSReadLine/ConsoleHost_history.txt")
-                    .display()
-                    .to_string()]
+                vec![
+                    base_config_dir()
+                        .join("Microsoft/Windows/PowerShell/PSReadLine/ConsoleHost_history.txt")
+                        .display()
+                        .to_string(),
+                ]
             }
         }
     }

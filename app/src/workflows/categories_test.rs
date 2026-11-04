@@ -1,6 +1,6 @@
+use crate::workflows::WorkflowType;
 use crate::workflows::categories::{CategoriesView, WorkflowMatchType};
 use crate::workflows::workflow::Workflow;
-use crate::workflows::WorkflowType;
 use std::sync::Arc;
 
 #[test]

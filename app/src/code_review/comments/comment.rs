@@ -1,12 +1,12 @@
 use crate::{
     ai::agent::{CurrentHead, DiffBase},
-    code::editor::{line::EditorLineLocation, EditorReviewComment},
+    code::editor::{EditorReviewComment, line::EditorLineLocation},
 };
+use agent_proto::{self as api};
 use chrono::{DateTime, Local};
 use std::fmt::{Display, Formatter};
 use std::path::PathBuf;
 use warp_editor::render::model::LineCount;
-use agent_proto::{self as api};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum CommentOrigin {

@@ -7,13 +7,13 @@ use super::snapshot::{
     large_buffer_real_rows, rows_cannot_wrap_measured, widest_ascii_advance_ems,
 };
 use super::{
-    position_id_for_cached_point, snapshot::ViewSnapshot, CursorColors, DisplayPoint,
-    DrawableSelection, EditorAction, ScrollState, SelectAction,
+    CursorColors, DisplayPoint, DrawableSelection, EditorAction, ScrollState, SelectAction,
+    position_id_for_cached_point, snapshot::ViewSnapshot,
 };
-use super::{position_id_for_cursor, LocalDrawableSelectionData, ReplicaId};
+use super::{LocalDrawableSelectionData, ReplicaId, position_id_for_cursor};
 use crate::appearance::Appearance;
 use crate::editor::accept_autosuggestion_keybinding_view::{
-    AcceptAutosuggestionKeybinding, AUTOSUGGESTION_HINT_MINIMUM_HEIGHT,
+    AUTOSUGGESTION_HINT_MINIMUM_HEIGHT, AcceptAutosuggestionKeybinding,
 };
 use crate::editor::autosuggestion_ignore_view::AutosuggestionIgnore;
 use crate::editor::position_id_for_first_cursor;
@@ -23,18 +23,18 @@ use crate::ui_components::icons::Icon;
 use itertools::Itertools;
 use pathfinder_geometry::{
     rect::RectF,
-    vector::{vec2f, Vector2F},
+    vector::{Vector2F, vec2f},
 };
 use vim::vim::{MotionType, VimMode};
 use warp_core::features::FeatureFlag;
 use warp_core::ui::appearance::DEFAULT_UI_FONT_SIZE;
 use warp_util::user_input::UserInput;
+use warpui::ViewHandle;
 use warpui::event::KeyState;
 use warpui::text_selection_utils::{
-    calculate_tick_width, create_newline_tick_rect, selection_crosses_newline_row_based,
-    NewlineTickParams,
+    NewlineTickParams, calculate_tick_width, create_newline_tick_rect,
+    selection_crosses_newline_row_based,
 };
-use warpui::ViewHandle;
 use warpui::{event::ModifiersState, text_layout::ComputeBaselinePositionArgs};
 
 use crate::editor::view::AutosuggestionLocation;
@@ -48,15 +48,15 @@ use std::{
     time::Duration,
 };
 use warpui::{
+    AppContext, SingletonEntity, TaskId,
     elements::{
         AfterLayoutContext, CornerRadius, Element, Event, EventContext, LayoutContext,
         PaintContext, Point, SizeConstraint,
     },
     event::DispatchedEvent,
     keymap::Keystroke,
-    text_layout::{self, LayoutCache, DEFAULT_TOP_BOTTOM_RATIO},
+    text_layout::{self, DEFAULT_TOP_BOTTOM_RATIO, LayoutCache},
     ui_components::components::UiComponent,
-    AppContext, SingletonEntity, TaskId,
 };
 
 use warpui::elements::{
@@ -65,7 +65,7 @@ use warpui::elements::{
 use warpui::platform::keyboard::KeyCode;
 
 use instant::Instant;
-use warpui::elements::{Radius, DEFAULT_UI_LINE_HEIGHT_RATIO};
+use warpui::elements::{DEFAULT_UI_LINE_HEIGHT_RATIO, Radius};
 
 // Similar to the terminal::model::ansi::CursorShape, this Editor Element has different cursor
 // shapes. However, this element doesn't implement all the same variants, so we don't share that
@@ -1041,7 +1041,9 @@ impl EditorElement {
                     let cursor_row_layout = match layout.frame_layouts.get_line(index) {
                         Some(layout) => layout,
                         None => {
-                            log::warn!("Attempting to access line {index}, but there are fewer lines in the layout.");
+                            log::warn!(
+                                "Attempting to access line {index}, but there are fewer lines in the layout."
+                            );
                             continue;
                         }
                     };

@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 use windows::{
-    core::BSTR,
     Win32::{
-        Foundation::{LocalFree, HLOCAL},
-        Security::Cryptography::{CryptProtectData, CryptUnprotectData, CRYPT_INTEGER_BLOB},
+        Foundation::{HLOCAL, LocalFree},
+        Security::Cryptography::{CRYPT_INTEGER_BLOB, CryptProtectData, CryptUnprotectData},
     },
+    core::BSTR,
 };
 
 use super::Error;

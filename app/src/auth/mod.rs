@@ -123,7 +123,6 @@ impl AuthToken {
             AuthToken::NoAuth => None,
         }
     }
-
 }
 
 // ---------- User metadata ----------
@@ -509,7 +508,6 @@ impl AuthView {
     pub fn variant(&self) -> AuthViewVariant {
         self.variant
     }
-
 }
 
 impl Entity for AuthView {
@@ -718,7 +716,9 @@ impl AuthManager {
     /// for reuse by settings-reset / session-cleanup call sites, etc.
     pub(crate) fn log_out(&mut self, _ctx: &mut ModelContext<Self>) {
         self.auth_state.reset_local_defaults();
-        log::debug!("AuthManager::log_out performed a local reset: switched to the local placeholder user state");
+        log::debug!(
+            "AuthManager::log_out performed a local reset: switched to the local placeholder user state"
+        );
     }
 
     /// Marks that reauthentication is needed. Localized: no-op.
@@ -769,7 +769,6 @@ impl AuthManager {
         _url_constructor: AnonymousTokenUrlBuilder,
     ) {
     }
-
 }
 
 impl Entity for AuthManager {

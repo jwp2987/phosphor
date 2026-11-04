@@ -1,8 +1,8 @@
 use std::ops::Range;
 
 use super::{GridSnapshot, GridSource};
-use crate::terminal::model::grid::grid_handler::GridHandler;
 use crate::terminal::model::grid::Dimensions as _;
+use crate::terminal::model::grid::grid_handler::GridHandler;
 use crate::test_util::mock_blockgrid;
 
 /// Every answer the renderer can ask for, from both sources, for rows `0..=total_rows`.
@@ -12,16 +12,34 @@ fn assert_snapshot_answers_like_the_grid(grid: &GridHandler, snapshot: &GridSnap
     assert_eq!(snapshot.visible_rows(), grid.visible_rows());
     assert_eq!(snapshot.total_rows(), grid.total_rows());
     assert_eq!(snapshot.history_size(), grid.history_size());
-    assert_eq!(GridSource::cursor_point(snapshot), GridSource::cursor_point(grid));
+    assert_eq!(
+        GridSource::cursor_point(snapshot),
+        GridSource::cursor_point(grid)
+    );
     assert_eq!(
         GridSource::cursor_render_point(snapshot),
         GridSource::cursor_render_point(grid)
     );
-    assert_eq!(snapshot.is_cursor_on_wide_char(), grid.is_cursor_on_wide_char());
-    assert_eq!(GridSource::max_content_row(snapshot), GridSource::max_content_row(grid));
-    assert_eq!(GridSource::marked_text(snapshot), GridSource::marked_text(grid));
-    assert_eq!(GridSource::has_secrets(snapshot), GridSource::has_secrets(grid));
-    assert_eq!(GridSource::len_displayed(snapshot), GridSource::len_displayed(grid));
+    assert_eq!(
+        snapshot.is_cursor_on_wide_char(),
+        grid.is_cursor_on_wide_char()
+    );
+    assert_eq!(
+        GridSource::max_content_row(snapshot),
+        GridSource::max_content_row(grid)
+    );
+    assert_eq!(
+        GridSource::marked_text(snapshot),
+        GridSource::marked_text(grid)
+    );
+    assert_eq!(
+        GridSource::has_secrets(snapshot),
+        GridSource::has_secrets(grid)
+    );
+    assert_eq!(
+        GridSource::len_displayed(snapshot),
+        GridSource::len_displayed(grid)
+    );
     assert_eq!(
         GridSource::filter_matches(snapshot),
         GridSource::filter_matches(grid)
@@ -92,9 +110,7 @@ fn rows_outside_the_captured_range_are_absent() {
 #[test]
 fn a_grid_with_marked_text_is_not_snapshotted() {
     let mut blockgrid = mock_blockgrid("hello");
-    blockgrid
-        .grid_handler_mut()
-        .set_marked_text("ab", &(0..2));
+    blockgrid.grid_handler_mut().set_marked_text("ab", &(0..2));
     let grid = blockgrid.grid_handler();
     assert!(GridSnapshot::capture(grid, 0..grid.total_rows()).is_none());
 }

@@ -1,6 +1,6 @@
 use std::env;
 use std::fs::{self, File};
-use std::io::{copy, IsTerminal, Write};
+use std::io::{IsTerminal, Write, copy};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -626,8 +626,9 @@ fn migrate_previous_session_in_session_chunks(log_directory: &Path, channel_file
         if let Some(rest) = name.strip_prefix(&prefix)
             && let Ok(chunk_index) = rest.parse::<usize>()
         {
-            let new_path =
-                log_directory.join(format!("{channel_file_name}.old.0.in_session.{chunk_index}"));
+            let new_path = log_directory.join(format!(
+                "{channel_file_name}.old.0.in_session.{chunk_index}"
+            ));
             let _ = fs::rename(path, new_path);
         }
     }
@@ -799,7 +800,9 @@ fn collect_log_paths_in(log_directory: &Path, logfile_name: &str) -> Result<Vec<
     );
 
     if files.is_empty() {
-        return Err(anyhow::anyhow!("No warp logs were found for {logfile_name}"));
+        return Err(anyhow::anyhow!(
+            "No warp logs were found for {logfile_name}"
+        ));
     }
 
     Ok(files)

@@ -1,11 +1,11 @@
 use crate::input_suggestions::AIQueryHistoryEntryDetails;
 use std::{borrow::Cow, ops::Sub};
 use warpui::{
+    AppContext, Element, SingletonEntity,
     elements::{
         Align, ConstrainedBox, Container, CrossAxisAlignment, Flex, Icon, ParentElement, Shrinkable,
     },
     ui_components::components::{Coords, UiComponent, UiComponentStyles},
-    AppContext, Element, SingletonEntity,
 };
 
 use super::HistoryEntry;

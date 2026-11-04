@@ -1,6 +1,6 @@
 use crate::{
-    elements::ChildView, AppContext, Element, Entity, EntityId, EntityIdMap, TypedActionView, View,
-    ViewContext, ViewHandle, WindowId,
+    AppContext, Element, Entity, EntityId, EntityIdMap, TypedActionView, View, ViewContext,
+    ViewHandle, WindowId, elements::ChildView,
 };
 
 use super::view_tree_debug_view::ViewTreeDebugView;

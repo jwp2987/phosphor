@@ -18,9 +18,9 @@ use warpui::{
 
 use apply_diff_model::ApplyDiffModel;
 use diff_application::DiffApplicationError;
-use rollback::{PreEdit, plan_rollback, rollback_message, run_rollback};
 pub(crate) use diff_application::FileReadResult;
 pub(crate) use diff_application::apply_edits;
+use rollback::{PreEdit, plan_rollback, rollback_message, run_rollback};
 pub(crate) use telemetry::MalformedFinalLineProxyEvent;
 #[allow(unused_imports)]
 pub use telemetry::{EditAcceptAndContinueClickedEvent, EditAcceptClickedEvent};

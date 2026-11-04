@@ -1,8 +1,8 @@
 use async_broadcast::{InactiveReceiver, Sender as BroadcastSender};
+use futures::StreamExt;
 use futures::channel::mpsc::{self, Receiver as MpscReceiver, Sender as MpscSender};
 use futures::channel::oneshot::{self, Receiver, Sender};
 use futures::future::{AbortHandle, Abortable};
-use futures::StreamExt;
 use instant::Instant;
 use std::collections::HashMap;
 use std::future::Future;
@@ -12,7 +12,7 @@ use std::time::Duration;
 use warpui::r#async::executor::Background;
 
 use anyhow::Result;
-use warpui::{r#async::Timer, Entity, RetryOption, SingletonEntity};
+use warpui::{Entity, RetryOption, SingletonEntity, r#async::Timer};
 
 const DEFAULT_BUFFER_SIZE: usize = 1024;
 const DEFAULT_SYNC_RETRY_STRATEGY: RetryOption = RetryOption::exponential(

@@ -5,24 +5,24 @@ use warp_core::features::FeatureFlag;
 use warpui::{AppContext, ModelContext, SingletonEntity};
 
 use crate::{
+    BlocklistAIHistoryModel,
     ai::{
         agent::{
-            conversation::AIConversationId, AIAgentAttachment, AIAgentContext, AIAgentInput,
-            CloneRepositoryURL, EntrypointType, RequestMetadata, UserQueryMode,
+            AIAgentAttachment, AIAgentContext, AIAgentInput, CloneRepositoryURL, EntrypointType,
+            RequestMetadata, UserQueryMode, conversation::AIConversationId,
         },
         blocklist::{
             agent_view::AgentViewEntryOrigin,
-            context_model::{context_and_files_from_read, PendingFile, ReadAttachment},
+            context_model::{PendingFile, ReadAttachment, context_and_files_from_read},
         },
     },
     search::slash_command_menu::static_commands::commands,
     terminal::input::slash_commands::SlashCommandTrigger,
-    BlocklistAIHistoryModel,
 };
 
 use super::{
-    add_pending_file_attachments, input_context_for_request, parse_context_attachments,
     BlocklistAIController, BlocklistAIControllerEvent, QueuedSend, RequestInput,
+    add_pending_file_attachments, input_context_for_request, parse_context_attachments,
 };
 
 /// A skill invocation waiting for its attached files to be read off the UI thread (#1314).

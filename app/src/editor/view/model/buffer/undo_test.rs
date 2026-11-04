@@ -1,14 +1,14 @@
 use super::{LocalUndoStack, UndoHistory};
 use crate::editor::{
+    PlainTextEditorViewAction,
     view::model::{
+        Anchor, LocalSelection, LocalSelections,
         buffer::{
+            ReplicaId,
             time::{Global, Lamport, LamportValue},
             undo::UNDO_REDO_BATCH_TIMER,
-            ReplicaId,
         },
-        Anchor, LocalSelection, LocalSelections,
     },
-    PlainTextEditorViewAction,
 };
 use vec1::vec1;
 

@@ -1,14 +1,14 @@
 use crate::ai::agent::SuggestedLoggingId;
-use crate::drive::items::{ai_fact::WarpDriveAIFact, WarpDriveItem};
+use crate::drive::items::{WarpDriveItem, ai_fact::WarpDriveAIFact};
 use crate::server::ids::SyncId;
 use crate::{
     cloud_object::{
+        GenericStoredObject, GenericStringObjectFormat, GenericStringObjectUniqueKey,
+        JsonObjectType,
         model::{
             generic_string_model::{GenericStringModel, GenericStringObjectId, StringModel},
             json_model::{JsonModel, JsonSerializer},
         },
-        GenericStoredObject, GenericStringObjectFormat, GenericStringObjectUniqueKey,
-        JsonObjectType,
     },
     drive::ObjectTypeAndId,
 };

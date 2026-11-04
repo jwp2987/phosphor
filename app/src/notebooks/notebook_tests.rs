@@ -5,31 +5,32 @@ use futures_util::future::BoxFuture;
 use warp_core::ui::appearance::Appearance;
 use warp_editor::editor::EditorView;
 use warpui::{
-    platform::WindowStyle, presenter::ChildView, r#async::Timer, AddSingletonModel, App,
-    AppContext, Element, Entity, SingletonEntity, TypedActionView, View, ViewHandle, WindowId,
+    AddSingletonModel, App, AppContext, Element, Entity, SingletonEntity, TypedActionView, View,
+    ViewHandle, WindowId, r#async::Timer, platform::WindowStyle, presenter::ChildView,
 };
 
 use crate::{
-    auth::{AuthManager, AuthStateProvider, UserUid, TEST_USER_EMAIL, TEST_USER_UID},
+    GlobalResourceHandles, GlobalResourceHandlesProvider, PrivacySettings,
+    auth::{AuthManager, AuthStateProvider, TEST_USER_EMAIL, TEST_USER_UID, UserUid},
     cloud_object::{
+        Owner, StoredObjectMetadata, StoredObjectPermissions,
         model::{
             actions::ObjectActions,
             persistence::ObjectStoreModel,
             view::{Editor, EditorState, ObjectStoreViewModel},
         },
         update_manager::UpdateManager,
-        Owner, StoredObjectMetadata, StoredObjectPermissions,
     },
     drive::ZapDriveObjectSettings,
     editor::{DisplayPoint, EditorAction, SelectAction},
     network::NetworkStatus,
     notebooks::{
+        NotebookLocation, NotebookObject, NotebookObjectModel,
         active_notebook_data::Mode,
         editor::{
             keys::NotebookKeybindings, notebook_command::NotebookCommand, view::EditorViewAction,
         },
         notebook::FocusedComponent,
-        NotebookLocation, NotebookObject, NotebookObjectModel,
     },
     pane_group::PaneEvent,
     search::files::model::FileSearchModel,
@@ -37,13 +38,12 @@ use crate::{
     settings_view::keybindings::KeybindingChangedNotifier,
     terminal::keys::TerminalKeybindings,
     test_util::settings::initialize_settings_for_tests,
-    workflows::{workflow::Workflow, WorkflowSource, WorkflowType},
+    workflows::{WorkflowSource, WorkflowType, workflow::Workflow},
     workspace::ActiveSession,
     workspaces::{
         user_profiles::{UserProfileWithUID, UserProfiles},
         user_workspaces::UserWorkspaces,
     },
-    GlobalResourceHandles, GlobalResourceHandlesProvider, PrivacySettings,
 };
 
 use super::{NotebookEvent, NotebookView, SAVE_PERIOD};

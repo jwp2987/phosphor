@@ -3,17 +3,17 @@ use settings::Setting as _;
 use std::collections::HashMap;
 use warp_core::features::FeatureFlag;
 use warpui::{
-    units::{IntoPixels, Pixels},
     AppContext, Entity, ModelContext, ModelHandle, SingletonEntity, WindowId,
+    units::{IntoPixels, Pixels},
 };
 
 use crate::settings::InputSettings;
 use crate::terminal::input::{
     inline_menu::{
+        InlineMenuType,
         message_bar::INLINE_MENU_BORDER_WIDTH,
         styles::{CONTENT_BORDER_WIDTH, CONTENT_VERTICAL_PADDING},
         view::QUERY_RESULT_RENDERER_STYLES,
-        InlineMenuType,
     },
     message_bar::common::standard_message_bar_height,
 };
@@ -23,8 +23,8 @@ use crate::{
     appearance::Appearance,
     settings::InputModeSettings,
     terminal::{
-        block_list_viewport::InputMode, element_size_at_last_frame,
-        input::suggestions_mode_model::InputSuggestionsModeModel, SizeInfo,
+        SizeInfo, block_list_viewport::InputMode, element_size_at_last_frame,
+        input::suggestions_mode_model::InputSuggestionsModeModel,
     },
 };
 

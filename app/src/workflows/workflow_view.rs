@@ -13,10 +13,12 @@ use syntax_highlightable::SyntaxHighlightable;
 use url::Url;
 
 use crate::{
+    FeatureFlag,
     ai::blocklist::secret_redaction::find_secrets_in_text,
     appearance::Appearance,
     auth::{AuthState, AuthStateProvider},
     cloud_object::{
+        ObjectType, Owner, Revision, Space, StoredObject, StoredObjectEventEntrypoint,
         breadcrumbs::ContainingObject,
         model::{
             persistence::{ObjectStoreEvent, ObjectStoreModel},
@@ -26,9 +28,9 @@ use crate::{
             FetchSingleObjectOption, ObjectOperation, OperationSuccessType, UpdateManager,
             UpdateManagerEvent,
         },
-        ObjectType, Owner, Revision, Space, StoredObject, StoredObjectEventEntrypoint,
     },
     drive::{
+        DriveObjectType, ObjectTypeAndId, ZapDriveObjectSettings,
         cloud_object_styling::warp_drive_icon_color,
         drive_helpers::has_feature_gated_anonymous_user_reached_workflow_limit,
         items::WarpDriveItemId,
@@ -40,7 +42,6 @@ use crate::{
             workflow_arg_selector::{WorkflowArgSelector, WorkflowArgSelectorEvent},
             workflow_arg_type_helpers::{self, ArgumentEditorRowIndex},
         },
-        DriveObjectType, ObjectTypeAndId, ZapDriveObjectSettings,
     },
     editor::{
         EditorOptions, EditorView, EnterAction, EnterSettings, Event as EditorEvent,
@@ -50,7 +51,7 @@ use crate::{
     menu::{MenuItem, MenuItemFields},
     network::NetworkStatus,
     pane_group::{
-        focus_state::PaneFocusHandle, pane::view, BackingView, PaneConfiguration, PaneEvent,
+        BackingView, PaneConfiguration, PaneEvent, focus_state::PaneFocusHandle, pane::view,
     },
     send_telemetry_from_ctx,
     server::{
@@ -58,29 +59,30 @@ use crate::{
         telemetry::{ObjectTelemetryMetadata, TelemetryEvent, TelemetryObjectType},
     },
     settings::{
-        app_installation_detection::{UserAppInstallDetectionSettings, UserAppInstallStatus},
         AISettings,
+        app_installation_detection::{UserAppInstallDetectionSettings, UserAppInstallStatus},
     },
     terminal::safe_mode_settings::get_secret_obfuscation_mode,
     ui_components::{
-        breadcrumb::{render_breadcrumbs, BreadcrumbState},
+        breadcrumb::{BreadcrumbState, render_breadcrumbs},
         buttons::{accent_icon_button, icon_button},
-        dialog::{dialog_styles, Dialog},
+        dialog::{Dialog, dialog_styles},
         icons::Icon,
     },
     util::bindings::CustomAction,
     view_components::{DismissibleToast, ToastType},
     workflows::{
-        workflow::{Argument, Workflow},
         WorkflowObject,
+        workflow::{Argument, Workflow},
     },
     workspace::ToastStack,
-    FeatureFlag,
 };
 
 use warp_core::{context_flag::ContextFlag, settings::Setting, ui::theme::AnsiColorIdentifier};
 use warp_editor::editor::NavigationKey;
 use warpui::{
+    AppContext, Element, Entity, FocusContext, ModelHandle, SingletonEntity, TypedActionView, View,
+    ViewContext, ViewHandle, WindowId,
     clipboard::ClipboardContent,
     elements::{
         Align, Border, ChildAnchor, ChildView, Clipped, ClippedScrollStateHandle,
@@ -97,13 +99,11 @@ use warpui::{
         button::{Button, ButtonVariant, TextAndIcon, TextAndIconAlignment},
         components::{Coords, UiComponent, UiComponentStyles},
     },
-    AppContext, Element, Entity, FocusContext, ModelHandle, SingletonEntity, TypedActionView, View,
-    ViewContext, ViewHandle, WindowId,
 };
 
 use super::{
-    aliases::WorkflowAliases, command_parser::WorkflowCommandDisplayData, WorkflowObjectModel,
-    WorkflowSource, WorkflowType, WorkflowViewMode,
+    WorkflowObjectModel, WorkflowSource, WorkflowType, WorkflowViewMode, aliases::WorkflowAliases,
+    command_parser::WorkflowCommandDisplayData,
 };
 
 mod alias_argument_selector;

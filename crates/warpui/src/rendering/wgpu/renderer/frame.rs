@@ -1,8 +1,8 @@
-use crate::rendering::wgpu::renderer::{glyph, image, rect, WGPUContext};
+use crate::rendering::wgpu::renderer::{WGPUContext, glyph, image, rect};
 
+use crate::Scene;
 use crate::rendering::wgpu::Resources;
 use crate::scene::Layer;
-use crate::Scene;
 
 use pathfinder_color::ColorU;
 use pathfinder_geometry::rect::RectF;

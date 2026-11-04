@@ -59,10 +59,12 @@ async fn loopback_callback_accepts_matching_state() {
         }
         CallbackResult::Error { error } => panic!("unexpected callback error: {error:?}"),
     }
-    assert!(callback
-        .await
-        .expect("callback task should join")
-        .contains("200 OK"));
+    assert!(
+        callback
+            .await
+            .expect("callback task should join")
+            .contains("200 OK")
+    );
 }
 
 /// CSRF protection: a callback whose `state` does not match the one generated for this
@@ -82,10 +84,12 @@ async fn loopback_callback_rejects_mismatched_state() {
         .await
         .expect_err("mismatched callback should fail");
     assert!(error.to_string().contains("state did not match"));
-    assert!(callback
-        .await
-        .expect("callback task should join")
-        .contains("400 Bad Request"));
+    assert!(
+        callback
+            .await
+            .expect("callback task should join")
+            .contains("400 Bad Request")
+    );
 }
 
 /// Builds a minimal `OAuthTokenResponse` for tests, optionally with a refresh token.

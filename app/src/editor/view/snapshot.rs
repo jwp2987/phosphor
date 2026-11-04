@@ -12,7 +12,7 @@ use crate::editor::soft_wrap::FrameLayouts;
 use crate::terminal::grid_size_util::grid_compute_baseline_position_fn;
 
 use parking_lot::Mutex;
-use pathfinder_geometry::vector::{vec2f, Vector2F};
+use pathfinder_geometry::vector::{Vector2F, vec2f};
 
 use anyhow::Result;
 use core::f32;
@@ -31,17 +31,17 @@ use warpui::text::point::Point;
 
 use string_offset::ByteOffset;
 
+use warpui::EntityId;
 use warpui::fonts::{FamilyId, Properties};
 use warpui::platform::LineStyle;
 use warpui::text_layout::{
-    default_compute_baseline_position_fn, ClipConfig, ComputeBaselinePositionFn, StyleAndFont,
-    TextAlignment, TextStyle, DEFAULT_TOP_BOTTOM_RATIO,
+    ClipConfig, ComputeBaselinePositionFn, DEFAULT_TOP_BOTTOM_RATIO, StyleAndFont, TextAlignment,
+    TextStyle, default_compute_baseline_position_fn,
 };
-use warpui::EntityId;
 use warpui::{
+    AppContext, ModelHandle,
     fonts::Cache as FontCache,
     text_layout::{self, LayoutCache},
-    AppContext, ModelHandle,
 };
 
 /// Ratio to calculate font size of cursor avatar.
@@ -1026,8 +1026,8 @@ pub(super) fn bounded_ghost_text(text: &str) -> Cow<'_, str> {
 /// Logs that a windowed layout fell back, at most once per [`WINDOWED_LAYOUT_WARN_INTERVAL`]: if
 /// the proof fails persistently this runs every frame.
 fn warn_windowed_layout_wrapped() {
-    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::OnceLock;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, Instant};
     const WINDOWED_LAYOUT_WARN_INTERVAL: Duration = Duration::from_secs(30);
     static START: OnceLock<Instant> = OnceLock::new();

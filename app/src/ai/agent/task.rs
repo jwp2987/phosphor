@@ -8,6 +8,10 @@ use std::{
     sync::Arc,
 };
 
+use agent_proto::{
+    self as api,
+    message::{Message, tool_call::subagent::Metadata},
+};
 use ai::skills::SkillPathOrigin;
 use chrono::DateTime;
 use field_mask::{FieldMaskError, FieldMaskOperation};
@@ -16,31 +20,27 @@ use itertools::Itertools;
 use prost_types::FieldMask;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use agent_proto::{
-    self as api,
-    message::{tool_call::subagent::Metadata, Message},
-};
 
 use crate::{
+    AIAgentTodoList,
     ai::{
         agent::comment::CodeReview,
         document::ai_document_model::{AIDocumentId, AIDocumentVersion},
     },
     server::datetime_ext::DateTimeExt,
     terminal::model::block::BlockId,
-    AIAgentTodoList,
 };
 
 use super::{
-    api::{
-        convert_conversation::convert_tool_call_result_to_input, user_inputs_from_messages,
-        ConversionParams, ConvertAPIMessageToClientOutputMessage,
-    },
-    conversation::{context_in_exchanges, update_todo_list_from_todo_op},
-    util::{parse_markdown_into_text_and_code_sections, IncrementalTextSections},
     AIAgentContext, AIAgentExchange, AIAgentExchangeId, AIAgentOutput, AIAgentOutputMessage,
     AIAgentOutputMessageType, AIAgentOutputStatus, AIAgentTextSection, MaybeAIAgentOutputMessage,
     MessageId, MessageToAIAgentOutputMessageError, Shared,
+    api::{
+        ConversionParams, ConvertAPIMessageToClientOutputMessage,
+        convert_conversation::convert_tool_call_result_to_input, user_inputs_from_messages,
+    },
+    conversation::{context_in_exchanges, update_todo_list_from_todo_op},
+    util::{IncrementalTextSections, parse_markdown_into_text_and_code_sections},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

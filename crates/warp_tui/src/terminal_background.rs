@@ -21,7 +21,6 @@
 // re-pin conflict for no gain. Drop this attribute once the module is fully wired
 // and check what is genuinely dead then.
 
-
 use std::io::IsTerminal;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

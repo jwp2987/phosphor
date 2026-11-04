@@ -12,7 +12,9 @@ use crate::ai::agent::api::ServerConversationToken;
 use crate::ai::agent::conversation::{
     AIConversation, AIConversationId, ServerAIConversationMetadata,
 };
-use crate::persistence::model::{AgentConversation, AgentConversationData, AgentConversationSummary};
+use crate::persistence::model::{
+    AgentConversation, AgentConversationData, AgentConversationSummary,
+};
 use crate::terminal::model::block::SerializedBlock;
 
 #[cfg(feature = "local_fs")]
@@ -607,20 +609,23 @@ impl BlocklistAIHistoryModel {
                     .and_then(|data| data.server_conversation_token)
                     .map(ServerConversationToken::new);
 
-                Some((conversation_id, AIConversationMetadata {
-                    id: conversation_id,
-                    title,
-                    initial_query,
-                    last_modified_at: agent_conv.conversation.last_modified_at,
-                    initial_working_directory,
-                    credits_spent,
-                    server_conversation_token,
-                    has_local_data: true,
-                    artifacts,
-                    ambient_agent_task_id: None,
-                    parent_conversation_id,
-                    parent_agent_id,
-                }))
+                Some((
+                    conversation_id,
+                    AIConversationMetadata {
+                        id: conversation_id,
+                        title,
+                        initial_query,
+                        last_modified_at: agent_conv.conversation.last_modified_at,
+                        initial_working_directory,
+                        credits_spent,
+                        server_conversation_token,
+                        has_local_data: true,
+                        artifacts,
+                        ambient_agent_task_id: None,
+                        parent_conversation_id,
+                        parent_agent_id,
+                    },
+                ))
             })
             .collect();
 

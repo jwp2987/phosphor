@@ -1,7 +1,7 @@
 use std::fmt::Display;
 
-use warp_core::errors::{ReportErrorLogMode, report_error};
 use agent_proto as api;
+use warp_core::errors::{ReportErrorLogMode, report_error};
 
 /// A citation listed in an AI response.
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]

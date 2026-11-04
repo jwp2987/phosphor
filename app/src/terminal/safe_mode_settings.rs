@@ -1,5 +1,5 @@
 use settings::{
-    macros::define_settings_group, RespectUserSyncSetting, Setting, SupportedPlatforms, SyncToCloud,
+    RespectUserSyncSetting, Setting, SupportedPlatforms, SyncToCloud, macros::define_settings_group,
 };
 use warpui::{AppContext, SingletonEntity};
 

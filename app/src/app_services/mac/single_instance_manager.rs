@@ -77,21 +77,28 @@ mod tests;
 fn lock_file_path() -> std::io::Result<std::path::PathBuf> {
     let dir = warp_core::paths::state_dir();
     std::fs::create_dir_all(&dir)?;
-    Ok(dir.join(format!("single-instance-{:?}.lock", ChannelState::channel())))
+    Ok(dir.join(format!(
+        "single-instance-{:?}.lock",
+        ChannelState::channel()
+    )))
 }
 
 fn try_acquire_lock() -> LockState {
     let path = match lock_file_path() {
         Ok(path) => path,
         Err(err) => {
-            log::error!("Failed to resolve Phosphor single-instance lock path, allowing launch anyway: {err:#}");
+            log::error!(
+                "Failed to resolve Phosphor single-instance lock path, allowing launch anyway: {err:#}"
+            );
             return LockState::ErrorAssumeSole;
         }
     };
     let file = match OpenOptions::new().create(true).write(true).open(&path) {
         Ok(file) => file,
         Err(err) => {
-            log::error!("Failed to open Phosphor single-instance lock file, allowing launch anyway: {err:#}");
+            log::error!(
+                "Failed to open Phosphor single-instance lock file, allowing launch anyway: {err:#}"
+            );
             return LockState::ErrorAssumeSole;
         }
     };
@@ -107,7 +114,9 @@ fn try_acquire_lock() -> LockState {
             // Another instance already holds the lock -- the expected, common case.
             LockState::AnotherInstanceRunning
         } else {
-            log::error!("Failed to acquire Phosphor single-instance lock, allowing launch anyway: {err:#}");
+            log::error!(
+                "Failed to acquire Phosphor single-instance lock, allowing launch anyway: {err:#}"
+            );
             LockState::ErrorAssumeSole
         }
     }

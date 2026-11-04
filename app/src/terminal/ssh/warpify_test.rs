@@ -1,8 +1,8 @@
-use warpui::{assets::asset_cache::AssetSource, App};
+use warpui::{App, assets::asset_cache::AssetSource};
 
 use crate::{
-    terminal::ssh::util::convert_script_to_one_line,
-    test_util::settings::initialize_settings_for_tests, Assets,
+    Assets, terminal::ssh::util::convert_script_to_one_line,
+    test_util::settings::initialize_settings_for_tests,
 };
 
 use super::*;

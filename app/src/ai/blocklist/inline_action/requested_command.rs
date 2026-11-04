@@ -1,3 +1,4 @@
+use instant::Instant;
 use lazy_static::lazy_static;
 use parking_lot::FairMutex;
 use pathfinder_color::ColorU;
@@ -10,21 +11,22 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
-use instant::Instant;
 use uuid::Uuid;
+use warp_core::ui::Icon;
 use warp_core::ui::appearance::Appearance;
 use warp_core::ui::theme::WarpTheme;
-use warp_core::ui::Icon;
 use warp_editor::render::element::VerticalExpansionBehavior;
+use warpui::r#async::{SpawnedFutureHandle, Timer};
 use warpui::clipboard::ClipboardContent;
 use warpui::elements::{
     ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox, Fill, Highlight, ScrollbarWidth,
 };
 use warpui::fonts::{Properties, Weight};
-use warpui::r#async::{SpawnedFutureHandle, Timer};
 use warpui::text_layout::TextStyle;
 use warpui::ui_components::components::UiComponent as _;
 use warpui::{
+    AppContext, Element, Entity, ModelHandle, SingletonEntity, TypedActionView, UpdateView, View,
+    ViewContext, ViewHandle,
     elements::{
         Align, Border, ChildView, Clipped, Container, CornerRadius, CrossAxisAlignment, Expanded,
         Flex, MainAxisSize, MouseStateHandle, OffsetPositioning, ParentElement, Radius,
@@ -32,8 +34,6 @@ use warpui::{
     },
     id,
     keymap::{Context, ContextPredicate, EditableBinding, FixedBinding, Keystroke},
-    AppContext, Element, Entity, ModelHandle, SingletonEntity, TypedActionView, UpdateView, View,
-    ViewContext, ViewHandle,
 };
 
 use crate::ai::agent::{AIAgentActionResult, AIAgentActionType};
@@ -42,7 +42,7 @@ use warpui::{EntityId, EventContext};
 
 use crate::ai::agent::CancellationReason;
 use crate::ai::agent::RequestCommandOutputResult;
-use crate::ai::agent::{icons, AIAgentActionResultType};
+use crate::ai::agent::{AIAgentActionResultType, icons};
 use crate::ai::blocklist::block::cli_controller::{
     LongRunningCommandControlState, UserTakeOverReason,
 };
@@ -56,31 +56,36 @@ use crate::ai::mcp::TemplatableMCPServerManager;
 use crate::ai::{
     agent::{AIAgentActionId, AIAgentCitation, AIAgentOutputMessageType, CallMCPToolResult},
     blocklist::{
+        BlocklistAIActionModel,
         action_model::AIActionStatus,
         block::{
-            view_impl::{
-                render_autonomy_checkbox_setting_speedbump_footer, render_citation,
-                render_citation_chips, CONTENT_HORIZONTAL_PADDING, CONTENT_ITEM_VERTICAL_MARGIN,
-            },
             AIBlockAction, AutonomySettingSpeedbump,
+            view_impl::{
+                CONTENT_HORIZONTAL_PADDING, CONTENT_ITEM_VERTICAL_MARGIN,
+                render_autonomy_checkbox_setting_speedbump_footer, render_citation,
+                render_citation_chips,
+            },
         },
         inline_action::{
             inline_action_header::INLINE_ACTION_HORIZONTAL_PADDING,
             inline_action_header::{ExpandedConfig, HeaderConfig, InteractionMode},
         },
-        BlocklistAIActionModel,
     },
 };
 use crate::code::editor::view::{CodeEditorEvent, CodeEditorRenderOptions, CodeEditorView};
 use crate::editor::InteractionState;
 use crate::menu::{Event as MenuEvent, Menu, MenuItemFields, MenuVariant};
+use crate::terminal::TerminalModel;
 use crate::terminal::block_list_viewport::InputMode;
 use crate::terminal::model::block::Block;
-use crate::terminal::TerminalModel;
+use crate::ui_components::json_tree::{
+    CopyJsonFn, JsonTreeColors, JsonTreeState, PathSegment, ToggleFn, ToggleStringFn,
+    render_json_tree,
+};
 use crate::util::bindings::keybinding_name_to_keystroke;
 use crate::view_components::action_button::{ButtonSize, KeystrokeSource, NakedTheme};
 use crate::view_components::compactible_action_button::{
-    CompactibleActionButton, RenderCompactibleActionButton, MEDIUM_SIZE_SWITCH_THRESHOLD,
+    CompactibleActionButton, MEDIUM_SIZE_SWITCH_THRESHOLD, RenderCompactibleActionButton,
     SMALL_SIZE_SWITCH_THRESHOLD, XLARGE_SIZE_SWITCH_THRESHOLD,
 };
 use crate::view_components::compactible_split_action_button::CompactibleSplitActionButton;
@@ -88,10 +93,6 @@ use crate::{
     cmd_or_ctrl_shift,
     settings::{InputModeSettings, SelectionSettings},
     ui_components::blended_colors,
-};
-use crate::ui_components::json_tree::{
-    CopyJsonFn, JsonTreeColors, JsonTreeState, PathSegment, ToggleFn, ToggleStringFn,
-    render_json_tree,
 };
 
 use super::command_approval_preview::{self, ApprovalPreviewCache, ZERO_WIDTH_BREAK};
@@ -325,9 +326,9 @@ pub(crate) fn reject_disposition(
     match status {
         Some(AIActionStatus::RunningAsync) => RejectDisposition::InterruptRunningCommand,
         Some(AIActionStatus::Finished(_)) | None => RejectDisposition::Ignore,
-        Some(
-            AIActionStatus::Blocked | AIActionStatus::Queued | AIActionStatus::Preprocessing,
-        ) => RejectDisposition::Reject,
+        Some(AIActionStatus::Blocked | AIActionStatus::Queued | AIActionStatus::Preprocessing) => {
+            RejectDisposition::Reject
+        }
     }
 }
 
@@ -492,7 +493,9 @@ pub enum RequestedCommandViewEvent {
     /// Emitted for a Reject on a running command, and for the Windows code-editor ctrl-c
     /// fallback whenever no decision is pending. Issue #850.
     InterruptRunningCommand,
-    UpdatedExpansionState { is_expanded: bool },
+    UpdatedExpansionState {
+        is_expanded: bool,
+    },
     TextSelected,
     CopiedEmptyText,
     EditorFocused,
@@ -1454,7 +1457,9 @@ impl RequestedCommandView {
             let Some(mouse_state_handle) =
                 self.citation_state_handles.get(copied_citation).cloned()
             else {
-                log::warn!("Tried to retrieve mouse state handle for citation, but no mouse state handle exists.");
+                log::warn!(
+                    "Tried to retrieve mouse state handle for citation, but no mouse state handle exists."
+                );
                 return None;
             };
             render_citation(

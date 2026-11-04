@@ -5,7 +5,7 @@ use std::io::Write;
 use anyhow::{Context, Result};
 use serde::Serialize;
 use warp_cli::agent::OutputFormat;
-use warpui::{platform::TerminationMode, AppContext, SingletonEntity};
+use warpui::{AppContext, SingletonEntity, platform::TerminationMode};
 
 /// What `whoami` reports.
 ///

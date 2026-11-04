@@ -5,12 +5,12 @@ use crate::{
 };
 use regex::Regex;
 use url::Url;
-use warp_util::path::{is_posix_portable_pathname, ShellFamily};
+use warp_util::path::{ShellFamily, is_posix_portable_pathname};
 use warpui::AppContext;
 
 use crate::root_view::SubshellCommandArg;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 
 /// String of hex digits meant to represent a Docker container ID.
 #[derive(Debug)]

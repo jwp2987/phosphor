@@ -1,16 +1,16 @@
 use warpui::{
+    AppContext, Element, SizeConstraint,
     elements::{Align, CacheOption, CornerRadius, Empty, Image, Radius, Text},
     geometry::vector::vec2f,
-    AppContext, Element, SizeConstraint,
 };
 
 use crate::{
     editor::RunnableCommandModel,
     extract_block,
     render::{
-        element::paint::CursorData,
-        model::{viewport::ViewportItem, BlockItem, RenderState},
         BLOCK_FOOTER_HEIGHT,
+        element::paint::CursorData,
+        model::{BlockItem, RenderState, viewport::ViewportItem},
     },
 };
 

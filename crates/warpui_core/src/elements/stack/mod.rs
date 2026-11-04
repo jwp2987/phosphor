@@ -41,7 +41,7 @@ pub use save_position::*;
 
 use crate::{
     event::DispatchedEvent,
-    text::{word_boundaries::WordBoundariesPolicy, IsRect, SelectionDirection, SelectionType},
+    text::{IsRect, SelectionDirection, SelectionType, word_boundaries::WordBoundariesPolicy},
 };
 
 use super::{
@@ -50,7 +50,7 @@ use super::{
 };
 use crate::ClipBounds;
 use log::warn;
-use pathfinder_geometry::vector::{vec2f, Vector2F};
+use pathfinder_geometry::vector::{Vector2F, vec2f};
 
 #[derive(Clone, Copy, Default)]
 pub enum EventDispatchMode {

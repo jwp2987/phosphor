@@ -2,7 +2,7 @@ use float_cmp::assert_approx_eq;
 
 use super::*;
 use crate::rendering;
-use crate::{fonts::Weight, App};
+use crate::{App, fonts::Weight};
 
 #[test]
 fn test_empty_line() {

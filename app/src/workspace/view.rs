@@ -42,6 +42,7 @@ use crate::ai::blocklist::suggested_rule_modal::{
 };
 use crate::ai::conversation_utils;
 use crate::ai::document::ai_document_model::{AIDocumentId, AIDocumentModel};
+use crate::ai::execution_context::WarpAiExecutionContext;
 use crate::ai::llms::LLMPreferences;
 use crate::ai::persisted_workspace::PersistedWorkspace;
 use crate::ai::{
@@ -55,7 +56,6 @@ use crate::ai::{
     },
     facts::{AIFactManager, AIFactView, AIFactViewEvent, view::AIFactPage},
 };
-use crate::ai::execution_context::WarpAiExecutionContext;
 use crate::app_state::{
     LeafContents, LeafSnapshot, LeftPanelDisplayedTab, LeftPanelSnapshot, NotebookPaneSnapshot,
     PaneNodeSnapshot, PaneUuid, RightPanelSnapshot, SettingsPaneSnapshot, TabGroupSnapshot,
@@ -323,11 +323,7 @@ use crate::workspace::toast_stack::{
     ToastStack as WorkspaceToastStack, ToastStackEvent as WorkspaceToastStackEvent,
 };
 use crate::{GlobalResourceHandles, send_telemetry_from_ctx};
-use crate::{
-    ai::ask_ai::AskAIType,
-    settings,
-    ui_components::blended_colors,
-};
+use crate::{ai::ask_ai::AskAIType, settings, ui_components::blended_colors};
 
 use futures::Future;
 use itertools::Itertools;
@@ -386,11 +382,11 @@ use super::delete_conversation_confirmation_dialog::{
     DeleteConversationConfirmationDialog, DeleteConversationConfirmationEvent,
     DeleteConversationDialogSource,
 };
-use super::native_modal::{NativeModal, NativeModalEvent};
-use super::one_time_modal_model::OneTimeModalEvent;
 use super::multiline_submit_confirmation_dialog::{
     MultilineSubmitConfirmationDialog, MultilineSubmitConfirmationEvent,
 };
+use super::native_modal::{NativeModal, NativeModalEvent};
+use super::one_time_modal_model::OneTimeModalEvent;
 use super::rewind_confirmation_dialog::{
     RewindConfirmationDialog, RewindConfirmationEvent, RewindDialogSource,
 };
@@ -468,8 +464,8 @@ use warpui::{
     elements::{
         Align, Border, ChildAnchor, ChildView, Clipped, ConstrainedBox, Container, CornerRadius,
         CrossAxisAlignment, Dismiss, DragAxis, Draggable, Element, Empty, Expanded,
-        Fill as ElementFill, Flex, Highlight, Hoverable, MainAxisAlignment,
-        MainAxisSize, OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds,
+        Fill as ElementFill, Flex, Highlight, Hoverable, MainAxisAlignment, MainAxisSize,
+        OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds,
         PositionedElementAnchor, PositionedElementOffsetBounds, Radius, SavePosition, Shrinkable,
         SizeConstraintCondition, SizeConstraintSwitch, Stack, Text,
     },
@@ -3511,7 +3507,6 @@ impl Workspace {
         event: &BlocklistAIHistoryEvent,
         ctx: &mut ViewContext<Self>,
     ) {
-
         if matches!(
             event,
             BlocklistAIHistoryEvent::UpdatedConversationStatus { .. }
@@ -7962,8 +7957,7 @@ impl Workspace {
         ctx: &mut ViewContext<Self>,
     ) {
         let mut local_paths = Vec::new();
-        if let Some(crate::code::buffer_location::BufferLocation::Local(path)) = source.location()
-        {
+        if let Some(crate::code::buffer_location::BufferLocation::Local(path)) = source.location() {
             local_paths.push(path);
         }
         local_paths.extend(additional_paths.iter().cloned());
@@ -10908,9 +10902,7 @@ impl Workspace {
             .map(|terminal_view| terminal_view.as_ref(ctx).input().clone());
         if let Some(input) = input {
             input.update(ctx, |input, ctx| match event {
-                MultilineSubmitConfirmationEvent::Confirm => {
-                    input.confirm_multiline_submit(ctx)
-                }
+                MultilineSubmitConfirmationEvent::Confirm => input.confirm_multiline_submit(ctx),
                 MultilineSubmitConfirmationEvent::Cancel => input.cancel_multiline_submit(ctx),
             });
         }
@@ -19680,12 +19672,7 @@ impl Workspace {
             tab_bar.add_child(button);
         }
 
-        self.add_configurable_right_side_tab_bar_controls(
-            &mut tab_bar,
-            &config,
-            appearance,
-            ctx,
-        );
+        self.add_configurable_right_side_tab_bar_controls(&mut tab_bar, &config, appearance, ctx);
 
         let left_padding = self.compute_tab_bar_left_padding(ctx);
 
@@ -21837,7 +21824,6 @@ impl Workspace {
             left_panel.update_available_views(views, ctx);
         });
     }
-
 }
 
 impl Entity for Workspace {

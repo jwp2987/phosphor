@@ -1174,8 +1174,8 @@ fn test_slash_command_spelling_versus_path() {
 /// unambiguous-syntax rule before any model sees it.
 #[test]
 fn test_gate_bounds_what_the_inner_classifier_sees() {
-    use std::sync::Mutex;
     use crate::util::MAX_MODEL_INPUT_BYTES;
+    use std::sync::Mutex;
 
     struct Recording(Mutex<Vec<usize>>);
 
@@ -1221,7 +1221,10 @@ fn test_gate_bounds_what_the_inner_classifier_sees() {
         {
             let seen = gated.inner.0.lock().unwrap();
             assert_eq!(seen.len(), 2);
-            assert!(seen.iter().all(|&len| len <= MAX_MODEL_INPUT_BYTES), "{seen:?}");
+            assert!(
+                seen.iter().all(|&len| len <= MAX_MODEL_INPUT_BYTES),
+                "{seen:?}"
+            );
         }
         // A shell line over the cap never reaches the model at all.
         let shell = format!("echo {}; echo END", "x ".repeat(3000));

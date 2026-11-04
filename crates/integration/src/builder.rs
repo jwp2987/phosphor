@@ -1,4 +1,4 @@
-use crate::util::{set_zsh_histfile_location, write_rc_files_for_test, ShellRcType};
+use crate::util::{ShellRcType, set_zsh_histfile_location, write_rc_files_for_test};
 use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
@@ -7,8 +7,8 @@ use std::time::Duration;
 use warpui::integration::{self, PersistedDataMap, TestStep};
 use warpui::integration::{TestDriver, TestSetupUtils};
 use warpui::{App, WindowId};
-use warpui_extras::user_preferences::file_backed::FileBackedUserPreferences;
 use warpui_extras::user_preferences::UserPreferences;
+use warpui_extras::user_preferences::file_backed::FileBackedUserPreferences;
 
 // We have logic in our build script to pass the path of the cargo target
 // tmp directory to our app. This needs to be done as a build script because

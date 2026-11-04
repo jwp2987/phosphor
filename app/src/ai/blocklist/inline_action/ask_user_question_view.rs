@@ -5,29 +5,31 @@ use ai::agent::{
     action_result::{AskUserQuestionAnswerItem, AskUserQuestionResult},
 };
 use itertools::Itertools;
-use warp_core::ui::theme::{color::internal_colors, WarpTheme};
+use warp_core::ui::theme::{WarpTheme, color::internal_colors};
 use warpui::{
-    elements::{
-        new_scrollable::SingleAxisConfig, Border, ChildView, Clipped, ClippedScrollStateHandle,
-        ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Expanded, Fill, Flex,
-        FormattedTextElement, MainAxisAlignment, MainAxisSize, MouseStateHandle, ParentElement,
-        Radius, Text, DEFAULT_UI_LINE_HEIGHT_RATIO,
-    },
-    keymap::{FixedBinding, Keystroke},
-    r#async::{SpawnedFutureHandle, Timer},
-    ui_components::components::Coords,
-    units::Pixels,
     AppContext, Element, Entity, EntityId, FocusContext, ModelHandle, SingletonEntity,
     TypedActionView, View, ViewContext, ViewHandle,
+    r#async::{SpawnedFutureHandle, Timer},
+    elements::{
+        Border, ChildView, Clipped, ClippedScrollStateHandle, ConstrainedBox, Container,
+        CornerRadius, CrossAxisAlignment, DEFAULT_UI_LINE_HEIGHT_RATIO, Expanded, Fill, Flex,
+        FormattedTextElement, MainAxisAlignment, MainAxisSize, MouseStateHandle, ParentElement,
+        Radius, Text, new_scrollable::SingleAxisConfig,
+    },
+    keymap::{FixedBinding, Keystroke},
+    ui_components::components::Coords,
+    units::Pixels,
 };
 
 use crate::{
+    Appearance,
     ai::{
         agent::{
-            conversation::AIConversationId, icons::yellow_stop_icon, task::TaskId, AIAgentActionId,
-            AIAgentActionResult, AIAgentActionResultType,
+            AIAgentActionId, AIAgentActionResult, AIAgentActionResultType,
+            conversation::AIConversationId, icons::yellow_stop_icon, task::TaskId,
         },
         blocklist::{
+            BlocklistAIHistoryModel,
             action_model::{AIActionStatus, BlocklistAIActionEvent, BlocklistAIActionModel},
             block::{
                 compact_agent_input,
@@ -36,25 +38,24 @@ use crate::{
                     NumberShortcutButtonsConfig,
                 },
                 view_impl::{
-                    render_autonomy_dropdown_setting_speedbump_footer, CONTENT_HORIZONTAL_PADDING,
-                    CONTENT_ITEM_VERTICAL_MARGIN,
+                    CONTENT_HORIZONTAL_PADDING, CONTENT_ITEM_VERTICAL_MARGIN,
+                    render_autonomy_dropdown_setting_speedbump_footer,
                 },
             },
             inline_action::{
                 inline_action_header::{
-                    ExpandedConfig, HeaderConfig, InteractionMode,
-                    INLINE_ACTION_HEADER_VERTICAL_PADDING, INLINE_ACTION_HORIZONTAL_PADDING,
+                    ExpandedConfig, HeaderConfig, INLINE_ACTION_HEADER_VERTICAL_PADDING,
+                    INLINE_ACTION_HORIZONTAL_PADDING, InteractionMode,
                 },
                 inline_action_icons::{self, icon_size},
                 requested_action::CTRL_C_KEYSTROKE,
             },
-            BlocklistAIHistoryModel,
         },
-        execution_profiles::{profiles::AIExecutionProfilesModel, AskUserQuestionPermission},
+        execution_profiles::{AskUserQuestionPermission, profiles::AIExecutionProfilesModel},
     },
     terminal::input::message_bar::{
-        common::{render_standard_message, standard_message_bar_height, styles},
         Message, MessageItem,
+        common::{render_standard_message, standard_message_bar_height, styles},
     },
     ui_components::{blended_colors, icons::Icon},
     view_components::{
@@ -62,7 +63,6 @@ use crate::{
         compactible_action_button::CompactibleActionButton,
         dropdown::{Dropdown, DropdownItem},
     },
-    Appearance,
 };
 
 const ASK_USER_QUESTION_ACTIVE: &str = "AskUserQuestionActive";
@@ -1837,8 +1837,8 @@ pub(crate) fn render_text_with_markdown_support(
     text_color: pathfinder_color::ColorU,
     appearance: &Appearance,
 ) -> Box<dyn Element> {
-    match markdown_parser::parse_markdown(text) { Ok(formatted_text) => {
-        FormattedTextElement::new(
+    match markdown_parser::parse_markdown(text) {
+        Ok(formatted_text) => FormattedTextElement::new(
             formatted_text,
             font_size,
             appearance.ui_font_family(),
@@ -1848,13 +1848,12 @@ pub(crate) fn render_text_with_markdown_support(
         )
         .with_heading_to_font_size_multipliers(appearance.heading_font_size_multipliers().clone())
         .with_line_height_ratio(DEFAULT_UI_LINE_HEIGHT_RATIO)
-        .finish()
-    } _ => {
-        Text::new(text.to_string(), appearance.ui_font_family(), font_size)
+        .finish(),
+        _ => Text::new(text.to_string(), appearance.ui_font_family(), font_size)
             .soft_wrap(true)
             .with_color(text_color)
-            .finish()
-    }}
+            .finish(),
+    }
 }
 
 #[cfg(test)]

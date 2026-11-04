@@ -24,10 +24,9 @@
 // constructing one in a test cannot avoid naming them.
 #![allow(deprecated)]
 
-
 use crate::ai::agent::{MCPContext, MCPServer};
-use api::message;
 use agent_proto as api;
+use api::message;
 
 use super::chat_stream;
 use super::tools;
@@ -114,7 +113,10 @@ fn serialize_grep_tool_call_is_deterministic() {
     assert_eq!(n1, n2, "tool name must match");
     let j1 = serde_json::to_string(&v1).unwrap();
     let j2 = serde_json::to_string(&v2).unwrap();
-    assert_eq!(j1, j2, "the same ToolCall must be byte-equal across serializations");
+    assert_eq!(
+        j1, j2,
+        "the same ToolCall must be byte-equal across serializations"
+    );
 }
 
 /// Grep's `queries` is a `Vec<String>`, and order must be stable (a Vec is naturally
@@ -134,7 +136,10 @@ fn serialize_grep_preserves_queries_order() {
     let s = serde_json::to_string(&v).unwrap();
     let pos_z = s.find("zzz").expect("queries should contain zzz");
     let pos_a = s.find("aaa").expect("queries should contain aaa");
-    assert!(pos_z < pos_a, "Vec order must be preserved as given (zzz first, aaa second)");
+    assert!(
+        pos_z < pos_a,
+        "Vec order must be preserved as given (zzz first, aaa second)"
+    );
 }
 
 /// MCP tool call contains a `prost_types::Struct`; verifies serialization stability.
@@ -142,7 +147,7 @@ fn serialize_grep_preserves_queries_order() {
 /// stable — this test just confirms it.
 #[test]
 fn serialize_mcp_tool_call_is_deterministic() {
-    use prost_types::{value::Kind, Struct, Value as ProstValue};
+    use prost_types::{Struct, Value as ProstValue, value::Kind};
     use std::collections::BTreeMap;
 
     let mut fields = BTreeMap::new();
@@ -269,7 +274,10 @@ fn full_tools_array_serialization_is_stable() {
     let a = assemble();
     let b = assemble();
     assert_eq!(a.len(), b.len());
-    assert_eq!(a, b, "tools array serialization must be byte-equal across calls");
+    assert_eq!(
+        a, b,
+        "tools array serialization must be byte-equal across calls"
+    );
 }
 
 /// End-to-end assembly stability with an MCP server (works with P0-3's ordering
@@ -338,11 +346,19 @@ fn full_tools_array_with_mcp_is_stable() {
 
     let a = assemble(&ctx1);
     let b = assemble(&ctx2);
-    assert_eq!(a, b, "the tools array with MCP must be byte-equal across calls");
+    assert_eq!(
+        a, b,
+        "the tools array with MCP must be byte-equal across calls"
+    );
     // Verify MCP tools are in function_name lexicographic order (alpha before zeta)
-    let pos_alpha = a.find("mcp__server-a__alpha").expect("should contain alpha");
+    let pos_alpha = a
+        .find("mcp__server-a__alpha")
+        .expect("should contain alpha");
     let pos_zeta = a.find("mcp__server-a__zeta").expect("should contain zeta");
-    assert!(pos_alpha < pos_zeta, "P0-3 ordering guarantee: alpha < zeta");
+    assert!(
+        pos_alpha < pos_zeta,
+        "P0-3 ordering guarantee: alpha < zeta"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -370,10 +386,10 @@ fn full_tools_array_with_mcp_is_stable() {
 //
 // The assertions below are the guardrails for these three issues.
 
-use crate::ai::agent::api::convert_conversation::convert_input_context;
 use crate::ai::agent::AIAgentContext;
-use crate::ai::block_context::BlockContext;
+use crate::ai::agent::api::convert_conversation::convert_input_context;
 use crate::ai::agent_providers::user_context;
+use crate::ai::block_context::BlockContext;
 
 fn sample_block(id: &str) -> BlockContext {
     BlockContext {

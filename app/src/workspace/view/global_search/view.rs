@@ -17,6 +17,7 @@ use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warp_util::remote_path::RemotePath;
 use warp_util::standardized_path::StandardizedPath;
 
+use crate::TelemetryEvent;
 use crate::code::icon_from_file_path;
 use crate::debounce::debounce;
 use crate::editor::{
@@ -27,16 +28,15 @@ use crate::search::ItemHighlightState as SearchHighlightState;
 use crate::ui_components::blended_colors;
 use crate::ui_components::icons::Icon as UiIcon;
 use crate::ui_components::item_highlight::{ImageOrIcon, ItemHighlightState};
-use crate::ui_components::render_file_search_row::{render_file_search_row, FileSearchRowOptions};
+use crate::ui_components::render_file_search_row::{FileSearchRowOptions, render_file_search_row};
 use crate::view_components::action_button::{ActionButton, ButtonSize, NakedTheme};
 use crate::workspace::view::global_search::model::GlobalSearch;
 use crate::workspace::view::global_search::{GlobalSearchMatch, SearchConfig};
-use crate::TelemetryEvent;
 use warp_core::send_telemetry_from_ctx;
+use warp_core::ui::Icon;
 use warp_core::ui::appearance::Appearance;
 use warp_core::ui::theme::color::internal_colors;
 use warp_core::ui::theme::{AnsiColorIdentifier, Fill as ThemeFill};
-use warp_core::ui::Icon;
 use warpui::elements::{
     Border, ChildAnchor, ChildView, Clipped, ConstrainedBox, Container, CornerRadius,
     CrossAxisAlignment, DispatchEventResult, Empty, EventHandler, Fill, Flex, FormattedTextElement,
@@ -513,7 +513,6 @@ impl TypedActionView for GlobalSearchView {
 }
 
 impl GlobalSearchView {
-
     /// Convert submatch byte ranges into character indices for highlighting.
     fn highlight_indices_from_submatches(line_text: &str, submatches: &[Submatch]) -> Vec<usize> {
         if line_text.is_empty() || submatches.is_empty() {
@@ -2253,12 +2252,17 @@ impl View for GlobalSearchView {
         if should_render_pre_search_zero_state {
             body =
                 body.with_child(Shrinkable::new(1.0, self.render_pre_search_state(app)).finish());
-        } else { match self.render_results(app) { Some(results) => {
-            let results_section = Container::new(results)
-                .with_horizontal_padding(12.)
-                .finish();
-            body = body.with_child(Shrinkable::new(1.0, results_section).finish());
-        } _ => {}}}
+        } else {
+            match self.render_results(app) {
+                Some(results) => {
+                    let results_section = Container::new(results)
+                        .with_horizontal_padding(12.)
+                        .finish();
+                    body = body.with_child(Shrinkable::new(1.0, results_section).finish());
+                }
+                _ => {}
+            }
+        }
 
         let has_results = !self.directory_entries.is_empty();
 

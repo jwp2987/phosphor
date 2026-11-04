@@ -6,8 +6,8 @@
 pub(crate) mod modal_shell;
 
 pub(crate) use modal_shell::{
-    render_chip_editor_modal, render_chip_editor_sections, ChipEditorModalConfig,
-    ChipEditorMouseHandles, ChipEditorSectionsConfig,
+    ChipEditorModalConfig, ChipEditorMouseHandles, ChipEditorSectionsConfig,
+    render_chip_editor_modal, render_chip_editor_sections,
 };
 
 use pathfinder_geometry::rect::RectF;

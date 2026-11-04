@@ -472,8 +472,10 @@ fn a_refused_rename_undo_abandons_the_older_edit_behind_it_in_the_source_lane() 
     const RENAME: &str = "rename-foo-to-bar";
     const EDIT_FOO: &str = "edit-foo";
 
-    let mut sequence =
-        RevertSequence::new([(vec!["foo.rs", "bar.rs"], RENAME), (vec!["foo.rs"], EDIT_FOO)]);
+    let mut sequence = RevertSequence::new([
+        (vec!["foo.rs", "bar.rs"], RENAME),
+        (vec!["foo.rs"], EDIT_FOO),
+    ]);
 
     assert!(sequence.start(|_| RevertStart::InFlight).is_empty());
     let abandoned = sequence

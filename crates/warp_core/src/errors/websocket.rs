@@ -1,6 +1,6 @@
 use http::StatusCode;
 
-use super::{register_error, ErrorExt};
+use super::{ErrorExt, register_error};
 
 impl ErrorExt for websocket::tungstenite::Error {
     fn is_actionable(&self) -> bool {

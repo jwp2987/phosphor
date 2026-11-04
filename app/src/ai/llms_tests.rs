@@ -4,6 +4,7 @@ use std::rc::Rc;
 use warpui::{App, SingletonEntity};
 
 use super::*;
+use crate::LaunchMode;
 use crate::ai::execution_profiles::profiles::AIExecutionProfilesModel;
 use crate::ai::mcp::TemplatableMCPServerManager;
 use crate::auth::AuthStateProvider;
@@ -13,7 +14,6 @@ use crate::network::NetworkStatus;
 use crate::settings::{AISettings, PrivacySettings};
 use crate::test_util::settings::initialize_settings_for_tests;
 use crate::workspaces::user_workspaces::UserWorkspaces;
-use crate::LaunchMode;
 
 #[test]
 fn llm_info_deserializes_without_base_model_name() {
@@ -224,8 +224,9 @@ fn selecting_a_custom_profile_default_clears_the_session_override() {
         let preferences =
             app.add_singleton_model(|_| preferences_for_profile_model_tests(&custom_model_id));
         let surface_id = EntityId::new();
-        let profile_id =
-            profiles.read(&app, |profiles, ctx| *profiles.active_profile(Some(surface_id), ctx).id());
+        let profile_id = profiles.read(&app, |profiles, ctx| {
+            *profiles.active_profile(Some(surface_id), ctx).id()
+        });
         profiles.update(&mut app, |profiles, ctx| {
             profiles.set_base_model(profile_id, Some(custom_model_id.clone()), ctx);
         });

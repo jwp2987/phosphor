@@ -13,14 +13,14 @@ use std::sync::Arc;
 use warp_core::semantic_selection::SemanticSelection;
 use warp_core::{features::FeatureFlag, ui::Icon};
 use warpui::{
-    elements::{
-        get_rich_content_position_id, Border, Clipped, Container, CornerRadius, CrossAxisAlignment,
-        Flex, FormattedTextElement, MouseStateHandle, ParentElement, Radius, SavePosition,
-        SelectableArea, SelectionHandle,
-    },
-    keymap::{FixedBinding, Keystroke},
     AppContext, Element, Entity, EntityId, FocusContext, SingletonEntity, TypedActionView, View,
     ViewContext,
+    elements::{
+        Border, Clipped, Container, CornerRadius, CrossAxisAlignment, Flex, FormattedTextElement,
+        MouseStateHandle, ParentElement, Radius, SavePosition, SelectableArea, SelectionHandle,
+        get_rich_content_position_id,
+    },
+    keymap::{FixedBinding, Keystroke},
 };
 
 use crate::{

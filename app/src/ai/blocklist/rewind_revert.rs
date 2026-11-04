@@ -262,10 +262,7 @@ impl<U, K: Eq + Hash> RevertSequence<U, K> {
 
     /// Whether any revert `matches` picks out is still queued or in flight.
     pub fn holds(&self, matches: impl Fn(&U) -> bool) -> bool {
-        self.jobs
-            .iter()
-            .flatten()
-            .any(|job| matches(&job.payload))
+        self.jobs.iter().flatten().any(|job| matches(&job.payload))
     }
 
     /// Dispatches the next waiting job of `lane_idx`, but only once it is

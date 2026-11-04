@@ -1,4 +1,4 @@
-﻿use crate::auth::AuthStateProvider;
+use crate::auth::AuthStateProvider;
 use crate::remote_server::auth_context::server_api_auth_context;
 use instant::Instant;
 use remote_server::auth::RemoteServerAuthContext;
@@ -17,7 +17,7 @@ use crate::remote_server::ssh_transport::SshTransport;
 use crate::terminal::model::session::{IsLegacySSHSession, SessionInfo};
 use crate::terminal::model_events::{ModelEvent, ModelEventDispatcher};
 use crate::terminal::warpify::settings::WarpifySettings;
-use crate::{send_telemetry_from_ctx, TelemetryEvent};
+use crate::{TelemetryEvent, send_telemetry_from_ctx};
 use remote_server::setup::{
     PreinstallCheckResult, PreinstallStatus, RemoteLibc, RemotePlatform, UnsupportedReason,
 };
@@ -217,13 +217,16 @@ impl<T: EventLoopSender> RemoteServerController<T> {
             return;
         }
         self.bootstrap_written = true;
-        match self.pty_controller.upgrade(ctx) { Some(pty) => {
-            pty.update(ctx, |pty, ctx| {
-                pty.initialize_shell(&session_info, ctx);
-            });
-        } _ => {
-            log::warn!("PtyController dropped before bootstrap could be flushed");
-        }}
+        match self.pty_controller.upgrade(ctx) {
+            Some(pty) => {
+                pty.update(ctx, |pty, ctx| {
+                    pty.initialize_shell(&session_info, ctx);
+                });
+            }
+            _ => {
+                log::warn!("PtyController dropped before bootstrap could be flushed");
+            }
+        }
     }
 
     /// Idle -> AwaitingCheck

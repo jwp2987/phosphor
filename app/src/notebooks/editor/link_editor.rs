@@ -1,5 +1,7 @@
 use warp_editor::{editor::NavigationKey, model::RichTextEditorModel, render::model::RenderState};
 use warpui::{
+    AppContext, BlurContext, Element, Entity, ModelHandle, SingletonEntity, TypedActionView, View,
+    ViewContext, ViewHandle,
     elements::{
         AnchorPair, Container, Flex, MouseStateHandle, OffsetPositioning, OffsetType,
         ParentElement, PositionedElementOffsetBounds, PositioningAxis, XAxisAnchor, YAxisAnchor,
@@ -9,8 +11,6 @@ use warpui::{
         button::ButtonVariant,
         components::{Coords, UiComponent, UiComponentStyles},
     },
-    AppContext, BlurContext, Element, Entity, ModelHandle, SingletonEntity, TypedActionView, View,
-    ViewContext, ViewHandle,
 };
 
 use crate::{

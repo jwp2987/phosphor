@@ -58,7 +58,7 @@ use super::ai_page::{
     ProviderEditFields,
 };
 use super::settings_page::{
-    build_sub_header, render_customer_type_badge, SettingsWidget, HEADER_PADDING,
+    HEADER_PADDING, SettingsWidget, build_sub_header, render_customer_type_badge,
 };
 
 const CARD_BUTTON_PADDING: f32 = 6.0;
@@ -450,10 +450,7 @@ impl ProviderDraftEditors {
         app: &AppContext,
         action: AISettingsPageAction,
     ) -> AISettingsPageAction {
-        AISettingsPageAction::SaveAgentProviderEditsThen(
-            self.collect_fields(app),
-            Box::new(action),
-        )
+        AISettingsPageAction::SaveAgentProviderEditsThen(self.collect_fields(app), Box::new(action))
     }
 
     /// Reads every draft editor's current buffer text into a [`ProviderEditFields`], shared by
@@ -478,25 +475,27 @@ impl ProviderDraftEditors {
         let models: Vec<ModelEditFields> = self
             .model_editors
             .iter()
-            .map(|(idx, name_e, id_e, ctx_e, out_e, in_price_e, out_price_e)| {
-                let m_name = name_e.as_ref(app).buffer_text(app);
-                let m_id = id_e.as_ref(app).buffer_text(app);
-                let context_window = parse_token_count(&ctx_e.as_ref(app).buffer_text(app));
-                let max_output_tokens = parse_token_count(&out_e.as_ref(app).buffer_text(app));
-                ModelEditFields {
-                    model_index: *idx,
-                    name: m_name,
-                    id: m_id,
-                    context_window,
-                    max_output_tokens,
-                    input_usd_per_million_tokens: parse_usd_rate(
-                        &in_price_e.as_ref(app).buffer_text(app),
-                    ),
-                    output_usd_per_million_tokens: parse_usd_rate(
-                        &out_price_e.as_ref(app).buffer_text(app),
-                    ),
-                }
-            })
+            .map(
+                |(idx, name_e, id_e, ctx_e, out_e, in_price_e, out_price_e)| {
+                    let m_name = name_e.as_ref(app).buffer_text(app);
+                    let m_id = id_e.as_ref(app).buffer_text(app);
+                    let context_window = parse_token_count(&ctx_e.as_ref(app).buffer_text(app));
+                    let max_output_tokens = parse_token_count(&out_e.as_ref(app).buffer_text(app));
+                    ModelEditFields {
+                        model_index: *idx,
+                        name: m_name,
+                        id: m_id,
+                        context_window,
+                        max_output_tokens,
+                        input_usd_per_million_tokens: parse_usd_rate(
+                            &in_price_e.as_ref(app).buffer_text(app),
+                        ),
+                        output_usd_per_million_tokens: parse_usd_rate(
+                            &out_price_e.as_ref(app).buffer_text(app),
+                        ),
+                    }
+                },
+            )
             .collect();
 
         ProviderEditFields {
@@ -1714,10 +1713,14 @@ impl AgentProvidersWidget {
             if let Some(status) = gcloud_login_status() {
                 column.add_child(
                     Container::new(
-                        Text::new(status, appearance.ui_font_family(), appearance.ui_font_size())
-                            .with_color(appearance.theme().disabled_ui_text_color().into())
-                            .soft_wrap(true)
-                            .finish(),
+                        Text::new(
+                            status,
+                            appearance.ui_font_family(),
+                            appearance.ui_font_size(),
+                        )
+                        .with_color(appearance.theme().disabled_ui_text_color().into())
+                        .soft_wrap(true)
+                        .finish(),
                     )
                     .with_margin_top(4.)
                     .finish(),
@@ -1858,9 +1861,9 @@ impl AgentProvidersWidget {
                 .finish()
             };
             let header_cell_with_info = |flex: f32,
-                                          label: &str,
-                                          tooltip: String,
-                                          info_state: MouseStateHandle|
+                                         label: &str,
+                                         tooltip: String,
+                                         info_state: MouseStateHandle|
              -> Box<dyn Element> {
                 Expanded::new(
                     flex,
@@ -2227,19 +2230,18 @@ impl AgentProvidersWidget {
         }
 
         Container::new(
-            card
-                .with_child(
-                    Container::new(headers_column.finish())
-                        .with_margin_top(8.)
-                        .finish(),
-                )
-                .with_child(
-                    Container::new(models_column.finish())
-                        .with_margin_top(8.)
-                        .finish(),
-                )
-                .with_child(Container::new(bottom_row).with_margin_top(10.).finish())
-                .finish(),
+            card.with_child(
+                Container::new(headers_column.finish())
+                    .with_margin_top(8.)
+                    .finish(),
+            )
+            .with_child(
+                Container::new(models_column.finish())
+                    .with_margin_top(8.)
+                    .finish(),
+            )
+            .with_child(Container::new(bottom_row).with_margin_top(10.).finish())
+            .finish(),
         )
         .with_background(appearance.theme().surface_1())
         .with_uniform_padding(12.)
@@ -2623,7 +2625,9 @@ impl AgentProvidersWidget {
                             Flex::row()
                                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
                                 .with_child(chip)
-                                .with_child(Container::new(hide_button).with_margin_left(2.).finish())
+                                .with_child(
+                                    Container::new(hide_button).with_margin_left(2.).finish(),
+                                )
                                 .finish(),
                         );
                     }
@@ -2731,7 +2735,9 @@ impl AgentProvidersWidget {
                                 AISettingsPageAction::ToggleCatalogProviderVisibilityOverride {
                                     catalog_provider_id: cat_id.clone(),
                                 },
-                                crate::t!("settings-agent-providers-unhide-catalog-provider-tooltip"),
+                                crate::t!(
+                                    "settings-agent-providers-unhide-catalog-provider-tooltip"
+                                ),
                                 appearance,
                             );
                             unhide_wrap = unhide_wrap.with_child(unhide_button);

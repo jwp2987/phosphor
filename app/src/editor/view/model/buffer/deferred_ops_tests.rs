@@ -1,5 +1,5 @@
-use crate::editor::view::model::buffer::time::ReplicaId;
 use crate::editor::view::model::buffer::EditOperation;
+use crate::editor::view::model::buffer::time::ReplicaId;
 
 use super::super::time::{Global, Lamport};
 use super::{DeferredOperations, Operation};

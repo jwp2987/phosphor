@@ -29,8 +29,8 @@ use crate::terminal::{
 use super::{LegacySshFallbackReason, SessionInfo};
 
 pub use in_band_command_executor::{
-    is_in_band_command, InBandCommand, InBandCommandCancelledEvent, InBandCommandExecutor,
-    InBandCommandOutputReceiver, POSIX_GENERATOR_WRAPPER, POWERSHELL_GENERATOR_WRAPPER,
+    InBandCommand, InBandCommandCancelledEvent, InBandCommandExecutor, InBandCommandOutputReceiver,
+    POSIX_GENERATOR_WRAPPER, POWERSHELL_GENERATOR_WRAPPER, is_in_band_command,
 };
 #[cfg(feature = "local_tty")]
 pub use local_command_executor::LocalCommandExecutor;
@@ -38,8 +38,8 @@ pub use noop_command_executor::NoOpCommandExecutor;
 #[cfg(feature = "local_tty")]
 pub use remote_command_executor::RemoteCommandExecutor;
 pub use shared::{
-    nu_raw_string, sh_script_quote_arg, shell_escape_single_quotes, shell_quote_arg,
-    ExecutorCommandEvent,
+    ExecutorCommandEvent, nu_raw_string, sh_script_quote_arg, shell_escape_single_quotes,
+    shell_quote_arg,
 };
 
 #[derive(Copy, Clone, Debug)]
@@ -328,14 +328,17 @@ fn new_command_executor_for_local_tty_session(
                 && !FeatureFlag::InBandGeneratorsForSSH.is_enabled()
                 && !force_use_in_band_generators =>
         {
-            if let IsLegacySSHSession::Yes { socket_path, .. } = &session_info.is_legacy_ssh_session {
+            if let IsLegacySSHSession::Yes { socket_path, .. } = &session_info.is_legacy_ssh_session
+            {
                 let wsl_distro = parent_session_info
                     .and_then(|session| session.wsl_name())
                     .map(ToOwned::to_owned);
                 log::info!("creating a legacy ssh executor!");
                 Arc::new(RemoteCommandExecutor::new(socket_path.clone(), wsl_distro))
             } else {
-                unreachable!("Unreachable because of match! above. Unfortunately if let guards in rust are still experimental.")
+                unreachable!(
+                    "Unreachable because of match! above. Unfortunately if let guards in rust are still experimental."
+                )
             }
         }
         _ => {

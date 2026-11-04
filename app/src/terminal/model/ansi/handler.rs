@@ -5,8 +5,8 @@ use warp_terminal::model::ansi::control_sequence_parameters::*;
 use warp_terminal::model::{KeyboardModes, KeyboardModesApplyBehavior};
 use warpui::color::ColorU;
 
-use super::dcs_hooks::*;
 use super::ProcessorInput;
+use super::dcs_hooks::*;
 use crate::terminal::model::completions::{ShellCompletion, ShellCompletionUpdate};
 use crate::terminal::model::image_map::StoredImageMetadata;
 use crate::terminal::model::iterm_image::{ITermImage, ITermImageMetadata};

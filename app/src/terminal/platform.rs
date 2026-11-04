@@ -1,5 +1,5 @@
 #[allow(unused_imports)]
-use crate::{Assets, ASSETS};
+use crate::{ASSETS, Assets};
 use anyhow::Result;
 
 pub fn init() -> Result<()> {
@@ -13,7 +13,7 @@ mod mac {
     #![allow(clippy::let_unit_value)]
 
     use super::*;
-    use libc::{setlocale, LC_ALL, LC_CTYPE};
+    use libc::{LC_ALL, LC_CTYPE, setlocale};
     use objc2::runtime::NSObjectProtocol;
     use objc2::sel;
     use objc2_foundation::NSLocale;

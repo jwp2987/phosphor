@@ -11274,7 +11274,9 @@ impl TerminalView {
                 self.ssh_typeahead_holding,
                 self.ssh_held_bytes(),
                 pending_now.is_some(),
-                self.ssh_connect_gate.as_ref().is_some_and(|g| g.output_seen),
+                self.ssh_connect_gate
+                    .as_ref()
+                    .is_some_and(|g| g.output_seen),
             )
         });
         if dialog_up {
@@ -14293,9 +14295,9 @@ impl TerminalView {
                     // The late verdict is dropped: the next Enter is the user's say-so. (A large
                     // buffer's is kept, #1604: the next Enter waits for it or submits on it.)
                     self.input.update(ctx, |input, ctx| {
-                        input
-                            .ai_input_model()
-                            .update(ctx, |model, _| model.abandon_pending_detection_after_give_up())
+                        input.ai_input_model().update(ctx, |model, _| {
+                            model.abandon_pending_detection_after_give_up()
+                        })
                     });
                     self.keep_deferred_enter_text_hand_back("young_verdict_cap", ctx);
                 }
@@ -14333,7 +14335,9 @@ impl TerminalView {
         );
         // A stage may already be running.
         self.arm_young_compute_cap(id, ctx);
-        let text_len = self.input.read(ctx, |input, ctx| input.buffer_char_len(ctx));
+        let text_len = self
+            .input
+            .read(ctx, |input, ctx| input.buffer_char_len(ctx));
         self.arm_young_timer(id, young_detection_backstop_for(text_len), true, ctx);
     }
 

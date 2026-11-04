@@ -9,11 +9,11 @@ use crate::{
 };
 use warp_core::ui::appearance::Appearance;
 use warpui::{
+    Action, AppContext, Element, TypedActionView, View, ViewContext, ViewHandle,
     elements::{
         ChildView, ConstrainedBox, Container, CrossAxisAlignment, Flex, MainAxisAlignment,
         MainAxisSize, ParentElement,
     },
-    Action, AppContext, Element, TypedActionView, View, ViewContext, ViewHandle,
 };
 const BUTTON_MARGIN: f32 = 8.;
 

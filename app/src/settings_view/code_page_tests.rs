@@ -436,7 +436,9 @@ fn the_indexing_rows_appear_only_behind_the_indexing_flag() {
 /// the limit case silently degrades to a grey "Unavailable" with no indication that the fix is
 /// to delete an index, which is the regression these two tests are here to catch.
 mod remote_index_limit {
-    use remote_server::codebase_index_proto::{RemoteCodebaseIndexState, RemoteCodebaseIndexStatus};
+    use remote_server::codebase_index_proto::{
+        RemoteCodebaseIndexState, RemoteCodebaseIndexStatus,
+    };
 
     // Two levels: this module sits inside `code_page`'s `mod tests`, so `super::super` is
     // `code_page` itself, where the predicate is a private free function.

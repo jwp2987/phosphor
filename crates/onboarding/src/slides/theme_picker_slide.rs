@@ -1,14 +1,15 @@
 use super::OnboardingSlide;
+use crate::OnboardingIntention;
 use crate::localization::localized;
 use crate::model::{OnboardingStateEvent, OnboardingStateModel};
 use crate::slides::{bottom_nav, layout, slide_content};
 use crate::telemetry::OnboardingEvent;
-use crate::OnboardingIntention;
 use pathfinder_color::ColorU;
-use ui_components::{button, Component as _, Options as _};
+use ui_components::{Component as _, Options as _, button};
 use warp_core::send_telemetry_from_ctx;
-use warp_core::ui::{appearance::Appearance, theme::color::internal_colors, theme::WarpTheme};
+use warp_core::ui::{appearance::Appearance, theme::WarpTheme, theme::color::internal_colors};
 use warpui::{
+    AppContext, Element, Entity, ModelHandle, SingletonEntity, TypedActionView, View, ViewContext,
     elements::{
         Border, ClippedScrollStateHandle, ConstrainedBox, Container, CornerRadius,
         CrossAxisAlignment, Empty, Flex, FormattedTextElement, Hoverable, MainAxisAlignment,
@@ -19,7 +20,6 @@ use warpui::{
     platform::Cursor,
     text_layout::TextAlignment,
     ui_components::components::{UiComponent, UiComponentStyles},
-    AppContext, Element, Entity, ModelHandle, SingletonEntity, TypedActionView, View, ViewContext,
 };
 
 #[derive(Debug, Clone)]

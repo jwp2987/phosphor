@@ -26,8 +26,8 @@ pub mod platform;
 pub mod prelude;
 pub mod presenter;
 pub mod profiling;
-mod report_error;
 pub mod rendering;
+mod report_error;
 #[cfg(feature = "tui")]
 pub mod runtime;
 pub mod scene;

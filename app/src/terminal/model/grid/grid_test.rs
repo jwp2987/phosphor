@@ -1,5 +1,6 @@
 use std::num::NonZeroUsize;
 
+use crate::terminal::SizeInfo;
 use crate::terminal::model::ansi::{self, Handler as _};
 use crate::terminal::model::grid::grid_handler::GridHandler;
 use crate::terminal::model::index::Point;
@@ -8,7 +9,6 @@ use crate::terminal::model::{
     grid::Dimensions,
     index::{VisiblePoint, VisibleRow},
 };
-use crate::terminal::SizeInfo;
 
 use super::GridStorage;
 

@@ -6,7 +6,7 @@ use crate::appearance::Appearance;
 use crate::terminal::grid_size_util::calculate_grid_baseline_position;
 use crate::terminal::model::ansi::{Color, CursorShape, CursorStyle};
 use crate::terminal::model::cell::{Cell, Flags};
-use crate::terminal::{color, SizeInfo};
+use crate::terminal::{SizeInfo, color};
 
 use crate::terminal::model::index::Point;
 use crate::terminal::model::selection::SelectionPoint;
@@ -24,19 +24,19 @@ use std::cmp::Ordering;
 use std::ops::Range;
 use std::{collections::HashMap, ops::RangeInclusive};
 use unicode_width::UnicodeWidthChar;
-use warp_core::errors::{report_error, ReportErrorLogMode};
+use warp_core::errors::{ReportErrorLogMode, report_error};
 use warp_core::features::FeatureFlag;
 use warpui::assets::asset_cache::{AssetCache, AssetSource, AssetState};
 use warpui::color::ColorU;
-use warpui::elements::{Border, CornerRadius, Fill, Radius, DEFAULT_UI_LINE_HEIGHT_RATIO};
+use warpui::elements::{Border, CornerRadius, DEFAULT_UI_LINE_HEIGHT_RATIO, Fill, Radius};
 use warpui::fonts::{Cache as FontCache, FamilyId, FontId, Properties, Style, Weight};
 use warpui::geometry::rect::RectF;
-use warpui::geometry::vector::{vec2f, Vector2F};
+use warpui::geometry::vector::{Vector2F, vec2f};
 use warpui::image_cache::{
     AnimatedImageBehavior, CacheOption, DeferredImage, FitType, Image, ImageCache,
 };
 use warpui::platform::LineStyle;
-use warpui::text_layout::{Line, StyleAndFont, TextStyle, DEFAULT_TOP_BOTTOM_RATIO};
+use warpui::text_layout::{DEFAULT_TOP_BOTTOM_RATIO, Line, StyleAndFont, TextStyle};
 use warpui::units::{IntoLines as _, Lines, Pixels};
 use warpui::{AppContext, Element, EntityId, PaintContext, Scene, SingletonEntity};
 
@@ -46,9 +46,9 @@ use self::cell_type::{CellType, IsFocused, Secret};
 use super::block_filter::{BLOCK_FILTER_DOTTED_LINE_DASH, BLOCK_FILTER_DOTTED_LINE_WIDTH};
 use super::blockgrid_renderer::GridRenderParams;
 use super::model::char_or_str::CharOrStr;
+use super::model::grid::RespectDisplayedOutput;
 use super::model::grid::grid_handler::{ContainsPoint, Link};
 use super::model::grid::grid_source::GridSource;
-use super::model::grid::RespectDisplayedOutput;
 use super::model::image_map::{ImagePlacementData, StoredImageMetadata};
 use super::model::terminal_model::RangeInModel;
 use crate::settings::EnforceMinimumContrast;
@@ -1643,7 +1643,9 @@ fn take_render_scratch() -> RenderScratch {
 
 fn return_render_scratch(mut scratch: RenderScratch) {
     scratch.cell_decorations.clear();
-    scratch.cell_decorations.shrink_to(MAX_RETAINED_SCRATCH_ITEMS);
+    scratch
+        .cell_decorations
+        .shrink_to(MAX_RETAINED_SCRATCH_ITEMS);
     scratch.native_glyphs.clear();
     scratch.native_glyphs.shrink_to(MAX_RETAINED_SCRATCH_ITEMS);
     if scratch.contrast_map.len() > MAX_RETAINED_CONTRAST_ENTRIES {

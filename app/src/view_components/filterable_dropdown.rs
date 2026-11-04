@@ -1,6 +1,5 @@
 use super::dropdown::{
-    DropdownAction, DropdownItem, MenuHeaderTextFormatter, DROPDOWN_PADDING,
-    TOP_MENU_BAR_MAX_WIDTH,
+    DROPDOWN_PADDING, DropdownAction, DropdownItem, MenuHeaderTextFormatter, TOP_MENU_BAR_MAX_WIDTH,
 };
 use crate::{
     appearance::Appearance,
@@ -13,6 +12,8 @@ use crate::{
 };
 use warp_editor::editor::NavigationKey;
 use warpui::{
+    Action, AppContext, BlurContext, Entity, FocusContext, SingletonEntity, TypedActionView, View,
+    ViewContext, ViewHandle,
     elements::{
         Align, Border, ChildAnchor, ChildView, Clipped, ConstrainedBox, Container, CornerRadius,
         CrossAxisAlignment, Dismiss, Element, EventHandler, Flex, MainAxisAlignment, MainAxisSize,
@@ -24,8 +25,6 @@ use warpui::{
         button::{ButtonVariant, TextAndIcon, TextAndIconAlignment},
         components::{Coords, UiComponent, UiComponentStyles},
     },
-    Action, AppContext, BlurContext, Entity, FocusContext, SingletonEntity, TypedActionView, View,
-    ViewContext, ViewHandle,
 };
 
 const EMPTY_DROPDOWN_HEIGHT: f32 = 50.0;

@@ -8,18 +8,18 @@ use warp_editor::{
 };
 use warp_util::user_input::UserInput;
 use warpui::{
+    AppContext, Element, Entity, ModelAsRef, ModelContext, ModelHandle, SingletonEntity,
     elements::{
         Align, Border, Container, CrossAxisAlignment, Empty, Flex, MainAxisAlignment,
         MouseStateHandle, ParentElement, Shrinkable,
     },
     platform::Cursor,
     ui_components::{button::ButtonVariant, components::UiComponent},
-    AppContext, Element, Entity, ModelAsRef, ModelContext, ModelHandle, SingletonEntity,
 };
 
 use crate::{
     appearance::Appearance,
-    cloud_object::{model::persistence::ObjectStoreModel, StoredObject},
+    cloud_object::{StoredObject, model::persistence::ObjectStoreModel},
     completer::SessionAgnosticContext,
     notebooks::{
         styles::block_footer_action_button,
@@ -27,7 +27,7 @@ use crate::{
     },
     server::ids::{HashableId, ToServerId},
     settings::FontSettings,
-    terminal::input::decorations::{parse_current_commands_and_tokens, ParsedTokensSnapshot},
+    terminal::input::decorations::{ParsedTokensSnapshot, parse_current_commands_and_tokens},
     themes::theme::AnsiColorIdentifier,
     ui_components::icons::Icon,
     util::bindings::CustomAction,
@@ -35,13 +35,13 @@ use crate::{
 };
 
 use super::{
+    NotebookWorkflow,
     embedded_item::EmbeddedWorkflow,
-    keys::{custom_action_to_display, NotebookKeybindings},
+    keys::{NotebookKeybindings, custom_action_to_display},
     model::ChildModelHandle,
     notebook_command::{parsed_token_to_color_style_ranges, transform_ansi_color_to_solid_color},
     rich_text_styles,
     view::EditorViewAction,
-    NotebookWorkflow,
 };
 
 #[derive(Default)]

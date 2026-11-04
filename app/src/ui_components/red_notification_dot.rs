@@ -2,12 +2,12 @@ use crate::appearance::Appearance;
 use pathfinder_geometry::vector::vec2f;
 use warp_core::ui::theme::AnsiColorIdentifier;
 use warpui::{
+    Element,
     elements::{
         ChildAnchor, ConstrainedBox, Container, CornerRadius, Empty, Fill, OffsetPositioning,
         ParentAnchor, ParentElement as _, ParentOffsetBounds, Radius, Stack,
     },
     ui_components::components::UiComponentStyles,
-    Element,
 };
 
 pub struct RedNotificationDot {}

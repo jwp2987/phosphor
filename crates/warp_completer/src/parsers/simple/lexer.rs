@@ -1,4 +1,4 @@
-use super::{token::Token, EscapeChar};
+use super::{EscapeChar, token::Token};
 use crate::meta::{Span, Spanned, SpannedItem};
 
 /// Iterator for converting a string into a series of Tokens

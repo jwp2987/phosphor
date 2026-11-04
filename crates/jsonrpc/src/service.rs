@@ -1,16 +1,16 @@
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicI32, Ordering},
         Arc, Mutex,
+        atomic::{AtomicI32, Ordering},
     },
 };
 
 use crate::transport::Transport;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use futures::{channel::oneshot, lock::Mutex as AsyncMutex};
 use serde::{Deserialize, Serialize};
-use serde_json::{value::RawValue, Value};
+use serde_json::{Value, value::RawValue};
 use warpui::r#async::executor::Background;
 
 pub const JSON_RPC_VERSION: &str = "2.0";

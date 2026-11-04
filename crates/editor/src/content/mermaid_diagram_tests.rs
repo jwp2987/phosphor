@@ -1,6 +1,6 @@
+use warpui::App;
 use warpui::assets::asset_cache::{AssetCache, AssetSource, AssetState};
 use warpui::image_cache::ImageType;
-use warpui::App;
 
 use super::*;
 use crate::render::layout::TextLayout;

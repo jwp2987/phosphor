@@ -47,11 +47,11 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use agent_proto as api;
 use futures::StreamExt;
 use instant::Instant;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use uuid::Uuid;
-use agent_proto as api;
 
 use genai::adapter::AdapterKind;
 use genai::chat::{
@@ -68,12 +68,12 @@ use crate::ai::agent::{AIAgentActionResult, AIAgentInput, RunningCommand, UserQu
 use crate::ai::api_error::AIApiError;
 use crate::ai::byop_compaction;
 use crate::ai::byop_readiness::{
-    classify_projection, AcceptedRepair, BlockedByopReadinessError, LiveToolCall,
-    LiveToolCallState, ProjectedToolCall, ProjectedToolResult, ProjectionItem, ReadinessCategory,
-    ReadinessContext, ReadinessDiagnosticCoalescer, ReadinessDiagnosticContext,
-    ReadinessDiagnosticLevel, ReadinessReport, ReadinessState, ReadinessTriggerLayer,
-    RedactedToolKind, RepairSource, RepairStateStatus, TerminalResultKind, ToolCallKey,
-    ToolCallRef, ToolResultSource,
+    AcceptedRepair, BlockedByopReadinessError, LiveToolCall, LiveToolCallState, ProjectedToolCall,
+    ProjectedToolResult, ProjectionItem, ReadinessCategory, ReadinessContext,
+    ReadinessDiagnosticCoalescer, ReadinessDiagnosticContext, ReadinessDiagnosticLevel,
+    ReadinessReport, ReadinessState, ReadinessTriggerLayer, RedactedToolKind, RepairSource,
+    RepairStateStatus, TerminalResultKind, ToolCallKey, ToolCallRef, ToolResultSource,
+    classify_projection,
 };
 use crate::settings::AgentProviderApiType;
 use ai::agent::convert::ConvertToAPITypeError;
@@ -1443,7 +1443,11 @@ fn prepare_screenshot_attachment(image: &api::RawImage) -> Option<PreparedScreen
         // `resize` preserves aspect ratio and never upscales past the given box, so passing
         // the long edge for both dimensions caps the long edge exactly.
         let resized = if w.max(h) > long_edge {
-            decoded.resize(long_edge, long_edge, ::image::imageops::FilterType::Lanczos3)
+            decoded.resize(
+                long_edge,
+                long_edge,
+                ::image::imageops::FilterType::Lanczos3,
+            )
         } else {
             decoded.clone()
         };
@@ -1561,8 +1565,7 @@ fn collect_screenshot_attachment(
 
 /// Header text for the screenshot message, so the model knows why a user turn suddenly carries
 /// images it did not send.
-const SCREENSHOT_MESSAGE_HEADER: &str =
-    "Automatically attached by the client, not sent by the user: the screenshot(s) captured by \
+const SCREENSHOT_MESSAGE_HEADER: &str = "Automatically attached by the client, not sent by the user: the screenshot(s) captured by \
      the computer-use tool call(s) above. This is the current state of the screen.";
 
 /// Appends the prepared screenshots to the request.
@@ -2572,9 +2575,10 @@ fn build_chat_request_unredacted(
                 //
                 // The order must match the live path (attachments first, then referenced),
                 // or the assembled text still won't match.
-                let history_ctx = crate::ai::agent::api::convert_conversation::convert_input_context(
-                    u.context.as_ref(),
-                );
+                let history_ctx =
+                    crate::ai::agent::api::convert_conversation::convert_input_context(
+                        u.context.as_ref(),
+                    );
                 if let Some(prefix) = user_context::collect_user_attachments(&history_ctx).prefix {
                     history_prefixes.push(prefix);
                 }
@@ -3019,7 +3023,6 @@ fn build_chat_request_unredacted(
             push_environment_context_message(&mut messages, tail, api_type);
         }
     }
-
 
     let mut tools_array = build_tools_array(params, attachment_caps.images);
 
@@ -3657,7 +3660,9 @@ fn byop_diag_content_enabled() -> bool {
 /// The escape scan and the on-error dump that consume this only care about text the caller
 /// authored; base64 is neither readable nor a source of the illegal escapes they hunt for, and
 /// a computer-use loop would otherwise put a megabyte of it in the log on every turn.
-fn diag_request_with_redacted_binaries(chat_req: &ChatRequest) -> std::borrow::Cow<'_, ChatRequest> {
+fn diag_request_with_redacted_binaries(
+    chat_req: &ChatRequest,
+) -> std::borrow::Cow<'_, ChatRequest> {
     if !chat_req
         .messages
         .iter()
@@ -5818,28 +5823,31 @@ fn build_client_uncached(
     );
     // Vertex mints a short-lived OAuth2 bearer per request, so it needs an async resolver; every
     // other type routes through the synchronous static-key path below.
-    let resolver = if api_type == AgentProviderApiType::Vertex {
-        build_vertex_resolver(endpoint_url.clone(), api_key.clone())
-    } else {
-    // Defense-in-depth: don't hand the API key to `AuthData` at all when the endpoint
-    // would carry it as a plaintext `Authorization: Bearer` header over the network (see
-    // `super::is_plaintext_bearer_risk`). Loopback `http://` (Ollama et al.) is untouched;
-    // this only strips the key for a non-loopback `http://` endpoint, which then behaves
-    // like "no key configured" (same as an intentionally unauthenticated local service)
-    // instead of silently leaking the key to whoever can observe the wire.
-    let key_for_resolver = if !api_key.is_empty() && super::is_plaintext_bearer_risk(&endpoint_url) {
-        log::warn!(
-            "[byop] refusing to send the API key as a plaintext Authorization header to \
+    let resolver =
+        if api_type == AgentProviderApiType::Vertex {
+            build_vertex_resolver(endpoint_url.clone(), api_key.clone())
+        } else {
+            // Defense-in-depth: don't hand the API key to `AuthData` at all when the endpoint
+            // would carry it as a plaintext `Authorization: Bearer` header over the network (see
+            // `super::is_plaintext_bearer_risk`). Loopback `http://` (Ollama et al.) is untouched;
+            // this only strips the key for a non-loopback `http://` endpoint, which then behaves
+            // like "no key configured" (same as an intentionally unauthenticated local service)
+            // instead of silently leaking the key to whoever can observe the wire.
+            let key_for_resolver = if !api_key.is_empty()
+                && super::is_plaintext_bearer_risk(&endpoint_url)
+            {
+                log::warn!(
+                    "[byop] refusing to send the API key as a plaintext Authorization header to \
              insecure endpoint {} — only https:// or a loopback http:// \
              (localhost/127.0.0.1) endpoint may carry it; use https, or point this \
              provider at a local runtime",
-            redact_endpoint_for_log(&endpoint_url)
-        );
-        String::new()
-    } else {
-        api_key.clone()
-    };
-    ServiceTargetResolver::from_resolver_fn(
+                    redact_endpoint_for_log(&endpoint_url)
+                );
+                String::new()
+            } else {
+                api_key.clone()
+            };
+            ServiceTargetResolver::from_resolver_fn(
         move |service_target: ServiceTarget| -> Result<ServiceTarget, genai::resolver::Error> {
             let ServiceTarget { model, .. } = service_target;
             let endpoint = Endpoint::from_owned(endpoint_url.clone());
@@ -5868,7 +5876,7 @@ fn build_client_uncached(
             })
         },
         )
-    };
+        };
 
     // Zap BYOP: the SSE stream must not use gzip. `Accept-Encoding: gzip` makes an
     // nginx-style proxy compress the response, and the server has to flush a complete
@@ -5967,9 +5975,12 @@ fn build_vertex_resolver(endpoint_url: String, credential: String) -> ServiceTar
                 auth,
                 model,
             })
-        }) as std::pin::Pin<
-            Box<dyn std::future::Future<Output = genai::resolver::Result<ServiceTarget>> + Send>,
-        >
+        })
+            as std::pin::Pin<
+                Box<
+                    dyn std::future::Future<Output = genai::resolver::Result<ServiceTarget>> + Send,
+                >,
+            >
     })
 }
 
@@ -5979,8 +5990,8 @@ fn build_vertex_resolver(endpoint_url: String, credential: String) -> ServiceTar
 ///
 /// The app name is the user-facing product name (`ChannelState::display_name()`), so the
 /// User-Agent reflects the brand ("Phosphor") rather than the storage-facing app id name.
-fn build_user_agent_header(
-) -> Result<reqwest::header::HeaderValue, reqwest::header::InvalidHeaderValue> {
+fn build_user_agent_header()
+-> Result<reqwest::header::HeaderValue, reqwest::header::InvalidHeaderValue> {
     let app_name = warp_core::channel::ChannelState::display_name();
     let ua = match warp_core::channel::ChannelState::app_version() {
         Some(v) if !v.is_empty() => format!("{app_name}/{v}"),
@@ -6243,7 +6254,12 @@ fn parse_retry_after_header(raw: Option<&str>) -> Option<std::time::Duration> {
 /// Whether a response that was not JSON is an HTML page (by content type, or by how the
 /// body opens).
 fn is_html_response(content_type: &str, body: &str) -> bool {
-    let head = body.trim_start().chars().take(16).collect::<String>().to_ascii_lowercase();
+    let head = body
+        .trim_start()
+        .chars()
+        .take(16)
+        .collect::<String>()
+        .to_ascii_lowercase();
     content_type.to_ascii_lowercase().contains("html")
         || head.starts_with("<!doctype html")
         || head.starts_with("<html")
@@ -9090,16 +9106,15 @@ async fn dispatch_byop_get_relevant_files_tool(
             "codebase_context_enabled is disabled for this profile"
         ));
     }
-    let args = match serde_json::from_str::<get_relevant_files_runtime::GetRelevantFilesArgs>(
-        args_str,
-    ) {
-        Ok(args) => args,
-        Err(e) => {
-            return get_relevant_files_runtime::error_to_json(&anyhow::anyhow!(
-                "invalid_arguments: {e}"
-            ));
-        }
-    };
+    let args =
+        match serde_json::from_str::<get_relevant_files_runtime::GetRelevantFilesArgs>(args_str) {
+            Ok(args) => args,
+            Err(e) => {
+                return get_relevant_files_runtime::error_to_json(&anyhow::anyhow!(
+                    "invalid_arguments: {e}"
+                ));
+            }
+        };
     // A missing snapshot (no BYOP one-shot configured, or the outline isn't ready) is
     // no longer the end of the road: the embedding index may still answer. Both being
     // absent yields a graceful `no_context`, not an error.
@@ -9129,7 +9144,11 @@ async fn dispatch_byop_get_relevant_files_tool(
 /// etc.). Without this second check, disabling the privacy switch wouldn't actually block
 /// outbound network requests — just hide the affordance. So this must run before any network
 /// I/O (including building the SSRF-safe client), never after.
-async fn dispatch_byop_web_tool(tool_name: &str, args_str: &str, web_search_enabled: bool) -> Value {
+async fn dispatch_byop_web_tool(
+    tool_name: &str,
+    args_str: &str,
+    web_search_enabled: bool,
+) -> Value {
     use tools::web_runtime;
     if !web_search_enabled {
         log::warn!(
@@ -9329,7 +9348,9 @@ fn recover_tool_by_arg_shape(
             continue;
         }
         let schema = (candidate.parameters)();
-        let Some(properties) = schema.get("properties").and_then(serde_json::Value::as_object)
+        let Some(properties) = schema
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
         else {
             continue;
         };
@@ -9408,7 +9429,7 @@ fn parse_incoming_tool_call(
             None => {
                 return Err(anyhow::Error::new(UnknownToolName {
                     name: call.fn_name.clone(),
-                }))
+                }));
             }
         },
     };
@@ -10640,7 +10661,11 @@ mod assistant_buffer_tests {
         buf.reasoning = Some("planning".to_string());
         let mut msgs = Vec::new();
         buf.flush_into(&mut msgs);
-        assert_eq!(msgs.len(), 2, "text + tool_calls should flush into two messages");
+        assert_eq!(
+            msgs.len(),
+            2,
+            "text + tool_calls should flush into two messages"
+        );
         for m in &msgs {
             assert!(
                 reasoning_part(m).is_none(),
@@ -11465,7 +11490,11 @@ mod cache_boundary_stability_tests {
             } else {
                 CacheControl::Ephemeral5m
             };
-            assert_eq!(cc, expected, "TTL for role={:?} doesn't match expectation", m.role);
+            assert_eq!(
+                cc, expected,
+                "TTL for role={:?} doesn't match expectation",
+                m.role
+            );
         }
     }
 
@@ -11484,8 +11513,14 @@ mod cache_boundary_stability_tests {
             .collect();
         // Verifies that system (idx=0) and the last 2 non-system entries (idx=4, idx=5)
         // are both tagged.
-        assert!(tagged_indices.contains(&0), "first system entry was not tagged");
-        assert!(tagged_indices.contains(&4), "second-to-last entry was not tagged");
+        assert!(
+            tagged_indices.contains(&0),
+            "first system entry was not tagged"
+        );
+        assert!(
+            tagged_indices.contains(&4),
+            "second-to-last entry was not tagged"
+        );
         assert!(tagged_indices.contains(&5), "last entry was not tagged");
         assert_eq!(
             tagged_indices.len(),
@@ -11747,8 +11782,8 @@ mod serializer_readiness_tests {
     };
     use crate::ai::byop_compaction::state::{CompactionState, CompletedCompaction};
     use crate::ai::byop_readiness::{
-        PendingByopToolResultsError, RepairRecord, RepairState, ToolCallKey, ToolCallRef,
-        BLOCKED_BYOP_REQUEST_MESSAGE,
+        BLOCKED_BYOP_REQUEST_MESSAGE, PendingByopToolResultsError, RepairRecord, RepairState,
+        ToolCallKey, ToolCallRef,
     };
     use crate::terminal::model::block::BlockId;
     use std::collections::{HashMap, HashSet};
@@ -12547,9 +12582,11 @@ mod serializer_readiness_tests {
     #[test]
     fn strict_request_body_checker_rejects_orphans_duplicates_and_early_boundaries() {
         let orphan = vec![ChatMessage::user("hi"), tool_response("a")];
-        assert!(strict_chat_completions_ordering_errors(&orphan)
-            .iter()
-            .any(|error| error.contains("orphan")));
+        assert!(
+            strict_chat_completions_ordering_errors(&orphan)
+                .iter()
+                .any(|error| error.contains("orphan"))
+        );
 
         let duplicate = vec![
             ChatMessage::user("hi"),
@@ -12557,9 +12594,11 @@ mod serializer_readiness_tests {
             tool_response("a"),
             tool_response("a"),
         ];
-        assert!(strict_chat_completions_ordering_errors(&duplicate)
-            .iter()
-            .any(|error| error.contains("duplicate")));
+        assert!(
+            strict_chat_completions_ordering_errors(&duplicate)
+                .iter()
+                .any(|error| error.contains("duplicate"))
+        );
 
         let early_boundary = vec![
             ChatMessage::user("hi"),
@@ -12567,9 +12606,11 @@ mod serializer_readiness_tests {
             ChatMessage::user("too soon"),
             tool_response("a"),
         ];
-        assert!(strict_chat_completions_ordering_errors(&early_boundary)
-            .iter()
-            .any(|error| error.contains("before pending")));
+        assert!(
+            strict_chat_completions_ordering_errors(&early_boundary)
+                .iter()
+                .any(|error| error.contains("before pending"))
+        );
 
         let out_of_order = vec![
             ChatMessage::user("hi"),
@@ -12577,9 +12618,11 @@ mod serializer_readiness_tests {
             tool_response("b"),
             tool_response("a"),
         ];
-        assert!(strict_chat_completions_ordering_errors(&out_of_order)
-            .iter()
-            .any(|error| error.contains("out-of-order")));
+        assert!(
+            strict_chat_completions_ordering_errors(&out_of_order)
+                .iter()
+                .any(|error| error.contains("out-of-order"))
+        );
     }
 
     #[test]
@@ -13052,12 +13095,7 @@ mod serializer_readiness_tests {
         // gradient keeps the encoded size in the same order of magnitude as a real screenshot.
         let mut img = ::image::RgbaImage::new(width, height);
         for (x, y, pixel) in img.enumerate_pixels_mut() {
-            *pixel = ::image::Rgba([
-                (x % 256) as u8,
-                (y % 256) as u8,
-                ((x + y) % 256) as u8,
-                255,
-            ]);
+            *pixel = ::image::Rgba([(x % 256) as u8, (y % 256) as u8, ((x + y) % 256) as u8, 255]);
         }
         let mut out = Vec::new();
         ::image::DynamicImage::ImageRgba8(img)
@@ -13137,8 +13175,7 @@ mod serializer_readiness_tests {
         api_type: AgentProviderApiType,
         images: bool,
     ) -> ChatRequest {
-        build_chat_request(params, false, api_type, caps(images))
-            .expect("request should serialize")
+        build_chat_request(params, false, api_type, caps(images)).expect("request should serialize")
     }
 
     fn attached_binaries(request: &ChatRequest) -> Vec<&Binary> {
@@ -13210,7 +13247,10 @@ mod serializer_readiness_tests {
         // The image rides on a user message that comes after every tool response, so pairing is
         // untouched.
         let errors = strict_chat_completions_ordering_errors(&request.messages);
-        assert!(errors.is_empty(), "pairing broken by the attachment: {errors:?}");
+        assert!(
+            errors.is_empty(),
+            "pairing broken by the attachment: {errors:?}"
+        );
 
         // The replayed assistant turn must name the tool the model actually called, or it
         // cannot correlate the image with the action that produced it.
@@ -13307,10 +13347,9 @@ mod serializer_readiness_tests {
         );
 
         use ::image::GenericImageView as _;
-        let (width, height) =
-            ::image::load_from_memory(&decoded_bytes)
-                .expect("attachment must still be a decodable image")
-                .dimensions();
+        let (width, height) = ::image::load_from_memory(&decoded_bytes)
+            .expect("attachment must still be a decodable image")
+            .dimensions();
         assert!(
             width.max(height) <= ATTACHED_SCREENSHOT_MAX_LONG_EDGE_PX,
             "long edge {} exceeds the cap",
@@ -13826,7 +13865,11 @@ mod accepted_history_repair_tests {
         ];
         repair_messages(&mut msgs);
 
-        assert_eq!(msgs.len(), 3, "two adjacent Tool messages should merge into one");
+        assert_eq!(
+            msgs.len(),
+            3,
+            "two adjacent Tool messages should merge into one"
+        );
         assert_eq!(msgs[0].role, ChatRole::User);
         assert_eq!(msgs[1].role, ChatRole::Assistant);
         assert_eq!(msgs[2].role, ChatRole::Tool);
@@ -13847,7 +13890,11 @@ mod accepted_history_repair_tests {
         let mut msgs = vec![ChatMessage::user("q"), assistant_with_calls(&["a", "b"])];
         repair_messages(&mut msgs);
 
-        assert_eq!(msgs.len(), 3, "a Tool message must be filled in after Assistant");
+        assert_eq!(
+            msgs.len(),
+            3,
+            "a Tool message must be filled in after Assistant"
+        );
         assert_eq!(msgs[2].role, ChatRole::Tool);
         let responses = responses_of(&msgs[2]);
         assert_eq!(
@@ -13891,7 +13938,11 @@ mod accepted_history_repair_tests {
         ];
         repair_messages(&mut msgs);
 
-        assert_eq!(msgs.len(), 3, "two adjacent Tool messages merge, orphan z is dropped");
+        assert_eq!(
+            msgs.len(),
+            3,
+            "two adjacent Tool messages merge, orphan z is dropped"
+        );
         let responses = responses_of(&msgs[2]);
         assert_eq!(
             responses,
@@ -14352,9 +14403,7 @@ mod push_environment_context_message_tests {
     /// `user`-role messages.
     #[test]
     fn anthropic_merges_into_trailing_user_message_instead_of_appending() {
-        let mut messages = vec![
-            ChatMessage::user("What folder am I in?"),
-        ];
+        let mut messages = vec![ChatMessage::user("What folder am I in?")];
 
         push_environment_context_message(
             &mut messages,
@@ -14460,7 +14509,8 @@ mod dispatch_byop_web_tool_tests {
             .and_then(|v| v.as_str())
             .unwrap_or_default();
         assert!(
-            message.to_lowercase().contains("web_search_enabled") || message.to_lowercase().contains("disabled"),
+            message.to_lowercase().contains("web_search_enabled")
+                || message.to_lowercase().contains("disabled"),
             "error message should explain the search was rejected because web search is \
              disabled, got: {message}"
         );
@@ -14470,8 +14520,8 @@ mod dispatch_byop_web_tool_tests {
     /// tools go through the same privacy switch), so it must be rejected too.
     #[tokio::test]
     async fn webfetch_rejected_when_web_search_disabled() {
-        let args = serde_json::json!({ "url": "https://example.invalid/does-this-run" })
-            .to_string();
+        let args =
+            serde_json::json!({ "url": "https://example.invalid/does-this-run" }).to_string();
 
         let result = dispatch_byop_web_tool(tools::webfetch::TOOL_NAME, &args, false).await;
 
@@ -14950,7 +15000,9 @@ mod plan_mode_round_trip_tests {
                 tool_withdrawn_reason(&params, refused).is_some(),
                 "{refused} must be refused on a CLI-subagent turn"
             );
-            assert!(tool_call_refused_at_dispatch(&params, false, &offered, refused));
+            assert!(tool_call_refused_at_dispatch(
+                &params, false, &offered, refused
+            ));
         }
         for allowed in CLI_AGENT_TOOLS.iter().copied() {
             assert!(
@@ -15306,7 +15358,10 @@ mod plan_mode_round_trip_tests {
             in_names
         };
 
-        assert!(offers(&all_tools_on()), "a listed local skill offers read_skill");
+        assert!(
+            offers(&all_tools_on()),
+            "a listed local skill offers read_skill"
+        );
 
         // No skills context at all (ListSkills off / nothing discovered), and a tool-result
         // turn whose remembered context is missing: the fixture's conversation id was never
@@ -15324,7 +15379,10 @@ mod plan_mode_round_trip_tests {
         let mut remote = all_tools_on();
         remote.session_context =
             crate::ai::blocklist::SessionContext::new_warpified_remote_for_test(true);
-        assert!(!offers(&remote), "a local skill cannot bind on a remote host");
+        assert!(
+            !offers(&remote),
+            "a local skill cannot bind on a remote host"
+        );
 
         // Refused at dispatch once it is withheld.
         let offered = available_tool_names(&none_listed);
@@ -15380,7 +15438,11 @@ mod plan_mode_round_trip_tests {
             .byop_conversation_id
             .expect("fixture: a BYOP conversation");
         remember_conversation_context(conversation_id, &listed_skill_context());
-        assert!(available_tool_names(&params).iter().any(|n| n == "read_skill"));
+        assert!(
+            available_tool_names(&params)
+                .iter()
+                .any(|n| n == "read_skill")
+        );
         assert_eq!(turn_listed_skills(&params).len(), 1);
     }
 
@@ -15520,11 +15582,16 @@ mod plan_mode_round_trip_tests {
                 Some(DispatchRefusal::NotOffered),
                 "{name}"
             );
-            assert!(tool_call_refused_at_dispatch(&params, false, &offered, name));
+            assert!(tool_call_refused_at_dispatch(
+                &params, false, &offered, name
+            ));
         }
         // A name that is no tool at all is left to `parse_incoming_tool_call`'s
         // UnknownToolName result (rename hint, arg-shape recovery over offered tools only).
-        assert_eq!(dispatch_refusal(&params, false, &offered, "no_such_tool"), None);
+        assert_eq!(
+            dispatch_refusal(&params, false, &offered, "no_such_tool"),
+            None
+        );
     }
 
     /// #1067: MCP tools are named dynamically, so the gate must compare against the offered
@@ -15542,7 +15609,10 @@ mod plan_mode_round_trip_tests {
         )
         .remove(0)
         .0;
-        assert!(offered.contains(&mcp_name), "fixture: {mcp_name} must be offered");
+        assert!(
+            offered.contains(&mcp_name),
+            "fixture: {mcp_name} must be offered"
+        );
         assert_eq!(dispatch_refusal(&params, false, &offered, &mcp_name), None);
         assert_eq!(
             dispatch_refusal(&params, false, &offered, "mcp_read_resource"),
@@ -15574,7 +15644,11 @@ mod plan_mode_round_trip_tests {
         let v = dispatch_refusal_payload(r.unwrap(), SHELL, "{}");
         assert_eq!(field(&v, "error").as_deref(), Some("plan_mode_blocked"));
         assert_eq!(v.get("executed"), Some(&Value::Bool(false)));
-        assert!(field(&v, "message").unwrap().contains("Plan Mode is active"));
+        assert!(
+            field(&v, "message")
+                .unwrap()
+                .contains("Plan Mode is active")
+        );
 
         // Computer use off.
         let mut params = all_tools_on();
@@ -15585,7 +15659,11 @@ mod plan_mode_round_trip_tests {
         assert_eq!(r, Some(DispatchRefusal::ComputerUseDisabled));
         let v = dispatch_refusal_payload(r.unwrap(), name, "{}");
         assert_eq!(field(&v, "error").as_deref(), Some("computer_use_disabled"));
-        assert!(field(&v, "message").unwrap().contains("Computer use is not available"));
+        assert!(
+            field(&v, "message")
+                .unwrap()
+                .contains("Computer use is not available")
+        );
 
         // Running command.
         let mut params = all_tools_on();
@@ -15600,9 +15678,11 @@ mod plan_mode_round_trip_tests {
         );
         let v = dispatch_refusal_payload(r.unwrap(), SHELL, "{}");
         assert_eq!(field(&v, "error").as_deref(), Some("tool_not_offered"));
-        assert!(field(&v, "message")
-            .unwrap()
-            .contains("A command is already running"));
+        assert!(
+            field(&v, "message")
+                .unwrap()
+                .contains("A command is already running")
+        );
 
         // No file route.
         let mut params = all_tools_on();
@@ -15612,9 +15692,11 @@ mod plan_mode_round_trip_tests {
         let r = dispatch_refusal(&params, false, &offered, "read_files");
         assert!(matches!(r, Some(DispatchRefusal::Withdrawn(_))), "{r:?}");
         let v = dispatch_refusal_payload(r.unwrap(), "read_files", "{}");
-        assert!(field(&v, "message")
-            .unwrap()
-            .contains("cannot reach the remote host's filesystem"));
+        assert!(
+            field(&v, "message")
+                .unwrap()
+                .contains("cannot reach the remote host's filesystem")
+        );
 
         // Every payload names its own code, carries `executed: false` where it did before,
         // and none of them would trigger the controller's auto-resume.
@@ -15690,7 +15772,10 @@ mod plan_mode_round_trip_tests {
         });
 
         let params = tool_result_round_trip(false);
-        assert!(!params.web_search_enabled, "fixture: web access must be off");
+        assert!(
+            !params.web_search_enabled,
+            "fixture: web access must be off"
+        );
         let (_cancel_tx, cancellation_rx) = futures::channel::oneshot::channel::<()>();
         let mut stream = generate_byop_output(ByopOutputInput {
             params,
@@ -15755,7 +15840,10 @@ mod plan_mode_round_trip_tests {
                 )
             })
             .count();
-        assert_eq!(calls, 1, "exactly one (carrier) ToolCall for the refused id");
+        assert_eq!(
+            calls, 1,
+            "exactly one (carrier) ToolCall for the refused id"
+        );
         let results: Vec<&api::Message> = messages
             .iter()
             .filter(|m| {
@@ -15765,7 +15853,11 @@ mod plan_mode_round_trip_tests {
                 )
             })
             .collect();
-        assert_eq!(results.len(), 1, "exactly one error result for the refused id");
+        assert_eq!(
+            results.len(),
+            1,
+            "exactly one error result for the refused id"
+        );
         assert!(
             results[0]
                 .server_message_data
@@ -16060,14 +16152,23 @@ mod plan_mode_round_trip_tests {
 
         let local = all_tools_on();
         let offered = available_tool_names(&local);
-        assert!(offered.iter().any(|n| n == "read_skill"), "fixture: offered locally");
-        assert_eq!(system_prompt_context(&ctx, &offered).as_ref(), ctx.as_slice());
+        assert!(
+            offered.iter().any(|n| n == "read_skill"),
+            "fixture: offered locally"
+        );
+        assert_eq!(
+            system_prompt_context(&ctx, &offered).as_ref(),
+            ctx.as_slice()
+        );
 
         let mut remote = all_tools_on();
         remote.session_context =
             crate::ai::blocklist::SessionContext::new_warpified_remote_for_test(false);
         let offered = available_tool_names(&remote);
-        assert!(!offered.iter().any(|n| n == "read_skill"), "fixture: withdrawn remotely");
+        assert!(
+            !offered.iter().any(|n| n == "read_skill"),
+            "fixture: withdrawn remotely"
+        );
         let filtered = system_prompt_context(&ctx, &offered);
         assert!(
             !filtered
@@ -16145,7 +16246,10 @@ mod plan_mode_round_trip_tests {
     #[test]
     fn the_first_round_trip_is_guarded_by_the_payload_alone() {
         let mut first = RequestParams::new_for_test(
-            vec![user_query_input("how would you fix this?", UserQueryMode::Plan)],
+            vec![user_query_input(
+                "how would you fix this?",
+                UserQueryMode::Plan,
+            )],
             vec![task_with_messages(vec![])],
         );
         first.plan_mode = false;
@@ -16154,7 +16258,9 @@ mod plan_mode_round_trip_tests {
             "the payload's own /plan UserQuery must still be honoured"
         );
         assert!(
-            !available_tool_names(&first).iter().any(|name| name == SHELL),
+            !available_tool_names(&first)
+                .iter()
+                .any(|name| name == SHELL),
             "the first round-trip must withdraw {SHELL}"
         );
     }
@@ -16518,7 +16624,10 @@ mod byop_diag_privacy_tests {
         static ONCE: std::sync::Once = std::sync::Once::new();
         static INSTALLED: AtomicBool = AtomicBool::new(false);
         ONCE.call_once(|| {
-            INSTALLED.store(warp_logging::set_unit_test_log_tap(capture_tap), Ordering::SeqCst);
+            INSTALLED.store(
+                warp_logging::set_unit_test_log_tap(capture_tap),
+                Ordering::SeqCst,
+            );
         });
         // The `#[ctor]` in `app/src/lib.rs` installs the unit-test logger before `main`,
         // so `log::set_logger` here could only ever fail. Rather than skip -- which would
@@ -17017,7 +17126,10 @@ mod read_skill_binding_tests {
     /// any action exists, with an error the rejected-call branch recognises.
     #[test]
     fn unlisted_name_is_rejected_before_an_action_exists() {
-        let skills = [listed("review", "/home/user/.agents/skills/review/SKILL.md")];
+        let skills = [listed(
+            "review",
+            "/home/user/.agents/skills/review/SKILL.md",
+        )];
         let err = parse_turn_tool_call(
             &read_skill_call("deploy"),
             None,
@@ -17833,7 +17945,10 @@ mod request_overhead_tests {
         );
         let deep = RequestParams::new_for_test(vec![], original.tasks.as_ref().clone());
         let body = body_of(&original);
-        assert!(body.len() > 100_000, "fixture should be a long conversation");
+        assert!(
+            body.len() > 100_000,
+            "fixture should be a long conversation"
+        );
         assert_eq!(body, body_of(&shared));
         assert_eq!(body, body_of(&deep));
     }
@@ -17994,7 +18109,10 @@ mod outbound_redaction_chat_tests {
         );
         params.should_redact_secrets = true;
         let redacted = wire(&params);
-        assert!(!redacted.contains(SECRET), "secret reached the wire: {redacted}");
+        assert!(
+            !redacted.contains(SECRET),
+            "secret reached the wire: {redacted}"
+        );
     }
 
     #[test]

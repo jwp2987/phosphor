@@ -4,8 +4,8 @@ use crate::ai::agent_sdk::output::{self, TableFormat};
 use crate::ai::llms::LLMPreferences;
 use comfy_table::Cell;
 use serde::Serialize;
-use warp_cli::{model::ModelCommand, GlobalOptions};
-use warpui::{platform::TerminationMode, AppContext, ModelContext, SingletonEntity};
+use warp_cli::{GlobalOptions, model::ModelCommand};
+use warpui::{AppContext, ModelContext, SingletonEntity, platform::TerminationMode};
 
 /// Handle model-related CLI commands.
 pub fn run(

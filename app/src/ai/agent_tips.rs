@@ -7,18 +7,18 @@ use crate::terminal::view::init::{
     TOGGLE_AUTOEXECUTE_MODE_KEYBINDING,
 };
 use crate::util::bindings::trigger_to_keystroke;
+use crate::workspace::WorkspaceAction;
 use crate::workspace::view::{
     TOGGLE_COMMAND_PALETTE_KEYBINDING_NAME, TOGGLE_RIGHT_PANEL_BINDING_NAME,
 };
-use crate::workspace::WorkspaceAction;
 use crate::workspaces::user_workspaces::UserWorkspaces;
 
 use markdown_parser::FormattedTextFragment;
 
 use std::sync::LazyLock;
 use std::time::Duration;
-use warpui::keymap::Keystroke;
 use warpui::r#async::SpawnedFutureHandle;
+use warpui::keymap::Keystroke;
 use warpui::{AppContext, Entity, ModelContext, SingletonEntity};
 
 /// Trait for tip implementations that can be displayed to users.
@@ -140,7 +140,6 @@ static DEFAULT_TIPS: LazyLock<Vec<AgentTip>> = LazyLock::new(|| {
             action: None,
             kind: AgentTipKind::Context,
         },
-
         AgentTip {
             description: crate::t!("agent-tip-agent-profiles"),
             link: Some("".to_string()),
@@ -419,10 +418,7 @@ pub fn get_agent_tips(ctx: &AppContext) -> Vec<AgentTip> {
     {
         tips.push(AgentTip {
             description: crate::t!("agent-tip-voice-input"),
-            link: Some(
-                ""
-                    .to_string(),
-            ),
+            link: Some("".to_string()),
             binding_name: Some("FN"),
             action: None,
             kind: AgentTipKind::General,

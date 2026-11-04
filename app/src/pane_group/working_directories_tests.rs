@@ -145,22 +145,28 @@ fn register_remote_repo_persists_across_local_refresh() {
 
         // Register a remote repo, then run a local-only refresh; the remote
         // root must survive the refresh (it is not rederivable from local CWDs).
-        let repos: Vec<LocalOrRemotePath> = working_directories_handle.update(&mut app, |model, ctx| {
-            model.register_remote_repo(pane_group_id, remote_root.clone(), remote_terminal, ctx);
+        let repos: Vec<LocalOrRemotePath> =
+            working_directories_handle.update(&mut app, |model, ctx| {
+                model.register_remote_repo(
+                    pane_group_id,
+                    remote_root.clone(),
+                    remote_terminal,
+                    ctx,
+                );
 
-            model.refresh_working_directories_for_pane_group(
-                pane_group_id,
-                vec![(local_terminal, local_cwd.to_string_lossy().to_string())],
-                vec![],
-                Some(local_terminal),
-                ctx,
-            );
+                model.refresh_working_directories_for_pane_group(
+                    pane_group_id,
+                    vec![(local_terminal, local_cwd.to_string_lossy().to_string())],
+                    vec![],
+                    Some(local_terminal),
+                    ctx,
+                );
 
-            model
-                .most_recent_repositories_for_pane_group(pane_group_id)
-                .expect("pane group exists")
-                .collect()
-        });
+                model
+                    .most_recent_repositories_for_pane_group(pane_group_id)
+                    .expect("pane group exists")
+                    .collect()
+            });
 
         assert!(
             repos.contains(&remote_root),

@@ -2,8 +2,8 @@ use std::collections::HashSet;
 use std::ops::Range;
 use std::sync::Arc;
 
-use chrono::Local;
 use agent_proto::{FileContent, FileContentLineRange};
+use chrono::Local;
 
 use crate::ai::agent::{
     AIAgentContext, AIAgentExchange, AIAgentExchangeId, AIAgentOutput, AIAgentOutputMessage,

@@ -44,10 +44,10 @@
 //! The result inside `ToolCallResultType::CallMcpTool(CallMcpToolResult)` is
 //! structured MCP content, converted to JSON for the upstream model.
 
-use anyhow::{anyhow, Result};
-use prost_types::value::Kind as ProstKind;
-use serde_json::{json, Map, Value};
 use agent_proto as api;
+use anyhow::{Result, anyhow};
+use prost_types::value::Kind as ProstKind;
+use serde_json::{Map, Value, json};
 
 use crate::ai::agent::{MCPContext, MCPServer};
 

@@ -9,7 +9,7 @@
 //! All HTTP calls live in `web_runtime.rs`; this module is only responsible for
 //! building the request body and parsing the response string.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

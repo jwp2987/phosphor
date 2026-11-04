@@ -1,10 +1,10 @@
+use crate::Scene;
 use crate::image_cache::StaticImage;
 use crate::rendering::texture_cache::{TextureCache, TextureCacheIndex};
 use crate::rendering::wgpu::{resources, shader_types};
 use crate::scene::Layer;
-use crate::Scene;
 use std::borrow::Cow;
-use std::sync::{atomic::AtomicBool, Arc};
+use std::sync::{Arc, atomic::AtomicBool};
 use wgpu::{
     BindGroup, BindGroupDescriptor, BindGroupLayout, ColorTargetState, Device, Extent3d,
     FilterMode, Queue, RenderPass, RenderPipeline, Sampler, TextureDescriptor, TextureFormat,
@@ -13,8 +13,8 @@ use wgpu::{
 
 use self::shaders::{ColorModifier, ImageInstanceData};
 
-use super::util::InstanceBuffers;
 use super::WGPUContext;
+use super::util::InstanceBuffers;
 
 pub(super) struct Pipeline {
     render_pipeline: RenderPipeline,
@@ -310,8 +310,8 @@ impl TextureInfo {
 }
 
 mod shaders {
-    use crate::rendering::wgpu::shader_types::{vec4f, ColorF, Vector4F};
     use crate::rendering::CornerRadius;
+    use crate::rendering::wgpu::shader_types::{ColorF, Vector4F, vec4f};
     use pathfinder_color::ColorU;
     use pathfinder_geometry::rect::RectF;
 

@@ -1,14 +1,14 @@
+use agent_proto as api;
 use hashbrown::HashMap;
 use indexmap::IndexMap;
-use agent_proto as api;
 use warp_util::hashed::Hashed;
 
 use super::{
-    task::{
-        helper::{MessageExt, ToolCallExt},
-        Task, TaskId,
-    },
     AIAgentExchange, AIAgentExchangeId, AIAgentOutputMessageType,
+    task::{
+        Task, TaskId,
+        helper::{MessageExt, ToolCallExt},
+    },
 };
 
 #[derive(Debug, Clone)]

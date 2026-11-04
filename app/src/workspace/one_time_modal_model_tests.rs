@@ -1,6 +1,6 @@
 use warpui::{App, SingletonEntity};
 
-use super::{AISettings, FeatureIntroId, OneTimeModalModel, FEATURE_INTROS};
+use super::{AISettings, FEATURE_INTROS, FeatureIntroId, OneTimeModalModel};
 use crate::test_util::terminal::{add_window_with_terminal, initialize_app_for_terminal_view};
 
 #[test]

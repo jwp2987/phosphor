@@ -16,7 +16,7 @@ use warpui::{async_assert, async_assert_eq, integration::TestStep};
 
 use crate::util::{get_input_buffer, skip_if_powershell_core_2303};
 
-use super::{new_builder, Builder};
+use super::{Builder, new_builder};
 
 pub fn test_input_syncing_is_off_by_default() -> Builder {
     new_builder()

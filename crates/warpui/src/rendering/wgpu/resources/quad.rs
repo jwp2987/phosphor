@@ -1,6 +1,6 @@
 use wgpu::{
-    util::{BufferInitDescriptor, DeviceExt},
     Buffer, RenderPass,
+    util::{BufferInitDescriptor, DeviceExt},
 };
 
 use crate::rendering::wgpu::shader_types;

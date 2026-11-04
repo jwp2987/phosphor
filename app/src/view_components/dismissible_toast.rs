@@ -7,10 +7,13 @@ use uuid::Uuid;
 use warp_core::ui::builder::UiBuilder;
 use warp_core::ui::theme::color::internal_colors;
 use warpui::accessibility::{AccessibilityContent, ActionAccessibilityContent, WarpA11yRole};
+use warpui::r#async::Timer;
 use warpui::elements::ChildView;
 use warpui::keymap::Keystroke;
-use warpui::r#async::Timer;
+use warpui::{Action, ViewHandle};
 use warpui::{
+    AppContext, Element, Entity, SingletonEntity, TypedActionView, View, ViewContext,
+    r#async::SpawnedFutureHandle,
     elements::{
         Border, ChildAnchor, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment,
         DispatchEventResult, EventHandler, Flex, Hoverable, Icon, MainAxisAlignment, MainAxisSize,
@@ -18,12 +21,9 @@ use warpui::{
         PositionedElementOffsetBounds, Radius, SavePosition, Shrinkable, Stack,
     },
     fonts::Weight,
-    r#async::SpawnedFutureHandle,
     ui_components::button::ButtonVariant,
     ui_components::components::{Coords, UiComponent, UiComponentStyles},
-    AppContext, Element, Entity, SingletonEntity, TypedActionView, View, ViewContext,
 };
-use warpui::{Action, ViewHandle};
 
 use crate::{appearance::Appearance, themes::theme::Fill};
 

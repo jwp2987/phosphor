@@ -1,8 +1,8 @@
 use std::path::Path;
 
+use agent_proto as api;
 use anyhow::anyhow;
 use warp_core::report_error;
-use agent_proto as api;
 
 use crate::notebooks::NotebookId;
 

@@ -12,7 +12,7 @@ use warp_editor::search::Searcher;
 use warp_editor::search::{RestorableSearchResults, SelectedResult};
 use warpui::WeakViewHandle;
 use warpui::{
-    r#async::SpawnedFutureHandle, AppContext, Entity, EntityId, ModelContext, ViewHandle,
+    AppContext, Entity, EntityId, ModelContext, ViewHandle, r#async::SpawnedFutureHandle,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

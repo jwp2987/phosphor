@@ -108,7 +108,7 @@ pub use tracked::Tracked;
 
 use super::{EntityId, WindowId};
 use std::cell::UnsafeCell;
-use std::collections::{hash_map::Entry, HashMap, HashSet};
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::mem;
 use tracked::TrackedId;
 

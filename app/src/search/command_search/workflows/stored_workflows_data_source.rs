@@ -4,12 +4,12 @@ use futures_lite::future::yield_now;
 use warpui::{AppContext, SingletonEntity};
 
 use crate::cloud_object::model::persistence::ObjectStoreModel;
+use crate::search::QueryFilter;
 use crate::search::async_snapshot_data_source::AsyncSnapshotDataSource;
 use crate::search::command_search::searcher::CommandSearchItemAction;
 use crate::search::data_source::{Query, QueryResult};
 use crate::search::mixer::{BoxFuture, DataSourceRunErrorWrapper};
 use crate::search::workflows::fuzzy_match::FuzzyMatchWorkflowResult;
-use crate::search::QueryFilter;
 use crate::server::ids::SyncId;
 use crate::settings::AISettings;
 use crate::workflows::{WorkflowObjectModel, WorkflowSource};
@@ -31,8 +31,8 @@ pub(crate) struct StoredWorkflowsSnapshot {
 }
 
 /// Creates an async data source for cloud workflows (i.e. those that exist in Zap Drive).
-pub fn stored_workflows_data_source(
-) -> AsyncSnapshotDataSource<StoredWorkflowsSnapshot, CommandSearchItemAction> {
+pub fn stored_workflows_data_source()
+-> AsyncSnapshotDataSource<StoredWorkflowsSnapshot, CommandSearchItemAction> {
     AsyncSnapshotDataSource::new(
         |query: &Query, app: &AppContext| {
             let is_ai_enabled = AISettings::as_ref(app).is_any_ai_enabled(app);

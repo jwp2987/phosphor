@@ -43,13 +43,12 @@ pub(crate) mod file_invalidation_queue;
 use code_review_view::CodeReviewAction;
 use std::path::{Path, PathBuf};
 use warpui::{
-    id,
+    AppContext, Entity, EntityId, ModelContext, SingletonEntity, WeakViewHandle, WindowId, id,
     keymap::{EditableBinding, FixedBinding},
-    AppContext, Entity, EntityId, ModelContext, SingletonEntity, WeakViewHandle, WindowId,
 };
 
 use crate::code_review::telemetry_event::CodeReviewPaneEntrypoint;
-use crate::terminal::{view::TerminalView, CLIAgent};
+use crate::terminal::{CLIAgent, view::TerminalView};
 use crate::util::bindings::CustomAction;
 
 /// Arguments needed to open or toggle the code review panel.

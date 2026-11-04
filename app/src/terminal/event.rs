@@ -11,13 +11,13 @@ use warp_util::lazy::Lazy;
 
 use crate::server::ids::SyncId;
 use crate::server::telemetry::ImageProtocol;
+use crate::terminal::ClipboardType;
 use crate::terminal::model::block::BlockMetadata;
 use crate::terminal::model::block::{DeferredBlockContent, SerializedBlock};
 use crate::terminal::model::blocks::BlockList;
 use crate::terminal::model::completions::ShellCompletion;
 use crate::terminal::model::terminal_model::HandlerEvent;
 use crate::terminal::shell::ShellType;
-use crate::terminal::ClipboardType;
 use crate::util::AsciiDebug;
 
 use super::history::HistoryEntry;
@@ -664,10 +664,7 @@ impl Debug for Event {
             Event::RemoteServerReady { session_id } => {
                 write!(f, "RemoteServerReady(session: {session_id:?})")
             }
-            Event::RemoteServerFailed {
-                session_id,
-                error,
-            } => {
+            Event::RemoteServerFailed { session_id, error } => {
                 write!(
                     f,
                     "RemoteServerFailed(session: {session_id:?}, error: {error})"

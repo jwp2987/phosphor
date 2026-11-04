@@ -15,23 +15,25 @@ pub mod view_impl;
 
 pub use pending_user_query_block::{PendingUserQueryBlock, PendingUserQueryBlockEvent};
 
-use crate::ai::agent::telemetry::ForTelemetry as _;
 use crate::ai::agent::CancellationReason;
 use crate::ai::agent::PassiveSuggestionTrigger;
 use crate::ai::agent::SuggestPromptRequest;
 use crate::ai::agent::SuggestPromptResult;
 use crate::ai::agent::TodoOperation;
+use crate::ai::agent::telemetry::ForTelemetry as _;
 use crate::ai::ai_document_view::DEFAULT_PLANNING_DOCUMENT_TITLE;
+use crate::ai::blocklist::BlocklistAIContextEvent;
+use crate::ai::blocklist::BlocklistAIContextModel;
+use crate::ai::blocklist::SuggestionDismissButtonTheme;
 use crate::ai::blocklist::agent_view::{AgentViewController, AgentViewEntryOrigin};
 use crate::ai::blocklist::context_model::AttachmentType;
 use crate::ai::blocklist::inline_action::code_diff_view::convert_file_edits_to_file_diffs;
 use crate::ai::blocklist::inline_action::suggested_unit_tests::SuggestedUnitTestsEvent;
 use crate::ai::blocklist::inline_action::suggested_unit_tests::SuggestedUnitTestsView;
-use crate::ai::blocklist::BlocklistAIContextEvent;
-use crate::ai::blocklist::BlocklistAIContextModel;
-use crate::ai::blocklist::SuggestionDismissButtonTheme;
 use repo_metadata::repositories::DetectedRepositories;
 
+use crate::AIAgentTodoList;
+use crate::FileEdit;
 #[cfg(feature = "local_fs")]
 use crate::ai::skills::SkillOpenOrigin;
 use crate::ai::skills::{SkillManager, SkillTelemetryEvent};
@@ -39,20 +41,18 @@ use crate::code::editor::comment_editor::create_readonly_comment_markdown_editor
 use crate::code::editor::view::CodeEditorRenderOptions;
 use crate::code::editor_management::CodeSource;
 use crate::code_review::comment_rendering::{CommentViewCard, HeaderClickHandler};
+use crate::terminal::TerminalModel;
 use crate::terminal::model::BlockId;
 use crate::terminal::model_events::ModelEvent;
 use crate::terminal::model_events::ModelEventDispatcher;
 use crate::terminal::view::ambient_agent::AmbientAgentViewModel;
-use crate::terminal::TerminalModel;
 use crate::view_components::action_button::{
     ActionButtonTheme, NakedTheme, PrimaryTheme, SecondaryTheme,
 };
 use crate::view_components::compactible_action_button::CompactibleActionButton;
-use crate::AIAgentTodoList;
-use crate::FileEdit;
 use pathfinder_color::ColorU;
-use warp_core::ui::theme::color::internal_colors;
 use warp_core::ui::theme::Fill;
+use warp_core::ui::theme::color::internal_colors;
 
 use cli_controller::CLISubagentController;
 use cli_controller::CLISubagentEvent;
@@ -61,18 +61,19 @@ use model::AIBlockOutputStatus;
 use parking_lot::FairMutex;
 use settings::Setting as _;
 use warp_core::features::FeatureFlag;
-use warpui::elements::get_rich_content_position_id;
 use warpui::elements::ClippedScrollStateHandle;
 use warpui::elements::TableStateHandle;
+use warpui::elements::get_rich_content_position_id;
 use warpui::ui_components::radio_buttons::RadioButtonStateHandle;
 
-use crate::ai::agent::conversation::AIConversationId;
+use crate::Appearance;
 use crate::ai::agent::AIAgentActionResultType;
 use crate::ai::agent::AIAgentOutput;
 use crate::ai::agent::AIAgentTextSection;
 use crate::ai::agent::AIIdentifiers;
 use crate::ai::agent::MessageId;
 use crate::ai::agent::RequestFileEditsResult;
+use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::blocklist::action_model::NewConversationDecision;
 use crate::ai::blocklist::block::keyboard_navigable_buttons::KeyboardNavigableButtonBuilder;
 use crate::ai::blocklist::block::keyboard_navigable_buttons::KeyboardNavigableButtons;
@@ -99,7 +100,6 @@ use crate::view_components::action_button::ActionButton;
 use crate::view_components::action_button::ButtonSize;
 use crate::view_components::action_button::KeystrokeSource;
 use crate::workspaces::user_workspaces::UserWorkspaces;
-use crate::Appearance;
 use indexmap::IndexMap;
 use parking_lot::{Mutex, RwLock};
 use pathfinder_geometry::vector::vec2f;
@@ -131,15 +131,15 @@ use warp_editor::{
     content::buffer::InitialBufferState, render::element::VerticalExpansionBehavior,
 };
 use warpui::{
+    AppContext, Entity, EntityId, ModelHandle, SingletonEntity, TypedActionView, View, ViewContext,
+    ViewHandle, WeakViewHandle, WindowId,
     assets::asset_cache::AssetCache,
+    r#async::{SpawnedFutureHandle, Timer},
     clipboard::ClipboardContent,
     elements::{MouseStateHandle, SelectionBound, SelectionHandle},
     image_cache::ImageType,
     keymap::FixedBinding,
-    r#async::{SpawnedFutureHandle, Timer},
     text::SelectionType,
-    AppContext, Entity, EntityId, ModelHandle, SingletonEntity, TypedActionView, View, ViewContext,
-    ViewHandle, WeakViewHandle, WindowId,
 };
 
 use crate::ai::agent::{
@@ -149,7 +149,6 @@ use crate::ai::agent::{
     RenderableAIError, RequestCommandOutputResult, SuggestedLoggingId, SummarizationType,
 };
 use crate::ai::blocklist::inline_action::code_diff_view;
-use crate::ai::execution_profiles::profiles::AIExecutionProfilesModel;
 use crate::ai::blocklist::inline_action::requested_command::{
     self, RequestedActionViewType, RequestedCommand, RequestedCommandView,
     RequestedCommandViewEvent,
@@ -159,6 +158,7 @@ use crate::ai::blocklist::permissions::{
 };
 use crate::ai::blocklist::suggestion_chip_view::{SuggestedChipViewEvent, SuggestionChipView};
 use crate::ai::document::ai_document_model::{AIDocumentId, AIDocumentModel, AIDocumentVersion};
+use crate::ai::execution_profiles::profiles::AIExecutionProfilesModel;
 use crate::auth::AuthStateProvider;
 use crate::code::editor::view::{CodeEditorEvent, CodeEditorView};
 use crate::notebooks::editor::model::FileLinkResolutionContext;
@@ -169,7 +169,7 @@ use crate::terminal::{ShellLaunchData, TerminalView};
 use crate::uri::link_policy::{openable_untrusted_content_url, report_blocked_link};
 use crate::view_components::DismissibleToast;
 use crate::workspace::{ForkAIConversationParams, ForkedConversationDestination, WorkspaceAction};
-use crate::{report_error, report_if_error, ToastStack};
+use crate::{ToastStack, report_error, report_if_error};
 use ai::agent::action::{AskUserQuestionItem, InsertReviewComment};
 
 use crate::editor::InteractionState;
@@ -184,7 +184,7 @@ use crate::terminal::{
     find::{RichContentMatchId, TerminalFindModel},
     model::secrets::RichContentSecretTooltipInfo,
     safe_mode_settings::{
-        get_secret_obfuscation_mode, SafeModeSettings, SafeModeSettingsChangedEvent,
+        SafeModeSettings, SafeModeSettingsChangedEvent, get_secret_obfuscation_mode,
     },
     view::{RichContentLink, RichContentLinkTooltipInfo},
 };
@@ -195,11 +195,11 @@ use super::inline_action::requested_action::CTRL_C_KEYSTROKE;
 use super::inline_action::requested_action::ENTER_KEYSTROKE;
 use super::suggested_agent_mode_workflow_modal::SuggestedAgentModeWorkflowAndId;
 use super::suggested_rule_modal::SuggestedRuleAndId;
-use crate::code_review::comments::{
-    attach_pending_imported_comments, convert_insert_review_comments, AttachedReviewComment,
-    CommentId, CommentOrigin,
-};
 use crate::code_review::CodeReviewTelemetryEvent;
+use crate::code_review::comments::{
+    AttachedReviewComment, CommentId, CommentOrigin, attach_pending_imported_comments,
+    convert_insert_review_comments,
+};
 use crate::{
     ai::agent::{AIAgentInput, ServerOutputId},
     send_telemetry_from_ctx,
@@ -207,16 +207,16 @@ use crate::{
     settings::AISettings,
 };
 
-use super::controller::ClientIdentifiers;
 use super::ResponseStreamId;
+use super::controller::ClientIdentifiers;
 use super::{
+    BlocklistAIActionModel, BlocklistAIController, BlocklistAIHistoryEvent,
+    BlocklistAIHistoryModel, BlocklistAIPermissions,
     action_model::{AIActionStatus, BlocklistAIActionEvent, RequestFileEditsFormatKind},
     code_block::CodeSnippetButtonHandles,
     inline_action::code_diff_view::{CodeDiffState, CodeDiffView, CodeDiffViewEvent},
     inline_action::requested_command_attribution::is_command_copied_from_document,
     permissions::is_agent_mode_autonomy_allowed,
-    BlocklistAIActionModel, BlocklistAIController, BlocklistAIHistoryEvent,
-    BlocklistAIHistoryModel, BlocklistAIPermissions,
 };
 
 /// The default display name used for the user if they have no associated display name.
@@ -1481,10 +1481,8 @@ impl AIBlock {
                         && let Some(requested_command) =
                             me.requested_commands.get(requested_command_action_id)
                     {
-                        requested_command.force_expand_for_control_change(
-                            reason.overrides_user_collapse(),
-                            ctx,
-                        );
+                        requested_command
+                            .force_expand_for_control_change(reason.overrides_user_collapse(), ctx);
                     }
                     if let Some(requested_command_view) =
                         me.requested_commands.get(requested_command_action_id)
@@ -1694,12 +1692,17 @@ impl AIBlock {
         if me.model.status(ctx).is_streaming() {
             me.model
                 .on_updated_output(Box::new(Self::on_output_status_update), ctx);
-        } else { match me.model.status(ctx).output_to_render() { Some(output) => {
-            // "Simulate" receiving this output if output is already complete.
-            let output = output.get();
-            me.handle_updated_output(&output, ctx);
-            me.handle_complete_output(&output, ctx);
-        } _ => {}}}
+        } else {
+            match me.model.status(ctx).output_to_render() {
+                Some(output) => {
+                    // "Simulate" receiving this output if output is already complete.
+                    let output = output.get();
+                    me.handle_updated_output(&output, ctx);
+                    me.handle_complete_output(&output, ctx);
+                }
+                _ => {}
+            }
+        }
 
         match me.model.status(ctx) {
             AIBlockOutputStatus::Complete { .. } => {
@@ -4551,7 +4554,12 @@ impl AIBlock {
     ///
     /// Covers an MCP tool call's approval card as well as a shell command's (#1095).
     pub fn pending_command_card_view_id(&self, app: &AppContext) -> Option<EntityId> {
-        let pending_id = self.action_model.as_ref(app).get_pending_action(app)?.id.clone();
+        let pending_id = self
+            .action_model
+            .as_ref(app)
+            .get_pending_action(app)?
+            .id
+            .clone();
         let command = self
             .requested_commands
             .get(&pending_id)
@@ -4637,8 +4645,10 @@ impl AIBlock {
                             ..
                         } if speedbump_action_id == action_id && *shown.lock() => {
                             BlocklistAIPermissions::handle(ctx).update(ctx, |permissions, ctx| {
-                                report_if_error!(permissions
-                                    .set_should_autoexecute_readonly_commands(*checked, ctx));
+                                report_if_error!(
+                                    permissions
+                                        .set_should_autoexecute_readonly_commands(*checked, ctx)
+                                );
                             });
                         }
                         AutonomySettingSpeedbump::ShouldShowForFileAccess {
@@ -6494,7 +6504,10 @@ impl TypedActionView for AIBlock {
                     .get_pending_actions_for_conversation(&conversation_id)
                     .next()
                     .filter(|action| {
-                        matches!(action.action, AIAgentActionType::RequestCommandOutput { .. })
+                        matches!(
+                            action.action,
+                            AIAgentActionType::RequestCommandOutput { .. }
+                        )
                     })
                     .and_then(|action| self.requested_commands.get(&action.id))
                     .map(|requested_command| requested_command.view.clone());
@@ -6626,9 +6639,11 @@ impl TypedActionView for AIBlock {
                     }
                 });
                 AISettings::handle(ctx).update(ctx, |settings, ctx| {
-                    report_if_error!(settings
-                        .rule_suggestions_enabled_internal
-                        .set_value(false, ctx));
+                    report_if_error!(
+                        settings
+                            .rule_suggestions_enabled_internal
+                            .set_value(false, ctx)
+                    );
                 });
                 ctx.notify();
             }

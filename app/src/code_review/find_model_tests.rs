@@ -1,19 +1,19 @@
 use super::*;
+use crate::NotebookKeybindings;
 use crate::auth::AuthStateProvider;
 use crate::cloud_object::model::persistence::ObjectStoreModel;
 use crate::code::editor::view::{CodeEditorRenderOptions, CodeEditorView};
 use crate::code::local_code_editor::LocalCodeEditorView;
+use crate::code_review::GlobalCodeReviewModel;
 use crate::code_review::code_review_view::CodeReviewView;
 use crate::code_review::diff_state::DiffStateModel;
-use crate::code_review::GlobalCodeReviewModel;
 use crate::pane_group::WorkingDirectoriesModel;
 use crate::settings_view::keybindings::KeybindingChangedNotifier;
 use crate::test_util::settings::initialize_settings_for_tests;
 use crate::vim_registers::VimRegisters;
-use crate::workspace::sync_inputs::SyncedInputState;
 use crate::workspace::ActiveSession;
+use crate::workspace::sync_inputs::SyncedInputState;
 use crate::workspaces::user_workspaces::UserWorkspaces;
-use crate::NotebookKeybindings;
 use repo_metadata::repositories::DetectedRepositories;
 use std::path::PathBuf;
 use string_offset::CharOffset;
@@ -171,7 +171,10 @@ fn create_find_model_with_query(
     let working_directories_model = app.add_model(|_| WorkingDirectoriesModel::new());
     let code_review_comment_batch =
         working_directories_model.update(app, |working_directories, ctx| {
-            working_directories.get_or_create_code_review_comments(&warp_util::local_or_remote_path::LocalOrRemotePath::Local(repo_path.clone()), ctx)
+            working_directories.get_or_create_code_review_comments(
+                &warp_util::local_or_remote_path::LocalOrRemotePath::Local(repo_path.clone()),
+                ctx,
+            )
         });
 
     let code_review_view = app.add_view(window_id, |ctx| {

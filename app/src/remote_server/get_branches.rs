@@ -4,7 +4,7 @@
 //! unit-tested without the async handler pipeline.
 
 use super::proto::{
-    get_branches_response, BranchInfo, GetBranchesError, GetBranchesResponse, GetBranchesSuccess,
+    BranchInfo, GetBranchesError, GetBranchesResponse, GetBranchesSuccess, get_branches_response,
 };
 
 /// Builds a success response from `(branch_name, is_main)` pairs, as returned
@@ -23,7 +23,9 @@ pub(super) fn success_response(branches: Vec<(String, bool)>) -> GetBranchesResp
 /// Builds an error response carrying `message`.
 pub(super) fn error_response(message: String) -> GetBranchesResponse {
     GetBranchesResponse {
-        result: Some(get_branches_response::Result::Error(GetBranchesError { message })),
+        result: Some(get_branches_response::Result::Error(GetBranchesError {
+            message,
+        })),
     }
 }
 

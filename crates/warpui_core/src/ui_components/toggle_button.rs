@@ -1,12 +1,12 @@
 use pathfinder_geometry::vector::vec2f;
 
 use crate::{
+    Element,
     elements::{
         ChildAnchor, ConstrainedBox, Container, Empty, Hoverable, MouseState, MouseStateHandle,
         OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds, Stack,
     },
     scene::Border,
-    Element,
 };
 
 use super::{

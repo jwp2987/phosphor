@@ -205,17 +205,45 @@ fn hidden_command_blocks_user_accept_until_that_exact_text_is_shown() {
     let other_conversation = AIConversationId::new();
 
     let none_shown = HashMap::new();
-    assert!(hidden_command_blocks_user_accept(conversation, &long_token, &none_shown));
-    assert!(hidden_command_blocks_user_accept(conversation, &blank_padding, &none_shown));
-    assert!(!hidden_command_blocks_user_accept(conversation, &short, &none_shown));
-    assert!(!hidden_command_blocks_user_accept(conversation, &question, &none_shown));
+    assert!(hidden_command_blocks_user_accept(
+        conversation,
+        &long_token,
+        &none_shown
+    ));
+    assert!(hidden_command_blocks_user_accept(
+        conversation,
+        &blank_padding,
+        &none_shown
+    ));
+    assert!(!hidden_command_blocks_user_accept(
+        conversation,
+        &short,
+        &none_shown
+    ));
+    assert!(!hidden_command_blocks_user_accept(
+        conversation,
+        &question,
+        &none_shown
+    ));
 
     let mut shown = HashMap::new();
     shown.insert((conversation, long_token.id.clone()), long_text.clone());
-    assert!(!hidden_command_blocks_user_accept(conversation, &long_token, &shown));
+    assert!(!hidden_command_blocks_user_accept(
+        conversation,
+        &long_token,
+        &shown
+    ));
     // A mark is per action, per conversation: the same id elsewhere is not covered.
-    assert!(hidden_command_blocks_user_accept(other_conversation, &long_token, &shown));
-    assert!(hidden_command_blocks_user_accept(conversation, &blank_padding, &shown));
+    assert!(hidden_command_blocks_user_accept(
+        other_conversation,
+        &long_token,
+        &shown
+    ));
+    assert!(hidden_command_blocks_user_accept(
+        conversation,
+        &blank_padding,
+        &shown
+    ));
 
     // Review B1: a mark for one text does not cover another. The user edits the command,
     // shows the edit in full, and then an accept path runs a different (original) text.
@@ -224,5 +252,9 @@ fn hidden_command_blocks_user_accept_until_that_exact_text_is_shown() {
         (conversation, long_token.id.clone()),
         format!("{long_text} # edited"),
     );
-    assert!(hidden_command_blocks_user_accept(conversation, &long_token, &shown_edit));
+    assert!(hidden_command_blocks_user_accept(
+        conversation,
+        &long_token,
+        &shown_edit
+    ));
 }

@@ -14,14 +14,14 @@ use crate::server::ids::{ClientId, SyncId};
 use crate::settings::{AISettings, AISettingsChangedEvent};
 use crate::ui_components::icons::Icon;
 use crate::view_components::{
-    action_button::{ActionButton, NakedTheme},
     DismissibleToast,
+    action_button::{ActionButton, NakedTheme},
 };
 use crate::workspace::ToastStack;
 use crate::workspaces::user_workspaces::UserWorkspaces;
 use ai::project_context::model::{ProjectContextModel, ProjectContextModelEvent};
 use markdown_parser::{
-    weight::CustomWeight, FormattedText, FormattedTextFragment, FormattedTextLine,
+    FormattedText, FormattedTextFragment, FormattedTextLine, weight::CustomWeight,
 };
 use std::fmt::Debug;
 use std::path::PathBuf;
@@ -33,6 +33,8 @@ use warpui::elements::Shrinkable;
 use warpui::platform::FilePickerConfiguration;
 use warpui::ui_components::button::ButtonVariant;
 use warpui::{
+    AppContext, Element, Entity, FocusContext, SingletonEntity, TypedActionView, View, ViewContext,
+    ViewHandle,
     elements::{
         Align, Border, ChildView, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment,
         Expanded, Flex, FormattedTextElement, HighlightedHyperlink, Hoverable, MainAxisAlignment,
@@ -40,8 +42,6 @@ use warpui::{
     },
     platform::Cursor,
     ui_components::components::{UiComponent, UiComponentStyles},
-    AppContext, Element, Entity, FocusContext, SingletonEntity, TypedActionView, View, ViewContext,
-    ViewHandle,
 };
 
 use super::style;

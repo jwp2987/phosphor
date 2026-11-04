@@ -13,7 +13,7 @@ pub(super) mod telemetry;
 pub(super) mod util;
 
 // Re-export types that were moved to the ai crate.
-pub use ai::agent::{action::*, action_result::*, AIAgentCitation, FileLocations};
+pub use ai::agent::{AIAgentCitation, FileLocations, action::*, action_result::*};
 use warp_core::channel::ChannelState;
 use warp_core::features::FeatureFlag;
 
@@ -36,6 +36,7 @@ pub use telemetry::AIIdentifiers;
 
 use warp_editor::render::model::LineCount;
 
+use agent_proto::{AgentEvent, AgentType, diff_hunk as diff_hunk_api};
 use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
@@ -43,18 +44,17 @@ use std::ops::{AddAssign, Deref, DerefMut, Range};
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
-use agent_proto::{diff_hunk as diff_hunk_api, AgentEvent, AgentType};
 
 pub use self::api::{MaybeAIAgentOutputMessage, MessageToAIAgentOutputMessageError};
+use crate::TelemetryEvent;
 use crate::ai::execution_context::WarpAiExecutionContext;
 use crate::terminal::model::block::BlockId;
 use crate::terminal::shell::ShellType;
 use crate::terminal::view::block_onboarding::onboarding_agentic_suggestions_block::OnboardingChipType;
-use crate::TelemetryEvent;
 use derivative::Derivative;
 use markdown_parser::{
-    parse_markdown, parse_markdown_with_gfm_tables, FormattedTable, FormattedText,
-    FormattedTextInline, FormattedTextLine,
+    FormattedTable, FormattedText, FormattedTextInline, FormattedTextLine, parse_markdown,
+    parse_markdown_with_gfm_tables,
 };
 use serde::{Deserialize, Serialize};
 
@@ -813,7 +813,10 @@ impl From<&AIApiError> for RenderableAIError {
                     "Your AI provider returned HTTP 404 — the model id or base URL may be wrong.\n\n{err}"
                 ),
                 Some(status) => {
-                    format!("Your AI provider returned HTTP {}.\n\n{err}", status.as_u16())
+                    format!(
+                        "Your AI provider returned HTTP {}.\n\n{err}",
+                        status.as_u16()
+                    )
                 }
                 // A transport error with no HTTP status is a lost-connection failure: the
                 // server never responded. Surface it as a transient network error so the
@@ -836,7 +839,10 @@ impl From<&AIApiError> for RenderableAIError {
                 )
             }
             AIApiError::ErrorStatus(status, body, _) => {
-                format!("Your AI provider returned HTTP {}.\n\n{body}", status.as_u16())
+                format!(
+                    "Your AI provider returned HTTP {}.\n\n{body}",
+                    status.as_u16()
+                )
             }
             AIApiError::Deserialization(err) => {
                 format!("Phosphor couldn't parse the response from your AI provider.\n\n{err}")
@@ -861,7 +867,10 @@ impl Display for RenderableAIError {
         match self {
             Self::QuotaLimit => write!(f, "Quota limit reached."),
             Self::ServerOverloaded => {
-                write!(f, "Phosphor is currently overloaded. Please try again later.")
+                write!(
+                    f,
+                    "Phosphor is currently overloaded. Please try again later."
+                )
             }
             Self::InternalWarpError => write!(f, "Internal Phosphor error."),
             Self::ContextWindowExceeded(message) => {
@@ -2073,9 +2082,11 @@ impl Display for AIAgentOutputMessage {
             AIAgentOutputMessageType::EventsFromAgents { event_ids } => {
                 write!(f, "Received {} agent events", event_ids.len())?
             }
-            AIAgentOutputMessageType::RejectedToolCall { tool, detail, kind } => {
-                write!(f, "{}", rejected_tool_call_text(tool.as_deref(), detail, *kind))?
-            }
+            AIAgentOutputMessageType::RejectedToolCall { tool, detail, kind } => write!(
+                f,
+                "{}",
+                rejected_tool_call_text(tool.as_deref(), detail, *kind)
+            )?,
         }
 
         if !self.citations.is_empty() {
@@ -2474,9 +2485,7 @@ impl From<CurrentHead> for agent_proto::CurrentRef {
     fn from(value: CurrentHead) -> Self {
         Self {
             r#ref: Some(match value {
-                CurrentHead::BranchName(name) => {
-                    agent_proto::current_ref::Ref::BranchName(name)
-                }
+                CurrentHead::BranchName(name) => agent_proto::current_ref::Ref::BranchName(name),
                 CurrentHead::HeadlessCommitSha(sha) => {
                     agent_proto::current_ref::Ref::HeadlessCommitSha(sha)
                 }
@@ -2511,9 +2520,7 @@ impl From<DiffBase> for agent_proto::BaseRef {
                 DiffBase::HeadlessCommitSha(sha) => {
                     agent_proto::base_ref::Ref::HeadlessCommitSha(sha)
                 }
-                DiffBase::UncommittedChanges => {
-                    agent_proto::base_ref::Ref::UncommittedChanges(())
-                }
+                DiffBase::UncommittedChanges => agent_proto::base_ref::Ref::UncommittedChanges(()),
             }),
         }
     }

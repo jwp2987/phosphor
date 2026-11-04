@@ -18,6 +18,8 @@ use pathfinder_color::ColorU;
 use warp_core::ui::{appearance::Appearance, theme::Fill};
 use warp_editor::render::element::VerticalExpansionBehavior;
 use warpui::{
+    AppContext, Element, Entity, FocusContext, ModelHandle, SingletonEntity, TypedActionView, View,
+    ViewContext, ViewHandle,
     elements::{
         Border, ChildView, Clipped, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment,
         Flex, MainAxisAlignment, MainAxisSize, ParentElement, Radius, Shrinkable, Text,
@@ -25,8 +27,6 @@ use warpui::{
     keymap::Keystroke,
     text_layout::ClipConfig,
     units::Pixels,
-    AppContext, Element, Entity, FocusContext, ModelHandle, SingletonEntity, TypedActionView, View,
-    ViewContext, ViewHandle,
 };
 
 /// Default width of the comment editor, in pixels.

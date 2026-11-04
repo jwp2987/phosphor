@@ -1,11 +1,10 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use warpui::{
-    async_assert,
+    Event, SingletonEntity, async_assert,
     integration::{AssertionOutcome, TestStep},
-    Event, SingletonEntity,
 };
 
 use crate::integration_testing::terminal::{
@@ -36,11 +35,11 @@ use crate::{
 };
 
 use super::{
-    assert_active_block_output_for_single_terminal_in_tab, assert_active_block_received_precmd,
-    assert_alt_grid_active, assert_command_executed,
+    PYTHON_PROMPT_READY, assert_active_block_output_for_single_terminal_in_tab,
+    assert_active_block_received_precmd, assert_alt_grid_active, assert_command_executed,
     assert_long_running_block_executing_for_single_terminal_in_tab, assert_terminal_bootstrapped,
-    util::{current_shell_starter_and_version, nonce, ExpectedExitStatus, ExpectedOutput},
-    validate_block_output, PYTHON_PROMPT_READY,
+    util::{ExpectedExitStatus, ExpectedOutput, current_shell_starter_and_version, nonce},
+    validate_block_output,
 };
 
 pub fn wait_until_bootstrapped_single_pane_for_tab(tab_index: usize) -> TestStep {

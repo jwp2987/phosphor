@@ -7,7 +7,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::{core::view::AnyViewHandle, AnyView, EntityId};
+use crate::{AnyView, EntityId, core::view::AnyViewHandle};
 
 /// A unique identifier for a window.
 ///

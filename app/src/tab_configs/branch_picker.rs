@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use warpui::{
-    elements::ChildView, ui_components::components::UiComponentStyles, AppContext, Element, Entity,
-    TypedActionView, View, ViewContext, ViewHandle,
+    AppContext, Element, Entity, TypedActionView, View, ViewContext, ViewHandle,
+    elements::ChildView, ui_components::components::UiComponentStyles,
 };
 
 use crate::{
@@ -137,8 +137,10 @@ impl BranchPicker {
             async move {
                 let branches = match known_main {
                     Some(ref main) => {
-                        LocalDiffStateModel::get_all_branches_with_known_main(&cwd, main, None, false)
-                            .await
+                        LocalDiffStateModel::get_all_branches_with_known_main(
+                            &cwd, main, None, false,
+                        )
+                        .await
                     }
                     None => LocalDiffStateModel::get_all_branches(&cwd, None, false).await,
                 };

@@ -4,20 +4,20 @@ use ai::agent::action::{AIAgentActionType, ShellCommandDelay};
 use parking_lot::FairMutex;
 use warp_core::ui::appearance::Appearance;
 use warpui::{
-    elements::{CornerRadius, Radius},
     AppContext, Element, Entity, EntityId, ModelHandle, SingletonEntity, View, ViewContext,
+    elements::{CornerRadius, Radius},
 };
 
 use crate::{
     ai::{
         agent::icons,
         blocklist::{
+            BlocklistAIActionModel, BlocklistAIHistoryEvent, BlocklistAIHistoryModel,
             block::cli_controller::LongRunningCommandControlState,
-            inline_action::inline_action_header::HeaderConfig, BlocklistAIActionModel,
-            BlocklistAIHistoryEvent, BlocklistAIHistoryModel,
+            inline_action::inline_action_header::HeaderConfig,
         },
     },
-    terminal::{model::session::Sessions, TerminalModel},
+    terminal::{TerminalModel, model::session::Sessions},
     ui_components::{blended_colors, icons::Icon},
 };
 

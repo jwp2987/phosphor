@@ -3,8 +3,8 @@
 
 use std::path::{Path, PathBuf};
 
-use super::background_writer::{BackgroundWriter, FailureFn, WriteFn, WRITE_DEBOUNCE};
-use super::{in_memory::InMemoryPreferences, Error};
+use super::background_writer::{BackgroundWriter, FailureFn, WRITE_DEBOUNCE, WriteFn};
+use super::{Error, in_memory::InMemoryPreferences};
 
 /// A preferences file write (temp file + fsync + rename) slower than this is a visible stall
 /// when it happens on the UI thread (#1146, #1203).

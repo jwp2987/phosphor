@@ -2,8 +2,8 @@
 use std::fs;
 use std::{path::PathBuf, sync::Arc};
 
-use warp_core::features::FeatureFlag;
 use warp_core::HostId;
+use warp_core::features::FeatureFlag;
 use warp_util::standardized_path::StandardizedPath;
 
 use crate::{
@@ -16,22 +16,22 @@ use crate::{
     code::buffer_location::RemotePath,
     code::editor_management::CodeSource,
     notebooks::{NotebookObject, NotebookObjectModel},
-    persistence::{model, model::ObjectPermissions, schema, BlockCompleted, ModelEvent},
+    persistence::{BlockCompleted, ModelEvent, model, model::ObjectPermissions, schema},
     server::ids::ClientId,
     server_time::ServerTimestamp,
     settings_view::SettingsSection,
     tab::SelectedTabColor,
-    terminal::model::block::SerializedBlock,
     terminal::ShellLaunchData,
+    terminal::model::block::SerializedBlock,
     themes::theme::AnsiColorIdentifier,
     workspace::tab_group::TabGroupId,
 };
 
 use super::{
-    codebase_index_has_embeddings, decode_path, deduplicate_events, encode_path,
+    SPECULATIVE_READ, codebase_index_has_embeddings, decode_path, deduplicate_events, encode_path,
     get_all_codebase_index_metadata, read_sqlite_data, read_sqlite_data_counting, save_app_state,
     save_codebase_index_embeddings, save_codebase_index_metadata, setup_database,
-    setup_database_or_quarantine, speculative_startup_read, start_writer, SPECULATIVE_READ,
+    setup_database_or_quarantine, speculative_startup_read, start_writer,
 };
 use crate::auth::UserUid;
 
@@ -234,7 +234,7 @@ fn damaged_tab_rows_are_counted_as_skipped() {
         &mut conn,
         "PRAGMA foreign_keys = OFF; delete from pane_nodes;",
     )
-        .expect("rows deleted");
+    .expect("rows deleted");
     let restored = read_sqlite_data_counting(&mut conn, None, &skipped).expect("loads");
     assert_eq!(skipped.get(), 1);
     assert!(restored.app_state.windows[0].tabs.is_empty());
@@ -384,7 +384,10 @@ fn reconstruct_after_pause_keeps_the_new_databases_wal() {
     assert_eq!(restored[0].path, metadata.path);
     assert!(wal.exists(), "the WAL must still exist after the read");
 
-    writer.sender.send(ModelEvent::Terminate).expect("terminate");
+    writer
+        .sender
+        .send(ModelEvent::Terminate)
+        .expect("terminate");
     writer.handle.join().expect("writer should terminate");
 }
 
@@ -401,8 +404,14 @@ fn pause_and_reconstruct_cycles_do_not_leak_file_descriptors() {
     let conn = setup_database(&database_path).expect("database should initialize");
     let writer = start_writer(conn, database_path.clone()).expect("writer should start");
     let cycle = |writer: &super::WriterHandles| {
-        writer.sender.send(ModelEvent::PauseAndRemoveDatabase).unwrap();
-        writer.sender.send(ModelEvent::ReconstructAndResume).unwrap();
+        writer
+            .sender
+            .send(ModelEvent::PauseAndRemoveDatabase)
+            .unwrap();
+        writer
+            .sender
+            .send(ModelEvent::ReconstructAndResume)
+            .unwrap();
         // The writer is idle again once it answers a no-op-ish event; a write
         // forces it through the preceding events.
         writer
@@ -2271,7 +2280,7 @@ fn migration_race_error_is_recognised_and_not_unusable() {
 // Test-only: measures wall-clock time against the setup lock budget.
 #[allow(clippy::disallowed_types)]
 fn setup_gives_up_within_the_budget_when_another_connection_holds_the_lock() {
-    use diesel::{connection::SimpleConnection, Connection, SqliteConnection};
+    use diesel::{Connection, SqliteConnection, connection::SimpleConnection};
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let database_path = tempdir.path().join("warp.sqlite");
     let mut holder = SqliteConnection::establish(database_path.to_str().unwrap()).expect("open");
@@ -2283,7 +2292,10 @@ fn setup_gives_up_within_the_budget_when_another_connection_holds_the_lock() {
     let result = setup_database_or_quarantine(&database_path);
     let elapsed = started.elapsed();
 
-    assert!(result.is_err(), "setup cannot succeed while the lock is held");
+    assert!(
+        result.is_err(),
+        "setup cannot succeed while the lock is held"
+    );
     assert!(
         elapsed < std::time::Duration::from_millis(3500),
         "setup must give up within the budget, took {elapsed:?}"
@@ -2293,7 +2305,10 @@ fn setup_gives_up_within_the_budget_when_another_connection_holds_the_lock() {
         .filter_map(|entry| entry.ok())
         .filter(|entry| entry.file_name().to_string_lossy().contains("corrupt"))
         .count();
-    assert_eq!(quarantined, 0, "a held lock must never quarantine the database");
+    assert_eq!(
+        quarantined, 0,
+        "a held lock must never quarantine the database"
+    );
 
     holder.batch_execute("ROLLBACK;").expect("release");
     drop(holder);
@@ -3017,8 +3032,8 @@ fn writes_after_a_lock_episode_are_visible_to_a_fresh_connection() {
 /// waiting for another conversation to be saved or for the writer to close.
 #[test]
 fn lone_conversation_write_is_visible_to_a_fresh_connection_promptly() {
-    use diesel::{Connection as _, sqlite::SqliteConnection};
     use agent_proto as api;
+    use diesel::{Connection as _, sqlite::SqliteConnection};
 
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let database_path = tempdir.path().join("warp.sqlite");
@@ -3160,7 +3175,7 @@ struct SingleInt {
 /// A database with an intact header whose later pages (everything after the
 /// schema's own root pages, i.e. the row data) are damaged. Returns the path.
 fn database_with_damaged_data_pages(dir: &std::path::Path) -> std::path::PathBuf {
-    use diesel::{connection::SimpleConnection, RunQueryDsl};
+    use diesel::{RunQueryDsl, connection::SimpleConnection};
     use std::io::{Seek, SeekFrom, Write};
 
     let database_path = dir.join("warp.sqlite");
@@ -3231,8 +3246,8 @@ fn damaged_interior_pages_end_the_startup_read_and_are_quarantined() {
     let path_for_thread = database_path.clone();
     std::thread::spawn(move || {
         let outcome = (|| -> Result<String, String> {
-            let mut conn = setup_database(&path_for_thread)
-                .map_err(|err| format!("setup failed: {err:#}"))?;
+            let mut conn =
+                setup_database(&path_for_thread).map_err(|err| format!("setup failed: {err:#}"))?;
             match read_sqlite_data(&mut conn, None) {
                 Ok(_) => Ok(String::new()),
                 Err(err) => Ok(super::diesel_database_error_message(&err)),
@@ -3482,7 +3497,7 @@ fn writer_connection_uses_normal_synchronous_in_wal_mode() {
 /// A non-WAL connection keeps the safe default: NORMAL is only crash-safe in WAL.
 #[test]
 fn durability_pragmas_are_skipped_outside_wal_mode() {
-    use diesel::{connection::SimpleConnection, Connection, RunQueryDsl};
+    use diesel::{Connection, RunQueryDsl, connection::SimpleConnection};
     let mut conn = diesel::SqliteConnection::establish(":memory:").expect("in-memory db");
     conn.batch_execute("PRAGMA journal_mode=MEMORY;")
         .expect("journal mode");
@@ -3590,7 +3605,11 @@ fn write_barrier_is_answered_after_the_events_queued_before_it() {
 
     let mut conn = setup_database(&database_path).expect("database should reopen");
     let restored = get_all_codebase_index_metadata(&mut conn).expect("metadata should load");
-    assert_eq!(restored.len(), 1, "the write queued before the barrier is on disk");
+    assert_eq!(
+        restored.len(),
+        1,
+        "the write queued before the barrier is on disk"
+    );
     assert_eq!(restored[0].path, metadata.path);
 
     writer

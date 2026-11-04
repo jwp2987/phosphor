@@ -6,6 +6,7 @@ use std::path::Path;
 
 use warp_core::ui::appearance::Appearance;
 use warpui::{
+    AppContext, SingletonEntity, ViewContext, ViewHandle,
     elements::{
         ChildView, ClippedScrollStateHandle, Container, CornerRadius, CrossAxisAlignment, Element,
         Flex, MainAxisAlignment, MainAxisSize, MouseStateHandle, ParentElement, Radius, Text,
@@ -14,7 +15,6 @@ use warpui::{
         components::{UiComponent, UiComponentStyles},
         switch::SwitchStateHandle,
     },
-    AppContext, SingletonEntity, ViewContext, ViewHandle,
 };
 
 use crate::{
@@ -22,9 +22,9 @@ use crate::{
     code_review::{
         commit_message_gen,
         git_dialog::{
-            interactive_path_future, pr::show_pr_created_toast, render_branch_section,
-            render_file_changes_box, should_send_git_ops_ai_request, show_toast,
-            user_facing_git_error, GitDialog, GitDialogAction, GitDialogEvent, GitDialogMode,
+            GitDialog, GitDialogAction, GitDialogEvent, GitDialogMode, interactive_path_future,
+            pr::show_pr_created_toast, render_branch_section, render_file_changes_box,
+            should_send_git_ops_ai_request, show_toast, user_facing_git_error,
         },
     },
     editor::{
@@ -33,7 +33,7 @@ use crate::{
     },
     ui_components::icons::Icon,
     util::git::{
-        create_pr, get_file_change_entries, run_commit, run_push, FileChangeEntry, PrInfo,
+        FileChangeEntry, PrInfo, create_pr, get_file_change_entries, run_commit, run_push,
     },
     view_components::action_button::{ActionButton, ButtonSize, SecondaryTheme},
 };
@@ -291,10 +291,7 @@ fn autogen_config(app: &AppContext) -> Option<OneshotConfig> {
 /// `commit_message_gen::generate_commit_message_from_diff`; wiring it up is
 /// deferred until the remote git write-ops work (PR #125) lands, because the
 /// remote commit flow it hooks into does not exist on this branch yet.
-pub(super) fn maybe_start_commit_message_autogen(
-    me: &GitDialog,
-    ctx: &mut ViewContext<GitDialog>,
-) {
+pub(super) fn maybe_start_commit_message_autogen(me: &GitDialog, ctx: &mut ViewContext<GitDialog>) {
     let Some(cfg) = autogen_config(ctx) else {
         return;
     };
@@ -345,7 +342,11 @@ pub(super) fn apply_generated_commit_message(
     match result {
         Ok(generated) => {
             // User input wins — don't clobber their text.
-            let user_typed = !message_editor.as_ref(ctx).buffer_text(ctx).trim().is_empty();
+            let user_typed = !message_editor
+                .as_ref(ctx)
+                .buffer_text(ctx)
+                .trim()
+                .is_empty();
             message_editor.update(ctx, |editor, ctx| {
                 editor.set_placeholder_text(fallback_placeholder, ctx);
                 if !user_typed {

@@ -491,13 +491,14 @@ pub fn mermaid_diagram_layout(
     // been measured yet, or when the block's horizontal insets are wider than the
     // viewport. Clamp it so the block never claims a negative width.
     let max_width = (layout.max_width() - spacing.x_axis_offset()).max(Pixels::zero());
-    let (width, height) = mermaid_diagram_size(&asset_source, max_width, app).unwrap_or_else(|| {
-        // A diagram that failed to render collapses to a short placeholder
-        // height instead of reserving the full loading-state height.
-        let height = layout.rich_text_styles().base_line_height()
-            * mermaid_diagram_fallback_height_line_multiplier(&asset_source, app).into_pixels();
-        (max_width, height)
-    });
+    let (width, height) =
+        mermaid_diagram_size(&asset_source, max_width, app).unwrap_or_else(|| {
+            // A diagram that failed to render collapses to a short placeholder
+            // height instead of reserving the full loading-state height.
+            let height = layout.rich_text_styles().base_line_height()
+                * mermaid_diagram_fallback_height_line_multiplier(&asset_source, app).into_pixels();
+            (max_width, height)
+        });
 
     (
         asset_source,
@@ -512,7 +513,10 @@ pub fn mermaid_diagram_layout(
 /// The line-height multiplier for a diagram with no intrinsic size yet: a
 /// short placeholder once it has failed to load, otherwise the taller
 /// loading/default reservation.
-fn mermaid_diagram_fallback_height_line_multiplier(asset_source: &AssetSource, app: &AppContext) -> f32 {
+fn mermaid_diagram_fallback_height_line_multiplier(
+    asset_source: &AssetSource,
+    app: &AppContext,
+) -> f32 {
     let asset_cache = AssetCache::as_ref(app);
     match asset_cache.load_asset::<ImageType>(asset_source.clone()) {
         AssetState::FailedToLoad(_) => FAILED_MERMAID_HEIGHT_LINE_MULTIPLIER,
@@ -749,7 +753,10 @@ mod subprocess_tests {
     #[test]
     fn a_failing_or_silent_child_is_an_error() {
         assert!(run("echo partial; exit 1", "x", Duration::from_secs(5)).is_err());
-        assert!(run("exit 0", "x", Duration::from_secs(5)).is_err(), "empty output");
+        assert!(
+            run("exit 0", "x", Duration::from_secs(5)).is_err(),
+            "empty output"
+        );
     }
 
     #[test]

@@ -1,5 +1,5 @@
 use warp_core::features::FeatureFlag;
-use warpui::{elements::ScrollOffset, units::Pixels, ViewContext, ViewHandle};
+use warpui::{ViewContext, ViewHandle, elements::ScrollOffset, units::Pixels};
 
 use warpui::{AppContext, WeakViewHandle};
 

@@ -1,7 +1,7 @@
 use super::{
-    connection_label_from_session_hosts, connection_label_from_ssh_host,
+    KnownExtensionHosts, connection_label_from_session_hosts, connection_label_from_ssh_host,
     connection_label_from_user_and_host, early_bootstrap_flush_from_env,
-    early_flush_known_hosts_from_env, KnownExtensionHosts,
+    early_flush_known_hosts_from_env,
 };
 
 #[test]

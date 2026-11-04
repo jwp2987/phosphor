@@ -85,7 +85,10 @@ fn build_mcp_tool_defs_is_stable_across_calls() {
     };
     let r1 = build_mcp_tool_defs(&ctx);
     let r2 = build_mcp_tool_defs(&ctx);
-    assert_eq!(r1, r2, "build_mcp_tool_defs must produce deterministic output");
+    assert_eq!(
+        r1, r2,
+        "build_mcp_tool_defs must produce deterministic output"
+    );
 }
 
 /// When input servers / tools are out of order, the output is sorted by
@@ -208,13 +211,16 @@ fn read_resource_description_is_stable_and_sorted() {
     // After sorting, a.txt comes before z.txt
     let pos_a = last.1.find("a.txt").expect("should contain a.txt");
     let pos_z = last.1.find("z.txt").expect("should contain z.txt");
-    assert!(pos_a < pos_z, "available_uris must be sorted lexicographically");
+    assert!(
+        pos_a < pos_z,
+        "available_uris must be sorted lexicographically"
+    );
 }
 
 mod result_rendering {
     use super::super::serialize_result;
-    use serde_json::json;
     use agent_proto as api;
+    use serde_json::json;
 
     use api::call_mcp_tool_result::success::result::Result as Part;
 

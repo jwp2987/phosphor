@@ -27,15 +27,15 @@ use futures::{FutureExt, StreamExt};
 use async_channel::Sender;
 use notify_debouncer_full::notify::{RecursiveMode, WatchFilter};
 use repo_metadata::{
+    CanonicalizedPath, Repository, RepositoryUpdate, RepositoryWatchMode,
     repositories::DetectedRepositories,
     repository::{RepositorySubscriber, SubscriberId},
-    CanonicalizedPath, Repository, RepositoryUpdate, RepositoryWatchMode,
 };
 use warp_util::content_version::ContentVersion;
 use warp_util::file::FileSaveError;
 use warp_util::file::{FileId, FileLoadError};
 use warpui::ModelHandle;
-use warpui::{r#async::SpawnedFutureHandle, AppContext, Entity, ModelContext, SingletonEntity};
+use warpui::{AppContext, Entity, ModelContext, SingletonEntity, r#async::SpawnedFutureHandle};
 use watcher::{BulkFilesystemWatcher, BulkFilesystemWatcherEvent};
 
 pub mod atomic_write;
@@ -347,10 +347,12 @@ fn check_pre_image(
             "{display} was deleted after this change was proposed, so it was not \
              recreated. Re-run the request to work from the current file."
         )),
-        (ExpectedDiskState::Content(_), DiskProbe::Failed(err)) => PreWriteVerdict::Refuse(format!(
-            "{display} could not be read to check whether it changed since this change \
+        (ExpectedDiskState::Content(_), DiskProbe::Failed(err)) => {
+            PreWriteVerdict::Refuse(format!(
+                "{display} could not be read to check whether it changed since this change \
              was proposed ({err}), so it was not overwritten. Nothing was changed."
-        )),
+            ))
+        }
         // `probe_disk` pairs each expectation with its own syscall, so no other
         // combination can arise. Refuse rather than panic or assume: a probe
         // result that does not answer the question asked is exactly the "we
@@ -1220,17 +1222,14 @@ impl FileModel {
                         .await
                         .map_err(|e| e.to_string())
                 };
-                ctx.spawn(
-                    future,
-                    move |me, result: Result<(), String>, ctx| {
-                        me.report_save_outcome(
-                            file_id,
-                            version,
-                            result.map_err(FileSaveError::RemoteError),
-                            ctx,
-                        );
-                    },
-                );
+                ctx.spawn(future, move |me, result: Result<(), String>, ctx| {
+                    me.report_save_outcome(
+                        file_id,
+                        version,
+                        result.map_err(FileSaveError::RemoteError),
+                        ctx,
+                    );
+                });
             }
         }
 
@@ -1383,9 +1382,12 @@ impl FileModel {
                 let path = path.as_str().to_string();
                 let future = async move {
                     let read_result = client.read_file_bytes(path.clone()).await;
-                    if let Some(message) =
-                        remote_pre_image_refusal(&path, &expected, read_result, Some(content.as_str()))
-                    {
+                    if let Some(message) = remote_pre_image_refusal(
+                        &path,
+                        &expected,
+                        read_result,
+                        Some(content.as_str()),
+                    ) {
                         return Err(message);
                     }
                     client
@@ -1393,17 +1395,14 @@ impl FileModel {
                         .await
                         .map_err(|e| e.to_string())
                 };
-                ctx.spawn(
-                    future,
-                    move |me, result: Result<(), String>, ctx| {
-                        me.report_save_outcome(
-                            file_id,
-                            version,
-                            result.map_err(FileSaveError::RemoteError),
-                            ctx,
-                        );
-                    },
-                );
+                ctx.spawn(future, move |me, result: Result<(), String>, ctx| {
+                    me.report_save_outcome(
+                        file_id,
+                        version,
+                        result.map_err(FileSaveError::RemoteError),
+                        ctx,
+                    );
+                });
             }
         }
 
@@ -1710,17 +1709,14 @@ impl FileModel {
                 let path = path.as_str().to_string();
                 let future =
                     async move { client.delete_file(path).await.map_err(|e| e.to_string()) };
-                ctx.spawn(
-                    future,
-                    move |me, result: Result<(), String>, ctx| {
-                        me.report_save_outcome(
-                            file_id,
-                            version,
-                            result.map_err(FileSaveError::RemoteError),
-                            ctx,
-                        );
-                    },
-                );
+                ctx.spawn(future, move |me, result: Result<(), String>, ctx| {
+                    me.report_save_outcome(
+                        file_id,
+                        version,
+                        result.map_err(FileSaveError::RemoteError),
+                        ctx,
+                    );
+                });
             }
         }
 
@@ -1811,17 +1807,14 @@ impl FileModel {
                     }
                     client.delete_file(path).await.map_err(|e| e.to_string())
                 };
-                ctx.spawn(
-                    future,
-                    move |me, result: Result<(), String>, ctx| {
-                        me.report_save_outcome(
-                            file_id,
-                            version,
-                            result.map_err(FileSaveError::RemoteError),
-                            ctx,
-                        );
-                    },
-                );
+                ctx.spawn(future, move |me, result: Result<(), String>, ctx| {
+                    me.report_save_outcome(
+                        file_id,
+                        version,
+                        result.map_err(FileSaveError::RemoteError),
+                        ctx,
+                    );
+                });
             }
         }
 

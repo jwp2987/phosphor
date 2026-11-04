@@ -6,18 +6,18 @@ use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::vec2f;
 use std::sync::Arc;
 use warpui::{
+    AppContext, Element, Entity, EntityId, ModelHandle, SingletonEntity as _, TypedActionView,
+    View, ViewContext, ViewHandle,
     elements::{
         Border, ChildAnchor, ChildView, ConstrainedBox, Container, CornerRadius,
-        CrossAxisAlignment, DropShadow, Empty, Expanded, Flex, Hoverable, MainAxisAlignment,
-        MainAxisSize, MouseStateHandle, OffsetPositioning, ParentAnchor, ParentElement as _,
-        ParentOffsetBounds, Percentage, PositionedElementAnchor, PositionedElementOffsetBounds,
-        Radius, Rect, SavePosition, Stack, Text, DEFAULT_UI_LINE_HEIGHT_RATIO,
+        CrossAxisAlignment, DEFAULT_UI_LINE_HEIGHT_RATIO, DropShadow, Empty, Expanded, Flex,
+        Hoverable, MainAxisAlignment, MainAxisSize, MouseStateHandle, OffsetPositioning,
+        ParentAnchor, ParentElement as _, ParentOffsetBounds, Percentage, PositionedElementAnchor,
+        PositionedElementOffsetBounds, Radius, Rect, SavePosition, Stack, Text,
     },
     platform::Cursor,
     text_layout::ClipConfig,
     ui_components::components::UiComponent,
-    AppContext, Element, Entity, EntityId, ModelHandle, SingletonEntity as _, TypedActionView,
-    View, ViewContext, ViewHandle,
 };
 
 const SIDECAR_HORIZONTAL_GAP: f32 = 8.;
@@ -26,16 +26,16 @@ const SIDECAR_POSITION_ID: &str = "model_sidecar_panel";
 use crate::{
     ai::{
         blocklist::{
-            prompt::PromptIconButtonTheme, BlocklistAIController, BlocklistAIControllerEvent,
-            BlocklistAIInputEvent, BlocklistAIInputModel,
+            BlocklistAIController, BlocklistAIControllerEvent, BlocklistAIInputEvent,
+            BlocklistAIInputModel, prompt::PromptIconButtonTheme,
         },
         execution_profiles::{
             model_menu_items::{available_model_menu_items, has_reasoning_variants, is_auto},
             profiles::{AIExecutionProfilesModel, AIExecutionProfilesModelEvent, ClientProfileId},
         },
         llms::{
-            dedupe_model_display_names, is_using_api_key_for_provider, LLMId, LLMInfo,
-            LLMPreferences, LLMPreferencesEvent, LLMSpec,
+            LLMId, LLMInfo, LLMPreferences, LLMPreferencesEvent, LLMSpec,
+            dedupe_model_display_names, is_using_api_key_for_provider,
         },
     },
     appearance::Appearance,
@@ -48,21 +48,21 @@ use crate::{
     settings_view::SettingsSection,
     terminal::view::ambient_agent::AmbientAgentViewModel,
     terminal::{
-        input::{MenuPositioning, MenuPositioningProvider},
         TerminalModel,
+        input::{MenuPositioning, MenuPositioningProvider},
     },
     ui_components::icons::Icon,
     view_components::{
-        action_button::{ActionButton, ActionButtonTheme, ButtonSize, SecondaryTheme},
         FeaturePopup, NewFeaturePopupEvent, NewFeaturePopupLabel,
+        action_button::{ActionButton, ActionButtonTheme, ButtonSize, SecondaryTheme},
     },
     workspace::WorkspaceAction,
 };
 
-use warp_core::ui::theme::{color::internal_colors, Fill};
+use warp_core::ui::theme::{Fill, color::internal_colors};
 use warp_core::{
     features::FeatureFlag,
-    ui::color::{coloru_with_opacity, Opacity},
+    ui::color::{Opacity, coloru_with_opacity},
 };
 
 const MENU_WIDTH: f32 = 280.;

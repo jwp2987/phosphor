@@ -2,7 +2,7 @@ mod awake_time;
 pub mod settings;
 mod stack;
 
-use warpui::{keymap::EditableBinding, AppContext};
+use warpui::{AppContext, keymap::EditableBinding};
 
 use crate::{util::bindings::CustomAction, workspace::WorkspaceAction};
 

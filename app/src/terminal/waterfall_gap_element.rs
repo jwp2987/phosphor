@@ -1,11 +1,11 @@
-use pathfinder_geometry::vector::{vec2f, Vector2F};
+use pathfinder_geometry::vector::{Vector2F, vec2f};
+use warpui::ModelHandle;
 use warpui::elements::ZIndex;
 use warpui::event::ModifiersState;
 use warpui::units::{IntoLines, IntoPixels, Pixels};
-use warpui::ModelHandle;
 use warpui::{
-    elements::{ScrollData, ScrollableElement},
     AppContext, Element, EventContext, SizeConstraint,
+    elements::{ScrollData, ScrollableElement},
 };
 
 use crate::terminal::input::inline_menu::InlineMenuPositioner;

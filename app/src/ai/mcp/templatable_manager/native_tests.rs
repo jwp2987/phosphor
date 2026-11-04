@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rmcp::model::{ErrorCode, ErrorData, Resource, ServerCapabilities, Tool};
 
@@ -545,8 +545,8 @@ mod app_exit {
 
 #[test]
 fn legacy_env_var_read_runs_off_thread_and_returns_every_server() {
-    use crate::ai::mcp::{MCPServer, ServerSentEvents, TransportType};
     use super::{ClientId, SyncId};
+    use crate::ai::mcp::{MCPServer, ServerSentEvents, TransportType};
 
     let main_thread = std::thread::current().id();
     let servers: Vec<_> = (0..3)
@@ -565,8 +565,7 @@ fn legacy_env_var_read_runs_off_thread_and_returns_every_server() {
         })
         .collect();
     let expected: Vec<_> = servers.iter().map(|(_, s)| s.uuid).collect();
-    let out =
-        futures::executor::block_on(super::read_legacy_env_vars_in_background(None, servers));
+    let out = futures::executor::block_on(super::read_legacy_env_vars_in_background(None, servers));
     assert_eq!(
         out.iter().map(|(_, s)| s.uuid).collect::<Vec<_>>(),
         expected

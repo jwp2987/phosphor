@@ -4,11 +4,12 @@ use warp_core::{
     features::FeatureFlag,
     ui::{
         external_product_icon::ExternalProductIcon,
-        icons::{Icon, ICON_DIMENSIONS},
-        theme::{color::internal_colors, AnsiColorIdentifier},
+        icons::{ICON_DIMENSIONS, Icon},
+        theme::{AnsiColorIdentifier, color::internal_colors},
     },
 };
 use warpui::{
+    AppContext, Element, Entity, SingletonEntity, TypedActionView, View, ViewContext,
     accessibility::ActionAccessibilityContent,
     elements::{
         Border, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Expanded, Fill, Flex,
@@ -23,16 +24,15 @@ use warpui::{
         components::{Coords, UiComponent, UiComponentStyles},
         switch::SwitchStateHandle,
     },
-    AppContext, Element, Entity, SingletonEntity, TypedActionView, View, ViewContext,
 };
 
 use crate::{
     ai::mcp::{
-        templatable::TemplatableMCPServerObject, MCPServerState, TemplatableMCPServerManager,
+        MCPServerState, TemplatableMCPServerManager, templatable::TemplatableMCPServerObject,
     },
     appearance::Appearance,
     cloud_object::StoredObject,
-    settings_view::mcp_servers::{style, ServerCardItemId},
+    settings_view::mcp_servers::{ServerCardItemId, style},
     ui_components::{
         avatar::{Avatar, AvatarContent, StatusElementTypes},
         blended_colors,
@@ -697,7 +697,9 @@ impl ServerCardView {
                     ),
                     HighlightedHyperlink::default(),
                 )
-                .with_heading_to_font_size_multipliers(appearance.heading_font_size_multipliers().clone())
+                .with_heading_to_font_size_multipliers(
+                    appearance.heading_font_size_multipliers().clone(),
+                )
                 .finish(),
             );
         }
@@ -714,7 +716,9 @@ impl ServerCardView {
                     blended_colors::text_sub(appearance.theme(), appearance.theme().surface_1()),
                     HighlightedHyperlink::default(),
                 )
-                .with_heading_to_font_size_multipliers(appearance.heading_font_size_multipliers().clone())
+                .with_heading_to_font_size_multipliers(
+                    appearance.heading_font_size_multipliers().clone(),
+                )
                 .finish(),
             );
         }
@@ -731,7 +735,9 @@ impl ServerCardView {
                     appearance.theme().ui_error_color(),
                     HighlightedHyperlink::default(),
                 )
-                .with_heading_to_font_size_multipliers(appearance.heading_font_size_multipliers().clone())
+                .with_heading_to_font_size_multipliers(
+                    appearance.heading_font_size_multipliers().clone(),
+                )
                 .finish(),
             );
         }

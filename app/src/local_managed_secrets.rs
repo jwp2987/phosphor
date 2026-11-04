@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use warp_managed_secrets::client::{ManagedSecretsClient, TaskIdentityToken};
 use warp_managed_secrets::{ManagedSecret, ManagedSecretValue};

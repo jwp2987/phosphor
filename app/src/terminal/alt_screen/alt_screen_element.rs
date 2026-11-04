@@ -5,8 +5,9 @@ use crate::terminal::blockgrid_renderer::GridRenderParams;
 use crate::terminal::find::TerminalFindModel;
 use crate::terminal::grid_renderer::SharedCellGlyphCache;
 use crate::terminal::meta_shortcuts::handle_keystroke_despite_composing;
+use crate::terminal::model::SecretHandle;
 use crate::terminal::model::escape_sequences::{
-    maybe_kitty_keyboard_escape_sequence, KeystrokeWithDetails, ToEscapeSequence,
+    KeystrokeWithDetails, ToEscapeSequence, maybe_kitty_keyboard_escape_sequence,
 };
 use crate::terminal::model::grid::grid_handler::{Link, TermMode};
 use crate::terminal::model::grid::{Dimensions, RespectDisplayedOutput};
@@ -14,16 +15,15 @@ use crate::terminal::model::index::Point;
 use crate::terminal::model::mouse::{MouseAction, MouseButton, MouseState};
 use crate::terminal::model::selection::{SelectAction, SelectionPoint};
 use crate::terminal::model::terminal_model::WithinModel;
-use crate::terminal::model::SecretHandle;
 use crate::terminal::safe_mode_settings::get_secret_obfuscation_mode;
 use crate::terminal::shared_session::presence_manager::{
-    text_selection_color, PresenceManager, MUTED_PARTICIPANT_COLOR,
+    MUTED_PARTICIPANT_COLOR, PresenceManager, text_selection_color,
 };
 use crate::terminal::view::{
     ActiveSessionState, TerminalAction, TerminalEditor, TerminalViewRenderContext,
 };
-use crate::terminal::{grid_renderer, should_right_click_paste, SizeInfo};
-use crate::terminal::{heights_approx_eq, TerminalModel};
+use crate::terminal::{SizeInfo, grid_renderer, should_right_click_paste};
+use crate::terminal::{TerminalModel, heights_approx_eq};
 use num_traits::Float as _;
 use parking_lot::FairMutex;
 use pathfinder_geometry::vector::vec2f;
@@ -44,10 +44,10 @@ use warpui::geometry::rect::RectF;
 use warpui::geometry::vector::Vector2F;
 use warpui::units::{IntoLines, IntoPixels, Lines, Pixels};
 use warpui::{
-    end_trace,
+    AfterLayoutContext, AppContext, Element, Event, EventContext, LayoutContext, PaintContext,
+    SizeConstraint, end_trace,
     event::{DispatchedEvent, InBoundsExt},
-    record_trace_event, start_trace, AfterLayoutContext, AppContext, Element, Event, EventContext,
-    LayoutContext, PaintContext, SizeConstraint,
+    record_trace_event, start_trace,
 };
 use warpui::{ClipBounds, EntityId, ModelHandle};
 
@@ -1048,11 +1048,9 @@ impl Element for AltScreenElement {
                     let is_press = matches!(state, KeyState::Pressed);
                     // The modes as published (the model's lock is the pty reader's while it parses).
                     let modes = self.key_model.eager_modes().unwrap_or_default();
-                    if let Some(escape_sequence) = maybe_kitty_keyboard_escape_sequence(
-                        &modes,
-                        key_code,
-                        is_press,
-                    ) {
+                    if let Some(escape_sequence) =
+                        maybe_kitty_keyboard_escape_sequence(&modes, key_code, is_press)
+                    {
                         ctx.dispatch_typed_action(TerminalAction::ControlSequence(escape_sequence));
                         return true;
                     }

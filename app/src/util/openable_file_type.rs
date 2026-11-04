@@ -1,7 +1,7 @@
 //! File type detection utilities for determining if files can be opened in Zap.
 
 #[cfg(feature = "local_fs")]
-use crate::util::file::external_editor::{settings::EditorChoice, Editor, EditorSettings};
+use crate::util::file::external_editor::{Editor, EditorSettings, settings::EditorChoice};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use warp_core::features::FeatureFlag;
@@ -491,10 +491,7 @@ mod tests {
     fn test_open_code_panels_file_editor_default_is_warp() {
         use crate::util::file::external_editor::settings::OpenCodePanelsFileEditor;
 
-        assert_eq!(
-            OpenCodePanelsFileEditor::default_value(),
-            EditorChoice::Zap
-        );
+        assert_eq!(OpenCodePanelsFileEditor::default_value(), EditorChoice::Zap);
     }
 
     #[test]

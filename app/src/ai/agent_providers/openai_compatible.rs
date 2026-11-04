@@ -570,7 +570,9 @@ mod tests {
     ) {
         match outcome {
             None => {} // still in flight past the guard
-            Some(Ok(_)) => panic!("{what}: something actually answered; the test target must be unreachable"),
+            Some(Ok(_)) => {
+                panic!("{what}: something actually answered; the test target must be unreachable")
+            }
             Some(Err(err)) => assert!(
                 !matches!(err, OpenAiCompatibleError::InsecureEndpoint(_)),
                 "{what}: the fetch must no longer abort on a plaintext non-loopback endpoint: {err}"

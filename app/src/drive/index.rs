@@ -1,4 +1,5 @@
 use crate::{
+    ObjectActions,
     ai::{
         document::ai_document_model::AIDocumentId,
         facts::{AIFact, AIMemory},
@@ -8,13 +9,13 @@ use crate::{
         AuthState, AuthStateProvider, AuthViewVariant, {AuthManager, LoginGatedFeature},
     },
     cloud_object::{
+        GenericStoredObject, GenericStringObjectFormat, JsonObjectType, ObjectType, Space,
+        StoredObject, StoredObjectLocation,
         model::{
             persistence::{ObjectStoreEvent, ObjectStoreModel},
             view::{ObjectStoreViewModel, ObjectStoreViewModelEvent, UpdateTimestamp},
         },
         update_manager::{FetchSingleObjectOption, UpdateManager},
-        GenericStoredObject, GenericStringObjectFormat, JsonObjectType, ObjectType, Space,
-        StoredObject, StoredObjectLocation,
     },
     editor::{EditorView, Event as EditorEvent, SingleLineEditorOptions},
     env_vars::EnvVarCollectionObject,
@@ -31,18 +32,18 @@ use crate::{
     ui_components::{
         blended_colors,
         buttons::{highlight, icon_button},
-        icons::{Icon, ICON_DIMENSIONS},
-        menu_button::{icon_button_with_context_menu, MenuDirection},
+        icons::{ICON_DIMENSIONS, Icon},
+        menu_button::{MenuDirection, icon_button_with_context_menu},
     },
     util::{color::coloru_with_opacity, sync::Condition},
     view_components::{Dropdown, DropdownItem},
     workflows::{WorkflowObject, WorkflowViewMode},
     workspace::active_terminal_in_window,
     workspaces::{user_workspaces::UserWorkspaces, workspace::WorkspaceUid},
-    ObjectActions,
 };
 
 use super::{
+    DriveObjectType, DriveSortOrder, ObjectTypeAndId,
     cloud_object_naming_dialog::ObjectNamingDialog,
     drive_helpers::{
         has_feature_gated_anonymous_user_reached_env_var_limit,
@@ -52,24 +53,25 @@ use super::{
     empty_trash_confirmation_dialog::{EmptyTrashConfirmationDialog, EmptyTrashConfirmationEvent},
     folders::FolderObject,
     items::{
-        ai_fact_collection::WarpDriveAIFactCollection,
-        item::{tools_panel_menu_direction, ItemStates, WarpDriveRow},
-        mcp_server_collection::WarpDriveMCPServerCollection,
         WarpDriveItemId,
+        ai_fact_collection::WarpDriveAIFactCollection,
+        item::{ItemStates, WarpDriveRow, tools_panel_menu_direction},
+        mcp_server_collection::WarpDriveMCPServerCollection,
     },
     settings::WarpDriveSettings,
     sharing::ContentEditability,
-    DriveObjectType, DriveSortOrder, ObjectTypeAndId,
 };
 use crate::drive::panel::DrivePanelAction;
 use futures::Future;
 use itertools::Itertools;
 use pathfinder_color::ColorU;
-use pathfinder_geometry::vector::{vec2f, Vector2F};
+use pathfinder_geometry::vector::{Vector2F, vec2f};
 use std::{any::Any, collections::HashMap, sync::Arc};
 use url::Url;
 use warp_core::{context_flag::ContextFlag, settings::Setting};
 use warpui::{
+    AppContext, BlurContext, Element, Entity, ModelHandle, SingletonEntity, TypedActionView,
+    UpdateView, View, ViewContext, ViewHandle, WindowId,
     clipboard::ClipboardContent,
     elements::{
         Align, AnchorPair, Border, ChildAnchor, ChildView, ClippedScrollStateHandle,
@@ -88,8 +90,6 @@ use warpui::{
         components::{Coords, UiComponent, UiComponentStyles},
     },
     units::IntoPixels,
-    AppContext, BlurContext, Element, Entity, ModelHandle, SingletonEntity, TypedActionView,
-    UpdateView, View, ViewContext, ViewHandle, WindowId,
 };
 
 // Team zero state consts
@@ -2066,7 +2066,10 @@ impl DriveIndex {
         .finish()
     }
 
-    fn render_all_sections(&self, app: &AppContext) -> impl Iterator<Item = Box<dyn Element>> + use<> {
+    fn render_all_sections(
+        &self,
+        app: &AppContext,
+    ) -> impl Iterator<Item = Box<dyn Element>> + use<> {
         let appearance = Appearance::as_ref(app);
         let object_store_model = ObjectStoreModel::as_ref(app);
 
@@ -4242,12 +4245,14 @@ impl DriveIndex {
             space: *space,
             offset,
         });
-        let menu_items = vec![MenuItemFields::new(crate::t!("drive-collapse-all"))
-            .with_on_select_action(DriveIndexAction::CollapseAllInLocation(
-                StoredObjectLocation::Space(*space),
-            ))
-            .with_icon(Icon::ListCollapsed)
-            .into_item()];
+        let menu_items = vec![
+            MenuItemFields::new(crate::t!("drive-collapse-all"))
+                .with_on_select_action(DriveIndexAction::CollapseAllInLocation(
+                    StoredObjectLocation::Space(*space),
+                ))
+                .with_icon(Icon::ListCollapsed)
+                .into_item(),
+        ];
 
         ctx.update_view(&self.menu, |menu, ctx| {
             menu.set_items(menu_items, ctx);
@@ -4457,28 +4462,29 @@ impl View for DriveIndex {
         let index_content = match (
             self.should_show_personal_object_limit_status,
             self.render_personal_limit_status(appearance, app),
-        ) { (true, Some(personal_object_limit_card)) => {
-            // Render column with a spacer to ensure the tip appears at the bottom of drive
-            let col = Flex::column()
-                .with_child(index)
-                .with_child(Shrinkable::new(1., Empty::new().finish()).finish())
-                .finish();
+        ) {
+            (true, Some(personal_object_limit_card)) => {
+                // Render column with a spacer to ensure the tip appears at the bottom of drive
+                let col = Flex::column()
+                    .with_child(index)
+                    .with_child(Shrinkable::new(1., Empty::new().finish()).finish())
+                    .finish();
 
-            let mut stack = Stack::new().with_constrain_absolute_children();
-            stack.add_child(col);
-            stack.add_positioned_child(
-                personal_object_limit_card,
-                OffsetPositioning::offset_from_parent(
-                    vec2f(0., 0.),
-                    ParentOffsetBounds::WindowByPosition,
-                    ParentAnchor::BottomMiddle,
-                    ChildAnchor::BottomMiddle,
-                ),
-            );
-            stack.finish()
-        } _ => {
-            index
-        }};
+                let mut stack = Stack::new().with_constrain_absolute_children();
+                stack.add_child(col);
+                stack.add_positioned_child(
+                    personal_object_limit_card,
+                    OffsetPositioning::offset_from_parent(
+                        vec2f(0., 0.),
+                        ParentOffsetBounds::WindowByPosition,
+                        ParentAnchor::BottomMiddle,
+                        ChildAnchor::BottomMiddle,
+                    ),
+                );
+                stack.finish()
+            }
+            _ => index,
+        };
 
         let mut drive = Flex::column();
 

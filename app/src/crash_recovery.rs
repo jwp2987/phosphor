@@ -104,8 +104,8 @@ impl CrashRecoveryProcess {
                     .expect("sequence of renders map cannot be empty")
             );
             log::error!(
-                    "Failed to render a frame {NUM_DRAW_ERRORS_BEFORE_EXITING} times in a row; exiting..."
-                );
+                "Failed to render a frame {NUM_DRAW_ERRORS_BEFORE_EXITING} times in a row; exiting..."
+            );
 
             // Stop the local crash-reporting process before exiting, to avoid leaving behind a background child process.
             #[cfg(feature = "crash_reporting")]
@@ -152,7 +152,9 @@ impl CrashRecoveryProcess {
             // crash recovery child process and collect its exit status.
             self.kill();
 
-            log::info!("Successfully drew {NUM_SUCCESSFUL_DRAW_FRAMES_PER_WINDOW} frames; killing crash recovery child process");
+            log::info!(
+                "Successfully drew {NUM_SUCCESSFUL_DRAW_FRAMES_PER_WINDOW} frames; killing crash recovery child process"
+            );
         }
     }
 }
@@ -380,7 +382,7 @@ fn spawn_recovery_process(
 fn wait_for_parent_crash(args: &warp_cli::AppArgs) {
     use windows::Win32::{
         Foundation::{GetLastError, WAIT_FAILED, WAIT_OBJECT_0},
-        System::Threading::{GetProcessId, WaitForSingleObject, INFINITE},
+        System::Threading::{GetProcessId, INFINITE, WaitForSingleObject},
     };
 
     let parent_handle = match args.parent.handle {
@@ -452,7 +454,9 @@ mod unix_wait {
     mod imp {
         pub(super) fn wait_for_pid_exit(pid: i32, still_alive: impl Fn() -> bool) -> bool {
             // SAFETY: plain syscall with integer arguments.
-            let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::c_long, 0 as libc::c_long) };
+            let fd = unsafe {
+                libc::syscall(libc::SYS_pidfd_open, pid as libc::c_long, 0 as libc::c_long)
+            };
             if fd < 0 {
                 // ESRCH: already gone, which is the event we were waiting for.  Anything else
                 // (ENOSYS on kernels before 5.3, EPERM in a sandbox): no event source.
@@ -508,9 +512,8 @@ mod unix_wait {
 
             // Register first (no wait), so the liveness re-check below cannot miss an exit.
             // SAFETY: `change` is valid for one change; no event list is requested.
-            let registered = unsafe {
-                libc::kevent(kq, &change, 1, std::ptr::null_mut(), 0, std::ptr::null())
-            };
+            let registered =
+                unsafe { libc::kevent(kq, &change, 1, std::ptr::null_mut(), 0, std::ptr::null()) };
             let mut result = true;
             if registered < 0 {
                 // ESRCH: the process is already gone, which is the event we wanted.
@@ -527,8 +530,7 @@ mod unix_wait {
                         break;
                     }
                     if r < 0
-                        && std::io::Error::last_os_error().kind()
-                            != std::io::ErrorKind::Interrupted
+                        && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
                     {
                         result = false;
                         break;

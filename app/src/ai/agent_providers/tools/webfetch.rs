@@ -14,9 +14,9 @@
 //!
 //! The parameter schema is aligned with opencode's `webfetch.ts:12-20`.
 
-use anyhow::{anyhow, Result};
-use serde_json::{json, Value};
 use agent_proto as api;
+use anyhow::{Result, anyhow};
+use serde_json::{Value, json};
 
 use super::OpenAiTool;
 

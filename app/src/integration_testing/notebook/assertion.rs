@@ -2,9 +2,8 @@ use itertools::Itertools;
 use string_offset::CharOffset;
 use warp_editor::render::model::BlockItem;
 use warpui::{
-    async_assert, async_assert_eq,
+    App, ViewHandle, async_assert, async_assert_eq,
     integration::{AssertionCallback, AssertionOutcome, AssertionWithDataCallback},
-    App, ViewHandle,
 };
 
 use crate::{
@@ -13,7 +12,7 @@ use crate::{
         terminal::util::ExpectedOutput,
         view_getters::{notebook_view, terminal_view},
     },
-    notebooks::{notebook::NotebookView, NotebookId, NotebookObjectModel},
+    notebooks::{NotebookId, NotebookObjectModel, notebook::NotebookView},
     pane_group::PaneGroup,
     server::ids::SyncId,
 };

@@ -1,7 +1,7 @@
 use pathfinder_geometry::rect::RectF;
 use warpui::{
-    async_assert_eq, integration::TestStep, platform::TerminationMode, windowing::WindowManager,
-    SingletonEntity,
+    SingletonEntity, async_assert_eq, integration::TestStep, platform::TerminationMode,
+    windowing::WindowManager,
 };
 
 use crate::integration_testing::step::new_step_with_default_assertions;

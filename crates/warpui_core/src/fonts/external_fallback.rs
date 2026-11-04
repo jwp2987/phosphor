@@ -1,7 +1,7 @@
 use super::{Cache, FamilyId, FontFallbackCache, FontFamilyName, FontId, GlyphId};
 
 use crate::assets::asset_cache::Asset;
-use crate::{text_layout, Entity, ModelContext, SingletonEntity};
+use crate::{Entity, ModelContext, SingletonEntity, text_layout};
 
 use std::hash::{Hash, Hasher};
 use std::mem;

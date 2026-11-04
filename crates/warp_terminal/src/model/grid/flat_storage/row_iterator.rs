@@ -5,7 +5,7 @@ use crate::model::grid::{
     row::Row,
 };
 
-use super::{grapheme::Grapheme, style::BgAndStyle, EndOfPromptMarker, FlatStorage};
+use super::{EndOfPromptMarker, FlatStorage, grapheme::Grapheme, style::BgAndStyle};
 
 /// An iterator over [`Row`]s in the grid.
 ///

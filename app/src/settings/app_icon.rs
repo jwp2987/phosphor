@@ -2,7 +2,7 @@ use enum_iterator::Sequence;
 use serde::{Deserialize, Serialize};
 use warp_core::{
     channel::{Channel, ChannelState},
-    settings::{macros::define_settings_group, SupportedPlatforms, SyncToCloud},
+    settings::{SupportedPlatforms, SyncToCloud, macros::define_settings_group},
 };
 
 /// The app icon to use (mac-only).

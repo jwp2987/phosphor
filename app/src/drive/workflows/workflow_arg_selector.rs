@@ -4,6 +4,8 @@ use strum::IntoEnumIterator;
 use warp_core::ui::{appearance::Appearance, theme::Fill};
 use warp_editor::editor::NavigationKey;
 use warpui::{
+    AppContext, Element, Entity, FocusContext, SingletonEntity, TypedActionView, View, ViewContext,
+    ViewHandle,
     elements::{
         Align, Border, ChildAnchor, ChildView, ClippedScrollStateHandle, ClippedScrollable,
         ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Dismiss, Empty, EventHandler,
@@ -16,8 +18,6 @@ use warpui::{
         text::Span,
         toggle_menu::{ToggleMenuItem, ToggleMenuStateHandle},
     },
-    AppContext, Element, Entity, FocusContext, SingletonEntity, TypedActionView, View, ViewContext,
-    ViewHandle,
 };
 
 use crate::{

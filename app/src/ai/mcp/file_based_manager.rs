@@ -3,7 +3,7 @@ use super::file_mcp_watcher::FileMCPConfigDiagnostic;
 use super::{FileMCPWatcher, FileMCPWatcherEvent};
 use itertools::Itertools as _;
 use repo_metadata::repositories::DetectedRepositories;
-use std::collections::{hash_map::Entry, HashMap, HashSet};
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 use warp_core::execution_mode::AppExecutionMode;
@@ -12,10 +12,10 @@ use warpui::{AppContext, Entity, ModelContext, SingletonEntity};
 
 use crate::{
     ai::mcp::{
-        templatable_installation::TemplatableMCPServerInstallation,
         ParsedTemplatableMCPServerResult,
+        templatable_installation::TemplatableMCPServerInstallation,
     },
-    settings::{ai::AISettings, AISettingsChangedEvent},
+    settings::{AISettingsChangedEvent, ai::AISettings},
     warp_managed_paths_watcher::warp_managed_mcp_config_path,
 };
 

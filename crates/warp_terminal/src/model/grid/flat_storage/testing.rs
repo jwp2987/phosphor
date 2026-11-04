@@ -2,7 +2,7 @@ use unicode_segmentation::UnicodeSegmentation as _;
 
 use crate::model::grid::{cell::Flags, row::Row};
 
-use super::{grapheme::Grapheme, FlatStorage};
+use super::{FlatStorage, grapheme::Grapheme};
 
 pub fn assert_rows_equal(actual: &[Row], expected: &[Row]) {
     assert_eq!(

@@ -1,6 +1,6 @@
-use std::sync::mpsc;
 #[cfg(not(test))]
 use std::sync::OnceLock;
+use std::sync::mpsc;
 use std::{
     fs::{self, File, OpenOptions},
     io::{self, Write as _},
@@ -122,7 +122,6 @@ impl PromptChipLogger {
             }
         }
     }
-
 }
 
 pub(crate) fn log_file_path() -> anyhow::Result<PathBuf> {

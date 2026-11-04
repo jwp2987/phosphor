@@ -1,6 +1,6 @@
 use std::convert::TryFrom;
 
-use crate::terminal::{shell::ShellType, ShellLaunchData};
+use crate::terminal::{ShellLaunchData, shell::ShellType};
 use crate::ui_components::icons::Icon;
 
 #[derive(Clone, Copy)]

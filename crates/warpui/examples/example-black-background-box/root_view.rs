@@ -1,5 +1,5 @@
 use pathfinder_color::ColorU;
-use warpui::{elements::Rect, AppContext, Element, Entity, TypedActionView, View};
+use warpui::{AppContext, Element, Entity, TypedActionView, View, elements::Rect};
 
 pub struct RootView {}
 

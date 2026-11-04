@@ -10,15 +10,15 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use warp_core::ui::appearance::Appearance;
-use warpui::elements::new_scrollable::SingleAxisConfig;
+use warpui::r#async::{SpawnedFutureHandle, Timer};
+use warpui::clipboard::ClipboardContent;
 use warpui::elements::ClippedScrollStateHandle;
+use warpui::elements::new_scrollable::SingleAxisConfig;
 use warpui::elements::{
     ChildView, ConstrainedBox, Container, CrossAxisAlignment, Fill, Flex, MainAxisSize,
     NewScrollable, ParentElement,
 };
 use warpui::ui_components::components::{Coords, UiComponent, UiComponentStyles};
-use warpui::clipboard::ClipboardContent;
-use warpui::r#async::{SpawnedFutureHandle, Timer};
 use warpui::{
     AppContext, Element, Entity, SingletonEntity, TypedActionView, View, ViewContext, ViewHandle,
 };
@@ -274,11 +274,12 @@ impl WireInspectorView {
             .finish()
     }
 
-    fn render_context_bar(&self, app: &AppContext, entries: &[WireEntry]) -> Option<Box<dyn Element>> {
-        let usage = entries
-            .iter()
-            .rev()
-            .find_map(|e| e.usage.as_ref())?;
+    fn render_context_bar(
+        &self,
+        app: &AppContext,
+        entries: &[WireEntry],
+    ) -> Option<Box<dyn Element>> {
+        let usage = entries.iter().rev().find_map(|e| e.usage.as_ref())?;
         let appearance = Appearance::as_ref(app);
         let pct = usage.pct.clamp(0.0, 100.0);
         let color = if pct >= 90.0 {
@@ -295,10 +296,7 @@ impl WireInspectorView {
             usage
                 .active_kv_tokens
                 .unwrap_or(usage.prompt + usage.completion),
-            usage
-                .active_kv_tokens
-                .map(|_| " active KV")
-                .unwrap_or(""),
+            usage.active_kv_tokens.map(|_| " active KV").unwrap_or(""),
         );
         Some(text_line(app, &label, 12., color))
     }
@@ -353,14 +351,11 @@ impl WireInspectorView {
                 let prev_system = prev.and_then(|p| p.system.as_ref());
                 if prev_system != Some(system) {
                     let header = format!("system prompt ({} chars)", system.chars().count());
-                    column.add_child(Container::new(text_line(
-                        app,
-                        &header,
-                        12.,
-                        theme.accent().into_solid(),
-                    ))
-                    .with_margin_top(4.)
-                    .finish());
+                    column.add_child(
+                        Container::new(text_line(app, &header, 12., theme.accent().into_solid()))
+                            .with_margin_top(4.)
+                            .finish(),
+                    );
                     let shown = truncate_preview(system);
                     column.add_child(payload_block(app, &shown));
                 } else {
@@ -550,10 +545,18 @@ impl WireInspectorView {
             ));
             if let Some(snap) = &entry.context {
                 if !snap.tools.is_empty() {
-                    out.push_str(&format!("tools ({}): {}\n", snap.tools.len(), snap.tools.join(", ")));
+                    out.push_str(&format!(
+                        "tools ({}): {}\n",
+                        snap.tools.len(),
+                        snap.tools.join(", ")
+                    ));
                 }
                 if !snap.skills.is_empty() {
-                    out.push_str(&format!("skills ({}): {}\n", snap.skills.len(), snap.skills.join(", ")));
+                    out.push_str(&format!(
+                        "skills ({}): {}\n",
+                        snap.skills.len(),
+                        snap.skills.join(", ")
+                    ));
                 }
                 for (k, v) in &snap.env {
                     out.push_str(&format!("env {k}={v}\n"));

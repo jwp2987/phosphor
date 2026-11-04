@@ -11,8 +11,8 @@ use crate::{
 };
 
 use super::{
-    current_prompt::CurrentPrompt, prompt_snapshot::PromptSnapshot, ChipResult, ChipValue,
-    ContextChipKind,
+    ChipResult, ChipValue, ContextChipKind, current_prompt::CurrentPrompt,
+    prompt_snapshot::PromptSnapshot,
 };
 
 /// The type of warp prompt being used

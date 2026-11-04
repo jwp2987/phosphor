@@ -5,9 +5,9 @@ use crate::{
     app_state::{EnvVarCollectionPaneSnapshot, LeafContents},
     drive::items::WarpDriveItemId,
     env_vars::{
+        EnvVarCollectionType,
         manager::{EnvVarCollectionManager, EnvVarCollectionSource},
         view::env_var_collection::{EnvVarCollectionEvent, EnvVarCollectionView},
-        EnvVarCollectionType,
     },
     pane_group::focus_state::PaneFocusHandle,
     server::ids::SyncId,
@@ -15,8 +15,8 @@ use crate::{
 };
 
 use super::{
-    view::PaneView, DetachType, PaneConfiguration, PaneContent, PaneGroup, PaneId, ShareableLink,
-    ShareableLinkError,
+    DetachType, PaneConfiguration, PaneContent, PaneGroup, PaneId, ShareableLink,
+    ShareableLinkError, view::PaneView,
 };
 
 pub struct EnvVarCollectionPane {

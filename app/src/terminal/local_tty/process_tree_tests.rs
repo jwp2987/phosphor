@@ -94,9 +94,7 @@ fn pane_kill_ends_foreground_but_spares_nohup_and_disowned_jobs() {
     drop(slave);
     let shell_pid = shell.id();
     master
-        .write_all(
-            b"nohup sleep 7771 >/dev/null 2>&1 &\nsleep 7772 & disown\nsleep 7773\n",
-        )
+        .write_all(b"nohup sleep 7771 >/dev/null 2>&1 &\nsleep 7772 & disown\nsleep 7773\n")
         .unwrap();
 
     // (pid, state) of the processes in the shell's session whose command line is `sleep <arg>`.

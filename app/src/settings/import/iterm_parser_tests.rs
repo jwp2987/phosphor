@@ -7,10 +7,10 @@ use warpui::{fonts::FontInfo, keymap::Keystroke};
 
 use crate::settings::import::{
     config::{GlobalHotkey, HotkeyError, ImportedFont, ParseableConfig, ThemeType},
-    iterm_parser::{default_dark_theme, default_light_theme, Flags, ITermKeystroke, ITermProfile},
+    iterm_parser::{Flags, ITermKeystroke, ITermProfile, default_dark_theme, default_light_theme},
 };
 
-use super::{color_dictionary_to_coloru, ITermTheme, ITermThemeType};
+use super::{ITermTheme, ITermThemeType, color_dictionary_to_coloru};
 
 fn courier_new() -> Vec<FontInfo> {
     vec![FontInfo {

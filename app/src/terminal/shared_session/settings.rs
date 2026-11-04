@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use settings::{
-    macros::define_settings_group, RespectUserSyncSetting, Setting, SupportedPlatforms, SyncToCloud,
+    RespectUserSyncSetting, Setting, SupportedPlatforms, SyncToCloud, macros::define_settings_group,
 };
 
 define_settings_group!(SharedSessionSettings, settings: [

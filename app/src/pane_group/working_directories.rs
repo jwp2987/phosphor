@@ -6,13 +6,13 @@ use remote_server::manager::RemoteServerManager;
 use repo_metadata::repositories::DetectedRepositories;
 // Unconditional: the public `WorkingDirectory` / event types below are keyed by
 // `LocalOrRemotePath` on all targets.
-use warp_util::local_or_remote_path::LocalOrRemotePath;
 #[cfg(feature = "local_fs")]
 use crate::code::buffer_location::util_remote_path_to_buffer;
 use std::collections::HashMap;
 #[cfg(feature = "local_fs")]
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use warp_util::local_or_remote_path::LocalOrRemotePath;
 #[cfg(feature = "local_fs")]
 use warpui::{AppContext, SingletonEntity as _};
 use warpui::{Entity, EntityId, ModelContext};
@@ -365,8 +365,7 @@ impl WorkingDirectoriesModel {
             }
         };
 
-        self.diff_state_models
-            .insert(key, diff_state_model.clone());
+        self.diff_state_models.insert(key, diff_state_model.clone());
 
         Some(diff_state_model)
     }
@@ -845,17 +844,18 @@ impl WorkingDirectoriesModel {
         diff_mode: &DiffMode,
         ctx: &mut ModelContext<Self>,
     ) {
-        match self.get_code_review_view(pane_group_id, repo_path) { Some(code_review_view) => {
-            code_review_view.update(ctx, |code_review_view, ctx| {
+        match self.get_code_review_view(pane_group_id, repo_path) {
+            Some(code_review_view) => code_review_view.update(ctx, |code_review_view, ctx| {
                 code_review_view.set_diff_base(diff_mode.to_owned(), ctx);
                 code_review_view.expand_comment_list(ctx);
-            })
-        } _ => {
-            log::error!(
-                "WorkingDirectoriesModel did not find CodeReviewView for repo path {:?}",
-                repo_path
-            );
-        }}
+            }),
+            _ => {
+                log::error!(
+                    "WorkingDirectoriesModel did not find CodeReviewView for repo path {:?}",
+                    repo_path
+                );
+            }
+        }
 
         if let Some(comment_batch) = self.get_or_create_code_review_comments(repo_path, ctx) {
             let comments = comments.to_owned();

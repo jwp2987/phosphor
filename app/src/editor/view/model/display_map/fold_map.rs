@@ -1,8 +1,8 @@
 use super::super::buffer::{AnchorRangeExt, TextSummary};
 use super::buffer::StylizedChar;
-use super::{buffer, Anchor, Buffer, DisplayPoint, Edit, Point, ToCharOffset};
+use super::{Anchor, Buffer, DisplayPoint, Edit, Point, ToCharOffset, buffer};
 use crate::util::extensions::SliceExt as _;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::{
     cmp::{self, Ordering},
     iter::Take,

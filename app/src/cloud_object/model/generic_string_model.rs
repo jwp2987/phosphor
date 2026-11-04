@@ -6,7 +6,7 @@ use crate::{
         GenericStoredObject, GenericStringObjectFormat, GenericStringObjectUniqueKey, ObjectType,
         SerializedModel, StoredObject, StoredObjectModel,
     },
-    drive::{items::WarpDriveItem, ObjectTypeAndId},
+    drive::{ObjectTypeAndId, items::WarpDriveItem},
     persistence::ModelEvent,
     server::ids::{ObjectUid, ServerId, SyncId},
 };

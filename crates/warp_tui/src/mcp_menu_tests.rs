@@ -149,11 +149,7 @@ fn file_provenance_includes_provider_scope_and_repository() {
 
 #[test]
 fn multiple_diagnostics_render_without_hiding_healthy_servers() {
-    let mut snapshot = snapshot(vec![file_based(
-        2,
-        "Healthy",
-        TuiMcpServerStatus::Offline,
-    )]);
+    let mut snapshot = snapshot(vec![file_based(2, "Healthy", TuiMcpServerStatus::Offline)]);
     snapshot.diagnostics = vec![
         TuiMcpConfigDiagnostic {
             provider: "Claude".to_owned(),
@@ -224,11 +220,7 @@ fn logout_capability_keeps_a_transitional_server_selectable() {
 
 #[test]
 fn actionless_server_transition_remains_selectable() {
-    let snapshot = snapshot(vec![file_based(
-        1,
-        "GitHub",
-        TuiMcpServerStatus::Stopping,
-    )]);
+    let snapshot = snapshot(vec![file_based(1, "GitHub", TuiMcpServerStatus::Stopping)]);
 
     let rows = menu_rows(&snapshot, "");
 

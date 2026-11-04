@@ -4,11 +4,11 @@
 use std::path::Path;
 
 use warpui::{
+    AppContext, Element, EventContext, SingletonEntity,
     elements::{
         Border, Container, CornerRadius, Flex, MouseStateHandle, ParentElement, Radius, Text,
     },
     ui_components::components::{Coords, UiComponent, UiComponentStyles},
-    AppContext, Element, EventContext, SingletonEntity,
 };
 
 use crate::{
@@ -34,7 +34,6 @@ impl<OnClick> TooltipLink<OnClick> {
             mouse_state,
         }
     }
-
 }
 
 /// Configuration for redaction messaging in tooltips
@@ -244,7 +243,7 @@ pub fn should_show_open_in_warp_link(path: &Path, app: &AppContext) -> bool {
     use crate::{
         code::view::is_binary_file,
         notebooks::file::renders_in_warp_notebook_viewer,
-        util::file::external_editor::{settings::EditorChoice, EditorSettings},
+        util::file::external_editor::{EditorSettings, settings::EditorChoice},
     };
     use warpui::SingletonEntity;
 

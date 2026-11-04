@@ -1,11 +1,11 @@
 use crate::appearance::Appearance;
 use crate::settings::EnforceMinimumContrast;
 use crate::terminal::blockgrid_renderer::BlockGridParams;
+use crate::terminal::model::ObfuscateSecrets;
 use crate::terminal::model::blockgrid::BlockGrid;
 use crate::terminal::model::grid::Dimensions;
-use crate::terminal::model::ObfuscateSecrets;
-use crate::terminal::{color, SizeInfo};
-use pathfinder_geometry::vector::{vec2f, Vector2F};
+use crate::terminal::{SizeInfo, color};
+use pathfinder_geometry::vector::{Vector2F, vec2f};
 use warpui::elements::{
     AfterLayoutContext, AppContext, Element, EventContext, LayoutContext, PaintContext, Point,
     SizeConstraint,

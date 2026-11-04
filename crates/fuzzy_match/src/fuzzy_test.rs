@@ -377,8 +377,8 @@ fn test_ignore_spaces_single_word_query() {
 /// sized inputs and from several threads.
 #[test]
 fn shared_matcher_matches_fresh_matcher() {
-    use fuzzy_matcher::skim::SkimMatcherV2;
     use fuzzy_matcher::FuzzyMatcher;
+    use fuzzy_matcher::skim::SkimMatcherV2;
 
     let texts = [
         "Open theme chooser",

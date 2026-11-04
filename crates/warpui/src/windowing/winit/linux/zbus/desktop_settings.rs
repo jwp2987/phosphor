@@ -10,8 +10,8 @@ use winit::event_loop::EventLoopProxy;
 use zbus::{proxy, zvariant};
 
 use crate::{
+    r#async::{FutureExt as _, executor::Background},
     platform::SystemTheme,
-    r#async::{executor::Background, FutureExt as _},
     windowing::winit::app::CustomEvent,
 };
 
@@ -64,10 +64,10 @@ impl From<&zvariant::Value<'_>> for SystemColorScheme {
                 Ok(v) => SystemColorScheme::from(&v),
                 Err(err) => {
                     log::error!(
-                            "D-Bus inner variant type {:#?}: {:#?} could not be converted to SystemThemePreference: {err:#}",
-                            value.value_signature(),
-                            value
-                        );
+                        "D-Bus inner variant type {:#?}: {:#?} could not be converted to SystemThemePreference: {err:#}",
+                        value.value_signature(),
+                        value
+                    );
                     SystemColorScheme::NoPreference
                 }
             },

@@ -1,3 +1,4 @@
+use crate::Scene;
 use crate::fonts::SubpixelAlignment;
 use crate::rendering::atlas::TextureId;
 use crate::rendering::wgpu::renderer::WGPUContext;
@@ -5,11 +6,10 @@ use crate::rendering::wgpu::texture_with_bind_group::TextureWithBindGroup;
 use crate::rendering::wgpu::{resources, shader_types};
 use crate::rendering::{GlyphCache, GlyphConfig};
 use crate::scene::{GlyphFade, Layer};
-use crate::Scene;
 use pathfinder_geometry::rect::RectF;
 use rustc_hash::FxHashMap;
 use std::borrow::Cow;
-use std::sync::{atomic::AtomicBool, Arc};
+use std::sync::{Arc, atomic::AtomicBool};
 use wgpu::{
     BindGroupLayout, ColorTargetState, Device, FilterMode, Queue, RenderPass, RenderPipeline,
     Sampler,

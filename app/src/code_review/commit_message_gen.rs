@@ -31,11 +31,11 @@
 
 use std::path::Path;
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use warpui::AppContext;
 
 use crate::ai::agent_providers::oneshot::{
-    byop_oneshot_completion, resolve_active_ai_oneshot, OneshotConfig, OneshotOptions,
+    OneshotConfig, OneshotOptions, byop_oneshot_completion, resolve_active_ai_oneshot,
 };
 use crate::ai::agent_providers::prompt_renderer;
 use crate::util::git::get_diff_for_commit_message;

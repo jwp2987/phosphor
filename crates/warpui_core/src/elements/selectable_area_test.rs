@@ -7,9 +7,9 @@
 //! its own clicks directly; only prose text depends on this `SelectableArea` at all.
 use super::*;
 use crate::{
+    App, Entity, Presenter, TypedActionView, WindowInvalidation,
     elements::{DispatchEventResult, EventHandler, Rect},
     platform::WindowStyle,
-    App, Entity, Presenter, TypedActionView, WindowInvalidation,
 };
 use std::{cell::RefCell, collections::HashSet, rc::Rc};
 

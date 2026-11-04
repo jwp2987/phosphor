@@ -1,13 +1,13 @@
 use std::sync::Arc;
 use warpui::elements::{Border, DispatchEventResult, DropShadow, Fill as ElementFill};
 use warpui::{
+    Action, AppContext, Element, EventContext, SingletonEntity,
     elements::{
         ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Empty, EventHandler, Flex,
         Hoverable, MainAxisSize, MouseState, MouseStateHandle, ParentElement, Radius, Shrinkable,
         SizeConstraintCondition, SizeConstraintSwitch,
     },
     platform::Cursor,
-    Action, AppContext, Element, EventContext, SingletonEntity,
 };
 
 use crate::search::item::IconLocation;

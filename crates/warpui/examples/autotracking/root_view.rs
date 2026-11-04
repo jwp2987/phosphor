@@ -2,12 +2,12 @@ use pathfinder_color::ColorU;
 use warpui::elements::DispatchEventResult;
 use warpui::fonts::FamilyId;
 use warpui::{
+    AppContext, Element, Entity, ModelHandle, SingletonEntity, Tracked, TypedActionView, View,
+    ViewContext, ViewHandle,
     elements::{
         Align, Border, ChildView, Container, CornerRadius, EventHandler, Flex, ParentElement,
         Radius, Rect, Stack, Text,
     },
-    AppContext, Element, Entity, ModelHandle, SingletonEntity, Tracked, TypedActionView, View,
-    ViewContext, ViewHandle,
 };
 
 pub fn init(ctx: &mut AppContext) {

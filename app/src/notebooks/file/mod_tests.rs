@@ -6,24 +6,25 @@ use pathfinder_geometry::vector::vec2f;
 use repo_metadata::RepoMetadataModel;
 use repo_metadata::{repositories::DetectedRepositories, watcher::DirectoryWatcher};
 use string_offset::CharOffset;
+use warp_core::HostId;
 use warp_core::features::FeatureFlag;
 use warp_core::ui::appearance::Appearance;
-use warp_core::HostId;
 use warp_editor::render::model::BlockItem;
 #[cfg(feature = "local_fs")]
 use warp_files::FileModel;
 use warp_util::standardized_path::StandardizedPath;
-use warpui::{platform::WindowStyle, App, SingletonEntity, TypedActionView, View};
+use warpui::{App, SingletonEntity, TypedActionView, View, platform::WindowStyle};
 
 use crate::code::buffer_location::{BufferLocation, RemotePath};
 use crate::pane_group::PaneEvent;
 use crate::terminal::keys::TerminalKeybindings;
 use crate::{
+    GlobalResourceHandles, GlobalResourceHandlesProvider,
     auth::{AuthManager, AuthStateProvider},
     cloud_object::model::persistence::ObjectStoreModel,
     notebooks::{
         editor::keys::NotebookKeybindings,
-        file::{is_markdown_file, MarkdownDisplayMode},
+        file::{MarkdownDisplayMode, is_markdown_file},
     },
     search::files::model::FileSearchModel,
     settings_view::keybindings::KeybindingChangedNotifier,
@@ -31,7 +32,6 @@ use crate::{
     test_util::settings::initialize_settings_for_tests,
     workspace::ActiveSession,
     workspaces::user_workspaces::UserWorkspaces,
-    GlobalResourceHandles, GlobalResourceHandlesProvider,
 };
 
 use crate::notebooks::context_menu::MenuSource;

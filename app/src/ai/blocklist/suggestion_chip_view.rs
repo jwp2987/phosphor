@@ -1,3 +1,4 @@
+use crate::TelemetryEvent;
 use crate::ai::agent::{SuggestedAgentModeWorkflow, SuggestedLoggingId, SuggestedRule};
 use crate::ai::facts::AIFactObjectModel;
 use crate::cloud_object::model::generic_string_model::GenericStringObjectId;
@@ -8,7 +9,6 @@ use crate::cloud_object::update_manager::{
 use crate::drive::ObjectTypeAndId;
 use crate::server::ids::SyncId;
 use crate::view_components::action_button::{ActionButton, ActionButtonTheme, SecondaryTheme};
-use crate::TelemetryEvent;
 use crate::{
     ai::facts::{AIFact, AIMemory},
     cloud_object::update_manager::UpdateManager,
@@ -20,8 +20,8 @@ use warp_core::send_telemetry_from_ctx;
 use warp_core::ui::appearance::Appearance;
 use warp_core::ui::theme::Fill;
 use warpui::{
-    elements::{Align, ChildView, Container, ParentElement, SavePosition, Stack},
     AppContext, Element, Entity, SingletonEntity, TypedActionView, View, ViewContext, ViewHandle,
+    elements::{Align, ChildView, Container, ParentElement, SavePosition, Stack},
 };
 
 use super::suggested_agent_mode_workflow_modal::SuggestedAgentModeWorkflowAndId;

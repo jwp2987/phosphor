@@ -1,5 +1,5 @@
-use windows::core::{Result, HSTRING, PWSTR};
 use windows::Win32::System::LibraryLoader::SetDllDirectoryW;
+use windows::core::{HSTRING, PWSTR, Result};
 
 use std::ffi::{OsStr, OsString};
 use std::os::windows::ffi::OsStrExt as _;

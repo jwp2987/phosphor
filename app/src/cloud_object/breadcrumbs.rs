@@ -1,6 +1,6 @@
 use super::{Space, StoredObject};
 use crate::{
-    drive::{folders::FolderObject, items::WarpDriveItemId, ObjectTypeAndId},
+    drive::{ObjectTypeAndId, folders::FolderObject, items::WarpDriveItemId},
     ui_components::breadcrumb::Breadcrumb,
 };
 use warpui::AppContext;

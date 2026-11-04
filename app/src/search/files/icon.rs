@@ -1,6 +1,6 @@
 use crate::search::result_renderer::ItemHighlightState;
 use warp_core::ui::appearance::Appearance;
-use warpui::{elements::Icon, Element};
+use warpui::{Element, elements::Icon};
 
 /// Assumes the path is a file, not a folder
 pub fn icon_from_file_path(

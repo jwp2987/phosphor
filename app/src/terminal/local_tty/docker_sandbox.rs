@@ -10,8 +10,8 @@
 //! bulk of the sandbox-specific surface lives here so `shell.rs` can stay
 //! focused on the cross-shell abstraction.
 
-use futures::future::BoxFuture;
 use futures::FutureExt as _;
+use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};

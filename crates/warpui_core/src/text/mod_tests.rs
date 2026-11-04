@@ -2,7 +2,7 @@ use super::{
     byte_offset_for_char_offset, count_chars_up_to_byte,
     point::Point,
     word_boundaries::WordBoundariesPolicy,
-    {char_slice, BufferIndex, SelectionDirection, TextBuffer},
+    {BufferIndex, SelectionDirection, TextBuffer, char_slice},
 };
 
 use super::str_to_byte_vec;

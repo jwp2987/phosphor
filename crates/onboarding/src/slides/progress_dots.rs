@@ -1,9 +1,9 @@
 use warp_core::ui::{appearance::Appearance, theme::color::internal_colors};
 use warpui::{
+    Element,
     elements::{
         ConstrainedBox, Container, CornerRadius, Empty, Flex, MainAxisSize, ParentElement, Radius,
     },
-    Element,
 };
 
 /// Render `n` dots with 4px radius and 8px spacing. `k` is the 0-based active dot index.

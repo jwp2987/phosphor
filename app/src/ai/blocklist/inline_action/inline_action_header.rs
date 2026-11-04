@@ -3,6 +3,7 @@ use std::borrow::Cow;
 use std::rc::Rc;
 use warp_core::ui::{appearance::Appearance, theme::color::internal_colors};
 use warpui::{
+    AppContext, Element, EventContext, SingletonEntity,
     elements::{
         Border, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, DispatchEventResult,
         EventHandler, Expanded, Flex, FormattedTextElement, Hoverable, MainAxisAlignment,
@@ -11,15 +12,14 @@ use warpui::{
     },
     fonts::FamilyId,
     platform::Cursor,
-    AppContext, Element, EventContext, SingletonEntity,
 };
 
 use crate::{
     ai::blocklist::inline_action::inline_action_icons::icon_size,
     ui_components::blended_colors,
     view_components::compactible_action_button::{
-        render_compact_and_regular_button_rows, render_expansion_icon,
-        RenderCompactibleActionButton,
+        RenderCompactibleActionButton, render_compact_and_regular_button_rows,
+        render_expansion_icon,
     },
 };
 
@@ -254,7 +254,9 @@ impl HeaderConfig {
                     text_color,
                     Default::default(),
                 )
-                .with_heading_to_font_size_multipliers(appearance.heading_font_size_multipliers().clone())
+                .with_heading_to_font_size_multipliers(
+                    appearance.heading_font_size_multipliers().clone(),
+                )
                 .set_selectable(self.is_text_selectable);
                 if !self.soft_wrap_title {
                     element = element.with_no_text_wrapping();
@@ -347,16 +349,19 @@ impl HeaderConfig {
             };
 
             // Wrap in EventHandler to allow right-click event propagation
-            match expansion_config.on_right_click.clone() { Some(right_click_callback) => {
-                return EventHandler::new(element)
-                    .on_right_mouse_down(move |ctx, _, _, _| {
-                        right_click_callback(ctx);
-                        DispatchEventResult::PropagateToParent
-                    })
-                    .finish();
-            } _ => {
-                return element;
-            }}
+            match expansion_config.on_right_click.clone() {
+                Some(right_click_callback) => {
+                    return EventHandler::new(element)
+                        .on_right_mouse_down(move |ctx, _, _, _| {
+                            right_click_callback(ctx);
+                            DispatchEventResult::PropagateToParent
+                        })
+                        .finish();
+                }
+                _ => {
+                    return element;
+                }
+            }
         } else if let Some(InteractionMode::RightClickable(right_click_config)) =
             &self.interaction_mode
         {
@@ -376,98 +381,105 @@ impl HeaderConfig {
     }
 
     pub fn render(self, app: &AppContext) -> Box<dyn Element> {
-        match self.interaction_mode.clone() { Some(interaction_mode) => {
-            let appearance: &Appearance = Appearance::as_ref(app);
-            match interaction_mode {
-                InteractionMode::ActionButtons {
-                    action_buttons,
-                    size_switch_threshold,
-                } => {
-                    // Convert boxed trait objects into trait object references expected by the renderer
-                    let button_refs: Vec<&dyn RenderCompactibleActionButton> =
-                        action_buttons.iter().map(|b| b.as_ref()).collect();
+        match self.interaction_mode.clone() {
+            Some(interaction_mode) => {
+                let appearance: &Appearance = Appearance::as_ref(app);
+                match interaction_mode {
+                    InteractionMode::ActionButtons {
+                        action_buttons,
+                        size_switch_threshold,
+                    } => {
+                        // Convert boxed trait objects into trait object references expected by the renderer
+                        let button_refs: Vec<&dyn RenderCompactibleActionButton> =
+                            action_buttons.iter().map(|b| b.as_ref()).collect();
 
-                    let (regular_row, compact_row) =
-                        render_compact_and_regular_button_rows(button_refs, None, appearance, app);
+                        let (regular_row, compact_row) = render_compact_and_regular_button_rows(
+                            button_refs,
+                            None,
+                            appearance,
+                            app,
+                        );
 
-                    let regular_header = self.clone().render_header(app, Some(regular_row));
-                    let compact_header = self.render_header(app, Some(compact_row));
+                        let regular_header = self.clone().render_header(app, Some(regular_row));
+                        let compact_header = self.render_header(app, Some(compact_row));
 
-                    let size_switch_threshold =
-                        size_switch_threshold * appearance.monospace_ui_scalar();
-                    SizeConstraintSwitch::new(
-                        regular_header,
-                        vec![(
-                            SizeConstraintCondition::WidthLessThan(size_switch_threshold),
-                            compact_header,
-                        )],
-                    )
-                    .finish()
-                }
-                InteractionMode::ManuallyExpandable(expansion_config) => {
-                    let expanded_icon = ConstrainedBox::new(render_expansion_icon(
-                        expansion_config.is_expanded,
-                        expansion_config.expands_upwards,
-                        appearance,
-                        app,
-                    ))
-                    .with_height(icon_size(app))
-                    .with_width(icon_size(app))
-                    .finish();
-
-                    match expansion_config.trailing_button.clone() {
-                        Some(button) => {
-                            let make_row = |button_element: Box<dyn Element>,
-                                            icon: Box<dyn Element>| {
-                                Flex::row()
-                                    .with_main_axis_alignment(MainAxisAlignment::End)
-                                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                                    .with_main_axis_size(MainAxisSize::Min)
-                                    .with_child(
-                                        Container::new(button_element)
-                                            .with_margin_right(ICON_MARGIN)
-                                            .finish(),
-                                    )
-                                    .with_child(icon)
-                                    .finish()
-                            };
-                            let make_icon = || {
-                                ConstrainedBox::new(render_expansion_icon(
-                                    expansion_config.is_expanded,
-                                    expansion_config.expands_upwards,
-                                    appearance,
-                                    app,
-                                ))
-                                .with_height(icon_size(app))
-                                .with_width(icon_size(app))
-                                .finish()
-                            };
-                            let regular_header = self.clone().render_header(
-                                app,
-                                Some(make_row(button.render_expanded_button(), make_icon())),
-                            );
-                            let compact_header = self.render_header(
-                                app,
-                                Some(make_row(button.render_compact_button(), make_icon())),
-                            );
-                            let size_switch_threshold = TRAILING_BUTTON_SIZE_SWITCH_THRESHOLD
-                                * appearance.monospace_ui_scalar();
-                            SizeConstraintSwitch::new(
-                                regular_header,
-                                vec![(
-                                    SizeConstraintCondition::WidthLessThan(size_switch_threshold),
-                                    compact_header,
-                                )],
-                            )
-                            .finish()
-                        }
-                        None => self.render_header(app, Some(expanded_icon)),
+                        let size_switch_threshold =
+                            size_switch_threshold * appearance.monospace_ui_scalar();
+                        SizeConstraintSwitch::new(
+                            regular_header,
+                            vec![(
+                                SizeConstraintCondition::WidthLessThan(size_switch_threshold),
+                                compact_header,
+                            )],
+                        )
+                        .finish()
                     }
+                    InteractionMode::ManuallyExpandable(expansion_config) => {
+                        let expanded_icon = ConstrainedBox::new(render_expansion_icon(
+                            expansion_config.is_expanded,
+                            expansion_config.expands_upwards,
+                            appearance,
+                            app,
+                        ))
+                        .with_height(icon_size(app))
+                        .with_width(icon_size(app))
+                        .finish();
+
+                        match expansion_config.trailing_button.clone() {
+                            Some(button) => {
+                                let make_row =
+                                    |button_element: Box<dyn Element>, icon: Box<dyn Element>| {
+                                        Flex::row()
+                                            .with_main_axis_alignment(MainAxisAlignment::End)
+                                            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                                            .with_main_axis_size(MainAxisSize::Min)
+                                            .with_child(
+                                                Container::new(button_element)
+                                                    .with_margin_right(ICON_MARGIN)
+                                                    .finish(),
+                                            )
+                                            .with_child(icon)
+                                            .finish()
+                                    };
+                                let make_icon = || {
+                                    ConstrainedBox::new(render_expansion_icon(
+                                        expansion_config.is_expanded,
+                                        expansion_config.expands_upwards,
+                                        appearance,
+                                        app,
+                                    ))
+                                    .with_height(icon_size(app))
+                                    .with_width(icon_size(app))
+                                    .finish()
+                                };
+                                let regular_header = self.clone().render_header(
+                                    app,
+                                    Some(make_row(button.render_expanded_button(), make_icon())),
+                                );
+                                let compact_header = self.render_header(
+                                    app,
+                                    Some(make_row(button.render_compact_button(), make_icon())),
+                                );
+                                let size_switch_threshold = TRAILING_BUTTON_SIZE_SWITCH_THRESHOLD
+                                    * appearance.monospace_ui_scalar();
+                                SizeConstraintSwitch::new(
+                                    regular_header,
+                                    vec![(
+                                        SizeConstraintCondition::WidthLessThan(
+                                            size_switch_threshold,
+                                        ),
+                                        compact_header,
+                                    )],
+                                )
+                                .finish()
+                            }
+                            None => self.render_header(app, Some(expanded_icon)),
+                        }
+                    }
+                    InteractionMode::RightClickable(_) => self.render_header(app, None),
                 }
-                InteractionMode::RightClickable(_) => self.render_header(app, None),
             }
-        } _ => {
-            self.render_header(app, None)
-        }}
+            _ => self.render_header(app, None),
+        }
     }
 }

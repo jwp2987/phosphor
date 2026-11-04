@@ -11,13 +11,14 @@ use warpui::platform::OperatingSystem;
 use warpui::{AppContext, Entity, ModelHandle, SingletonEntity, View, ViewContext};
 
 use super::{AgentViewState, EphemeralMessageModel, EphemeralMessageModelEvent};
+use crate::BlocklistAIHistoryModel;
 use crate::ai::agent::conversation::AIConversation;
 use crate::ai::agent::{
     AIAgentExchangeId, AIAgentOutputStatus, FinishedAIAgentOutput, RenderableAIError,
 };
 use crate::ai::blocklist::agent_view::shortcuts::AgentShortcutViewModel;
 use crate::ai::blocklist::agent_view::{
-    agent_view_bg_fill, AgentViewController, AgentViewControllerEvent,
+    AgentViewController, AgentViewControllerEvent, agent_view_bg_fill,
 };
 use crate::ai::blocklist::{
     BlocklistAIContextEvent, BlocklistAIContextModel, BlocklistAIHistoryEvent,
@@ -25,20 +26,20 @@ use crate::ai::blocklist::{
 };
 use crate::ai::document::ai_document_model::{AIDocumentModel, AIDocumentModelEvent};
 use crate::ai::mcp::{
-    templatable_manager::{FigmaMcpStatus, TemplatableMCPServerManagerEvent},
     TemplatableMCPServerManager,
+    templatable_manager::{FigmaMcpStatus, TemplatableMCPServerManagerEvent},
 };
 use crate::ai::request_usage_model::{AIRequestUsageModel, AIRequestUsageModelEvent};
 use crate::search::slash_command_menu::static_commands::commands;
 use crate::settings::{InputSettings, InputSettingsChangedEvent};
 use crate::terminal::input::buffer_model::{InputBufferModel, InputBufferUpdateEvent};
-use crate::terminal::input::message_bar::misroute::misroute_recovery_message;
 use crate::terminal::input::message_bar::attached_context::{
     AttachedBlocksMessageProducer, AttachedContextArgs, AttachedTextSelectionMessageProducer,
 };
 use crate::terminal::input::message_bar::common::{
     disableable_message_item_color_overrides, render_standard_message_bar,
 };
+use crate::terminal::input::message_bar::misroute::misroute_recovery_message;
 use crate::terminal::input::message_bar::{
     ChipHorizontalAlignment, EmptyMessageProducer, Message, MessageItem, MessageProvider,
 };
@@ -51,9 +52,8 @@ use crate::terminal::model::TerminalModel;
 use crate::terminal::view::TerminalAction;
 use crate::ui_components::blended_colors;
 use crate::util::bindings::keybinding_name_to_keystroke;
-use crate::workspace::tab_settings::{TabSettings, TabSettingsChangedEvent};
 use crate::workspace::WorkspaceAction;
-use crate::BlocklistAIHistoryModel;
+use crate::workspace::tab_settings::{TabSettings, TabSettingsChangedEvent};
 
 const FIGMA_ICON_SIZE: f32 = 14.;
 

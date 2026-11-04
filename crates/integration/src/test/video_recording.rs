@@ -3,7 +3,7 @@ use std::pin::Pin;
 
 use pathfinder_geometry::vector::vec2f;
 use warpui::event::{Event, ModifiersState};
-use warpui::integration::{TestStep, ARTIFACTS_DIR_ENV_VAR};
+use warpui::integration::{ARTIFACTS_DIR_ENV_VAR, TestStep};
 
 use crate::Builder;
 use warp::integration_testing::step::new_step_with_default_assertions;

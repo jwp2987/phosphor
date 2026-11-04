@@ -1,10 +1,10 @@
 use super::{
+    Input, InputAction, InputDropTargetData,
     common::{
         add_command_xray_overlay, add_input_suggestions_overlays, add_voltron_overlay,
         add_workflow_info_overlay, should_show_terminal_input_message_bar,
         wrap_input_with_terminal_padding_and_focus_handler,
     },
-    Input, InputAction, InputDropTargetData,
 };
 
 use crate::{
@@ -19,12 +19,12 @@ use crate::{
 };
 use warp_core::settings::Setting;
 use warpui::{
+    AppContext, SingletonEntity,
     elements::{
         Border, Clipped, Container, DropTarget, Element, Flex, Hoverable, ParentElement,
         SavePosition, Stack,
     },
     presenter::ChildView,
-    AppContext, SingletonEntity,
 };
 
 impl Input {

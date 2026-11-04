@@ -1,5 +1,5 @@
 use warp_core::ui::appearance::Appearance;
-use warpui::{platform::WindowStyle, App};
+use warpui::{App, platform::WindowStyle};
 
 use crate::auth::AuthStateProvider;
 use crate::settings_view::keybindings::KeybindingChangedNotifier;

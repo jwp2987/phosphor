@@ -27,8 +27,8 @@ use warpui::SingletonEntity;
 use warpui_core::{AppContext, Entity};
 
 use super::{
-    MAX_ASCII_ART_BYTES, MAX_ASCII_ART_COLS, MAX_ASCII_ART_ROWS, built_in_mark_contains,
-    BUILT_IN_MARK_CELL_ASPECT_RATIO,
+    BUILT_IN_MARK_CELL_ASPECT_RATIO, MAX_ASCII_ART_BYTES, MAX_ASCII_ART_COLS, MAX_ASCII_ART_ROWS,
+    built_in_mark_contains,
 };
 
 #[derive(Clone, Debug)]

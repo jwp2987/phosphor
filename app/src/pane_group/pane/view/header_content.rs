@@ -5,10 +5,10 @@
 
 use warp_core::ui::theme::Fill;
 use warpui::{
+    AppContext, Element,
     elements::{DraggableState, MouseStateHandle},
     fonts::Properties,
     text_layout::ClipConfig,
-    AppContext, Element,
 };
 
 /// Closure that renders sharing controls (share button, view-only indicator) for a pane header.

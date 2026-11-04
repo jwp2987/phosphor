@@ -1,10 +1,10 @@
 use crate::ai::aws_credentials::AwsCredentialRefresher as _;
 use crate::auth::AuthState;
 use crate::auth::AuthStateProvider;
+use crate::terminal::TerminalManager as TerminalManagerTrait;
 use crate::terminal::model::terminal_model::ExitReason;
 use crate::terminal::shell::ShellName;
 use crate::terminal::warpify::settings::WarpifySettings;
-use crate::terminal::TerminalManager as TerminalManagerTrait;
 use anyhow::Context as _;
 use async_broadcast::InactiveReceiver;
 use std::any::Any;
@@ -12,25 +12,27 @@ use std::sync::mpsc::{SendError, SyncSender};
 use std::{collections::HashMap, ffi::OsString, path::PathBuf, sync::Arc, thread::JoinHandle};
 use warp_core::SessionId;
 
-use crate::terminal::available_shells::{AvailableShell, AvailableShells};
 use crate::terminal::ShellLaunchData;
 use crate::terminal::ShellLaunchState;
+use crate::terminal::available_shells::{AvailableShell, AvailableShells};
 
 use parking_lot::{FairMutex, Mutex};
 use pathfinder_geometry::vector::Vector2F;
 
 use settings::Setting as _;
 use warpui::r#async::executor::Background;
-use warpui::{AppContext, Entity, ModelContext, ModelHandle, SingletonEntity, ViewHandle, WindowId};
+use warpui::{
+    AppContext, Entity, ModelContext, ModelHandle, SingletonEntity, ViewHandle, WindowId,
+};
 
 use crate::ai::blocklist::{InputConfig, SerializedBlockListItem};
 use crate::terminal::view::ConversationRestorationInNewPaneType;
 
 use crate::banner::BannerState;
+use crate::context_chips::ContextChipKind;
 use crate::context_chips::current_prompt::CurrentPrompt;
 use crate::context_chips::prompt::Prompt;
 use crate::context_chips::prompt_type::PromptType;
-use crate::context_chips::ContextChipKind;
 use crate::features::FeatureFlag;
 use crate::pane_group::TerminalViewResources;
 use crate::persistence::ModelEvent;
@@ -55,12 +57,12 @@ use crate::terminal::writeable_pty::terminal_surface::{
     PtyIntentEvent, TerminalSurface, TerminalSurfaceInit, TerminalSurfaceResult,
 };
 use crate::terminal::writeable_pty::{self, Message};
+use crate::terminal::{PTY_READS_BROADCAST_CHANNEL_SIZE, TerminalView, terminal_manager};
 use crate::terminal::{
+    TerminalModel,
     event_listener::ChannelEventListener,
     local_tty::{Pty, PtyOptions},
-    TerminalModel,
 };
-use crate::terminal::{terminal_manager, TerminalView, PTY_READS_BROADCAST_CHANNEL_SIZE};
 
 use super::mio_channel;
 use super::recorder;
@@ -224,7 +226,10 @@ impl TerminalManager<TerminalView> {
         chosen_shell: Option<AvailableShell>,
         initial_input_config: Option<InputConfig>,
         ctx: &mut AppContext,
-    ) -> (ViewHandle<TerminalView>, ModelHandle<Box<dyn TerminalManagerTrait>>) {
+    ) -> (
+        ViewHandle<TerminalView>,
+        ModelHandle<Box<dyn TerminalManagerTrait>>,
+    ) {
         // If we have explicit restored_blocks, prioritize those (these come from db on startup).
         // Otherwise if there's a conversation we're restoring, get blocks from those (including
         // when `restored_blocks` is missing or an empty vec: on startup the blocks may only exist
@@ -378,7 +383,10 @@ impl<S> TerminalManager<S> {
         model_event_sender: Option<SyncSender<ModelEvent>>,
         chosen_shell: Option<AvailableShell>,
         ctx: &mut AppContext,
-        create_surface: impl FnOnce(TerminalSurfaceInit, &mut AppContext) -> TerminalSurfaceResult<S, PostWire>,
+        create_surface: impl FnOnce(
+            TerminalSurfaceInit,
+            &mut AppContext,
+        ) -> TerminalSurfaceResult<S, PostWire>,
     ) -> TerminalManagerInit<S>
     where
         S: TerminalSurface,
@@ -420,7 +428,10 @@ impl<S> TerminalManager<S> {
         chosen_shell: Option<AvailableShell>,
         ssh_remote_server_support: SshRemoteServerSupport,
         ctx: &mut AppContext,
-        create_surface: impl FnOnce(TerminalSurfaceInit, &mut AppContext) -> TerminalSurfaceResult<S, PostWire>,
+        create_surface: impl FnOnce(
+            TerminalSurfaceInit,
+            &mut AppContext,
+        ) -> TerminalSurfaceResult<S, PostWire>,
         box_manager: BoxManager,
     ) -> TerminalManagerInit<S>
     where
@@ -636,11 +647,14 @@ impl<S> TerminalManager<S> {
             log::info!("Failed to send Shutdown {e:?}");
         }
 
-        match self.event_loop_handle.take() { Some(join_handle) => {
-            join_event_loop(join_handle, wait);
-        } _ => {
-            log::error!("No event loop handle to join when dropping terminal manager.")
-        }}
+        match self.event_loop_handle.take() {
+            Some(join_handle) => {
+                join_event_loop(join_handle, wait);
+            }
+            _ => {
+                log::error!("No event loop handle to join when dropping terminal manager.")
+            }
+        }
 
         self.inactive_pty_reads_rx.close();
     }
@@ -1066,7 +1080,10 @@ fn on_shell_determined<S: TerminalSurface>(
                     .drained_with(|| super::terminal_attributes::pty_master_has_unread(fd))
             }));
         }
-        model.lock().typeahead_handoff_mut().set_foreground_probe(probe);
+        model
+            .lock()
+            .typeahead_handoff_mut()
+            .set_foreground_probe(probe);
         // #1373: who owns the terminal decides "interactive / long running", not elapsed time.
         model.lock().set_interactive_probe(Arc::new(move || {
             super::terminal_attributes::terminal_owner(fd, pid as i32)
@@ -1342,12 +1359,12 @@ where
             return;
         };
         let now = instant::Instant::now();
-        let detection =
-            self.detector
-                .borrow_mut()
-                .observe(now, is_echo_on, is_canonical, || {
-                    surface.read(ctx, |surface, ctx| surface.pending_interactive_prompt(ctx))
-                });
+        let detection = self
+            .detector
+            .borrow_mut()
+            .observe(now, is_echo_on, is_canonical, || {
+                surface.read(ctx, |surface, ctx| surface.pending_interactive_prompt(ctx))
+            });
         if let Some(detection) = detection {
             match detection {
                 PromptDetection::Password => {
@@ -1389,17 +1406,18 @@ where
         self.epoch.set(epoch);
         if let Some(at) = wake {
             let me = self.clone();
-            let _ = ctx.spawn(
-                async move {
-                    warpui::r#async::Timer::after(at.saturating_duration_since(now)).await
-                },
-                move |_, _, ctx| {
-                    if me.epoch.get() == epoch {
-                        me.armed_for.set(None);
-                        me.on_output(ctx);
-                    }
-                },
-            );
+            let _ =
+                ctx.spawn(
+                    async move {
+                        warpui::r#async::Timer::after(at.saturating_duration_since(now)).await
+                    },
+                    move |_, _, ctx| {
+                        if me.epoch.get() == epoch {
+                            me.armed_for.set(None);
+                            me.on_output(ctx);
+                        }
+                    },
+                );
         }
     }
 }

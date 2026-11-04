@@ -1,5 +1,5 @@
 use crate::ChannelState;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use url::Url;
 
 #[derive(Debug)]
@@ -28,7 +28,6 @@ impl WebIntent {
             {
                 return Err(anyhow!("Attempting to parse invalid url: {}", url));
             }
-
         };
 
         if segments.is_empty() {
@@ -120,4 +119,3 @@ pub fn maybe_rewrite_web_url_to_intent(url: &Url) -> Option<Url> {
 
 // Looks at the current url and converts it into an app intent.
 // NOTE: This is only intended for use with target_family = "wasm"
-

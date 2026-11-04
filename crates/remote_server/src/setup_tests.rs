@@ -115,31 +115,39 @@ fn state_is_ready() {
 
 #[test]
 fn state_is_failed() {
-    assert!(RemoteServerSetupState::Failed {
-        error: "test".into()
-    }
-    .is_failed());
+    assert!(
+        RemoteServerSetupState::Failed {
+            error: "test".into()
+        }
+        .is_failed()
+    );
     assert!(!RemoteServerSetupState::Ready.is_failed());
 }
 
 #[test]
 fn state_is_terminal() {
     assert!(RemoteServerSetupState::Ready.is_terminal());
-    assert!(RemoteServerSetupState::Failed {
-        error: "test".into()
-    }
-    .is_terminal());
-    assert!(RemoteServerSetupState::Unsupported {
-        reason: UnsupportedReason::NonGlibc {
-            name: "musl".into()
+    assert!(
+        RemoteServerSetupState::Failed {
+            error: "test".into()
         }
-    }
-    .is_terminal());
+        .is_terminal()
+    );
+    assert!(
+        RemoteServerSetupState::Unsupported {
+            reason: UnsupportedReason::NonGlibc {
+                name: "musl".into()
+            }
+        }
+        .is_terminal()
+    );
     assert!(!RemoteServerSetupState::Checking.is_terminal());
-    assert!(!RemoteServerSetupState::Installing {
-        progress_percent: None,
-    }
-    .is_terminal());
+    assert!(
+        !RemoteServerSetupState::Installing {
+            progress_percent: None,
+        }
+        .is_terminal()
+    );
     assert!(!RemoteServerSetupState::Updating.is_terminal());
     assert!(!RemoteServerSetupState::Initializing.is_terminal());
 }
@@ -283,7 +291,8 @@ fn install_script_uses_release_asset_prefix_and_staging_placeholder() {
     let script = install_script(Some("~/.phosphor/remote-server/phosphor-upload.tar.gz"));
 
     assert!(
-        script.contains("staging_tarball_path=\"~/.phosphor/remote-server/phosphor-upload.tar.gz\"")
+        script
+            .contains("staging_tarball_path=\"~/.phosphor/remote-server/phosphor-upload.tar.gz\"")
     );
     assert!(script.contains("phosphor-cli-$os_name-$arch_name.tar.gz"));
     // Deliberately changed on 2026-08-11: the script asked for a `zap-` asset,
@@ -692,7 +701,9 @@ fn install_script_tolerates_tarball_without_resources() {
 /// `HOME` pointed at a temp dir, and returns the temp dir guard, the script
 /// text (for failure messages) and the resolved install directory.
 #[cfg(unix)]
-fn run_install_with_tarball(with_resources: bool) -> (tempfile::TempDir, String, std::path::PathBuf) {
+fn run_install_with_tarball(
+    with_resources: bool,
+) -> (tempfile::TempDir, String, std::path::PathBuf) {
     let home = tempfile::tempdir().expect("failed to create temp HOME");
     let home_path = home.path().to_path_buf();
 
@@ -715,7 +726,10 @@ fn run_install_with_tarball(with_resources: bool) -> (tempfile::TempDir, String,
         .arg(".")
         .status()
         .expect("failed to spawn tar");
-    assert!(tar_status.success(), "tar failed to build the test artifact");
+    assert!(
+        tar_status.success(),
+        "tar failed to build the test artifact"
+    );
 
     let script = install_script(Some(tarball.to_str().unwrap()));
 
@@ -739,9 +753,8 @@ fn run_install_with_tarball(with_resources: bool) -> (tempfile::TempDir, String,
         String::from_utf8_lossy(&output.stderr),
     );
 
-    let install_dir = std::path::PathBuf::from(
-        remote_server_dir().replacen('~', home_path.to_str().unwrap(), 1),
-    );
+    let install_dir =
+        std::path::PathBuf::from(remote_server_dir().replacen('~', home_path.to_str().unwrap(), 1));
     (home, script, install_dir)
 }
 
@@ -1032,11 +1045,7 @@ fn download_failures_report_transport_failure_never_a_digest_verdict() {
 #[cfg(unix)]
 fn run_download_install_with_failing_curl(
     curl_status: i32,
-) -> (
-    tempfile::TempDir,
-    std::path::PathBuf,
-    std::process::Output,
-) {
+) -> (tempfile::TempDir, std::path::PathBuf, std::process::Output) {
     let home = tempfile::tempdir().expect("failed to create temp HOME");
     let home_path = home.path().to_path_buf();
 
@@ -1074,9 +1083,8 @@ fn run_download_install_with_failing_curl(
         .output()
         .expect("failed to spawn bash");
 
-    let install_dir = std::path::PathBuf::from(
-        remote_server_dir().replacen('~', home_path.to_str().unwrap(), 1),
-    );
+    let install_dir =
+        std::path::PathBuf::from(remote_server_dir().replacen('~', home_path.to_str().unwrap(), 1));
     (home, install_dir, output)
 }
 
@@ -1098,11 +1106,7 @@ enum DigestUnderTest {
 fn run_download_install_with_digest(
     which: DigestUnderTest,
     digest_tool_shim: Option<&str>,
-) -> (
-    tempfile::TempDir,
-    std::path::PathBuf,
-    std::process::Output,
-) {
+) -> (tempfile::TempDir, std::path::PathBuf, std::process::Output) {
     let home = tempfile::tempdir().expect("failed to create temp HOME");
     let home_path = home.path().to_path_buf();
 
@@ -1119,7 +1123,10 @@ fn run_download_install_with_digest(
         .arg(".")
         .status()
         .expect("failed to spawn tar");
-    assert!(tar_status.success(), "tar failed to build the test artifact");
+    assert!(
+        tar_status.success(),
+        "tar failed to build the test artifact"
+    );
 
     let real_digest = sha256_of(&tarball);
     let pinned = match which {
@@ -1178,9 +1185,8 @@ fn run_download_install_with_digest(
         .output()
         .expect("failed to spawn bash");
 
-    let install_dir = std::path::PathBuf::from(
-        remote_server_dir().replacen('~', home_path.to_str().unwrap(), 1),
-    );
+    let install_dir =
+        std::path::PathBuf::from(remote_server_dir().replacen('~', home_path.to_str().unwrap(), 1));
     (home, install_dir, output)
 }
 
@@ -1302,7 +1308,11 @@ fn prior_install_probe_requires_an_executable_binary_not_just_the_directory() {
 
     // The empty directory a failed install used to leave behind: NOT an install.
     std::fs::create_dir_all(&dir).unwrap();
-    assert_eq!(sh_status(&probe), 1, "an empty directory is not a prior install");
+    assert_eq!(
+        sh_status(&probe),
+        1,
+        "an empty directory is not a prior install"
+    );
 
     // Unrelated files (bundled resources, pid files, a staged tarball) are not an install.
     std::fs::create_dir_all(dir.join("bundled_resources")).unwrap();
@@ -1313,7 +1323,11 @@ fn prior_install_probe_requires_an_executable_binary_not_just_the_directory() {
     // A non-executable (partial) binary is not an install.
     let bin = dir.join("phosphor-oss-0.1.12");
     std::fs::write(&bin, "partial").unwrap();
-    assert_eq!(sh_status(&probe), 1, "a non-executable binary is not an install");
+    assert_eq!(
+        sh_status(&probe),
+        1,
+        "a non-executable binary is not an install"
+    );
 
     // A complete, executable versioned binary is.
     std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();

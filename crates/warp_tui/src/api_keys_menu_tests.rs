@@ -134,14 +134,20 @@ fn select_at_snapshot_index_and_scroll_by_delta_update_the_list() {
             // An out-of-bounds index is rejected and leaves the selection untouched.
             let selected = menu.update(ctx, |menu, ctx| menu.select_at_snapshot_index(99, ctx));
             assert!(!selected, "index 99 is out of bounds for a 2-row list");
-            let snapshot = menu.as_ref(ctx).snapshot(ctx).expect("menu should still be open");
+            let snapshot = menu
+                .as_ref(ctx)
+                .snapshot(ctx)
+                .expect("menu should still be open");
             assert_eq!(snapshot.selected_index, Some(1));
 
             // Scrolling must not itself be treated as a bug if it doesn't move a 2-row list that
             // fits entirely within the viewport -- this only checks that the call is safe to make
             // (no panic) while the menu remains open.
             menu.update(ctx, |menu, ctx| menu.scroll_by_delta(1, ctx));
-            assert!(menu.as_ref(ctx).snapshot(ctx).is_some(), "menu should still be open");
+            assert!(
+                menu.as_ref(ctx).snapshot(ctx).is_some(),
+                "menu should still be open"
+            );
         });
     });
 }
@@ -189,7 +195,11 @@ fn build_provider_rows_filters_by_case_insensitive_display_name() {
 #[test]
 fn build_provider_rows_empty_input_lists_everything() {
     let rows = build_provider_rows(vec![provider("p1", "Local Ollama", false)], "   ");
-    assert_eq!(rows.len(), 1, "whitespace-only query must not filter anything out");
+    assert_eq!(
+        rows.len(),
+        1,
+        "whitespace-only query must not filter anything out"
+    );
 }
 
 // ── Input ownership (#599) ────────────────────────────────────────────────────

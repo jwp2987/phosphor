@@ -6,8 +6,8 @@ use std::{
     io::{self, Write},
     path::PathBuf,
     sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
     },
     thread,
     time::Duration,
@@ -19,12 +19,11 @@ use crate::ai::skills::SkillManager;
 use ai::skills::{parse_skills_dirs_env, read_skills_for_skills_dirs, resolve_skills_dirs};
 
 use crate::ai::agent_sdk::driver::harness::{
-    harness_model_env_vars, task_env_vars, HarnessKind, HarnessRunner, SavePoint,
-    ThirdPartyHarness,
+    HarnessKind, HarnessRunner, SavePoint, ThirdPartyHarness, harness_model_env_vars, task_env_vars,
 };
 use crate::ai::ambient_agents::task::HarnessModelConfig;
 use crate::terminal::cli_agent_sessions::plugin_manager::{
-    plugin_manager_for, CliAgentPluginManager,
+    CliAgentPluginManager, plugin_manager_for,
 };
 use crate::terminal::cli_agent_sessions::{
     CLIAgentSessionStatus, CLIAgentSessionsModel, CLIAgentSessionsModelEvent,
@@ -37,27 +36,27 @@ use crate::{
         },
         agent_events::DisabledAgentEventStreamClient,
         ambient_agents::{
-            conversation_output_status_from_conversation, AmbientAgentTaskId,
-            AmbientConversationStatus,
+            AmbientAgentTaskId, AmbientConversationStatus,
+            conversation_output_status_from_conversation,
         },
         blocklist::{
-            agent_view::AgentViewEntryOrigin, BlocklistAIHistoryEvent, BlocklistAIHistoryModel,
-            BlocklistAIPermissions,
+            BlocklistAIHistoryEvent, BlocklistAIHistoryModel, BlocklistAIPermissions,
+            agent_view::AgentViewEntryOrigin,
         },
         execution_profiles::profiles::AIExecutionProfilesModel,
         mcp::{
-            parsing::{normalize_mcp_json, resolve_json, ParsedTemplatableMCPServerResult},
-            templatable_manager::TemplatableMCPServerManagerEvent,
             TemplatableMCPServerInstallation, TemplatableMCPServerManager,
+            parsing::{ParsedTemplatableMCPServerResult, normalize_mcp_json, resolve_json},
+            templatable_manager::TemplatableMCPServerManagerEvent,
         },
     },
     auth::AuthStateProvider,
 };
 use anyhow::Context as _;
 use futures::{
+    FutureExt as _,
     channel::oneshot,
     future::{self, Either},
-    FutureExt as _,
 };
 use oneshot::{Canceled, Receiver, Sender};
 use uuid::Uuid;
@@ -66,8 +65,8 @@ use warp_cli::mcp::MCPSpec;
 use warp_core::{features::FeatureFlag, report_if_error, safe_debug, safe_info};
 use warp_managed_secrets::ManagedSecretValue;
 use warpui::{
-    r#async::{FutureExt, TimeoutError},
     Entity, ModelContext, ModelHandle, ModelSpawner, SingletonEntity,
+    r#async::{FutureExt, TimeoutError},
 };
 
 pub(crate) mod harness;
@@ -1368,10 +1367,12 @@ impl AgentDriver {
         } else {
             harness::HarnessCleanupDisposition::DropResumptionState
         };
-        report_if_error!(runner
-            .cleanup(cleanup_disposition, foreground)
-            .await
-            .context("Failed to clean up harness runtime state"));
+        report_if_error!(
+            runner
+                .cleanup(cleanup_disposition, foreground)
+                .await
+                .context("Failed to clean up harness runtime state")
+        );
 
         // A runtime failure detected mid-run takes precedence over the
         // harness's own exit code: surface the actionable detail rather
@@ -1775,15 +1776,18 @@ impl AgentDriver {
                             log::debug!(
                                 "Triggering post-turn harness session update from CLI agent event"
                             );
-                            report_if_error!(runner
-                                .handle_session_update(&spawner)
-                                .await
-                                .context("Failed to update harness state from CLI session event"));
+                            report_if_error!(
+                                runner.handle_session_update(&spawner).await.context(
+                                    "Failed to update harness state from CLI session event"
+                                )
+                            );
                             log::debug!("Triggering post-turn save of harness conversation data");
-                            report_if_error!(runner
-                                .save_conversation(SavePoint::PostTurn, &spawner)
-                                .await
-                                .context("Failed to save harness conversation (post-turn)"));
+                            report_if_error!(
+                                runner
+                                    .save_conversation(SavePoint::PostTurn, &spawner)
+                                    .await
+                                    .context("Failed to save harness conversation (post-turn)")
+                            );
                         },
                         |_, _, _| {},
                     );
@@ -1799,9 +1803,7 @@ impl AgentDriver {
     fn handle_terminal_driver_event(&mut self, event: &TerminalDriverEvent) {
         match event {
             TerminalDriverEvent::SlowBootstrap => {
-                eprintln!(
-                    "Warning: Terminal session is slow to bootstrap."
-                );
+                eprintln!("Warning: Terminal session is slow to bootstrap.");
             }
         }
     }
@@ -1817,11 +1819,13 @@ impl SingletonEntity for AgentDriver {}
 
 /// Write the run ID to stdout using the appropriate output format.
 pub(super) fn write_run_started(run_id: &str, output_format: OutputFormat) {
-    report_if_error!(output::with_stdout_buffered(|buf| match output_format {
-        OutputFormat::Json | OutputFormat::Ndjson => output::json::run_started(run_id, buf),
-        OutputFormat::Text | OutputFormat::Pretty => output::text::run_started(run_id, buf),
-    })
-    .context("Failed to write run ID"));
+    report_if_error!(
+        output::with_stdout_buffered(|buf| match output_format {
+            OutputFormat::Json | OutputFormat::Ndjson => output::json::run_started(run_id, buf),
+            OutputFormat::Text | OutputFormat::Pretty => output::text::run_started(run_id, buf),
+        })
+        .context("Failed to write run ID")
+    );
 }
 
 /// Build the environment variables that carry managed secrets into the agent's

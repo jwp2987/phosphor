@@ -2,6 +2,7 @@ use std::{cell::RefCell, collections::HashMap, time::Duration};
 
 use settings::{Setting, ToggleableSetting};
 use warpui::{
+    AppContext, Element, Entity, SingletonEntity, TypedActionView, View, ViewContext, ViewHandle,
     elements::{
         Container, CrossAxisAlignment, Flex, MainAxisAlignment, MouseStateHandle, ParentElement,
         Text,
@@ -10,7 +11,6 @@ use warpui::{
         components::{Coords, UiComponent, UiComponentStyles},
         switch::SwitchStateHandle,
     },
-    AppContext, Element, Entity, SingletonEntity, TypedActionView, View, ViewContext, ViewHandle,
 };
 
 use crate::{
@@ -19,9 +19,9 @@ use crate::{
     report_if_error,
     settings_view::{
         features_page::render_group,
-        settings_page::{render_body_item, LocalOnlyIconState, ToggleState},
+        settings_page::{LocalOnlyIconState, ToggleState, render_body_item},
     },
-    undo_close::{settings::UndoCloseEnabled, UndoCloseSettings},
+    undo_close::{UndoCloseSettings, settings::UndoCloseEnabled},
 };
 
 #[derive(Debug, Clone, Copy)]

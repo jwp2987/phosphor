@@ -1,12 +1,12 @@
 use crate::view_components::action_button::{
     ActionButtonTheme, DisabledSecondaryTheme, SecondaryTheme,
 };
-use warp_core::ui::appearance::Appearance;
-use warp_core::ui::color::contrast::MinimumAllowedContrast;
-use warp_core::ui::color::ContrastingColor;
-use warp_core::ui::theme::color::internal_colors;
-use warp_core::ui::theme::Fill;
 use warp_core::ui::Icon;
+use warp_core::ui::appearance::Appearance;
+use warp_core::ui::color::ContrastingColor;
+use warp_core::ui::color::contrast::MinimumAllowedContrast;
+use warp_core::ui::theme::Fill;
+use warp_core::ui::theme::color::internal_colors;
 use warpui::elements::MouseState;
 
 /// A button rendered within the gutter of the editor.
@@ -139,7 +139,6 @@ impl StageHunkButton {
         self.is_staged = is_staged;
         self
     }
-
 }
 
 impl GutterButton for StageHunkButton {

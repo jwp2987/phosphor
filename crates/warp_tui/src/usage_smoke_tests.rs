@@ -78,14 +78,13 @@ fn usage_tui_zero_state_render() {
                 },
                 |_| TestHostView,
             );
-            let view =
-                ctx.add_tui_view(window_id, |ctx| {
-                    TuiZeroStateView::new(
-                        active_session,
-                        crate::zero_state_animation::ZeroStateInteractionHandle::default(),
-                        ctx,
-                    )
-                });
+            let view = ctx.add_tui_view(window_id, |ctx| {
+                TuiZeroStateView::new(
+                    active_session,
+                    crate::zero_state_animation::ZeroStateInteractionHandle::default(),
+                    ctx,
+                )
+            });
             (window_id, view)
         });
 

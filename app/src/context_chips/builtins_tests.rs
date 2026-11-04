@@ -5,8 +5,8 @@ use crate::{
     terminal::model::{
         block::BlockMetadata,
         session::{
-            command_executor::testing::TestCommandExecutor, BootstrapSessionType, Session,
-            SessionInfo,
+            BootstrapSessionType, Session, SessionInfo,
+            command_executor::testing::TestCommandExecutor,
         },
     },
 };

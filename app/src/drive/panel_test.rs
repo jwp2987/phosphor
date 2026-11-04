@@ -1,13 +1,14 @@
 use warp_core::ui::appearance::Appearance;
-use warpui::{platform::WindowStyle, App};
+use warpui::{App, platform::WindowStyle};
 
 use crate::{
+    Assets, ObjectActions,
     ai::blocklist::BlocklistAIHistoryModel,
     auth::{AuthManager, AuthStateProvider},
     cloud_object::update_manager::UpdateManager,
     cloud_object::{
-        model::{persistence::ObjectStoreModel, view::ObjectStoreViewModel},
         Space,
+        model::{persistence::ObjectStoreModel, view::ObjectStoreViewModel},
     },
     drive::index::DriveIndexSection,
     network::NetworkStatus,
@@ -15,7 +16,6 @@ use crate::{
     terminal::resizable_data::ResizableData,
     test_util::settings::initialize_settings_for_tests,
     workspaces::user_workspaces::UserWorkspaces,
-    Assets, ObjectActions,
 };
 
 use super::DrivePanel;

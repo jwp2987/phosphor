@@ -10,12 +10,12 @@ pub use startup_shell::*;
 pub use working_directory_config::*;
 
 use warp_core::settings::{
-    macros::define_settings_group, RespectUserSyncSetting, SupportedPlatforms, SyncToCloud,
+    RespectUserSyncSetting, SupportedPlatforms, SyncToCloud, macros::define_settings_group,
 };
 
 use crate::ai::blocklist::agent_view::toolbar_item::AgentToolbarItemKind;
-use crate::context_chips::prompt::PromptSelection;
 use crate::context_chips::ContextChipKind;
+use crate::context_chips::prompt::PromptSelection;
 
 lazy_static! {
     pub static ref DEFAULT_THRESHOLD_FOR_LONG_RUNNING_NOTIFICATION: Duration =

@@ -1,6 +1,11 @@
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 
+use agent_proto::response_event::stream_finished::ConversationUsageMetadata;
+use agent_proto::{
+    client_action::{Action, StartNewConversation},
+    response_event::stream_finished::TokenUsage,
+};
 use ai::skills::SkillPathOrigin;
 use anyhow::anyhow;
 use chrono::{DateTime, Local, NaiveDateTime};
@@ -8,11 +13,6 @@ use itertools::Itertools as _;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use warp_cli::agent::Harness;
-use agent_proto::response_event::stream_finished::ConversationUsageMetadata;
-use agent_proto::{
-    client_action::{Action, StartNewConversation},
-    response_event::stream_finished::TokenUsage,
-};
 use warpui::{AppContext, Entity, EntityId, ModelContext, SingletonEntity};
 
 #[cfg(feature = "local_fs")]
@@ -21,13 +21,14 @@ use std::sync::{Arc, Mutex};
 #[cfg(feature = "local_fs")]
 use diesel::SqliteConnection;
 
+use crate::GlobalResourceHandlesProvider;
+use crate::ai::agent::AIAgentExchangeId;
+use crate::ai::agent::CancellationReason;
 use crate::ai::agent::api::ServerConversationToken;
 use crate::ai::agent::conversation::ConversationStatus;
 use crate::ai::agent::conversation::UpdateConversationError;
-use crate::ai::agent::task::helper::{MessageExt, ToolCallExt};
 use crate::ai::agent::task::TaskId;
-use crate::ai::agent::AIAgentExchangeId;
-use crate::ai::agent::CancellationReason;
+use crate::ai::agent::task::helper::{MessageExt, ToolCallExt};
 use crate::ai::ambient_agents::AmbientAgentTaskId;
 use crate::ai::artifacts::Artifact;
 use crate::ai::byop_readiness::{
@@ -40,29 +41,28 @@ use crate::persistence::{ModelEvent, PersistedTaskRetention, WriteBarrier};
 use crate::terminal::general_settings::GeneralSettings;
 use crate::terminal::model::block::BlockId;
 use crate::terminal::view::blocklist_filter;
-use crate::GlobalResourceHandlesProvider;
-use warp_core::execution_mode::AppExecutionMode;
 use crate::{
     ai::agent::{
-        conversation::{AIConversation, AIConversationId},
         AIAgentActionId, AIAgentExchange, AIAgentInput, AIAgentOutputStatus, FinishedAIAgentOutput,
         MessageId, RenderableAIError, RequestCost, Suggestions,
+        conversation::{AIConversation, AIConversationId},
     },
     persistence::model::AgentConversation,
     ui_components::icons::Icon,
 };
+use warp_core::execution_mode::AppExecutionMode;
 
 #[cfg(feature = "local_fs")]
 use crate::persistence::{database_file_path, establish_ro_connection};
 
+use super::RequestInput;
 use super::controller::response_stream::ResponseStreamId;
 use super::persistence::{PersistedAIInput, PersistedAIInputType};
-use super::RequestInput;
 
 mod conversation_loader;
 pub use conversation_loader::{
-    convert_persisted_conversation_to_ai_conversation_with_metadata, CLIAgentConversation,
-    LoadedConversationData,
+    CLIAgentConversation, LoadedConversationData,
+    convert_persisted_conversation_to_ai_conversation_with_metadata,
 };
 
 pub(super) const MAX_HISTORICAL_CONVERSATIONS: usize = 100;
@@ -888,8 +888,7 @@ impl BlocklistAIHistoryModel {
 
         let mut updated = false;
         if let Some(conversation) = self.conversations_by_id.get_mut(&conversation_id) {
-            conversation
-                .restore_conversation_title(rename.previous_root_task_description, ctx);
+            conversation.restore_conversation_title(rename.previous_root_task_description, ctx);
             updated = true;
         } else {
             log::warn!(
@@ -1082,7 +1081,10 @@ impl BlocklistAIHistoryModel {
     /// source of truth, with no new state that could desync from it. Same cost class
     /// (O(panes x conversations)) that method already accepts, called once per ambient-run list
     /// row.
-    pub fn terminal_view_id_for_ambient_task(&self, task_id: AmbientAgentTaskId) -> Option<EntityId> {
+    pub fn terminal_view_id_for_ambient_task(
+        &self,
+        task_id: AmbientAgentTaskId,
+    ) -> Option<EntityId> {
         self.live_conversation_ids_for_terminal_view
             .iter()
             .find(|(_, conversation_ids)| {
@@ -2168,10 +2170,15 @@ impl BlocklistAIHistoryModel {
                 {
                     log::warn!("Failed to mark exchange as cancelled: {e}");
                 }
-            } else { match conversation.mark_request_cancelled(stream_id, terminal_view_id, reason, ctx)
-            { Err(e) => {
-                log::warn!("Failed to mark exchange as cancelled: {e}");
-            } _ => {}}}
+            } else {
+                match conversation.mark_request_cancelled(stream_id, terminal_view_id, reason, ctx)
+                {
+                    Err(e) => {
+                        log::warn!("Failed to mark exchange as cancelled: {e}");
+                    }
+                    _ => {}
+                }
+            }
         }
         AIDocumentModel::handle(ctx).update(ctx, |model, ctx| {
             model.clear_streaming_documents_for_conversation(&conversation_id, ctx);
@@ -3615,9 +3622,7 @@ fn byop_result_message_ids_by_tool_call_key(
     result_ids
 }
 
-fn byop_tool_call_keys_by_message_id(
-    tasks: &[agent_proto::Task],
-) -> HashMap<String, ToolCallKey> {
+fn byop_tool_call_keys_by_message_id(tasks: &[agent_proto::Task]) -> HashMap<String, ToolCallKey> {
     let mut keys = HashMap::new();
     for task in tasks {
         let mut pending_task_id: Option<String> = None;
@@ -3776,9 +3781,7 @@ fn reconcile_fork_point_tool_calls(
                 agent_proto::message::ToolCallResult {
                     tool_call_id: tool_call.tool_call_id.clone(),
                     context: None,
-                    result: Some(
-                        agent_proto::message::tool_call_result::Result::Cancel(()),
-                    ),
+                    result: Some(agent_proto::message::tool_call_result::Result::Cancel(())),
                 },
             ));
             cancel
@@ -3790,4 +3793,3 @@ fn reconcile_fork_point_tool_calls(
         root.messages.insert(index + shift, message);
     }
 }
-

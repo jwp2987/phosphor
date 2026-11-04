@@ -229,14 +229,18 @@ mod tests {
         if let TransportType::ServerSentEvents(parsed_sse) = &parsed_server.transport_type {
             assert_eq!(parsed_sse.url, "https://example.com/sse");
             assert_eq!(parsed_sse.headers.len(), 2);
-            assert!(parsed_sse
-                .headers
-                .iter()
-                .any(|h| h.name == "Authorization" && h.value == "Bearer token123"));
-            assert!(parsed_sse
-                .headers
-                .iter()
-                .any(|h| h.name == "X-Custom-Header" && h.value == "custom-value"));
+            assert!(
+                parsed_sse
+                    .headers
+                    .iter()
+                    .any(|h| h.name == "Authorization" && h.value == "Bearer token123")
+            );
+            assert!(
+                parsed_sse
+                    .headers
+                    .iter()
+                    .any(|h| h.name == "X-Custom-Header" && h.value == "custom-value")
+            );
         } else {
             panic!("Expected ServerSentEvents transport type");
         }

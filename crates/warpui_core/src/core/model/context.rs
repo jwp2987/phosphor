@@ -1,24 +1,24 @@
 use std::{any::Any, future::Future, marker::PhantomData, sync::Arc};
 
 use crate::{
-    r#async::{BoxFuture, SpawnableOutput, Timer},
-    windowing::WindowManager,
     ReadModel, ReadView, UpdateView, ViewAsRef, ViewContext, ViewHandle, ViewUpdateError,
     WeakModelHandle,
+    r#async::{BoxFuture, SpawnableOutput, Timer},
+    windowing::WindowManager,
 };
 use anyhow::Result;
 use futures::{
-    stream::{AbortHandle, Abortable},
     FutureExt,
+    stream::{AbortHandle, Abortable},
 };
 use thiserror::Error;
 
 use crate::{
-    accessibility::AccessibilityContent,
-    core::{Observation, Subscription, SubscriptionKey, TaskCallback},
-    r#async::{executor, SpawnedFutureHandle, SpawnedLocalStream},
     AppContext, Effect, Entity, EntityId, GetSingletonModelHandle, ModelAsRef, ModelHandle,
     RequestState, RetryOption, UpdateModel,
+    accessibility::AccessibilityContent,
+    r#async::{SpawnedFutureHandle, SpawnedLocalStream, executor},
+    core::{Observation, Subscription, SubscriptionKey, TaskCallback},
 };
 
 /// Error returned when a model has been dropped, and so references to it are invalid.

@@ -23,12 +23,12 @@
 //! - The user mentions a skill name / filename / path
 //! - The task matches a skill's description (e.g. "do a PR review" triggers the `review` skill)
 
+use agent_proto as api;
 use ai::skills::{SkillPathOrigin, SkillReference};
 use anyhow::Result;
 use api::message::tool_call::read_skill::SkillReference as ApiSkillReference;
 use serde::Deserialize;
-use serde_json::{json, Value};
-use agent_proto as api;
+use serde_json::{Value, json};
 use warp_util::local_or_remote_path::LocalOrRemotePath;
 
 use super::OpenAiTool;

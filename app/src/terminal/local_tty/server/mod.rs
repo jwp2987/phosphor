@@ -303,7 +303,9 @@ mod reaper_tests {
     /// Once the child has been reaped there is nothing to block on.
     #[test]
     fn blocking_wait_gives_up_when_the_child_is_already_reaped() {
-        let mut child = std::process::Command::new("true").spawn().expect("spawn true");
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .expect("spawn true");
         let pid = child.id();
         child.wait().expect("wait");
         assert!(!block_until_child_exits(pid));

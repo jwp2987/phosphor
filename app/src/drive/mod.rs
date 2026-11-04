@@ -22,8 +22,8 @@ use warpui::AppContext;
 
 use crate::{
     cloud_object::{
-        model::view::{ObjectStoreViewModel, UpdateTimestamp},
         GenericStringObjectFormat, ObjectIdType, ObjectType, StoredObject,
+        model::view::{ObjectStoreViewModel, UpdateTimestamp},
     },
     server::ids::{HashedSqliteId, ObjectUid, ServerId, SyncId},
     ui_components::icons::Icon,

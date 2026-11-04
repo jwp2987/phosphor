@@ -143,7 +143,10 @@ impl LoopbackOAuthReceiver {
         };
 
         let (status, message) = if result.is_ok() {
-            ("200 OK", "Authentication complete. You can return to Phosphor.")
+            (
+                "200 OK",
+                "Authentication complete. You can return to Phosphor.",
+            )
         } else {
             (
                 "400 Bad Request",

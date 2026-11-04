@@ -11,13 +11,13 @@ use serde_json as json;
 
 use warpui::r#async::executor::Background;
 
+use crate::terminal::ShellLaunchState;
 use crate::terminal::color;
 use crate::terminal::color::Colors;
 use crate::terminal::event_listener::ChannelEventListener;
 use crate::terminal::model::grid::{Dimensions, GridStorage};
-use crate::terminal::model::{ansi, block::BlockSize, ObfuscateSecrets};
+use crate::terminal::model::{ObfuscateSecrets, ansi, block::BlockSize};
 use crate::terminal::shell::{ShellName, ShellType};
-use crate::terminal::ShellLaunchState;
 use crate::terminal::{BlockPadding, SizeInfo, TerminalModel};
 
 macro_rules! ref_tests {

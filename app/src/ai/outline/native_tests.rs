@@ -4,8 +4,8 @@
 
 use std::path::{Path, PathBuf};
 
-use repo_metadata::repositories::DetectedRepositories;
 use repo_metadata::DirectoryWatcher;
+use repo_metadata::repositories::DetectedRepositories;
 use warpui::{App, SingletonEntity};
 
 use super::RepoOutlines;

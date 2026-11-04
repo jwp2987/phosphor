@@ -1,9 +1,9 @@
 use itertools::Itertools;
 use warpui::{
+    Element, Entity, SingletonEntity, TypedActionView, View, ViewContext, ViewHandle,
     elements::{Container, CrossAxisAlignment, Flex, ParentElement, Shrinkable},
     presenter::ChildView,
     ui_components::components::{Coords, UiComponent, UiComponentStyles},
-    Element, Entity, SingletonEntity, TypedActionView, View, ViewContext, ViewHandle,
 };
 
 use crate::{

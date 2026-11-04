@@ -1,13 +1,13 @@
 use regex::Regex;
 
 use crate::terminal::{
+    SizeInfo,
     event_listener::ChannelEventListener,
     model::{
         ansi::{self, Handler as _},
         blockgrid::BlockGrid,
         secrets::RespectObfuscatedSecrets,
     },
-    SizeInfo,
 };
 
 use super::*;

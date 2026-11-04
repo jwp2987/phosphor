@@ -2,7 +2,7 @@ use crate::search::item::IconLocation;
 use crate::search::mixer::{DataSourceRunError, SyncDataSource};
 use crate::search::result_renderer::ItemHighlightState;
 use crate::{appearance::Appearance, ui_components::icons::Icon};
-use enum_iterator::{all, Sequence};
+use enum_iterator::{Sequence, all};
 use lazy_static::lazy_static;
 use ordered_float::OrderedFloat;
 use serde::{Deserialize, Serialize};

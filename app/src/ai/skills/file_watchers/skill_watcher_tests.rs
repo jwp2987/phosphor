@@ -7,13 +7,15 @@ use std::{
 use crate::ai::skills::skill_manager::SkillWatcherEvent;
 use ai::skills::{ParsedSkill, SkillProvider, SkillScope};
 use repo_metadata::{
-    entry::{DirectoryEntry, Entry, FileMetadata},
-    file_tree_store::FileTreeState,
-    file_tree_update::{DirectoryNodeMetadata, FileNodeMetadata, FileTreeEntryUpdate, RepoNodeMetadata},
-    repositories::DetectedRepositories,
     DirectoryWatcher, RepoMetadataModel, RepoMetadataUpdate, RepositoryIdentifier,
     RepositoryUpdate, StandingQueryContent, StandingQueryResults, StandingQueryResultsDelta,
     TargetFile,
+    entry::{DirectoryEntry, Entry, FileMetadata},
+    file_tree_store::FileTreeState,
+    file_tree_update::{
+        DirectoryNodeMetadata, FileNodeMetadata, FileTreeEntryUpdate, RepoNodeMetadata,
+    },
+    repositories::DetectedRepositories,
 };
 use tempfile::TempDir;
 // `RemoteRepositoryIdentifier::new` and `insert_remote_snapshot` both take
@@ -745,7 +747,11 @@ fn test_refresh_project_skills_for_repo_removes_missing_project_skill_paths() {
 
         repo_metadata_handle.update(&mut app, |model, ctx| {
             model.insert_test_state(repo_key.clone(), project_state(&repo, None), ctx);
-            model.insert_test_standing_results(repo_key, project_standing_results(&repo, None), ctx);
+            model.insert_test_standing_results(
+                repo_key,
+                project_standing_results(&repo, None),
+                ctx,
+            );
         });
         skill_watcher_handle.update(&mut app, |skill_watcher, ctx| {
             skill_watcher.refresh_project_skills_for_repo(&repo_id, ctx);
@@ -777,7 +783,12 @@ fn test_stale_project_skill_refresh_result_is_ignored() {
         skill_watcher_handle.update(&mut app, |skill_watcher, ctx| {
             let stale_generation = skill_watcher.advance_project_skill_refresh_generation(&repo_id);
             skill_watcher.advance_project_skill_refresh_generation(&repo_id);
-            skill_watcher.emit_project_skills_if_current(&repo_id, stale_generation, vec![skill], ctx);
+            skill_watcher.emit_project_skills_if_current(
+                &repo_id,
+                stale_generation,
+                vec![skill],
+                ctx,
+            );
         });
 
         assert!(rx.try_recv().is_err());
@@ -799,7 +810,8 @@ fn test_removing_project_repo_invalidates_pending_refresh_result() {
         let repo_id = RepositoryIdentifier::try_local(temp_dir.path()).unwrap();
 
         skill_watcher_handle.update(&mut app, |skill_watcher, ctx| {
-            let pending_generation = skill_watcher.advance_project_skill_refresh_generation(&repo_id);
+            let pending_generation =
+                skill_watcher.advance_project_skill_refresh_generation(&repo_id);
             skill_watcher.remove_project_skills_for_repo(&repo_id);
             skill_watcher.emit_project_skills_if_current(
                 &repo_id,

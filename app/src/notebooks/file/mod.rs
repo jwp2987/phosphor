@@ -9,6 +9,8 @@ use warp_util::path::user_friendly_path;
 #[cfg(feature = "local_fs")]
 use warpui::clipboard::ClipboardContent;
 use warpui::{
+    AppContext, Element, Entity, ModelHandle, SingletonEntity, TypedActionView, View, ViewContext,
+    ViewHandle,
     accessibility::{AccessibilityContent, WarpA11yRole},
     elements::{
         Align, Container, CrossAxisAlignment, DispatchEventResult, Empty, EventHandler, Flex,
@@ -21,8 +23,6 @@ use warpui::{
         button::{ButtonVariant, TextAndIcon, TextAndIconAlignment},
         components::{UiComponent, UiComponentStyles},
     },
-    AppContext, Element, Entity, ModelHandle, SingletonEntity, TypedActionView, View, ViewContext,
-    ViewHandle,
 };
 
 use crate::{
@@ -32,13 +32,13 @@ use crate::{
     menu::{MenuItem, MenuItemFields},
     notebooks::editor::{model::NotebooksEditorModel, rich_text_styles},
     pane_group::{
+        BackingView, PaneConfiguration, PaneEvent,
         focus_state::PaneFocusHandle,
         pane::view,
         pane::view::header::components::{
-            render_pane_header_buttons, render_pane_header_title_text, render_three_column_header,
-            CenteredHeaderEdgeWidth,
+            CenteredHeaderEdgeWidth, render_pane_header_buttons, render_pane_header_title_text,
+            render_three_column_header,
         },
-        BackingView, PaneConfiguration, PaneEvent,
     },
     safe_warn, send_telemetry_from_ctx,
     server::telemetry::{NotebookActionEvent, NotebookTelemetryMetadata, TelemetryEvent},
@@ -51,12 +51,12 @@ use crate::{
 };
 
 use super::{
-    context_menu::{show_rich_editor_context_menu, ContextMenuAction, ContextMenuState},
+    NotebookLocation,
+    context_menu::{ContextMenuAction, ContextMenuState, show_rich_editor_context_menu},
     editor::view::{EditorViewEvent, RichTextEditorConfig, RichTextEditorView},
     link::{NotebookLinks, SessionSource},
     styles,
     telemetry::NotebookTelemetryAction,
-    NotebookLocation,
 };
 use crate::code::buffer_location::{BufferLocation, RemotePath};
 #[cfg(feature = "local_fs")]

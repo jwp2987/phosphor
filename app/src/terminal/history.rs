@@ -15,15 +15,15 @@ use super::{
 };
 use crate::{
     cloud_object::{
-        model::{persistence::ObjectStoreModel, view::ObjectStoreViewModel},
         Space,
+        model::{persistence::ObjectStoreModel, view::ObjectStoreViewModel},
     },
     server::ids::{ClientId, HashableId as _, SyncId},
     terminal::model::session::{Session, SessionId},
     util::dedupe_from_last,
     workflows::{
-        local_workflows::LocalWorkflows, workflow::Workflow, WorkflowId, WorkflowSource,
-        WorkflowType,
+        WorkflowId, WorkflowSource, WorkflowType, local_workflows::LocalWorkflows,
+        workflow::Workflow,
     },
 };
 

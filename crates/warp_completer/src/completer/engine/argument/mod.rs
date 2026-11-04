@@ -4,8 +4,8 @@ pub use legacy::*;
 use crate::{
     meta::{Span, SpannedItem},
     parsers::{
-        hir::{Expression, ShellCommand},
         ParsedExpression, ParsedToken,
+        hir::{Expression, ShellCommand},
     },
 };
 

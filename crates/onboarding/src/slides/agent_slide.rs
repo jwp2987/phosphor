@@ -1,14 +1,15 @@
-use super::two_line_button::{render_two_line_button, TwoLineButtonSpec};
 use super::OnboardingSlide;
+use super::two_line_button::{TwoLineButtonSpec, render_two_line_button};
 use crate::localization::localized;
 use crate::model::{OnboardingStateEvent, OnboardingStateModel};
 use crate::slides::{bottom_nav, layout, slide_content};
-use ui_components::{button, Component as _, Options as _};
+use ui_components::{Component as _, Options as _, button};
 use warp_core::ui::{
     appearance::Appearance,
-    theme::{color::internal_colors, Fill},
+    theme::{Fill, color::internal_colors},
 };
 use warpui::{
+    AppContext, Element, Entity, SingletonEntity as _, TypedActionView, View, ViewContext,
     elements::{
         AnchorPair, Border, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox, Container,
         CornerRadius, CrossAxisAlignment, Dismiss, Empty, Flex, FormattedTextElement, Hoverable,
@@ -23,7 +24,6 @@ use warpui::{
     scene::DropShadow,
     text_layout::TextAlignment,
     ui_components::components::{UiComponent as _, UiComponentStyles},
-    AppContext, Element, Entity, SingletonEntity as _, TypedActionView, View, ViewContext,
 };
 
 use ai::LLMId;
@@ -856,7 +856,10 @@ impl AgentSlide {
             .finish();
 
         let label = Text::new(
-            localized("onboarding-agent-disable-warp-agent", "Disable Phosphor Agent"),
+            localized(
+                "onboarding-agent-disable-warp-agent",
+                "Disable Phosphor Agent",
+            ),
             appearance.ui_font_family(),
             14.0,
         )

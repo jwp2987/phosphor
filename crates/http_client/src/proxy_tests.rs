@@ -79,7 +79,9 @@ fn apply_system_returns_default_builder() {
     let builder = cfg.apply(test_builder()).no_proxy();
     // The extra no_proxy() above is only to avoid actually resolving the system
     // proxy during build; the core assertion is that apply doesn't panic.
-    let _client = builder.build().expect("System mode should build successfully");
+    let _client = builder
+        .build()
+        .expect("System mode should build successfully");
 }
 
 #[test]
@@ -115,7 +117,9 @@ fn apply_custom_with_basic_auth_succeeds() {
         ..Default::default()
     };
     let builder = cfg.apply(test_builder());
-    let _client = builder.build().expect("Custom + auth should build successfully");
+    let _client = builder
+        .build()
+        .expect("Custom + auth should build successfully");
 }
 
 #[test]
@@ -127,7 +131,9 @@ fn apply_custom_with_no_proxy_list_succeeds() {
         ..Default::default()
     };
     let builder = cfg.apply(test_builder());
-    let _client = builder.build().expect("Custom + no_proxy should build successfully");
+    let _client = builder
+        .build()
+        .expect("Custom + no_proxy should build successfully");
 }
 
 #[test]
@@ -139,7 +145,9 @@ fn apply_custom_with_empty_url_falls_back_silently() {
     };
     // Shouldn't panic; equivalent to falling back to System (reqwest default).
     let builder = cfg.apply(test_builder()).no_proxy();
-    let _client = builder.build().expect("empty URL should fall back silently");
+    let _client = builder
+        .build()
+        .expect("empty URL should fall back silently");
 }
 
 #[test]
@@ -150,7 +158,9 @@ fn apply_custom_with_invalid_url_falls_back_silently() {
         ..Default::default()
     };
     let builder = cfg.apply(test_builder()).no_proxy();
-    let _client = builder.build().expect("invalid URL should fall back silently");
+    let _client = builder
+        .build()
+        .expect("invalid URL should fall back silently");
 }
 
 #[test]

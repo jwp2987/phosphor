@@ -228,7 +228,10 @@ fn no_rerank_model_appears_twice_in_the_supported_list() {
     let count = seen.len();
     seen.dedup();
     assert_eq!(count, seen.len());
-    assert!(count >= 2, "at least the two provider families must be listed");
+    assert!(
+        count >= 2,
+        "at least the two provider families must be listed"
+    );
 }
 
 #[test]

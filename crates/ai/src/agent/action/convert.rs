@@ -1,9 +1,9 @@
 use std::{path::PathBuf, time::Duration};
 
+use agent_proto as api;
 use itertools::Itertools as _;
 use uuid::Uuid;
 use warp_core::features::FeatureFlag;
-use agent_proto as api;
 
 use crate::{
     agent::{

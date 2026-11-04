@@ -1,8 +1,8 @@
 use super::*;
 use crate::{
+    App, AppContext, Entity, Event, Presenter, TypedActionView, ViewContext, WindowInvalidation,
     elements::{ConstrainedBox, DispatchEventResult, EventHandler, Rect, ZIndex},
     platform::WindowStyle,
-    App, AppContext, Entity, Event, Presenter, TypedActionView, ViewContext, WindowInvalidation,
 };
 use pathfinder_geometry::vector::vec2f;
 use std::{

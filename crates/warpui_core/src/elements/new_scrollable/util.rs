@@ -1,15 +1,15 @@
 use pathfinder_geometry::{
     rect::RectF,
-    vector::{vec2f, Vector2F},
+    vector::{Vector2F, vec2f},
 };
 
 use crate::{
+    EventContext, SizeConstraint,
     elements::{
-        project_scroll_delta_by_sensitivity, Axis, ClippedScrollStateHandle, RectFExt as _,
-        ScrollToPositionMode,
+        Axis, ClippedScrollStateHandle, RectFExt as _, ScrollToPositionMode,
+        project_scroll_delta_by_sensitivity,
     },
     units::Pixels,
-    EventContext, SizeConstraint,
 };
 
 /// Calculate the child size constraint for a given axis.

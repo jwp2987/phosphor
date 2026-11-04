@@ -19,7 +19,7 @@
 
 use fuzzy_match::match_indices_case_insensitive_ignore_spaces;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub const DEFAULT_MAX_RESULTS: usize = 20;
 pub const MAX_MAX_RESULTS: usize = 100;

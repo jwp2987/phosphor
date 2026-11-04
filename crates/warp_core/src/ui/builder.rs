@@ -1,16 +1,17 @@
 use std::borrow::Cow;
 use std::rc::Rc;
 
-use super::color::{blend::Blend, contrast::MinimumAllowedContrast, ContrastingColor};
+use super::color::{ContrastingColor, blend::Blend, contrast::MinimumAllowedContrast};
 use super::theme::color::internal_colors::{self, text_main};
 use super::theme::{Fill, WarpTheme};
+use warpui::View;
 use warpui::color::ColorU;
 use warpui::elements::{
     ChildAnchor, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Flex, Hoverable,
     OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds, Radius, Stack, Text,
 };
 use warpui::fonts::{Properties, Weight};
-use warpui::geometry::vector::{vec2f, Vector2F};
+use warpui::geometry::vector::{Vector2F, vec2f};
 use warpui::platform::Cursor;
 use warpui::ui_components::components::UiComponent;
 use warpui::ui_components::keyboard_shortcut::KeyboardShortcut;
@@ -26,8 +27,8 @@ use warpui::ui_components::toggle_menu::{
     ToggleMenu, ToggleMenuCallback, ToggleMenuItem, ToggleMenuStateHandle,
 };
 use warpui::ui_components::tool_tip::{Tooltip, TooltipWithSublabel};
-use warpui::View;
 use warpui::{
+    Element, ViewHandle,
     elements::{Icon, MouseStateHandle},
     fonts::FamilyId,
     keymap::Keystroke,
@@ -40,7 +41,6 @@ use warpui::{
         text::{Paragraph, Span},
         text_input::TextInput,
     },
-    Element, ViewHandle,
 };
 
 const CLOSE_SVG_PATH: &str = "bundled/svg/close.svg";
@@ -209,7 +209,7 @@ impl UiBuilder {
                     self.warp_theme.outline(),
                     self.warp_theme
                         .main_text_color(self.warp_theme.background()),
-                )
+                );
             }
             ButtonVariant::Warn => (Fill::warn(), self.warp_theme.foreground().with_opacity(0)),
             ButtonVariant::Error => (Fill::error(), self.warp_theme.foreground().with_opacity(0)),

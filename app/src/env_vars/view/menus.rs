@@ -1,21 +1,21 @@
 use pathfinder_geometry::vector::Vector2F;
 use warp_core::context_flag::ContextFlag;
-use warpui::{keymap::Trigger, SingletonEntity, ViewContext, ViewHandle};
+use warpui::{SingletonEntity, ViewContext, ViewHandle, keymap::Trigger};
 
 use crate::{
+    AppContext, FeatureFlag, ObjectStoreModel,
     cloud_object::update_manager::UpdateManager,
     cloud_object::{GenericStringObjectFormat, Space, StoredObject},
     drive::{
-        drive_helpers::has_feature_gated_anonymous_user_reached_env_var_limit,
-        export::ExportManager, ObjectTypeAndId,
+        ObjectTypeAndId, drive_helpers::has_feature_gated_anonymous_user_reached_env_var_limit,
+        export::ExportManager,
     },
     env_vars::active_env_var_collection_data::TrashStatus,
     external_secrets::SecretManager,
     menu::{Event as MenuEvent, Menu, MenuItem, MenuItemFields},
     pane_group::PaneEvent,
     ui_components::icons::Icon,
-    util::bindings::{keybinding_name_to_display_string, trigger_to_keystroke, CustomAction},
-    AppContext, FeatureFlag, ObjectStoreModel,
+    util::bindings::{CustomAction, keybinding_name_to_display_string, trigger_to_keystroke},
 };
 
 use super::env_var_collection::{EnvVarCollectionAction, EnvVarCollectionView, VariableRowIndex};

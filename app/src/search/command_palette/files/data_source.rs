@@ -3,7 +3,7 @@ use super::search_item::{CreateFileSearchItem, FileSearchItem};
 use crate::code::opened_files::OpenedFilesModel;
 use crate::search::command_palette::mixer::CommandPaletteItemAction;
 use crate::search::data_source::{Query, QueryResult};
-use crate::search::files::model::{git_changed_files_async, FileSearchModel};
+use crate::search::files::model::{FileSearchModel, git_changed_files_async};
 use crate::search::files::search_item::FileSearchResult;
 use crate::search::mixer::{AsyncDataSource, BoxFuture, DataSourceRunErrorWrapper};
 use futures_lite::FutureExt;

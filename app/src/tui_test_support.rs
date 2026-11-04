@@ -154,9 +154,7 @@ pub fn register_tui_action_execution_test_singletons(app: &mut warpui::App) {
     // provider settings to decide how the command is awaited, so a test that actually runs a
     // command needs them. Each is guarded so this stays safe next to a fixture that already
     // registered it.
-    if !app.read(|ctx| {
-        ctx.has_singleton_model::<warpui_extras::secure_storage::Model>()
-    }) {
+    if !app.read(|ctx| ctx.has_singleton_model::<warpui_extras::secure_storage::Model>()) {
         app.update(|ctx| warpui_extras::secure_storage::register_noop("test", ctx));
     }
     if !app.read(|ctx| ctx.has_singleton_model::<SettingsManager>()) {
@@ -177,7 +175,8 @@ pub fn register_tui_action_execution_test_singletons(app: &mut warpui::App) {
         app.add_singleton_model(|_| AuthStateProvider::new_for_test());
         app.add_singleton_model(AuthManager::new_for_test);
     }
-    if !app.read(|ctx| ctx.has_singleton_model::<crate::ai::agent_providers::AgentProviderSecrets>())
+    if !app
+        .read(|ctx| ctx.has_singleton_model::<crate::ai::agent_providers::AgentProviderSecrets>())
     {
         app.add_singleton_model(crate::ai::agent_providers::AgentProviderSecrets::new);
     }

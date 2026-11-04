@@ -1,14 +1,15 @@
 use warpui::{
-    platform::WindowStyle, presenter::ChildView, App, Element, Entity, TypedActionView, View,
-    ViewHandle, WindowId,
+    App, Element, Entity, TypedActionView, View, ViewHandle, WindowId, platform::WindowStyle,
+    presenter::ChildView,
 };
 
 use super::{create_editable_comment_markdown_editor, create_readonly_comment_markdown_editor};
 use crate::notebooks::editor::view::RichTextEditorView;
-use repo_metadata::repositories::DetectedRepositories;
 use repo_metadata::RepoMetadataModel;
+use repo_metadata::repositories::DetectedRepositories;
 
 use crate::{
+    GlobalResourceHandles, GlobalResourceHandlesProvider, UserWorkspaces,
     appearance::Appearance,
     auth::AuthStateProvider,
     cloud_object::model::persistence::ObjectStoreModel,
@@ -21,7 +22,6 @@ use crate::{
     terminal::keys::TerminalKeybindings,
     test_util::settings::initialize_settings_for_tests,
     workspace::ActiveSession,
-    GlobalResourceHandles, GlobalResourceHandlesProvider, UserWorkspaces,
 };
 
 struct TestView {

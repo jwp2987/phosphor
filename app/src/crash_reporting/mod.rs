@@ -7,7 +7,7 @@ mod linux;
 use std::borrow::Cow;
 
 use lazy_static::lazy_static;
-use warpui::{r#async::block_on, AppContext, SingletonEntity};
+use warpui::{AppContext, SingletonEntity, r#async::block_on};
 
 use crate::antivirus::{AntivirusInfo, AntivirusInfoEvent};
 use crate::auth::{AuthStateProvider, UserUid};

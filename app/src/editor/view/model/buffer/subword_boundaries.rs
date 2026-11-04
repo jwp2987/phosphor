@@ -2,7 +2,7 @@ use super::{CharOffset, Point};
 use itertools::Either;
 use std::iter::Peekable;
 use warpui::text::{
-    word_boundaries::WordBoundariesApproach, words::is_subword_boundary_char, TextBuffer,
+    TextBuffer, word_boundaries::WordBoundariesApproach, words::is_subword_boundary_char,
 };
 
 pub struct SubwordBoundaries<'a, T: TextBuffer + ?Sized> {

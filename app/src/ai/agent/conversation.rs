@@ -13,8 +13,8 @@ use crate::terminal::model::block::{
 };
 
 use crate::ai::agent::api::convert_conversation::{
-    compute_time_to_first_token_ms_from_messages, proto_timestamp_to_local_datetime,
-    ConvertToExchanges,
+    ConvertToExchanges, compute_time_to_first_token_ms_from_messages,
+    proto_timestamp_to_local_datetime,
 };
 use ai::skills::SkillPathOrigin;
 use chrono::{DateTime, Local, TimeZone};
@@ -24,6 +24,8 @@ use std::collections::HashSet;
 use std::{collections::HashMap, fmt::Display};
 
 use super::task_store::TaskStore;
+use agent_proto::response_event::stream_finished;
+use agent_proto::{self as api, response_event::stream_finished::TokenUsage};
 use uuid::Uuid;
 use vec1::{Size0Error, Vec1};
 use warp_cli::agent::Harness;
@@ -32,45 +34,42 @@ use warp_core::execution_mode::AppExecutionMode;
 use warp_core::features::FeatureFlag;
 use warp_core::send_telemetry_from_ctx;
 use warp_core::ui::appearance::Appearance;
-use warp_core::ui::theme::color::internal_colors;
 use warp_core::ui::theme::WarpTheme;
-use agent_proto::response_event::stream_finished;
-use agent_proto::{self as api, response_event::stream_finished::TokenUsage};
+use warp_core::ui::theme::color::internal_colors;
 use warpui::color::ColorU;
 use warpui::{EntityId, ModelContext, SingletonEntity};
 
 use crate::ai::agent::{AIIdentifiers, CancellationOutcome, CancellationReason};
 use crate::{
+    BlocklistAIHistoryModel, GlobalResourceHandlesProvider,
     ai::{
         agent::{
+            AIAgentOutputMessage, AIAgentOutputMessageType, MessageToAIAgentOutputMessageError,
             icons::{
                 failed_icon, gray_stop_icon, in_progress_icon, succeeded_icon, yellow_stop_icon,
             },
             todos::AIAgentTodoList,
-            AIAgentOutputMessage, AIAgentOutputMessageType, MessageToAIAgentOutputMessageError,
         },
         blocklist::{BlocklistAIHistoryEvent, ConversationStatusUpdate},
     },
     persistence::{
-        model::{AgentConversationData, PersistedAutoexecuteMode},
         ModelEvent, PersistedTaskRetention,
+        model::{AgentConversationData, PersistedAutoexecuteMode},
     },
     ui_components::icons::Icon,
-    BlocklistAIHistoryModel, GlobalResourceHandlesProvider,
 };
 
 use super::task::{ExtractMessagesError, UpdateTaskError, UpgradeOptimisticTaskError};
 use super::{
+    AIAgentAction, AIAgentActionId, AIAgentContext, AIAgentExchange, AIAgentExchangeId,
+    AIAgentInput, AIAgentOutputStatus, AIAgentTodoId, FinishedAIAgentOutput, MessageId,
+    RenderableAIError, RequestCost,
     api::ServerConversationToken,
     task::{
-        derive_todo_lists_from_root_task,
+        Task, TaskId, derive_todo_lists_from_root_task,
         helper::*,
         transaction::{SavedTask, Transaction},
-        Task, TaskId,
     },
-    AIAgentAction, AIAgentActionId, AIAgentContext, AIAgentExchange, AIAgentExchangeId,
-    AIAgentInput, AIAgentOutputStatus, AIAgentTodoId, FinishedAIAgentOutput,
-    MessageId, RenderableAIError, RequestCost,
 };
 use super::{
     AIAgentOutput, OutputModelInfo, ServerOutputId, Shared, SuggestedLoggingId, Suggestions,
@@ -1587,8 +1586,7 @@ impl AIConversation {
                 m.message,
                 AIAgentOutputMessageType::Summarization {
                     finished_duration: None,
-                    summarization_type:
-                        crate::ai::agent::SummarizationType::ConversationSummary,
+                    summarization_type: crate::ai::agent::SummarizationType::ConversationSummary,
                     ..
                 }
             )
@@ -1942,18 +1940,21 @@ impl AIConversation {
         if let Err(e) = self.send_updated_conversation_state_for_byop_preflight(ctx) {
             match self.task_store.modify_task(&task_id, |task| {
                 task.remove_source_messages_by_ids(&message_ids)
-            }) { Some(rollback_result) => {
-                if let Err(rollback_error) = rollback_result {
-                    log::error!(
-                        "[byop-readiness] failed to roll back preflight messages after \
+            }) {
+                Some(rollback_result) => {
+                    if let Err(rollback_error) = rollback_result {
+                        log::error!(
+                            "[byop-readiness] failed to roll back preflight messages after \
                          persistence error: {rollback_error:?}"
+                        );
+                    }
+                }
+                _ => {
+                    log::error!(
+                        "[byop-readiness] failed to find task while rolling back preflight messages"
                     );
                 }
-            } _ => {
-                log::error!(
-                    "[byop-readiness] failed to find task while rolling back preflight messages"
-                );
-            }}
+            }
             return Err(e);
         }
         Ok(message_count)
@@ -2806,9 +2807,7 @@ impl AIConversation {
                             terminal_view_id,
                         });
 
-                        for AddedExchange {
-                            task_id, ..
-                        } in self
+                        for AddedExchange { task_id, .. } in self
                             .added_exchanges_by_response
                             .get_mut(response_stream_id)
                             .ok_or(UpdateConversationError::NoPendingRequest)?
@@ -4315,7 +4314,12 @@ impl AIConversation {
             // which would leave the block unfinished with zero height.
             let (pwd, exchange_time) = message_id_to_exchange
                 .get(command_block.message_id.as_str())
-                .map(|exchange| (exchange.working_directory.clone(), Some(exchange.start_time)))
+                .map(|exchange| {
+                    (
+                        exchange.working_directory.clone(),
+                        Some(exchange.start_time),
+                    )
+                })
                 .unwrap_or((fallback_pwd.clone(), None));
 
             // On CLI subagent restore, serialize visible, read-only agent association metadata; other blocks keep their original metadata.
@@ -5172,8 +5176,9 @@ mod computer_use_approval_tests {
 
         // Stand in for the restore constructor: snapshot everything already present, exactly
         // as `new_restored_synthesizing_on_empty` does before the conversation is reachable.
-        let restored =
-            AIConversation::snapshot_computer_use_approvals(conversation.task_store.all_exchanges());
+        let restored = AIConversation::snapshot_computer_use_approvals(
+            conversation.task_store.all_exchanges(),
+        );
         conversation.restored_computer_use_approval_ids = restored;
 
         assert_eq!(
@@ -5199,8 +5204,9 @@ mod computer_use_approval_tests {
             &mut conversation,
             exchange_with_result(&task_id, "approval-from-last-month", approved_result()),
         );
-        let restored =
-            AIConversation::snapshot_computer_use_approvals(conversation.task_store.all_exchanges());
+        let restored = AIConversation::snapshot_computer_use_approvals(
+            conversation.task_store.all_exchanges(),
+        );
         conversation.restored_computer_use_approval_ids = restored;
         assert!(!conversation.has_approved_computer_use());
 

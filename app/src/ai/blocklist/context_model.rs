@@ -23,9 +23,9 @@ use super::conversation_selection::ConversationSelectionHandle;
 use ai::project_context::model::ProjectContextModel;
 use parking_lot::FairMutex;
 use warp_core::features::FeatureFlag;
-use warpui::{AppContext, Entity, EntityId, ModelContext, ModelHandle, SingletonEntity};
 #[cfg(feature = "local_fs")]
 use warpui::WeakModelHandle;
+use warpui::{AppContext, Entity, EntityId, ModelContext, ModelHandle, SingletonEntity};
 
 #[cfg(feature = "local_fs")]
 use crate::code_review::git_status_update::GitRepoStatusModel;
@@ -39,26 +39,26 @@ use crate::{
     ai::{
         agent::todos::AIAgentTodoList,
         agent::{
-            conversation::{AIConversation, AIConversationId},
             AIAgentAttachment, AIAgentContext, ImageContext,
+            conversation::{AIConversation, AIConversationId},
         },
         document::ai_document_model::AIDocumentId,
         llms::{LLMPreferences, LLMPreferencesEvent},
         outline::RepoOutlines,
     },
     terminal::{
+        TerminalModel,
         event::{BlockCompletedEvent, BlockType},
         model::{
             block::{BlockId, BlockMetadata},
             session::Sessions,
         },
         model_events::{ModelEvent, ModelEventDispatcher},
-        TerminalModel,
     },
 };
 
 use super::{
-    block::DirectoryContext, history_model::BlocklistAIHistoryModel, BlocklistAIHistoryEvent,
+    BlocklistAIHistoryEvent, block::DirectoryContext, history_model::BlocklistAIHistoryModel,
 };
 
 /// A non-image file picked via the "attach file" button, stored until query submission.
@@ -1486,7 +1486,6 @@ impl BlocklistAIContextModel {
                 .unwrap_or_default(),
         }
     }
-
 
     pub fn toggle_pending_query_autoexecute(&mut self, ctx: &mut ModelContext<Self>) {
         // When AgentView is enabled, the autoexecution toggle should apply to the active agent view

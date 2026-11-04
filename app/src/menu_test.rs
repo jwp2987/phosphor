@@ -1,7 +1,7 @@
 use super::{Menu, MenuAction, MenuItem, MenuItemFields, SelectAction, SubMenu};
 
 use warp_core::ui::appearance::Appearance;
-use warpui::{platform::WindowStyle, App, TypedActionView};
+use warpui::{App, TypedActionView, platform::WindowStyle};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum TestAction {
@@ -33,15 +33,19 @@ fn two_submenu_items() -> Vec<MenuItem<TestAction>> {
     vec![
         MenuItem::Submenu {
             fields: MenuItemFields::new_submenu("first submenu"),
-            menu: SubMenu::new(vec![MenuItemFields::new("first child")
-                .with_on_select_action(TestAction::ChildOne)
-                .into_item()]),
+            menu: SubMenu::new(vec![
+                MenuItemFields::new("first child")
+                    .with_on_select_action(TestAction::ChildOne)
+                    .into_item(),
+            ]),
         },
         MenuItem::Submenu {
             fields: MenuItemFields::new_submenu("second submenu"),
-            menu: SubMenu::new(vec![MenuItemFields::new("second child")
-                .with_on_select_action(TestAction::ChildTwo)
-                .into_item()]),
+            menu: SubMenu::new(vec![
+                MenuItemFields::new("second child")
+                    .with_on_select_action(TestAction::ChildTwo)
+                    .into_item(),
+            ]),
         },
     ]
 }
@@ -49,10 +53,12 @@ fn two_submenu_items() -> Vec<MenuItem<TestAction>> {
 #[test]
 fn test_menu_item_selectable() {
     assert!(MenuItemFields::<()>::new("normal").into_item().selectable());
-    assert!(!MenuItemFields::<()>::new("disabled")
-        .with_disabled(true)
-        .into_item()
-        .selectable());
+    assert!(
+        !MenuItemFields::<()>::new("disabled")
+            .with_disabled(true)
+            .into_item()
+            .selectable()
+    );
     assert!(!MenuItem::<()>::Separator.selectable());
 }
 
@@ -384,9 +390,11 @@ fn two_submenu_context_menu_items() -> Vec<MenuItem<TestAction>> {
     vec![
         MenuItem::Submenu {
             fields: MenuItemFields::new_submenu("upload"),
-            menu: SubMenu::new(vec![MenuItemFields::new("upload file")
-                .with_on_select_action(TestAction::ChildOne)
-                .into_item()]),
+            menu: SubMenu::new(vec![
+                MenuItemFields::new("upload file")
+                    .with_on_select_action(TestAction::ChildOne)
+                    .into_item(),
+            ]),
         },
         MenuItem::Submenu {
             fields: MenuItemFields::new_submenu("other"),
@@ -483,8 +491,7 @@ fn test_nested_submenu_leaf_hover_is_handled_at_child_depth() {
 
             assert_eq!(menu.selected_index(), Some(0));
             assert_eq!(
-                menu
-                    .menu
+                menu.menu
                     .selected_submenu()
                     .and_then(|submenu| submenu.selected_index()),
                 Some(0)

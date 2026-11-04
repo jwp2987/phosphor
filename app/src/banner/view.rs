@@ -5,6 +5,8 @@ use markdown_parser::{
 };
 use warpui::elements::HyperlinkLens;
 use warpui::{
+    Action, AppContext, Element, Entity, EventContext, SingletonEntity, TypedActionView, View,
+    ViewContext,
     elements::{
         ConstrainedBox, Container, CrossAxisAlignment, Flex, FormattedTextElement,
         HighlightedHyperlink, HyperlinkUrl, MainAxisAlignment, MainAxisSize, MouseStateHandle,
@@ -15,8 +17,6 @@ use warpui::{
         button::ButtonVariant,
         components::{UiComponent, UiComponentStyles},
     },
-    Action, AppContext, Element, Entity, EventContext, SingletonEntity, TypedActionView, View,
-    ViewContext,
 };
 
 use crate::{

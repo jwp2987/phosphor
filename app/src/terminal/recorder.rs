@@ -4,7 +4,7 @@ use std::{
 };
 
 use async_broadcast::InactiveReceiver;
-use warpui::{r#async::SpawnedFutureHandle, Entity, ModelContext, SingletonEntity, WindowId};
+use warpui::{Entity, ModelContext, SingletonEntity, WindowId, r#async::SpawnedFutureHandle};
 
 use crate::{
     settings::{DebugSettings, DebugSettingsChangedEvent},

@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use itertools::Itertools;
 
-use crate::elements::{Icon, DEFAULT_UI_LINE_HEIGHT_RATIO};
+use crate::elements::{DEFAULT_UI_LINE_HEIGHT_RATIO, Icon};
 use crate::{
     elements::{
         Align, ConstrainedBox, Container, CrossAxisAlignment, Element, Flex, MinSize, ParentElement,

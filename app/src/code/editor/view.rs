@@ -15,8 +15,8 @@ use crate::code::editor::{
     scroll::{ScrollPosition, ScrollTrigger, ScrollWheelBehavior},
 };
 use crate::code::{
-    editor::EditorReviewComment, DiffResult, NoopCommentEditorProvider,
-    NoopFindReferencesCardProvider, ShowCommentEditorProvider, ShowFindReferencesCardProvider,
+    DiffResult, NoopCommentEditorProvider, NoopFindReferencesCardProvider,
+    ShowCommentEditorProvider, ShowFindReferencesCardProvider, editor::EditorReviewComment,
 };
 use crate::{
     appearance::Appearance,
@@ -36,7 +36,7 @@ use std::rc::Rc;
 use std::{collections::HashMap, ops::Range};
 use std::{collections::HashSet, path::Path};
 use string_offset::CharOffset;
-use vec1::{vec1, Vec1};
+use vec1::{Vec1, vec1};
 use vim::vim::{Direction, InsertPosition, VimMode, VimModel, VimState, VimSubscriber};
 use warp_core::platform::SessionPlatform;
 use warp_editor::{
@@ -52,26 +52,28 @@ use warp_editor::{
     multiline::AnyMultilineString,
     render::{
         element::{
-            lens_element::RichTextElementLens, DisplayOptions, DisplayStateHandle, RichTextElement,
-            VerticalExpansionBehavior,
+            DisplayOptions, DisplayStateHandle, RichTextElement, VerticalExpansionBehavior,
+            lens_element::RichTextElementLens,
         },
         model::{
-            AutoScrollMode, BlockSpacing, Decoration, ExpansionType, LineCount, ParagraphStyles,
-            RichTextStyles, CODE_EDITOR_HIDDEN_SECTION_EXPANSION_LINES,
+            AutoScrollMode, BlockSpacing, CODE_EDITOR_HIDDEN_SECTION_EXPANSION_LINES, Decoration,
+            ExpansionType, LineCount, ParagraphStyles, RichTextStyles,
         },
     },
-    search::{SearchEvent, Searcher, MATCH_FILL, SELECTED_MATCH_FILL},
+    search::{MATCH_FILL, SELECTED_MATCH_FILL, SearchEvent, Searcher},
 };
 use warp_util::content_version::ContentVersion;
 use warp_util::user_input::UserInput;
 use warpui::{
+    AppContext, BlurContext, CursorInfo, Element, Entity, FocusContext, ModelHandle,
+    SingletonEntity, View, ViewContext, ViewHandle, WeakViewHandle, WindowId,
     elements::{
-        new_scrollable::{
-            AxisConfiguration, DualAxisConfig, NewScrollableElement, ScrollableAppearance,
-        },
         ChildAnchor, ChildView, Dismiss, Fill, Flex, Margin, MouseStateHandle, NewScrollable,
         OffsetPositioning, Padding, ParentAnchor, ParentElement, ParentOffsetBounds,
         ScrollStateHandle, Shrinkable, Stack,
+        new_scrollable::{
+            AxisConfiguration, DualAxisConfig, NewScrollableElement, ScrollableAppearance,
+        },
     },
     event::ModifiersState,
     keymap::Keystroke,
@@ -80,13 +82,11 @@ use warpui::{
     text::point::Point,
     units::Pixels,
     windowing::{self, WindowManager},
-    AppContext, BlurContext, CursorInfo, Element, Entity, FocusContext, ModelHandle,
-    SingletonEntity, View, ViewContext, ViewHandle, WeakViewHandle, WindowId,
 };
 
 mod actions;
-pub use actions::init;
 pub(crate) use actions::CodeEditorViewAction;
+pub use actions::init;
 
 mod vim_handler;
 
@@ -540,10 +540,7 @@ impl CodeEditorView {
     }
 
     /// The go-to-line dialog, created on first use.
-    fn ensure_goto_line_dialog(
-        &mut self,
-        ctx: &mut ViewContext<Self>,
-    ) -> ViewHandle<GoToLineView> {
+    fn ensure_goto_line_dialog(&mut self, ctx: &mut ViewContext<Self>) -> ViewHandle<GoToLineView> {
         if let Some(dialog) = &self.goto_line_dialog {
             return dialog.clone();
         }
@@ -562,10 +559,7 @@ impl CodeEditorView {
     }
 
     /// The inline comment editor, created on first use.
-    fn ensure_comment_editor(
-        &mut self,
-        ctx: &mut ViewContext<Self>,
-    ) -> ViewHandle<CommentEditor> {
+    fn ensure_comment_editor(&mut self, ctx: &mut ViewContext<Self>) -> ViewHandle<CommentEditor> {
         if let Some(editor) = &self.active_comment_editor {
             return editor.clone();
         }
@@ -2002,9 +1996,7 @@ impl CodeEditorView {
                     first_replace = if first_replace.is_uppercase() {
                         first_replace
                     } else {
-                        {
-                            first_replace.to_uppercase().next().unwrap_or(first_replace)
-                        }
+                        { first_replace.to_uppercase().next().unwrap_or(first_replace) }
                     };
                     result.push(first_replace);
                     result.push_str(&replace_chars.collect::<String>().to_lowercase());
@@ -2268,9 +2260,9 @@ impl CodeEditorView {
             vim_model.typed_character(c, ctx);
         });
         if !rest.is_empty() {
-            ctx.dispatch_typed_action_deferred(CodeEditorViewAction::VimUserTyped(
-                UserInput::new(rest),
-            ));
+            ctx.dispatch_typed_action_deferred(CodeEditorViewAction::VimUserTyped(UserInput::new(
+                rest,
+            )));
         }
     }
 

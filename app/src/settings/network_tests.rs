@@ -37,7 +37,10 @@ fn proxy_mode_defaults_to_system() {
 fn default_proxy_mode_reaches_both_transports_as_system() {
     let default = ProxyMode::default();
     assert_eq!(default, ProxyMode::System);
-    assert_eq!(default.to_http_client_mode(), http_client::ProxyMode::System);
+    assert_eq!(
+        default.to_http_client_mode(),
+        http_client::ProxyMode::System
+    );
     assert_eq!(default.to_websocket_mode(), websocket::ProxyMode::System);
 }
 

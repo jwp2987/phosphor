@@ -1,7 +1,7 @@
 use crate::completer::SessionContext;
 use crate::terminal::model::session::Session;
 use crate::terminal::model::session::{
-    command_executor::testing::TestCommandExecutor, BootstrapSessionType, SessionInfo,
+    BootstrapSessionType, SessionInfo, command_executor::testing::TestCommandExecutor,
 };
 use std::cell::Cell;
 use std::collections::HashSet;

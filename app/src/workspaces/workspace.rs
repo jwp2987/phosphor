@@ -182,8 +182,7 @@ pub enum CustomerType {
     Unknown,
 }
 
-impl CustomerType {
-}
+impl CustomerType {}
 
 /// Local representation of persisted billing delinquency status.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -410,7 +409,6 @@ pub struct AiOverages {
 }
 
 impl BillingMetadata {
-
     /**
      * Returns whether customer can upgrade to the Build plan based on their current tier.
      */
@@ -489,7 +487,6 @@ impl BillingMetadata {
             .byo_api_key_policy
             .is_some_and(|policy| policy.enabled)
     }
-
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

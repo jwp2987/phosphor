@@ -1,12 +1,12 @@
-use warpui::fonts::FamilyId;
 use warpui::SingletonEntity as _;
+use warpui::fonts::FamilyId;
 use warpui::{
+    AppContext, Element, Entity, TypedActionView, View, ViewContext,
     elements::{
         Border, ConstrainedBox, Container, Fill, Flex, List, ListState, MainAxisSize,
         ParentElement, Rect, ScrollStateHandle, Scrollable, ScrollableElement, ScrollbarWidth,
         Stack, Text,
     },
-    AppContext, Element, Entity, TypedActionView, View, ViewContext,
 };
 
 use std::sync::{Arc, Mutex};

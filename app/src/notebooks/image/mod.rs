@@ -8,17 +8,19 @@ use std::{
 };
 
 use warpui::{
+    AppContext, Element, Entity, ModelHandle, SingletonEntity, TypedActionView, View, ViewContext,
     accessibility::{AccessibilityContent, WarpA11yRole},
     assets::asset_cache::{AssetCache, AssetSource},
     elements::{Align, CacheOption, DispatchEventResult, Empty, EventHandler, Image, Text},
     image_cache::ImageType,
-    AppContext, Element, Entity, ModelHandle, SingletonEntity, TypedActionView, View, ViewContext,
 };
 
 use crate::{
     appearance::Appearance,
     code::buffer_location::RemotePath,
-    pane_group::{focus_state::PaneFocusHandle, pane::view, BackingView, PaneConfiguration, PaneEvent},
+    pane_group::{
+        BackingView, PaneConfiguration, PaneEvent, focus_state::PaneFocusHandle, pane::view,
+    },
     terminal::model::session::Session,
 };
 

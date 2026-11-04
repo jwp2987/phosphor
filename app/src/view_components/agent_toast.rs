@@ -3,10 +3,12 @@ use std::time::Duration;
 use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::vec2f;
 use uuid::Uuid;
-use warpui::elements::{DropShadow, Expanded};
-use warpui::r#async::Timer;
 use warpui::WindowId;
+use warpui::r#async::Timer;
+use warpui::elements::{DropShadow, Expanded};
 use warpui::{
+    AppContext, Element, Entity, EntityId, SingletonEntity, TypedActionView, View, ViewContext,
+    r#async::SpawnedFutureHandle,
     elements::{
         ChildAnchor, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment,
         DispatchEventResult, EventHandler, Flex, Hoverable, Icon, MouseStateHandle,
@@ -14,9 +16,7 @@ use warpui::{
         PositionedElementOffsetBounds, Radius, SavePosition, Stack,
     },
     keymap::Keystroke,
-    r#async::SpawnedFutureHandle,
     ui_components::components::{Coords, UiComponent, UiComponentStyles},
-    AppContext, Element, Entity, EntityId, SingletonEntity, TypedActionView, View, ViewContext,
 };
 
 use crate::appearance::Appearance;

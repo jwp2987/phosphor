@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 #[cfg(feature = "local_tty")]
 use futures::future::{BoxFuture, FutureExt};
 use std::{collections::HashMap, path::PathBuf, process::Stdio};
@@ -166,9 +166,10 @@ impl LocalShellState {
 
                         // Notify all waiting receivers
                         if let LocalShellState::Loaded(local_shell) = me {
-                            if let InteractiveEnvState::Pending { waiters } =
-                                std::mem::replace(&mut local_shell.interactive_env_state, next_state)
-                            {
+                            if let InteractiveEnvState::Pending { waiters } = std::mem::replace(
+                                &mut local_shell.interactive_env_state,
+                                next_state,
+                            ) {
                                 for waiter in waiters {
                                     let _ = waiter.try_send(path.clone());
                                 }
@@ -313,10 +314,14 @@ async fn capture_interactive_shell_env(
             format!("builtin printf '{PATH_CAPTURE_START}%s{PATH_CAPTURE_END}' \"$PATH\"")
         }
         ShellType::Fish => {
-            format!("builtin printf '{PATH_CAPTURE_START}%s{PATH_CAPTURE_END}' (string join : $PATH)")
+            format!(
+                "builtin printf '{PATH_CAPTURE_START}%s{PATH_CAPTURE_END}' (string join : $PATH)"
+            )
         }
         ShellType::PowerShell => {
-            format!("Microsoft.PowerShell.Utility\\Write-Output \"{PATH_CAPTURE_START}$($env:PATH){PATH_CAPTURE_END}\"")
+            format!(
+                "Microsoft.PowerShell.Utility\\Write-Output \"{PATH_CAPTURE_START}$($env:PATH){PATH_CAPTURE_END}\""
+            )
         }
         ShellType::Nu => {
             format!(

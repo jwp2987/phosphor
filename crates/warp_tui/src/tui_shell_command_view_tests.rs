@@ -68,7 +68,12 @@ fn blocked_command_card_matches_permission_layout() {
         // Pump the async preprocess so the queued action reaches the pending
         // queue and the permission card renders in its blocked state.
         crate::test_fixtures::settle_until(&mut app, |app| {
-            app.read(|ctx| view.as_ref(ctx).permission_prompt.as_ref(ctx).is_active(ctx))
+            app.read(|ctx| {
+                view.as_ref(ctx)
+                    .permission_prompt
+                    .as_ref(ctx)
+                    .is_active(ctx)
+            })
         })
         .await;
 
@@ -148,7 +153,12 @@ fn finishing_command_editing_selects_yes_without_executing() {
         // pending queue and the permission prompt becomes active, exactly as it
         // would before a user could interact in the running app.
         crate::test_fixtures::settle_until(&mut app, |app| {
-            app.read(|ctx| view.as_ref(ctx).permission_prompt.as_ref(ctx).is_active(ctx))
+            app.read(|ctx| {
+                view.as_ref(ctx)
+                    .permission_prompt
+                    .as_ref(ctx)
+                    .is_active(ctx)
+            })
         })
         .await;
 
@@ -210,7 +220,12 @@ fn saving_an_edit_allows_a_later_streamed_update_to_resync() {
         });
         // Pump the async preprocess so the action blocks and the prompt is active.
         crate::test_fixtures::settle_until(&mut app, |app| {
-            app.read(|ctx| view.as_ref(ctx).permission_prompt.as_ref(ctx).is_active(ctx))
+            app.read(|ctx| {
+                view.as_ref(ctx)
+                    .permission_prompt
+                    .as_ref(ctx)
+                    .is_active(ctx)
+            })
         })
         .await;
 
@@ -218,9 +233,7 @@ fn saving_an_edit_allows_a_later_streamed_update_to_resync() {
             prompt.handle_action(&TuiPermissionPromptAction::EditBody, ctx);
         });
         let command_editor = app.read(|ctx| view.as_ref(ctx).command_editor.clone());
-        command_editor.update(&mut app, |editor, ctx| {
-            editor.set_text("echo edited", ctx)
-        });
+        command_editor.update(&mut app, |editor, ctx| editor.set_text("echo edited", ctx));
         present_shell_view(&mut app, &view);
         assert!(dispatch_focused_key(&mut app, &view, "enter"));
 
@@ -275,7 +288,12 @@ fn escape_while_editing_exits_edit_mode_without_rejecting_or_discarding() {
         // pending queue and the permission prompt becomes active, exactly as it
         // would before a user could interact in the running app.
         crate::test_fixtures::settle_until(&mut app, |app| {
-            app.read(|ctx| view.as_ref(ctx).permission_prompt.as_ref(ctx).is_active(ctx))
+            app.read(|ctx| {
+                view.as_ref(ctx)
+                    .permission_prompt
+                    .as_ref(ctx)
+                    .is_active(ctx)
+            })
         })
         .await;
 
@@ -287,9 +305,7 @@ fn escape_while_editing_exits_edit_mode_without_rejecting_or_discarding() {
             assert!(view.command_editor.as_ref(ctx).is_focused());
         });
         let command_editor = app.read(|ctx| view.as_ref(ctx).command_editor.clone());
-        command_editor.update(&mut app, |editor, ctx| {
-            editor.set_text("echo edited", ctx)
-        });
+        command_editor.update(&mut app, |editor, ctx| editor.set_text("echo edited", ctx));
         present_shell_view(&mut app, &view);
 
         assert!(dispatch_focused_key(&mut app, &view, "escape"));
@@ -299,14 +315,14 @@ fn escape_while_editing_exits_edit_mode_without_rejecting_or_discarding() {
             // Edit mode was exited (focus returned to the read-only reviewing
             // state, Yes highlighted), not the whole request rejected.
             assert!(!view.command_editor.as_ref(ctx).is_focused());
-            assert_eq!(view.permission_prompt.as_ref(ctx).highlighted_index(ctx), Some(0));
+            assert_eq!(
+                view.permission_prompt.as_ref(ctx).highlighted_index(ctx),
+                Some(0)
+            );
             // Escape while editing SAVES the edit, matching Enter/the old
             // ctrl-e -- it does not cancel the tool call, and it does not
             // discard the in-progress edit either.
-            assert_eq!(
-                view.command_editor.as_ref(ctx).text(ctx),
-                "echo edited"
-            );
+            assert_eq!(view.command_editor.as_ref(ctx).text(ctx), "echo edited");
             // The command is still pending/blocked, not rejected.
             assert!(
                 view.action_model
@@ -339,7 +355,12 @@ fn escape_when_not_editing_still_rejects_the_command() {
         });
         // Pump the async preprocess so the action blocks and the prompt is active.
         crate::test_fixtures::settle_until(&mut app, |app| {
-            app.read(|ctx| view.as_ref(ctx).permission_prompt.as_ref(ctx).is_active(ctx))
+            app.read(|ctx| {
+                view.as_ref(ctx)
+                    .permission_prompt
+                    .as_ref(ctx)
+                    .is_active(ctx)
+            })
         })
         .await;
         // Focus the prompt, whose option selector (not the command editor) owns
@@ -393,7 +414,12 @@ fn command_editor_arrows_move_within_multiline_text_then_cycle_at_boundaries() {
         // Pump the async preprocess so the action blocks and the prompt is active
         // before entering edit mode.
         crate::test_fixtures::settle_until(&mut app, |app| {
-            app.read(|ctx| view.as_ref(ctx).permission_prompt.as_ref(ctx).is_active(ctx))
+            app.read(|ctx| {
+                view.as_ref(ctx)
+                    .permission_prompt
+                    .as_ref(ctx)
+                    .is_active(ctx)
+            })
         })
         .await;
         prompt.update(&mut app, |prompt, ctx| {
@@ -414,7 +440,12 @@ fn command_editor_arrows_move_within_multiline_text_then_cycle_at_boundaries() {
         // executor. Pump it so the multiline command text is laid out before the
         // arrow keys drive row-aware movement.
         crate::test_fixtures::settle_until(&mut app, |app| {
-            app.read(|ctx| view.as_ref(ctx).permission_prompt.as_ref(ctx).is_active(ctx))
+            app.read(|ctx| {
+                view.as_ref(ctx)
+                    .permission_prompt
+                    .as_ref(ctx)
+                    .is_active(ctx)
+            })
         })
         .await;
         app.read(|ctx| {
@@ -603,7 +634,12 @@ fn ctrl_t_toggles_the_output_section_like_the_mouse_click_handler() {
         });
         // Pump the async preprocess so the action blocks and the prompt is active.
         crate::test_fixtures::settle_until(&mut app, |app| {
-            app.read(|ctx| view.as_ref(ctx).permission_prompt.as_ref(ctx).is_active(ctx))
+            app.read(|ctx| {
+                view.as_ref(ctx)
+                    .permission_prompt
+                    .as_ref(ctx)
+                    .is_active(ctx)
+            })
         })
         .await;
         // A prompt no longer focuses itself when its action blocks (that would
@@ -937,7 +973,12 @@ fn user_accept_of_an_elided_command_is_refused_until_shown_in_full() {
             model.execute_next_action_for_user(conversation_id, ctx);
         });
         app.read(|ctx| {
-            assert!(action_model.as_ref(ctx).get_action_result(&action.id).is_none());
+            assert!(
+                action_model
+                    .as_ref(ctx)
+                    .get_action_result(&action.id)
+                    .is_none()
+            );
         });
 
         let plain = command_action("action-plain", "echo hi; ls");

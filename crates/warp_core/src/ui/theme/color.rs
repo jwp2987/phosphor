@@ -11,9 +11,9 @@ use self::internal_colors::{
 use super::{AnsiColor, AnsiColorIdentifier, Fill, TerminalColors, WarpTheme};
 
 use crate::ui::color::{
-    blend::Blend,
-    contrast::{pick_best_foreground_color, MinimumAllowedContrast},
     Opacity,
+    blend::Blend,
+    contrast::{MinimumAllowedContrast, pick_best_foreground_color},
 };
 use getset::Getters;
 use serde::{Deserialize, Serialize};

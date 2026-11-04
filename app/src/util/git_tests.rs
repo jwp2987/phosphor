@@ -1,13 +1,13 @@
 use std::path::Path;
 
-use command::r#async::Command;
 use command::Stdio;
+use command::r#async::Command;
 use tempfile::TempDir;
 
 use super::{
-    compute_unpushed_state, detect_current_branch, detect_current_branch_display,
-    get_pr_for_branch, git_operation_in_progress, is_gh_auth_error, is_gh_missing_error,
-    run_commit_chain, run_pull, CommitChainMode, PrInfo, RepositoryInfo,
+    CommitChainMode, PrInfo, RepositoryInfo, compute_unpushed_state, detect_current_branch,
+    detect_current_branch_display, get_pr_for_branch, git_operation_in_progress, is_gh_auth_error,
+    is_gh_missing_error, run_commit_chain, run_pull,
 };
 
 /// Helper: run a git command inside the given repo directory.
@@ -102,7 +102,11 @@ async fn add_bare_origin(repo: &Path) -> TempDir {
     // files. A "second contributor" fixture built on that clone then commits
     // onto an unborn master and its push never reaches origin/main -- which
     // silently turns any pull test into a no-op.
-    git(&bare.path().to_path_buf(), &["init", "--bare", "-b", "main"]).await;
+    git(
+        &bare.path().to_path_buf(),
+        &["init", "--bare", "-b", "main"],
+    )
+    .await;
     let bare_url = bare.path().to_string_lossy().to_string();
     git(repo, &["remote", "add", "origin", &bare_url]).await;
     // `-u` sets the upstream tracking ref (origin/<branch>).
@@ -315,9 +319,13 @@ async fn git_operation_in_progress_detects_every_sentinel() {
 
         // Clearing the sentinel unblocks again, so the check is not sticky.
         if sentinel.starts_with("rebase-") {
-            tokio::fs::remove_dir(&path).await.expect("remove state dir");
+            tokio::fs::remove_dir(&path)
+                .await
+                .expect("remove state dir");
         } else {
-            tokio::fs::remove_file(&path).await.expect("remove sentinel");
+            tokio::fs::remove_file(&path)
+                .await
+                .expect("remove sentinel");
         }
         assert!(
             !git_operation_in_progress(&repo),
@@ -398,9 +406,8 @@ async fn get_pr_for_branch_does_not_require_origin_remote() {
 #[tokio::test]
 async fn get_pr_for_branch_returns_none_when_gh_finds_no_pr() {
     let (_dir, repo) = init_repo().await;
-    let (_fake_bin, path_env) = fake_gh(
-        "#!/bin/sh\nprintf 'no pull requests found for branch \"main\"\\n' >&2\nexit 1\n",
-    );
+    let (_fake_bin, path_env) =
+        fake_gh("#!/bin/sh\nprintf 'no pull requests found for branch \"main\"\\n' >&2\nexit 1\n");
 
     assert_eq!(
         get_pr_for_branch(&repo, Some(&path_env)).await.unwrap(),
@@ -612,7 +619,7 @@ fn detects_repository_lookup_not_applicable_errors() {
 mod wsl_unc_git {
     use std::path::Path;
 
-    use super::super::{build_wslenv, translate_for_wsl_unc_cwd, WslGitCommand};
+    use super::super::{WslGitCommand, build_wslenv, translate_for_wsl_unc_cwd};
 
     /// Translates a git command in `cwd`, asserting that the working directory qualified for the
     /// WSL rewrite.
@@ -885,7 +892,13 @@ fn command_may_change_cwd_detects_directory_changes() {
     ] {
         assert!(f(yes), "{yes}");
     }
-    for no in ["ls", "echo cdrom", "git status", "make cd-target", "abcd /x"] {
+    for no in [
+        "ls",
+        "echo cdrom",
+        "git status",
+        "make cd-target",
+        "abcd /x",
+    ] {
         assert!(!f(no), "{no}");
     }
 }
@@ -981,9 +994,11 @@ fn reserved_worktree_name_is_visible_to_next_call_and_released_by_listing() {
     let repo = Path::new("/nonexistent/reserved-branch-name-test");
     assert!(super::cached_local_branches(repo).is_none());
     super::reserve_branch_name(repo, "taken-name");
-    assert!(super::cached_local_branches(repo)
-        .unwrap()
-        .contains("taken-name"));
+    assert!(
+        super::cached_local_branches(repo)
+            .unwrap()
+            .contains("taken-name")
+    );
     let generation = super::begin_branch_refresh(repo);
     assert!(super::finish_branch_refresh(
         repo,

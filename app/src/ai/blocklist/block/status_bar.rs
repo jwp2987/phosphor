@@ -1,23 +1,24 @@
 use std::{collections::HashSet, sync::Arc, time::Duration};
 
-use crate::ai::blocklist::controller::response_stream::current_retry_wait;
 use super::{
     cli_controller::{CLISubagentController, CLISubagentEvent, UserTakeOverReason},
     model::{AIBlockModel, AIBlockModelImpl, AIBlockOutputStatus},
     view_impl::common::{
+        ButtonProps, ForceRefreshButtonProps, LOAD_OUTPUT_MESSAGE, MaybeShimmeringText,
+        WAITING_FOR_USER_INPUT_MESSAGE, WarpingIndicatorProps, WarpingProps,
         render_switch_control_to_user_button, render_warping_indicator,
-        render_warping_indicator_base, ButtonProps, ForceRefreshButtonProps, MaybeShimmeringText,
-        WarpingIndicatorProps, WarpingProps, LOAD_OUTPUT_MESSAGE, WAITING_FOR_USER_INPUT_MESSAGE,
+        render_warping_indicator_base,
     },
 };
-use crate::{ai::agent_tips::AITipModel, terminal::input::buffer_model::InputBufferUpdateEvent};
+use crate::ai::blocklist::controller::response_stream::current_retry_wait;
 use crate::terminal::input::message_bar::common::render_terminal_message;
 use crate::terminal::input::message_bar::misroute::misroute_recovery_message;
 use crate::uri::link_policy::openable_app_content_url;
+use crate::{ai::agent_tips::AITipModel, terminal::input::buffer_model::InputBufferUpdateEvent};
 use crate::{
     ai::blocklist::agent_view::{
-        agent_view_bg_fill, child_agent_status_card::ChildAgentStatusCard, AgentMessageBar,
-        AgentViewController, EphemeralMessageModel,
+        AgentMessageBar, AgentViewController, EphemeralMessageModel, agent_view_bg_fill,
+        child_agent_status_card::ChildAgentStatusCard,
     },
     terminal::input::{
         buffer_model::InputBufferModel, slash_command_model::SlashCommandModel,
@@ -27,39 +28,39 @@ use crate::{
 use agent_proto as api;
 
 use crate::{
+    BlocklistAIHistoryModel,
     ai::{
+        AgentTip,
         agent::{
-            conversation::AIConversationId, icons, AIAgentExchangeId, AIAgentOutput,
-            AIAgentOutputMessageType, CancellationReason, SummarizationType,
+            AIAgentExchangeId, AIAgentOutput, AIAgentOutputMessageType, CancellationReason,
+            SummarizationType, conversation::AIConversationId, icons,
         },
         blocklist::{
+            BlocklistAIActionEvent, BlocklistAIActionModel, BlocklistAIContextEvent,
+            BlocklistAIContextModel, BlocklistAIController, BlocklistAIHistoryEvent,
+            BlocklistAIInputEvent, BlocklistAIInputModel, QueuedQueryModel, ResponseStreamId,
             agent_view::shortcuts::AgentShortcutViewModel,
             ai_brand_color,
             model::AIBlockModelHelper,
             summarization_cancel_dialog::{
                 self, SummarizationCancelDialog, SummarizationCancelDialogEvent,
             },
-            BlocklistAIActionEvent, BlocklistAIActionModel, BlocklistAIContextEvent,
-            BlocklistAIContextModel, BlocklistAIController, BlocklistAIHistoryEvent,
-            BlocklistAIInputEvent, BlocklistAIInputModel, QueuedQueryModel, ResponseStreamId,
         },
         llms::LLMPreferences,
-        AgentTip,
     },
     send_telemetry_from_app_ctx,
     server::telemetry::TelemetryEvent,
     settings::{InputModeSettings, InputSettings},
     settings_view::keybindings::KeybindingChangedNotifier,
     terminal::{
+        CANCEL_COMMAND_KEYBINDING, TOGGLE_AUTOEXECUTE_MODE_KEYBINDING,
+        TOGGLE_HIDE_CLI_RESPONSES_KEYBINDING, TOGGLE_QUEUE_NEXT_PROMPT_KEYBINDING, TerminalModel,
         input::SET_INPUT_MODE_TERMINAL_ACTION_NAME,
         model_events::{ModelEvent, ModelEventDispatcher},
         view::ambient_agent::{AmbientAgentViewModel, AmbientAgentViewModelEvent},
         warpify::render::LEFT_STRIPE_WIDTH,
-        TerminalModel, CANCEL_COMMAND_KEYBINDING, TOGGLE_AUTOEXECUTE_MODE_KEYBINDING,
-        TOGGLE_HIDE_CLI_RESPONSES_KEYBINDING, TOGGLE_QUEUE_NEXT_PROMPT_KEYBINDING,
     },
     util::bindings::keybinding_name_to_keystroke,
-    BlocklistAIHistoryModel,
 };
 use instant::Instant;
 use parking_lot::FairMutex;
@@ -70,14 +71,14 @@ use warp_core::{
 };
 use warpui::elements::shimmering_text::ShimmeringTextStateHandle;
 use warpui::{
+    AppContext, Element, Entity, EntityId, ModelHandle, SingletonEntity, View, ViewContext,
+    ViewHandle,
+    r#async::SpawnedFutureHandle,
     elements::{Border, Container, Empty, Flex, MouseStateHandle, ParentElement, Text},
     keymap::Keystroke,
     presenter::ChildView,
-    r#async::SpawnedFutureHandle,
-    AppContext, Element, Entity, EntityId, ModelHandle, SingletonEntity, View, ViewContext,
-    ViewHandle,
 };
-use warpui::{r#async::Timer, TypedActionView};
+use warpui::{TypedActionView, r#async::Timer};
 
 pub fn init(app: &mut AppContext) {
     summarization_cancel_dialog::init(app);
@@ -258,10 +259,7 @@ impl BlocklistAIStatusBar {
             }
         });
         ctx.subscribe_to_model(&context_model, |_, _, event, ctx| {
-            if matches!(
-                event,
-                BlocklistAIContextEvent::PendingQueryStateUpdated
-            ) {
+            if matches!(event, BlocklistAIContextEvent::PendingQueryStateUpdated) {
                 ctx.notify();
             }
         });
@@ -892,13 +890,12 @@ impl BlocklistAIStatusBar {
                     ButtonProps {
                         button_handle: &self.state_handles.queue_next_prompt_button,
                         keystroke: self.queue_next_prompt_keystroke.as_ref(),
-                        is_active: model
-                            .conversation(app)
-                            .map(|c| c.id())
-                            .is_some_and(|conversation_id| {
+                        is_active: model.conversation(app).map(|c| c.id()).is_some_and(
+                            |conversation_id| {
                                 QueuedQueryModel::as_ref(app)
                                     .is_queue_next_prompt_toggle_enabled(conversation_id)
-                            }),
+                            },
+                        ),
                     },
                 ),
                 stop_button: Some(ButtonProps {
@@ -968,16 +965,21 @@ fn render_agent_tip(tip: &AgentTip, app: &AppContext) -> Box<dyn Element> {
 
     let mut fragments = tip.to_formatted_text(app);
 
-    match (tip.action.clone(), action_text.clone()) { (Some(action), Some(text)) => {
-        fragments.push(FormattedTextFragment::plain_text(" "));
-        fragments.push(FormattedTextFragment::hyperlink_action(text, action));
-    } _ => if let Some(link_target) = tip.link.clone() {
-        fragments.push(FormattedTextFragment::plain_text(" "));
-        fragments.push(FormattedTextFragment::hyperlink(
-            crate::t!("common-learn-more"),
-            link_target,
-        ));
-    }}
+    match (tip.action.clone(), action_text.clone()) {
+        (Some(action), Some(text)) => {
+            fragments.push(FormattedTextFragment::plain_text(" "));
+            fragments.push(FormattedTextFragment::hyperlink_action(text, action));
+        }
+        _ => {
+            if let Some(link_target) = tip.link.clone() {
+                fragments.push(FormattedTextFragment::plain_text(" "));
+                fragments.push(FormattedTextFragment::hyperlink(
+                    crate::t!("common-learn-more"),
+                    link_target,
+                ));
+            }
+        }
+    }
 
     let formatted_text =
         markdown_parser::FormattedText::new(vec![FormattedTextLine::Line(fragments)]);
@@ -1154,29 +1156,34 @@ impl View for BlocklistAIStatusBar {
                 },
                 app,
             )
-        } else { match (
-            self.render_warping_indicator_for_latest_exchange(app),
-            self.ephemeral_message_model
-                .as_ref(app)
-                .current_message()
-                .is_none(),
-        ) { (Some(warping_indicator), true) => {
-            warping_indicator
-        } _ => if self
-            .ambient_agent_view_model
-            .as_ref(app)
-            .is_waiting_for_session()
-        {
-            // Don't render warping indicator - the loading screen is shown in the main view
-            return Empty::new().finish();
-        } else if agent_view_controller.is_active() {
-            return Flex::column()
-                .with_child(ChildView::new(&self.child_agent_status_card).finish())
-                .with_child(ChildView::new(&self.agent_message_bar).finish())
-                .finish();
         } else {
-            return Empty::new().finish();
-        }}};
+            match (
+                self.render_warping_indicator_for_latest_exchange(app),
+                self.ephemeral_message_model
+                    .as_ref(app)
+                    .current_message()
+                    .is_none(),
+            ) {
+                (Some(warping_indicator), true) => warping_indicator,
+                _ => {
+                    if self
+                        .ambient_agent_view_model
+                        .as_ref(app)
+                        .is_waiting_for_session()
+                    {
+                        // Don't render warping indicator - the loading screen is shown in the main view
+                        return Empty::new().finish();
+                    } else if agent_view_controller.is_active() {
+                        return Flex::column()
+                            .with_child(ChildView::new(&self.child_agent_status_card).finish())
+                            .with_child(ChildView::new(&self.agent_message_bar).finish())
+                            .finish();
+                    } else {
+                        return Empty::new().finish();
+                    }
+                }
+            }
+        };
 
         let appearance = Appearance::as_ref(app);
         let theme = appearance.theme();

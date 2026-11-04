@@ -1,6 +1,6 @@
 use pathfinder_geometry::{
     rect::RectF,
-    vector::{vec2f, Vector2F},
+    vector::{Vector2F, vec2f},
 };
 
 /// Parameters for creating a visual tick mark that indicates a newline in text selection.

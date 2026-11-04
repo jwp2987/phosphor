@@ -2,7 +2,7 @@ use std::fs;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use command::blocking::Command;
 use warp_core::channel::ChannelState;
 use warp_util::path::ShellFamily;
@@ -283,7 +283,9 @@ pub fn uninstall_warpctrl() -> Result<()> {
     let warpctrl_path = warpctrl_install_target_path();
 
     if !warpctrl_path.exists() {
-        return Err(anyhow!("Phosphor Control command is not currently installed."));
+        return Err(anyhow!(
+            "Phosphor Control command is not currently installed."
+        ));
     }
 
     // Safety check: verify it's actually a symlink before removing

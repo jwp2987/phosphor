@@ -15,11 +15,11 @@ use warp::{
     sqlite_testing::set_user_and_hostname_for_commands,
     terminal::{input::Input, model::session::get_local_hostname, shell::ShellType},
 };
-use warpui::{async_assert, ViewHandle};
+use warpui::{ViewHandle, async_assert};
 
 use crate::util::{get_local_user, write_histfiles_for_test};
 
-use super::{new_builder, TEST_ONLY_ASSETS};
+use super::{TEST_ONLY_ASSETS, new_builder};
 
 /// The `history_with_metadata.sqlite` table looks like the following:
 ///
@@ -72,11 +72,12 @@ pub fn test_up_arrow_history() -> Builder {
                 let input_view: &ViewHandle<Input> = views.first().unwrap();
                 input_view.read(app, |view, ctx| {
                     // The history menu should be visible.
-                    assert!(view
-                        .suggestions_mode_model()
-                        .as_ref(ctx)
-                        .mode()
-                        .is_visible());
+                    assert!(
+                        view.suggestions_mode_model()
+                            .as_ref(ctx)
+                            .mode()
+                            .is_visible()
+                    );
 
                     // The cursor should be on the last row.
                     assert!(view.editor().as_ref(ctx).single_cursor_on_last_row(ctx));
@@ -99,11 +100,12 @@ pub fn test_up_arrow_history() -> Builder {
                 let input_view: &ViewHandle<Input> = views.first().unwrap();
                 input_view.read(app, |view, ctx| {
                     // The history menu should be visible.
-                    assert!(view
-                        .suggestions_mode_model()
-                        .as_ref(ctx)
-                        .mode()
-                        .is_visible());
+                    assert!(
+                        view.suggestions_mode_model()
+                            .as_ref(ctx)
+                            .mode()
+                            .is_visible()
+                    );
 
                     // The cursor should be on the first row.
                     assert!(view.editor().as_ref(ctx).single_cursor_on_first_row(ctx));
@@ -157,11 +159,12 @@ pub fn test_up_arrow_history_enters_shift_tab_for_workflow() -> Builder {
                 let input_view = single_input_view(app, window_id);
                 input_view.read(app, |view, ctx| {
                     // The history menu should be visible.
-                    async_assert!(view
-                        .suggestions_mode_model()
-                        .as_ref(ctx)
-                        .mode()
-                        .is_visible())
+                    async_assert!(
+                        view.suggestions_mode_model()
+                            .as_ref(ctx)
+                            .mode()
+                            .is_visible()
+                    )
                 })
             })
             .add_named_assertion(

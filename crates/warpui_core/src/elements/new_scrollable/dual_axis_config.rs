@@ -1,24 +1,24 @@
 use pathfinder_geometry::{
     rect::RectF,
-    vector::{vec2f, Vector2F},
+    vector::{Vector2F, vec2f},
 };
 
 #[cfg(debug_assertions)]
 use crate::elements::new_scrollable::ScrollableAxis;
 use crate::{
+    AfterLayoutContext, AppContext, Element, EventContext, LayoutContext, PaintContext,
+    SizeConstraint,
     elements::{
-        new_scrollable::util::child_constraint_for_axis, Axis, ClippedScrollStateHandle,
-        ScrollData, ScrollStateHandle, SelectableElement, Vector2FExt,
+        Axis, ClippedScrollStateHandle, ScrollData, ScrollStateHandle, SelectableElement,
+        Vector2FExt, new_scrollable::util::child_constraint_for_axis,
     },
     event::DispatchedEvent,
     units::{IntoPixels, Pixels},
-    AfterLayoutContext, AppContext, Element, EventContext, LayoutContext, PaintContext,
-    SizeConstraint,
 };
 
 use super::{
-    util::{scroll_clipped_scrollable_handle_with_delta, scroll_delta_for_axis},
     NewScrollableElement, SingleAxisConfig,
+    util::{scroll_clipped_scrollable_handle_with_delta, scroll_delta_for_axis},
 };
 
 use crate::elements::ScrollTarget;

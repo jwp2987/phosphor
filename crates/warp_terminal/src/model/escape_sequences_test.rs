@@ -2,9 +2,9 @@ use warpui::keymap::Keystroke;
 use warpui::platform::OperatingSystem;
 
 use crate::model::{
+    TermMode,
     indexing::Point,
     mouse::{MouseAction, MouseButton, MouseState},
-    TermMode,
 };
 
 use super::*;

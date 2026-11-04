@@ -1,12 +1,11 @@
 use std::{path::PathBuf, time::Duration};
 
 use warpui::{
-    async_assert,
+    ModelHandle, async_assert,
     integration::{AssertionOutcome, TestStep},
-    ModelHandle,
 };
 
-use super::{assert_approx_eq, new_builder, TEST_ONLY_ASSETS};
+use super::{TEST_ONLY_ASSETS, assert_approx_eq, new_builder};
 use crate::Builder;
 use warp::integration_testing::{
     pane_group::assert_focused_pane_index,

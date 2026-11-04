@@ -14,8 +14,8 @@ use crate::workflows::{WorkflowObject, WorkflowObjectModel};
 use crate::{
     cloud_object::update_manager::UpdateManager,
     cloud_object::{
-        model::{persistence::ObjectStoreModel, view::ObjectStoreViewModel},
         Revision,
+        model::{persistence::ObjectStoreModel, view::ObjectStoreViewModel},
     },
     network::NetworkStatus,
     notebooks::NotebookId,

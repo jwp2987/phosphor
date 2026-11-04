@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::ai::execution_context::WarpAiExecutionContext;
-use crate::terminal::model::block::BlockState;
 use crate::terminal::TerminalModel;
+use crate::terminal::model::block::BlockState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommandContext {

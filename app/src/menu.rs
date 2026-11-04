@@ -1,6 +1,6 @@
 use std::cell::OnceCell;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::{fmt, vec};
 
 use crate::safe_triangle::SafeTriangle;
@@ -10,15 +10,16 @@ use crate::{appearance::Appearance, ui_components::icons};
 use chrono::{DateTime, Local};
 use pathfinder_color::ColorU;
 use pathfinder_geometry::rect::RectF;
-use pathfinder_geometry::vector::{vec2f, Vector2F};
+use pathfinder_geometry::vector::{Vector2F, vec2f};
 use warp_core::ui::color::blend::Blend;
+use warpui::WindowId;
 use warpui::elements::{
     ChildAnchor, ClippedScrollStateHandle, ClippedScrollable, DropShadow, OffsetPositioning,
     ParentAnchor, ParentOffsetBounds, PositionedElementAnchor, PositionedElementOffsetBounds,
     ScrollTarget, ScrollToPositionMode, ScrollbarWidth, Stack,
 };
-use warpui::WindowId;
 use warpui::{
+    Action, AppContext, Entity, SingletonEntity, TypedActionView, View, ViewContext,
     accessibility::{AccessibilityContent, ActionAccessibilityContent, WarpA11yRole},
     elements::{
         Align, Border, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Dismiss,
@@ -30,7 +31,6 @@ use warpui::{
     keymap::FixedBinding,
     platform::Cursor,
     ui_components::components::UiComponent,
-    Action, AppContext, Entity, SingletonEntity, TypedActionView, View, ViewContext,
 };
 
 pub const CHEVRON_RIGHT_ALIGN_SVG_PATH: &str = "bundled/svg/chevron-right-align.svg";
@@ -1055,21 +1055,29 @@ impl<A: Action + Clone> MenuItemFields<A> {
                 if self.has_submenu {
                     label_row
                         .add_child(self.render_right_aligned_chevron(appearance, primary_color));
-                } else { match self.render_right_side_label(appearance, secondary_color.into())
-                { Some(right_label) => {
-                    label_row.add_child(right_label);
-                } _ => { match self.render_key_shortcut(appearance, secondary_color.into())
-                { Some(key_shortcut) => {
-                    label_row.add_child(key_shortcut);
-                } _ => if let Some(timestamp) = &self.timestamp {
-                    label_row.add_child(self.render_right_aligned_time_estimation(
-                        timestamp,
-                        font_family,
-                        font_size,
-                        text_background_color,
-                        appearance,
-                    ));
-                }}}}}
+                } else {
+                    match self.render_right_side_label(appearance, secondary_color.into()) {
+                        Some(right_label) => {
+                            label_row.add_child(right_label);
+                        }
+                        _ => match self.render_key_shortcut(appearance, secondary_color.into()) {
+                            Some(key_shortcut) => {
+                                label_row.add_child(key_shortcut);
+                            }
+                            _ => {
+                                if let Some(timestamp) = &self.timestamp {
+                                    label_row.add_child(self.render_right_aligned_time_estimation(
+                                        timestamp,
+                                        font_family,
+                                        font_size,
+                                        text_background_color,
+                                        appearance,
+                                    ));
+                                }
+                            }
+                        },
+                    }
+                }
             }
 
             // If menu item doesn't have an icon but we want to indent it, add left padding so it aligns with menu items that do have icons
@@ -2845,11 +2853,9 @@ impl<A: Action + Clone> MenuItem<A> {
     pub fn is_separator(&self) -> bool {
         matches!(self, MenuItem::Separator)
     }
-
 }
 
-impl<A: Action + Clone> Menu<A> {
-}
+impl<A: Action + Clone> Menu<A> {}
 
 #[cfg(test)]
 impl<A: Action + Clone> Menu<A> {

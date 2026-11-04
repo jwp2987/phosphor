@@ -1,15 +1,15 @@
 use crate::settings::EnforceMinimumContrast;
+use crate::terminal::SizeInfo;
 use crate::terminal::color;
 use crate::terminal::grid_renderer::{
-    render_cursor, render_grid, CellGlyphCache, SharedCellGlyphCache,
+    CellGlyphCache, SharedCellGlyphCache, render_cursor, render_grid,
 };
+use crate::terminal::model::ObfuscateSecrets;
 use crate::terminal::model::blockgrid::{BlockGrid, CursorDisplayPoint};
 use crate::terminal::model::grid::grid_handler::{GridHandler, Link};
 use crate::terminal::model::grid::grid_source::GridSnapshot;
 use crate::terminal::model::index::Point;
 use crate::terminal::model::terminal_model::BlockIndex;
-use crate::terminal::model::ObfuscateSecrets;
-use crate::terminal::SizeInfo;
 use crate::themes::theme::WarpTheme;
 use pathfinder_color::ColorU;
 use rustc_hash::FxHashMap;
@@ -23,13 +23,13 @@ use warpui::LayerInsertionPoint;
 use super::block_list_element::GridType;
 use warpui::fonts::{FamilyId, Properties, Weight};
 use warpui::geometry::rect::RectF;
-use warpui::geometry::vector::{vec2f, Vector2F};
+use warpui::geometry::vector::{Vector2F, vec2f};
 use warpui::{AppContext, Element, EntityId, PaintContext};
 
+use super::model::SecretHandle;
 use super::model::ansi::{CursorShape, CursorStyle};
 use super::model::grid::RespectDisplayedOutput;
 use super::model::image_map::StoredImageMetadata;
-use super::model::SecretHandle;
 
 pub struct GridRenderParams {
     /// Shared with `Appearance` (see `Appearance::shared_theme`) so building the params each

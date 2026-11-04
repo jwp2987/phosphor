@@ -341,7 +341,8 @@ use warpui::{AppContext, OpenUrlDecision, SingletonEntity, WindowId};
 #[derive(Clone, Copy, RustEmbed)]
 #[folder = "assets"]
 #[include = "bundled/**"] // Should be kept in sync with BUNDLED_ASSETS_DIR.
-#[include = "async/**"] // Should be kept in sync with ASYNC_ASSETS_DIR.
+#[include = "async/**"]
+// Should be kept in sync with ASYNC_ASSETS_DIR.
 // Excludes take precedence.
 // Standalone CLI builds (the `oz` tarball) are headless and never render the
 // onboarding/theme imagery in `async/`, so we exclude those bytes from the
@@ -1617,7 +1618,9 @@ fn initialize_app(
     ctx.add_singleton_model(|_| ExecutionProfileEditorManager::default());
     ctx.add_singleton_model(|_| pricing::PricingInfoModel::new());
     ctx.add_singleton_model(|_| {
-        ManagedSecretManager::new(Arc::new(local_managed_secrets::DisabledManagedSecretsClient))
+        ManagedSecretManager::new(Arc::new(
+            local_managed_secrets::DisabledManagedSecretsClient,
+        ))
     });
 
     #[cfg(target_os = "macos")]

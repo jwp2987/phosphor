@@ -8,23 +8,23 @@ pub use single_axis_config::*;
 use pathfinder_color::ColorU;
 use pathfinder_geometry::{
     rect::RectF,
-    vector::{vec2f, Vector2F},
+    vector::{Vector2F, vec2f},
 };
 
 use crate::{
-    elements::Vector2FExt,
-    event::{DispatchedEvent, ModifiersState},
-    text::{word_boundaries::WordBoundariesPolicy, IsRect, SelectionDirection, SelectionType},
-    units::{IntoPixels, Pixels},
     AfterLayoutContext, AppContext, ClipBounds, Element, Event, EventContext, LayoutContext,
     PaintContext, SizeConstraint,
+    elements::Vector2FExt,
+    event::{DispatchedEvent, ModifiersState},
+    text::{IsRect, SelectionDirection, SelectionType, word_boundaries::WordBoundariesPolicy},
+    units::{IntoPixels, Pixels},
 };
 
 use self::util::adjust_scroll_delta_with_sensitivity_config;
 
 use super::{
-    scrollbar_size, Axis, ClippedScrollStateHandle, CornerRadius, F32Ext, Fill, Point, Radius,
-    ScrollData, ScrollbarWidth, SelectableElement, SelectionFragment, ZIndex,
+    Axis, ClippedScrollStateHandle, CornerRadius, F32Ext, Fill, Point, Radius, ScrollData,
+    ScrollbarWidth, SelectableElement, SelectionFragment, ZIndex, scrollbar_size,
 };
 
 const LEFT_PADDING: f32 = 2.;

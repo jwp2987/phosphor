@@ -1,8 +1,8 @@
 use crate::context_chips::{
+    ChipResult,
     display_chip::{DisplayChip, GitLineChanges, PromptDisplayChipEvent},
     git_line_changes_from_chips,
     prompt_type::PromptType,
-    ChipResult,
 };
 use warpui::{ModelHandle, ViewContext, ViewHandle};
 

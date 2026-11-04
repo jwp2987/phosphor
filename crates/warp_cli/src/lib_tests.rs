@@ -811,7 +811,13 @@ fn multiple_global_flags_before_subcommand_parse() {
 #[test]
 fn agent_run_accepts_harness_flag() {
     let args = Args::try_parse_from([
-        "warp", "agent", "run", "--prompt", "hello", "--harness", "claude",
+        "warp",
+        "agent",
+        "run",
+        "--prompt",
+        "hello",
+        "--harness",
+        "claude",
     ])
     .unwrap();
 

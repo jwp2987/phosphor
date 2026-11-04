@@ -1,12 +1,12 @@
 use chrono::Local;
 use std::collections::HashSet;
 use warp_core::ui::appearance::Appearance;
-use warpui::{platform::WindowStyle, App};
+use warpui::{App, platform::WindowStyle};
 
 use crate::ai::blocklist::AIQueryHistory;
-use crate::input_suggestions::{filter_tab_suggestions, HistoryOrder};
-use crate::terminal::model::session::SessionId;
+use crate::input_suggestions::{HistoryOrder, filter_tab_suggestions};
 use crate::terminal::HistoryEntry;
+use crate::terminal::model::session::SessionId;
 use warp_completer::completer::{
     EngineFileType, Match, MatchStrategy, MatchedSuggestion, Priority, Suggestion,
     SuggestionResults, SuggestionType, TopLevelCommandCaseSensitivity,

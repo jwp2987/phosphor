@@ -5,8 +5,8 @@ use crate::search::result_renderer::ItemHighlightState;
 use fuzzy_match::FuzzyMatchResult;
 use ordered_float::OrderedFloat;
 use warpui::{
-    elements::{ConstrainedBox, Container, Icon, Text},
     AppContext, Element, SingletonEntity,
+    elements::{ConstrainedBox, Container, Icon, Text},
 };
 
 #[derive(Clone, Debug)]

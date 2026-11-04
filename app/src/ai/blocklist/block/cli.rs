@@ -8,11 +8,11 @@ use warp_core::report_error;
 use warp_core::ui::theme::color::internal_colors;
 use warpui::elements::new_scrollable::SingleAxisConfig;
 use warpui::elements::{
-    resizable_state_handle, ClippedScrollStateHandle, ConstrainedBox, DispatchEventResult,
-    DragBarSide, Empty, EventHandler, Fill, FormattedTextElement, Highlight, HighlightedHyperlink,
-    Hoverable, MainAxisAlignment, MainAxisSize, NewScrollable, Resizable, ResizableStateHandle,
-    SavePosition, ScrollTarget, ScrollToPositionMode, SelectableArea, SizeConstraintCondition,
-    SizeConstraintSwitch,
+    ClippedScrollStateHandle, ConstrainedBox, DispatchEventResult, DragBarSide, Empty,
+    EventHandler, Fill, FormattedTextElement, Highlight, HighlightedHyperlink, Hoverable,
+    MainAxisAlignment, MainAxisSize, NewScrollable, Resizable, ResizableStateHandle, SavePosition,
+    ScrollTarget, ScrollToPositionMode, SelectableArea, SizeConstraintCondition,
+    SizeConstraintSwitch, resizable_state_handle,
 };
 use warpui::fonts::Weight;
 use warpui::platform::{Cursor, OperatingSystem};
@@ -30,6 +30,9 @@ use warp_editor::{
 };
 use warpui::r#async::Timer;
 use warpui::{
+    AppContext, Element, Entity, EntityId, ModelHandle, SingletonEntity, TypedActionView, View,
+    ViewContext, ViewHandle,
+    r#async::SpawnedFutureHandle,
     clipboard::ClipboardContent,
     elements::{
         Border, ChildAnchor, ChildView, Container, CornerRadius, CrossAxisAlignment, DropShadow,
@@ -39,22 +42,20 @@ use warpui::{
     },
     fonts::{Properties, Style},
     keymap::{EditableBinding, Keystroke},
-    r#async::SpawnedFutureHandle,
-    AppContext, Element, Entity, EntityId, ModelHandle, SingletonEntity, TypedActionView, View,
-    ViewContext, ViewHandle,
 };
 
+use crate::ToastStack;
 use crate::ai::agent::{AIAgentPtyWriteMode, CancellationReason};
-use crate::ai::blocklist::pty_write_for_target_command;
 use crate::ai::blocklist::block::view_impl::common::{
-    render_query_text, UserQueryProps, BLOCKED_ACTION_MESSAGE_FOR_GREP_OR_FILE_GLOB,
-    BLOCKED_ACTION_MESSAGE_FOR_READING_FILES,
+    BLOCKED_ACTION_MESSAGE_FOR_GREP_OR_FILE_GLOB, BLOCKED_ACTION_MESSAGE_FOR_READING_FILES,
     BLOCKED_ACTION_MESSAGE_FOR_WRITE_TO_LONG_RUNNING_SHELL_COMMAND,
     LOAD_OUTPUT_MESSAGE_FOR_FILE_GLOB, LOAD_OUTPUT_MESSAGE_FOR_GREP,
-    LOAD_OUTPUT_MESSAGE_FOR_READING_FILES, LOAD_OUTPUT_MESSAGE_FOR_WEB_SEARCH,
+    LOAD_OUTPUT_MESSAGE_FOR_READING_FILES, LOAD_OUTPUT_MESSAGE_FOR_WEB_SEARCH, UserQueryProps,
+    render_query_text,
 };
 use crate::ai::blocklist::permissions::is_agent_mode_autonomy_allowed;
-use crate::ai::control_code_parser::{parse_control_codes_from_bytes, ParsedControlCodeOutput};
+use crate::ai::blocklist::pty_write_for_target_command;
+use crate::ai::control_code_parser::{ParsedControlCodeOutput, parse_control_codes_from_bytes};
 use crate::ai::execution_profiles::WriteToPtyPermission;
 use crate::code::editor::view::{CodeEditorEvent, CodeEditorRenderOptions};
 use crate::menu::MenuItemFields;
@@ -67,17 +68,17 @@ use crate::terminal::resizable_data::{ModalType, ResizableData};
 use crate::terminal::{ShellLaunchData, TerminalModel};
 use crate::view_components::DismissibleToast;
 use crate::workspace::WorkspaceAction;
-use crate::ToastStack;
 use crate::{
+    BlocklistAIHistoryModel,
     ai::{
         agent::{
-            conversation::AIConversationId, task::TaskId, AIAgentActionType, AIAgentExchangeId,
-            AIAgentOutput, AIAgentOutputMessageType, AIAgentText, AIAgentTextSection,
-            ProgrammingLanguage, WebSearchStatus,
+            AIAgentActionType, AIAgentExchangeId, AIAgentOutput, AIAgentOutputMessageType,
+            AIAgentText, AIAgentTextSection, ProgrammingLanguage, WebSearchStatus,
+            conversation::AIConversationId, task::TaskId,
         },
         blocklist::{
-            code_block::CodeSnippetButtonHandles, BlocklistAIActionModel, BlocklistAIHistoryEvent,
-            BlocklistAIPermissions,
+            BlocklistAIActionModel, BlocklistAIHistoryEvent, BlocklistAIPermissions,
+            code_block::CodeSnippetButtonHandles,
         },
         execution_profiles::profiles::{AIExecutionProfilesModel, AIExecutionProfilesModelEvent},
     },
@@ -90,35 +91,34 @@ use crate::{
     view_components::{
         action_button::{ButtonSize, KeystrokeSource, NakedTheme, PrimaryTheme},
         compactible_action_button::{
-            render_compact_and_regular_button_rows, CompactibleActionButton,
-            RenderCompactibleActionButton,
+            CompactibleActionButton, RenderCompactibleActionButton,
+            render_compact_and_regular_button_rows,
         },
         compactible_split_action_button::CompactibleSplitActionButton,
     },
-    BlocklistAIHistoryModel,
 };
 
 use crate::ai::agent::AIAgentInput;
 use crate::ai::blocklist::block::TextLocation;
-use crate::util::link_detection::{detect_links, DetectedLinksState};
+use crate::util::link_detection::{DetectedLinksState, detect_links};
 
 use crate::ai::agent::icons::yellow_stop_icon;
 use crate::ai::blocklist::inline_action::inline_action_icons::{self, icon_size};
 use crate::ai::blocklist::inline_action::requested_action::RenderableAction;
 
+use super::TableSectionHandles;
 use super::cli_controller::{CLISubagentController, CLISubagentEvent, UserTakeOverReason};
 use super::model::AIBlockModelHelper;
-use super::TableSectionHandles;
 use super::{
+    EmbeddedCodeEditorView, SecretRedactionState,
     model::{AIBlockModel, AIBlockModelImpl, AIBlockOutputStatus},
     view_impl::{
         common::{
-            render_debug_footer, render_failed_output, render_informational_footer,
-            render_text_sections, DebugFooterProps, FailedOutputProps, TextSectionsProps,
+            DebugFooterProps, FailedOutputProps, TextSectionsProps, render_debug_footer,
+            render_failed_output, render_informational_footer, render_text_sections,
         },
         output::are_all_text_sections_empty,
     },
-    EmbeddedCodeEditorView, SecretRedactionState,
 };
 /// How far outside a bubble's text areas a press is still taken by that area (#1021).
 const CLI_BUBBLE_CAPTURE_SLOP: f32 = 6.0;
@@ -313,7 +313,7 @@ const HAS_PENDING_NON_TRANSFER_CONTROL_ACTION_CONTEXT_KEY: &str =
 const BLOCKED_ACTION_MESSAGE_FOR_TRANSFER_CONTROL: &str = "Agent is asking you to take control.";
 
 pub fn init(app: &mut AppContext) {
-    use warpui::keymap::{macros::*, FixedBinding};
+    use warpui::keymap::{FixedBinding, macros::*};
 
     app.register_fixed_bindings([
         FixedBinding::new(

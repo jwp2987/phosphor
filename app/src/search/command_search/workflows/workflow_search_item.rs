@@ -2,13 +2,13 @@ use std::sync::Arc;
 
 use ordered_float::OrderedFloat;
 use warpui::{
+    AppContext, Element, SingletonEntity,
     elements::{
         Border, Clipped, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Flex,
         Highlight, MainAxisAlignment, MainAxisSize, ParentElement, Radius, Shrinkable, Text,
     },
     fonts::{Properties, Weight},
     ui_components::components::{UiComponent, UiComponentStyles},
-    AppContext, Element, SingletonEntity,
 };
 
 use crate::appearance::Appearance;

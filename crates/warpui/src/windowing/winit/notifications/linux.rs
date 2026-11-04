@@ -1,7 +1,7 @@
+use crate::WindowId;
 use crate::notification::NotificationSendError;
 use crate::windowing::winit::app::CustomEvent;
 use crate::windowing::winit::notifications::NotificationInfo;
-use crate::WindowId;
 use futures::FutureExt;
 use winit::event_loop::EventLoopProxy;
 

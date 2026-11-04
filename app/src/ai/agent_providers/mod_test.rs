@@ -4,19 +4,19 @@ use ai::LLMId;
 use settings::Setting;
 use warpui::{App, SingletonEntity};
 
-use crate::ai::agent_providers::{llm_id, lookup_byop, AgentProviderSecrets};
+use crate::ai::agent_providers::{AgentProviderSecrets, llm_id, lookup_byop};
 // `tui_export` only exists under the `tui` feature; the tests that use it are
 // likewise gated below, so a `--features gui` (no tui) check still compiles.
-#[cfg(feature = "tui")]
-use crate::tui_export::{
-    tui_agent_provider_has_connected_key, tui_clear_agent_provider_api_key,
-    tui_list_agent_provider_keys, tui_set_agent_provider_api_key,
-};
 use crate::ai::llms::{DisableReason, LLMPreferences};
 use crate::auth::{AuthManager, AuthStateProvider};
 use crate::network::NetworkStatus;
 use crate::settings::{AISettings, AgentProvider, AgentProviderApiType, AgentProviderModel};
 use crate::test_util::settings::initialize_settings_for_tests;
+#[cfg(feature = "tui")]
+use crate::tui_export::{
+    tui_agent_provider_has_connected_key, tui_clear_agent_provider_api_key,
+    tui_list_agent_provider_keys, tui_set_agent_provider_api_key,
+};
 use crate::workspaces::user_workspaces::UserWorkspaces;
 
 fn sample_provider(id: &str) -> AgentProvider {
@@ -267,14 +267,11 @@ fn smoke_disabled_model_is_excluded_from_picker_but_sibling_model_still_works() 
         app.update(|ctx| {
             AISettings::handle(ctx).update(ctx, |settings, ctx| {
                 let mut provider = sample_provider(provider_id);
-                provider.models = vec![
-                    AgentProviderModel::from_id("llama3.2".to_owned()),
-                    {
-                        let mut m = AgentProviderModel::from_id("llama3.2-huge".to_owned());
-                        m.disabled = true;
-                        m
-                    },
-                ];
+                provider.models = vec![AgentProviderModel::from_id("llama3.2".to_owned()), {
+                    let mut m = AgentProviderModel::from_id("llama3.2-huge".to_owned());
+                    m.disabled = true;
+                    m
+                }];
                 let _ = settings.agent_providers.set_value(vec![provider], ctx);
             });
         });

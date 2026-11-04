@@ -30,8 +30,8 @@
 //! changes instead of relying on cross-layer events.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::RwLock;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use chrono::{DateTime, Local};
 
@@ -337,7 +337,10 @@ mod tests {
         sample_out();
         assert_eq!(snapshot().len(), 2, "reopening must preserve prior entries");
         clear();
-        assert!(snapshot().is_empty(), "explicit clear still empties the buffer");
+        assert!(
+            snapshot().is_empty(),
+            "explicit clear still empties the buffer"
+        );
     }
 
     #[test]
@@ -410,7 +413,11 @@ mod tests {
         assert_eq!(z.pct, 0.0, "a 0 window must not divide by zero");
         // active_kv_tokens wins over the under-reported prompt+completion sum.
         let kv = TokenUsage::new(214, 96, Some(10578), 30000);
-        assert!((kv.pct - 35.26).abs() < 0.1, "uses active_kv/window: {}", kv.pct);
+        assert!(
+            (kv.pct - 35.26).abs() < 0.1,
+            "uses active_kv/window: {}",
+            kv.pct
+        );
     }
 
     #[test]
@@ -419,6 +426,10 @@ mod tests {
         let mut slugs: Vec<&str> = Kind::ALL.iter().map(|k| k.slug()).collect();
         slugs.sort();
         slugs.dedup();
-        assert_eq!(slugs.len(), Kind::ALL.len(), "slugs are unique and cover ALL");
+        assert_eq!(
+            slugs.len(),
+            Kind::ALL.len(),
+            "slugs are unique and cover ALL"
+        );
     }
 }

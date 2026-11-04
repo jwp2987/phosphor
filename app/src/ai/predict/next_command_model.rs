@@ -4,12 +4,12 @@ use crate::ai::execution_context::WarpAiExecutionContext;
 use crate::completer::SessionContext;
 use crate::report_error;
 use crate::settings::AISettings;
+#[cfg(feature = "local_fs")]
+use crate::terminal::ShellHost;
 use crate::terminal::event::UserBlockCompleted;
 use crate::terminal::history::VisibleHistorySnapshot;
 use crate::terminal::input::{CompleterData, IntelligentAutosuggestionResult};
 use crate::terminal::model::session::Sessions;
-#[cfg(feature = "local_fs")]
-use crate::terminal::ShellHost;
 use crate::terminal::{History, HistoryEntry, TerminalModel};
 use crate::workspaces::user_workspaces::UserWorkspaces;
 use chrono::Utc;
@@ -22,12 +22,12 @@ use std::sync::Arc;
 #[cfg(feature = "local_fs")]
 use std::time::Duration;
 use warp_completer::completer::{
-    self, expand_command_aliases, AliasExpansionResult, CompleterOptions,
-    CompletionsFallbackStrategy, MatchStrategy,
+    self, AliasExpansionResult, CompleterOptions, CompletionsFallbackStrategy, MatchStrategy,
+    expand_command_aliases,
 };
 use warp_completer::meta::Spanned;
-use warp_completer::parsers::hir::{Command, Expression, FlagType};
 use warp_completer::parsers::ParsedExpression;
+use warp_completer::parsers::hir::{Command, Expression, FlagType};
 #[cfg(feature = "local_fs")]
 use warp_core::command::ExitCode;
 use warp_core::features::FeatureFlag;
@@ -38,8 +38,8 @@ use warpui::{AppContext, Entity, ModelContext, ModelHandle, SingletonEntity};
 #[cfg(feature = "local_fs")]
 use super::generate_ai_input_suggestions::HistoryContext;
 use super::generate_ai_input_suggestions::{
-    create_generate_ai_input_suggestions_request, get_context_messages,
     GenerateAIInputSuggestionsRequest, GenerateAIInputSuggestionsResponseV2, NextCommandContext,
+    create_generate_ai_input_suggestions_request, get_context_messages,
 };
 
 use crate::ai::agent::api::collect_user_rules;
@@ -356,10 +356,13 @@ impl NextCommandModel {
         #[cfg(feature = "local_fs")]
         if let Some(conn) = conn {
             let mut conn = conn.lock();
-            let serialized_block = block_completed.serialized_block_without_output.get_with(|compute| {
-                let model = terminal_model.lock();
-                compute(model.block_list())
-            });
+            let serialized_block =
+                block_completed
+                    .serialized_block_without_output
+                    .get_with(|compute| {
+                        let model = terminal_model.lock();
+                        compute(model.block_list())
+                    });
             let command = block_completed.command.get_with(|compute| {
                 let model = terminal_model.lock();
                 compute(model.block_list())

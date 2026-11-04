@@ -12,8 +12,6 @@ use warpui::keymap::Keystroke;
 use warpui::notification::{NotificationSendError, RequestPermissionsOutcome};
 use warpui::rendering::ThinStrokes;
 
-use crate::ai::agent::api::ServerConversationToken;
-use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::agent::AIAgentActionId;
 use crate::ai::agent::AIAgentExchangeId;
 use crate::ai::agent::AIAgentInput as FullAIAgentInput;
@@ -22,38 +20,40 @@ use crate::ai::agent::EntrypointType;
 use crate::ai::agent::PassiveSuggestionTrigger;
 use crate::ai::agent::ServerOutputId;
 use crate::ai::agent::SuggestedLoggingId;
+use crate::ai::agent::api::ServerConversationToken;
+use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::ambient_agents::AmbientAgentTaskId;
-use crate::ai::blocklist::agent_view::AgentViewEntryOrigin;
 use crate::ai::blocklist::CommandExecutionPermissionAllowedReason;
 use crate::ai::blocklist::InputType;
+use crate::ai::blocklist::agent_view::AgentViewEntryOrigin;
 use crate::ai::mcp::TemplateVariable;
 use crate::ai::predict::generate_ai_input_suggestions::GenerateAIInputSuggestionsRequest;
 use crate::ai::predict::generate_ai_input_suggestions::GenerateAIInputSuggestionsResponseV2;
 use crate::ai::predict::next_command_model::HistoryBasedAutosuggestionState;
 use crate::auth::LoginGatedFeature;
 use crate::cloud_object::{
-    model::generic_string_model::GenericStringObjectId, GenericStringObjectFormat, ObjectType,
-    Space,
+    GenericStringObjectFormat, ObjectType, Space,
+    model::generic_string_model::GenericStringObjectId,
 };
 #[cfg(feature = "local_fs")]
 use crate::code::editor_management::CodeSource;
 use crate::drive::DriveSortOrder;
 use crate::drive::ObjectTypeAndId;
 use crate::launch_configs::save_modal::SaveState;
-use crate::notebooks::telemetry::NotebookTelemetryAction;
 use crate::notebooks::NotebookId;
 use crate::notebooks::NotebookLocation;
+use crate::notebooks::telemetry::NotebookTelemetryAction;
 use crate::palette::PaletteMode;
 use crate::pane_group::PaneDragDropLocation;
 use crate::prompt::editor_modal::OpenSource as PromptEditorOpenSource;
-use crate::search::command_search::searcher::CommandSearchItemAction;
 use crate::search::QueryFilter;
+use crate::search::command_search::searcher::CommandSearchItemAction;
 use crate::server::ids::ObjectUid;
 use crate::server::ids::ServerId;
+use crate::settings::AgentModeCodingPermissionsType;
 use crate::settings::import::config::ParsedTerminalSetting;
 use crate::settings::import::config::SettingType;
 use crate::settings::import::model::TerminalType;
-use crate::settings::AgentModeCodingPermissionsType;
 use crate::tab::TabTelemetryAction;
 use crate::terminal::block_list_viewport::InputMode;
 use crate::terminal::cli_agent_sessions::CLIAgentInputEntrypoint;
@@ -67,14 +67,14 @@ use crate::terminal::model::terminal_model::TmuxInstallationState;
 use crate::terminal::settings::AltScreenPaddingMode;
 use crate::terminal::shell::ShellType;
 use crate::terminal::ssh::ssh_detection::SshInteractiveSessionDetected;
-use crate::terminal::view::block_onboarding::onboarding_agentic_suggestions_block::OnboardingChipType;
-use crate::terminal::view::inline_banner::ZeroStatePromptSuggestionTriggeredFrom;
-use crate::terminal::view::inline_banner::ZeroStatePromptSuggestionType;
 use crate::terminal::view::BlockEntity;
 use crate::terminal::view::BlockSelectionDetails;
 use crate::terminal::view::ContextMenuInfo;
 use crate::terminal::view::GridHighlightedLink;
 use crate::terminal::view::PromptPart;
+use crate::terminal::view::block_onboarding::onboarding_agentic_suggestions_block::OnboardingChipType;
+use crate::terminal::view::inline_banner::ZeroStatePromptSuggestionTriggeredFrom;
+use crate::terminal::view::inline_banner::ZeroStatePromptSuggestionType;
 use crate::terminal::view::{
     NotificationsDiscoveryBannerAction, NotificationsErrorBannerAction, NotificationsTrigger,
 };
@@ -86,9 +86,9 @@ use crate::util::openable_file_type::FileTarget;
 use crate::workflows::WorkflowId;
 use crate::workflows::WorkflowSelectionSource;
 use crate::workflows::WorkflowSource;
+use crate::workspace::TabMovement;
 use crate::workspace::tab_settings::TabCloseButtonPosition;
 use crate::workspace::tab_settings::WorkspaceDecorationVisibility;
-use crate::workspace::TabMovement;
 use warp_core::interval_timer::TimingDataPoint;
 
 #[derive(Clone, Serialize, Deserialize)]

@@ -21,8 +21,8 @@ use crate::report_settings_write_error;
 use crate::terminal::safe_mode_settings::SafeModeSettings;
 
 use settings::{
-    macros::{define_settings_group, maybe_define_setting, register_settings_events},
     RespectUserSyncSetting, Setting, SupportedPlatforms, SyncToCloud,
+    macros::{define_settings_group, maybe_define_setting, register_settings_events},
 };
 
 use serde::{Deserialize, Serialize};
@@ -325,17 +325,20 @@ impl PrivacySettings {
             // Convert EnterpriseSecretRegex to CustomSecretRegex for internal use
             let mut enterprise_secrets = Vec::new();
             for enterprise_regex in enterprise_regexes {
-                match Regex::new(&enterprise_regex.pattern) { Ok(regex) => {
-                    enterprise_secrets.push(CustomSecretRegex {
-                        pattern: regex,
-                        name: enterprise_regex.name,
-                    });
-                } _ => {
-                    log::error!(
-                        "Invalid enterprise secret regex pattern: {}",
-                        enterprise_regex.pattern
-                    );
-                }}
+                match Regex::new(&enterprise_regex.pattern) {
+                    Ok(regex) => {
+                        enterprise_secrets.push(CustomSecretRegex {
+                            pattern: regex,
+                            name: enterprise_regex.name,
+                        });
+                    }
+                    _ => {
+                        log::error!(
+                            "Invalid enterprise secret regex pattern: {}",
+                            enterprise_regex.pattern
+                        );
+                    }
+                }
             }
             self.enterprise_secret_regex_list = enterprise_secrets;
         } else {
@@ -459,7 +462,9 @@ impl PrivacySettings {
 
             if self.auth_state.is_logged_in() {
                 // Zap Wave 3-1: same as above.
-                log::debug!("set_is_telemetry_enabled remote sync has been localized, new_value={new_value}");
+                log::debug!(
+                    "set_is_telemetry_enabled remote sync has been localized, new_value={new_value}"
+                );
             }
             ctx.emit(PrivacySettingsChangedEvent::UpdateIsTelemetryEnabled {
                 old_value,
@@ -496,17 +501,20 @@ impl PrivacySettings {
 
         // Add all the default regexes if they don't already exist
         for default_regex in crate::terminal::model::secrets::regexes::DEFAULT_REGEXES_WITH_NAMES {
-            match Regex::new(default_regex.pattern) { Ok(regex) => {
-                let custom_regex = CustomSecretRegex {
-                    pattern: regex,
-                    name: Some(default_regex.name.to_string()),
-                };
-                if !new_user_secret_regex_list.contains(&custom_regex) {
-                    new_user_secret_regex_list.push(custom_regex);
+            match Regex::new(default_regex.pattern) {
+                Ok(regex) => {
+                    let custom_regex = CustomSecretRegex {
+                        pattern: regex,
+                        name: Some(default_regex.name.to_string()),
+                    };
+                    if !new_user_secret_regex_list.contains(&custom_regex) {
+                        new_user_secret_regex_list.push(custom_regex);
+                    }
                 }
-            } _ => {
-                log::error!("Failed to compile default regex: {}", default_regex.pattern);
-            }}
+                _ => {
+                    log::error!("Failed to compile default regex: {}", default_regex.pattern);
+                }
+            }
         }
 
         if num_existing_regexes == new_user_secret_regex_list.len() {
@@ -656,12 +664,16 @@ impl PrivacySettings {
             self.is_crash_reporting_enabled
         );
         WarpDrivePrivacySettings::handle(ctx).update(ctx, |settings, ctx| {
-            report_if_error!(settings
-                .is_telemetry_enabled
-                .set_value(self.is_telemetry_enabled, ctx));
-            report_if_error!(settings
-                .is_crash_reporting_enabled
-                .set_value(self.is_crash_reporting_enabled, ctx));
+            report_if_error!(
+                settings
+                    .is_telemetry_enabled
+                    .set_value(self.is_telemetry_enabled, ctx)
+            );
+            report_if_error!(
+                settings
+                    .is_crash_reporting_enabled
+                    .set_value(self.is_crash_reporting_enabled, ctx)
+            );
         });
     }
 }
@@ -698,8 +710,8 @@ mod default_regex_seeding_tests {
     //! used to record a failed write as a permanent success.
 
     use settings::{
-        is_settings_file_enabled, set_settings_file_enabled, PrivatePreferences, PublicPreferences,
-        Setting, SettingsManager,
+        PrivatePreferences, PublicPreferences, Setting, SettingsManager, is_settings_file_enabled,
+        set_settings_file_enabled,
     };
     use warpui::{App, SingletonEntity};
     use warpui_extras::user_preferences::{

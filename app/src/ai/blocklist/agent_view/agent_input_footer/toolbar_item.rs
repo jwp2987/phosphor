@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::context_chips::{agent_footer_available_chips, available_chips, ContextChipKind};
+use crate::context_chips::{ContextChipKind, agent_footer_available_chips, available_chips};
 use crate::features::FeatureFlag;
 use crate::settings::CodeSettings;
 use crate::terminal::shared_session::SharedSessionStatus;

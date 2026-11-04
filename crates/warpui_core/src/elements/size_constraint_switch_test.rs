@@ -3,9 +3,9 @@ use lazy_static::lazy_static;
 use pathfinder_geometry::vector::vec2f;
 
 use crate::{
+    App, Entity, TypedActionView, View, ViewContext, ViewHandle, WindowId,
     elements::{ChildView, ConstrainedBox, Rect},
     platform::WindowStyle,
-    App, Entity, TypedActionView, View, ViewContext, ViewHandle, WindowId,
 };
 
 use super::*;

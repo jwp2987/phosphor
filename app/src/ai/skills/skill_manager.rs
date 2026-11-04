@@ -23,15 +23,15 @@
 
 #[path = "file_watchers/mod.rs"]
 mod file_watchers;
-pub use file_watchers::{extract_skill_parent_directory, SkillWatcher, SkillWatcherEvent};
+pub use file_watchers::{SkillWatcher, SkillWatcherEvent, extract_skill_parent_directory};
 
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
 };
 
-use super::bundled::{BundledSkill, BundledSkills};
 pub use super::bundled::BundledSkillActivation;
+use super::bundled::{BundledSkill, BundledSkills};
 #[cfg(test)]
 use super::bundled::{build_bundled_skill_context, read_bundled_skills};
 use super::{
@@ -39,7 +39,7 @@ use super::{
     SkillManagerEvent, SkillPathQuery,
 };
 use crate::ai::skills::skill_utils::SkillDeduplicator;
-use ai::skills::{provider_rank, ParsedSkill, SkillPathOrigin, SkillProvider, SkillReference};
+use ai::skills::{ParsedSkill, SkillPathOrigin, SkillProvider, SkillReference, provider_rank};
 use warp_core::features::FeatureFlag;
 use warp_util::host_id::HostId;
 use warp_util::local_or_remote_path::LocalOrRemotePath;
@@ -466,7 +466,11 @@ impl SkillManager {
     // `RemoteAgentContextSnapshot`s arrive from connected SSH hosts and as hosts
     // disconnect.
 
-    pub(super) fn set_remote_bundled_skill(&mut self, host_id: HostId, bundled_skill: BundledSkill) {
+    pub(super) fn set_remote_bundled_skill(
+        &mut self,
+        host_id: HostId,
+        bundled_skill: BundledSkill,
+    ) {
         self.bundled_skills.insert_remote(host_id, bundled_skill);
     }
 
@@ -529,7 +533,10 @@ impl SkillManager {
         ctx.emit(SkillManagerEvent::InventoryChanged);
     }
 
-    fn home_directory_for_origin(&self, path_origin: &SkillPathOrigin) -> Option<LocalOrRemotePath> {
+    fn home_directory_for_origin(
+        &self,
+        path_origin: &SkillPathOrigin,
+    ) -> Option<LocalOrRemotePath> {
         match path_origin {
             SkillPathOrigin::Local => dirs::home_dir().map(LocalOrRemotePath::Local),
             SkillPathOrigin::Remote { host_id } => {
@@ -668,7 +675,11 @@ impl SkillManager {
         ctx.emit(SkillManagerEvent::InventoryChanged);
     }
 
-    fn handle_skills_deleted(&mut self, paths: Vec<LocalOrRemotePath>, ctx: &mut ModelContext<Self>) {
+    fn handle_skills_deleted(
+        &mut self,
+        paths: Vec<LocalOrRemotePath>,
+        ctx: &mut ModelContext<Self>,
+    ) {
         if paths.is_empty() {
             return;
         }
@@ -721,7 +732,8 @@ impl SkillManager {
         skill: ParsedSkill,
         activation: BundledSkillActivation,
     ) {
-        self.bundled_skills.insert_local_for_testing(id, skill, activation);
+        self.bundled_skills
+            .insert_local_for_testing(id, skill, activation);
     }
 
     /// Adds a bundled skill to a remote host's catalog, for testing purposes.

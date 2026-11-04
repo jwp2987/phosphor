@@ -18,7 +18,7 @@ use crate::global_resource_handles::GlobalResourceHandlesProvider;
 use crate::persistence::ModelEvent;
 use crate::{
     ai::{
-        agent::{conversation::AIConversationId, AIAgentActionId},
+        agent::{AIAgentActionId, conversation::AIConversationId},
         execution_profiles::profiles::AIExecutionProfilesModel,
     },
     appearance::Appearance,
@@ -29,8 +29,8 @@ use crate::{
     notebooks::file::MarkdownDisplayMode,
     settings::FontSettings,
     terminal::{
-        model::session::{active_session::ActiveSession, Session},
         TerminalView,
+        model::session::{Session, active_session::ActiveSession},
     },
     throttle::throttle,
 };
@@ -609,7 +609,9 @@ impl AIDocumentModel {
             return;
         }
 
-        log::info!("Applying persisted SQLite content for document {id} (content differs from conversation restoration)");
+        log::info!(
+            "Applying persisted SQLite content for document {id} (content differs from conversation restoration)"
+        );
         doc.editor.update(ctx, |editor, editor_ctx| {
             editor.reset_with_markdown(persisted_content, editor_ctx);
         });

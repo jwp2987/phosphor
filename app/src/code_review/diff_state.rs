@@ -3,7 +3,7 @@
 //! Some of the code in this module is adapted from GitHub Desktop, which is licensed under the MIT license,
 //! Copyright (c) GitHub, Inc.  See GITHUB-DESKTOP-LICENSE in this directory.
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -23,15 +23,15 @@ cfg_if::cfg_if! {
     }
 }
 use warpui::AppContext;
-use warpui::{r#async::SpawnedFutureHandle, ModelContext};
+use warpui::{ModelContext, r#async::SpawnedFutureHandle};
 
 use crate::code_review::diff_size_limits::DiffSize;
 use crate::features::FeatureFlag;
 #[cfg(feature = "local_fs")]
 use crate::util::git::get_pr_for_branch;
 use crate::util::git::{
-    detect_current_branch, detect_main_branch, get_unpushed_commits, run_git_command, Commit,
-    PrInfo,
+    Commit, PrInfo, detect_current_branch, detect_main_branch, get_unpushed_commits,
+    run_git_command,
 };
 
 use super::diff_size_limits::{MAX_DIFF_SIZE, UnrenderableReason, compute_diff_size};
@@ -1288,10 +1288,7 @@ impl LocalDiffStateModel {
     /// (`app/src/remote_server/server_model.rs`) calls it directly so the SSH
     /// path runs byte-identical git invocations to the local one.
     #[cfg(feature = "local_fs")]
-    pub(crate) async fn stage_changes_impl(
-        repo_path: &Path,
-        request: &StageRequest,
-    ) -> Result<()> {
+    pub(crate) async fn stage_changes_impl(repo_path: &Path, request: &StageRequest) -> Result<()> {
         match &request.target {
             StageTarget::Paths(paths) => {
                 log::debug!(
@@ -2024,9 +2021,15 @@ impl LocalDiffStateModel {
         } in changed_files
         {
             let is_binary = binary_files.contains(&file_path);
-            let mut file_diff =
-                Self::get_file_diff(repo_path, &file_path, &status, Some(staged), is_binary, None)
-                    .await?;
+            let mut file_diff = Self::get_file_diff(
+                repo_path,
+                &file_path,
+                &status,
+                Some(staged),
+                is_binary,
+                None,
+            )
+            .await?;
             // Never read or ship base content for binary files: it can't be
             // inline-rendered and, after lossy UTF-8 decoding, can balloon ~3x.
             let content_at_head = if is_binary {
@@ -2198,12 +2201,7 @@ impl LocalDiffStateModel {
         let is_binary = Self::is_file_binary(repo_path, file, commit).await?;
 
         let diff = Self::file_diff_for_path(
-            is_binary,
-            repo_path,
-            &file_path,
-            &status,
-            staged,
-            merge_base,
+            is_binary, repo_path, &file_path, &status, staged, merge_base,
         )
         .await?;
 
@@ -2696,7 +2694,10 @@ impl LocalDiffStateModel {
                             staged: FileStagedState::from_status_code(status_code),
                         });
                     } else {
-                        log::warn!("Invalid format for changed entry: '{token}' - expected at least 9 parts, got {}", parts.len());
+                        log::warn!(
+                            "Invalid format for changed entry: '{token}' - expected at least 9 parts, got {}",
+                            parts.len()
+                        );
                     }
                 }
                 '2' => {
@@ -2737,7 +2738,10 @@ impl LocalDiffStateModel {
                         });
                         i += 1; // Skip the old path token
                     } else {
-                        log::warn!("Invalid format for renamed/copied entry: '{token}' - expected at least 10 parts, got {}", parts.len());
+                        log::warn!(
+                            "Invalid format for renamed/copied entry: '{token}' - expected at least 10 parts, got {}",
+                            parts.len()
+                        );
                     }
                 }
                 'u' => {
@@ -2754,7 +2758,11 @@ impl LocalDiffStateModel {
                             staged: FileStagedState::Unstaged,
                         });
                     } else {
-                        log::warn!("Invalid format for unmerged entry: '{}' - expected at least 11 parts, got {}", token, parts.len());
+                        log::warn!(
+                            "Invalid format for unmerged entry: '{}' - expected at least 11 parts, got {}",
+                            token,
+                            parts.len()
+                        );
                     }
                 }
                 '?' => {
@@ -2768,7 +2776,9 @@ impl LocalDiffStateModel {
                             staged: FileStagedState::Unstaged,
                         });
                     } else {
-                        log::warn!("Invalid format for untracked entry: '{token}' - expected path after '? '");
+                        log::warn!(
+                            "Invalid format for untracked entry: '{token}' - expected path after '? '"
+                        );
                     }
                 }
                 '!' => {
@@ -3842,23 +3852,23 @@ impl DiffStateModel {
         ctx: &mut ModelContext<Self>,
     ) {
         match self {
-            Self::Local(m) => {
-                m.update(ctx, |local, ctx| local.set_diff_mode(mode, should_fetch_base, ctx))
-            }
-            Self::Remote(m) => {
-                m.update(ctx, |local, ctx| local.set_diff_mode(mode, should_fetch_base, ctx))
-            }
+            Self::Local(m) => m.update(ctx, |local, ctx| {
+                local.set_diff_mode(mode, should_fetch_base, ctx)
+            }),
+            Self::Remote(m) => m.update(ctx, |local, ctx| {
+                local.set_diff_mode(mode, should_fetch_base, ctx)
+            }),
         }
     }
 
     pub fn set_diff_mode_and_fetch_base(&mut self, mode: DiffMode, ctx: &mut ModelContext<Self>) {
         match self {
-            Self::Local(m) => {
-                m.update(ctx, |local, ctx| local.set_diff_mode_and_fetch_base(mode, ctx))
-            }
-            Self::Remote(m) => {
-                m.update(ctx, |local, ctx| local.set_diff_mode_and_fetch_base(mode, ctx))
-            }
+            Self::Local(m) => m.update(ctx, |local, ctx| {
+                local.set_diff_mode_and_fetch_base(mode, ctx)
+            }),
+            Self::Remote(m) => m.update(ctx, |local, ctx| {
+                local.set_diff_mode_and_fetch_base(mode, ctx)
+            }),
         }
     }
 
@@ -3868,12 +3878,12 @@ impl DiffStateModel {
         ctx: &mut ModelContext<Self>,
     ) {
         match self {
-            Self::Local(m) => {
-                m.update(ctx, |local, ctx| local.load_diffs_for_current_repo(should_fetch_base, ctx))
-            }
-            Self::Remote(m) => {
-                m.update(ctx, |local, ctx| local.load_diffs_for_current_repo(should_fetch_base, ctx))
-            }
+            Self::Local(m) => m.update(ctx, |local, ctx| {
+                local.load_diffs_for_current_repo(should_fetch_base, ctx)
+            }),
+            Self::Remote(m) => m.update(ctx, |local, ctx| {
+                local.load_diffs_for_current_repo(should_fetch_base, ctx)
+            }),
         }
     }
 
@@ -3985,9 +3995,7 @@ enum DiffStateRepositoryUpdate {
 /// reload against stale data, and a touched `.gitignore` can change which files
 /// belong in the diff at all, so it forces a full reload.
 #[cfg(feature = "local_fs")]
-pub(crate) fn classify_repository_update(
-    update: RepositoryUpdate,
-) -> Option<InvalidationBehavior> {
+pub(crate) fn classify_repository_update(update: RepositoryUpdate) -> Option<InvalidationBehavior> {
     // Refresh if there are file changes or if commit state has been updated
     if update.is_empty() {
         return None;
@@ -4101,7 +4109,7 @@ mod tests;
 /// introduced them was scoped to this file and `code_review_view.rs`.
 #[cfg(test)]
 mod hunk_span_tests {
-    use super::{hunk_covers_new_lines, hunk_new_line_span, DiffHunk, DiffLine, DiffLineType};
+    use super::{DiffHunk, DiffLine, DiffLineType, hunk_covers_new_lines, hunk_new_line_span};
 
     fn line(line_type: DiffLineType) -> DiffLine {
         DiffLine {

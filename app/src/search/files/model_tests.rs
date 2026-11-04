@@ -1,8 +1,8 @@
 use super::super::search_item::{FileSearchItem, FileSearchResult};
 use super::FileSearchModel;
 use fuzzy_match::FuzzyMatchResult;
-use repo_metadata::repositories::DetectedRepositories;
 use repo_metadata::RepoMetadataModel;
+use repo_metadata::repositories::DetectedRepositories;
 use warpui::{App, SingletonEntity};
 
 #[cfg(test)]

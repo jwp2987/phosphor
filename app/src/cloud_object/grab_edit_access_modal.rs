@@ -1,12 +1,12 @@
 use warpui::fonts::{Properties, Style, Weight};
 use warpui::platform::Cursor;
 use warpui::ui_components::button::ButtonVariant;
-use warpui::{elements::Element, AppContext, View};
+use warpui::{AppContext, View, elements::Element};
 use warpui::{Entity, SingletonEntity, TypedActionView, ViewContext};
 
 use crate::appearance::Appearance;
 use crate::ui_components::buttons::close_button;
-use crate::ui_components::dialog::{dialog_styles, Dialog};
+use crate::ui_components::dialog::{Dialog, dialog_styles};
 use warpui::elements::{Container, MouseStateHandle, Text};
 use warpui::ui_components::components::UiComponent;
 

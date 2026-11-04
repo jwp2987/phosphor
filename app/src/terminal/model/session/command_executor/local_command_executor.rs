@@ -1,7 +1,7 @@
 use super::{CommandExecutor, CommandOutput, ExecuteCommandOptions};
 use crate::safe_warn;
 use crate::terminal::shell::{Shell, ShellType};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use command::r#async::Command;
 use parking_lot::Mutex;
@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 #[cfg(unix)]
 fn kill_all_processes_in_process_group(pid: u32) -> Result<(), nix::Error> {
-    use nix::sys::signal::{kill, Signal};
+    use nix::sys::signal::{Signal, kill};
     use nix::unistd::Pid;
     // Killing a negative PID kills all processes in this process group
     kill(Pid::from_raw(-(pid as i32)), Signal::SIGKILL)
@@ -484,7 +484,12 @@ impl LocalCommandExecutor {
             }
             DirectPlan::FirstSuccess(first, second) => {
                 match self
-                    .run_direct_step(first, command, current_directory_path, environment_variables)
+                    .run_direct_step(
+                        first,
+                        command,
+                        current_directory_path,
+                        environment_variables,
+                    )
                     .await?
                 {
                     Ok(output) if output.success() => Some(Ok(output)),
@@ -501,14 +506,24 @@ impl LocalCommandExecutor {
             }
             DirectPlan::JoinedWithRecordSeparator(first, second) => {
                 let first_output = match self
-                    .run_direct_step(first, command, current_directory_path, environment_variables)
+                    .run_direct_step(
+                        first,
+                        command,
+                        current_directory_path,
+                        environment_variables,
+                    )
                     .await?
                 {
                     Ok(output) => output,
                     Err(error) => return Some(Err(error)),
                 };
                 let mut output = match self
-                    .run_direct_step(second, command, current_directory_path, environment_variables)
+                    .run_direct_step(
+                        second,
+                        command,
+                        current_directory_path,
+                        environment_variables,
+                    )
                     .await?
                 {
                     Ok(output) => output,

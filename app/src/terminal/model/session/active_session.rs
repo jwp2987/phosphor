@@ -6,10 +6,10 @@ use warpui::{AppContext, Entity, ModelContext, ModelHandle};
 use crate::{
     ai::execution_context::WarpAiExecutionContext,
     terminal::{
+        ShellLaunchData,
         model::session::SessionsEvent,
         model_events::{ModelEvent, ModelEventDispatcher},
         shell::ShellType,
-        ShellLaunchData,
     },
 };
 

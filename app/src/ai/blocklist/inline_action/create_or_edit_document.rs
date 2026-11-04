@@ -1,11 +1,11 @@
 use warpui::SingletonEntity;
 use warpui::{
+    AppContext, Element,
     elements::{
         Clipped, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Expanded, Flex,
         Hoverable, Icon, MouseStateHandle, ParentElement, Radius, Text,
     },
     platform::Cursor,
-    AppContext, Element,
 };
 
 use warp_core::ui::appearance::Appearance;

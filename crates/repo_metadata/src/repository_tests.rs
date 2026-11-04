@@ -11,8 +11,8 @@ use warpui::r#async::Timer;
 use warpui::{App, ModelContext};
 
 use super::{
-    merge_repository_updates, Repository, RepositorySubscriber, RepositorySubscription,
-    RepositoryWatchMode, TrackedRemoteRef,
+    Repository, RepositorySubscriber, RepositorySubscription, RepositoryWatchMode,
+    TrackedRemoteRef, merge_repository_updates,
 };
 use crate::repositories::stub_git_repository;
 use crate::watcher::DirectoryWatcher;
@@ -193,9 +193,10 @@ fn merge_repository_updates_preserves_remote_ref_updates() {
     merge_repository_updates(&mut acc, &incoming);
 
     assert!(acc.remote_ref_updated);
-    assert!(acc
-        .added
-        .contains(&TargetFile::new(PathBuf::from("/repo/file.txt"), false)));
+    assert!(
+        acc.added
+            .contains(&TargetFile::new(PathBuf::from("/repo/file.txt"), false))
+    );
 }
 
 // The four tests below are ported from upstream `d78ced530` ("Avoid Git probes for

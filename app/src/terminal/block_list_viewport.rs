@@ -5,9 +5,9 @@ use serde::{Deserialize, Serialize};
 use sum_tree::{Cursor, SeekBias};
 use warp_core::features::FeatureFlag;
 use warpui::{
+    AppContext, ModelHandle,
     elements::ClippedScrollStateHandle,
     units::{IntoLines, IntoPixels, Lines, Pixels},
-    AppContext, ModelHandle,
 };
 
 use crate::{
@@ -17,9 +17,10 @@ use crate::{
 use crate::{ai::blocklist::agent_view::AgentViewState, terminal::model::blocks::RichContentItem};
 
 use super::{
+    HEIGHT_FUDGE_FACTOR_LINES, SizeInfo,
     block_list_element::{
-        GridType, SnackbarHeader, SnackbarHeaderState, SnackbarPoint, VisibleItem,
-        BLOCK_HOVER_BUTTON_HEIGHT, SNACKBAR_HEADER_MAX_RATIO,
+        BLOCK_HOVER_BUTTON_HEIGHT, GridType, SNACKBAR_HEADER_MAX_RATIO, SnackbarHeader,
+        SnackbarHeaderState, SnackbarPoint, VisibleItem,
     },
     height_in_range_approx, heights_approx_gt, heights_approx_gte, heights_approx_lt,
     heights_approx_lte,
@@ -33,7 +34,6 @@ use super::{
         terminal_model::{BlockIndex, BlockSortDirection, WithinBlock},
     },
     view::BlockVisibilityMode,
-    SizeInfo, HEIGHT_FUDGE_FACTOR_LINES,
 };
 
 /// The topmost visible block and where it sat before a reflow, see

@@ -11,8 +11,8 @@ use warpui::App;
 #[cfg(unix)]
 use super::cli_agent_search_dirs;
 use super::{
-    build_diff_hunk_prompt, build_review_prompt, build_selection_line_range_prompt,
-    build_selection_substring_prompt, CLIAgent, PHOSPHOR_COLOR, UBER_TEAM_UID,
+    CLIAgent, PHOSPHOR_COLOR, UBER_TEAM_UID, build_diff_hunk_prompt, build_review_prompt,
+    build_selection_line_range_prompt, build_selection_substring_prompt,
 };
 use crate::ai::agent::{AgentReviewCommentBatch, DiffSetHunk};
 use crate::code::editor::line::EditorLineLocation;
@@ -641,8 +641,10 @@ fn test_phosphor_tui_matches_binaries_and_launchers() {
 fn test_phosphor_tui_matches_with_env_var_prefix() {
     // Env-var assignments before the command are skipped when an escape char is
     // provided (mirrors `CLIAgent::detect`).
-    assert!(CLIAgent::PhosphorTui
-        .matches_command("WARP_API_KEY=secret warp", Some(EscapeChar::Backslash),));
+    assert!(
+        CLIAgent::PhosphorTui
+            .matches_command("WARP_API_KEY=secret warp", Some(EscapeChar::Backslash),)
+    );
 }
 
 #[test]

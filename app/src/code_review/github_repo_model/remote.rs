@@ -27,7 +27,7 @@ use remote_server::manager::{RemoteServerManager, RemoteServerManagerEvent};
 use warpui::{Entity, ModelContext, SingletonEntity};
 
 use super::GitHubRepoEvent;
-use crate::code::buffer_location::{util_remote_path_to_buffer, RemotePath};
+use crate::code::buffer_location::{RemotePath, util_remote_path_to_buffer};
 use crate::remote_server::diff_state_proto::proto_to_pr_info;
 use crate::remote_server::git_status_proto::proto_to_repository_info;
 use crate::remote_server::proto;

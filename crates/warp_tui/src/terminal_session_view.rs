@@ -22,22 +22,21 @@ use warp::tui_export::{
     AgentConversationEntryId, AgentConversationListEntryState, AgentConversationsModel,
     AgentInteractionMetadata, AgentViewEntryOrigin, AgentViewState, Appearance, BlockId,
     BlockIndex, BlockType, BlocklistAIActionEvent, BlocklistAIActionModel, BlocklistAIContextModel,
-    BlocklistAIController, BlocklistAIHistoryEvent, BlocklistAIHistoryModel,
-    BlocklistAIInputModel, CLISubagentController, CLISubagentEvent, CLISubagentTarget,
-    COMMAND_REGISTRY, CancellationReason, ChangelogModel, ChangelogRequestType, ClientProfileId,
+    BlocklistAIController, BlocklistAIHistoryEvent, BlocklistAIHistoryModel, BlocklistAIInputModel,
+    CLISubagentController, CLISubagentEvent, CLISubagentTarget, COMMAND_REGISTRY,
+    CancellationReason, ChangelogModel, ChangelogRequestType, ClientProfileId,
     CommandExecutionSource, ConversationFileExport, ConversationSelection,
     ConversationSelectionHandle, ExecuteCommandEvent, FORK_PREFIX, FileDiff, ForkConversationError,
-    GitHubRepoModel,
-    GitRepoStatusModel, LLMId, LLMPreferences,
-    LLMPreferencesEvent, LOCAL_SKILLS_REMOTE_EXECUTION_ERROR_MESSAGE, LinkedWorkflowData,
-    LoadedConversationData, ModelEvent, PRE_REWIND_PREFIX, ParsedSlashCommandInput,
-    PersistenceWriter, PtyIntent, PtyIntentEvent, RepoDetectionSessionType, RepoDetectionSource,
-    ServerConversationToken, SessionsEvent, ShellCommandExecutorEvent, SizeInfo, SizeUpdate,
-    SkillReference, SlashCommandKind, SlashCommandSelectionBehavior, StaticCommand, TerminalModel,
-    TerminalSurface, TerminalSurfaceInit, TuiMcpAction, TuiMcpManager, TuiMcpServerId,
-    TuiMcpVariableValue, TuiSlashCommandDataSource, TuiSlashCommandDataSourceArgs,
-    TuiUpArrowHistoryItemKind, TuiZeroStateDataSource, UsageCostOutcome, UserTakeOverReason,
-    WAKEUP_THROTTLE_PERIOD, WarpConfig, WarpConfigUpdateEvent, block_context_from_terminal_model,
+    GitHubRepoModel, GitRepoStatusModel, LLMId, LLMPreferences, LLMPreferencesEvent,
+    LOCAL_SKILLS_REMOTE_EXECUTION_ERROR_MESSAGE, LinkedWorkflowData, LoadedConversationData,
+    ModelEvent, PRE_REWIND_PREFIX, ParsedSlashCommandInput, PersistenceWriter, PtyIntent,
+    PtyIntentEvent, RepoDetectionSessionType, RepoDetectionSource, ServerConversationToken,
+    SessionsEvent, ShellCommandExecutorEvent, SizeInfo, SizeUpdate, SkillReference,
+    SlashCommandKind, SlashCommandSelectionBehavior, StaticCommand, TerminalModel, TerminalSurface,
+    TerminalSurfaceInit, TuiMcpAction, TuiMcpManager, TuiMcpServerId, TuiMcpVariableValue,
+    TuiSlashCommandDataSource, TuiSlashCommandDataSourceArgs, TuiUpArrowHistoryItemKind,
+    TuiZeroStateDataSource, UsageCostOutcome, UserTakeOverReason, WAKEUP_THROTTLE_PERIOD,
+    WarpConfig, WarpConfigUpdateEvent, block_context_from_terminal_model,
     build_slash_command_mixer, context_usage_report, conversation_cost_report,
     detect_possible_git_repo, export_conversation_markdown, loaded_subtree_rollup, log_out_tui,
     maybe_build_ai_query_upsert_event, prepare_conversation_block_restoration,
@@ -94,10 +93,10 @@ use crate::keybindings::{
     KEYBOARD_ENHANCEMENT_AVAILABLE_FLAG, PLAN_TOGGLE_AVAILABLE_FLAG, PLAN_TOGGLE_BINDING_NAME,
     TUI_BINDING_GROUP, binding_hint,
 };
+use crate::link::TuiLink;
 use crate::mcp_install_flow::{
     TuiMcpInstallFlowAction, TuiMcpInstallFlowEvent, TuiMcpInstallFlowModel,
 };
-use crate::link::TuiLink;
 use crate::mcp_menu::{TuiMcpMenuEvent, TuiMcpMenuModel};
 use crate::orchestration_model::TuiOrchestrationModel;
 use crate::orchestration_tab_bar::{
@@ -436,9 +435,6 @@ fn rewind_outcome_hint(outcomes: &[FileRevertOutcome]) -> (String, bool) {
         )
     }
 }
-
-
-
 
 /// The Enter-key hint for an MCP row's primary action, or `None` when the
 /// action is not one Enter performs from the menu.
@@ -3447,9 +3443,6 @@ impl TuiTerminalSessionView {
         .finish();
         render_warping_indicator_row(label, elapsed, auto_approve, ctx)
     }
-
-
-
 
     /// Mirrors the GUI `/cost` eligibility checks, then toggles the selected
     /// conversation's completed-response summary.

@@ -4,10 +4,10 @@
 //! suggests an action, the user accepts/rejects it in the UI, and the executor writes the
 //! result back once the user decides. No server dependency.
 
+use agent_proto as api;
 use anyhow::Result;
 use serde::Deserialize;
-use serde_json::{json, Value};
-use agent_proto as api;
+use serde_json::{Value, json};
 
 use super::OpenAiTool;
 

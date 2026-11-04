@@ -8,9 +8,9 @@ use simple_logger::SimpleLogger;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::ai::mcp::templatable::TemplatableMCPServerObject;
 use crate::ai::mcp::FileBasedMCPManager;
-use crate::ai::mcp::{templatable_installation::TemplatableMCPServerInstallation, MCPServerState};
+use crate::ai::mcp::templatable::TemplatableMCPServerObject;
+use crate::ai::mcp::{MCPServerState, templatable_installation::TemplatableMCPServerInstallation};
 use futures_util::stream::AbortHandle;
 use uuid::Uuid;
 use warpui::ModelSpawner;

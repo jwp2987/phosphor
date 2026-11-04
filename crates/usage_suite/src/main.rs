@@ -21,8 +21,8 @@ use std::time::Instant;
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
 
-use manifest::{all_scenarios, Scenario, Tag, GUI_SCENARIOS, TUI_SCENARIOS};
-use report::{print_human_table, print_ndjson, ScenarioReport, Status, Summary};
+use manifest::{GUI_SCENARIOS, Scenario, TUI_SCENARIOS, Tag, all_scenarios};
+use report::{ScenarioReport, Status, Summary, print_human_table, print_ndjson};
 
 /// `warpui_core::integration::driver::RERUN_EXIT_CODE` — the exit code the
 /// `integration` binary uses to signal "flaked, retry" (see
@@ -197,11 +197,7 @@ fn has_desktop_session() -> bool {
     // Non-EMPTY, not merely present: `DISPLAY=` exports an empty value, and
     // `var_os(..).is_some()` is true for it — which would report a desktop on
     // a host that has none. Caught by testing the negative case.
-    let set = |k: &str| {
-        std::env::var_os(k)
-            .map(|v| !v.is_empty())
-            .unwrap_or(false)
-    };
+    let set = |k: &str| std::env::var_os(k).map(|v| !v.is_empty()).unwrap_or(false);
     set("DISPLAY") || set("WAYLAND_DISPLAY")
 }
 
@@ -556,7 +552,13 @@ fn discover_tui_tests_nextest() -> Result<Vec<String>> {
 fn discover_tui_tests_cargo_test() -> Result<Vec<String>> {
     let output = Command::new("cargo")
         .args([
-            "test", "-p", "warp_tui", "--lib", "usage_tui_", "--", "--list",
+            "test",
+            "-p",
+            "warp_tui",
+            "--lib",
+            "usage_tui_",
+            "--",
+            "--list",
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -608,10 +610,7 @@ fn run_tui_tests_nextest_capturing() -> (bool, String) {
 }
 
 fn run_tui_tests_cargo_test() -> std::result::Result<(), String> {
-    run_and_capture(
-        "cargo",
-        &["test", "-p", "warp_tui", "--lib", "usage_tui_"],
-    )
+    run_and_capture("cargo", &["test", "-p", "warp_tui", "--lib", "usage_tui_"])
 }
 
 /// Strips ANSI SGR escapes so nextest's coloured output can be parsed.
@@ -942,7 +941,11 @@ mod parse_tests {
         // "2 passed, 1 failed" contains neither a usage_tui_ name nor a
         // PASS/FAIL token in test-result position; it must not add entries.
         let got = parse_nextest_outcomes(SAMPLE);
-        assert_eq!(got.len(), 3, "expected exactly the 3 real tests, got {got:?}");
+        assert_eq!(
+            got.len(),
+            3,
+            "expected exactly the 3 real tests, got {got:?}"
+        );
     }
 
     #[test]
@@ -951,7 +954,10 @@ mod parse_tests {
             "  TRY 1 FAIL [ 0.1s] warp_tui usage_smoke_tests::usage_tui_flaky\n",
             "        PASS [ 0.1s] warp_tui usage_smoke_tests::usage_tui_flaky\n",
         );
-        assert_eq!(parse_nextest_outcomes(retried).get("usage_tui_flaky"), Some(&true));
+        assert_eq!(
+            parse_nextest_outcomes(retried).get("usage_tui_flaky"),
+            Some(&true)
+        );
     }
 
     /// A batch run where one of six TUI tests fails, in nextest's real

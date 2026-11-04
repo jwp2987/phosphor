@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use crate::elements::{Highlight, HighlightedRange, DEFAULT_UI_LINE_HEIGHT_RATIO};
+use crate::elements::{DEFAULT_UI_LINE_HEIGHT_RATIO, Highlight, HighlightedRange};
 use crate::{
     elements::{Container, Element, Text},
     fonts::Properties,

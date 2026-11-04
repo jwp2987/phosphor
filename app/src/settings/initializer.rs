@@ -155,9 +155,11 @@ impl SettingsInitializer {
 
                 let was_global_autodetection_enabled =
                     *ai_settings.ai_autodetection_enabled_internal;
-                report_if_error!(ai_settings
-                    .nld_in_terminal_enabled_internal
-                    .set_value(was_global_autodetection_enabled, ctx));
+                report_if_error!(
+                    ai_settings
+                        .nld_in_terminal_enabled_internal
+                        .set_value(was_global_autodetection_enabled, ctx)
+                );
             });
         }
 
@@ -201,9 +203,11 @@ impl SettingsInitializer {
                     == Some(true);
 
                 if old_value_was_true {
-                    report_if_error!(ai_settings
-                        .thinking_display_mode
-                        .set_value(ThinkingDisplayMode::AlwaysShow, ctx));
+                    report_if_error!(
+                        ai_settings
+                            .thinking_display_mode
+                            .set_value(ThinkingDisplayMode::AlwaysShow, ctx)
+                    );
                 }
 
                 // Clean up the old key.
@@ -235,7 +239,9 @@ mod tests {
 
     use super::SettingsInitializer;
     use crate::settings::input::InputBoxType;
-    use crate::settings::{AISettings, FontSettings, InputSettings, PrivacySettings, ThemeSettings};
+    use crate::settings::{
+        AISettings, FontSettings, InputSettings, PrivacySettings, ThemeSettings,
+    };
     use crate::terminal::session_settings::SessionSettings;
     use crate::test_util::settings::initialize_settings_for_tests;
 
@@ -325,7 +331,9 @@ mod tests {
                 // defaults to `false`, so only the "explicitly set" half of this can
                 // ever fail -- which is exactly the half that matters.
                 assert!(
-                    !SessionSettings::as_ref(ctx).honor_ps1.is_value_explicitly_set(),
+                    !SessionSettings::as_ref(ctx)
+                        .honor_ps1
+                        .is_value_explicitly_set(),
                     "startup must not write honor_ps1: it was the Universal-input \
                      override's follow-up, and writing the value it already has would \
                      still pin it"
@@ -504,9 +512,11 @@ mod tests {
             app.read(|ctx| {
                 let ai_settings = AISettings::as_ref(ctx);
                 assert!(*ai_settings.nld_in_terminal_enabled_internal);
-                assert!(ai_settings
-                    .nld_in_terminal_enabled_internal
-                    .is_value_explicitly_set());
+                assert!(
+                    ai_settings
+                        .nld_in_terminal_enabled_internal
+                        .is_value_explicitly_set()
+                );
             });
         });
     }

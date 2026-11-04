@@ -1409,10 +1409,7 @@ fn index_build_skips_a_subtree_that_is_not_fully_embedded() {
                 },
                 IntermediateNode {
                     hash: parent,
-                    children: vec![
-                        NodeHash::from(embedded.clone()),
-                        NodeHash::from(pending),
-                    ],
+                    children: vec![NodeHash::from(embedded.clone()), NodeHash::from(pending)],
                 },
             ],
         )

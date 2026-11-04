@@ -8,11 +8,11 @@ pub use text_layout_system::TextLayoutSystem;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::{platform, rendering, scene::GlyphKey, SingletonEntity};
+use crate::{SingletonEntity, platform, rendering, scene::GlyphKey};
 use anyhow::{Error, Result};
 use dashmap::{
-    mapref::{entry::Entry, one::Ref},
     DashMap,
+    mapref::{entry::Entry, one::Ref},
 };
 
 use enum_iterator::Sequence;
@@ -21,7 +21,7 @@ use ordered_float::OrderedFloat;
 use pathfinder_geometry::vector::Vector2I;
 use pathfinder_geometry::{
     rect::{RectF, RectI},
-    vector::{vec2f, Vector2F},
+    vector::{Vector2F, vec2f},
 };
 use serde::{Deserialize, Serialize};
 
@@ -121,7 +121,7 @@ impl CustomWeightConversion for CustomWeight {
     }
 }
 
-use {futures_util::future::BoxFuture, futures_util::FutureExt};
+use {futures_util::FutureExt, futures_util::future::BoxFuture};
 
 pub(crate) use external_fallback::{FontBytes, RequestedFallbackFontSource};
 

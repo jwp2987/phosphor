@@ -58,7 +58,9 @@ use std::sync::Mutex;
 
 use ai::index::full_source_code_embedding::EmbeddingConfig;
 use ai::index::full_source_code_embedding::Error as IndexError;
-use ai::index::full_source_code_embedding::local_store_client::{EmbeddingProvider, RerankProvider};
+use ai::index::full_source_code_embedding::local_store_client::{
+    EmbeddingProvider, RerankProvider,
+};
 use async_trait::async_trait;
 use http_client::Client;
 use serde::{Deserialize, Serialize};
@@ -886,12 +888,11 @@ impl RerankProvider for HttpRerankProvider {
             IndexError::Other(anyhow::anyhow!(error).context("failed to parse rerank response"))
         })?;
 
-        let data = parsed
-            .data
-            .or(parsed.results)
-            .ok_or_else(|| IndexError::Other(anyhow::anyhow!(
+        let data = parsed.data.or(parsed.results).ok_or_else(|| {
+            IndexError::Other(anyhow::anyhow!(
                 "rerank response from {url} has neither a `data` nor a `results` list"
-            )))?;
+            ))
+        })?;
         if data.len() != expected {
             return Err(IndexError::Other(anyhow::anyhow!(
                 "rerank provider returned {} scores for {expected} documents",

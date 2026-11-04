@@ -7,8 +7,8 @@ use string_offset::ByteOffset;
 use warp_completer::completer::SuggestionTypeName;
 use warp_completer::signatures::CommandRegistry;
 use warp_core::ui::theme::AnsiColorIdentifier;
-use warpui::r#async::SpawnedFutureHandle;
 use warpui::ViewHandle;
+use warpui::r#async::SpawnedFutureHandle;
 use warpui::{Entity, ModelContext, SingletonEntity};
 
 use crate::appearance::Appearance;
@@ -16,7 +16,7 @@ use crate::completer::SessionAgnosticContext;
 use crate::debounce::debounce;
 use crate::editor::{EditorView, TextStyleOperation};
 use crate::terminal::input::decorations::{
-    parse_current_commands_and_tokens, ParsedTokenData, ParsedTokensSnapshot,
+    ParsedTokenData, ParsedTokensSnapshot, parse_current_commands_and_tokens,
 };
 
 /// Debounce for syntax highlighting workflow

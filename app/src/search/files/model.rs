@@ -1,7 +1,7 @@
 #![cfg_attr(not(feature = "local_fs"), allow(dead_code))]
 use fuzzy_match::{
-    contains_wildcards, match_indices_case_insensitive, match_wildcard_pattern_case_insensitive,
-    FuzzyMatchResult,
+    FuzzyMatchResult, contains_wildcards, match_indices_case_insensitive,
+    match_wildcard_pattern_case_insensitive,
 };
 use std::sync::Arc;
 use std::{

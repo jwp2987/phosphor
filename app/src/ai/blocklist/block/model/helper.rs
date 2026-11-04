@@ -1,15 +1,15 @@
 use warpui::{AppContext, EntityId, ModelHandle, SingletonEntity};
 
 use crate::{
+    BlocklistAIHistoryModel,
     ai::{
         agent::{
-            conversation::AIConversation, AIAgentAction, AIAgentActionId, AIAgentActionType,
-            AIAgentInput, AIAgentOutputMessageType, MessageId, SummarizationType,
+            AIAgentAction, AIAgentActionId, AIAgentActionType, AIAgentInput,
+            AIAgentOutputMessageType, MessageId, SummarizationType, conversation::AIConversation,
         },
         blocklist::BlocklistAIActionModel,
         byop_compaction::marker::{CompactionMarker, SummaryStreamStatus, compaction_marker},
     },
-    BlocklistAIHistoryModel,
 };
 
 use super::{AIBlockModel, AIBlockOutputStatus};
@@ -77,37 +77,39 @@ impl<T: ?Sized + AIBlockModel> AIBlockModelHelper for T {
     }
 
     fn contains_create_document_action(&self, app: &AppContext) -> bool {
-        match self.status(app).output_to_render() { Some(output) => {
-            let output = output.get();
-            output.messages.iter().any(|m| {
-                matches!(
-                    m.message,
-                    AIAgentOutputMessageType::Action(AIAgentAction {
-                        action: AIAgentActionType::CreateDocuments { .. },
-                        ..
-                    })
-                )
-            })
-        } _ => {
-            false
-        }}
+        match self.status(app).output_to_render() {
+            Some(output) => {
+                let output = output.get();
+                output.messages.iter().any(|m| {
+                    matches!(
+                        m.message,
+                        AIAgentOutputMessageType::Action(AIAgentAction {
+                            action: AIAgentActionType::CreateDocuments { .. },
+                            ..
+                        })
+                    )
+                })
+            }
+            _ => false,
+        }
     }
 
     fn contains_update_document_action(&self, app: &AppContext) -> bool {
-        match self.status(app).output_to_render() { Some(output) => {
-            let output = output.get();
-            output.messages.iter().any(|m| {
-                matches!(
-                    m.message,
-                    AIAgentOutputMessageType::Action(AIAgentAction {
-                        action: AIAgentActionType::EditDocuments { .. },
-                        ..
-                    })
-                )
-            })
-        } _ => {
-            false
-        }}
+        match self.status(app).output_to_render() {
+            Some(output) => {
+                let output = output.get();
+                output.messages.iter().any(|m| {
+                    matches!(
+                        m.message,
+                        AIAgentOutputMessageType::Action(AIAgentAction {
+                            action: AIAgentActionType::EditDocuments { .. },
+                            ..
+                        })
+                    )
+                })
+            }
+            _ => false,
+        }
     }
 
     fn is_latest_non_passive_exchange_in_root_task(&self, app: &AppContext) -> bool {

@@ -3,9 +3,9 @@ use std::sync::Arc;
 use parking_lot::FairMutex;
 use warp::tui_export::{
     AIConversationAutoexecuteMode, AIConversationId, AgentConversationListEntryState,
-    AgentRunDisplayStatus, AgentViewEntryOrigin, BlocklistAIHistoryEvent, BlocklistAIHistoryModel,
-    ConversationSelection, ConversationSelectionEvent, ConversationSelectionHandle, Harness,
-    TerminalModel, AgentViewState, register_tui_session_view_test_singletons,
+    AgentRunDisplayStatus, AgentViewEntryOrigin, AgentViewState, BlocklistAIHistoryEvent,
+    BlocklistAIHistoryModel, ConversationSelection, ConversationSelectionEvent,
+    ConversationSelectionHandle, Harness, TerminalModel, register_tui_session_view_test_singletons,
 };
 use warp_core::execution_mode::{AppExecutionMode, ExecutionMode};
 use warpui::{App, EntityId, ModelHandle, SingletonEntity};

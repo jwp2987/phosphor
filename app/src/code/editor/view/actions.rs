@@ -27,12 +27,12 @@ use warp_editor::{
 };
 use warp_util::user_input::UserInput;
 use warpui::{
+    AppContext, TypedActionView, ViewContext, WeakViewHandle,
     actions::StandardAction,
     elements::Axis,
     event::ModifiersState,
     keymap::{EditableBinding, FixedBinding, Keystroke, PerPlatformKeystroke},
     units::Pixels,
-    AppContext, TypedActionView, ViewContext, WeakViewHandle,
 };
 
 /// Limit the keybindings that conflict with the Agent Mode embedded editor.

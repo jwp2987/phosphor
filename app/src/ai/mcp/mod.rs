@@ -6,17 +6,17 @@ use std::path::{Path, PathBuf};
 use crate::persistence::model::MCPEnvironmentVariables;
 use crate::{
     cloud_object::{
+        GenericStoredObject, GenericStringObjectFormat, GenericStringObjectUniqueKey,
+        JsonObjectType,
         model::{
             generic_string_model::{GenericStringModel, GenericStringObjectId, StringModel},
             json_model::{JsonModel, JsonSerializer},
             persistence::ObjectStoreModel,
         },
-        GenericStoredObject, GenericStringObjectFormat, GenericStringObjectUniqueKey,
-        JsonObjectType,
     },
     drive::{
-        items::{mcp_server::WarpDriveMCPServer, WarpDriveItem},
         ObjectTypeAndId,
+        items::{WarpDriveItem, mcp_server::WarpDriveMCPServer},
     },
     server::ids::SyncId,
 };
@@ -24,8 +24,8 @@ use diesel::{QueryDsl, RunQueryDsl, SqliteConnection};
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
-use warp_core::ui::appearance::Appearance;
 use warp_core::ui::Icon;
+use warp_core::ui::appearance::Appearance;
 
 pub mod app_exit;
 pub mod manager;
@@ -142,7 +142,7 @@ pub fn mcp_provider_from_file_path(file_path: &Path) -> Option<MCPProvider> {
 
 #[cfg(test)]
 mod tests {
-    use super::{mcp_provider_from_file_path, MCPProvider};
+    use super::{MCPProvider, mcp_provider_from_file_path};
 
     #[test]
     fn mcp_provider_from_file_path_recognizes_warp_home_path() {

@@ -1,9 +1,6 @@
 use std::borrow::Cow;
 
-use warp_core::ui::{
-    appearance::Appearance,
-    theme::color::internal_colors,
-};
+use warp_core::ui::{appearance::Appearance, theme::color::internal_colors};
 use warpui::{
     color::ColorU,
     elements::{CornerRadius, Radius},

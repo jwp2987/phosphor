@@ -485,7 +485,10 @@ fn revert_refuses_when_line_endings_were_converted_after_the_accept() {
             outcomes,
             vec![FileRevertOutcome::Refused { path: path.clone() }]
         );
-        assert_eq!(fs::read_to_string(&path).unwrap(), "one\r\nTWO\r\nthree\r\n");
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "one\r\nTWO\r\nthree\r\n"
+        );
     });
 }
 

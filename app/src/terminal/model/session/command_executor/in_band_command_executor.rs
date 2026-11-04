@@ -1,8 +1,8 @@
 use std::any::Any;
 use std::cmp::min;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::{collections::VecDeque, fmt};
 
 use anyhow::Result;
@@ -20,10 +20,10 @@ use crate::terminal::event::ExecutedExecutorCommandEvent;
 use crate::terminal::shell::{Shell, ShellType};
 use warp_util::on_cancel::OnCancelFutureExt;
 
-use crate::terminal::model::session::command_executor::{
-    shared, CommandExecutor, ExecutorCommandEvent,
-};
 use crate::terminal::SizeInfo;
+use crate::terminal::model::session::command_executor::{
+    CommandExecutor, ExecutorCommandEvent, shared,
+};
 use warp_completer::completer::{CommandExitStatus, CommandOutput};
 
 use super::ExecuteCommandOptions;
@@ -291,7 +291,11 @@ impl InBandCommandExecutor {
                         }
                     }
                 } else {
-                    log::warn!("Cached in-band command ID {} does not match ID of executed in-band command output {}", cmd.id, &event.command_id);
+                    log::warn!(
+                        "Cached in-band command ID {} does not match ID of executed in-band command output {}",
+                        cmd.id,
+                        &event.command_id
+                    );
                     // If the command event that we received is not for the current running command,
                     // we need to restore the command as the currently running command.
                     *current_command = Some(cmd);

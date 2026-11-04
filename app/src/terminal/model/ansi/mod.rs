@@ -31,7 +31,7 @@ use crate::terminal::model::index::VisibleRow;
 use crate::terminal::model::iterm_image::parse_iterm_image_metadata;
 
 use crate::terminal::model::tmux::{
-    commands::{parse_command, TmuxCommandResponse},
+    commands::{TmuxCommandResponse, parse_command},
     format_input,
     parser::{TmuxControlModeHandler, TmuxControlModeParser, TmuxMessage},
 };
@@ -51,7 +51,7 @@ use std::{io, str};
 use vte::{Params, Parser as VteParser, Perform as VtePerform};
 use warpui::color::ColorU;
 
-use super::kitty::{parse_kitty_chunk, MAX_KITTY_BASE64_BYTES};
+use super::kitty::{MAX_KITTY_BASE64_BYTES, parse_kitty_chunk};
 use super::terminal_model::TmuxInstallationState;
 
 /// Marks an OSC as one that is sent by Zap logic registered in the shell.
@@ -730,11 +730,14 @@ impl<'a, H: Handler + 'a, W: io::Write> Performer<'a, H, W> {
                 self.handler.remote_warpification_is_unavailable(value)
             }
             Ok(DProtoHook::SshTmuxInstaller { value, .. }) => {
-                match TmuxInstallationState::from_str(&value) { Ok(tmux_installation) => {
-                    self.handler.notify_ssh_tmux_is_installed(tmux_installation)
-                } _ => {
-                    log::error!("Received invalid SSH tmux installer value: '{value}'");
-                }}
+                match TmuxInstallationState::from_str(&value) {
+                    Ok(tmux_installation) => {
+                        self.handler.notify_ssh_tmux_is_installed(tmux_installation)
+                    }
+                    _ => {
+                        log::error!("Received invalid SSH tmux installer value: '{value}'");
+                    }
+                }
             }
             Ok(DProtoHook::TmuxInstallFailed { value, .. }) => {
                 self.handler.tmux_install_failed(value)
@@ -1316,7 +1319,9 @@ where
             // Received a Zap OSC used for in-band generators.
             WARP_IN_BAND_GENERATOR_OSC_MARKER => match params.get(1) {
                 Some(&WARP_IN_BAND_GENERATOR_START_BYTE) => {
-                    log::info!("Received a Phosphor OSC marker for starting in-band command output.");
+                    log::info!(
+                        "Received a Phosphor OSC marker for starting in-band command output."
+                    );
                     self.handler.start_in_band_command_output();
                 }
                 Some(&WARP_IN_BAND_GENERATOR_END_BYTE) => {
@@ -1391,7 +1396,9 @@ where
                         .map(|osc_data| String::from_utf8_lossy(osc_data))
                         .and_then(|format| CompletionsShellData::from_format_type(&format))
                     else {
-                        log::warn!("Phosphor start completions OSC marker contained invalid format.");
+                        log::warn!(
+                            "Phosphor start completions OSC marker contained invalid format."
+                        );
                         return;
                     };
                     self.handler.start_completions_output(format);
@@ -1445,7 +1452,9 @@ where
                             );
                         }
                         _ => {
-                            log::warn!("Invalid Phosphor OSC marker parameter for completions match metadata: {parameter}");
+                            log::warn!(
+                                "Invalid Phosphor OSC marker parameter for completions match metadata: {parameter}"
+                            );
                         }
                     }
                 }
@@ -1453,7 +1462,9 @@ where
                     self.handler.send_completions_prompt();
                 }
                 _ => {
-                    log::warn!("Received a Phosphor OSC completions marker missing required param.");
+                    log::warn!(
+                        "Received a Phosphor OSC completions marker missing required param."
+                    );
                 }
             },
 
@@ -1832,7 +1843,8 @@ where
             // The dropped sequence may have been a chunk of an in-progress
             // kitty transmission; abandon it so the next `G` APC doesn't get
             // appended to a stale message.
-            self.handler.discard_kitty_action_receiving(&mut self.writer);
+            self.handler
+                .discard_kitty_action_receiving(&mut self.writer);
             return;
         }
         let first_byte = match self.state.apc_data.first() {
@@ -1948,7 +1960,9 @@ impl<'a, H: Handler + 'a, W: io::Write> TmuxPerformer<'a, H, W> {
         );
 
         let PrimaryPaneState::Pending { pane_output_map } = previous_pane_state else {
-            log::error!("Received primary pane initialization message after primary pane was already initialized!");
+            log::error!(
+                "Received primary pane initialization message after primary pane was already initialized!"
+            );
             return;
         };
 

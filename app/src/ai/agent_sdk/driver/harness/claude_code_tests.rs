@@ -733,16 +733,20 @@ fn prepare_claude_environment_config_without_config_dir_uses_home_global_config(
     prepare_claude_environment_config(&working_dir, &HashMap::new()).unwrap();
 
     assert!(home_dir.path().join(CLAUDE_JSON_FILE_NAME).exists());
-    assert!(home_dir
-        .path()
-        .join(".claude")
-        .join(CLAUDE_SETTINGS_FILE_NAME)
-        .exists());
-    assert!(!home_dir
-        .path()
-        .join(".claude")
-        .join(CLAUDE_JSON_FILE_NAME)
-        .exists());
+    assert!(
+        home_dir
+            .path()
+            .join(".claude")
+            .join(CLAUDE_SETTINGS_FILE_NAME)
+            .exists()
+    );
+    assert!(
+        !home_dir
+            .path()
+            .join(".claude")
+            .join(CLAUDE_JSON_FILE_NAME)
+            .exists()
+    );
 
     match old_home {
         // TODO: Audit that the environment access only happens in single-threaded code.
@@ -774,14 +778,18 @@ fn prepare_claude_environment_config_with_config_dir_uses_dir_global_config() {
     // Adaptation: see the sibling test — secrets map instead of resolved env vars.
     prepare_claude_environment_config(&working_dir, &HashMap::new()).unwrap();
 
-    assert!(claude_config_dir
-        .path()
-        .join(CLAUDE_JSON_FILE_NAME)
-        .exists());
-    assert!(claude_config_dir
-        .path()
-        .join(CLAUDE_SETTINGS_FILE_NAME)
-        .exists());
+    assert!(
+        claude_config_dir
+            .path()
+            .join(CLAUDE_JSON_FILE_NAME)
+            .exists()
+    );
+    assert!(
+        claude_config_dir
+            .path()
+            .join(CLAUDE_SETTINGS_FILE_NAME)
+            .exists()
+    );
     assert!(!home_dir.path().join(CLAUDE_JSON_FILE_NAME).exists());
 
     match old_home {

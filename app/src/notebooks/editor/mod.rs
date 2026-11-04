@@ -11,7 +11,7 @@ use warp_editor::{
     },
     render::model::{
         BrokenLinkStyle, CheckBoxStyle, EmbeddedItem, HorizontalRuleStyle, InlineCodeStyle,
-        ParagraphStyles, RichTextStyles, TableStyle, PARAGRAPH_MIN_HEIGHT,
+        PARAGRAPH_MIN_HEIGHT, ParagraphStyles, RichTextStyles, TableStyle,
     },
 };
 use warp_util::user_input::UserInput;
@@ -20,7 +20,7 @@ use warpui::{elements::Border, fonts::FamilyId, ui_components::checkbox::HOVER_B
 use crate::{
     appearance::Appearance,
     notebooks::editor::embedded_item::EmbeddedWorkflow,
-    settings::{derived_notebook_font_size, FontSettings},
+    settings::{FontSettings, derived_notebook_font_size},
     themes::theme::Fill,
     ui_components::icons::Icon,
     util::color::{ContrastingColor, MinimumAllowedContrast},

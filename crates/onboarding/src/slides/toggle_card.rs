@@ -3,6 +3,7 @@ use warp_core::ui::theme::Fill;
 use warp_core::ui::{appearance::Appearance, theme::color::internal_colors};
 use warpui::prelude::Align;
 use warpui::{
+    AppContext, Element,
     elements::{
         Border, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Flex,
         FormattedTextElement, Hoverable, MainAxisAlignment, MainAxisSize, MouseStateHandle,
@@ -12,7 +13,6 @@ use warpui::{
     platform::Cursor,
     presenter::EventContext,
     text_layout::TextAlignment,
-    AppContext, Element,
 };
 
 pub(super) type ClickCallback = Box<dyn FnMut(&mut EventContext, &AppContext, Vector2F) + 'static>;

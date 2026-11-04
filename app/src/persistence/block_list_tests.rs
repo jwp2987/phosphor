@@ -291,7 +291,10 @@ fn process_ai_queries_for_nld_history_match_filters_empty_and_whitespace_inputs_
         with_start_ts(make_query("older prompt"), t0),
         with_start_ts(make_query("   "), t0 + chrono::Duration::seconds(1)),
         with_start_ts(make_empty_input_query(), t0 + chrono::Duration::seconds(2)),
-        with_start_ts(make_query("newer prompt"), t0 + chrono::Duration::seconds(3)),
+        with_start_ts(
+            make_query("newer prompt"),
+            t0 + chrono::Duration::seconds(3),
+        ),
     ] {
         super::upsert_ai_query_with_limit(&mut conn, query, 10).expect("upsert should succeed");
     }

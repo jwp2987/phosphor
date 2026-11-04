@@ -13,7 +13,7 @@ use super::{
 use crate::event::{DispatchedEvent, ModifiersState};
 use crate::text::word_boundaries::WordBoundariesPolicy;
 use crate::text::{IsRect, SelectionDirection, SelectionType};
-use pathfinder_geometry::vector::{vec2f, Vector2F};
+use pathfinder_geometry::vector::{Vector2F, vec2f};
 
 use lazy_static::lazy_static;
 use std::ops::Range;

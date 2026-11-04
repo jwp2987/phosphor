@@ -3,8 +3,8 @@ use chrono::{DateTime, Local};
 use std::path::PathBuf;
 
 use super::{
-    comment::ImportedCommentDetails, PendingImportedReviewComment,
-    PendingImportedReviewCommentTarget,
+    PendingImportedReviewComment, PendingImportedReviewCommentTarget,
+    comment::ImportedCommentDetails,
 };
 use crate::code_review::comments::diff_hunk_parser::parse_diff_hunk;
 
@@ -21,7 +21,11 @@ impl std::fmt::Display for ConversionError {
                 write!(f, "Invalid timestamp: {}", ts)
             }
             ConversionError::InvalidFilePath(path) => {
-                write!(f, "Pending imported review comment targets must use repo-relative paths, invalid path: {}", path.display())
+                write!(
+                    f,
+                    "Pending imported review comment targets must use repo-relative paths, invalid path: {}",
+                    path.display()
+                )
             }
         }
     }

@@ -1,7 +1,7 @@
 use itertools::Itertools as _;
 use std::os::windows::ffi::OsStrExt as _;
-use winreg::enums::HKEY_CURRENT_USER;
 use winreg::RegKey;
+use winreg::enums::HKEY_CURRENT_USER;
 
 // Re-export a couple winit types and modules as the concrete implementations
 // for Windows.

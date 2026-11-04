@@ -7,15 +7,15 @@ use warpui::{elements::CornerRadius, fonts::Weight};
 use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::vec2f;
 use warpui::{
+    AppContext, Element, SingletonEntity,
     elements::{
         ChildAnchor, Fill, Hoverable, MouseStateHandle, OffsetPositioning, ParentAnchor,
         ParentElement, ParentOffsetBounds, Radius, Stack,
     },
     ui_components::components::{UiComponent, UiComponentStyles},
-    AppContext, Element, SingletonEntity,
 };
 
-use super::presence_manager::{Participant, MUTED_AVATAR_BORDER_COLOR, MUTED_PARTICIPANT_COLOR};
+use super::presence_manager::{MUTED_AVATAR_BORDER_COLOR, MUTED_PARTICIPANT_COLOR, Participant};
 
 pub fn shared_session_indicator_color(appearance: &Appearance) -> ColorU {
     appearance.theme().terminal_colors().normal.red.into()

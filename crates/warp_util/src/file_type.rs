@@ -4,7 +4,7 @@
 //! based on its filename and extension. It uses a hybrid approach combining MIME type detection
 //! with explicit extension checking for edge cases.
 
-use content_inspector::{inspect, ContentType};
+use content_inspector::{ContentType, inspect};
 use mime_guess::{self, mime};
 use std::fs::File;
 use std::io::Read;

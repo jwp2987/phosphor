@@ -1,7 +1,7 @@
 use pathfinder_color::ColorU;
 use warp_core::ui::{
     appearance::Appearance,
-    color::{contrast::MinimumAllowedContrast, ContrastingColor},
+    color::{ContrastingColor, contrast::MinimumAllowedContrast},
     theme::Fill,
 };
 

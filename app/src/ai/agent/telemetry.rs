@@ -1,8 +1,8 @@
 use serde::Serialize;
 use warpui::{AppContext, SingletonEntity};
 
-use crate::ai::llms::LLMId;
 use crate::ObjectStoreModel;
+use crate::ai::llms::LLMId;
 use crate::{
     server::telemetry::AgentModeCitation as CitationForTelemetry,
     terminal::view::block_onboarding::onboarding_agentic_suggestions_block::OnboardingChipType,

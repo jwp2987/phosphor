@@ -4,8 +4,8 @@ use warpui::{AppContext, SingletonEntity, ViewHandle};
 
 use crate::{
     cloud_object::{
-        model::persistence::ObjectStoreModel, update_manager::UpdateManager, Owner,
-        StoredObjectEventEntrypoint,
+        Owner, StoredObjectEventEntrypoint, model::persistence::ObjectStoreModel,
+        update_manager::UpdateManager,
     },
     editor::EditorView,
     server::ids::SyncId,

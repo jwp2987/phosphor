@@ -1,14 +1,14 @@
-use super::{workflow::Workflow, WorkflowObjectModel};
+use super::{WorkflowObjectModel, workflow::Workflow};
 use crate::{
-    cloud_object::{model::persistence::ObjectStoreModel, GenericStoredObject, Owner},
+    PaneViewLocator, WindowId,
+    cloud_object::{GenericStoredObject, Owner, model::persistence::ObjectStoreModel},
     drive::ZapDriveObjectSettings,
     pane_group::{PaneContent, WorkflowPane},
     safe_warn,
     server::ids::{ClientId, SyncId},
-    workflows::{workflow_view::WorkflowView, WorkflowViewMode},
-    PaneViewLocator, WindowId,
+    workflows::{WorkflowViewMode, workflow_view::WorkflowView},
 };
-use std::collections::{hash_map::Entry, HashMap};
+use std::collections::{HashMap, hash_map::Entry};
 use warpui::{Entity, EntityId, ModelContext, SingletonEntity};
 
 pub struct WorkflowManager {

@@ -17,12 +17,13 @@ use crate::{
 use ordered_float::OrderedFloat;
 use warp_core::ui::builder;
 use warpui::{
-    elements::{ConstrainedBox, Container, Text},
     AppContext, Element, SingletonEntity,
+    elements::{ConstrainedBox, Container, Text},
 };
 
 const OPEN_WARP_AI_ITEM_BODY_TEXT: &str = "Ask Phosphor AI for command suggestions";
-const TRANSLATE_WITH_WARP_AI_ITEM_BODY_TEXT: &str = "Translate into shell command using Phosphor AI";
+const TRANSLATE_WITH_WARP_AI_ITEM_BODY_TEXT: &str =
+    "Translate into shell command using Phosphor AI";
 
 #[derive(Clone, Debug)]
 pub enum WarpAISearchItem {

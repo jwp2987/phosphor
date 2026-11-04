@@ -1,9 +1,9 @@
-use warpui::{elements::MouseStateHandle, Element};
+use warpui::{Element, elements::MouseStateHandle};
 
 use crate::{
     appearance::Appearance,
     cloud_object::{Space, StoredObjectMetadata},
-    drive::{index::DriveIndexAction, DriveObjectType},
+    drive::{DriveObjectType, index::DriveIndexAction},
     themes::theme::Fill,
 };
 

@@ -4,17 +4,17 @@ use std::sync::LazyLock;
 use itertools::Itertools;
 use pathfinder_geometry::vector::vec2f;
 use warp_core::features::FeatureFlag;
+use warp_core::ui::Icon;
 use warp_core::ui::appearance::Appearance;
 use warp_core::ui::color::blend::Blend;
 use warp_core::ui::theme::Fill;
-use warp_core::ui::Icon;
 use warpui::color::ColorU;
 use warpui::elements::{
-    drag_resize::drag_resize_handle, ChildAnchor, Clipped, DispatchEventResult, DragResizeElement,
-    DragResizeHandle, EventHandler, Expanded, Hoverable, MainAxisAlignment, MainAxisSize,
-    MouseInBehavior, MouseStateHandle, OffsetPositioning, ParentAnchor, ParentElement,
-    ParentOffsetBounds, ResizeEndFn, Scrollable, ScrollableElement, ScrollbarWidth,
-    SizeConstraintCondition, SizeConstraintSwitch, Stack, UniformList, UniformListState,
+    ChildAnchor, Clipped, DispatchEventResult, DragResizeElement, DragResizeHandle, EventHandler,
+    Expanded, Hoverable, MainAxisAlignment, MainAxisSize, MouseInBehavior, MouseStateHandle,
+    OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds, ResizeEndFn, Scrollable,
+    ScrollableElement, ScrollbarWidth, SizeConstraintCondition, SizeConstraintSwitch, Stack,
+    UniformList, UniformListState, drag_resize::drag_resize_handle,
 };
 use warpui::fonts::Weight;
 use warpui::platform::Cursor;
@@ -25,14 +25,14 @@ use warpui::prelude::{
 use warpui::scene::{Border, CornerRadius, Radius};
 use warpui::ui_components::button::ButtonVariant;
 use warpui::ui_components::components::{Coords, UiComponent, UiComponentStyles};
-use warpui::{elements::ScrollStateHandle, ModelHandle, View};
 use warpui::{
     Action, AppContext, Element, Entity, SingletonEntity, TypedActionView, ViewContext, ViewHandle,
     WeakViewHandle,
 };
+use warpui::{ModelHandle, View, elements::ScrollStateHandle};
 
 use crate::ai::blocklist::agent_view::{
-    agent_view_bg_color, AgentViewController, AgentViewControllerEvent,
+    AgentViewController, AgentViewControllerEvent, agent_view_bg_color,
 };
 use crate::search::item::IconLocation;
 use crate::search::mixer::{SearchMixer, SearchMixerEvent};
@@ -45,8 +45,8 @@ use crate::terminal::input::inline_menu::message_bar::{
 use crate::terminal::input::inline_menu::model::{InlineMenuModel, InlineMenuTabConfig};
 use crate::terminal::input::inline_menu::styles as inline_styles;
 use crate::terminal::input::inline_menu::{
-    default_navigation_message_items, positioning::Updated as PositionerUpdated,
-    InlineMenuMessageArgs, InlineMenuPositioner, InlineMenuType,
+    InlineMenuMessageArgs, InlineMenuPositioner, InlineMenuType, default_navigation_message_items,
+    positioning::Updated as PositionerUpdated,
 };
 use crate::terminal::input::message_bar::Message;
 use crate::terminal::input::suggestions_mode_model::{
@@ -945,14 +945,13 @@ impl<A: InlineMenuAction, T: 'static + Send + Sync> InlineMenuView<A, T> {
             *terminal::view::PADDING_LEFT - QUERY_RESULT_RENDERER_STYLES.result_horizontal_padding;
         let results = self.render_results_only(should_reverse, horizontal_padding, app);
 
-        match self.banner_fn.as_ref().and_then(|f| f(app)) { Some(banner) => {
-            Flex::column()
+        match self.banner_fn.as_ref().and_then(|f| f(app)) {
+            Some(banner) => Flex::column()
                 .with_child(banner)
                 .with_child(Expanded::new(1., results).finish())
-                .finish()
-        } _ => {
-            results
-        }}
+                .finish(),
+            _ => results,
+        }
     }
 
     fn details_display_idx(&self) -> Option<usize> {
@@ -1021,95 +1020,98 @@ impl<A: InlineMenuAction, T: 'static + Send + Sync> View for InlineMenuView<A, T
                 self.details_display_idx()
                     .and_then(|idx| self.result_renderers.get(idx))
                     .and_then(|renderer| renderer.search_result.render_details(app)),
-            ) { Some((details_config, rendered_details)) => {
-                let mut split_view =
-                    Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+            ) {
+                Some((details_config, rendered_details)) => {
+                    let mut split_view =
+                        Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
 
-                let aligned_results = if is_rendering_below_input {
-                    results_list
-                } else {
-                    Align::new(results_list).bottom_center().finish()
-                };
-                if let Some(max_result_width) = details_config.max_result_width {
-                    split_view.add_child(
-                        ConstrainedBox::new(aligned_results)
-                            .with_max_width(max_result_width)
-                            .finish(),
-                    );
-                } else {
-                    split_view.add_child(Expanded::new(1., aligned_results).finish());
-                }
-
-                const DETAILS_MARGIN_LEFT: f32 = 20.;
-                let laid_out_details = Container::new(
-                    Container::new(Align::new(rendered_details).bottom_left().finish())
-                        .with_horizontal_margin(styles::DETAILS_PANE_PADDING)
-                        .with_vertical_margin(styles::DETAILS_PANE_PADDING)
-                        .with_margin_left(DETAILS_MARGIN_LEFT)
-                        .finish(),
-                )
-                .with_border(Border::left(1.0).with_border_fill(theme.outline()))
-                .finish();
-
-                if let Some(min_required_width) = details_config.min_required_details_width {
-                    let min_details_total_width = min_required_width
-                        + DETAILS_MARGIN_LEFT
-                        + styles::DETAILS_PANE_PADDING * 2.;
-
-                    if let Some(max_result_width) = details_config.max_result_width {
-                        // When max_result_width is set, the results are a
-                        // non-flex child that won't expand when details are
-                        // hidden. Use an outer SizeConstraintSwitch to swap in
-                        // a full-width results list when the container is too
-                        // narrow for the details panel.
-                        split_view.add_child(Expanded::new(1., laid_out_details).finish());
-
-                        let narrow_results = self.render_results_list(app);
-                        let narrow_aligned = if is_rendering_below_input {
-                            narrow_results
-                        } else {
-                            Align::new(narrow_results).bottom_center().finish()
-                        };
-                        content = SizeConstraintSwitch::new(
-                            split_view.finish(),
-                            vec![(
-                                SizeConstraintCondition::WidthLessThan(
-                                    max_result_width + min_details_total_width,
-                                ),
-                                narrow_aligned,
-                            )],
-                        )
-                        .finish();
+                    let aligned_results = if is_rendering_below_input {
+                        results_list
                     } else {
-                        // Without max_result_width, results are Expanded and
-                        // will naturally reclaim space. Use the inner
-                        // SizeConstraintSwitch to hide the details panel when
-                        // squeezed.
+                        Align::new(results_list).bottom_center().finish()
+                    };
+                    if let Some(max_result_width) = details_config.max_result_width {
                         split_view.add_child(
-                            Expanded::new(
-                                1.,
-                                SizeConstraintSwitch::new(
-                                    laid_out_details,
-                                    vec![(
-                                        SizeConstraintCondition::WidthLessThan(
-                                            min_details_total_width,
-                                        ),
-                                        Empty::new().finish(),
-                                    )],
+                            ConstrainedBox::new(aligned_results)
+                                .with_max_width(max_result_width)
+                                .finish(),
+                        );
+                    } else {
+                        split_view.add_child(Expanded::new(1., aligned_results).finish());
+                    }
+
+                    const DETAILS_MARGIN_LEFT: f32 = 20.;
+                    let laid_out_details = Container::new(
+                        Container::new(Align::new(rendered_details).bottom_left().finish())
+                            .with_horizontal_margin(styles::DETAILS_PANE_PADDING)
+                            .with_vertical_margin(styles::DETAILS_PANE_PADDING)
+                            .with_margin_left(DETAILS_MARGIN_LEFT)
+                            .finish(),
+                    )
+                    .with_border(Border::left(1.0).with_border_fill(theme.outline()))
+                    .finish();
+
+                    if let Some(min_required_width) = details_config.min_required_details_width {
+                        let min_details_total_width = min_required_width
+                            + DETAILS_MARGIN_LEFT
+                            + styles::DETAILS_PANE_PADDING * 2.;
+
+                        if let Some(max_result_width) = details_config.max_result_width {
+                            // When max_result_width is set, the results are a
+                            // non-flex child that won't expand when details are
+                            // hidden. Use an outer SizeConstraintSwitch to swap in
+                            // a full-width results list when the container is too
+                            // narrow for the details panel.
+                            split_view.add_child(Expanded::new(1., laid_out_details).finish());
+
+                            let narrow_results = self.render_results_list(app);
+                            let narrow_aligned = if is_rendering_below_input {
+                                narrow_results
+                            } else {
+                                Align::new(narrow_results).bottom_center().finish()
+                            };
+                            content = SizeConstraintSwitch::new(
+                                split_view.finish(),
+                                vec![(
+                                    SizeConstraintCondition::WidthLessThan(
+                                        max_result_width + min_details_total_width,
+                                    ),
+                                    narrow_aligned,
+                                )],
+                            )
+                            .finish();
+                        } else {
+                            // Without max_result_width, results are Expanded and
+                            // will naturally reclaim space. Use the inner
+                            // SizeConstraintSwitch to hide the details panel when
+                            // squeezed.
+                            split_view.add_child(
+                                Expanded::new(
+                                    1.,
+                                    SizeConstraintSwitch::new(
+                                        laid_out_details,
+                                        vec![(
+                                            SizeConstraintCondition::WidthLessThan(
+                                                min_details_total_width,
+                                            ),
+                                            Empty::new().finish(),
+                                        )],
+                                    )
+                                    .finish(),
                                 )
                                 .finish(),
-                            )
-                            .finish(),
-                        );
+                            );
+                            content = split_view.finish();
+                        }
+                    } else {
+                        split_view.add_child(Expanded::new(1., laid_out_details).finish());
                         content = split_view.finish();
                     }
-                } else {
-                    split_view.add_child(Expanded::new(1., laid_out_details).finish());
-                    content = split_view.finish();
                 }
-            } _ => {
-                content = results_list;
-            }}
+                _ => {
+                    content = results_list;
+                }
+            }
         }
 
         let aligned_content = if is_rendering_below_input {

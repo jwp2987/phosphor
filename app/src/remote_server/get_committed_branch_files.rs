@@ -4,15 +4,13 @@
 //! can be unit-tested without the async handler pipeline.
 
 use super::proto::{
-    get_committed_branch_files_response, FileChangeEntry, GetCommittedBranchFilesError,
-    GetCommittedBranchFilesResponse, GetCommittedBranchFilesSuccess,
+    FileChangeEntry, GetCommittedBranchFilesError, GetCommittedBranchFilesResponse,
+    GetCommittedBranchFilesSuccess, get_committed_branch_files_response,
 };
 
 /// Builds a success response from `(path, additions, deletions)` tuples, as
 /// returned by `LocalDiffStateModel::get_committed_branch_file_entries`.
-pub(super) fn success_response(
-    files: Vec<(String, u64, u64)>,
-) -> GetCommittedBranchFilesResponse {
+pub(super) fn success_response(files: Vec<(String, u64, u64)>) -> GetCommittedBranchFilesResponse {
     GetCommittedBranchFilesResponse {
         result: Some(get_committed_branch_files_response::Result::Success(
             GetCommittedBranchFilesSuccess {

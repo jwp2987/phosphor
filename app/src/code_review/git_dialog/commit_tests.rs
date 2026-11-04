@@ -17,7 +17,7 @@ use warpui::platform::WindowStyle;
 use warpui::ui_components::switch::SwitchStateHandle;
 use warpui::{App, Element};
 
-use super::{confirm_tooltip, is_ready_to_confirm, CommitIntent, CommitState};
+use super::{CommitIntent, CommitState, confirm_tooltip, is_ready_to_confirm};
 use crate::auth::AuthStateProvider;
 use crate::editor::EditorView;
 use crate::settings_view::keybindings::KeybindingChangedNotifier;
@@ -25,8 +25,8 @@ use crate::test_util::settings::initialize_settings_for_tests;
 use crate::util::git::FileChangeEntry;
 use crate::view_components::action_button::{ActionButton, SecondaryTheme};
 use crate::vim_registers::VimRegisters;
-use crate::workspace::sync_inputs::SyncedInputState;
 use crate::workspace::ToastStack;
+use crate::workspace::sync_inputs::SyncedInputState;
 use crate::workspaces::user_workspaces::UserWorkspaces;
 
 /// Minimal window root; the dialog itself is not rendered, only its state is

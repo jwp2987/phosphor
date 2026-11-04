@@ -1,13 +1,13 @@
 use itertools::Itertools;
 use warp_editor::editor::NavigationKey;
 use warpui::{
+    AppContext, Entity, SingletonEntity, TypedActionView, View, ViewContext, WeakViewHandle,
     elements::{
-        ConstrainedBox, Container, DispatchEventResult, Element, Fill, Flex, ParentElement,
-        ScrollStateHandle, Scrollable, ScrollableElement, ScrollbarWidth, Shrinkable, Text,
-        UniformList, UniformListState, LEFT_PADDING as SCROLLABLE_LEFT_PADDING,
+        ConstrainedBox, Container, DispatchEventResult, Element, Fill, Flex,
+        LEFT_PADDING as SCROLLABLE_LEFT_PADDING, ParentElement, ScrollStateHandle, Scrollable,
+        ScrollableElement, ScrollbarWidth, Shrinkable, Text, UniformList, UniformListState,
     },
     fonts::{Properties, Weight},
-    AppContext, Entity, SingletonEntity, TypedActionView, View, ViewContext, WeakViewHandle,
 };
 
 use crate::appearance::Appearance;
@@ -23,7 +23,7 @@ use crate::{
     themes::theme::{self, Blend, WarpTheme},
     user_config::WarpConfigUpdateEvent,
 };
-use fuzzy_match::{match_indices_case_insensitive, FuzzyMatchResult};
+use fuzzy_match::{FuzzyMatchResult, match_indices_case_insensitive};
 use std::collections::HashMap;
 use std::ops::Deref;
 #[cfg(feature = "local_fs")]
@@ -41,7 +41,7 @@ use warpui::keymap::FixedBinding;
 use warpui::text_layout::TextStyle;
 use warpui::ui_components::components::{UiComponent, UiComponentStyles};
 
-use super::{workflow::Workflow, WorkflowSource};
+use super::{WorkflowSource, workflow::Workflow};
 
 const SCROLLBAR_WIDTH: ScrollbarWidth = ScrollbarWidth::Auto;
 const DESCRIPTION_MARGIN: f32 = 24.;
@@ -738,10 +738,7 @@ impl CategoriesView {
                 .ui_builder()
                 .link(
                     "creating your own workflow".into(),
-                    Some(
-                        ""
-                            .into(),
-                    ),
+                    Some("".into()),
                     None,
                     self.link_mouse_state_handles
                         .documentation_link_handle

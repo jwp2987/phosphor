@@ -29,11 +29,11 @@ use super::agent_view::{AgentViewController, AgentViewControllerEvent, AgentView
 use super::compute_clock::ComputeClock;
 use super::context_model::BlocklistAIContextModel;
 use super::conversation_selection::ConversationSelectionEvent;
-use super::history_model::BlocklistAIHistoryModel;
-use super::misroute_recovery::{MisrouteMemory, MisrouteOffer, RouteReason, SubmitRoute};
 #[cfg(any(test, feature = "test-util"))]
 use super::conversation_selection::{ConversationSelection, MockConversationSelection};
+use super::history_model::BlocklistAIHistoryModel;
 use super::input_mode_policy::{InputModePolicy, InputModePolicyHandle, PolicyConfigUpdate};
+use super::misroute_recovery::{MisrouteMemory, MisrouteOffer, RouteReason, SubmitRoute};
 use crate::terminal::cli_agent_sessions::{
     CLIAgentInputState, CLIAgentSessionsModel, CLIAgentSessionsModelEvent,
 };
@@ -41,16 +41,16 @@ use warp_completer::completer::CompletionContext;
 use warp_terminal::shell::ShellType;
 
 use crate::{
+    TelemetryEvent,
     input_classifier::InputClassifierModel,
     report_if_error, send_telemetry_from_ctx,
     settings::{AISettings, AISettingsChangedEvent, InputBoxType, InputSettings},
     terminal::{
+        History, HistoryEntry, TerminalModel,
         history::RanBefore,
         input::decorations::ParsedTokensSnapshot,
         model::{rich_content::RichContentType, session::SessionId},
-        History, HistoryEntry, TerminalModel,
     },
-    TelemetryEvent,
 };
 
 /// Cutoff score for deciding an user input matches a history command entry.
@@ -482,7 +482,10 @@ impl BlocklistAIInputModel {
         //
         // The `.clone()` releases the borrow of `ctx` taken by `as_ref` before
         // `subscribe_to_model` takes it mutably.
-        let conversation_selection = ai_context_model.as_ref(ctx).conversation_selection().clone();
+        let conversation_selection = ai_context_model
+            .as_ref(ctx)
+            .conversation_selection()
+            .clone();
         ctx.subscribe_to_model(&conversation_selection, |me, event, ctx| {
             // A policy that returns `None` leaves the config untouched -- no unconditional
             // rewrite on every selection event.
@@ -496,83 +499,83 @@ impl BlocklistAIInputModel {
 
         if FeatureFlag::AgentView.is_enabled() {
             if let Some(agent_view_controller) = &agent_view_controller {
-            ctx.subscribe_to_model(agent_view_controller, |me, event, ctx| match event {
-                AgentViewControllerEvent::EnteredAgentView {
-                    display_mode,
-                    origin,
-                    ..
-                } => {
-                    if display_mode.is_inline() {
-                        me.set_input_config_internal(
-                            InputConfig {
-                                input_type: InputType::AI,
-                                is_locked: true,
-                            },
-                            ctx,
-                        );
-                    } else if matches!(origin, AgentViewEntryOrigin::ClearBuffer) {
-                        let is_autodetection_enabled =
-                            AISettings::as_ref(ctx).is_ai_autodetection_enabled(ctx);
-                        me.set_input_config_internal(
-                            InputConfig {
-                                input_type: me.input_config().input_type,
-                                is_locked: !is_autodetection_enabled,
-                            },
-                            ctx,
-                        );
-                    } else if me.has_locking_attachment(ctx) {
-                        // Interaction patterns that should fully bypass NLD on
-                        // entry: image / file attachment in progress / attached, or block
-                        // already in pending context. Force-lock to AI regardless of the
-                        // user's NLD setting so the classifier never gets a chance to drop
-                        // the buffer back to shell.
-                        me.set_input_config_internal(
-                            InputConfig {
-                                input_type: InputType::AI,
-                                is_locked: true,
-                            },
-                            ctx,
-                        );
-                    } else {
-                        let is_autodetection_enabled =
-                            AISettings::as_ref(ctx).is_ai_autodetection_enabled(ctx);
-                        if is_autodetection_enabled {
-                            // Upon entering the agent view, temporarily disable autodetection as
-                            // the existing buffer contents, if any are now most likely intended to
-                            // be sent to the agent, and if the input would otherwise trigger a
-                            // false-negative classification, we'd drop the user right into shell
-                            // mode.
-                            me.temporarily_disable_autodetection(ctx);
+                ctx.subscribe_to_model(agent_view_controller, |me, event, ctx| match event {
+                    AgentViewControllerEvent::EnteredAgentView {
+                        display_mode,
+                        origin,
+                        ..
+                    } => {
+                        if display_mode.is_inline() {
+                            me.set_input_config_internal(
+                                InputConfig {
+                                    input_type: InputType::AI,
+                                    is_locked: true,
+                                },
+                                ctx,
+                            );
+                        } else if matches!(origin, AgentViewEntryOrigin::ClearBuffer) {
+                            let is_autodetection_enabled =
+                                AISettings::as_ref(ctx).is_ai_autodetection_enabled(ctx);
+                            me.set_input_config_internal(
+                                InputConfig {
+                                    input_type: me.input_config().input_type,
+                                    is_locked: !is_autodetection_enabled,
+                                },
+                                ctx,
+                            );
+                        } else if me.has_locking_attachment(ctx) {
+                            // Interaction patterns that should fully bypass NLD on
+                            // entry: image / file attachment in progress / attached, or block
+                            // already in pending context. Force-lock to AI regardless of the
+                            // user's NLD setting so the classifier never gets a chance to drop
+                            // the buffer back to shell.
+                            me.set_input_config_internal(
+                                InputConfig {
+                                    input_type: InputType::AI,
+                                    is_locked: true,
+                                },
+                                ctx,
+                            );
+                        } else {
+                            let is_autodetection_enabled =
+                                AISettings::as_ref(ctx).is_ai_autodetection_enabled(ctx);
+                            if is_autodetection_enabled {
+                                // Upon entering the agent view, temporarily disable autodetection as
+                                // the existing buffer contents, if any are now most likely intended to
+                                // be sent to the agent, and if the input would otherwise trigger a
+                                // false-negative classification, we'd drop the user right into shell
+                                // mode.
+                                me.temporarily_disable_autodetection(ctx);
+                            }
+                            me.set_input_config_internal(
+                                InputConfig {
+                                    input_type: InputType::AI,
+                                    is_locked: !is_autodetection_enabled,
+                                },
+                                ctx,
+                            );
                         }
-                        me.set_input_config_internal(
-                            InputConfig {
-                                input_type: InputType::AI,
-                                is_locked: !is_autodetection_enabled,
-                            },
-                            ctx,
-                        );
                     }
-                }
-                AgentViewControllerEvent::ExitedAgentView {
-                    is_exit_before_new_entrance,
-                    ..
-                } => {
-                    if !is_exit_before_new_entrance {
-                        // When truly exiting agent view, use the terminal-specific NLD setting
-                        // since the user is returning to terminal mode.
-                        let is_nld_in_terminal_enabled =
-                            AISettings::as_ref(ctx).is_nld_in_terminal_enabled(ctx);
-                        me.set_input_config_internal(
-                            InputConfig {
-                                input_type: InputType::Shell,
-                                is_locked: !is_nld_in_terminal_enabled,
-                            },
-                            ctx,
-                        );
+                    AgentViewControllerEvent::ExitedAgentView {
+                        is_exit_before_new_entrance,
+                        ..
+                    } => {
+                        if !is_exit_before_new_entrance {
+                            // When truly exiting agent view, use the terminal-specific NLD setting
+                            // since the user is returning to terminal mode.
+                            let is_nld_in_terminal_enabled =
+                                AISettings::as_ref(ctx).is_nld_in_terminal_enabled(ctx);
+                            me.set_input_config_internal(
+                                InputConfig {
+                                    input_type: InputType::Shell,
+                                    is_locked: !is_nld_in_terminal_enabled,
+                                },
+                                ctx,
+                            );
+                        }
                     }
-                }
-                _ => (),
-            });
+                    _ => (),
+                });
             }
         }
 
@@ -655,7 +658,11 @@ impl BlocklistAIInputModel {
     ) {
         // When agent view is active, the input should behave like Universal mode
         // even if Classic mode is selected (e.g. when PS1 is enabled).
-        if FeatureFlag::AgentView.is_enabled() && self.agent_view_controller.as_ref().is_none_or(|c| c.as_ref(ctx).is_active())
+        if FeatureFlag::AgentView.is_enabled()
+            && self
+                .agent_view_controller
+                .as_ref()
+                .is_none_or(|c| c.as_ref(ctx).is_active())
         {
             return;
         }
@@ -775,9 +782,11 @@ impl BlocklistAIInputModel {
         {
             AISettings::handle(ctx).update(ctx, |settings, ctx| {
                 let new_num_times = *settings.entered_agent_mode_num_times + 1;
-                report_if_error!(settings
-                    .entered_agent_mode_num_times
-                    .set_value(new_num_times, ctx));
+                report_if_error!(
+                    settings
+                        .entered_agent_mode_num_times
+                        .set_value(new_num_times, ctx)
+                );
             });
         }
 
@@ -1224,8 +1233,7 @@ impl BlocklistAIInputModel {
         // #1185: classified without a trailing comment. #1183: in an agent conversation a line
         // with no positive evidence of being a command is not decided Shell here, and an
         // inherited Shell moves to the agent (never for typeahead, as with requests).
-        let classify_snapshot =
-            input_classifier::util::strip_trailing_comment(input).into_owned();
+        let classify_snapshot = input_classifier::util::strip_trailing_comment(input).into_owned();
         let no_command_evidence = self.in_active_agent_view(ctx)
             && input_classifier::util::lacks_command_evidence_in_agent_conversation(
                 &classify_snapshot,
@@ -1430,7 +1438,9 @@ impl BlocklistAIInputModel {
             // If NLD is enabled and input is currently locked, unlock it, as we want to
             // resume autodetection for the next input.
             self.input_config.unlocked_if_autodetection_enabled(
-                self.agent_view_controller.as_ref().is_some_and(|c| c.as_ref(ctx).is_fullscreen()),
+                self.agent_view_controller
+                    .as_ref()
+                    .is_some_and(|c| c.as_ref(ctx).is_fullscreen()),
                 ctx,
             )
         };
@@ -1790,7 +1800,8 @@ impl BlocklistAIInputModel {
             // decided Shell by the history close-match below (`make commit port` is a close match
             // of an earlier `make ...` line, and that match returned before the classifier's gate
             // ran).
-            history_may_decide = history_close_match_allowed(in_active_agent_view, classify_snapshot);
+            history_may_decide =
+                history_close_match_allowed(in_active_agent_view, classify_snapshot);
         } else if routing_v2_enabled() {
             // #1604: the same procedure, run by the job. The exact-history lookup hashes the whole
             // text on the UI thread, so it is not made for this size (the close match in the job
@@ -1942,9 +1953,11 @@ impl BlocklistAIInputModel {
                     // so that we can skip doing additional expensive work if the classification is aborted.
                     futures_lite::future::yield_now().await;
 
-                    let input =
-                        warp_completer::util::expand_aliases(classify_snapshot, &completion_context)
-                            .await;
+                    let input = warp_completer::util::expand_aliases(
+                        classify_snapshot,
+                        &completion_context,
+                    )
+                    .await;
 
                     futures_lite::future::yield_now().await;
 
@@ -2265,8 +2278,8 @@ async fn most_recent_close_match<'a>(
         if !close_match_possible_by_length(candidate.len(), word.len(), cutoff) {
             continue;
         }
-        let matcher = matcher
-            .get_or_insert_with(|| difflib::sequencematcher::SequenceMatcher::new("", word));
+        let matcher =
+            matcher.get_or_insert_with(|| difflib::sequencematcher::SequenceMatcher::new("", word));
         matcher.set_first_seq(candidate);
         // The fast ratio computations produce an upper bound on the value of
         // ratio, so if a faster check fails, the slower checks are guaranteed

@@ -216,7 +216,6 @@ pub enum SlashCommandKind {
 }
 
 impl StaticCommand {
-
     pub fn is_active(&self, session_context: Availability) -> bool {
         session_context.contains(self.availability)
     }

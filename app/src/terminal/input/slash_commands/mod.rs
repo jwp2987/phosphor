@@ -22,9 +22,10 @@ use warp_util::path::{CleanPathResult, LineAndColumnArg};
 use warpui::clipboard::ClipboardContent;
 use warpui::{AppContext, SingletonEntity, ViewContext};
 
+use crate::TelemetryEvent;
 use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::blocklist::agent_view::{
-    AgentViewEntryOrigin, DismissalStrategy, EphemeralMessage, ENTER_OR_EXIT_CONFIRMATION_WINDOW,
+    AgentViewEntryOrigin, DismissalStrategy, ENTER_OR_EXIT_CONFIRMATION_WINDOW, EphemeralMessage,
 };
 use crate::ai::blocklist::drive_object_attachment_for_reference;
 use crate::ai::blocklist::{
@@ -32,10 +33,10 @@ use crate::ai::blocklist::{
     SlashCommandRequest,
 };
 use crate::ai::usage_cost::{self, UsageCostOutcome};
-use crate::cloud_object::{model::persistence::ObjectStoreModel, ObjectType};
+use crate::cloud_object::{ObjectType, model::persistence::ObjectStoreModel};
 use crate::code_review::telemetry_event::CodeReviewPaneEntrypoint;
-use crate::search::slash_command_menu::static_commands::commands::{self, COMMAND_REGISTRY};
 use crate::search::slash_command_menu::static_commands::Availability;
+use crate::search::slash_command_menu::static_commands::commands::{self, COMMAND_REGISTRY};
 use crate::search::slash_command_menu::{SlashCommandId, SlashCommandKind, StaticCommand};
 use crate::server::ids::SyncId;
 use crate::server::telemetry::{AgentModeAutoDetectionSettingOrigin, SlashCommandAcceptedDetails};
@@ -61,7 +62,6 @@ use crate::workflows::command_parser::compute_workflow_display_data;
 use crate::workspace::{ForkedConversationDestination, ToastStack, WorkspaceAction};
 #[cfg(feature = "local_fs")]
 use crate::workspaces::user_workspaces::UserWorkspaces;
-use crate::TelemetryEvent;
 
 /// What happens when a slash command is selected from the menu.
 ///
@@ -1028,7 +1028,9 @@ impl Input {
                     .map(|path| path.to_path_buf())
                     .map(|path| path.to_string_lossy().to_string())
                 else {
-                    log::error!("Expected a valid working directory since /pr-comments is only available from the terminal");
+                    log::error!(
+                        "Expected a valid working directory since /pr-comments is only available from the terminal"
+                    );
                     return false;
                 };
 
@@ -1617,10 +1619,10 @@ mod tests {
         use std::sync::Arc;
 
         use super::*;
-        use crate::terminal::model::session::command_executor::testing::TestCommandExecutor;
-        use crate::terminal::model::session::SessionInfo;
-        use crate::terminal::shell::ShellType;
         use crate::terminal::ShellLaunchData;
+        use crate::terminal::model::session::SessionInfo;
+        use crate::terminal::model::session::command_executor::testing::TestCommandExecutor;
+        use crate::terminal::shell::ShellType;
 
         fn wsl_session() -> Session {
             Session::new(

@@ -13,6 +13,8 @@ use crate::{
 use itertools::Itertools;
 use lazy_static::lazy_static;
 use warpui::{
+    AppContext, Element, Entity, FocusContext, ModelHandle, SingletonEntity, TypedActionView, View,
+    ViewContext, ViewHandle, WeakViewHandle,
     elements::{
         Align, ConstrainedBox, Container, CornerRadius, Dismiss, Empty, Fill, Flex, ParentElement,
         Radius, SavePosition, ScrollStateHandle, Scrollable, ScrollableElement, Shrinkable,
@@ -20,8 +22,6 @@ use warpui::{
     },
     presenter::ChildView,
     ui_components::components::{UiComponent, UiComponentStyles},
-    AppContext, Element, Entity, FocusContext, ModelHandle, SingletonEntity, TypedActionView, View,
-    ViewContext, ViewHandle, WeakViewHandle,
 };
 
 use super::searcher::{EmbeddingSearchItemAction, EmbeddingSearchMixer};

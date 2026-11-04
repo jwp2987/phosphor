@@ -1,7 +1,7 @@
 use super::Point;
 use crate::{
-    event::DispatchedEvent, AfterLayoutContext, AppContext, Element, EventContext, LayoutContext,
-    PaintContext, SizeConstraint,
+    AfterLayoutContext, AppContext, Element, EventContext, LayoutContext, PaintContext,
+    SizeConstraint, event::DispatchedEvent,
 };
 use pathfinder_geometry::vector::Vector2F;
 

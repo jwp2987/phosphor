@@ -2,11 +2,11 @@ use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 #[cfg(not(test))]
 use std::env::var_os;
-use vec1::{vec1, Vec1};
+use vec1::{Vec1, vec1};
+use warpui::AppContext;
 use warpui::keymap::Keystroke;
 #[cfg(not(test))]
 use warpui::keymap::Trigger;
-use warpui::AppContext;
 
 use anyhow::Context;
 

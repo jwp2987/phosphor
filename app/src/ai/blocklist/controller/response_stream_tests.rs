@@ -169,7 +169,11 @@ fn pending_resume_carries_its_budget_and_backoff_verbatim() {
         RecoveryBudget::fresh(),
         "a fresh budget here restores the per-path budget REMOTE-2269 removed"
     );
-    assert_eq!(pending.backoff(), backoff, "the resume must wait the charged backoff");
+    assert_eq!(
+        pending.backoff(),
+        backoff,
+        "the resume must wait the charged backoff"
+    );
 
     // The immediate (BYOP bad-arguments) constructor is the one deliberate exception: a
     // fresh budget and no wait, bounded by its call site instead of by the budget.

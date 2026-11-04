@@ -193,7 +193,11 @@ fn a_truncated_or_overwritten_file_is_not_a_database() {
     page.extend_from_slice(&[0; 4080]);
     std::fs::write(&db, page).unwrap();
     assert_eq!(check_file_is_database(&db), None);
-    assert_eq!(check_file_is_database(dir.path()), None, "a folder is not judged");
+    assert_eq!(
+        check_file_is_database(dir.path()),
+        None,
+        "a folder is not judged"
+    );
 }
 
 #[test]
@@ -296,8 +300,14 @@ fn reset_rearms_the_damage_notice() {
         record_write_outcome(db, Some("file is not a database")),
         WriteFailureLog::First
     );
-    assert_eq!(take_database_problem_notice().unwrap().problem, DatabaseProblem::Corrupt);
-    assert_eq!(take_database_problem_notice().unwrap().problem, DatabaseProblem::Corrupt);
+    assert_eq!(
+        take_database_problem_notice().unwrap().problem,
+        DatabaseProblem::Corrupt
+    );
+    assert_eq!(
+        take_database_problem_notice().unwrap().problem,
+        DatabaseProblem::Corrupt
+    );
 }
 
 /// #971: a lock held elsewhere is its own problem, so it gets a notice that

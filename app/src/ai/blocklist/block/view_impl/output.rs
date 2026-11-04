@@ -14,8 +14,8 @@ use ai::agent::file_locations::group_file_contexts_for_display;
 
 use crate::ai::agent::conversation::AIConversation;
 use crate::ai::blocklist::block::view_impl::common::{
-    MaybeShimmeringText, BLOCKED_ACTION_MESSAGE_FOR_GREP_OR_FILE_GLOB,
-    BLOCKED_ACTION_MESSAGE_FOR_READING_FILES,
+    BLOCKED_ACTION_MESSAGE_FOR_GREP_OR_FILE_GLOB, BLOCKED_ACTION_MESSAGE_FOR_READING_FILES,
+    MaybeShimmeringText,
 };
 use crate::ai::blocklist::inline_action::aws_bedrock_credentials_error::AwsBedrockCredentialsErrorView;
 use crate::ai::blocklist::inline_action::create_or_edit_document::CreateOrEditDocumentAction;
@@ -25,14 +25,16 @@ use crate::ai::blocklist::usage::rollup::{
 };
 use crate::ai::blocklist::view_util::format_credits;
 use crate::ai::skills::SkillOpenOrigin;
-use crate::ai::skills::{icon_override_for_skill_name, render_skill_button, skill_path_from_location};
+use crate::ai::skills::{
+    icon_override_for_skill_name, render_skill_button, skill_path_from_location,
+};
 
+use crate::AIAgentTodoList;
 use crate::code::editor_management::CodeSource;
 use crate::terminal::shared_session::SharedSessionStatus;
 use crate::view_components::compactible_action_button::{
     CompactibleActionButton, RenderCompactibleActionButton, SMALL_SIZE_SWITCH_THRESHOLD,
 };
-use crate::AIAgentTodoList;
 
 #[allow(unused_imports)]
 use std::path::{Component, Path, PathBuf};
@@ -41,14 +43,14 @@ use ai::agent::action::{RequestComputerUseRequest, SuggestPromptRequest, UseComp
 use ai::skills::SkillReference;
 use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::vec2f;
-use ui_components::{button, Component as _, Options as _};
+use ui_components::{Component as _, Options as _, button};
 use warp_core::ui::theme::color::internal_colors;
 use warp_util::local_or_remote_path::LocalOrRemotePath;
+use warpui::EntityId;
 use warpui::elements::new_scrollable::SingleAxisConfig;
 use warpui::elements::{
     ChildAnchor, NewScrollable, OffsetPositioning, ParentAnchor, ParentOffsetBounds, Stack,
 };
-use warpui::EntityId;
 
 use crate::ai::blocklist::block::{
     CollapsibleElementState, CollapsibleExpansionState, FinishReason, ImportedCommentGroup,
@@ -56,35 +58,37 @@ use crate::ai::blocklist::block::{
 use indexmap::IndexMap;
 use std::{cmp::Ordering, collections::HashMap, rc::Rc, sync::Arc};
 
-use crate::util::link_detection::{add_link_detection_mouse_interactions, DetectedLinksState};
+use crate::util::link_detection::{DetectedLinksState, add_link_detection_mouse_interactions};
 use crate::{
+    FeatureFlag,
     ai::{
         agent::{
-            icons::{self, gray_stop_icon, yellow_stop_icon},
             AIAgentAction, AIAgentActionId, AIAgentActionResult, AIAgentActionResultType,
             AIAgentActionType, AIAgentCitation, AIAgentOutputMessage, AIAgentOutputMessageType,
             AIAgentText, AIAgentTextSection, MessageId, ReadFilesRequest,
             RequestCommandOutputResult, SuggestNewConversationResult, SummarizationType,
+            icons::{self, gray_stop_icon, yellow_stop_icon},
         },
         blocklist::{
+            BlocklistAIActionModel, SuggestionChipView,
             action_model::AIActionStatus,
             block::{
-                model::{AIBlockModel, AIBlockModelHelper, AIBlockOutputStatus},
                 AIBlock, AIBlockAction, AIBlockStateHandles, ActionButtons,
                 AutonomySettingSpeedbump, EmbeddedCodeEditorView, EmptyEnterHint, RequestedEdit,
                 TextLocation, TodoListElementState,
+                model::{AIBlockModel, AIBlockModelHelper, AIBlockOutputStatus},
             },
             history_model::BlocklistAIHistoryModel,
             inline_action::{
                 ask_user_question_view::AskUserQuestionView,
                 inline_action_header::{
-                    HeaderConfig, InteractionMode, INLINE_ACTION_HEADER_VERTICAL_PADDING,
-                    INLINE_ACTION_HORIZONTAL_PADDING,
+                    HeaderConfig, INLINE_ACTION_HEADER_VERTICAL_PADDING,
+                    INLINE_ACTION_HORIZONTAL_PADDING, InteractionMode,
                 },
                 inline_action_icons::{self, icon_size},
                 requested_action::{
-                    render_requested_action_body_text, render_requested_action_row_for_text,
-                    RenderableAction,
+                    RenderableAction, render_requested_action_body_text,
+                    render_requested_action_row_for_text,
                 },
                 requested_command::RequestedCommand,
                 suggested_unit_tests::SuggestedUnitTestsView,
@@ -92,7 +96,6 @@ use crate::{
                 web_search::WebSearchView,
             },
             keyboard_navigable_buttons::KeyboardNavigableButtons,
-            BlocklistAIActionModel, SuggestionChipView,
         },
         paths::shell_native_absolute_path,
         skills::SkillManager,
@@ -104,30 +107,29 @@ use crate::{
     ui_components::{blended_colors, buttons::icon_button, icons::Icon},
     view_components::action_button::ActionButton,
     workspaces::user_workspaces::UserWorkspaces,
-    FeatureFlag,
 };
 use itertools::Itertools;
 use markdown_parser::{FormattedText, FormattedTextFragment, FormattedTextLine};
 use warp_core::channel::ChannelState;
 
+use super::CONTENT_HORIZONTAL_PADDING;
 use super::common::{
-    format_elapsed_seconds, render_debug_footer, render_failed_output, render_informational_footer,
-    render_output_status_text, render_scrollable_collapsible_content,
-    render_show_full_output_button, render_text_sections,
-    DebugFooterProps, FailedOutputProps, FindContext, OutputBudget, OutputCapProps,
-    TextSectionsProps, MAX_COLLAPSED_OUTPUT_BYTES, MAX_COLLAPSED_OUTPUT_LINES,
-    STATUS_FOOTER_VERTICAL_PADDING, STATUS_ICON_SIZE_DELTA,
+    DebugFooterProps, FailedOutputProps, FindContext, MAX_COLLAPSED_OUTPUT_BYTES,
+    MAX_COLLAPSED_OUTPUT_LINES, OutputBudget, OutputCapProps, STATUS_FOOTER_VERTICAL_PADDING,
+    STATUS_ICON_SIZE_DELTA, TextSectionsProps, format_elapsed_seconds, render_debug_footer,
+    render_failed_output, render_informational_footer, render_output_status_text,
+    render_scrollable_collapsible_content, render_show_full_output_button, render_text_sections,
 };
 use super::imported_comments::render_imported_comments;
 use super::orchestration;
 use super::todos::render_todos;
-use super::CONTENT_HORIZONTAL_PADDING;
 use super::{
-    add_highlights_to_rich_text, render_autonomy_checkbox_setting_speedbump_footer,
-    render_citation_chips, todos::render_completed_todo_items, WithContentItemSpacing,
-    CONTENT_ITEM_VERTICAL_MARGIN,
+    CONTENT_ITEM_VERTICAL_MARGIN, WithContentItemSpacing, add_highlights_to_rich_text,
+    render_autonomy_checkbox_setting_speedbump_footer, render_citation_chips,
+    todos::render_completed_todo_items,
 };
 use warpui::{
+    Action, AppContext, Element, ModelHandle, SingletonEntity, View, ViewHandle,
     elements::{
         Align, Border, ChildView, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment,
         Empty, Expanded, Fill, Flex, FormattedTextElement, Hoverable, MainAxisAlignment,
@@ -136,7 +138,6 @@ use warpui::{
     keymap::Keystroke,
     platform::{Cursor, OperatingSystem},
     ui_components::components::{Coords, UiComponent, UiComponentStyles},
-    Action, AppContext, Element, ModelHandle, SingletonEntity, View, ViewHandle,
 };
 
 /// Data required to render the AI block output component.
@@ -1084,7 +1085,9 @@ pub(super) fn render(props: Props, app: &AppContext) -> Box<dyn Element> {
                                 body_color,
                                 Default::default(),
                             )
-                            .with_heading_to_font_size_multipliers(appearance.heading_font_size_multipliers().clone())
+                            .with_heading_to_font_size_multipliers(
+                                appearance.heading_font_size_multipliers().clone(),
+                            )
                             .set_selectable(true);
 
                             let mut action =

@@ -12,11 +12,11 @@
 //! Use it only when the user's instruction admits multiple reasonable
 //! interpretations and picking the wrong one is costly.
 
+use agent_proto as api;
 use anyhow::Result;
 use serde::{Deserialize, Deserializer};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use uuid::Uuid;
-use agent_proto as api;
 
 use super::OpenAiTool;
 
@@ -215,8 +215,8 @@ fn from_args(args: &str) -> Result<api::message::tool_call::Tool> {
 }
 
 fn result_to_json(result: &api::message::tool_call_result::Result) -> Option<Value> {
-    use api::ask_user_question_result::answer_item::Answer as A;
     use api::ask_user_question_result::Result as AR;
+    use api::ask_user_question_result::answer_item::Answer as A;
     use api::message::tool_call_result::Result as R;
     let r = match result {
         R::AskUserQuestion(r) => r,

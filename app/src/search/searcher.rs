@@ -18,14 +18,14 @@ use tantivy::query::{
     AllQuery, BooleanQuery, BoostQuery, FuzzyTermQuery, Occur, PhrasePrefixQuery, TermQuery,
 };
 use tantivy::schema::{
-    BytesOptions, Field, FieldEntry, IndexRecordOption, OwnedValue, Schema, TextFieldIndexing,
-    STORED, TEXT,
+    BytesOptions, Field, FieldEntry, IndexRecordOption, OwnedValue, STORED, Schema, TEXT,
+    TextFieldIndexing,
 };
 use tantivy::tokenizer::{Token, TokenStream, Tokenizer};
 use tantivy::{
-    snippet::SnippetGenerator, Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, Term,
+    Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, Term, snippet::SnippetGenerator,
 };
-use warpui::r#async::{block_on, executor::Background, Timer};
+use warpui::r#async::{Timer, block_on, executor::Background};
 
 pub type FullTextSearchDocumentEntry = HashMap<String, FullTextSearchFieldValue>;
 
@@ -1054,7 +1054,6 @@ impl<C: SearchSchemaConfig> FullTextSearchSchema<C> {
     pub fn add_search_field(&mut self, field_name: String, weight: f32) {
         self.weighted_search_fields.insert(field_name, weight);
     }
-
 }
 
 pub trait SearchDocumentEntry: FullTextSearchMatchValues {

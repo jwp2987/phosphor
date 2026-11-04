@@ -5,8 +5,8 @@
 // dependency. See specs/warp-oss-sync/SCOPE.md.
 // Vendored from warp_core::async::debounce (Zap's warp_core lacks the async
 // module); a self-contained stream combinator used by the mixer.
-pub mod debounce;
 pub mod data_source;
+pub mod debounce;
 pub mod inline_menu;
 pub mod item;
 pub mod mixer;

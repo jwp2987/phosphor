@@ -4,10 +4,10 @@ use std::{
 };
 
 use futures::{
-    io::{AsyncReadExt, AsyncWriteExt, BufReader},
     AsyncRead, AsyncWrite,
+    io::{AsyncReadExt, AsyncWriteExt, BufReader},
 };
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use uuid::Uuid;
 
 use super::service::ServiceId;

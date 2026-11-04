@@ -9,9 +9,9 @@ use warp::{
     integration_testing::terminal::wait_until_bootstrapped_single_pane_for_tab,
     settings::{BlockVisibilitySettings, ScrollSettings},
 };
-use warpui::{async_assert, async_assert_eq, integration::AssertionOutcome, SingletonEntity};
+use warpui::{SingletonEntity, async_assert, async_assert_eq, integration::AssertionOutcome};
 
-use super::{new_builder, Builder};
+use super::{Builder, new_builder};
 
 /// Verifies that when the `SettingsFile` feature flag is enabled and no TOML
 /// file exists yet, public settings are migrated from the platform-native

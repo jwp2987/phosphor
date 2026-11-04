@@ -1,10 +1,10 @@
 use std::fmt::{Display, Formatter};
 
-use enum_iterator::{all, Sequence};
+use enum_iterator::{Sequence, all};
 use serde::{Deserialize, Serialize};
 use settings::{
-    macros::define_settings_group, RespectUserSyncSetting, Setting as _, SupportedPlatforms,
-    SyncToCloud,
+    RespectUserSyncSetting, Setting as _, SupportedPlatforms, SyncToCloud,
+    macros::define_settings_group,
 };
 use warpui::ModelContext;
 
@@ -169,7 +169,6 @@ impl WarpPromptSeparator {
             Self::ChevronSymbol => ">",
         }
     }
-
 }
 
 define_settings_group!(AppEditorSettings, settings: [
@@ -274,9 +273,10 @@ impl AppEditorSettings {
         // that failed to parse inhibits writes, and I/O errors are now propagated
         // rather than discarded by `Setting::write_to_preferences`), and a failed
         // write must not crash the app.
-        warp_core::report_if_error!(self
-            .cursor_blink
-            .set_value(self.cursor_blink.other_value(), ctx));
+        warp_core::report_if_error!(
+            self.cursor_blink
+                .set_value(self.cursor_blink.other_value(), ctx)
+        );
         ctx.notify();
     }
 

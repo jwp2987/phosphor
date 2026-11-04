@@ -707,7 +707,10 @@ fn test_reset_pane_sizes_only_resets_containing_branch() {
 #[test]
 fn test_divider_mouse_down_action_double_click_resets_sizes() {
     let mouse_state: MouseStateHandle = Default::default();
-    mouse_state.lock().unwrap().set_click_count_for_test(Some(2));
+    mouse_state
+        .lock()
+        .unwrap()
+        .set_click_count_for_test(Some(2));
 
     let border_id = EntityId::new();
     let action = divider_mouse_down_action(
@@ -726,7 +729,10 @@ fn test_divider_mouse_down_action_double_click_resets_sizes() {
 #[test]
 fn test_divider_mouse_down_action_single_click_starts_resizing() {
     let mouse_state: MouseStateHandle = Default::default();
-    mouse_state.lock().unwrap().set_click_count_for_test(Some(1));
+    mouse_state
+        .lock()
+        .unwrap()
+        .set_click_count_for_test(Some(1));
 
     let border_id = EntityId::new();
     let action = divider_mouse_down_action(

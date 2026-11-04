@@ -25,8 +25,8 @@ use warp::{
     cmd_or_ctrl_shift,
     integration_testing::{
         command_palette::{
-            close_command_palette, open_command_palette, open_command_palette_and_run_action,
-            TestStepsExt,
+            TestStepsExt, close_command_palette, open_command_palette,
+            open_command_palette_and_run_action,
         },
         input::input_editor_is_focused,
         secret_redaction::assert_secrets_redacted_for_ai,
@@ -37,7 +37,8 @@ use warp::{
         step::new_step_with_default_assertions,
         tab::{assert_pane_title, assert_tab_title},
         terminal::{
-            assert_selected_block_index_is_last_renderable, clear_blocklist_to_remove_bootstrapped_blocks,
+            assert_selected_block_index_is_last_renderable,
+            clear_blocklist_to_remove_bootstrapped_blocks,
             execute_command_for_single_terminal_in_tab, initialize_secret_regexes,
             util::ExpectedExitStatus, wait_until_bootstrapped_single_pane_for_tab,
         },
@@ -45,11 +46,11 @@ use warp::{
         workspace::assert_tab_count,
     },
     settings_view::{SettingsSection, SettingsView},
-    workspace::{Workspace, NEW_TAB_BUTTON_POSITION_ID},
+    workspace::{NEW_TAB_BUTTON_POSITION_ID, Workspace},
 };
-use warpui::{async_assert, async_assert_eq, integration::TestStep, ViewHandle};
+use warpui::{ViewHandle, async_assert, async_assert_eq, integration::TestStep};
 
-use super::{new_builder, Builder};
+use super::{Builder, new_builder};
 use crate::util::skip_if_powershell_core_2303;
 
 /// The synthetic user query used by the injected dummy AI blocks.
@@ -324,7 +325,9 @@ pub fn usage_find_in_block() -> Builder {
                 .add_assertion(|app, window_id| {
                     let terminal_view = single_terminal_view_for_tab(app, window_id, 0);
                     let num_matches = terminal_view.read(app, |view, ctx| {
-                        view.find_model().as_ref(ctx).visible_block_list_match_count()
+                        view.find_model()
+                            .as_ref(ctx)
+                            .visible_block_list_match_count()
                     });
                     async_assert!(
                         num_matches >= 1,
@@ -456,8 +459,8 @@ pub fn usage_agent_roundtrip() -> Builder {
         .with_step(clear_blocklist_to_remove_bootstrapped_blocks())
         .with_step(insert_dummy_ai_block_step())
         .with_step(
-            new_step_with_default_assertions("Synthetic agent response is present")
-                .add_assertion(|app, window_id| {
+            new_step_with_default_assertions("Synthetic agent response is present").add_assertion(
+                |app, window_id| {
                     let terminal_view = single_terminal_view_for_tab(app, window_id, 0);
                     terminal_view.read(app, |view, ctx| {
                         let Some(ai_block) = view.last_ai_block() else {
@@ -471,7 +474,8 @@ pub fn usage_agent_roundtrip() -> Builder {
                             )
                         })
                     })
-                }),
+                },
+            ),
         )
 }
 

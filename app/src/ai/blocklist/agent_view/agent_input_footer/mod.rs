@@ -6,22 +6,21 @@ pub mod toolbar_item;
 
 use crate::{
     ai::{
+        AIRequestUsageModel,
         blocklist::{
+            BlocklistAIInputModel,
             history_model::{BlocklistAIHistoryEvent, BlocklistAIHistoryModel},
             prompt::prompt_alert::PromptAlertView,
             usage::icon_for_context_window_usage,
-            BlocklistAIInputModel,
         },
         execution_profiles::profiles::AIExecutionProfilesModel,
-        AIRequestUsageModel,
     },
     appearance::Appearance,
     completer::SessionContext,
     context_chips::{
-        self,
+        self, ContextChipKind,
         display_chip::{DisplayChip, DisplayChipConfig, PromptChipShellCommand},
         prompt_type::PromptType,
-        ContextChipKind,
     },
     features::FeatureFlag,
     network::NetworkStatus,
@@ -30,29 +29,28 @@ use crate::{
     settings::{AISettings, AISettingsChangedEvent, CodeSettings, CodeSettingsChangedEvent},
     settings_view::SettingsSection,
     terminal::{
+        CLIAgent, TerminalModel,
         cli_agent_sessions::{
-            CLIAgentInputState, CLIAgentSessionsModel,
-            CLIAgentSessionsModelEvent,
+            CLIAgentInputState, CLIAgentSessionsModel, CLIAgentSessionsModelEvent,
         },
-        input::{models::InlineModelSelectorTab, MenuPositioningProvider},
+        input::{MenuPositioningProvider, models::InlineModelSelectorTab},
         model_events::ModelEvent,
         profile_model_selector::{ProfileModelSelector, ProfileModelSelectorEvent},
         session_settings::{SessionSettings, SessionSettingsChangedEvent, ToolbarChipSelection},
         shared_session::SharedSessionStatus,
+        view::TerminalAction,
         view::ambient_agent::{AmbientAgentViewModel, ModelSelector},
         view::init::OPEN_CLI_AGENT_RICH_INPUT_KEYBINDING,
-        view::TerminalAction,
-        CLIAgent, TerminalModel,
     },
     ui_components::{icon_with_status::render_cli_agent_logo, icons::Icon},
     view_components::{
+        DismissibleToast,
         action_button::{
             ActionButton, ActionButtonTheme, AdjoinedSide, ButtonSize, KeystrokeSource, NakedTheme,
             TooltipAlignment,
         },
-        DismissibleToast,
     },
-    workspace::{view::TOGGLE_PROJECT_EXPLORER_BINDING_NAME, ToastStack},
+    workspace::{ToastStack, view::TOGGLE_PROJECT_EXPLORER_BINDING_NAME},
     workspaces::user_workspaces::UserWorkspaces,
 };
 use toolbar_item::AgentToolbarItemKind;
@@ -60,14 +58,14 @@ use toolbar_item::AgentToolbarItemKind;
 
 use std::sync::Arc;
 
-use crate::terminal::local_shell::LocalShellState;
 use crate::terminal::ShellLaunchData;
+use crate::terminal::local_shell::LocalShellState;
 #[cfg(feature = "voice_input")]
 use crate::voice::transcriber::TranscribeError;
 use ai::document::{AIDocumentId, AIDocumentVersion};
 use parking_lot::FairMutex;
 use pathfinder_color::ColorU;
-use pathfinder_geometry::vector::{vec2f, Vector2F};
+use pathfinder_geometry::vector::{Vector2F, vec2f};
 use settings::Setting;
 use settings::ToggleableSetting;
 use std::env;
@@ -80,22 +78,22 @@ use voice_input::{StartListeningError, VoiceSessionResult};
 use warp_core::{
     report_if_error,
     ui::{
-        color::{blend::Blend, contrast::MinimumAllowedContrast, ContrastingColor},
-        theme::{color::internal_colors, Fill},
+        color::{ContrastingColor, blend::Blend, contrast::MinimumAllowedContrast},
+        theme::{Fill, color::internal_colors},
     },
 };
 #[cfg(feature = "voice_input")]
 use warpui::r#async::SpawnedFutureHandle;
 use warpui::{
-    elements::{
-        Border, ChildAnchor, ChildView, Clipped, ConstrainedBox, Container, CornerRadius,
-        CrossAxisAlignment, DispatchEventResult, Element, EventHandler, Expanded, Flex,
-        MainAxisAlignment, MainAxisSize, OffsetPositioning, ParentElement, PositionedElementAnchor,
-        PositionedElementOffsetBounds, Radius, Shrinkable, Stack, Text, Wrap, WrapFill,
-        WrapFillEntireRun, DEFAULT_UI_LINE_HEIGHT_RATIO,
-    },
     AppContext, Entity, EntityId, ModelHandle, SingletonEntity, TypedActionView, View, ViewContext,
     ViewHandle,
+    elements::{
+        Border, ChildAnchor, ChildView, Clipped, ConstrainedBox, Container, CornerRadius,
+        CrossAxisAlignment, DEFAULT_UI_LINE_HEIGHT_RATIO, DispatchEventResult, Element,
+        EventHandler, Expanded, Flex, MainAxisAlignment, MainAxisSize, OffsetPositioning,
+        ParentElement, PositionedElementAnchor, PositionedElementOffsetBounds, Radius, Shrinkable,
+        Stack, Text, Wrap, WrapFill, WrapFillEntireRun,
+    },
 };
 
 use warpui::r#async::Timer;
@@ -107,8 +105,8 @@ pub(crate) use self::reasoning_depth_selector::{
 };
 use crate::server::telemetry::PluginChipTelemetryAction;
 use crate::terminal::cli_agent_sessions::plugin_manager::{
-    compare_versions, plugin_manager_for, plugin_manager_for_with_shell, CliAgentPluginManager,
-    PluginInstallError, PluginModalKind,
+    CliAgentPluginManager, PluginInstallError, PluginModalKind, compare_versions,
+    plugin_manager_for, plugin_manager_for_with_shell,
 };
 use crate::view_components::ToastLink;
 use crate::workspace::WorkspaceAction;
@@ -2103,9 +2101,11 @@ impl TypedActionView for AgentInputFooter {
             AgentInputFooterAction::ToggleAutodetectionSetting => {
                 let ai_settings = AISettings::handle(ctx);
                 ai_settings.update(ctx, |settings, ctx| {
-                    report_if_error!(settings
-                        .ai_autodetection_enabled_internal
-                        .toggle_and_save_value(ctx));
+                    report_if_error!(
+                        settings
+                            .ai_autodetection_enabled_internal
+                            .toggle_and_save_value(ctx)
+                    );
                 });
             }
             AgentInputFooterAction::DismissFtuModelCallout => {
@@ -2115,35 +2115,31 @@ impl TypedActionView for AgentInputFooter {
                 }
             }
             AgentInputFooterAction::InstallPlugin => {
-                {
-                    if let Some(agent) = self.cli_agent(ctx) {
-                        send_telemetry_from_ctx!(
-                            TelemetryEvent::CLIAgentPluginChipClicked {
-                                cli_agent: agent.into(),
-                                action: PluginChipTelemetryAction::Install,
-                            },
-                            ctx
-                        );
-                    }
-                    if !self.handle_install_plugin(ctx) {
-                        self.record_plugin_auto_failure_and_notify(ctx);
-                    }
+                if let Some(agent) = self.cli_agent(ctx) {
+                    send_telemetry_from_ctx!(
+                        TelemetryEvent::CLIAgentPluginChipClicked {
+                            cli_agent: agent.into(),
+                            action: PluginChipTelemetryAction::Install,
+                        },
+                        ctx
+                    );
+                }
+                if !self.handle_install_plugin(ctx) {
+                    self.record_plugin_auto_failure_and_notify(ctx);
                 }
             }
             AgentInputFooterAction::UpdatePlugin => {
-                {
-                    if let Some(agent) = self.cli_agent(ctx) {
-                        send_telemetry_from_ctx!(
-                            TelemetryEvent::CLIAgentPluginChipClicked {
-                                cli_agent: agent.into(),
-                                action: PluginChipTelemetryAction::Update,
-                            },
-                            ctx
-                        );
-                    }
-                    if !self.handle_update_plugin(ctx) {
-                        self.record_plugin_auto_failure_and_notify(ctx);
-                    }
+                if let Some(agent) = self.cli_agent(ctx) {
+                    send_telemetry_from_ctx!(
+                        TelemetryEvent::CLIAgentPluginChipClicked {
+                            cli_agent: agent.into(),
+                            action: PluginChipTelemetryAction::Update,
+                        },
+                        ctx
+                    );
+                }
+                if !self.handle_update_plugin(ctx) {
+                    self.record_plugin_auto_failure_and_notify(ctx);
                 }
             }
             AgentInputFooterAction::OpenPluginInstallInstructionsPane => {

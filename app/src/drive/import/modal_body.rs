@@ -2,16 +2,16 @@ use futures_util::stream::AbortHandle;
 use pathfinder_geometry::vector::vec2f;
 use std::path::PathBuf;
 use warpui::{
+    AppContext, Element, Entity, ModelHandle, SingletonEntity, TypedActionView, View, ViewContext,
     elements::{
         Align, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Flex,
         MainAxisAlignment, MainAxisSize, MouseStateHandle, ParentElement, Radius,
     },
-    platform::{file_picker::FilePickerError, Cursor},
+    platform::{Cursor, file_picker::FilePickerError},
     ui_components::{
         button::{ButtonVariant, TextAndIcon, TextAndIconAlignment},
         components::{Coords, UiComponent, UiComponentStyles},
     },
-    AppContext, Element, Entity, ModelHandle, SingletonEntity, TypedActionView, View, ViewContext,
 };
 
 use crate::{
@@ -26,7 +26,7 @@ use crate::{
 use super::{
     modal::BODY_HEIGHT,
     nodes::{
-        expand_dirs, parse_file, FileContent, FileId, FileUploadState, FolderId, UploadResult,
+        FileContent, FileId, FileUploadState, FolderId, UploadResult, expand_dirs, parse_file,
     },
     queue::{ImportQueue, ImportQueueArgs, ImportQueueEvent, ParentId, RequestContent},
 };
@@ -38,8 +38,7 @@ pub(super) const IMPORT_FONT_SIZE: f32 = 14.;
 pub(super) const INDENT_MARGIN: f32 = 22.;
 pub(super) const BASE_INDENT: f32 = 30.;
 
-const FILE_TYPE_DOCS_URL: &str =
-    "";
+const FILE_TYPE_DOCS_URL: &str = "";
 const SUPPORTED_FILE_TYPE_TEXT: &str = "md, yaml, yml";
 
 #[cfg(test)]

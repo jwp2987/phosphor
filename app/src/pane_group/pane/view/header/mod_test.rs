@@ -1,18 +1,18 @@
 use warp_core::ui::appearance::Appearance;
 use warpui::{
-    elements::Empty, platform::WindowStyle, App, AppContext, Element, Entity, TypedActionView,
-    View, ViewContext,
+    App, AppContext, Element, Entity, TypedActionView, View, ViewContext, elements::Empty,
+    platform::WindowStyle,
 };
 
 use crate::{
+    NetworkStatus, UpdateManager, UserProfiles, UserWorkspaces,
     ai::blocklist::BlocklistAIHistoryModel,
     auth::AuthStateProvider,
     cloud_object::model::persistence::ObjectStoreModel,
     menu::MenuItemFields,
-    pane_group::{focus_state::PaneFocusHandle, BackingView, PaneConfiguration, PaneId, PaneView},
+    pane_group::{BackingView, PaneConfiguration, PaneId, PaneView, focus_state::PaneFocusHandle},
     settings_view::keybindings::KeybindingChangedNotifier,
     test_util::settings::initialize_settings_for_tests,
-    NetworkStatus, UpdateManager, UserProfiles, UserWorkspaces,
 };
 
 use super::{Event, OpenOverlay};
@@ -132,9 +132,11 @@ fn test_overflow_menu_items() {
         let overflow_menu = header.read(&app, |header, _ctx| header.overflow_menu.to_owned());
 
         let menu_item_label = "Increment counter";
-        let menu_items = vec![MenuItemFields::new(menu_item_label)
-            .with_on_select_action(TestViewAction::IncrementCounter)
-            .into_item()];
+        let menu_items = vec![
+            MenuItemFields::new(menu_item_label)
+                .with_on_select_action(TestViewAction::IncrementCounter)
+                .into_item(),
+        ];
 
         // Set the menu items and open the menu.
         header.update(&mut app, |header, ctx| {

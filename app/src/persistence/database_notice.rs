@@ -7,8 +7,8 @@
 //! only remedy is to say so.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Why the database cannot be used.
 #[derive(Clone, Debug, PartialEq, Eq)]

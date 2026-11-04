@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use crate::{banner::BannerState, resource_center::Tip};
 use warp_core::settings::{
-    macros::define_settings_group, RespectUserSyncSetting, SupportedPlatforms, SyncToCloud,
+    RespectUserSyncSetting, SupportedPlatforms, SyncToCloud, macros::define_settings_group,
 };
 
 /// Default for `general.quit_on_last_window_closed`. On (#1154): the app must not be

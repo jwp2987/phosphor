@@ -1,14 +1,14 @@
 use super::*;
-use crate::elements::DispatchEventResult;
 use crate::r#async::Timer;
+use crate::elements::DispatchEventResult;
 use crate::{
+    App, AppContext, Entity, Event, Presenter, TypedActionView, ViewContext, WindowInvalidation,
     elements::{
         ChildAnchor, ConstrainedBox, EventHandler, OffsetPositioning, ParentAnchor, ParentElement,
         ParentOffsetBounds, Rect, Stack, Text,
     },
     fonts::FamilyId,
     platform::WindowStyle,
-    App, AppContext, Entity, Event, Presenter, TypedActionView, ViewContext, WindowInvalidation,
 };
 use pathfinder_geometry::vector::vec2f;
 use std::{

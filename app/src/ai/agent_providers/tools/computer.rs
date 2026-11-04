@@ -71,10 +71,10 @@
 //! The three tables are compiled on every platform (selection is `cfg!`, not `#[cfg]`) so all
 //! of them stay type-checked and testable from any host.
 
+use agent_proto as api;
 use anyhow::{Result, anyhow, bail};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use agent_proto as api;
 
 use super::OpenAiTool;
 
@@ -1361,8 +1361,7 @@ pub static USE_COMPUTER: OpenAiTool = OpenAiTool {
 /// text when `AttachmentCaps::images` is set — a tool description that tells a sighted model it
 /// is blind is worse than no description at all: it stops the model looking at an image that is
 /// right there.
-const USE_COMPUTER_DESCRIPTION_SIGHTED: &str =
-    "Drive the user's mouse and keyboard: move, click, scroll, type, and press keys, optionally \
+const USE_COMPUTER_DESCRIPTION_SIGHTED: &str = "Drive the user's mouse and keyboard: move, click, scroll, type, and press keys, optionally \
      against one specific window. Only usable after request_computer_use has been approved in \
      this conversation — that call is also how you learn the screen dimensions and the \
      window_id / pid values you may target. Actions run in order, so batch a whole interaction \
@@ -1376,8 +1375,7 @@ const USE_COMPUTER_DESCRIPTION_SIGHTED: &str =
      stay inside what they asked for.";
 
 /// `request_computer_use`'s description for a model that *can* see the attached screenshot.
-const REQUEST_COMPUTER_USE_DESCRIPTION_SIGHTED: &str =
-    "Ask the user for permission to control their computer, and on approval learn the screen \
+const REQUEST_COMPUTER_USE_DESCRIPTION_SIGHTED: &str = "Ask the user for permission to control their computer, and on approval learn the screen \
      dimensions, the platform, and the list of on-screen windows you may target. Call this once \
      before any use_computer call in the conversation; use_computer runs without a further \
      prompt because the user already approved here. Only use it when the task genuinely needs \

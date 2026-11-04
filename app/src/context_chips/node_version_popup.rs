@@ -6,14 +6,14 @@ use warpui::elements::{
 };
 use warpui::fonts::FamilyId;
 use warpui::{
+    AppContext, Element, Entity, ModelHandle, SingletonEntity, TypedActionView, View, ViewContext,
+    ViewHandle,
     elements::{
         ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, DropShadow, Flex,
         MainAxisAlignment, MainAxisSize, Radius, Text,
     },
     fonts::Properties,
     keymap::FixedBinding,
-    AppContext, Element, Entity, ModelHandle, SingletonEntity, TypedActionView, View, ViewContext,
-    ViewHandle,
 };
 
 use crate::menu::{self, Event as MenuEvent, Menu, MenuItemFields};

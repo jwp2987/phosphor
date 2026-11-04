@@ -1,28 +1,28 @@
 use warp_core::ui::appearance::Appearance;
 use warpui::{
-    platform::WindowStyle, AddSingletonModel, App, SingletonEntity, TypedActionView, ViewHandle,
+    AddSingletonModel, App, SingletonEntity, TypedActionView, ViewHandle, platform::WindowStyle,
 };
 
 use crate::{
+    Assets,
     ai::blocklist::BlocklistAIHistoryModel,
     auth::{AuthManager, AuthStateProvider},
     cloud_object::{
+        ObjectType, Owner, Space, StoredObjectSyncStatus,
         model::{
             actions::ObjectActions, persistence::ObjectStoreModel, view::ObjectStoreViewModel,
         },
         update_manager::UpdateManager,
-        ObjectType, Owner, Space, StoredObjectSyncStatus,
     },
-    drive::{items::WarpDriveItemId, ObjectTypeAndId},
+    drive::{ObjectTypeAndId, items::WarpDriveItemId},
     menu::MenuItem,
     network::NetworkStatus,
     notebooks::{NotebookObject, NotebookObjectModel},
     server::ids::{ClientId, SyncId},
     settings_view::keybindings::KeybindingChangedNotifier,
     test_util::settings::initialize_settings_for_tests,
-    workflows::{workflow::Workflow, WorkflowObject, WorkflowObjectModel},
+    workflows::{WorkflowObject, WorkflowObjectModel, workflow::Workflow},
     workspaces::{user_profiles::UserProfiles, user_workspaces::UserWorkspaces},
-    Assets,
 };
 
 use super::{DriveIndex, DriveIndexAction};

@@ -16,7 +16,6 @@
 // re-pin conflict for no gain. Drop this attribute once the module is fully wired
 // and check what is genuinely dead then.
 
-
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;

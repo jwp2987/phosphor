@@ -21,8 +21,8 @@ use warpui::elements::{
 use warpui::keymap::FixedBinding;
 use warpui::ui_components::toggle_menu::ToggleMenuStateHandle;
 use warpui::{
-    elements::{Border, Container, CrossAxisAlignment, Flex, ParentElement},
     AppContext, Element, Entity, SingletonEntity, TypedActionView, View, ViewContext,
+    elements::{Border, Container, CrossAxisAlignment, Flex, ParentElement},
 };
 use warpui::{BlurContext, FocusContext};
 

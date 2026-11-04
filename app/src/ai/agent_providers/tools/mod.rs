@@ -23,14 +23,14 @@
 pub mod ask;
 pub mod codebase;
 pub mod codebase_runtime;
-pub mod get_relevant_files;
-pub mod get_relevant_files_runtime;
 pub mod coerce;
 pub mod computer;
 pub mod documents;
 pub mod edit;
 pub mod exa;
 pub mod files;
+pub mod get_relevant_files;
+pub mod get_relevant_files_runtime;
 pub mod long_shell;
 pub mod markers;
 pub mod mcp;
@@ -43,9 +43,9 @@ pub mod web_runtime;
 pub mod webfetch;
 pub mod websearch;
 
+use agent_proto as api;
 use anyhow::Result;
 use serde_json::Value;
-use agent_proto as api;
 
 use crate::ai::agent::AIAgentActionResult;
 

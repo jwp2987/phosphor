@@ -11,6 +11,8 @@ use crate::{
 };
 use pathfinder_geometry::vector::vec2f;
 use warpui::{
+    AppContext, Entity, EntityId, ModelHandle, SingletonEntity, TypedActionView, View, ViewContext,
+    ViewHandle, WindowId,
     elements::{
         Align, ClippedScrollStateHandle, ClippedScrollable, Container, CornerRadius, Element,
         Empty, Fill, Flex, Hoverable, Icon, MainAxisAlignment, MainAxisSize, MouseStateHandle,
@@ -22,21 +24,19 @@ use warpui::{
         button::{ButtonVariant, TextAndIcon, TextAndIconAlignment},
         components::{Coords, UiComponent, UiComponentStyles},
     },
-    AppContext, Entity, EntityId, ModelHandle, SingletonEntity, TypedActionView, View, ViewContext,
-    ViewHandle, WindowId,
 };
 
 use crate::{appearance::Appearance, workspace::WorkspaceAction};
 
 use super::{
-    section_views::{
-        feature_section::FeatureSectionEvent, SectionViewHandle, BUTTON_PADDING, DETAIL_FONT_SIZE,
-        FOOTER_ICON_SIZE, SCROLLBAR_OFFSET, SCROLLBAR_WIDTH, SECTION_SPACING,
-        SECTION_SPACING_BOTTOM,
-    },
-    sections::sections,
     ChangelogSectionView, ContentSectionData, ContentSectionView, FeatureSection,
     FeatureSectionData, FeatureSectionView, Section, TipsCompleted,
+    section_views::{
+        BUTTON_PADDING, DETAIL_FONT_SIZE, FOOTER_ICON_SIZE, SCROLLBAR_OFFSET, SCROLLBAR_WIDTH,
+        SECTION_SPACING, SECTION_SPACING_BOTTOM, SectionViewHandle,
+        feature_section::FeatureSectionEvent,
+    },
+    sections::sections,
 };
 
 const SEND_SVG_PATH: &str = "bundled/svg/send.svg";

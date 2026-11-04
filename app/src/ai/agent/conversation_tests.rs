@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 
 use super::{
-    artifact_from_fork_proto, AIConversation, AIConversationAutoexecuteMode, AIConversationId,
-    ConversationStatus, RestoreConversationError, TaskId,
+    AIConversation, AIConversationAutoexecuteMode, AIConversationId, ConversationStatus,
+    RestoreConversationError, TaskId, artifact_from_fork_proto,
 };
 use crate::ai::artifacts::Artifact;
 use crate::ai::blocklist::{
-    block::cli_controller::LongRunningCommandControlState, SerializedBlockListItem,
+    SerializedBlockListItem, block::cli_controller::LongRunningCommandControlState,
 };
 use crate::ai::byop_readiness::{
     InvalidRepairState, RepairRecord, RepairSource, RepairState, RepairStateLoadError,
@@ -14,12 +14,12 @@ use crate::ai::byop_readiness::{
 };
 use crate::persistence::model::AgentConversationData;
 use crate::persistence::{ModelEvent, PersistedTaskRetention};
+use crate::terminal::model::BlockId;
 use crate::terminal::model::block::{
     AgentInteractionMetadata, AgentViewVisibility, SerializedAIMetadata, SerializedBlock,
 };
-use crate::terminal::model::BlockId;
-use warp_core::features::FeatureFlag;
 use agent_proto as api;
+use warp_core::features::FeatureFlag;
 
 fn restored_conversation(conversation_data: Option<AgentConversationData>) -> AIConversation {
     AIConversation::new_restored(
@@ -174,7 +174,11 @@ fn run_shell_command_tool() -> api::message::tool_call::Tool {
     })
 }
 
-fn tool_call_message_with_tool(id: &str, call_id: &str, tool: api::message::tool_call::Tool) -> api::Message {
+fn tool_call_message_with_tool(
+    id: &str,
+    call_id: &str,
+    tool: api::message::tool_call::Tool,
+) -> api::Message {
     api::Message {
         id: id.to_string(),
         task_id: "root-task".to_string(),
@@ -501,11 +505,7 @@ fn test_cli_subagent_serialized_block_preserves_block_id_and_metadata() {
             api::Task {
                 id: "root-task".to_string(),
                 messages: vec![
-                    tool_call_message_with_tool(
-                        "tool-call-1",
-                        "call-1",
-                        run_shell_command_tool(),
-                    ),
+                    tool_call_message_with_tool("tool-call-1", "call-1", run_shell_command_tool()),
                     tool_call_result_message_with_result(
                         "tool-result-1",
                         "call-1",
@@ -996,10 +996,12 @@ fn is_done_only_includes_success_error_cancelled() {
     assert!(ConversationStatus::Cancelled.is_done());
 
     assert!(!ConversationStatus::InProgress.is_done());
-    assert!(!ConversationStatus::Blocked {
-        blocked_action: "approve".to_string()
-    }
-    .is_done());
+    assert!(
+        !ConversationStatus::Blocked {
+            blocked_action: "approve".to_string()
+        }
+        .is_done()
+    );
     assert!(!ConversationStatus::WaitingForEvents.is_done());
 }
 
@@ -1012,10 +1014,12 @@ fn is_waiting_for_events_returns_true_only_for_waiting_for_events_variant() {
     assert!(!ConversationStatus::Success.is_waiting_for_events());
     assert!(!ConversationStatus::Error.is_waiting_for_events());
     assert!(!ConversationStatus::Cancelled.is_waiting_for_events());
-    assert!(!ConversationStatus::Blocked {
-        blocked_action: "approve".to_string()
-    }
-    .is_waiting_for_events());
+    assert!(
+        !ConversationStatus::Blocked {
+            blocked_action: "approve".to_string()
+        }
+        .is_waiting_for_events()
+    );
 }
 
 #[test]

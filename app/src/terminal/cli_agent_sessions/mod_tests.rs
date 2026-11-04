@@ -4,7 +4,7 @@ use warpui::r#async::Timer;
 use warpui::{App, EntityId};
 
 use super::event::{
-    parse_event, CLIAgentEvent, CLIAgentEventPayload, CLIAgentEventSource, CLIAgentEventType,
+    CLIAgentEvent, CLIAgentEventPayload, CLIAgentEventSource, CLIAgentEventType, parse_event,
 };
 use super::{
     CLIAgentInputEntrypoint, CLIAgentInputState, CLIAgentSession, CLIAgentSessionContext,
@@ -924,7 +924,10 @@ fn failed_status_latches_until_the_next_prompt() {
             None,
             "{event_type:?} must not clear a failed status"
         );
-        assert!(matches!(session.status, CLIAgentSessionStatus::Failed { .. }));
+        assert!(matches!(
+            session.status,
+            CLIAgentSessionStatus::Failed { .. }
+        ));
     }
 
     assert_eq!(

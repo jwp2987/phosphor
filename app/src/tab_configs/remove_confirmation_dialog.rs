@@ -3,18 +3,18 @@ use std::path::PathBuf;
 use pathfinder_geometry::vector::vec2f;
 use warp_core::ui::theme::Fill;
 use warpui::{
+    AppContext, Element, Entity, SingletonEntity, TypedActionView, View, ViewContext, ViewHandle,
     elements::{
         Align, ChildAnchor, ChildView, Container, OffsetPositioning, ParentAnchor,
         ParentOffsetBounds, Stack,
     },
     keymap::{FixedBinding, Keystroke},
     ui_components::components::{UiComponent, UiComponentStyles},
-    AppContext, Element, Entity, SingletonEntity, TypedActionView, View, ViewContext, ViewHandle,
 };
 
 use crate::{
     appearance::Appearance,
-    ui_components::dialog::{dialog_styles, Dialog},
+    ui_components::dialog::{Dialog, dialog_styles},
     view_components::action_button::{
         ActionButton, DangerPrimaryTheme, KeystrokeSource, NakedTheme,
     },

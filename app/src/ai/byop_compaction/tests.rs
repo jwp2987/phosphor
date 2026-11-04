@@ -2,14 +2,14 @@
 //!
 //! e2e integration tests will be added once Phase 3 (state + message_view) lands.
 
-use super::algorithm::{prune_decisions, select, turns, MessageRef, Role, ToolOutputRef};
+use super::algorithm::{MessageRef, Role, ToolOutputRef, prune_decisions, select, turns};
 use super::commit::commit_summarization;
-use super::config::{model_limit_from_parts, CompactionConfig};
+use super::config::{CompactionConfig, model_limit_from_parts};
 use super::consts::*;
 use super::overflow::{
     ModelLimit, OverflowVerdict, TokenCounts, is_overflow, overflow_verdict, usable,
 };
-use super::prompt::{build_continue_message, build_prompt, SUMMARY_TEMPLATE};
+use super::prompt::{SUMMARY_TEMPLATE, build_continue_message, build_prompt};
 use super::token::estimate;
 use crate::ai::agent::conversation::{AIConversation, AIConversationId};
 use agent_proto as api;
@@ -1164,7 +1164,7 @@ fn turn_has_tool_calls_only_counts_the_new_turn() {
 
 #[test]
 fn auto_compaction_is_limited_to_one_per_turn() {
-    use super::{auto_compaction_decision as d, AutoCompactionDecision as D};
+    use super::{AutoCompactionDecision as D, auto_compaction_decision as d};
     assert_eq!(d(false, false), D::None);
     assert_eq!(d(false, true), D::None);
     assert_eq!(d(true, false), D::Compact);

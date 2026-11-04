@@ -9,7 +9,7 @@ use crate::search::{
     mixer::{DataSourceRunErrorWrapper, SyncDataSource},
 };
 use crate::terminal::available_shells::AvailableShells;
-use fuzzy_match::{match_indices_case_insensitive, FuzzyMatchResult};
+use fuzzy_match::{FuzzyMatchResult, match_indices_case_insensitive};
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 use warp_core::features::FeatureFlag;

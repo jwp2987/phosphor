@@ -6,7 +6,7 @@ use warp_cli::agent::Harness;
 use warp_core::ui::theme::WarpTheme;
 use warpui::color::ColorU;
 
-use crate::ai::artifacts::{deserialize_artifacts, Artifact};
+use crate::ai::artifacts::{Artifact, deserialize_artifacts};
 use crate::ui_components::icons::Icon;
 
 use super::AmbientAgentTaskId;

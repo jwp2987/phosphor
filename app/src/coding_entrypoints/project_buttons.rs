@@ -4,9 +4,10 @@ use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::Vector2F;
 use warp_core::{
     features::FeatureFlag,
-    ui::{appearance::Appearance, color::blend::Blend as _, theme::color::internal_colors, Icon},
+    ui::{Icon, appearance::Appearance, color::blend::Blend as _, theme::color::internal_colors},
 };
 use warpui::{
+    AppContext, Element, Entity, SingletonEntity as _, TypedActionView, View, ViewContext,
     elements::{
         ChildAnchor, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, DropShadow,
         Expanded, Flex, Hoverable, MouseStateHandle, OffsetPositioning, ParentAnchor,
@@ -14,12 +15,11 @@ use warpui::{
     },
     fonts::Weight,
     keymap::EditableBinding,
-    platform::{file_picker::FilePickerError, Cursor, FilePickerConfiguration},
+    platform::{Cursor, FilePickerConfiguration, file_picker::FilePickerError},
     ui_components::components::{UiComponent as _, UiComponentStyles},
-    AppContext, Element, Entity, SingletonEntity as _, TypedActionView, View, ViewContext,
 };
 
-use crate::util::bindings::{keybinding_name_to_display_string, BindingGroup, CustomAction};
+use crate::util::bindings::{BindingGroup, CustomAction, keybinding_name_to_display_string};
 
 const BUTTON_MIN_WIDTH: f32 = 149.;
 

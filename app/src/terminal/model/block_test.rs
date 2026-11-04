@@ -10,7 +10,7 @@ use crate::{
         header_grid::PromptEndPoint,
         session::SessionInfo,
         test_utils::{
-            block_size, create_test_block_with_grids, test_iterm_image, TestBlockBuilder,
+            TestBlockBuilder, block_size, create_test_block_with_grids, test_iterm_image,
         },
     },
     test_util::mock_blockgrid,
@@ -425,10 +425,12 @@ pub fn test_command_grid_bold() {
     block.prompt_only_precmd(PromptMetadata::default());
 
     // We should have the BOLD flag enabled for commands, once we've started the command grid.
-    assert!(block
-        .header_grid
-        .command_cursor_flags()
-        .contains(Flags::BOLD));
+    assert!(
+        block
+            .header_grid
+            .command_cursor_flags()
+            .contains(Flags::BOLD)
+    );
 
     for c in "command".chars() {
         block.input(c);
@@ -447,20 +449,24 @@ pub fn test_command_grid_bold_after_reset() {
     block.prompt_only_precmd(PromptMetadata::default());
 
     // We should have the BOLD flag enabled for commands, once we've started the command grid.
-    assert!(block
-        .header_grid
-        .command_cursor_flags()
-        .contains(Flags::BOLD));
+    assert!(
+        block
+            .header_grid
+            .command_cursor_flags()
+            .contains(Flags::BOLD)
+    );
 
     for c in "command".chars() {
         block.input(c);
     }
     // Even after a Reset, we should still re-enable the BOLD flag.
     block.terminal_attribute(Attr::Reset);
-    assert!(block
-        .header_grid
-        .command_cursor_flags()
-        .contains(Flags::BOLD));
+    assert!(
+        block
+            .header_grid
+            .command_cursor_flags()
+            .contains(Flags::BOLD)
+    );
 
     block.finish(0);
 
@@ -643,7 +649,10 @@ pub fn test_lazily_started_block_at_preexec_is_not_padded() {
     let mut lazy = TestBlockBuilder::new().build();
     lazy.prompt_only_precmd(PromptMetadata::default());
     echo(&mut lazy);
-    assert!(!lazy.started(), "fixture must exercise the lazy start, or this proves nothing");
+    assert!(
+        !lazy.started(),
+        "fixture must exercise the lazy start, or this proves nothing"
+    );
     lazy.preexec(Default::default());
     assert!(lazy.started());
     lazy.finish(0);

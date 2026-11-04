@@ -1,14 +1,14 @@
 use warpui::{
+    AppContext, Element,
     elements::{Flex, MouseStateHandle, ParentElement},
     fonts::Weight,
     ui_components::components::{UiComponent, UiComponentStyles},
-    AppContext, Element,
 };
 
 use crate::{
     appearance::Appearance,
     cloud_object::StoredObjectMetadata,
-    drive::{index::DriveIndexAction, DriveObjectType, ObjectTypeAndId},
+    drive::{DriveObjectType, ObjectTypeAndId, index::DriveIndexAction},
     notebooks::NotebookObject,
     themes::theme::Fill,
 };

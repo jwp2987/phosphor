@@ -197,13 +197,13 @@ use crate::{
 use lazy_static::lazy_static;
 use pathfinder_geometry::{rect::RectF, vector::Vector2F};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use settings::Setting as _;
 use std::{collections::HashMap, ops::Mul, path::PathBuf};
 use warp_core::features::FeatureFlag;
 use warpui::{
-    elements::DEFAULT_UI_LINE_HEIGHT_RATIO, keymap::Keystroke, AppContext, DisplayIdx,
-    SingletonEntity,
+    AppContext, DisplayIdx, SingletonEntity, elements::DEFAULT_UI_LINE_HEIGHT_RATIO,
+    keymap::Keystroke,
 };
 
 // The following are user preferences keys.

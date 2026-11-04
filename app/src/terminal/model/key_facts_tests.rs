@@ -648,7 +648,10 @@ fn a_published_shell_prompt_stays_a_shell_prompt_through_the_echo_of_a_line() {
     parse_slice_like_the_event_loop(&mut model, "echo B");
     let read = load_consistent(&model.key_facts_cell(), &model.key_model_cell());
     assert!(read.snapshot.unterminated_since_gen.is_some());
-    assert!(read.snapshot.unterminated_is_shell, "the echo does not unlatch it");
+    assert!(
+        read.snapshot.unterminated_is_shell,
+        "the echo does not unlatch it"
+    );
     parse_slice_like_the_event_loop(&mut model, "\r\nout\r\n");
     let read = load_consistent(&model.key_facts_cell(), &model.key_model_cell());
     assert!(!read.snapshot.unterminated_is_shell, "the episode ended");

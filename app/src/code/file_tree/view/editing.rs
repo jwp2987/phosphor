@@ -9,13 +9,13 @@ use repo_metadata::{FileMetadata, FileTreeEntry};
 use std::cmp::Ordering;
 use std::sync::Arc;
 use warp_util::standardized_path::StandardizedPath;
-use warpui::{elements::MouseStateHandle, ViewContext};
+use warpui::{ViewContext, elements::MouseStateHandle};
 
 use super::{FileTreeIdentifier, FileTreeItem, FileTreeView};
 use crate::{
     code::file_tree::{
-        view::{PendingEdit, PendingEditKind},
         FileTreeEvent,
+        view::{PendingEdit, PendingEditKind},
     },
     send_telemetry_from_ctx,
     server::telemetry::TelemetryEvent,

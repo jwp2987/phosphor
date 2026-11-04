@@ -3,12 +3,12 @@ use warpui::{AppContext, Entity, ModelContext, SingletonEntity};
 use crate::{
     ai::document::ai_document_model::AIDocumentId,
     cloud_object::{
+        Owner, Space, StoredObject,
         breadcrumbs::ContainingObject,
         model::{
             persistence::{ObjectStoreEvent, ObjectStoreModel},
             view::{Editor, EditorState, ObjectStoreViewModel},
         },
-        Owner, Space, StoredObject,
     },
     drive::sharing::{ContentEditability, SharingAccessLevel},
     notebooks::NotebookObject,

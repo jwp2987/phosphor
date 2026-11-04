@@ -411,11 +411,14 @@ mod unix {
   *) echo "unexpected: $*"; exit 9 ;;
 esac"#,
             );
-            let executor = LocalCommandExecutor::new(
-                Some("/nonexistent/pwsh".into()),
-                ShellType::PowerShell,
-            );
-            let env = || Some(HashMap::from([("PATH".to_owned(), bin.path().display().to_string())]));
+            let executor =
+                LocalCommandExecutor::new(Some("/nonexistent/pwsh".into()), ShellType::PowerShell);
+            let env = || {
+                Some(HashMap::from([(
+                    "PATH".to_owned(),
+                    bin.path().display().to_string(),
+                )]))
+            };
             let text = |generator: crate::context_chips::context_chip::ShellCommandGenerator| {
                 generator
                     .command()

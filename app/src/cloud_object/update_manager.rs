@@ -6,19 +6,19 @@ use crate::{
     },
     auth::TEST_USER_UID,
     cloud_object::{
+        GenericStoredObject, GenericStringObjectFormat, JsonObjectType, ObjectIdType, ObjectType,
+        Owner, Revision, Space, StoredObject, StoredObjectEventEntrypoint, StoredObjectLocation,
+        StoredObjectModel,
         model::{
             actions::{ObjectActionType, ObjectActions},
             generic_string_model::GenericStringObjectId,
             persistence::{ObjectStoreEvent, ObjectStoreModel, UpdateSource},
             view::{Editor, EditorState, ObjectStoreViewModel},
         },
-        GenericStoredObject, GenericStringObjectFormat, JsonObjectType, ObjectIdType, ObjectType,
-        Owner, Revision, Space, StoredObject, StoredObjectEventEntrypoint, StoredObjectLocation,
-        StoredObjectModel,
     },
     drive::{
-        folders::{FolderId, FolderObjectModel},
         ObjectTypeAndId,
+        folders::{FolderId, FolderObjectModel},
     },
     env_vars::{EnvVarCollection, EnvVarCollectionObjectModel},
     notebooks::{NotebookId, NotebookObjectModel},
@@ -26,9 +26,9 @@ use crate::{
     server::ids::{ClientId, HashableId, ObjectUid, ServerId, SyncId, ToServerId},
     server_time::ServerTimestamp,
     workflows::{
+        WorkflowId, WorkflowObjectModel,
         workflow::Workflow,
         workflow_enum::{WorkflowEnum, WorkflowEnumObject, WorkflowEnumObjectModel},
-        WorkflowId, WorkflowObjectModel,
     },
     workspaces::user_workspaces::UserWorkspaces,
 };
@@ -38,9 +38,9 @@ use itertools::Itertools;
 use lazy_static::lazy_static;
 use regex::Regex;
 use std::collections::HashSet;
-use std::sync::{mpsc::SyncSender, Arc};
-use warpui::r#async::FutureId;
+use std::sync::{Arc, mpsc::SyncSender};
 use warpui::AppContext;
+use warpui::r#async::FutureId;
 use warpui::{Entity, ModelContext, SingletonEntity};
 
 lazy_static! {
@@ -455,7 +455,9 @@ impl UpdateManager {
                 let object: Option<&WorkflowEnumObject> =
                     object_store_model.get_object_of_type(enum_id);
                 let Some(object) = object else {
-                    log::error!("Could not find referenced workflow enum to copy over to the new space, skipping");
+                    log::error!(
+                        "Could not find referenced workflow enum to copy over to the new space, skipping"
+                    );
                     continue;
                 };
 

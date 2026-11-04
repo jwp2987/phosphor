@@ -6,11 +6,11 @@ use std::path::Path;
 use warpui::{AppContext, Entity, ModelContext, SingletonEntity};
 
 use crate::search::command_palette::mixer::CommandPaletteItemAction;
-use crate::search::command_search::projects::{os_probably_case_sensitive, ProjectSearchItem};
+use crate::search::command_search::projects::{ProjectSearchItem, os_probably_case_sensitive};
 use crate::search::data_source::{Query, QueryResult};
 use crate::search::mixer::{DataSourceRunErrorWrapper, SyncDataSource};
-use crate::terminal::model::session::get_local_hostname;
 use crate::terminal::History;
+use crate::terminal::model::session::get_local_hostname;
 
 const SUGGESTION_TIME_WINDOW: Duration = Duration::days(30);
 const SUGGESTION_MAX_COUNT: usize = 20;

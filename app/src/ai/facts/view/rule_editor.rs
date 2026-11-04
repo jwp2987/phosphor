@@ -12,6 +12,8 @@ use warp_core::ui::{appearance::Appearance, theme::color::internal_colors};
 use warp_editor::editor::NavigationKey;
 use warpui::elements::{Clipped, ConstrainedBox};
 use warpui::{
+    AppContext, Element, Entity, FocusContext, SingletonEntity, TypedActionView, View, ViewContext,
+    ViewHandle,
     elements::{
         Border, ChildView, ClippedScrollStateHandle, ClippedScrollable, Container, CornerRadius,
         CrossAxisAlignment, Flex, MainAxisAlignment, MainAxisSize, MouseStateHandle, ParentElement,
@@ -19,8 +21,6 @@ use warpui::{
     },
     platform::Cursor,
     ui_components::components::UiComponent,
-    AppContext, Element, Entity, FocusContext, SingletonEntity, TypedActionView, View, ViewContext,
-    ViewHandle,
 };
 
 use super::style;

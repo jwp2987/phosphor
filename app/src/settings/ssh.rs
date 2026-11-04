@@ -1,5 +1,5 @@
 use settings::{
-    macros::define_settings_group, RespectUserSyncSetting, SupportedPlatforms, SyncToCloud,
+    RespectUserSyncSetting, SupportedPlatforms, SyncToCloud, macros::define_settings_group,
 };
 
 // `enable_legacy_ssh_wrapper` used to be declared here *as well as* in

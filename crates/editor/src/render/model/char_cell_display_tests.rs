@@ -170,7 +170,10 @@ fn ghosts_interleave_before_their_line_and_wrap() {
     // The first ghost's trailing '\n' is a line separator (removed-line
     // blocks conventionally carry one), not content: it must not add a
     // column or an extra wrapped row.
-    state.set_temporary_blocks(vec![ghost(&state, "removed a\n", 1), ghost(&state, "removed b!!", 1)]);
+    state.set_temporary_blocks(vec![
+        ghost(&state, "removed a\n", 1),
+        ghost(&state, "removed b!!", 1),
+    ]);
     assert_eq!(
         summarize(&rows(&state, &[])),
         vec![

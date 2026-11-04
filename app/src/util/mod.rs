@@ -9,9 +9,9 @@ pub mod image;
 pub(crate) mod link_detection;
 pub mod links;
 pub mod openable_file_type;
-pub mod path_probe;
 #[cfg(feature = "local_tty")]
 pub mod path;
+pub mod path_probe;
 pub mod repo_detection;
 pub mod retry_strategies;
 pub mod sync;
@@ -132,7 +132,11 @@ fn encode_pwsh_command_round_trips_without_trailing_nul() {
     let decoded_bytes = base64::engine::general_purpose::STANDARD
         .decode(&encoded)
         .expect("encode_pwsh_command must produce valid base64");
-    assert_eq!(decoded_bytes.len() % 2, 0, "UTF-16LE payload must be an even number of bytes");
+    assert_eq!(
+        decoded_bytes.len() % 2,
+        0,
+        "UTF-16LE payload must be an even number of bytes"
+    );
 
     let code_units: Vec<u16> = decoded_bytes
         .chunks_exact(2)

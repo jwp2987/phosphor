@@ -15,7 +15,7 @@ use crate::builder::cargo_target_tmpdir;
 use warp::{
     integration_testing::{
         terminal::util::{
-            current_shell_starter_and_version, default_histfile_directory, ExpectedOutput,
+            ExpectedOutput, current_shell_starter_and_version, default_histfile_directory,
         },
         view_getters,
     },

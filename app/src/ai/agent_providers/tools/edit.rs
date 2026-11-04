@@ -10,10 +10,10 @@
 //! tool, distinguishing subtypes via the `op` field — this is more intuitive and
 //! less error-prone than having the model return 4 parallel arrays at once.
 
+use agent_proto as api;
 use anyhow::Result;
 use serde::Deserialize;
-use serde_json::{json, Value};
-use agent_proto as api;
+use serde_json::{Value, json};
 
 use super::OpenAiTool;
 

@@ -321,11 +321,7 @@ pub(super) fn git_diff_with_base_content_to_proto(
 #[cfg(test)]
 pub(super) fn proto_to_git_diff_data(data: &proto::GitDiffData) -> GitDiffData {
     GitDiffData {
-        files: data
-            .files
-            .iter()
-            .map(|f| proto_to_file_diff(f).0)
-            .collect(),
+        files: data.files.iter().map(|f| proto_to_file_diff(f).0).collect(),
         total_additions: data.total_additions as usize,
         total_deletions: data.total_deletions as usize,
         files_changed: data.files_changed as usize,
@@ -375,20 +371,21 @@ pub(super) fn diff_state_to_proto(state: &DiffState) -> proto::DiffState {
 
 /// Rebuilds the domain `DiffState`, folding the separately-carried `diffs`
 /// payload back into the `Loaded` variant.
-pub(super) fn proto_to_diff_state(state: &proto::DiffState, diffs: Option<GitDiffData>) -> DiffState {
+pub(super) fn proto_to_diff_state(
+    state: &proto::DiffState,
+    diffs: Option<GitDiffData>,
+) -> DiffState {
     use proto::diff_state::State;
     match &state.state {
         Some(State::NotInRepository(_)) | None => DiffState::NotInRepository,
         Some(State::Loading(_)) => DiffState::Loading,
         Some(State::Error(e)) => DiffState::Error(e.message.clone()),
-        Some(State::Loaded(_)) => {
-            DiffState::Loaded(diffs.unwrap_or_else(|| GitDiffData {
-                files: Vec::new(),
-                total_additions: 0,
-                total_deletions: 0,
-                files_changed: 0,
-            }))
-        }
+        Some(State::Loaded(_)) => DiffState::Loaded(diffs.unwrap_or_else(|| GitDiffData {
+            files: Vec::new(),
+            total_additions: 0,
+            total_deletions: 0,
+            files_changed: 0,
+        })),
     }
 }
 
@@ -437,8 +434,7 @@ impl TryFrom<&proto::FileStatusInfo> for FileStatusInfo {
 
         // Renamed/Copied old_path also flows into git restore/checkout
         // commands during discard, so it must be absolute too.
-        if let GitFileStatus::Renamed { old_path } | GitFileStatus::Copied { old_path } = &status
-        {
+        if let GitFileStatus::Renamed { old_path } | GitFileStatus::Copied { old_path } = &status {
             if !PathBuf::from(old_path).is_absolute() {
                 return Err(format!("old_path is not absolute: {old_path}"));
             }
@@ -560,9 +556,7 @@ impl TryFrom<&proto::DiffMetadataAgainstBase> for DiffMetadataAgainstBase {
                 .aggregate_stats
                 .as_ref()
                 .map(proto_to_diff_stats)
-                .ok_or_else(|| {
-                    "missing aggregate_stats in DiffMetadataAgainstBase".to_string()
-                })?,
+                .ok_or_else(|| "missing aggregate_stats in DiffMetadataAgainstBase".to_string())?,
         })
     }
 }
@@ -579,7 +573,11 @@ pub(super) fn diff_metadata_to_proto(metadata: &DiffMetadata) -> proto::DiffMeta
             .as_ref()
             .map(diff_metadata_against_base_to_proto),
         has_head_commit: metadata.has_head_commit,
-        unpushed_commits: metadata.unpushed_commits.iter().map(commit_to_proto).collect(),
+        unpushed_commits: metadata
+            .unpushed_commits
+            .iter()
+            .map(commit_to_proto)
+            .collect(),
         upstream_ref: metadata.upstream_ref.clone(),
         pr_info: metadata.pr_info.as_ref().map(pr_info_to_proto),
     }
@@ -822,7 +820,11 @@ pub(crate) fn decode_snapshot(
 pub(crate) fn decode_metadata_update(
     update: &proto::DiffStateMetadataUpdate,
 ) -> Result<Option<DiffMetadata>, String> {
-    update.metadata.as_ref().map(DiffMetadata::try_from).transpose()
+    update
+        .metadata
+        .as_ref()
+        .map(DiffMetadata::try_from)
+        .transpose()
 }
 
 /// A single-file diff-state delta decoded into domain types.
@@ -844,7 +846,11 @@ pub(crate) fn decode_file_delta(
             content_at_head,
         }
     });
-    let metadata = delta.metadata.as_ref().map(DiffMetadata::try_from).transpose()?;
+    let metadata = delta
+        .metadata
+        .as_ref()
+        .map(DiffMetadata::try_from)
+        .transpose()?;
     Ok(DecodedFileDelta {
         file_path: delta.file_path.clone(),
         diff,

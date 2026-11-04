@@ -1,8 +1,8 @@
 use warpui_core::{
+    AppContext, AssetProvider,
+    r#async::LocalBoxFuture,
     integration::TestDriver,
     keymap::{CustomTag, Keystroke},
-    r#async::LocalBoxFuture,
-    AppContext, AssetProvider,
 };
 
 pub use warpui_core::platform::app::*;

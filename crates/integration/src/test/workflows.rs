@@ -1,7 +1,7 @@
 use warp::{
     integration_testing::{
         self,
-        command_palette::{open_command_palette_and_run_action, TestStepsExt},
+        command_palette::{TestStepsExt, open_command_palette_and_run_action},
         step::new_step_with_default_assertions,
         terminal::{
             execute_command_for_single_terminal_in_tab, util::ExpectedExitStatus,
@@ -16,11 +16,11 @@ use warp::{
     },
     workflows::CategoriesView,
 };
-use warpui::{async_assert_eq, integration::TestStep, ViewHandle};
+use warpui::{ViewHandle, async_assert_eq, integration::TestStep};
 
 use crate::Builder;
 
-use super::{new_builder, TEST_ONLY_ASSETS};
+use super::{TEST_ONLY_ASSETS, new_builder};
 
 pub fn test_open_workflow_in_pane() -> Builder {
     new_builder()

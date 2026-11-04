@@ -11,9 +11,9 @@ cfg_if::cfg_if! {
 }
 
 mod database_notice;
-pub use database_notice::{DatabaseProblem, DatabaseProblemNotice};
 #[cfg(test)]
 pub(crate) use database_notice::record_partial_restore;
+pub use database_notice::{DatabaseProblem, DatabaseProblemNotice};
 
 pub use persistence::model;
 #[cfg_attr(not(feature = "local_fs"), expect(unused_imports))]
@@ -25,15 +25,15 @@ pub mod testing;
 use instant::Instant;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::mpsc::SyncSender;
 use std::sync::Arc;
+use std::sync::mpsc::SyncSender;
 use std::thread::JoinHandle;
 
+use agent_proto as api;
 use ai::project_context::model::ProjectRulePath;
 use chrono::{DateTime, Local, Utc};
 use uuid::Uuid;
 use warp_core::command::ExitCode;
-use agent_proto as api;
 use warpui::{AppContext, Entity, SingletonEntity};
 
 use lsp::supported_servers::LSPServerType;
@@ -384,7 +384,9 @@ pub fn send_snapshot_nonblocking(sender: &SyncSender<ModelEvent>, state: AppStat
         deferred.state = None;
         deferred.thread_running = false;
         note_deferred_send_finished();
-        log::warn!("Could not start the deferred snapshot thread; this session snapshot is skipped");
+        log::warn!(
+            "Could not start the deferred snapshot thread; this session snapshot is skipped"
+        );
     }
 }
 

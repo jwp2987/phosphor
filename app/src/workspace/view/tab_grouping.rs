@@ -16,7 +16,7 @@ use warpui::{EntityId, UpdateView, ViewContext};
 use super::{Workspace, group_member_indices};
 use crate::features::FeatureFlag;
 use crate::menu::{MenuItem, MenuItemFields};
-use crate::tab::{TabData, MOVE_TO_GROUP_LABEL};
+use crate::tab::{MOVE_TO_GROUP_LABEL, TabData};
 use crate::workspace::action::{TabContextMenuAnchor, WorkspaceAction};
 use crate::workspace::tab_group::{TabGroup, TabGroupId};
 use crate::workspace::util::PaneViewLocator;
@@ -473,11 +473,11 @@ impl Workspace {
     /// group" only when there's a destination group worth offering.
     fn tab_selection_menu_items(&self) -> Vec<MenuItem<WorkspaceAction>> {
         let shared_group = self.selection_shared_group();
-        let mut menu_items = vec![MenuItemFields::new(crate::t!(
-            "menu-tab-selection-create-group"
-        ))
-        .with_on_select_action(WorkspaceAction::NewTabGroupFromSelectedTabs)
-        .into_item()];
+        let mut menu_items = vec![
+            MenuItemFields::new(crate::t!("menu-tab-selection-create-group"))
+                .with_on_select_action(WorkspaceAction::NewTabGroupFromSelectedTabs)
+                .into_item(),
+        ];
 
         // Only single-group selections have an unambiguous group to leave.
         if shared_group.is_some() {

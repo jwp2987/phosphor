@@ -5,9 +5,12 @@ use std::{
 };
 
 use pathfinder_color::ColorU;
-use pathfinder_geometry::vector::{vec2f, Vector2F};
+use pathfinder_geometry::vector::{Vector2F, vec2f};
 
 use crate::{
+    AfterLayoutContext, App, AppContext, Element, Entity, EntityId, Event, EventContext,
+    LayoutContext, PaintContext, Presenter, SizeConstraint, TypedActionView, View, ViewContext,
+    WindowInvalidation,
     elements::{
         Axis, ClippedScrollStateHandle, ConstrainedBox, DispatchEventResult, EventHandler, Fill,
         ParentElement, Point, Rect, SavePosition, ScrollData, ScrollStateHandle, ScrollTarget,
@@ -15,11 +18,8 @@ use crate::{
     },
     event::DispatchedEvent,
     platform::{TerminationMode, WindowStyle},
-    text::{word_boundaries::WordBoundariesPolicy, IsRect, SelectionDirection, SelectionType},
+    text::{IsRect, SelectionDirection, SelectionType, word_boundaries::WordBoundariesPolicy},
     units::Pixels,
-    AfterLayoutContext, App, AppContext, Element, Entity, EntityId, Event, EventContext,
-    LayoutContext, PaintContext, Presenter, SizeConstraint, TypedActionView, View, ViewContext,
-    WindowInvalidation,
 };
 
 use super::{

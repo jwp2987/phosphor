@@ -5,7 +5,7 @@ use crate::ui_components::icons::Icon;
 use typed_path::TypedPathBuf;
 use warp_completer::completer::{EngineDirEntry, EngineFileType};
 use warp_util::file_type::is_binary_file;
-use warpui::{r#async::SpawnedFutureHandle, AppContext, Entity, ModelContext};
+use warpui::{AppContext, Entity, ModelContext, r#async::SpawnedFutureHandle};
 
 use super::display_menu::GenericMenuItem;
 
@@ -60,26 +60,29 @@ impl DirectoryFetcher {
         }
 
         // Always use async method - SessionContext works for both local and remote sessions
-        match self.session_context.clone() { Some(session_ctx) => {
-            let dir_path = self.current_directory.clone();
+        match self.session_context.clone() {
+            Some(session_ctx) => {
+                let dir_path = self.current_directory.clone();
 
-            self.fetch_handle = Some(ctx.spawn(
-                async move { Self::fetch_files_async(&session_ctx, &dir_path).await },
-                |fetcher, files, ctx| {
-                    fetcher.cached_files = files;
-                    fetcher.fetch_handle = None;
-                    ctx.emit(DirectoryFetcherEvent::DirectoryContentsUpdated);
-                    ctx.emit(DirectoryFetcherEvent::FetchCompleted { success: true });
-                    ctx.notify();
-                },
-            ));
-            ctx.emit(DirectoryFetcherEvent::FetchStarted);
-        } _ => {
-            // If no session context, we can't fetch directory contents
-            log::warn!("No SessionContext available for directory fetching");
-            ctx.emit(DirectoryFetcherEvent::FetchCompleted { success: false });
-            ctx.notify();
-        }}
+                self.fetch_handle = Some(ctx.spawn(
+                    async move { Self::fetch_files_async(&session_ctx, &dir_path).await },
+                    |fetcher, files, ctx| {
+                        fetcher.cached_files = files;
+                        fetcher.fetch_handle = None;
+                        ctx.emit(DirectoryFetcherEvent::DirectoryContentsUpdated);
+                        ctx.emit(DirectoryFetcherEvent::FetchCompleted { success: true });
+                        ctx.notify();
+                    },
+                ));
+                ctx.emit(DirectoryFetcherEvent::FetchStarted);
+            }
+            _ => {
+                // If no session context, we can't fetch directory contents
+                log::warn!("No SessionContext available for directory fetching");
+                ctx.emit(DirectoryFetcherEvent::FetchCompleted { success: false });
+                ctx.notify();
+            }
+        }
     }
 
     /// Asynchronously list directory files using SessionContext
@@ -143,7 +146,6 @@ impl DirectoryFetcher {
     pub fn is_fetching(&self) -> bool {
         self.fetch_handle.is_some()
     }
-
 }
 
 impl Entity for DirectoryFetcher {

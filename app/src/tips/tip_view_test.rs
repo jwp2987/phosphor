@@ -1,8 +1,8 @@
 use super::*;
 use warpui::{
+    App, ViewHandle,
     elements::{ChildView, Empty, SavePosition},
     platform::WindowStyle,
-    App, ViewHandle,
 };
 
 struct TipContainer {

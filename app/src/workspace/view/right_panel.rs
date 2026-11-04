@@ -3,27 +3,27 @@ use crate::code_review::code_review_header::HEADER_BUTTON_PADDING;
 #[cfg(feature = "local_fs")]
 use crate::code_review::code_review_view::CodeReviewAction;
 use crate::code_review::code_review_view::{
-    render_file_navigation_button, CodeReviewView, CONTENT_LEFT_MARGIN, CONTENT_RIGHT_MARGIN,
+    CONTENT_LEFT_MARGIN, CONTENT_RIGHT_MARGIN, CodeReviewView, render_file_navigation_button,
 };
 use crate::code_review::code_review_view::{CodeReviewCommentDebugState, CodeReviewViewEvent};
 use crate::code_review::telemetry_event::CodeReviewContextDestination;
-use crate::pane_group::pane::view::header::{components::HEADER_EDGE_PADDING, PANE_HEADER_HEIGHT};
 use crate::pane_group::WorkingDirectoriesEvent;
+use crate::pane_group::pane::view::header::{PANE_HEADER_HEIGHT, components::HEADER_EDGE_PADDING};
 use crate::pane_group::{Event as PaneGroupEvent, PaneGroup, WorkingDirectoriesModel};
 use crate::settings::{AISettings, AISettingsChangedEvent};
+use crate::terminal::CLIAgent;
 use crate::terminal::cli_agent_sessions::CLIAgentSessionsModel;
 use crate::terminal::input::MenuPositioning;
-use crate::terminal::CLIAgent;
 use crate::ui_components::{buttons::icon_button_with_color, icons};
-use crate::util::bindings::{keybinding_name_to_display_string, CustomAction};
+use crate::util::bindings::{CustomAction, keybinding_name_to_display_string};
 #[cfg(feature = "local_fs")]
 use crate::util::openable_file_type::FileTarget;
 use crate::view_components::action_button::{ActionButton, PaneHeaderTheme};
 #[cfg(feature = "local_fs")]
 use crate::view_components::action_button::{NakedTheme, TooltipAlignment};
 use crate::view_components::{Dropdown, DropdownItem};
-use crate::workspace::view::TOGGLE_RIGHT_PANEL_BINDING_NAME;
 use crate::workspace::WorkspaceAction;
+use crate::workspace::view::TOGGLE_RIGHT_PANEL_BINDING_NAME;
 use crate::{
     appearance::Appearance,
     drive::panel::{MAX_SIDEBAR_WIDTH_RATIO, MIN_SIDEBAR_WIDTH},
@@ -39,16 +39,16 @@ use warp_core::features::FeatureFlag;
 use warp_core::ui::Icon;
 use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warp_util::path::LineAndColumnArg;
+use warpui::EntityId;
 use warpui::elements::{ChildAnchor, Empty, PositionedElementAnchor};
 use warpui::keymap::EditableBinding;
-use warpui::EntityId;
 use warpui::{
-    elements::{
-        resizable_state_handle, Container, DragBarSide, Element, MainAxisSize, MouseStateHandle,
-        Resizable, ResizableStateHandle,
-    },
     AppContext, Entity, ModelHandle, SingletonEntity, TypedActionView, View, ViewContext,
     ViewHandle, WeakViewHandle,
+    elements::{
+        Container, DragBarSide, Element, MainAxisSize, MouseStateHandle, Resizable,
+        ResizableStateHandle, resizable_state_handle,
+    },
 };
 use warpui::{
     elements::{
@@ -176,7 +176,11 @@ impl CodeReviewState {
     }
 
     #[cfg(feature = "local_fs")]
-    fn set_available_repos(&mut self, repos: Vec<LocalOrRemotePath>, ctx: &mut ViewContext<RightPanelView>) {
+    fn set_available_repos(
+        &mut self,
+        repos: Vec<LocalOrRemotePath>,
+        ctx: &mut ViewContext<RightPanelView>,
+    ) {
         let should_clear = self
             .selected_repo_path
             .as_ref()
@@ -206,7 +210,11 @@ impl CodeReviewState {
     }
 
     #[cfg(feature = "local_fs")]
-    pub fn set_selected_repo(&mut self, repo_path: LocalOrRemotePath, ctx: &mut ViewContext<RightPanelView>) {
+    pub fn set_selected_repo(
+        &mut self,
+        repo_path: LocalOrRemotePath,
+        ctx: &mut ViewContext<RightPanelView>,
+    ) {
         self.set_selected_repo_internal(repo_path, true, ctx);
     }
 
@@ -468,7 +476,11 @@ impl RightPanelView {
     }
 
     #[cfg(feature = "local_fs")]
-    pub fn update_selected_repo(&mut self, repo_path: LocalOrRemotePath, ctx: &mut ViewContext<Self>) {
+    pub fn update_selected_repo(
+        &mut self,
+        repo_path: LocalOrRemotePath,
+        ctx: &mut ViewContext<Self>,
+    ) {
         self.handle_action(
             &RightPanelAction::SelectRepo {
                 repo_path,
@@ -632,18 +644,23 @@ impl RightPanelView {
                 view.on_open(repo_path.to_local_path().map(|p| p.to_path_buf()), ctx);
             });
             self.recompute_terminal_availability(ctx);
-        } else { match self.create_code_review_view(
-            repo_path,
-            diff_state_model.clone(),
-            pane_group_id,
-            terminal_view.clone(),
-            ctx,
-        ) { Some(view) => {
-            view.update(ctx, |view, ctx| {
-                view.on_open(repo_path.to_local_path().map(|p| p.to_path_buf()), ctx);
-            });
-            self.recompute_terminal_availability(ctx);
-        } _ => {}}};
+        } else {
+            match self.create_code_review_view(
+                repo_path,
+                diff_state_model.clone(),
+                pane_group_id,
+                terminal_view.clone(),
+                ctx,
+            ) {
+                Some(view) => {
+                    view.update(ctx, |view, ctx| {
+                        view.on_open(repo_path.to_local_path().map(|p| p.to_path_buf()), ctx);
+                    });
+                    self.recompute_terminal_availability(ctx);
+                }
+                _ => {}
+            }
+        };
         ctx.notify();
     }
 
@@ -1164,7 +1181,13 @@ impl RightPanelView {
                     comments,
                     repo_path,
                 } => {
-                    Self::route_review_comments(me, &code_review, comments.clone(), &LocalOrRemotePath::Local(repo_path.clone()), ctx);
+                    Self::route_review_comments(
+                        me,
+                        &code_review,
+                        comments.clone(),
+                        &LocalOrRemotePath::Local(repo_path.clone()),
+                        ctx,
+                    );
                 }
                 #[cfg(feature = "local_fs")]
                 CodeReviewViewEvent::OpenFileWithTarget {
@@ -1357,7 +1380,9 @@ impl RightPanelView {
         let Some(pane_group) = &self.active_pane_group else {
             log::info!(
                 "Review comment send status for active tab: no active pane group, selected_repo_path={}, ai_enabled={}",
-                Self::format_optional_path(selected_repo_path.as_ref().and_then(|p| p.to_local_path())),
+                Self::format_optional_path(
+                    selected_repo_path.as_ref().and_then(|p| p.to_local_path())
+                ),
                 ai_enabled,
             );
             if let Some(debug_state) = &code_review_debug_state {
@@ -1558,7 +1583,12 @@ impl RightPanelView {
 
         let ai_enabled = AISettings::as_ref(ctx).is_any_ai_enabled(ctx);
         let destination = self
-            .find_review_terminal(pane_group, &LocalOrRemotePath::Local(repo_path), ai_enabled, ctx)
+            .find_review_terminal(
+                pane_group,
+                &LocalOrRemotePath::Local(repo_path),
+                ai_enabled,
+                ctx,
+            )
             .map(|tv| {
                 tv.read(ctx, |t, ctx| {
                     t.active_cli_agent(ctx)
@@ -1573,7 +1603,11 @@ impl RightPanelView {
         });
     }
 
-    fn ensure_code_review_view_exists(&mut self, repo_path: &LocalOrRemotePath, ctx: &mut ViewContext<Self>) {
+    fn ensure_code_review_view_exists(
+        &mut self,
+        repo_path: &LocalOrRemotePath,
+        ctx: &mut ViewContext<Self>,
+    ) {
         let Some(pane_group) = &self.active_pane_group else {
             return;
         };

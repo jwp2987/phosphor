@@ -4,14 +4,14 @@ use std::{collections::HashSet, ops::RangeInclusive};
 use itertools::Itertools as _;
 
 use crate::ai::blocklist::block::secret_redaction::find_secrets_in_text_with_levels_using_regex;
-use crate::terminal::model::grid::{grapheme_cursor, Dimensions as _};
+use crate::terminal::model::grid::{Dimensions as _, grapheme_cursor};
 use crate::terminal::model::terminal_model::RangeInModel;
 use crate::terminal::model::{
     grid::RespectDisplayedOutput,
     index::{Direction, Point},
     secrets::{
-        IsObfuscated, ObfuscateSecrets, Secret, SecretAndHandle, SecretHandle, SecretLevel,
-        SecretsRegex, SECRETS_REGEX,
+        IsObfuscated, ObfuscateSecrets, SECRETS_REGEX, Secret, SecretAndHandle, SecretHandle,
+        SecretLevel, SecretsRegex,
     },
 };
 

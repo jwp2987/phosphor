@@ -309,7 +309,7 @@ pub mod relevant_files {
         fut: impl std::future::Future<Output = T>,
         deadline: std::time::Duration,
     ) -> Option<T> {
-        use futures::future::{select, Either};
+        use futures::future::{Either, select};
         let fut = std::pin::pin!(fut);
         let timer = std::pin::pin!(warpui::r#async::Timer::after(deadline));
         match select(fut, timer).await {

@@ -11,18 +11,18 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::{
     ai::{
         agent::{
-            conversation::AIConversationId, AIAgentActionType, AIAgentAttachment, AIAgentContext,
-            AIAgentExchangeId, AIAgentInput, AIAgentPtyWriteMode, AskUserQuestionItem,
-            FileLocations, PassiveSuggestionResultType, ReadFilesRequest, RequestComputerUseRequest,
-            UseComputerRequest, UserQueryMode,
+            AIAgentActionType, AIAgentAttachment, AIAgentContext, AIAgentExchangeId, AIAgentInput,
+            AIAgentPtyWriteMode, AskUserQuestionItem, FileLocations, PassiveSuggestionResultType,
+            ReadFilesRequest, RequestComputerUseRequest, UseComputerRequest, UserQueryMode,
+            conversation::AIConversationId,
         },
         llms::LLMId,
     },
     terminal::model::block::{BlockId, SerializedBlock},
 };
 
-use super::history_model::{BlocklistAIHistoryEvent, BlocklistAIHistoryModel};
 use super::AIQueryHistoryOutputStatus;
+use super::history_model::{BlocklistAIHistoryEvent, BlocklistAIHistoryModel};
 use crate::persistence::ModelEvent;
 use warpui::{AppContext, EntityId, SingletonEntity as _};
 /// Data we persist for each [`AIAgentExchange`] for use in history. Does not contain output data.
@@ -75,12 +75,19 @@ impl TryFrom<&AIAgentInput> for PersistedAIInputType {
                 context: context.clone(),
                 referenced_attachments: Default::default(),
             }),
-            AIAgentInput::PassiveSuggestionResult { suggestion: PassiveSuggestionResultType::Prompt { prompt }, context, .. } => Ok(Self::Query {
+            AIAgentInput::PassiveSuggestionResult {
+                suggestion: PassiveSuggestionResultType::Prompt { prompt },
+                context,
+                ..
+            } => Ok(Self::Query {
                 text: prompt.clone(),
                 context: context.clone(),
                 referenced_attachments: Default::default(),
             }),
-            AIAgentInput::PassiveSuggestionResult { suggestion: PassiveSuggestionResultType::CodeDiff { .. }, .. } => Err(anyhow!(
+            AIAgentInput::PassiveSuggestionResult {
+                suggestion: PassiveSuggestionResultType::CodeDiff { .. },
+                ..
+            } => Err(anyhow!(
                 "PassiveSuggestionResult::CodeDiff is not persisted as a query."
             )),
             AIAgentInput::ActionResult { .. }

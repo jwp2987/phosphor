@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 
 #[cfg(test)]
 #[path = "git_tests.rs"]
@@ -248,9 +248,7 @@ pub fn list_local_branches_sync(repo_path: &Path) -> HashSet<String> {
         .output();
 
     match output {
-        Ok(out) if out.status.success() => {
-            parse_branch_list(&String::from_utf8_lossy(&out.stdout))
-        }
+        Ok(out) if out.status.success() => parse_branch_list(&String::from_utf8_lossy(&out.stdout)),
         _ => HashSet::new(),
     }
 }
@@ -267,7 +265,12 @@ pub(crate) fn parse_branch_list(stdout: &str) -> HashSet<String> {
 /// Non-blocking variant of [`list_local_branches_sync`] (#1313). Empty set on any failure.
 #[cfg(feature = "local_fs")]
 pub async fn list_local_branches(repo_path: &Path) -> HashSet<String> {
-    match run_git_command(repo_path, &["branch", "--list", "--format=%(refname:short)"]).await {
+    match run_git_command(
+        repo_path,
+        &["branch", "--list", "--format=%(refname:short)"],
+    )
+    .await
+    {
         Ok(out) => parse_branch_list(&out),
         Err(_) => HashSet::new(),
     }
@@ -463,7 +466,9 @@ pub fn command_may_change_head(command: &str) -> bool {
                 break;
             }
         }
-        if let Some(&sub) = tokens.peek() && HEAD_CHANGING.contains(&sub) {
+        if let Some(&sub) = tokens.peek()
+            && HEAD_CHANGING.contains(&sub)
+        {
             return true;
         }
     }
@@ -1462,8 +1467,8 @@ pub async fn get_repository_info(
 /// findable from macOS GUI launches (launchd's minimal `PATH` excludes it).
 #[cfg(feature = "local_fs")]
 async fn run_gh_command(repo_path: &Path, args: &[&str], path_env: Option<&str>) -> Result<String> {
-    use command::r#async::Command;
     use command::Stdio;
+    use command::r#async::Command;
 
     log::debug!(
         "[GIT OPERATION] git.rs run_gh_command gh {}",

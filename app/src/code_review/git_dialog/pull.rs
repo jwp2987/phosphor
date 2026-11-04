@@ -34,14 +34,14 @@
 
 use warp_core::ui::appearance::Appearance;
 use warpui::{
-    elements::{Container, Element, Flex, ParentElement},
     ViewContext,
+    elements::{Container, Element, Flex, ParentElement},
 };
 
 use crate::{
     code_review::git_dialog::{
-        interactive_path_future, render_branch_section, show_toast, user_facing_git_error,
-        GitDialog, GitDialogEvent, GitDialogMode,
+        GitDialog, GitDialogEvent, GitDialogMode, interactive_path_future, render_branch_section,
+        show_toast, user_facing_git_error,
     },
     ui_components::icons::Icon,
 };

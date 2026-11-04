@@ -11,19 +11,19 @@ use warpui::assets::asset_cache::AssetSource;
 use warpui::image_cache::ImageType;
 
 use pathfinder_geometry::vector::vec2f;
-use ui_components::{button, Component as _, Options as _};
+use ui_components::{Component as _, Options as _, button};
 use warp_core::ui::{appearance::Appearance, theme::WarpTheme};
 use warpui::elements::Rect;
 use warpui::{
+    AppContext, Element, Entity, ModelHandle, SingletonEntity as _, TypedActionView, View,
+    ViewContext, ViewHandle,
     elements::{
         CacheOption, ChildAnchor, Container, Empty, Image, OffsetPositioning, ParentAnchor,
         ParentElement, ParentOffsetBounds, Shrinkable, Stack,
     },
     keymap::Keystroke,
-    keymap::{macros::*, FixedBinding},
+    keymap::{FixedBinding, macros::*},
     presenter::ChildView,
-    AppContext, Element, Entity, ModelHandle, SingletonEntity as _, TypedActionView, View,
-    ViewContext, ViewHandle,
 };
 
 #[derive(Clone, Debug)]
@@ -260,32 +260,35 @@ impl View for AgentOnboardingView {
 
         let mut stack = Stack::new();
 
-        match theme.background_image() { Some(img) => {
-            // Render the image behind everything.
-            stack.add_child(
-                Shrinkable::new(
-                    1.,
-                    Image::new(img.source(), CacheOption::Original)
-                        .cover()
-                        .finish(),
-                )
-                .finish(),
-            );
+        match theme.background_image() {
+            Some(img) => {
+                // Render the image behind everything.
+                stack.add_child(
+                    Shrinkable::new(
+                        1.,
+                        Image::new(img.source(), CacheOption::Original)
+                            .cover()
+                            .finish(),
+                    )
+                    .finish(),
+                );
 
-            // Overlay the theme background so the image shows through at img.opacity.
-            let overlay_opacity = (100u8).saturating_sub(img.opacity);
-            stack.add_child(
-                Rect::new()
-                    .with_background(theme.background().with_opacity(overlay_opacity))
-                    .finish(),
-            );
-        } _ => {
-            stack.add_child(
-                Container::new(Empty::new().finish())
-                    .with_background(theme.background())
-                    .finish(),
-            );
-        }}
+                // Overlay the theme background so the image shows through at img.opacity.
+                let overlay_opacity = (100u8).saturating_sub(img.opacity);
+                stack.add_child(
+                    Rect::new()
+                        .with_background(theme.background().with_opacity(overlay_opacity))
+                        .finish(),
+                );
+            }
+            _ => {
+                stack.add_child(
+                    Container::new(Empty::new().finish())
+                        .with_background(theme.background())
+                        .finish(),
+                );
+            }
+        }
 
         let selected_slide = self.onboarding_state.as_ref(app).step();
         let slide = match selected_slide {

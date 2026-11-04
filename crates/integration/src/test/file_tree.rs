@@ -1,4 +1,4 @@
-use super::{new_builder, Builder};
+use super::{Builder, new_builder};
 use regex::Regex;
 
 use warp::{
@@ -10,7 +10,7 @@ use warp::{
     },
     workspace::WorkspaceAction,
 };
-use warpui::{async_assert, async_assert_eq, integration::TestStep, App};
+use warpui::{App, async_assert, async_assert_eq, integration::TestStep};
 
 use crate::util::write_all_rc_files_for_test;
 

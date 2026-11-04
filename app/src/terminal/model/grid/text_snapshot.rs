@@ -13,9 +13,9 @@
 use std::ops::Range;
 use std::time::{Duration, Instant};
 
+use crate::terminal::model::BlockId;
 use crate::terminal::model::block::{BlockGridPoint, SnapshotSliceCursor};
 use crate::terminal::model::blocks::BlockList;
-use crate::terminal::model::BlockId;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::terminal::model::cell::Flags;

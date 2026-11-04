@@ -1,6 +1,6 @@
 use warpui::{
-    windowing::{StateEvent, WindowManager},
     Entity, ModelContext, SingletonEntity,
+    windowing::{StateEvent, WindowManager},
 };
 
 #[cfg(target_os = "macos")]

@@ -15,13 +15,13 @@ mod step;
 pub mod video_recorder;
 pub use action_log::ActionLog;
 pub use artifacts::ARTIFACTS_DIR_ENV_VAR;
-pub use driver::{Builder, SetupFn, TestDriver, RERUN_EXIT_CODE, RUNTIME_TAG_FAILURE_REASON};
+pub use driver::{Builder, RERUN_EXIT_CODE, RUNTIME_TAG_FAILURE_REASON, SetupFn, TestDriver};
 pub use overlay::OverlayLog;
 pub use step::{
     AssertionCallback, AssertionOutcome, AssertionWithDataCallback, IntegrationTestEvent,
     PersistedDataMap, StepData, StepDataMap, TestStep,
 };
-pub use video_recorder::{save_captured_frame_as_png, VideoRecorder};
+pub use video_recorder::{VideoRecorder, save_captured_frame_as_png};
 
 #[macro_export]
 macro_rules! async_assert {

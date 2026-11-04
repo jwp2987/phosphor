@@ -4,9 +4,9 @@ use ordered_float::OrderedFloat;
 use std::{cmp::Ordering, path::PathBuf};
 use warp_core::ui::theme::Fill;
 use warpui::{
+    AppContext, Element, SingletonEntity,
     elements::{Align, ConstrainedBox, Flex, Highlight, ParentElement, Shrinkable, Text},
     fonts::{Properties, Weight},
-    AppContext, Element, SingletonEntity,
 };
 
 use crate::search::action::search_item::styles;

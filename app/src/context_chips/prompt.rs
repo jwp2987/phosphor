@@ -301,7 +301,6 @@ impl Prompt {
             ctx.emit(PromptEvent::Changed);
         }
     }
-
 }
 
 impl Entity for Prompt {
@@ -398,5 +397,4 @@ impl PromptConfiguration {
     pub fn separator(&self) -> WarpPromptSeparator {
         self.separator
     }
-
 }

@@ -20,7 +20,7 @@ use warpui::{async_assert, integration::TestStep};
 
 use crate::util::skip_if_powershell_core_2303;
 
-use super::{new_builder, Builder};
+use super::{Builder, new_builder};
 
 pub fn test_secret_is_obfuscated_on_copy() -> Builder {
     let phone_number = "123-456-7890";

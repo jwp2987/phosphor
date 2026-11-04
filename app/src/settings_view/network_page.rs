@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use settings::Setting;
 use warpui::{
+    AppContext, Entity, SingletonEntity, TypedActionView, View, ViewContext, ViewHandle,
     elements::{
         Align, ConstrainedBox, Container, CrossAxisAlignment, Element, Flex, MainAxisAlignment,
         MainAxisSize, MouseStateHandle, ParentElement, Text,
@@ -19,15 +20,14 @@ use warpui::{
         button::ButtonVariant,
         components::{Coords, UiComponent, UiComponentStyles},
     },
-    AppContext, Entity, SingletonEntity, TypedActionView, View, ViewContext, ViewHandle,
 };
 
-use super::settings_page::{
-    render_body_item, render_page_title, render_sub_header_with_description, AdditionalInfo,
-    LocalOnlyIconState, MatchData, PageType, SettingsPageEvent, SettingsPageMeta,
-    SettingsPageViewHandle, SettingsWidget, ToggleState,
-};
 use super::SettingsSection;
+use super::settings_page::{
+    AdditionalInfo, LocalOnlyIconState, MatchData, PageType, SettingsPageEvent, SettingsPageMeta,
+    SettingsPageViewHandle, SettingsWidget, ToggleState, render_body_item, render_page_title,
+    render_sub_header_with_description,
+};
 use crate::appearance::Appearance;
 use crate::editor::{EditorView, InteractionState, SingleLineEditorOptions, TextOptions};
 use crate::report_if_error;

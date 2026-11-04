@@ -1,5 +1,5 @@
-use crate::actions::StandardAction;
 use crate::AppContext;
+use crate::actions::StandardAction;
 use crate::{Action, Tracked};
 use anyhow::anyhow;
 use lazy_static::lazy_static;
@@ -18,7 +18,7 @@ mod context;
 mod matcher;
 
 use crate::platform::OperatingSystem;
-pub use context::{macros, Context, ContextPredicate};
+pub use context::{Context, ContextPredicate, macros};
 pub use matcher::{IsBindingValid, MatchResult, Matcher};
 
 #[derive(Default)]

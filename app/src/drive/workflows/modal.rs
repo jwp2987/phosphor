@@ -7,9 +7,11 @@ use pathfinder_geometry::vector::vec2f;
 use string_offset::CharOffset;
 use warp_core::ui::theme::Fill;
 use warp_editor::editor::NavigationKey;
-use warpui::elements::Clipped;
 use warpui::FocusContext;
+use warpui::elements::Clipped;
 use warpui::{
+    AppContext, Element, Entity, SingletonEntity, TypedActionView, UpdateView, View, ViewContext,
+    ViewHandle,
     clipboard::ClipboardContent,
     elements::{
         Align, Border, ChildAnchor, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox,
@@ -24,22 +26,20 @@ use warpui::{
         button::{ButtonVariant, TextAndIcon, TextAndIconAlignment},
         components::{Coords, UiComponent, UiComponentStyles},
     },
-    AppContext, Element, Entity, SingletonEntity, TypedActionView, UpdateView, View, ViewContext,
-    ViewHandle,
 };
 
 use crate::auth::UserUid;
 use crate::{
     appearance::Appearance,
     cloud_object::{
+        ObjectType, Owner, Revision, StoredObject, StoredObjectEventEntrypoint,
         breadcrumbs::{ContainingObject, ContainingObjectKind},
         model::persistence::{ObjectStoreEvent, ObjectStoreModel},
         update_manager::UpdateManager,
-        ObjectType, Owner, Revision, StoredObject, StoredObjectEventEntrypoint,
     },
     drive::{
-        cloud_object_styling::warp_drive_icon_color, items::WarpDriveItemId, DriveObjectType,
-        ObjectTypeAndId,
+        DriveObjectType, ObjectTypeAndId, cloud_object_styling::warp_drive_icon_color,
+        items::WarpDriveItemId,
     },
     editor::{
         EditorOptions, EditorView, EnterAction, EnterSettings, Event as EditorEvent,
@@ -54,13 +54,13 @@ use crate::{
         blended_colors,
         breadcrumb::{self, BreadcrumbState},
         buttons::icon_button,
-        dialog::{dialog_styles, Dialog},
-        icons::{self, Icon, ICON_DIMENSIONS},
-        menu_button::{icon_button_with_context_menu, MenuDirection},
+        dialog::{Dialog, dialog_styles},
+        icons::{self, ICON_DIMENSIONS, Icon},
+        menu_button::{MenuDirection, icon_button_with_context_menu},
     },
     workflows::{
-        workflow::{Argument, Workflow},
         WorkflowObject,
+        workflow::{Argument, Workflow},
     },
 };
 
@@ -96,8 +96,7 @@ const DIALOG_WIDTH: f32 = 460.;
 const AI_ASSIST_BUTTON_SIZE: f32 = 96.;
 const SCROLLBAR_WIDTH: ScrollbarWidth = ScrollbarWidth::Auto;
 
-const COMMAND_EDITOR_PLACEHOLDER_TEXT: &str =
-    "echo \"Hello {{your_name}}\" # insert arguments with curly braces\n# enter a single-line command or an entire shell script";
+const COMMAND_EDITOR_PLACEHOLDER_TEXT: &str = "echo \"Hello {{your_name}}\" # insert arguments with curly braces\n# enter a single-line command or an entire shell script";
 const DEFAULT_ARGUMENT_PREFIX: &str = "argument";
 
 #[derive(Default)]
@@ -731,7 +730,12 @@ impl WorkflowModal {
         match (self.workflow_id, self.owner) {
             (Some(workflow_id), None) => {
                 UpdateManager::handle(ctx).update(ctx, |update_manager, ctx| {
-                    update_manager.update_workflow(workflow, workflow_id, self.revision_ts.clone(), ctx);
+                    update_manager.update_workflow(
+                        workflow,
+                        workflow_id,
+                        self.revision_ts.clone(),
+                        ctx,
+                    );
                 });
                 ctx.emit(WorkflowModalEvent::UpdatedWorkflow(workflow_id));
             }
@@ -748,7 +752,9 @@ impl WorkflowModal {
                     );
                 });
             }
-            _ => log::error!("Only one of a workflow ID or space can be specified for saving workflows, but both or neither were specified instead")
+            _ => log::error!(
+                "Only one of a workflow ID or space can be specified for saving workflows, but both or neither were specified instead"
+            ),
         }
 
         self.close(true, ctx);

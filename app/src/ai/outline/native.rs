@@ -19,7 +19,9 @@ use warpui::{Entity, ModelContext, ModelHandle, SingletonEntity};
 
 use super::OutlineStatus;
 use crate::ai::terminal_working_directories::all_working_directories;
-use crate::settings::{AISettings, AISettingsChangedEvent, InputSettings, InputSettingsChangedEvent};
+use crate::settings::{
+    AISettings, AISettingsChangedEvent, InputSettings, InputSettingsChangedEvent,
+};
 use crate::{TelemetryEvent, report_error, safe_info, safe_warn, send_telemetry_from_ctx};
 
 /// State for a repository outline, containing both the repository handle and the outline status.

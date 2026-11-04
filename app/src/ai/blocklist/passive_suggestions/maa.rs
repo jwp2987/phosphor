@@ -5,12 +5,12 @@ use crate::ai::agent::AIIdentifiers;
 use crate::ai::agent::FileContext;
 use crate::ai::agent::PassiveCodeDiffEntry;
 use crate::ai::agent::PassiveSuggestionTrigger;
-use crate::ai::agent::{conversation::AIConversationId, ShellCommandCompletedTrigger};
+use crate::ai::agent::{ShellCommandCompletedTrigger, conversation::AIConversationId};
 use crate::ai::block_context::BlockContext;
 use crate::ai::blocklist::inline_action::code_diff_view::FileDiff;
 use crate::ai::blocklist::{
-    apply_edits, BlocklistAIHistoryModel, FileReadResult, RequestFileEditsFormatKind,
-    SessionContext,
+    BlocklistAIHistoryModel, FileReadResult, RequestFileEditsFormatKind, SessionContext,
+    apply_edits,
 };
 use crate::ai::paths::host_native_absolute_path;
 use crate::auth::AuthStateProvider;

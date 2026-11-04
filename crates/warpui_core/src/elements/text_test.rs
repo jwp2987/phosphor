@@ -1,7 +1,7 @@
 use float_cmp::assert_approx_eq;
 
-use crate::scene::ZIndex;
 use crate::App;
+use crate::scene::ZIndex;
 
 use super::*;
 
@@ -51,12 +51,14 @@ fn test_single_line_char_hit_testing_respects_y_bounds() {
             text.origin = Some(Point::from_vec2f(vec2f(10., 20.), ZIndex::new(0)));
 
             assert!(text.get_char_index(&vec2f(10., 19.9)).is_none());
-            assert!(text
-                .get_char_index(&vec2f(10., 20. + line_height + 0.1))
-                .is_none());
-            assert!(text
-                .get_char_index(&vec2f(10., 20. + line_height / 2.))
-                .is_some());
+            assert!(
+                text.get_char_index(&vec2f(10., 20. + line_height + 0.1))
+                    .is_none()
+            );
+            assert!(
+                text.get_char_index(&vec2f(10., 20. + line_height / 2.))
+                    .is_some()
+            );
         });
     });
 }

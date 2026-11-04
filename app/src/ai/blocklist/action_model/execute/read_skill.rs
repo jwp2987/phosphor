@@ -295,9 +295,9 @@ fn skill_path_is_in_session_scope(
     working_directory: Option<&Path>,
     home_directory: Option<&Path>,
 ) -> bool {
-    let Ok(owner) = extract_skill_parent_directory(&LocalOrRemotePath::Local(
-        skill_path.to_path_buf(),
-    )) else {
+    let Ok(owner) =
+        extract_skill_parent_directory(&LocalOrRemotePath::Local(skill_path.to_path_buf()))
+    else {
         return false;
     };
     let Some(owner) = owner.to_local_path().map(lexically_normalized) else {

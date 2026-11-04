@@ -8,13 +8,14 @@ use crate::{
         block_list_settings::BlockListSettings,
         block_list_viewport::InputMode,
         input::{
+            InputDropTargetData,
             common::{
                 add_command_xray_overlay, add_input_suggestions_overlays, add_vim_status_to_stack,
                 add_voltron_overlay, add_workflow_info_overlay,
                 should_show_terminal_input_message_bar,
                 wrap_input_with_terminal_padding_and_focus_handler,
             },
-            get_input_box_top_border_width, InputDropTargetData,
+            get_input_box_top_border_width,
         },
         settings::{SpacingMode, TerminalSettings},
         view::TerminalAction,
@@ -24,15 +25,15 @@ use crate::{
 use pathfinder_geometry::vector::vec2f;
 use settings::Setting;
 use warpui::{
+    AppContext, SingletonEntity,
     elements::{
         Border, ChildAnchor, ChildView, Clipped, Container, DropTarget, Element, Empty, Flex,
         Hoverable, OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds,
         SavePosition, Stack,
     },
-    AppContext, SingletonEntity,
 };
 
-use super::{should_render_prompt_using_editor_decorator_elements, Input, SubshellRenderState};
+use super::{Input, SubshellRenderState, should_render_prompt_using_editor_decorator_elements};
 
 impl Input {
     /// Renders the classic input. This is used when the user has 'Honor PS1' enabled in settings,

@@ -13,7 +13,7 @@
 //! populates exactly one of `success`/`error`, so an unset result is a
 //! malformed/never-populated response, never a benign success.
 
-use crate::proto::{server_message, ServerMessage};
+use crate::proto::{ServerMessage, server_message};
 
 /// Interprets a per-operation response with the standard
 /// `Success | Error | (unset)` result shape. A missing `result` is an error

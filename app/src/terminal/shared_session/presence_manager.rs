@@ -16,10 +16,10 @@ use rand::Rng;
 
 use asset_cache::AssetCacheExt as _;
 use warpui::{
-    assets::asset_cache::{AssetCache, AssetState},
-    image_cache::ImageType,
-    r#async::SpawnedFutureHandle,
     AppContext, Entity, ModelContext, SingletonEntity,
+    assets::asset_cache::{AssetCache, AssetState},
+    r#async::SpawnedFutureHandle,
+    image_cache::ImageType,
 };
 
 use crate::terminal::shared_session::protocol::ParticipantId;
@@ -538,7 +538,9 @@ impl PresenceManager {
             self.role = Some(role);
         } else {
             let Some(participant) = self.present_viewers.get_mut(participant_id) else {
-                log::warn!("Received shared session participant role update for participant that doesn't exist");
+                log::warn!(
+                    "Received shared session participant role update for participant that doesn't exist"
+                );
                 return;
             };
             participant.role = Some(role);

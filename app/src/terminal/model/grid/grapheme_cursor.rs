@@ -1,14 +1,14 @@
 use std::borrow::Cow;
 
 use warp_terminal::model::grid::{
+    CellType,
     cell::{self, Cell},
     row::Row,
-    CellType,
 };
 
 use crate::terminal::model::index::Point;
 
-use super::{grid_handler::GridHandler, CursorDirection, CursorState, Dimensions as _};
+use super::{CursorDirection, CursorState, Dimensions as _, grid_handler::GridHandler};
 
 /// The set of possible grapheme cursor wrapping behaviors.
 #[derive(PartialEq)]

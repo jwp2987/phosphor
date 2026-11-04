@@ -678,8 +678,16 @@ fn long_lines_route_like_their_short_forms() {
     let script = vec![format!("echo {}; echo PASTE-H1", "PASTE-G1 ".repeat(12)); 40].join("\n");
     let prose = "please explain why the build failed ".repeat(140);
     for (short, long, expected) in [
-        ("echo PASTE-G1; echo PASTE-LONG-END", shell_line, Route::Shell),
-        ("echo PASTE-G1; echo PASTE-H1\necho PASTE-G1; echo PASTE-H1", script, Route::Shell),
+        (
+            "echo PASTE-G1; echo PASTE-LONG-END",
+            shell_line,
+            Route::Shell,
+        ),
+        (
+            "echo PASTE-G1; echo PASTE-H1\necho PASTE-G1; echo PASTE-H1",
+            script,
+            Route::Shell,
+        ),
         ("please explain why the build failed", prose, Route::Agent),
     ] {
         assert!(long.len() > 4096, "{}", long.len());
@@ -691,13 +699,19 @@ fn long_lines_route_like_their_short_forms() {
             let long_decision = routing::route(&unparsed(&long), &context(surface));
             assert_eq!(short_decision.route, expected, "{short:?} on {surface:?}");
             assert_eq!(
-                long_decision.route, expected,
+                long_decision.route,
+                expected,
                 "{} bytes on {surface:?}: {} (short form: {})",
                 long.len(),
                 long_decision.rule,
                 short_decision.rule
             );
-            assert_eq!(long_decision.rule, short_decision.rule, "{} bytes", long.len());
+            assert_eq!(
+                long_decision.rule,
+                short_decision.rule,
+                "{} bytes",
+                long.len()
+            );
         }
     }
 }

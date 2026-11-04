@@ -1,15 +1,15 @@
 use pathfinder_geometry::rect::RectF;
 use pathfinder_geometry::vector::vec2f;
 
+use crate::Entity;
+use crate::View;
+use crate::WindowId;
 use crate::elements::ConstrainedBox;
 use crate::elements::Container;
 use crate::elements::Empty;
 use crate::elements::ParentElement;
 use crate::elements::Rect;
 use crate::platform::WindowStyle;
-use crate::Entity;
-use crate::View;
-use crate::WindowId;
 use crate::{App, TypedActionView};
 
 use super::*;

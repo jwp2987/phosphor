@@ -1,5 +1,5 @@
 use parking_lot::FairMutex;
-use serde::{de, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de};
 use settings::Setting as _;
 use std::{
     collections::{HashMap, HashSet},
@@ -1469,9 +1469,11 @@ impl LLMPreferences {
         crate::settings::AISettings::handle(ctx).update(ctx, |settings, ctx| {
             let mut map = settings.byop_last_used_reasoning.value().0.clone();
             map.insert(key, effort);
-            report_if_error!(settings
-                .byop_last_used_reasoning
-                .set_value(crate::settings::BYOPLastUsedReasoningMap::new(map), ctx));
+            report_if_error!(
+                settings
+                    .byop_last_used_reasoning
+                    .set_value(crate::settings::BYOPLastUsedReasoningMap::new(map), ctx)
+            );
         });
 
         ctx.emit(LLMPreferencesEvent::UpdatedReasoningEffort);

@@ -34,8 +34,8 @@ use warpui::{
 use crate::ai::agent::conversation::{AIConversation, AIConversationId, ConversationStatus};
 use crate::ai::artifacts::Artifact;
 use crate::ai::blocklist::agent_view::avatar_disc::{
-    render_agent_avatar_disc, render_avatar_disc, render_orchestrator_avatar_disc, AvatarGlyph,
-    pill_avatar_color, pill_initial,
+    AvatarGlyph, pill_avatar_color, pill_initial, render_agent_avatar_disc, render_avatar_disc,
+    render_orchestrator_avatar_disc,
 };
 use crate::ai::blocklist::agent_view::orchestration_conversation_links::{
     is_conversation_open_in_other_visible_view, pane_group_id_containing_terminal_view,
@@ -1295,7 +1295,9 @@ fn render_hover_card(
     // Harness chip: prefer the spawn-time `orchestration_harness_type`
     // so child agents report their harness immediately; fall back to
     // Oz so the chip slot stays populated.
-    let harness = conversation.orchestration_harness().unwrap_or(warp_cli::agent::Harness::Oz);
+    let harness = conversation
+        .orchestration_harness()
+        .unwrap_or(warp_cli::agent::Harness::Oz);
     let harness_icon = harness_display::icon_for(harness);
     let harness_label = harness_display::display_name(harness).to_string();
     let harness_color = harness_display::brand_color(harness).unwrap_or(sub_text);

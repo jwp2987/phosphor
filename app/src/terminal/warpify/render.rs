@@ -17,8 +17,8 @@ use warpui::ui_components::components::UiComponent as _;
 use warpui::ui_components::components::UiComponentStyles;
 use warpui::{AppContext, Element, EventContext, PaintContext, SingletonEntity as _};
 
-use super::settings::WarpifySettings;
 use super::SubshellSource;
+use super::settings::WarpifySettings;
 
 const SUBSHELL_FLAG_HORIZONTAL_PADDING: f32 = 8.;
 const SUBSHELL_FLAG_VERTICAL_PADDING: f32 = 1.;

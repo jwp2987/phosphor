@@ -4,11 +4,11 @@ use warpui::{Entity, ModelContext, SingletonEntity};
 
 use crate::{
     cloud_object::{
+        Owner, StoredObjectEventEntrypoint,
         model::persistence::ObjectStoreModel,
         update_manager::{
             InitiatedBy, ObjectOperation, OperationSuccessType, UpdateManager, UpdateManagerEvent,
         },
-        Owner, StoredObjectEventEntrypoint,
     },
     drive::folders::FolderId,
     notebooks::NotebookObjectModel,

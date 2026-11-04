@@ -3,19 +3,19 @@ use std::sync::{Arc, OnceLock};
 
 use parking_lot::Mutex;
 
+use crate::ai::agent::AIAgentActionId;
 use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::agent::task::TaskId;
-use crate::ai::agent::AIAgentActionId;
 use crate::ai::blocklist::block::cli_controller::LongRunningCommandControlState;
+use crate::terminal::ShellHost;
+use crate::terminal::model::BlockId;
 use crate::terminal::model::block::{
-    has_block_failed, AgentViewVisibility, Block, BlockState, PromptInfo,
-    MAX_SERIALIZED_STYLIZED_OUTPUT_LINES,
+    AgentViewVisibility, Block, BlockState, MAX_SERIALIZED_STYLIZED_OUTPUT_LINES, PromptInfo,
+    has_block_failed,
 };
 use crate::terminal::model::blockgrid::BlockGrid;
 use crate::terminal::model::header_grid::CommandSnapshot;
 use crate::terminal::model::session::SessionId;
-use crate::terminal::model::BlockId;
-use crate::terminal::ShellHost;
 use crate::util::extensions::TrimStringExt;
 use chrono::{DateTime, Local, TimeZone as _};
 use serde::{Deserialize, Serialize};
@@ -130,7 +130,10 @@ pub struct SerializedAIMetadata {
 
     /// `true` if this block should be hidden from the user (as is the case with AI-requested
     /// commands, for example).
-    #[serde(default = "default_as_true", skip_serializing_if = "skip_hide_when_true")]
+    #[serde(
+        default = "default_as_true",
+        skip_serializing_if = "skip_hide_when_true"
+    )]
     should_hide_block: bool,
 }
 

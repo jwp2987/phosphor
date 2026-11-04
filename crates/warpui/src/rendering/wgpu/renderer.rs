@@ -10,10 +10,10 @@ use util::with_error_scope;
 use warpui_core::platform::CapturedFrame;
 use wgpu::wgc::{device::DeviceError, present::SurfaceError};
 
+use crate::Scene;
 use crate::r#async::block_on;
 use crate::rendering::wgpu::Resources;
 use crate::rendering::{GlyphConfig, GlyphRasterBoundsFn, RasterizeGlyphFn};
-use crate::Scene;
 
 pub use super::resources::{GetSurfaceTextureError, SurfaceConfigureError};
 

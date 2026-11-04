@@ -1,4 +1,4 @@
-use super::{write_json, write_json_line, write_list, TableFormat};
+use super::{TableFormat, write_json, write_json_line, write_list};
 use comfy_table::Cell;
 use serde::Serialize;
 use warp_cli::agent::OutputFormat;

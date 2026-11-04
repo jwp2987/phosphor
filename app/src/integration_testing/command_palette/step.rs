@@ -1,7 +1,6 @@
 use crate::integration_testing::command_palette::assertions::{
     assert_command_palette_has_results, assert_command_palette_is_closed,
-    assert_command_palette_is_open,
-    assert_command_palette_selection_matches,
+    assert_command_palette_is_open, assert_command_palette_selection_matches,
 };
 use crate::integration_testing::view_getters::command_palette_view;
 use crate::search::data_source::QueryFilter;

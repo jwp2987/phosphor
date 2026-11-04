@@ -2,7 +2,7 @@ use warp_terminal::model::grid::CellType;
 
 use crate::terminal::model::index::Point;
 
-use super::{grid_handler::GridHandler, CursorDirection, CursorState, Dimensions as _};
+use super::{CursorDirection, CursorState, Dimensions as _, grid_handler::GridHandler};
 
 /// A structure to help with movement of the cursor for keyboard-driven
 /// text selection.

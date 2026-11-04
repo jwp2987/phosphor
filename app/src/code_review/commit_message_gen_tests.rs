@@ -155,7 +155,10 @@ fn sanitize_keeps_unbalanced_quotes() {
 fn sanitize_returns_none_for_empty_output() {
     assert_eq!(sanitize_commit_message(""), None);
     assert_eq!(sanitize_commit_message("   \n\n  "), None);
-    assert_eq!(sanitize_commit_message("<think>only reasoning</think>"), None);
+    assert_eq!(
+        sanitize_commit_message("<think>only reasoning</think>"),
+        None
+    );
     assert_eq!(sanitize_commit_message("```"), None);
 }
 

@@ -1,6 +1,6 @@
 use crate::search::{
     ai_context_menu::{
-        files::data_source::{file_data_source_for_pwd, fuzzy_match_files, FileSnapshot},
+        files::data_source::{FileSnapshot, file_data_source_for_pwd, fuzzy_match_files},
         mixer::AIContextMenuSearchableAction,
     },
     data_source::Query,
@@ -9,19 +9,19 @@ use crate::search::{
     mixer::AsyncDataSource,
 };
 use crate::{terminal::model::session::Session, workspace::ActiveSession};
-use repo_metadata::repositories::DetectedRepositories;
 use repo_metadata::RepoMetadataModel;
+use repo_metadata::repositories::DetectedRepositories;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tempfile::tempdir;
-use warpui::platform::WindowStyle;
-use warpui::r#async::block_on;
-use warpui::windowing::WindowManager;
 use warpui::SingletonEntity;
-use warpui::{elements::Empty, App, AppContext, Element, Entity, TypedActionView, View};
+use warpui::r#async::block_on;
+use warpui::platform::WindowStyle;
+use warpui::windowing::WindowManager;
+use warpui::{App, AppContext, Element, Entity, TypedActionView, View, elements::Empty};
 struct TestView;
 
 impl Entity for TestView {
@@ -431,9 +431,11 @@ fn test_directory_search_support() {
     assert!(!file_item.is_directory);
 
     // Test accessibility labels
-    assert!(directory_item
-        .accessibility_label()
-        .starts_with("Directory:"));
+    assert!(
+        directory_item
+            .accessibility_label()
+            .starts_with("Directory:")
+    );
     assert!(file_item.accessibility_label().starts_with("File:"));
 }
 

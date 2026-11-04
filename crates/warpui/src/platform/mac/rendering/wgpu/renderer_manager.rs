@@ -1,5 +1,5 @@
-use crate::rendering::wgpu::{Renderer, Resources};
 use crate::rendering::GlyphConfig;
+use crate::rendering::wgpu::{Renderer, Resources};
 use pathfinder_geometry::vector::Vector2F;
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};

@@ -178,12 +178,8 @@ impl Workflow {
     pub fn replace_object_id(&mut self, old_id: SyncId, new_id: SyncId) -> bool {
         let mut changed = false;
         let arguments = match self {
-            Self::Command {
-                arguments, ..
-            } => arguments,
-            Self::AgentMode {
-                arguments, ..
-            } => arguments,
+            Self::Command { arguments, .. } => arguments,
+            Self::AgentMode { arguments, .. } => arguments,
         };
         for arg in arguments.iter_mut() {
             match &mut arg.arg_type {

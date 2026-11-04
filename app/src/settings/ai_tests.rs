@@ -1558,7 +1558,9 @@ fn handles_command_snapshots_explicit_value_beats_the_default() {
 #[test]
 fn agent_mode_entry_counter_stops_at_the_cap() {
     assert!(should_count_agent_mode_entry(0));
-    assert!(should_count_agent_mode_entry(ENTERED_AGENT_MODE_COUNT_CAP - 1));
+    assert!(should_count_agent_mode_entry(
+        ENTERED_AGENT_MODE_COUNT_CAP - 1
+    ));
     assert!(!should_count_agent_mode_entry(ENTERED_AGENT_MODE_COUNT_CAP));
     assert!(!should_count_agent_mode_entry(usize::MAX));
 }

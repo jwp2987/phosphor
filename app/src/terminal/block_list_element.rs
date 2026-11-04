@@ -1,10 +1,9 @@
-use crate::ai::blocklist::agent_view::{agent_view_bg_fill, AgentViewState};
-use settings::Setting as _;
+use crate::ai::ask_ai::{AI_ASSISTANT_SVG_PATH, ASK_AI_ASSISTANT_TEXT};
+use crate::ai::blocklist::agent_view::{AgentViewState, agent_view_bg_fill};
 use crate::ai::blocklist::block::cli::{
     CLI_SUBAGENT_MIN_RESIZABLE_HEIGHT, CLI_SUBAGENT_MIN_RESIZABLE_WIDTH,
 };
-use crate::ai::blocklist::{ai_brand_color, ATTACH_AS_AGENT_MODE_CONTEXT_TEXT};
-use crate::ai::ask_ai::{AI_ASSISTANT_SVG_PATH, ASK_AI_ASSISTANT_TEXT};
+use crate::ai::blocklist::{ATTACH_AS_AGENT_MODE_CONTEXT_TEXT, ai_brand_color};
 use crate::appearance::Appearance;
 use crate::drive::settings::WarpDriveSettings;
 use crate::features::FeatureFlag;
@@ -23,13 +22,14 @@ use crate::terminal::model::index::Point as IndexPoint;
 use crate::terminal::model::selection::{SelectAction, SelectionPoint};
 use crate::terminal::safe_mode_settings::get_secret_obfuscation_mode;
 use crate::terminal::view::{StampedBlockIndex, TerminalAction};
-use crate::terminal::{grid_renderer, should_right_click_paste, SizeInfo};
+use crate::terminal::{SizeInfo, grid_renderer, should_right_click_paste};
 use crate::themes::theme::{Fill, WarpTheme};
 use crate::ui_components::{self, icons as UIIcon};
 use crate::util::color::Opacity;
 use enum_iterator::Sequence;
 use itertools::Itertools;
 use parking_lot::FairMutex;
+use settings::Setting as _;
 use vec1::Vec1;
 use warp_core::semantic_selection::SemanticSelection;
 use warp_core::ui::builder::UiBuilder;
@@ -56,26 +56,29 @@ use warpui::elements::{
 use warpui::event::{KeyState, ModifiersState};
 use warpui::fonts::{FamilyId, Properties, Weight};
 use warpui::geometry::rect::RectF;
-use warpui::geometry::vector::{vec2f, Vector2F};
+use warpui::geometry::vector::{Vector2F, vec2f};
 use warpui::platform::keyboard::KeyCode;
 use warpui::ui_components::components::UiComponent;
 use warpui::units::{IntoLines, IntoPixels, Lines, Pixels};
-use warpui::{elements::Icon, ClipBounds};
 use warpui::{
-    elements::SavePosition, event::DispatchedEvent, AfterLayoutContext, AppContext, Element, Event,
-    EventContext, LayoutContext, PaintContext, SizeConstraint,
+    AfterLayoutContext, AppContext, Element, Event, EventContext, LayoutContext, PaintContext,
+    SizeConstraint, elements::SavePosition, event::DispatchedEvent,
 };
+use warpui::{ClipBounds, elements::Icon};
 use warpui::{EntityId, ModelHandle, SingletonEntity as _};
 
 use super::block_list_viewport::{ClampingMode, InputMode, ScrollPosition, ViewportState};
 use super::blockgrid_renderer::{
-    block_list_paint_from_snapshot, DeferredGridDraw, GridRenderParams, GridSnapshotCache,
-    GridSnapshotKey,
+    DeferredGridDraw, GridRenderParams, GridSnapshotCache, GridSnapshotKey,
+    block_list_paint_from_snapshot,
 };
 use super::find::{BlockFindRenderData, TerminalFindModel};
 use super::grid_renderer::{CellGlyphCache, SharedCellGlyphCache};
 
+use super::TerminalModel;
+use super::heights_approx_eq;
 use super::meta_shortcuts::handle_keystroke_despite_composing;
+use super::model::SecretHandle;
 use super::model::ansi::CursorShape;
 use super::model::block::BlockId;
 use super::model::blocks::{RichContentItem, SelectionRange};
@@ -84,25 +87,21 @@ use super::model::image_map::StoredImageMetadata;
 use super::model::mouse::{MouseAction, MouseButton, MouseState};
 use super::model::session::SessionId;
 use super::model::terminal_model::{SelectedBlocks, WithinBlock, WithinModel};
-use super::model::SecretHandle;
 use super::shared_session::presence_manager::{
-    text_selection_color, PresenceManager, MUTED_PARTICIPANT_COLOR,
+    MUTED_PARTICIPANT_COLOR, PresenceManager, text_selection_color,
 };
 use super::shared_session::render_util::SHARED_SESSION_AVATAR_DIAMETER;
 use super::view::{
-    BlocklistAIRenderContext, InlineBannerId, RichContentMetadata, SeparatorId,
-    SharedSessionBanners, TerminalEditor, TerminalView, TerminalViewRenderContext,
-    BLOCK_BANNER_HEIGHT,
+    BLOCK_BANNER_HEIGHT, BlocklistAIRenderContext, InlineBannerId, RichContentMetadata,
+    SeparatorId, SharedSessionBanners, TerminalEditor, TerminalView, TerminalViewRenderContext,
 };
 use super::warpify::render::{draw_flag_pole, render_subshell_flag};
-use super::TerminalModel;
-use super::heights_approx_eq;
 use crate::terminal::blockgrid_renderer::BlockGridParams;
 use crate::terminal::model::terminal_model::BlockIndex;
 use crate::terminal::warpify::SubshellSource;
 
 use crate::terminal::model::escape_sequences::{
-    maybe_kitty_keyboard_escape_sequence, KeystrokeWithDetails, ToEscapeSequence,
+    KeystrokeWithDetails, ToEscapeSequence, maybe_kitty_keyboard_escape_sequence,
 };
 
 /// Lines above and below the viewport whose stale (deferred-reflow) blocks layout reflows
@@ -2708,9 +2707,11 @@ impl BlockListElement {
         ctx: &mut PaintContext,
         app: &AppContext,
     ) {
-        let block_height = block.height(&agent_view_state.transcript_scope()).as_f64() as f32 * cell_size.y();
+        let block_height =
+            block.height(&agent_view_state.transcript_scope()).as_f64() as f32 * cell_size.y();
         if block.is_restored()
-            && (!FeatureFlag::AgentView.is_enabled() || !agent_view_state.transcript_scope().is_conversation())
+            && (!FeatureFlag::AgentView.is_enabled()
+                || !agent_view_state.transcript_scope().is_conversation())
         {
             ctx.scene
                 .draw_rect_with_hit_recording(RectF::new(
@@ -2946,11 +2947,12 @@ impl BlockListElement {
 
         // Update grid_origin and draw command.
         let command_grid_properties = Properties::default();
-        let command_focused_range = find_render_data
-            .as_ref()
-            .and_then(|data: &BlockFindRenderData<'_>| {
-                data.focused_range_for_grid(GridType::PromptAndCommand)
-            });
+        let command_focused_range =
+            find_render_data
+                .as_ref()
+                .and_then(|data: &BlockFindRenderData<'_>| {
+                    data.focused_range_for_grid(GridType::PromptAndCommand)
+                });
         let deferred = deferred_grid_draws.as_mut().and_then(|draws| {
             let draw = block.prompt_and_command_grid().capture_draw(
                 command_origin,
@@ -3077,9 +3079,12 @@ impl BlockListElement {
                     block_grid_params,
                 ))
             });
-            let output_focused_range = find_render_data
-                .as_ref()
-                .and_then(|data: &BlockFindRenderData<'_>| data.focused_range_for_grid(GridType::Output));
+            let output_focused_range =
+                find_render_data
+                    .as_ref()
+                    .and_then(|data: &BlockFindRenderData<'_>| {
+                        data.focused_range_for_grid(GridType::Output)
+                    });
             let deferred = deferred_grid_draws.as_mut().and_then(|draws| {
                 let draw = block.output_grid().capture_draw(
                     *grid_origin,
@@ -4116,7 +4121,8 @@ impl Element for BlockListElement {
 
                     let total_lines = grid_storage_lines + flat_storage_lines;
                     let total_bytes = grid_storage_bytes + flat_storage_bytes;
-                    let text = format!("\
+                    let text = format!(
+                        "\
                             Lines: {total_lines} (grid: {grid_storage_lines}, flat: {flat_storage_lines}); \
                             Size: {:#.1} (grid: {:#.1}, flat: {:#.1})\
                         ",
@@ -4391,7 +4397,8 @@ impl Element for BlockListElement {
 
                     // TODO(vorporeal): should probably use `Pixels` here
                     let block_pixel_height =
-                        block.height(&agent_view_state.transcript_scope()).as_f64() as f32 * cell_size.y();
+                        block.height(&agent_view_state.transcript_scope()).as_f64() as f32
+                            * cell_size.y();
 
                     let block_bottom_y = grid_origin.y() + block_pixel_height;
                     let selection_bottom_y = snackbar_header
@@ -4531,7 +4538,9 @@ impl Element for BlockListElement {
                                     - SPACE_BETWEEN_SELECTED_BLOCK_AVATARS,
                             );
                         } else {
-                            log::warn!("Should show avatar for shared session participant at selected block but avatar element was not found")
+                            log::warn!(
+                                "Should show avatar for shared session participant at selected block but avatar element was not found"
+                            )
                         }
                     }
 
@@ -5354,11 +5363,9 @@ impl Element for BlockListElement {
                     let is_press = matches!(state, KeyState::Pressed);
                     // The modes as published (the model's lock is the pty reader's while it parses).
                     let modes = self.key_model.eager_modes().unwrap_or_default();
-                    if let Some(escape_sequence) = maybe_kitty_keyboard_escape_sequence(
-                        &modes,
-                        key_code,
-                        is_press,
-                    ) {
+                    if let Some(escape_sequence) =
+                        maybe_kitty_keyboard_escape_sequence(&modes, key_code, is_press)
+                    {
                         ctx.dispatch_typed_action(TerminalAction::ControlSequence(escape_sequence));
                         return true;
                     }

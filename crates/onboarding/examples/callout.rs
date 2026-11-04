@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use onboarding::components::onboarding_callout::{
     Button as CalloutButton, OnboardingCallout, Options as CalloutOptions, Params as CalloutParams,
     StepStatus,
@@ -12,7 +12,7 @@ use warpui::color::ColorU;
 use warpui::elements::{Rect, Stack};
 use warpui::fonts::{Cache, FamilyId, Weight};
 use warpui::platform;
-use warpui::{prelude::*, AddWindowOptions, AssetProvider, ModelContext};
+use warpui::{AddWindowOptions, AssetProvider, ModelContext, prelude::*};
 
 #[derive(Clone, Copy, RustEmbed)]
 #[folder = "../../app/assets"]

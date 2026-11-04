@@ -3,8 +3,8 @@ use warpui::{AppContext, ModelHandle, View, ViewContext, ViewHandle};
 use crate::{
     app_state::LeafContents,
     pane_group::{
-        pane::{get_started_view::GetStartedView, ShareableLink, ShareableLinkError},
         BackingView, PaneConfiguration, PaneContent, PaneGroup, PaneView,
+        pane::{ShareableLink, ShareableLinkError, get_started_view::GetStartedView},
     },
 };
 

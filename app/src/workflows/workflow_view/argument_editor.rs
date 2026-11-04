@@ -5,6 +5,7 @@ use pathfinder_color::ColorU;
 use warp_core::{features::FeatureFlag, ui::appearance::Appearance};
 use warp_editor::editor::NavigationKey;
 use warpui::{
+    AppContext, Element, SingletonEntity as _, ViewContext, ViewHandle,
     elements::{
         ChildView, ConstrainedBox, Container, CrossAxisAlignment, Fill, Flex, MainAxisAlignment,
         MainAxisSize, ParentElement, Shrinkable,
@@ -14,7 +15,6 @@ use warpui::{
         button::ButtonVariant,
         components::{Coords, UiComponent, UiComponentStyles},
     },
-    AppContext, Element, SingletonEntity as _, ViewContext, ViewHandle,
 };
 
 use crate::{
@@ -35,9 +35,9 @@ use crate::{
 use super::alias_argument_selector::{AliasArgumentSelector, AliasArgumentSelectorEvent};
 
 use super::{
-    WorkflowAction, WorkflowView, WorkflowViewEvent, BUTTON_BORDER_RADIUS, EDITOR_FONT_SIZE,
-    HORIZONTAL_TEXT_INPUT_PADDING, SECTION_SPACING, VERTICAL_TEXT_INPUT_PADDING,
-    WORKFLOW_PARAMETER_HIGHLIGHT_COLOR,
+    BUTTON_BORDER_RADIUS, EDITOR_FONT_SIZE, HORIZONTAL_TEXT_INPUT_PADDING, SECTION_SPACING,
+    VERTICAL_TEXT_INPUT_PADDING, WORKFLOW_PARAMETER_HIGHLIGHT_COLOR, WorkflowAction, WorkflowView,
+    WorkflowViewEvent,
 };
 
 const ARGUMENT_INPUT_HEIGHT: f32 = 30.;

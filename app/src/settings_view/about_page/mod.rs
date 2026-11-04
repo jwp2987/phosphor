@@ -1,29 +1,25 @@
 use super::{
-    settings_page::{
-        render_body_item, MatchData, PageType, SettingsPageEvent, SettingsPageMeta,
-        SettingsPageViewHandle, SettingsWidget,
-    },
     LocalOnlyIconState, SettingsSection, ToggleState,
+    settings_page::{
+        MatchData, PageType, SettingsPageEvent, SettingsPageMeta, SettingsPageViewHandle,
+        SettingsWidget, render_body_item,
+    },
 };
 use crate::{
-    appearance::Appearance,
-    autoupdate::AutoupdateState,
-    channel::ChannelState,
-    report_if_error,
-    settings::AutoupdateSettings,
-    workspace::WorkspaceAction,
+    appearance::Appearance, autoupdate::AutoupdateState, channel::ChannelState, report_if_error,
+    settings::AutoupdateSettings, workspace::WorkspaceAction,
 };
 use settings::Setting as _;
 use warp_core::{execution_mode::AppExecutionMode, settings::ToggleableSetting as _};
 use warpui::ui_components::switch::SwitchStateHandle;
 use warpui::{
+    AppContext, Entity, SingletonEntity, TypedActionView, View, ViewContext, ViewHandle,
     assets::asset_cache::AssetSource,
     elements::{
         Align, CacheOption, ConstrainedBox, Container, CrossAxisAlignment, Element, Flex, Image,
         MainAxisAlignment, MouseStateHandle, ParentElement, Wrap,
     },
     ui_components::components::UiComponent,
-    AppContext, Entity, SingletonEntity, TypedActionView, View, ViewContext, ViewHandle,
 };
 
 // Parked, not deleted: this holds the "update status" row (check-for-update /
@@ -104,9 +100,11 @@ impl TypedActionView for AboutPageView {
         match action {
             AboutPageAction::ToggleAutomaticUpdates => {
                 AutoupdateSettings::handle(ctx).update(ctx, |settings, ctx| {
-                    report_if_error!(settings
-                        .automatic_updates_enabled
-                        .toggle_and_save_value(ctx));
+                    report_if_error!(
+                        settings
+                            .automatic_updates_enabled
+                            .toggle_and_save_value(ctx)
+                    );
                 });
                 ctx.notify();
             }

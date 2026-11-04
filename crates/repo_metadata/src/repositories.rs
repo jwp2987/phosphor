@@ -13,7 +13,7 @@ use warpui::{AppContext, Entity, ModelContext, ModelHandle};
 
 use crate::DirectoryWatcher;
 use crate::Repository;
-use futures::future::{ready, Either};
+use futures::future::{Either, ready};
 use warpui::SingletonEntity;
 
 /// Indicates why a repository detection event was emitted.
@@ -116,24 +116,27 @@ impl DetectedRepositories {
                             .filter(|p| !p.starts_with(&repo_root_path));
 
                             match DirectoryWatcher::handle(ctx).update(ctx, |watcher, ctx| {
-                                    watcher
-                                        .add_directory_with_git_dir(
-                                            repo_root_path,
-                                            external_git_dir,
-                                            ctx,
-                                        )
-                                        .ok()
-                                })
-                            { Some(repository) => {
-                                let repo_path = repository.as_ref(ctx).root_dir().to_local_path();
-                                ctx.emit(DetectedRepositoriesEvent::DetectedGitRepo {
-                                    repository,
-                                    source,
-                                });
-                                let _ = tx.send(repo_path);
-                            } _ => {
-                                let _ = tx.send(None);
-                            }}
+                                watcher
+                                    .add_directory_with_git_dir(
+                                        repo_root_path,
+                                        external_git_dir,
+                                        ctx,
+                                    )
+                                    .ok()
+                            }) {
+                                Some(repository) => {
+                                    let repo_path =
+                                        repository.as_ref(ctx).root_dir().to_local_path();
+                                    ctx.emit(DetectedRepositoriesEvent::DetectedGitRepo {
+                                        repository,
+                                        source,
+                                    });
+                                    let _ = tx.send(repo_path);
+                                }
+                                _ => {
+                                    let _ = tx.send(None);
+                                }
+                            }
                         } else {
                             // No working tree path; do not treat git_dir_path as a repository path.
                             let _ = tx.send(None);
@@ -201,9 +204,9 @@ impl DetectedRepositories {
     /// remote roots for their host.
     pub fn get_root_for_lor_path(&self, path: &LocalOrRemotePath) -> Option<LocalOrRemotePath> {
         match path {
-            LocalOrRemotePath::Local(local_path) => {
-                self.get_root_for_path(local_path).map(LocalOrRemotePath::Local)
-            }
+            LocalOrRemotePath::Local(local_path) => self
+                .get_root_for_path(local_path)
+                .map(LocalOrRemotePath::Local),
             LocalOrRemotePath::Remote(remote_path) => self.find_remote_repository_root(remote_path),
         }
     }

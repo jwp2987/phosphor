@@ -3,7 +3,7 @@ use itertools::Itertools;
 
 use crate::terminal::model::terminal_model::BlockIndex;
 
-use super::{block_list::BlockListMatch, BlockListFindRun, TerminalFindModel};
+use super::{BlockListFindRun, TerminalFindModel, block_list::BlockListMatch};
 
 impl TerminalFindModel {
     /// Number of block-list matches that are not hidden by an active block filter.

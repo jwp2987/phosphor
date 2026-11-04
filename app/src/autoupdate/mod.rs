@@ -14,8 +14,8 @@ use crate::server::telemetry::TelemetryEvent;
 use crate::settings::AutoupdateSettings;
 use crate::workspace::Workspace;
 use crate::{
-    channel::Channel, report_if_error, send_telemetry_from_ctx, server::datetime_ext::DateTimeExt,
-    ChannelState,
+    ChannelState, channel::Channel, report_if_error, send_telemetry_from_ctx,
+    server::datetime_ext::DateTimeExt,
 };
 use ::channel_versions::{ParsedVersion, VersionInfo};
 use anyhow::{Context as _, Result};
@@ -26,13 +26,13 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 use warp_core::execution_mode::AppExecutionMode;
-use warpui::platform::TerminationMode;
 use warpui::r#async::Timer;
+use warpui::platform::TerminationMode;
 use warpui::windowing::state::ApplicationStage;
 use warpui::windowing::{self, WindowManager};
 use warpui::{
-    accessibility::{AccessibilityContent, WarpA11yRole},
     AppContext,
+    accessibility::{AccessibilityContent, WarpA11yRole},
 };
 use warpui::{Entity, ModelContext, SingletonEntity, ViewContext};
 
@@ -577,12 +577,7 @@ impl AutoupdateState {
                 // official; the platform's download_update_and_cleanup internally
                 // picks the appropriate asset on the OSS branch and skips codesign
                 // verify.
-                self.download_new_update(
-                    update_id.clone(),
-                    request_type,
-                    new_version.clone(),
-                    ctx,
-                );
+                self.download_new_update(update_id.clone(), request_type, new_version.clone(), ctx);
                 // We report the update status after attempting to download the update.
                 return;
             }
@@ -675,8 +670,7 @@ impl AutoupdateState {
         // to avoid the download blocking on send; the UI only ever reads the
         // latest progress, and any in-between backlog is simply overwritten when
         // the model processes it, so there's no "frame stutter".
-        let (progress_tx, progress_rx) =
-            futures::channel::mpsc::unbounded::<DownloadProgress>();
+        let (progress_tx, progress_rx) = futures::channel::mpsc::unbounded::<DownloadProgress>();
         let on_progress: ProgressCallback = Arc::new(move |p| {
             // Ignored if the receiving end has disconnected (download complete /
             // model destroyed); doesn't affect the download itself.

@@ -1,7 +1,7 @@
 use crate::{
-    elements::Point, event::DispatchedEvent, geometry::vector::Vector2F, scene::ZIndex,
     AfterLayoutContext, AppContext, ClipBounds, Element, EventContext, LayoutContext, PaintContext,
-    SizeConstraint,
+    SizeConstraint, elements::Point, event::DispatchedEvent, geometry::vector::Vector2F,
+    scene::ZIndex,
 };
 
 /// Internal elements used to support the `add_overlay_child` and `add_positioned_overlay_child`

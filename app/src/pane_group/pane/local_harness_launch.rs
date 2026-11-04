@@ -7,17 +7,17 @@ use warp_managed_secrets::ManagedSecretValue;
 
 use crate::ai::{
     agent_sdk::{
-        driver::AgentDriverError, harness_model_env_vars, task_env_vars, validate_cli_installed,
-        ClaudeHarness, ThirdPartyHarness,
+        ClaudeHarness, ThirdPartyHarness, driver::AgentDriverError, harness_model_env_vars,
+        task_env_vars, validate_cli_installed,
     },
     ambient_agents::{
-        task::{HarnessConfig, HarnessModelConfig},
         AgentConfigSnapshot, AmbientAgentTaskId,
+        task::{HarnessConfig, HarnessModelConfig},
     },
     local_harness_setup::{LocalHarnessSetupState, local_harness_setup_state},
 };
 use crate::terminal::cli_agent_sessions::plugin_manager::{
-    plugin_manager_for, CliAgentPluginManager,
+    CliAgentPluginManager, plugin_manager_for,
 };
 use crate::terminal::shell::ShellType;
 
@@ -274,12 +274,13 @@ pub(super) async fn prepare_local_harness_child_launch(
 ) -> Result<PreparedLocalHarnessLaunch, String> {
     // Ported from the pin (`local_harness_launch.rs:180-186`, `02b53fcd8`) for #323's
     // ANTHROPIC_MODEL merge sub-item.
-    let harness_model_config = model_id
-        .filter(|id| !id.is_empty())
-        .map(|model_id| HarnessModelConfig {
-            model_id,
-            reasoning_level: None,
-        });
+    let harness_model_config =
+        model_id
+            .filter(|id| !id.is_empty())
+            .map(|model_id| HarnessModelConfig {
+                model_id,
+                reasoning_level: None,
+            });
     let Some(harness) = normalize_local_child_harness(&harness_type) else {
         let harness_name = harness_type.trim();
         return Err(if harness_name.is_empty() {

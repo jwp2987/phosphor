@@ -5,7 +5,7 @@
 #[cfg(target_os = "windows")]
 mod clipboard_tests {
     use crate::windowing::winit::windows::clipboard::WindowsClipboard;
-    use crate::{clipboard::ClipboardContent, Clipboard};
+    use crate::{Clipboard, clipboard::ClipboardContent};
 
     fn create_test_clipboard() -> Option<WindowsClipboard> {
         WindowsClipboard::new().ok()

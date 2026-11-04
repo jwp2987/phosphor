@@ -276,10 +276,10 @@ fn test_deserialization_cannot_bypass_the_trailing_zero_invariant() {
 /// bites.
 #[test]
 fn test_deserialization_canonicalises_an_all_zero_version() {
-    let empty: ParsedVersion = serde_json::from_str(r#"{"components": []}"#)
-        .expect("a ParsedVersion should deserialize");
-    let zero: ParsedVersion = serde_json::from_str(r#"{"components": [0]}"#)
-        .expect("a ParsedVersion should deserialize");
+    let empty: ParsedVersion =
+        serde_json::from_str(r#"{"components": []}"#).expect("a ParsedVersion should deserialize");
+    let zero: ParsedVersion =
+        serde_json::from_str(r#"{"components": [0]}"#).expect("a ParsedVersion should deserialize");
     let many_zeros: ParsedVersion = serde_json::from_str(r#"{"components": [0, 0, 0, 0]}"#)
         .expect("a ParsedVersion should deserialize");
 

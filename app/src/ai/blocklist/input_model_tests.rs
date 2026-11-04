@@ -43,18 +43,18 @@ use warpui::{App, AppContext, EntityId, ModelHandle, SingletonEntity};
 
 use super::*;
 use crate::ai::agent::conversation::AIConversationId;
+use crate::ai::blocklist::BlocklistAIContextModel;
 use crate::ai::blocklist::agent_view::AgentViewEntryOrigin;
 use crate::ai::blocklist::conversation_selection::{
     ConversationSelectionEvent, ConversationSelectionHandle,
 };
 use crate::ai::blocklist::input_mode_policy::{InputModePolicy, PolicyConfigUpdate};
-use crate::ai::blocklist::BlocklistAIContextModel;
 use crate::settings::{AISettings, AISettingsChangedEvent};
 use crate::terminal::cli_agent_sessions::CLIAgentSessionsModel;
 use crate::terminal::color::{self, Colors};
 use crate::terminal::event_listener::ChannelEventListener;
-use crate::terminal::model::test_utils::block_size;
 use crate::terminal::model::TerminalModel;
+use crate::terminal::model::test_utils::block_size;
 use crate::test_util::settings::initialize_settings_for_tests;
 
 /// Returns a timestamp and a strictly-later timestamp, for ordering assertions.
@@ -247,7 +247,11 @@ fn request_lines_that_ran_in_the_shell_do_not_force_shell_965() {
     // While the line is being typed, its prefixes are not pinned to the shell by the finished
     // line's history entry either.
     for buffer in ["say hell", "say hel", "where is the confi"] {
-        assert_eq!(command_history_verdict(&history, buffer), None, "{buffer:?}");
+        assert_eq!(
+            command_history_verdict(&history, buffer),
+            None,
+            "{buffer:?}"
+        );
     }
     // The shell-ward lines keep matching history.
     let history = [
@@ -497,8 +501,8 @@ fn build_input_model(
         None,  /* session_startup_path */
     )));
     let terminal_view_id = EntityId::new();
-    let conversation_selection = app
-        .add_model(|_| Box::new(MockConversationSelection) as Box<dyn ConversationSelection>);
+    let conversation_selection =
+        app.add_model(|_| Box::new(MockConversationSelection) as Box<dyn ConversationSelection>);
     let ai_context_model = app.add_model(|_| {
         BlocklistAIContextModel::mock_agent_view_less(
             terminal_model.clone(),
@@ -1617,11 +1621,26 @@ fn enter_waits_for_the_verdict_only_for_unclassified_prose() {
     use EnterProvenance::{Classifiable, ShellTypeahead};
     let wait = should_wait_for_verdict_before_submit;
     assert!(wait(true, false, true, Classifiable, false));
-    assert!(!wait(false, false, true, Classifiable, false), "prose-free text");
-    assert!(!wait(true, true, true, Classifiable, false), "slash command");
-    assert!(!wait(true, false, false, Classifiable, false), "verdict landed");
-    assert!(!wait(true, false, true, ShellTypeahead, false), "typeahead for a running command");
-    assert!(!wait(true, false, true, Classifiable, true), "second Enter after giving up");
+    assert!(
+        !wait(false, false, true, Classifiable, false),
+        "prose-free text"
+    );
+    assert!(
+        !wait(true, true, true, Classifiable, false),
+        "slash command"
+    );
+    assert!(
+        !wait(true, false, false, Classifiable, false),
+        "verdict landed"
+    );
+    assert!(
+        !wait(true, false, true, ShellTypeahead, false),
+        "typeahead for a running command"
+    );
+    assert!(
+        !wait(true, false, true, Classifiable, true),
+        "second Enter after giving up"
+    );
 }
 
 /// #1158/#1351: a waiting Enter keeps waiting while the classifier's own compute is within the cap;
@@ -1663,7 +1682,10 @@ fn typeahead_is_young_only_while_the_provenance_lasts() {
         input_model.update(&mut app, |model, _| {
             assert!(!model.typeahead_is_young());
             model.note_typeahead_inserted("expl".to_owned());
-            assert!(!model.typeahead_is_young(), "a plain hand-off insert is shell typeahead");
+            assert!(
+                !model.typeahead_is_young(),
+                "a plain hand-off insert is shell typeahead"
+            );
             model.mark_typeahead_young();
             assert!(model.typeahead_is_young());
             // The user replaced the text: the provenance and its youth end.
@@ -1829,7 +1851,11 @@ fn history_close_match_is_ruled_out_by_length_before_the_matcher_is_built() {
     assert!(close_match_possible_by_length(100, 90, cutoff));
     assert!(!close_match_possible_by_length(80, 100, cutoff));
     assert!(!close_match_possible_by_length(100, 4096, cutoff));
-    assert!(!close_match_possible_by_length(10 * 1024 * 1024, 4096, cutoff));
+    assert!(!close_match_possible_by_length(
+        10 * 1024 * 1024,
+        4096,
+        cutoff
+    ));
     // A 10 MB buffer against a 4 KiB history: no entry can match, so the matcher is never built
     // and the job returns at once.
     let buffer = "x".repeat(10 * 1024 * 1024);
@@ -1987,7 +2013,10 @@ fn pending_line_that_ran_before_exactly_settles_to_shell_at_submit() {
         };
         // `yesterday` is a prose word, so the pre-filter leaves this to the classifier; history
         // decides it at once.
-        assert_eq!(enter(&mut app, "git log --since yesterday", true), InputType::Shell);
+        assert_eq!(
+            enter(&mut app, "git log --since yesterday", true),
+            InputType::Shell
+        );
         assert_eq!(
             enter(&mut app, "git log --since yesterday", false),
             InputType::AI,

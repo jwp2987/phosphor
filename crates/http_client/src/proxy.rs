@@ -103,7 +103,9 @@ impl ProxyConfig {
             ProxyMode::Custom => {
                 let trimmed = self.url.trim();
                 if trimmed.is_empty() {
-                    log::warn!("HTTP proxy set to Custom but URL is empty, falling back to reqwest default (reads system proxy)");
+                    log::warn!(
+                        "HTTP proxy set to Custom but URL is empty, falling back to reqwest default (reads system proxy)"
+                    );
                     return builder;
                 }
 
@@ -111,7 +113,9 @@ impl ProxyConfig {
                 let mut proxy = match proxy_result {
                     Ok(p) => p,
                     Err(err) => {
-                        log::warn!("HTTP proxy URL '{trimmed}' is invalid ({err}), falling back to reqwest default");
+                        log::warn!(
+                            "HTTP proxy URL '{trimmed}' is invalid ({err}), falling back to reqwest default"
+                        );
                         return builder;
                     }
                 };

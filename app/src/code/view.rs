@@ -7,8 +7,8 @@ use crate::editor::InteractionState;
 use crate::input::Vector2F;
 use crate::pane_group::focus_state::PaneFocusHandle;
 use crate::pane_group::pane::view::header::components::{
-    render_pane_header_buttons, render_pane_header_title_text, render_three_column_header,
-    CenteredHeaderEdgeWidth,
+    CenteredHeaderEdgeWidth, render_pane_header_buttons, render_pane_header_title_text,
+    render_three_column_header,
 };
 use crate::pane_group::pane::view::header::render_pane_header_draggable;
 use crate::pane_group::{CodePane, PaneConfigurationEvent, PaneDragDropLocation};
@@ -18,9 +18,10 @@ use crate::terminal::cli_agent::{
     build_selection_line_range_prompt, build_selection_substring_prompt,
 };
 use crate::terminal::view::CliAgentRouting;
-use crate::workspace::util::get_context_target_terminal_view;
 use crate::workspace::TabBarDropTargetData;
+use crate::workspace::util::get_context_target_terminal_view;
 use crate::{code::EditorTabBarDropTargetData, pane_group::pane::ActionOrigin};
+use lsp::LspManagerModel;
 use pathfinder_color::ColorU;
 use pathfinder_geometry::rect::RectF;
 use pathfinder_geometry::vector::vec2f;
@@ -31,17 +32,18 @@ use warp_core::features::FeatureFlag;
 use warp_core::ui::appearance::Appearance;
 use warp_core::ui::icons::ICON_DIMENSIONS;
 use warp_editor::render::element::VerticalExpansionBehavior;
-use lsp::LspManagerModel;
 use warp_util::file::FileId;
 use warp_util::path::LineAndColumnArg;
 use warpui::elements::Rect;
-use warpui::text::point::Point;
 use warpui::fonts::Style;
+use warpui::text::point::Point;
 use warpui::text_layout::ClipConfig;
 
 #[cfg(feature = "local_fs")]
 use warpui::clipboard::ClipboardContent;
 use warpui::{
+    AppContext, Element, Entity, EntityId, ModelHandle, SingletonEntity, TypedActionView, View,
+    ViewContext, ViewHandle, WindowId,
     elements::{
         AcceptedByDropTarget, Align, Border, ChildAnchor, ChildView, Clipped, ConstrainedBox,
         Container, CornerRadius, CrossAxisAlignment, Draggable, DraggableState, DropTarget, Empty,
@@ -53,14 +55,12 @@ use warpui::{
     id,
     keymap::EditableBinding,
     ui_components::{button::ButtonVariant, components::UiComponent},
-    AppContext, Element, Entity, EntityId, ModelHandle, SingletonEntity, TypedActionView, View,
-    ViewContext, ViewHandle, WindowId,
 };
 
 use crate::{
     menu::{MenuItem, MenuItemFields},
-    notebooks::file::{is_markdown_file, MarkdownDisplayMode},
-    search::{files::icon::icon_from_file_path, ItemHighlightState},
+    notebooks::file::{MarkdownDisplayMode, is_markdown_file},
+    search::{ItemHighlightState, files::icon::icon_from_file_path},
     tab::TAB_BAR_BORDER_HEIGHT,
     ui_components::{blended_colors, buttons::icon_button},
     view_components::{DismissibleToast, MarkdownToggleEvent, MarkdownToggleView},
@@ -68,8 +68,8 @@ use crate::{
 };
 
 use crate::pane_group::{
-    pane::{view, PaneHeaderAction},
     BackingView, PaneConfiguration, PaneEvent,
+    pane::{PaneHeaderAction, view},
 };
 
 use super::{
@@ -80,7 +80,7 @@ use super::{
     local_code_editor::{LocalCodeEditorEvent, LocalCodeEditorView},
 };
 
-use crate::{send_telemetry_from_ctx, TelemetryEvent};
+use crate::{TelemetryEvent, send_telemetry_from_ctx};
 
 // Read-only rendered Markdown preview for remote files reuses the notebook rich-text
 // machinery. `RichTextEditorView` is referenced by the always-present `TabData` field, so

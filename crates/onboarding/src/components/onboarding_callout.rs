@@ -3,12 +3,12 @@ use std::borrow::Cow;
 use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::vec2f;
 use ui_components::{
-    button, button::Button as ButtonComponent, Component, MouseEventHandler, Options as _,
+    Component, MouseEventHandler, Options as _, button, button::Button as ButtonComponent,
 };
 use warp_core::ui::{
     appearance::Appearance,
     color::{coloru_with_opacity, contrast::relative_luminance},
-    theme::{phenomenon::PhenomenonStyle, Fill},
+    theme::{Fill, phenomenon::PhenomenonStyle},
 };
 use warpui::{
     elements::{

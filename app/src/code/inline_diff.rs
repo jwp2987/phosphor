@@ -769,7 +769,10 @@ impl InlineDiffView {
                 });
                 Ok(RevertDispatch::WriteInFlight)
             }
-            RevertPlan::FinishRename { at, remove_expected } => {
+            RevertPlan::FinishRename {
+                at,
+                remove_expected,
+            } => {
                 // A previous attempt's first step already landed -- the
                 // registered path (`file_id`) already holds the original
                 // text -- so nothing is dispatched against it here, and
@@ -871,16 +874,19 @@ impl InlineDiffView {
 
         match dispatched {
             Ok(completion) => {
-                ctx.spawn(completion, move |_me, delete_result, ctx| match delete_result {
-                    Ok(()) => ctx.emit(InlineDiffViewEvent::FileSaved),
-                    Err(error) => ctx.emit(InlineDiffViewEvent::FailedToSave {
-                        error: Rc::new(partial_rename_revert_failure(
-                            &original_path,
-                            &at,
-                            &error,
-                        )),
-                    }),
-                });
+                ctx.spawn(
+                    completion,
+                    move |_me, delete_result, ctx| match delete_result {
+                        Ok(()) => ctx.emit(InlineDiffViewEvent::FileSaved),
+                        Err(error) => ctx.emit(InlineDiffViewEvent::FailedToSave {
+                            error: Rc::new(partial_rename_revert_failure(
+                                &original_path,
+                                &at,
+                                &error,
+                            )),
+                        }),
+                    },
+                );
             }
             Err(error) => {
                 ctx.emit(InlineDiffViewEvent::FailedToSave {
@@ -2019,7 +2025,11 @@ mod tests {
                 None,
             )
             .expect("plan");
-            let RevertPlan::FinishRename { at, remove_expected } = plan else {
+            let RevertPlan::FinishRename {
+                at,
+                remove_expected,
+            } = plan
+            else {
                 panic!("expected a finish-rename plan, got {plan:?}");
             };
             assert_eq!(at, destination_path);
@@ -2074,7 +2084,11 @@ mod tests {
                 None,
             )
             .expect("plan");
-            let RevertPlan::FinishRename { at: _, remove_expected } = plan else {
+            let RevertPlan::FinishRename {
+                at: _,
+                remove_expected,
+            } = plan
+            else {
                 panic!("expected a finish-rename plan, got {plan:?}");
             };
 

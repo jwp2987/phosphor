@@ -18,19 +18,20 @@ pub use slash_command::*;
 use self::response_stream::{
     PendingResume, PendingTitleGeneration, RecoveryBudget, ResponseStream, ResponseStreamEvent,
 };
-use super::agent_view::AgentViewEntryOrigin;
 use super::ResponseStreamId;
+use super::agent_view::AgentViewEntryOrigin;
 use super::{
+    BlocklistAIInputModel, InputType,
     action_model::{BlocklistAIActionEvent, BlocklistAIActionModel},
     agent_view::{AgentViewController, AgentViewControllerEvent},
     context_model::{
         BlocklistAIContextModel, PendingAttachment, ReadAttachment, attachments_need_disk_read,
-        block_context_from_terminal_model, context_and_files_from_read, read_attachments, read_attachments_cancellable,
+        block_context_from_terminal_model, context_and_files_from_read, read_attachments,
+        read_attachments_cancellable,
     },
     history_model::{BlocklistAIHistoryEvent, BlocklistAIHistoryModel},
     input_model::InputConfig,
     queued_query::{QueuedQueryId, QueuedQueryModel},
-    BlocklistAIInputModel, InputType,
 };
 use crate::ai::agent::api::{self, ServerConversationToken};
 use crate::ai::agent::conversation::{AIConversation, ConversationStatus};
@@ -44,9 +45,9 @@ use crate::ai::agent::{DocumentContentAttachmentSource, FileContext};
 use crate::ai::ambient_agents::AmbientAgentTaskId;
 use crate::ai::api_error::AIApiError;
 use crate::ai::byop_readiness::{
-    BlockedByopReadinessError, PendingByopToolResultsError, ReadinessCategory,
-    ReadinessDiagnosticCoalescer, ReadinessDiagnosticContext, ReadinessDiagnosticLevel,
-    ReadinessTriggerLayer, BLOCKED_BYOP_REQUEST_MESSAGE,
+    BLOCKED_BYOP_REQUEST_MESSAGE, BlockedByopReadinessError, PendingByopToolResultsError,
+    ReadinessCategory, ReadinessDiagnosticCoalescer, ReadinessDiagnosticContext,
+    ReadinessDiagnosticLevel, ReadinessTriggerLayer,
 };
 use crate::ai::document::ai_document_model::{
     AIDocumentId, AIDocumentModel, AIDocumentUserEditStatus,
@@ -54,10 +55,10 @@ use crate::ai::document::ai_document_model::{
 use crate::ai::llms::LLMId;
 use crate::ai::{
     agent::{
-        conversation::AIConversationId, AIAgentActionResultType, AIAgentAttachment, AIAgentContext,
-        AIAgentExchangeId, AIAgentInput, AIAgentOutputStatus, AIIdentifiers, EntrypointType,
-        FinishedAIAgentOutput, MessageId, RenderableAIError, RequestCost, RequestMetadata,
-        StaticQueryType, TransientNetworkErrorKind, UserQueryMode,
+        AIAgentActionResultType, AIAgentAttachment, AIAgentContext, AIAgentExchangeId,
+        AIAgentInput, AIAgentOutputStatus, AIIdentifiers, EntrypointType, FinishedAIAgentOutput,
+        MessageId, RenderableAIError, RequestCost, RequestMetadata, StaticQueryType,
+        TransientNetworkErrorKind, UserQueryMode, conversation::AIConversationId,
     },
     llms::LLMPreferences,
 };
@@ -69,17 +70,22 @@ use crate::persistence::ModelEvent;
 use crate::remote_server::manager::RemoteServerManager;
 use crate::search::slash_command_menu::static_commands::commands;
 use crate::terminal::model::block::{
-    formatted_terminal_contents_for_input, BlockId, CURSOR_MARKER,
+    BlockId, CURSOR_MARKER, formatted_terminal_contents_for_input,
 };
 use crate::terminal::ssh::util::InteractiveSshCommand;
 use crate::terminal::view::inline_banner::ZeroStatePromptSuggestionType;
 use crate::terminal::{
-    model::session::{active_session::ActiveSession, SessionType},
+    ShellLaunchData,
+    model::session::{SessionType, active_session::ActiveSession},
     model::terminal_model::TerminalModel,
     shared_session::ParticipantId,
-    ShellLaunchData,
 };
 use crate::{send_telemetry_from_ctx, server::telemetry::TelemetryEvent};
+use agent_proto::{
+    ClientAction, Task, ToolType,
+    client_action::{Action, UpdateTaskDescription},
+    message,
+};
 use ai::skills::SkillPathOrigin;
 use anyhow::anyhow;
 use chrono::{DateTime, Local};
@@ -89,10 +95,6 @@ use pending_response_streams::PendingResponseStreams;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use warp_core::assertions::safe_assert;
-use agent_proto::{
-    client_action::{Action, UpdateTaskDescription},
-    message, ClientAction, Task, ToolType,
-};
 use warpui::r#async::SpawnedFutureHandle;
 
 use warpui::{AppContext, Entity, EntityId, ModelContext, ModelHandle, SingletonEntity};
@@ -196,14 +198,12 @@ impl SessionContext {
         } else {
             None
         };
-        let remote_os_category = if matches!(session_type, Some(SessionType::WarpifiedRemote { .. }))
-        {
-            session_arc
-                .as_ref()
-                .and_then(|s| s.host_info().os_category)
-        } else {
-            None
-        };
+        let remote_os_category =
+            if matches!(session_type, Some(SessionType::WarpifiedRemote { .. })) {
+                session_arc.as_ref().and_then(|s| s.host_info().os_category)
+            } else {
+                None
+            };
         SessionContext {
             remote_os_category,
             remote_home,
@@ -1303,39 +1303,39 @@ impl BlocklistAIController {
         });
 
         if let Some(agent_view_controller) = &agent_view_controller {
-        ctx.subscribe_to_model(agent_view_controller, |me, event, ctx| {
-            let AgentViewControllerEvent::ExitedAgentView {
-                conversation_id,
-                final_exchange_count,
-                ..
-            } = event
-            else {
-                return;
-            };
+            ctx.subscribe_to_model(agent_view_controller, |me, event, ctx| {
+                let AgentViewControllerEvent::ExitedAgentView {
+                    conversation_id,
+                    final_exchange_count,
+                    ..
+                } = event
+                else {
+                    return;
+                };
 
-            // If we exited a brand-new empty conversation, there's nothing meaningful to cancel.
-            if *final_exchange_count == 0 {
-                return;
-            }
+                // If we exited a brand-new empty conversation, there's nothing meaningful to cancel.
+                if *final_exchange_count == 0 {
+                    return;
+                }
 
-            let history = BlocklistAIHistoryModel::handle(ctx);
-            let Some(conversation) = history.as_ref(ctx).conversation(conversation_id) else {
-                return;
-            };
+                let history = BlocklistAIHistoryModel::handle(ctx);
+                let Some(conversation) = history.as_ref(ctx).conversation(conversation_id) else {
+                    return;
+                };
 
-            // Viewer sessions should not send cancellations.
-            if conversation.is_viewing_shared_session() {
-                return;
-            }
+                // Viewer sessions should not send cancellations.
+                if conversation.is_viewing_shared_session() {
+                    return;
+                }
 
-            if conversation.status().is_in_progress() {
-                me.cancel_conversation_progress(
-                    *conversation_id,
-                    CancellationReason::ManuallyCancelled,
-                    ctx,
-                );
-            }
-        });
+                if conversation.status().is_in_progress() {
+                    me.cancel_conversation_progress(
+                        *conversation_id,
+                        CancellationReason::ManuallyCancelled,
+                        ctx,
+                    );
+                }
+            });
         }
 
         Self {
@@ -1754,9 +1754,7 @@ impl BlocklistAIController {
         if let Some(handle) = self.pending_auto_resume_handles.remove(&conversation_id) {
             handle.abort();
         }
-        self.update_compaction_turn_state(conversation_id, |state| {
-            state.on_conversation_stopped()
-        });
+        self.update_compaction_turn_state(conversation_id, |state| state.on_conversation_stopped());
         self.action_model.update(ctx, |action_model, _| {
             action_model.clear_finished_action_results(conversation_id);
         });
@@ -4243,8 +4241,7 @@ impl BlocklistAIController {
         ctx: &mut ModelContext<Self>,
     ) -> anyhow::Result<usize> {
         let request_id = format!("byop-preflight:{}", uuid::Uuid::new_v4());
-        let mut grouped_messages: HashMap<TaskId, Vec<agent_proto::Message>> =
-            HashMap::new();
+        let mut grouped_messages: HashMap<TaskId, Vec<agent_proto::Message>> = HashMap::new();
         for result in results {
             let task_id = result.task_id.to_string();
             let tool_call_id = result.id.to_string();
@@ -4388,8 +4385,7 @@ impl BlocklistAIController {
             }
         }
         let request_id = format!("byop-preflight:{}", uuid::Uuid::new_v4());
-        let mut grouped_messages: HashMap<TaskId, Vec<agent_proto::Message>> =
-            HashMap::new();
+        let mut grouped_messages: HashMap<TaskId, Vec<agent_proto::Message>> = HashMap::new();
         let mut keys_to_remove = HashSet::new();
         // A cancellation result that's already been persisted also counts as
         // "progress made"; otherwise, when readiness still reports
@@ -4461,8 +4457,7 @@ impl BlocklistAIController {
         ctx: &mut ModelContext<Self>,
     ) -> anyhow::Result<usize> {
         let request_id = format!("byop-preflight:{}", uuid::Uuid::new_v4());
-        let mut grouped_messages: HashMap<TaskId, Vec<agent_proto::Message>> =
-            HashMap::new();
+        let mut grouped_messages: HashMap<TaskId, Vec<agent_proto::Message>> = HashMap::new();
         for tool_call in tool_calls {
             let task_id = &tool_call.key.task_id;
             let tool_call_id = &tool_call.key.tool_call_id;
@@ -5373,13 +5368,13 @@ impl BlocklistAIController {
                                     }
                                 });
                             }
-                            agent_proto::response_event::Type::Finished(
-                                finished_event,
-                            ) => {
+                            agent_proto::response_event::Type::Finished(finished_event) => {
                                 let completed_successfully = matches!(
                                     finished_event.reason.as_ref(),
                                     Some(
-                                        agent_proto::response_event::stream_finished::Reason::Done(_)
+                                        agent_proto::response_event::stream_finished::Reason::Done(
+                                            _
+                                        )
                                     ) | None
                                 );
                                 if completed_successfully {
@@ -5865,7 +5860,8 @@ impl BlocklistAIController {
                         conversation_id,
                     );
                 if let Some(overflow) = summarize_overflow {
-                    let compaction_cfg = crate::ai::byop_compaction::CompactionConfig::from_settings(ctx);
+                    let compaction_cfg =
+                        crate::ai::byop_compaction::CompactionConfig::from_settings(ctx);
                     history_model.update(ctx, |history_model, _ctx| {
                         if let Some(convo) = history_model.conversation_mut(&conversation_id) {
                             summary_committed =
@@ -5873,7 +5869,9 @@ impl BlocklistAIController {
                                     convo,
                                     overflow,
                                     &compaction_cfg,
-                                    |id| stream_message_ids.contains(&MessageId::new(id.to_owned())),
+                                    |id| {
+                                        stream_message_ids.contains(&MessageId::new(id.to_owned()))
+                                    },
                                 );
                         }
                     });
@@ -5905,15 +5903,21 @@ impl BlocklistAIController {
                     None => {
                         let requested_tool_calls = {
                             let history = BlocklistAIHistoryModel::as_ref(ctx);
-                            history.conversation(&conversation_id).is_some_and(|conversation| {
-                                crate::ai::byop_compaction::turn_has_tool_calls(
-                                    conversation.all_tasks().flat_map(|task| task.messages()),
-                                    |id| stream_message_ids.contains(&MessageId::new(id.to_owned())),
-                                )
-                            })
+                            history
+                                .conversation(&conversation_id)
+                                .is_some_and(|conversation| {
+                                    crate::ai::byop_compaction::turn_has_tool_calls(
+                                        conversation.all_tasks().flat_map(|task| task.messages()),
+                                        |id| {
+                                            stream_message_ids
+                                                .contains(&MessageId::new(id.to_owned()))
+                                        },
+                                    )
+                                })
                         };
                         let overflowing = if aggregate_token_count > 0 {
-                            let cfg = crate::ai::byop_compaction::CompactionConfig::from_settings(ctx);
+                            let cfg =
+                                crate::ai::byop_compaction::CompactionConfig::from_settings(ctx);
                             // Sourced from the configured model, NOT ModelLimit::FALLBACK — the
                             // hardcoded constant pinned the trigger at 172_000 tokens for every
                             // model, compacting a 1M-window model at ~16%. See
@@ -6120,9 +6124,13 @@ impl BlocklistAIController {
                     // continues instead of ending on the summary text. Sent as
                     // agent-initiated so it doesn't reset the one-compaction-per-turn cap.
                     if resume_after_auto_compaction {
-                        log::info!("[byop-compaction] resuming the interrupted task after auto-compaction");
+                        log::info!(
+                            "[byop-compaction] resuming the interrupted task after auto-compaction"
+                        );
                     } else {
-                        log::info!("[byop-compaction] empty reply to the continue message; sending it once more");
+                        log::info!(
+                            "[byop-compaction] empty reply to the continue message; sending it once more"
+                        );
                     }
                     self.update_compaction_turn_state(conversation_id, |state| {
                         state.on_continue_sent()
@@ -6141,7 +6149,8 @@ impl BlocklistAIController {
                 }
             }
             Some(agent_proto::response_event::stream_finished::Reason::Other(_)) => {
-                let error_message = "Response stream finished unexpectedly (with finish reason `Other`).";
+                let error_message =
+                    "Response stream finished unexpectedly (with finish reason `Other`).";
                 history_model.update(ctx, |history_model, ctx| {
                     history_model.mark_response_stream_completed_with_error(
                         RenderableAIError::Other {
@@ -6157,7 +6166,9 @@ impl BlocklistAIController {
                     );
                 });
             }
-            Some(agent_proto::response_event::stream_finished::Reason::ContextWindowExceeded(_)) => {
+            Some(agent_proto::response_event::stream_finished::Reason::ContextWindowExceeded(
+                _,
+            )) => {
                 let error_message = "Input exceeded context window limit.";
                 history_model.update(ctx, |history_model, ctx| {
                     history_model.mark_response_stream_completed_with_error(
@@ -6242,7 +6253,8 @@ impl BlocklistAIController {
                 });
             }
             Some(agent_proto::response_event::stream_finished::Reason::InternalError(
-                agent_proto::response_event::stream_finished::InternalError{ message})) => {
+                agent_proto::response_event::stream_finished::InternalError { message },
+            )) => {
                 let error_message = format!(
                     "Response stream finished unexpectedly with internal error: {message}",
                 );
@@ -6525,7 +6537,10 @@ fn cancellation_switches_input_to_shell(
     reason: CancellationReason,
 ) -> bool {
     !was_passive_request
-        && matches!(reason.conversation_outcome(), CancellationOutcome::Cancelled)
+        && matches!(
+            reason.conversation_outcome(),
+            CancellationOutcome::Cancelled
+        )
 }
 
 /// Whether a BYOP synthetic `ToolCallResult` (one that never entered the action queue) makes

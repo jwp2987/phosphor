@@ -1,11 +1,11 @@
 //! Unit tests for format_command_text in requested_command.rs
 
 use super::{
-    COMMAND_CANCELLED_BY_USER_MESSAGE, COMMAND_CANCELLED_FOR_FOLLOW_UP_MESSAGE,
+    AcceptSource, COMMAND_CANCELLED_BY_USER_MESSAGE, COMMAND_CANCELLED_FOR_FOLLOW_UP_MESSAGE,
     COMMAND_CANCELLED_FOR_RUNNING_COMMAND_MESSAGE, COMMAND_CANCELLED_FOR_SHELL_EXIT_MESSAGE,
     COMMAND_CANCELLED_FOR_USER_COMMAND_MESSAGE, COMMAND_DENYLISTED_MESSAGE,
     COMMAND_REJECTED_BY_USER_MESSAGE, EDIT_MODE_OPEN_KEYMAP_CONTEXT, RequestedCommandView,
-    AcceptSource, StreamedTextChange, accept_is_stale, accept_key_predates_paint, cancel_explanation_for_reason,
+    StreamedTextChange, accept_is_stale, accept_key_predates_paint, cancel_explanation_for_reason,
     denylisted_command_message, enter_accepts_requested_command_context, format_command_text,
     header_message_for_user_take_over_reason, mcp_blocked_title_text,
     mcp_viewing_detail_title_text, should_expand_for_control_change, streamed_text_change,

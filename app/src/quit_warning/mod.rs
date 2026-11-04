@@ -2,11 +2,12 @@ use itertools::Itertools;
 use settings::ToggleableSetting as _;
 use std::fmt::Write;
 use warpui::{
-    modals::{AlertDialogWithCallbacks, AppModalCallback, ModalButton},
     AppContext, EntityId, SingletonEntity, ViewContext, WeakViewHandle, WindowId,
+    modals::{AlertDialogWithCallbacks, AppModalCallback, ModalButton},
 };
 
 use crate::{
+    TelemetryEvent,
     code::editor_management::{CodeEditorStatus, CodeEditorSummary},
     pane_group::{CodePane, PaneGroup, PaneId, TerminalPane},
     report_if_error, send_telemetry_from_app_ctx,
@@ -14,7 +15,6 @@ use crate::{
     session_management::{RunningSessionSummary, SessionNavigationData},
     terminal::general_settings::GeneralSettings,
     workspace::Workspace,
-    TelemetryEvent,
 };
 
 /// Scope of what's being quit/closed.
@@ -494,19 +494,17 @@ impl<'a> QuitWarningDialog<'a> {
 }
 
 fn pluralize<'a>(count: usize, singular: &'a str, plural: &'a str) -> &'a str {
-    if count > 1 {
-        plural
-    } else {
-        singular
-    }
+    if count > 1 { plural } else { singular }
 }
 
 /// Callback to disable the quit warning modal.
 fn on_disable_warning_modal(ctx: &mut AppContext) {
     GeneralSettings::handle(ctx).update(ctx, |general_settings, ctx| {
-        report_if_error!(general_settings
-            .show_warning_before_quitting
-            .toggle_and_save_value(ctx));
+        report_if_error!(
+            general_settings
+                .show_warning_before_quitting
+                .toggle_and_save_value(ctx)
+        );
     });
     send_telemetry_from_app_ctx!(TelemetryEvent::QuitModalDisabled, ctx);
 }

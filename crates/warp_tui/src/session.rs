@@ -4,8 +4,8 @@
 //! initialization is done, the mount built here starts the TUI driver and
 //! defers creating the first terminal session until login.
 
-use ai::LLMProvider;
 use crate::report_error::report_error;
+use ai::LLMProvider;
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use clap::error::ErrorKind;
@@ -299,10 +299,9 @@ fn init(
         freeze_repaints_when_unfocused,
     ) {
         Ok(driver) => {
-            let sessions =
-                ctx.add_singleton_model(|_| {
-                    TuiSessions::new(driver, exit_summary, resume_token, default_autoexecute_mode)
-                });
+            let sessions = ctx.add_singleton_model(|_| {
+                TuiSessions::new(driver, exit_summary, resume_token, default_autoexecute_mode)
+            });
             let sessions_for_zero_state_settings = sessions.clone();
             ctx.subscribe_to_model(
                 &TuiZeroStateSettings::handle(ctx),

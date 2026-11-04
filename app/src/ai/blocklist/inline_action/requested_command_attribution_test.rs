@@ -1,4 +1,4 @@
-use crate::env_vars::{view::command_dialog::EnvVarSecretCommand, EnvVar};
+use crate::env_vars::{EnvVar, view::command_dialog::EnvVarSecretCommand};
 
 use super::*;
 

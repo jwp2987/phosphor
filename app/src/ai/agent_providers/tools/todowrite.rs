@@ -27,12 +27,12 @@
 //! A pair of `Message::ToolCall` (carrier, tool=None) + `Message::ToolCallResult` is then
 //! synthesized to unblock the upstream model.
 
-use anyhow::{anyhow, Result};
+use agent_proto as api;
+use anyhow::{Result, anyhow};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
-use agent_proto as api;
 
 use super::OpenAiTool;
 

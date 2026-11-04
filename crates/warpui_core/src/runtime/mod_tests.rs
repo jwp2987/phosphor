@@ -756,7 +756,8 @@ fn repeats_dispatch_keymaps_while_modifier_events_bypass_them() {
             })
         });
         let terminal = TestTerminal::new(TuiSize::new(20, 3));
-        let mut screen = TuiScreen::new(window_id, root.clone(), terminal, Arc::new(Mutex::new(())));
+        let mut screen =
+            TuiScreen::new(window_id, root.clone(), terminal, Arc::new(Mutex::new(())));
         app.update(|ctx| screen.draw(ctx)).unwrap();
 
         let modifier = screen

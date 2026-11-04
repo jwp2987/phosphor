@@ -1,11 +1,11 @@
-use warpui::fonts::FamilyId;
 use warpui::SingletonEntity as _;
+use warpui::fonts::FamilyId;
 use warpui::{
+    AppContext, Element, Entity, TypedActionView, View, ViewContext,
     elements::{
         Border, ConstrainedBox, Container, Flex, MainAxisAlignment, MainAxisSize, ParentElement,
         Rect, Shrinkable, Stack, Text, Wrap,
     },
-    AppContext, Element, Entity, TypedActionView, View, ViewContext,
 };
 
 use warpui::color::ColorU;

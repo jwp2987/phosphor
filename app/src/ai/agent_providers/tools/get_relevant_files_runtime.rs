@@ -37,7 +37,7 @@
 //! controller consumes to trigger auto-resume so the model isn't left waiting.
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::ai::agent_providers::active_ai::relevant_files;
 

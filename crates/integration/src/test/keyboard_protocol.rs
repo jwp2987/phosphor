@@ -12,7 +12,7 @@ use warp::integration_testing::{
 use warpui::event::{KeyEventDetails, KeyState};
 use warpui::keymap::Keystroke;
 use warpui::platform::keyboard::KeyCode;
-use warpui::{async_assert, integration::TestStep, Event};
+use warpui::{Event, async_assert, integration::TestStep};
 
 use crate::Builder;
 

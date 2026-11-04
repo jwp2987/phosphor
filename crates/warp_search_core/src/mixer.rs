@@ -4,11 +4,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+use crate::debounce::debounce;
 use async_channel::Sender;
 use async_trait::async_trait;
 use futures_util::stream::AbortHandle;
 use itertools::Itertools;
-use crate::debounce::debounce;
 use warpui_core::r#async::Timer;
 use warpui_core::{Action, AppContext, Entity, ModelContext};
 

@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use super::*;
-use crate::ai::persisted_workspace::PersistedWorkspace;
+use crate::ai::AIRequestUsageModel;
 use crate::ai::agent::DriveObjectPayload;
 use crate::ai::agent_conversations_model::AgentConversationsModel;
 use crate::ai::blocklist::{AIQueryHistory, BlocklistAIPermissions};
@@ -11,15 +11,15 @@ use crate::ai::llms::LLMPreferences;
 use crate::ai::mcp::gallery::MCPGalleryManager;
 use crate::ai::mcp::templatable_manager::TemplatableMCPServerManager;
 use crate::ai::outline::RepoOutlines;
+use crate::ai::persisted_workspace::PersistedWorkspace;
 use crate::ai::restored_conversations::RestoredAgentConversations;
 use crate::ai::skills::SkillManager;
-use crate::ai::AIRequestUsageModel;
 use crate::auth::AuthManager;
 use crate::auth::AuthStateProvider;
 use crate::changelog_model::ChangelogModel;
 use crate::cloud_object::{
-    model::persistence::ObjectStoreModel, GenericStringObjectFormat, JsonObjectType, ObjectType,
-    Owner,
+    GenericStringObjectFormat, JsonObjectType, ObjectType, Owner,
+    model::persistence::ObjectStoreModel,
 };
 use crate::pricing::PricingInfoModel;
 use crate::search::files::model::FileSearchModel;
@@ -27,12 +27,12 @@ use crate::server::ids::ClientId;
 use crate::terminal::cli_agent_sessions::CLIAgentSessionsModel;
 use crate::terminal::event::BlockMetadataReceivedEvent;
 use crate::terminal::input::slash_command_model::SlashCommandEntryState;
-use crate::terminal::model_events::ModelEvent;
 use crate::terminal::input::slash_commands::SlashCommandsEvent;
+use crate::terminal::model_events::ModelEvent;
 use crate::warp_managed_paths_watcher::WarpManagedPathsWatcher;
+use repo_metadata::RepoMetadataModel;
 use repo_metadata::repositories::DetectedRepositories;
 use repo_metadata::watcher::DirectoryWatcher;
-use repo_metadata::RepoMetadataModel;
 use watcher::HomeDirectoryWatcher;
 
 use crate::cloud_object::update_manager::UpdateManager;
@@ -52,19 +52,17 @@ use crate::terminal::keys::TerminalKeybindings;
 use crate::terminal::local_shell::LocalShellState;
 use crate::workspaces::user_workspaces::UserWorkspaces;
 
+use crate::context_chips::display_chip::PromptChipShellCommand;
 use crate::terminal::block_list_viewport::ScrollPosition;
 use crate::terminal::local_tty::shell::ShellStarter;
 use crate::terminal::model::ansi::{Handler, PromptMetadata};
 use crate::terminal::model::block::SerializedBlock;
-use crate::terminal::model::blocks::{insert_block, BlockListPoint};
+use crate::terminal::model::blocks::{BlockListPoint, insert_block};
 use crate::terminal::model::grid::Dimensions as _;
 use crate::terminal::model::index::Side;
 use crate::terminal::model::session::{BootstrapSessionType, SessionInfo};
 use crate::terminal::model::terminal_model::BlockIndex;
-use crate::context_chips::display_chip::PromptChipShellCommand;
 // Imports for the queued-prompt / long-running-command cluster ported from the pinned oracle.
-use std::cell::RefCell;
-use std::rc::Rc;
 use crate::ai::agent::conversation::{AIConversationId, ConversationStatus};
 use crate::ai::agent::task::TaskId;
 use crate::ai::agent::{
@@ -83,8 +81,9 @@ use crate::settings::{
 use crate::terminal::event::{BlockCompletedEvent, BlockType, UserBlockCompleted};
 use crate::terminal::model::block::BlockId;
 use crate::terminal::view::queued_prompts_panel::QueuedPromptsPanelEvent;
+use std::cell::RefCell;
+use std::rc::Rc;
 use warpui::ViewHandle;
-
 
 use chrono::Local;
 use warpui::text::SelectionType;
@@ -118,8 +117,8 @@ use crate::terminal::universal_developer_input::UniversalDeveloperInputButtonBar
 
 use warp_util::user_input::UserInput;
 use workflows::{
-    workflow::{Argument, ArgumentType, Workflow},
     WorkflowObject, WorkflowObjectModel,
+    workflow::{Argument, ArgumentType, Workflow},
 };
 
 use crate::context_chips::prompt::Prompt;
@@ -1669,11 +1668,13 @@ fn test_tab_completion_with_cursor_movement() {
             input
                 .input_suggestions
                 .read(&app, |input_suggestions, _ctx| {
-                    assert!(input_suggestions
-                        .items()
-                        .iter()
-                        .map(|item| item.text())
-                        .eq(["add", "audit", "autoclean",]))
+                    assert!(
+                        input_suggestions
+                            .items()
+                            .iter()
+                            .map(|item| item.text())
+                            .eq(["add", "audit", "autoclean",])
+                    )
                 });
         });
 
@@ -1686,11 +1687,13 @@ fn test_tab_completion_with_cursor_movement() {
             input
                 .input_suggestions
                 .read(&app, |input_suggestions, _ctx| {
-                    assert!(input_suggestions
-                        .items()
-                        .iter()
-                        .map(|item| item.text())
-                        .eq(["audit", "autoclean",]))
+                    assert!(
+                        input_suggestions
+                            .items()
+                            .iter()
+                            .map(|item| item.text())
+                            .eq(["audit", "autoclean",])
+                    )
                 });
 
             assert!(matches!(
@@ -1710,11 +1713,13 @@ fn test_tab_completion_with_cursor_movement() {
             input
                 .input_suggestions
                 .read(&app, |input_suggestions, _ctx| {
-                    assert!(input_suggestions
-                        .items()
-                        .iter()
-                        .map(|item| item.text())
-                        .eq(["add", "audit", "autoclean",]))
+                    assert!(
+                        input_suggestions
+                            .items()
+                            .iter()
+                            .map(|item| item.text())
+                            .eq(["add", "audit", "autoclean",])
+                    )
                 });
 
             assert!(matches!(
@@ -2511,11 +2516,13 @@ fn test_tab_completion_hides_autosuggestion() {
             ));
 
             // Autosuggestion should be closed.
-            assert!(input
-                .editor
-                .as_ref(ctx)
-                .current_autosuggestion_text()
-                .is_none());
+            assert!(
+                input
+                    .editor
+                    .as_ref(ctx)
+                    .current_autosuggestion_text()
+                    .is_none()
+            );
         });
     });
 }
@@ -2553,11 +2560,13 @@ fn test_completions_while_typing_doesnt_hide_autosuggestion() {
 
         // Autosuggestion should be active.
         input.read(&app, |input, ctx| {
-            assert!(input
-                .editor
-                .as_ref(ctx)
-                .current_autosuggestion_text()
-                .is_some());
+            assert!(
+                input
+                    .editor
+                    .as_ref(ctx)
+                    .current_autosuggestion_text()
+                    .is_some()
+            );
         });
 
         input.update(&mut app, |input, ctx| {
@@ -2580,11 +2589,13 @@ fn test_completions_while_typing_doesnt_hide_autosuggestion() {
                 InputSuggestionsMode::CompletionSuggestions { .. }
             ));
 
-            assert!(input
-                .editor
-                .as_ref(ctx)
-                .current_autosuggestion_text()
-                .is_some());
+            assert!(
+                input
+                    .editor
+                    .as_ref(ctx)
+                    .current_autosuggestion_text()
+                    .is_some()
+            );
         });
     });
 }
@@ -3684,7 +3695,10 @@ fn test_agent_slash_command_via_keybinding_sends_typed_text() {
                 .conversation(&conversation_id)
                 .is_some_and(|conversation| !conversation.is_empty())
         });
-        assert!(is_non_empty, "keybinding-triggered /agent with text must send it");
+        assert!(
+            is_non_empty,
+            "keybinding-triggered /agent with text must send it"
+        );
     });
 }
 
@@ -5129,13 +5143,18 @@ fn test_workflow_view_does_not_panic() {
             Workflow::new("Test Workflow", "echo \"Hello World\""),
             Workflow::new("Test Workflow with Description", "echo \"Hello World\"")
                 .with_description("This is a test workflow that prints Hello World!".into()),
-            Workflow::new("Test Workflow with Args", "echo \"Hello {{person}}\"")
-                .with_arguments(vec![Argument::new("person", ArgumentType::Text)
-                    .with_description("The person you want to say hello to".to_string())]),
+            Workflow::new("Test Workflow with Args", "echo \"Hello {{person}}\"").with_arguments(
+                vec![
+                    Argument::new("person", ArgumentType::Text)
+                        .with_description("The person you want to say hello to".to_string()),
+                ],
+            ),
             Workflow::new("test", "echo \"Hello {{person}}\"")
                 .with_description("This is a test workflow that prints Hello {{person}}!".into())
-                .with_arguments(vec![Argument::new("person", ArgumentType::Text)
-                    .with_description("The person you want to say hello to".to_string())]),
+                .with_arguments(vec![
+                    Argument::new("person", ArgumentType::Text)
+                        .with_description("The person you want to say hello to".to_string()),
+                ]),
         ];
 
         for workflow in workflows {
@@ -6287,7 +6306,9 @@ fn test_voice_input_toggle_preserves_lock_state() {
         // headless box (the 60 s hang on the runner) and records on a developer's. Disabled, the
         // editor's toggle returns before any audio code while the input still enters AI mode.
         AISettings::handle(&app).update(&mut app, |ai_settings, ctx| {
-            let _ = ai_settings.voice_input_enabled_internal.set_value(false, ctx);
+            let _ = ai_settings
+                .voice_input_enabled_internal
+                .set_value(false, ctx);
         });
 
         // Start in shell mode with input locked
@@ -7020,11 +7041,13 @@ fn test_ai_context_menu_keeps_workflow_reference_in_ai_input() {
         input.read(&app, |input, ctx| {
             assert_eq!(input.buffer_text(ctx), "@proxy ");
             assert!(!input.is_workflows_info_box_open());
-            assert!(input
-                .ai_context_model
-                .as_ref(ctx)
-                .pending_at_context_attachments()
-                .contains_key("@proxy"));
+            assert!(
+                input
+                    .ai_context_model
+                    .as_ref(ctx)
+                    .pending_at_context_attachments()
+                    .contains_key("@proxy")
+            );
             assert_eq!(
                 input
                     .ai_context_model
@@ -7121,11 +7144,13 @@ fn test_ai_context_menu_enters_ai_mode_for_ai_only_context_items() {
                 assert!(input.ai_input_model.as_ref(ctx).is_ai_input_enabled());
                 if let Some(reference) = expected_buffer.strip_suffix(' ') {
                     if reference.starts_with('@') {
-                        assert!(input
-                            .ai_context_model
-                            .as_ref(ctx)
-                            .pending_at_context_attachments()
-                            .contains_key(reference));
+                        assert!(
+                            input
+                                .ai_context_model
+                                .as_ref(ctx)
+                                .pending_at_context_attachments()
+                                .contains_key(reference)
+                        );
                         let attachment = input
                             .ai_context_model
                             .as_ref(ctx)
@@ -7509,8 +7534,8 @@ fn test_agent_view_terminal_only_initial_input_config_unlocked_when_autodetectio
 
 #[test]
 fn test_terminal_only_ai_enter_enters_agent_view_and_clears_buffer() {
-    use crate::ai::blocklist::agent_view::AgentViewState;
     use crate::ai::blocklist::InputConfig;
+    use crate::ai::blocklist::agent_view::AgentViewState;
 
     App::test((), |mut app| async move {
         let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
@@ -7949,7 +7974,10 @@ fn test_enter_on_oversized_buffer_waits_for_its_background_verdict_and_runs_the_
         );
         assert_eq!(*ai_queries.borrow(), 0);
         input.read(&app, |input, ctx| {
-            assert!(input.verdict_wait.is_none(), "the wait was released by the verdict");
+            assert!(
+                input.verdict_wait.is_none(),
+                "the wait was released by the verdict"
+            );
             assert!(!input.detection_pending_for_buffer(ctx));
         });
     });
@@ -8037,7 +8065,10 @@ fn test_enter_on_20k_char_paste_is_classified_without_a_parse_and_never_swallowe
             executed.borrow().first().map(|command| command.len())
         );
         input.read(&app, |input, ctx| {
-            assert_eq!(input.ai_input_model().as_ref(ctx).input_type(), InputType::AI);
+            assert_eq!(
+                input.ai_input_model().as_ref(ctx).input_type(),
+                InputType::AI
+            );
             assert!(
                 input.last_enter_submitted_ai_query,
                 "the prose took the agent submit path"
@@ -8137,13 +8168,23 @@ fn test_second_enter_after_a_give_up_on_an_over_cap_shell_line_runs_it_in_the_sh
             );
         });
         assert!(executed.borrow().is_empty(), "the clock ran nothing");
-        assert_eq!(*ai_queries.borrow(), 0, "the clock sent nothing to the agent");
+        assert_eq!(
+            *ai_queries.borrow(),
+            0,
+            "the clock sent nothing to the agent"
+        );
 
         // The verdict lands; the second Enter runs the line in the shell, once.
         warpui::r#async::Timer::after(Duration::from_millis(500)).await;
         input.read(&app, |input, ctx| {
-            assert!(!input.detection_pending_for_buffer(ctx), "the verdict landed");
-            assert_eq!(input.ai_input_model().as_ref(ctx).input_type(), InputType::Shell);
+            assert!(
+                !input.detection_pending_for_buffer(ctx),
+                "the verdict landed"
+            );
+            assert_eq!(
+                input.ai_input_model().as_ref(ctx).input_type(),
+                InputType::Shell
+            );
         });
         input.update(&mut app, |input, ctx| input.input_enter(ctx));
         warpui::r#async::Timer::after(Duration::from_millis(300)).await;
@@ -8210,7 +8251,11 @@ fn test_paste_of_a_large_buffer_and_the_keystroke_after_it_are_linear_in_its_siz
         // The minimum of three samples per size: a scheduler hiccup or a page-fault storm on one
         // run must not read as a complexity regression.
         let mut measure = |bytes: usize| -> (Duration, Duration) {
-            let samples = [measure_once(bytes), measure_once(bytes), measure_once(bytes)];
+            let samples = [
+                measure_once(bytes),
+                measure_once(bytes),
+                measure_once(bytes),
+            ];
             (
                 samples.iter().map(|(paste, _)| *paste).min().unwrap(),
                 samples.iter().map(|(_, key)| *key).min().unwrap(),
@@ -8605,9 +8650,9 @@ fn test_custom_terminal_page_scroll_binding_applies_when_prompt_is_focused() {
         app.update(|ctx| {
             ctx.set_custom_trigger(
                 "terminal:scroll_up_one_page".to_owned(),
-                warpui::keymap::Trigger::Keystrokes(
-                    vec![Keystroke::parse("shift-pageup").unwrap()],
-                ),
+                warpui::keymap::Trigger::Keystrokes(vec![
+                    Keystroke::parse("shift-pageup").unwrap(),
+                ]),
             );
         });
 
@@ -11713,7 +11758,11 @@ fn test_keys_typed_behind_waiting_enter_recognises_suffix_and_cursor_insertion()
     assert_eq!(behind("show the file"), None, "the line itself");
     assert_eq!(behind("show the files"), Some("s".to_string()));
     assert_eq!(behind("show me the file"), Some(" me".to_string()));
-    assert_eq!(behind("show th file"), None, "an edit of the line voids the Enter");
+    assert_eq!(
+        behind("show th file"),
+        None,
+        "an edit of the line voids the Enter"
+    );
     assert_eq!(behind("shw the file!"), None);
     assert_eq!(behind("show the fil"), None);
 }
@@ -11772,8 +11821,14 @@ fn test_keys_typed_behind_waiting_enter_pressed_mid_line_queue_behind_it() {
         });
         input.update(&mut app, |input, ctx| input.input_enter(ctx));
         input.read(&app, |input, ctx| {
-            let wait = input.verdict_wait.as_ref().expect("the Enter must be waiting");
-            assert_eq!(wait.cursor, 5, "the wait records the cursor the Enter was pressed at");
+            let wait = input
+                .verdict_wait
+                .as_ref()
+                .expect("the Enter must be waiting");
+            assert_eq!(
+                wait.cursor, 5,
+                "the wait records the cursor the Enter was pressed at"
+            );
             assert!(input.detection_pending_for_buffer(ctx));
         });
 
@@ -13018,7 +13073,11 @@ fn test_history_file_line_runs_in_shell_at_once_for_every_shell() {
         let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
         initialize_app(&mut app);
         for (shell_type, histfile, line) in [
-            (ShellType::Bash, "git log --since yesterday\n", "git log --since yesterday"),
+            (
+                ShellType::Bash,
+                "git log --since yesterday\n",
+                "git log --since yesterday",
+            ),
             (
                 ShellType::Zsh,
                 ": 1699251735:0;git log --since yesterday\n",
@@ -14050,11 +14109,18 @@ fn test_padded_ready_paste_then_immediate_enter_runs_on_time_and_hands_back_when
     for pad in [500usize, 3500] {
         let text = format!("is it true #{}", "x".repeat(pad));
         let (executed, queries, _) = padded_ready_paste_run(text.clone(), false);
-        assert_eq!(executed, [text.clone()], "on time, pad {pad}: runs in the shell");
+        assert_eq!(
+            executed,
+            [text.clone()],
+            "on time, pad {pad}: runs in the shell"
+        );
         assert_eq!(queries, 0, "on time, pad {pad}");
         let (executed, queries, buffer) = padded_ready_paste_run(text.clone(), true);
         assert!(executed.is_empty(), "late, pad {pad}: {executed:?}");
-        assert_eq!(buffer, text, "late, pad {pad}: the line stays in the editor");
+        assert_eq!(
+            buffer, text,
+            "late, pad {pad}: the line stays in the editor"
+        );
         assert_eq!(queries, 0, "late, pad {pad}");
     }
 }
@@ -14745,7 +14811,10 @@ fn test_cursor_keys_behind_a_large_paste_apply_after_the_whole_paste() {
                                 "{mode:?} size {size}: End/! applied on the old layout"
                             );
                         });
-                        assert!(soft.is_stale(), "{mode:?} size {size}: the paste staled the layout");
+                        assert!(
+                            soft.is_stale(),
+                            "{mode:?} size {size}: the paste staled the layout"
+                        );
                         soft.hold_updates_for_test(false);
                         // The frame after the paste is laid out.
                         soft.update(FrameLayouts::new(Vec::new(), 0, 0));

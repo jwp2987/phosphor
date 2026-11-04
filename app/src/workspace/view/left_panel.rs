@@ -7,15 +7,15 @@ use warp_core::ui::theme::color::internal_colors;
 use warp_core::{send_telemetry_from_ctx, ui::Icon};
 use warp_util::path::LineAndColumnArg;
 use warpui::{
+    AppContext, Entity, FocusContext, ModelHandle, SingletonEntity, TypedActionView, View,
+    ViewContext, ViewHandle, WeakViewHandle,
     elements::{
-        resizable_state_handle, ChildView, ConstrainedBox, Container, CrossAxisAlignment,
-        DragBarSide, Element, Empty, Flex, MainAxisAlignment, MainAxisSize, MouseStateHandle,
-        ParentElement, Resizable, ResizableStateHandle, Shrinkable,
+        ChildView, ConstrainedBox, Container, CrossAxisAlignment, DragBarSide, Element, Empty,
+        Flex, MainAxisAlignment, MainAxisSize, MouseStateHandle, ParentElement, Resizable,
+        ResizableStateHandle, Shrinkable, resizable_state_handle,
     },
     platform::Cursor,
     ui_components::components::{Coords, UiComponent, UiComponentStyles},
-    AppContext, Entity, FocusContext, ModelHandle, SingletonEntity, TypedActionView, View,
-    ViewContext, ViewHandle, WeakViewHandle,
 };
 
 use crate::ai::agent::conversation::AIConversationId;
@@ -35,9 +35,9 @@ use crate::settings_view::keybindings::{KeybindingChangedEvent, KeybindingChange
 use crate::skill_manager::{SkillManagerPanel, SkillManagerPanelEvent};
 #[cfg(feature = "local_fs")]
 use crate::util::file::external_editor::EditorSettings;
+use crate::util::openable_file_type::FileTarget;
 #[cfg(feature = "local_fs")]
 use crate::util::openable_file_type::{is_markdown_file, resolve_file_target_with_editor_choice};
-use crate::util::openable_file_type::FileTarget;
 use crate::workspace::view::conversation_list::view::{
     ConversationListView, Event as ConversationListViewEvent,
 };
@@ -47,15 +47,16 @@ use crate::workspace::view::global_search::view::{
 use crate::workspace::view::{
     LEFT_PANEL_AGENT_CONVERSATIONS_BINDING_NAME, LEFT_PANEL_GLOBAL_SEARCH_BINDING_NAME,
     LEFT_PANEL_PROJECT_EXPLORER_BINDING_NAME, LEFT_PANEL_SKILL_MANAGER_BINDING_NAME,
-    LEFT_PANEL_WARP_DRIVE_BINDING_NAME,
-    OPEN_GLOBAL_SEARCH_BINDING_NAME, TOGGLE_CONVERSATION_LIST_VIEW_BINDING_NAME,
-    TOGGLE_PROJECT_EXPLORER_BINDING_NAME, TOGGLE_WARP_DRIVE_BINDING_NAME,
+    LEFT_PANEL_WARP_DRIVE_BINDING_NAME, OPEN_GLOBAL_SEARCH_BINDING_NAME,
+    TOGGLE_CONVERSATION_LIST_VIEW_BINDING_NAME, TOGGLE_PROJECT_EXPLORER_BINDING_NAME,
+    TOGGLE_WARP_DRIVE_BINDING_NAME,
 };
 use crate::{
+    TelemetryEvent,
     appearance::Appearance,
     code::file_tree::FileTreeView,
     drive::panel::{MAX_SIDEBAR_WIDTH_RATIO, MIN_SIDEBAR_WIDTH},
-    pane_group::pane::view::header::{components::HEADER_EDGE_PADDING, PANE_HEADER_HEIGHT},
+    pane_group::pane::view::header::{PANE_HEADER_HEIGHT, components::HEADER_EDGE_PADDING},
     pane_group::{self},
     terminal::resizable_data::{ModalType, ResizableData},
     ui_components::{
@@ -64,7 +65,6 @@ use crate::{
     },
     util::bindings::keybinding_name_to_display_string,
     workspace::WorkspaceAction,
-    TelemetryEvent,
 };
 
 #[derive(Default)]
@@ -338,10 +338,8 @@ impl LeftPanelView {
                 // directories. Terminal working dirs are local; remote (SSH)
                 // roots went through `GlobalSearchView::set_server_search_root`,
                 // which lost its only caller with the server file browser.
-                let roots: Vec<LocalOrRemotePath> = directories
-                    .iter()
-                    .map(|d| d.path.clone())
-                    .collect();
+                let roots: Vec<LocalOrRemotePath> =
+                    directories.iter().map(|d| d.path.clone()).collect();
 
                 let global_search_view =
                     me.get_or_create_global_search_view_for_pane_group(active_pane_group.id(), ctx);
@@ -681,10 +679,8 @@ impl LeftPanelView {
         // directories. Terminal working dirs are local; remote (SSH) roots went
         // through `GlobalSearchView::set_server_search_root`, which lost its
         // only caller with the server file browser.
-        let roots: Vec<LocalOrRemotePath> = active_directories
-            .iter()
-            .map(|d| d.path.clone())
-            .collect();
+        let roots: Vec<LocalOrRemotePath> =
+            active_directories.iter().map(|d| d.path.clone()).collect();
         let global_search_view =
             self.get_or_create_global_search_view_for_pane_group(pane_group_id, ctx);
         global_search_view.update(ctx, |view, view_ctx| {
@@ -978,7 +974,10 @@ impl LeftPanelView {
             keybinding_name_to_display_string("workspace:toggle_wire_inspector", app);
         let tooltip = if let Some(keybinding) = tooltip_keybinding {
             ui_builder
-                .tool_tip_with_sublabel(crate::t!("workspace-left-panel-wire-inspector"), keybinding)
+                .tool_tip_with_sublabel(
+                    crate::t!("workspace-left-panel-wire-inspector"),
+                    keybinding,
+                )
                 .build()
                 .finish()
         } else {
@@ -1324,31 +1323,25 @@ impl View for LeftPanelView {
         };
 
         let content_area: Box<dyn Element> = match self.active_view.get() {
-            ToolPanelView::ProjectExplorer => {
-                match self.active_file_tree_view(app) { Some(file_tree_view) => {
-                    Shrinkable::new(
-                        1.0,
-                        Container::new(ChildView::new(&file_tree_view).finish())
-                            .with_padding_left(2.)
-                            .with_padding_right(2.)
-                            .finish(),
-                    )
-                    .finish()
-                } _ => {
-                    Shrinkable::new(1.0, Container::new(Empty::new().finish()).finish()).finish()
-                }}
-            }
-            ToolPanelView::GlobalSearch { .. } => {
-                match self.active_global_search_view(app) { Some(global_search_view) => {
-                    Shrinkable::new(
-                        1.0,
-                        Container::new(ChildView::new(&global_search_view).finish()).finish(),
-                    )
-                    .finish()
-                } _ => {
-                    Shrinkable::new(1.0, Container::new(Empty::new().finish()).finish()).finish()
-                }}
-            }
+            ToolPanelView::ProjectExplorer => match self.active_file_tree_view(app) {
+                Some(file_tree_view) => Shrinkable::new(
+                    1.0,
+                    Container::new(ChildView::new(&file_tree_view).finish())
+                        .with_padding_left(2.)
+                        .with_padding_right(2.)
+                        .finish(),
+                )
+                .finish(),
+                _ => Shrinkable::new(1.0, Container::new(Empty::new().finish()).finish()).finish(),
+            },
+            ToolPanelView::GlobalSearch { .. } => match self.active_global_search_view(app) {
+                Some(global_search_view) => Shrinkable::new(
+                    1.0,
+                    Container::new(ChildView::new(&global_search_view).finish()).finish(),
+                )
+                .finish(),
+                _ => Shrinkable::new(1.0, Container::new(Empty::new().finish()).finish()).finish(),
+            },
             ToolPanelView::ZapDrive => Shrinkable::new(
                 1.0,
                 Container::new(ChildView::new(&self.warp_drive_view).finish())

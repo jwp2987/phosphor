@@ -34,20 +34,18 @@ use crate::ai::agent::{AIAgentAttachment, AIAgentExchangeId, CancellationReason}
 use crate::ai::agent_conversations_model::AgentConversationsModel;
 use crate::ai::blocklist::action_model::AIActionStatus;
 use crate::ai::blocklist::agent_view::shortcuts::AgentShortcutViewModel;
+use crate::ai::blocklist::agent_view::{AgentViewEntryOrigin, EphemeralMessageModel};
+use crate::ai::blocklist::block::cli_controller::CLISubagentController;
+use crate::ai::blocklist::block::status_bar::BlocklistAIStatusBar;
 use crate::ai::blocklist::compute_clock::ComputeClock;
 use crate::ai::blocklist::input_model::{
     EnterProvenance, EnterVerdictWait, enter_verdict_wait_decision_for,
     large_text_compute_allowance, routes_off_thread, shell_family,
     should_wait_for_verdict_before_submit,
 };
-use instant::Instant;
-use warpui::r#async::Timer;
-use crate::ai::blocklist::agent_view::{AgentViewEntryOrigin, EphemeralMessageModel};
-use crate::ai::blocklist::block::cli_controller::CLISubagentController;
-use crate::ai::blocklist::block::status_bar::BlocklistAIStatusBar;
 use crate::ai::blocklist::{
-    ai_indicator_height, BlocklistAIActionModel, QueuedQuery, QueuedQueryId, QueuedQueryModel,
-    ConversationStatusUpdate, QueuedQueryEvent, QueuedQueryOrigin, SlashCommandRequest,
+    BlocklistAIActionModel, ConversationStatusUpdate, QueuedQuery, QueuedQueryEvent, QueuedQueryId,
+    QueuedQueryModel, QueuedQueryOrigin, SlashCommandRequest, ai_indicator_height,
 };
 use crate::ai::document::ai_document_model::{AIDocumentId, AIDocumentVersion};
 use crate::ai::execution_profiles::profiles::AIExecutionProfilesModel;
@@ -61,15 +59,20 @@ use crate::context_chips::spacing;
 use crate::pane_group::focus_state::PaneFocusHandle;
 use crate::prompt::editor_modal::OpenSource as PromptEditorOpenSource;
 use crate::search::slash_command_menu::static_commands::commands::{self, COMMAND_REGISTRY};
+use instant::Instant;
+use warpui::r#async::Timer;
 
+#[allow(unused_imports)]
+use crate::ASSETS;
 use crate::ai::blocklist::misroute_recovery::{
-    agent_view_entry_keeps_offer, MisrouteOffer, RouteReason, SubmitRoute,
+    MisrouteOffer, RouteReason, SubmitRoute, agent_view_entry_keeps_offer,
 };
 use crate::server::telemetry::{PaletteSource, SlashCommandAcceptedDetails, SlashMenuSource};
 use crate::settings::{PrivacySettings, SelectionSettings};
 use crate::suggestions::ignored_suggestions_model::{
     IgnoredSuggestionsModel, IgnoredSuggestionsModelEvent, SuggestionType,
 };
+use crate::terminal::CLIAgent;
 #[cfg(not(target_family = "wasm"))]
 use crate::terminal::cli_agent_sessions::plugin_manager::PluginModalKind;
 use crate::terminal::cli_agent_sessions::{
@@ -92,8 +95,8 @@ use crate::terminal::input::rewind::{RewindMenuEvent, RewindMenuView};
 use crate::terminal::input::skills::{InlineSkillSelectorEvent, InlineSkillSelectorView};
 use crate::terminal::input::slash_command_model::{SlashCommandEntryState, SlashCommandModel};
 use crate::terminal::input::slash_commands::{
-    slash_command_is_submitted_as_prompt, InlineSlashCommandView, SlashCommandDataSource,
-    SlashCommandTrigger,
+    InlineSlashCommandView, SlashCommandDataSource, SlashCommandTrigger,
+    slash_command_is_submitted_as_prompt,
 };
 use crate::terminal::input::suggestions_mode_model::{
     InputSuggestionsModeEvent, InputSuggestionsModeModel,
@@ -107,14 +110,11 @@ use crate::terminal::paste_sequencer::paste_backstop;
 use crate::terminal::prompt_render_helper::should_render_ps1_prompt;
 use crate::terminal::universal_developer_input::AtContextMenuDisabledReason;
 use crate::terminal::view::CodeDiffAction;
-use crate::terminal::CLIAgent;
 use crate::util::bindings::keybinding_name_to_normalized_string;
 use crate::util::clipboard::clipboard_content_with_escaped_paths;
 #[cfg(feature = "local_fs")]
 use crate::util::file::external_editor;
 use crate::util::truncation::truncate_from_end;
-#[allow(unused_imports)]
-use crate::ASSETS;
 
 #[cfg(feature = "local_fs")]
 use crate::code::editor_management::CodeSource;
@@ -123,34 +123,34 @@ use crate::ai::block_context::BlockContext;
 use crate::ai::blocklist::AttachmentType;
 use crate::ai::mcp::TemplatableMCPServerManager;
 use crate::{
+    AgentModeEntrypoint,
+    ai::execution_context::WarpAiExecutionContext,
     ai::{
+        AIRequestUsageModel,
         agent::{AIAgentContext, EntrypointType},
         blocklist::{
+            BLOCK_CONTEXT_ATTACHMENT_REGEX, BlocklistAIContextEvent, BlocklistAIContextModel,
+            BlocklistAIController, BlocklistAIControllerEvent, BlocklistAIHistoryEvent,
+            BlocklistAIHistoryModel, BlocklistAIInputEvent, BlocklistAIInputModel,
+            DIFF_HUNK_ATTACHMENT_REGEX, DRIVE_OBJECT_ATTACHMENT_REGEX, InputConfig, InputType,
             drive_object_attachment_for_reference, plan_attachment_for_reference,
             prompt::prompt_alert::PromptAlertView, render_ai_agent_mode_icon,
             render_ai_follow_up_icon, telemetry_banner::should_collect_ai_ugc_telemetry,
-            BlocklistAIContextEvent, BlocklistAIContextModel, BlocklistAIController,
-            BlocklistAIControllerEvent, BlocklistAIHistoryEvent, BlocklistAIHistoryModel,
-            BlocklistAIInputEvent, BlocklistAIInputModel, InputConfig, InputType,
-            BLOCK_CONTEXT_ATTACHMENT_REGEX, DIFF_HUNK_ATTACHMENT_REGEX,
-            DRIVE_OBJECT_ATTACHMENT_REGEX,
         },
         llms::{LLMPreferences, LLMPreferencesEvent},
         predict::next_command_model::{
-            is_command_valid, is_next_command_enabled, NextCommandModel, NextCommandModelEvent,
-            NextCommandSuggestionState, ZeroStateSuggestionInfo,
+            NextCommandModel, NextCommandModelEvent, NextCommandSuggestionState,
+            ZeroStateSuggestionInfo, is_command_valid, is_next_command_enabled,
         },
-        AIRequestUsageModel,
     },
-    ai::execution_context::WarpAiExecutionContext,
     appearance::{Appearance, AppearanceEvent},
     channel::{Channel, ChannelState},
     cloud_object::{
+        Space, StoredObject,
         model::{
             actions::ObjectActionType, persistence::ObjectStoreModel, view::ObjectStoreViewModel,
         },
         update_manager::UpdateManager,
-        Space, StoredObject,
     },
     cmd_or_ctrl_shift,
     code_review::diff_state::DiffMode,
@@ -162,15 +162,14 @@ use crate::{
     },
     debounce::debounce,
     editor::{
-        default_cursor_colors, position_id_for_cached_point, position_id_for_cursor,
-        position_id_for_first_cursor, AttachedImage as AttachedImageRawData,
-        AutosuggestionLocation, AutosuggestionType, BaselinePositionComputationMethod,
-        CommandXRayAnchor, CrdtOperation, CursorColors, DisplayPoint, EditOrigin, EditorAction,
-        EditorDecoratorElements, EditorOptions, EditorSnapshot, EditorView, Event as EditorEvent,
-        ImageContextOptions, InteractionState, PathTransformerFn, PlainTextEditorViewAction,
+        AttachedImage as AttachedImageRawData, AutosuggestionLocation, AutosuggestionType,
+        BaselinePositionComputationMethod, CommandXRayAnchor, CrdtOperation, CursorColors,
+        DisplayPoint, EditOrigin, EditorAction, EditorDecoratorElements, EditorOptions,
+        EditorSnapshot, EditorView, Event as EditorEvent, ImageContextOptions, InteractionState,
+        MAX_IMAGES_PER_CONVERSATION, PathTransformerFn, PlainTextEditorViewAction,
         Point as BufferPoint, PropagateAndNoOpEscapeKey, PropagateAndNoOpNavigationKeys,
-        PropagateHorizontalNavigationKeys, ReplicaId, TextColors, TextRun,
-        MAX_IMAGES_PER_CONVERSATION,
+        PropagateHorizontalNavigationKeys, ReplicaId, TextColors, TextRun, default_cursor_colors,
+        position_id_for_cached_point, position_id_for_cursor, position_id_for_first_cursor,
     },
     features::FeatureFlag,
     input_suggestions::{
@@ -182,14 +181,14 @@ use crate::{
     prefix::longest_common_prefix,
     report_if_error,
     resource_center::{
-        mark_feature_used_and_write_to_user_defaults, Tip, TipAction, TipHint, TipsCompleted,
+        Tip, TipAction, TipHint, TipsCompleted, mark_feature_used_and_write_to_user_defaults,
     },
     search::{
+        QueryFilter,
         ai_context_menu::{
             mixer::AIContextMenuSearchableAction, search::is_valid_search_query,
             view::AIContextMenuAction,
         },
-        QueryFilter,
     },
     send_telemetry_from_ctx,
     server::{
@@ -206,7 +205,7 @@ use crate::{
         AppEditorSettingsChangedEvent, InputModeSettings, InputSettings, InputSettingsChangedEvent,
         MAX_TIMES_TO_SHOW_AUTOSUGGESTION_HINT,
     },
-    settings_view::{flags, SettingsSection},
+    settings_view::{SettingsSection, flags},
     terminal::view::inline_banner::PromptSuggestionsView,
     ui_components::{blended_colors, icons::Icon},
     user_config::WarpConfig,
@@ -218,26 +217,23 @@ use crate::{
         VoltronFeatureViewMeta, VoltronItem, VoltronMetadata,
     },
     workflows::{
-        self,
+        self, WorkflowSelectionSource, WorkflowSource, WorkflowType,
         aliases::WorkflowAliases,
         command_parser::{
-            compute_workflow_display_data, compute_workflow_display_data_for_history_command,
-            compute_workflow_display_data_with_overrides, WorkflowArgumentIndex,
-            WorkflowDisplayData,
+            WorkflowArgumentIndex, WorkflowDisplayData, compute_workflow_display_data,
+            compute_workflow_display_data_for_history_command,
+            compute_workflow_display_data_with_overrides,
         },
         info_box::{
-            WorkflowsInfoBoxViewEvent, WorkflowsMoreInfoView, WORKFLOW_PARAMETER_HIGHLIGHT_COLOR,
+            WORKFLOW_PARAMETER_HIGHLIGHT_COLOR, WorkflowsInfoBoxViewEvent, WorkflowsMoreInfoView,
         },
         local_workflows::LocalWorkflows,
         workflow_enum::EnumVariants,
-        WorkflowSelectionSource, WorkflowSource, WorkflowType,
     },
     workspace::{
-        sync_inputs::SyncedInputState, CommandSearchOptions, ForkFromExchange,
-        ForkedConversationDestination, InitContent, RestoreConversationLayout, ToastStack,
-        WorkspaceAction,
+        CommandSearchOptions, ForkFromExchange, ForkedConversationDestination, InitContent,
+        RestoreConversationLayout, ToastStack, WorkspaceAction, sync_inputs::SyncedInputState,
     },
-    AgentModeEntrypoint,
 };
 
 use crate::terminal::shared_session::protocol::ParticipantId;
@@ -272,31 +268,33 @@ use warp_completer::{
         SuggestionResults,
     },
     meta::{HasSpan, Spanned},
-    parsers::{simple::command_at_cursor_position, LiteCommand},
+    parsers::{LiteCommand, simple::command_at_cursor_position},
     signatures::CommandRegistry,
 };
-use warp_core::ui::theme::{color::internal_colors, AnsiColorIdentifier};
+use warp_core::ui::theme::{AnsiColorIdentifier, color::internal_colors};
 use warp_core::user_preferences::GetUserPreferences as _;
 use warp_editor::editor::NavigationKey;
 use warp_util::path::ShellFamily;
 use warpui::{
+    AppContext, Entity, EntityId, FocusContext, ModelAsRef, ModelHandle, SingletonEntity,
+    TypedActionView, View, ViewContext, ViewHandle, ViewUpdateError, WeakViewHandle,
     accessibility::{AccessibilityContent, ActionAccessibilityContent, WarpA11yRole},
+    r#async::SpawnedFutureHandle,
     clipboard::{ClipboardContent, ImageData},
     clipboard_utils::CLIPBOARD_IMAGE_MIME_TYPES,
     color::ColorU,
     elements::{
-        resizable_state_handle, Align, AnchorPair, ChildAnchor, Clipped, ConstrainedBox, Container,
-        CornerRadius, CrossAxisAlignment, DispatchEventResult, DropTargetData, Element,
-        EventHandler, Flex, MainAxisAlignment, MainAxisSize, MouseStateHandle, OffsetPositioning,
-        OffsetType, ParentAnchor, ParentElement, PositionedElementOffsetBounds, PositioningAxis,
-        Radius, ResizableStateHandle, SavePosition, SelectionHandle, Text, Wrap, XAxisAnchor,
-        YAxisAnchor,
+        Align, AnchorPair, ChildAnchor, Clipped, ConstrainedBox, Container, CornerRadius,
+        CrossAxisAlignment, DispatchEventResult, DropTargetData, Element, EventHandler, Flex,
+        MainAxisAlignment, MainAxisSize, MouseStateHandle, OffsetPositioning, OffsetType,
+        ParentAnchor, ParentElement, PositionedElementOffsetBounds, PositioningAxis, Radius,
+        ResizableStateHandle, SavePosition, SelectionHandle, Text, Wrap, XAxisAnchor, YAxisAnchor,
+        resizable_state_handle,
     },
     end_trace,
     keymap::{BindingDescription, EditableBinding, FixedBinding, Keystroke},
     platform::OperatingSystem,
     presenter::ChildView,
-    r#async::SpawnedFutureHandle,
     start_trace,
     text_layout::TextStyle,
     ui_components::{
@@ -304,17 +302,16 @@ use warpui::{
         components::{Coords, UiComponent, UiComponentStyles},
     },
     units::IntoPixels,
-    AppContext, Entity, EntityId, FocusContext, ModelAsRef, ModelHandle, SingletonEntity,
-    TypedActionView, View, ViewContext, ViewHandle, ViewUpdateError, WeakViewHandle,
 };
 pub use warpui::{
-    elements::{ParentElement as _, Stack},
-    geometry::vector::{vec2f, Vector2F},
     WindowId,
+    elements::{ParentElement as _, Stack},
+    geometry::vector::{Vector2F, vec2f},
 };
 
 use self::decorations::InputBackgroundJobOptions;
 use super::{
+    History, HistoryEntry, SizeInfo, TerminalModel, UpArrowHistoryConfig,
     alias::is_expandable_alias,
     block_list_viewport::InputMode,
     event::{BlockCompletedEvent, BlockType, UserBlockCompleted},
@@ -325,39 +322,40 @@ use super::{
     },
     prompt,
     prompt_render_helper::{
-        should_render_prompt_on_same_line, should_render_prompt_using_editor_decorator_elements,
-        PromptRenderHelper, SameLinePromptElements,
+        PromptRenderHelper, SameLinePromptElements, should_render_prompt_on_same_line,
+        should_render_prompt_using_editor_decorator_elements,
     },
     safe_mode_settings::{
-        get_secret_obfuscation_mode, SafeModeSettings, SafeModeSettingsChangedEvent,
+        SafeModeSettings, SafeModeSettingsChangedEvent, get_secret_obfuscation_mode,
     },
     session_settings::{SessionSettings, SessionSettingsChangedEvent},
     settings::{SpacingMode, TerminalSettings, TerminalSettingsChangedEvent},
     shared_session::{
-        presence_manager::PresenceManager, viewer::history_model::SharedSessionHistoryModel,
-        SharedSessionStatus,
+        SharedSessionStatus, presence_manager::PresenceManager,
+        viewer::history_model::SharedSessionHistoryModel,
     },
     shell::ShellType,
+    should_right_click_paste,
     universal_developer_input::{
         UniversalDeveloperInputButtonBar, UniversalDeveloperInputButtonBarEvent,
     },
     view::{
+        ExecuteCommandEvent, PADDING_LEFT as TERMINAL_VIEW_PADDING_LEFT, SyncInputType,
+        TerminalAction,
         ambient_agent::AmbientAgentViewModel,
         inline_banner::{
             PromptSuggestionBannerState, ZeroStatePromptSuggestionTriggeredFrom,
             ZeroStatePromptSuggestionType,
         },
-        ExecuteCommandEvent, SyncInputType, TerminalAction,
-        PADDING_LEFT as TERMINAL_VIEW_PADDING_LEFT,
     },
     warpify::SubshellSource,
-    should_right_click_paste, History, HistoryEntry, SizeInfo, TerminalModel,
-    UpArrowHistoryConfig,
 };
 use crate::ai::blocklist::agent_view::{
     AgentInputFooter, AgentInputFooterEvent, AgentViewController,
 };
-use crate::terminal::view::queued_prompts_panel::{QueuedPromptsPanelEvent, QueuedPromptsPanelView};
+use crate::terminal::view::queued_prompts_panel::{
+    QueuedPromptsPanelEvent, QueuedPromptsPanelView,
+};
 use async_channel::Sender;
 
 /// Capacity of the input debounce channels. The debounce stream drains its channel on every
@@ -378,8 +376,8 @@ use parking_lot::FairMutex;
 #[cfg(feature = "local_fs")]
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(feature = "local_fs")]
 use crate::ai::predict::next_command_model::SimilarHistoryContextCache;
@@ -1379,7 +1377,10 @@ fn keys_typed_behind_waiting_enter(current: &str, wait: &VerdictWait) -> Option<
     if let Some(suffix) = current.strip_prefix(text) {
         return (!suffix.is_empty()).then(|| suffix.to_string());
     }
-    let inserted = current.len().checked_sub(text.len()).filter(|len| *len > 0)?;
+    let inserted = current
+        .len()
+        .checked_sub(text.len())
+        .filter(|len| *len > 0)?;
     let cursor = wait.cursor.min(text.len());
     let end = cursor + inserted;
     if !text.is_char_boundary(cursor)
@@ -8389,10 +8390,8 @@ impl Input {
 
     pub fn replace_buffer_content(&mut self, content: &str, ctx: &mut ViewContext<Self>) {
         // #1434: not while an Enter waits for its verdict or an editor paste is read.
-        if self.defer_programmatic_edit(
-            enter_queue::DeferredEdit::Replace(content.to_owned()),
-            ctx,
-        ) {
+        if self.defer_programmatic_edit(enter_queue::DeferredEdit::Replace(content.to_owned()), ctx)
+        {
             return;
         }
         self.bump_input_generation();
@@ -8971,9 +8970,11 @@ impl Input {
             .info_box_expanded;
 
         InputSettings::handle(ctx).update(ctx, |input_settings, ctx| {
-            report_if_error!(input_settings
-                .workflows_box_expanded
-                .set_value(info_box_expanded, ctx));
+            report_if_error!(
+                input_settings
+                    .workflows_box_expanded
+                    .set_value(info_box_expanded, ctx)
+            );
         });
     }
 
@@ -10745,9 +10746,11 @@ impl Input {
                                         current_count + 1
                                     };
 
-                                    report_if_error!(input_settings
-                                        .autosuggestion_accepted_count
-                                        .set_value(new_count, ctx))
+                                    report_if_error!(
+                                        input_settings
+                                            .autosuggestion_accepted_count
+                                            .set_value(new_count, ctx)
+                                    )
                                 }
                             })
                         }
@@ -12634,7 +12637,8 @@ impl Input {
                     results.explicit_tab_completion(query, self.path_separators(ctx).all)
                 } else {
                     ExplicitTabCompletion::Open {
-                        suggestions: results.prepare_for_query(query, self.path_separators(ctx).all),
+                        suggestions: results
+                            .prepare_for_query(query, self.path_separators(ctx).all),
                         replacement_span: results.replacement_span,
                     }
                 };
@@ -13070,9 +13074,9 @@ impl Input {
     /// a background refilter that has not landed yet is redone inline (never act on a stale
     /// list). Closes the menu if the current text matches nothing.
     fn flush_pending_suggestion_refilter(&mut self, ctx: &mut ViewContext<Self>) {
-        let flushed = self
-            .input_suggestions
-            .update(ctx, |suggestions, ctx| suggestions.flush_pending_refilter(ctx));
+        let flushed = self.input_suggestions.update(ctx, |suggestions, ctx| {
+            suggestions.flush_pending_refilter(ctx)
+        });
         if flushed == Some(true)
             && matches!(
                 self.suggestions_mode_model.as_ref(ctx).mode(),
@@ -13757,10 +13761,9 @@ impl Input {
         if self.suggestions_mode_model.as_ref(ctx).is_ai_context_menu()
             && !self.ai_input_model.as_ref(ctx).is_ai_input_enabled()
             && !self.editor.update(ctx, |editor, ctx| {
-                editor.ai_context_menu().is_some_and(|menu| {
-                    menu.as_ref(ctx)
-                        .has_selectable_item(&typed_at_filter, ctx)
-                })
+                editor
+                    .ai_context_menu()
+                    .is_some_and(|menu| menu.as_ref(ctx).has_selectable_item(&typed_at_filter, ctx))
             })
         {
             self.close_ai_context_menu(ctx);
@@ -14892,8 +14895,9 @@ impl Input {
         &mut self,
         ctx: &mut ViewContext<Self>,
     ) -> bool {
-        self.ai_input_model
-            .update(ctx, |input_model, _| input_model.clear_typeahead_provenance());
+        self.ai_input_model.update(ctx, |input_model, _| {
+            input_model.clear_typeahead_provenance()
+        });
         self.last_enter_submitted_shell_command = false;
         self.input_enter(ctx);
         self.last_enter_submitted_shell_command
@@ -14975,7 +14979,12 @@ impl Input {
         // #1395: the user replaced the handed-back line (cleared it, ran something else, typed a
         // new command). This Enter belongs to the new line: swallowing it merged the next typed
         // text into that line. Only a line that still starts with the handed-back text is held.
-        if !self.editor.as_ref(ctx).buffer_text(ctx).starts_with(&baseline) {
+        if !self
+            .editor
+            .as_ref(ctx)
+            .buffer_text(ctx)
+            .starts_with(&baseline)
+        {
             return false;
         }
         if !ctx.has_singleton_model::<ToastStack>() {
@@ -15026,7 +15035,10 @@ impl Input {
     /// previous input config is restored exactly, including its lock flag.
     pub(crate) fn resubmit_locked_to_shell(&mut self, text: &str, ctx: &mut ViewContext<Self>) {
         // #1434: not while an Enter waits for its verdict or an editor paste is read.
-        if self.defer_programmatic_edit(enter_queue::DeferredEdit::ResubmitToShell(text.to_owned()), ctx) {
+        if self.defer_programmatic_edit(
+            enter_queue::DeferredEdit::ResubmitToShell(text.to_owned()),
+            ctx,
+        ) {
             return;
         }
         let (previous_config, previous_lock_flag) =
@@ -15062,7 +15074,9 @@ impl Input {
     /// empty before.
     pub(crate) fn send_text_to_agent(&mut self, text: &str, ctx: &mut ViewContext<Self>) {
         // #1434: not while an Enter waits for its verdict or an editor paste is read.
-        if self.defer_programmatic_edit(enter_queue::DeferredEdit::SendToAgent(text.to_owned()), ctx) {
+        if self
+            .defer_programmatic_edit(enter_queue::DeferredEdit::SendToAgent(text.to_owned()), ctx)
+        {
             return;
         }
         self.editor.update(ctx, |editor, ctx| {
@@ -15655,7 +15669,8 @@ impl Input {
                     /*is_queued_prompt*/ true,
                     // This path submits into the currently-selected conversation and has no
                     // queued row backing it, so there is no queued row for a command to act on.
-                    /*queued_conversation_id*/ None,
+                    /*queued_conversation_id*/
+                    None,
                     /*queued_query_id*/ None,
                     ctx,
                 )
@@ -15779,7 +15794,8 @@ impl Input {
             let pending_action_id = {
                 let terminal_model = self.model.lock();
                 let active_block = terminal_model.block_list().active_block();
-                if active_block.is_active_and_long_running() && !active_block.is_agent_monitoring() {
+                if active_block.is_active_and_long_running() && !active_block.is_agent_monitoring()
+                {
                     active_block.requested_command_action_id().cloned()
                 } else {
                     None
@@ -16563,8 +16579,9 @@ impl Input {
                                 compute(model.block_list())
                             })
                             .to_owned();
-                        let serialized_block =
-                            block_completed.serialized_block_without_output.get_with(|compute| {
+                        let serialized_block = block_completed
+                            .serialized_block_without_output
+                            .get_with(|compute| {
                                 let model = self.model.lock();
                                 compute(model.block_list())
                             });
@@ -16789,9 +16806,11 @@ impl Input {
                             env_var_collection_name.to_owned(),
                         )))
                     } else {
-                        crate::terminal::warpify::subshell_display_name(&info.spawning_command).map(|exec| {
-                            SubshellRenderState::Flag(SubshellSource::Command(exec.to_owned()))
-                        })
+                        crate::terminal::warpify::subshell_display_name(&info.spawning_command).map(
+                            |exec| {
+                                SubshellRenderState::Flag(SubshellSource::Command(exec.to_owned()))
+                            },
+                        )
                     }
                 })
             })?;
@@ -17078,8 +17097,8 @@ impl Input {
                     .with_typed_characters_when_unpainted()
                     .finish(),
             )
-                .with_max_height(editor_height_rounded_down.as_f32())
-                .finish(),
+            .with_max_height(editor_height_rounded_down.as_f32())
+            .finish(),
         )
         .with_padding_right(*TERMINAL_VIEW_PADDING_LEFT)
         .with_padding_bottom(bottom_padding)
@@ -17274,7 +17293,6 @@ impl TypedActionView for Input {
         match action {
             InputAction::FocusInputBox => {
                 ActionAccessibilityContent::Custom(AccessibilityContent::new(
-
                     translate_input_key(INPUT_A11Y_LABEL_KEY),
                     // TODO (a11y) use bindings from user settings
                     translate_input_key(INPUT_A11Y_HELPER_KEY),

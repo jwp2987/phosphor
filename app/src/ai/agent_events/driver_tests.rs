@@ -4,13 +4,13 @@ use std::time::Duration;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
-use futures::stream::{self, BoxStream};
 use futures::StreamExt;
+use futures::stream::{self, BoxStream};
 use warp_core::errors::AnyhowErrorExt as _;
 
 use super::*;
-use crate::ai::agent_events::driver::agent_event_failure_should_log_error;
 use crate::ai::agent_events::AgentRunEvent;
+use crate::ai::agent_events::driver::agent_event_failure_should_log_error;
 use crate::util::retry_strategies::HttpStatusError;
 
 const ZERO_BACKOFF_STEPS: &[u64] = &[0];

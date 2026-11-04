@@ -5,19 +5,19 @@ use string_offset::ByteOffset;
 use typed_path::TypedPathBuf;
 
 use crate::completer::EngineDirEntry;
+use crate::completer::{TopLevelCommandCaseSensitivity, suggest::SuggestionType};
 use crate::completer::{context::CompletionContext, suggest::MatchRequirement};
 use crate::completer::{
     describe::OptionCaseSensitivity,
     testing::{FakeCompletionContext, MockPathCompletionContext},
 };
-use crate::completer::{suggest::SuggestionType, TopLevelCommandCaseSensitivity};
 use crate::meta::{Span, SpannedItem};
 use crate::signatures::{
-    testing::{add_content_signature, create_test_command_registry, git_signature, test_signature},
     CommandRegistry,
+    testing::{add_content_signature, create_test_command_registry, git_signature, test_signature},
 };
 
-use super::{describe, Description};
+use super::{Description, describe};
 
 #[cfg(windows)]
 mod windows_constants {
@@ -56,13 +56,17 @@ pub fn test_describe_top_level_commands_case_sensitive() {
         Some("git".into())
     );
 
-    assert!(describe_at_cursor("GIT", ByteOffset::from(1), &ctx)
-        .map(Description::into_token_name)
-        .is_none());
+    assert!(
+        describe_at_cursor("GIT", ByteOffset::from(1), &ctx)
+            .map(Description::into_token_name)
+            .is_none()
+    );
 
-    assert!(describe_at_cursor("GIt", ByteOffset::from(1), &ctx)
-        .map(Description::into_token_name)
-        .is_none());
+    assert!(
+        describe_at_cursor("GIt", ByteOffset::from(1), &ctx)
+            .map(Description::into_token_name)
+            .is_none()
+    );
 
     // The `TopLevelCommandCaseSensitivity` value does not matter since we check parts other than the top-level command.
     assert_eq!(

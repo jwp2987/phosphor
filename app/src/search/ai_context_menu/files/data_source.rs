@@ -4,7 +4,7 @@ use crate::code::opened_files::OpenedFilesModel;
 use crate::search::ai_context_menu::mixer::AIContextMenuSearchableAction;
 use crate::search::async_snapshot_data_source::AsyncSnapshotDataSource;
 use crate::search::data_source::{Query, QueryResult};
-use crate::search::files::model::{git_changed_files_async, FileSearchModel};
+use crate::search::files::model::{FileSearchModel, git_changed_files_async};
 use crate::search::files::search_item::FileSearchResult;
 use crate::search::mixer::{BoxFuture, DataSourceRunErrorWrapper};
 use crate::workspace::ActiveSession;
@@ -58,8 +58,8 @@ pub(crate) struct FileSnapshot {
 /// Builds the repository-backed file search source used by the AI context menu.
 /// For empty queries, snapshots repo contents with git-change status to prioritize modified files,
 /// and for non-empty queries snapshots repo contents only for faster fuzzy matching.
-pub fn file_data_source_for_current_repo(
-) -> AsyncSnapshotDataSource<PendingFileSnapshot, AIContextMenuSearchableAction> {
+pub fn file_data_source_for_current_repo()
+-> AsyncSnapshotDataSource<PendingFileSnapshot, AIContextMenuSearchableAction> {
     AsyncSnapshotDataSource::new(
         |query: &Query, app: &AppContext| {
             if FileSearchModel::should_skip_overly_broad_query(&query.text) {

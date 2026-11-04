@@ -10,9 +10,9 @@ use ordered_float::OrderedFloat;
 use pathfinder_color::ColorU;
 use pathfinder_geometry::rect::RectF;
 use pathfinder_geometry::vector::Vector2F;
-use rstar::{primitives::Rectangle, RTree};
+use rstar::{RTree, primitives::Rectangle};
 use std::sync::Arc;
-use vec1::{vec1, Vec1};
+use vec1::{Vec1, vec1};
 
 /// See [`Scene::stats`]. Areas are device pixels, summed over primitives (overdraw counts).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -286,35 +286,19 @@ pub struct Dash {
 
 impl Border {
     pub fn top_width(&self) -> f32 {
-        if self.top {
-            self.width
-        } else {
-            0.0
-        }
+        if self.top { self.width } else { 0.0 }
     }
 
     pub fn right_width(&self) -> f32 {
-        if self.right {
-            self.width
-        } else {
-            0.0
-        }
+        if self.right { self.width } else { 0.0 }
     }
 
     pub fn bottom_width(&self) -> f32 {
-        if self.bottom {
-            self.width
-        } else {
-            0.0
-        }
+        if self.bottom { self.width } else { 0.0 }
     }
 
     pub fn left_width(&self) -> f32 {
-        if self.left {
-            self.width
-        } else {
-            0.0
-        }
+        if self.left { self.width } else { 0.0 }
     }
 }
 
@@ -349,13 +333,18 @@ impl CornerRadius {
     /// Whether every corner is square: unset, or an absolute radius of zero. `with_all(Pixels(0.))`
     /// draws the same as `CornerRadius::default()`, but compares unequal to it.
     pub fn is_square(&self) -> bool {
-        [self.top_left, self.top_right, self.bottom_left, self.bottom_right]
-            .into_iter()
-            .all(|radius| match radius {
-                None => true,
-                Some(Radius::Pixels(pixels)) => pixels == 0.,
-                Some(Radius::Percentage(_)) => false,
-            })
+        [
+            self.top_left,
+            self.top_right,
+            self.bottom_left,
+            self.bottom_right,
+        ]
+        .into_iter()
+        .all(|radius| match radius {
+            None => true,
+            Some(Radius::Pixels(pixels)) => pixels == 0.,
+            Some(Radius::Percentage(_)) => false,
+        })
     }
 
     /// Merge this CornerRadius struct with another.
@@ -506,7 +495,11 @@ impl ZIndex {
 
 impl Scene {
     pub fn new(scale_factor: f32, rendering_config: rendering::Config) -> Self {
-        Self::with_capacity_hints(scale_factor, rendering_config, SceneCapacityHints::default())
+        Self::with_capacity_hints(
+            scale_factor,
+            rendering_config,
+            SceneCapacityHints::default(),
+        )
     }
 
     /// A scene whose layers are pre-allocated to the sizes in `capacity_hints`, normally the

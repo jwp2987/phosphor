@@ -2,8 +2,8 @@ use crate::{auth::AuthState, send_telemetry_on_executor, server::telemetry::Tele
 use async_broadcast::Receiver;
 use instant::{Duration, Instant};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 use warpui::r#async::executor::Background;
 

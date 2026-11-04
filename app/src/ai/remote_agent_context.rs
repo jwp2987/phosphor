@@ -18,11 +18,10 @@
 //! agent query" is not.
 use ai::project_context::model::{ProjectContextModel, ProjectRule};
 use ai::skills::{
-    get_provider_for_path, parse_skill_content_at_location, ParsedSkill, SkillProvider,
-    SkillScope,
+    ParsedSkill, SkillProvider, SkillScope, get_provider_for_path, parse_skill_content_at_location,
 };
 use remote_server::manager::{RemoteServerManager, RemoteServerManagerEvent};
-use remote_server::proto::{remote_skill_proto, RemoteAgentContextSnapshot, RemoteSkillProto};
+use remote_server::proto::{RemoteAgentContextSnapshot, RemoteSkillProto, remote_skill_proto};
 use std::path::PathBuf;
 use warp_core::features::FeatureFlag;
 use warp_core::safe_warn;
@@ -117,7 +116,10 @@ impl RemoteAgentContext {
     }
 }
 
-fn parse_snapshot(host_id: &HostId, snapshot: RemoteAgentContextSnapshot) -> RemoteAgentContextState {
+fn parse_snapshot(
+    host_id: &HostId,
+    snapshot: RemoteAgentContextSnapshot,
+) -> RemoteAgentContextState {
     let bundled_skills = FeatureFlag::BundledSkills
         .is_enabled()
         .then(|| bundled_skill_from_protos(host_id, &snapshot.skills));

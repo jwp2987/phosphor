@@ -3,7 +3,7 @@
 use crate::platform::NotificationInfo;
 use crate::platform::{RequestNotificationPermissionsCallback, SendNotificationErrorCallback};
 use crate::windowing::winit::app::CustomEvent;
-use crate::{notification, WindowId};
+use crate::{WindowId, notification};
 use winit::event_loop::EventLoopProxy;
 
 #[cfg_attr(any(target_os = "linux", target_os = "freebsd"), path = "linux.rs")]

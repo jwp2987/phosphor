@@ -123,14 +123,38 @@ fn usage_exactly_on_a_boundary_keeps_the_brighter_icon() {
         icon_for_context_window_usage(0.05),
         Icon::ContextRemaining100
     );
-    assert_eq!(icon_for_context_window_usage(0.15), Icon::ContextRemaining90);
-    assert_eq!(icon_for_context_window_usage(0.25), Icon::ContextRemaining80);
-    assert_eq!(icon_for_context_window_usage(0.35), Icon::ContextRemaining70);
-    assert_eq!(icon_for_context_window_usage(0.45), Icon::ContextRemaining60);
-    assert_eq!(icon_for_context_window_usage(0.55), Icon::ContextRemaining50);
-    assert_eq!(icon_for_context_window_usage(0.65), Icon::ContextRemaining40);
-    assert_eq!(icon_for_context_window_usage(0.75), Icon::ContextRemaining30);
-    assert_eq!(icon_for_context_window_usage(0.95), Icon::ContextRemaining10);
+    assert_eq!(
+        icon_for_context_window_usage(0.15),
+        Icon::ContextRemaining90
+    );
+    assert_eq!(
+        icon_for_context_window_usage(0.25),
+        Icon::ContextRemaining80
+    );
+    assert_eq!(
+        icon_for_context_window_usage(0.35),
+        Icon::ContextRemaining70
+    );
+    assert_eq!(
+        icon_for_context_window_usage(0.45),
+        Icon::ContextRemaining60
+    );
+    assert_eq!(
+        icon_for_context_window_usage(0.55),
+        Icon::ContextRemaining50
+    );
+    assert_eq!(
+        icon_for_context_window_usage(0.65),
+        Icon::ContextRemaining40
+    );
+    assert_eq!(
+        icon_for_context_window_usage(0.75),
+        Icon::ContextRemaining30
+    );
+    assert_eq!(
+        icon_for_context_window_usage(0.95),
+        Icon::ContextRemaining10
+    );
 }
 
 /// The one boundary where f32 representation, not the threshold table,
@@ -146,11 +170,20 @@ fn usage_exactly_on_a_boundary_keeps_the_brighter_icon() {
 /// so it is pinned as-is rather than "fixed" into a divergence.
 #[test]
 fn the_zero_point_eight_five_boundary_falls_to_the_lower_icon_in_f32() {
-    assert_eq!(icon_for_context_window_usage(0.85), Icon::ContextRemaining10);
+    assert_eq!(
+        icon_for_context_window_usage(0.85),
+        Icon::ContextRemaining10
+    );
     // The neighbouring values behave as the table says, so this is the
     // representation of `0.85` itself and not a shifted threshold.
-    assert_eq!(icon_for_context_window_usage(0.849), Icon::ContextRemaining20);
-    assert_eq!(icon_for_context_window_usage(0.851), Icon::ContextRemaining10);
+    assert_eq!(
+        icon_for_context_window_usage(0.849),
+        Icon::ContextRemaining20
+    );
+    assert_eq!(
+        icon_for_context_window_usage(0.851),
+        Icon::ContextRemaining10
+    );
 }
 
 /// A context window can be reported as over-full (usage > 1.0) when the
@@ -160,7 +193,10 @@ fn the_zero_point_eight_five_boundary_falls_to_the_lower_icon_in_f32() {
 fn over_full_context_window_clamps_to_zero_remaining() {
     assert_eq!(icon_for_context_window_usage(1.0), Icon::ContextRemaining0);
     assert_eq!(icon_for_context_window_usage(1.5), Icon::ContextRemaining0);
-    assert_eq!(icon_for_context_window_usage(100.0), Icon::ContextRemaining0);
+    assert_eq!(
+        icon_for_context_window_usage(100.0),
+        Icon::ContextRemaining0
+    );
 }
 
 /// Negative usage is not a state the app should produce, but the function is

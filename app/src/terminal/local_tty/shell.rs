@@ -13,11 +13,11 @@ use warp_util::path::{canonicalize_git_bash_path, is_msys2_path, warp_shell_path
 
 use crate::{
     terminal::{
+        ShellLaunchData,
         available_shells::AvailableShell,
         bootstrap::{generate_session_id, init_shell_script_for_shell},
         local_tty::docker_sandbox::DockerSandboxShellStarter,
         shell::{ShellName, ShellType},
-        ShellLaunchData,
     },
     util::path::resolve_executable,
 };
@@ -122,7 +122,7 @@ impl ShellStarter {
                 ShellLaunchData::WSL { distro } => {
                     return Some(ShellStarterSourceOrWslName::WSLName {
                         distro_name: distro,
-                    })
+                    });
                 }
                 ShellLaunchData::MSYS2 {
                     executable_path,
@@ -137,7 +137,7 @@ impl ShellStarter {
                             session_id,
                         }))
                         .into(),
-                    )
+                    );
                 }
                 ShellLaunchData::DockerSandbox {
                     sbx_path,

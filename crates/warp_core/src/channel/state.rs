@@ -3,9 +3,9 @@ use parking_lot::Mutex;
 use std::{borrow::Cow, collections::HashSet};
 use url::{Origin, Url};
 
+use crate::AppId;
 #[cfg(not(feature = "test-util"))]
 use crate::channel::config::DISABLED_HTTP_SENTINEL;
-use crate::AppId;
 use crate::{
     channel::config::{ChannelConfig, McpOAuthProviderConfig},
     features::FeatureFlag,

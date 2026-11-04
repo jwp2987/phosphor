@@ -1,10 +1,10 @@
 use super::{CornerRadius, Element, Point};
 use crate::{
+    AfterLayoutContext, AppContext, EventContext, LayoutContext, PaintContext, SingletonEntity,
+    SizeConstraint,
     assets::asset_cache::{AssetCache, AssetSource, AssetState},
     event::DispatchedEvent,
     image_cache::{AnimatedImage, AnimatedImageBehavior, FitType, ImageCache, StaticImage},
-    AfterLayoutContext, AppContext, EventContext, LayoutContext, PaintContext, SingletonEntity,
-    SizeConstraint,
 };
 
 pub use crate::image_cache::CacheOption;
@@ -12,7 +12,7 @@ use instant::Instant;
 use lazy_static::lazy_static;
 use parking_lot::Mutex;
 use pathfinder_geometry::rect::RectF;
-use pathfinder_geometry::vector::{vec2f, Vector2F, Vector2I};
+use pathfinder_geometry::vector::{Vector2F, Vector2I, vec2f};
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;

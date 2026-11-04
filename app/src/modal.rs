@@ -2,6 +2,8 @@ use crate::ui_components::blended_colors;
 use crate::{appearance::Appearance, themes::theme::Fill, ui_components::icons};
 use pathfinder_geometry::vector::vec2f;
 use warpui::{
+    AppContext, Entity, FocusContext, ModelHandle, SingletonEntity, TypedActionView, View,
+    ViewContext, ViewHandle,
     color::ColorU,
     elements::{
         Align, Border, ChildAnchor, ChildView, ConstrainedBox, Container, CornerRadius,
@@ -11,8 +13,6 @@ use warpui::{
     fonts::{Properties, Weight},
     keymap::FixedBinding,
     ui_components::components::{Coords, UiComponent, UiComponentStyles},
-    AppContext, Entity, FocusContext, ModelHandle, SingletonEntity, TypedActionView, View,
-    ViewContext, ViewHandle,
 };
 
 pub const MODAL_CORNER_RADIUS: Radius = Radius::Pixels(8.);

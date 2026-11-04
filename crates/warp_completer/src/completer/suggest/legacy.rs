@@ -3,9 +3,9 @@
 use std::collections::HashMap;
 
 use crate::completer::{
+    CompleterOptions, CompletionContext, LocationType, MatchedSuggestion,
     engine::{self, CompletionLocation},
     suggest::SuggestionTypeName,
-    CompleterOptions, CompletionContext, LocationType, MatchedSuggestion,
 };
 use crate::parsers::{ClassifiedCommand, SignatureAtTokenIndex};
 

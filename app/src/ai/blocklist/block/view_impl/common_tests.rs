@@ -3,23 +3,23 @@ use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use ai::skills::{ParsedSkill, SkillProvider, SkillScope};
 use warp_util::local_or_remote_path::LocalOrRemotePath;
+use warpui::App;
 #[cfg(feature = "local_fs")]
 use warpui::assets::asset_cache::AssetSource;
-use warpui::App;
 
-#[cfg(feature = "local_fs")]
-use super::{blocklist_image_asset_source, ResolvedBlocklistImageSources};
 use super::{
-    collect_visual_markdown_lightbox_collection, compute_visual_section_width, line_count,
-    step_for_group, IndexedImageSection, RenderableImageGroup,
+    CollapsibleElementState, CollapsibleExpansionState, IndexedImageSection, OutputBudget,
+    QueryContextReference, RenderableImageGroup, VisualMarkdownLightboxCollection,
+    collect_visual_markdown_lightbox_collection, compute_visual_section_width,
     display_query_without_context_references, focused_match_is_hidden,
-    image_tooltip_handles_for_group, inline_image_source_label, is_supported_blocklist_image_source,
-    lightbox_trigger_for_section, query_context_references, query_prefix_highlight_len,
-    render_scrollable_collapsible_content, should_render_query_and_header,
-    should_show_agent_command_status, text_sections_with_indices, truncate_formatted_text,
-    warping_footer_height, CollapsibleElementState, CollapsibleExpansionState, OutputBudget,
-    QueryContextReference, VisualMarkdownLightboxCollection,
+    image_tooltip_handles_for_group, inline_image_source_label,
+    is_supported_blocklist_image_source, lightbox_trigger_for_section, line_count,
+    query_context_references, query_prefix_highlight_len, render_scrollable_collapsible_content,
+    should_render_query_and_header, should_show_agent_command_status, step_for_group,
+    text_sections_with_indices, truncate_formatted_text, warping_footer_height,
 };
+#[cfg(feature = "local_fs")]
+use super::{ResolvedBlocklistImageSources, blocklist_image_asset_source};
 use crate::{
     ai::agent::{
         AIAgentAttachment, AIAgentInput, AIAgentTextSection, AgentOutputImage,
@@ -31,8 +31,8 @@ use crate::{
 };
 use ui_components::lightbox::{LightboxImage, LightboxImageSource};
 use warpui::{
-    elements::{Empty, MouseStateHandle},
     Element,
+    elements::{Empty, MouseStateHandle},
 };
 
 #[test]
@@ -40,9 +40,7 @@ fn query_prefix_highlight_len_highlights_invoke_skill_inputs() {
     let input = AIAgentInput::InvokeSkill {
         context: Arc::new([]),
         skill: ParsedSkill {
-            path: LocalOrRemotePath::Local(PathBuf::from(
-                "/tmp/.agents/skills/review-pr/SKILL.md",
-            )),
+            path: LocalOrRemotePath::Local(PathBuf::from("/tmp/.agents/skills/review-pr/SKILL.md")),
             name: "review-pr".to_string(),
             description: "Review a pull request.".to_string(),
             content: String::new(),
@@ -431,10 +429,12 @@ fn collect_visual_markdown_lightbox_collection_includes_mermaid_sections_in_sour
 
             assert_eq!(collection.section_indices, vec![11, 13]);
             assert_eq!(collection.images.len(), 2);
-            assert!(collection
-                .images
-                .iter()
-                .all(|image| image.description.is_none()));
+            assert!(
+                collection
+                    .images
+                    .iter()
+                    .all(|image| image.description.is_none())
+            );
         });
     });
 }

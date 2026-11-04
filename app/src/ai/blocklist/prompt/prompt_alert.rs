@@ -1,15 +1,15 @@
 use markdown_parser::{FormattedText, FormattedTextFragment, FormattedTextLine};
 use warp_core::ui::appearance::Appearance;
 use warpui::{
+    AppContext, Element, Entity, SingletonEntity, TypedActionView, View, ViewContext,
     elements::{
         ConstrainedBox, Container, CrossAxisAlignment, Flex, FormattedTextElement,
         HighlightedHyperlink, HyperlinkLens, MainAxisAlignment, MainAxisSize, ParentElement,
     },
-    AppContext, Element, Entity, SingletonEntity, TypedActionView, View, ViewContext,
 };
 
 use crate::{
-    ai::{blocklist::error_color, AIRequestUsageModel},
+    ai::{AIRequestUsageModel, blocklist::error_color},
     auth::AuthStateProvider,
     network::NetworkStatus,
     settings_view::SettingsSection,

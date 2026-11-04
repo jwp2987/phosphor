@@ -3,10 +3,10 @@ use futures::Future;
 use futures::stream::AbortHandle;
 use regex::Regex;
 use repo_metadata::{
+    RepositoryWatchMode,
     repositories::{DetectedRepositories, DetectedRepositoriesEvent, RepoDetectionSource},
     repository::{Repository, RepositorySubscriber, SubscriberId},
     watcher::{DirectoryWatcher, RepositoryUpdate},
-    RepositoryWatchMode,
 };
 use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;

@@ -1,6 +1,6 @@
 use crate::{
     event::DispatchedEvent,
-    text::{word_boundaries::WordBoundariesPolicy, IsRect, SelectionDirection, SelectionType},
+    text::{IsRect, SelectionDirection, SelectionType, word_boundaries::WordBoundariesPolicy},
 };
 use pathfinder_geometry::rect::RectF;
 
@@ -8,7 +8,7 @@ use super::{
     AfterLayoutContext, AppContext, Element, EventContext, LayoutContext, PaintContext, Point,
     SelectableElement, Selection, SelectionFragment, SizeConstraint,
 };
-use pathfinder_geometry::vector::{vec2f, Vector2F};
+use pathfinder_geometry::vector::{Vector2F, vec2f};
 
 pub struct Align {
     child: Box<dyn Element>,

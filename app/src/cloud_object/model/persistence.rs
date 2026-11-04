@@ -8,9 +8,9 @@ use crate::env_vars::{EnvVarCollection, EnvVarCollectionObject};
 use crate::notebooks::NotebookObject;
 use crate::persistence::ModelEvent;
 use crate::server::ids::{HashableId, ObjectUid, SyncId, ToServerId};
+use crate::workflows::WorkflowObject;
 use crate::workflows::workflow::Workflow;
 use crate::workflows::workflow_enum::WorkflowEnumObject;
-use crate::workflows::WorkflowObject;
 
 use itertools::Itertools;
 use std::collections::{HashMap, HashSet};

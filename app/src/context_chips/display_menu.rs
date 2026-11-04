@@ -14,22 +14,18 @@ use crate::{
     },
     ui_components::icons::Icon,
     view_components::copyable_text_field::{
-        render_copyable_text_field, CopyButtonPlacement, CopyableTextFieldConfig,
-        COPY_FEEDBACK_DURATION,
+        COPY_FEEDBACK_DURATION, CopyButtonPlacement, CopyableTextFieldConfig,
+        render_copyable_text_field,
     },
 };
-use fuzzy_match::{match_indices_case_insensitive, FuzzyMatchResult};
+use fuzzy_match::{FuzzyMatchResult, match_indices_case_insensitive};
 use warp_core::ui::theme::color::internal_colors;
 use warp_core::ui::{appearance::Appearance, builder::MIN_FONT_SIZE, theme::Fill};
 use warp_editor::editor::NavigationKey;
 use warpui::units::Pixels;
 use warpui::{
-    color::ColorU,
-    elements::Highlight,
-    fonts::{Properties, Weight},
-    ui_components::components::{Coords, UiComponentStyles},
-};
-use warpui::{
+    AppContext, Element, Entity, FocusContext, SingletonEntity as _, TypedActionView, View,
+    ViewContext, ViewHandle, WindowId,
     elements::{
         Border, ChildAnchor, ChildView, ClippedScrollStateHandle, ClippedScrollable,
         ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Dismiss, DispatchEventResult,
@@ -41,12 +37,16 @@ use warpui::{
     },
     keymap::FixedBinding,
     ui_components::components::UiComponent,
-    AppContext, Element, Entity, FocusContext, SingletonEntity as _, TypedActionView, View,
-    ViewContext, ViewHandle, WindowId,
+};
+use warpui::{
+    color::ColorU,
+    elements::Highlight,
+    fonts::{Properties, Weight},
+    ui_components::components::{Coords, UiComponentStyles},
 };
 
-use warpui::clipboard::ClipboardContent;
 use warpui::r#async::Timer;
+use warpui::clipboard::ClipboardContent;
 
 /// Trait for items that can be displayed in a generic menu
 pub trait GenericMenuItem: Debug + 'static {

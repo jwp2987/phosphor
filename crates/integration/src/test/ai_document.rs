@@ -2,7 +2,8 @@ use std::time::Duration;
 
 use warp::integration_testing::{
     ai_document::{
-        ai_document_overflow_button_position_id, assert_ai_document_overflow_button_position_exists,
+        ai_document_overflow_button_position_id,
+        assert_ai_document_overflow_button_position_exists,
         assert_viewed_ai_document_has_code_and_mermaid_controls, create_and_open_ai_document,
         restore_and_open_ai_document, select_initial_ai_document_version,
     },

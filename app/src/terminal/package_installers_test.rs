@@ -57,7 +57,7 @@ fn test_command_at_cursor_has_common_package_installer_prefix_with_alias_expansi
 
     use crate::completer::SessionContext;
     use crate::terminal::model::session::{
-        command_executor::testing::TestCommandExecutor, Session, SessionInfo,
+        Session, SessionInfo, command_executor::testing::TestCommandExecutor,
     };
 
     App::test((), |app| async move {

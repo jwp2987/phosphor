@@ -12,7 +12,7 @@ use crate::{
     ai::agent::AIAgentCitation, cloud_object::model::persistence::ObjectStoreModel,
     workflows::command_parser::command_matches_workflow,
 };
-use markdown_parser::{parse_markdown, FormattedTextLine};
+use markdown_parser::{FormattedTextLine, parse_markdown};
 
 /// Returns true iff the `command` is directly copied from the `document`.
 pub(crate) fn is_command_copied_from_document(

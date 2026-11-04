@@ -6,11 +6,11 @@ use warpui::{AppContext, Entity, ModelHandle};
 
 use crate::ai::blocklist::agent_view::AgentViewController;
 use crate::ai::conversation_navigation::ConversationNavigationData;
+use crate::search::SyncDataSource;
 use crate::search::data_source::{Query, QueryFilter, QueryResult};
 use crate::search::mixer::DataSourceRunErrorWrapper;
-use crate::search::SyncDataSource;
-use crate::terminal::input::conversations::search_item::ConversationSearchItem;
 use crate::terminal::input::conversations::AcceptConversation;
+use crate::terminal::input::conversations::search_item::ConversationSearchItem;
 use crate::terminal::model::session::active_session::ActiveSession;
 
 pub struct ConversationMenuDataSource {

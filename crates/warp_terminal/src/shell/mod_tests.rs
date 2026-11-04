@@ -359,7 +359,9 @@ fn only_powershell_enumerates_functions_and_builtins_after_bootstrap() {
     // formatter wrap or pad the object list.
     for command in [functions, builtins] {
         assert!(command.contains("[System.Text.UTF8Encoding]::new($false).GetBytes($text)"));
-        assert!(command.contains("[Console]::OpenStandardOutput().Write($bytes, 0, $bytes.Length)"));
+        assert!(
+            command.contains("[Console]::OpenStandardOutput().Write($bytes, 0, $bytes.Length)")
+        );
     }
 }
 

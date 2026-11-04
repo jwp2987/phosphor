@@ -5,6 +5,7 @@ use settings::Setting as _;
 use std::{borrow::Cow, cmp::Reverse, path::Path, sync::Arc};
 use warp_core::ui::Icon;
 use warpui::{
+    AppContext, Element, Entity, ModelHandle, SingletonEntity, TypedActionView, View, ViewContext,
     elements::{
         Container, CornerRadius, CrossAxisAlignment, Expanded, Flex, FormattedTextElement,
         MainAxisSize, MouseStateHandle, ParentElement, Radius, Text,
@@ -13,7 +14,6 @@ use warpui::{
     keymap::Keystroke,
     prelude::{ConstrainedBox, Cursor, Empty, Hoverable, SavePosition},
     scene::Border,
-    AppContext, Element, Entity, ModelHandle, SingletonEntity, TypedActionView, View, ViewContext,
 };
 
 use crate::{
@@ -21,8 +21,8 @@ use crate::{
         agent::conversation::AIConversationId,
         blocklist::{
             agent_view::{
-                agent_view_bg_color, AgentViewController, AgentViewEntryOrigin,
-                ENTER_AGENT_VIEW_NEW_CONVERSATION_KEYSTROKE,
+                AgentViewController, AgentViewEntryOrigin,
+                ENTER_AGENT_VIEW_NEW_CONVERSATION_KEYSTROKE, agent_view_bg_color,
             },
             history_model::{BlocklistAIHistoryEvent, BlocklistAIHistoryModel},
         },
@@ -32,20 +32,16 @@ use crate::{
     report_if_error,
     settings::{InputSettings, InputSettingsChangedEvent},
     terminal::{
-        self,
+        self, TerminalModel,
         event::BlockType,
-        input::message_bar::{common::render_standard_message, Message, MessageItem},
+        input::message_bar::{Message, MessageItem, common::render_standard_message},
         model::{
             blocks::BlockHeightItem,
             session::{BootstrapSessionType, Session, SessionType, Sessions},
         },
         model_events::{AnsiHandlerEvent, ModelEvent, ModelEventDispatcher},
         prompt,
-        view::{
-            ambient_agent::AmbientAgentViewModel,
-            TerminalAction,
-        },
-        TerminalModel,
+        view::{TerminalAction, ambient_agent::AmbientAgentViewModel},
     },
     util::time_format::format_approx_duration_from_now_utc,
 };
@@ -582,7 +578,9 @@ fn render_title_and_description(props: HeaderProps, app: &AppContext) -> Vec<Box
                     sub_text_color,
                     Default::default(),
                 )
-                .with_heading_to_font_size_multipliers(appearance.heading_font_size_multipliers().clone())
+                .with_heading_to_font_size_multipliers(
+                    appearance.heading_font_size_multipliers().clone(),
+                )
                 .with_inline_code_properties(Some(main_text_color), None)
                 .finish()
             });
@@ -623,70 +621,75 @@ fn render_body(props: ZeroStateBodyProps<'_>, app: &AppContext) -> Vec<Box<dyn E
         return vec![];
     }
     let mut body_items = match render_recent_conversations_section(
-            RecentConversationProps {
-                recent_conversations,
-                active_session,
-                current_working_directory,
-                state_handles,
-            },
-            app,
-        ) { Some(recent_conversations_section) => {
-        vec![recent_conversations_section]
-    } _ => {
-        let mut body_items = vec![
-            render_standard_message(
-                Message::new(vec![MessageItem::clickable(
-                    vec![
-                        MessageItem::keystroke(ENTER_AGENT_VIEW_NEW_CONVERSATION_KEYSTROKE.clone()),
-                        MessageItem::text(crate::t!("terminal-zero-state-start-agent")),
-                    ],
-                    |ctx| {
-                        ctx.dispatch_typed_action(TerminalAction::StartNewAgentConversation);
-                    },
-                    state_handles.start_new_conversation.clone(),
-                )]),
-                app,
-            ),
-            render_standard_message(
-                Message::new(vec![MessageItem::clickable(
-                    vec![
-                        MessageItem::keystroke(Keystroke {
-                            key: "/model".to_owned(),
-                            ..Default::default()
-                        }),
-                        MessageItem::text(crate::t!("agent-zero-state-switch-model")),
-                    ],
-                    |ctx| {
-                        ctx.dispatch_typed_action(TerminalAction::OpenModelSelector);
-                    },
-                    state_handles.switch_model.clone(),
-                )]),
-                app,
-            ),
-        ];
-
-        // Only show "escape to go back" if there's a parent terminal
-        if has_parent_terminal {
-            body_items.push(render_standard_message(
-                Message::new(vec![MessageItem::clickable(
-                    vec![
-                        MessageItem::keystroke(Keystroke {
-                            key: "escape".to_owned(),
-                            ..Default::default()
-                        }),
-                        MessageItem::text(crate::t!("agent-zero-state-go-back-to-terminal")),
-                    ],
-                    |ctx| {
-                        ctx.dispatch_typed_action(TerminalAction::ExitAgentView);
-                    },
-                    state_handles.exit.clone(),
-                )]),
-                app,
-            ));
+        RecentConversationProps {
+            recent_conversations,
+            active_session,
+            current_working_directory,
+            state_handles,
+        },
+        app,
+    ) {
+        Some(recent_conversations_section) => {
+            vec![recent_conversations_section]
         }
+        _ => {
+            let mut body_items = vec![
+                render_standard_message(
+                    Message::new(vec![MessageItem::clickable(
+                        vec![
+                            MessageItem::keystroke(
+                                ENTER_AGENT_VIEW_NEW_CONVERSATION_KEYSTROKE.clone(),
+                            ),
+                            MessageItem::text(crate::t!("terminal-zero-state-start-agent")),
+                        ],
+                        |ctx| {
+                            ctx.dispatch_typed_action(TerminalAction::StartNewAgentConversation);
+                        },
+                        state_handles.start_new_conversation.clone(),
+                    )]),
+                    app,
+                ),
+                render_standard_message(
+                    Message::new(vec![MessageItem::clickable(
+                        vec![
+                            MessageItem::keystroke(Keystroke {
+                                key: "/model".to_owned(),
+                                ..Default::default()
+                            }),
+                            MessageItem::text(crate::t!("agent-zero-state-switch-model")),
+                        ],
+                        |ctx| {
+                            ctx.dispatch_typed_action(TerminalAction::OpenModelSelector);
+                        },
+                        state_handles.switch_model.clone(),
+                    )]),
+                    app,
+                ),
+            ];
 
-        body_items
-    }};
+            // Only show "escape to go back" if there's a parent terminal
+            if has_parent_terminal {
+                body_items.push(render_standard_message(
+                    Message::new(vec![MessageItem::clickable(
+                        vec![
+                            MessageItem::keystroke(Keystroke {
+                                key: "escape".to_owned(),
+                                ..Default::default()
+                            }),
+                            MessageItem::text(crate::t!("agent-zero-state-go-back-to-terminal")),
+                        ],
+                        |ctx| {
+                            ctx.dispatch_typed_action(TerminalAction::ExitAgentView);
+                        },
+                        state_handles.exit.clone(),
+                    )]),
+                    app,
+                ));
+            }
+
+            body_items
+        }
+    };
 
     if should_show_init_callout {
         let appearance = Appearance::as_ref(app);

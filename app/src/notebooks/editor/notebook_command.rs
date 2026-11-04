@@ -20,8 +20,8 @@ use warp_editor::{
         mermaid_diagram::mermaid_asset_source,
         selection_model::BufferSelectionModel,
         text::{
-            BlockType, BufferBlockStyle, CodeBlockType, CODE_BLOCK_DEFAULT_DISPLAY_LANG,
-            CODE_BLOCK_SHELL_DISPLAY_LANG,
+            BlockType, BufferBlockStyle, CODE_BLOCK_DEFAULT_DISPLAY_LANG,
+            CODE_BLOCK_SHELL_DISPLAY_LANG, CodeBlockType,
         },
     },
     editor::RunnableCommandModel,
@@ -29,20 +29,21 @@ use warp_editor::{
 
 use markdown_parser::markdown_parser::CODE_BLOCK_DEFAULT_MARKDOWN_LANG;
 use warp_util::user_input::UserInput;
-use warpui::{elements::Align, platform::Cursor, r#async::SpawnedFutureHandle, AppContext};
 use warpui::ui_components::components::{UiComponent, UiComponentStyles};
+use warpui::{AppContext, r#async::SpawnedFutureHandle, elements::Align, platform::Cursor};
 use warpui::{
+    Element, Entity, ModelAsRef, ModelContext, ModelHandle, SingletonEntity, ViewHandle,
+    WeakModelHandle, WindowId,
     elements::{
         Border, Container, CornerRadius, CrossAxisAlignment, Empty, Flex, MainAxisAlignment,
         MouseStateHandle, ParentElement, Radius, Shrinkable, Text,
     },
     fonts::Properties,
     presenter::ChildView,
-    Element, Entity, ModelAsRef, ModelContext, ModelHandle, SingletonEntity, ViewHandle,
-    WeakModelHandle, WindowId,
 };
 
 use crate::{
+    Assets,
     appearance::Appearance,
     completer::SessionAgnosticContext,
     debounce::debounce,
@@ -55,8 +56,8 @@ use crate::{
     },
     settings::FontSettings,
     terminal::input::{
-        decorations::{parse_current_commands_and_tokens, ParsedTokenData, ParsedTokensSnapshot},
         DEBOUNCE_INPUT_DECORATION_PERIOD,
+        decorations::{ParsedTokenData, ParsedTokensSnapshot, parse_current_commands_and_tokens},
     },
     themes::theme::{AnsiColorIdentifier, AnsiColors},
     ui_components::{buttons::icon_button, icons::Icon},
@@ -65,18 +66,17 @@ use crate::{
         color::{ContrastingColor, MinimumAllowedContrast},
     },
     view_components::{Dropdown, DropdownItem},
-    workflows::{workflow::Workflow, WorkflowType},
+    workflows::{WorkflowType, workflow::Workflow},
     workspace::WorkspaceAction,
-    Assets,
 };
 
 use super::{
+    NotebookWorkflow,
     interaction_state_model::InteractionStateModel,
-    keys::{custom_action_to_display, NotebookKeybindings},
+    keys::{NotebookKeybindings, custom_action_to_display},
     model::ChildModelHandle,
     rich_text_styles,
     view::EditorViewAction,
-    NotebookWorkflow,
 };
 
 lazy_static! {
@@ -740,9 +740,10 @@ impl RunnableCommandModel for NotebookCommand {
                             {
                                 ctx.dispatch_typed_action(WorkspaceAction::OpenLightbox {
                                     images: vec![ui_components::lightbox::LightboxImage {
-                                        source: ui_components::lightbox::LightboxImageSource::Resolved {
-                                            asset_source: mermaid_asset_source(&source),
-                                        },
+                                        source:
+                                            ui_components::lightbox::LightboxImageSource::Resolved {
+                                                asset_source: mermaid_asset_source(&source),
+                                            },
                                         description: None,
                                     }],
                                     initial_index: 0,

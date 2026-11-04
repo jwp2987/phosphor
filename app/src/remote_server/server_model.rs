@@ -8,11 +8,11 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use warp_core::channel::ChannelState;
 use warp_core::SessionId;
+use warp_core::channel::ChannelState;
 use warp_util::standardized_path::StandardizedPath;
-use warpui::platform::TerminationMode;
 use warpui::r#async::{Spawnable, SpawnableOutput, SpawnedFutureHandle};
+use warpui::platform::TerminationMode;
 use warpui::{Entity, ModelContext, SingletonEntity};
 
 use warp_files::{FileModel, FileModelEvent};
@@ -20,22 +20,21 @@ use warp_util::content_version::ContentVersion;
 use warp_util::file::FileId;
 
 use super::proto::{
-    client_message, delete_file_response, discard_files_response, git_commit_chain_response,
-    git_create_pr_response, git_pull_response, git_push_response, git_stage_response,
-    host_scoped_request, notification, run_command_response, server_message,
-    session_scoped_request, write_file_response, Abort, Authenticate, ClientMessage, DeleteFile,
-    DeleteFileResponse,
-    DeleteFileSuccess, DiscardFilesError, DiscardFilesRequest, DiscardFilesResponse,
-    DiscardFilesSuccess, ErrorCode, ErrorResponse, FailedFileRead, FileContextProto,
-    FileOperationError, GetBranches, GetCommittedBranchFilesRequest, GetDiffState,
-    GitCommitChainMode, GitCommitChainRequest, GitCommitChainResponse, GitCommitChainSuccess,
-    GitCreatePrRequest, GitCreatePrResponse, GitOpDelta, GitOpError, GitPullRequest,
-    GitPullResponse, GitPushRequest, GitPushResponse, GitStageError, GitStageRequest,
-    GitStageResponse, GitStageSuccess, HostScopedRequest, Initialize,
-    InitializeResponse, NavigatedToDirectory, NavigatedToDirectoryResponse, Notification,
-    ReadFileContextResponse, RipgrepSearchRequest, RunCommandError, RunCommandErrorCode,
-    RunCommandRequest, RunCommandResponse, RunCommandSuccess, ServerMessage, SessionBootstrapped,
-    SessionScopedRequest, UnsubscribeDiffState, WriteFile, WriteFileResponse, WriteFileSuccess,
+    Abort, Authenticate, ClientMessage, DeleteFile, DeleteFileResponse, DeleteFileSuccess,
+    DiscardFilesError, DiscardFilesRequest, DiscardFilesResponse, DiscardFilesSuccess, ErrorCode,
+    ErrorResponse, FailedFileRead, FileContextProto, FileOperationError, GetBranches,
+    GetCommittedBranchFilesRequest, GetDiffState, GitCommitChainMode, GitCommitChainRequest,
+    GitCommitChainResponse, GitCommitChainSuccess, GitCreatePrRequest, GitCreatePrResponse,
+    GitOpDelta, GitOpError, GitPullRequest, GitPullResponse, GitPushRequest, GitPushResponse,
+    GitStageError, GitStageRequest, GitStageResponse, GitStageSuccess, HostScopedRequest,
+    Initialize, InitializeResponse, NavigatedToDirectory, NavigatedToDirectoryResponse,
+    Notification, ReadFileContextResponse, RipgrepSearchRequest, RunCommandError,
+    RunCommandErrorCode, RunCommandRequest, RunCommandResponse, RunCommandSuccess, ServerMessage,
+    SessionBootstrapped, SessionScopedRequest, UnsubscribeDiffState, WriteFile, WriteFileResponse,
+    WriteFileSuccess, client_message, delete_file_response, discard_files_response,
+    git_commit_chain_response, git_create_pr_response, git_pull_response, git_push_response,
+    git_stage_response, host_scoped_request, notification, run_command_response, server_message,
+    session_scoped_request, write_file_response,
 };
 
 // Remote codebase indexing (Delta D2, remote-daemon leg). Gated `local_fs`
@@ -53,20 +52,7 @@ use super::codebase_index_store::daemon_store_client;
 // `local_fs` because every producer behind them runs `git` / `gh` against the
 // host's own filesystem.
 #[cfg(feature = "local_fs")]
-use super::git_status_proto::{
-    git_status_metadata_to_proto, repository_info_to_proto,
-};
-#[cfg(feature = "local_fs")]
-use super::proto::{
-    GitHubPrInfoPush, GitHubRepositoryInfoPush, GitStatusPush, UpdateGitHubPrInfo,
-    UpdateGitHubRepoInfo, UpdateGitStatus,
-};
-#[cfg(feature = "local_fs")]
-use crate::code_review::github_repo_model::GitHubRepoEvent;
-#[cfg(feature = "local_fs")]
-use crate::remote_server::diff_state_proto::pr_info_to_proto;
-#[cfg(feature = "local_fs")]
-use warp_util::local_or_remote_path::LocalOrRemotePath;
+use super::git_status_proto::{git_status_metadata_to_proto, repository_info_to_proto};
 #[cfg(feature = "local_fs")]
 use super::proto::{
     CodebaseIndexLimits, CodebaseIndexStatus, CodebaseIndexStatusUpdated,
@@ -81,7 +67,16 @@ use super::proto::{
     search_remote_codebase_response,
 };
 #[cfg(feature = "local_fs")]
+use super::proto::{
+    GitHubPrInfoPush, GitHubRepositoryInfoPush, GitStatusPush, UpdateGitHubPrInfo,
+    UpdateGitHubRepoInfo, UpdateGitStatus,
+};
+#[cfg(feature = "local_fs")]
 use crate::ai::agent_providers::embeddings::EmbeddingEndpoint;
+#[cfg(feature = "local_fs")]
+use crate::code_review::github_repo_model::GitHubRepoEvent;
+#[cfg(feature = "local_fs")]
+use crate::remote_server::diff_state_proto::pr_info_to_proto;
 #[cfg(feature = "local_fs")]
 use ::ai::index::full_source_code_embedding::manager::{
     CodebaseIndexManager, CodebaseIndexManagerEvent,
@@ -93,17 +88,21 @@ use ::ai::index::full_source_code_embedding::{
 };
 #[cfg(feature = "local_fs")]
 use warp_core::features::FeatureFlag;
+#[cfg(feature = "local_fs")]
+use warp_util::local_or_remote_path::LocalOrRemotePath;
 
 // Remote Agent Mode context snapshot (#438 dependent feature 1, #353 producer): depends
 // on `SkillManager`'s real (non-dummy) API, gated `local_fs` like the buffer-sync imports
 // below.
 #[cfg(feature = "local_fs")]
 use super::proto::{
-    remote_skill_proto, HomeSkillMetadata, RemoteAgentContextSnapshot, RemoteContextFileProto,
-    RemoteSkillProto,
+    HomeSkillMetadata, RemoteAgentContextSnapshot, RemoteContextFileProto, RemoteSkillProto,
+    remote_skill_proto,
 };
 #[cfg(feature = "local_fs")]
-use crate::ai::skills::{bundled_skill_snapshot_protos, BundledSkill, SkillManager, SkillManagerEvent};
+use crate::ai::skills::{
+    BundledSkill, SkillManager, SkillManagerEvent, bundled_skill_snapshot_protos,
+};
 // Daemon-side producer for `RemoteAgentContextSnapshot.global_rules` (#575):
 // this host's own file-based global rules (e.g. `~/.agents/AGENTS.md`),
 // indexed by the same `ProjectContextModel` singleton `app/src/remote_server/
@@ -116,15 +115,15 @@ use ai::project_context::model::{ProjectContextModel, ProjectContextModelEvent};
 // buffer handling is gated on `local_fs`.
 #[cfg(feature = "local_fs")]
 use super::proto::{
+    BufferEdit, BufferUpdatedPush, CloseBuffer, CreateDirectory, CreateDirectoryResponse,
+    CreateDirectorySuccess, DirEntry, FileSystemEntryKind, ListDirectory, ListDirectoryResponse,
+    ListDirectorySuccess, OpenBuffer, OpenBufferResponse, ReadFileChunk, ReadFileChunkResponse,
+    ReadFileChunkSuccess, ResolveConflict, ResolveConflictResponse, ResolveConflictSuccess,
+    ResolvePath, ResolvePathResponse, ResolvePathSuccess, SaveBuffer, SaveBufferResponse,
+    SaveBufferSuccess, TextEdit, WriteFileChunk, WriteFileChunkResponse, WriteFileChunkSuccess,
     create_directory_response, list_directory_response, read_file_chunk_response,
     resolve_conflict_response, resolve_path_response, save_buffer_response,
-    write_file_chunk_response, BufferEdit, BufferUpdatedPush, CloseBuffer, CreateDirectory,
-    CreateDirectoryResponse, CreateDirectorySuccess, DirEntry, FileSystemEntryKind, ListDirectory,
-    ListDirectoryResponse, ListDirectorySuccess, OpenBuffer, OpenBufferResponse, ReadFileChunk,
-    ReadFileChunkResponse, ReadFileChunkSuccess, ResolveConflict, ResolveConflictResponse,
-    ResolveConflictSuccess, ResolvePath, ResolvePathResponse, ResolvePathSuccess, SaveBuffer,
-    SaveBufferResponse, SaveBufferSuccess, TextEdit, WriteFileChunk, WriteFileChunkResponse,
-    WriteFileChunkSuccess,
+    write_file_chunk_response,
 };
 #[cfg(feature = "local_fs")]
 use super::server_buffer_tracker::{PendingBufferRequestKind, ServerBufferTracker};
@@ -160,7 +159,7 @@ pub(crate) fn chunked_responses_enabled_from_env(value: Option<&str>) -> bool {
 }
 use super::protocol::{MAX_MESSAGE_SIZE, RequestId};
 use crate::ai::agent::FileLocations;
-use crate::ai::blocklist::{read_local_file_context, ReadFileContextResult};
+use crate::ai::blocklist::{ReadFileContextResult, read_local_file_context};
 use crate::terminal::model::session::command_executor::{
     ExecuteCommandOptions, LocalCommandExecutor,
 };
@@ -1053,7 +1052,10 @@ impl ServerModel {
     /// broadcasts it to every connection.
     #[cfg(feature = "local_fs")]
     fn refresh_remote_agent_context_snapshot(&mut self, ctx: &warpui::AppContext) {
-        let revision = self.remote_agent_context_snapshot.revision.saturating_add(1);
+        let revision = self
+            .remote_agent_context_snapshot
+            .revision
+            .saturating_add(1);
         self.remote_agent_context_snapshot =
             remote_agent_context_snapshot(revision, &self.bundled_skills, ctx);
         self.broadcast_remote_agent_context_snapshot();
@@ -3016,7 +3018,11 @@ impl ServerModel {
     /// being silent would be a correctness one, so the fallback is never removed
     /// on a guess.
     #[cfg(feature = "local_fs")]
-    fn ensure_diff_state_watch(&mut self, repo: &StandardizedPath, ctx: &mut ModelContext<Self>) -> bool {
+    fn ensure_diff_state_watch(
+        &mut self,
+        repo: &StandardizedPath,
+        ctx: &mut ModelContext<Self>,
+    ) -> bool {
         use repo_metadata::repositories::DetectedRepositories;
 
         if self.diff_state_watches.contains_key(repo) {
@@ -3026,9 +3032,7 @@ impl ServerModel {
         let Some(repository) =
             DetectedRepositories::as_ref(ctx).get_watched_repo_for_path(&repo_local, ctx)
         else {
-            log::debug!(
-                "No watched repository for {repo}; diff-state pushes stay whole-snapshot"
-            );
+            log::debug!("No watched repository for {repo}; diff-state pushes stay whole-snapshot");
             return false;
         };
 
@@ -3540,8 +3544,13 @@ impl ServerModel {
             request_id.clone(),
             async move {
                 guard_git_operation_in_progress(&repo_path)?;
-                LocalDiffStateModel::discard_files_impl(&repo_path, file_infos, should_stash, &branch)
-                    .await
+                LocalDiffStateModel::discard_files_impl(
+                    &repo_path,
+                    file_infos,
+                    should_stash,
+                    &branch,
+                )
+                .await
             },
             move |me, result, ctx| {
                 let message = match result {
@@ -3606,9 +3615,11 @@ impl ServerModel {
         use crate::code_review::diff_state::{LocalDiffStateModel, StageRequest, StageTarget};
 
         fn stage_error(message: String) -> HandlerOutcome {
-            HandlerOutcome::Sync(server_message::Message::GitStageResponse(GitStageResponse {
-                result: Some(git_stage_response::Result::Error(GitStageError { message })),
-            }))
+            HandlerOutcome::Sync(server_message::Message::GitStageResponse(
+                GitStageResponse {
+                    result: Some(git_stage_response::Result::Error(GitStageError { message })),
+                },
+            ))
         }
 
         let canonical_path =
@@ -3691,11 +3702,13 @@ impl ServerModel {
         _conn_id: ConnectionId,
         _ctx: &mut ModelContext<Self>,
     ) -> HandlerOutcome {
-        HandlerOutcome::Sync(server_message::Message::GitStageResponse(GitStageResponse {
-            result: Some(git_stage_response::Result::Error(GitStageError {
-                message: "Staging requires the local_fs feature".to_string(),
-            })),
-        }))
+        HandlerOutcome::Sync(server_message::Message::GitStageResponse(
+            GitStageResponse {
+                result: Some(git_stage_response::Result::Error(GitStageError {
+                    message: "Staging requires the local_fs feature".to_string(),
+                })),
+            },
+        ))
     }
 
     /// Handles `UnsubscribeDiffState` — fire-and-forget removal of a diff-state
@@ -3914,9 +3927,9 @@ impl ServerModel {
             return;
         }
         let repo = LocalOrRemotePath::Local(repo_path.to_local_path_lossy());
-        let handle = match GitRepoModels::handle(ctx)
-            .update(ctx, |factory, ctx| factory.subscribe_github_repo(&repo, ctx))
-        {
+        let handle = match GitRepoModels::handle(ctx).update(ctx, |factory, ctx| {
+            factory.subscribe_github_repo(&repo, ctx)
+        }) {
             Ok(handle) => handle,
             Err(e) => {
                 log::warn!("Daemon: github repo subscribe failed for {repo_path}: {e}");

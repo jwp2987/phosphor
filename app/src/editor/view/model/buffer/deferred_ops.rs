@@ -1,5 +1,5 @@
-use super::time::ReplicaId;
 use super::Operation;
+use super::time::ReplicaId;
 
 use std::collections::HashSet;
 

@@ -11,18 +11,18 @@ use crate::editor::{
     PropagateHorizontalNavigationKeys, SingleLineEditorOptions, TextOptions,
 };
 use crate::menu::{Event as MenuEvent, Menu, MenuItem, MenuItemFields};
-use crate::view_components::action_button::{ActionButton, ButtonSize, SecondaryTheme};
 use crate::view_components::DismissibleToast;
+use crate::view_components::action_button::{ActionButton, ButtonSize, SecondaryTheme};
+use crate::workspace::ToastStack;
+use crate::workspace::WorkspaceAction;
 use crate::workspace::global_actions::ForkedConversationDestination;
 use crate::workspace::header_toolbar_item::HeaderToolbarItemKind;
 use crate::workspace::tab_settings::TabSettings;
 use crate::workspace::view::conversation_list::item::{
-    render_item, render_static_item, ItemProps, ItemState, OverflowMenuDisplay, StaticItemProps,
-    STATIC_ITEM_MIN_HEIGHT,
+    ItemProps, ItemState, OverflowMenuDisplay, STATIC_ITEM_MIN_HEIGHT, StaticItemProps,
+    render_item, render_static_item,
 };
 use crate::workspace::view::conversation_list::view_model::ConversationOrTaskId;
-use crate::workspace::ToastStack;
-use crate::workspace::WorkspaceAction;
 use warp_core::ui::Icon;
 
 use super::view_model::{ConversationEntry, ConversationListViewModel};
@@ -35,8 +35,8 @@ use warpui::elements::{
     ScrollbarWidth, Shrinkable, Stack, Text, UniformList, UniformListState,
 };
 use warpui::fonts::{Properties, Weight};
-use warpui::keymap::macros::*;
 use warpui::keymap::FixedBinding;
+use warpui::keymap::macros::*;
 use warpui::platform::Cursor;
 use warpui::text_layout::TextAlignment;
 use warpui::{

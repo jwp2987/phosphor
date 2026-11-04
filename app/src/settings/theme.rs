@@ -1,8 +1,8 @@
-use warpui::{platform::SystemTheme, AppContext};
+use warpui::{AppContext, platform::SystemTheme};
 
 use crate::themes::theme::{RespectSystemTheme, SelectedSystemThemes, ThemeKind};
 use settings::{
-    macros::define_settings_group, RespectUserSyncSetting, Setting, SupportedPlatforms, SyncToCloud,
+    RespectUserSyncSetting, Setting, SupportedPlatforms, SyncToCloud, macros::define_settings_group,
 };
 
 // Settings group for themes related settings.

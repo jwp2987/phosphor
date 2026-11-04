@@ -1,26 +1,26 @@
 use pathfinder_color::ColorU;
-use pathfinder_geometry::vector::{vec2f, Vector2F};
+use pathfinder_geometry::vector::{Vector2F, vec2f};
 use std::{borrow::Cow, sync::Arc};
 use warp_core::ui::{
     appearance::Appearance,
-    color::{coloru_with_opacity, contrast::MinimumAllowedContrast, ContrastingColor},
-    theme::{color::internal_colors, AnsiColorIdentifier, Fill},
+    color::{ContrastingColor, coloru_with_opacity, contrast::MinimumAllowedContrast},
+    theme::{AnsiColorIdentifier, Fill, color::internal_colors},
 };
-use warpui::{elements::MainAxisAlignment, Gradient};
-use warpui::{elements::MainAxisSize, text_layout::ClipConfig};
 use warpui::{
+    AppContext, BlurContext, Element, Entity, EventContext, FocusContext, SingletonEntity as _,
+    TypedActionView, View, ViewContext,
     elements::{
-        Border, ChildAnchor, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Flex,
-        Hoverable, MouseStateHandle, OffsetPositioning, Padding, ParentAnchor, ParentElement as _,
-        ParentOffsetBounds, Radius, Stack, Text, DEFAULT_UI_LINE_HEIGHT_RATIO,
+        Border, ChildAnchor, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment,
+        DEFAULT_UI_LINE_HEIGHT_RATIO, Flex, Hoverable, MouseStateHandle, OffsetPositioning,
+        Padding, ParentAnchor, ParentElement as _, ParentOffsetBounds, Radius, Stack, Text,
     },
     fonts::{Properties, Weight},
     keymap::Keystroke,
     platform::Cursor,
     ui_components::components::{Coords, UiComponent, UiComponentStyles},
-    AppContext, BlurContext, Element, Entity, EventContext, FocusContext, SingletonEntity as _,
-    TypedActionView, View, ViewContext,
 };
+use warpui::{Gradient, elements::MainAxisAlignment};
+use warpui::{elements::MainAxisSize, text_layout::ClipConfig};
 
 use crate::{
     settings_view::keybindings::{KeybindingChangedEvent, KeybindingChangedNotifier},

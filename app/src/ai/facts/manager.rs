@@ -1,7 +1,7 @@
 use crate::ai::facts::AIFactView;
 use crate::{
-    pane_group::{AIFactPane, PaneContent},
     PaneViewLocator,
+    pane_group::{AIFactPane, PaneContent},
 };
 use std::collections::HashMap;
 use warpui::{Entity, EntityId, ModelContext, SingletonEntity, ViewHandle, WindowId};

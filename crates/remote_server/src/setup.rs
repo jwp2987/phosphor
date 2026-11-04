@@ -4,7 +4,7 @@ pub use glibc::{GlibcVersion, RemoteLibc};
 
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use warp_core::channel::{Channel, ChannelState};
 
 /// State machine for the remote server install → launch → initialize flow.
@@ -575,9 +575,15 @@ pub fn install_script(staging_tarball_path: Option<&str>) -> String {
         // turns out to be a different platform than the client guessed still verifies rather
         // than silently falling through to an empty expectation.
         .replace("{sha256_linux_x86_64}", expected_sha256("linux", "x86_64"))
-        .replace("{sha256_linux_aarch64}", expected_sha256("linux", "aarch64"))
+        .replace(
+            "{sha256_linux_aarch64}",
+            expected_sha256("linux", "aarch64"),
+        )
         .replace("{sha256_macos_x86_64}", expected_sha256("macos", "x86_64"))
-        .replace("{sha256_macos_aarch64}", expected_sha256("macos", "aarch64"))
+        .replace(
+            "{sha256_macos_aarch64}",
+            expected_sha256("macos", "aarch64"),
+        )
 }
 
 /// Headlines the client prefixes onto an install failure when the install script refused to

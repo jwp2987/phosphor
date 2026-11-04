@@ -1,3 +1,4 @@
+use warpui::SingletonEntity as _;
 use warpui::color::ColorU;
 use warpui::elements::{
     Align, Container, CornerRadius, CrossAxisAlignment, Fill, Flex, ParentElement, Radius, Text,
@@ -8,7 +9,6 @@ use warpui::ui_components::components::{Coords, UiComponentStyles};
 use warpui::ui_components::segmented_control::{
     LabelConfig, RenderableOptionConfig, SegmentedControl, SegmentedControlEvent,
 };
-use warpui::SingletonEntity as _;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext, ViewHandle};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

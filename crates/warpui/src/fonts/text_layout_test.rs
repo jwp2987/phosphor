@@ -4,7 +4,7 @@ use crate::fonts::{FamilyId, Properties, Style, Weight};
 use crate::platform::FontDB as _;
 use crate::platform::LineStyle;
 use crate::text_layout::{
-    ClipConfig, Line, StyleAndFont, TextAlignment, TextFrame, TextStyle, DEFAULT_TOP_BOTTOM_RATIO,
+    ClipConfig, DEFAULT_TOP_BOTTOM_RATIO, Line, StyleAndFont, TextAlignment, TextFrame, TextStyle,
 };
 use anyhow::Result;
 use itertools::Itertools;
@@ -1378,10 +1378,12 @@ fn test_layout_text_first_line_indent_large_bidirectional() -> Result<()> {
 
     // The first line is left entirely blank since no glyphs fit on it.
     assert_eq!(overflow_indent_frame.lines().len(), 6);
-    assert!(collect_glyph_indices(&overflow_indent_frame)
-        .first()
-        .unwrap()
-        .is_empty(),);
+    assert!(
+        collect_glyph_indices(&overflow_indent_frame)
+            .first()
+            .unwrap()
+            .is_empty(),
+    );
     assert!(first_line_bounded(
         &overflow_indent_frame,
         FRAME_WIDTH + 5.,
@@ -1403,10 +1405,12 @@ fn test_layout_text_first_line_indent_large_bidirectional() -> Result<()> {
 
     // The first line is left entirely blank since no glyphs fit on it.
     assert_eq!(big_indent_frame.lines().len(), 6);
-    assert!(collect_glyph_indices(&big_indent_frame)
-        .first()
-        .unwrap()
-        .is_empty(),);
+    assert!(
+        collect_glyph_indices(&big_indent_frame)
+            .first()
+            .unwrap()
+            .is_empty(),
+    );
     assert!(first_line_bounded(
         &big_indent_frame,
         FRAME_WIDTH - 0.1,

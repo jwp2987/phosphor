@@ -1,17 +1,17 @@
-use std::collections::{hash_map::Entry, HashMap};
+use std::collections::{HashMap, hash_map::Entry};
 use std::sync::Arc;
 
 use futures_util::stream::AbortHandle;
 use markdown_parser::markdown_parser::parse_markdown_to_raw_text;
 use warpui::{
-    r#async::SpawnedFutureHandle, Entity, EntityId, ModelContext, SingletonEntity, WeakViewHandle,
-    WindowId,
+    Entity, EntityId, ModelContext, SingletonEntity, WeakViewHandle, WindowId,
+    r#async::SpawnedFutureHandle,
 };
 
 use crate::{
     cloud_object::{
-        model::persistence::{ObjectStoreEvent, ObjectStoreModel},
         Owner,
+        model::persistence::{ObjectStoreEvent, ObjectStoreModel},
     },
     drive::ZapDriveObjectSettings,
     pane_group::{NotebookPane, PaneContent},
@@ -20,7 +20,7 @@ use crate::{
     workspace::PaneViewLocator,
 };
 
-use super::{notebook::NotebookView, NotebookObject};
+use super::{NotebookObject, notebook::NotebookView};
 
 #[cfg(test)]
 #[path = "manager_tests.rs"]

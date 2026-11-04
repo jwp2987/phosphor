@@ -1,10 +1,10 @@
+use warpui::SingletonEntity as _;
 use warpui::color::ColorU;
 use warpui::elements::shimmering_text::{
     ShimmerConfig, ShimmeringTextElement, ShimmeringTextStateHandle,
 };
 use warpui::elements::{Align, ConstrainedBox, ParentElement, Rect, Stack};
 use warpui::fonts::FamilyId;
-use warpui::SingletonEntity as _;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
 
 pub struct RootView {

@@ -3,6 +3,8 @@ use std::sync::Arc;
 
 use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::vec2f;
+use warpui::Element;
+use warpui::EventContext;
 use warpui::elements::{
     Border, ChildAnchor, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Expanded,
     Flex, Hoverable, MainAxisAlignment, MainAxisSize, MouseStateHandle, OffsetPositioning,
@@ -12,8 +14,6 @@ use warpui::fonts::{Properties, Weight};
 use warpui::geometry::vector::Vector2F;
 use warpui::platform::Cursor;
 use warpui::ui_components::components::UiComponent;
-use warpui::Element;
-use warpui::EventContext;
 
 use warp_core::ui::theme::Fill;
 use warp_core::ui::theme::WarpTheme;

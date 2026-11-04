@@ -17,8 +17,8 @@ use crate::{
     appearance::Appearance,
     cloud_object::{GenericStoredObject, ObjectType, Owner, StoredObjectModel},
     drive::{
-        items::{notebook::WarpDriveNotebook, WarpDriveItem},
         ObjectTypeAndId,
+        items::{WarpDriveItem, notebook::WarpDriveNotebook},
     },
     persistence::ModelEvent,
     server::ids::{ServerId, SyncId},

@@ -1,14 +1,14 @@
 use settings::{
-    macros::define_settings_group, RespectUserSyncSetting, Setting, SupportedPlatforms, SyncToCloud,
+    RespectUserSyncSetting, Setting, SupportedPlatforms, SyncToCloud, macros::define_settings_group,
 };
-use warpui::{keymap::Keystroke, AppContext, DisplayIdx, ModelContext};
+use warpui::{AppContext, DisplayIdx, ModelContext, keymap::Keystroke};
 
 use crate::{
     report_if_error,
-    root_view::{update_quake_window_bounds, QuakeModePinPosition},
+    root_view::{QuakeModePinPosition, update_quake_window_bounds},
     settings::{
-        CtrlTabBehavior, ExtraMetaKeys as ExtraMetaKeysEnum, GlobalHotkeyMode, SizePercentages,
-        DEFAULT_QUAKE_MODE_SIZE_PERCENTAGES,
+        CtrlTabBehavior, DEFAULT_QUAKE_MODE_SIZE_PERCENTAGES, ExtraMetaKeys as ExtraMetaKeysEnum,
+        GlobalHotkeyMode, SizePercentages,
     },
 };
 
@@ -85,9 +85,10 @@ impl KeysSettings {
         };
 
         report_if_error!(self.quake_mode_enabled.set_value(enable_quake_mode, ctx));
-        report_if_error!(self
-            .activation_hotkey_enabled
-            .set_value(enable_activation_hotkey, ctx));
+        report_if_error!(
+            self.activation_hotkey_enabled
+                .set_value(enable_activation_hotkey, ctx)
+        );
     }
 
     // Note that registering an empty keybinding when enabling quake mode will be a no-op.
@@ -197,7 +198,9 @@ impl KeysSettings {
         }
 
         if *self.quake_mode_enabled && *self.activation_hotkey_enabled {
-            log::error!("Both quake mode AND activation hotkey enabled. Either one or the other should be active.");
+            log::error!(
+                "Both quake mode AND activation hotkey enabled. Either one or the other should be active."
+            );
             // Quake mode takes precedence
             selected = GlobalHotkeyMode::QuakeMode;
         } else if *self.quake_mode_enabled {

@@ -10,14 +10,14 @@ use warp_core::features::FeatureFlag;
 use warpui::elements::{FormattedTextElement, HighlightedHyperlink};
 use warpui::keymap::ContextPredicate;
 use warpui::{
+    Action, AppContext, Element, Entity, ModelHandle, SingletonEntity, TypedActionView, View,
+    ViewContext, ViewHandle,
     elements::{Container, Flex, MouseStateHandle, ParentElement},
     presenter::ChildView,
     ui_components::{
         components::{Coords, UiComponent, UiComponentStyles},
         switch::SwitchStateHandle,
     },
-    Action, AppContext, Element, Entity, ModelHandle, SingletonEntity, TypedActionView, View,
-    ViewContext, ViewHandle,
 };
 
 use crate::settings::{ReuseExistingSshControlMaster, SplitInheritsSshSetting, SshSettings};
@@ -35,18 +35,17 @@ use crate::{
     view_components::{SubmittableTextInput, SubmittableTextInputEvent},
 };
 
-use super::settings_page::{
-    render_body_item, render_dropdown_item, render_page_title, AdditionalInfo, Category,
-    LocalOnlyIconState, MatchData, PageType, SettingsPageEvent, SettingsWidget, ToggleState,
-    HEADER_PADDING,
-};
 use super::SettingsSection;
+use super::settings_page::{
+    AdditionalInfo, Category, HEADER_PADDING, LocalOnlyIconState, MatchData, PageType,
+    SettingsPageEvent, SettingsWidget, ToggleState, render_body_item, render_dropdown_item,
+    render_page_title,
+};
 use super::{
-    flags,
+    SettingsAction, ToggleSettingActionPair, flags,
     settings_page::{
-        add_setting, render_alternating_color_list, SettingsPageMeta, SettingsPageViewHandle,
+        SettingsPageMeta, SettingsPageViewHandle, add_setting, render_alternating_color_list,
     },
-    SettingsAction, ToggleSettingActionPair,
 };
 use crate::view_components::dropdown::{Dropdown, DropdownItem};
 
@@ -461,9 +460,11 @@ impl TypedActionView for WarpifyPageView {
             RemoveAddedCommand(index) => self.remove_added_command(*index, ctx),
             ToggleSshWarpification => {
                 WarpifySettings::handle(ctx).update(ctx, |ssh_settings, ctx| {
-                    report_if_error!(ssh_settings
-                        .enable_ssh_warpification
-                        .toggle_and_save_value(ctx));
+                    report_if_error!(
+                        ssh_settings
+                            .enable_ssh_warpification
+                            .toggle_and_save_value(ctx)
+                    );
                     send_telemetry_from_ctx!(
                         TelemetryEvent::ToggleSshWarpification {
                             enabled: *ssh_settings.enable_ssh_warpification.value(),
@@ -496,9 +497,11 @@ impl TypedActionView for WarpifyPageView {
             }
             ToggleReuseSshControlMaster => {
                 SshSettings::handle(ctx).update(ctx, |ssh_settings, ctx| {
-                    report_if_error!(ssh_settings
-                        .reuse_existing_control_master
-                        .toggle_and_save_value(ctx));
+                    report_if_error!(
+                        ssh_settings
+                            .reuse_existing_control_master
+                            .toggle_and_save_value(ctx)
+                    );
                     send_telemetry_from_ctx!(
                         TelemetryEvent::FeaturesPageAction {
                             action: "ToggleSshReuseControlMaster".to_string(),
@@ -518,9 +521,11 @@ impl TypedActionView for WarpifyPageView {
             }
             SetSshExtensionInstallMode(mode) => {
                 WarpifySettings::handle(ctx).update(ctx, |warpify_settings, ctx| {
-                    report_if_error!(warpify_settings
-                        .ssh_extension_install_mode
-                        .set_value(*mode, ctx));
+                    report_if_error!(
+                        warpify_settings
+                            .ssh_extension_install_mode
+                            .set_value(*mode, ctx)
+                    );
                     send_telemetry_from_ctx!(
                         TelemetryEvent::SetSshExtensionInstallMode {
                             mode: mode.telemetry_name(),

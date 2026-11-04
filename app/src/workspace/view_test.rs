@@ -173,7 +173,6 @@ pub(crate) fn initialize_app(app: &mut App) {
     #[cfg(enable_crash_recovery)]
     crate::crash_recovery::CrashRecovery::register_for_test(app);
 
-
     app.add_singleton_model(AIRequestUsageModel::new_for_test);
     app.add_singleton_model(
         crate::workspace::bonus_grant_notification_model::BonusGrantNotificationModel::new,
@@ -7694,8 +7693,9 @@ fn restored_orphan_queue_goes_to_the_active_tab_not_the_first() {
             origin: "queue_slash_command".to_owned(),
             created_at: chrono::Utc::now().naive_utc(),
         };
-        crate::ai::blocklist::QueuedQueryModel::handle(&app)
-            .update(&mut app, |model, ctx| model.restore_persisted(vec![row], ctx));
+        crate::ai::blocklist::QueuedQueryModel::handle(&app).update(&mut app, |model, ctx| {
+            model.restore_persisted(vec![row], ctx)
+        });
 
         let restored = restored_workspace(&mut app, snapshot);
         restored.update(&mut app, |workspace, ctx| {

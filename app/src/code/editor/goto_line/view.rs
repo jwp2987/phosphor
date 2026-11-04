@@ -5,12 +5,12 @@ use crate::editor::{
     SingleLineEditorOptions, TextOptions,
 };
 use warpui::{
+    AppContext, Element, Entity, FocusContext, SingletonEntity, TypedActionView, View, ViewContext,
+    ViewHandle,
     elements::{
         Align, Border, ChildView, ConstrainedBox, Container, CornerRadius, DropShadow, Flex,
         ParentElement, Radius, Text,
     },
-    AppContext, Element, Entity, FocusContext, SingletonEntity, TypedActionView, View, ViewContext,
-    ViewHandle,
 };
 
 const GOTO_LINE_WIDTH: f32 = 300.;

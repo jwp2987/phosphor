@@ -14,15 +14,15 @@ use crate::workspaces::user_workspaces::UserWorkspaces;
 use settings::Setting as _;
 use voice_input::{StartListeningError, VoiceInput, VoiceSessionResult};
 use warp_core::send_telemetry_from_ctx;
-use warp_core::ui::theme::color::internal_colors;
 use warp_core::ui::theme::AnsiColorIdentifier;
+use warp_core::ui::theme::color::internal_colors;
+use warpui::ViewHandle;
+use warpui::r#async::SpawnedFutureHandle;
 use warpui::elements;
 use warpui::elements::{Container, CornerRadius, Icon, Radius};
 use warpui::platform::Cursor;
-use warpui::r#async::SpawnedFutureHandle;
 use warpui::ui_components::button::ButtonTooltipPosition;
 use warpui::ui_components::components::{Coords, UiComponent, UiComponentStyles};
-use warpui::ViewHandle;
 use warpui::{AppContext, Element, SingletonEntity, ViewContext};
 
 use super::VoiceTranscriber;
@@ -30,7 +30,9 @@ use super::VoiceTranscriber;
 const MICROPHONE_ACCESS_ERROR_ID: &str = "MICROPHONE_ACCESS_ERROR";
 const NUM_TIMES_TO_SHOW_VOICE_NEW_FEATURE_POPUP: usize = 4;
 // The stored counter stops at `ENTERED_AGENT_MODE_COUNT_CAP`; the popup check must stay below it.
-const _: () = assert!(NUM_TIMES_TO_SHOW_VOICE_NEW_FEATURE_POPUP < crate::settings::ENTERED_AGENT_MODE_COUNT_CAP);
+const _: () = assert!(
+    NUM_TIMES_TO_SHOW_VOICE_NEW_FEATURE_POPUP < crate::settings::ENTERED_AGENT_MODE_COUNT_CAP
+);
 
 #[derive(Debug, Default, Clone)]
 pub(super) enum VoiceInputState {
@@ -84,9 +86,11 @@ impl EditorView {
                 crate::view_components::NewFeaturePopupEvent::Dismissed
             ) {
                 AISettings::handle(ctx).update(ctx, |settings, ctx| {
-                    warp_core::report_if_error!(settings
-                        .dismissed_voice_input_new_feature_popup
-                        .set_value(true, ctx));
+                    warp_core::report_if_error!(
+                        settings
+                            .dismissed_voice_input_new_feature_popup
+                            .set_value(true, ctx)
+                    );
                 });
                 ctx.notify();
             }
@@ -172,9 +176,14 @@ impl EditorView {
             voice_input.update(ctx, |voice_input, ctx| {
                 if cancel_transcription {
                     voice_input.abort_listening();
-                } else { match voice_input.stop_listening(ctx) { Err(e) => {
-                    log::error!("Failed to stop voice input: {e:?}");
-                } _ => {}}}
+                } else {
+                    match voice_input.stop_listening(ctx) {
+                        Err(e) => {
+                            log::error!("Failed to stop voice input: {e:?}");
+                        }
+                        _ => {}
+                    }
+                }
             });
         }
         if cancel_transcription {

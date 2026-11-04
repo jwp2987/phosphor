@@ -1,8 +1,8 @@
 use std::fs;
 
 use super::{
-    check_installed, claude_code_marketplace_has_local_override, installed_version,
-    ClaudeCodePluginManager, CliAgentPluginManager,
+    ClaudeCodePluginManager, CliAgentPluginManager, check_installed,
+    claude_code_marketplace_has_local_override, installed_version,
 };
 
 #[test]

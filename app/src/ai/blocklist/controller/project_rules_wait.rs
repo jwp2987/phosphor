@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use futures::channel::oneshot;
 
-use crate::ai::agent::{api::RequestParams, AIAgentContext, AIAgentInput};
+use crate::ai::agent::{AIAgentContext, AIAgentInput, api::RequestParams};
 
 /// Give-up for a scan that never reports. The scan itself is structurally bounded (a handful of
 /// stats), so this only guards a stuck filesystem.
@@ -86,7 +86,7 @@ pub(super) async fn wait_for_project_rules(
     receiver: RulesReceiver,
     cancellation_rx: &mut oneshot::Receiver<()>,
 ) -> RulesWaitOutcome {
-    use futures::future::{select, Either};
+    use futures::future::{Either, select};
 
     let timer = warpui::r#async::Timer::after(PROJECT_RULES_GIVE_UP);
     futures::pin_mut!(timer);

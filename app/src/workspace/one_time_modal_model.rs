@@ -1,5 +1,5 @@
 use super::hoa_onboarding;
-use super::view::feature_intro_modal::{FeatureIntroId, FEATURE_INTROS};
+use super::view::feature_intro_modal::{FEATURE_INTROS, FeatureIntroId};
 use crate::auth::{AuthManager, AuthManagerEvent};
 use crate::channel::{Channel, ChannelState};
 // Zap (localization, Phase 5): `PreferencesSyncer` has been physically removed.
@@ -182,11 +182,7 @@ impl OneTimeModalModel {
         }
     }
 
-    fn set_zap_launch_modal_open(
-        &mut self,
-        is_open: bool,
-        ctx: &mut ModelContext<Self>,
-    ) -> bool {
+    fn set_zap_launch_modal_open(&mut self, is_open: bool, ctx: &mut ModelContext<Self>) -> bool {
         if self.is_zap_launch_modal_open != is_open {
             self.is_zap_launch_modal_open = is_open;
             ctx.emit(OneTimeModalEvent::VisibilityChanged { is_open });

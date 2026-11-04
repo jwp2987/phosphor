@@ -4,8 +4,8 @@ use pathfinder_geometry::vector::Vector2F;
 use std::sync::{Arc, Mutex};
 
 use crate::{
-    event::DispatchedEvent, platform::Cursor, AfterLayoutContext, AppContext, Element, Event,
-    EventContext, LayoutContext, PaintContext, SizeConstraint,
+    AfterLayoutContext, AppContext, Element, Event, EventContext, LayoutContext, PaintContext,
+    SizeConstraint, event::DispatchedEvent, platform::Cursor,
 };
 
 /// Shared handle for drag-to-resize state, following the same `Arc<Mutex<_>>`

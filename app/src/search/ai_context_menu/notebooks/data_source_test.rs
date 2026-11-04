@@ -4,6 +4,7 @@ mod tests {
     use settings::manager::SettingsManager;
     use warpui::{App, SingletonEntity};
 
+    use crate::NetworkStatus;
     use crate::auth::AuthStateProvider;
     use crate::cloud_object::model::persistence::ObjectStoreModel;
     use crate::cloud_object::model::view::ObjectStoreViewModel;
@@ -19,7 +20,6 @@ mod tests {
     use crate::system::SystemStats;
     use crate::workspaces::user_profiles::UserProfiles;
     use crate::workspaces::user_workspaces::UserWorkspaces;
-    use crate::NetworkStatus;
 
     fn mock_notebook_with_revision(id: i64, title: &str, revision: Revision) -> NotebookObject {
         let sync_id = SyncId::ServerId(id.into());

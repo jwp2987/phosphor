@@ -1,16 +1,16 @@
 use std::fs;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use crate::repositories::stub_git_repository;
 use crate::repository::{RepositorySubscriber, RepositoryWatchMode, TrackedRemoteRef};
 use crate::watcher::{DirectoryWatcher, TaskQueue};
 use crate::{CanonicalizedPath, RepoMetadataError, Repository, RepositoryUpdate};
-use futures::channel::mpsc;
 use futures::StreamExt as _;
+use futures::channel::mpsc;
 use virtual_fs::{Stub, VirtualFS};
 use warp_util::standardized_path::StandardizedPath;
 use warpui::r#async::Timer;
@@ -860,8 +860,9 @@ fn start_watching_registers_gitignore_pruning_watch_filter() {
             }));
 
             let gitignores = repo_handle.read(&app, |repo, _ctx| repo.watch_filter_gitignores());
-            let force_included_paths =
-                watcher_handle.read(&app, |watcher, _ctx| watcher.force_included_paths().to_vec());
+            let force_included_paths = watcher_handle.read(&app, |watcher, _ctx| {
+                watcher.force_included_paths().to_vec()
+            });
 
             assert!(should_watch_repo_directory(
                 &repo_root.join("src"),

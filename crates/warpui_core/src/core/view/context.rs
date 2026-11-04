@@ -9,32 +9,32 @@ use futures::{Future, FutureExt};
 use pathfinder_geometry::rect::RectF;
 use thiserror::Error;
 
+use crate::r#async::{BoxFuture, SpawnableOutput};
 use crate::modals::{AlertDialogWithCallbacks, ModalButton, ViewModalCallback};
 use crate::platform::{
-    file_picker::{FilePickerConfiguration, FilePickerError},
     Cursor, SaveFilePickerConfiguration, TerminationMode,
+    file_picker::{FilePickerConfiguration, FilePickerError},
 };
-use crate::r#async::{BoxFuture, SpawnableOutput};
 use crate::windowing::WindowManager;
 use crate::{
+    Action, AppContext, Effect, Entity, EntityId, ModelAsRef, ModelContext, ModelHandle,
+    UpdateModel, WindowId,
     accessibility::AccessibilityContent,
+    r#async::{
+        SpawnedFutureHandle, SpawnedLocalStream,
+        executor::{Background, Foreground},
+    },
     core::{Observation, Subscription, SubscriptionKey, TaskCallback},
     fonts::Cache as FontCache,
     notification::{NotificationSendError, RequestPermissionsOutcome, UserNotification},
-    r#async::{
-        executor::{Background, Foreground},
-        SpawnedFutureHandle, SpawnedLocalStream,
-    },
-    Action, AppContext, Effect, Entity, EntityId, ModelAsRef, ModelContext, ModelHandle,
-    UpdateModel, WindowId,
 };
 use crate::{GetSingletonModelHandle, ReadModel};
 
 use super::{
+    TypedActionView, View,
     handle::{
         AnyViewHandle, ReadView, UpdateView, ViewAsRef, ViewHandle, ViewUpdateError, WeakViewHandle,
     },
-    TypedActionView, View,
 };
 
 /// Callback that receives the output of a resolved future spawned from a [`ViewContext`].
@@ -76,7 +76,6 @@ impl<'a, T: Entity> ViewContext<'a, T> {
 // genuinely View-only method (`element_position_by_id`, GUI presenter) stays in
 // the `T: View` block below.
 impl<'a, T: Entity> ViewContext<'a, T> {
-
     /// Adds a callback that will be invoked immediately after the next frame is drawn.
     /// Note that the callback is only invoked once and is discarded after it is called.
     pub fn on_next_frame_drawn<F: 'static + Fn()>(&mut self, callback: F) {
@@ -339,9 +338,9 @@ impl<'a, T: Entity> ViewContext<'a, T> {
     pub fn open_file_picker(
         &mut self,
         callback: impl FnOnce(Result<Vec<String>, FilePickerError>, &mut ViewContext<T>)
-            + Send
-            + Sync
-            + 'static,
+        + Send
+        + Sync
+        + 'static,
         config: FilePickerConfiguration,
     ) {
         let window_id = self.window_id;
@@ -497,7 +496,11 @@ impl<'a, T: Entity> ViewContext<'a, T> {
     ///
     /// TODO(vorporeal): Determine how best to eliminate this function and move
     ///     the relevant logic into `spawn()`.
-    fn spawn_local<S, F, U>(&mut self, future: S, callback: F) -> impl Future<Output = ()> + use<S, F, U, T>
+    fn spawn_local<S, F, U>(
+        &mut self,
+        future: S,
+        callback: F,
+    ) -> impl Future<Output = ()> + use<S, F, U, T>
     where
         S: 'static + Future,
         F: 'static + FnOnce(&mut T, S::Output, &mut ViewContext<T>) -> U,
@@ -790,16 +793,16 @@ impl<'a, T: Entity> ViewContext<'a, T> {
             task_id,
             TaskCallback::ViewFromStream {
                 view_id: self.view_id,
-                on_item: Box::new(move |view: &mut dyn std::any::Any, task, app, window_id, view_id| {
-                    let view = view
-                        .downcast_mut()
-                        .expect("unexpected view type");
-                    let task: ViewTask<T> = *task
-                        .downcast()
-                        .expect("task from spawner should be ViewTask<T>");
-                    let mut ctx = ViewContext::new(app, window_id, view_id);
-                    task(view, &mut ctx);
-                }),
+                on_item: Box::new(
+                    move |view: &mut dyn std::any::Any, task, app, window_id, view_id| {
+                        let view = view.downcast_mut().expect("unexpected view type");
+                        let task: ViewTask<T> = *task
+                            .downcast()
+                            .expect("task from spawner should be ViewTask<T>");
+                        let mut ctx = ViewContext::new(app, window_id, view_id);
+                        task(view, &mut ctx);
+                    },
+                ),
                 on_done: Box::new(move |_view, _app, _window_id, _view_id| {}),
             },
         );

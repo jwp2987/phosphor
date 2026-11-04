@@ -6,10 +6,10 @@
 //! through `crate::ai::document::ai_document_model::AIDocumentModel`, entirely
 //! locally, with no dependency on any server.
 
+use agent_proto as api;
 use anyhow::Result;
 use serde::Deserialize;
-use serde_json::{json, Value};
-use agent_proto as api;
+use serde_json::{Value, json};
 
 use super::OpenAiTool;
 

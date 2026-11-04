@@ -11,8 +11,8 @@ use warpui::{
     ViewHandle,
 };
 
-use crate::report_if_error;
 use crate::Appearance;
+use crate::report_if_error;
 
 use crate::settings::{AISettings, AISettingsChangedEvent};
 use crate::ui_components::blended_colors;

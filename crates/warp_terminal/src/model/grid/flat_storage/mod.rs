@@ -39,9 +39,9 @@ use string_offset::ByteOffset;
 use style::BgAndStyle;
 
 use crate::model::grid::HyperlinkId;
-use crate::model::{ansi, Point};
+use crate::model::{Point, ansi};
 
-use super::{cell, row::Row, CellType};
+use super::{CellType, cell, row::Row};
 
 const DEFAULT_FG_COLOR: ansi::Color = ansi::Color::Named(ansi::NamedColor::Foreground);
 

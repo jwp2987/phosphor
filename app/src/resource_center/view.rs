@@ -1,6 +1,8 @@
-use vec1::{vec1, Vec1};
+use vec1::{Vec1, vec1};
 use warp_core::{features::FeatureFlag, ui::builder::AnimatedButtonOptions};
 use warpui::{
+    AppContext, Entity, EntityId, FocusContext, ModelHandle, SingletonEntity, TypedActionView,
+    View, ViewContext, ViewHandle, WindowId,
     elements::{
         Align, Border, ConstrainedBox, Container, CrossAxisAlignment, Element, Flex, Icon,
         MainAxisAlignment, MainAxisSize, MouseStateHandle, ParentElement, SavePosition, Shrinkable,
@@ -13,17 +15,15 @@ use warpui::{
         components::{Coords, UiComponent, UiComponentStyles},
     },
     windowing::{StateEvent, WindowManager},
-    AppContext, Entity, EntityId, FocusContext, ModelHandle, SingletonEntity, TypedActionView,
-    View, ViewContext, ViewHandle, WindowId,
 };
 
 use super::{
+    KeybindingsView, ResourceCenterMainEvent, ResourceCenterMainView, TipsCompleted,
     keybindings_page::KeybindingsEvent,
     section_views::{
         FOOTER_ICON_SIZE, HEADER_FONT_SIZE, ICON_PADDING, KEYBOARD_ICON_SIZE, SCROLLBAR_OFFSET,
         SECTION_SPACING,
     },
-    KeybindingsView, ResourceCenterMainEvent, ResourceCenterMainView, TipsCompleted,
 };
 use crate::ui_components::{buttons::icon_button, window_focus_dimming::WindowFocusDimming};
 use crate::{
@@ -31,7 +31,7 @@ use crate::{
     changelog_model::ChangelogModel,
     ui_components::icons,
     util::links,
-    workspace::{WorkspaceAction, PANEL_HEADER_HEIGHT},
+    workspace::{PANEL_HEADER_HEIGHT, WorkspaceAction},
 };
 
 // Footer icons
@@ -588,8 +588,10 @@ mod tests {
     #[test]
     fn docs_button_points_at_the_manual() {
         assert!(ResourceCenterFooterItem::Docs.is_available());
-        assert!(ResourceCenterFooterItem::Docs
-            .url()
-            .is_some_and(|url| url.contains("/docs/manual")));
+        assert!(
+            ResourceCenterFooterItem::Docs
+                .url()
+                .is_some_and(|url| url.contains("/docs/manual"))
+        );
     }
 }

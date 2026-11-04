@@ -4,8 +4,8 @@ mod convert_from;
 pub use ai::agent::convert::ConvertToAPITypeError;
 use ai::api_keys::ApiKeyManager;
 pub use convert_from::{
-    user_inputs_from_messages, ConversionParams, ConvertAPIMessageToClientOutputMessage,
-    MaybeAIAgentOutputMessage, MessageToAIAgentOutputMessageError,
+    ConversionParams, ConvertAPIMessageToClientOutputMessage, MaybeAIAgentOutputMessage,
+    MessageToAIAgentOutputMessageError, user_inputs_from_messages,
 };
 
 use futures_lite::Stream;
@@ -31,11 +31,11 @@ use super::{
 use crate::ai::blocklist::{BlocklistAIHistoryModel, BlocklistAIPermissions, RequestInput};
 use crate::ai::execution_profiles::profiles::AIExecutionProfilesModel;
 use crate::ai::facts::{AIFact, AIFactObjectModel};
-use crate::ai::mcp::templatable_manager::TemplatableMCPServerInfo;
 use crate::ai::mcp::TemplatableMCPServerManager;
+use crate::ai::mcp::templatable_manager::TemplatableMCPServerInfo;
+use crate::cloud_object::StoredObject;
 use crate::cloud_object::model::generic_string_model::GenericStringObjectId;
 use crate::cloud_object::model::persistence::ObjectStoreModel;
-use crate::cloud_object::StoredObject;
 use crate::settings::AISettings;
 use crate::terminal::safe_mode_settings::get_secret_obfuscation_mode;
 use crate::workspaces::user_workspaces::UserWorkspaces;
@@ -57,7 +57,11 @@ impl ServerConversationToken {
     }
 
     pub fn debug_link(&self) -> String {
-        format!("{}://debug/maa/{}", ChannelState::url_scheme(), self.as_str())
+        format!(
+            "{}://debug/maa/{}",
+            ChannelState::url_scheme(),
+            self.as_str()
+        )
     }
 
     /// The artifact `/copy-debugging-id` puts on the clipboard for this conversation.
@@ -174,9 +178,8 @@ pub struct RequestParams {
     /// `RepoOutlines` code symbols. Materialized once in `new()` (where `AppContext` is
     /// available) only when `codebase_context_enabled` is on; the `chat_stream` interceptor
     /// (which has no `AppContext`) fuzzy-searches this snapshot. `Arc` keeps `Clone` cheap.
-    pub codebase_symbols: std::sync::Arc<
-        Vec<crate::ai::agent_providers::tools::codebase_runtime::CodebaseSymbol>,
-    >,
+    pub codebase_symbols:
+        std::sync::Arc<Vec<crate::ai::agent_providers::tools::codebase_runtime::CodebaseSymbol>>,
     /// Why `codebase_symbols` is empty or incomplete (index disabled, still building, failed,
     /// partial), resolved in `new()` with the snapshot; `search_codebase` passes it on to the
     /// model (#1276). `None` when the index is complete or the tool is off.
@@ -374,10 +377,7 @@ fn inherited_plan_mode(conversation_id: AIConversationId, app: &AppContext) -> b
 
 impl RequestParams {
     #[cfg(test)]
-    pub(crate) fn new_for_test(
-        input: Vec<AIAgentInput>,
-        tasks: Vec<agent_proto::Task>,
-    ) -> Self {
+    pub(crate) fn new_for_test(input: Vec<AIAgentInput>, tasks: Vec<agent_proto::Task>) -> Self {
         Self {
             input,
             conversation_token: None,
@@ -545,8 +545,8 @@ impl RequestParams {
         // the active repo's local symbol index so the tool interceptor (which has no
         // AppContext) can search it. When off, the snapshot is empty and the tool is filtered
         // out of the tools array entirely.
-        let codebase_context_enabled = BlocklistAIPermissions::as_ref(app)
-            .get_codebase_context_enabled(app, terminal_view_id);
+        let codebase_context_enabled =
+            BlocklistAIPermissions::as_ref(app).get_codebase_context_enabled(app, terminal_view_id);
         let codebase_symbols = if codebase_context_enabled {
             crate::ai::agent_providers::tools::codebase_runtime::collect_codebase_symbols(
                 app,

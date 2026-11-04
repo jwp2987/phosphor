@@ -366,7 +366,9 @@ pub(crate) fn surface_unavailable_reason(
         // to gate on in this fork. `ActionKind::SurfaceAgentManagementOpen` is marked
         // `ActionImplementationStatus::Stub` in `crates/local_control/src/catalog.rs`
         // for the same reason, so this arm is defense in depth, not the primary gate.
-        SurfaceDestination::AgentManagement => Some("agent management is not available in this build"),
+        SurfaceDestination::AgentManagement => {
+            Some("agent management is not available in this build")
+        }
     }
 }
 

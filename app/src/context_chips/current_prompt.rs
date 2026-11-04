@@ -19,15 +19,15 @@ use crate::{
         view::{ContextMenuAction, PromptPart, PromptPosition, TerminalAction},
     },
 };
-use futures::{pin_mut, FutureExt as _};
+use futures::{FutureExt as _, pin_mut};
 use itertools::Itertools;
 use parking_lot::FairMutex;
 use warp_completer::completer::CommandExitStatus;
 use warp_core::user_preferences::GetUserPreferences;
 
-use super::{empty_on_click_values, ChipResult};
+use super::{ChipResult, empty_on_click_values};
 use super::{
-    chips_to_string,
+    ChipValue, ContextChipKind, chips_to_string,
     context_chip::{
         ChipAvailability, ChipFingerprintInput, ChipRuntimeCapabilities, ContextChip, Environment,
         ExternalCommandsAvailability, GeneratorContext, PromptGenerator, RefreshConfig,
@@ -35,7 +35,6 @@ use super::{
     },
     logging::{ChipCommandLogEntry, PromptChipExecutionPhase, PromptChipLogger},
     prompt::Prompt,
-    ChipValue, ContextChipKind,
 };
 #[cfg(feature = "local_fs")]
 use crate::code_review::git_status_update::{GitRepoStatusEvent, GitRepoStatusModel};
@@ -47,11 +46,11 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hash as _, Hasher as _};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
-use warpui::windowing::WindowManager;
 use warpui::WeakModelHandle;
+use warpui::windowing::WindowManager;
 use warpui::{
-    r#async::{SpawnedFutureHandle, Timer},
     AppContext, EntityId, ViewHandle, WindowId,
+    r#async::{SpawnedFutureHandle, Timer},
 };
 use warpui::{Entity, ModelAsRef, ModelContext, ModelHandle, SingletonEntity};
 
@@ -442,11 +441,14 @@ impl CurrentPrompt {
             me.update_states_with_new_context(ctx);
         });
 
-        ctx.subscribe_to_model(&CLIAgentSessionsModel::handle(ctx), move |me, event, ctx| {
-            if event.terminal_view_id() == terminal_view_id {
-                me.update_states_with_new_context(ctx);
-            }
-        });
+        ctx.subscribe_to_model(
+            &CLIAgentSessionsModel::handle(ctx),
+            move |me, event, ctx| {
+                if event.terminal_view_id() == terminal_view_id {
+                    me.update_states_with_new_context(ctx);
+                }
+            },
+        );
         ctx.subscribe_to_model(&AISettings::handle(ctx), |me, event, ctx| {
             if matches!(
                 event,
@@ -1219,11 +1221,9 @@ impl CurrentPrompt {
                 allow_fingerprint_skip,
                 ctx,
             );
-            let Some(interval) = next_poll_delay(
-                chip_kind,
-                *interval,
-                millis_into_current_minute(),
-            ) else {
+            let Some(interval) =
+                next_poll_delay(chip_kind, *interval, millis_into_current_minute())
+            else {
                 // Event-driven chip: no timer (see `is_git_chip_driven_by_events`).
                 if let Some(state) = self.states.get_mut(chip_kind) {
                     state.refresh_handle = None;

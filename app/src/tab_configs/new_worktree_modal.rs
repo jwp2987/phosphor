@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use warpui::{
+    AppContext, Entity, SingletonEntity, TypedActionView, View, ViewContext, ViewHandle,
     elements::{
         Border, ChildView, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Element,
         Fill as ElementFill, Flex, MainAxisAlignment, MainAxisSize, MouseStateHandle, Padding,
@@ -14,7 +15,6 @@ use warpui::{
         checkbox::Checkbox,
         components::{Coords, UiComponent, UiComponentStyles},
     },
-    AppContext, Entity, SingletonEntity, TypedActionView, View, ViewContext, ViewHandle,
 };
 
 /// Registers keybindings for the new-worktree modal (ESC to close).

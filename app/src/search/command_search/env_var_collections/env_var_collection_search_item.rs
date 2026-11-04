@@ -1,13 +1,13 @@
 use itertools::Itertools;
 use ordered_float::OrderedFloat;
 use warpui::{
+    AppContext, Element, SingletonEntity,
     elements::{
         ConstrainedBox, Container, CrossAxisAlignment, Flex, Highlight, Icon, MainAxisAlignment,
         MainAxisSize, ParentElement, Text,
     },
     fonts::{Properties, Weight},
     ui_components::components::{UiComponent, UiComponentStyles},
-    AppContext, Element, SingletonEntity,
 };
 
 use crate::{

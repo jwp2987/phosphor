@@ -7,7 +7,7 @@ mod sink_map_err;
 use anyhow::anyhow;
 pub use async_tungstenite::tungstenite::client::IntoClientRequest;
 use async_tungstenite::tungstenite::http::HeaderValue;
-use futures_util::{future, SinkExt, TryStreamExt};
+use futures_util::{SinkExt, TryStreamExt, future};
 use itertools::Itertools;
 use thiserror::Error;
 
@@ -16,7 +16,7 @@ pub use async_tungstenite::tungstenite;
 // Issue #72: re-exports the global proxy types from the native::proxy module
 // to the crate root, so `app::settings::network` / `app::settings::init` can
 // reference them directly via `websocket::ProxyMode`.
-pub use imp::proxy::{set_global_proxy_config, ProxyConfig, ProxyMode};
+pub use imp::proxy::{ProxyConfig, ProxyMode, set_global_proxy_config};
 
 use crate::sink_map_err::map_err;
 

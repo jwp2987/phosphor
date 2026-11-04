@@ -376,8 +376,20 @@ fn idle_children_keep_the_rollup_alive_without_appearing_or_adding_credit() {
         let orchestrator_id = history.update(&mut app, |history, ctx| {
             history.start_new_conversation(terminal_view_id, false, false, ctx)
         });
-        let idle_a = spawn_child(&mut app, &history, "IdleA", orchestrator_id, terminal_view_id);
-        let idle_b = spawn_child(&mut app, &history, "IdleB", orchestrator_id, terminal_view_id);
+        let idle_a = spawn_child(
+            &mut app,
+            &history,
+            "IdleA",
+            orchestrator_id,
+            terminal_view_id,
+        );
+        let idle_b = spawn_child(
+            &mut app,
+            &history,
+            "IdleB",
+            orchestrator_id,
+            terminal_view_id,
+        );
 
         set_credits(&mut app, &history, orchestrator_id, 2.5);
         // Explicitly zero, not merely left unset: a child that ran and spent
@@ -414,8 +426,20 @@ fn fractional_credits_are_summed_across_the_whole_tree() {
         let orchestrator_id = history.update(&mut app, |history, ctx| {
             history.start_new_conversation(terminal_view_id, false, false, ctx)
         });
-        let child_a = spawn_child(&mut app, &history, "Alpha", orchestrator_id, terminal_view_id);
-        let child_b = spawn_child(&mut app, &history, "Beta", orchestrator_id, terminal_view_id);
+        let child_a = spawn_child(
+            &mut app,
+            &history,
+            "Alpha",
+            orchestrator_id,
+            terminal_view_id,
+        );
+        let child_b = spawn_child(
+            &mut app,
+            &history,
+            "Beta",
+            orchestrator_id,
+            terminal_view_id,
+        );
 
         set_credits(&mut app, &history, orchestrator_id, 0.5);
         set_credits(&mut app, &history, child_a, 0.3);
@@ -651,10 +675,22 @@ fn ties_break_by_preorder_position_not_by_depth_or_branch() {
         let orchestrator_id = history.update(&mut app, |history, ctx| {
             history.start_new_conversation(terminal_view_id, false, false, ctx)
         });
-        let alpha_id = spawn_child(&mut app, &history, "Alpha", orchestrator_id, terminal_view_id);
+        let alpha_id = spawn_child(
+            &mut app,
+            &history,
+            "Alpha",
+            orchestrator_id,
+            terminal_view_id,
+        );
         let grandchild_id =
             spawn_child(&mut app, &history, "Grandchild", alpha_id, terminal_view_id);
-        let beta_id = spawn_child(&mut app, &history, "Beta", orchestrator_id, terminal_view_id);
+        let beta_id = spawn_child(
+            &mut app,
+            &history,
+            "Beta",
+            orchestrator_id,
+            terminal_view_id,
+        );
 
         set_credits(&mut app, &history, orchestrator_id, 1.0);
         set_credits(&mut app, &history, alpha_id, 9.0);

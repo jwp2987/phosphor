@@ -2,6 +2,7 @@
 
 use pathfinder_color::ColorU;
 use warp_core::ui::theme::Fill;
+use warpui::Action;
 use warpui::elements::{
     ConstrainedBox, DraggableState, Hoverable, MouseStateHandle, OffsetPositioning, ParentElement,
     ParentOffsetBounds, Stack,
@@ -9,10 +10,9 @@ use warpui::elements::{
 use warpui::fonts::{Properties, Weight};
 use warpui::platform::Cursor;
 use warpui::ui_components::components::UiComponent;
-use warpui::Action;
 use warpui::{
-    elements::{Container, CrossAxisAlignment, Flex, Text},
     Element,
+    elements::{Container, CrossAxisAlignment, Flex, Text},
 };
 
 use crate::appearance::Appearance;

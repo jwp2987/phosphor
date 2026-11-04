@@ -6,8 +6,8 @@ use parking_lot::Mutex;
 use winit::event_loop::EventLoopProxy;
 
 use global_hotkey::{
-    hotkey::{Code, HotKey, Modifiers},
     GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState,
+    hotkey::{Code, HotKey, Modifiers},
 };
 
 /// Responsible for registering system-wide (global) hotkeys with the platform.

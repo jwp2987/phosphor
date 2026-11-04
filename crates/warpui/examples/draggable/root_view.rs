@@ -3,15 +3,15 @@ use std::any::Any;
 use pathfinder_color::ColorU;
 use pathfinder_geometry::{
     rect::RectF,
-    vector::{vec2f, Vector2F},
+    vector::{Vector2F, vec2f},
 };
 use warpui::elements::{AcceptedByDropTarget, DropTarget, DropTargetData};
 use warpui::{
+    AppContext, Element, Entity, TypedActionView, View,
     elements::{
         Align, ConstrainedBox, Container, DragAxis, Draggable, DraggableState, ParentElement, Rect,
         Stack,
     },
-    AppContext, Element, Entity, TypedActionView, View,
 };
 
 #[derive(Default)]

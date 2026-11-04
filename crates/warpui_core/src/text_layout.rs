@@ -1,4 +1,4 @@
-use crate::elements::{Fill, DEFAULT_UI_LINE_HEIGHT_RATIO};
+use crate::elements::{DEFAULT_UI_LINE_HEIGHT_RATIO, Fill};
 use crate::fonts::{
     Cache as FontCache, FamilyId, Properties, RequestedFallbackFontSource, TextLayoutSystem,
 };
@@ -7,9 +7,9 @@ use crate::geometry::vector::vec2f;
 use crate::platform::LineStyle;
 use crate::scene::{Border, CornerRadius, Dash};
 use crate::{
+    Scene,
     fonts::{FontId, GlyphId},
     scene::GlyphFade,
-    Scene,
 };
 use itertools::Itertools;
 use ordered_float::OrderedFloat;
@@ -17,6 +17,7 @@ use parking_lot::{Mutex, RwLock, RwLockUpgradableReadGuard};
 use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::Vector2F;
 use rangemap::RangeMap;
+use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 use std::{
     borrow::Borrow,
@@ -24,8 +25,7 @@ use std::{
     ops::Range,
     sync::Arc,
 };
-use rustc_hash::FxHashMap;
-use vec1::{vec1, Vec1};
+use vec1::{Vec1, vec1};
 
 type StyleRun = (Range<usize>, StyleAndFont);
 
@@ -1176,7 +1176,10 @@ impl Line {
                 }
                 // The zero-width placeholder of an unlaid tail (`TextFrame::with_unlaid_tail`)
                 // sits at the tail's last index, so the last laid char is followed by a gap.
-                if glyph.width == 0. && glyph.char_index() > index + 1 && prev_glyph.char_index() == index {
+                if glyph.width == 0.
+                    && glyph.char_index() > index + 1
+                    && prev_glyph.char_index() == index
+                {
                     return Some(
                         glyph.position_along_baseline.x() - prev_glyph.position_along_baseline.x(),
                     );
@@ -1310,9 +1313,7 @@ impl Line {
 
     /// The last character index that's within this line (inclusive).
     pub fn last_index(&self) -> usize {
-        self.caret_positions
-            .last()
-            .map_or(0, |caret| caret.last())
+        self.caret_positions.last().map_or(0, |caret| caret.last())
     }
 
     /// The first character index that's after this line.

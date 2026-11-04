@@ -282,7 +282,8 @@ fn competition_ranks(scores: &[f32]) -> Vec<usize> {
     let mut ranks = vec![0usize; scores.len()];
     let mut rank = 0usize;
     for (position, index) in order.iter().enumerate() {
-        if position == 0 || scores[*index].total_cmp(&scores[order[position - 1]]) != Ordering::Equal
+        if position == 0
+            || scores[*index].total_cmp(&scores[order[position - 1]]) != Ordering::Equal
         {
             rank = position + 1;
         }
@@ -767,9 +768,7 @@ impl StoreClient for LocalStoreClient {
                 Ok(scores) if scores.len() == fragments.len() => {
                     let mut scored: Vec<(Fragment, f32)> =
                         fragments.into_iter().zip(scores).collect();
-                    sort_by_score_desc(&mut scored, |fragment| {
-                        fragment.content_hash().to_string()
-                    });
+                    sort_by_score_desc(&mut scored, |fragment| fragment.content_hash().to_string());
                     return Ok(scored.into_iter().map(|(fragment, _)| fragment).collect());
                 }
                 Ok(scores) => log::warn!(

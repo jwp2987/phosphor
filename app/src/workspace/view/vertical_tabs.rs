@@ -5685,11 +5685,13 @@ fn compute_tab_group_color_mode(
                         if dir_colors.is_empty() {
                             None
                         } else {
-                            tv.as_ref(app).canonical_cwd_for_display(app).and_then(|cwd| {
-                                dir_colors
-                                    .color_for_canonical_directory(&cwd)
-                                    .and_then(|c| c.ansi_color())
-                            })
+                            tv.as_ref(app)
+                                .canonical_cwd_for_display(app)
+                                .and_then(|cwd| {
+                                    dir_colors
+                                        .color_for_canonical_directory(&cwd)
+                                        .and_then(|c| c.ansi_color())
+                                })
                         }
                     }
                     _ => {

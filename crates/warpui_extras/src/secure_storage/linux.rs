@@ -9,12 +9,12 @@ use std::{
     path::PathBuf,
 };
 
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use rand::RngCore;
 use ring::aead;
 use secret_service::{
-    blocking::{Item, SecretService},
     EncryptionType,
+    blocking::{Item, SecretService},
 };
 
 use super::Error;

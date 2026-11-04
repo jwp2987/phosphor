@@ -1,6 +1,7 @@
 use anyhow::{Result, anyhow};
 use core::fmt;
 use itertools::Itertools;
+use rustc_hash::FxHasher;
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
@@ -8,11 +9,10 @@ use std::{
     hash::{Hash, Hasher},
     rc::Rc,
     sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc, LazyLock, Mutex,
+        atomic::{AtomicUsize, Ordering},
     },
 };
-use rustc_hash::FxHasher;
 use strum_macros::EnumIter;
 
 use crate::{

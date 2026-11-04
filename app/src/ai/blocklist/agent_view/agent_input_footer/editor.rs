@@ -7,18 +7,18 @@ use warpui::keymap::FixedBinding;
 
 use warpui::{AppContext, Element, Entity, SingletonEntity, TypedActionView, View, ViewContext};
 
+use crate::Appearance;
 use crate::appearance::AppearanceEvent;
 use crate::chip_configurator::{
-    render_chip_editor_modal, render_chip_editor_sections, ChipConfigurator,
-    ChipConfiguratorAction, ChipConfiguratorLayout, ChipEditorModalConfig, ChipEditorMouseHandles,
-    ChipEditorSectionsConfig,
+    ChipConfigurator, ChipConfiguratorAction, ChipConfiguratorLayout, ChipEditorModalConfig,
+    ChipEditorMouseHandles, ChipEditorSectionsConfig, render_chip_editor_modal,
+    render_chip_editor_sections,
 };
 use crate::report_if_error;
 use crate::terminal::session_settings::{
     AgentToolbarChipSelection, CLIAgentToolbarChipSelection, SessionSettings,
     SessionSettingsChangedEvent, ToolbarChipSelection,
 };
-use crate::Appearance;
 
 use settings::Setting as _;
 
@@ -261,9 +261,11 @@ fn save_toolbar_selection<V: View>(
                 AgentToolbarChipSelection::Custom { left, right }
             };
             SessionSettings::handle(ctx).update(ctx, |settings, ctx| {
-                report_if_error!(settings
-                    .agent_footer_chip_selection
-                    .set_value(selection, ctx));
+                report_if_error!(
+                    settings
+                        .agent_footer_chip_selection
+                        .set_value(selection, ctx)
+                );
             });
         }
         AgentToolbarEditorMode::CLIAgent => {
@@ -273,9 +275,11 @@ fn save_toolbar_selection<V: View>(
                 CLIAgentToolbarChipSelection::Custom { left, right }
             };
             SessionSettings::handle(ctx).update(ctx, |settings, ctx| {
-                report_if_error!(settings
-                    .cli_agent_footer_chip_selection
-                    .set_value(selection, ctx));
+                report_if_error!(
+                    settings
+                        .cli_agent_footer_chip_selection
+                        .set_value(selection, ctx)
+                );
             });
         }
     }

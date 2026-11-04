@@ -2,9 +2,10 @@
 use std::{collections::HashMap, iter, ops::RangeInclusive};
 
 use itertools::Itertools;
-use warpui::{units::Lines, AppContext, EntityId};
+use warpui::{AppContext, EntityId, units::Lines};
 
 use crate::terminal::{
+    GridType,
     model::{
         block::Block,
         blocks::{
@@ -15,13 +16,12 @@ use crate::terminal::{
         index::Point,
         terminal_model::{BlockIndex, BlockSortDirection},
     },
-    GridType,
 };
 use crate::view_components::find::FindDirection;
 
 use super::{
-    rich_content::{FindableRichContentHandle, RichContentMatchId},
     FindOptions,
+    rich_content::{FindableRichContentHandle, RichContentMatchId},
 };
 
 /// Runs a find operation on the blocklist using the given `options` and returns a
@@ -644,11 +644,7 @@ fn update_matches_for_filtered_block<'a>(
 ) {
     let Some(displayed_rows) = block.displayed_output_row_ranges() else {
         matches.for_each(|find_match| {
-            if let BlockListMatch::CommandBlock(BlockGridMatch {
-                is_filtered,
-                ..
-            }) = find_match
-            {
+            if let BlockListMatch::CommandBlock(BlockGridMatch { is_filtered, .. }) = find_match {
                 *is_filtered = false;
             }
         });

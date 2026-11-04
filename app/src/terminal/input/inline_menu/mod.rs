@@ -10,7 +10,7 @@ use super::{InputSuggestionsMode, UserQueryMenuAction};
 use serde::{Deserialize, Serialize};
 
 pub use message_bar::{InlineMenuMessageArgs, InlineMenuMessageBarArgs};
-pub use message_provider::{default_navigation_message_items, InlineMenuMessageProvider};
+pub use message_provider::{InlineMenuMessageProvider, default_navigation_message_items};
 pub use model::{InlineMenuModel, InlineMenuModelEvent, InlineMenuTabConfig};
 pub use positioning::InlineMenuPositioner;
 pub use view::{

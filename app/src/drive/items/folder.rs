@@ -1,12 +1,12 @@
 use warp_core::features::FeatureFlag;
-use warpui::{elements::MouseStateHandle, AppContext, Element};
+use warpui::{AppContext, Element, elements::MouseStateHandle};
 
 use crate::{
     appearance::Appearance,
     cloud_object::StoredObjectMetadata,
     drive::{
-        cloud_object_styling::warp_drive_icon_color, folders::FolderObject,
-        index::DriveIndexAction, DriveObjectType, ObjectTypeAndId,
+        DriveObjectType, ObjectTypeAndId, cloud_object_styling::warp_drive_icon_color,
+        folders::FolderObject, index::DriveIndexAction,
     },
     themes::theme::Fill,
     ui_components::icons::Icon,

@@ -28,15 +28,15 @@ use std::{
 
 use num_traits::SaturatingSub;
 use string_offset::{ByteOffset, CharOffset};
-use vec1::{vec1, Vec1};
+use vec1::{Vec1, vec1};
 use warpui::{
+    AppContext, Entity, ModelAsRef, ModelContext, ModelHandle,
     accessibility::{AccessibilityContent, WarpA11yRole},
     text_layout::TextStyle,
-    AppContext, Entity, ModelAsRef, ModelContext, ModelHandle,
 };
 use warpui::{
-    text::{point::Point, word_boundaries::WordBoundariesPolicy, TextBuffer},
     SingletonEntity,
+    text::{TextBuffer, point::Point, word_boundaries::WordBoundariesPolicy},
 };
 
 use crate::{editor::RangeExt, vim_registers::VimRegisters};
@@ -57,7 +57,7 @@ use vim::{
 
 use buffer::{Buffer, Text};
 
-use super::{movement, PlainTextEditorViewAction, SelectionInsertion, ValidInputType};
+use super::{PlainTextEditorViewAction, SelectionInsertion, ValidInputType, movement};
 
 use itertools::{
     FoldWhile::{Continue, Done},
@@ -1163,10 +1163,14 @@ impl EditorModel {
             if matches!(text, "(" | "[" | "{") {
                 let bracket = text.chars().next().expect("bracket is one char");
                 let buffer_text = self.buffer_text(ctx);
-                let blocked = self.selection_to_char_offset_ranges(ctx).iter().any(|range| {
-                    let prefix: String = buffer_text.chars().take(range.start.as_usize()).collect();
-                    !bracket_may_autopair(&prefix, bracket)
-                });
+                let blocked = self
+                    .selection_to_char_offset_ranges(ctx)
+                    .iter()
+                    .any(|range| {
+                        let prefix: String =
+                            buffer_text.chars().take(range.start.as_usize()).collect();
+                        !bracket_may_autopair(&prefix, bracket)
+                    });
                 if blocked {
                     self.insert_internal(text, None, SelectionInsertion::No, ctx);
                     return;

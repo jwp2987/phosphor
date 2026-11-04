@@ -5,9 +5,9 @@ pub mod bonus_grant_notification_model;
 // warpctrl install button from outside this module.
 #[cfg(target_os = "macos")]
 pub(crate) mod cli_install;
+mod close_session_confirmation_dialog;
 #[cfg(feature = "local_fs")]
 mod code_open_queue;
-mod close_session_confirmation_dialog;
 pub(crate) mod cross_window_tab_drag;
 pub mod delete_conversation_confirmation_dialog;
 mod global_actions;
@@ -16,10 +16,10 @@ pub mod header_toolbar_item;
 pub mod hoa_onboarding;
 mod home;
 mod lightbox_view;
+pub mod multiline_submit_confirmation_dialog;
 mod native_modal;
 mod one_time_modal_model;
 mod registry;
-pub mod multiline_submit_confirmation_dialog;
 pub mod rewind_confirmation_dialog;
 pub mod sync_inputs;
 pub mod tab_group;
@@ -36,22 +36,22 @@ use crate::notebooks;
 use crate::pane_group::TabBarHoverIndex;
 use crate::server::telemetry::AgentModeEntrypoint;
 use crate::server::telemetry::PaletteSource;
-use crate::settings_view::{self, flags, SettingsSection};
-use crate::tab::{uses_vertical_tabs, NewSessionMenuItem};
+use crate::settings_view::{self, SettingsSection, flags};
+use crate::tab::{NewSessionMenuItem, uses_vertical_tabs};
 use crate::tab_configs;
 
 use crate::channel::ChannelState;
 
-use crate::util::bindings::{self, cmd_or_ctrl_shift, is_binding_pty_compliant, CustomAction};
+use crate::util::bindings::{self, CustomAction, cmd_or_ctrl_shift, is_binding_pty_compliant};
 
 use crate::palette::PaletteMode;
 use serde::{Deserialize, Serialize};
 use warp_core::context_flag::ContextFlag;
+use warpui::AppContext;
 use warpui::accessibility::AccessibilityVerbosity;
 use warpui::elements::DropTargetData;
 use warpui::keymap::FixedBinding;
 use warpui::keymap::{BindingDescription, EditableBinding};
-use warpui::AppContext;
 
 pub use action::{
     CommandSearchOptions, InitContent, RestoreConversationLayout, TabContextMenuAnchor,
@@ -59,12 +59,13 @@ pub use action::{
 };
 pub use active_session::ActiveSession;
 pub use global_actions::{
-    flush_pending_app_snapshot, ForkAIConversationParams, ForkFromExchange, ForkedConversationDestination,
+    ForkAIConversationParams, ForkFromExchange, ForkedConversationDestination,
+    flush_pending_app_snapshot,
 };
-pub use util::{active_terminal_in_window, PaneViewLocator, TabMovement};
+pub use util::{PaneViewLocator, TabMovement, active_terminal_in_window};
 pub use view::{
-    Workspace, NEW_SESSION_MENU_BUTTON_POSITION_ID, NEW_TAB_BUTTON_POSITION_ID,
-    PANEL_HEADER_HEIGHT, TAB_BAR_HEIGHT, TOTAL_TAB_BAR_HEIGHT, WORKSPACE_PADDING,
+    NEW_SESSION_MENU_BUTTON_POSITION_ID, NEW_TAB_BUTTON_POSITION_ID, PANEL_HEADER_HEIGHT,
+    TAB_BAR_HEIGHT, TOTAL_TAB_BAR_HEIGHT, WORKSPACE_PADDING, Workspace,
 };
 
 // Helper function to access panel header corner radius from other modules
@@ -75,13 +76,12 @@ pub fn panel_header_corner_radius() -> warpui::elements::CornerRadius {
 use crate::workspace::view::{
     LEFT_PANEL_AGENT_CONVERSATIONS_BINDING_NAME, LEFT_PANEL_GLOBAL_SEARCH_BINDING_NAME,
     LEFT_PANEL_PROJECT_EXPLORER_BINDING_NAME, LEFT_PANEL_SKILL_MANAGER_BINDING_NAME,
-    LEFT_PANEL_WARP_DRIVE_BINDING_NAME,
-    NEW_AGENT_TAB_BINDING_NAME, NEW_TAB_BINDING_NAME, NEW_TERMINAL_TAB_BINDING_NAME,
-    OPEN_GLOBAL_SEARCH_BINDING_NAME, TOGGLE_CONVERSATION_LIST_VIEW_BINDING_NAME,
-    TOGGLE_HIDDEN_FILES_BINDING_NAME, TOGGLE_NOTIFICATION_MAILBOX_BINDING_NAME,
-    TOGGLE_PROJECT_EXPLORER_BINDING_NAME, TOGGLE_RIGHT_PANEL_BINDING_NAME,
-    TOGGLE_TAB_CONFIGS_MENU_BINDING_NAME, TOGGLE_VERTICAL_TABS_PANEL_BINDING_NAME,
-    TOGGLE_WARP_DRIVE_BINDING_NAME,
+    LEFT_PANEL_WARP_DRIVE_BINDING_NAME, NEW_AGENT_TAB_BINDING_NAME, NEW_TAB_BINDING_NAME,
+    NEW_TERMINAL_TAB_BINDING_NAME, OPEN_GLOBAL_SEARCH_BINDING_NAME,
+    TOGGLE_CONVERSATION_LIST_VIEW_BINDING_NAME, TOGGLE_HIDDEN_FILES_BINDING_NAME,
+    TOGGLE_NOTIFICATION_MAILBOX_BINDING_NAME, TOGGLE_PROJECT_EXPLORER_BINDING_NAME,
+    TOGGLE_RIGHT_PANEL_BINDING_NAME, TOGGLE_TAB_CONFIGS_MENU_BINDING_NAME,
+    TOGGLE_VERTICAL_TABS_PANEL_BINDING_NAME, TOGGLE_WARP_DRIVE_BINDING_NAME,
 };
 pub use one_time_modal_model::OneTimeModalModel;
 pub use registry::WorkspaceRegistry;
@@ -1271,20 +1271,18 @@ pub fn init(app: &mut AppContext) {
     }
 
     // The binding name is kept from the removed AI Assistant panel to preserve custom keybindings.
-    app.register_editable_bindings([
-        EditableBinding::new(
-            "workspace:toggle_ai_assistant",
-            crate::t!("keybinding-desc-new-agent-pane"),
-            WorkspaceAction::NewPaneInAgentMode {
-                entrypoint: AgentModeEntrypoint::NewPaneBinding,
-                zero_state_prompt_suggestion_type: None,
-            },
-        )
-        .with_enabled(|| FeatureFlag::AgentMode.is_enabled())
-        .with_context_predicate(id!("Workspace") & id!(flags::IS_ANY_AI_ENABLED))
-        .with_group(bindings::BindingGroup::WarpAi.as_str())
-        .with_custom_action(CustomAction::NewAgentModePane),
-    ]);
+    app.register_editable_bindings([EditableBinding::new(
+        "workspace:toggle_ai_assistant",
+        crate::t!("keybinding-desc-new-agent-pane"),
+        WorkspaceAction::NewPaneInAgentMode {
+            entrypoint: AgentModeEntrypoint::NewPaneBinding,
+            zero_state_prompt_suggestion_type: None,
+        },
+    )
+    .with_enabled(|| FeatureFlag::AgentMode.is_enabled())
+    .with_context_predicate(id!("Workspace") & id!(flags::IS_ANY_AI_ENABLED))
+    .with_group(bindings::BindingGroup::WarpAi.as_str())
+    .with_custom_action(CustomAction::NewAgentModePane)]);
 
     app.register_editable_bindings([
         EditableBinding::new(

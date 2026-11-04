@@ -1026,10 +1026,11 @@ fn test_truncate_for_model_cuts_at_a_char_boundary_and_drops_tokens_past_the_cut
     let cut = truncate_for_model(&parsed).into_owned();
     assert_eq!(cut.buffer_text.len(), MAX_MODEL_INPUT_BYTES);
     assert!(!cut.parsed_tokens.is_empty());
-    assert!(cut
-        .parsed_tokens
-        .iter()
-        .all(|token| token.token.span.end() <= MAX_MODEL_INPUT_BYTES));
+    assert!(
+        cut.parsed_tokens
+            .iter()
+            .all(|token| token.token.span.end() <= MAX_MODEL_INPUT_BYTES)
+    );
     assert!(cut.parsed_tokens.len() < parsed.parsed_tokens.len());
 }
 

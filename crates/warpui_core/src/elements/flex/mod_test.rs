@@ -6,8 +6,8 @@ use crate::geometry::rect::RectF;
 
 use crate::platform::WindowStyle;
 use crate::{
-    elements::{ConstrainedBox, ParentElement, Rect},
     App, Entity, Presenter, TypedActionView, WindowId, WindowInvalidation,
+    elements::{ConstrainedBox, ParentElement, Rect},
 };
 
 type RenderFn = dyn Fn(&AppContext) -> Box<dyn Element> + 'static;

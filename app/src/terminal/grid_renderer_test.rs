@@ -1,15 +1,15 @@
-use super::{active_or_next_match, CachedBackgroundColor};
+use super::{CachedBackgroundColor, active_or_next_match};
 use crate::terminal::grid_size_util::calculate_grid_baseline_position;
 use crate::terminal::model::index::Point;
 use crate::terminal::model::selection::SelectionPoint;
-use crate::terminal::{grid_renderer, SizeInfo};
+use crate::terminal::{SizeInfo, grid_renderer};
 use anyhow::Result;
 use futures::FutureExt as _;
 use pathfinder_geometry::rect::RectF;
-use pathfinder_geometry::vector::{vec2f, Vector2F, Vector2I};
+use pathfinder_geometry::vector::{Vector2F, Vector2I, vec2f};
 use std::any::Any;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use warpui::fonts::{Cache as FontCache, FamilyId, FontId, GlyphId, Metrics, Properties};
 use warpui::platform::{self, LoadedSystemFonts, TextLayoutSystem};
 use warpui::text_layout::{ClipConfig, Line, TextAlignment, TextFrame};
@@ -488,7 +488,7 @@ fn test_calculate_selection_bounds() {
 #[test]
 fn render_scratch_buffers_are_reused_across_frames() {
     use super::{
-        return_render_scratch, take_render_scratch, DecorationData, MAX_RETAINED_SCRATCH_ITEMS,
+        DecorationData, MAX_RETAINED_SCRATCH_ITEMS, return_render_scratch, take_render_scratch,
     };
     use warpui::color::ColorU;
 
@@ -518,8 +518,8 @@ fn render_scratch_buffers_are_reused_across_frames() {
 #[test]
 fn minimal_contrast_map_persists_across_frames_and_is_bounded() {
     use super::{
-        return_render_scratch, take_render_scratch, CellColors, MinimalContrastCache,
-        MAX_RETAINED_CONTRAST_ENTRIES,
+        CellColors, MAX_RETAINED_CONTRAST_ENTRIES, MinimalContrastCache, return_render_scratch,
+        take_render_scratch,
     };
     use warpui::color::ColorU;
 

@@ -2,10 +2,10 @@ use futures_util::future::LocalBoxFuture;
 use std::mem::ManuallyDrop;
 
 use crate::{
+    AppContext, AssetProvider, WindowId,
     integration::TestDriver,
     keymap,
     platform::{self, TerminationMode},
-    AppContext, AssetProvider, WindowId,
 };
 use derivative::Derivative;
 

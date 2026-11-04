@@ -4,7 +4,7 @@ use warpui::elements::{Container, CrossAxisAlignment, Element, Flex, ParentEleme
 use warpui::{AppContext, Entity, SingletonEntity, TypedActionView, View, ViewContext};
 
 use super::search_results_common::{
-    render_collapsible_search_results, CollapsibleSearchResultsState,
+    CollapsibleSearchResultsState, render_collapsible_search_results,
 };
 use crate::ai::agent::WebSearchStatus;
 use crate::ai::blocklist::block::view_impl::WithContentItemSpacing;

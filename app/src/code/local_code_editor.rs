@@ -74,38 +74,38 @@ use warpui::ModelHandle;
 use warpui::platform::SaveFilePickerConfiguration;
 
 use warpui::{
+    AppContext, Element, Entity, SingletonEntity, TypedActionView, View, ViewContext, ViewHandle,
+    WindowId,
     elements::{
         Border, ChildAnchor, ChildView, ClippedScrollStateHandle, ConstrainedBox, Container,
         CornerRadius, CrossAxisAlignment, DropShadow, Flex, Hoverable, MainAxisAlignment,
         MainAxisSize, MouseStateHandle, OffsetPositioning, ParentAnchor, ParentElement,
         ParentOffsetBounds, Radius, Rect, Shrinkable, Stack, Text,
     },
-    keymap::{macros::*, FixedBinding},
+    keymap::{FixedBinding, macros::*},
     text::point::Point,
     ui_components::{
         button::ButtonVariant,
         components::{Coords, UiComponent, UiComponentStyles},
     },
-    AppContext, Element, Entity, SingletonEntity, TypedActionView, View, ViewContext, ViewHandle,
-    WindowId,
 };
 
 use crate::ai::persisted_workspace::PersistedWorkspace;
 #[cfg(feature = "local_fs")]
 use crate::ai::persisted_workspace::PersistedWorkspaceEvent;
 use crate::{
-    code::{editor::EditorReviewComment, global_buffer_model::GlobalBufferModelEvent},
-    code_review::comments::CommentId,
-};
-use crate::{
     code::{
+        SaveOutcome,
         footer::{CodeFooterView, CodeFooterViewEvent},
         global_buffer_model::{BufferState, GlobalBufferModel},
-        SaveOutcome,
     },
     settings::AISettings,
     terminal::TerminalView,
     util::sync::Condition,
+};
+use crate::{
+    code::{editor::EditorReviewComment, global_buffer_model::GlobalBufferModelEvent},
+    code_review::comments::CommentId,
 };
 use ai::diff_validation::DiffType;
 use pathfinder_color::ColorU;
@@ -127,6 +127,7 @@ const DROP_SHADOW_COLOR: ColorU = ColorU {
 
 const HOVER_DEBOUNCE_PERIOD: Duration = Duration::from_millis(500);
 
+use super::ImmediateSaveError;
 use super::diff_viewer::DiffViewer;
 use super::editor::{
     scroll::{ScrollPosition, ScrollTrigger},
@@ -135,10 +136,9 @@ use super::editor::{
 use super::find_references_view::{FindReferencesView, FindReferencesViewEvent};
 use super::language_server_extension::ProcessedDiagnostic;
 use super::lsp_telemetry::LspTelemetryEvent;
-use super::ImmediateSaveError;
-use warp_core::send_telemetry_from_ctx;
 use crate::code::editor::model::HoverableLink;
 use crate::settings::CodeSettings;
+use warp_core::send_telemetry_from_ctx;
 
 type SaveCallback =
     Box<dyn FnOnce(SaveOutcome, &mut ViewContext<LocalCodeEditorView>) + Send + Sync + 'static>;
@@ -1792,19 +1792,21 @@ impl LocalCodeEditorView {
         let buffer_version = me.editor.as_ref(ctx).version(ctx);
 
         me.base_content_version = Some(buffer_version);
-        let save_outcome = match GlobalBufferModel::handle(ctx)
-            .update(ctx, move |model, ctx| {
-                model.save(file_id, content, buffer_version, ctx)
-            }) { Err(err) => {
-            log::error!("Failed to save file to new path: {err:?}");
-            ctx.emit(LocalCodeEditorEvent::FailedToSave {
-                error: Rc::new(err),
-            });
-            SaveOutcome::Failed
-        } _ => {
-            Self::subscribe_to_global_buffer_events(file_id, ctx);
-            SaveOutcome::Succeeded
-        }};
+        let save_outcome = match GlobalBufferModel::handle(ctx).update(ctx, move |model, ctx| {
+            model.save(file_id, content, buffer_version, ctx)
+        }) {
+            Err(err) => {
+                log::error!("Failed to save file to new path: {err:?}");
+                ctx.emit(LocalCodeEditorEvent::FailedToSave {
+                    error: Rc::new(err),
+                });
+                SaveOutcome::Failed
+            }
+            _ => {
+                Self::subscribe_to_global_buffer_events(file_id, ctx);
+                SaveOutcome::Succeeded
+            }
+        };
         callback(save_outcome, ctx);
     }
 

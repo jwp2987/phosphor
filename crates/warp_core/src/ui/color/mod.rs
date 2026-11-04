@@ -1,6 +1,6 @@
 use warpui::color::ColorU;
 
-use self::contrast::{high_enough_contrast, pick_constrasting_color, MinimumAllowedContrast};
+use self::contrast::{MinimumAllowedContrast, high_enough_contrast, pick_constrasting_color};
 
 pub mod blend;
 pub mod contrast;

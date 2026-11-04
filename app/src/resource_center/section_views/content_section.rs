@@ -1,11 +1,11 @@
 use pathfinder_color::ColorU;
 use warpui::{
+    AppContext, Entity, SingletonEntity, TypedActionView, View, ViewContext,
     elements::{
         ConstrainedBox, Container, Element, Empty, Flex, MouseStateHandle, ParentElement,
         Shrinkable,
     },
     ui_components::components::{UiComponent, UiComponentStyles},
-    AppContext, Entity, SingletonEntity, TypedActionView, View, ViewContext,
 };
 
 use crate::util::color::{ContrastingColor, MinimumAllowedContrast};
@@ -15,8 +15,8 @@ use crate::{
 };
 
 use super::{
-    SectionAction, SectionView, CHEVRON_ICON_SIZE, DESCRIPTION_FONT_SIZE, ICON_PADDING,
-    ITEM_PADDING_BOTTOM, SECTION_SPACING,
+    CHEVRON_ICON_SIZE, DESCRIPTION_FONT_SIZE, ICON_PADDING, ITEM_PADDING_BOTTOM, SECTION_SPACING,
+    SectionAction, SectionView,
 };
 
 #[derive(Default)]

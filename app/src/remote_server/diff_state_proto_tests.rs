@@ -569,7 +569,8 @@ fn snapshot_from_parts_with_base_content_carries_content_at_base() {
     assert!(err.diffs.is_none());
 
     // metadata None → NotInRepository, regardless of diff_data.
-    let nir = snapshot_from_parts_with_base_content("/repo".to_string(), &DiffMode::Head, None, None);
+    let nir =
+        snapshot_from_parts_with_base_content("/repo".to_string(), &DiffMode::Head, None, None);
     assert!(matches!(
         nir.state.and_then(|s| s.state),
         Some(proto::diff_state::State::NotInRepository(_))
@@ -596,7 +597,10 @@ fn decode_file_delta_decodes_path_diff_and_metadata() {
     assert_eq!(file.content_at_head.as_deref(), Some("c"));
     assert_eq!(file.file_diff, sample_file_diff());
     assert_eq!(
-        decoded.metadata.expect("delta carried metadata").main_branch_name,
+        decoded
+            .metadata
+            .expect("delta carried metadata")
+            .main_branch_name,
         "main"
     );
 }

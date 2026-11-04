@@ -1,7 +1,8 @@
 use pathfinder_color::ColorU;
 use settings::Setting;
-use warp_core::ui::{appearance::Appearance, Icon};
+use warp_core::ui::{Icon, appearance::Appearance};
 use warpui::{
+    Element, Entity, ModelHandle, SingletonEntity, TypedActionView, View, ViewContext,
     elements::{
         ConstrainedBox, Container, CrossAxisAlignment, Empty, Flex, Hoverable, MainAxisSize,
         MouseStateHandle, ParentElement, Shrinkable, Text,
@@ -10,17 +11,16 @@ use warpui::{
     platform::Cursor,
     prelude::{Border, CornerRadius, Radius},
     text_layout::ClipConfig,
-    Element, Entity, ModelHandle, SingletonEntity, TypedActionView, View, ViewContext,
 };
 
 use crate::{
+    BlocklistAIHistoryModel,
     ai::{
         agent::conversation::{AIConversationId, ConversationStatus},
         blocklist::BlocklistAIHistoryEvent,
     },
     terminal::BlockListSettings,
     ui_components::blended_colors,
-    BlocklistAIHistoryModel,
 };
 
 use super::{AgentViewController, AgentViewEntryOrigin};

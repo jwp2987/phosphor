@@ -3484,7 +3484,6 @@ impl AISettings {
             report_if_error!(self.cli_agent_scan_completed.set_value(true, ctx));
         }
     }
-
 }
 
 /// Singleton model that caches compiled regexes for the `cli_agent_footer_enabled_commands`

@@ -1,12 +1,12 @@
 use std::cmp::Ordering;
-use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
 use crate::elements::DropTargetData;
 use crate::platform::Cursor;
 use crate::{
-    elements::Point, AfterLayoutContext, AppContext, Element, EventContext, LayoutContext,
-    PaintContext, SizeConstraint,
+    AfterLayoutContext, AppContext, Element, EventContext, LayoutContext, PaintContext,
+    SizeConstraint, elements::Point,
 };
 
 use crate::{
@@ -17,7 +17,7 @@ use crate::{
 use itertools::Itertools;
 use parking_lot::Mutex;
 use pathfinder_geometry::rect::RectF;
-use pathfinder_geometry::vector::{vec2f, Vector2F};
+use pathfinder_geometry::vector::{Vector2F, vec2f};
 
 /// The default drag threshold used when no value is explicitly set by the creator
 const DEFAULT_DRAG_THRESHOLD: f32 = 5.;

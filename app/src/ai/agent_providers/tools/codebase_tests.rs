@@ -31,7 +31,10 @@ fn descriptor_name_and_schema() {
 fn description_is_local_only_and_non_empty() {
     assert!(!SEARCH_CODEBASE.description.is_empty());
     let d = SEARCH_CODEBASE.description.to_lowercase();
-    assert!(d.contains("local"), "description must advertise local-only search");
+    assert!(
+        d.contains("local"),
+        "description must advertise local-only search"
+    );
     // Must not imply any cloud/network capability.
     assert!(!d.contains("cloud search") && !d.contains("upload"));
 }

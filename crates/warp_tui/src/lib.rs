@@ -19,7 +19,6 @@ fn init_i18n_for_warp_tui_tests() {
     warp::i18n::init(Some("en"));
 }
 
-mod report_error;
 mod agent_block;
 mod agent_block_sections;
 mod agent_message;
@@ -32,6 +31,7 @@ pub mod benchmark_support;
 mod cli_agent_osc_event_publisher;
 mod clipboard;
 pub mod input;
+mod report_error;
 pub mod root_view;
 pub mod session;
 mod telemetry;
@@ -84,7 +84,6 @@ mod tool_call_labels;
 mod transcript_view;
 mod transient_hint;
 mod tui_block_list_viewport_source;
-mod tui_revert_registry;
 mod tui_cli_subagent_view;
 mod tui_code_block_view;
 mod tui_column_layout;
@@ -94,6 +93,7 @@ mod tui_generic_tool_call_view;
 mod tui_markdown;
 mod tui_permission_prompt;
 mod tui_plan_view;
+mod tui_revert_registry;
 mod tui_review_comments;
 mod tui_shell_command_view;
 mod usage;

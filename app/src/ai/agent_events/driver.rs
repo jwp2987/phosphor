@@ -1,17 +1,17 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
-use futures::future::Either;
 use futures::StreamExt;
+use futures::future::Either;
 use instant::Instant;
 use warp_core::errors::AnyhowErrorExt as _;
 use warpui::r#async::Timer;
 
 use crate::ai::agent_events::{AgentEventStreamClient, AgentRunEvent};
 use crate::report_error;
-use crate::util::retry_strategies::{is_auth_error, is_transient_http_error, HttpStatusError};
+use crate::util::retry_strategies::{HttpStatusError, is_auth_error, is_transient_http_error};
 
 pub(crate) const DEFAULT_AGENT_EVENT_RECONNECT_BACKOFF_STEPS: &[u64] = &[1, 2, 5, 10];
 pub(crate) const DEFAULT_PERMANENT_ERROR_BACKOFF_STEPS: &[u64] = &[30];

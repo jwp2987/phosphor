@@ -3,6 +3,8 @@ use std::ops::Range;
 
 use warp_core::{features::FeatureFlag, settings::Setting};
 use warpui::{
+    AppContext, Element, Entity, EventContext, SingletonEntity, TypedActionView, View, ViewContext,
+    ViewHandle,
     elements::{
         self, Align, Border, Clipped, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox,
         Container, CornerRadius, CrossAxisAlignment, DropShadow, Flex, Highlight, Icon,
@@ -14,8 +16,6 @@ use warpui::{
     presenter::ChildView,
     text_layout::ClipConfig,
     ui_components::button::ButtonVariant,
-    AppContext, Element, Entity, EventContext, SingletonEntity, TypedActionView, View, ViewContext,
-    ViewHandle,
 };
 
 use string_offset::CharOffset;
@@ -29,7 +29,7 @@ use crate::{
 };
 use crate::{
     appearance::Appearance,
-    cloud_object::{model::actions::ObjectActions, StoredObjectMetadataExt},
+    cloud_object::{StoredObjectMetadataExt, model::actions::ObjectActions},
 };
 use crate::{cloud_object::model::actions::ObjectActionType, terminal::view::TerminalAction};
 use crate::{terminal::input::InputAction, ui_components::buttons::icon_button};
@@ -40,10 +40,10 @@ use warpui::text_layout::TextStyle;
 use warpui::ui_components::components::{UiComponent, UiComponentStyles};
 
 use super::{
-    command_parser::{compute_workflow_display_data, WorkflowArgumentIndex, WorkflowDisplayData},
+    AIWorkflowOrigin, WorkflowObject,
+    command_parser::{WorkflowArgumentIndex, WorkflowDisplayData, compute_workflow_display_data},
     workflow::Argument,
     workflow_view::env_var_selector::{EnvVarSelector, EnvVarSelectorEvent},
-    AIWorkflowOrigin, WorkflowObject,
 };
 
 const INFO_BOX_PADDING: f32 = 20.;

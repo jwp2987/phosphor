@@ -1,9 +1,9 @@
+use super::*;
+use command::Stdio;
+use command::r#async::Command;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use command::r#async::Command;
-use command::Stdio;
 use tempfile::TempDir;
-use super::*;
 
 #[test]
 fn test_parse_range_with_comma() {
@@ -260,8 +260,7 @@ fn parse_git_status_entries_reads_the_index_column() {
 #[test]
 fn parse_git_status_entries_reads_the_index_column_for_renames() {
     // A rename is a type-2 entry; its `XY` lives in the same field.
-    let status_output =
-        "2 R. N... 100644 100644 100644 abc1234 def5678 R100 new.txt\0old.txt\0\
+    let status_output = "2 R. N... 100644 100644 100644 abc1234 def5678 R100 new.txt\0old.txt\0\
          2 RM N... 100644 100644 100644 abc1234 def5678 R100 new2.txt\0old2.txt";
     let result = LocalDiffStateModel::parse_git_status_entries(status_output).unwrap();
     assert_eq!(result.len(), 2);
@@ -340,8 +339,7 @@ async fn staged_state_of_file(repo_path: &Path) -> Option<FileStagedState> {
 async fn stage_paths_moves_a_file_into_the_index_and_back_out() {
     let (_dir, repo_path) = init_repo_for_staging("one\ntwo\nthree\n").await;
 
-    std::fs::write(repo_path.join("file.txt"), "one\ntwo changed\nthree\n")
-        .expect("edit file.txt");
+    std::fs::write(repo_path.join("file.txt"), "one\ntwo changed\nthree\n").expect("edit file.txt");
     assert_eq!(
         staged_state_of_file(&repo_path).await,
         Some(FileStagedState::Unstaged)
@@ -421,12 +419,9 @@ async fn stage_changes_impl_stages_one_hunk_and_leaves_the_other() {
         .replace("line 19\n", "line 19 edited\n");
     std::fs::write(repo_path.join("file.txt"), &edited).expect("edit file.txt");
 
-    let diff_output = run_git_command(
-        &repo_path,
-        &["diff", "--no-color", "--", "file.txt"],
-    )
-    .await
-    .expect("git diff");
+    let diff_output = run_git_command(&repo_path, &["diff", "--no-color", "--", "file.txt"])
+        .await
+        .expect("git diff");
     let hunks = LocalDiffStateModel::parse_diff_hunks(&diff_output).expect("parse hunks");
     assert_eq!(hunks.len(), 2, "expected two separate hunks");
 
@@ -581,10 +576,12 @@ async fn get_all_branches_lists_local_branches_with_main_flagged() {
         .map(|(_, is_main)| *is_main)
         .collect();
     assert_eq!(main_flags, vec![true]);
-    assert!(branches
-        .iter()
-        .filter(|(name, _)| name.starts_with("feature/"))
-        .all(|(_, is_main)| !*is_main));
+    assert!(
+        branches
+            .iter()
+            .filter(|(name, _)| name.starts_with("feature/"))
+            .all(|(_, is_main)| !*is_main)
+    );
 }
 
 #[tokio::test]
@@ -598,9 +595,11 @@ async fn get_all_branches_excludes_remote_tracking_branches_by_default() {
     let local_only = LocalDiffStateModel::get_all_branches(&repo, None, false)
         .await
         .expect("get_all_branches should succeed for a valid repo");
-    assert!(local_only
-        .iter()
-        .all(|(name, _)| !name.starts_with("origin/")));
+    assert!(
+        local_only
+            .iter()
+            .all(|(name, _)| !name.starts_with("origin/"))
+    );
 
     let with_remotes = LocalDiffStateModel::get_all_branches(&repo, None, true)
         .await

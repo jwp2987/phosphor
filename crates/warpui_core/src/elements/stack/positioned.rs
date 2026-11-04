@@ -5,11 +5,11 @@ use std::any::Any;
 use super::OffsetPositioning;
 use crate::elements::Selection;
 use crate::{
-    elements::{Point, SelectableElement, SelectionFragment},
-    event::DispatchedEvent,
-    text::{word_boundaries::WordBoundariesPolicy, IsRect, SelectionDirection, SelectionType},
     AfterLayoutContext, AppContext, Element, EventContext, LayoutContext, PaintContext,
     SizeConstraint,
+    elements::{Point, SelectableElement, SelectionFragment},
+    event::DispatchedEvent,
+    text::{IsRect, SelectionDirection, SelectionType, word_boundaries::WordBoundariesPolicy},
 };
 
 pub(super) struct Positioned {

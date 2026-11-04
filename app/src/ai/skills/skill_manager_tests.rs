@@ -2,17 +2,17 @@ use super::*;
 use crate::ai::skills::bundled::activation_for_bundled_skill;
 use crate::settings::AISettings;
 use crate::warp_managed_paths_watcher::WarpManagedPathsWatcher;
-use warp_core::execution_mode::{AppExecutionMode, ExecutionMode};
-use ai::skills::{get_provider_for_path, ParsedSkill, SkillProvider, SkillReference, SkillScope};
-use repo_metadata::{repositories::DetectedRepositories, DirectoryWatcher, RepoMetadataModel};
+use ai::skills::{ParsedSkill, SkillProvider, SkillReference, SkillScope, get_provider_for_path};
+use repo_metadata::{DirectoryWatcher, RepoMetadataModel, repositories::DetectedRepositories};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 use tempfile::TempDir;
 use warp_core::channel::ChannelState;
+use warp_core::execution_mode::{AppExecutionMode, ExecutionMode};
 use warp_core::features::FeatureFlag;
 use warp_util::host_id::HostId;
 use warp_util::remote_path::RemotePath;
@@ -165,7 +165,10 @@ fn get_skills_for_working_directory_scopes_subdirectory_skills() {
         .insert(LocalOrRemotePath::Local(frontend_skill_path.clone()));
 
     let mut skills_by_path: HashMap<LocalOrRemotePath, ParsedSkill> = HashMap::new();
-    skills_by_path.insert(LocalOrRemotePath::Local(root_skill_path.clone()), root_skill);
+    skills_by_path.insert(
+        LocalOrRemotePath::Local(root_skill_path.clone()),
+        root_skill,
+    );
     skills_by_path.insert(
         LocalOrRemotePath::Local(frontend_skill_path.clone()),
         frontend_skill,
@@ -235,7 +238,10 @@ fn get_skills_for_working_directory_scopes_subdirectory_skills() {
 
         // Test 3: From repo root, should only see root skill (not frontend skill)
         let skills_from_root = skill_manager_handle.read(&app, |manager, ctx| {
-            manager.get_skills_for_working_directory(Some(&LocalOrRemotePath::Local(repo.clone())), ctx)
+            manager.get_skills_for_working_directory(
+                Some(&LocalOrRemotePath::Local(repo.clone())),
+                ctx,
+            )
         });
         let names_from_root: Vec<&str> = skills_from_root.iter().map(|s| s.name.as_str()).collect();
         assert!(
@@ -297,7 +303,10 @@ fn get_skills_for_working_directory_name_collision_returns_both() {
         .insert(LocalOrRemotePath::Local(subdir_skill_path.clone()));
 
     let mut skills_by_path: HashMap<LocalOrRemotePath, ParsedSkill> = HashMap::new();
-    skills_by_path.insert(LocalOrRemotePath::Local(root_skill_path.clone()), root_skill);
+    skills_by_path.insert(
+        LocalOrRemotePath::Local(root_skill_path.clone()),
+        root_skill,
+    );
     skills_by_path.insert(
         LocalOrRemotePath::Local(subdir_skill_path.clone()),
         subdir_skill,
@@ -326,7 +335,10 @@ fn get_skills_for_working_directory_name_collision_returns_both() {
 
         // From subdir: should see both "deploy" skills (root + subdir)
         let skills = skill_manager_handle.read(&app, |manager, ctx| {
-            manager.get_skills_for_working_directory(Some(&LocalOrRemotePath::Local(subdir.clone())), ctx)
+            manager.get_skills_for_working_directory(
+                Some(&LocalOrRemotePath::Local(subdir.clone())),
+                ctx,
+            )
         });
         let deploy_skills: Vec<_> = skills.iter().filter(|s| s.name == "deploy").collect();
         assert_eq!(
@@ -337,7 +349,10 @@ fn get_skills_for_working_directory_name_collision_returns_both() {
 
         // From repo root: should only see root "deploy"
         let skills = skill_manager_handle.read(&app, |manager, ctx| {
-            manager.get_skills_for_working_directory(Some(&LocalOrRemotePath::Local(repo.clone())), ctx)
+            manager.get_skills_for_working_directory(
+                Some(&LocalOrRemotePath::Local(repo.clone())),
+                ctx,
+            )
         });
         let deploy_skills: Vec<_> = skills.iter().filter(|s| s.name == "deploy").collect();
         assert_eq!(
@@ -376,9 +391,11 @@ Run `{{warp_cli_binary_name}}` to connect to {{warp_server_url}}.
     let skill = skills.get("test-skill").unwrap();
 
     let expected_cli = ChannelState::channel().cli_command_name();
-    assert!(skill
-        .content
-        .contains(&format!("Run `{expected_cli}` to connect to .")));
+    assert!(
+        skill
+            .content
+            .contains(&format!("Run `{expected_cli}` to connect to ."))
+    );
 }
 
 #[test]
@@ -847,7 +864,10 @@ fn get_skills_for_working_directory_respects_location() {
         let local_skills = handle.read(&app, |manager, ctx| {
             manager.get_skills_for_working_directory(Some(&local_project_dir), ctx)
         });
-        let local_names: HashSet<_> = local_skills.iter().map(|skill| skill.name.as_str()).collect();
+        let local_names: HashSet<_> = local_skills
+            .iter()
+            .map(|skill| skill.name.as_str())
+            .collect();
         assert!(local_names.contains("local-home"));
         assert!(local_names.contains("local-project"));
         assert!(local_names.contains("bundled"));

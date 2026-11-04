@@ -9,10 +9,10 @@ use crate::ai::agent::comment::CodeReview;
 use crate::ai::agent::task::TaskId;
 use crate::ai::agent::todos::AIAgentTodoList;
 use crate::ai::agent::{
-    util::parse_markdown_into_text_and_code_sections, AIAgentAction, AIAgentActionType,
-    AIAgentCitation, AIAgentInput, AIAgentOutputMessage, AIAgentText, AIAgentTodo,
-    ArtifactCreatedData, MessageId, RejectedToolCallKind, SuggestedAgentModeWorkflow,
-    SuggestedRule, Suggestions, TodoOperation,
+    AIAgentAction, AIAgentActionType, AIAgentCitation, AIAgentInput, AIAgentOutputMessage,
+    AIAgentText, AIAgentTodo, ArtifactCreatedData, MessageId, RejectedToolCallKind,
+    SuggestedAgentModeWorkflow, SuggestedRule, Suggestions, TodoOperation,
+    util::parse_markdown_into_text_and_code_sections,
 };
 use crate::ai::agent::{
     CloneRepositoryURL, SubagentCall, SubagentType, SummarizationType, WebFetchStatus,
@@ -20,13 +20,13 @@ use crate::ai::agent::{
 };
 use crate::ai::artifact_download::sanitized_basename;
 use crate::ai::document::ai_document_model::{AIDocumentId, AIDocumentVersion};
+use agent_proto as api;
+use ai::agent::UnknownCitationTypeError;
 use ai::agent::action::ReadSkillRequest;
 use ai::agent::convert::ToolToAIAgentActionError;
-use ai::agent::UnknownCitationTypeError;
-use ai::skills::{skill_reference_from_read_skill_ref, SkillPathOrigin};
+use ai::skills::{SkillPathOrigin, skill_reference_from_read_skill_ref};
 use api::ask_user_question::question::QuestionType;
 use warp_core::channel::ChannelState;
-use agent_proto as api;
 
 use crate::ai::agent::{AIAgentAttachment, UserQueryMode};
 

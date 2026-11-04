@@ -100,8 +100,8 @@ fn provider_api_key_flags_are_refused_for_every_provider() {
 /// argument would go unnoticed.
 #[test]
 fn a_launch_without_the_key_flags_is_not_refused() {
-    let args = TuiArgs::try_parse_from(["warp", "--auto-approve"])
-        .expect("a plain launch should parse");
+    let args =
+        TuiArgs::try_parse_from(["warp", "--auto-approve"]).expect("a plain launch should parse");
 
     assert!(reject_provider_api_key_flags(&args).is_ok());
 }

@@ -10,7 +10,7 @@ use warp_core::ui::{
 
 use async_trait::async_trait;
 use thiserror::Error;
-use warpui::{fonts::FontInfo, keymap::Keystroke, DisplayIdx};
+use warpui::{DisplayIdx, fonts::FontInfo, keymap::Keystroke};
 
 use crate::{
     interval_timer::IntervalTimer,
@@ -213,11 +213,10 @@ impl Config {
                         |_| dark.clone(),
                     );
 
-                    match (light_written, dark_written) { (Some(light), Some(dark)) => {
-                        Some(ThemeType::LightAndDark { light, dark })
-                    } _ => {
-                        None
-                    }}
+                    match (light_written, dark_written) {
+                        (Some(light), Some(dark)) => Some(ThemeType::LightAndDark { light, dark }),
+                        _ => None,
+                    }
                 }
                 ThemeType::Single(normal) => {
                     let theme_yaml_file_name = format!("{}_theme.yaml", self.terminal_name);

@@ -2,6 +2,8 @@ use instant::Instant;
 use markdown_parser::{FormattedText, FormattedTextFragment, FormattedTextLine};
 use warp_core::features::FeatureFlag;
 use warpui::{
+    AppContext, Entity, ModelAsRef, ModelHandle, SingletonEntity, TypedActionView, View,
+    ViewContext,
     elements::{
         Border, CacheOption, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Element,
         Flex, FormattedTextElement, HighlightedHyperlink, Icon, Image, MouseStateHandle,
@@ -9,8 +11,6 @@ use warpui::{
     },
     fonts::Weight,
     ui_components::components::{UiComponent, UiComponentStyles},
-    AppContext, Entity, ModelAsRef, ModelHandle, SingletonEntity, TypedActionView, View,
-    ViewContext,
 };
 
 use crate::{
@@ -21,7 +21,7 @@ use crate::{
 };
 use crate::{send_telemetry_from_ctx, server::telemetry::TelemetryEvent};
 
-use super::{feature_section::FeatureSection, SectionAction, SectionView};
+use super::{SectionAction, SectionView, feature_section::FeatureSection};
 
 #[derive(Default)]
 struct ChangelogMouseStateHandles {

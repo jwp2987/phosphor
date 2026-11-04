@@ -6,8 +6,8 @@ use async_channel::Sender;
 pub use command_executor::*;
 
 use anyhow::Result;
-use futures::future::{BoxFuture, Shared};
 use futures::FutureExt;
+use futures::future::{BoxFuture, Shared};
 use instant::Instant;
 use once_cell::sync::OnceCell;
 use smol_str::SmolStr;
@@ -18,37 +18,37 @@ use std::fmt;
 use std::fmt::{Debug, Display, Formatter};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use typed_path::{TypedPath, TypedPathBuf, WindowsPath};
 use warp_util::path::{
-    convert_msys2_to_windows_native_path, convert_wsl_to_windows_host_path, msys2_exe_to_root,
-    ShellDialect, ShellFamily,
+    ShellDialect, ShellFamily, convert_msys2_to_windows_native_path,
+    convert_wsl_to_windows_host_path, msys2_exe_to_root,
 };
 
 use version_compare::Version;
 use warp_completer::completer::{
     CommandExitStatus, CommandOutput, PathSeparators, TopLevelCommandCaseSensitivity,
 };
-use warpui::{platform::OperatingSystem, Entity, ModelContext, SingletonEntity};
+use warpui::{Entity, ModelContext, SingletonEntity, platform::OperatingSystem};
 
 #[cfg(feature = "local_tty")]
 use crate::features::FeatureFlag;
 #[cfg(feature = "local_tty")]
+use crate::remote_server::client::RemoteServerClient;
+#[cfg(feature = "local_tty")]
 use crate::remote_server::manager::{RemoteServerManager, RemoteServerManagerEvent};
 use crate::server::telemetry::{BootstrappingInfo, TelemetryEvent};
-use crate::terminal::event::ExecutedExecutorCommandEvent;
 use crate::terminal::ShellHost;
 use crate::terminal::ShellLaunchData;
-#[cfg(feature = "local_tty")]
-use crate::remote_server::client::RemoteServerClient;
+use crate::terminal::event::ExecutedExecutorCommandEvent;
 #[cfg(feature = "local_tty")]
 use command_executor::remote_server_executor::RemoteServerCommandExecutor;
 use parking_lot::{Mutex, RwLock};
 
+use crate::terminal::History;
 use crate::terminal::shell::{Shell, ShellType};
 use crate::terminal::warpify::SubshellSource;
-use crate::terminal::History;
 
 use super::ansi::{BootstrappedValue, InitShellValue, SSHValue};
 use super::terminal_model::{HistoryEntry, SubshellInitializationInfo};
@@ -61,7 +61,9 @@ pub enum ReadHistoryContentsError {
     PowerShellError(anyhow::Error),
 
     #[cfg(windows)]
-    #[error("Error running PowerShell commands and reading from filesystem to read history file. PowerShell error: {powershell_error}, filesystem error: {async_fs_error}")]
+    #[error(
+        "Error running PowerShell commands and reading from filesystem to read history file. PowerShell error: {powershell_error}, filesystem error: {async_fs_error}"
+    )]
     PowerShellAndAsyncFsError {
         powershell_error: anyhow::Error,
         async_fs_error: std::io::Error,
@@ -897,7 +899,11 @@ impl SessionInfo {
         let shell_type = match ShellType::from_name(bootstrapped_value.shell.as_str()) {
             Some(value) => {
                 if value != self.shell.shell_type() {
-                    log::error!("Received ShellType {:?} in BootstrappedValue that conflicts with pending ShellType {:?}", value, self.shell.shell_type());
+                    log::error!(
+                        "Received ShellType {:?} in BootstrappedValue that conflicts with pending ShellType {:?}",
+                        value,
+                        self.shell.shell_type()
+                    );
                 }
                 value
             }
@@ -1784,11 +1790,7 @@ impl Session {
         }) {
             return false;
         }
-        !self
-            .late_commands
-            .missing
-            .lock()
-            .contains(word)
+        !self.late_commands.missing.lock().contains(word)
     }
 
     /// The `stat`-per-`$PATH`-directory half of [`Self::discover_command_word`]; records a miss
@@ -2521,7 +2523,7 @@ pub mod testing {
                 command_executor: RwLock::new(Arc::new(TestCommandExecutor::default())),
                 load_external_commands_future: Default::default(),
                 external_commands_load_finished: Arc::new(AtomicBool::new(false)),
-            command_data_stale: AtomicBool::new(false),
+                command_data_stale: AtomicBool::new(false),
                 late_commands: Default::default(),
                 command_case_sensitivity: TopLevelCommandCaseSensitivity::CaseSensitive,
                 session_type: Mutex::new(session_type),
@@ -2543,7 +2545,7 @@ pub mod testing {
                 command_executor: RwLock::new(Arc::new(TestCommandExecutor::default())),
                 load_external_commands_future: Default::default(),
                 external_commands_load_finished: Arc::new(AtomicBool::new(false)),
-            command_data_stale: AtomicBool::new(false),
+                command_data_stale: AtomicBool::new(false),
                 late_commands: Default::default(),
                 command_case_sensitivity: TopLevelCommandCaseSensitivity::CaseSensitive,
                 session_type: Mutex::new(session_type),
@@ -2560,7 +2562,9 @@ pub mod testing {
                 .set(external_commands_with_values(commands))
                 .is_err()
             {
-                log::warn!("Ignored call to set_external_commands, as external commands had already been set!");
+                log::warn!(
+                    "Ignored call to set_external_commands, as external commands had already been set!"
+                );
             };
         }
 
@@ -2698,7 +2702,8 @@ fn local_dir_is_outside_git_repo(dir: &Path) -> bool {
     if std::env::var_os("GIT_DIR").is_some() || !dir.is_dir() {
         return false;
     }
-    !dir.ancestors().any(|ancestor| ancestor.join(".git").exists())
+    !dir.ancestors()
+        .any(|ancestor| ancestor.join(".git").exists())
 }
 
 /// The commands in nushell's sqlite history (`history.file_format = sqlite`, its default), oldest

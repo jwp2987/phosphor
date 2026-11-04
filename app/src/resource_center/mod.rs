@@ -7,7 +7,6 @@ use crate::{
     util::bindings::trigger_to_keystroke,
 };
 
-
 mod main_page;
 pub mod utils;
 pub use main_page::{ResourceCenterMainEvent, ResourceCenterMainView};
@@ -19,7 +18,7 @@ pub mod sections;
 mod view;
 use serde::{Deserialize, Serialize};
 pub use view::{ResourceCenterAction, ResourceCenterEvent, ResourceCenterPage, ResourceCenterView};
-use warpui::{keymap::Keystroke, AppContext, Entity, SingletonEntity};
+use warpui::{AppContext, Entity, SingletonEntity, keymap::Keystroke};
 
 use self::section_views::feature_section::FeatureSection;
 
@@ -224,14 +223,18 @@ pub fn mark_feature_used_and_write_to_user_defaults(
 ) {
     if tips_completed.mark_feature_used(feature) {
         GeneralSettings::handle(ctx).update(ctx, |general_settings, ctx| {
-            report_if_error!(general_settings
-                .welcome_tips_features_used
-                .set_value(tips_completed.features_used.clone(), ctx));
+            report_if_error!(
+                general_settings
+                    .welcome_tips_features_used
+                    .set_value(tips_completed.features_used.clone(), ctx)
+            );
 
             if tips_completed.skipped_or_completed {
-                report_if_error!(general_settings
-                    .welcome_tips_skipped_or_completed
-                    .set_value(true, ctx));
+                report_if_error!(
+                    general_settings
+                        .welcome_tips_skipped_or_completed
+                        .set_value(true, ctx)
+                );
             }
         });
     }
@@ -244,9 +247,11 @@ pub fn skip_tips_and_write_to_user_defaults(
 ) {
     tips_completed.skipped_or_completed = true;
     GeneralSettings::handle(ctx).update(ctx, |general_settings, ctx| {
-        report_if_error!(general_settings
-            .welcome_tips_skipped_or_completed
-            .set_value(true, ctx));
+        report_if_error!(
+            general_settings
+                .welcome_tips_skipped_or_completed
+                .set_value(true, ctx)
+        );
     });
 }
 
@@ -257,9 +262,11 @@ pub fn complete_tips_and_write_to_user_defaults(
 ) {
     tips_completed.skipped_or_completed = true;
     GeneralSettings::handle(ctx).update(ctx, |general_settings, ctx| {
-        report_if_error!(general_settings
-            .welcome_tips_skipped_or_completed
-            .set_value(true, ctx));
+        report_if_error!(
+            general_settings
+                .welcome_tips_skipped_or_completed
+                .set_value(true, ctx)
+        );
     });
 }
 

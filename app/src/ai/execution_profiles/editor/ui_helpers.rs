@@ -1,14 +1,15 @@
+use crate::Appearance;
+use crate::TemplatableMCPServerManager;
 use crate::ai::execution_profiles::{AIExecutionProfile, ActionPermission, PromptSlot};
 use crate::editor::EditorView;
 use crate::settings::AISettings;
 use crate::ui_components::icons::Icon;
 use crate::view_components::FilterableDropdown;
 use crate::view_components::{Dropdown, SubmittableTextInput};
-use crate::Appearance;
-use crate::TemplatableMCPServerManager;
 use pathfinder_geometry::vector::vec2f;
 use uuid::Uuid;
 use warp_core::features::FeatureFlag;
+use warpui::AppContext;
 use warpui::elements::Hoverable;
 use warpui::elements::MouseStateHandle;
 use warpui::elements::{
@@ -18,13 +19,12 @@ use warpui::elements::{
 };
 use warpui::fonts::{Properties, Weight};
 use warpui::ui_components::components::UiComponent;
-use warpui::AppContext;
 use warpui::{Element, SingletonEntity, ViewHandle};
 
 use super::ExecutionProfileEditorView;
 use super::ExecutionProfileEditorViewAction;
 
-use crate::settings_view::{render_input_list, render_separator, InputListItem};
+use crate::settings_view::{InputListItem, render_input_list, render_separator};
 
 pub fn workspace_override_tooltip_message() -> String {
     crate::t!("settings-exec-profile-editor-workspace-override-tooltip")

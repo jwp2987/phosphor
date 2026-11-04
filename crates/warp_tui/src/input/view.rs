@@ -997,9 +997,7 @@ impl TuiInputView {
             // inline menu that owns the input suppresses every menu trigger.
             TuiInputAction::Submit
             | TuiInputAction::HandleEscape
-            | TuiInputAction::LogOutSelectedMcp => {
-                TuiEditorInteractionOutcome::PreserveViewport
-            }
+            | TuiInputAction::LogOutSelectedMcp => TuiEditorInteractionOutcome::PreserveViewport,
         };
         let outcome = match outcome {
             TuiEditorInteractionOutcome::Clipboard(_) if input_ownership.is_masked() => {

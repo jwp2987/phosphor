@@ -6,20 +6,19 @@ use warpui::{AppContext, SingletonEntity, WindowId};
 
 use crate::PrivacySettings;
 use crate::{
-    ai::blocklist::{telemetry_banner::should_collect_ai_ugc_telemetry, SerializedBlockListItem},
+    ai::blocklist::{SerializedBlockListItem, telemetry_banner::should_collect_ai_ugc_telemetry},
     appearance::Appearance,
     settings::{BlockVisibilitySettings, DebugSettings, InputModeSettings},
 };
 
 use super::{
-    color,
+    ShellLaunchState, SizeInfo, TerminalModel, color,
     event_listener::ChannelEventListener,
     model::block::BlockSize,
     safe_mode_settings::get_secret_obfuscation_mode,
     session_settings::SessionSettings,
     settings::TerminalSettings,
-    view::{create_size_info_for_blocklist, WARP_PROMPT_HEIGHT_LINES},
-    ShellLaunchState, SizeInfo, TerminalModel,
+    view::{WARP_PROMPT_HEIGHT_LINES, create_size_info_for_blocklist},
 };
 use crate::pane_group::pane::DetachType;
 

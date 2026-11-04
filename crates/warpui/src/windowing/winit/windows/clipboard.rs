@@ -6,7 +6,7 @@ use crate::clipboard::{
     Availability, BackgroundClipboardWriter, ClipboardReader, ClipboardTarget, ReadKind,
     ReadOutcome,
 };
-use crate::{clipboard::ClipboardContent, Clipboard};
+use crate::{Clipboard, clipboard::ClipboardContent};
 
 // Standard clipboard format ids (winuser.h), spelled out so no extra windows-crate feature is needed.
 const CF_TEXT: u32 = 1;
@@ -50,10 +50,10 @@ impl Clipboard for WindowsClipboard {
         }
         // `IsClipboardFormatAvailable` never opens the clipboard, so it cannot block on another
         // process holding it and decodes nothing (#1306). Covers the formats `read` consumes.
-        use windows::core::w;
         use windows::Win32::System::DataExchange::{
             IsClipboardFormatAvailable, RegisterClipboardFormatW,
         };
+        use windows::core::w;
         let available =
             |format: u32| format != 0 && unsafe { IsClipboardFormatAvailable(format) }.is_ok();
         let any = [CF_UNICODETEXT, CF_TEXT, CF_HDROP, CF_DIB, CF_DIBV5]

@@ -1,27 +1,27 @@
 use super::*;
+use crate::NotebookKeybindings;
 use crate::ai::request_usage_model::AIRequestUsageModel;
 use crate::auth::AuthStateProvider;
 use crate::cloud_object::model::persistence::ObjectStoreModel;
 use crate::code::editor::view::{CodeEditorRenderOptions, CodeEditorView};
 use crate::code::local_code_editor::LocalCodeEditorView;
+use crate::code_review::GlobalCodeReviewModel;
 use crate::code_review::comments::{
-    attach_pending_imported_comments, AttachedReviewComment, AttachedReviewCommentTarget,
-    CommentId, CommentOrigin, ImportedCommentDetails, LineDiffContent,
-    PendingImportedReviewComment, PendingImportedReviewCommentTarget,
+    AttachedReviewComment, AttachedReviewCommentTarget, CommentId, CommentOrigin,
+    ImportedCommentDetails, LineDiffContent, PendingImportedReviewComment,
+    PendingImportedReviewCommentTarget, attach_pending_imported_comments,
 };
 use crate::code_review::diff_size_limits::DiffSize;
 use crate::code_review::diff_state::{DiffStateModel, FileDiff, GitFileStatus};
 use crate::code_review::editor_state::CodeReviewEditorState;
-use crate::code_review::GlobalCodeReviewModel;
 use crate::pane_group::WorkingDirectoriesModel;
 use crate::settings_view::keybindings::KeybindingChangedNotifier;
 use crate::terminal::local_shell::LocalShellState;
 use crate::test_util::settings::initialize_settings_for_tests;
 use crate::vim_registers::VimRegisters;
-use crate::workspace::sync_inputs::SyncedInputState;
 use crate::workspace::ActiveSession;
+use crate::workspace::sync_inputs::SyncedInputState;
 use crate::workspaces::user_workspaces::UserWorkspaces;
-use crate::NotebookKeybindings;
 use ai::agent::action::InsertReviewComment;
 use chrono::Local;
 use repo_metadata::repositories::DetectedRepositories;
@@ -298,7 +298,10 @@ impl TestContext {
         let working_directories_model = app.add_model(|_| WorkingDirectoriesModel::new());
         let code_review_comment_batch =
             working_directories_model.update(app, |working_directories, ctx| {
-                working_directories.get_or_create_code_review_comments(&warp_util::local_or_remote_path::LocalOrRemotePath::Local(repo_path.clone()), ctx)
+                working_directories.get_or_create_code_review_comments(
+                    &warp_util::local_or_remote_path::LocalOrRemotePath::Local(repo_path.clone()),
+                    ctx,
+                )
             });
 
         let code_review_view = app.add_view(window_id, |ctx| {

@@ -2,7 +2,7 @@ use pathfinder_color::ColorU;
 use settings::Setting as _;
 use string_offset::ByteOffset;
 use warp_core::features::FeatureFlag;
-use warpui::{text_layout::TextStyle, App, SingletonEntity as _};
+use warpui::{App, SingletonEntity as _, text_layout::TextStyle};
 
 use crate::{
     appearance::Appearance,
@@ -11,8 +11,8 @@ use crate::{
     terminal::{
         input::{
             decorations::{
-                text_exceeds_background_job_token_cap, DecorationSet, InputBackgroundJobOptions,
-                MAX_BACKGROUND_JOB_BUFFER_CHARS, MAX_BACKGROUND_JOB_BUFFER_TOKENS,
+                DecorationSet, InputBackgroundJobOptions, MAX_BACKGROUND_JOB_BUFFER_CHARS,
+                MAX_BACKGROUND_JOB_BUFFER_TOKENS, text_exceeds_background_job_token_cap,
             },
             tests::{
                 add_window_with_bootstrapped_terminal, ensure_input_classifier_for_test,
@@ -242,7 +242,10 @@ fn test_oversized_buffer_keeps_detection_pending_and_is_classified_in_the_backgr
         let input = terminal.read(&app, |view, _| view.input().clone());
         simulate_directory_for_completion(session_id, &terminal, &mut app, "/usr/bin");
 
-        let line = format!("echo {}; echo END", "x".repeat(MAX_BACKGROUND_JOB_BUFFER_CHARS));
+        let line = format!(
+            "echo {}; echo END",
+            "x".repeat(MAX_BACKGROUND_JOB_BUFFER_CHARS)
+        );
         input.update(&mut app, |input, ctx| {
             input.ai_input_model().update(ctx, |ai_input, ctx| {
                 ai_input.set_input_config(

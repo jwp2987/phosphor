@@ -1,8 +1,9 @@
+use crate::TelemetryEvent;
 use crate::pane_group::focus_state::PaneFocusHandle;
 use crate::server::telemetry::MCPServerCollectionPaneEntrypoint;
 use crate::settings_view::mcp_servers_page::MCPServersSettingsPage;
-use crate::TelemetryEvent;
 use crate::{
+    GlobalResourceHandlesProvider,
     ai::execution_profiles::profiles::ClientProfileId,
     appearance::Appearance,
     editor::{
@@ -11,18 +12,17 @@ use crate::{
     },
     menu::{self, Menu, MenuItem, MenuItemFields},
     pane_group::{
-        pane::view, BackingView, Direction, PaneConfiguration, PaneEvent, SplitPaneState,
+        BackingView, Direction, PaneConfiguration, PaneEvent, SplitPaneState, pane::view,
     },
     settings::{AISettings, BlockVisibilitySettings, SettingsFileError},
     settings_view::mcp_servers_page::MCPServersSettingsPageEvent,
-    terminal::{model::blockgrid::BlockGrid, SizeInfo},
+    terminal::{SizeInfo, model::blockgrid::BlockGrid},
     ui_components::icons,
     util::bindings::{
-        custom_tag_to_keystroke, keybinding_name_to_display_string, BindingGroup, CustomAction,
+        BindingGroup, CustomAction, custom_tag_to_keystroke, keybinding_name_to_display_string,
     },
     view_components::ToastFlavor,
     workspace::WorkspaceAction,
-    GlobalResourceHandlesProvider,
 };
 use about_page::AboutPageView;
 use ai_page::{AISettingsPageAction, AISettingsPageEvent, AISettingsPageView, AISubpage};
@@ -36,10 +36,10 @@ use nav::{SettingsNavItem, SettingsUmbrella};
 use pathfinder_geometry::vector::Vector2F;
 use privacy_page::{PrivacyPageView, PrivacyPageViewEvent};
 use scripting_page::ScriptingSettingsPageView;
-use settings_file_footer::{render_footer, SettingsFooterKind, SettingsFooterMouseStates};
+use settings_file_footer::{SettingsFooterKind, SettingsFooterMouseStates, render_footer};
 use settings_page::{
-    MatchData, SettingsPage, SettingsPageEvent, SettingsPageMeta, SettingsPageViewHandle,
-    HEADER_PADDING,
+    HEADER_PADDING, MatchData, SettingsPage, SettingsPageEvent, SettingsPageMeta,
+    SettingsPageViewHandle,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -53,18 +53,18 @@ use warp_editor::editor::NavigationKey;
 use warpify_page::{WarpifyPageAction, WarpifyPageView};
 use warpui::Element;
 use warpui::{
+    Action, AppContext, Entity, ModelHandle, SingletonEntity, TypedActionView, UpdateView as _,
+    View, ViewContext, ViewHandle,
     elements::{
-        get_rich_content_position_id, Align, Border, ChildAnchor, ChildView, Clipped,
-        ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox, Container, CornerRadius,
-        CrossAxisAlignment, DispatchEventResult, Empty, EventHandler, Expanded, Fill, Flex,
-        MainAxisSize, OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds, Radius,
-        SavePosition, ScrollbarWidth, Shrinkable, Stack, Text,
+        Align, Border, ChildAnchor, ChildView, Clipped, ClippedScrollStateHandle,
+        ClippedScrollable, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment,
+        DispatchEventResult, Empty, EventHandler, Expanded, Fill, Flex, MainAxisSize,
+        OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds, Radius, SavePosition,
+        ScrollbarWidth, Shrinkable, Stack, Text, get_rich_content_position_id,
     },
     fonts::{Properties, Weight},
     id,
     keymap::{ContextPredicate, EnabledPredicate, FixedBinding},
-    Action, AppContext, Entity, ModelHandle, SingletonEntity, TypedActionView, UpdateView as _,
-    View, ViewContext, ViewHandle,
 };
 
 mod about_page;
@@ -105,8 +105,8 @@ pub use code_page::CodeSettingsPageView;
 pub use features_page::FeaturesPageAction;
 pub use privacy_page::PrivacyPageAction;
 pub use settings_page::{
-    render_body_item_label, render_info_icon, render_input_list, render_separator, AdditionalInfo,
-    InputListItem, LocalOnlyIconState, ToggleState,
+    AdditionalInfo, InputListItem, LocalOnlyIconState, ToggleState, render_body_item_label,
+    render_info_icon, render_input_list, render_separator,
 };
 
 /// Resolves a stable, friendly deeplink slug (used by
@@ -1738,11 +1738,7 @@ impl SettingsView {
             );
         }
 
-        if items.is_empty() {
-            None
-        } else {
-            Some(items)
-        }
+        if items.is_empty() { None } else { Some(items) }
     }
 
     fn context_menu_items(&self, ctx: &mut ViewContext<Self>) -> Vec<MenuItem<SettingsAction>> {

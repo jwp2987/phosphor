@@ -344,8 +344,7 @@ impl PersistedWorkspace {
             // Bring the index up to date when a conversation starts.
             ctx.subscribe_to_model(&BlocklistAIHistoryModel::handle(ctx), |me, event, ctx| {
                 if let BlocklistAIHistoryEvent::StartedNewConversation {
-                    terminal_view_id,
-                    ..
+                    terminal_view_id, ..
                 } = event
                 {
                     #[cfg(feature = "local_fs")]

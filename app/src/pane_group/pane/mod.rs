@@ -46,17 +46,17 @@ use crate::{
     notebooks::{file::FileNotebookView, image::ImageViewerView, notebook::NotebookView},
     settings::PaneSettings,
     settings_view::SettingsView,
-    terminal::{available_shells::AvailableShell, TerminalView},
+    terminal::{TerminalView, available_shells::AvailableShell},
     workflows::workflow_view::WorkflowView,
 };
 use serde::{Deserialize, Serialize};
 use url::Url;
 use warp_core::HostId;
 use warpui::{
-    elements::{DispatchEventResult, EventHandler, MouseInBehavior},
-    presenter::ChildView,
     Action, AppContext, Element, Entity, EntityId, ModelContext, ModelHandle, SingletonEntity,
     View, ViewContext, ViewHandle, WeakModelHandle,
+    elements::{DispatchEventResult, EventHandler, MouseInBehavior},
+    presenter::ChildView,
 };
 
 pub use self::view::PaneHeaderAction;
@@ -813,7 +813,6 @@ impl PaneConfiguration {
     pub fn notify_header_content_changed(&mut self, ctx: &mut ModelContext<Self>) {
         ctx.emit(PaneConfigurationEvent::HeaderContentChanged);
     }
-
 }
 
 pub enum PaneConfigurationEvent {
@@ -858,8 +857,7 @@ impl<P: BackingView> Entity for PaneStack<P> {
     type Event = PaneStackEvent<P>;
 }
 
-impl<P: BackingView<AssociatedData = ()>> PaneStack<P> {
-}
+impl<P: BackingView<AssociatedData = ()>> PaneStack<P> {}
 
 impl<P: BackingView> PaneStack<P> {
     /// Creates a new pane stack with a single initial view and its associated data.

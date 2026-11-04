@@ -1,11 +1,11 @@
 use super::{Point, SelectableElement, Selection, SelectionFragment, ZIndex};
+use crate::TaskId;
 use crate::platform::Cursor;
 use crate::text::word_boundaries::WordBoundariesPolicy;
 use crate::text::{IsRect, SelectionDirection, SelectionType};
-use crate::TaskId;
 use crate::{
-    event::{DispatchedEvent, ModifiersState},
     AfterLayoutContext, AppContext, Element, Event, EventContext, PaintContext,
+    event::{DispatchedEvent, ModifiersState},
 };
 use instant::Instant;
 use pathfinder_geometry::rect::RectF;
@@ -379,9 +379,15 @@ impl Hoverable {
     /// If there is another element above this one at the cursor position, then we treat that as
     /// outside the element for purposes of [`MouseState`].
     fn is_mouse_over_element(&self, ctx: &EventContext, position: Vector2F) -> bool {
-        let Some(origin) = self.origin else { return false; };
-        let Some(size) = self.size() else { return false; };
-        let Some(z_index) = self.child_max_z_index else { return false; };
+        let Some(origin) = self.origin else {
+            return false;
+        };
+        let Some(size) = self.size() else {
+            return false;
+        };
+        let Some(z_index) = self.child_max_z_index else {
+            return false;
+        };
 
         let is_hovering = ctx
             .visible_rect(origin, size)

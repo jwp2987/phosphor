@@ -3,10 +3,10 @@
 //! Corresponds to `api::message::tool_call::Tool::ReadFiles` in warp;
 //! once executed, the result is `ToolCallResultType::ReadFiles(ReadFilesResult)`.
 
+use agent_proto as api;
 use anyhow::Result;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use agent_proto as api;
 
 use super::OpenAiTool;
 

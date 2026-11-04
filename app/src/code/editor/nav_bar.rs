@@ -1,6 +1,8 @@
 use warp_core::ui::{appearance::Appearance, theme::Fill};
 use warp_editor::model::CoreEditorModel;
 use warpui::{
+    AppContext, Element, Entity, ModelHandle, SingletonEntity, TypedActionView, View, ViewContext,
+    ViewHandle,
     elements::{
         Align, Border, ConstrainedBox, Container, CrossAxisAlignment, Flex, MouseStateHandle,
         ParentElement, Shrinkable,
@@ -11,8 +13,6 @@ use warpui::{
         components::{UiComponent, UiComponentStyles},
     },
     units::IntoPixels,
-    AppContext, Element, Entity, ModelHandle, SingletonEntity, TypedActionView, View, ViewContext,
-    ViewHandle,
 };
 
 use crate::{

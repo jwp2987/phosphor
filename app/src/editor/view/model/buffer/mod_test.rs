@@ -13,9 +13,9 @@ use rand::prelude::StdRng;
 use std::{
     cmp::Ordering,
     collections::HashSet,
-    pin::{pin, Pin},
+    pin::{Pin, pin},
 };
-use warpui::{color::ColorU, App, ModelHandle};
+use warpui::{App, ModelHandle, color::ColorU};
 
 fn visible_text_styles(buffer: &Buffer) -> Vec<Option<TextStyle>> {
     buffer
@@ -4011,9 +4011,11 @@ fn test_receiving_selection_change_before_edit() {
                 .expect("can apply selection change to replica 2");
 
             assert_eq!(buffer.text(), "abc");
-            assert!(buffer
-                .selections_for_replica(replica_1_id.clone())
-                .is_empty(),);
+            assert!(
+                buffer
+                    .selections_for_replica(replica_1_id.clone())
+                    .is_empty(),
+            );
         });
 
         buffer_2.update(&mut app, |buffer, ctx| {

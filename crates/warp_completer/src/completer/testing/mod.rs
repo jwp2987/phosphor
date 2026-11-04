@@ -19,8 +19,8 @@ use crate::{
         GeneratorContext, PathCompletionContext, Suggestion, TopLevelCommandCaseSensitivity,
     },
     signatures::{
-        testing::{TEST_ALIAS_COMMAND, TEST_GENERATOR_1_COMMAND, TEST_GENERATOR_2_COMMAND},
         CommandRegistry,
+        testing::{TEST_ALIAS_COMMAND, TEST_GENERATOR_1_COMMAND, TEST_GENERATOR_2_COMMAND},
     },
 };
 

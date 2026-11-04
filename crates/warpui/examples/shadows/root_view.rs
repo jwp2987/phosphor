@@ -3,8 +3,8 @@ use warpui::elements::{
     Align, ConstrainedBox, Container, CornerRadius, DropShadow, Radius, Shrinkable,
 };
 use warpui::{
-    elements::{Flex, ParentElement, Rect},
     AppContext, Element, Entity, TypedActionView, View,
+    elements::{Flex, ParentElement, Rect},
 };
 
 use warpui::color::ColorU;

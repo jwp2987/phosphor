@@ -8,8 +8,8 @@ use warpui::elements::{
     ScrollToPositionMode, ScrollbarWidth, Shrinkable,
 };
 use warpui::fonts::Weight;
-use warpui::keymap::macros::id;
 use warpui::keymap::FixedBinding;
+use warpui::keymap::macros::id;
 use warpui::platform::Cursor;
 use warpui::ui_components::components::{UiComponent, UiComponentStyles};
 use warpui::{AppContext, Entity, SingletonEntity, TypedActionView, View, ViewContext, ViewHandle};
@@ -18,8 +18,8 @@ use crate::ai::artifacts::{Artifact, ArtifactButtonsRow, ArtifactButtonsRowEvent
 use crate::appearance::Appearance;
 use crate::notifications::item::NotificationFilter;
 use crate::notifications::item_rendering::{
-    create_notification_artifact_buttons_view, handle_notification_artifact_buttons_event,
-    render_notification_item_content, NotificationRenderContext,
+    NotificationRenderContext, create_notification_artifact_buttons_view,
+    handle_notification_artifact_buttons_event, render_notification_item_content,
 };
 use crate::notifications::model::{NotificationsEvent, NotificationsModel};
 use crate::notifications::{NotificationId, NotificationItem, NotificationItems};

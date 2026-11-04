@@ -50,9 +50,7 @@ impl AppContext {
             .windows
             .get_mut(&window_id)
             .expect("Window does not exist");
-        window
-            .tui_views
-            .insert(view_id, Box::new(view));
+        window.tui_views.insert(view_id, Box::new(view));
         self.view_to_window.insert(view_id, window_id);
         self.window_invalidations
             .entry(window_id)
@@ -111,9 +109,7 @@ impl AppContext {
             .windows
             .get_mut(&window_id)
             .expect("Window does not exist");
-        window
-            .tui_views
-            .insert(view_id, Box::new(view));
+        window.tui_views.insert(view_id, Box::new(view));
 
         self.register_typed_action_view_internal::<V>(window_id, view_id, parent_view_id)
     }

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use warpui::{App, EntityId};
 
-use super::{maybe_build_ai_query_upsert_event, PersistedAIAgentActionType, PersistedAIInputType};
+use super::{PersistedAIAgentActionType, PersistedAIInputType, maybe_build_ai_query_upsert_event};
 use crate::ai::agent::conversation::{AIConversation, AIConversationId};
 use crate::ai::agent::{AIAgentActionType, UseComputerRequest};
 use crate::ai::blocklist::{BlocklistAIHistoryEvent, BlocklistAIHistoryModel};

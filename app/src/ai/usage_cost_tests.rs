@@ -188,11 +188,17 @@ fn cost_report_without_a_rate_reports_tokens_and_never_a_money_figure() {
         "an unpriced conversation is not a cost report"
     );
     let message = outcome.message();
-    assert!(message.contains("no token price is configured"), "{message}");
+    assert!(
+        message.contains("no token price is configured"),
+        "{message}"
+    );
     // Names the model so the user knows which row to fill in.
     assert!(message.contains("Sonnet (Anthropic)"), "{message}");
     assert!(message.contains("1,000,000 in"), "{message}");
-    assert!(message.contains("Settings > AI > Agent providers"), "{message}");
+    assert!(
+        message.contains("Settings > AI > Agent providers"),
+        "{message}"
+    );
     assert!(
         !message.contains('$'),
         "an unconfigured rate must not produce a dollar figure: {message}"
@@ -205,7 +211,11 @@ fn cost_report_with_an_explicit_zero_rate_does_show_zero_dollars() {
     // said the endpoint is free, never because nobody said anything.
     let outcome = format_cost_report(&[totals("Local Llama", Some(price(0.0, 0.0)))]);
     assert!(!outcome.is_unavailable());
-    assert!(outcome.message().contains("$0.0000"), "{}", outcome.message());
+    assert!(
+        outcome.message().contains("$0.0000"),
+        "{}",
+        outcome.message()
+    );
 }
 
 #[test]
@@ -247,7 +257,9 @@ fn cost_report_with_no_recorded_usage_explains_why() {
     let outcome = format_cost_report(&[]);
     assert!(outcome.is_unavailable());
     assert!(
-        outcome.message().contains("no token usage has been recorded"),
+        outcome
+            .message()
+            .contains("no token usage has been recorded"),
         "{}",
         outcome.message()
     );
@@ -263,12 +275,28 @@ fn cost_report_breakdown_lists_cache_buckets_only_when_non_zero() {
         cache_write: 40,
         price: Some(price(3.0, 15.0)),
     }]);
-    assert!(with_cache.message().contains("30 cache-read"), "{}", with_cache.message());
-    assert!(with_cache.message().contains("40 cache-write"), "{}", with_cache.message());
+    assert!(
+        with_cache.message().contains("30 cache-read"),
+        "{}",
+        with_cache.message()
+    );
+    assert!(
+        with_cache.message().contains("40 cache-write"),
+        "{}",
+        with_cache.message()
+    );
 
     let without_cache = format_cost_report(&[totals("m", Some(price(3.0, 15.0)))]);
-    assert!(!without_cache.message().contains("cache-read"), "{}", without_cache.message());
-    assert!(!without_cache.message().contains("cache-write"), "{}", without_cache.message());
+    assert!(
+        !without_cache.message().contains("cache-read"),
+        "{}",
+        without_cache.message()
+    );
+    assert!(
+        !without_cache.message().contains("cache-write"),
+        "{}",
+        without_cache.message()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -283,7 +311,10 @@ fn context_usage_report_states_used_and_remaining() {
     assert!(message.contains("18% used"), "{message}");
     assert!(message.contains("82% remaining"), "{message}");
     assert!(message.contains("gpt-5 (OpenAI)"), "{message}");
-    assert!(message.contains("200,000 token context window"), "{message}");
+    assert!(
+        message.contains("200,000 token context window"),
+        "{message}"
+    );
 }
 
 #[test]
@@ -307,7 +338,10 @@ fn context_usage_report_treats_zero_as_not_reported_yet() {
     let outcome = format_context_usage_report(0.0, Some("gpt-5"), Some(200_000));
     assert!(outcome.is_unavailable());
     let message = outcome.message();
-    assert!(message.contains("No context-window usage reported yet"), "{message}");
+    assert!(
+        message.contains("No context-window usage reported yet"),
+        "{message}"
+    );
     assert!(message.contains("send a message first"), "{message}");
     assert!(
         !message.contains("0% used"),
@@ -333,10 +367,7 @@ fn context_usage_report_without_a_window_names_the_setting_to_fill_in() {
 #[test]
 fn context_usage_report_omits_the_suffix_when_nothing_is_known_about_the_model() {
     let outcome = format_context_usage_report(0.5, None, None);
-    assert_eq!(
-        outcome.message(),
-        "Context window: 50% used, 50% remaining"
-    );
+    assert_eq!(outcome.message(), "Context window: 50% used, 50% remaining");
 }
 
 // ---------------------------------------------------------------------------

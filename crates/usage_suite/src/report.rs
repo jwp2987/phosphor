@@ -66,7 +66,12 @@ impl ScenarioReport {
         }
         obj.insert(
             "tags".into(),
-            Value::Array(self.tags.iter().map(|t| Value::String((*t).into())).collect()),
+            Value::Array(
+                self.tags
+                    .iter()
+                    .map(|t| Value::String((*t).into()))
+                    .collect(),
+            ),
         );
         if let Some(retries) = self.retries {
             obj.insert("retries".into(), Value::from(retries));
@@ -123,7 +128,10 @@ impl Summary {
     /// Render as `{"summary": {...}}`, matching SCOPE.md §3.
     pub fn to_json(&self) -> Value {
         let mut wrapper = Map::new();
-        wrapper.insert("summary".into(), serde_json::to_value(self).expect("Summary always serializes"));
+        wrapper.insert(
+            "summary".into(),
+            serde_json::to_value(self).expect("Summary always serializes"),
+        );
         Value::Object(wrapper)
     }
 }
@@ -167,7 +175,10 @@ fn detail_lines_for_table(detail: &str) -> Vec<String> {
 /// Print the human-readable table + totals line to stderr, matching the
 /// layout shown in SCOPE.md §3.
 pub fn print_human_table(reports: &[ScenarioReport], summary: &Summary) {
-    eprintln!("{:<8} {:<40} {:<6} {:>8}", "SURFACE", "SCENARIO", "STATUS", "MS");
+    eprintln!(
+        "{:<8} {:<40} {:<6} {:>8}",
+        "SURFACE", "SCENARIO", "STATUS", "MS"
+    );
     for report in reports {
         let status = match report.status {
             Status::Pass => "PASS",

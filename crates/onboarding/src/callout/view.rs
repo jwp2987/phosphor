@@ -1,10 +1,10 @@
 use ui_components::Component;
 use warp_core::ui::appearance::Appearance;
 use warpui::{
-    elements::Empty,
-    keymap::{macros::*, FixedBinding, Keystroke},
     AppContext, Element, Entity, EventContext, ModelHandle, SingletonEntity, TypedActionView, View,
     ViewContext,
+    elements::Empty,
+    keymap::{FixedBinding, Keystroke, macros::*},
 };
 
 use crate::localization::{localized, localized_static};
@@ -19,12 +19,12 @@ pub struct OnboardingKeybindings {
 }
 
 use crate::{
+    OnboardingIntention,
     callout::model::{
         AgentModalityCalloutState, FinalState, OnboardingCalloutModel, OnboardingCalloutModelEvent,
         OnboardingCalloutState, OnboardingQuery, UniversalInputCalloutState,
     },
     components::onboarding_callout::{self, Button, StepStatus},
-    OnboardingIntention,
 };
 
 /// Options for rendering a callout.
@@ -58,7 +58,10 @@ fn get_universal_input_callout_options(
 ) -> Option<CalloutOptions> {
     match state {
         UniversalInputCalloutState::MeetInput => Some(CalloutOptions {
-            title: localized_static("onboarding-callout-meet-input-title", "Meet the Phosphor input"),
+            title: localized_static(
+                "onboarding-callout-meet-input-title",
+                "Meet the Phosphor input",
+            ),
             text: format!(
                 "{} {} {}",
                 localized(

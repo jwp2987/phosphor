@@ -5,7 +5,7 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use markdown_parser::{parse_html, parse_markdown, FormattedText};
+use markdown_parser::{FormattedText, parse_html, parse_markdown};
 use pathfinder_geometry::vector::vec2f;
 use string_offset::CharOffset;
 use warp_editor::{
@@ -28,8 +28,11 @@ use warp_editor::{
 
 use warp_util::{path::LineAndColumnArg, user_input::UserInput};
 use warpui::{
+    AppContext, BlurContext, CursorInfo, Element, Entity, FocusContext, ModelHandle,
+    SingletonEntity, TypedActionView, View, ViewContext, ViewHandle, WeakViewHandle,
     accessibility::{AccessibilityContent, ActionAccessibilityContent, WarpA11yRole},
     assets::asset_cache::{AssetCache, AssetHandle, AssetSource, AssetState},
+    r#async::SpawnedFutureHandle,
     clipboard::ClipboardContent,
     elements::{
         AnchorPair, Axis, Border, ChildAnchor, Clipped, ConstrainedBox, Container, CornerRadius,
@@ -43,14 +46,12 @@ use warpui::{
     keymap::{EditableBinding, FixedBinding},
     platform::{Cursor, OperatingSystem},
     presenter::ChildView,
-    r#async::SpawnedFutureHandle,
     ui_components::{
         button::ButtonVariant,
         components::{Coords, UiComponent, UiComponentStyles},
     },
     units::Pixels,
-    windowing, AppContext, BlurContext, CursorInfo, Element, Entity, FocusContext, ModelHandle,
-    SingletonEntity, TypedActionView, View, ViewContext, ViewHandle, WeakViewHandle,
+    windowing,
 };
 use warpui::{actions::StandardAction, elements::Hoverable};
 use warpui::{keymap::PerPlatformKeystroke, windowing::WindowManager};
@@ -72,25 +73,26 @@ use crate::{
     ui_components::icons::ICON_DIMENSIONS,
     util::{
         bindings::CustomAction,
-        tooltips::{render_tooltip, should_show_open_in_warp_link, TooltipLink, TooltipRedaction},
+        tooltips::{TooltipLink, TooltipRedaction, render_tooltip, should_show_open_in_warp_link},
     },
     view_components::DismissibleToast,
 };
 
 #[cfg(feature = "local_fs")]
-use crate::util::link_detection::{detect_file_paths, get_word_range_at_offset, DetectedLinkType};
+use crate::util::link_detection::{DetectedLinkType, detect_file_paths, get_word_range_at_offset};
 
 #[cfg(feature = "local_fs")]
 use warpui::text::word_boundaries::WordBoundariesPolicy;
 
 use super::{
+    BlockType, NotebookWorkflow,
     block_insertion_menu::{BlockInsertionMenuState, BlockInsertionSource},
     find_bar::{FindBar, FindBarEvent, FindBarState},
     keys::NotebookKeybindings,
     link_editor::{LinkEditor, LinkEditorEvent},
     model::{NotebooksEditorModel, RichTextEditorModelEvent},
     omnibar::{Omnibar, OmnibarEvent},
-    rich_text_styles, BlockType, NotebookWorkflow,
+    rich_text_styles,
 };
 
 #[cfg(test)]
@@ -3948,11 +3950,7 @@ impl RichTextAction<RichTextEditorView> for EditorViewAction {
                 ..
             } = loc
             {
-                if !clamped {
-                    Some(*char_offset)
-                } else {
-                    None
-                }
+                if !clamped { Some(*char_offset) } else { None }
             } else {
                 None
             }

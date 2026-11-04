@@ -10,14 +10,14 @@ use pathfinder_geometry::rect::RectF;
 use super::*;
 
 use crate::{
-    elements::{Clipped, DispatchEventResult},
-    platform::WindowStyle,
-    TypedActionView,
-};
-use crate::{
-    elements::{ConstrainedBox, EventHandler, ParentElement, Rect, ZIndex},
     App, AppContext, Entity, Event, Presenter, ViewContext, ViewHandle, WindowId,
     WindowInvalidation,
+    elements::{ConstrainedBox, EventHandler, ParentElement, Rect, ZIndex},
+};
+use crate::{
+    TypedActionView,
+    elements::{Clipped, DispatchEventResult},
+    platform::WindowStyle,
 };
 
 #[derive(Default)]

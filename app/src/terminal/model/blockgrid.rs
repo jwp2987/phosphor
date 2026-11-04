@@ -1,5 +1,5 @@
-use crate::terminal::event_listener::ChannelEventListener;
 use crate::terminal::SizeInfo;
+use crate::terminal::event_listener::ChannelEventListener;
 
 use crate::terminal::model::ansi::{
     self, Attr, CharsetIndex, ClearMode, CursorShape, CursorStyle, LineClearMode, Mode,
@@ -9,8 +9,8 @@ use crate::terminal::model::grid::grid_handler::{GridHandler, PerformResetGridCh
 use crate::terminal::model::index::{Point, VisibleRow};
 use crate::terminal::model::iterm_image::ITermImage;
 
-use crate::terminal::model::grid::Dimensions;
 use crate::terminal::model::GridStorage;
+use crate::terminal::model::grid::Dimensions;
 
 use crate::terminal::model::secrets::ObfuscateSecrets;
 use instant::Instant;
@@ -22,8 +22,8 @@ use std::ops::{Range, RangeInclusive};
 use std::sync::{Arc, OnceLock};
 
 use super::find::RegexDFAs;
-use super::grid::text_snapshot::GridTextSnapshot;
 use super::grid::RespectDisplayedOutput;
+use super::grid::text_snapshot::GridTextSnapshot;
 use super::image_map::StoredImageMetadata;
 use super::kitty::{KittyAction, KittyResponse};
 use super::secrets::RespectObfuscatedSecrets;

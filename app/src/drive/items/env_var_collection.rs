@@ -1,19 +1,19 @@
 use itertools::Itertools;
 use warp_core::context_flag::ContextFlag;
 use warpui::{
+    AppContext, Element, SingletonEntity,
     elements::{Clipped, Container, Flex, MouseStateHandle, ParentElement},
     fonts::Weight,
     ui_components::components::{UiComponent, UiComponentStyles},
-    AppContext, Element, SingletonEntity,
 };
 
 use crate::{
     appearance::Appearance,
     cloud_object::{
-        model::actions::{ObjectActionType, ObjectActions},
         StoredObjectMetadata,
+        model::actions::{ObjectActionType, ObjectActions},
     },
-    drive::{index::DriveIndexAction, DriveObjectType, ObjectTypeAndId},
+    drive::{DriveObjectType, ObjectTypeAndId, index::DriveIndexAction},
     env_vars::{EnvVarCollectionObject, EnvVarValue},
     themes::theme::Fill,
 };

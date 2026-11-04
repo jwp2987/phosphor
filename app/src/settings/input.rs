@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 /// TODO: move alias_expansion setting into this group.
-use settings::{define_settings_group, RespectUserSyncSetting, SupportedPlatforms, SyncToCloud};
+use settings::{RespectUserSyncSetting, SupportedPlatforms, SyncToCloud, define_settings_group};
 use std::collections::HashMap;
 use warpui::{AppContext, SingletonEntity};
 

@@ -25,9 +25,9 @@ use crate::code_review::diff_state::DiffMode;
 use crate::env_vars::EnvVarCollectionType;
 use crate::notebooks::file::FileNotebookView;
 use crate::pane_group::focus_state::PaneGroupFocusEvent;
+use crate::pane_group::pane::ActionOrigin;
 use crate::pane_group::pane::get_started_pane::GetStartedPane;
 use crate::pane_group::pane::welcome_pane::WelcomePane;
-use crate::pane_group::pane::ActionOrigin;
 use crate::quit_warning::UnsavedStateSummary;
 use crate::settings::{AISettings, DefaultSessionMode, PaneSettings, SshSettings};
 use crate::settings_view::SettingsSection;
@@ -54,7 +54,7 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::{mpsc::SyncSender, Arc};
+use std::sync::{Arc, mpsc::SyncSender};
 
 use itertools::Itertools;
 use lazy_static::lazy_static;
@@ -62,18 +62,18 @@ use lazy_static::lazy_static;
 use markdown_parser::FormattedTextFragment;
 use parking_lot::FairMutex;
 use pathfinder_geometry::rect::RectF;
-use pathfinder_geometry::vector::{vec2f, Vector2F};
+use pathfinder_geometry::vector::{Vector2F, vec2f};
 use serde::{Deserialize, Serialize};
 use tree::DEFAULT_FLEX_VALUE;
 use typed_path::TypedPath;
 use uuid::Uuid;
 use warp_cli::agent::Harness;
+use warp_core::HostId;
 use warp_core::command::ExitCode;
 use warp_core::context_flag::ContextFlag;
-use warp_core::HostId;
-use warp_util::path::convert_wsl_to_windows_host_path;
 #[cfg(feature = "local_fs")]
 use warp_util::path::LineAndColumnArg;
+use warp_util::path::convert_wsl_to_windows_host_path;
 use warpui::elements::{
     CrossAxisAlignment, DispatchEventResult, EventHandler, Flex, MainAxisSize, Shrinkable, Stack,
 };
@@ -82,8 +82,8 @@ use warpui::notification::NotificationSendError;
 
 use warpui::windowing::WindowManager;
 use warpui::{
-    elements::{ChildView, Element, ParentElement},
     AppContext, Entity, EntityId, ModelHandle, TypedActionView, View, ViewHandle, WindowId,
+    elements::{ChildView, Element, ParentElement},
 };
 use warpui::{SingletonEntity, ViewContext};
 
@@ -106,7 +106,7 @@ use crate::launch_configs::launch_config::{self, PaneMode, PaneTemplateType};
 use crate::persistence::ModelEvent;
 use crate::report_if_error;
 use crate::resource_center::{
-    mark_feature_used_and_write_to_user_defaults, Tip, TipAction, TipsCompleted,
+    Tip, TipAction, TipsCompleted, mark_feature_used_and_write_to_user_defaults,
 };
 use crate::server::ids::{ObjectUid, SyncId};
 use crate::server::telemetry::{PaletteSource, TelemetryEvent};
@@ -130,7 +130,7 @@ use crate::{cmd_or_ctrl_shift, send_telemetry_from_ctx};
 use settings::Setting as _;
 
 use crate::code::active_file::ActiveFileModel;
-use crate::util::bindings::{is_binding_pty_compliant, CustomAction};
+use crate::util::bindings::{CustomAction, is_binding_pty_compliant};
 use crate::workflows::{WorkflowSelectionSource, WorkflowSource, WorkflowType};
 
 use crate::palette::PaletteMode;
@@ -143,11 +143,11 @@ use crate::workspace::{
 
 pub mod focus_state;
 pub mod pane;
+#[cfg(feature = "local_fs")]
+pub(crate) mod repo_idle_evictor;
 pub mod ssh_split;
 pub mod tree;
 pub mod working_directories;
-#[cfg(feature = "local_fs")]
-pub(crate) mod repo_idle_evictor;
 
 use focus_state::PaneGroupFocusState;
 
@@ -158,6 +158,8 @@ pub use pane::code_diff_pane::CodeDiffPane;
 pub use pane::code_pane::CodePane;
 pub use pane::env_var_collection_pane::EnvVarCollectionPane;
 // Zap Wave 7-3: `EnvironmentManagementPane` was physically removed along with the ambient-agent UI subsystem.
+pub use pane::PaneHeaderAction;
+pub use pane::PaneHeaderCustomAction;
 pub use pane::execution_profile_editor_pane::ExecutionProfileEditorPane;
 pub use pane::file_pane::FilePane;
 pub use pane::image_pane::ImagePane;
@@ -165,8 +167,6 @@ pub use pane::notebook_pane::NotebookPane;
 pub use pane::settings_pane::SettingsPane;
 pub use pane::terminal_pane::TerminalPane;
 pub use pane::workflow_pane::WorkflowPane;
-pub use pane::PaneHeaderAction;
-pub use pane::PaneHeaderCustomAction;
 pub use pane::{
     AnyPaneContent, BackingView, PaneConfiguration, PaneConfigurationEvent, PaneContent, PaneEvent,
     PaneId, PaneView, TerminalPaneId,
@@ -229,8 +229,7 @@ fn resolve_tab_config_shell(name: &str, ctx: &AppContext) -> Option<AvailableShe
 
     AvailableShell::try_from(name).ok()
 }
-const WARP_SHELL_COMPATIBILITY_DOCS: &str =
-    "";
+const WARP_SHELL_COMPATIBILITY_DOCS: &str = "";
 // Default minimum width for a newly created Agent Mode pane so that it is legible. Called "default"
 // because this value may be too large for small windows. In that case, we fall back to 50% of the
 // window width.
@@ -1631,12 +1630,14 @@ impl PaneGroup {
                         .update(ctx, |store, _| {
                             store.take_conversations(&filtered_conversation_ids)
                         });
-                    vec1::Vec1::try_from_vec(conversations).ok().map(
-                        |conversations| ConversationRestorationInNewPaneType::Startup {
-                            conversations,
-                            active_conversation_id: terminal_snapshot.active_conversation_id,
-                        },
-                    )
+                    vec1::Vec1::try_from_vec(conversations)
+                        .ok()
+                        .map(
+                            |conversations| ConversationRestorationInNewPaneType::Startup {
+                                conversations,
+                                active_conversation_id: terminal_snapshot.active_conversation_id,
+                            },
+                        )
                 };
                 let pane_data = PaneGroup::terminal_pane_from_snapshot(
                     &terminal_snapshot,
@@ -2157,8 +2158,7 @@ impl PaneGroup {
     pub fn find_terminal_pane_by_session_uuid(&self, uuid: &[u8]) -> Option<PaneId> {
         self.panes_of::<TerminalPane>()
             .find(|pane| {
-                pane.session_uuid().as_slice() == uuid
-                    && !self.is_pane_hidden_for_close(pane.id())
+                pane.session_uuid().as_slice() == uuid && !self.is_pane_hidden_for_close(pane.id())
             })
             .map(|pane| pane.id())
     }
@@ -2368,17 +2368,20 @@ impl PaneGroup {
             pane.notebook_view(ctx).as_ref(ctx).selected_text(ctx)
         } else if let Some(pane) = self.downcast_pane_by_id::<AIDocumentPane>(focused_pane_id) {
             pane.document_view(ctx).as_ref(ctx).selected_text(ctx)
-        } else { match self.terminal_view_from_pane_id(focused_pane_id, ctx) { Some(terminal_view) => {
-            // NOTE: We currently don't have a way to track recency of selection events.
-            // In lieu of this, we prefer selections to the input editor over the terminal view.
-            // TODO(vkodithala): Once we have a way to track recency of selection events, we should use that instead.
-            terminal_view
-                .as_ref(ctx)
-                .selected_text_from_input(ctx)
-                .or_else(|| terminal_view.as_ref(ctx).selected_text(ctx))
-        } _ => {
-            None
-        }}};
+        } else {
+            match self.terminal_view_from_pane_id(focused_pane_id, ctx) {
+                Some(terminal_view) => {
+                    // NOTE: We currently don't have a way to track recency of selection events.
+                    // In lieu of this, we prefer selections to the input editor over the terminal view.
+                    // TODO(vkodithala): Once we have a way to track recency of selection events, we should use that instead.
+                    terminal_view
+                        .as_ref(ctx)
+                        .selected_text_from_input(ctx)
+                        .or_else(|| terminal_view.as_ref(ctx).selected_text(ctx))
+                }
+                _ => None,
+            }
+        };
 
         text.filter(|text: &String| !text.is_empty())
     }
@@ -2411,8 +2414,8 @@ impl PaneGroup {
                         .update(app, |terminal_manager, ctx| {
                             if let Some(manager) = terminal_manager
                                 .as_any()
-                                .downcast_ref::<local_tty::TerminalManager<TerminalView>>()
-                            {
+                                .downcast_ref::<local_tty::TerminalManager<TerminalView>>(
+                            ) {
                                 if honor_ps1 {
                                     manager.send_switch_to_ps1_bindkey(ctx);
                                 } else {
@@ -2726,30 +2729,33 @@ impl PaneGroup {
         let new_pane_id =
             self.insert_terminal_pane_hidden_for_child_agent(parent_pane_id, HashMap::new(), ctx);
 
-        match self.terminal_view_from_pane_id(new_pane_id, ctx) { Some(new_terminal_view) => {
-            if let Some(task_context) = child_task_context.as_ref() {
-                apply_hidden_child_agent_task_context(&new_terminal_view, task_context, ctx);
-            }
-            new_terminal_view.update(ctx, |terminal_view, ctx| {
-                terminal_view.restore_conversation_after_view_creation(
-                    RestoredAIConversation::new(child_conversation),
-                    true,
-                    RestoreConversationEntryBehavior::PreserveAgentViewState,
-                    ctx,
-                );
-                terminal_view.enter_agent_view(
-                    None,
-                    Some(child_id),
-                    AgentViewEntryOrigin::ChildAgent,
-                    ctx,
-                );
-            });
+        match self.terminal_view_from_pane_id(new_pane_id, ctx) {
+            Some(new_terminal_view) => {
+                if let Some(task_context) = child_task_context.as_ref() {
+                    apply_hidden_child_agent_task_context(&new_terminal_view, task_context, ctx);
+                }
+                new_terminal_view.update(ctx, |terminal_view, ctx| {
+                    terminal_view.restore_conversation_after_view_creation(
+                        RestoredAIConversation::new(child_conversation),
+                        true,
+                        RestoreConversationEntryBehavior::PreserveAgentViewState,
+                        ctx,
+                    );
+                    terminal_view.enter_agent_view(
+                        None,
+                        Some(child_id),
+                        AgentViewEntryOrigin::ChildAgent,
+                        ctx,
+                    );
+                });
 
-            self.child_agent_panes.insert(child_id, new_pane_id.into());
-        } _ => {
-            log::error!("Failed to get terminal view for child agent pane {child_id:?}");
-            self.discard_pane(new_pane_id.into(), ctx);
-        }}
+                self.child_agent_panes.insert(child_id, new_pane_id.into());
+            }
+            _ => {
+                log::error!("Failed to get terminal view for child agent pane {child_id:?}");
+                self.discard_pane(new_pane_id.into(), ctx);
+            }
+        }
     }
 
     /// Returns the terminal view currently owning `conversation_id`, even if
@@ -4054,8 +4060,7 @@ impl PaneGroup {
         // test tree membership, not `pane_contents`: a pane can be tracked by
         // the group while owning no tree slot (the original side of another
         // active swap), and focusing that would leave nothing on screen.
-        if self.panes.is_pane_in_tree(target_pane_id)
-            && !self.panes.is_pane_hidden(&target_pane_id)
+        if self.panes.is_pane_in_tree(target_pane_id) && !self.panes.is_pane_hidden(&target_pane_id)
         {
             self.handle_pane_count_change(ctx);
             self.focus_pane_preserving_maximized_state(target_pane_id, true, ctx);
@@ -5013,14 +5018,17 @@ impl PaneGroup {
     fn close_active_pane_with_confirmation(&mut self, ctx: &mut ViewContext<Self>) {
         if self.focused_pane_id(ctx).is_code_pane() {
             // If focused on a CodePane, close its active editor tab (optionally, the entire pane if it only has 1 tab).
-            match self.code_view_from_pane_id(self.focused_pane_id(ctx), ctx) { Some(code_view) => {
-                code_view.update(ctx, |view, ctx| {
-                    let index = view.active_tab_index();
-                    view.handle_action(&CodeViewAction::RemoveTabAtIndex { index }, ctx);
-                });
-            } _ => {
-                self.close_pane_with_confirmation(self.focused_pane_id(ctx), ctx);
-            }}
+            match self.code_view_from_pane_id(self.focused_pane_id(ctx), ctx) {
+                Some(code_view) => {
+                    code_view.update(ctx, |view, ctx| {
+                        let index = view.active_tab_index();
+                        view.handle_action(&CodeViewAction::RemoveTabAtIndex { index }, ctx);
+                    });
+                }
+                _ => {
+                    self.close_pane_with_confirmation(self.focused_pane_id(ctx), ctx);
+                }
+            }
         } else {
             self.close_pane_with_confirmation(self.focused_pane_id(ctx), ctx);
         }
@@ -5490,12 +5498,9 @@ impl PaneGroup {
         let pane_id = self
             .pane_contents
             .keys()
-            .find(|id| {
-                match self.terminal_view_from_pane_id(**id, ctx) { Some(terminal_view) => {
-                    terminal_view_id == terminal_view.id()
-                } _ => {
-                    false
-                }}
+            .find(|id| match self.terminal_view_from_pane_id(**id, ctx) {
+                Some(terminal_view) => terminal_view_id == terminal_view.id(),
+                _ => false,
             })
             .cloned();
 
@@ -5633,9 +5638,11 @@ impl PaneGroup {
                     });
 
                 GeneralSettings::handle(ctx).update(ctx, |general_settings, ctx| {
-                    report_if_error!(general_settings
-                        .user_default_shell_unsupported_banner_state
-                        .set_value(BannerState::Dismissed, ctx));
+                    report_if_error!(
+                        general_settings
+                            .user_default_shell_unsupported_banner_state
+                            .set_value(BannerState::Dismissed, ctx)
+                    );
                 });
             }
             BannerEvent::Action(_) => {
@@ -6716,7 +6723,6 @@ impl PaneGroup {
         if let Some(pane) = self.focused_pane_content(ctx) {
             pane.focus(ctx);
         }
-
     }
 
     /// Focus the active terminal session, if there is one.

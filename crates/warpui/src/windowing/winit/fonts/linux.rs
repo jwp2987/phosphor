@@ -10,17 +10,17 @@ use std::ffi::c_int;
 use std::{collections::HashMap, ffi::CString};
 
 use super::{
-    font_handle::{Error as FontDataError, FontHandle},
     FontFamily, ValidateFontSupportsEn,
+    font_handle::{Error as FontDataError, FontHandle},
 };
 use crate::fonts::{FontInfo, Properties, Style, Weight};
 
 use fontconfig::{
-    list_fonts, sort_fonts, FontSet, Fontconfig, ObjectSet, Pattern, FC_FAMILY, FC_FILE,
-    FC_FONTFORMAT, FC_FULLNAME, FC_INDEX, FC_LANG, FC_MONO, FC_SLANT, FC_SLANT_ITALIC,
-    FC_SLANT_ROMAN, FC_SPACING, FC_WEIGHT, FC_WEIGHT_BLACK, FC_WEIGHT_BOLD, FC_WEIGHT_EXTRABOLD,
-    FC_WEIGHT_EXTRALIGHT, FC_WEIGHT_LIGHT, FC_WEIGHT_MEDIUM, FC_WEIGHT_NORMAL, FC_WEIGHT_SEMIBOLD,
-    FC_WEIGHT_THIN,
+    FC_FAMILY, FC_FILE, FC_FONTFORMAT, FC_FULLNAME, FC_INDEX, FC_LANG, FC_MONO, FC_SLANT,
+    FC_SLANT_ITALIC, FC_SLANT_ROMAN, FC_SPACING, FC_WEIGHT, FC_WEIGHT_BLACK, FC_WEIGHT_BOLD,
+    FC_WEIGHT_EXTRABOLD, FC_WEIGHT_EXTRALIGHT, FC_WEIGHT_LIGHT, FC_WEIGHT_MEDIUM, FC_WEIGHT_NORMAL,
+    FC_WEIGHT_SEMIBOLD, FC_WEIGHT_THIN, FontSet, Fontconfig, ObjectSet, Pattern, list_fonts,
+    sort_fonts,
 };
 use itertools::Itertools;
 

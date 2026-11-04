@@ -2,12 +2,12 @@ use itertools::Itertools;
 use pathfinder_color::ColorU;
 
 use crate::{
+    AppContext, Element, Entity, EntityId, EntityIdMap, TypedActionView, View, ViewContext,
+    WeakViewHandle, WindowId,
     elements::{
         Align, Container, Fill, Hoverable, MouseStateHandle, ScrollStateHandle, Scrollable,
         ScrollableElement, ScrollbarWidth, Text, UniformList, UniformListState,
     },
-    AppContext, Element, Entity, EntityId, EntityIdMap, TypedActionView, View, ViewContext,
-    WeakViewHandle, WindowId,
 };
 
 /// Turns a map of parent->children into a list of (view, tree_depth) pairs,

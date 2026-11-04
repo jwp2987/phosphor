@@ -1,26 +1,26 @@
 use warp_editor::editor::NavigationKey;
 use warpui::{
+    AppContext, Element, ViewContext, ViewHandle,
     elements::{
         Align, ConstrainedBox, Container, Flex, ParentElement, SavePosition, Shrinkable, Stack,
     },
     fonts::FamilyId,
     ui_components::components::{Coords, UiComponent, UiComponentStyles},
-    AppContext, Element, ViewContext, ViewHandle,
 };
 
 use crate::{
+    Appearance,
     editor::{
         EditOrigin, EditorOptions, EditorView, Event as EditorEvent, InteractionState,
         PropagateAndNoOpNavigationKeys, SingleLineEditorOptions, TextOptions,
     },
     env_vars::{
+        EnvVarValue,
         active_env_var_collection_data::SavingStatus,
         view::env_var_collection::{
-            EditorType, EnvVarCollectionView, DESCRIPTION_EDITOR_POSITION, ROW_SPACING,
+            DESCRIPTION_EDITOR_POSITION, EditorType, EnvVarCollectionView, ROW_SPACING,
         },
-        EnvVarValue,
     },
-    Appearance,
 };
 
 // Metadata labels (name and description)

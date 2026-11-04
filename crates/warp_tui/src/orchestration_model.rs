@@ -124,7 +124,6 @@ pub(crate) enum TuiOrchestrationEvent {
     RemoveChildSession(TuiSessionId),
 }
 
-
 /// The TUI's orchestration singleton. See the module doc above for what was
 /// cut relative to the pin.
 pub(crate) struct TuiOrchestrationModel {
@@ -654,7 +653,9 @@ impl TuiOrchestrationModel {
                 harness_type: Some(harness_type),
                 ..
             } => {
-                format!("Local {harness_type} child agents aren't supported in Phosphor Agent CLI yet.")
+                format!(
+                    "Local {harness_type} child agents aren't supported in Phosphor Agent CLI yet."
+                )
             }
             StartAgentExecutionMode::Local {
                 harness_type: None, ..

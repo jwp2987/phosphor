@@ -8,9 +8,9 @@
 use std::borrow::Cow;
 use std::ops::{Range, RangeInclusive};
 
+use super::Dimensions;
 use super::grid_handler::{ContentGeneration, GridHandler, ImagePlacement};
 use super::row::Row;
-use super::Dimensions;
 use crate::terminal::model::image_map::ImagePlacementData;
 use crate::terminal::model::index::Point;
 use crate::terminal::model::secrets::{ObfuscateSecrets, Secret, SecretAndHandle, SecretHandle};

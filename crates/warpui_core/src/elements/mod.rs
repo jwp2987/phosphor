@@ -13,7 +13,6 @@ pub mod tui;
 // maths. Sharing it is the point of the extraction; gating it to `tui` made that
 // impossible and is what broke the `--features gui` build when the duplicate was
 // removed.
-pub mod shimmer_math;
 mod child_view;
 mod clipped;
 mod clipped_scrollable;
@@ -41,6 +40,7 @@ pub mod resizable;
 mod scrollable;
 mod selectable_area;
 pub mod shared_scrollbar;
+pub mod shimmer_math;
 pub mod shimmering_text;
 mod size_constraint_switch;
 mod stack;
@@ -89,20 +89,20 @@ pub use viewported_list::*;
 
 use crate::event::ModifiersState;
 use crate::platform::Cursor;
-use crate::{
-    event::DispatchedEvent,
-    text::{word_boundaries::WordBoundariesPolicy, IsRect, SelectionDirection, SelectionType},
-    Gradient,
-};
 pub use crate::{
-    scene::Dash, scene::ZIndex, AfterLayoutContext, AppContext, Event, EventContext, LayoutContext,
-    PaintContext, SizeConstraint,
+    AfterLayoutContext, AppContext, Event, EventContext, LayoutContext, PaintContext,
+    SizeConstraint, scene::Dash, scene::ZIndex,
+};
+use crate::{
+    Gradient,
+    event::DispatchedEvent,
+    text::{IsRect, SelectionDirection, SelectionType, word_boundaries::WordBoundariesPolicy},
 };
 use core::fmt;
 use pathfinder_color::ColorU;
 use pathfinder_geometry::{
     rect::RectF,
-    vector::{vec2f, Vector2F},
+    vector::{Vector2F, vec2f},
 };
 use std::any::Any;
 use std::borrow::Cow;

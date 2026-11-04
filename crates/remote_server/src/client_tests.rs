@@ -6,13 +6,14 @@ use crate::proto::{
     CodebaseIndexStatusesSnapshot, ErrorCode, FileSystemEntryKind, GetDiffState,
     GetDiffStateResponse, GitCommitChainMode, GitCommitChainRequest, GitCommitChainResponse,
     GitCommitChainSuccess, GitCreatePrRequest, GitCreatePrResponse, GitOpDelta, GitOpError,
-    GitPullRequest, GitPullResponse, GitPushRequest, GitPushResponse, HostScopedRequest, InitializeResponse, Notification,
-    OpenBufferResponse, PrInfo, ReadFileChunkResponse, ReadFileChunkSuccess,
-    ResolvePathResponse, ResolvePathSuccess, RunCommandResponse, RunCommandSuccess, ServerMessage,
-    SessionScopedRequest, WriteFileChunkResponse, WriteFileChunkSuccess, client_message,
-    git_commit_chain_response, git_create_pr_response, git_pull_response, git_push_response, host_scoped_request,
-    notification, read_file_chunk_response, resolve_path_response, run_command_response,
-    server_message, session_scoped_request, write_file_chunk_response,
+    GitPullRequest, GitPullResponse, GitPushRequest, GitPushResponse, HostScopedRequest,
+    InitializeResponse, Notification, OpenBufferResponse, PrInfo, ReadFileChunkResponse,
+    ReadFileChunkSuccess, ResolvePathResponse, ResolvePathSuccess, RunCommandResponse,
+    RunCommandSuccess, ServerMessage, SessionScopedRequest, WriteFileChunkResponse,
+    WriteFileChunkSuccess, client_message, git_commit_chain_response, git_create_pr_response,
+    git_pull_response, git_push_response, host_scoped_request, notification,
+    read_file_chunk_response, resolve_path_response, run_command_response, server_message,
+    session_scoped_request, write_file_chunk_response,
 };
 use crate::protocol;
 use warp_core::SessionId;

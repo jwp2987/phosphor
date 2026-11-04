@@ -1,4 +1,4 @@
-use warpui::{elements::MouseStateHandle, AppContext, Element};
+use warpui::{AppContext, Element, elements::MouseStateHandle};
 
 use crate::{
     appearance::Appearance,
@@ -8,9 +8,9 @@ use crate::{
 };
 
 use super::{
-    cloud_object_styling::warp_drive_icon_color,
-    index::{warp_drive_section_header_position_id, DriveIndexAction, DriveIndexSection},
     DriveObjectType, ObjectTypeAndId,
+    cloud_object_styling::warp_drive_icon_color,
+    index::{DriveIndexAction, DriveIndexSection, warp_drive_section_header_position_id},
 };
 
 pub mod ai_fact;

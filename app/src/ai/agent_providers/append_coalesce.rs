@@ -22,9 +22,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
+use agent_proto as api;
 use futures::{Stream, StreamExt};
 use instant::Instant;
-use agent_proto as api;
 
 use crate::ai::api_error::AIApiError;
 

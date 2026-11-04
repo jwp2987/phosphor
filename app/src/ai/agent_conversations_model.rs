@@ -22,7 +22,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::{HashMap, HashSet};
 use warp_cli::agent::Harness;
 use warp_core::features::FeatureFlag;
-use warp_core::ui::theme::{color::internal_colors, WarpTheme};
+use warp_core::ui::theme::{WarpTheme, color::internal_colors};
 use warpui::color::ColorU;
 use warpui::{AppContext, Entity, EntityId, ModelContext, SingletonEntity, WindowId};
 

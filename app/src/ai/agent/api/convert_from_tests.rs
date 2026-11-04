@@ -1,10 +1,10 @@
+use agent_proto as api;
 use ai::agent::action::AskUserQuestionType;
 use ai::skills::SkillPathOrigin;
-use agent_proto as api;
 
 use super::{
-    convert_api_question, ConversionParams, ConvertAPIMessageToClientOutputMessage,
-    MaybeAIAgentOutputMessage,
+    ConversionParams, ConvertAPIMessageToClientOutputMessage, MaybeAIAgentOutputMessage,
+    convert_api_question,
 };
 use crate::ai::agent::task::TaskId;
 use crate::ai::agent::{AIAgentActionType, AIAgentOutputMessageType, RejectedToolCallKind};

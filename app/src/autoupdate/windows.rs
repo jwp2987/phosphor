@@ -1,6 +1,6 @@
 use crate::server::telemetry::TelemetryEvent;
 use anyhow::anyhow;
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use channel_versions::VersionInfo;
 use command::blocking::Command;
 use lazy_static::lazy_static;
@@ -15,7 +15,7 @@ use warp_core::channel::{Channel, ChannelState};
 use warpui::AppContext;
 
 use super::{
-    gitlab, release_assets_directory_url, DownloadProgress, DownloadReady, ProgressCallback,
+    DownloadProgress, DownloadReady, ProgressCallback, gitlab, release_assets_directory_url,
 };
 use crate::util::windows::install_dir;
 
@@ -122,8 +122,8 @@ pub(super) async fn download_update_and_cleanup(
             // the same reason: "could not read" must not become "safe to
             // reuse", and the recovery here (download it again) is cheap and
             // loses nothing.
-            already_exists = may_reuse_staged_installer
-                && path.metadata().map(|m| m.len() > 0).unwrap_or(false);
+            already_exists =
+                may_reuse_staged_installer && path.metadata().map(|m| m.len() > 0).unwrap_or(false);
             if already_exists {
                 File::open(path)
             } else {
@@ -165,18 +165,12 @@ pub(super) async fn download_update_and_cleanup(
             if downloaded - last_reported >= REPORT_BYTES_THRESHOLD
                 || last_reported_at.elapsed() >= REPORT_TIME_THRESHOLD
             {
-                on_progress(DownloadProgress {
-                    downloaded,
-                    total,
-                });
+                on_progress(DownloadProgress { downloaded, total });
                 last_reported = downloaded;
                 last_reported_at = Instant::now();
             }
         }
-        on_progress(DownloadProgress {
-            downloaded,
-            total,
-        });
+        on_progress(DownloadProgress { downloaded, total });
     } else {
         // Reuse a previously downloaded installer with the same name: no new
         // request is made, just push one extra progress report so the UI

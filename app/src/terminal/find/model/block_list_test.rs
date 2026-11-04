@@ -4,16 +4,16 @@ use itertools::Itertools;
 use warpui::App;
 
 use crate::terminal::{
+    GridType, TerminalModel,
     block_filter::BlockFilterQuery,
     find::{
-        model::{block_list::run_find_on_block_list, FindOptions},
         BlockGridMatch,
+        model::{FindOptions, block_list::run_find_on_block_list},
     },
     model::{
         index::Point,
         terminal_model::{BlockIndex, BlockSortDirection},
     },
-    GridType, TerminalModel,
 };
 
 use super::{BlockListFindRun, BlockListMatch};

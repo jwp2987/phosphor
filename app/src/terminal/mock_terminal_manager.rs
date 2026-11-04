@@ -1,6 +1,6 @@
 use std::any::Any;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use parking_lot::FairMutex;
 use pathfinder_geometry::vector::Vector2F;
@@ -12,9 +12,9 @@ use crate::{
 };
 
 use super::{
+    ShellLaunchState, TerminalManager, TerminalModel, TerminalView,
     event_listener::ChannelEventListener, model::session::Sessions,
-    model_events::ModelEventDispatcher, ShellLaunchState, TerminalManager, TerminalModel,
-    TerminalView,
+    model_events::ModelEventDispatcher,
 };
 
 pub struct MockTerminalManager {
@@ -145,11 +145,11 @@ impl TerminalManager for MockTerminalManager {
 
 #[cfg(test)]
 mod testing {
-    use warpui::{platform::WindowStyle, App, Element};
+    use warpui::{App, Element, platform::WindowStyle};
 
     use crate::terminal::{
-        shell::{ShellName, ShellType},
         ShellLaunchState,
+        shell::{ShellName, ShellType},
     };
 
     use super::*;

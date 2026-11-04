@@ -1,15 +1,15 @@
 use std::collections::HashSet;
 
 use super::*;
+use crate::Entity;
+use crate::Presenter;
+use crate::TypedActionView;
+use crate::WindowInvalidation;
 use crate::core::View;
 use crate::elements::{ConstrainedBox, Rect, Scrollable, ScrollbarWidth};
 use crate::platform::WindowStyle;
 use crate::prelude::Fill;
 use crate::units::{IntoPixels, Pixels};
-use crate::Entity;
-use crate::Presenter;
-use crate::TypedActionView;
-use crate::WindowInvalidation;
 use crate::{App, ViewContext};
 use crate::{AppContext, Event};
 

@@ -1,11 +1,12 @@
 use parking_lot::FairMutex;
 use warp_core::ui::appearance::Appearance;
 use warpui::{
-    r#async::SpawnedFutureHandle, AppContext, EntityId, SingletonEntity as _, ViewContext,
-    ViewHandle,
+    AppContext, EntityId, SingletonEntity as _, ViewContext, ViewHandle,
+    r#async::SpawnedFutureHandle,
 };
 
 use crate::terminal::{
+    TerminalModel, TerminalView,
     model::{
         ansi::SystemDetails,
         block::BlockId,
@@ -15,7 +16,6 @@ use crate::terminal::{
     settings::TerminalSettings,
     shell::ShellType,
     ssh::{error::SshErrorBlock, install_tmux::SshInstallTmuxBlock, warpify::SshWarpifyBlock},
-    TerminalModel, TerminalView,
 };
 use std::{collections::HashMap, sync::Arc};
 

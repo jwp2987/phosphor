@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
 use warpui::{
-    async_assert, integration::TestStep, windowing::WindowManager, SingletonEntity, WindowId,
+    SingletonEntity, WindowId, async_assert, integration::TestStep, windowing::WindowManager,
 };
 
 use crate::{
-    ai::facts::{view::AIFactPage, AIMemory},
-    cloud_object::{model::persistence::ObjectStoreModel, update_manager::UpdateManager, Space},
+    ai::facts::{AIMemory, view::AIFactPage},
+    cloud_object::{Space, model::persistence::ObjectStoreModel, update_manager::UpdateManager},
     integration_testing::view_getters::workspace_view,
     server::ids::{ClientId, SyncId},
     workspaces::user_workspaces::UserWorkspaces,

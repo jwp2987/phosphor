@@ -116,4 +116,3 @@ fn document_title(index: usize, document_count: usize) -> String {
 #[cfg(test)]
 #[path = "document_action_presentation_tests.rs"]
 mod tests;
-

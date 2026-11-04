@@ -1,6 +1,6 @@
 pub use crate::aws_credentials::{AwsCredentials, AwsCredentialsState};
-use serde::{Deserialize, Serialize};
 use agent_proto as api;
+use serde::{Deserialize, Serialize};
 use warpui::{Entity, ModelContext, SingletonEntity};
 use warpui_extras::secure_storage::{self, AppContextExt};
 

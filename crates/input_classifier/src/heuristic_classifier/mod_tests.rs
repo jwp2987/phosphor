@@ -67,7 +67,10 @@ fn test_input_detection() {
 
         let token = mock_parsed_input_token("cargo --version".to_string()).await;
         assert_eq!(
-            classifier.detect_input_type(token, &context).await.input_type,
+            classifier
+                .detect_input_type(token, &context)
+                .await
+                .input_type,
             InputType::Shell
         );
 
@@ -82,14 +85,20 @@ fn test_input_detection() {
         let mut token = mock_parsed_input_token("cargo --version".to_string()).await;
         token.parsed_tokens[0].token_description = None;
         assert_eq!(
-            classifier.detect_input_type(token, &context).await.input_type,
+            classifier
+                .detect_input_type(token, &context)
+                .await
+                .input_type,
             InputType::Shell
         );
 
         let mut token = mock_parsed_input_token("rvm install 3.3".to_string()).await;
         token.parsed_tokens[0].token_description = None;
         assert_eq!(
-            classifier.detect_input_type(token, &context).await.input_type,
+            classifier
+                .detect_input_type(token, &context)
+                .await
+                .input_type,
             InputType::Shell
         );
 
@@ -97,7 +106,10 @@ fn test_input_detection() {
         let mut token = mock_parsed_input_token("Explain this".to_string()).await;
         token.parsed_tokens[0].token_description = None;
         assert_eq!(
-            classifier.detect_input_type(token.clone(), &context).await.input_type,
+            classifier
+                .detect_input_type(token.clone(), &context)
+                .await
+                .input_type,
             InputType::AI
         );
 
@@ -107,21 +119,30 @@ fn test_input_detection() {
         let mut token = mock_parsed_input_token("fix this".to_string()).await;
         token.parsed_tokens[0].token_description = None;
         assert_eq!(
-            classifier.detect_input_type(token, &context).await.input_type,
+            classifier
+                .detect_input_type(token, &context)
+                .await
+                .input_type,
             InputType::AI,
         );
 
         // Short queries with punctuation should be parsed as AI input.
         let token = mock_parsed_input_token("What went wrong?".to_string()).await;
         assert_eq!(
-            classifier.detect_input_type(token, &context).await.input_type,
+            classifier
+                .detect_input_type(token, &context)
+                .await
+                .input_type,
             InputType::AI
         );
         // Short queries with contractions should be parsed as AI input.
         let mut token = mock_parsed_input_token("What's the reason".to_string()).await;
         token.parsed_tokens[0].token_description = None;
         assert_eq!(
-            classifier.detect_input_type(token, &context).await.input_type,
+            classifier
+                .detect_input_type(token, &context)
+                .await
+                .input_type,
             InputType::AI
         );
 
@@ -130,7 +151,10 @@ fn test_input_detection() {
             mock_parsed_input_token("The message is \"utils::future ... ok\"".to_string()).await;
         token.parsed_tokens[0].token_description = None;
         assert_eq!(
-            classifier.detect_input_type(token, &context).await.input_type,
+            classifier
+                .detect_input_type(token, &context)
+                .await
+                .input_type,
             InputType::AI
         );
 
@@ -138,7 +162,10 @@ fn test_input_detection() {
         let mut token = mock_parsed_input_token("The type is \"<>\"".to_string()).await;
         token.parsed_tokens[0].token_description = None;
         assert_eq!(
-            classifier.detect_input_type(token, &context).await.input_type,
+            classifier
+                .detect_input_type(token, &context)
+                .await
+                .input_type,
             InputType::AI
         );
     });
@@ -161,42 +188,60 @@ fn test_cjk_input_detection() {
         // A single CJK character also classifies as AI (default logic would classify it as Shell due to token count < 2).
         let token = mock_parsed_input_token("帮我列出当前目录文件".to_string()).await;
         assert_eq!(
-            classifier.detect_input_type(token, &context).await.input_type,
+            classifier
+                .detect_input_type(token, &context)
+                .await
+                .input_type,
             InputType::AI
         );
 
         // Mixed Chinese and English; as long as it contains CJK, it goes to AI.
         let token = mock_parsed_input_token("用 cargo build 编译这个项目".to_string()).await;
         assert_eq!(
-            classifier.detect_input_type(token, &context).await.input_type,
+            classifier
+                .detect_input_type(token, &context)
+                .await
+                .input_type,
             InputType::AI
         );
 
         // Chinese punctuation (fullwidth comma, period, question mark) also matches.
         let token = mock_parsed_input_token("这是什么?".to_string()).await;
         assert_eq!(
-            classifier.detect_input_type(token, &context).await.input_type,
+            classifier
+                .detect_input_type(token, &context)
+                .await
+                .input_type,
             InputType::AI
         );
 
         // Japanese (hiragana + katakana).
         let token = mock_parsed_input_token("ファイルを表示してください".to_string()).await;
         assert_eq!(
-            classifier.detect_input_type(token, &context).await.input_type,
+            classifier
+                .detect_input_type(token, &context)
+                .await
+                .input_type,
             InputType::AI
         );
 
         // Korean.
         let token = mock_parsed_input_token("파일 목록을 보여줘".to_string()).await;
         assert_eq!(
-            classifier.detect_input_type(token, &context).await.input_type,
+            classifier
+                .detect_input_type(token, &context)
+                .await
+                .input_type,
             InputType::AI
         );
 
         // Pure English shell commands are unaffected.
         let token = mock_parsed_input_token("ls -la".to_string()).await;
         assert_eq!(
-            classifier.detect_input_type(token, &context).await.input_type,
+            classifier
+                .detect_input_type(token, &context)
+                .await
+                .input_type,
             InputType::Shell
         );
     });

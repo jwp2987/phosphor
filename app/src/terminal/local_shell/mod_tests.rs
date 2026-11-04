@@ -1,4 +1,7 @@
-use super::{InteractiveCaptureTimedOut, InteractiveEnvState, state_after_capture, PATH_CAPTURE_END, PATH_CAPTURE_START, extract_captured_path};
+use super::{
+    InteractiveCaptureTimedOut, InteractiveEnvState, PATH_CAPTURE_END, PATH_CAPTURE_START,
+    extract_captured_path, state_after_capture,
+};
 
 #[test]
 fn extracts_clean_path() {
@@ -72,9 +75,11 @@ fn path_probe_command_is_defined_for_every_shell() {
         ShellType::PowerShell,
         ShellType::Nu,
     ] {
-        assert!(super::path_probe_command(shell)
-            .to_lowercase()
-            .contains("path"));
+        assert!(
+            super::path_probe_command(shell)
+                .to_lowercase()
+                .contains("path")
+        );
     }
 }
 

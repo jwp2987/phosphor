@@ -8,14 +8,14 @@ use pathfinder_color::ColorU;
 use plist::{Dictionary, Value};
 use warp_core::ui::theme::{AnsiColors, TerminalColors, WarpTheme};
 use warpui::{
-    fonts::FontInfo, keymap::Keystroke, platform::mac::utils::unicode_char_to_key, DisplayIdx,
+    DisplayIdx, fonts::FontInfo, keymap::Keystroke, platform::mac::utils::unicode_char_to_key,
 };
 
 use crate::{
     root_view::QuakeModePinPosition,
     settings::{
-        import::config::HotkeyError, ExtraMetaKeys, DEFAULT_MONOSPACE_FONT_NAME,
-        DEFAULT_MONOSPACE_FONT_SIZE,
+        DEFAULT_MONOSPACE_FONT_NAME, DEFAULT_MONOSPACE_FONT_SIZE, ExtraMetaKeys,
+        import::config::HotkeyError,
     },
     terminal::{
         local_tty::shell::is_valid_path_or_command_for_supported_shell,
@@ -27,9 +27,9 @@ use crate::{
 };
 
 use super::config::{
-    calculate_accent_color, Config, ConfigError, GlobalHotkey, ImportableSetting, ImportedFont,
-    MouseAndScrollReporting, OpacitySettings, ParseableConfig, QuakeModeWindow, SettingType,
-    ThemeError, ThemeType,
+    Config, ConfigError, GlobalHotkey, ImportableSetting, ImportedFont, MouseAndScrollReporting,
+    OpacitySettings, ParseableConfig, QuakeModeWindow, SettingType, ThemeError, ThemeType,
+    calculate_accent_color,
 };
 
 extern crate plist;

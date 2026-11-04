@@ -16,12 +16,12 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use remote_server::manager::{RemoteServerManager, RemoteServerManagerEvent};
 use remote_server::HostId;
+use remote_server::manager::{RemoteServerManager, RemoteServerManagerEvent};
 use warpui::{AppContext, ModelContext, SingletonEntity};
 
 use super::diff_state::{
-    DiffMetadata, DiffMetadataAgainstBase, DiffMode, DiffState, DiffStats, DiffStateModelEvent,
+    DiffMetadata, DiffMetadataAgainstBase, DiffMode, DiffState, DiffStateModelEvent, DiffStats,
     GitDiffData, InvalidationBehavior, InvalidationSource,
 };
 use crate::code::buffer_location::RemotePath;
@@ -196,12 +196,7 @@ impl RemoteDiffStateModel {
     }
 
     /// Whether an incoming push targets this model's `(host, repo, mode)`.
-    fn matches(
-        &self,
-        host_id: &HostId,
-        repo_path: &str,
-        mode: Option<&proto::DiffMode>,
-    ) -> bool {
+    fn matches(&self, host_id: &HostId, repo_path: &str, mode: Option<&proto::DiffMode>) -> bool {
         host_id == &self.remote_path.host_id
             && repo_path == self.repo_path_string()
             && mode == Some(&encode_diff_mode(&self.mode))
@@ -219,7 +214,11 @@ impl RemoteDiffStateModel {
         ctx.emit(DiffStateModelEvent::ConnectionLost);
     }
 
-    fn apply_snapshot(&mut self, snapshot: &proto::DiffStateSnapshot, ctx: &mut ModelContext<Self>) {
+    fn apply_snapshot(
+        &mut self,
+        snapshot: &proto::DiffStateSnapshot,
+        ctx: &mut ModelContext<Self>,
+    ) {
         // A malformed `metadata` payload (issue #326) is surfaced as an error
         // state rather than silently degrading to defaulted metadata.
         let decoded = match decode_snapshot(snapshot) {
@@ -292,7 +291,11 @@ impl RemoteDiffStateModel {
         ));
     }
 
-    fn apply_file_delta(&mut self, delta: &proto::DiffStateFileDelta, ctx: &mut ModelContext<Self>) {
+    fn apply_file_delta(
+        &mut self,
+        delta: &proto::DiffStateFileDelta,
+        ctx: &mut ModelContext<Self>,
+    ) {
         // A malformed per-delta `metadata` payload (issue #326) is surfaced
         // as an error state rather than silently dropped.
         let decoded = match decode_file_delta(delta) {

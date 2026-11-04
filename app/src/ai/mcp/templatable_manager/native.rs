@@ -2,8 +2,7 @@ use crate::ai::mcp::FileBasedMCPManager;
 use crate::ai::mcp::app_exit::{ChildKillHandle, ChildProcessSlot, McpAppExitShutdown};
 use crate::ai::mcp::file_based_manager::FileBasedMCPManagerEvent;
 use crate::ai::mcp::templatable_manager::oauth::{
-    parse_credentials, FILE_BASED_MCP_CREDENTIALS_KEY,
-    TEMPLATABLE_MCP_CREDENTIALS_KEY,
+    FILE_BASED_MCP_CREDENTIALS_KEY, TEMPLATABLE_MCP_CREDENTIALS_KEY, parse_credentials,
 };
 use core::fmt;
 use itertools::Itertools;
@@ -14,16 +13,16 @@ use std::{collections::HashMap, future::Future};
 
 use crate::ai::mcp::http_client::build_client_with_headers;
 use crate::ai::mcp::sse_transport::{SseClientConfig, SseClientTransport};
-use crate::ai::mcp::tool_call::{self, McpClientHandler};
 use crate::ai::mcp::templatable::GalleryData;
 use crate::ai::mcp::templatable_manager::FigmaMcpStatus;
+use crate::ai::mcp::tool_call::{self, McpClientHandler};
 use crate::ai::mcp::{
     Author, JsonTemplate, MCPGalleryManager, MCPServerObject, MCPServerUpdate,
     ParsedTemplatableMCPServerResult,
 };
 
-use crate::ai::mcp::parsing::resolve_json;
 use crate::ai::mcp::TemplatableMCPServer;
+use crate::ai::mcp::parsing::resolve_json;
 use crate::auth::AuthStateProvider;
 use crate::cloud_object::model::persistence::{ObjectStoreEvent, ObjectStoreModel};
 use crate::cloud_object::update_manager::{InitiatedBy, UpdateManager};
@@ -35,9 +34,10 @@ use crate::server::telemetry::{
 };
 use crate::workspaces::user_workspaces::UserWorkspaces;
 use crate::{
+    GlobalResourceHandlesProvider,
     ai::mcp::{
-        logs, templatable::TemplatableMCPServerObject, templatable_installation::VariableValue,
-        MCPServer, StaticEnvVar, TemplatableMCPServerInstallation, TransportType,
+        MCPServer, StaticEnvVar, TemplatableMCPServerInstallation, TransportType, logs,
+        templatable::TemplatableMCPServerObject, templatable_installation::VariableValue,
     },
     cloud_object::{GenericStringObjectFormat, JsonObjectType},
     drive::ObjectTypeAndId,
@@ -47,27 +47,26 @@ use crate::{
     settings::AISettings,
     view_components::DismissibleToast,
     workspace::ToastStack,
-    GlobalResourceHandlesProvider,
 };
 use async_compat::CompatExt as _;
 use cfg_if::cfg_if;
 use futures::FutureExt as _;
 use parking_lot::Mutex;
-use rmcp::{transport::ConfigureCommandExt as _, ServiceExt as _};
-use simple_logger::manager::LogManager;
+use rmcp::{ServiceExt as _, transport::ConfigureCommandExt as _};
 use simple_logger::SimpleLogger;
+use simple_logger::manager::LogManager;
 use tokio::io::AsyncBufReadExt as _;
 use uuid::Uuid;
 use warp_core::safe_error;
 use warp_core::{execution_mode::AppExecutionMode, features::FeatureFlag, settings::Setting as _};
 use warpui::AppContext;
+use warpui::{ModelContext, SingletonEntity, windowing::WindowManager};
 use warpui_extras::secure_storage::AppContextExt as _;
-use warpui::{windowing::WindowManager, ModelContext, SingletonEntity};
 
 use super::{
-    oauth::{self, AuthContext},
     MCPServerState, SpawnedServerInfo, TemplatableMCPServerInfo, TemplatableMCPServerManager,
     TemplatableMCPServerManagerEvent,
+    oauth::{self, AuthContext},
 };
 
 /// Controls the behavior of `spawn_server_impl`.
@@ -1061,16 +1060,19 @@ impl TemplatableMCPServerManager {
         }
         self.pending_oauth_csrf
             .retain(|_, v| *v != installation_uuid);
-        match self.active_servers.remove(&installation_uuid) { Some(server_info) => {
-            self.change_server_state(installation_uuid, MCPServerState::ShuttingDown, ctx);
-            // Cancel the server, and emit NotRunning state once it has stopped.
-            ctx.spawn(server_info.service.cancel(), move |me, _, ctx| {
-                me.change_server_state(installation_uuid, MCPServerState::NotRunning, ctx);
-                ctx.dispatch_global_action("workspace:save_app", ());
-            });
-        } _ => {
-            self.change_server_state(installation_uuid, MCPServerState::NotRunning, ctx);
-        }}
+        match self.active_servers.remove(&installation_uuid) {
+            Some(server_info) => {
+                self.change_server_state(installation_uuid, MCPServerState::ShuttingDown, ctx);
+                // Cancel the server, and emit NotRunning state once it has stopped.
+                ctx.spawn(server_info.service.cancel(), move |me, _, ctx| {
+                    me.change_server_state(installation_uuid, MCPServerState::NotRunning, ctx);
+                    ctx.dispatch_global_action("workspace:save_app", ());
+                });
+            }
+            _ => {
+                self.change_server_state(installation_uuid, MCPServerState::NotRunning, ctx);
+            }
+        }
 
         log::debug!("Successfully shut down server with installation uuid {installation_uuid}");
     }

@@ -1,18 +1,18 @@
 use std::{borrow::Cow, fmt, str::FromStr};
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use chrono::{DateTime, Utc};
 use derivative::Derivative;
 use pathfinder_geometry::vector::vec2f;
 use serde::{Deserialize, Serialize};
-use warp_core::ui::{appearance::Appearance, theme::Fill, Icon};
+use warp_core::ui::{Icon, appearance::Appearance, theme::Fill};
 use warpui::{
+    Element,
     elements::{
         Align, ChildAnchor, ConstrainedBox, Hoverable, MouseStateHandle, OffsetPositioning,
         ParentAnchor, ParentElement, ParentOffsetBounds, Stack,
     },
     ui_components::components::UiComponent,
-    Element,
 };
 
 use crate::{

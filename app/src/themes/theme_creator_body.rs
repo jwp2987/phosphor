@@ -9,11 +9,12 @@ use crate::{
 use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::vec2f;
 use std::default::Default;
-use std::path::PathBuf;
 #[cfg(feature = "local_fs")]
 use std::fs::copy;
+use std::path::PathBuf;
 #[cfg(feature = "local_fs")]
 use warp_core::ui::theme::WarpTheme;
+use warpui::ViewHandle;
 use warpui::elements::{
     Border, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, DispatchEventResult,
     EventHandler, Fill, Flex, Icon, MainAxisAlignment, MainAxisSize, MouseStateHandle,
@@ -23,10 +24,9 @@ use warpui::fonts::Weight;
 use warpui::ui_components::button::{ButtonVariant, TextAndIcon, TextAndIconAlignment};
 use warpui::ui_components::components::{Coords, UiComponent, UiComponentStyles};
 use warpui::ui_components::text_input::TextInput;
-use warpui::ViewHandle;
 use warpui::{
-    platform::Cursor, AppContext, Element, Entity, SingletonEntity, TypedActionView, View,
-    ViewContext,
+    AppContext, Element, Entity, SingletonEntity, TypedActionView, View, ViewContext,
+    platform::Cursor,
 };
 
 const BUTTON_PADDING: f32 = 12.;

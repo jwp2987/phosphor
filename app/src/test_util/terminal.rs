@@ -1,28 +1,28 @@
-use repo_metadata::repositories::DetectedRepositories;
 #[cfg(feature = "local_fs")]
 use repo_metadata::RepoMetadataModel;
+use repo_metadata::repositories::DetectedRepositories;
 use std::sync::Arc;
 use warp_core::ui::appearance::Appearance;
 
-use crate::ai::persisted_workspace::PersistedWorkspace;
 use crate::ai::agent_conversations_model::AgentConversationsModel;
 use crate::ai::ambient_agents::github_auth_notifier::GitHubAuthNotifier;
 use crate::ai::document::ai_document_model::AIDocumentModel;
 use crate::ai::mcp::{
     gallery::MCPGalleryManager, templatable_manager::TemplatableMCPServerManager,
 };
+use crate::ai::persisted_workspace::PersistedWorkspace;
 use crate::ai::skills::SkillManager;
 use crate::code_review::git_status_update::GitStatusUpdateModel;
 use crate::terminal::cli_agent_sessions::CLIAgentSessionsModel;
 use crate::warp_managed_paths_watcher::WarpManagedPathsWatcher;
-use warpui::{platform::WindowStyle, App, ViewHandle, WindowId};
+use warpui::{App, ViewHandle, WindowId, platform::WindowStyle};
 use watcher::HomeDirectoryWatcher;
 
 use super::settings::initialize_settings_for_tests;
 use crate::ai::agent_providers::AgentProviderSecrets;
 use crate::ai::blocklist::BlocklistAIPermissions;
-use crate::ai::blocklist::agent_view::orchestration_pill_bar_model::OrchestrationPillBarModel;
 use crate::ai::blocklist::SerializedBlockListItem;
+use crate::ai::blocklist::agent_view::orchestration_pill_bar_model::OrchestrationPillBarModel;
 use crate::ai::execution_profiles::profiles::AIExecutionProfilesModel;
 use crate::ai::llms::LLMPreferences;
 use crate::ai::outline::RepoOutlines;
@@ -36,7 +36,7 @@ use crate::terminal::view::inline_banner::ByoLlmAuthBannerSessionState;
 use crate::undo_close::UndoCloseStack;
 use crate::workspace::{OneTimeModalModel, WorkspaceRegistry};
 use crate::{
-    ai::{blocklist::BlocklistAIHistoryModel, AIRequestUsageModel},
+    ai::{AIRequestUsageModel, blocklist::BlocklistAIHistoryModel},
     cloud_object::model::persistence::ObjectStoreModel,
     cloud_object::update_manager::UpdateManager,
     context_chips::prompt::Prompt,
@@ -46,11 +46,9 @@ use crate::{
     settings_view::keybindings::KeybindingChangedNotifier,
     system::SystemInfo,
     system::SystemStats,
-    terminal::{
-        keys::TerminalKeybindings, resizable_data::ResizableData, History, TerminalView,
-    },
+    terminal::{History, TerminalView, keys::TerminalKeybindings, resizable_data::ResizableData},
     workflows::local_workflows::LocalWorkflows,
-    workspace::{sync_inputs::SyncedInputState, ActiveSession},
+    workspace::{ActiveSession, sync_inputs::SyncedInputState},
     workspaces::user_workspaces::UserWorkspaces,
 };
 use repo_metadata::watcher::DirectoryWatcher;
@@ -132,7 +130,6 @@ pub fn initialize_app_for_terminal_view(app: &mut App) {
     // queued_query_tests.rs and others) register it themselves after calling this helper,
     // and `add_singleton_model` panics on a second registration rather than ignoring it.
     // Tests that need it register it at their own call site.
-
 }
 
 /// Creates a window in `app` with a [`TerminalView`] as the root view.

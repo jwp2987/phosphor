@@ -9,7 +9,7 @@ use string_offset::CharOffset;
 use warp_core::ui::theme::Fill;
 use warp_editor::{
     content::{edit::TemporaryBlock, version::BufferVersion},
-    multiline::{AnyMultilineString, MultilineStr, MultilineString, LF},
+    multiline::{AnyMultilineString, LF, MultilineStr, MultilineString},
     render::model::{Decoration, LineCount, LineDecoration},
 };
 use warpui::{Entity, ModelContext};

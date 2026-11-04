@@ -1,8 +1,8 @@
 use std::time::Duration;
 
+use agent_proto as api;
 use futures::StreamExt;
 use futures::executor::block_on;
-use agent_proto as api;
 
 use super::{Event, coalesce_append_events};
 

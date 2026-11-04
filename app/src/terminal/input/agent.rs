@@ -1,33 +1,32 @@
 use super::{
+    Input, InputAction, InputDropTargetData,
     common::{
         add_command_xray_overlay, add_input_suggestions_overlays, add_voltron_overlay,
         add_workflow_info_overlay, wrap_input_with_terminal_padding_and_focus_handler,
     },
-    Input, InputAction, InputDropTargetData,
 };
 use crate::{
+    BlocklistAIHistoryModel,
     ai::blocklist::{
-        agent_view::{
-            agent_view_bg_fill,
-            shortcuts::{render_agent_shortcuts_view, AgentShortcutsViewContext},
-            AgentViewState,
-        },
         InputType,
+        agent_view::{
+            AgentViewState, agent_view_bg_fill,
+            shortcuts::{AgentShortcutsViewContext, render_agent_shortcuts_view},
+        },
     },
     appearance::Appearance,
     context_chips::spacing::{self},
     features::FeatureFlag,
     settings::InputModeSettings,
     terminal::{settings::TerminalSettings, view::TerminalAction},
-    BlocklistAIHistoryModel,
 };
 use warp_core::settings::Setting;
 use warpui::{
+    AppContext, SingletonEntity as _,
     elements::{
         Border, Container, DropTarget, Element, Flex, Hoverable, ParentElement, SavePosition, Stack,
     },
     presenter::ChildView,
-    AppContext, SingletonEntity as _,
 };
 
 impl Input {

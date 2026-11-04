@@ -3,7 +3,9 @@ use std::sync::Arc;
 use crate::ai::blocklist::agent_view::AgentViewController;
 use crate::ai::blocklist::{BlocklistAIHistoryEvent, BlocklistAIHistoryModel};
 use crate::ai::document::ai_document_model::{AIDocumentId, AIDocumentVersion};
-use crate::context_chips::display_chip::{prompt_chip_command_for_git_branch, PromptChipShellCommand};
+use crate::context_chips::display_chip::{
+    PromptChipShellCommand, prompt_chip_command_for_git_branch,
+};
 use crate::settings::InputSettings;
 use crate::terminal::model_events::ModelEventDispatcher;
 use crate::{
@@ -15,19 +17,19 @@ use crate::{
 use std::path::PathBuf;
 use warp_core::features::FeatureFlag;
 use warpui::{
+    AppContext, Entity, EntityId, FocusContext, ModelHandle, SingletonEntity, TypedActionView,
+    View, ViewContext, ViewHandle,
     elements::{
         ChildView, Clipped, Container, CrossAxisAlignment, Element, Flex, MainAxisAlignment,
         MainAxisSize, ParentElement, Wrap,
     },
-    AppContext, Entity, EntityId, FocusContext, ModelHandle, SingletonEntity, TypedActionView,
-    View, ViewContext, ViewHandle,
 };
 
 use super::{
+    ChipResult, ContextChipKind,
     display_chip::{DisplayChip, DisplayChipConfig, PromptDisplayChipEvent},
     git_line_changes_from_chips,
     prompt_type::PromptType,
-    ChipResult, ContextChipKind,
 };
 
 /// Enum introduced to abstract over the different row types we use for the prompt display,

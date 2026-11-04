@@ -7,6 +7,7 @@ use super::{ActionPayload, PaneHeaderAction};
 
 use warp_core::ui::icons::ICON_DIMENSIONS;
 use warp_core::ui::theme::Fill;
+use warpui::Element;
 use warpui::elements::{
     Align, Clipped, ConstrainedBox, Container, CrossAxisAlignment, Flex, Hoverable,
     MainAxisAlignment, MainAxisSize, MouseStateHandle, ParentElement, SavePosition, Shrinkable,
@@ -14,7 +15,6 @@ use warpui::elements::{
 };
 use warpui::text_layout::ClipConfig;
 use warpui::ui_components::components::UiComponent;
-use warpui::Element;
 
 /// Horizontal padding applied inside each edge column of the three-column header.
 pub const HEADER_EDGE_PADDING: f32 = 4.;

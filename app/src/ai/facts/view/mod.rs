@@ -5,16 +5,16 @@
 // container view itself is kept, responsible for switching between the Rules /
 // RuleEditor pages.
 use crate::pane_group::focus_state::PaneFocusHandle;
-use crate::pane_group::{pane::view, BackingView, PaneConfiguration, PaneEvent};
+use crate::pane_group::{BackingView, PaneConfiguration, PaneEvent, pane::view};
 use crate::server::ids::SyncId;
 use std::path::PathBuf;
 use warp_core::ui::appearance::Appearance;
 use warpui::{
+    AppContext, Element, Entity, FocusContext, ModelHandle, TypedActionView, View, ViewContext,
     elements::{
         Align, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox, Container, Flex,
         MainAxisSize, ParentElement, ScrollbarWidth,
     },
-    AppContext, Element, Entity, FocusContext, ModelHandle, TypedActionView, View, ViewContext,
 };
 
 use warpui::elements::ChildView;

@@ -108,11 +108,8 @@ fn capacity_hints_do_not_change_the_recorded_scene() {
     let mut first = Scene::new(1., rendering::Config::default());
     draw_sample_frame(&mut first);
 
-    let mut hinted = Scene::with_capacity_hints(
-        1.,
-        rendering::Config::default(),
-        first.capacity_hints(),
-    );
+    let mut hinted =
+        Scene::with_capacity_hints(1., rendering::Config::default(), first.capacity_hints());
     draw_sample_frame(&mut hinted);
 
     assert_eq!(primitives(&first), primitives(&hinted));
@@ -125,11 +122,8 @@ fn capacity_hints_reserve_each_layer_up_front() {
     let mut first = Scene::new(1., rendering::Config::default());
     draw_sample_frame(&mut first);
 
-    let mut hinted = Scene::with_capacity_hints(
-        1.,
-        rendering::Config::default(),
-        first.capacity_hints(),
-    );
+    let mut hinted =
+        Scene::with_capacity_hints(1., rendering::Config::default(), first.capacity_hints());
     assert!(hinted.layers.first().rects.capacity() >= 3);
     hinted.start_layer(ClipBounds::None);
     assert!(hinted.active_layer().glyphs.capacity() >= 5);
@@ -157,7 +151,13 @@ fn paint_deferred_part(scene: &mut Scene) {
         .with_background(Fill::Solid(ColorU::new(2, 2, 2, 255)));
     scene.draw_rect_with_hit_recording(RectF::new(vec2f(30., 0.), vec2f(5., 5.)));
     for i in 0..3 {
-        scene.draw_glyph(vec2f(20. + i as f32, 1.), 10 + i, FontId(1), 12., ColorU::black());
+        scene.draw_glyph(
+            vec2f(20. + i as f32, 1.),
+            10 + i,
+            FontId(1),
+            12.,
+            ColorU::black(),
+        );
     }
 }
 
@@ -246,16 +246,18 @@ fn rect_with(background: Fill, border: Border) -> Rect {
 fn a_rect_without_alpha_and_without_a_drawn_border_draws_nothing() {
     assert!(rect_with(Fill::None, Border::default()).draws_nothing());
     assert!(rect_with(Fill::Solid(ColorU::new(9, 9, 9, 0)), Border::default()).draws_nothing());
-    assert!(rect_with(
-        Fill::Gradient {
-            start: vec2f(0., 0.),
-            end: vec2f(1., 1.),
-            start_color: ColorU::new(1, 2, 3, 0),
-            end_color: ColorU::new(4, 5, 6, 0),
-        },
-        Border::default(),
-    )
-    .draws_nothing());
+    assert!(
+        rect_with(
+            Fill::Gradient {
+                start: vec2f(0., 0.),
+                end: vec2f(1., 1.),
+                start_color: ColorU::new(1, 2, 3, 0),
+                end_color: ColorU::new(4, 5, 6, 0),
+            },
+            Border::default(),
+        )
+        .draws_nothing()
+    );
     // A border colour with no alpha, or a border with no width on any side, adds nothing.
     assert!(rect_with(Fill::None, Border::all(2.)).draws_nothing());
     let mut no_sides = Border::all(2.);
@@ -270,16 +272,18 @@ fn a_rect_without_alpha_and_without_a_drawn_border_draws_nothing() {
 #[test]
 fn a_rect_with_any_visible_alpha_or_border_is_drawn() {
     assert!(!rect_with(Fill::Solid(ColorU::new(0, 0, 0, 1)), Border::default()).draws_nothing());
-    assert!(!rect_with(
-        Fill::Gradient {
-            start: vec2f(0., 0.),
-            end: vec2f(1., 1.),
-            start_color: ColorU::new(0, 0, 0, 0),
-            end_color: ColorU::new(0, 0, 0, 255),
-        },
-        Border::default(),
-    )
-    .draws_nothing());
+    assert!(
+        !rect_with(
+            Fill::Gradient {
+                start: vec2f(0., 0.),
+                end: vec2f(1., 1.),
+                start_color: ColorU::new(0, 0, 0, 0),
+                end_color: ColorU::new(0, 0, 0, 255),
+            },
+            Border::default(),
+        )
+        .draws_nothing()
+    );
     let mut visible = Border::all(1.);
     visible.color = Fill::Solid(ColorU::new(255, 255, 255, 255));
     assert!(!rect_with(Fill::None, visible).draws_nothing());

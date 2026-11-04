@@ -1,6 +1,6 @@
 use crate::appearance::Appearance;
-use crate::drive::cloud_object_styling::warp_drive_icon_color;
 use crate::drive::DriveObjectType;
+use crate::drive::cloud_object_styling::warp_drive_icon_color;
 use crate::features::FeatureFlag;
 use crate::search::command_palette::mixer::CommandPaletteItemAction;
 use crate::search::command_palette::render_util::{
@@ -169,11 +169,7 @@ impl SearchItem for MatchedBinding {
     /// items". Only a prefix match qualifies, so ordinary fuzzy queries rank
     /// exactly as before.
     fn priority_tier(&self) -> u8 {
-        if self.name_is_prefix_match {
-            1
-        } else {
-            0
-        }
+        if self.name_is_prefix_match { 1 } else { 0 }
     }
 
     fn score(&self) -> OrderedFloat<f64> {

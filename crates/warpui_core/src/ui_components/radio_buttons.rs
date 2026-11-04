@@ -1,19 +1,19 @@
 use std::{borrow::Cow, rc::Rc};
 
-use crate::{elements::FormattedTextElement, platform::Cursor, AppContext, EventContext};
+use crate::{AppContext, EventContext, elements::FormattedTextElement, platform::Cursor};
 
 use parking_lot::Mutex;
 use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::Vector2F;
 
 use crate::{
+    Element,
     elements::{
         ChildAnchor, ConstrainedBox, Container, CrossAxisAlignment, Flex, Hoverable,
         MouseStateHandle, OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds, Rect,
         Stack,
     },
     scene::{Border, CornerRadius, Radius},
-    Element,
 };
 
 use super::components::{Coords, UiComponent, UiComponentStyles};

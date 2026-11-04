@@ -156,7 +156,9 @@ fn parsed_skill_for_common_locations_resolves_cached_remote_skill() {
         app.add_singleton_model(|_| repo_metadata::repositories::DetectedRepositories::default());
         app.add_singleton_model(repo_metadata::RepoMetadataModel::new);
         app.add_singleton_model(watcher::HomeDirectoryWatcher::new_for_test);
-        app.add_singleton_model(crate::warp_managed_paths_watcher::WarpManagedPathsWatcher::new_for_testing);
+        app.add_singleton_model(
+            crate::warp_managed_paths_watcher::WarpManagedPathsWatcher::new_for_testing,
+        );
         let manager = app.add_singleton_model(SkillManager::new);
         manager.update(&mut app, |manager, _| {
             manager.add_skill_for_testing(skill.clone());
@@ -192,7 +194,9 @@ fn parsed_skill_for_common_locations_does_not_mix_remote_hosts() {
         app.add_singleton_model(|_| repo_metadata::repositories::DetectedRepositories::default());
         app.add_singleton_model(repo_metadata::RepoMetadataModel::new);
         app.add_singleton_model(watcher::HomeDirectoryWatcher::new_for_test);
-        app.add_singleton_model(crate::warp_managed_paths_watcher::WarpManagedPathsWatcher::new_for_testing);
+        app.add_singleton_model(
+            crate::warp_managed_paths_watcher::WarpManagedPathsWatcher::new_for_testing,
+        );
         let manager = app.add_singleton_model(SkillManager::new);
         manager.update(&mut app, |manager, _| {
             manager.add_skill_for_testing(skill);

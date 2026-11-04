@@ -17,9 +17,9 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use settings::schema::SettingSchemaEntry;
-use warp_core::features::{FeatureFlag, DEBUG_FLAGS, DOGFOOD_FLAGS, PREVIEW_FLAGS, RELEASE_FLAGS};
-use warpui_extras::user_preferences::toml_backed::TomlBackedUserPreferences;
+use warp_core::features::{DEBUG_FLAGS, DOGFOOD_FLAGS, FeatureFlag, PREVIEW_FLAGS, RELEASE_FLAGS};
 use warpui_extras::user_preferences::UserPreferences as _;
+use warpui_extras::user_preferences::toml_backed::TomlBackedUserPreferences;
 
 /// Ensures all `inventory::submit!` registrations from the app crate's
 /// dependency tree are linked into the binary.
@@ -118,12 +118,15 @@ fn main() {
             default_json,
             entry.hierarchy,
             entry.max_table_depth,
-        ) { Err(err) => {
-            eprintln!("Warning: failed to write {}: {err}", entry.storage_key);
-            failed += 1;
-        } _ => {
-            written += 1;
-        }}
+        ) {
+            Err(err) => {
+                eprintln!("Warning: failed to write {}: {err}", entry.storage_key);
+                failed += 1;
+            }
+            _ => {
+                written += 1;
+            }
+        }
     }
 
     println!(

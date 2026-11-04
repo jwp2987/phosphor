@@ -14,20 +14,20 @@ use crate::{
 };
 use settings::Setting;
 use warpui::{
+    AppContext, SingletonEntity,
     elements::{
         Border, ChildView, Container, CornerRadius, DropTarget, Element, Flex, Hoverable,
         ParentElement, Radius, SavePosition, Stack,
     },
-    AppContext, SingletonEntity,
 };
 
 use super::{
+    Input,
     common::{
         add_command_xray_overlay, add_input_suggestions_overlays, add_vim_status_to_stack,
         add_voltron_overlay, add_workflow_info_overlay,
         wrap_input_with_terminal_padding_and_focus_handler,
     },
-    Input,
 };
 
 impl Input {

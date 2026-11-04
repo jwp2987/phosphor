@@ -431,7 +431,12 @@ impl BlocklistAIActionModel {
         action_id: &AIAgentActionId,
         command: &str,
     ) -> bool {
-        is_shown_text(&self.full_command_shown, conversation_id, action_id, command)
+        is_shown_text(
+            &self.full_command_shown,
+            conversation_id,
+            action_id,
+            command,
+        )
     }
 
     /// Whether a user's accept of `action` in `conversation_id` must be refused because its
@@ -628,14 +633,12 @@ impl BlocklistAIActionModel {
                 }
             }
 
-            let Some(result) =
-                self.start_pending_action_by_id(
-                    &front_action.id,
-                    conversation_id,
-                    ActionInitiator::Agent,
-                    ctx,
-                )
-            else {
+            let Some(result) = self.start_pending_action_by_id(
+                &front_action.id,
+                conversation_id,
+                ActionInitiator::Agent,
+                ctx,
+            ) else {
                 return;
             };
 

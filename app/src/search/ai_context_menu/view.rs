@@ -23,9 +23,9 @@ use crate::search::mixer::SearchMixerEvent;
 use crate::search::result_renderer::{QueryResultRenderer, QueryResultRendererStyles};
 use crate::search::search_bar::{SearchBar, SearchBarEvent, SearchBarState, SearchResultOrdering};
 use crate::settings::InputSettings;
-use settings::Setting as _;
 use async_channel::Sender;
 use itertools::Itertools;
+use settings::Setting as _;
 use std::collections::HashSet;
 use std::ops::Range;
 use std::time::Duration;
@@ -48,10 +48,10 @@ use warpui::elements::{
     SavePosition, Shrinkable, Stack, Text, XAxisAnchor, YAxisAnchor,
 };
 
-use warpui::platform::Cursor;
-use warpui::windowing::WindowManager;
 use warpui::SingletonEntity;
 use warpui::View;
+use warpui::platform::Cursor;
+use warpui::windowing::WindowManager;
 use warpui::{
     AppContext, Element, Entity, ModelHandle, TypedActionView, ViewContext, ViewHandle,
     WeakViewHandle,
@@ -376,7 +376,6 @@ impl AIContextMenu {
 
         // Compute once — used by CLI agent, AI-mode, and terminal-mode branches.
         let is_active_dir_in_git_repo = {
-
             {
                 let active_window_id = app.windows().state().active_window;
                 let active_dir = active_window_id

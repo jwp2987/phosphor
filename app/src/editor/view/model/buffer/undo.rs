@@ -7,7 +7,7 @@ use bounded_vec_deque::BoundedVecDeque;
 use instant::Instant;
 
 use super::time::{Global, Lamport, LamportValue};
-use crate::editor::view::{model::LocalSelections, PlainTextEditorViewAction};
+use crate::editor::view::{PlainTextEditorViewAction, model::LocalSelections};
 
 /// The maximum time we will batch consecutive edits for the same [`Action`].
 /// The "batch" here is not to be confused with the [`Buffer`]'s notion

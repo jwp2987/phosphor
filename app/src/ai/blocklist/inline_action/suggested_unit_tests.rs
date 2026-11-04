@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
 use markdown_parser::{FormattedText, FormattedTextFragment, FormattedTextLine};
-use rand::{distributions::Alphanumeric, thread_rng, Rng as _};
+use rand::{Rng as _, distributions::Alphanumeric, thread_rng};
 use warp_core::{settings::ToggleableSetting, ui::appearance::Appearance};
 use warpui::{
+    AppContext, Element, Entity, FocusContext, SingletonEntity, TypedActionView, View, ViewContext,
     elements::{
         Align, ConstrainedBox, Container, CrossAxisAlignment, Expanded, Flex, FormattedTextElement,
         HighlightedHyperlink, MainAxisAlignment, MainAxisSize, MouseStateHandle, ParentElement,
@@ -11,10 +12,10 @@ use warpui::{
     },
     platform::Cursor,
     ui_components::components::{Coords, UiComponent, UiComponentStyles},
-    AppContext, Element, Entity, FocusContext, SingletonEntity, TypedActionView, View, ViewContext,
 };
 
 use crate::{
+    TelemetryEvent,
     ai::{
         agent::{AIAgentActionId, AIIdentifiers},
         predict::prompt_suggestions::{
@@ -28,11 +29,10 @@ use crate::{
     view_components::{
         action_button::{ButtonSize, KeystrokeSource, NakedTheme, PrimaryTheme},
         compactible_action_button::{
-            render_compact_and_regular_button_rows, CompactibleActionButton,
-            MEDIUM_SIZE_SWITCH_THRESHOLD,
+            CompactibleActionButton, MEDIUM_SIZE_SWITCH_THRESHOLD,
+            render_compact_and_regular_button_rows,
         },
     },
-    TelemetryEvent,
 };
 
 const ACCEPT_LABEL: &str = "Generate tests";

@@ -1,5 +1,5 @@
 use super::{InstallOrigin, MCPServersSettingsPageView, MCPServersSettingsWidget};
-use crate::settings_view::settings_page::{search_terms_match, SettingsWidget};
+use crate::settings_view::settings_page::{SettingsWidget, search_terms_match};
 
 // These tests cover the origin-first decision tree introduced in
 // specs/GH686/product.md. The underlying `start_server_installation` flow

@@ -355,8 +355,10 @@ impl ConversationSelection for TuiConversationSelection {
                 ..
             } => {
                 let selected_conversation_id = self.selected_id();
-                let selected_conversation_was_cleared = selected_conversation_id
-                    .is_some_and(|conversation_id| active_conversation_id == &Some(conversation_id));
+                let selected_conversation_was_cleared =
+                    selected_conversation_id.is_some_and(|conversation_id| {
+                        active_conversation_id == &Some(conversation_id)
+                    });
                 if selected_conversation_was_cleared {
                     self.defer_replacement_conversation(
                         selected_conversation_id

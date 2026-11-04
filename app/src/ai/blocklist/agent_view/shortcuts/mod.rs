@@ -7,10 +7,10 @@ use std::borrow::Cow;
 
 use warp_core::{features::FeatureFlag, ui::appearance::Appearance};
 use warpui::{
+    AppContext, Element, SingletonEntity,
     elements::{Border, Container, CrossAxisAlignment, Expanded, Flex, ParentElement, Text},
     keymap::Keystroke,
     ui_components::components::{Coords, UiComponent, UiComponentStyles},
-    AppContext, Element, SingletonEntity,
 };
 
 use crate::{

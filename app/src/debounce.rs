@@ -1,6 +1,6 @@
 use std::{pin, task, time::Duration};
 
-use futures_lite::{ready, Stream};
+use futures_lite::{Stream, ready};
 use pin::Pin;
 use pin_project::pin_project;
 use task::{Context, Poll};

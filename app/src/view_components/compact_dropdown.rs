@@ -7,6 +7,8 @@ use crate::{
 };
 use pathfinder_geometry::vector::vec2f;
 use warpui::{
+    Action, AppContext, BlurContext, Element, Entity, SingletonEntity, TypedActionView, View,
+    ViewContext, ViewHandle,
     elements::{
         Border, ChildAnchor, ConstrainedBox, CornerRadius, CrossAxisAlignment, Flex,
         Icon as WarpUiIcon, MainAxisAlignment, MouseStateHandle, OffsetPositioning, ParentElement,
@@ -17,8 +19,6 @@ use warpui::{
         button::ButtonVariant,
         components::{Coords, UiComponent, UiComponentStyles},
     },
-    Action, AppContext, BlurContext, Element, Entity, SingletonEntity, TypedActionView, View,
-    ViewContext, ViewHandle,
 };
 
 #[cfg(test)]

@@ -1218,7 +1218,11 @@ fn test_a_new_view_builds_a_frame_once_then_none_until_mounted() {
         });
         let layouts = new_child.update(app, |child, _ctx| child.counts.layout_calls.get());
         assert_eq!(frames.layout_calls.get(), frames_before + 1);
-        assert_eq!(renders.get(), 2, "mounting an already-rendered view needs no render");
+        assert_eq!(
+            renders.get(),
+            2,
+            "mounting an already-rendered view needs no render"
+        );
         assert_eq!(layouts, 1, "and the frame that mounts it lays it out");
         assert!(presenter.borrow().is_view_mounted(new_child.id()));
     })

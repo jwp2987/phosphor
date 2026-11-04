@@ -2,6 +2,8 @@ use std::fmt::Debug;
 
 use pathfinder_color::ColorU;
 use warpui::{
+    Action, AppContext, BlurContext, Entity, SingletonEntity, TypedActionView, View, ViewContext,
+    ViewHandle, WeakViewHandle,
     elements::{
         Border, ChildAnchor, ChildView, ConstrainedBox, Container, Element, Icon,
         MainAxisAlignment, MainAxisSize, MouseStateHandle, OffsetPositioning, ParentElement,
@@ -14,8 +16,6 @@ use warpui::{
         button::{ButtonVariant, TextAndIcon, TextAndIconAlignment},
         components::{Coords, UiComponent, UiComponentStyles},
     },
-    Action, AppContext, BlurContext, Entity, SingletonEntity, TypedActionView, View, ViewContext,
-    ViewHandle, WeakViewHandle,
 };
 
 use crate::{
@@ -473,9 +473,9 @@ where
             ctx.dispatch_typed_action(DropdownAction::<A>::ToggleExpanded);
         });
 
-        let effective_height = self.top_bar_height.unwrap_or_else(|| {
-            appearance.dropdown_top_bar_height()
-        });
+        let effective_height = self
+            .top_bar_height
+            .unwrap_or_else(|| appearance.dropdown_top_bar_height());
 
         SavePosition::new(
             Container::new(

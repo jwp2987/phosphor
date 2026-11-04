@@ -12,9 +12,9 @@
 //! search runs in `codebase_runtime::run_search_codebase`, invoked directly by
 //! `chat_stream::dispatch_byop_codebase_tool`.
 
-use anyhow::{anyhow, Result};
-use serde_json::{json, Value};
 use agent_proto as api;
+use anyhow::{Result, anyhow};
+use serde_json::{Value, json};
 
 use super::OpenAiTool;
 

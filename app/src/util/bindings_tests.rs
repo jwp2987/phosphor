@@ -1,8 +1,8 @@
 use warpui::platform::OperatingSystem;
 use warpui::{
+    App,
     actions::StandardAction,
     keymap::{EditableBinding, Keystroke, Trigger},
-    App,
 };
 
 use crate::{
@@ -15,7 +15,7 @@ use crate::{
 };
 
 #[cfg(any(windows, target_os = "linux"))]
-use crate::util::bindings::{custom_tag_to_keystroke, CustomAction};
+use crate::util::bindings::{CustomAction, custom_tag_to_keystroke};
 
 #[test]
 fn test_keybinding_name_to_display_string() {

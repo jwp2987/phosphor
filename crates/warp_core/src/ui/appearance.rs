@@ -2,10 +2,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use warpui::{
-    current_render_window,
+    Entity, ModelContext, SingletonEntity, WindowId, current_render_window,
     elements::HeadingFontSizeMultipliers,
     fonts::{FamilyId, Weight},
-    Entity, ModelContext, SingletonEntity, WindowId,
 };
 
 use super::{builder::UiBuilder, theme::WarpTheme};
@@ -146,7 +145,7 @@ impl Appearance {
     pub fn mock() -> Self {
         use warpui::color::ColorU;
 
-        use crate::ui::theme::{mock_terminal_colors, Details, Fill};
+        use crate::ui::theme::{Details, Fill, mock_terminal_colors};
 
         let mock_theme = WarpTheme::new(
             Fill::Solid(ColorU::from_u32(0x000000ff)),
@@ -376,7 +375,10 @@ impl Appearance {
             return &self.ui_builder;
         }
         match current_render_window() {
-            Some(w) => self.ui_builder_overrides.get(&w).unwrap_or(&self.ui_builder),
+            Some(w) => self
+                .ui_builder_overrides
+                .get(&w)
+                .unwrap_or(&self.ui_builder),
             None => &self.ui_builder,
         }
     }

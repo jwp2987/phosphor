@@ -1,11 +1,11 @@
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use warpui::r#async::executor::Background;
 
 use super::LogManager;
-use crate::{path_with_suffix, RotationConfig};
+use crate::{RotationConfig, path_with_suffix};
 
 fn temp_path(name: &str) -> PathBuf {
     static NEXT_ID: AtomicUsize = AtomicUsize::new(0);

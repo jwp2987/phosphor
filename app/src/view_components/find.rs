@@ -15,21 +15,21 @@ use warpui::elements::{ChildAnchor, OffsetPositioning, Radius, SavePosition, Shr
 use warpui::keymap::EditableBinding;
 use warpui::ui_components::components::UiComponent;
 pub use warpui::{
+    AppContext,
     accessibility::{AccessibilityContent, WarpA11yRole},
     elements::{ParentElement as _, Stack},
     geometry::vector::vec2f,
-    AppContext,
 };
 use warpui::{
+    Entity, SingletonEntity, TypedActionView, View,
     elements::{
         Align, Border, Clipped, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment,
         DropShadow, Element, Flex, Hoverable, MouseStateHandle, ParentAnchor, ParentOffsetBounds,
         Text,
     },
-    Entity, SingletonEntity, TypedActionView, View,
 };
-use warpui::{presenter::ChildView, ViewContext, ViewHandle};
 use warpui::{FocusContext, ModelHandle};
+use warpui::{ViewContext, ViewHandle, presenter::ChildView};
 
 pub const FIND_BAR_WIDTH: f32 = 500.;
 const ICON_PADDING: f32 = 4.;
@@ -39,7 +39,6 @@ pub const FIND_BAR_PADDING: f32 = 4.;
 const FIND_EDITOR_PADDING: f32 = 6.;
 pub const FIND_EDITOR_BORDER_RADIUS: f32 = 6.;
 pub(crate) const FIND_EDITOR_BORDER_WIDTH: f32 = 1.;
-
 
 pub const REGEX_TOGGLE_LABEL: &str = ". *";
 pub const REGEX_TOGGLE_TOOLTIP: &str = "Regex toggle";
@@ -373,12 +372,16 @@ impl<T: FindModel + Entity<Event = FindEvent> + 'static> Find<T> {
             } else {
                 "Scanning...".to_string()
             };
-            return Text::new_inline(label, appearance.ui_font_family(), appearance.ui_font_body())
-                .with_color(blended_colors::text_sub(
-                    appearance.theme(),
-                    appearance.theme().surface_1(),
-                ))
-                .finish();
+            return Text::new_inline(
+                label,
+                appearance.ui_font_family(),
+                appearance.ui_font_body(),
+            )
+            .with_color(blended_colors::text_sub(
+                appearance.theme(),
+                appearance.theme().surface_1(),
+            ))
+            .finish();
         }
 
         // If there is some match index, we add 1 to it since the UI is 1-indexed
@@ -388,12 +391,16 @@ impl<T: FindModel + Entity<Event = FindEvent> + 'static> Find<T> {
             Some(idx) => idx + 1,
         };
         let label = format!("{}/{}", index, model.match_count());
-        Text::new_inline(label, appearance.ui_font_family(), appearance.ui_font_body())
-            .with_color(blended_colors::text_sub(
-                appearance.theme(),
-                appearance.theme().surface_1(),
-            ))
-            .finish()
+        Text::new_inline(
+            label,
+            appearance.ui_font_family(),
+            appearance.ui_font_body(),
+        )
+        .with_color(blended_colors::text_sub(
+            appearance.theme(),
+            appearance.theme().surface_1(),
+        ))
+        .finish()
     }
 
     #[allow(clippy::too_many_arguments)]

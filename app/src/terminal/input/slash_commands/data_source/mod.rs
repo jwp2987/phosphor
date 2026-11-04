@@ -35,10 +35,10 @@ use crate::{
         block::cli_controller::{CLISubagentController, CLISubagentEvent},
     },
     search::{
-        slash_command_menu::{
-            static_commands::commands::COMMAND_REGISTRY, SlashCommandId, StaticCommand,
-        },
         SyncDataSource,
+        slash_command_menu::{
+            SlashCommandId, StaticCommand, static_commands::commands::COMMAND_REGISTRY,
+        },
     },
     settings::{
         AISettings, AISettingsChangedEvent, CodeSettings, CodeSettingsChangedEvent, InputSettings,

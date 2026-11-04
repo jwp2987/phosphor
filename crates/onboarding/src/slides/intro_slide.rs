@@ -3,18 +3,18 @@ use crate::model::OnboardingStateModel;
 
 use super::OnboardingSlide;
 use pathfinder_color::ColorU;
-use ui_components::{button, Component as _, Options as _};
-use warp_core::ui::{appearance::Appearance, theme::color::internal_colors, Icon};
+use ui_components::{Component as _, Options as _, button};
+use warp_core::ui::{Icon, appearance::Appearance, theme::color::internal_colors};
 use warpui::{
+    AppContext, Element, Entity, ModelHandle, SingletonEntity as _, TypedActionView, View,
+    ViewContext,
     elements::{
-        shimmering_text::{ShimmerConfig, ShimmeringTextElement, ShimmeringTextStateHandle},
         Align, ConstrainedBox, Container, CrossAxisAlignment, Flex, FormattedTextElement,
         MainAxisAlignment, MainAxisSize, ParentElement,
+        shimmering_text::{ShimmerConfig, ShimmeringTextElement, ShimmeringTextStateHandle},
     },
     keymap::Keystroke,
     text_layout::TextAlignment,
-    AppContext, Element, Entity, ModelHandle, SingletonEntity as _, TypedActionView, View,
-    ViewContext,
 };
 
 #[derive(Clone, Debug)]

@@ -9,9 +9,9 @@ use crate::terminal::shared_session::ParticipantId;
 
 use crate::ai::{
     agent::{
-        conversation::AIConversationId, AIAgentExchangeId, AIAgentInput, AIAgentOutput,
-        CancellationReason, PassiveSuggestionTrigger, PassiveSuggestionTriggerType,
-        RenderableAIError, ServerOutputId, Shared,
+        AIAgentExchangeId, AIAgentInput, AIAgentOutput, CancellationReason,
+        PassiveSuggestionTrigger, PassiveSuggestionTriggerType, RenderableAIError, ServerOutputId,
+        Shared, conversation::AIConversationId,
     },
     llms::LLMId,
 };
@@ -225,11 +225,11 @@ pub mod testing {
 
     use crate::ai::{
         agent::{
-            conversation::AIConversationId, AIAgentInput, AIAgentOutput, ServerOutputId, Shared,
+            AIAgentInput, AIAgentOutput, ServerOutputId, Shared, conversation::AIConversationId,
         },
         blocklist::{
-            model::{AIRequestType, PassiveRequestType, PassiveSuggestionTriggerType},
             AIBlock,
+            model::{AIRequestType, PassiveRequestType, PassiveSuggestionTriggerType},
         },
         llms::LLMId,
     };

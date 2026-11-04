@@ -8,12 +8,12 @@ pub use view::{InlineConversationMenuEvent, InlineConversationMenuView};
 
 use pathfinder_color::ColorU;
 use warp_core::ui::appearance::Appearance;
-use warpui::{keymap::Keystroke, SingletonEntity};
+use warpui::{SingletonEntity, keymap::Keystroke};
 
 use crate::ai::conversation_navigation::ConversationNavigationData;
 use crate::terminal::input::inline_menu::{
-    default_navigation_message_items, InlineMenuAction, InlineMenuMessageArgs, InlineMenuRowAction,
-    InlineMenuType,
+    InlineMenuAction, InlineMenuMessageArgs, InlineMenuRowAction, InlineMenuType,
+    default_navigation_message_items,
 };
 use crate::terminal::input::message_bar::{Message, MessageItem};
 

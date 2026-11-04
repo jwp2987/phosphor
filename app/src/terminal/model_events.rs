@@ -33,7 +33,7 @@ use super::{
 };
 use crate::features::FeatureFlag;
 use crate::terminal::shell::ShellType;
-use crate::{send_telemetry_from_ctx, TelemetryEvent};
+use crate::{TelemetryEvent, send_telemetry_from_ctx};
 
 /// Per-instance override controlling whether the dispatcher routes legacy SSH
 /// sessions through the remote server.
@@ -98,10 +98,8 @@ impl ModelEventDispatcher {
     }
 
     fn should_use_ssh_remote_server(&self, is_legacy_ssh: bool) -> bool {
-        self.ssh_remote_server_support.should_use_remote_server(
-            FeatureFlag::SshRemoteServer.is_enabled(),
-            is_legacy_ssh,
-        )
+        self.ssh_remote_server_support
+            .should_use_remote_server(FeatureFlag::SshRemoteServer.is_enabled(), is_legacy_ssh)
     }
 
     /// Returns the active session to which the PTY is currently attached.

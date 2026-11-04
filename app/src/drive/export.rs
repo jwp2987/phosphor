@@ -2,8 +2,8 @@
 use std::io::ErrorKind;
 use std::{
     collections::{
-        hash_map::{Entry, OccupiedEntry},
         HashMap,
+        hash_map::{Entry, OccupiedEntry},
     },
     path::{Path, PathBuf},
 };
@@ -11,14 +11,14 @@ use std::{
 #[cfg(feature = "local_fs")]
 use aho_corasick::{AhoCorasick, MatchKind};
 #[cfg(feature = "local_fs")]
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 #[cfg(feature = "local_fs")]
 use futures::AsyncWriteExt;
 use warp_util::path::ShellFamily;
 use warpui::{
-    platform::{file_picker::FilePickerError, FilePickerConfiguration, OperatingSystem},
-    r#async::SpawnedFutureHandle,
     AppContext, Entity, ModelContext, SingletonEntity, WindowId,
+    r#async::SpawnedFutureHandle,
+    platform::{FilePickerConfiguration, OperatingSystem, file_picker::FilePickerError},
 };
 
 #[cfg(feature = "local_fs")]
@@ -28,10 +28,10 @@ use crate::{
     workspace::WorkspaceAction,
 };
 use crate::{
-    cloud_object::{model::persistence::ObjectStoreModel, Space},
+    cloud_object::{Space, model::persistence::ObjectStoreModel},
     safe_warn,
     view_components::DismissibleToast,
-    workspace::{active_terminal_in_window, ToastStack},
+    workspace::{ToastStack, active_terminal_in_window},
 };
 
 use super::ObjectTypeAndId;

@@ -18,7 +18,7 @@ use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
 use instant::Duration;
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 
 // Re-export the derive macro when available.
 use serde_json::Value;

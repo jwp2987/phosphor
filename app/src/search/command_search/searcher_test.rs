@@ -16,9 +16,9 @@ use itertools::Itertools;
 use ordered_float::OrderedFloat;
 use std::collections::HashSet;
 use std::time::Duration;
-use warpui::r#async::Timer;
 use warpui::AppContext;
-use warpui::{elements::Empty, App, Element};
+use warpui::r#async::Timer;
+use warpui::{App, Element, elements::Empty};
 
 #[derive(Clone, Debug)]
 enum TestItemAction {
@@ -129,10 +129,12 @@ fn test_add_source_to_mixer() {
             );
         });
         app.read(|app| {
-            assert!(mixer
-                .as_ref(app)
-                .registered_filters()
-                .any(|filter| filter == QueryFilter::History));
+            assert!(
+                mixer
+                    .as_ref(app)
+                    .registered_filters()
+                    .any(|filter| filter == QueryFilter::History)
+            );
         });
     });
 }

@@ -1,6 +1,6 @@
-use crate::keyboard::{remove_custom_keybinding, write_custom_keybinding, UserDefinedKeybinding};
+use crate::keyboard::{UserDefinedKeybinding, remove_custom_keybinding, write_custom_keybinding};
 use crate::settings_view::keybindings::{KeybindingChangedEvent, KeybindingChangedNotifier};
-use enum_iterator::{all, Sequence};
+use enum_iterator::{Sequence, all};
 use fuzzy_match::match_indices_case_insensitive;
 use itertools::Itertools;
 use lazy_static::lazy_static;
@@ -15,12 +15,12 @@ use std::{
 use warpui::keymap::{BindingId, IsBindingValid};
 use warpui::platform::OperatingSystem;
 use warpui::{
+    Action,
     actions::StandardAction,
     keymap::{
         BindingDescription, BindingLens, CustomTag, DescriptionContext, EditableBindingLens,
         Keystroke, Trigger,
     },
-    Action,
 };
 use warpui::{AppContext, SingletonEntity};
 
@@ -665,11 +665,7 @@ pub fn filter_bindings_including_keystroke<'a>(
                 let keystroke_search_score = if let Some(search_keystroke) = &search_keystroke {
                     binding.trigger.as_ref().and_then(|candidate_keystroke| {
                         let score = keystroke_includes(search_keystroke, candidate_keystroke);
-                        if score > 0 {
-                            Some(score)
-                        } else {
-                            None
-                        }
+                        if score > 0 { Some(score) } else { None }
                     })
                 } else {
                     None

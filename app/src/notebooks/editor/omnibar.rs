@@ -12,6 +12,8 @@ use warp_editor::{
     render::model::RenderState,
 };
 use warpui::{
+    AppContext, Element, Entity, ModelHandle, SingletonEntity, SizeConstraint, TypedActionView,
+    View, ViewContext, ViewHandle,
     accessibility::{AccessibilityContent, ActionAccessibilityContent, WarpA11yRole},
     elements::{
         AnchorPair, Border, ConstrainedBox, Container, CornerRadius, DropShadow, Flex,
@@ -20,8 +22,6 @@ use warpui::{
     },
     presenter::ChildView,
     ui_components::components::{Coords, UiComponent, UiComponentStyles},
-    AppContext, Element, Entity, ModelHandle, SingletonEntity, SizeConstraint, TypedActionView,
-    View, ViewContext, ViewHandle,
 };
 
 use crate::{
@@ -32,9 +32,9 @@ use crate::{
 };
 
 use super::{
+    BlockType,
     model::{NotebooksEditorModel, RichTextEditorModelEvent},
     view::EditorViewAction,
-    BlockType,
 };
 
 const OMNIBAR_HEIGHT: f32 = 32.;

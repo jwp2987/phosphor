@@ -6,7 +6,9 @@ use warpui::elements::{
 };
 use warpui::platform::Cursor;
 use warpui::ui_components::button::ButtonVariant;
+use warpui::{Action, BlurContext, EntityId, ModelHandle, SingletonEntity, WindowId};
 use warpui::{
+    AppContext, Entity, TypedActionView, View,
     elements::{
         Border, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Element, Flex,
         ParentElement, Shrinkable,
@@ -14,10 +16,8 @@ use warpui::{
     fonts::Weight,
     keymap::Keystroke,
     ui_components::components::{UiComponent, UiComponentStyles},
-    AppContext, Entity, TypedActionView, View,
 };
-use warpui::{keymap::FixedBinding, ViewContext};
-use warpui::{Action, BlurContext, EntityId, ModelHandle, SingletonEntity, WindowId};
+use warpui::{ViewContext, keymap::FixedBinding};
 
 use crate::appearance::Appearance;
 use crate::resource_center::{Tip, TipAction, TipsCompleted};

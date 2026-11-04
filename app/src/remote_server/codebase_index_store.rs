@@ -49,7 +49,7 @@ use ai::index::full_source_code_embedding::{
     CodebaseContextConfig, ContentHash, EmbeddingConfig, Error as IndexError, Fragment, NodeHash,
     RepoMetadata,
 };
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use async_trait::async_trait;
 use diesel::SqliteConnection;
 use http_client::Client;

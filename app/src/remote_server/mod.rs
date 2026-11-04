@@ -3,21 +3,22 @@
 pub use remote_server::*;
 
 pub mod auth_context;
+/// Client-side model of the remote codebase index. Unlike the daemon-side
+/// status/store modules above it never touches the host filesystem, so it is
+/// not `local_fs`-gated; it is `wasm`-gated only because every
+/// `RemoteServerManager` mutation it calls is.
+pub mod codebase_index_model;
 /// Remote codebase indexing (Delta D2). `local_fs`-gated for the same reason
 /// the daemon's index manager is: it walks and stores on the host filesystem.
 #[cfg(feature = "local_fs")]
 pub mod codebase_index_status;
 #[cfg(feature = "local_fs")]
 pub mod codebase_index_store;
-/// Client-side model of the remote codebase index. Unlike the daemon-side
-/// status/store modules above it never touches the host filesystem, so it is
-/// not `local_fs`-gated; it is `wasm`-gated only because every
-/// `RemoteServerManager` mutation it calls is.
-pub mod codebase_index_model;
-pub mod server_buffer_tracker;
+pub mod diff_state_proto;
+#[cfg(feature = "local_fs")]
+pub mod diff_state_tracker;
 pub mod get_branches;
 pub mod get_committed_branch_files;
-pub mod diff_state_proto;
 /// Wire conversions for the remote git-chip / PR-context pushes. Gated on
 /// `local_fs` rather than on wasm like its neighbours, so the gate matches the
 /// `GitStatusMetadata` / `GitRepoStatusModel` types it converts and every `use`
@@ -25,9 +26,8 @@ pub mod diff_state_proto;
 /// `app/build.rs:245-249` sets `local_fs` for exactly `target_family != "wasm"`.
 #[cfg(feature = "local_fs")]
 pub mod git_status_proto;
-#[cfg(feature = "local_fs")]
-pub mod diff_state_tracker;
 pub mod ripgrep_search;
+pub mod server_buffer_tracker;
 pub mod server_model;
 pub mod ssh_transport;
 #[cfg(unix)]
@@ -99,12 +99,14 @@ pub fn run_daemon(_identity_key: String) -> anyhow::Result<()> {
 /// ```
 pub(super) fn run_daemon_app(
     #[cfg_attr(not(feature = "local_fs"), allow(unused_variables))] identity_key: String,
-    server_model_init: impl FnOnce(&mut warpui::ModelContext<server_model::ServerModel>) -> server_model::ServerModel
-        + 'static,
+    server_model_init: impl FnOnce(
+        &mut warpui::ModelContext<server_model::ServerModel>,
+    ) -> server_model::ServerModel
+    + 'static,
 ) -> anyhow::Result<()> {
-    use warpui::platform::app::AppCallbacks;
-    use warpui::platform::AppBuilder;
     use warpui::SingletonEntity;
+    use warpui::platform::AppBuilder;
+    use warpui::platform::app::AppCallbacks;
 
     AppBuilder::new_headless(AppCallbacks::default(), Box::new(()), None).run(move |ctx| {
         // Rotate log files from the previous daemon invocation in the background.
@@ -129,9 +131,9 @@ pub(super) fn run_daemon_app(
         // Reads report `Error::NotFound`; writes and removals succeed and discard.
         warpui_extras::secure_storage::register_unavailable(ctx);
 
+        use repo_metadata::RepoMetadataModel;
         use repo_metadata::repositories::DetectedRepositories;
         use repo_metadata::watcher::DirectoryWatcher;
-        use repo_metadata::RepoMetadataModel;
 
         // Order matters: DetectedRepositories must be registered before
         // RepoMetadataModel because LocalRepoMetadataModel::new()
@@ -216,9 +218,7 @@ pub(super) fn run_daemon_app(
         // tried to subscribe to an unregistered `WarpManagedPathsWatcher`.
         ctx.add_singleton_model(crate::warp_managed_paths_watcher::WarpManagedPathsWatcher::new);
         if let Some(home_dir) = dirs::home_dir() {
-            ctx.add_singleton_model(|ctx| {
-                watcher::HomeDirectoryWatcher::new(home_dir, ctx)
-            });
+            ctx.add_singleton_model(|ctx| watcher::HomeDirectoryWatcher::new(home_dir, ctx));
         } else {
             log::info!("Home directory not found; skipping HomeDirectoryWatcher registration");
         }
@@ -235,10 +235,7 @@ pub(super) fn run_daemon_app(
         // `new_from_persisted` is seeded with an empty list, matching the non-daemon
         // (app) path's shape but with nothing to hydrate.
         ctx.add_singleton_model(|ctx| {
-            ::ai::project_context::model::ProjectContextModel::new_from_persisted(
-                Vec::new(),
-                ctx,
-            )
+            ::ai::project_context::model::ProjectContextModel::new_from_persisted(Vec::new(), ctx)
         });
         ::ai::project_context::model::ProjectContextModel::handle(ctx)
             .update(ctx, |me, ctx| me.index_global_rules(ctx));
@@ -267,10 +264,10 @@ pub(super) fn run_daemon_app(
         //   replaces them.
         #[cfg(feature = "local_fs")]
         {
+            use ::ai::index::full_source_code_embedding::SnapshotStorage;
             use ::ai::index::full_source_code_embedding::manager::{
                 CodebaseIndexManager, CodebaseIndexManagerConfig,
             };
-            use ::ai::index::full_source_code_embedding::SnapshotStorage;
 
             let data_dir = daemon_codebase_index_data_dir(&identity_key);
             let store_client = codebase_index_store::build_daemon_store_client(&data_dir);

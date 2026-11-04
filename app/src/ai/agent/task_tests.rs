@@ -478,10 +478,10 @@ fn test_is_warp_documentation_search_subagent() {
 mod streamed_text {
     use std::collections::HashSet;
 
+    use agent_proto as api;
     use ai::skills::SkillPathOrigin;
     use chrono::Local;
     use prost_types::FieldMask;
-    use agent_proto as api;
 
     use crate::ai::agent::util::parse_markdown_into_text_and_code_sections;
     use crate::ai::agent::{

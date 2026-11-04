@@ -254,7 +254,10 @@ fn tmux_pending_input_is_bounded_and_the_overflow_is_reported_once() {
             );
         });
         assert_eq!(*overflow_events.lock(), 1, "told once");
-        assert!(sender.messages.lock().is_empty(), "nothing reached the pty yet");
+        assert!(
+            sender.messages.lock().is_empty(),
+            "nothing reached the pty yet"
+        );
         drop(model_events_tx);
     });
 }

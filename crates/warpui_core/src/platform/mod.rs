@@ -22,18 +22,18 @@ use crate::notification::{NotificationSendError, RequestPermissionsOutcome};
 use crate::rendering::{GPUPowerPreference, OnGPUDeviceSelected};
 use crate::text_layout::{ClipConfig, StyleAndFont, TextAlignment, TextFrame};
 use crate::{
+    AppContext, ApplicationBundleInfo, Clipboard, DisplayId, DisplayIdx, OptionalPlatformWindow,
+    geometry, rendering,
+};
+use crate::{
+    Scene, WindowId,
     accessibility::AccessibilityContent,
     fonts::{
-        canvas::RasterFormat, FamilyId, FontId, GlyphId, Metrics, Properties, RasterizedGlyph,
+        FamilyId, FontId, GlyphId, Metrics, Properties, RasterizedGlyph, canvas::RasterFormat,
     },
     notification::UserNotification,
     text_layout::Line,
     windowing::WindowCallbacks,
-    Scene, WindowId,
-};
-use crate::{
-    geometry, rendering, AppContext, ApplicationBundleInfo, Clipboard, DisplayId, DisplayIdx,
-    OptionalPlatformWindow,
 };
 use anyhow::Result;
 use async_task::Runnable;
@@ -214,7 +214,7 @@ pub trait Delegate: 'static {
 
     /// Retrieve the absolute path of given application's bundle and its executable.
     fn application_bundle_info(&self, bundle_identifier: &str)
-        -> Option<ApplicationBundleInfo<'_>>;
+    -> Option<ApplicationBundleInfo<'_>>;
 
     /// Create a window showing a modal dialog native to the platform. The modal will synchronously
     /// block all other interactions with the app until dismissed. The [`ModalId`] is a handle to

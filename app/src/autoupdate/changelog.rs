@@ -2,7 +2,7 @@ use std::{iter, sync::Arc};
 
 use anyhow::Result;
 use channel_versions::{Changelog, ChannelVersions};
-use rand::{distributions::Alphanumeric, thread_rng, Rng as _};
+use rand::{Rng as _, distributions::Alphanumeric, thread_rng};
 
 use crate::channel::{Channel, ChannelState};
 

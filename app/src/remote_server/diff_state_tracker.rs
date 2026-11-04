@@ -108,8 +108,7 @@ impl RepositorySubscriber for DiffStateTrackerSubscriber {
                     .await;
                 return;
             }
-            let Some(behavior) =
-                crate::code_review::diff_state::classify_repository_update(update)
+            let Some(behavior) = crate::code_review::diff_state::classify_repository_update(update)
             else {
                 return;
             };

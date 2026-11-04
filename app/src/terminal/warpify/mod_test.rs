@@ -297,7 +297,9 @@ fn subshell_flag_source_uses_the_display_name() {
         SubshellSource::Command("zsh".to_owned())
     );
     assert_eq!(
-        f(&SubshellSource::Command("docker exec -it c bash".to_owned())),
+        f(&SubshellSource::Command(
+            "docker exec -it c bash".to_owned()
+        )),
         SubshellSource::Command("docker".to_owned())
     );
     assert_eq!(

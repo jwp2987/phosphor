@@ -1,5 +1,5 @@
-use super::window_attribute::get_window_attribute;
 use super::WindowAttributeErr;
+use super::window_attribute::get_window_attribute;
 use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Dwm;
 use winit::window::Window as WinitWindow;

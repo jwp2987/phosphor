@@ -1,11 +1,11 @@
 use crate::ai::agent::SuggestedRule;
 use crate::ai::facts::AIFactObjectModel;
+use crate::cloud_object::Owner;
 use crate::cloud_object::model::generic_string_model::GenericStringObjectId;
 use crate::cloud_object::model::persistence::{ObjectStoreEvent, ObjectStoreModel};
 use crate::cloud_object::update_manager::{
     ObjectOperation, OperationSuccessType, UpdateManagerEvent,
 };
-use crate::cloud_object::Owner;
 use crate::drive::ObjectTypeAndId;
 use crate::editor::{
     EditorOptions, EditorView, EnterAction, EnterSettings, Event as EditorEvent, InteractionState,
@@ -32,17 +32,17 @@ use warpui::elements::{
 use warpui::fonts::Weight;
 use warpui::keymap::FixedBinding;
 use warpui::{
-    elements::ClippedScrollStateHandle,
-    ui_components::components::{Coords, UiComponentStyles},
-};
-use warpui::{
+    AppContext, Element, Entity, FocusContext, SingletonEntity, TypedActionView, View, ViewContext,
+    ViewHandle,
     elements::{
         Align, Border, ChildView, ClippedScrollable, ConstrainedBox, Container, CornerRadius, Flex,
         ParentElement, Radius, ScrollbarWidth,
     },
     ui_components::components::UiComponent,
-    AppContext, Element, Entity, FocusContext, SingletonEntity, TypedActionView, View, ViewContext,
-    ViewHandle,
+};
+use warpui::{
+    elements::ClippedScrollStateHandle,
+    ui_components::components::{Coords, UiComponentStyles},
 };
 
 const HEADER_TEXT: &str = "Suggested rule";

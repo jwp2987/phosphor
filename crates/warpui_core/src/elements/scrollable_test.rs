@@ -8,14 +8,14 @@ use itertools::Itertools;
 
 use super::*;
 use crate::{
-    elements::{ClippedScrollStateHandle, ClippedScrollable, DispatchEventResult, Flex},
-    platform::WindowStyle,
-    TypedActionView,
-};
-use crate::{
+    App, AppContext, Entity, Event, Presenter, ViewContext, WindowInvalidation,
     elements::{ConstrainedBox, EventHandler, ParentElement, Rect, Stack},
     presenter::DispatchedActionKind,
-    App, AppContext, Entity, Event, Presenter, ViewContext, WindowInvalidation,
+};
+use crate::{
+    TypedActionView,
+    elements::{ClippedScrollStateHandle, ClippedScrollable, DispatchEventResult, Flex},
+    platform::WindowStyle,
 };
 
 /// Since we support scrolling in both vertical and horizontal directions,

@@ -69,8 +69,7 @@ impl SoftWrapState {
             return;
         }
         *self.layouts.lock() = Some(new_value);
-        self.stale
-            .store(false, std::sync::atomic::Ordering::SeqCst);
+        self.stale.store(false, std::sync::atomic::Ordering::SeqCst);
         self.generation
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if let Some(waker) = self.layout_waker.lock().as_ref() {

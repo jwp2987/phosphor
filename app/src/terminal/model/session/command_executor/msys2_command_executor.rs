@@ -3,7 +3,7 @@ use crate::{
     safe_warn,
     terminal::shell::{Shell, ShellType},
 };
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use command::r#async::Command;
 use itertools::Itertools;

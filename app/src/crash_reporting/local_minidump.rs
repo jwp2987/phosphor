@@ -9,8 +9,8 @@ use std::{
     path::{Path, PathBuf},
     process,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
@@ -122,8 +122,7 @@ pub fn run_server(socket_path: &Path) -> anyhow::Result<()> {
                 .join("crash-dumps");
             std::fs::create_dir_all(&dump_dir)?;
 
-            let dump_path =
-                dump_dir.join(format!("zap-minidump-{}.dmp", Uuid::new_v4().simple()));
+            let dump_path = dump_dir.join(format!("zap-minidump-{}.dmp", Uuid::new_v4().simple()));
             let file = File::create(&dump_path)?;
             *self.pending_dump_path.lock() = Some(dump_path.clone());
             Ok((file, dump_path))
@@ -415,13 +414,15 @@ fn wait_for_server(socket_path: &Path) -> anyhow::Result<minidumper::Client> {
 fn spawn_keepalive_thread(client: Arc<minidumper::Client>) {
     let _ = std::thread::Builder::new()
         .name("minidump-keepalive".to_string())
-        .spawn(move || loop {
-            // Assume that if a ping fails, the server was shut down - the only purpose of this thread
-            // is to prevent an idle timeout.
-            if client.ping().is_err() {
-                return;
+        .spawn(move || {
+            loop {
+                // Assume that if a ping fails, the server was shut down - the only purpose of this thread
+                // is to prevent an idle timeout.
+                if client.ping().is_err() {
+                    return;
+                }
+                std::thread::sleep(PING_INTERVAL);
             }
-            std::thread::sleep(PING_INTERVAL);
         });
 }
 

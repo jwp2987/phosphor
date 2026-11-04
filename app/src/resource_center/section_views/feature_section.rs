@@ -6,6 +6,8 @@ use crate::{
     themes::theme::Fill,
 };
 use warpui::{
+    Action, AppContext, Entity, EntityId, ModelHandle, SingletonEntity, TypedActionView, View,
+    ViewContext, WindowId,
     elements::{
         Align, ConstrainedBox, Container, CrossAxisAlignment, Element, Flex, Hoverable, Icon,
         MouseState, MouseStateHandle, ParentElement, Shrinkable,
@@ -13,18 +15,16 @@ use warpui::{
     fonts::Weight,
     platform::Cursor,
     ui_components::components::{UiComponent, UiComponentStyles},
-    Action, AppContext, Entity, EntityId, ModelHandle, SingletonEntity, TypedActionView, View,
-    ViewContext, WindowId,
 };
 
 use crate::resource_center::{
-    complete_tips_and_write_to_user_defaults, main_page::ActionTarget,
-    skip_tips_and_write_to_user_defaults, FeatureItem, FeatureSectionData, Tip, TipsCompleted,
+    FeatureItem, FeatureSectionData, Tip, TipsCompleted, complete_tips_and_write_to_user_defaults,
+    main_page::ActionTarget, skip_tips_and_write_to_user_defaults,
 };
 
 use super::{
-    SectionAction, SectionView, CHEVRON_ICON_SIZE, DESCRIPTION_FONT_SIZE, ELLIPSE_ICON_SIZE,
-    ELLIPSE_SVG_PATH, ICON_PADDING, ITEM_PADDING_BOTTOM, SCROLLBAR_OFFSET, SECTION_SPACING,
+    CHEVRON_ICON_SIZE, DESCRIPTION_FONT_SIZE, ELLIPSE_ICON_SIZE, ELLIPSE_SVG_PATH, ICON_PADDING,
+    ITEM_PADDING_BOTTOM, SCROLLBAR_OFFSET, SECTION_SPACING, SectionAction, SectionView,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

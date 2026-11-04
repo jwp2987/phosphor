@@ -1,8 +1,8 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::path::PathBuf;
 
 use deltae::*;
-use kmeans_colors::{get_kmeans_hamerly, Calculate, CentroidData, Sort};
+use kmeans_colors::{Calculate, CentroidData, Sort, get_kmeans_hamerly};
 use palette::{FromColor, IntoColor, Lab, Pixel, Srgb, Srgba};
 use pathfinder_color::ColorU;
 

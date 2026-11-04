@@ -1,4 +1,4 @@
-use settings::{macros::define_settings_group, SupportedPlatforms, SyncToCloud};
+use settings::{SupportedPlatforms, SyncToCloud, macros::define_settings_group};
 
 // Zap-adapted from warp/master `app/src/settings/tui_autoupdate.rs`. Warp's
 // newer `surface: SettingSurfaces::TUI` marker is dropped — Zap's settings macro

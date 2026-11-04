@@ -2,11 +2,11 @@ use std::ffi::c_void;
 
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::System::Threading::{
-    GetExitCodeProcess, RegisterWaitForSingleObject, UnregisterWait, INFINITE,
+    GetExitCodeProcess, INFINITE, RegisterWaitForSingleObject, UnregisterWait,
     WT_EXECUTEINWAITTHREAD, WT_EXECUTEONLYONCE,
 };
 
-use mio::{event::Source, Interest, Registry, Token};
+use mio::{Interest, Registry, Token, event::Source};
 
 use crate::terminal::local_tty::mio_channel;
 use crate::terminal::local_tty::windows::ShareableHandle;

@@ -1,6 +1,6 @@
 #![allow(deprecated)]
 
-use command::{blocking, r#async::Command};
+use command::{r#async::Command, blocking};
 use futures::StreamExt;
 use futures_lite::future;
 use instant::Instant;
@@ -16,7 +16,7 @@ use std::{
 };
 use warp_core::safe_error;
 
-use anyhow::{anyhow, bail, ensure, Context, Result};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use channel_versions::VersionInfo;
 use nix::unistd::{fchown, getgid};
 use nix::{errno::Errno, unistd::getuid};
@@ -31,7 +31,7 @@ use crate::{
 };
 
 use super::{
-    gitlab, release_assets_directory_url, DownloadProgress, DownloadReady, ProgressCallback,
+    DownloadProgress, DownloadReady, ProgressCallback, gitlab, release_assets_directory_url,
 };
 
 // Relative path to the directory containing old executables from before an autoupdate.
@@ -1112,18 +1112,12 @@ async fn download_dmg(
         if downloaded - last_reported >= REPORT_BYTES_THRESHOLD
             || last_reported_at.elapsed() >= REPORT_TIME_THRESHOLD
         {
-            on_progress(DownloadProgress {
-                downloaded,
-                total,
-            });
+            on_progress(DownloadProgress { downloaded, total });
             last_reported = downloaded;
             last_reported_at = Instant::now();
         }
     }
-    on_progress(DownloadProgress {
-        downloaded,
-        total,
-    });
+    on_progress(DownloadProgress { downloaded, total });
     file.sync_data().await?;
 
     log::info!("Wrote DMG to tempfile at {:?}", &dmg_file);

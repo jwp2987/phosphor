@@ -3,18 +3,18 @@ use crate::ai::blocklist::inline_action::inline_action_header::{
 };
 use crate::ai::blocklist::inline_action::inline_action_icons::icon_size;
 use crate::code::editor_management::CodeSource;
-use crate::search::files::icon::icon_from_file_path;
 use crate::search::ItemHighlightState;
+use crate::search::files::icon::icon_from_file_path;
 use std::iter;
 use warp_core::ui::theme::Fill;
 use warpui::elements::{ChildView, HighlightedRange, MouseStateHandle};
 use warpui::{
+    AppContext, Element, SingletonEntity,
     elements::{
         Border, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Empty, Expanded, Flex,
         MainAxisAlignment, MainAxisSize, ParentElement, Radius, Shrinkable, Text,
     },
     ui_components::components::UiComponent,
-    AppContext, Element, SingletonEntity,
 };
 use warpui::{EventContext, ViewHandle};
 

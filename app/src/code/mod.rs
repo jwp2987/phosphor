@@ -3,22 +3,22 @@ use std::any::Any;
 use std::fmt::Debug;
 use std::ops::AddAssign;
 use warp_util::file::FileSaveError;
-use warpui::elements::DropTargetData;
 use warpui::AppContext;
+use warpui::elements::DropTargetData;
 
 pub mod buffer_location;
 pub mod diff_viewer;
 pub mod editor;
 pub mod editor_management;
+pub mod find_references_view;
 pub mod global_buffer_model;
 pub mod inline_diff;
-pub mod find_references_view;
 pub mod language_server_extension;
 #[cfg(feature = "local_fs")]
 pub mod language_server_shutdown_manager;
+pub mod local_code_editor;
 pub mod lsp_logs;
 pub mod lsp_telemetry;
-pub mod local_code_editor;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ImmediateSaveError {

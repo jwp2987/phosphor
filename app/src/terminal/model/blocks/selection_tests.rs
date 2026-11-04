@@ -3,16 +3,16 @@ use float_cmp::assert_approx_eq;
 use warpui::App;
 
 use crate::terminal::{
-        event_listener::ChannelEventListener,
-        model::{
-            ansi::{self, Handler as _, PreexecValue},
-            blocks::{
-                insert_block,
-                tests::{command_finished_and_precmd, input_string, new_bootstrapped_block_list},
-            },
-            test_utils,
+    event_listener::ChannelEventListener,
+    model::{
+        ansi::{self, Handler as _, PreexecValue},
+        blocks::{
+            insert_block,
+            tests::{command_finished_and_precmd, input_string, new_bootstrapped_block_list},
         },
-    };
+        test_utils,
+    },
+};
 
 use super::*;
 
@@ -694,9 +694,11 @@ fn test_selection_is_removed_if_contained_within_active_truncated_block() {
         blocks.linefeed();
     }
 
-    assert!(blocks
-        .renderable_selection(&semantic_selection, false)
-        .is_none());
+    assert!(
+        blocks
+            .renderable_selection(&semantic_selection, false)
+            .is_none()
+    );
 }
 
 #[test]

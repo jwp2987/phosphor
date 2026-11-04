@@ -1,9 +1,9 @@
 //! Search tools: `Grep` (line-by-line matching) + `FileGlobV2` (filename globbing).
 
+use agent_proto as api;
 use anyhow::Result;
 use serde::Deserialize;
-use serde_json::{json, Value};
-use agent_proto as api;
+use serde_json::{Value, json};
 
 use super::OpenAiTool;
 

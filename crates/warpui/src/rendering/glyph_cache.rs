@@ -1,4 +1,4 @@
-use crate::fonts::{canvas, RasterizedGlyph};
+use crate::fonts::{RasterizedGlyph, canvas};
 use crate::rendering::atlas::{self, AllocatedRegion, TextureId};
 use crate::{fonts::SubpixelAlignment, rendering, scene::GlyphKey};
 use anyhow::Result;

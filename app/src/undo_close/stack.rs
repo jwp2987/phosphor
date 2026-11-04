@@ -1,7 +1,7 @@
 use uuid::Uuid;
 use warpui::{
-    r#async::SpawnedFutureHandle, AppContext, ClosedWindowData, Entity, EntityId, ModelContext,
-    ModelHandle, SingletonEntity, ViewHandle, WeakViewHandle, WindowId,
+    AppContext, ClosedWindowData, Entity, EntityId, ModelContext, ModelHandle, SingletonEntity,
+    ViewHandle, WeakViewHandle, WindowId, r#async::SpawnedFutureHandle,
 };
 
 use crate::{
@@ -14,7 +14,7 @@ use crate::{
 };
 
 use super::awake_time::{awake_now, remaining_grace};
-use super::{settings::UndoCloseSettingsChangedEvent, UndoCloseSettings};
+use super::{UndoCloseSettings, settings::UndoCloseSettingsChangedEvent};
 
 /// A unique identifier for an item in the undo close stack.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]

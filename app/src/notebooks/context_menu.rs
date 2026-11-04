@@ -3,18 +3,18 @@
 use pathfinder_geometry::vector::Vector2F;
 use warp_core::context_flag::ContextFlag;
 use warpui::{
+    Action, Element, EventContext, TypedActionView, View, ViewContext, ViewHandle,
     clipboard::ClipboardContent,
     elements::{ChildAnchor, OffsetPositioning, ParentAnchor, ParentOffsetBounds, Stack},
     keymap::Trigger,
     presenter::ChildView,
-    Action, Element, EventContext, TypedActionView, View, ViewContext, ViewHandle,
 };
 
 use crate::{
     editor::EditorView,
     menu::{self, Menu, MenuItem, MenuItemFields},
-    pane_group::{focus_state::PaneFocusHandle, PaneEvent, SplitPaneState},
-    util::bindings::{keybinding_name_to_display_string, trigger_to_keystroke, CustomAction},
+    pane_group::{PaneEvent, SplitPaneState, focus_state::PaneFocusHandle},
+    util::bindings::{CustomAction, keybinding_name_to_display_string, trigger_to_keystroke},
 };
 
 use super::{

@@ -1,6 +1,6 @@
 use crate::{
     appearance::Appearance,
-    cloud_object::{model::persistence::ObjectStoreModel, Owner, StoredObject},
+    cloud_object::{Owner, StoredObject, model::persistence::ObjectStoreModel},
     server::ids::SyncId,
     themes::theme::WarpTheme,
     workspaces::user_workspaces::UserWorkspaces,
@@ -8,6 +8,7 @@ use crate::{
 use pathfinder_geometry::vector::vec2f;
 use warp_core::ui::theme::Fill;
 use warpui::{
+    AppContext, Element, Entity, SingletonEntity, TypedActionView, View, ViewContext, ViewHandle,
     elements::{
         Align, Border, ChildAnchor, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox,
         Container, CornerRadius, CrossAxisAlignment, Flex, Highlight, MouseStateHandle,
@@ -20,7 +21,6 @@ use warpui::{
         button::ButtonVariant,
         components::{UiComponent, UiComponentStyles},
     },
-    AppContext, Element, Entity, SingletonEntity, TypedActionView, View, ViewContext, ViewHandle,
 };
 
 use super::modal_body::{ImportModalBody, ImportModalBodyAction, ImportModalBodyEvent};

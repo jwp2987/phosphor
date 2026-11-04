@@ -1,4 +1,5 @@
 use warpui::{
+    Element,
     elements::{
         Align, Border, ConstrainedBox, Container, CornerRadius, Flex, Highlight, ParentElement,
         Radius, Shrinkable, Text,
@@ -8,7 +9,6 @@ use warpui::{
         components::{Coords, UiComponent, UiComponentStyles},
         text::Span,
     },
-    Element,
 };
 
 use crate::appearance::Appearance;

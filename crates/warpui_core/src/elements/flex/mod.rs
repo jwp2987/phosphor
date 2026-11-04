@@ -2,10 +2,10 @@ mod wrap;
 
 pub use wrap::*;
 
-use crate::report_error::{report_error, ReportErrorLogMode};
+use crate::report_error::{ReportErrorLogMode, report_error};
 use crate::{
     event::DispatchedEvent,
-    text::{word_boundaries::WordBoundariesPolicy, IsRect, SelectionDirection, SelectionType},
+    text::{IsRect, SelectionDirection, SelectionType, word_boundaries::WordBoundariesPolicy},
 };
 
 use super::{
@@ -14,7 +14,7 @@ use super::{
     Vector2FExt,
 };
 use pathfinder_geometry::rect::RectF;
-use pathfinder_geometry::vector::{vec2f, Vector2F};
+use pathfinder_geometry::vector::{Vector2F, vec2f};
 use std::any::Any;
 
 pub struct Flex {

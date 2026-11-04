@@ -1,11 +1,11 @@
 use super::{FAST_PATH_OFF, FAST_PATH_ON, encode_layer, shader_source_with, shader_types};
-use std::borrow::Cow;
+use crate::Scene;
 use crate::elements::Fill;
 use crate::rendering;
-use crate::Scene;
 use pathfinder_color::ColorU;
 use pathfinder_geometry::rect::RectF;
 use pathfinder_geometry::vector::vec2f;
+use std::borrow::Cow;
 
 fn sample_scene() -> Scene {
     let mut scene = Scene::new(2., rendering::Config::default());

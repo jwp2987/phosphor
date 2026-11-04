@@ -18,13 +18,13 @@ pub use {
     time::{LamportValue, ReplicaId},
 };
 
+use super::EditorSnapshot;
 use super::selections::{
     AsSelection, MarkedTextState, RemoteSelection, RemoteSelections, Selection,
 };
-use super::EditorSnapshot;
-use super::{selections::LocalSelections, LocalSelection};
+use super::{LocalSelection, selections::LocalSelections};
 use crate::editor::{CursorColors, PlainTextEditorViewAction};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use itertools::Itertools;
 use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
@@ -42,9 +42,9 @@ use string_offset::{ByteOffset, CharOffset};
 use sum_tree::{self, Cursor, FilterCursor, SeekBias, SumTree};
 use time::{Global, Lamport};
 use undo::{LocalUndoStack, UndoHistory};
-use vec1::{vec1, Vec1};
+use vec1::{Vec1, vec1};
 use warpui::color::ColorU;
-use warpui::text::{point::Point, words::is_default_word_boundary, BufferIndex, TextBuffer};
+use warpui::text::{BufferIndex, TextBuffer, point::Point, words::is_default_word_boundary};
 use warpui::text_layout::TextStyle;
 use warpui::{Entity, ModelContext};
 

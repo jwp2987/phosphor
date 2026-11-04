@@ -6,7 +6,7 @@ use crate::modals::ModalId;
 use crate::windowing::state::ApplicationStage;
 use crate::windowing::{WindowCallbackDispatcher, WindowManager};
 use crate::{
-    keymap::Keystroke, notification, AppContext, ClosedWindowData, SingletonEntity, WindowId,
+    AppContext, ClosedWindowData, SingletonEntity, WindowId, keymap::Keystroke, notification,
 };
 
 use super::TerminationMode;

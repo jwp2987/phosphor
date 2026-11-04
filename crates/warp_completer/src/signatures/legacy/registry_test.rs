@@ -1,9 +1,9 @@
 use warp_command_signatures::{Priority, Signature};
 use warp_core::channel::Channel;
 
-use crate::completer::testing::FakeCompletionContext;
 use crate::completer::CompletionContext;
 use crate::completer::TopLevelCommandCaseSensitivity;
+use crate::completer::testing::FakeCompletionContext;
 use crate::signatures::registry::{MAX_CACHEABLE_COMMAND_LEN, SignatureResult};
 use crate::signatures::testing::{create_test_command_registry, git_signature, test_signature};
 // `miss_cache` is private to the `legacy` module, so it's reached relatively rather than

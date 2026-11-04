@@ -92,7 +92,10 @@ impl TuiElement for TuiSpinner {
         _ctx: &mut TuiLayoutContext,
         _app: &AppContext,
     ) -> TuiSize {
-        let size = TuiSize::new(constraint.constrain_width(1), constraint.constrain_height(1));
+        let size = TuiSize::new(
+            constraint.constrain_width(1),
+            constraint.constrain_height(1),
+        );
         self.size = Some(size);
         size
     }

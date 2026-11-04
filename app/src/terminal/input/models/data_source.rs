@@ -1,11 +1,11 @@
-use fuzzy_match::{match_indices_case_insensitive, FuzzyMatchResult};
+use fuzzy_match::{FuzzyMatchResult, match_indices_case_insensitive};
 use itertools::Itertools;
 use markdown_parser::{FormattedText, FormattedTextFragment, FormattedTextLine};
 use ordered_float::OrderedFloat;
 use warp_core::ui::appearance::Appearance;
 use warp_core::ui::icons::Icon;
-use warp_core::ui::theme::color::internal_colors;
 use warp_core::ui::theme::Fill;
+use warp_core::ui::theme::color::internal_colors;
 use warpui::elements::{
     ConstrainedBox, Container, CornerRadius, FormattedTextElement, Highlight, HighlightedHyperlink,
     MouseStateHandle, Radius, Text,
@@ -20,8 +20,8 @@ use warpui::{AppContext, Element, Entity, EntityId, SingletonEntity as _};
 use crate::ai::agent_providers::{llm_id as byop_llm_id, lookup_byop};
 use crate::ai::execution_profiles::model_menu_items::is_auto;
 use crate::ai::llms::{
-    is_using_api_key_for_provider, DisableReason, LLMId, LLMInfo, LLMPreferences, LLMProvider,
-    LLMSpec,
+    DisableReason, LLMId, LLMInfo, LLMPreferences, LLMProvider, LLMSpec,
+    is_using_api_key_for_provider,
 };
 use crate::features::FeatureFlag;
 use crate::search::data_source::{Query, QueryFilter, QueryResult};
@@ -29,10 +29,10 @@ use crate::search::mixer::DataSourceRunErrorWrapper;
 use crate::search::result_renderer::ItemHighlightState;
 use crate::search::{SearchItem, SyncDataSource};
 use crate::settings_view::SettingsSection;
+use crate::terminal::input::inline_menu::{DetailsRenderConfig, styles as inline_styles};
 use crate::terminal::input::inline_menu::{
-    default_navigation_message_items, InlineMenuAction, InlineMenuMessageArgs, InlineMenuType,
+    InlineMenuAction, InlineMenuMessageArgs, InlineMenuType, default_navigation_message_items,
 };
-use crate::terminal::input::inline_menu::{styles as inline_styles, DetailsRenderConfig};
 use crate::terminal::input::message_bar::{Message, MessageItem};
 use crate::workspace::WorkspaceAction;
 use crate::workspaces::user_workspaces::UserWorkspaces;
@@ -40,8 +40,8 @@ use warpui::keymap::Keystroke;
 use warpui::platform::OperatingSystem;
 
 use super::model_spec_scores::{
-    render_byop_spec_scores, render_model_spec_header, render_model_spec_scores, CostRow,
-    ModelSpecScoresLayout,
+    CostRow, ModelSpecScoresLayout, render_byop_spec_scores, render_model_spec_header,
+    render_model_spec_scores,
 };
 
 #[derive(Clone, Debug)]
@@ -201,11 +201,7 @@ impl ModelPickerChoice {
     }
 
     fn priority_tier(&self) -> u8 {
-        if self.is_selectable() {
-            0
-        } else {
-            1
-        }
+        if self.is_selectable() { 0 } else { 1 }
     }
 }
 
@@ -706,7 +702,9 @@ impl SearchItem for ModelSearchItem {
                 theme.disabled_ui_text_color().into_solid(),
                 HighlightedHyperlink::default(),
             )
-            .with_heading_to_font_size_multipliers(appearance.heading_font_size_multipliers().clone())
+            .with_heading_to_font_size_multipliers(
+                appearance.heading_font_size_multipliers().clone(),
+            )
             .with_hyperlink_font_color(theme.accent().into_solid())
             .register_default_click_handlers_with_action_support(|hyperlink_lens, event, ctx| {
                 match hyperlink_lens {
@@ -734,11 +732,7 @@ impl SearchItem for ModelSearchItem {
     }
 
     fn priority_tier(&self) -> u8 {
-        if self.is_disabled() {
-            1
-        } else {
-            0
-        }
+        if self.is_disabled() { 1 } else { 0 }
     }
 
     fn score(&self) -> OrderedFloat<f64> {

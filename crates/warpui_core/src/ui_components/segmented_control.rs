@@ -1,6 +1,7 @@
 use itertools::Itertools;
 
 use crate::{
+    AppContext, Element, Entity, TypedActionView, View, ViewContext,
     color::ColorU,
     elements::{
         Align, Border, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Fill, Flex,
@@ -13,7 +14,6 @@ use crate::{
         components::{Coords, UiComponent, UiComponentStyles},
         tool_tip::{Tooltip, TooltipWithSublabel},
     },
-    AppContext, Element, Entity, TypedActionView, View, ViewContext,
 };
 
 use core::fmt;

@@ -1,5 +1,6 @@
 use pathfinder_geometry::{rect::RectF, vector::Vector2F};
 use warpui::{
+    AppContext, Element, SingletonEntity, ViewHandle,
     elements::{
         AcceptedByDropTarget, Border, ChildAnchor, ConstrainedBox, Container, CornerRadius,
         CrossAxisAlignment, Draggable, DraggableState, DropShadow, Empty, Flex, Hoverable,
@@ -14,13 +15,12 @@ use warpui::{
         components::{UiComponent, UiComponentStyles},
         text::Span,
     },
-    AppContext, Element, SingletonEntity, ViewHandle,
 };
 
 use crate::{
     cloud_object::{
-        model::{persistence::ObjectStoreModel, view::ObjectStoreViewModel},
         Owner, StoredObject, StoredObjectMetadataExt,
+        model::{persistence::ObjectStoreModel, view::ObjectStoreViewModel},
     },
     drive::ObjectTypeAndId,
     workspaces::{user_profiles::UserProfiles, user_workspaces::UserWorkspaces},
@@ -33,19 +33,20 @@ use crate::{
     cloud_object::Space,
     drive::{
         index::{
-            DriveIndexAction, AUTOSCROLL_DETECTION_DISTANCE, AUTOSCROLL_SPEED_MULTIPLIER,
-            DRIVE_INDEX_VIEW_POSITION_ID, FOLDER_DEPTH_INDENT, INDEX_CONTENT_MARGIN_LEFT,
-            ITEM_FONT_SIZE, ITEM_MARGIN_BOTTOM, ITEM_PADDING_HORIZONTAL, ITEM_PADDING_VERTICAL,
+            AUTOSCROLL_DETECTION_DISTANCE, AUTOSCROLL_SPEED_MULTIPLIER,
+            DRIVE_INDEX_VIEW_POSITION_ID, DriveIndexAction, FOLDER_DEPTH_INDENT,
+            INDEX_CONTENT_MARGIN_LEFT, ITEM_FONT_SIZE, ITEM_MARGIN_BOTTOM, ITEM_PADDING_HORIZONTAL,
+            ITEM_PADDING_VERTICAL,
         },
         panel::WARP_DRIVE_POSITION_ID,
     },
     menu::Menu,
     ui_components::{
         blended_colors,
-        icons::{Icon, ICON_DIMENSIONS},
+        icons::{ICON_DIMENSIONS, Icon},
         menu_button::{
-            highlight_icon_button_with_context_menu_drive, icon_button_with_context_menu_drive,
-            MenuDirection,
+            MenuDirection, highlight_icon_button_with_context_menu_drive,
+            icon_button_with_context_menu_drive,
         },
     },
 };
@@ -303,10 +304,11 @@ impl<'a> WarpDriveRow<'a> {
         app: &AppContext,
     ) -> Option<Box<dyn Element>> {
         self.item.preview(appearance).map(|content_preview| {
-            let mut stacked_preview_panels: Vec<Box<dyn Element>> =
-                vec![Container::new(content_preview)
+            let mut stacked_preview_panels: Vec<Box<dyn Element>> = vec![
+                Container::new(content_preview)
                     .with_uniform_padding(16.)
-                    .finish()];
+                    .finish(),
+            ];
 
             stacked_preview_panels.extend(self.render_shared_object_owner(appearance, app));
 

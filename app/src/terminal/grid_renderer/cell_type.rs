@@ -8,9 +8,9 @@ use crate::{
     terminal::{
         color,
         model::{
-            ansi::{color_index, Color, NamedColor},
-            cell::{Cell, Flags},
             ObfuscateSecrets,
+            ansi::{Color, NamedColor, color_index},
+            cell::{Cell, Flags},
         },
     },
     util::color::OPAQUE,

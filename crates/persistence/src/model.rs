@@ -2,23 +2,22 @@
 
 use std::collections::{HashMap, HashSet};
 
+use agent_proto::{self as api, response_event::stream_finished};
 use chrono::NaiveDateTime;
 use diesel::prelude::*;
 use serde::{Deserialize, Deserializer, Serialize};
-use agent_proto::{self as api, response_event::stream_finished};
 
 use super::schema::{
     active_mcp_servers, agent_conversations, agent_tasks, ai_document_panes, ai_memory_panes,
     ambient_agent_panes, app, blocks, cloud_objects_refreshes, code_pane_tabs, code_panes,
     code_review_panes, codebase_index_embeddings, codebase_index_node_summaries,
-    codebase_index_nodes, commands,
-    current_user_information, env_var_collection_panes, folders, generic_string_objects,
-    ignored_suggestions, mcp_environment_variables, mcp_server_installations,
-    notebook_panes, notebooks, object_actions, object_metadata, object_permissions, pane_branches,
-    pane_leaves, pane_nodes, panels, project_rules, projects, queued_prompts,
-    settings_panes, tab_groups, tabs, team_members, team_settings, teams, terminal_panes, user_profiles,
-    welcome_panes, windows, workflow_panes, workflows, workspace_language_server,
-    workspace_metadata, workspace_teams, workspaces,
+    codebase_index_nodes, commands, current_user_information, env_var_collection_panes, folders,
+    generic_string_objects, ignored_suggestions, mcp_environment_variables,
+    mcp_server_installations, notebook_panes, notebooks, object_actions, object_metadata,
+    object_permissions, pane_branches, pane_leaves, pane_nodes, panels, project_rules, projects,
+    queued_prompts, settings_panes, tab_groups, tabs, team_members, team_settings, teams,
+    terminal_panes, user_profiles, welcome_panes, windows, workflow_panes, workflows,
+    workspace_language_server, workspace_metadata, workspace_teams, workspaces,
 };
 
 #[derive(Insertable)]
@@ -1393,7 +1392,6 @@ impl ModelTokenUsage {
             &self.custom_endpoint_token_usage_by_category,
         )
     }
-
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -1607,7 +1605,7 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{
-        api, AgentConversation, AgentConversationData, AgentConversationSummary, ModelTokenUsage,
+        AgentConversation, AgentConversationData, AgentConversationSummary, ModelTokenUsage, api,
     };
 
     fn parentless_task(id: &str, message_count: usize) -> api::Task {
@@ -1694,7 +1692,11 @@ mod tests {
     fn summary_from_tasks_derives_query_title_and_working_directory() {
         let mut root = parentless_task("root", 0);
         root.description = "Root title".to_string();
-        root.messages = vec![user_query_message("root", "Initial query", Some("/tmp/repo"))];
+        root.messages = vec![user_query_message(
+            "root",
+            "Initial query",
+            Some("/tmp/repo"),
+        )];
 
         let summary = AgentConversationSummary::from_tasks([&root]);
 
@@ -1755,7 +1757,11 @@ mod tests {
     fn summary_roundtrips_through_json() {
         let mut root = parentless_task("root", 0);
         root.description = "Root title".to_string();
-        root.messages = vec![user_query_message("root", "Initial query", Some("/tmp/repo"))];
+        root.messages = vec![user_query_message(
+            "root",
+            "Initial query",
+            Some("/tmp/repo"),
+        )];
 
         let summary = AgentConversationSummary::from_tasks([&root]);
         let json = serde_json::to_string(&summary).expect("summary should serialize");

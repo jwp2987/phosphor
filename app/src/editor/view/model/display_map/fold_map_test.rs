@@ -1,6 +1,6 @@
 use super::*;
-use crate::editor::tests::{sample_text, RandomCharIter};
 use crate::editor::EditOrigin;
+use crate::editor::tests::{RandomCharIter, sample_text};
 use tests::buffer::RangesWhenEditing;
 use warpui::App;
 

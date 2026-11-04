@@ -1,11 +1,11 @@
 use instant::Duration;
 use settings::{
-    is_settings_file_enabled, set_settings_file_enabled, PrivatePreferences, PublicPreferences,
-    Setting, SettingsManager,
+    PrivatePreferences, PublicPreferences, Setting, SettingsManager, is_settings_file_enabled,
+    set_settings_file_enabled,
 };
 use settings_value::SettingsValue;
 use warp_core::features::FeatureFlag;
-use warp_core::settings::{macros::define_settings_group, SupportedPlatforms, SyncToCloud};
+use warp_core::settings::{SupportedPlatforms, SyncToCloud, macros::define_settings_group};
 use warp_core::user_preferences::GetUserPreferences as _;
 use warpui::SingletonEntity;
 use warpui_extras::user_preferences;
@@ -13,8 +13,8 @@ use warpui_extras::user_preferences;
 use crate::terminal::session_settings::{NotificationsMode, NotificationsSettings};
 
 use super::{
-    migrate_native_settings_to_settings_file, needs_settings_file_migration,
-    SETTINGS_FILE_MIGRATION_COMPLETE_KEY,
+    SETTINGS_FILE_MIGRATION_COMPLETE_KEY, migrate_native_settings_to_settings_file,
+    needs_settings_file_migration,
 };
 
 // A minimal settings group with one public and one private setting, used to
@@ -204,13 +204,15 @@ fn test_migration_skips_settings_absent_from_native_store() {
                     .unwrap()
                     .is_none()
             );
-            assert!(public
-                .read_value_with_hierarchy(
-                    PublicStringSetting::storage_key(),
-                    PublicStringSetting::hierarchy(),
-                )
-                .unwrap()
-                .is_none());
+            assert!(
+                public
+                    .read_value_with_hierarchy(
+                        PublicStringSetting::storage_key(),
+                        PublicStringSetting::hierarchy(),
+                    )
+                    .unwrap()
+                    .is_none()
+            );
         });
     });
 }
@@ -390,7 +392,7 @@ fn test_migration_with_multiple_setting_types() {
 
 mod notifications_migration {
     use settings::{PrivatePreferences, PublicPreferences, SettingsManager};
-    use warp_core::settings::{macros::define_settings_group, SupportedPlatforms, SyncToCloud};
+    use warp_core::settings::{SupportedPlatforms, SyncToCloud, macros::define_settings_group};
     use warpui_extras::user_preferences;
 
     use crate::terminal::session_settings::NotificationsSettings;
@@ -423,7 +425,7 @@ mod notifications_migration {
     }
 }
 use notifications_migration::{
-    init_notifications_migration_test_app, NotificationsMigrationTestSettings,
+    NotificationsMigrationTestSettings, init_notifications_migration_test_app,
 };
 
 // -- from_file_value unit tests: these demonstrate the derive-level bug ------

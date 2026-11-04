@@ -1,8 +1,8 @@
 use ordered_float::OrderedFloat;
 use warpui::{
+    AppContext, Element, SingletonEntity,
     elements::{ConstrainedBox, Container, Highlight, Text},
     fonts::{Properties, Weight},
-    AppContext, Element, SingletonEntity,
 };
 
 use crate::search::item::SearchItem;

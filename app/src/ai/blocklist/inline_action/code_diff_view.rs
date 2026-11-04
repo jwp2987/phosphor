@@ -5,7 +5,7 @@ use anyhow::Result;
 use lazy_static::lazy_static;
 use markdown_parser::{FormattedText, FormattedTextFragment, FormattedTextLine};
 use pathfinder_geometry::vector::vec2f;
-use rand::{distributions::Alphanumeric, thread_rng, Rng as _};
+use rand::{Rng as _, distributions::Alphanumeric, thread_rng};
 use std::{
     collections::{HashMap, HashSet},
     ops::Range,
@@ -15,6 +15,7 @@ use std::{
     time::Duration,
 };
 use warp_core::{
+    HostId,
     features::FeatureFlag,
     platform::SessionPlatform,
     settings::ToggleableSetting,
@@ -22,11 +23,10 @@ use warp_core::{
         appearance::Appearance,
         color::CLAUDE_ORANGE,
         theme::{
-            color::internal_colors::{fg_overlay_6, neutral_1, neutral_4},
             Fill,
+            color::internal_colors::{fg_overlay_6, neutral_1, neutral_4},
         },
     },
-    HostId,
 };
 use warp_editor::{
     content::buffer::InitialBufferState, render::element::VerticalExpansionBehavior,
@@ -35,8 +35,9 @@ use warp_util::file::FileSaveError;
 use warp_util::path::common_path;
 use warp_util::standardized_path::StandardizedPath;
 use warpui::{
+    AppContext, Element, Entity, FocusContext, ModelHandle, SingletonEntity, TypedActionView, View,
+    ViewContext, ViewHandle,
     elements::{
-        new_scrollable::{ScrollableAppearance, SingleAxisConfig},
         Align, Border, ChildAnchor, ChildView, Clipped, ClippedScrollStateHandle, ConstrainedBox,
         Container, CornerRadius, CrossAxisAlignment, DispatchEventResult, Empty, EventHandler,
         Flex, FormattedTextElement, HighlightedHyperlink, Hoverable, MainAxisAlignment,
@@ -44,23 +45,24 @@ use warpui::{
         ParentElement, ParentOffsetBounds, PositionedElementAnchor, PositionedElementOffsetBounds,
         Radius, SavePosition, ScrollTarget, ScrollToPositionMode, ScrollbarWidth, Shrinkable,
         SizeConstraintCondition, SizeConstraintSwitch, Stack, Text,
+        new_scrollable::{ScrollableAppearance, SingleAxisConfig},
     },
     keymap::{EditableBinding, FixedBinding, Keystroke},
     platform::{Cursor, OperatingSystem},
     ui_components::components::{Coords, UiComponent, UiComponentStyles},
-    AppContext, Element, Entity, FocusContext, ModelHandle, SingletonEntity, TypedActionView, View,
-    ViewContext, ViewHandle,
 };
 
 use super::malformed_line_heuristics::has_malformed_terminal_correction_signal;
 use crate::view_components::action_button::{ActionButton, NakedTheme};
 use crate::{
+    TelemetryEvent,
     ai::{
         agent::{
-            icons::{self, yellow_stop_icon},
             AIAgentActionId, AIIdentifiers, FileEdit, FileLocations, ServerOutputId,
+            icons::{self, yellow_stop_icon},
         },
         blocklist::{
+            RequestedEditResolution,
             action_model::{
                 AIActionStatus, BlocklistAIActionEvent, BlocklistAIActionModel,
                 EditAcceptAndContinueClickedEvent, EditAcceptClickedEvent, EditResolvedEvent,
@@ -73,55 +75,52 @@ use crate::{
                 inline_action_icons::{cancelled_icon, green_check_icon, icon_size, reverted_icon},
             },
             model::{AIBlockModel, AIBlockModelHelper},
-            RequestedEditResolution,
         },
-        mcp::{mcp_provider_from_file_path, MCPProvider},
+        mcp::{MCPProvider, mcp_provider_from_file_path},
         paths::host_native_absolute_path,
         predict::prompt_suggestions::ACCEPT_PROMPT_SUGGESTION_KEYBINDING,
         skills::{
-            icon_override_for_skill_name, render_skill_button, skill_path_from_file_path,
-            SkillManager, SkillReference,
+            SkillManager, SkillReference, icon_override_for_skill_name, render_skill_button,
+            skill_path_from_file_path,
         },
     },
     cmd_or_ctrl_shift,
     code::{
+        DiffResult,
         diff_viewer::{DiffViewer, DisplayMode},
         editor::{
             add_color, remove_color,
             view::{CodeEditorEvent, CodeEditorRenderOptions, CodeEditorView},
         },
         inline_diff::{FileWriteAction, InlineDiffView, InlineDiffViewEvent, RevertDispatch},
-        DiffResult,
     },
     code_review::telemetry_event::CodeReviewPaneEntrypoint,
     menu::{Event as MenuEvent, Menu, MenuItemFields, MenuVariant},
     pane_group::{
-        focus_state::PaneFocusHandle,
-        pane::{view, PaneId},
         BackingView, PaneEvent,
+        focus_state::PaneFocusHandle,
+        pane::{PaneId, view},
     },
     send_telemetry_from_ctx,
     server::telemetry::{AgentModeCodeFileNavigationSource, ToggleCodeSuggestionsSettingSource},
     settings::AISettings,
-    terminal::{input::SET_INPUT_MODE_AGENT_ACTION_NAME, ShellLaunchData},
+    terminal::{ShellLaunchData, input::SET_INPUT_MODE_AGENT_ACTION_NAME},
     ui_components::{blended_colors, icons::Icon},
     util::bindings::keybinding_name_to_keystroke,
     view_components::{
+        DismissibleToast,
         action_button::{ButtonSize, KeystrokeSource},
         compactible_action_button::{
-            render_compact_and_regular_button_rows, CompactibleActionButton,
-            RenderCompactibleActionButton, MEDIUM_SIZE_SWITCH_THRESHOLD,
-            XLARGE_SIZE_SWITCH_THRESHOLD,
+            CompactibleActionButton, MEDIUM_SIZE_SWITCH_THRESHOLD, RenderCompactibleActionButton,
+            XLARGE_SIZE_SWITCH_THRESHOLD, render_compact_and_regular_button_rows,
         },
         compactible_split_action_button::CompactibleSplitActionButton,
-        DismissibleToast,
     },
     workspace::ToastStack,
-    TelemetryEvent,
 };
 use ai::diff_validation::{
-    fuzzy_match_diffs, fuzzy_match_v4a_diffs, parse_line_numbers, DiffDelta, DiffType, ParsedDiff,
-    SearchAndReplace, V4AHunk,
+    DiffDelta, DiffType, ParsedDiff, SearchAndReplace, V4AHunk, fuzzy_match_diffs,
+    fuzzy_match_v4a_diffs, parse_line_numbers,
 };
 
 const REQUESTED_EDIT_REFINE_LABEL: &str = "Refine";
@@ -766,14 +765,13 @@ impl CodeDiffView {
         if is_passive {
             self.accept_split_button_menu.update(ctx, |menu, ctx| {
                 menu.set_items(
-                    vec![MenuItemFields::new_multiline(
-                        SUGGESTED_EDIT_ACCEPT_AND_CONTINUE_LABEL,
-                        2,
-                    )
-                    .with_on_select_action(
-                        CodeDiffViewAction::AcceptPassiveDiffAndContinueWithAgent,
-                    )
-                    .into_item()],
+                    vec![
+                        MenuItemFields::new_multiline(SUGGESTED_EDIT_ACCEPT_AND_CONTINUE_LABEL, 2)
+                            .with_on_select_action(
+                                CodeDiffViewAction::AcceptPassiveDiffAndContinueWithAgent,
+                            )
+                            .into_item(),
+                    ],
                     ctx,
                 );
             });
@@ -2287,7 +2285,13 @@ impl CodeDiffView {
     /// agent proposed a rename.
     fn is_remote_rename_fallback(action: &FileWriteAction, diff_type: Option<&DiffType>) -> bool {
         matches!(action, FileWriteAction::Write)
-            && matches!(diff_type, Some(DiffType::Update { rename: Some(_), .. }))
+            && matches!(
+                diff_type,
+                Some(DiffType::Update {
+                    rename: Some(_),
+                    ..
+                })
+            )
     }
 
     /// Whether [`Self::render_editor`] should show the "renamed without

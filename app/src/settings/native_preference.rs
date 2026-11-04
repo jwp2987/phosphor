@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use settings::{macros::define_settings_group, SupportedPlatforms, SyncToCloud};
+use settings::{SupportedPlatforms, SyncToCloud, macros::define_settings_group};
 
 #[derive(
     Clone,

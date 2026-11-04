@@ -16,7 +16,7 @@ use warp_editor::content::edit::EditDelta;
 use warp_editor::content::find::{SearchConfig, SearchResults};
 use warp_editor::content::selection_model::BufferSelectionModel;
 use warp_editor::content::version::BufferVersion;
-use warp_editor::multiline::{AnyMultilineString, MultilineString, LF};
+use warp_editor::multiline::{AnyMultilineString, LF, MultilineString};
 use warp_editor::render::model::{AutoScrollMode, LineCount, StyleUpdateAction};
 use warp_editor::selection::TextDirection;
 use warpui::units::{IntoPixels, Pixels};
@@ -29,11 +29,11 @@ use crate::{
 
 use ai::diff_validation::DiffDelta;
 use itertools::Itertools;
-use languages::{language_by_local_filename, language_by_name, Language};
+use languages::{Language, language_by_local_filename, language_by_name};
 use line_ending::LineEnding;
 use string_offset::CharOffset;
 use syntax_tree::{ColorMap, DecorationStateEvent, SyntaxTreeState};
-use vec1::{vec1, Vec1};
+use vec1::{Vec1, vec1};
 use vim::vim::{
     BracketChar, CharacterMotion, Direction, FindCharMotion, FirstNonWhitespaceMotion,
     InsertPosition, LineMotion, MotionType, TextObjectInclusion, TextObjectType, VimOperator,
@@ -68,13 +68,13 @@ use warpui::elements::{
     AnchorPair, OffsetPositioning, OffsetType, PositionedElementOffsetBounds, PositioningAxis,
     XAxisAnchor, YAxisAnchor,
 };
-use warpui::text::{point::Point, TextBuffer};
+use warpui::text::{TextBuffer, point::Point};
 use warpui::{AppContext, Entity, ModelAsRef, ModelContext, ModelHandle, SingletonEntity};
 
 use super::super::DiffResult;
 use super::comments::{EditorCommentsModel, PendingComment, PendingCommentEvent};
 use super::diff::{
-    add_inline_overlay_color, DiffModel, DiffModelEvent, DiffStatus, RenderableDiffHunk,
+    DiffModel, DiffModelEvent, DiffStatus, RenderableDiffHunk, add_inline_overlay_color,
 };
 use super::line::EditorLineLocation;
 use crate::code_review::comments::{CommentId, CommentOrigin, LineDiffContent};
@@ -424,8 +424,7 @@ impl CodeEditorModel {
     /// rendering). Shares all of `CodeEditorModel`'s non-render features. Reads syntax-highlight
     /// colors from the `Appearance` singleton, like [`Self::new`].
     pub fn new_tui(terminal_width: u16, ctx: &mut ModelContext<Self>) -> Self {
-        let content =
-            ctx.add_model(|_| Buffer::new(Box::new(|_, _| IndentBehavior::Ignore)));
+        let content = ctx.add_model(|_| Buffer::new(Box::new(|_, _| IndentBehavior::Ignore)));
         ctx.subscribe_to_model(&content, |me, event, ctx| {
             me.handle_content_model_event(event, ctx);
         });
@@ -3206,15 +3205,19 @@ impl CodeEditorModel {
         let new_selections = current_selections.mapped(|selection| {
             let start_offset = selection.head;
 
-            let end_offset = match vim_word_iterator_from_offset(start_offset, buffer, direction, bound, word_type)
-            { Ok(boundaries) => {
-                boundaries
+            let end_offset = match vim_word_iterator_from_offset(
+                start_offset,
+                buffer,
+                direction,
+                bound,
+                word_type,
+            ) {
+                Ok(boundaries) => boundaries
                     .take(word_count as usize)
                     .last()
-                    .unwrap_or(start_offset)
-            } _ => {
-                start_offset
-            }};
+                    .unwrap_or(start_offset),
+                _ => start_offset,
+            };
 
             SelectionOffsets {
                 head: end_offset,
@@ -3314,50 +3317,56 @@ impl CodeEditorModel {
         let current_selections = selection_model.selection_offsets();
         let new_selections = current_selections.mapped(|selection| {
             let start_offset = selection.head;
-            let (cursor_position, selection_start) = match vim_word_iterator_from_offset(start_offset, buffer, *direction, *bound, *word_type)
-            { Ok(boundaries) => {
-                let mut target_pos = boundaries
-                    .take(word_count as usize)
-                    .last()
-                    .unwrap_or(start_offset);
+            let (cursor_position, selection_start) = match vim_word_iterator_from_offset(
+                start_offset,
+                buffer,
+                *direction,
+                *bound,
+                *word_type,
+            ) {
+                Ok(boundaries) => {
+                    let mut target_pos = boundaries
+                        .take(word_count as usize)
+                        .last()
+                        .unwrap_or(start_offset);
 
-                // Apply vim word boundary quirks and calculate selection boundaries
-                match direction {
-                    Direction::Forward => {
-                        // `de`, unlike other word motions, will include character it lands on
-                        // in the operation.
-                        if *bound == WordBound::End {
-                            target_pos += 1;
-                        } else if *bound == WordBound::Start && word_count == 1 {
-                            // `dw`, cannot traverse a newline unless the count > 1. We have
-                            // to check this range for newlines and cut the range short in that
-                            // case.
-                            let text = buffer.text_in_range(start_offset..target_pos);
-                            if let Some(newline_pos) = text.as_str().find('\n') {
-                                target_pos = start_offset + newline_pos;
-                            }
-                        }
-                        (target_pos, start_offset)
-                    }
-                    Direction::Backward => {
-                        // `db` will traverse *but not delete* a newline if the count is 1 and
-                        // the cursor starts on column zero and the line above is not empty.
-                        let mut actual_start = start_offset;
-                        if *bound == WordBound::Start && word_count == 1 {
-                            if let Ok(mut char_iter) = buffer.chars_rev_at(start_offset) {
-                                if char_iter.next().is_some_and(|c| c == '\n')
-                                    && char_iter.next().is_some_and(|c| c != '\n')
-                                {
-                                    actual_start -= 1;
+                    // Apply vim word boundary quirks and calculate selection boundaries
+                    match direction {
+                        Direction::Forward => {
+                            // `de`, unlike other word motions, will include character it lands on
+                            // in the operation.
+                            if *bound == WordBound::End {
+                                target_pos += 1;
+                            } else if *bound == WordBound::Start && word_count == 1 {
+                                // `dw`, cannot traverse a newline unless the count > 1. We have
+                                // to check this range for newlines and cut the range short in that
+                                // case.
+                                let text = buffer.text_in_range(start_offset..target_pos);
+                                if let Some(newline_pos) = text.as_str().find('\n') {
+                                    target_pos = start_offset + newline_pos;
                                 }
                             }
+                            (target_pos, start_offset)
                         }
-                        (target_pos, actual_start)
+                        Direction::Backward => {
+                            // `db` will traverse *but not delete* a newline if the count is 1 and
+                            // the cursor starts on column zero and the line above is not empty.
+                            let mut actual_start = start_offset;
+                            if *bound == WordBound::Start && word_count == 1 {
+                                if let Ok(mut char_iter) = buffer.chars_rev_at(start_offset) {
+                                    if char_iter.next().is_some_and(|c| c == '\n')
+                                        && char_iter.next().is_some_and(|c| c != '\n')
+                                    {
+                                        actual_start -= 1;
+                                    }
+                                }
+                            }
+                            (target_pos, actual_start)
+                        }
                     }
                 }
-            } _ => {
-                (start_offset, start_offset)
-            }};
+                _ => (start_offset, start_offset),
+            };
 
             SelectionOffsets {
                 head: cursor_position,

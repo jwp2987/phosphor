@@ -1,5 +1,5 @@
-use super::search_item::ConversationSearchItem;
 use super::ConversationContextItem;
+use super::search_item::ConversationSearchItem;
 use crate::ai::agent_conversations_model::AgentConversationsModel;
 use crate::ai::conversation_navigation::ConversationNavigationData;
 use crate::search::ai_context_menu::mixer::AIContextMenuSearchableAction;

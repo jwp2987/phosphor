@@ -3,8 +3,8 @@ use std::time::Duration;
 
 use parking_lot::FairMutex;
 use warp::tui_export::{
-    AIAgentActionId, AIConversationId, AgentInteractionMetadata, Appearance, BlockId,
-    TerminalModel, AgentViewState,
+    AIAgentActionId, AIConversationId, AgentInteractionMetadata, AgentViewState, Appearance,
+    BlockId, TerminalModel,
 };
 use warpui::App;
 use warpui_core::r#async::Timer;

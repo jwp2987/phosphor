@@ -1,4 +1,5 @@
 use warpui::{
+    AppContext, Element, ViewHandle,
     elements::{
         Border, Clipped, Container, CornerRadius, Dismiss, Empty, Flex, MainAxisSize,
         MouseStateHandle, ParentElement, Radius, Shrinkable, Text,
@@ -10,7 +11,6 @@ use warpui::{
         button::ButtonVariant,
         components::{Coords, UiComponent, UiComponentStyles},
     },
-    AppContext, Element, ViewHandle,
 };
 
 use crate::cloud_object::Space;
@@ -18,7 +18,7 @@ use crate::{
     appearance::Appearance, editor::EditorView, server::ids::SyncId, ui_components::blended_colors,
 };
 
-use super::{index::DriveIndexAction, DriveObjectType};
+use super::{DriveObjectType, index::DriveIndexAction};
 
 const DIALOG_PADDING: f32 = 24.;
 const INPUT_MARGIN_TOP: f32 = 16.;

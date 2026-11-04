@@ -149,7 +149,11 @@ fn test_unique_skills_keeps_same_provider_skills_from_different_dirs() {
     ];
 
     let result = unique_skills(&skill_paths, &skills_by_path);
-    assert_eq!(result.len(), 2, "Same name + same provider across different directories should each be kept");
+    assert_eq!(
+        result.len(),
+        2,
+        "Same name + same provider across different directories should each be kept"
+    );
     assert!(
         result
             .iter()

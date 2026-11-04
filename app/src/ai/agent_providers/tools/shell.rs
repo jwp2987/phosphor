@@ -3,10 +3,10 @@
 //! Corresponds to `api::message::tool_call::Tool::RunShellCommand` in warp;
 //! after execution the result is `ToolCallResultType::RunShellCommand(RunShellCommandResult)`.
 
+use agent_proto as api;
 use anyhow::Result;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use agent_proto as api;
 
 use super::OpenAiTool;
 

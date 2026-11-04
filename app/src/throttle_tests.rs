@@ -70,7 +70,10 @@ fn gate_delays_an_urgent_item_inside_the_floor_only_to_the_floor() {
         gate.bypass_delay(start + Duration::from_millis(10), true),
         Some(Duration::ZERO)
     );
-    assert_eq!(gate.bypass_delay(start + Duration::from_millis(1), false), None);
+    assert_eq!(
+        gate.bypass_delay(start + Duration::from_millis(1), false),
+        None
+    );
 }
 
 /// #1138: the second write of a keystroke's echo (vim sends the character, then the cursor

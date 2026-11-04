@@ -1,20 +1,21 @@
 use crate::{
+    TelemetryEvent,
     ai::agent::SuggestedAgentModeWorkflow,
     modal::{Modal, ModalEvent},
     pane_group::PaneEvent,
     server::ids::SyncId,
     ui_components::blended_colors,
     workflows::{
-        workflow_view::{WorkflowView, WorkflowViewEvent},
         WorkflowSelectionSource, WorkflowSource, WorkflowType,
+        workflow_view::{WorkflowView, WorkflowViewEvent},
     },
     workspaces::user_workspaces::UserWorkspaces,
-    TelemetryEvent,
 };
 use pathfinder_geometry::vector::vec2f;
 use std::{collections::HashMap, default::Default, sync::Arc};
 use warp_core::{send_telemetry_from_ctx, ui::appearance::Appearance};
 use warpui::{
+    AppContext, Element, Entity, SingletonEntity, TypedActionView, View, ViewContext, ViewHandle,
     elements::{
         ChildAnchor, Empty, OffsetPositioning, PositionedElementAnchor,
         PositionedElementOffsetBounds,
@@ -23,7 +24,6 @@ use warpui::{
     keymap::FixedBinding,
     presenter::ChildView,
     ui_components::components::{Coords, UiComponentStyles},
-    AppContext, Element, Entity, SingletonEntity, TypedActionView, View, ViewContext, ViewHandle,
 };
 
 const SUGGESTED_PROMPT_MODAL_HEADER: &str = "Prompt";

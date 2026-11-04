@@ -1,13 +1,13 @@
+use crate::Scene;
 use crate::rendering::get_best_dash_gap;
 use crate::rendering::wgpu::shader_types::BorderWidth;
 use crate::rendering::wgpu::{resources, shader_types};
 use crate::scene::Layer;
-use crate::Scene;
 use pathfinder_color::ColorU;
 use pathfinder_geometry::rect::RectF;
 use pathfinder_geometry::vector::vec2f;
 use std::borrow::Cow;
-use std::sync::{atomic::AtomicBool, Arc};
+use std::sync::{Arc, atomic::AtomicBool};
 use wgpu::{BindGroupLayout, ColorTargetState, Device, Queue, RenderPass, RenderPipeline};
 
 use super::util::InstanceBuffers;

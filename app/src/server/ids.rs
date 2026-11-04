@@ -69,7 +69,6 @@ pub enum SyncId {
 }
 
 impl SyncId {
-
     pub fn uid(&self) -> ObjectUid {
         match self {
             Self::ClientId(id) => id.to_string(),

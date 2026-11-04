@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use chrono::{Local, TimeDelta};
 use history_model::{BlocklistAIHistoryEvent, BlocklistAIHistoryModel};
 use warpui::{AppContext, Entity, SingletonEntity, ViewContext};
@@ -9,8 +9,8 @@ use crate::terminal::shared_session::ParticipantId;
 
 use crate::ai::{
     agent::{
-        conversation::AIConversationId, AIAgentExchange, AIAgentExchangeId, AIAgentInput,
-        AIAgentOutputStatus, FinishedAIAgentOutput, ServerOutputId, Shared,
+        AIAgentExchange, AIAgentExchangeId, AIAgentInput, AIAgentOutputStatus,
+        FinishedAIAgentOutput, ServerOutputId, Shared, conversation::AIConversationId,
     },
     blocklist::{
         history_model,

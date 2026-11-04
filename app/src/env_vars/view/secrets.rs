@@ -2,6 +2,7 @@ use pathfinder_geometry::vector::vec2f;
 use warp_core::{features::FeatureFlag, ui::appearance::Appearance};
 use warpui::SingletonEntity;
 use warpui::{
+    Element, ViewContext,
     elements::{
         ChildAnchor, ChildView, Clipped, ConstrainedBox, Container, Empty, Fill, MainAxisAlignment,
         MainAxisSize, MouseStateHandle, OffsetPositioning, ParentAnchor, ParentElement,
@@ -12,16 +13,15 @@ use warpui::{
         button::{ButtonVariant, TextAndIcon, TextAndIconAlignment},
         components::{UiComponent, UiComponentStyles},
     },
-    Element, ViewContext,
 };
 
 use super::env_var_collection::{
-    EnvVarCollectionAction, EnvVarCollectionView, VariableRowIndex, CORE_MAX_WIDTH, ROW_SPACING,
+    CORE_MAX_WIDTH, EnvVarCollectionAction, EnvVarCollectionView, ROW_SPACING, VariableRowIndex,
 };
 
 use crate::{
     drive::sharing::ContentEditability,
-    env_vars::{active_env_var_collection_data::SavingStatus, EnvVarValue},
+    env_vars::{EnvVarValue, active_env_var_collection_data::SavingStatus},
     external_secrets::{ExternalSecretManager, SecretManager},
     search::external_secrets::{
         searcher::ExternalSecretSearchItemAction, view::ExternalSecretsMenuEvent,
@@ -30,7 +30,7 @@ use crate::{
 };
 #[cfg(feature = "local_tty")]
 use crate::{
-    terminal::local_shell::{probe_path_env_var, LocalShellState},
+    terminal::local_shell::{LocalShellState, probe_path_env_var},
     view_components::{DismissibleToast, ToastLink},
     workspace::{ToastStack, WorkspaceAction},
 };

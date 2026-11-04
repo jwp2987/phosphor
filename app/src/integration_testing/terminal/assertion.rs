@@ -4,11 +4,10 @@ use regex::Regex;
 use settings::Setting as _;
 use warp_util::path::user_friendly_path;
 use warpui::{
-    async_assert, async_assert_eq,
+    App, SingletonEntity, ViewHandle, WindowId, async_assert, async_assert_eq,
     integration::{AssertionCallback, AssertionOutcome},
     units::Lines,
     windowing::WindowManager,
-    App, SingletonEntity, ViewHandle, WindowId,
 };
 
 use crate::{
@@ -18,6 +17,7 @@ use crate::{
     },
     settings::InputModeSettings,
     terminal::{
+        History,
         block_list_viewport::InputMode,
         block_list_viewport::ScrollPosition,
         model::block::BlockState,
@@ -25,7 +25,6 @@ use crate::{
         model::grid::grid_handler::TermMode,
         model::{blocks::BlockFilter, terminal_model::BlockIndex},
         view::TerminalViewState,
-        History,
     },
     workspace::{ActiveSession, Workspace},
 };
@@ -138,12 +137,13 @@ pub fn assert_input_mode(expected_input_mode: InputMode) -> AssertionCallback {
 pub fn assert_gap_exists(gap_exists: bool) -> AssertionCallback {
     Box::new(move |app, window_id| {
         app.update(|ctx| {
-            assert!(ctx
-                .presenter(window_id)
-                .expect("should exist")
-                .borrow()
-                .scene()
-                .is_some());
+            assert!(
+                ctx.presenter(window_id)
+                    .expect("should exist")
+                    .borrow()
+                    .scene()
+                    .is_some()
+            );
         });
         let terminal_view = single_terminal_view(app, window_id);
         terminal_view.read(app, |view, _ctx| {

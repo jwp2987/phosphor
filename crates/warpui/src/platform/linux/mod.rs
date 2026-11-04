@@ -2,9 +2,9 @@
 // for the linux platform.
 pub use crate::windowing::winit::app::App;
 
-use crate::{windowing, AppContext};
+use crate::{AppContext, windowing};
 
-use super::{app::AppBackend, AsInnerMut};
+use super::{AsInnerMut, app::AppBackend};
 
 /// An extension trait defining additional configurability for
 /// applications when running on Linux.

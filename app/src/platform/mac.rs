@@ -1,6 +1,6 @@
 //! macOS process-level setup for headless launches.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use objc2::MainThreadMarker;
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
 

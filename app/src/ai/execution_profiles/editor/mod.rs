@@ -1,9 +1,11 @@
+use crate::TemplatableMCPServerManager;
+use crate::UserWorkspaces;
 use crate::ai::blocklist::BlocklistAIPermissions;
 use crate::ai::execution_profiles::model_menu_items::available_model_menu_items;
 use crate::ai::execution_profiles::{
+    AIExecutionProfile, ActionPermission, BUILTIN_PROMPT_TEMPLATES, ProfilePromptOverrides,
+    PromptSlot, PromptSource, WriteToPtyPermission,
     profiles::{AIExecutionProfilesModel, AIExecutionProfilesModelEvent, ClientProfileId},
-    AIExecutionProfile, ActionPermission, ProfilePromptOverrides, PromptSlot, PromptSource,
-    WriteToPtyPermission, BUILTIN_PROMPT_TEMPLATES,
 };
 use crate::ai::llms::{LLMId, LLMInfo, LLMPreferences, LLMPreferencesEvent};
 use crate::ai::paths::host_native_absolute_path;
@@ -13,15 +15,13 @@ use crate::pane_group::focus_state::PaneFocusHandle;
 use crate::settings::{AISettings, AgentModeCommandExecutionPredicate};
 use crate::ui_components::icons::Icon;
 use crate::view_components::{
-    action_button::{ActionButton, DangerSecondaryTheme},
     Dropdown, DropdownItem, FilterableDropdown, SubmittableTextInput, SubmittableTextInputEvent,
+    action_button::{ActionButton, DangerSecondaryTheme},
 };
 use crate::workspaces::user_workspaces::UserWorkspacesEvent;
-use crate::TemplatableMCPServerManager;
-use crate::UserWorkspaces;
 use crate::{
-    pane_group::{pane::view, BackingView, PaneConfiguration, PaneEvent},
     Appearance,
+    pane_group::{BackingView, PaneConfiguration, PaneEvent, pane::view},
 };
 use ai::api_keys::{ApiKeyManager, ApiKeyManagerEvent};
 use itertools::Itertools;
@@ -30,12 +30,12 @@ use warpui::ui_components::switch::SwitchStateHandle;
 
 use std::path::{Path, PathBuf};
 use warpui::{
+    AppContext, Element, Entity, ModelHandle, SingletonEntity, TypedActionView, View, ViewContext,
+    ViewHandle,
     elements::{
         Align, ChildView, ClippedScrollStateHandle, ClippedScrollable, Container, Flex,
         MouseStateHandle, ParentElement, ScrollbarWidth,
     },
-    AppContext, Element, Entity, ModelHandle, SingletonEntity, TypedActionView, View, ViewContext,
-    ViewHandle,
 };
 
 const MODEL_MENU_WIDTH: f32 = 250.;
@@ -1683,12 +1683,7 @@ impl TypedActionView for ExecutionProfileEditorView {
             }
             ExecutionProfileEditorViewAction::SetPromptOverride { slot, source } => {
                 AIExecutionProfilesModel::handle(ctx).update(ctx, |profiles_model, ctx| {
-                    profiles_model.set_prompt_override(
-                        self.profile_id,
-                        *slot,
-                        source.clone(),
-                        ctx,
-                    );
+                    profiles_model.set_prompt_override(self.profile_id, *slot, source.clone(), ctx);
                 });
                 ctx.notify();
             }
@@ -1775,7 +1770,10 @@ mod prompt_picker_tests {
         let custom = vec!["custom/mine.j2".to_string()];
         let items = prompt_override_items(PromptSlot::Base, &custom);
         // Auto + every built-in family + each custom file.
-        assert_eq!(items.len(), 1 + BUILTIN_PROMPT_TEMPLATES.len() + custom.len());
+        assert_eq!(
+            items.len(),
+            1 + BUILTIN_PROMPT_TEMPLATES.len() + custom.len()
+        );
     }
 
     #[test]

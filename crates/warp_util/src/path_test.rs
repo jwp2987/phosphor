@@ -1640,7 +1640,7 @@ fn test_artifact_dir_from_out_dir_rejects_unexpected_shapes() {
 #[cfg(unix)]
 #[test]
 fn executable_file_names_in_path_lists_what_get_command_application_lists() {
-    use std::os::unix::fs::{symlink, PermissionsExt as _};
+    use std::os::unix::fs::{PermissionsExt as _, symlink};
 
     let root = tempfile::tempdir().unwrap();
     let one = root.path().join("one");

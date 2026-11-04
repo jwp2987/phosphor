@@ -1,8 +1,8 @@
 use crate::ai::blocklist::agent_view::agent_view_bg_color;
 use pathfinder_color::ColorU;
+use warp_core::ui::Icon;
 use warp_core::ui::appearance::Appearance;
 use warp_core::ui::theme::Fill;
-use warp_core::ui::Icon;
 use warpui::elements::{
     Border, CacheOption, Clipped, Container, CornerRadius, Element, Hoverable, Image,
     ParentElement, Radius,

@@ -1,11 +1,11 @@
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc, OnceLock,
+    atomic::{AtomicBool, Ordering},
 };
 
 use wgpu::{
-    util::BufferInitDescriptor, Buffer, BufferAddress, BufferDescriptor, BufferUsages, Device,
-    Queue, COPY_BUFFER_ALIGNMENT,
+    Buffer, BufferAddress, BufferDescriptor, BufferUsages, COPY_BUFFER_ALIGNMENT, Device, Queue,
+    util::BufferInitDescriptor,
 };
 
 use super::Error;
@@ -17,7 +17,11 @@ use super::Error;
 pub fn reuse_instance_buffers() -> bool {
     static REUSE: OnceLock<bool> = OnceLock::new();
     *REUSE.get_or_init(|| {
-        reuse_unless_disabled(std::env::var("PHOSPHOR_WGPU_PER_FRAME_BUFFERS").ok().as_deref())
+        reuse_unless_disabled(
+            std::env::var("PHOSPHOR_WGPU_PER_FRAME_BUFFERS")
+                .ok()
+                .as_deref(),
+        )
     })
 }
 
@@ -96,9 +100,11 @@ impl InstanceBuffers {
     }
 
     pub fn vertex_buffer(&self) -> Option<&Buffer> {
-        self.this_frame
-            .as_ref()
-            .or_else(|| self.persistent.as_ref().map(|persistent| &persistent.buffer))
+        self.this_frame.as_ref().or_else(|| {
+            self.persistent
+                .as_ref()
+                .map(|persistent| &persistent.buffer)
+        })
     }
 }
 

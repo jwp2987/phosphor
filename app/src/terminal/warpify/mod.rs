@@ -3,9 +3,9 @@ pub mod settings;
 pub mod success_block;
 pub mod trigger_state;
 
+use crate::ASSETS;
 use crate::terminal::model::terminal_model::SubshellInitializationInfo;
 use crate::terminal::shell::ShellType;
-use crate::ASSETS;
 use channel_versions::overrides::TargetOS;
 use warpui::AssetProvider;
 
@@ -246,7 +246,10 @@ fn replace_template_chars_with_arguments(
                 argument.into_bytes().into_iter(),
             );
         } else {
-            debug_assert!(false, "Number of arguments does not match number of template chars (%) in hardcoded subshell block bytes.");
+            debug_assert!(
+                false,
+                "Number of arguments does not match number of template chars (%) in hardcoded subshell block bytes."
+            );
         }
     }
     templated_bytes

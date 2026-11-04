@@ -17,7 +17,7 @@ fn autodetected_requires_other_conditions() {
 
 #[test]
 fn typing_that_keeps_the_bar_the_same_does_not_rerender() {
-    use super::{buffer_event_needs_render, BufferSignature};
+    use super::{BufferSignature, buffer_event_needs_render};
     let ls = BufferSignature::of("ls");
     let lsa = BufferSignature::of("ls -a");
     // The first event always renders; then more of the same kind of text does not.

@@ -30,7 +30,7 @@ use serde_json::json;
 use settings::Setting;
 use warpui::{AppContext, SingletonEntity};
 
-use crate::ai::agent_providers::{llm_id, AgentProviderSecrets};
+use crate::ai::agent_providers::{AgentProviderSecrets, llm_id};
 use crate::settings::{AISettings, AgentProvider, AgentProviderApiType, AgentProviderModel};
 
 /// Provider id the mock registers under (stable, so scenarios can reference it).
@@ -192,7 +192,7 @@ mod tests {
     use genai::{ModelIden, ServiceTarget};
     use warpui::App;
 
-    use crate::ai::agent_providers::{lookup_byop, AgentProviderSecrets};
+    use crate::ai::agent_providers::{AgentProviderSecrets, lookup_byop};
     use crate::settings::AISettings;
     use crate::test_util::settings::initialize_settings_for_tests;
 

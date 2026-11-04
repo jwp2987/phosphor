@@ -5,7 +5,7 @@ use command::r#async::Command;
 use objc2::rc::{Retained, autoreleasepool};
 use objc2_app_kit::NSWorkspace;
 use objc2_foundation::{NSBundle, NSString, NSURL};
-use warp_core::{channel::ChannelState, AppId};
+use warp_core::{AppId, channel::ChannelState};
 use warpui::ApplicationBundleInfo;
 
 use super::*;
@@ -383,8 +383,7 @@ fn is_zap_bundle(bundle_id: &str) -> bool {
             // have an older bundle installed, and it is just as much "this app"
             // for the purposes of default-app redirection. Replacing rather
             // than adding would stop recognising it.
-            id.qualifier() == "dev"
-                && matches!(id.organization(), "warp" | "zap" | "phosphor")
+            id.qualifier() == "dev" && matches!(id.organization(), "warp" | "zap" | "phosphor")
         })
         .unwrap_or(false)
 }

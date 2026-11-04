@@ -6,10 +6,10 @@ use warpui::{AppContext, Entity, ModelContext, SingletonEntity};
 use crate::{
     auth::{AuthStateProvider, UserUid},
     cloud_object::{
+        Space, StoredObject, StoredObjectLocation,
         update_manager::{
             ObjectOperation, OperationSuccessType, UpdateManager, UpdateManagerEvent,
         },
-        Space, StoredObject, StoredObjectLocation,
     },
     drive::{
         folders::FolderObject,

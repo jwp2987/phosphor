@@ -7,15 +7,16 @@ use crate::{
     completer::TopLevelCommandCaseSensitivity,
     meta::{HasSpan, Span, Spanned, SpannedItem},
     parsers::{
-        hir::Flags, parse_arg, parse_dollar_expr, ArgumentError, FlagArgumentsCardinality,
-        FlagSignature, ParsedExpression, ParsedToken,
+        ArgumentError, FlagArgumentsCardinality, FlagSignature, ParsedExpression, ParsedToken,
+        hir::Flags, parse_arg, parse_dollar_expr,
     },
     signatures::CommandRegistry,
 };
 
 use super::{
+    LiteCommand, ParseError,
     hir::{Command, Expression, ShellCommand},
-    parse_unclassified_command, LiteCommand, ParseError,
+    parse_unclassified_command,
 };
 
 #[derive(Clone, Copy)]

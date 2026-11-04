@@ -9,18 +9,18 @@ use lazy_static::lazy_static;
 use std::{collections::HashSet, ops::Range, sync::Arc, time::Duration};
 use warp_core::features::FeatureFlag;
 use warpui::{
+    AppContext, Element, Entity, FocusContext, ModelHandle, SingletonEntity, TypedActionView, View,
+    ViewContext, ViewHandle, WeakViewHandle,
     accessibility::{AccessibilityContent, WarpA11yRole},
     elements::{
-        resizable_state_handle, Align, AnchorPair, Border, ConstrainedBox, Container, CornerRadius,
-        CrossAxisAlignment, Dismiss, Fill, Flex, OffsetPositioning, OffsetType, ParentElement,
-        ParentOffsetBounds, PositionedElementOffsetBounds, PositioningAxis, Radius, Resizable,
-        ResizableStateHandle, SavePosition, ScrollStateHandle, Scrollable, ScrollableElement,
-        Shrinkable, Stack, UniformList, UniformListState, XAxisAnchor, YAxisAnchor,
+        Align, AnchorPair, Border, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment,
+        Dismiss, Fill, Flex, OffsetPositioning, OffsetType, ParentElement, ParentOffsetBounds,
+        PositionedElementOffsetBounds, PositioningAxis, Radius, Resizable, ResizableStateHandle,
+        SavePosition, ScrollStateHandle, Scrollable, ScrollableElement, Shrinkable, Stack,
+        UniformList, UniformListState, XAxisAnchor, YAxisAnchor, resizable_state_handle,
     },
     presenter::ChildView,
     ui_components::components::{UiComponent, UiComponentStyles},
-    AppContext, Element, Entity, FocusContext, ModelHandle, SingletonEntity, TypedActionView, View,
-    ViewContext, ViewHandle, WeakViewHandle,
 };
 
 use crate::{
@@ -30,19 +30,19 @@ use crate::{
     completer::SessionContext,
     drive::settings::WarpDriveSettings,
     search::{
+        QueryFilter,
         command_search::searcher::{CommandSearchItemAction, CommandSearchMixer},
         result_renderer::{QueryResultRenderer, QueryResultRendererStyles},
         search_bar::{SearchBar, SearchBarEvent, SearchBarState, SearchResultOrdering},
-        QueryFilter,
     },
     send_telemetry_from_ctx,
     server::telemetry::TelemetryEvent,
     settings::AISettings,
     terminal::{
+        History, HistoryEvent,
         input::MenuPositioning,
         model::session::SessionId,
-        resizable_data::{ModalType, ResizableData, DEFAULT_UNIVERSAL_SEARCH_WIDTH},
-        History, HistoryEvent,
+        resizable_data::{DEFAULT_UNIVERSAL_SEARCH_WIDTH, ModalType, ResizableData},
     },
 };
 
@@ -52,7 +52,7 @@ use super::{
     history::history_data_source_for_session,
     notebooks::notebooks_data_source,
     warp_ai::WarpAIDataSource,
-    workflows::{stored_workflows_data_source, WorkflowsDataSource},
+    workflows::{WorkflowsDataSource, stored_workflows_data_source},
     zero_state::{CommandSearchZeroStateEvent, CommandSearchZeroStateView},
 };
 

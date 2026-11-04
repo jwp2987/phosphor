@@ -11,31 +11,31 @@
 #[cfg(feature = "local_fs")]
 use super::features::external_editor::ExternalEditorView;
 use super::{
-    settings_page::{
-        render_body_item, render_sub_header_with_description, MatchData, PageType,
-        SettingsPageMeta, SettingsPageViewHandle, SettingsWidget,
-    },
     LocalOnlyIconState, SettingsAction, SettingsSection, ToggleState,
+    settings_page::{
+        MatchData, PageType, SettingsPageMeta, SettingsPageViewHandle, SettingsWidget,
+        render_body_item, render_sub_header_with_description,
+    },
 };
 use crate::{
+    TelemetryEvent,
+    ai::agent_providers::embeddings,
     ai::persisted_workspace::{
         EnablementState, LspRepoStatus, PersistedWorkspace, PersistedWorkspaceEvent,
     },
     appearance::Appearance,
     code::lsp_telemetry::{LspControlActionType, LspEnablementSource, LspTelemetryEvent},
     send_telemetry_from_ctx,
-    ai::agent_providers::embeddings,
     settings::{AISettings, AppEditorSettings, CodeEditorLineNumberMode, CodeSettings},
-    view_components::{Dropdown, DropdownItem},
-    workspaces::user_workspaces::UserWorkspaces,
     terminal::general_settings::GeneralSettings,
     ui_components::{
         avatar::{Avatar, AvatarContent, StatusElementTypes},
         buttons::icon_button,
         icons::Icon,
     },
+    view_components::{Dropdown, DropdownItem},
     workspace::tab_settings::TabSettings,
-    TelemetryEvent,
+    workspaces::user_workspaces::UserWorkspaces,
 };
 use ai::project_context::model::{ProjectContextModel, ProjectContextModelEvent};
 use ai::workspace::WorkspaceMetadata;
@@ -53,6 +53,8 @@ use warp_core::{
 };
 use warp_util::path::user_friendly_path;
 use warpui::{
+    Action, AppContext, Entity, ModelHandle, SingletonEntity, TypedActionView, View, ViewContext,
+    ViewHandle,
     elements::{
         ChildView, Container, CornerRadius, CrossAxisAlignment, Element, Empty, Expanded, Fill,
         Flex, MainAxisAlignment, MainAxisSize, MouseStateHandle, ParentElement, Radius, Shrinkable,
@@ -65,8 +67,6 @@ use warpui::{
         components::{UiComponent, UiComponentStyles},
         switch::SwitchStateHandle,
     },
-    Action, AppContext, Entity, ModelHandle, SingletonEntity, TypedActionView, View, ViewContext,
-    ViewHandle,
 };
 
 // The remote codebase-index section. Gated exactly as its model is: `app/src/remote_server/mod.rs`
@@ -191,13 +191,14 @@ impl CodeSettingsPageView {
                     } => {
                         for &server_type in servers {
                             #[cfg(feature = "local_fs")]
-                            let status = PersistedWorkspace::handle(ctx).update(ctx, |model, ctx| {
-                                model.detect_lsp_workspace_status(
-                                    workspace_path.clone(),
-                                    server_type,
-                                    ctx,
-                                )
-                            });
+                            let status =
+                                PersistedWorkspace::handle(ctx).update(ctx, |model, ctx| {
+                                    model.detect_lsp_workspace_status(
+                                        workspace_path.clone(),
+                                        server_type,
+                                        ctx,
+                                    )
+                                });
                             #[cfg(not(feature = "local_fs"))]
                             let status = LspRepoStatus::CheckingForInstallation;
                             me.suggested_server_statuses
@@ -210,7 +211,8 @@ impl CodeSettingsPageView {
                         server_type,
                         status,
                     } => {
-                        let new_status = LspRepoStatus::from_installation_status(status, *server_type);
+                        let new_status =
+                            LspRepoStatus::from_installation_status(status, *server_type);
                         for ((_, st), repo_status) in &mut me.suggested_server_statuses {
                             if *st == *server_type {
                                 *repo_status = new_status.clone();
@@ -444,9 +446,11 @@ impl TypedActionView for CodeSettingsPageView {
             }
             CodeSettingsPageAction::ToggleShowCodeReviewDiffStats => {
                 TabSettings::handle(ctx).update(ctx, |settings, ctx| {
-                    report_if_error!(settings
-                        .show_code_review_diff_stats
-                        .toggle_and_save_value(ctx));
+                    report_if_error!(
+                        settings
+                            .show_code_review_diff_stats
+                            .toggle_and_save_value(ctx)
+                    );
                 });
                 ctx.notify();
             }
@@ -616,9 +620,11 @@ impl TypedActionView for CodeSettingsPageView {
             }
             CodeSettingsPageAction::ToggleAutoOpenCodeReviewPane => {
                 GeneralSettings::handle(ctx).update(ctx, |settings, ctx| {
-                    report_if_error!(settings
-                        .auto_open_code_review_pane_on_first_agent_change
-                        .toggle_and_save_value(ctx));
+                    report_if_error!(
+                        settings
+                            .auto_open_code_review_pane_on_first_agent_change
+                            .toggle_and_save_value(ctx)
+                    );
                 });
                 send_telemetry_from_ctx!(
                     TelemetryEvent::FeaturesPageAction {

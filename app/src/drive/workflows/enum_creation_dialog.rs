@@ -5,6 +5,8 @@ use strum_macros::{EnumIter, IntoStaticStr};
 use warp_core::{features::FeatureFlag, ui::appearance::Appearance};
 use warp_editor::editor::NavigationKey;
 use warpui::{
+    AppContext, Element, Entity, FocusContext, SingletonEntity, TypedActionView, View, ViewContext,
+    ViewHandle,
     elements::{
         Border, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox, Container,
         CornerRadius, CrossAxisAlignment, Empty, Fill, Flex, MainAxisAlignment, MainAxisSize,
@@ -15,12 +17,10 @@ use warpui::{
         components::{UiComponent, UiComponentStyles},
         toggle_menu::{ToggleMenuItem, ToggleMenuStateHandle},
     },
-    AppContext, Element, Entity, FocusContext, SingletonEntity, TypedActionView, View, ViewContext,
-    ViewHandle,
 };
 
 use crate::{
-    cloud_object::{model::persistence::ObjectStoreModel, Revision},
+    cloud_object::{Revision, model::persistence::ObjectStoreModel},
     editor::{
         EditorOptions, EditorView, Event, PropagateAndNoOpNavigationKeys, SingleLineEditorOptions,
         TextOptions,

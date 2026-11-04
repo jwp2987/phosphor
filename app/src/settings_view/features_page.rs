@@ -18,20 +18,19 @@ use super::keybindings::KeyBindingModifyingState;
 #[cfg(feature = "local_tty")]
 use super::settings_page::render_sub_sub_header;
 use super::settings_page::{
-    add_setting, build_reset_button, render_body_item_label, render_dropdown_item_label,
-    Category, LocalOnlyIconState, MatchData, PageType, SettingsWidget,
-    TOGGLE_BUTTON_RIGHT_PADDING,
+    AdditionalInfo, HEADER_PADDING, SettingsPageMeta, SettingsPageViewHandle, ToggleState,
+    render_body_item, render_dropdown_item,
 };
 use super::settings_page::{
-    render_body_item, render_dropdown_item, AdditionalInfo, SettingsPageMeta,
-    SettingsPageViewHandle, ToggleState, HEADER_PADDING,
+    Category, LocalOnlyIconState, MatchData, PageType, SettingsWidget, TOGGLE_BUTTON_RIGHT_PADDING,
+    add_setting, build_reset_button, render_body_item_label, render_dropdown_item_label,
 };
-use super::{features, SettingsAction};
-use super::{flags, DisplayCount};
+use super::{DisplayCount, flags};
+use super::{SettingsAction, features};
 use super::{SettingsSection, ToggleSettingActionPair};
 use crate::editor::{
-    Event as EditorEvent, SingleLineEditorOptions, TextOptions,
-    ACCEPT_AUTOSUGGESTION_KEYBINDING_NAME,
+    ACCEPT_AUTOSUGGESTION_KEYBINDING_NAME, Event as EditorEvent, SingleLineEditorOptions,
+    TextOptions,
 };
 use crate::search::command_search::settings::{
     CommandSearchSettings, ShowGlobalWorkflowsInUniversalSearch,
@@ -44,15 +43,15 @@ use crate::settings::{
 use crate::settings::{
     AliasExpansionEnabled, AliasExpansionSettings, AppEditorSettings, AtContextMenuInTerminalMode,
     AutocompleteSymbols, AutosuggestionKeybindingHint, CodeSettings, CommandCorrections,
-    CompletionsOpenWhileTyping, CopyOnSelect, CtrlTabBehavior, DefaultSessionMode,
-    EnableSlashCommandsInTerminal, ErrorUnderliningEnabled, ExtraMetaKeys,
+    CompletionsOpenWhileTyping, CopyOnSelect, CtrlTabBehavior, DEFAULT_QUAKE_MODE_SIZE_PERCENTAGES,
+    DefaultSessionMode, EnableSlashCommandsInTerminal, ErrorUnderliningEnabled, ExtraMetaKeys,
     GPUSettings, GlobalHotkeyMode, InputSettings, InputSettingsChangedEvent,
     LinuxSelectionClipboard, MiddleClickPasteEnabled, MouseScrollMultiplier, PreferLowPowerGPU,
-    PreferredGraphicsBackend, QuakeModeSettings, RightClickBehavior,
-    RightClickBehaviorSetting, ScrollSettings, SelectionSettings, SelectionSettingsChangedEvent,
-    ShowAutosuggestionIgnoreButton, ShowTerminalInputMessageBar, SshSettings,
-    SyntaxHighlighting, TabBehavior, VimModeEnabled, VimStatusBar, VimUnnamedSystemClipboard,
-    DEFAULT_QUAKE_MODE_SIZE_PERCENTAGES, QUAKE_WINDOW_AUTOHIDE_SUPPORTED,
+    PreferredGraphicsBackend, QUAKE_WINDOW_AUTOHIDE_SUPPORTED, QuakeModeSettings,
+    RightClickBehavior, RightClickBehaviorSetting, ScrollSettings, SelectionSettings,
+    SelectionSettingsChangedEvent, ShowAutosuggestionIgnoreButton, ShowTerminalInputMessageBar,
+    SshSettings, SyntaxHighlighting, TabBehavior, VimModeEnabled, VimStatusBar,
+    VimUnnamedSystemClipboard,
 };
 use crate::terminal::alt_screen_reporting::{
     AltScreenReporting, FocusReportingEnabled, MouseReportingEnabled, ScrollReportingEnabled,
@@ -82,12 +81,12 @@ use crate::util::bindings::{
     keybinding_name_to_display_string, reset_keybinding_to_default, set_custom_keybinding,
 };
 use crate::view_components::{Dropdown, DropdownItem, FilterableDropdown};
-use crate::workspace::tab_settings::{NewTabPlacement, TabSettings};
 use crate::workspace::WorkspaceAction;
+use crate::workspace::tab_settings::{NewTabPlacement, TabSettings};
+use crate::{GlobalResourceHandles, report_if_error, send_telemetry_from_ctx, themes};
 use crate::{appearance::Appearance, settings::native_preference::NativePreferenceSettings};
 use crate::{editor::EditorView, settings::native_preference::UserNativePreference};
 use crate::{features::FeatureFlag, terminal::settings::TerminalSettingsChangedEvent};
-use crate::{report_if_error, send_telemetry_from_ctx, themes, GlobalResourceHandles};
 use crate::{root_view::QuakeModePinPosition, workspace::tab_settings::TabSettingsChangedEvent};
 use ::settings::{Setting, ToggleableSetting};
 use std::cell::RefCell;
@@ -1350,23 +1349,29 @@ impl TypedActionView for FeaturesPageView {
         match action {
             SetCtrlTabBehavior(ctrl_tab_behavior) => {
                 KeysSettings::handle(ctx).update(ctx, |keys_settings, ctx| {
-                    report_if_error!(keys_settings
-                        .ctrl_tab_behavior
-                        .set_value(*ctrl_tab_behavior, ctx));
+                    report_if_error!(
+                        keys_settings
+                            .ctrl_tab_behavior
+                            .set_value(*ctrl_tab_behavior, ctx)
+                    );
                 });
             }
             SetRightClickBehavior(right_click_behavior) => {
                 SelectionSettings::handle(ctx).update(ctx, |selection_settings, ctx| {
-                    report_if_error!(selection_settings
-                        .right_click_behavior
-                        .set_value(*right_click_behavior, ctx));
+                    report_if_error!(
+                        selection_settings
+                            .right_click_behavior
+                            .set_value(*right_click_behavior, ctx)
+                    );
                 });
             }
             SetOsc52ClipboardAccess(osc52_clipboard_access) => {
                 TerminalSettings::handle(ctx).update(ctx, |terminal_settings, ctx| {
-                    report_if_error!(terminal_settings
-                        .osc52_clipboard_access
-                        .set_value(*osc52_clipboard_access, ctx));
+                    report_if_error!(
+                        terminal_settings
+                            .osc52_clipboard_access
+                            .set_value(*osc52_clipboard_access, ctx)
+                    );
                 });
             }
             ToggleCopyOnSelect => {
@@ -1376,23 +1381,29 @@ impl TypedActionView for FeaturesPageView {
             }
             ToggleSnackbar => {
                 BlockListSettings::handle(ctx).update(ctx, |blocklist_settings, ctx| {
-                    report_if_error!(blocklist_settings
-                        .snackbar_enabled
-                        .toggle_and_save_value(ctx));
+                    report_if_error!(
+                        blocklist_settings
+                            .snackbar_enabled
+                            .toggle_and_save_value(ctx)
+                    );
                 });
             }
             ToggleGlobalWorkflowsInUniversalSearch => {
                 CommandSearchSettings::handle(ctx).update(ctx, |workflow_settings, ctx| {
-                    report_if_error!(workflow_settings
-                        .show_global_workflows_in_universal_search
-                        .toggle_and_save_value(ctx));
+                    report_if_error!(
+                        workflow_settings
+                            .show_global_workflows_in_universal_search
+                            .toggle_and_save_value(ctx)
+                    );
                 });
             }
             ToggleCodeAsDefaultEditor => {
                 CodeSettings::handle(ctx).update(ctx, |code_settings, ctx| {
-                    report_if_error!(code_settings
-                        .code_as_default_editor
-                        .toggle_and_save_value(ctx));
+                    report_if_error!(
+                        code_settings
+                            .code_as_default_editor
+                            .toggle_and_save_value(ctx)
+                    );
                 })
             }
             ToggleOpenLinksInDesktopApp => {
@@ -1408,9 +1419,11 @@ impl TypedActionView for FeaturesPageView {
                                 UserNativePreference::Desktop
                             }
                         };
-                        report_if_error!(native_preference_settings
-                            .user_native_redirect_preference
-                            .set_value(new_value, ctx));
+                        report_if_error!(
+                            native_preference_settings
+                                .user_native_redirect_preference
+                                .set_value(new_value, ctx)
+                        );
                     },
                 );
             }
@@ -1424,32 +1437,40 @@ impl TypedActionView for FeaturesPageView {
             }
             TogglePersistConversations => {
                 GeneralSettings::handle(ctx).update(ctx, |general_settings, ctx| {
-                    report_if_error!(general_settings
-                        .persist_conversations
-                        .toggle_and_save_value(ctx))
+                    report_if_error!(
+                        general_settings
+                            .persist_conversations
+                            .toggle_and_save_value(ctx)
+                    )
                 })
             }
             ToggleAutocompleteSymbols => {
                 AppEditorSettings::handle(ctx).update(ctx, |editor_settings, ctx| {
-                    report_if_error!(editor_settings
-                        .autocomplete_symbols
-                        .toggle_and_save_value(ctx));
+                    report_if_error!(
+                        editor_settings
+                            .autocomplete_symbols
+                            .toggle_and_save_value(ctx)
+                    );
                 })
             }
             #[allow(deprecated)]
             ToggleSshWrapper => {
                 self.ssh_wrapper_toggled = true;
                 WarpifySettings::handle(ctx).update(ctx, |warpify_settings, ctx| {
-                    report_if_error!(warpify_settings
-                        .enable_ssh_wrapper
-                        .toggle_and_save_value(ctx));
+                    report_if_error!(
+                        warpify_settings
+                            .enable_ssh_wrapper
+                            .toggle_and_save_value(ctx)
+                    );
                 });
             }
             ToggleSshReuseControlMaster => {
                 SshSettings::handle(ctx).update(ctx, |ssh_settings, ctx| {
-                    report_if_error!(ssh_settings
-                        .reuse_existing_control_master
-                        .toggle_and_save_value(ctx));
+                    report_if_error!(
+                        ssh_settings
+                            .reuse_existing_control_master
+                            .toggle_and_save_value(ctx)
+                    );
                 });
             }
             OpenUrl(url) => {
@@ -1576,25 +1597,31 @@ impl TypedActionView for FeaturesPageView {
             }
             SetExtraMetaKeys(extra_meta_keys) => {
                 KeysSettings::handle(ctx).update(ctx, |keys_settings, ctx| {
-                    report_if_error!(keys_settings
-                        .extra_meta_keys
-                        .set_value(*extra_meta_keys, ctx))
+                    report_if_error!(
+                        keys_settings
+                            .extra_meta_keys
+                            .set_value(*extra_meta_keys, ctx)
+                    )
                 });
             }
             ToggleLeftMetaKey => {
                 let current_meta_keys = *KeysSettings::as_ref(ctx).extra_meta_keys;
                 KeysSettings::handle(ctx).update(ctx, |keys_settings, ctx| {
-                    report_if_error!(keys_settings
-                        .extra_meta_keys
-                        .set_value(current_meta_keys.toggle_left_key(), ctx))
+                    report_if_error!(
+                        keys_settings
+                            .extra_meta_keys
+                            .set_value(current_meta_keys.toggle_left_key(), ctx)
+                    )
                 });
             }
             ToggleRightMetaKey => {
                 let current_meta_keys = *KeysSettings::as_ref(ctx).extra_meta_keys;
                 KeysSettings::handle(ctx).update(ctx, |keys_settings, ctx| {
-                    report_if_error!(keys_settings
-                        .extra_meta_keys
-                        .set_value(current_meta_keys.toggle_right_key(), ctx))
+                    report_if_error!(
+                        keys_settings
+                            .extra_meta_keys
+                            .set_value(current_meta_keys.toggle_right_key(), ctx)
+                    )
                 });
             }
             ToggleMouseReporting => {
@@ -1734,16 +1761,20 @@ impl TypedActionView for FeaturesPageView {
             }
             ToggleCompletionsOpenWhileTyping => {
                 InputSettings::handle(ctx).update(ctx, |input_settings, ctx| {
-                    report_if_error!(input_settings
-                        .completions_open_while_typing
-                        .toggle_and_save_value(ctx));
+                    report_if_error!(
+                        input_settings
+                            .completions_open_while_typing
+                            .toggle_and_save_value(ctx)
+                    );
                 });
             }
             ToggleCommandCorrections => {
                 InputSettings::handle(ctx).update(ctx, |input_settings, ctx| {
-                    report_if_error!(input_settings
-                        .command_corrections
-                        .toggle_and_save_value(ctx));
+                    report_if_error!(
+                        input_settings
+                            .command_corrections
+                            .toggle_and_save_value(ctx)
+                    );
                 });
             }
             ToggleErrorUnderlining => {
@@ -1753,23 +1784,29 @@ impl TypedActionView for FeaturesPageView {
             }
             ToggleSyntaxHighlighting => {
                 InputSettings::handle(ctx).update(ctx, |input_settings, ctx| {
-                    report_if_error!(input_settings
-                        .syntax_highlighting
-                        .toggle_and_save_value(ctx));
+                    report_if_error!(
+                        input_settings
+                            .syntax_highlighting
+                            .toggle_and_save_value(ctx)
+                    );
                 });
             }
             ToggleAliasExpansion => {
                 AliasExpansionSettings::handle(ctx).update(ctx, |alias_expansion_settings, ctx| {
-                    report_if_error!(alias_expansion_settings
-                        .alias_expansion_enabled
-                        .toggle_and_save_value(ctx));
+                    report_if_error!(
+                        alias_expansion_settings
+                            .alias_expansion_enabled
+                            .toggle_and_save_value(ctx)
+                    );
                 });
             }
             ToggleMiddleClickPaste => {
                 SelectionSettings::handle(ctx).update(ctx, |selection_settings, ctx| {
-                    report_if_error!(selection_settings
-                        .middle_click_paste_enabled
-                        .toggle_and_save_value(ctx));
+                    report_if_error!(
+                        selection_settings
+                            .middle_click_paste_enabled
+                            .toggle_and_save_value(ctx)
+                    );
                 });
             }
             ToggleShowInputHintText => {
@@ -1779,9 +1816,11 @@ impl TypedActionView for FeaturesPageView {
             }
             ToggleShowTerminalInputMessageLine => {
                 InputSettings::handle(ctx).update(ctx, |input_settings, ctx| {
-                    report_if_error!(input_settings
-                        .show_terminal_input_message_bar
-                        .toggle_and_save_value(ctx));
+                    report_if_error!(
+                        input_settings
+                            .show_terminal_input_message_bar
+                            .toggle_and_save_value(ctx)
+                    );
                 });
             }
             ToggleLinkTooltip => {
@@ -1791,9 +1830,11 @@ impl TypedActionView for FeaturesPageView {
             }
             ToggleShowWarningBeforeQuitting => {
                 GeneralSettings::handle(ctx).update(ctx, |warning_settings, ctx| {
-                    report_if_error!(warning_settings
-                        .show_warning_before_quitting
-                        .toggle_and_save_value(ctx));
+                    report_if_error!(
+                        warning_settings
+                            .show_warning_before_quitting
+                            .toggle_and_save_value(ctx)
+                    );
                 })
             }
             ToggleSmartSelection => {
@@ -1807,9 +1848,11 @@ impl TypedActionView for FeaturesPageView {
                     .read(ctx, |editor, ctx| editor.buffer_text(ctx));
 
                 SemanticSelection::handle(ctx).update(ctx, |selection, ctx| {
-                    report_if_error!(selection
-                        .word_char_allowlist
-                        .set_value(word_boundary_allowlist, ctx));
+                    report_if_error!(
+                        selection
+                            .word_char_allowlist
+                            .set_value(word_boundary_allowlist, ctx)
+                    );
                 });
             }
             ResetWordCharAllowlist => {
@@ -1819,9 +1862,11 @@ impl TypedActionView for FeaturesPageView {
             }
             ToggleUseAudibleBell => {
                 TerminalSettings::handle(ctx).update(ctx, |terminal_settings, ctx| {
-                    report_if_error!(terminal_settings
-                        .use_audible_bell
-                        .toggle_and_save_value(ctx));
+                    report_if_error!(
+                        terminal_settings
+                            .use_audible_bell
+                            .toggle_and_save_value(ctx)
+                    );
                 })
             }
             ToggleVimMode => AppEditorSettings::handle(ctx).update(ctx, |editor_settings, ctx| {
@@ -1855,12 +1900,16 @@ impl TypedActionView for FeaturesPageView {
             SetDefaultSessionMode(mode) => self.set_default_session_mode(mode, ctx),
             SetDefaultTabConfig(path) => {
                 AISettings::handle(ctx).update(ctx, |ai_settings, ctx| {
-                    report_if_error!(ai_settings
-                        .default_session_mode_internal
-                        .set_value(DefaultSessionMode::TabConfig, ctx));
-                    report_if_error!(ai_settings
-                        .default_tab_config_path
-                        .set_value(path.clone(), ctx));
+                    report_if_error!(
+                        ai_settings
+                            .default_session_mode_internal
+                            .set_value(DefaultSessionMode::TabConfig, ctx)
+                    );
+                    report_if_error!(
+                        ai_settings
+                            .default_tab_config_path
+                            .set_value(path.clone(), ctx)
+                    );
                 });
             }
             SearchForKeybinding(query) => {
@@ -1919,25 +1968,31 @@ impl TypedActionView for FeaturesPageView {
             }
             SetPreferredGraphicsBackend(graphics_backend) => {
                 GPUSettings::handle(ctx).update(ctx, |gpu_settings, ctx| {
-                    report_if_error!(gpu_settings
-                        .preferred_backend
-                        .set_value(*graphics_backend, ctx));
+                    report_if_error!(
+                        gpu_settings
+                            .preferred_backend
+                            .set_value(*graphics_backend, ctx)
+                    );
                 });
                 ctx.update_rendering_config(|config| config.backend_preference = *graphics_backend);
                 self.graphics_backend_preference_changed = true;
             }
             ToggleShowTerminalZeroStateBlock => {
                 TerminalSettings::handle(ctx).update(ctx, |terminal_settings, ctx| {
-                    report_if_error!(terminal_settings
-                        .show_terminal_zero_state_block
-                        .toggle_and_save_value(ctx));
+                    report_if_error!(
+                        terminal_settings
+                            .show_terminal_zero_state_block
+                            .toggle_and_save_value(ctx)
+                    );
                 });
             }
             ToggleLinuxClipboardSelection => {
                 SelectionSettings::handle(ctx).update(ctx, |selection_settings, ctx| {
-                    report_if_error!(selection_settings
-                        .linux_selection_clipboard
-                        .toggle_and_save_value(ctx));
+                    report_if_error!(
+                        selection_settings
+                            .linux_selection_clipboard
+                            .toggle_and_save_value(ctx)
+                    );
                 });
             }
             #[cfg(any(target_os = "linux", target_os = "freebsd"))]
@@ -1959,32 +2014,40 @@ impl TypedActionView for FeaturesPageView {
             }),
             ToggleQuitOnLastWindowClosed => {
                 GeneralSettings::handle(ctx).update(ctx, |settings, ctx| {
-                    report_if_error!(settings
-                        .quit_on_last_window_closed
-                        .toggle_and_save_value(ctx));
+                    report_if_error!(
+                        settings
+                            .quit_on_last_window_closed
+                            .toggle_and_save_value(ctx)
+                    );
                 })
             }
             ToggleAtContextMenuInTerminalMode => {
                 InputSettings::handle(ctx).update(ctx, |input_settings, ctx| {
-                    report_if_error!(input_settings
-                        .at_context_menu_in_terminal_mode
-                        .toggle_and_save_value(ctx));
+                    report_if_error!(
+                        input_settings
+                            .at_context_menu_in_terminal_mode
+                            .toggle_and_save_value(ctx)
+                    );
                 });
             }
             ToggleSlashCommandsInTerminalMode => {
                 InputSettings::handle(ctx).update(ctx, |input_settings, ctx| {
-                    report_if_error!(input_settings
-                        .enable_slash_commands_in_terminal
-                        .toggle_and_save_value(ctx));
+                    report_if_error!(
+                        input_settings
+                            .enable_slash_commands_in_terminal
+                            .toggle_and_save_value(ctx)
+                    );
                 });
             }
             // Zap: the `ToggleOutlineCodebaseSymbolsForAtContextMenu` action was removed along
             // with the retirement of outline.
             ToggleAutoOpenCodeReviewPane => {
                 GeneralSettings::handle(ctx).update(ctx, |settings, ctx| {
-                    report_if_error!(settings
-                        .auto_open_code_review_pane_on_first_agent_change
-                        .toggle_and_save_value(ctx));
+                    report_if_error!(
+                        settings
+                            .auto_open_code_review_pane_on_first_agent_change
+                            .toggle_and_save_value(ctx)
+                    );
                 })
             }
             SetNotificationToastDuration => {
@@ -2153,12 +2216,13 @@ impl FeaturesPageView {
             &TerminalSettings::handle(ctx),
             |me, terminal_settings, event, ctx| {
                 if matches!(event, TerminalSettingsChangedEvent::MaxRetainedLines { .. }) {
-                    me.max_retained_lines_input_editor.update(ctx, |editor, ctx| {
-                        editor.set_buffer_text(
-                            &format!("{}", *terminal_settings.as_ref(ctx).max_retained_lines),
-                            ctx,
-                        );
-                    });
+                    me.max_retained_lines_input_editor
+                        .update(ctx, |editor, ctx| {
+                            editor.set_buffer_text(
+                                &format!("{}", *terminal_settings.as_ref(ctx).max_retained_lines),
+                                ctx,
+                            );
+                        });
                 }
                 if matches!(event, TerminalSettingsChangedEvent::MaximumGridSize { .. }) {
                     me.max_block_size_input_editor.update(ctx, |editor, ctx| {
@@ -2672,7 +2736,6 @@ impl FeaturesPageView {
         {
             session_widgets.push(Box::new(SSHWrapperWidget::default()));
         }
-
 
         let session_settings = SessionSettings::as_ref(ctx);
 
@@ -3264,9 +3327,10 @@ impl FeaturesPageView {
         // Invalid input resets the field to the last known value.
         let shown = new_value.unwrap_or(current);
         self.valid_max_retained_lines = true;
-        self.max_retained_lines_input_editor.update(ctx, |editor, ctx| {
-            editor.set_buffer_text(&format!("{shown}"), ctx);
-        });
+        self.max_retained_lines_input_editor
+            .update(ctx, |editor, ctx| {
+                editor.set_buffer_text(&format!("{shown}"), ctx);
+            });
         if shown != current {
             TerminalSettings::handle(ctx).update(ctx, |settings, ctx| {
                 report_if_error!(settings.max_retained_lines.set_value(shown, ctx));
@@ -3672,9 +3736,11 @@ impl FeaturesPageView {
         ctx: &mut ViewContext<Self>,
     ) {
         AISettings::handle(ctx).update(ctx, |ai_settings, ctx| {
-            report_if_error!(ai_settings
-                .default_session_mode_internal
-                .set_value(*value, ctx));
+            report_if_error!(
+                ai_settings
+                    .default_session_mode_internal
+                    .set_value(*value, ctx)
+            );
         });
     }
 
@@ -4562,9 +4628,7 @@ impl SettingsWidget for SessionRestorationWidget {
             crate::t!("settings-features-restore-session"),
             Some(AdditionalInfo {
                 mouse_state: self.additional_info_link.clone(),
-                on_click_action: Some(FeaturesPageAction::OpenUrl(
-                    "".into(),
-                )),
+                on_click_action: Some(FeaturesPageAction::OpenUrl("".into())),
                 secondary_text: None,
                 tooltip_override_text: None,
             }),
@@ -4694,9 +4758,7 @@ impl SettingsWidget for SnackbarHeaderWidget {
             crate::t!("settings-features-show-sticky-command-header"),
             Some(AdditionalInfo {
                 mouse_state: self.additional_info_link.clone(),
-                on_click_action: Some(FeaturesPageAction::OpenUrl(
-                    "".into(),
-                )),
+                on_click_action: Some(FeaturesPageAction::OpenUrl("".into())),
                 secondary_text: None,
                 tooltip_override_text: None,
             }),
@@ -5154,7 +5216,9 @@ impl SettingsWidget for MaxRetainedLinesWidget {
             ToggleState::Enabled,
             appearance,
             input_field,
-            Some(crate::t!("settings-features-max-retained-lines-description")),
+            Some(crate::t!(
+                "settings-features-max-retained-lines-description"
+            )),
         )
     }
 }
@@ -5183,9 +5247,7 @@ impl SettingsWidget for SSHWrapperWidget {
             crate::t!("settings-features-ssh-wrapper"),
             Some(AdditionalInfo {
                 mouse_state: self.additional_info_link.clone(),
-                on_click_action: Some(FeaturesPageAction::OpenUrl(
-                    "".into(),
-                )),
+                on_click_action: Some(FeaturesPageAction::OpenUrl("".into())),
                 secondary_text: if view.ssh_wrapper_toggled {
                     Some(crate::t!("settings-features-takes-effect-new-sessions"))
                 } else {
@@ -5616,10 +5678,7 @@ impl SettingsWidget for GlobalHotkeyWidget {
                         ui_builder
                             .link(
                                 crate::t!("settings-features-see-docs"),
-                                Some(
-                                    ""
-                                        .to_owned(),
-                                ),
+                                Some("".to_owned()),
                                 None,
                                 view.button_mouse_states.global_hotkey_link.clone(),
                             )
@@ -6668,10 +6727,7 @@ impl SettingsWidget for MouseReportingWidget {
             crate::t!("settings-features-enable-mouse-reporting"),
             Some(AdditionalInfo {
                 mouse_state: self.additional_info_link.clone(),
-                on_click_action: Some(FeaturesPageAction::OpenUrl(
-                    ""
-                        .into(),
-                )),
+                on_click_action: Some(FeaturesPageAction::OpenUrl("".into())),
                 secondary_text: None,
                 tooltip_override_text: None,
             }),
@@ -6929,9 +6985,7 @@ impl SettingsWidget for SmartSelectWidget {
             crate::t!("settings-features-double-click-smart-selection"),
             Some(AdditionalInfo {
                 mouse_state: self.additional_info_link.clone(),
-                on_click_action: Some(FeaturesPageAction::OpenUrl(
-                    "".into(),
-                )),
+                on_click_action: Some(FeaturesPageAction::OpenUrl("".into())),
                 secondary_text: None,
                 tooltip_override_text: None,
             }),
@@ -7220,9 +7274,7 @@ impl SettingsWidget for WorkflowsInCommandSearch {
             crate::t!("settings-features-show-global-workflows-in-command-search"),
             Some(AdditionalInfo {
                 mouse_state: self.additional_info_link.clone(),
-                on_click_action: Some(FeaturesPageAction::OpenUrl(
-                    "".into(),
-                )),
+                on_click_action: Some(FeaturesPageAction::OpenUrl("".into())),
                 secondary_text: None,
                 tooltip_override_text: None,
             }),

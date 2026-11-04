@@ -1,13 +1,13 @@
+use agent_proto as api;
 use chrono::NaiveDateTime;
 use diesel::associations::HasTable;
-use diesel::{prelude::*, result::Error, SqliteConnection};
+use diesel::{SqliteConnection, prelude::*, result::Error};
 use prost::Message;
 use std::collections::{HashMap, HashSet};
-use agent_proto as api;
 
 use super::ConversationSummaryBackfill;
-use super::model::{AgentConversation, AgentConversationData, AgentConversationSummary};
 use super::PersistedTaskRetention;
+use super::model::{AgentConversation, AgentConversationData, AgentConversationSummary};
 use crate::persistence::model::{AgentConversationRecord, AgentTaskRecord};
 use crate::persistence::schema::{self, agent_conversations, agent_tasks};
 

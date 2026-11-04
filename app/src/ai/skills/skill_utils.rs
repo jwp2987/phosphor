@@ -3,19 +3,19 @@
 use super::{SkillDescriptor, SkillManager};
 use crate::ai::blocklist::view_util::render_provider_icon_button;
 use ai::skills::{
-    home_skills_path, provider_parent_directory_for_skills_root, provider_rank, ParsedSkill,
-    SkillProvider, SKILL_PROVIDER_DEFINITIONS,
+    ParsedSkill, SKILL_PROVIDER_DEFINITIONS, SkillProvider, home_skills_path,
+    provider_parent_directory_for_skills_root, provider_rank,
 };
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::path::Path;
 use std::path::PathBuf;
+use warp_core::ui::Icon;
 use warp_core::ui::appearance::Appearance;
 use warp_core::ui::theme::color::internal_colors;
-use warp_core::ui::Icon;
 use warp_util::local_or_remote_path::LocalOrRemotePath;
-use warpui::prelude::MouseStateHandle;
 use warpui::EventContext;
+use warpui::prelude::MouseStateHandle;
 use warpui::{AppContext, Element, SingletonEntity};
 
 use crate::warp_managed_paths_watcher::warp_managed_skill_dirs;
@@ -51,7 +51,10 @@ impl SkillDeduplicator {
                 continue;
             };
             let descriptor = SkillDescriptor::from(skill.clone());
-            match self.name_map.entry((descriptor.name.clone(), dir_path.clone())) {
+            match self
+                .name_map
+                .entry((descriptor.name.clone(), dir_path.clone()))
+            {
                 Entry::Vacant(e) => {
                     e.insert(descriptor);
                 }

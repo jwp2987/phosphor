@@ -1,16 +1,16 @@
 use warpui::{
-    async_assert, integration::TestStep, windowing::WindowManager, SingletonEntity, WindowId,
+    SingletonEntity, WindowId, async_assert, integration::TestStep, windowing::WindowManager,
 };
 
 use crate::{
     cloud_object::{
-        model::persistence::ObjectStoreModel, update_manager::UpdateManager, Space,
-        StoredObjectEventEntrypoint,
+        Space, StoredObjectEventEntrypoint, model::persistence::ObjectStoreModel,
+        update_manager::UpdateManager,
     },
     drive::ZapDriveObjectSettings,
     integration_testing::view_getters::workspace_view,
     server::ids::{ClientId, SyncId},
-    workflows::{manager::WorkflowOpenSource, workflow::Workflow, WorkflowViewMode},
+    workflows::{WorkflowViewMode, manager::WorkflowOpenSource, workflow::Workflow},
     workspaces::user_workspaces::UserWorkspaces,
 };
 

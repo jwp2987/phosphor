@@ -6,8 +6,8 @@ use warp_util::path::user_friendly_path;
 use crate::terminal::shell::ShellType;
 
 use super::{
-    context_chip::{GeneratorContext, ShellCommand, ShellCommandGenerator},
     ChipValue,
+    context_chip::{GeneratorContext, ShellCommand, ShellCommandGenerator},
 };
 
 #[cfg(test)]
@@ -382,7 +382,8 @@ pub(crate) fn direct_powershell_invocation(command: &str) -> Option<DirectPlan> 
 /// we take the latest directory of the working copy as the branch/tag name.
 pub fn svn_branch_context() -> ShellCommandGenerator {
     const SH_COMMAND: &str = "basename $(svn info --show-item wc-root)";
-    const PWSH_COMMAND: &str = "svn info --show-item wc-root | Microsoft.PowerShell.Management\\Split-Path -Leaf";
+    const PWSH_COMMAND: &str =
+        "svn info --show-item wc-root | Microsoft.PowerShell.Management\\Split-Path -Leaf";
     let command = ShellCommand::shell_specific([
         (ShellType::PowerShell, PWSH_COMMAND.to_string()),
         (ShellType::Bash, SH_COMMAND.to_string()),

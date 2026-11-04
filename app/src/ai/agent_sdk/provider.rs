@@ -3,10 +3,10 @@ use crate::workspaces::user_workspaces::UserWorkspaces;
 use comfy_table::Cell;
 use serde::Serialize;
 use warp_cli::{
-    provider::{ProviderCommand, ProviderType},
     GlobalOptions,
+    provider::{ProviderCommand, ProviderType},
 };
-use warpui::{platform::TerminationMode, AppContext, ModelContext, SingletonEntity};
+use warpui::{AppContext, ModelContext, SingletonEntity, platform::TerminationMode};
 
 use crate::ai::agent_sdk::output::{self, TableFormat};
 

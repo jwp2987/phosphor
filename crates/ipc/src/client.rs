@@ -1,16 +1,16 @@
 use std::{collections::HashMap, sync::Arc};
 
-use futures::{channel::oneshot, future::FutureExt, io::BufReader, AsyncRead, AsyncWrite};
+use futures::{AsyncRead, AsyncWrite, channel::oneshot, future::FutureExt, io::BufReader};
 use warpui::r#async::executor::Background;
 
 use crate::{platform::client::connect_client, protocol::Request};
 
 use super::{
+    Service,
     protocol::{
-        receive_message, send_message, ConnectionAddress, ProtocolError, RequestId, Response,
+        ConnectionAddress, ProtocolError, RequestId, Response, receive_message, send_message,
     },
     service::service_id,
-    Service,
 };
 
 #[derive(Debug)]

@@ -1,13 +1,15 @@
 use super::OnboardingSlide;
+use crate::OnboardingIntention;
 use crate::localization::localized;
 use crate::model::OnboardingStateModel;
 use crate::slides::{bottom_nav, layout, slide_content};
-use crate::OnboardingIntention;
-use ui_components::{button, Component as _, Options as _};
+use ui_components::{Component as _, Options as _, button};
 use warp_core::ui::theme::Fill;
-use warp_core::ui::{appearance::Appearance, theme::color::internal_colors, Icon};
+use warp_core::ui::{Icon, appearance::Appearance, theme::color::internal_colors};
 use warpui::prelude::Align;
 use warpui::{
+    AppContext, Element, Entity, ModelHandle, SingletonEntity as _, TypedActionView, View,
+    ViewContext,
     elements::{
         Border, ClippedScrollStateHandle, ConstrainedBox, Container, CornerRadius,
         CrossAxisAlignment, Flex, FormattedTextElement, Hoverable, MainAxisAlignment, MainAxisSize,
@@ -18,8 +20,6 @@ use warpui::{
     platform::Cursor,
     text_layout::TextAlignment,
     ui_components::components::{UiComponent as _, UiComponentStyles},
-    AppContext, Element, Entity, ModelHandle, SingletonEntity as _, TypedActionView, View,
-    ViewContext,
 };
 
 #[derive(Debug, Clone)]
@@ -79,7 +79,10 @@ impl IntentionSlide {
 
         let title = appearance
             .ui_builder()
-            .paragraph(localized("onboarding-intention-title", "Welcome to Phosphor"))
+            .paragraph(localized(
+                "onboarding-intention-title",
+                "Welcome to Phosphor",
+            ))
             .with_style(UiComponentStyles {
                 font_size: Some(36.),
                 font_weight: Some(Weight::Medium),

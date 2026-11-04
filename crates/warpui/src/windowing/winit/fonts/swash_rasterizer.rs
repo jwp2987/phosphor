@@ -5,11 +5,11 @@ use crate::fonts::{FontId, GlyphId, RasterizedGlyph, SubpixelAlignment};
 use crate::platform::FontDB as _;
 use crate::rendering::GlyphConfig;
 use crate::windowing::winit::fonts::FontDB;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use cosmic_text::{CacheKey, CacheKeyFlags};
 use parking_lot::RwLock;
 use pathfinder_geometry::rect::RectI;
-use pathfinder_geometry::vector::{vec2i, Vector2F, Vector2I};
+use pathfinder_geometry::vector::{Vector2F, Vector2I, vec2i};
 use std::collections::HashMap;
 
 type RasterBoundsMemoKey = (FontId, GlyphId, u32, u32, u32);

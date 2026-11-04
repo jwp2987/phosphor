@@ -16,8 +16,8 @@ use crate::{
 };
 
 use super::{
-    notebook_pane::subscribe_to_link_model, view::PaneView, DetachType, PaneConfiguration,
-    PaneContent, PaneGroup, PaneId, ShareableLink, ShareableLinkError,
+    DetachType, PaneConfiguration, PaneContent, PaneGroup, PaneId, ShareableLink,
+    ShareableLinkError, notebook_pane::subscribe_to_link_model, view::PaneView,
 };
 
 pub struct FilePane {

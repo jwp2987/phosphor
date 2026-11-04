@@ -4,13 +4,13 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use warpui::SingletonEntity as _;
 use warpui::{
+    AppContext, Element, Entity, TypedActionView, View, ViewContext,
     elements::{
         Align, ConstrainedBox, Container, DispatchEventResult, EventHandler, Padding,
         ParentElement, Rect, Stack, Text,
     },
     fonts::{Cache as FontCache, FamilyId},
     platform::CapturedFrame,
-    AppContext, Element, Entity, TypedActionView, View, ViewContext,
 };
 
 #[derive(Clone, Debug)]

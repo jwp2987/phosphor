@@ -1,6 +1,6 @@
 use warp_core::ui::theme::Fill;
 
-use super::{warp_agent_circle_colors, OZ_AMBIENT_BACKGROUND_COLOR};
+use super::{OZ_AMBIENT_BACKGROUND_COLOR, warp_agent_circle_colors};
 use crate::themes::default_themes::{dark_theme, light_theme};
 
 #[test]

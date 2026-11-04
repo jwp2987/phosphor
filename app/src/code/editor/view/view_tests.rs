@@ -1,21 +1,21 @@
 use warp_core::ui::appearance::Appearance;
 use warp_editor::render::element::VerticalExpansionBehavior;
 use warpui::{
-    elements::{new_scrollable::ScrollableAppearance, ScrollbarWidth},
-    platform::WindowStyle,
     App, TypedActionView, ViewHandle, WindowId,
+    elements::{ScrollbarWidth, new_scrollable::ScrollableAppearance},
+    platform::WindowStyle,
 };
 
 use crate::{
+    AuthStateProvider,
     cloud_object::model::persistence::ObjectStoreModel,
     editor::InteractionState,
     notebooks::editor::keys::NotebookKeybindings,
     settings_view::keybindings::KeybindingChangedNotifier,
     test_util::settings::initialize_settings_for_tests,
     vim_registers::VimRegisters,
-    workspace::{sync_inputs::SyncedInputState, ActiveSession},
+    workspace::{ActiveSession, sync_inputs::SyncedInputState},
     workspaces::user_workspaces::UserWorkspaces,
-    AuthStateProvider,
 };
 
 use super::{CodeEditorRenderOptions, CodeEditorView, CodeEditorViewAction};

@@ -16,8 +16,8 @@ use warpui::{App, SingletonEntity as _, TypedActionView as _};
 use super::{ScriptingSettingsPageAction, ScriptingSettingsPageView};
 use crate::appearance::Appearance;
 use crate::settings::{LocalControlMode, LocalControlSettings};
-use crate::settings_view::settings_page::SettingsPageMeta as _;
 use crate::settings_view::SettingsSection;
+use crate::settings_view::settings_page::SettingsPageMeta as _;
 
 #[test]
 fn scripting_page_registers_under_the_scripting_section() {

@@ -1,12 +1,12 @@
 use pathfinder_color::ColorU;
 use warpui::{
+    AppContext, Element, Entity, TypedActionView, View, ViewContext, ViewHandle,
     elements::{Align, Container},
     presenter::ChildView,
     ui_components::{
         components::{UiComponent, UiComponentStyles},
         slider::{Slider, SliderStateHandle},
     },
-    AppContext, Element, Entity, TypedActionView, View, ViewContext, ViewHandle,
 };
 
 /// Renders a center-aligned slider component against a black background. When the slider is

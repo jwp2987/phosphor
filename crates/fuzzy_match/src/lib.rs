@@ -54,8 +54,8 @@
 
 use std::sync::LazyLock;
 
-use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
+use fuzzy_matcher::skim::SkimMatcherV2;
 
 // Shared matchers. `SkimMatcherV2` keeps its scratch buffers in per-thread caches, so one
 // instance is safe to share across threads and, unlike a fresh matcher per call, reuses those

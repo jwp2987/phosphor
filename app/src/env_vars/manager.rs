@@ -1,12 +1,12 @@
 use crate::{
-    cloud_object::{model::persistence::ObjectStoreModel, Owner},
+    PaneViewLocator, WindowId,
+    cloud_object::{Owner, model::persistence::ObjectStoreModel},
     env_vars::view::env_var_collection::EnvVarCollectionView,
     pane_group::{EnvVarCollectionPane, PaneContent},
     safe_warn,
     server::ids::SyncId,
-    PaneViewLocator, WindowId,
 };
-use std::collections::{hash_map::Entry, HashMap};
+use std::collections::{HashMap, hash_map::Entry};
 use warpui::{Entity, EntityId, ModelContext, SingletonEntity, WeakViewHandle};
 
 pub struct EnvVarCollectionManager {

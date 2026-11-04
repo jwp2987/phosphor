@@ -2,9 +2,9 @@ use std::path::Path;
 
 use warp_core::ui::appearance::Appearance;
 use warpui::{
+    Element,
     assets::asset_cache::AssetSource,
     elements::{CacheOption, Icon, Image},
-    Element,
 };
 
 /// Returns a special icon for the given file path, if any.

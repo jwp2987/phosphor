@@ -6,7 +6,7 @@ use crate::{
     terminal::{
         input::{Input, InputAction, InputSuggestionsMode, MenuPositioning},
         model::TerminalModel,
-        view::{TerminalAction, PADDING_LEFT},
+        view::{PADDING_LEFT, TerminalAction},
     },
     ui_components::icons::Icon,
 };
@@ -15,6 +15,7 @@ use vim::vim::{VimMode, VimState};
 use warp_completer::completer::Description;
 use warp_core::features::FeatureFlag;
 use warpui::{
+    AppContext, SingletonEntity, ViewHandle,
     elements::{
         AnchorPair, Border, ChildAnchor, ConstrainedBox, Container, CornerRadius,
         CrossAxisAlignment, DispatchEventResult, Element, EventHandler, Flex, OffsetPositioning,
@@ -24,7 +25,6 @@ use warpui::{
     fonts::Weight,
     presenter::ChildView,
     ui_components::components::{UiComponent, UiComponentStyles},
-    AppContext, SingletonEntity, ViewHandle,
 };
 
 /// Whether the terminal input message bar should be shown.

@@ -6,22 +6,22 @@ use super::static_prompt_suggestions::static_suggested_query;
 use crate::ai::agent::PassiveSuggestionTrigger;
 use crate::ai::agent::{AIAgentExchangeId, CancellationReason};
 use crate::ai::blocklist::controller::{
-    response_stream::ResponseStreamId, BlocklistAIController, BlocklistAIControllerEvent,
+    BlocklistAIController, BlocklistAIControllerEvent, response_stream::ResponseStreamId,
 };
 use crate::ai::blocklist::{
-    read_local_file_context, BlocklistAIHistoryModel, BlocklistAIPermissions,
+    BlocklistAIHistoryModel, BlocklistAIPermissions, read_local_file_context,
 };
+use crate::ai::execution_context::WarpAiExecutionContext;
 use crate::ai::paths::host_native_absolute_path;
 use crate::ai::predict::generate_am_query_suggestions::{
     GenerateAMQuerySuggestionsResponse, Suggestion,
 };
-use crate::ai::execution_context::WarpAiExecutionContext;
 use crate::network::NetworkStatus;
 use crate::server::telemetry::PromptSuggestionFallbackReason;
 use crate::settings::AISettings;
 use crate::terminal::event::{BlockType, UserBlockCompleted};
 use crate::terminal::model::block::BlockId;
-use crate::terminal::model::session::{active_session::ActiveSession, SessionType};
+use crate::terminal::model::session::{SessionType, active_session::ActiveSession};
 use crate::terminal::model::terminal_model::TerminalModel;
 use crate::terminal::model_events::{ModelEvent, ModelEventDispatcher};
 use crate::terminal::view::{AgentModePromptSuggestion, PromptSuggestion};
@@ -321,10 +321,13 @@ impl PassiveSuggestionsModel {
         }
 
         {
-            let serialized_block = block_completed.serialized_block_without_output.get_with(|compute| {
-                let model = self.terminal_model.lock();
-                compute(model.block_list())
-            });
+            let serialized_block =
+                block_completed
+                    .serialized_block_without_output
+                    .get_with(|compute| {
+                        let model = self.terminal_model.lock();
+                        compute(model.block_list())
+                    });
             let Some(current_dir) = serialized_block.pwd.as_ref().map(PathBuf::from) else {
                 return;
             };
@@ -655,7 +658,7 @@ fn build_prompt_suggestions_byop_request(
     terminal_view_id: EntityId,
     ctx: &warpui::AppContext,
 ) -> Option<crate::ai::agent_providers::active_ai::RenderedRequest> {
-    use crate::ai::agent_providers::active_ai::{prompt_suggestions, BlockSnippet};
+    use crate::ai::agent_providers::active_ai::{BlockSnippet, prompt_suggestions};
 
     let serialized_block = block.serialized_block_without_output.get_with(|compute| {
         let model = terminal_model.lock();

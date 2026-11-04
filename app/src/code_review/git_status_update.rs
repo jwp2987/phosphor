@@ -11,16 +11,16 @@ use {
     crate::util::git::{detect_current_branch_display, detect_main_branch, run_git_command},
     async_channel::Sender,
     repo_metadata::{
+        Repository, RepositoryUpdate, RepositoryWatchMode,
         repositories::DetectedRepositories,
         repository::{RepositorySubscriber, SubscriberId},
-        Repository, RepositoryUpdate, RepositoryWatchMode,
     },
     std::{
         collections::HashMap,
         time::{Duration, Instant},
     },
     warp_util::local_or_remote_path::LocalOrRemotePath,
-    warpui::{r#async::SpawnedFutureHandle, ModelHandle, WeakModelHandle},
+    warpui::{ModelHandle, WeakModelHandle, r#async::SpawnedFutureHandle},
 };
 
 #[cfg(feature = "local_fs")]
@@ -142,8 +142,7 @@ impl GitStatusUpdateModel {
             }
             LocalOrRemotePath::Remote(remote_path) => {
                 let remote_path = remote_path.clone();
-                let inner =
-                    ctx.add_model(|ctx| RemoteGitRepoStatusModel::new(remote_path, ctx));
+                let inner = ctx.add_model(|ctx| RemoteGitRepoStatusModel::new(remote_path, ctx));
                 ctx.add_model(|ctx| {
                     ctx.subscribe_to_model(&inner, |me, event, ctx| {
                         GitRepoStatusModel::forward_event(me, event, ctx)
@@ -177,7 +176,11 @@ impl GitStatusUpdateModel {
         repo: &LocalOrRemotePath,
         ctx: &mut ModelContext<Self>,
     ) -> anyhow::Result<ModelHandle<GitHubRepoModel>> {
-        if let Some(handle) = self.github_repos.get(repo).and_then(|weak| weak.upgrade(ctx)) {
+        if let Some(handle) = self
+            .github_repos
+            .get(repo)
+            .and_then(|weak| weak.upgrade(ctx))
+        {
             return Ok(handle);
         }
 
@@ -187,8 +190,8 @@ impl GitStatusUpdateModel {
                 // for branch info.
                 let git_status = self.subscribe(repo, ctx)?;
                 let repo_path = repo_path.clone();
-                let inner = ctx
-                    .add_model(|ctx| LocalGitHubRepoModel::new(repo_path, git_status, ctx));
+                let inner =
+                    ctx.add_model(|ctx| LocalGitHubRepoModel::new(repo_path, git_status, ctx));
                 ctx.add_model(|ctx| {
                     ctx.subscribe_to_model(&inner, |me, event, ctx| {
                         GitHubRepoModel::forward_event(me, event, ctx)

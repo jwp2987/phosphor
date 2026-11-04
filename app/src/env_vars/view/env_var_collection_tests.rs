@@ -1,8 +1,9 @@
 use warp_core::ui::appearance::Appearance;
-use warpui::{platform::WindowStyle, App, ViewHandle};
+use warpui::{App, ViewHandle, platform::WindowStyle};
 
 use crate::auth::AuthStateProvider;
 use crate::{
+    GlobalResourceHandles, GlobalResourceHandlesProvider,
     cloud_object::model::{
         actions::ObjectActions, persistence::ObjectStoreModel, view::ObjectStoreViewModel,
     },
@@ -16,7 +17,6 @@ use crate::{
     test_util::settings::initialize_settings_for_tests,
     workspace::ActiveSession,
     workspaces::{user_profiles::UserProfiles, user_workspaces::UserWorkspaces},
-    GlobalResourceHandles, GlobalResourceHandlesProvider,
 };
 
 fn initialize_app(app: &mut App) {

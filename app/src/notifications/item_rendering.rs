@@ -24,7 +24,7 @@ use crate::notifications::telemetry::{ArtifactType, NotificationsTelemetryEvent}
 use crate::notifications::{NotificationCategory, NotificationItem};
 use crate::send_telemetry_from_ctx;
 use crate::ui_components::icon_with_status::{
-    render_icon_with_status, IconWithStatusSizing, IconWithStatusVariant,
+    IconWithStatusSizing, IconWithStatusVariant, render_icon_with_status,
 };
 use crate::util::time_format::format_elapsed_since;
 use crate::view_components::action_button::ActionButtonTheme;

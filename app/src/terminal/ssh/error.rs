@@ -10,6 +10,9 @@ use markdown_parser::FormattedText;
 use markdown_parser::FormattedTextFragment;
 use markdown_parser::FormattedTextLine;
 use warp_core::ui::theme::WarpTheme;
+use warpui::AppContext;
+use warpui::BlurContext;
+use warpui::FocusContext;
 use warpui::elements::HighlightedHyperlink;
 use warpui::elements::Hoverable;
 use warpui::elements::Icon;
@@ -21,18 +24,14 @@ use warpui::platform::Cursor;
 use warpui::ui_components::button::ButtonVariant;
 use warpui::ui_components::components::UiComponent;
 use warpui::ui_components::components::UiComponentStyles;
-use warpui::AppContext;
-use warpui::BlurContext;
-use warpui::FocusContext;
 use warpui::{
-    elements::{Border, Container, CrossAxisAlignment, Flex, ParentElement},
     Element, Entity, SingletonEntity, TypedActionView, View, ViewContext,
+    elements::{Border, Container, CrossAxisAlignment, Flex, ParentElement},
 };
 
 const TMUX_NOT_INSTALLED_ERROR: &str =
     "tmux is not installed on the remote machine. Please install tmux and try again.";
-const UNSUPPORTED_TMUX_VERSION_ERROR: &str =
-    "The tmux version available on the remote machine is below 3.0. Please install tmux 3.0 or greater using a different method and try again.";
+const UNSUPPORTED_TMUX_VERSION_ERROR: &str = "The tmux version available on the remote machine is below 3.0. Please install tmux 3.0 or greater using a different method and try again.";
 const TMUX_FAILED_ERROR: &str =
     "tmux failed to execute on the remote machine. Please re-install tmux and try again.";
 const WARPIFY_TIMEOUT_ERROR: &str = "Phosphorizing the session hit a timeout.";

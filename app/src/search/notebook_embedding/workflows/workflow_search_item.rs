@@ -1,19 +1,19 @@
 use ordered_float::OrderedFloat;
 use warpui::{
+    AppContext, Element, SingletonEntity,
     elements::{
         Clipped, ConstrainedBox, Container, CrossAxisAlignment, Flex, Highlight, MainAxisAlignment,
         MainAxisSize, ParentElement, Shrinkable, Text,
     },
     fonts::{Properties, Weight},
     ui_components::components::{Coords, UiComponent, UiComponentStyles},
-    AppContext, Element, SingletonEntity,
 };
 
 use crate::search::result_renderer::ItemHighlightState;
 use crate::{
     appearance::Appearance,
     cloud_object::StoredObject,
-    drive::{cloud_object_styling::warp_drive_icon_color, DriveObjectType},
+    drive::{DriveObjectType, cloud_object_styling::warp_drive_icon_color},
     search::{
         item::IconLocation,
         notebook_embedding::{

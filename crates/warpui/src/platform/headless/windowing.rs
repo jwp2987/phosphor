@@ -3,11 +3,11 @@ use std::{cell::RefCell, collections::HashMap, rc::Rc, sync::mpsc};
 use anyhow::Result;
 
 use crate::{
+    WindowId,
     geometry::rect::RectF,
-    geometry::vector::{vec2f, Vector2F},
+    geometry::vector::{Vector2F, vec2f},
     platform::{self, WindowOptions},
     windowing::WindowCallbacks,
-    WindowId,
 };
 
 use super::event_loop::AppEvent;

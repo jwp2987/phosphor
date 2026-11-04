@@ -1,10 +1,11 @@
-use enum_iterator::{all, Sequence};
+use enum_iterator::{Sequence, all};
 use itertools::{Either, Itertools};
+use warpui::FocusContext;
 use warpui::elements::CornerRadius;
 use warpui::presenter::ChildView;
 use warpui::units::Pixels;
-use warpui::FocusContext;
 use warpui::{
+    AppContext, Entity, SingletonEntity, TypedActionView, View, ViewContext, ViewHandle,
     elements::{
         Align, Border, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox, Container,
         CrossAxisAlignment, Element, Fill, Flex, MainAxisSize, MouseStateHandle, ParentElement,
@@ -12,7 +13,6 @@ use warpui::{
     },
     keymap::{DescriptionContext, Keystroke},
     ui_components::components::{Coords, UiComponent, UiComponentStyles},
-    AppContext, Entity, SingletonEntity, TypedActionView, View, ViewContext, ViewHandle,
 };
 
 use crate::settings_view;
@@ -40,7 +40,7 @@ use super::{
         DESCRIPTION_FONT_SIZE, ITEM_PADDING_BOTTOM, SCROLLBAR_OFFSET, SCROLLBAR_WIDTH,
         SECTION_HEADER_FONT_SIZE, SECTION_SPACING,
     },
-    utils::{get_additional_keybindings, FUNDAMENTALS_KEYBINDINGS},
+    utils::{FUNDAMENTALS_KEYBINDINGS, get_additional_keybindings},
 };
 
 use super::utils::{BLOCKS_KEYBINDINGS, INPUT_EDITOR_KEYBINDINGS, TERMINAL_KEYBINDINGS};

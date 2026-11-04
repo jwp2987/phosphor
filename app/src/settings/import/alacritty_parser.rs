@@ -10,8 +10,8 @@ use warp_core::ui::{
 use warpui::fonts::FontInfo;
 
 use super::config::{
-    calculate_accent_color, Config, ConfigError, ImportableSetting, ParseableConfig, SettingType,
-    ThemeType,
+    Config, ConfigError, ImportableSetting, ParseableConfig, SettingType, ThemeType,
+    calculate_accent_color,
 };
 use pathfinder_color::ColorU;
 

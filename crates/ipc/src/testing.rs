@@ -19,7 +19,7 @@ use async_trait::async_trait;
 use itertools::Itertools;
 use parking_lot::Mutex;
 
-use crate::{service::service_id, ClientError, Service, ServiceCaller};
+use crate::{ClientError, Service, ServiceCaller, service::service_id};
 
 // Use a `Mutex` so we can satisfy the immutable `&self` in the implementation of `ServiceCaller`.
 type ExpectationsMap<T, U> = Mutex<HashMap<T, Result<U, ClientError>>>;

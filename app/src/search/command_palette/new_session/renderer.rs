@@ -2,9 +2,9 @@ use super::new_session_option::NewSessionOption;
 
 use crate::search::command_palette::styles::SEARCH_ITEM_TEXT_PADDING;
 use warpui::{
+    Element,
     elements::{Container, Flex, Highlight, ParentElement, Text},
     fonts::{Properties, Weight},
-    Element,
 };
 
 use crate::appearance::Appearance;

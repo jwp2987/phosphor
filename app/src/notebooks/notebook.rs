@@ -10,7 +10,10 @@ use warp_editor::{
     model::{CoreEditorModel, RichTextEditorModel},
 };
 use warpui::{
+    AppContext, BlurContext, Element, Entity, FocusContext, ModelAsRef, ModelHandle,
+    SingletonEntity, TypedActionView, View, ViewContext, ViewHandle, WindowId,
     accessibility::{AccessibilityContent, WarpA11yRole},
+    r#async::SpawnedFutureHandle,
     clipboard::ClipboardContent,
     elements::{
         Align, Clipped, ConstrainedBox, Container, CrossAxisAlignment, DispatchEventResult, Empty,
@@ -19,13 +22,10 @@ use warpui::{
     },
     keymap::{EditableBinding, FixedBinding},
     presenter::ChildView,
-    r#async::SpawnedFutureHandle,
     ui_components::{
         button::ButtonVariant,
         components::{UiComponent, UiComponentStyles},
     },
-    AppContext, BlurContext, Element, Entity, FocusContext, ModelAsRef, ModelHandle,
-    SingletonEntity, TypedActionView, View, ViewContext, ViewHandle, WindowId,
 };
 
 use crate::{
@@ -35,19 +35,19 @@ use crate::{
     },
     appearance::Appearance,
     cloud_object::{
+        ObjectType, Owner, Space, StoredObject, StoredObjectEventEntrypoint,
         grab_edit_access_modal::{GrabEditAccessModal, GrabEditAccessModalEvent},
         model::{
             persistence::{ObjectStoreEvent, ObjectStoreModel, UpdateSource},
             view::{Editor, EditorState},
         },
         update_manager::{FetchSingleObjectOption, UpdateManager},
-        ObjectType, Owner, Space, StoredObject, StoredObjectEventEntrypoint,
     },
     cmd_or_ctrl_shift,
     drive::{
+        ObjectTypeAndId, ZapDriveObjectSettings,
         drive_helpers::has_feature_gated_anonymous_user_reached_notebook_limit,
-        export::ExportManager, items::WarpDriveItemId, ObjectTypeAndId,
-        ZapDriveObjectSettings,
+        export::ExportManager, items::WarpDriveItemId,
     },
     editor::{
         EditOrigin, EditorView, Event as EditorEvent, InteractionState,
@@ -57,13 +57,13 @@ use crate::{
     menu::{MenuItem, MenuItemFields},
     network::{NetworkStatus, NetworkStatusEvent},
     notebooks::{
-        editor::{model::NotebooksEditorModel, rich_text_styles},
         NotebookObject,
+        editor::{model::NotebooksEditorModel, rich_text_styles},
     },
     pane_group::{
+        BackingView, PaneConfiguration, PaneEvent,
         focus_state::{PaneFocusHandle, PaneGroupFocusEvent},
         pane::view,
-        BackingView, PaneConfiguration, PaneEvent,
     },
     report_if_error, safe_info, send_telemetry_from_ctx,
     server::{
@@ -71,8 +71,8 @@ use crate::{
         telemetry::{NotebookActionEvent, NotebookTelemetryMetadata, TelemetryEvent},
     },
     settings::{
-        decrease_notebook_font_size, increase_notebook_font_size, FontSettings,
-        FontSettingsChangedEvent, NotebookFontSize,
+        FontSettings, FontSettingsChangedEvent, NotebookFontSize, decrease_notebook_font_size,
+        increase_notebook_font_size,
     },
     terminal::safe_mode_settings::get_secret_obfuscation_mode,
     throttle::throttle,
@@ -87,23 +87,23 @@ use crate::{
 use self::details_bar::DetailsBar;
 
 use super::{
+    NotebookId, NotebookLocation, NotebookObjectModel,
     active_notebook_data::{
         ActiveNotebook, ActiveNotebookData, ActiveNotebookDataEvent, Mode, SavingStatus,
         TrashStatus,
     },
     context_menu::{
-        show_rich_editor_context_menu, show_text_editor_context_menu, ContextMenuAction,
-        ContextMenuState,
+        ContextMenuAction, ContextMenuState, show_rich_editor_context_menu,
+        show_text_editor_context_menu,
     },
     editor::{
-        view::{EditorViewEvent, RichTextEditorConfig, RichTextEditorView},
         NotebookWorkflow,
+        view::{EditorViewEvent, RichTextEditorConfig, RichTextEditorView},
     },
     link::{NotebookLinks, SessionSource},
     manager::NotebookManager,
     styles,
     telemetry::NotebookTelemetryAction,
-    NotebookId, NotebookLocation, NotebookObjectModel,
 };
 
 mod details_bar;
@@ -867,10 +867,11 @@ impl NotebookView {
     /// Enqueue a save of the notebook's content.
     fn enqueue_content_update(&mut self, ctx: &mut ViewContext<Self>) {
         self.content_is_dirty = true;
-        report_if_error!(self
-            .save_tx
-            .try_send(NotebookUpdateRequestDebounceArg {})
-            .context("Error enqueuing content save"));
+        report_if_error!(
+            self.save_tx
+                .try_send(NotebookUpdateRequestDebounceArg {})
+                .context("Error enqueuing content save")
+        );
         self.active_notebook_data.update(ctx, |data, ctx| {
             // Mark the notebook as saving as soon as there are changes to be saved. It won't be
             // marked as Saved until we get a response from the server.
@@ -883,10 +884,11 @@ impl NotebookView {
     /// Enqueue a save of the notebook's title.
     fn enqueue_title_update(&mut self) {
         self.title_is_dirty = true;
-        report_if_error!(self
-            .save_tx
-            .try_send(NotebookUpdateRequestDebounceArg {})
-            .context("Error enqueuing title save"));
+        report_if_error!(
+            self.save_tx
+                .try_send(NotebookUpdateRequestDebounceArg {})
+                .context("Error enqueuing title save")
+        );
     }
 
     fn handle_input_editor_event(&mut self, event: &EditorViewEvent, ctx: &mut ViewContext<Self>) {
@@ -1113,9 +1115,11 @@ impl NotebookView {
 
     fn apply_font_size_to_setting(&mut self, new_font_size: f32, ctx: &mut ViewContext<Self>) {
         FontSettings::handle(ctx).update(ctx, |font_settings, ctx| {
-            report_if_error!(font_settings
-                .notebook_font_size
-                .set_value(new_font_size, ctx))
+            report_if_error!(
+                font_settings
+                    .notebook_font_size
+                    .set_value(new_font_size, ctx)
+            )
         });
     }
 
@@ -1764,11 +1768,7 @@ impl NotebookView {
         // Load the server's version of the notebook now that the object store has been updated.
         // This will also switch back to edit mode if there isn't an active editor.
         if let Some(notebook) = ObjectStoreModel::as_ref(ctx).get_notebook(&id) {
-            self.load(
-                notebook.clone(),
-                &ZapDriveObjectSettings::default(),
-                ctx,
-            );
+            self.load(notebook.clone(), &ZapDriveObjectSettings::default(), ctx);
         }
         ctx.notify();
     }

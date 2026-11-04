@@ -29,24 +29,24 @@ pub mod grid;
 pub mod image_map;
 pub mod index;
 // Ported from Warp: the block-lifecycle transition coordinator. See `lifecycle/mod.rs`.
+pub mod key_facts;
 pub(in crate::terminal) mod lifecycle;
+pub mod pty_stream_barrier;
+pub mod reply_ledger;
 pub mod secrets;
 pub mod selection;
 pub mod session;
-pub mod terminal_model;
-pub mod pty_stream_barrier;
-pub mod reply_ledger;
 pub mod setup_echo_filter;
-pub mod key_facts;
-pub mod typeahead_handoff;
-pub mod typed_echo;
+pub mod terminal_model;
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_utils;
+pub mod typeahead_handoff;
+pub mod typed_echo;
 
 pub use secrets::{
-    set_user_and_enterprise_secret_regexes, ObfuscateSecrets, RespectObfuscatedSecrets, Secret,
-    SecretHandle,
+    ObfuscateSecrets, RespectObfuscatedSecrets, Secret, SecretHandle,
+    set_user_and_enterprise_secret_regexes,
 };
 pub use warp_terminal::model::{
-    char_or_str, completions, escape_sequences, grid::cell, iterm_image, kitty, mouse, BlockId,
+    BlockId, char_or_str, completions, escape_sequences, grid::cell, iterm_image, kitty, mouse,
 };

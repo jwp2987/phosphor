@@ -4,12 +4,12 @@ use crate::cloud_object::UniquePer;
 use crate::settings::AISettings;
 use crate::{
     cloud_object::{
+        GenericStoredObject, GenericStringObjectFormat, GenericStringObjectUniqueKey,
+        JsonObjectType,
         model::{
             generic_string_model::{GenericStringModel, GenericStringObjectId, StringModel},
             json_model::{JsonModel, JsonSerializer},
         },
-        GenericStoredObject, GenericStringObjectFormat, GenericStringObjectUniqueKey,
-        JsonObjectType,
     },
     settings::{
         AgentModeCommandExecutionPredicate, DEFAULT_COMMAND_EXECUTION_ALLOWLIST,
@@ -45,9 +45,15 @@ pub enum ActionPermission {
 impl ActionPermission {
     pub fn description(&self) -> &'static str {
         match self {
-            ActionPermission::AgentDecides | ActionPermission::Unknown => "The Agent chooses the safest path: acting on its own when confident, and asking for approval when uncertain.",
-            ActionPermission::AlwaysAllow => "Give the Agent full autonomy  — no manual approval ever required.",
-            ActionPermission::AlwaysAsk => "Require explicit approval before the Agent takes any action.",
+            ActionPermission::AgentDecides | ActionPermission::Unknown => {
+                "The Agent chooses the safest path: acting on its own when confident, and asking for approval when uncertain."
+            }
+            ActionPermission::AlwaysAllow => {
+                "Give the Agent full autonomy  — no manual approval ever required."
+            }
+            ActionPermission::AlwaysAsk => {
+                "Require explicit approval before the Agent takes any action."
+            }
         }
     }
 
@@ -81,7 +87,9 @@ impl WriteToPtyPermission {
             WriteToPtyPermission::AskOnFirstWrite => {
                 "The agent will ask for permission the first time it needs to interact with a running command. After that, it will continue automatically for the rest of that command."
             }
-            WriteToPtyPermission::AlwaysAsk => "The agent will always ask for permission to interact with a running command.",
+            WriteToPtyPermission::AlwaysAsk => {
+                "The agent will always ask for permission to interact with a running command."
+            }
             WriteToPtyPermission::Unknown => ActionPermission::Unknown.description(),
         }
     }

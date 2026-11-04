@@ -1,8 +1,8 @@
 use crate::elements::{ChildView, Clipped};
 use crate::{
+    View, ViewHandle,
     elements::{Border, ConstrainedBox, Container, Element},
     ui_components::components::{UiComponent, UiComponentStyles},
-    View, ViewHandle,
 };
 
 pub struct TextInput<T: View> {

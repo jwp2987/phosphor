@@ -27,8 +27,8 @@
 //! ```
 use agent_proto as api;
 
-use super::consts::COMPACTION_BUFFER;
 use super::CompactionConfig;
+use super::consts::COMPACTION_BUFFER;
 
 /// Model token limits — sourced from models.dev metadata or the BYOP provider config.
 #[derive(Debug, Clone, Copy)]

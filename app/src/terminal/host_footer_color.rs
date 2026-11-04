@@ -227,13 +227,15 @@ pub fn resolve_footer_bar_tooltip(
     match resolve_host(session_type, session_hostname, pending_ssh_target) {
         ResolvedHost::Local => None,
         ResolvedHost::Unknown => Some(crate::t!("terminal-host-footer-bar-unknown-host")),
-        ResolvedHost::Named(host) => rules
-            .iter()
-            .find(|rule| rule.pattern.is_match(&host))
-            .map(|rule| match &rule.name {
-                Some(rule_name) => format!("{host} ({rule_name})"),
-                None => host.clone(),
-            }),
+        ResolvedHost::Named(host) => {
+            rules
+                .iter()
+                .find(|rule| rule.pattern.is_match(&host))
+                .map(|rule| match &rule.name {
+                    Some(rule_name) => format!("{host} ({rule_name})"),
+                    None => host.clone(),
+                })
+        }
     }
 }
 

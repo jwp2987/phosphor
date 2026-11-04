@@ -1,5 +1,6 @@
-use crate::ai::mcp::templatable::GalleryData;
+use crate::ToastStack;
 use crate::ai::mcp::MCPServerUpdate;
+use crate::ai::mcp::templatable::GalleryData;
 use crate::modal::Modal;
 use crate::modal::ModalEvent;
 use crate::modal::ModalViewState;
@@ -7,46 +8,45 @@ use crate::server::telemetry::{MCPTemplateInstallationSource, TelemetryEvent};
 use crate::settings::{AISettings, AISettingsChangedEvent};
 use crate::settings_view::mcp_servers_page::InstallOrigin;
 use crate::settings_view::settings_page::{
-    build_toggle_element, render_body_item_label, LocalOnlyIconState, ToggleState,
+    LocalOnlyIconState, ToggleState, build_toggle_element, render_body_item_label,
 };
 use crate::util::links;
 use crate::util::truncation::truncate_from_end;
 use crate::view_components::DismissibleToast;
-use crate::ToastStack;
 
 #[cfg(feature = "local_fs")]
 use crate::ai::mcp::{
+    FileMCPWatcher,
+    FileMCPWatcherEvent,
     // Import events for file-based manager and watcher conditionally
     // since their WASM variants don't export events.
     file_based_manager::FileBasedMCPManagerEvent,
-    FileMCPWatcher,
-    FileMCPWatcherEvent,
 };
 
 use crate::{
     ai::mcp::{
+        FileBasedMCPManager, MCPGalleryManager, MCPProvider, TemplatableMCPServerInstallation,
         gallery::MCPGalleryManagerEvent,
         logs,
         templatable::TemplatableMCPServer,
         templatable_manager::{TemplatableMCPServerManager, TemplatableMCPServerManagerEvent},
-        FileBasedMCPManager, MCPGalleryManager, MCPProvider, TemplatableMCPServerInstallation,
     },
     appearance::Appearance,
     cloud_object::{
-        model::persistence::{ObjectStoreEvent, ObjectStoreModel},
         GenericStringObjectFormat, JsonObjectType,
+        model::persistence::{ObjectStoreEvent, ObjectStoreModel},
     },
     drive::ObjectTypeAndId,
     editor::{EditorView, PropagateAndNoOpNavigationKeys, SingleLineEditorOptions, TextOptions},
     pane_group::Direction,
     search_bar::SearchBar,
     settings_view::mcp_servers::{
+        ServerCardItemId,
         server_card::{
             ServerCardEvent, ServerCardOptions, ServerCardStatus, ServerCardView, TitleChip,
         },
         style,
         update_modal::{UpdateModalBody, UpdateModalBodyEvent},
-        ServerCardItemId,
     },
     ui_components::blended_colors,
     view_components::action_button::{ActionButton, NakedTheme},
@@ -61,8 +61,9 @@ use strum::IntoEnumIterator;
 use uuid::Uuid;
 use warp_core::features::FeatureFlag;
 use warp_core::send_telemetry_from_ctx;
-use warp_core::ui::{appearance::AppearanceEvent, theme::color::internal_colors, Icon};
+use warp_core::ui::{Icon, appearance::AppearanceEvent, theme::color::internal_colors};
 use warpui::{
+    AppContext, Element, Entity, SingletonEntity, TypedActionView, View, ViewContext, ViewHandle,
     elements::{
         Align, Border, ChildView, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment,
         Expanded, Fill, Flex, FormattedTextElement, HighlightedHyperlink, MainAxisAlignment,
@@ -72,7 +73,6 @@ use warpui::{
         components::{Coords, UiComponent, UiComponentStyles},
         switch::SwitchStateHandle,
     },
-    AppContext, Element, Entity, SingletonEntity, TypedActionView, View, ViewContext, ViewHandle,
 };
 
 #[derive(Debug, Clone)]

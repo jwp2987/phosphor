@@ -6,8 +6,8 @@ use string_offset::CharOffset;
 
 use super::point::Point;
 
-use super::words::is_default_word_boundary;
 use super::TextBuffer;
+use super::words::is_default_word_boundary;
 
 /// This enum configures how the WordBoundaries iterator defines a "word"
 #[derive(Clone, Debug)]

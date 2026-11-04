@@ -1,7 +1,7 @@
 use crate::terminal::{
-    find::model::{alt_screen::run_find_on_alt_screen, FindOptions},
-    model::index::Point,
     TerminalModel,
+    find::model::{FindOptions, alt_screen::run_find_on_alt_screen},
+    model::index::Point,
 };
 use crate::view_components::find::FindDirection;
 

@@ -29,8 +29,8 @@ use std::{
     env,
     path::{Path, PathBuf},
 };
-use syn::{parse::Parse, Token};
-use syn::{parse_macro_input, LitStr};
+use syn::{LitStr, parse_macro_input};
+use syn::{Token, parse::Parse};
 use warp_util::assets::{ASSETS_DIR, ASYNC_ASSETS_DIR, BUNDLED_ASSETS_DIR, REMOTE_ASSETS_DIR};
 
 struct MacroArgs {

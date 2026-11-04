@@ -5,13 +5,14 @@ mod handle;
 mod tui;
 
 use crate::{
+    Action, AppContext, CursorInfo, Element, Entity,
     accessibility::{AccessibilityContent, ActionAccessibilityContent},
-    keymap, Action, AppContext, CursorInfo, Element, Entity,
+    keymap,
 };
 
-pub use self::{context::*, handle::*};
 #[cfg(feature = "tui")]
 pub use self::tui::*;
+pub use self::{context::*, handle::*};
 
 use super::EntityId;
 

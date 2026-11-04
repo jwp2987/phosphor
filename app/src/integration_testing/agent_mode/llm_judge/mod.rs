@@ -1,12 +1,10 @@
 pub mod llm_generate;
 
+use agent_proto::{Message, apply_file_diffs_result::success::UpdatedFileContent, message};
 use anyhow::Result;
 use llm_generate::LLMGenerateRequest;
 use reqwest::blocking::Client;
 use serde::Deserialize;
-use agent_proto::{
-    apply_file_diffs_result::success::UpdatedFileContent, message, Message,
-};
 
 use crate::ai::agent::conversation::AIConversation;
 
@@ -70,12 +68,11 @@ impl LLMJudge {
 
 /// Filter out tool call result contents while preserving structure and success/error status
 pub fn filter_tool_call_result(result: &message::ToolCallResult) -> message::ToolCallResult {
-    use message::tool_call_result::Result as ToolResult;
     use agent_proto::*;
+    use message::tool_call_result::Result as ToolResult;
 
     let filtered_result = match &result.result {
-        Some(ToolResult::RunShellCommand(cmd_result)) =>
-        {
+        Some(ToolResult::RunShellCommand(cmd_result)) => {
             #[allow(deprecated)]
             Some(ToolResult::RunShellCommand(RunShellCommandResult {
                 command: cmd_result.command.clone(),

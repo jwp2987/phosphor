@@ -15,7 +15,7 @@ pub use view::*;
 pub use window::*;
 
 use crate::platform::{self, FullscreenState, WindowBounds, WindowStyle};
-use crate::{keymap, Element};
+use crate::{Element, keymap};
 use anyhow::Error;
 
 use crate::rendering::OnGPUDeviceSelected;
@@ -140,8 +140,7 @@ pub type OptionalPlatformWindow = Option<Rc<dyn platform::Window>>;
 type ActionCallback =
     dyn FnMut(&mut dyn Any, &dyn Any, &mut AppContext, WindowId, EntityId) -> bool;
 
-type TypedActionCallback =
-    dyn FnMut(&mut dyn Any, &dyn Any, &mut AppContext, WindowId, EntityId);
+type TypedActionCallback = dyn FnMut(&mut dyn Any, &dyn Any, &mut AppContext, WindowId, EntityId);
 
 type GlobalActionCallback =
     dyn FnMut(&dyn Any, &'static std::panic::Location<'static>, &mut AppContext);

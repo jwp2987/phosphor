@@ -10,10 +10,10 @@
 //! directly, and the actual side effect on the client is triggered when the
 //! UI/Terminal listens for the corresponding ToolCall message.
 
+use agent_proto as api;
 use anyhow::Result;
 use serde::Deserialize;
-use serde_json::{json, Value};
-use agent_proto as api;
+use serde_json::{Value, json};
 
 use super::OpenAiTool;
 

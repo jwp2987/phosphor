@@ -23,6 +23,7 @@ use warpui::elements::Clipped;
 use warpui::elements::FormattedTextElement;
 use warpui::fonts::FamilyId;
 use warpui::{
+    AppContext, Element, EventContext, SingletonEntity,
     elements::{
         Border, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Empty, Flex,
         Hoverable, MainAxisAlignment, MouseStateHandle, ParentElement, Radius, Shrinkable,
@@ -31,7 +32,6 @@ use warpui::{
     keymap::Keystroke,
     platform::Cursor,
     ui_components::components::{UiComponent, UiComponentStyles},
-    AppContext, Element, EventContext, SingletonEntity,
 };
 
 use super::inline_action_header::HeaderConfig;

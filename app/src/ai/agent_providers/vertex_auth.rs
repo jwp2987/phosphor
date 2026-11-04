@@ -182,7 +182,11 @@ fn is_plausible_service_account_email(email: &str) -> bool {
     let Some((local, domain)) = email.split_once('@') else {
         return false;
     };
-    !local.is_empty() && !domain.is_empty() && domain.contains('.') && !domain.starts_with('.') && !domain.ends_with('.')
+    !local.is_empty()
+        && !domain.is_empty()
+        && domain.contains('.')
+        && !domain.starts_with('.')
+        && !domain.ends_with('.')
 }
 
 fn cached_token(credential: &str) -> Option<String> {
@@ -462,7 +466,9 @@ mod service_account_email_tests {
     fn rejects_embedded_control_and_whitespace_characters() {
         // The concrete risk this guards against: a value that would smuggle extra bytes into
         // the `gcloud --impersonate-service-account=<value>` subprocess argument.
-        assert!(!is_plausible_service_account_email("sa@example.com\n--verbosity=debug"));
+        assert!(!is_plausible_service_account_email(
+            "sa@example.com\n--verbosity=debug"
+        ));
         assert!(!is_plausible_service_account_email("sa@example.com\r"));
         assert!(!is_plausible_service_account_email("sa @example.com"));
         assert!(!is_plausible_service_account_email("sa@exa mple.com"));
@@ -614,7 +620,10 @@ mod tests {
             "invalid Vertex impersonation service-account email \"nope\" — expected the form \
              name@project-id.iam.gserviceaccount.com",
         ] {
-            assert!(!is_reauth_required(err), "should not offer login for: {err}");
+            assert!(
+                !is_reauth_required(err),
+                "should not offer login for: {err}"
+            );
         }
     }
 

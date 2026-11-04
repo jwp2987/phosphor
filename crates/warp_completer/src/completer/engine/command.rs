@@ -1,11 +1,11 @@
 use itertools::Itertools;
 
 use crate::completer::{
+    TopLevelCommandCaseSensitivity,
     context::CompletionContext,
     engine, get_path_separators,
     matchers::MatchStrategy,
     suggest::{MatchedSuggestion, Priority, Suggestion, SuggestionType},
-    TopLevelCommandCaseSensitivity,
 };
 use crate::parsers::ParsedToken;
 
@@ -97,23 +97,22 @@ fn sorted_top_level_commands(
 
 /// Return a top-level command's `Suggestion`
 fn command_suggestion(command: &str, context: &dyn CompletionContext) -> Option<Suggestion> {
-    let command_suggestion =
-        context
-            .command_registry()
-            .signature(command)
-            .map(|signature| {
+    let command_suggestion = context
+        .command_registry()
+        .signature(command)
+        .map(|signature| {
             let case_sensitivity = if signature.parser_directives.always_case_insensitive {
                 TopLevelCommandCaseSensitivity::CaseInsensitive
             } else {
                 context.command_case_sensitivity()
             };
-                Suggestion::with_same_display_and_replacement(
-                    signature.name.clone(),
-                    signature.description.as_ref().cloned(),
-                    SuggestionType::Command(case_sensitivity),
-                    signature.priority.into(),
-                )
-            });
+            Suggestion::with_same_display_and_replacement(
+                signature.name.clone(),
+                signature.description.as_ref().cloned(),
+                SuggestionType::Command(case_sensitivity),
+                signature.priority.into(),
+            )
+        });
 
     command_suggestion
         .or_else(|| alias_suggestion(command, context))

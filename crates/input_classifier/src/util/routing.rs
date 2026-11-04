@@ -24,8 +24,8 @@ use natural_language_detection::is_ordinary_english_word;
 use warp_completer::ParsedTokensSnapshot;
 
 use super::{
-    AMBIGUOUS_LONE_HEADS, FREE_TEXT_ARG_HEADS, QUESTION_HEADS,
-    REQUEST_OPENER_HEADS, SHELL_WORD_TERMINATORS, STRONG_PROSE_WORDS, ShellWord, WRAPPER_HEADS,
+    AMBIGUOUS_LONE_HEADS, FREE_TEXT_ARG_HEADS, QUESTION_HEADS, REQUEST_OPENER_HEADS,
+    SHELL_WORD_TERMINATORS, STRONG_PROSE_WORDS, ShellWord, WRAPPER_HEADS,
     buffer_has_prose_colon_shape, effective_head_chain, effective_head_index,
     ends_in_sentence_punctuation, has_clear_shell_structure_for_unknown_head,
     has_no_prose_evidence, has_prose_veto_word, is_agent_follow_up_input, is_data_shaped_word,

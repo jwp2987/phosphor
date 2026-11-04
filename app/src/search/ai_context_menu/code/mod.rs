@@ -30,4 +30,3 @@ pub fn is_code_symbols_indexing(app: &AppContext) -> bool {
         false
     }
 }
-

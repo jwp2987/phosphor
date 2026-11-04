@@ -2,10 +2,10 @@ use std::ops::Range;
 
 use crate::platform::keyboard::KeyCode;
 use crate::{
+    EventContext,
     elements::{Point, ZIndex},
     keymap::Keystroke,
     zoom::{Scale, ZoomFactor},
-    EventContext,
 };
 use pathfinder_geometry::{rect::RectF, vector::Vector2F};
 

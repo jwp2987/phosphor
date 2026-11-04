@@ -6,9 +6,9 @@ use std::fmt::{Display, Formatter};
 use std::sync::OnceLock;
 
 #[cfg(target_family = "wasm")]
-use warpui::platform::wasm;
-#[cfg(target_family = "wasm")]
 use warpui::platform::OperatingSystem;
+#[cfg(target_family = "wasm")]
+use warpui::platform::wasm;
 
 static OS_INFO: OnceLock<Result<OperatingSystemInfo, OperatingSystemInfoError>> = OnceLock::new();
 

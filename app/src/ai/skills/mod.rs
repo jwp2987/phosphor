@@ -134,7 +134,7 @@ impl SkillPathQuery for PathBuf {
 
 mod resolve_skill_spec;
 pub use resolve_skill_spec::{
-    clone_repo_for_skill, resolve_skill_spec, ResolveSkillError, ResolvedSkill,
+    ResolveSkillError, ResolvedSkill, clone_repo_for_skill, resolve_skill_spec,
 };
 
 // `global_skills.rs` (pin's `filter_skills_by_spec`) was removed 2026-08-10 (#487):

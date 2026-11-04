@@ -20,10 +20,10 @@ use warpui_core::elements::tui::{
 use warpui_core::{AppContext, ViewContext};
 
 use super::{
-    CTRL_C_EXIT_HINT, CTRL_C_KILL_CHILD_HINT, ConversationRestoreState,
-    LOADING_CONVERSATION_HINT, RUNNING_COMMAND_DETACH_HINT, SHELL_MODE_HINT,
-    TuiConversationRestoreOrigin, TuiTerminalSessionAction, TuiTerminalSessionView,
-    render_mcp_install_footer, render_mcp_menu_footer,
+    CTRL_C_EXIT_HINT, CTRL_C_KILL_CHILD_HINT, ConversationRestoreState, LOADING_CONVERSATION_HINT,
+    RUNNING_COMMAND_DETACH_HINT, SHELL_MODE_HINT, TuiConversationRestoreOrigin,
+    TuiTerminalSessionAction, TuiTerminalSessionView, render_mcp_install_footer,
+    render_mcp_menu_footer,
 };
 use crate::transient_hint::TransientHintTone;
 use crate::tui_builder::TuiUiBuilder;
@@ -684,7 +684,8 @@ impl TuiTerminalSessionView {
         // remote repos through a push receiver, so the previous narrowing to
         // `LocalOrRemotePath::Local` (and the early return for remote repos)
         // is gone.
-        match GitRepoModels::handle(ctx).update(ctx, |models, ctx| models.subscribe(&repo_path, ctx))
+        match GitRepoModels::handle(ctx)
+            .update(ctx, |models, ctx| models.subscribe(&repo_path, ctx))
         {
             Ok(handle) => {
                 ctx.subscribe_to_model(&handle, |_, _, _, ctx| ctx.notify());

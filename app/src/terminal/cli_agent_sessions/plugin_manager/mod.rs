@@ -13,9 +13,9 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 
 use crate::features::FeatureFlag;
+use crate::terminal::CLIAgent;
 use crate::terminal::model::session::LocalCommandExecutor;
 use crate::terminal::shell::ShellType;
-use crate::terminal::CLIAgent;
 use claude::ClaudeCodePluginManager;
 use codex::CodexPluginManager;
 use deepseek::DeepSeekPluginManager;

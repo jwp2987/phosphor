@@ -7,10 +7,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use sha2::{Digest, Sha256};
-use toml_edit::{value, Array, DocumentMut, InlineTable, Item, Table, Value};
+use toml_edit::{Array, DocumentMut, InlineTable, Item, Table, Value, value};
 
-use super::background_writer::{BackgroundWriter, FailureFn, WriteFn, WRITE_DEBOUNCE};
 use super::Error;
+use super::background_writer::{BackgroundWriter, FailureFn, WRITE_DEBOUNCE, WriteFn};
 
 /// A settings file write (temp file + fsync + rename) slower than this is a visible stall (#1146).
 const SETTINGS_WRITE_SLOW: std::time::Duration = std::time::Duration::from_millis(50);

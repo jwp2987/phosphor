@@ -7,12 +7,12 @@ use std::{
 };
 
 #[cfg(feature = "local_fs")]
-use futures::{future::OptionFuture, FutureExt as _};
+use futures::{FutureExt as _, future::OptionFuture};
 use warpui::{Entity, ModelContext, ModelHandle, SingletonEntity, WeakModelHandle};
 
 use warp_util::standardized_path::StandardizedPath;
 
-use crate::{repository::SubscriberId, RepoMetadataError, Repository};
+use crate::{RepoMetadataError, Repository, repository::SubscriberId};
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "local_fs")] {
@@ -827,29 +827,23 @@ impl Task {
             Task::Scan {
                 repository,
                 subscriber_id,
-            } => {
-                match repository.upgrade(ctx) { Some(repository) => {
-                    repository.update(ctx, |repository, ctx| {
-                        repository.scan_subscriber(subscriber_id, ctx)
-                    })
-                } _ => {
-                    None
-                }}
-            }
+            } => match repository.upgrade(ctx) {
+                Some(repository) => repository.update(ctx, |repository, ctx| {
+                    repository.scan_subscriber(subscriber_id, ctx)
+                }),
+                _ => None,
+            },
             #[cfg(feature = "local_fs")]
             Task::Update {
                 repository,
                 subscriber_id,
                 update,
-            } => {
-                match repository.upgrade(ctx) { Some(repository) => {
-                    repository.update(ctx, |repository, ctx| {
-                        repository.notify_subscriber(subscriber_id, &update, ctx)
-                    })
-                } _ => {
-                    None
-                }}
-            }
+            } => match repository.upgrade(ctx) {
+                Some(repository) => repository.update(ctx, |repository, ctx| {
+                    repository.notify_subscriber(subscriber_id, &update, ctx)
+                }),
+                _ => None,
+            },
         }
     }
 }

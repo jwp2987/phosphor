@@ -3,14 +3,14 @@
 
 use string_offset::ByteOffset;
 use warp_terminal::model::{
-    grid::{
-        cell::{self, LineLength as _},
-        Dimensions as _,
-    },
     Point, VisiblePoint, VisibleRow,
+    grid::{
+        Dimensions as _,
+        cell::{self, LineLength as _},
+    },
 };
 
-use crate::terminal::{model::grid::Cursor, SizeInfo};
+use crate::terminal::{SizeInfo, model::grid::Cursor};
 
 use super::{FullGridClearBehavior, GridHandler};
 

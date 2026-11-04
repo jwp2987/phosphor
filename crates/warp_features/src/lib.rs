@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
-use enum_iterator::{cardinality, Sequence};
+use enum_iterator::{Sequence, cardinality};
 
 #[cfg(feature = "test-util")]
 pub use overrides::{get_overrides, set_overrides};
@@ -12,7 +12,6 @@ pub enum FeatureFlag {
     DebugMode,
     Autoupdate,
     RecordAppActiveEvents,
-
 
     RuntimeFeatureFlags,
 
@@ -32,7 +31,6 @@ pub enum FeatureFlag {
     /// menu bar.
     ToggleBootstrapBlock,
 
-
     /// Ligature Support in the Editor and Grid
     Ligatures,
 
@@ -44,8 +42,6 @@ pub enum FeatureFlag {
     /// Used to gate an experiment we're doing on WarpDev ONLY
     /// to get a sense of PTY throughput over time.
     RecordPtyThroughput,
-
-
 
     /// Defaults Windows builds to the high-performance GPU with Vulkan as the preferred backend.
     WindowsHighPerformanceGpuDefault,
@@ -93,7 +89,6 @@ pub enum FeatureFlag {
 
     /// Enable dynamic enum parameter types for workflow arguments
     DynamicWorkflowEnums,
-
 
     /// Enables receiving shared Zap Drive objects.
     SharedWithMe,
@@ -148,7 +143,6 @@ pub enum FeatureFlag {
     SshDragAndDrop,
     DragTabsToWindows,
 
-
     /// Enables cycling through the next command suggestions with down arrow.
     CycleNextCommandSuggestion,
 
@@ -166,7 +160,6 @@ pub enum FeatureFlag {
 
     /// Enables partial next command suggestions with a prefix.
     PartialNextCommandSuggestions,
-
 
     /// Enables iTerm image rendering
     ITermImages,
@@ -188,7 +181,6 @@ pub enum FeatureFlag {
 
     /// Enables support for Zap Packs.
     WarpPacks,
-
 
     /// Enables the XML output system prompt for the primary (terminal) agent in Agent Mode.
     AgentModePrimaryXML,
@@ -1001,7 +993,9 @@ impl FeatureFlag {
         // Allow calling this in integration tests because we sometimes use it in the app
         // during flows that integration tests cover.
         if cfg!(test) && cfg!(not(feature = "integration_tests")) {
-            panic!("Tried to globally enable {self:?} in a test. Use FeatureFlag::{self:?}.override_enabled instead");
+            panic!(
+                "Tried to globally enable {self:?} in a test. Use FeatureFlag::{self:?}.override_enabled instead"
+            );
         }
         FLAG_STATES[self as usize].store(enabled, Ordering::Relaxed);
     }
@@ -1045,9 +1039,15 @@ impl FeatureFlag {
             BlocklistMarkdownTableRendering => {
                 Some("Enables rendering markdown tables inline in AI block list responses.")
             }
-            MarkdownTables => Some("Enables rendering and interaction support for markdown tables in notebooks."),
-            SettingsFile => Some("Enables configuring Phosphor via a user-editable `settings.toml` file, with hot reload and error reporting for invalid values."),
-            GitOperationsInCodeReview => Some("Enables commit, push, and create-PR actions directly from the code review panel."),
+            MarkdownTables => {
+                Some("Enables rendering and interaction support for markdown tables in notebooks.")
+            }
+            SettingsFile => Some(
+                "Enables configuring Phosphor via a user-editable `settings.toml` file, with hot reload and error reporting for invalid values.",
+            ),
+            GitOperationsInCodeReview => Some(
+                "Enables commit, push, and create-PR actions directly from the code review panel.",
+            ),
             _ => None,
         }
     }

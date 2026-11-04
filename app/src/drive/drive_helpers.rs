@@ -3,8 +3,8 @@ use warpui::{SingletonEntity, ViewContext};
 use crate::{
     auth::{AuthManager, AuthStateProvider},
     cloud_object::{
-        model::persistence::ObjectStoreModel, GenericStringObjectFormat, JsonObjectType,
-        ObjectType, Space,
+        GenericStringObjectFormat, JsonObjectType, ObjectType, Space,
+        model::persistence::ObjectStoreModel,
     },
 };
 

@@ -21,9 +21,9 @@ use crate::settings_view::SettingsSection;
 use crate::tab::SelectedTabColor;
 use crate::terminal::ShellLaunchData;
 use crate::themes::theme::{AnsiColorIdentifier, ThemeKind};
+use crate::workspace::WorkspaceRegistry;
 use crate::workspace::tab_group::TabGroupId;
 use crate::workspace::view::left_panel::ToolPanelView;
-use crate::workspace::WorkspaceRegistry;
 use warpui::SingletonEntity as _;
 
 #[derive(Debug, Clone, PartialEq)]

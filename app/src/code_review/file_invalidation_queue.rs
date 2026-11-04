@@ -34,9 +34,14 @@ impl SyncQueueTaskTrait for FileInvalidationTask {
         let mode = self.mode.clone();
         let merge_base = self.merge_base.clone();
         Box::pin(async move {
-            LocalDiffStateModel::retrieve_diff_state(&repo_path, &file, &mode, merge_base.as_deref())
-                .await
-                .map_err(FileInvalidationError::from)
+            LocalDiffStateModel::retrieve_diff_state(
+                &repo_path,
+                &file,
+                &mode,
+                merge_base.as_deref(),
+            )
+            .await
+            .map_err(FileInvalidationError::from)
         })
     }
 }

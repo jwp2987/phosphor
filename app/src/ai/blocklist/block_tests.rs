@@ -347,7 +347,8 @@ fn ask_user_question_speedbump_shown_latch_starts_unset() {
     // so a seeded-but-never-shown speedbump must leave the latch clear.
     assert!(!*shown.lock());
 
-    if let AutonomySettingSpeedbump::ShouldShowForAskUserQuestion { shown: latch, .. } = &speedbump {
+    if let AutonomySettingSpeedbump::ShouldShowForAskUserQuestion { shown: latch, .. } = &speedbump
+    {
         *latch.lock() = true;
     }
     assert!(*shown.lock());

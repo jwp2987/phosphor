@@ -16,9 +16,9 @@ use warpui::{Entity, SingletonEntity};
 use crate::util::path::file_exists_and_is_executable;
 
 use super::{
+    ShellLaunchData,
     session_settings::{NewSessionShell, StartupShell},
     shell::ShellType,
-    ShellLaunchData,
 };
 
 #[derive(Debug, PartialEq, Eq, Hash)]

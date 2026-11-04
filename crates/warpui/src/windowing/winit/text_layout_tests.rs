@@ -1,9 +1,9 @@
 use super::*;
-use crate::fonts::{collect_glyph_indices, init_fonts, Properties};
+use crate::fonts::{Properties, collect_glyph_indices, init_fonts};
 use crate::platform::FontDB as _;
 use crate::{
     elements::DEFAULT_UI_LINE_HEIGHT_RATIO,
-    text_layout::{TextStyle, DEFAULT_TOP_BOTTOM_RATIO},
+    text_layout::{DEFAULT_TOP_BOTTOM_RATIO, TextStyle},
 };
 use anyhow::Result;
 
@@ -541,10 +541,12 @@ fn test_layout_text_first_line_indent_large_bidirectional() -> Result<()> {
 
     // The first line is left entirely blank since no glyphs fit on it.
     assert_eq!(overflow_indent_frame.lines().len(), 5);
-    assert!(collect_glyph_indices(&overflow_indent_frame)
-        .first()
-        .unwrap()
-        .is_empty(),);
+    assert!(
+        collect_glyph_indices(&overflow_indent_frame)
+            .first()
+            .unwrap()
+            .is_empty(),
+    );
     assert!(first_line_bounded(
         &overflow_indent_frame,
         FRAME_WIDTH + 5.,
@@ -566,10 +568,12 @@ fn test_layout_text_first_line_indent_large_bidirectional() -> Result<()> {
 
     // The first line is left entirely blank since no glyphs fit on it.
     assert_eq!(big_indent_frame.lines().len(), 5);
-    assert!(collect_glyph_indices(&big_indent_frame)
-        .first()
-        .unwrap()
-        .is_empty(),);
+    assert!(
+        collect_glyph_indices(&big_indent_frame)
+            .first()
+            .unwrap()
+            .is_empty(),
+    );
     assert!(first_line_bounded(
         &big_indent_frame,
         FRAME_WIDTH - 0.1,
@@ -1042,14 +1046,29 @@ fn test_capped_word_line_positions_reach_true_text_end() {
     let lines = frame.lines();
     assert!(lines.len() > 1);
     for pair in lines.windows(2).take(lines.len().saturating_sub(2)) {
-        assert_eq!(pair[0].end_index(), pair[1].first_index(), "rows must be contiguous");
+        assert_eq!(
+            pair[0].end_index(),
+            pair[1].first_index(),
+            "rows must be contiguous"
+        );
     }
     let last = lines.last().unwrap();
     assert_eq!(last.end_index(), n, "End on the last row");
-    assert_eq!(last.last_glyph().unwrap().char_index() + 1, n, "Down/clamp column");
-    assert_eq!(last.caret_index_for_x_unbounded(last.width + 50.), n, "click past the end");
+    assert_eq!(
+        last.last_glyph().unwrap().char_index() + 1,
+        n,
+        "Down/clamp column"
+    );
+    assert_eq!(
+        last.caret_index_for_x_unbounded(last.width + 50.),
+        n,
+        "click past the end"
+    );
     let home = last.first_index();
-    assert!(home > 0 && home < cosmic_text::MAX_SHAPED_WORD_BYTES, "Home {home}");
+    assert!(
+        home > 0 && home < cosmic_text::MAX_SHAPED_WORD_BYTES,
+        "Home {home}"
+    );
 }
 
 /// #940: text after the capped word on the same paragraph keeps true offsets.
@@ -1074,10 +1093,18 @@ fn test_capped_first_line_does_not_shift_following_lines() {
     let frame = frame_wrapped(&text, 400.);
     let lines = frame.lines();
     let last = lines.last().unwrap();
-    assert_eq!(last.first_index(), n + 1, "second paragraph starts after the newline");
+    assert_eq!(
+        last.first_index(),
+        n + 1,
+        "second paragraph starts after the newline"
+    );
     assert_eq!(last.end_index(), n + 1 + "second".len());
     let before = &lines[lines.len() - 2];
-    assert_eq!(before.end_index(), n + 1, "first paragraph's last row ends at the newline");
+    assert_eq!(
+        before.end_index(),
+        n + 1,
+        "first paragraph's last row ends at the newline"
+    );
 }
 
 /// #940: the single-line path (`layout_line`, no soft wrap; used for agent query text) is bounded
@@ -1110,7 +1137,10 @@ fn test_layout_line_of_huge_word_is_bounded_and_ends_at_text_end() {
 
     let glyphs: usize = line.runs.iter().map(|run| run.glyphs.len()).sum();
     let cap = cosmic_text::MAX_SHAPED_WORD_BYTES;
-    assert!(glyphs > 0 && glyphs <= cap + 1, "{glyphs} glyphs, cap {cap}");
+    assert!(
+        glyphs > 0 && glyphs <= cap + 1,
+        "{glyphs} glyphs, cap {cap}"
+    );
     // Painting walks only `runs[*].glyphs` and `caret_positions`, so both bound the paint cost.
     assert!(line.caret_positions.len() <= cap + 1);
     assert_eq!(line.end_index(), n);

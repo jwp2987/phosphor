@@ -1,5 +1,5 @@
-use super::icons::{Icon, ICON_DIMENSIONS};
-use super::{blended_colors, BORDER_RADIUS};
+use super::icons::{ICON_DIMENSIONS, Icon};
+use super::{BORDER_RADIUS, blended_colors};
 use crate::appearance::Appearance;
 use crate::themes::theme::Fill;
 use crate::themes::theme::WarpTheme;

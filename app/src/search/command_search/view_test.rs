@@ -1,4 +1,4 @@
-use warpui::{platform::WindowStyle, App};
+use warpui::{App, platform::WindowStyle};
 
 use crate::{
     auth::AuthManager, cloud_object::model::persistence::ObjectStoreModel,

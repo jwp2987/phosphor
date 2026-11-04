@@ -1,11 +1,11 @@
 use serde::{Deserialize, Serialize};
 
 use crate::cloud_object::{
+    GenericStoredObject, GenericStringObjectFormat, GenericStringObjectUniqueKey, JsonObjectType,
     model::{
         generic_string_model::{GenericStringModel, GenericStringObjectId, StringModel},
         json_model::{JsonModel, JsonSerializer},
     },
-    GenericStoredObject, GenericStringObjectFormat, GenericStringObjectUniqueKey, JsonObjectType,
 };
 
 /// Data model for a workflow enum, one type of argument that can be inserted into a workflow

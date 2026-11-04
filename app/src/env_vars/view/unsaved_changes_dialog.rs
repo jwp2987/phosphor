@@ -1,5 +1,6 @@
 use warp_core::ui::appearance::Appearance;
 use warpui::{
+    Element,
     elements::{Container, MouseStateHandle},
     fonts::Weight,
     platform::Cursor,
@@ -7,10 +8,9 @@ use warpui::{
         button::ButtonVariant,
         components::{Coords, UiComponent, UiComponentStyles},
     },
-    Element,
 };
 
-use crate::ui_components::dialog::{dialog_styles, Dialog};
+use crate::ui_components::dialog::{Dialog, dialog_styles};
 
 use super::env_var_collection::{EnvVarCollectionAction, EnvVarCollectionView};
 

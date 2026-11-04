@@ -6,10 +6,12 @@ use warp_core::{
     features::FeatureFlag,
     ui::{
         appearance::Appearance,
-        theme::{color::internal_colors::neutral_4, Fill},
+        theme::{Fill, color::internal_colors::neutral_4},
     },
 };
 use warpui::{
+    AppContext, Element, Entity, SingletonEntity as _, TypedActionView, View, ViewContext,
+    ViewHandle,
     elements::{
         ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Dismiss, Flex, Hoverable,
         MainAxisAlignment, MainAxisSize, MouseState, MouseStateHandle, ParentElement, Radius,
@@ -18,12 +20,11 @@ use warpui::{
         button::{ButtonVariant, TextAndIcon, TextAndIconAlignment},
         components::{Coords, UiComponent, UiComponentStyles},
     },
-    AppContext, Element, Entity, SingletonEntity as _, TypedActionView, View, ViewContext,
-    ViewHandle,
 };
 
 use crate::{
-    cloud_object::{model::persistence::ObjectStoreModel, StoredObject},
+    TelemetryEvent,
+    cloud_object::{StoredObject, model::persistence::ObjectStoreModel},
     editor::{
         EditOrigin, EditorView, Event as EditorEvent, PropagateAndNoOpNavigationKeys,
         SingleLineEditorOptions, TextOptions, ValidInputType,
@@ -32,7 +33,6 @@ use crate::{
     server::{ids::SyncId, telemetry::TelemetrySpace},
     ui_components::{buttons::icon_button, icons::Icon},
     workflows::aliases::{WorkflowAlias, WorkflowAliases},
-    TelemetryEvent,
 };
 
 /// Width of the alias name editor.

@@ -39,7 +39,7 @@
 //! before they would exercise the env-var path at all.
 
 use serde::{Deserialize, Serialize};
-use settings::{macros::define_settings_group, SupportedPlatforms, SyncToCloud};
+use settings::{SupportedPlatforms, SyncToCloud, macros::define_settings_group};
 
 /// The user-visible proxy mode.
 ///

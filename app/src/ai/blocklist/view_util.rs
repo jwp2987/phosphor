@@ -5,6 +5,7 @@ use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::vec2f;
 use warp_core::ui::appearance::Appearance;
 use warpui::{
+    AppContext, Element, EntityId, EventContext, SingletonEntity,
     elements::{
         ConstrainedBox, Container, CrossAxisAlignment, Flex, MainAxisAlignment, MainAxisSize,
         MouseStateHandle, ParentElement,
@@ -15,7 +16,6 @@ use warpui::{
         components::{UiComponent, UiComponentStyles},
         text::Span,
     },
-    AppContext, Element, EntityId, EventContext, SingletonEntity,
 };
 
 use crate::{
@@ -290,10 +290,12 @@ where
 {
     let theme = appearance.theme();
     let font_color = theme.foreground().into_solid();
-    let mut label_children = vec![ConstrainedBox::new(icon.to_warpui_icon(color).finish())
-        .with_width(PROVIDER_BUTTON_ICON_SIZE)
-        .with_height(PROVIDER_BUTTON_ICON_SIZE)
-        .finish()];
+    let mut label_children = vec![
+        ConstrainedBox::new(icon.to_warpui_icon(color).finish())
+            .with_width(PROVIDER_BUTTON_ICON_SIZE)
+            .with_height(PROVIDER_BUTTON_ICON_SIZE)
+            .finish(),
+    ];
     label_children.push(
         Container::new(
             Span::new(

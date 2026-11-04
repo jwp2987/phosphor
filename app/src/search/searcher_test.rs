@@ -1,13 +1,13 @@
 use crate::define_search_schema;
 use crate::search::searcher::{
     AsyncSearcher, CustomTokenizer, FullTextSearchDocumentEntry, FullTextSearchFieldValue,
-    MIN_MEMORY_BUDGET, PendingRebuild, ProducerState, QueuedItem, SearchDocumentEntry, SearchSchemaConfig,
-    SearcherEvent, SearcherProducerState, SimpleFullTextSearcher, SEARCH_IDLE_TIMEOUT, idle_deadline,
-    merge_with_rebuild,
+    MIN_MEMORY_BUDGET, PendingRebuild, ProducerState, QueuedItem, SEARCH_IDLE_TIMEOUT,
+    SearchDocumentEntry, SearchSchemaConfig, SearcherEvent, SearcherProducerState,
+    SimpleFullTextSearcher, idle_deadline, merge_with_rebuild,
 };
+use instant::Instant;
 use itertools::Itertools;
 use std::sync::Arc;
-use instant::Instant;
 use std::time::Duration;
 use tantivy::tokenizer::{TextAnalyzer, Token};
 use warpui::r#async::executor::Background;

@@ -2,11 +2,11 @@ mod convert;
 
 use std::{fmt::Display, ops::Range, time::SystemTime};
 
+use agent_proto::apply_file_diffs_result::success::UpdatedFileContent;
 use chrono::{DateTime, Local};
 use itertools::Itertools as _;
 use serde::{Deserialize, Serialize};
 use warp_core::command::ExitCode;
-use agent_proto::apply_file_diffs_result::success::UpdatedFileContent;
 use warp_terminal::model::BlockId;
 
 use crate::{

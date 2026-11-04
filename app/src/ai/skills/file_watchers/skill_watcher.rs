@@ -10,30 +10,30 @@ use super::{
     },
     utils::{
         find_local_project_skill_files_on_filesystem, find_project_skill_files_in_tree,
-        is_home_provider_path, is_home_skill_directory, is_skill_file, read_skills_from_directories,
-        read_skills_from_files,
+        is_home_provider_path, is_home_skill_directory, is_skill_file,
+        read_skills_from_directories, read_skills_from_files,
     },
 };
 use watcher::{BulkFilesystemWatcherEvent, HomeDirectoryWatcher, HomeDirectoryWatcherEvent};
 
 use crate::ai::remote_context_files::{
-    read_remote_text_file_contents, REMOTE_CONTEXT_MAX_BATCH_BYTES, REMOTE_CONTEXT_MAX_FILE_BYTES,
+    REMOTE_CONTEXT_MAX_BATCH_BYTES, REMOTE_CONTEXT_MAX_FILE_BYTES, read_remote_text_file_contents,
 };
 use crate::warp_managed_paths_watcher::{
-    filter_repository_update_by_prefix, warp_managed_skill_dirs, WarpManagedPathsWatcher,
-    WarpManagedPathsWatcherEvent,
+    WarpManagedPathsWatcher, WarpManagedPathsWatcherEvent, filter_repository_update_by_prefix,
+    warp_managed_skill_dirs,
 };
 use ai::skills::{
-    get_provider_for_path, home_skills_path, parse_skill, parse_skill_content_at_location,
-    ParsedSkill, SkillProvider, SkillScope, SKILL_PROVIDER_DEFINITIONS,
+    ParsedSkill, SKILL_PROVIDER_DEFINITIONS, SkillProvider, SkillScope, get_provider_for_path,
+    home_skills_path, parse_skill, parse_skill_content_at_location,
 };
 use async_channel::Sender;
 use futures::future::BoxFuture;
 use repo_metadata::{
-    repositories::DetectedRepositories,
-    repository::{Repository, SubscriberId},
     DirectoryWatcher, RepoMetadataModel, RepositoryIdentifier, RepositoryUpdate,
     RepositoryWatchMode,
+    repositories::DetectedRepositories,
+    repository::{Repository, SubscriberId},
 };
 use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warpui::{AppContext, Entity, ModelContext, ModelHandle, SingletonEntity};
@@ -590,7 +590,11 @@ impl SkillWatcher {
     }
 
     /// Handles incremental updates from a home provider directory watcher (e.g. `~/.agents`).
-    fn handle_repository_update(&mut self, update: &RepositoryUpdate, ctx: &mut ModelContext<Self>) {
+    fn handle_repository_update(
+        &mut self,
+        update: &RepositoryUpdate,
+        ctx: &mut ModelContext<Self>,
+    ) {
         let mut home_path_additions = HashSet::new();
         let mut deleted_paths = Vec::new();
 
@@ -789,8 +793,8 @@ impl SkillWatcher {
                 message_tx: self.repository_message_tx.clone(),
             });
             let start = repo_handle.update(ctx, |repo, ctx| {
-            repo.start_watching(RepositoryWatchMode::FilesystemOnly, subscriber, ctx)
-        });
+                repo.start_watching(RepositoryWatchMode::FilesystemOnly, subscriber, ctx)
+            });
             let subscriber_id = start.subscriber_id;
             self.symlink_target_watchers
                 .insert(canonical_dir.clone(), (repo_handle.clone(), subscriber_id));

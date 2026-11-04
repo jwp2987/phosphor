@@ -1,4 +1,4 @@
-use super::{elements::Axis, Event};
+use super::{Event, elements::Axis};
 use crate::assets::asset_cache::AssetHandle;
 use crate::elements::{DropTargetPosition, Selection};
 
@@ -9,17 +9,17 @@ pub mod tui;
 use crate::fonts;
 use crate::zoom::Scale;
 use crate::{
+    Action, AppContext, ClipBounds, EntityId, EntityIdMap, EntityIdSet, TaskId, View, ViewHandle,
+    WindowId, WindowInvalidation,
     elements::Point,
     event::DispatchedEvent,
     fonts::Cache as FontCache,
     platform::Cursor,
     scene::{Scene, ZIndex},
     text_layout::LayoutCache,
-    Action, AppContext, ClipBounds, EntityId, EntityIdMap, EntityIdSet, TaskId, View, ViewHandle,
-    WindowId, WindowInvalidation,
 };
 use instant::Instant;
-use pathfinder_geometry::vector::{vec2f, Vector2F};
+use pathfinder_geometry::vector::{Vector2F, vec2f};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::{
     any::Any,
@@ -307,7 +307,9 @@ impl<'a> EventContext<'a> {
 
     /// Returns an iterator of `DropTargetPosition`s. Used to determine if a draggable element
     /// was dropped on a `DropTarget`.
-    pub(crate) fn drop_target_data(&self) -> impl Iterator<Item = DropTargetPosition> + 'a + use<'a> {
+    pub(crate) fn drop_target_data(
+        &self,
+    ) -> impl Iterator<Item = DropTargetPosition> + 'a + use<'a> {
         self.position_cache.drop_target_data()
     }
 }
@@ -1001,15 +1003,16 @@ impl EventContext<'_> {
         event: &DispatchedEvent,
         app: &AppContext,
     ) -> bool {
-        match self.rendered_views.remove(&view_id) { Some(mut element) => {
-            self.view_stack.push(view_id);
-            let handled = element.dispatch_event(event, self, app);
-            self.rendered_views.insert(view_id, element);
-            self.view_stack.pop();
-            handled
-        } _ => {
-            false
-        }}
+        match self.rendered_views.remove(&view_id) {
+            Some(mut element) => {
+                self.view_stack.push(view_id);
+                let handled = element.dispatch_event(event, self, app);
+                self.rendered_views.insert(view_id, element);
+                self.view_stack.pop();
+                handled
+            }
+            _ => false,
+        }
     }
 
     pub fn dispatch_action<A: 'static + Any>(&mut self, name: &'static str, arg: A) {

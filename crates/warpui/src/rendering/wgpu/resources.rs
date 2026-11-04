@@ -7,14 +7,14 @@ use std::time::Duration;
 
 use instant::Instant;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 
 use crate::rendering::OnGPUDeviceSelected;
 use crate::windowing;
 use crate::{r#async::block_on, rendering::GPUPowerPreference};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use itertools::Itertools;
 use lazy_static::lazy_static;
 use pathfinder_geometry::vector::Vector2F;
@@ -136,7 +136,9 @@ impl Resources {
             let device_lost_clone = device_lost.clone();
             device.set_device_lost_callback(move |device_lost_reason, message| {
                 device_lost_clone.store(true, Ordering::SeqCst);
-                log::warn!("The current device is lost. Reason: {device_lost_reason:?}. Message: {message}")
+                log::warn!(
+                    "The current device is lost. Reason: {device_lost_reason:?}. Message: {message}"
+                )
             });
 
             Ok(Self {
@@ -382,7 +384,9 @@ fn is_supported_adapter(adapter: &wgpu::Adapter, surface: &wgpu::Surface) -> boo
     } else {
         format!(" ({})", info.driver_info)
     };
-    log::info!("{device_type:?}: {device_name}\n\tBackend: {backend:?}\n\tDriver: {driver}{driver_info}\n\tCan present: {can_present}\n\tSupported texture format: {supported_texture_format:?}\n\tSupported alpha mode: {supported_alpha_modes:?}");
+    log::info!(
+        "{device_type:?}: {device_name}\n\tBackend: {backend:?}\n\tDriver: {driver}{driver_info}\n\tCan present: {can_present}\n\tSupported texture format: {supported_texture_format:?}\n\tSupported alpha mode: {supported_alpha_modes:?}"
+    );
 
     can_present && supported_texture_format.is_some()
 }
@@ -770,7 +774,9 @@ fn adapter_stability_sort_func(
         && adapter_info.backend == Backend::Vulkan
         && !is_vulkan_nvidia_adapter(&adapter_info)
     {
-        log::info!("Deprioritizing non-NVIDIA Vulkan adapter (the PRIME performance profile is likely enabled)");
+        log::info!(
+            "Deprioritizing non-NVIDIA Vulkan adapter (the PRIME performance profile is likely enabled)"
+        );
         return AdapterSupport::Unsupported;
     }
 
@@ -1030,7 +1036,7 @@ fn get_surface_texture(
 ) -> Result<wgpu::SurfaceTexture, GetSurfaceTextureError> {
     let error = match surface.get_current_texture() {
         CurrentSurfaceTexture::Success(texture) | CurrentSurfaceTexture::Suboptimal(texture) => {
-            return Ok(texture)
+            return Ok(texture);
         }
         CurrentSurfaceTexture::Timeout => GetSurfaceTextureError::Timeout,
         CurrentSurfaceTexture::Occluded => GetSurfaceTextureError::Occluded,

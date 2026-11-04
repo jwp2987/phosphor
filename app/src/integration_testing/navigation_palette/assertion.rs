@@ -1,12 +1,12 @@
 use warpui::integration::AssertionCallback;
-use warpui::{async_assert, integration::AssertionOutcome, App, ViewHandle, WindowId};
+use warpui::{App, ViewHandle, WindowId, async_assert, integration::AssertionOutcome};
 
 use crate::integration_testing::view_getters::workspace_view;
 use crate::palette::PaletteMode;
 use crate::pane_group::{PaneId, PaneView};
 use crate::{
     integration_testing::view_getters::command_palette_view,
-    search::{command_palette::ItemSummary, QueryFilter},
+    search::{QueryFilter, command_palette::ItemSummary},
     terminal::TerminalView,
 };
 

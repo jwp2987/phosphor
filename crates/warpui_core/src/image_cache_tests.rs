@@ -3,8 +3,8 @@ use std::{borrow::Cow, rc::Rc};
 use rust_embed::RustEmbed;
 
 use crate::{
-    r#async::executor::{Background, Foreground},
     AssetProvider,
+    r#async::executor::{Background, Foreground},
 };
 
 use super::*;
@@ -419,10 +419,12 @@ fn test_svg_text_rasterizes_with_loaded_system_fonts() {
         panic!("Expected static image");
     };
 
-    assert!(image
-        .rgba_bytes()
-        .chunks_exact(4)
-        .any(|pixel| pixel[3] != 0));
+    assert!(
+        image
+            .rgba_bytes()
+            .chunks_exact(4)
+            .any(|pixel| pixel[3] != 0)
+    );
 }
 
 #[test]
@@ -456,10 +458,12 @@ fn test_svg_text_rasterizes_with_bundled_sans_serif_fallback() {
         panic!("Expected static image");
     };
 
-    assert!(image
-        .rgba_bytes()
-        .chunks_exact(4)
-        .any(|pixel| pixel[3] != 0));
+    assert!(
+        image
+            .rgba_bytes()
+            .chunks_exact(4)
+            .any(|pixel| pixel[3] != 0)
+    );
 }
 
 #[test]
@@ -958,7 +962,9 @@ fn deferred_large_svg_is_pending_then_ready_at_the_wanted_size() {
 
     // A new size shows the previous one while it is rasterised, then the exact size.
     match deferred_big_svg(&image_cache, &asset_cache, 400) {
-        DeferredImage::Pending { stale: Some(stale), .. } => {
+        DeferredImage::Pending {
+            stale: Some(stale), ..
+        } => {
             assert_eq!(stale.from_bounds, Vector2I::new(300, 300));
             assert_eq!(stale.to_bounds, Vector2I::new(400, 400));
         }
@@ -1017,7 +1023,11 @@ fn rendered_sizes_per_asset_are_bounded() {
         wait_for_deferred_big_svg(&image_cache, &asset_cache, side);
     }
     let cache = image_cache.images.read();
-    assert!(cache.values().all(|sizes| sizes.len() <= MAX_RENDERED_SIZES_PER_ASSET));
+    assert!(
+        cache
+            .values()
+            .all(|sizes| sizes.len() <= MAX_RENDERED_SIZES_PER_ASSET)
+    );
 }
 
 fn request(
@@ -1092,7 +1102,11 @@ fn inflight_cap_defers_the_third_request_until_a_slot_frees() {
         request(&image_cache, &asset_cache, "big-test.svg", 302),
         DeferredImage::Pending { .. }
     ));
-    assert_eq!(image_cache.pending.borrow().len(), 2, "third must not start");
+    assert_eq!(
+        image_cache.pending.borrow().len(),
+        2,
+        "third must not start"
+    );
     assert_eq!(image_cache.inflight.load(Ordering::Acquire), 2);
     image_cache.test_hook.set(0);
     wait_until(|| image_cache.inflight.load(Ordering::Acquire) == 0);
@@ -1214,9 +1228,7 @@ fn cap_evictions_leave_consistent_bookkeeping() {
 fn large_bitmap_scaling_is_deferred() {
     let asset_cache = new_asset_cache();
     let image_cache = ImageCache::new();
-    let source = AssetSource::Bundled {
-        path: "heavy.rgba",
-    };
+    let source = AssetSource::Bundled { path: "heavy.rgba" };
     let _: AssetState<ImageType> = asset_cache.load_asset(source);
     let mut image = None;
     let mut saw_pending = false;

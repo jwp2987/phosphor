@@ -22,8 +22,8 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::RwLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime};
 
@@ -598,7 +598,10 @@ mod quick_add_tests {
         assert_eq!(infer_api_type("google"), AgentProviderApiType::Gemini);
         assert_eq!(infer_api_type("deepseek"), AgentProviderApiType::DeepSeek);
         assert_eq!(infer_api_type("ollama"), AgentProviderApiType::Ollama);
-        assert_eq!(infer_api_type("google-vertex"), AgentProviderApiType::Vertex);
+        assert_eq!(
+            infer_api_type("google-vertex"),
+            AgentProviderApiType::Vertex
+        );
         assert_eq!(
             infer_api_type("google-vertex-anthropic"),
             AgentProviderApiType::Vertex
@@ -677,11 +680,10 @@ mod quick_add_tests {
         let merged = quick_add_catalog(&catalog);
 
         // The two vertex entries collapse into exactly one, under the canonical id.
-        assert_eq!(
-            merged.keys().filter(|id| id.contains("vertex")).count(),
-            1
-        );
-        let vertex = merged.get(VERTEX_QUICK_ADD_ID).expect("merged vertex entry");
+        assert_eq!(merged.keys().filter(|id| id.contains("vertex")).count(), 1);
+        let vertex = merged
+            .get(VERTEX_QUICK_ADD_ID)
+            .expect("merged vertex entry");
         assert_eq!(vertex.name, "Google Vertex AI");
         assert!(vertex.models.contains_key("gemini-2.5-pro"));
         assert!(vertex.models.contains_key("claude-sonnet-5"));
@@ -710,8 +712,14 @@ mod quick_add_tests {
 
         let merged = quick_add_catalog(&catalog);
 
-        let vertex = merged.get(VERTEX_QUICK_ADD_ID).expect("merged vertex entry");
-        assert_eq!(vertex.models.len(), 1, "collision must not duplicate/drop entries");
+        let vertex = merged
+            .get(VERTEX_QUICK_ADD_ID)
+            .expect("merged vertex entry");
+        assert_eq!(
+            vertex.models.len(),
+            1,
+            "collision must not duplicate/drop entries"
+        );
         assert!(vertex.models.contains_key("shared-id"));
     }
 

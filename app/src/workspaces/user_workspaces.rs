@@ -7,10 +7,9 @@ use super::{
 };
 use crate::{
     ai::llms::LLMModelHost,
-    auth::{UserUid, TEST_USER_UID},
+    auth::{TEST_USER_UID, UserUid},
     channel::ChannelState,
-    cloud_object::{
-        model::persistence::ObjectStoreModel, ObjectType, Owner, Space, },
+    cloud_object::{ObjectType, Owner, Space, model::persistence::ObjectStoreModel},
     server::ids::ServerId,
     settings::{AISettings, PrivacySettings},
     workspaces::workspace::{AiAutonomySettings, SandboxedAgentSettings},
@@ -23,9 +22,7 @@ use warp_core::{
 use warpui::{AppContext, Entity, ModelContext, SingletonEntity, Tracked};
 
 #[cfg(test)]
-use crate::workspaces::workspace::{
-    BillingMetadata, WorkspaceMember, WorkspaceSettings,
-};
+use crate::workspaces::workspace::{BillingMetadata, WorkspaceMember, WorkspaceSettings};
 
 #[cfg(test)]
 use super::workspace::WorkspaceMemberUsageInfo;
@@ -621,7 +618,6 @@ impl UserWorkspaces {
             })
             .unwrap_or_default()
     }
-
 }
 
 #[cfg(test)]
@@ -732,7 +728,6 @@ impl UserWorkspaces {
             ctx,
         );
     }
-
 }
 
 impl Entity for UserWorkspaces {
@@ -773,10 +768,8 @@ mod tests {
             .ai_permissions_settings
             .allow_ai_in_remote_sessions = false;
 
-        let workspaces = UserWorkspaces::new(
-            vec![workspace],
-            Some(WorkspaceUid::from(ServerId::from(1))),
-        );
+        let workspaces =
+            UserWorkspaces::new(vec![workspace], Some(WorkspaceUid::from(ServerId::from(1))));
 
         assert!(
             workspaces.current_workspace().is_some(),

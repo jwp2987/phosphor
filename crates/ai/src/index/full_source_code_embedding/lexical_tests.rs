@@ -26,9 +26,15 @@ fn identifiers_are_emitted_whole_and_in_parts() {
 #[test]
 fn camel_and_pascal_case_split_the_way_a_reader_would() {
     let emitted = tokens("parseJsonConfig");
-    assert!(emitted.contains(&"parsejsonconfig".to_owned()), "{emitted:?}");
+    assert!(
+        emitted.contains(&"parsejsonconfig".to_owned()),
+        "{emitted:?}"
+    );
     for part in ["parse", "json", "config"] {
-        assert!(emitted.contains(&part.to_owned()), "{part} missing from {emitted:?}");
+        assert!(
+            emitted.contains(&part.to_owned()),
+            "{part} missing from {emitted:?}"
+        );
     }
 
     // An acronym run followed by a word: `HTTPServer` is `HTTP` and `Server`,
@@ -49,7 +55,10 @@ fn digits_are_a_boundary() {
 fn punctuation_and_paths_are_separators() {
     let emitted = tokens("crate::ai::index -> Result<Settings>");
     for part in ["crate", "ai", "index", "result", "settings"] {
-        assert!(emitted.contains(&part.to_owned()), "{part} missing from {emitted:?}");
+        assert!(
+            emitted.contains(&part.to_owned()),
+            "{part} missing from {emitted:?}"
+        );
     }
 }
 
@@ -124,7 +133,10 @@ fn length_normalization_stops_a_long_fragment_winning_on_bulk() {
     // Without the `b` term, a fragment that merely mentions a term many times
     // because it is long would outrank a short fragment that is *about* it.
     let short = "fn merge(a: Settings, b: Settings) -> Settings { a.merge(b) }";
-    let padded = format!("fn unrelated() {{ {} }}", "let value = compute(); ".repeat(40));
+    let padded = format!(
+        "fn unrelated() {{ {} }}",
+        "let value = compute(); ".repeat(40)
+    );
     let long_with_one_mention = format!("{padded} // merge");
 
     let scores = bm25_scores("merge", &[short, &long_with_one_mention]);

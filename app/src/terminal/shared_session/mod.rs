@@ -13,7 +13,7 @@ use protocol::{Scrollback, ScrollbackBlock};
 
 #[cfg(test)]
 use super::model::block::SerializedBlock;
-use super::{model::terminal_model::BlockIndex, GridType, TerminalModel};
+use super::{GridType, TerminalModel, model::terminal_model::BlockIndex};
 
 pub mod participant_avatar_view;
 pub mod presence_manager;

@@ -3,13 +3,13 @@ use ordered_float::OrderedFloat;
 use std::sync::Arc;
 use warp_core::ui::builder;
 use warpui::{
+    AppContext, Element, SingletonEntity,
     elements::{
         Align, ConstrainedBox, Container, CrossAxisAlignment, Empty, Flex, Highlight, Icon,
         MainAxisAlignment, MainAxisSize, ParentElement, Shrinkable, Text,
     },
     fonts::{Properties, Weight},
     ui_components::components::{Coords, UiComponent, UiComponentStyles},
-    AppContext, Element, SingletonEntity,
 };
 
 use crate::search::item::SearchItem;

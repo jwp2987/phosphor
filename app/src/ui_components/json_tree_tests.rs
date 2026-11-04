@@ -5,8 +5,8 @@
 //! They do not exercise the element-construction layer (which requires a
 //! running UI framework).
 use crate::ui_components::json_tree::{
-    format_array_annotation, format_number, format_object_annotation, is_long_string,
-    JsonTreeState, PathSegment, LONG_STRING_THRESHOLD,
+    JsonTreeState, LONG_STRING_THRESHOLD, PathSegment, format_array_annotation, format_number,
+    format_object_annotation, is_long_string,
 };
 
 // -----------------------------------------------------------------------

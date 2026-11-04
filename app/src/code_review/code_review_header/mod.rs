@@ -1,12 +1,12 @@
 mod header_revamp;
 
 use crate::code_review::code_review_view::{
-    CodeReviewHeaderFields, CodeReviewView, CONTENT_TOP_MARGIN,
+    CONTENT_TOP_MARGIN, CodeReviewHeaderFields, CodeReviewView,
 };
 use crate::{
     appearance::Appearance,
     code_review::{
-        code_review_view::{get_discard_button_disabled_tooltip, CodeReviewAction, LoadedState},
+        code_review_view::{CodeReviewAction, LoadedState, get_discard_button_disabled_tooltip},
         diff_state::DiffStateModel,
     },
     menu::Menu,
@@ -19,6 +19,7 @@ use warpui::elements::{Hoverable, ParentElement};
 use warpui::platform::Cursor;
 use warpui::ui_components::components::{Coords, UiComponent};
 use warpui::{
+    AppContext, Element, ModelHandle, ViewHandle,
     elements::{
         Align, ChildAnchor, ChildView, Clipped, ConstrainedBox, Container, CrossAxisAlignment,
         Flex, MainAxisAlignment, MainAxisSize, MouseStateHandle, OffsetPositioning, ParentAnchor,
@@ -29,7 +30,6 @@ use warpui::{
         button::{ButtonVariant, TextAndIcon, TextAndIconAlignment},
         components::UiComponentStyles,
     },
-    AppContext, Element, ModelHandle, ViewHandle,
 };
 
 // This is a best effort guess of the size of all of the elements in the header to know when we should start to wrap to the second row

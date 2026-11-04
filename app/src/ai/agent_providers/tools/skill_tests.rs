@@ -6,11 +6,10 @@
 
 use std::path::PathBuf;
 
-use ai::skills::{
-    skill_reference_from_read_skill_ref, SkillPathOrigin, SkillProvider, SkillReference,
-    SkillScope,
-};
 use agent_proto as api;
+use ai::skills::{
+    SkillPathOrigin, SkillProvider, SkillReference, SkillScope, skill_reference_from_read_skill_ref,
+};
 use warp_util::host_id::HostId;
 use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warp_util::remote_path::RemotePath;
@@ -164,7 +163,9 @@ fn listed_bundled_skill_binds_by_name_or_bundled_id() {
         resolve_reference(&mut read_skill, &skills, &SkillPathOrigin::Local).expect(name);
         assert_eq!(
             read_skill.skill_reference,
-            Some(ApiSkillReference::BundledSkillId("find-skills-id".to_owned())),
+            Some(ApiSkillReference::BundledSkillId(
+                "find-skills-id".to_owned()
+            )),
             "{name}"
         );
     }
@@ -225,7 +226,10 @@ fn path_skills_do_not_bind_when_the_host_identity_is_unavailable() {
         resolve_reference(&mut read_skill, &skills, &SkillPathOrigin::Unavailable),
         Err(SkillResolutionError::NotAvailable)
     );
-    assert!(!is_listed_for_origin(&skills[0], &SkillPathOrigin::Unavailable));
+    assert!(!is_listed_for_origin(
+        &skills[0],
+        &SkillPathOrigin::Unavailable
+    ));
     // The same path could not have been converted either — the reason for the rule.
     assert!(
         skill_reference_from_read_skill_ref(
@@ -266,7 +270,9 @@ fn bundled_skill_sharing_a_file_skills_name_is_reachable_by_its_skill_path() {
     resolve_reference(&mut by_path, &skills, &SkillPathOrigin::Local).expect("bundled path");
     assert_eq!(
         by_path.skill_reference,
-        Some(ApiSkillReference::BundledSkillId("find-skills-id".to_owned()))
+        Some(ApiSkillReference::BundledSkillId(
+            "find-skills-id".to_owned()
+        ))
     );
 
     assert_eq!(listed_skill_path(&skills[0].reference), LISTED_PATH);
@@ -274,6 +280,12 @@ fn bundled_skill_sharing_a_file_skills_name_is_reachable_by_its_skill_path() {
 
 #[test]
 fn resolution_errors_carry_distinct_codes() {
-    assert_eq!(SkillResolutionError::NotAvailable.code(), "skill_unavailable");
-    assert_eq!(SkillResolutionError::Ambiguous.code(), "ambiguous_skill_name");
+    assert_eq!(
+        SkillResolutionError::NotAvailable.code(),
+        "skill_unavailable"
+    );
+    assert_eq!(
+        SkillResolutionError::Ambiguous.code(),
+        "ambiguous_skill_name"
+    );
 }

@@ -6,12 +6,12 @@ use crate::event::DispatchedEvent;
 use crate::platform::WindowStyle;
 use crate::text::word_boundaries::WordBoundariesPolicy;
 use crate::text::{BlockHeaderSize, SelectionDirection, SelectionType};
+use crate::{App, AppContext, Entity, Event, Presenter, TypedActionView};
 use crate::{
     elements::{Element, PartialClickableElement, Point, SelectableElement, ZIndex},
     fonts::{FamilyId, FontId},
     text_layout::{Glyph, Line, Run, TextAlignment, TextFrame, TextStyle},
 };
-use crate::{App, AppContext, Entity, Event, Presenter, TypedActionView};
 use markdown_parser::{FormattedText, FormattedTextFragment, FormattedTextLine};
 use pathfinder_color::ColorU;
 use pathfinder_geometry::{rect::RectF, vector::vec2f};
@@ -134,7 +134,12 @@ fn test_heading_multipliers_size_ordering() {
 #[test]
 fn test_get_multiplier_const_fn() {
     const M: HeadingFontSizeMultipliers = HeadingFontSizeMultipliers {
-        h1: 2.0, h2: 1.5, h3: 1.17, h4: 1.0, h5: 0.83, h6: 0.75,
+        h1: 2.0,
+        h2: 1.5,
+        h3: 1.17,
+        h4: 1.0,
+        h5: 0.83,
+        h6: 0.75,
     };
     const H1: f32 = M.get_multiplier(1);
     const H4: f32 = M.get_multiplier(4);
@@ -262,9 +267,11 @@ fn smart_select_returns_none_when_point_is_outside_horizontal_bounds() {
     let element = test_formatted_text_element("hello", 10.0, 20.0);
     let point = vec2f(10.0 + 100.0, 25.0);
 
-    assert!(element
-        .smart_select(point, select_first_character)
-        .is_none());
+    assert!(
+        element
+            .smart_select(point, select_first_character)
+            .is_none()
+    );
 }
 
 /// Builds a single-line element whose visual first glyph has a higher logical index than

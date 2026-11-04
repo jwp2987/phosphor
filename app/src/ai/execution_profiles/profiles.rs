@@ -12,8 +12,9 @@ use warpui::{AppContext, Entity, EntityId, ModelContext, SingletonEntity};
 use crate::ai::llms::LLMId;
 use crate::ai::mcp::templatable_manager::TemplatableMCPServerManagerEvent;
 use crate::cloud_object::model::persistence::{ObjectStoreEvent, UpdateSource};
-use crate::{send_telemetry_from_ctx, LaunchMode, TelemetryEvent};
+use crate::{LaunchMode, TelemetryEvent, send_telemetry_from_ctx};
 
+use crate::ObjectStoreModel;
 use crate::ai::mcp::TemplatableMCPServerManager;
 use crate::cloud_object::update_manager::UpdateManager;
 use crate::cloud_object::{GenericStringObjectFormat, JsonObjectType, StoredObject as _};
@@ -21,7 +22,6 @@ use crate::drive::ObjectTypeAndId;
 use crate::server::ids::SyncId;
 use crate::settings::AgentModeCommandExecutionPredicate;
 use crate::workspaces::user_workspaces::UserWorkspaces;
-use crate::ObjectStoreModel;
 use crate::{
     cloud_object::model::generic_string_model::GenericStringObjectId, server::ids::ClientId,
 };
@@ -1582,7 +1582,9 @@ impl AIExecutionProfilesModel {
         let Some(object) = object_store_model
             .get_object_of_type::<GenericStringObjectId, AIExecutionProfileObjectModel>(&sync_id)
         else {
-            log::warn!("Received ObjectCreated event for AI execution profile but object not found in ObjectStoreModel: {sync_id:?}");
+            log::warn!(
+                "Received ObjectCreated event for AI execution profile but object not found in ObjectStoreModel: {sync_id:?}"
+            );
             return;
         };
 
@@ -1653,7 +1655,9 @@ impl AIExecutionProfilesModel {
             // If the default profile was deleted, transition back to unsynced state
             let is_default = matches!(&self.default_profile_state, DefaultProfileState::Synced { id } if *id == profile_id);
             if is_default {
-                log::warn!("Default execution profile was deleted from cloud. Transitioning to unsynced state: {sync_id:?}");
+                log::warn!(
+                    "Default execution profile was deleted from cloud. Transitioning to unsynced state: {sync_id:?}"
+                );
                 self.default_profile_state = DefaultProfileState::Unsynced {
                     id: profile_id,
                     profile: AIExecutionProfile {

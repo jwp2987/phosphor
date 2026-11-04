@@ -123,7 +123,10 @@ fn a_cloned_grid_handler_carries_the_same_renderable_state() {
     assert_eq!(clone.visible_rows(), original.visible_rows());
     assert_eq!(clone.cursor_point(), original.cursor_point());
     assert_eq!(clone.cursor_render_point(), original.cursor_render_point());
-    assert_eq!(clone.is_cursor_on_wide_char(), original.is_cursor_on_wide_char());
+    assert_eq!(
+        clone.is_cursor_on_wide_char(),
+        original.is_cursor_on_wide_char()
+    );
     assert_eq!(clone.marked_text(), original.marked_text());
     assert_eq!(clone.has_secrets(), original.has_secrets());
     for row in 0..original.visible_rows() {
