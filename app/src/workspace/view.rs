@@ -11448,6 +11448,20 @@ impl Workspace {
             return false;
         };
         let removed_tab_had_terminal_panes = tab_data.pane_group.as_ref(ctx).has_terminal_panes();
+        // #1290: an agent tab vanished in the ssh matrix with its approval card pending and no
+        // close reason in the log. A tab removed with a pending card is named here.
+        if tab_data
+            .pane_group
+            .as_ref(ctx)
+            .terminal_views(ctx)
+            .iter()
+            .any(|view| view.as_ref(ctx).has_pending_agent_action(ctx))
+        {
+            log::warn!(
+                "Removing tab {index} (add_to_undo_stack={add_to_undo_stack}) while an agent \
+                 approval card in it is pending"
+            );
+        }
 
         // If the vertical-tabs detail sidecar is anchored to this tab's pane group, clear it.
         // Otherwise it will try to position itself against a pane row that is about to disappear
