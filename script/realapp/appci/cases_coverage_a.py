@@ -365,12 +365,10 @@ def c_ssh_drop(ctx, r):
     if ctx.win:
         r.skip("not yet ported to the Windows panes: the `~.` escape and kill -9 $$ need the msys ssh client (unverified there)")
     for variant in ("escape", "kill"):
-        if variant == "escape" and not os.environ.get("APPCI_SSH_ESCAPE_THROUGH"):
-            # r18u8 (Mac): in a managed (warpified) remote session the input editor owns the keys, so `<Enter>~.` is taken as an editor line, not ssh's escape, and the
-            # connection never drops (UNCLEAR in the triage: whether the owner wants the ssh escape passed through the editor is an OWNER DECISION, not decided
-            # here). Running the variant would only fail on that undecided question and leave the pane remote, so it is reported UNVERIFIABLE (status noref, never a
-            # pass) with the reason, and runs again with APPCI_SSH_ESCAPE_THROUGH=1 once the owner decides.
-            r.unverifiable("ssh_drop_reconnect [escape]: the `<Enter>~.` ssh escape is not delivered to ssh by a managed session's input editor; whether it should be is an owner decision (set APPCI_SSH_ESCAPE_THROUGH=1 to run it)")
+        if variant == "escape" and os.environ.get("APPCI_SSH_ESCAPE_THROUGH", "1") == "0":
+            # #1638 (owner, 2026-11-04): a managed ssh session passes `~X` typed at the start of an empty line to ssh, as a plain terminal does, so the
+            # escape arm runs by default. APPCI_SSH_ESCAPE_THROUGH=0 is the opt-out (a build from before #1638): the arm is then UNVERIFIABLE (noref).
+            r.unverifiable("ssh_drop_reconnect [escape]: skipped by APPCI_SSH_ESCAPE_THROUGH=0 (a build without #1638's ssh escape pass-through)")
             continue
         secs = CR.connect(ctx, "fake", 90)
         r.check(secs is not None, "[%s] no remote prompt after `ssh fake`. Test host: %s" % (variant, ctx.ssh_diag() if secs is None else ""))

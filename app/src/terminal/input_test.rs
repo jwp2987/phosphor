@@ -16138,3 +16138,207 @@ fn test_ready_paste_while_the_queue_is_held_is_deferred_not_a_panic() {
         });
     });
 }
+
+/// #1638 fixture: a bootstrapped pane whose active block belongs to a managed (warpified) ssh
+/// session (`remote`) or to a local one, with the input in `input_config`. Returns the input, its
+/// editor and every write that reached the pty.
+async fn pane_for_ssh_escape_test(
+    app: &mut App,
+    remote: bool,
+    input_config: InputConfig,
+) -> (
+    ViewHandle<Input>,
+    ViewHandle<EditorView>,
+    Rc<RefCell<Vec<Vec<u8>>>>,
+) {
+    let terminal = add_window_with_bootstrapped_terminal(app, None, None).await;
+    let input = terminal.read(app, |terminal, _| terminal.input().clone());
+    let editor = input.read(app, |input, _| input.editor().clone());
+    let writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+    let sink = writes.clone();
+    app.update(|ctx| {
+        ctx.subscribe_to_view(&terminal, move |_, event, _| match event {
+            crate::terminal::view::Event::WriteBytesToPty { bytes }
+            | crate::terminal::view::Event::WriteHandoffUserBytesToPty { bytes } => {
+                sink.borrow_mut().push(bytes.to_vec());
+            }
+            _ => {}
+        });
+    });
+    input.update(app, |input, ctx| {
+        if remote {
+            let remote_session_id = SessionId::from(16380);
+            input.sessions.update(ctx, |sessions, _| {
+                sessions.register_session_for_test(
+                    SessionInfo::new_for_test()
+                        .with_id(remote_session_id)
+                        .with_session_type(BootstrapSessionType::WarpifiedRemote),
+                );
+            });
+            input.set_active_block_metadata(
+                BlockMetadata::new(Some(remote_session_id), None),
+                false,
+                ctx,
+            );
+        }
+        input.ai_input_model().update(ctx, |ai_input, ctx| {
+            ai_input.set_input_config(input_config, true /* is_input_buffer_empty */, ctx);
+        });
+        input.clear_buffer_and_reset_undo_stack(ctx);
+    });
+    (input, editor, writes)
+}
+
+/// Types `keys` into the editor one key at a time, as the keyboard does (each key its own
+/// dispatch, so each edit is handled before the next key).
+fn type_keys_for_ssh_escape_test(app: &mut App, editor: &ViewHandle<EditorView>, keys: &[&str]) {
+    for key in keys {
+        editor.update(app, |editor, ctx| {
+            editor.handle_action(&EditorAction::UserInsert(UserInput::new(*key)), ctx);
+        });
+    }
+}
+
+const SHELL_INPUT_FOR_SSH_ESCAPE_TEST: InputConfig = InputConfig {
+    input_type: InputType::Shell,
+    is_locked: true,
+};
+
+/// #1638: in a managed ssh session, Enter and then `~.` reach ssh as `~.`, once, exactly as plain
+/// ssh in a plain terminal receives them; the editor is left empty. Every ssh escape character
+/// except `~` (see `SSH_ESCAPE_CHARS`) does the same. Shell input and the agent mode's
+/// autodetected input (not locked to the agent) alike; Legacy and Table.
+#[test]
+fn test_ssh_escape_at_line_start_of_a_managed_ssh_session_goes_to_the_pty() {
+    use crate::terminal::input_queue::DestinationMode;
+    let autodetected_ai = InputConfig {
+        input_type: InputType::AI,
+        is_locked: false,
+    };
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        for input_config in [SHELL_INPUT_FOR_SSH_ESCAPE_TEST, autodetected_ai] {
+            for escape in [".", "?", "C", "R", "V", "v", "#", "&", "B"] {
+                App::test((), move |mut app| async move {
+                    let _mode =
+                        crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+                    initialize_app(&mut app);
+                    let (input, editor, writes) =
+                        pane_for_ssh_escape_test(&mut app, true, input_config).await;
+
+                    type_keys_for_ssh_escape_test(&mut app, &editor, &["~"]);
+                    input.read(&app, |input, ctx| {
+                        assert_eq!(
+                            input.buffer_text(ctx),
+                            "~",
+                            "{mode:?} {input_config:?}: a lone `~` waits in the editor"
+                        );
+                    });
+                    assert!(
+                        writes.borrow().is_empty(),
+                        "{mode:?}: nothing before the 2nd key"
+                    );
+
+                    type_keys_for_ssh_escape_test(&mut app, &editor, &[escape]);
+                    assert_eq!(
+                        *writes.borrow(),
+                        vec![format!("~{escape}").into_bytes()],
+                        "{mode:?} {input_config:?}: `~{escape}` reached ssh once"
+                    );
+                    input.read(&app, |input, ctx| {
+                        assert_eq!(input.buffer_text(ctx), "", "{mode:?}: the editor is empty");
+                    });
+                });
+            }
+        }
+    }
+}
+
+/// #1638: `~` followed by a key that is not an ssh escape is editor text, in order, and nothing
+/// reaches the pty. `~~` stays editor text too: ssh turns it into one `~` when the line is sent.
+#[test]
+fn test_tilde_and_a_non_escape_key_stay_in_the_editor_of_a_managed_ssh_session() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        for second in ["x", "/", "~", " "] {
+            App::test((), move |mut app| async move {
+                let _mode =
+                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+                initialize_app(&mut app);
+                let (input, editor, writes) =
+                    pane_for_ssh_escape_test(&mut app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
+                type_keys_for_ssh_escape_test(&mut app, &editor, &["~", second, "."]);
+                input.read(&app, |input, ctx| {
+                    assert_eq!(input.buffer_text(ctx), format!("~{second}."), "{mode:?}");
+                });
+                assert!(
+                    writes.borrow().is_empty(),
+                    "{mode:?} `~{second}`: nothing to the pty"
+                );
+            });
+        }
+    }
+}
+
+/// #1638: ssh takes `~` only as the first character of a line; mid-line `~.` is editor text.
+#[test]
+fn test_ssh_escape_mid_line_stays_in_the_editor_of_a_managed_ssh_session() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app(&mut app);
+            let (input, editor, writes) =
+                pane_for_ssh_escape_test(&mut app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
+            type_keys_for_ssh_escape_test(&mut app, &editor, &["l", "s", " ", "~", "."]);
+            input.read(&app, |input, ctx| {
+                assert_eq!(input.buffer_text(ctx), "ls ~.", "{mode:?}");
+            });
+            assert!(writes.borrow().is_empty(), "{mode:?}: nothing to the pty");
+        });
+    }
+}
+
+/// #1638: a local session has no ssh client to take the escape: `~.` is editor text, as before.
+/// So is a line locked to the agent in a managed ssh session (the agent view, a steer, #851).
+#[test]
+fn test_ssh_escape_stays_in_the_editor_outside_a_managed_ssh_shell_line() {
+    use crate::terminal::input_queue::DestinationMode;
+    let locked_ai = InputConfig {
+        input_type: InputType::AI,
+        is_locked: true,
+    };
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        for (remote, input_config) in [(false, SHELL_INPUT_FOR_SSH_ESCAPE_TEST), (true, locked_ai)]
+        {
+            App::test((), move |mut app| async move {
+                let _mode =
+                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+                initialize_app(&mut app);
+                let (input, editor, writes) =
+                    pane_for_ssh_escape_test(&mut app, remote, input_config).await;
+                type_keys_for_ssh_escape_test(&mut app, &editor, &["~", "."]);
+                input.read(&app, |input, ctx| {
+                    assert_eq!(
+                        input.buffer_text(ctx),
+                        "~.",
+                        "{mode:?} remote={remote} {input_config:?}"
+                    );
+                });
+                assert!(writes.borrow().is_empty(), "{mode:?}: nothing to the pty");
+            });
+        }
+    }
+}
+
+/// #1638: the pure rule: an insert at the end of an empty line that leaves exactly `~X`.
+#[test]
+fn test_ssh_escape_bytes_rule() {
+    assert_eq!(super::ssh_escape_bytes("~", "~."), Some(*b"~."));
+    assert_eq!(super::ssh_escape_bytes("", "~?"), Some(*b"~?"));
+    assert_eq!(super::ssh_escape_bytes("~", "~~"), None);
+    assert_eq!(super::ssh_escape_bytes("~", "~x"), None);
+    // `~` typed before an existing `.` (the cursor was at 0): not at the end of an empty line.
+    assert_eq!(super::ssh_escape_bytes(".", "~."), None);
+    assert_eq!(super::ssh_escape_bytes("~.", "~."), None);
+    assert_eq!(super::ssh_escape_bytes("~", "~.a"), None);
+}
