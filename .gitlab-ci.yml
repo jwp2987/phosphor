@@ -1266,6 +1266,30 @@ release-meta:
     paths: [release-body.md]
     expire_in: 7 days
 
+# #1157 part 2: size and request latency of the ssh remote-server binary, release-cli (opt-level "s", musl malloc) against release-remote (opt-level 3,
+# mimalloc), measured by script/ci/remote_server_bench.py. MANUAL only (two LTO builds), on the build box; it installs nothing (zig, cargo-zigbuild and the musl
+# target are what the cli-linux job leaves in the runner's home). The numbers are the artifact `bench-out/remote-bench.json`.
+bench-remote-server:
+  extends: .box_job
+  needs: []
+  rules:
+    - when: manual
+      allow_failure: true
+  timeout: 5h
+  variables:
+    CARGO_BUILD_JOBS: "8"
+    REMOTE_BENCH_N: "300"
+  script:
+    - ./script/ci/remote_server_before_after bench-out
+  artifacts:
+    name: remote-server-bench
+    when: always
+    expire_in: 30 days
+    paths:
+      - bench-out/remote-bench.json
+      - bench-out/before/phosphor-cli.tar.gz
+      - bench-out/after/phosphor-cli.tar.gz
+
 # CLI + remote-server + TUI tarballs for Linux x86_64: a static musl build through
 # zig, so the artifact has no glibc floor and runs on any Linux x86_64 host (CentOS 7,
 # Alpine, ...). zig and cargo-zigbuild install into the runner user's home only. The musl

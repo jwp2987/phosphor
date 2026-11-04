@@ -1229,6 +1229,37 @@ def g11_upgrade_fixture_pack_unpack_and_migration_count():
     assert winmap.skip_reason("upgrade_over_previous", "gitbash") is None
 
 
+@check
+def g11_remote_server_bench_encoding_and_loop():
+    """#1157 part 2: the hand-encoded requests, the request_id decode, and the whole measurement loop against a fake proxy that speaks the frame protocol"""
+    ci = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "ci")
+    sys.path.insert(0, ci)
+    try:
+        import remote_server_bench as rb
+    finally:
+        sys.path.remove(ci)
+    assert rb.varint(300) == b"\xac\x02" and rb.varint(1) == b"\x01"
+    assert rb.msg_resolve_path("r1", "/tmp").hex() == "0a02723112086a060a042f746d70"
+    assert rb.request_id_of(rb.msg_list_directory("abc", "/x")) == "abc" and rb.request_id_of(rb.field(2, b"x")) == ""
+    fake = os.path.join(tempfile.mkdtemp(), "fake-phosphor")
+    open(fake, "w").write("#!/usr/bin/env python3\nimport struct, sys\n"
+                          "assert sys.argv[1] == 'remote-server-proxy' and sys.argv[2] == '--identity-key'\n"
+                          "sys.path.insert(0, %r)\nimport remote_server_bench as rb\n"
+                          "i, o = sys.stdin.buffer, sys.stdout.buffer\n"
+                          "while True:\n"
+                          "    h = i.read(4)\n"
+                          "    if len(h) < 4: break\n"
+                          "    b = i.read(struct.unpack('<I', h)[0])\n"
+                          "    o.write(rb.frame(rb.field(1, rb.request_id_of(b)) + rb.field(2, b'ok'))); o.flush()\n" % ci)
+    os.chmod(fake, 0o755)
+    res = rb.measure(fake, 12, 30)
+    assert res["rtt_ms"]["n"] == 12 and res["list_ms"]["n"] >= 20 and res["startup_ms"] > 0 and res["burst_ms_per_request"] >= 0, res
+    sz = rb.sizes(fake, {})
+    assert sz["binary_bytes"] > 0 and sz["gzip9_bytes"] > 0
+    d = rb.delta(dict(size=dict(gzip9_bytes=100), rtt_ms=dict(p50=2.0, p95=3.0, p99=4.0)), dict(size=dict(gzip9_bytes=125), rtt_ms=dict(p50=1.5, p95=2.0, p99=5.0)))
+    assert d["gzip9_bytes_ratio"] == 1.25 and d["rtt_ms_p50_delta"] == -0.5 and d["rtt_ms_p99_delta"] == 1.0, d
+
+
 def main():
     failed = 0
     for f in CHECKS:
