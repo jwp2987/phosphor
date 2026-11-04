@@ -1616,3 +1616,7 @@ Every item below is a harness change; none touches app code. Anything not listed
 - **winit trace in the Windows app log** (#1629): `WindowsApp.env` adds `winit=info` to `RUST_LOG`. The vendored winit's keyboard-layout trace (WM_INPUTLANGCHANGE
   enter/exit, `LAYOUT_CACHE` takes, layout-build timing; `lib/winit/CHANGES-PHOSPHOR.md`) logs at info, and under the bare `warn` base the r18u13 AltGr hang run
   carried none of it. winit logs nothing else through `log`, so the line count does not change outside a layout switch.
+- **#1629 root cause and unit tests**: the AltGr hang is the UI thread blocked in `DefWindowProc(WM_INPUTLANGCHANGEREQUEST)` on wgpu-hal's
+  never-pumped WGL instance thread (hidden top-level window). The app no longer initializes the GL backend on Windows by default
+  (`crates/warpui/src/rendering/wgpu/mod.rs` `default_backends`, kill switch `PHOSPHOR_WGPU_WINDOWS_GL=1`); `rendering/wgpu/mod_tests.rs` pins the
+  default set per platform. `intl_altgr_ps` / `intl_altgr_bash` are the real-app check.
