@@ -223,6 +223,7 @@ pub enum ActiveEnvVarCollectionDataEvent {
     BreadcrumbsChanged,
     /// The EVC was trashed or untrashed
     /// (used for refreshing the pane overflow items)
+    #[allow(dead_code)] // used by sibling unused code or shared name
     TrashStatusChanged,
 }
 

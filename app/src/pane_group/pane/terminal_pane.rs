@@ -3,8 +3,6 @@
 use crate::pane_group::CodeSource;
 use std::sync::mpsc::SyncSender;
 
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
-
 use warpui::{
     AppContext, EntityId, ModelHandle, SingletonEntity, ViewContext, ViewHandle, WindowId,
 };
@@ -84,10 +82,6 @@ pub struct TerminalPane {
 pub(in crate::pane_group) struct RestoredTerminalState {
     pub cwd: Option<String>,
     pub shell_launch_data: Option<ShellLaunchData>,
-}
-
-fn serialize_proto_to_base64<M: prost::Message>(message: &M) -> String {
-    BASE64_STANDARD.encode(message.encode_to_vec())
 }
 
 impl TerminalPane {

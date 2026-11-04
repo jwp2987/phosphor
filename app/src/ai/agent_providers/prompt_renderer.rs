@@ -918,6 +918,7 @@ pub fn render_init_project_command(arguments: Option<&str>) -> String {
 /// to the upstream LLM this turn (built-in + MCP, gating already applied). The template renders the whitelist dynamically from this,
 /// no longer hardcoding an "unavailable tools" blacklist -- the model naturally won't call tools it can't see,
 /// whereas a text blacklist would make the model afraid to call even genuinely-available tools.
+#[allow(dead_code)] // used only by tests
 pub fn render_system(
     api_type: AgentProviderApiType,
     model: &LLMId,

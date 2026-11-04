@@ -76,6 +76,7 @@ pub(crate) const HISTORY_MARKER: &str = "__phosphor_ap_";
 /// How every PowerShell wrapper starts. `pwsh.ps1` (the `Clear-History` call and the
 /// `AddToHistoryHandler`) matches this exact prefix, anchored, so a user's own command that
 /// merely mentions the marker is never dropped from their history (#942). MATCHED PAIR.
+#[allow(dead_code)] // used only by tests
 pub(crate) const PWSH_WRAPPER_HISTORY_PREFIX: &str =
     ". { $__phosphor_ap = @{}; foreach ($__phosphor_ap_v in @(";
 

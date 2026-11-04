@@ -164,11 +164,13 @@ pub(crate) trait AgentEventSource: Send + Sync {
 }
 
 /// An [`AgentEventSource`] whose underlying stream is provided by [`AgentEventStreamClient`].
+#[allow(dead_code)] // persisted or derived enum
 pub(crate) struct AgentEventStreamClientEventSource {
     client: Arc<dyn AgentEventStreamClient>,
 }
 
 impl AgentEventStreamClientEventSource {
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub(crate) fn new(client: Arc<dyn AgentEventStreamClient>) -> Self {
         Self { client }
     }

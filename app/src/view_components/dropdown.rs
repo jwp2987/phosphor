@@ -38,6 +38,7 @@ pub enum DropdownStyle {
     /// Similar to Secondary but with ActionButton-like hover behavior:
     /// background fill on hover instead of border color change.
     /// TODO this should probably replace the default `Secondary` theme
+    #[allow(dead_code)] // used by sibling unused code or shared name
     ActionButtonSecondary,
 }
 
@@ -75,6 +76,7 @@ pub struct Dropdown<A: Action + Clone> {
     selected_item: Option<MenuItem<DropdownAction<A>>>,
     // Function for overriding the default closed-state text (the selected item)
     menu_header_text_override: Option<MenuHeaderTextFormatter>,
+    #[allow(dead_code)] // field: set at construction or persisted
     self_handle: WeakViewHandle<Self>,
     style: DropdownStyle,
     use_drop_shadow: bool,
@@ -195,6 +197,7 @@ where
         }
     }
 
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     pub fn with_drop_shadow(mut self) -> Self {
         self.use_drop_shadow = true;
         self
@@ -225,6 +228,7 @@ where
         ctx.notify();
     }
 
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     pub fn set_style(&mut self, style: DropdownStyle, ctx: &mut ViewContext<Self>) {
         self.style = style;
         ctx.notify();
@@ -269,6 +273,7 @@ where
         ctx.notify();
     }
 
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     pub fn is_focused(&self, ctx: &AppContext) -> bool {
         let Some(handle) = self.self_handle.upgrade(ctx) else {
             return false;

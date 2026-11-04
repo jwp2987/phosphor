@@ -55,13 +55,6 @@ pub struct TemplatableMCPServer {
     pub gallery_data: Option<GalleryData>,
 }
 
-#[derive(Debug)]
-pub enum FromStoredJsonError {
-    NoServersFound,
-    TooManyServersFound,
-    ParseError(serde_json::Error),
-}
-
 impl TemplatableMCPServer {
     /// Looks for MCP servers under known wrapper keys (`mcpServers`, `servers`,
     /// `mcp.servers`, `mcp_servers`). Returns `None` if no known key is found.

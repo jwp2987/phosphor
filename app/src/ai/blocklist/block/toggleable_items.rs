@@ -42,12 +42,14 @@ pub fn init(app: &mut AppContext) {
 ///
 /// # Type Parameters
 /// - `T`: The data type for each item
+#[allow(dead_code)] // persisted or derived enum
 pub struct ToggleableItemBuilder<T> {
     label_fn: ItemLabelFn<T>,
     is_selected_fn: Box<dyn Fn(&T) -> bool>,
 }
 
 impl<T> ToggleableItemBuilder<T> {
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn new(
         label_fn: impl Fn(&T, &AppContext) -> Span + 'static,
         is_selected_fn: impl Fn(&T) -> bool + 'static,
@@ -83,6 +85,7 @@ pub struct ToggleableItemsView<T> {
 }
 
 impl<T> ToggleableItemsView<T> {
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn new(items: Vec<T>, builder: ToggleableItemBuilder<T>) -> Self {
         let count = items.len();
         let selected_states = items
@@ -98,14 +101,6 @@ impl<T> ToggleableItemsView<T> {
             row_mouse_states: (0..count).map(|_| MouseStateHandle::default()).collect(),
             selected_item_index: 0,
         }
-    }
-
-    /// Get the currently selected items.
-    pub fn get_selected_items(&self) -> impl Iterator<Item = &T> + '_ {
-        self.items
-            .iter()
-            .zip(self.selected_states.iter())
-            .filter_map(|(item, selected)| selected.then_some(item))
     }
 }
 

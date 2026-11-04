@@ -9,6 +9,9 @@
 //! machine (`app/src/pane_group/pane/local_harness_launch.rs`). There is no
 //! remote-worker execution path in this fork — see
 //! [`AIConversation::is_remote_child`]'s doc comment.
+// Orchestration belongs to the separate moth branch (moth-parliament): kept intact on main for
+// that branch's merge, so its not-yet-wired items are allowed here rather than deleted (#1467).
+#![allow(dead_code)]
 use std::collections::HashSet;
 
 use crate::ai::agent::conversation::{AIConversation, AIConversationId, ConversationStatus};

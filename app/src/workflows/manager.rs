@@ -177,6 +177,7 @@ impl WorkflowManager {
 }
 
 struct WorkflowPaneData {
+    #[allow(dead_code)] // field: set at construction or persisted
     workflow_id: SyncId,
     window_id: WindowId,
     locator: PaneViewLocator,

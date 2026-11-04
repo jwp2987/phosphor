@@ -658,6 +658,7 @@ impl AssistantBuffer {
         self.tool_call_keys.push(key);
     }
 
+    #[allow(dead_code)] // used only by tests
     fn flush_into(&mut self, messages: &mut Vec<ChatMessage>) {
         let _ = self.flush_into_with_group(messages);
     }
@@ -1799,6 +1800,7 @@ fn build_serializer_readiness_projection(
     builder.finish()
 }
 
+#[allow(dead_code)] // used only by tests
 pub(crate) fn classify_byop_controller_readiness(params: &RequestParams) -> ReadinessReport {
     classify_byop_controller_readiness_with_live_tool_calls(params, Vec::new())
 }
@@ -2008,6 +2010,7 @@ fn validate_byop_serializer_readiness(
     )
 }
 
+#[allow(dead_code)] // used only by tests
 fn validate_serializer_readiness_projection(
     projection: Vec<ProjectionItem>,
 ) -> Result<ReadinessReport, ConvertToAPITypeError> {

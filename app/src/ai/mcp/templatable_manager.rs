@@ -105,6 +105,7 @@ pub struct TemplatableMCPServerInfo {
     /// Whether the underlying transport uses authentication.
     ///
     /// TODO(vorporeal): Use this to display a toast when server authentication and connection is complete.
+    #[allow(dead_code)] // field: set at construction or persisted
     is_authenticated_transport: bool,
     /// A stdio server's child kill handle, released when the service loop closes the
     /// transport; always empty for HTTP/SSE servers.
@@ -137,6 +138,7 @@ impl TemplatableMCPServerInfo {
 
     /// Whether this connection authenticated its transport (OAuth), so a
     /// "log out" action is meaningful even before credentials are persisted.
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn is_authenticated_transport(&self) -> bool {
         self.is_authenticated_transport
     }
@@ -374,10 +376,15 @@ impl TemplatableMCPServerManager {
 
 #[derive(Debug)]
 pub enum TemplatableMCPServerManagerEvent {
-    StateChanged { uuid: Uuid, state: MCPServerState },
+    StateChanged {
+        uuid: Uuid,
+        state: MCPServerState,
+    },
     // TODO(aeybel) Right now most of the app doesn't use these events to communicate
     // We should change them so this manager is source of truth and all communication goes through here
+    #[allow(dead_code)] // field: set at construction or persisted
     ServerInstallationAdded(Uuid),
+    #[allow(dead_code)] // field: set at construction or persisted
     ServerInstallationDeleted(Uuid),
     TemplatableMCPServersUpdated,
     LegacyServerConverted,

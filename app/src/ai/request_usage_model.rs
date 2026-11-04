@@ -126,14 +126,6 @@ pub struct CodebaseContextUsageLimit {
     pub embedding_generation_batch_size: usize,
 }
 
-/// History: the aggregate struct returned by the server's `getRequestLimitInfo`.
-/// Zap: kept only as a type shell (other code still constructs
-/// this type). `AIRequestUsageModel` no longer consumes it.
-pub struct RequestUsageInfo {
-    pub request_limit_info: RequestLimitInfo,
-    pub bonus_grants: Vec<BonusGrant>,
-}
-
 /// Zap: the model no longer holds any state.
 pub struct AIRequestUsageModel;
 
@@ -145,7 +137,9 @@ impl Entity for AIRequestUsageModel {
 /// `match` patterns; after localization, `AIRequestUsageModel` no longer emits any
 /// variant → all subscription callbacks become silent no-ops.
 pub enum AIRequestUsageModelEvent {
+    #[allow(dead_code)] // used by sibling unused code or shared name
     RequestUsageUpdated,
+    #[allow(dead_code)] // used by sibling unused code or shared name
     RequestBonusRefunded {
         requests_refunded: i32,
         server_conversation_id: String,

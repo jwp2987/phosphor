@@ -489,31 +489,12 @@ pub mod text {
         writeln!(w, "Run ID: {run_id}\n")
     }
 
-    /// Report that a shared session has been established.
-    pub fn shared_session_established<W: Write>(join_url: &str, w: &mut W) -> io::Result<()> {
-        writeln!(w, "Sharing session at: {join_url}")
-    }
-
     /// Format a list of query patterns.
     fn format_queries<I: IntoIterator<Item = S>, S: fmt::Display>(queries: I) -> String {
         match queries.into_iter().exactly_one() {
             Ok(query) => query.to_string(),
             Err(queries) => format!("[{}]", queries.format(", ")),
         }
-    }
-
-    /// Write an artifact_created message for a plan to stdout. We have a separate function for
-    /// this since we report creation on plan WD sync.
-    pub fn plan_artifact_created<W: Write>(
-        document_id: &str,
-        notebook_link: &str,
-        title: &str,
-        w: &mut W,
-    ) -> io::Result<()> {
-        writeln!(
-            w,
-            "Created plan (title: {title}, id: {document_id}, notebook: {notebook_link})"
-        )
     }
 }
 
@@ -589,9 +570,17 @@ pub mod json {
     #[derive(Serialize)]
     #[serde(tag = "event_type", rename_all = "snake_case")]
     enum JsonSystemEvent<'a> {
-        ConversationStarted { conversation_id: &'a str },
-        RunStarted { run_id: &'a str, run_url: &'a str },
-        SharedSessionEstablished { join_url: &'a str },
+        ConversationStarted {
+            conversation_id: &'a str,
+        },
+        RunStarted {
+            run_id: &'a str,
+            run_url: &'a str,
+        },
+        #[allow(dead_code)] // persisted or derived enum
+        SharedSessionEstablished {
+            join_url: &'a str,
+        },
     }
 
     #[derive(Serialize)]
@@ -728,6 +717,7 @@ pub mod json {
             url: &'a str,
             branch: &'a str,
         },
+        #[allow(dead_code)] // persisted or derived enum
         Plan {
             document_id: &'a str,
             notebook_link: &'a str,
@@ -1166,21 +1156,6 @@ pub mod json {
         }
     }
 
-    /// Write an artifact_created message for a plan to stdout.
-    pub fn plan_artifact_created<W: Write>(
-        document_id: &str,
-        notebook_link: &str,
-        title: &str,
-        w: &mut W,
-    ) -> io::Result<()> {
-        let message = JsonMessage::ArtifactCreated(JsonArtifact::Plan {
-            document_id,
-            notebook_link,
-            title,
-        });
-        write_message(&message, w)
-    }
-
     fn write_message<W: Write>(message: &JsonMessage, w: &mut W) -> io::Result<()> {
         serde_json::to_writer(&mut *w, message).map_err(|e| io::Error::other(e.to_string()))?;
         writeln!(w)?;
@@ -1215,12 +1190,6 @@ pub mod json {
             run_id,
             run_url: "",
         });
-        write_message(&message, w)
-    }
-
-    /// Write a shared_session_established system event to stdout.
-    pub fn shared_session_established<W: Write>(join_url: &str, w: &mut W) -> io::Result<()> {
-        let message = JsonMessage::System(JsonSystemEvent::SharedSessionEstablished { join_url });
         write_message(&message, w)
     }
 

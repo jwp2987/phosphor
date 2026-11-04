@@ -48,11 +48,9 @@ const SECTION_UNIFORM_PADDING: f32 = 24.;
 const MARGIN_BETWEEN_MODAL_SECTIONS: f32 = 16.;
 const SLP_ROW_BOTTOM_PADDING: f32 = 8.;
 const SLP_ROW_TOP_MARGIN: f32 = 8.;
-const CHECKBOX_MARGIN_RIGHT: f32 = 4.;
-const DROPDOWN_LABEL_MARGIN_LEFT: f32 = 24.;
-const DROPDOWN_LABEL_MARGIN_RIGHT: f32 = 4.;
 const DROPDOWN_WIDTH: f32 = 72.;
 
+#[allow(dead_code)] // used by sibling unused code or shared name
 const CHECKBOX_SIZE: f32 = 16.;
 
 pub fn init(app: &mut AppContext) {
@@ -83,6 +81,7 @@ struct MouseStateHandles {
     restore_default_warp_prompt_handle: MouseStateHandle,
     warp_prompt_mouse_state_handle: MouseStateHandle,
     ps1_mouse_state_handle: MouseStateHandle,
+    #[allow(dead_code)] // field: set at construction or persisted
     same_line_prompt_checkbox_state_handle: MouseStateHandle,
 }
 
@@ -154,8 +153,11 @@ pub enum EditorModalAction {
     UsePS1,
     UseWarpPrompt,
     ResetWarpPrompt,
+    #[allow(dead_code)] // used by sibling unused code or shared name
     ToggleSameLinePrompt,
-    SetWarpPromptSeparator { separator: WarpPromptSeparator },
+    SetWarpPromptSeparator {
+        separator: WarpPromptSeparator,
+    },
 }
 
 impl EditorModal {

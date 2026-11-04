@@ -444,12 +444,15 @@ impl StoredObjectStatuses {
 
 #[derive(Copy, Default, Clone, Debug, Eq, PartialEq)]
 pub enum StoredObjectEventEntrypoint {
-    TeamSettings,
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     ResourceCenter,
+    #[allow(dead_code)] // used by sibling unused code or shared name
     UniversalSearch,
+    #[allow(dead_code)] // used by sibling unused code or shared name
     ManagementUI,
     Blocklist,
     ImportModal,
+    #[allow(dead_code)] // used by sibling unused code or shared name
     Onboarding,
     #[default]
     Unknown,

@@ -1159,6 +1159,7 @@ pub struct SettingsView {
     /// Handle to the AI settings page, used to switch subpage modes.
     ai_page_handle: ViewHandle<AISettingsPageView>,
     /// Handle to the Code settings page, used to switch subpage modes.
+    #[allow(dead_code)] // field: set at construction or persisted
     code_page_handle: ViewHandle<CodeSettingsPageView>,
     /// Per-subpage search match results. Populated during search so that
     /// subpages sharing the same backing page can be filtered independently.

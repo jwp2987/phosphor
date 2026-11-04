@@ -27,9 +27,11 @@ use crate::ai::blocklist::inline_action::code_diff_view::{DiffSessionType, FileD
 use crate::code::DiffResult;
 use crate::code::editor::compute_unified_diff;
 
+#[allow(dead_code)] // used by sibling unused code or shared name
 const APPLY_DIFF_RESULT_CONTEXT_LINES: usize = 10;
 
 /// Resolves with the outcome of one file's dispatched save.
+#[allow(dead_code)] // used by warp_tui (tui feature)
 pub type SaveFuture = BoxFuture<'static, Result<(), Arc<FileSaveError>>>;
 
 /// A surface that stores pending file-edit diffs and persists them on accept.
@@ -40,6 +42,7 @@ pub type SaveFuture = BoxFuture<'static, Result<(), Arc<FileSaveError>>>;
 /// kickoff ([`Self::start_saving`]). The shared save-completion flow lives on
 /// [`DiffStorageHelper`]; callers drive an accept solely through
 /// [`DiffStorageHelper::accept_and_save`].
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub trait DiffStorage {
     /// Snapshot of per-file state for result assembly, captured as the accept
     /// kicks off: reported paths, changed lines, contents, and user-edit
@@ -62,6 +65,7 @@ pub trait DiffStorage {
 /// Defined within a separate trait rather than a default implementation of
 /// `DiffStorage` so implementations cannot errantly override it (the same
 /// convention as `AIBlockModelHelper`).
+#[allow(dead_code)] // used by warp_tui (tui feature)
 pub trait DiffStorageHelper {
     /// The entry point for accepting a surface's diffs: snapshots per-file
     /// state, persists every file, and resolves with the assembled result
@@ -129,6 +133,7 @@ pub trait RegisteredDiffStorage {
 /// One file's contribution to the assembled result, snapshotted at accept
 /// time.
 #[derive(Clone)]
+#[allow(dead_code)] // used by warp_tui (tui feature)
 pub struct FileSnapshot {
     /// The updated file, reported at its final path; `None` for deletions.
     pub updated: Option<UpdatedFileState>,
@@ -144,6 +149,7 @@ pub struct FileSnapshot {
 
 /// Report state for a created or updated file.
 #[derive(Clone)]
+#[allow(dead_code)] // used by warp_tui (tui feature)
 pub struct UpdatedFileState {
     /// Path the update is reported at (the rename target when renamed).
     pub path: String,
@@ -156,6 +162,7 @@ pub struct UpdatedFileState {
 }
 
 /// Fails the whole edit when any file failed to save.
+#[allow(dead_code)] // used by sibling unused code or shared name
 fn save_failure_result(errors: &[Arc<FileSaveError>]) -> RequestFileEditsResult {
     let error = errors
         .iter()
@@ -171,6 +178,7 @@ fn save_failure_result(errors: &[Arc<FileSaveError>]) -> RequestFileEditsResult 
 
 /// Combines per-file report state and the combined result diff into one
 /// [`RequestFileEditsResult`].
+#[allow(dead_code)] // used by sibling unused code or shared name
 fn assemble_result(combined: DiffResult, files: Vec<FileSnapshot>) -> RequestFileEditsResult {
     let mut updated_files = Vec::new();
     let mut deleted_files = Vec::new();
@@ -200,6 +208,7 @@ fn assemble_result(combined: DiffResult, files: Vec<FileSnapshot>) -> RequestFil
 
 /// Expands each updated file's changed lines with surrounding context and
 /// extracts the corresponding fragments from the final file content.
+#[allow(dead_code)] // used only by tests
 fn updated_file_contexts_from_content_map(
     updated_files: &[(FileLocations, bool)],
     content_map: &HashMap<String, String>,
@@ -260,6 +269,7 @@ fn updated_file_contexts_from_content_map(
 }
 
 /// Clamps line ranges to the 1-indexed space used by file contexts.
+#[allow(dead_code)] // used by sibling unused code or shared name
 fn clamp_to_file_context_range_start(file_location: &mut FileLocations) {
     for range in &mut file_location.lines {
         range.start = range.start.max(1);
@@ -270,6 +280,7 @@ fn clamp_to_file_context_range_start(file_location: &mut FileLocations) {
 /// The 1-indexed changed line ranges implied by a diff op, for result
 /// reporting. Ported from warp/master's `diff_types::changed_lines_from_op`,
 /// over Zap's [`ai::diff_validation::DiffType`].
+#[allow(dead_code)] // used by warp_tui (tui feature)
 pub fn changed_lines_from_op(diff_type: &DiffType) -> Vec<Range<usize>> {
     match diff_type {
         DiffType::Create { delta } => inserted_content_range(1, &delta.insertion)
@@ -285,6 +296,7 @@ pub fn changed_lines_from_op(diff_type: &DiffType) -> Vec<Range<usize>> {
 
 /// The changed line range for one delta: the replacement range when it spans
 /// lines, else the range covered by inserted content at the insertion point.
+#[allow(dead_code)] // used by sibling unused code or shared name
 fn changed_line_range_for_delta(delta: &DiffDelta) -> Option<Range<usize>> {
     let replacement_range = &delta.replacement_line_range;
     if replacement_range.start == replacement_range.end {
@@ -294,6 +306,7 @@ fn changed_line_range_for_delta(delta: &DiffDelta) -> Option<Range<usize>> {
 }
 
 /// Returns the line range covered by inserted content starting at `start`.
+#[allow(dead_code)] // used by sibling unused code or shared name
 fn inserted_content_range(start: usize, content: &str) -> Option<Range<usize>> {
     let line_count = content.lines().count();
     (line_count > 0).then_some(start..start + line_count)

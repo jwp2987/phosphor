@@ -289,6 +289,7 @@ pub struct CategoriesView {
 
 enum WorkflowsFocusState {
     Editor,
+    #[allow(dead_code)] // used by sibling unused code or shared name
     WorkflowTypesSidebar,
 }
 

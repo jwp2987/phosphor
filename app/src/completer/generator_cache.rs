@@ -357,6 +357,7 @@ impl GeneratorCache {
     /// Returns the finished result for `key`, or the run to wait on: the one already in flight,
     /// or a new one made by `start` (given the new run's id) and registered before the lock is
     /// released, so two callers cannot both start a run for one key.
+    #[allow(dead_code)] // used only by tests
     pub(super) fn get_or_start(
         &mut self,
         key: &GeneratorKey,
@@ -370,6 +371,7 @@ impl GeneratorCache {
     /// not kept alive by the cache, so it is aborted when no caller is waiting on it any more
     /// and a later caller starts a new one. A remote generator nobody waits for would occupy the
     /// shared ssh connection (#1128).
+    #[allow(dead_code)] // used only by tests
     pub(super) fn get_or_start_with(
         &mut self,
         key: &GeneratorKey,

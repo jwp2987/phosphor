@@ -171,6 +171,7 @@ impl ThemeKind {
     /// different machine/OS/username. Built-in themes always can; a custom
     /// theme can only if its file path is stored as a path relative to the
     /// themes directory (see `custom_theme_path_is_portable`).
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub(crate) fn is_custom_theme_reference_syncable(&self) -> bool {
         match self {
             ThemeKind::Custom(custom_theme) | ThemeKind::CustomBase16(custom_theme) => {
@@ -263,6 +264,7 @@ fn custom_theme_path_storage_value(path: &Path, theme_root: &Path) -> serde_json
 /// Whether `path` can round-trip through portable storage relative to `theme_root`: either it
 /// is already a portable relative raw string, or it is an absolute (native or foreign-OS)
 /// path that resolves under `theme_root`.
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub(crate) fn custom_theme_path_is_portable(path: &Path, theme_root: &Path) -> bool {
     if path_is_absolute_or_foreign_absolute(path) {
         return portable_custom_theme_storage_string(path, theme_root).is_some();
@@ -366,10 +368,12 @@ fn path_starts_with_windows_drive_prefix_using_forward_slash(path: &Path) -> boo
 /// different OS (e.g. a Windows drive-letter or UNC path parsed on Unix, where it doesn't
 /// have a root by Unix's own rules). Such paths are never portable, but they must still be
 /// recognized so their raw form is preserved instead of being misread as relative.
+#[allow(dead_code)] // used by sibling unused code or shared name
 fn path_is_absolute_or_foreign_absolute(path: &Path) -> bool {
     path.has_root() || path_looks_like_foreign_windows_absolute(path)
 }
 
+#[allow(dead_code)] // used by sibling unused code or shared name
 fn path_looks_like_foreign_windows_absolute(path: &Path) -> bool {
     if path.has_root() {
         return false;

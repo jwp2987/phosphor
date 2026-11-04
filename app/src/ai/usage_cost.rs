@@ -90,6 +90,7 @@ pub struct ModelTokenTotals {
 
 impl ModelTokenTotals {
     /// Every token this model was billed for.
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     pub fn total_tokens(&self) -> u64 {
         self.uncached_input + self.output + self.cache_read + self.cache_write
     }

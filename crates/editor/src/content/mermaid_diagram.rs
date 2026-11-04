@@ -56,7 +56,7 @@ struct RenderSlot(&'static AtomicUsize);
 
 impl RenderSlot {
     fn acquire(live: &'static AtomicUsize, cap: usize) -> Option<Self> {
-        live.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+        live.try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
             (n < cap).then_some(n + 1)
         })
         .ok()

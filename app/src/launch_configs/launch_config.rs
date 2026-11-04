@@ -241,6 +241,7 @@ impl TabTemplate {
 }
 
 impl PaneTemplateType {
+    #[allow(dead_code)] // used only by tests
     fn add_commands_to_startup_pane(&mut self, tab_commands: Vec<CommandTemplate>) -> bool {
         match self {
             PaneTemplateType::PaneTemplate { commands, .. } => {
@@ -259,6 +260,7 @@ impl PaneTemplateType {
         }
     }
 
+    #[allow(dead_code)] // used by sibling unused code or shared name
     fn is_focused_pane(&self) -> bool {
         match self {
             PaneTemplateType::PaneTemplate { is_focused, .. } => is_focused.unwrap_or_default(),

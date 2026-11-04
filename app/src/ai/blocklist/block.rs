@@ -406,7 +406,9 @@ pub(super) struct AIBlockStateHandles {
     references_section_collapsible_handle: MouseStateHandle,
 
     autoread_files_speedbump_checkbox_handle: MouseStateHandle,
+    #[allow(dead_code)] // field: set at construction or persisted
     codebase_search_speedbump_option_handles: Vec<MouseStateHandle>,
+    #[allow(dead_code)] // field: set at construction or persisted
     codebase_search_speedbump_radio_button_handle: RadioButtonStateHandle,
     manage_autonomy_settings_link_handle: MouseStateHandle,
     /// Settings link handle for the Ask-User-Question speedbump footer. Owned
@@ -939,6 +941,7 @@ pub struct AIBlock {
     state_handles: AIBlockStateHandles,
     controller: ModelHandle<BlocklistAIController>,
     active_session: ModelHandle<ActiveSession>,
+    #[allow(dead_code)] // field: set at construction or persisted
     ambient_agent_view_model: ModelHandle<AmbientAgentViewModel>,
     terminal_view_id: EntityId,
     window_id: warpui::WindowId,

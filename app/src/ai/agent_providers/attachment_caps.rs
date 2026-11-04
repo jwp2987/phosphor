@@ -36,6 +36,7 @@ pub struct AttachmentCaps {
 impl AttachmentCaps {
     /// No multimodal capability at all → upstream must fall back to the text-only
     /// path.
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     pub fn is_text_only(&self) -> bool {
         !self.images && !self.pdf && !self.audio
     }
@@ -101,25 +102,6 @@ pub fn resolve_for_model(
         images: model.image.unwrap_or(inferred.images),
         pdf: model.pdf.unwrap_or(inferred.pdf),
         audio: model.audio.unwrap_or(inferred.audio),
-    }
-}
-
-/// A snapshot of the "inference result" for UI use (ignores the user's override,
-/// only looks at catalog/fallback).
-/// Used to display "Auto: catalog says supported" semantics in the chip tooltip.
-pub fn inferred_for_model(
-    provider_id: &str,
-    api_type: AgentProviderApiType,
-    model_id: &str,
-) -> AttachmentCaps {
-    if let Some(c) = models_dev::lookup_caps(provider_id, model_id) {
-        AttachmentCaps {
-            images: c.vision,
-            pdf: c.pdf,
-            audio: c.audio,
-        }
-    } else {
-        caps_for_by_substring(api_type, model_id)
     }
 }
 

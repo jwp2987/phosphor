@@ -376,6 +376,7 @@ pub struct Block {
     rprompt: Option<String>,
 
     /// Executor used for spawning futures in the background
+    #[allow(dead_code)] // field: set at construction or persisted
     background_executor: Arc<Background>,
 
     event_proxy: ChannelEventListener,

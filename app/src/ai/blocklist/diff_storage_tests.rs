@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use ai::agent::FileLocations;
 use ai::agent::action_result::AnyFileContent;
-use futures::FutureExt as _;
+
 use warpui::{App, Entity, ModelHandle};
 
 use super::*;

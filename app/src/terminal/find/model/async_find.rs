@@ -389,6 +389,7 @@ impl BlockFindResults {
 
     /// Counts visible matches by scanning every stored match; the ground truth for
     /// `visible_count`.
+    #[allow(dead_code)] // used only by tests
     pub(crate) fn recount_visible(&self) -> usize {
         let terminal_count: usize = self
             .terminal_matches
@@ -408,6 +409,7 @@ impl BlockFindResults {
     }
 
     /// Clears all results.
+    #[allow(dead_code)] // used by sibling unused code or shared name
     fn clear(&mut self) {
         self.terminal_matches.clear();
         self.ai_matches.clear();

@@ -33,6 +33,7 @@ pub struct ResolvedSkill {
     pub name: String,
     pub instructions: String,
     /// The full parsed skill, used for proto conversion when sending to server.
+    #[allow(dead_code)] // field: set at construction or persisted
     pub parsed_skill: ParsedSkill,
 }
 

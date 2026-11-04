@@ -18,6 +18,7 @@ pub enum CloseReason {
     /// in `windows_open`.
     Requested,
     /// The window's content was moved into another window; the app never quits.
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     ContentTransferred,
     /// A window has already closed and is no longer counted in `windows_open`.
     AlreadyClosed,

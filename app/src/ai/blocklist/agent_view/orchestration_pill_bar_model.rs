@@ -2,6 +2,9 @@
 //! bar: the set of pinned child-agent conversations (persisted so pins
 //! survive restarts) and a per-orchestrator horizontal scroll handle so
 //! the pill row's scroll offset survives switching between sibling panes.
+// Orchestration belongs to the separate moth branch (moth-parliament): kept intact on main for
+// that branch's merge, so its not-yet-wired items are allowed here rather than deleted (#1467).
+#![allow(dead_code)]
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 

@@ -459,6 +459,7 @@ impl ConversationOrTask<'_> {
     }
 
     /// Returns the request usage for the task or conversation
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub(super) fn request_usage(&self, app: &AppContext) -> Option<f32> {
         match self {
             ConversationOrTask::Task(task) => task.credits_used(),
@@ -502,6 +503,7 @@ impl ConversationOrTask<'_> {
         }
     }
 
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn run_time(&self) -> Option<String> {
         match self {
             // TODO this should really be done server-side
@@ -706,6 +708,7 @@ pub struct AgentConversationsModel {
     /// Zap: no polling after localization; only kept as a placeholder record for register_view_open/closed.
     active_data_consumers_per_window: HashMap<WindowId, HashSet<EntityId>>,
     /// Whether we have finished the initial task load
+    #[allow(dead_code)] // field: set at construction or persisted
     has_finished_initial_load: bool,
     /// Task IDs that have been manually opened from the management page.
     /// These will appear in the conversation list even if their source is not user-initiated
@@ -721,6 +724,7 @@ pub enum AgentConversationsModelEvent {
     /// Conversation status data was updated
     ConversationUpdated { kind: ConversationUpdateKind },
     /// Conversation artifacts were updated (plans, PRs, etc.)
+    #[allow(dead_code)] // field: set at construction or persisted
     ConversationArtifactsUpdated { conversation_id: AIConversationId },
     /// A task was manually opened from the management page.
     TaskManuallyOpened,
@@ -774,6 +778,7 @@ impl AgentConversationsModel {
         }
     }
 
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     pub fn is_loading(&self) -> bool {
         !self.has_finished_initial_load
     }
@@ -836,6 +841,7 @@ impl AgentConversationsModel {
     }
 
     /// Returns true if we have tasks or local conversations in this view
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn has_items(&self) -> bool {
         !self.tasks.is_empty() || !self.conversations.is_empty()
     }
@@ -1126,6 +1132,7 @@ impl AgentConversationsModel {
     /// so this emits one entry per local conversation. `filters` is accepted for call-site
     /// parity; local conversations are all Oz-harness and pass the menu's harness filter, so
     /// no server-side filtering is required here — surfaces apply their own selection policy.
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     pub fn get_entries(
         &self,
         _filters: &AgentManagementFilters,
@@ -1158,6 +1165,7 @@ impl AgentConversationsModel {
 
     /// Returns the single entry for `id`, if it is currently in memory. A narrow projection of
     /// [`Self::get_entries`] for consumers that already hold an entry id.
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     pub fn get_entry_by_id(
         &self,
         id: &AgentConversationEntryId,
@@ -1217,6 +1225,7 @@ impl AgentConversationsModel {
 
     /// Clears all stored conversation and task data in memory.
     /// This is used when logging out to ensure no conversation history persists across users.
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     pub(crate) fn reset(&mut self) {
         self.tasks.clear();
         self.conversations.clear();

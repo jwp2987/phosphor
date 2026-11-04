@@ -73,6 +73,7 @@ impl FileBasedMCPManager {
 
     /// The most recent diagnostic for the config file at `config_path`, if it failed to read or
     /// parse. `None` once that path has parsed (or been removed) successfully.
+    #[allow(dead_code)] // used only by tests
     pub fn config_diagnostic(&self, config_path: &Path) -> Option<&FileMCPConfigDiagnostic> {
         self.config_diagnostics_by_path.get(config_path)
     }
@@ -84,6 +85,7 @@ impl FileBasedMCPManager {
     /// several providers' config files are read at once and any subset of them
     /// can be broken independently.
     #[cfg(any(feature = "tui", test))]
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn config_diagnostics(&self) -> Vec<FileMCPConfigDiagnostic> {
         self.config_diagnostics_by_path
             .values()
@@ -103,6 +105,7 @@ impl FileBasedMCPManager {
     /// content hash but its sources are not, which is what lets the menu say
     /// "Claude global, Codex · my-repo" on one row.
     #[cfg(any(feature = "tui", test))]
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn file_based_servers_with_sources(&self) -> Vec<FileBasedMCPServerWithSources> {
         self.file_based_servers
             .iter()
@@ -137,6 +140,7 @@ impl FileBasedMCPManager {
 
     /// Returns a file-based installation by its stable content hash.
     #[cfg(any(feature = "tui", test))]
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn installation_by_hash(&self, hash: u64) -> Option<&TemplatableMCPServerInstallation> {
         self.file_based_servers.get(&hash)
     }
@@ -614,6 +618,7 @@ impl FileBasedMCPManager {
 }
 
 #[cfg(any(feature = "tui", test))]
+#[allow(dead_code)] // used by sibling unused code or shared name
 fn provider_sort_key(provider: MCPProvider) -> u8 {
     match provider {
         MCPProvider::Zap => 0,
@@ -634,6 +639,7 @@ pub enum FileBasedMCPServerScope {
 /// One config file that defines a file-based server.
 #[cfg(any(feature = "tui", test))]
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub struct FileBasedMCPServerSource {
     pub provider: MCPProvider,
     pub root_path: PathBuf,
@@ -643,6 +649,7 @@ pub struct FileBasedMCPServerSource {
 /// A file-based installation together with every config source defining it.
 #[cfg(any(feature = "tui", test))]
 #[derive(Clone, Debug)]
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub struct FileBasedMCPServerWithSources {
     pub installation: TemplatableMCPServerInstallation,
     pub sources: Vec<FileBasedMCPServerSource>,

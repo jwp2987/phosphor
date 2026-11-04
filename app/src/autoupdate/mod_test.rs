@@ -7,7 +7,7 @@ use crate::{
     settings::AutoupdateSettings,
 };
 
-use settings::{Setting as _, SettingsManager};
+use settings::SettingsManager;
 use warp_core::execution_mode::{AppExecutionMode, ExecutionMode};
 
 use super::*;

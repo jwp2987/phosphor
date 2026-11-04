@@ -44,6 +44,7 @@ pub enum BundledSkillActivation {
     /// Always active.
     Always,
     /// Active only in the TUI frontend.
+    #[allow(dead_code)] // used by sibling unused code or shared name
     TuiOnly,
     /// Active only when a specific Warp feature is enabled.
     RequiresFeature(FeatureFlag),

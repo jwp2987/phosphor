@@ -90,7 +90,6 @@ use crate::util::image::{MAX_IMAGE_COUNT_FOR_QUERY, MAX_IMAGE_SIZE_BYTES, resize
 use crate::util::merge_ranges;
 use crate::{BlocklistAIHistoryModel, workspace::Workspace};
 use anyhow::Result;
-use core::f32;
 use std::path::Path;
 use vim::vim::{
     BracketChar, CharacterMotion, Direction, FindCharMotion, FirstNonWhitespaceMotion,

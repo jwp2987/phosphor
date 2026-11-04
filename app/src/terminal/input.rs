@@ -991,6 +991,7 @@ struct SharedSessionInputState {
 
 struct ViewerCommandExecutionRequest {
     /// Text in buffer when command execution was requested.
+    #[allow(dead_code)] // field: set at construction or persisted
     original_buffer: String,
 }
 
@@ -2285,6 +2286,7 @@ impl DeferredRemoteOperations {
     }
 
     /// Defers the `operations` corresponding to the `block_id`.
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     fn defer(&mut self, block_id: BlockId, operations: Vec<CrdtOperation>) {
         self.deferred_ops
             .entry(block_id)

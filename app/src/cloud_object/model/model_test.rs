@@ -17,7 +17,7 @@ use crate::cloud_object::model::generic_string_model::{GenericStringModel, Gener
 use crate::cloud_object::model::view::EDITOR_TIMEOUT_DURATION_MINUTES;
 use crate::cloud_object::model::view::EditorState;
 use crate::cloud_object::model::view::ObjectStoreViewModel;
-use crate::cloud_object::model::view::UpdateTimestamp;
+
 use crate::drive::DriveIndexVariant;
 use crate::drive::folders::FolderObjectModel;
 use crate::features::FeatureFlag;
@@ -222,42 +222,6 @@ fn test_create_json_object() {
             assert_eq!(json_object.model().string_model, test_ai_fact());
         });
     })
-}
-
-fn check_cloud_folders(app: &mut App, number_of_folders: usize) {
-    ObjectStoreModel::handle(app).read(app, |model, _| {
-        assert_eq!(
-            number_of_folders,
-            model.get_all_active_and_inactive_folders().count(),
-            "we expected {} folders, and received {}",
-            number_of_folders,
-            model.get_all_active_and_inactive_folders().count()
-        );
-    });
-}
-
-fn check_cloud_workflows(app: &mut App, number_of_workflows: usize) {
-    ObjectStoreModel::handle(app).read(app, |model, _| {
-        assert_eq!(
-            number_of_workflows,
-            model.get_all_active_and_inactive_workflows().count(),
-            "we expected {} workflows, and received {}",
-            number_of_workflows,
-            model.get_all_active_and_inactive_workflows().count()
-        );
-    });
-}
-
-fn check_cloud_notebooks(app: &mut App, number_of_notebooks: usize) {
-    ObjectStoreModel::handle(app).read(app, |model, _| {
-        assert_eq!(
-            number_of_notebooks,
-            model.get_all_active_and_inactive_notebooks().count(),
-            "we expected {} notebooks, and received {}",
-            number_of_notebooks,
-            model.get_all_active_and_inactive_notebooks().count()
-        );
-    });
 }
 
 #[test]
@@ -523,25 +487,6 @@ fn test_breadcrumbs() {
             );
         });
     });
-}
-
-/// Asserts that the object with the given ID has the expected sorting timestamp.
-#[track_caller]
-fn assert_sorting_timestamp(id: ServerId, expected_ts: impl Into<ServerTimestamp>, app: &App) {
-    let sorting_timestamp = app.read(|ctx| {
-        let object = ObjectStoreModel::as_ref(ctx).get_by_uid(&id.uid())?;
-        ObjectStoreViewModel::as_ref(ctx).object_sorting_timestamp(
-            object,
-            UpdateTimestamp::Revision,
-            ctx,
-        )
-    });
-    assert_eq!(
-        sorting_timestamp,
-        Some(expected_ts.into()),
-        "Unexpected timestamp for {}",
-        id.uid()
-    );
 }
 
 #[test]

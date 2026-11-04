@@ -222,6 +222,7 @@ impl RangeInModel for &mut Secret {
 pub type SecretAndHandle<'a> = (SecretHandle, &'a Secret);
 
 impl Secret {
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub(super) fn set_is_obfuscated(&mut self, is_obfuscated: IsObfuscated) {
         self.is_obfuscated = is_obfuscated
     }
@@ -455,6 +456,7 @@ impl SecretMap {
         handle.zip(handle.and_then(|h| self.get_by_handle(&h)))
     }
 
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn iter(&self) -> impl Iterator<Item = (&SecretHandle, &Secret)> {
         self.secrets.iter()
     }

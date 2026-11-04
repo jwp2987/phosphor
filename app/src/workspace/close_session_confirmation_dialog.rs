@@ -27,6 +27,7 @@ use crate::{
 /// Describes the action which opened the close session confirmation dialog
 pub enum OpenDialogSource {
     /// Close a specific pane
+    #[allow(dead_code)] // used only by tests
     ClosePane {
         pane_group_id: EntityId,
         pane_id: PaneId,

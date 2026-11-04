@@ -167,12 +167,14 @@ impl EnvVarCollectionManager {
         }
     }
 
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     pub fn reset(&mut self) {
         self.panes_by_hashed_id.clear();
     }
 }
 
 struct EnvVarCollectionPaneData {
+    #[allow(dead_code)] // field: set at construction or persisted
     env_var_collection_id: SyncId,
     window_id: WindowId,
     handle: WeakViewHandle<EnvVarCollectionView>,

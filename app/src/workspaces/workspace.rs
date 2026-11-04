@@ -6,7 +6,7 @@ use crate::{
     auth::UserUid, pricing::StripeSubscriptionPlan, server::ids::ServerId,
     settings::AgentModeCommandExecutionPredicate,
 };
-use chrono::Utc;
+
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::{cmp::Ordering, path::PathBuf};

@@ -38,6 +38,7 @@ pub trait SubagentExt {
     fn is_summarization(&self) -> bool;
     fn is_conversation_search(&self) -> bool;
     fn is_warp_documentation_search(&self) -> bool;
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     fn type_name(&self) -> &'static str;
 }
 

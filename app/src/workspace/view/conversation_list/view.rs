@@ -143,6 +143,7 @@ pub enum Event {
 }
 
 pub struct ConversationListView {
+    #[allow(dead_code)] // field: set at construction or persisted
     window_id: WindowId,
     view_id: EntityId,
     view_model: ModelHandle<ConversationListViewModel>,

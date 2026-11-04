@@ -67,6 +67,7 @@ pub enum DrivePanelEvent {
         in_subshell: bool,
     },
     OpenSearch,
+    #[allow(dead_code)] // field: set at construction or persisted
     OpenSharedObjectsCreationDeniedModal(DriveObjectType, ServerId),
     OpenAIFactCollection,
     OpenMCPServerCollection,

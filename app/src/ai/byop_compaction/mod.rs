@@ -422,7 +422,6 @@ impl TurnCompactionState {
 pub mod consts {
     pub const PRUNE_MINIMUM: usize = 20_000;
     pub const PRUNE_PROTECT: usize = 40_000;
-    pub const TOOL_OUTPUT_MAX_CHARS: usize = 2_000;
     pub const DEFAULT_TAIL_TURNS: usize = 2;
     pub const MIN_PRESERVE_RECENT_TOKENS: usize = 2_000;
     pub const MAX_PRESERVE_RECENT_TOKENS: usize = 8_000;

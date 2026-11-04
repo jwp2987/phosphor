@@ -1,6 +1,9 @@
 //! Horizontal pill bar shown above the agent view header listing the
 //! orchestrator and its child agents. Clicking a pill switches the
 //! active pane to that agent's conversation.
+// Orchestration belongs to the separate moth branch (moth-parliament): kept intact on main for
+// that branch's merge, so its not-yet-wired items are allowed here rather than deleted (#1467).
+#![allow(dead_code)]
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -26,6 +29,7 @@ use warpui::platform::{Cursor, LineStyle};
 use warpui::text_layout::{
     ClipConfig, ClipDirection, ClipStyle, DEFAULT_TOP_BOTTOM_RATIO, StyleAndFont, TextStyle,
 };
+#[allow(unused_imports)]
 use warpui::{
     AppContext, Entity, EntityId, ModelHandle, SingletonEntity, TypedActionView, View, ViewContext,
     ViewHandle,

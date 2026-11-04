@@ -226,6 +226,7 @@ impl TerminalDriver {
     }
 
     /// Return a snapshot of the block with the given ID.
+    #[allow(dead_code)] // used only by tests
     pub fn block_snapshot(&self, block_id: &BlockId, ctx: &AppContext) -> Option<SerializedBlock> {
         let terminal = self.terminal_view.as_ref(ctx);
         let model = terminal.model.lock();
@@ -356,6 +357,7 @@ impl TerminalDriver {
     }
 
     /// Returns the shell type of the active terminal session, if known.
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     pub fn active_session_shell_type(&self, ctx: &AppContext) -> Option<ShellType> {
         self.terminal_view
             .read(ctx, |terminal, app| terminal.active_session_shell_type(app))
@@ -366,6 +368,7 @@ impl TerminalDriver {
     /// Uses the [`ShellDialect::shell_escape`] logic (backslash escaping, with
     /// control characters spelled per shell: `$'..'` for bash/zsh, fish's `\xHH`,
     /// pwsh `$([char]..)`).
+    #[allow(dead_code)] // used only by tests
     fn build_cd_command(&self, target: &str, ctx: &AppContext) -> String {
         let shell_dialect = self.terminal_view.read(ctx, |terminal, app| {
             terminal
@@ -378,6 +381,7 @@ impl TerminalDriver {
     }
 
     /// Change directory within the active terminal session.
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     pub fn cd(
         &mut self,
         target: &str,

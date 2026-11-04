@@ -917,6 +917,7 @@ pub(crate) fn unsent_actions_block(
 
 impl MonitoredCompletionFacts {
     /// Whether the finished command is reported to the model with a follow-up request now.
+    #[allow(dead_code)] // used only by tests
     pub(crate) fn should_follow_up(&self) -> bool {
         self.decision() == MonitoredCompletionDecision::Send
     }

@@ -62,7 +62,9 @@
 use super::facts::{FocusSnap, RouteFacts, SshPhase, Stamp, SubshellPhase};
 use super::{DestFacts, Destination, DropReason, EntryKind, GateKind, Origin, SignalKind};
 
-pub use super::gates::{GateSignalPlan, signal_plan};
+// Only table_tests.rs's signal-plan matrix reads these through `use super::*` (#1467).
+#[cfg(test)]
+use super::gates::{GateSignalPlan, signal_plan};
 
 /// What kind of input is being decided. The class is the input's shape; where it came from is
 /// [`Intent::origin`].
@@ -350,16 +352,19 @@ pub enum Row {
     H1,
     H2,
     H3,
+    #[allow(dead_code)] // used by sibling unused code or shared name
     H3b,
     H4,
     H5,
     H6,
     H7,
+    #[allow(dead_code)] // used by sibling unused code or shared name
     H7b,
     H8,
     H8Queue,
     H10,
     P1a,
+    #[allow(dead_code)] // used by sibling unused code or shared name
     P1b,
     P1c,
     P1d,
@@ -371,6 +376,7 @@ pub enum Row {
     D2,
     D2b,
     D3,
+    #[allow(dead_code)] // used by sibling unused code or shared name
     D4,
     D5,
     D6,

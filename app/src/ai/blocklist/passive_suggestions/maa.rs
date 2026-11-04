@@ -590,11 +590,13 @@ struct StreamExtractionResult {
 }
 
 enum ExtractedSuggestion {
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     Prompt {
         prompt: String,
         label: Option<String>,
         is_trigger_irrelevant: bool,
     },
+    #[allow(dead_code)] // used by sibling unused code or shared name
     CodeDiff {
         apply_file_diffs: agent_proto::message::tool_call::ApplyFileDiffs,
     },

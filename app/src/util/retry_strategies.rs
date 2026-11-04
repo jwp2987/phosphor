@@ -66,20 +66,25 @@ pub(crate) fn is_transient_http_error(e: &anyhow::Error) -> bool {
 }
 
 /// Maximum total attempts per operation (initial attempt plus retries on transient errors).
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub(crate) const MAX_ATTEMPTS: usize = 3;
 
 /// Base backoff between retry attempts; each subsequent attempt multiplies by [`BACKOFF_FACTOR`].
+#[allow(dead_code)] // used by sibling unused code or shared name
 const INITIAL_BACKOFF: Duration = Duration::from_millis(500);
 
 /// Exponential growth factor for retry backoff.
+#[allow(dead_code)] // used by sibling unused code or shared name
 const BACKOFF_FACTOR: f32 = 2.0;
 
 /// Maximum jitter as a fraction of the backoff interval.
+#[allow(dead_code)] // used by sibling unused code or shared name
 const BACKOFF_JITTER: f32 = 0.3;
 
 /// Ceiling on the backoff exponent, so a caller with a larger budget than
 /// [`MAX_ATTEMPTS`] can't grow the interval without bound (or overflow the
 /// multiplication). At [`BACKOFF_FACTOR`] this caps a single wait at ~32s.
+#[allow(dead_code)] // used by sibling unused code or shared name
 const BACKOFF_MAX_EXPONENT: i32 = 6;
 
 /// Jittered exponential backoff to wait after `attempts_made` failed attempts, before
@@ -87,6 +92,7 @@ const BACKOFF_MAX_EXPONENT: i32 = 6;
 ///
 /// `attempts_made` is 1-based: the wait after the first failure is [`INITIAL_BACKOFF`],
 /// and each subsequent wait multiplies by [`BACKOFF_FACTOR`].
+#[allow(dead_code)] // used by sibling unused code or shared name
 fn backoff_after_attempts(attempts_made: usize) -> Duration {
     let exponent = i32::try_from(attempts_made.saturating_sub(1))
         .unwrap_or(i32::MAX)
@@ -105,6 +111,7 @@ fn backoff_after_attempts(attempts_made: usize) -> Duration {
 /// Transient errors (per [`is_transient_http_error`]) are retried up to [`MAX_ATTEMPTS`]
 /// total. Permanent errors return immediately. A warning is logged between attempts so
 /// retries are visible in logs.
+#[allow(dead_code)] // used only by tests
 pub(crate) async fn with_bounded_retry<T, F, Fut>(operation: &str, attempt_fn: F) -> Result<T>
 where
     F: FnMut() -> Fut,
@@ -126,6 +133,7 @@ where
 /// `is_transient_graphql_or_http_error`, is *not* ported: it downcasts to `GraphQLError`,
 /// which is dropped-cloud transport this fork does not have. The combinator itself is
 /// transport-agnostic and is what the pin's two `with_bounded_retry_using` tests pin down.
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub(crate) async fn with_bounded_retry_using<T, F, Fut>(
     operation: &str,
     max_attempts: usize,

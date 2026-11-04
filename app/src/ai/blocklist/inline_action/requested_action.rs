@@ -175,6 +175,7 @@ impl RenderableAction {
         self
     }
 
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn with_content_item_spacing(mut self) -> Self {
         self.should_override_with_content_item_spacing = true;
         self

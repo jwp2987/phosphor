@@ -61,6 +61,7 @@ use crate::ai::blocklist::history_model::BlocklistAIHistoryModel;
 
 /// Per-request outcome of a StartAgent dispatch.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // used only by tests
 pub enum StartAgentOutcome {
     Started {
         agent_id: String,
@@ -72,16 +73,11 @@ pub enum StartAgentOutcome {
 /// Opaque, monotonically increasing request identifier.
 /// Disambiguates parallel in-flight StartAgent requests.
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq, Default)]
+#[allow(dead_code)] // used only by tests
 pub struct StartAgentRequestId(u64);
 
-impl StartAgentRequestId {
-    #[cfg(test)]
-    pub const fn from_raw_for_test(value: u64) -> Self {
-        Self(value)
-    }
-}
-
 #[derive(Clone)]
+#[allow(dead_code)] // used by warp_tui (tui feature)
 pub struct StartAgentRequest {
     pub id: StartAgentRequestId,
     pub name: String,
@@ -92,18 +88,21 @@ pub struct StartAgentRequest {
     pub parent_run_id: Option<String>,
 }
 
+#[allow(dead_code)] // used only by tests
 struct PendingStartAgent {
     sender: async_channel::Sender<StartAgentOutcome>,
 }
 
 /// One per session surface (mirroring the pin), not a singleton -- a caller
 /// creates its own via `ctx.add_model(StartAgentExecutor::new)`.
+#[allow(dead_code)] // used by warp_tui (tui feature)
 pub struct StartAgentExecutor {
     pending: HashMap<StartAgentRequestId, PendingStartAgent>,
     next_request_id: u64,
 }
 
 impl StartAgentExecutor {
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn new(_ctx: &mut ModelContext<Self>) -> Self {
         Self {
             pending: HashMap::new(),
@@ -111,6 +110,7 @@ impl StartAgentExecutor {
         }
     }
 
+    #[allow(dead_code)] // used only by tests
     fn next_request_id(&mut self) -> StartAgentRequestId {
         let id = self.next_request_id;
         self.next_request_id = self.next_request_id.wrapping_add(1);
@@ -120,6 +120,7 @@ impl StartAgentExecutor {
     /// Dispatch a pre-validated StartAgent request. Returns a receiver
     /// for the resulting [`StartAgentOutcome`].
     #[allow(clippy::too_many_arguments)]
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     pub fn dispatch(
         &mut self,
         name: String,
@@ -155,6 +156,7 @@ impl StartAgentExecutor {
     /// the (possibly already-deleted-by-the-time-you-read-this) ephemeral
     /// conversation the caller created to hold the failure, used only to
     /// decide whether it needs cleaning up.
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     pub fn resolve_error(
         &mut self,
         request_id: StartAgentRequestId,
@@ -181,6 +183,7 @@ impl StartAgentExecutor {
 /// `TransientError` (a recovery is in flight) keep their chip so the user can
 /// resolve them or let the retry complete. Ported verbatim from the pin --
 /// `ConversationStatus` has the same variants here.
+#[allow(dead_code)] // used only by tests
 fn should_cleanup_failed_child_launch(status: &ConversationStatus) -> bool {
     match status {
         ConversationStatus::Error | ConversationStatus::Cancelled => true,
@@ -196,6 +199,7 @@ impl Entity for StartAgentExecutor {
     type Event = StartAgentExecutorEvent;
 }
 
+#[allow(dead_code)] // used only by tests
 pub enum StartAgentExecutorEvent {
     CreateAgent(Box<StartAgentRequest>),
     /// A child agent failed at the launch stage (never started). The owning

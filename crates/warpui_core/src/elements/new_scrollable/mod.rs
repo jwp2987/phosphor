@@ -277,6 +277,7 @@ impl ScrollableState {
         }
     }
 
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     fn scroll_offset(&self) -> Vector2F {
         match self {
             Self::BothAxes { config, .. } => config.scroll_offset(),

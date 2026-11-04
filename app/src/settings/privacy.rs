@@ -1,16 +1,14 @@
 use std::fmt::Display;
 use std::sync::Arc;
 
-use anyhow::Result;
 use regex::Regex;
 use warp_core::report_if_error;
 use warp_core::user_preferences::GetUserPreferences as _;
 use warpui::{AppContext, Entity, ModelContext, SingletonEntity, UpdateModel};
 
-use crate::ai::blocklist::telemetry_banner::should_collect_ai_ugc_telemetry;
 use crate::auth::AuthState;
 use crate::auth::AuthStateProvider;
-use crate::auth::SyncedUserSettings;
+
 use crate::cloud_object::model::persistence::ObjectStoreModel;
 use crate::report_settings_write_error;
 // Zap Wave 3-1: the `AuthClient` trait + `MockAuthClient` were removed entirely along with
@@ -361,32 +359,6 @@ impl PrivacySettings {
         // settings are only saved locally; this entry point is a no-op.
     }
 
-    fn overwrite_local_settings_if_cloud_disabled(
-        &mut self,
-        fetched_settings: SyncedUserSettings,
-        ctx: &mut ModelContext<Self>,
-    ) {
-        // For now, only overwrite the user's locally stored setting if the cloud version
-        // has is_crash_reporting disabled. Until we implement a more reliable retry
-        // mechanism for update settings requests, in addition to possibly a UI for the
-        // user to resolve the conflicting settings themselves, default to "safe" behavior.
-        // Namely, we want to avoid incidentally overwriting is_crash_reporting_enabled to
-        // `true`.
-        if self.is_crash_reporting_enabled && !fetched_settings.is_crash_reporting_enabled {
-            self.set_is_crash_reporting_enabled(fetched_settings.is_crash_reporting_enabled, ctx);
-        }
-
-        // For now, only overwrite the user's locally stored setting if the cloud version
-        // has is_telemetry_enabled disabled. Until we implement a more reliable retry
-        // mechanism for update settings requests, in addition to possibly a UI for the
-        // user to resolve the conflicting settings themselves, default to "safe" behavior.
-        // Namely, we want to avoid incidentally overwriting is_telemetry_enabled to
-        // `true`.
-        if self.is_telemetry_enabled && !fetched_settings.is_telemetry_enabled {
-            self.set_is_telemetry_enabled(fetched_settings.is_telemetry_enabled, ctx);
-        }
-    }
-
     /// Constructor for tests only.
     #[cfg(any(test, feature = "test-util"))]
     pub fn mock(_ctx: &mut ModelContext<Self>) -> Self {
@@ -632,12 +604,6 @@ impl PrivacySettings {
             }
         }
     }
-
-    /// openWarp closed-source telemetry strip-out P3: privacy settings are no longer synced to
-    /// upstream cloud settings.
-    /// After strip-out, this is purely local persistence (the caller still writes to
-    /// settings.toml + the warp_drive local cache), with no outbound sync.
-    fn update_server_with_local_settings(&self, _ctx: &mut ModelContext<Self>) {}
 
     /// We wait until zap drive prefs have loaded and then either
     /// 1) use them as the data store for is_telemetry_enabled and is_crash_reporting_enabled, if those

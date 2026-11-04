@@ -47,6 +47,7 @@ impl McpAppExitShutdown {
     }
 
     /// How many servers are awaiting confirmation that they stopped.
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn pending(&self) -> usize {
         self.pending.len()
     }

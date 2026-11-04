@@ -14,6 +14,9 @@
 //! confirmation ("echo") once a turn's output shows the event was seen.
 //! None of this talks to a remote service — "echo" here means "came back
 //! out in this conversation's own output", not a network round trip.
+// Orchestration belongs to the separate moth branch (moth-parliament): kept intact on main for
+// that branch's merge, so its not-yet-wired items are allowed here rather than deleted (#1467).
+#![allow(dead_code)]
 use std::collections::{HashMap, HashSet};
 
 use agent_proto as api;

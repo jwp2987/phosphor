@@ -530,6 +530,7 @@ impl DualAxisConfig {
         }
     }
 
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     pub(super) fn scroll_offset(&self) -> Vector2F {
         match self {
             Self::Manual {

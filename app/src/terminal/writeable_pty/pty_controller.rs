@@ -2213,6 +2213,7 @@ impl<T: EventLoopSender> PtyController<T> {
     /// ConPTY prompt hold (#1349): the session's shell signals its line editor being ready, so
     /// the activation fallback waits for that signal for the (long) give-up cap instead of
     /// firing 50 ms after the precmd and releasing held keys ahead of it.
+    #[allow(dead_code)] // used only by tests
     pub fn set_conpty_prompt_hold_signals(
         &mut self,
         wait: Option<std::time::Duration>,

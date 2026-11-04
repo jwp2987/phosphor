@@ -254,6 +254,7 @@ pub struct BlocklistAIInputModel {
     /// [`BlocklistAIContextModel::has_locking_attachment`]).
     ai_context_model: ModelHandle<BlocklistAIContextModel>,
 
+    #[allow(dead_code)] // field: set at construction or persisted
     terminal_view_id: EntityId,
 
     /// View-supplied policy for decisions the model cannot make view-agnostically:
@@ -2396,6 +2397,7 @@ pub enum EnterVerdictWait {
 /// Decides [`EnterVerdictWait`] from whether the verdict is still pending and how much compute
 /// the classifier has spent on it. Never "keep in editor": a slow verdict is no reason to swallow
 /// the Enter.
+#[allow(dead_code)] // used only by tests
 pub fn enter_verdict_wait_decision(
     verdict_pending: bool,
     classifier_compute: Duration,

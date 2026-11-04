@@ -179,6 +179,7 @@ pub enum WorkflowModalEvent {
     Close,
     UpdatedWorkflow(SyncId),
     AiAssistError(String),
+    #[allow(dead_code)] // used only by tests
     AiAssistUpgradeError(Option<ServerId>, UserUid),
     ViewInWarpDrive(WarpDriveItemId),
 }
@@ -419,6 +420,7 @@ impl WorkflowModal {
     }
 
     /// Populate the modal with the data of a [`Workflow`] struct
+    #[allow(dead_code)] // used only by tests
     fn populate(&mut self, workflow: Workflow, ctx: &mut ViewContext<Self>) {
         // Sanitize the arguments generated for the workflow by removing any illegal characters.
         // Necessary since Zap AI command search sometimes provides arguments in an invalid argument format.

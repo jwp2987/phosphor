@@ -161,6 +161,7 @@ pub struct AIDocumentView {
     original_terminal_view: Option<ViewHandle<TerminalView>>,
     // Version menu state
     version_menu: ViewHandle<Menu<AIDocumentAction>>,
+    #[allow(dead_code)] // field: set at construction or persisted
     sync_button_mouse_state: MouseStateHandle,
     update_plan_button: ViewHandle<ActionButton>,
     restore_button: ViewHandle<ActionButton>,

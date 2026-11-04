@@ -42,6 +42,7 @@ const CODEX_SESSIONS_SUBDIR: &str = "sessions";
 /// The transcript is the parsed JSONL content of the rollout file; codex's resume
 /// path re-reads this JSONL line by line.
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub(crate) struct CodexTranscriptEnvelope {
     /// The directory the codex session started in (recovered from the `SessionMeta` line).
     pub(crate) cwd: PathBuf,
@@ -59,6 +60,7 @@ pub(crate) struct CodexTranscriptEnvelope {
 }
 
 impl CodexTranscriptEnvelope {
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub(crate) fn new(session_id: Uuid, meta: CodexSessionMetadata, entries: Vec<Value>) -> Self {
         Self {
             cwd: meta.cwd,
@@ -72,6 +74,7 @@ impl CodexTranscriptEnvelope {
 
 /// Session-level metadata pulled from the rollout's `SessionMeta` line.
 #[derive(Clone, Debug, Default, PartialEq)]
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub(crate) struct CodexSessionMetadata {
     pub(crate) cwd: PathBuf,
     pub(crate) codex_version: Option<String>,
@@ -131,6 +134,7 @@ fn read_subdirs(parent: &Path) -> impl Iterator<Item = PathBuf> + use<> {
 }
 
 /// Pull `cwd` and `cli_version` out of the first JSONL line if it's a `SessionMeta`.
+#[allow(dead_code)] // used only by tests
 pub(crate) fn parse_session_meta(first: Option<&Value>) -> Option<CodexSessionMetadata> {
     let entry = first?;
     if entry.get("type").and_then(|v| v.as_str()) != Some("session_meta") {
@@ -159,6 +163,7 @@ pub(crate) fn parse_session_meta(first: Option<&Value>) -> Option<CodexSessionMe
 /// YYYY/MM/DD and `<ts>` come from `envelope.session_start_timestamp`. Falls back to
 /// today's UTC date if absent — codex's lookup is by UUID so the precise path doesn't
 /// matter for resume to work.
+#[allow(dead_code)] // used only by tests
 pub(crate) fn write_envelope(
     envelope: &CodexTranscriptEnvelope,
     sessions_root: &Path,

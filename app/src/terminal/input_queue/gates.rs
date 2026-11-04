@@ -198,6 +198,7 @@ impl GateKind {
 /// is the table's form, with the cases the legacy code handles outside the queue (the hand-off's
 /// deferred Enter, the subshell bootstrap stash, the held keys' void) named.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // used only by tests
 pub enum GateSignalPlan {
     /// The paste is cancelled, the keys typed before the signal are delivered, then the signal.
     CancelPasteThenFlush,
@@ -226,6 +227,7 @@ pub enum GateSignalPlan {
 /// Interrupt and Eof are what the legacy code does; the Suspend and Quit columns are the deliberate
 /// OD-1 change (^Z and ^\ jump the queue like ^C). The ssh setup window is NOT a case of this
 /// function: inside it the table's P1a row holds the signal instead (OD-5).
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub fn signal_plan(gate: GateKind, signal: SignalKind) -> GateSignalPlan {
     let eof = signal == SignalKind::Eof;
     match gate {

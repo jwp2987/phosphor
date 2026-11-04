@@ -195,6 +195,7 @@ pub enum MenuItemLabel {
         secondary_text: String,
     },
     // Label with primary and secondary text stacked vertically (follows dropdown pattern).
+    #[allow(dead_code)] // used by sibling unused code or shared name
     StackedText {
         primary_text: String,
         secondary_text: String,

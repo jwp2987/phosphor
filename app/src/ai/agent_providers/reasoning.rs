@@ -242,9 +242,6 @@ fn is_gemini_reasoning_model(id: &str) -> bool {
 pub enum ReasoningInterleavedField {
     /// Top-level `reasoning_content` string field.
     ReasoningContent,
-    /// Top-level `reasoning_details` array field (reserved; the current serialization
-    /// path falls back).
-    ReasoningDetails,
 }
 
 /// Substring match table of model_ids for Chinese / third-party OpenAI-compatible

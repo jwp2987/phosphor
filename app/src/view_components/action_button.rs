@@ -155,6 +155,7 @@ pub enum TooltipAlignment {
 /// A special callout that may be attached to buttons, usually for announcing new features.
 pub enum Callout {
     /// This button is for a beta feature.
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     Beta,
 }
 

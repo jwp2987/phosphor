@@ -4,15 +4,14 @@ use crate::cloud_object::{
 };
 use crate::drive::folders::{FolderObject, FolderObjectModel};
 use crate::drive::{DriveIndexVariant, ObjectTypeAndId};
-use crate::env_vars::{EnvVarCollection, EnvVarCollectionObject};
+use crate::env_vars::EnvVarCollectionObject;
 use crate::notebooks::NotebookObject;
 use crate::persistence::ModelEvent;
 use crate::server::ids::{HashableId, ObjectUid, SyncId, ToServerId};
 use crate::workflows::WorkflowObject;
-use crate::workflows::workflow::Workflow;
+
 use crate::workflows::workflow_enum::WorkflowEnumObject;
 
-use itertools::Itertools;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::mpsc::SyncSender;
@@ -22,14 +21,8 @@ use warpui::{AppContext, Entity, ModelContext, SingletonEntity};
 use crate::cloud_object::StoredObject;
 use crate::util::sync::Condition;
 use chrono::{DateTime, Utc};
-use rand::Rng;
+
 use warp_core::features::FeatureFlag;
-
-// Equivalent to 24 hours
-const MIN_MINUTES_UNTIL_NEXT_FORCE_REFRESH: i64 = 1440;
-
-// Equivalent to 36 hours
-const MAX_MINUTES_UNTIL_NEXT_FORCE_REFRESH: i64 = 2160;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateSource {
@@ -257,46 +250,6 @@ impl ObjectStoreModel {
         }
         ctx.notify();
         (sync_ids_and_types, count)
-    }
-
-    fn delete_object_and_descendants_internal(
-        &mut self,
-        uid: ObjectUid,
-        accumulator: &mut Vec<(SyncId, ObjectIdType)>,
-        ctx: &mut ModelContext<Self>,
-    ) {
-        if let Some(object) = self.objects_by_id.remove(&uid) {
-            accumulator.push((
-                object.sync_id(),
-                object.object_type_and_id().object_id_type(),
-            ));
-            ctx.emit(ObjectStoreEvent::ObjectDeleted {
-                type_and_id: object.object_type_and_id(),
-                folder_id: object.metadata().folder_id,
-            });
-            if object.object_type() == ObjectType::Folder {
-                let contents = self
-                    .objects_by_id
-                    .iter()
-                    .filter_map(|(child_uid, child)| {
-                        if child
-                            .metadata()
-                            .folder_id
-                            .is_some_and(|parent| parent.uid() == uid)
-                        {
-                            Some(child_uid.clone())
-                        } else {
-                            None
-                        }
-                    })
-                    // Collect into a temporary Vec so that we can can call this mutable method
-                    // recursively.
-                    .collect_vec();
-                for child in contents {
-                    self.delete_object_and_descendants_internal(child, accumulator, ctx);
-                }
-            }
-        }
     }
 
     /// Update an object's location (folder and owner). This is an implementation detail of

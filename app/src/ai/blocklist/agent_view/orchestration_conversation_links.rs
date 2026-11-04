@@ -1,3 +1,6 @@
+// Orchestration belongs to the separate moth branch (moth-parliament): kept intact on main for
+// that branch's merge, so its not-yet-wired items are allowed here rather than deleted (#1467).
+#![allow(dead_code)]
 use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::Vector2F;
 use warp_core::ui::appearance::Appearance;

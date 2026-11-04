@@ -25,6 +25,6 @@ mod reqwest_impl;
 mod sse_client;
 
 #[allow(unused_imports)]
-pub use client_side_sse::{ExponentialBackoff, FixedInterval, NeverRetry, SseRetryPolicy};
+pub use client_side_sse::{ExponentialBackoff, FixedInterval, SseRetryPolicy};
 #[allow(unused_imports)]
 pub use sse_client::{SseClient, SseClientConfig, SseClientTransport, SseTransportError};

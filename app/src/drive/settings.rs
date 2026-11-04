@@ -4,8 +4,6 @@ use settings::{
 
 use super::DriveSortOrder;
 
-pub const HAS_AUTO_OPENED_WELCOME_FOLDER: &str = "HasAutoOpenedWelcomeFolder";
-
 define_settings_group!(WarpDriveSettings, settings: [
     sorting_choice: WarpDriveSortingChoice {
         type: DriveSortOrder,

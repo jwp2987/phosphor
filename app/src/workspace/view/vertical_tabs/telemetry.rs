@@ -1,5 +1,3 @@
-use serde_json::{Value, json};
-
 use crate::workspace::tab_settings::{
     VerticalTabsCompactSubtitle, VerticalTabsDisplayGranularity, VerticalTabsPrimaryInfo,
     VerticalTabsTabItemMode, VerticalTabsViewMode,
@@ -9,17 +7,26 @@ use crate::workspace::tab_settings::{
 /// along with the new value they picked.
 #[derive(Clone, Copy, Debug)]
 pub enum VerticalTabsDisplayOption {
+    #[allow(dead_code)] // field: set at construction or persisted
     DisplayGranularity(VerticalTabsDisplayGranularity),
+    #[allow(dead_code)] // field: set at construction or persisted
     TabItemMode(VerticalTabsTabItemMode),
+    #[allow(dead_code)] // field: set at construction or persisted
     ViewMode(VerticalTabsViewMode),
+    #[allow(dead_code)] // field: set at construction or persisted
     PrimaryInfo(VerticalTabsPrimaryInfo),
+    #[allow(dead_code)] // field: set at construction or persisted
     CompactSubtitle(VerticalTabsCompactSubtitle),
+    #[allow(dead_code)] // field: set at construction or persisted
     ShowPrLink(bool),
+    #[allow(dead_code)] // field: set at construction or persisted
     ShowDiffStats(bool),
+    #[allow(dead_code)] // field: set at construction or persisted
     ShowDetailsOnHover(bool),
 }
 
 impl VerticalTabsDisplayOption {
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     fn option_name(&self) -> &'static str {
         match self {
             Self::DisplayGranularity(_) => "display_granularity",
@@ -30,30 +37,6 @@ impl VerticalTabsDisplayOption {
             Self::ShowPrLink(_) => "show_pr_link",
             Self::ShowDiffStats(_) => "show_diff_stats",
             Self::ShowDetailsOnHover(_) => "show_details_on_hover",
-        }
-    }
-
-    fn serialized_value(&self) -> Value {
-        match self {
-            Self::DisplayGranularity(VerticalTabsDisplayGranularity::Panes) => json!("panes"),
-            Self::DisplayGranularity(VerticalTabsDisplayGranularity::Tabs) => json!("tabs"),
-            Self::TabItemMode(VerticalTabsTabItemMode::FocusedSession) => json!("focused_session"),
-            Self::TabItemMode(VerticalTabsTabItemMode::Summary) => json!("summary"),
-            Self::ViewMode(VerticalTabsViewMode::Compact) => json!("compact"),
-            Self::ViewMode(VerticalTabsViewMode::Expanded) => json!("expanded"),
-            Self::PrimaryInfo(VerticalTabsPrimaryInfo::Command) => json!("command"),
-            Self::PrimaryInfo(VerticalTabsPrimaryInfo::WorkingDirectory) => {
-                json!("working_directory")
-            }
-            Self::PrimaryInfo(VerticalTabsPrimaryInfo::Branch) => json!("branch"),
-            Self::CompactSubtitle(VerticalTabsCompactSubtitle::Branch) => json!("branch"),
-            Self::CompactSubtitle(VerticalTabsCompactSubtitle::WorkingDirectory) => {
-                json!("working_directory")
-            }
-            Self::CompactSubtitle(VerticalTabsCompactSubtitle::Command) => json!("command"),
-            Self::ShowPrLink(value) => json!(value),
-            Self::ShowDiffStats(value) => json!(value),
-            Self::ShowDetailsOnHover(value) => json!(value),
         }
     }
 }
@@ -73,6 +56,7 @@ pub enum VerticalTabsChipEntrypoint {
 }
 
 impl VerticalTabsChipEntrypoint {
+    #[allow(dead_code)] // used by sibling unused code or shared name
     fn serialized(&self) -> &'static str {
         match self {
             Self::Pane => "pane",
@@ -85,13 +69,16 @@ impl VerticalTabsChipEntrypoint {
 #[derive(Debug)]
 pub enum VerticalTabsTelemetryEvent {
     /// The user updated a display option in the vertical tabs settings popup.
+    #[allow(dead_code)] // field: set at construction or persisted
     DisplayOptionChanged(VerticalTabsDisplayOption),
     /// The user clicked the diff stats chip on a vertical tabs row or the detail sidecar.
     DiffStatsChipClicked {
+        #[allow(dead_code)] // field: set at construction or persisted
         entrypoint: VerticalTabsChipEntrypoint,
     },
     /// The user clicked the GitHub PR chip on a vertical tabs row or the detail sidecar.
     PrChipClicked {
+        #[allow(dead_code)] // field: set at construction or persisted
         entrypoint: VerticalTabsChipEntrypoint,
     },
 }

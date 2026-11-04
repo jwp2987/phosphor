@@ -191,6 +191,7 @@ impl SettingsPage {
 #[derive(PartialEq, Eq)]
 pub enum SettingsPageEvent {
     FocusModal,
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     Pane(PaneEventWrapper),
     // Zap Wave 7-3: `EnvironmentSetupModeSelectorToggled` /
     // `AgentAssistedEnvironmentModalToggled` were removed along with the ambient-agent UI
@@ -201,6 +202,7 @@ pub enum SettingsPageEvent {
 /// The actual handling converts this to the real PaneEvent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PaneEventWrapper {
+    #[allow(dead_code)] // used by sibling unused code or shared name
     Close,
 }
 

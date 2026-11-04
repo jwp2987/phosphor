@@ -1026,33 +1026,6 @@ impl AIExecutionProfilesModel {
         );
     }
 
-    pub fn set_autosync_plans_to_warp_drive(
-        &mut self,
-        profile_id: ClientProfileId,
-        enabled: bool,
-        ctx: &mut ModelContext<Self>,
-    ) {
-        self.edit_profile_internal(
-            profile_id,
-            |profile| {
-                if profile.autosync_plans_to_warp_drive != enabled {
-                    profile.autosync_plans_to_warp_drive = enabled;
-                    return true;
-                }
-                false
-            },
-            ctx,
-        );
-
-        send_telemetry_from_ctx!(
-            TelemetryEvent::AIExecutionProfileSettingUpdated {
-                setting_type: "plan_auto_sync".to_string(),
-                setting_value: format!("{enabled}"),
-            },
-            ctx
-        );
-    }
-
     pub fn set_profile_name(
         &mut self,
         profile_id: ClientProfileId,
@@ -1714,17 +1687,6 @@ impl AIExecutionProfilesModel {
                 },
                 ctx,
             );
-        }
-    }
-
-    // We don't want stale client ids in our map. We won't be able to find the backing cloud object when
-    // an edit occurs.
-    pub fn replace_client_id_with_server_id(&mut self, server_id: SyncId, client_id: SyncId) {
-        for (_, sync_id) in self.profile_id_to_sync_id.iter_mut() {
-            if *sync_id == client_id {
-                *sync_id = server_id;
-                log::info!("Updated profile id mapping after creating a new execution profile");
-            }
         }
     }
 

@@ -255,6 +255,7 @@ pub enum SharedSessionActionSource {
 struct EventNumber(usize);
 
 impl EventNumber {
+    #[allow(dead_code)] // used by sibling unused code or shared name
     fn new() -> Self {
         Self(0)
     }
@@ -263,6 +264,7 @@ impl EventNumber {
     /// it for the next usage. The event number returned
     /// is the event number that should be used for the next
     /// event to send to the server.
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     pub fn advance(&mut self) -> usize {
         let next = self.0;
         self.0 += 1;

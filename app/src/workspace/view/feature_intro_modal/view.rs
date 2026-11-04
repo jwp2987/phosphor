@@ -19,7 +19,9 @@ use crate::view_components::action_button::{
     ActionButton, ActionButtonTheme, ButtonSize, NakedTheme, PrimaryTheme,
 };
 
+#[allow(dead_code)] // used by sibling unused code or shared name
 const MODAL_WIDTH: f32 = 340.;
+#[allow(dead_code)] // used by sibling unused code or shared name
 const HERO_HEIGHT: f32 = 110.;
 
 /// Identifies a single feature announced through the reusable feature-intro
@@ -48,6 +50,7 @@ impl FeatureIntroId {
 
 #[derive(Clone, Copy)]
 pub enum FeatureIntroCtaTarget {
+    #[allow(dead_code)] // used by sibling unused code or shared name
     SettingsWidget {
         page: SettingsSection,
         widget_id: fn() -> &'static str,
@@ -57,6 +60,7 @@ pub enum FeatureIntroCtaTarget {
 /// A data-driven description of a single feature-intro popover. New feature
 /// announcements are added by appending an entry to [`FEATURE_INTROS`]; no new
 /// view, model, or workspace wiring is required.
+#[allow(dead_code)] // members used on other cfgs or tests
 pub struct FeatureIntro {
     /// Stable identifier; also the persisted "seen" key.
     pub id: FeatureIntroId,
@@ -101,10 +105,12 @@ pub const FEATURE_INTROS: &[FeatureIntro] = &[FeatureIntro {
     cta_target: None,
 }];
 
+#[allow(dead_code)] // used by warp_tui (tui feature)
 fn modal_background(appearance: &Appearance) -> Fill {
     appearance.theme().surface_3()
 }
 
+#[allow(dead_code)] // used only by tests
 fn modal_text_main(appearance: &Appearance) -> ColorU {
     appearance
         .theme()
@@ -112,6 +118,7 @@ fn modal_text_main(appearance: &Appearance) -> ColorU {
         .into_solid()
 }
 
+#[allow(dead_code)] // used only by tests
 fn modal_text_sub(appearance: &Appearance) -> ColorU {
     appearance
         .theme()
@@ -119,6 +126,7 @@ fn modal_text_sub(appearance: &Appearance) -> ColorU {
         .into_solid()
 }
 
+#[allow(dead_code)] // used by sibling unused code or shared name
 struct CloseButtonTheme;
 
 impl ActionButtonTheme for CloseButtonTheme {
@@ -136,6 +144,7 @@ impl ActionButtonTheme for CloseButtonTheme {
     }
 }
 
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub fn init(_app: &mut AppContext) {
     // Not wired into the workspace yet: this fork ships the popover mechanism
     // with an empty `FEATURE_INTROS` (see its doc comment), so nothing ever
@@ -145,12 +154,14 @@ pub fn init(_app: &mut AppContext) {
 }
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)] // used only by tests
 pub enum FeatureIntroModalAction {
     Close,
     GetStarted,
 }
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)] // used only by tests
 pub enum FeatureIntroModalEvent {
     /// The user dismissed the popover (close button or escape).
     Close(FeatureIntroId),
@@ -162,6 +173,7 @@ pub enum FeatureIntroModalEvent {
 /// non-blocking bottom-right overlay (no scrim, does not grab focus); the
 /// content is driven entirely by the [`FeatureIntro`] descriptor set via
 /// [`FeatureIntroModal::set_feature`].
+#[allow(dead_code)] // persisted or derived enum
 pub struct FeatureIntroModal {
     close_button: ViewHandle<ActionButton>,
     cta_button: ViewHandle<ActionButton>,
@@ -169,6 +181,7 @@ pub struct FeatureIntroModal {
     current: Option<&'static FeatureIntro>,
 }
 
+#[allow(dead_code)] // members used on other cfgs or tests
 impl FeatureIntroModal {
     pub fn new(ctx: &mut ViewContext<Self>) -> Self {
         let close_button = ctx.add_view(|_ctx| {
@@ -188,22 +201,6 @@ impl FeatureIntroModal {
             cta_button,
             current: None,
         }
-    }
-
-    /// Sets the feature descriptor that the popover should render. Passing
-    /// `None` leaves the popover empty (the workspace simply stops rendering it).
-    pub fn set_feature(
-        &mut self,
-        intro: Option<&'static FeatureIntro>,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        self.current = intro;
-        if let Some(intro) = intro {
-            self.cta_button.update(ctx, |button, ctx| {
-                button.set_label(intro.cta_label, ctx);
-            });
-        }
-        ctx.notify();
     }
 
     fn render_hero(&self, intro: &FeatureIntro) -> Box<dyn Element> {

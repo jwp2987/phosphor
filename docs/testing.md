@@ -102,6 +102,14 @@ Hard rules:
   passes is a stale entry (exit 1, delete the line in the same change). BOTH `warp` and `warp_tui` must be
   in one invocation, otherwise a listed failure that did not run counts as fixed. Adding a line needs an
   issue and maintainer sign-off.
+- **Dead code is no longer blanket-allowed (#1467).** The crate-level `#![allow(dead_code)]` in
+  `app/src/lib.rs` and `crates/warpui_core/src/lib.rs` is gone, so a new unused item warns. Items kept on
+  purpose carry a narrow `#[allow(dead_code)] // reason` (used only by tests, by `warp_tui` under the `tui`
+  feature, by other platforms, or persisted). The same change deleted test helpers nothing called
+  (`check_cloud_folders`, `check_cloud_workflows`, `check_cloud_notebooks`, `assert_sorting_timestamp` in
+  `cloud_object/model/model_test.rs`, `ensure_saved` in `notebooks/notebook_tests.rs`,
+  `mock_workspace_with_shared_session` in `workspace/view_test.rs`, `build_test_http_client` in
+  `ai/agent_sdk/test_support.rs`, `void_enter_gate_for_test` in `terminal/input/enter_queue.rs`); no test was removed.
 
 ### 2.2 Integration crates
 

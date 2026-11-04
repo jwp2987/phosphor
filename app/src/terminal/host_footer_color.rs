@@ -112,6 +112,7 @@ pub fn resolve_host(
 ///
 /// First match wins: rules are tried in the order they appear in `rules`, and a
 /// later rule matching the same host is never consulted.
+#[allow(dead_code)] // used only by tests
 pub fn matching_color(
     host: &ResolvedHost,
     rules: &[HostFooterColorRule],
@@ -142,6 +143,7 @@ pub fn matching_color(
 /// Callers cache the result and recompute it only when the session's host, the rule
 /// list, or `unknown_host_color` changes -- never during render/layout, see the
 /// module doc.
+#[allow(dead_code)] // used only by tests
 pub fn resolve_footer_bar_color(
     session_type: &SessionType,
     session_hostname: &str,
@@ -218,6 +220,7 @@ pub fn resolve_footer_bar_color_and_tooltip(
 /// [`ResolvedHost::Local`] session, or a [`ResolvedHost::Named`] one that no rule
 /// matches -- there is no color on screen for either case, so there is nothing to
 /// explain.
+#[allow(dead_code)] // used only by tests
 pub fn resolve_footer_bar_tooltip(
     session_type: &SessionType,
     session_hostname: &str,

@@ -32,6 +32,7 @@ use warpui::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DisplayMode {
+    #[allow(dead_code)] // persisted or derived enum
     Settings,
     Footer,
 }
@@ -113,6 +114,7 @@ pub struct ConversationUsageView {
 }
 
 impl ConversationUsageView {
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn new(
         usage_info: ConversationUsageInfo,
         display_mode: DisplayMode,

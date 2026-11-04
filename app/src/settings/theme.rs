@@ -57,6 +57,7 @@ define_settings_group!(ThemeSettings, settings: [
 ]);
 
 impl Theme {
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     fn current_value_is_syncable(&self) -> bool {
         // Custom themes reference local files, so they're only syncable when the file's path
         // can be stored portably (relative to the themes directory), letting it round-trip on
@@ -67,6 +68,7 @@ impl Theme {
 }
 
 impl SystemThemes {
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     fn current_value_is_syncable(&self) -> bool {
         // Same scoping as `Theme::current_value_is_syncable`, but for both the
         // light and dark slots: a custom theme in either slot must be portable

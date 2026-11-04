@@ -91,6 +91,7 @@ impl GlobalRules {
         self.rules.values().cloned()
     }
 
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub(crate) fn paths(&self) -> impl Iterator<Item = PathBuf> + '_ {
         self.rules.keys().cloned()
     }

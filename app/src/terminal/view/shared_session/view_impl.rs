@@ -962,6 +962,7 @@ impl TerminalView {
 
     /// Resizes the sharer's terminal to match the viewer's reported size,
     /// going through the normal view/model/PTY resize pipeline.
+    #[allow(dead_code)] // used only by tests
     pub(crate) fn resize_from_viewer_report(
         &mut self,
         viewer_size: WindowSize,

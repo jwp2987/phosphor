@@ -20,7 +20,7 @@
 //! encoding space) it returns `None` and the caller silently no-ops.
 
 use anyhow::Context as _;
-use futures::StreamExt;
+
 use genai::chat::{ChatMessage, ChatOptions, ChatRequest};
 use warpui::{AppContext, EntityId, SingletonEntity as _};
 

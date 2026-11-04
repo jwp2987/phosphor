@@ -187,17 +187,20 @@ impl FindWorkQueue {
     }
 
     /// Removes all pending items from the queue.
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn clear(&self) {
         let mut inner = self.inner.lock().unwrap();
         inner.items.clear();
     }
 
     /// Returns `true` if the queue has no pending items.
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn is_empty(&self) -> bool {
         self.inner.lock().unwrap().items.is_empty()
     }
 
     /// Returns the number of pending items.
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn len(&self) -> usize {
         self.inner.lock().unwrap().items.len()
     }

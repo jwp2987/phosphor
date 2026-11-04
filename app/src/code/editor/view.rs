@@ -157,8 +157,11 @@ pub enum CodeEditorEvent {
     DeleteComment {
         id: CommentId,
     },
+    #[allow(dead_code)] // used by sibling unused code or shared name
     VimGotoDefinition,
+    #[allow(dead_code)] // used by sibling unused code or shared name
     VimFindReferences,
+    #[allow(dead_code)] // used by sibling unused code or shared name
     VimShowHover,
 }
 
@@ -1996,7 +1999,7 @@ impl CodeEditorView {
                     first_replace = if first_replace.is_uppercase() {
                         first_replace
                     } else {
-                        { first_replace.to_uppercase().next().unwrap_or(first_replace) }
+                        first_replace.to_uppercase().next().unwrap_or(first_replace)
                     };
                     result.push(first_replace);
                     result.push_str(&replace_chars.collect::<String>().to_lowercase());

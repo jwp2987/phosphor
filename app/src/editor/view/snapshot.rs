@@ -15,7 +15,6 @@ use parking_lot::Mutex;
 use pathfinder_geometry::vector::{Vector2F, vec2f};
 
 use anyhow::Result;
-use core::f32;
 use instant::Instant;
 use rayon::prelude::*;
 use std::borrow::Cow;
@@ -500,6 +499,7 @@ impl ViewSnapshot {
 
     /// If the range of rows passed does not exist, we just layout the rows that do exist
     /// within the provided range.
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn layout_text_frames(
         &self,
         rows: Range<u32>,
@@ -854,6 +854,7 @@ fn row_is_laid_out(real_rows: Option<&[Range<u32>]>, row: u32) -> bool {
 /// its chars were as wide as the font's widest glyph, the row would fit in `max_width`. The
 /// advance bound is 1 em for ASCII text (no common font has a wider ASCII glyph) and 1.5 em
 /// otherwise (wide and emoji glyphs). A tab advances to the next tab stop, so any tab gives up.
+#[allow(dead_code)] // used only by tests
 pub(crate) fn rows_cannot_wrap(
     longest_row_chars: u32,
     all_ascii: bool,

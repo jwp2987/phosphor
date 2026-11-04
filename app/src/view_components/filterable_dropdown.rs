@@ -127,6 +127,7 @@ where
         }
     }
 
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn set_menu_header_text_override<F>(&mut self, formatter: F)
     where
         F: Fn(&str) -> String + 'static,
@@ -158,6 +159,7 @@ where
     ///
     /// Default is MainAxisSize::Max, set to MainAxisSize::Min if you want to wrap the dropdown to
     /// the text that's filling it.
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn set_main_axis_size(
         &mut self,
         main_axis_size: MainAxisSize,
@@ -295,6 +297,7 @@ where
         self.top_bar_max_width = max_width;
     }
 
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn set_top_bar_height(&mut self, height: f32, ctx: &mut ViewContext<Self>) {
         self.top_bar_height = Some(height);
         ctx.notify();

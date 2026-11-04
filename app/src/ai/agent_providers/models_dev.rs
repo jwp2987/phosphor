@@ -143,6 +143,7 @@ fn cache_path() -> PathBuf {
 /// Reads a copy of the loaded catalog (no lock wait — just clones it).
 /// Returns `None` when there's no data; the UI should show a "fetching" state /
 /// retry button.
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub fn cached() -> Option<Catalog> {
     state().read().ok().and_then(|s| s.catalog.clone())
 }
@@ -173,6 +174,7 @@ pub struct ModelCaps {
     pub vision: bool,
     pub pdf: bool,
     pub audio: bool,
+    #[allow(dead_code)] // field: set at construction or persisted
     pub attachment: bool,
 }
 

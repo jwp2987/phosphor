@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use crate::terminal::shared_session::protocol::SessionSourceType;
-use warp_core::settings::Setting as _;
+
 use warpui::{App, AppContext, SingletonEntity, ViewContext};
 
 use crate::{

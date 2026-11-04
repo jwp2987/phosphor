@@ -87,6 +87,7 @@ impl CommentId {
         CommentId(uuid::Uuid::new_v4())
     }
 
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub(crate) fn from_uuid(uuid: uuid::Uuid) -> Self {
         Self(uuid)
     }

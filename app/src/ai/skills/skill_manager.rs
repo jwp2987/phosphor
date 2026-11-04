@@ -380,6 +380,7 @@ impl SkillManager {
     /// skill whose activation condition has since flipped off) cannot invoke a
     /// disabled bundled skill. Equivalent to always passing `SkillPathOrigin::Local` to
     /// [`Self::active_skill_by_reference_with_origin`].
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn active_skill_by_reference(
         &self,
         reference: &SkillReference,

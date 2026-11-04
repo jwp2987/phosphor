@@ -505,6 +505,7 @@ impl From<SerializedBlock> for SerializedBlockListItem {
 /// Ported from warp/master `blocklist/persistence.rs`; adapted to Zap's event
 /// accessor name (`terminal_view_id()` — warp's `terminal_surface_id()`). Returns
 /// the persistence [`ModelEvent`] the `PersistenceWriter` sender accepts.
+#[allow(dead_code)] // used by warp_tui (tui feature)
 pub fn maybe_build_ai_query_upsert_event(
     event: &BlocklistAIHistoryEvent,
     terminal_view_id: EntityId,

@@ -57,6 +57,7 @@ where
 }
 
 /// Serialize a slice of JSON values as a JSONL byte string (one value per line).
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub(super) fn entries_to_jsonl(entries: &[Value]) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
     for entry in entries {

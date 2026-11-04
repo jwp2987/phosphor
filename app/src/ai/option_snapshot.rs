@@ -11,6 +11,7 @@ use warp_cli::agent::Harness;
 
 /// One selectable row in an option snapshot. Carries no GUI types.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)] // used by warp_tui (tui feature)
 pub struct OptionRow {
     pub id: String,
     pub label: String,
@@ -23,6 +24,7 @@ pub struct OptionRow {
 
 impl OptionRow {
     /// Creates an enabled row with no badge or harness.
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
         Self {
             id: id.into(),
@@ -36,6 +38,7 @@ impl OptionRow {
 
 /// Secondary marker rendered next to a row's label.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // used by warp_tui (tui feature)
 pub enum OptionBadge {
     Default,
     Recent,
@@ -46,6 +49,7 @@ pub enum OptionBadge {
 
 /// Load state of the catalog backing a snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)] // used by warp_tui (tui feature)
 pub enum OptionSourceStatus {
     Ready,
     Loading,
@@ -55,6 +59,7 @@ pub enum OptionSourceStatus {
 
 /// Trailing affordance below the option list.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)] // used by warp_tui (tui feature)
 pub enum OptionFooter {
     /// Free-form text entry (e.g. custom host slug).
     CustomText { label: String },
@@ -65,6 +70,7 @@ pub enum OptionFooter {
 
 /// A complete option list for one configuration field.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)] // used by warp_tui (tui feature)
 pub struct OptionSnapshot {
     pub rows: Vec<OptionRow>,
     pub selected_id: Option<String>,
@@ -74,6 +80,7 @@ pub struct OptionSnapshot {
 
 impl OptionSnapshot {
     /// A `Ready` snapshot with no footer.
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn ready(rows: Vec<OptionRow>, selected_id: Option<String>) -> Self {
         Self {
             rows,

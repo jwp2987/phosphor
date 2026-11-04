@@ -224,6 +224,7 @@ pub struct AgentInputFooter {
     // Zap Wave 7-3:`environment_selector` field was removed with the hosted-mode footer.
     reasoning_depth_selector: ViewHandle<ReasoningDepthSelector>,
     prompt_alert: ViewHandle<PromptAlertView>,
+    #[allow(dead_code)] // field: set at construction or persisted
     ambient_agent_view_model: ModelHandle<AmbientAgentViewModel>,
     left_display_chips: Vec<ViewHandle<DisplayChip>>,
     right_display_chips: Vec<ViewHandle<DisplayChip>>,

@@ -1,12 +1,15 @@
-use warpui::{Entity, ModelContext, SingletonEntity};
+use warpui::{Entity, SingletonEntity};
 
 #[derive(Debug, Clone)]
 pub struct AddonCreditsOption {
+    #[allow(dead_code)] // field: set at construction or persisted
     pub credits: i32,
+    #[allow(dead_code)] // field: set at construction or persisted
     pub price_usd_cents: i32,
 }
 
 impl AddonCreditsOption {
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn rate(&self) -> f32 {
         self.price_usd_cents as f32 / self.credits as f32
     }
@@ -14,16 +17,23 @@ impl AddonCreditsOption {
 
 #[derive(Debug, Clone)]
 pub struct PricingInfo {
+    #[allow(dead_code)] // field: set at construction or persisted
     pub plans: Vec<PlanPricing>,
+    #[allow(dead_code)] // field: set at construction or persisted
     pub addon_credits_options: Vec<AddonCreditsOption>,
 }
 
 #[derive(Debug, Clone)]
 pub struct PlanPricing {
+    #[allow(dead_code)] // field: set at construction or persisted
     pub plan: StripeSubscriptionPlan,
+    #[allow(dead_code)] // field: set at construction or persisted
     pub monthly_plan_price_per_month_usd_cents: i32,
+    #[allow(dead_code)] // field: set at construction or persisted
     pub yearly_plan_price_per_month_usd_cents: i32,
+    #[allow(dead_code)] // field: set at construction or persisted
     pub request_limit: Option<i32>,
+    #[allow(dead_code)] // field: set at construction or persisted
     pub max_team_size: Option<i32>,
 }
 
@@ -37,6 +47,7 @@ pub enum StripeSubscriptionPlan {
     Build,
     BuildBusiness,
     BuildMax,
+    #[allow(dead_code)] // used by sibling unused code or shared name
     Other(String),
 }
 
@@ -49,6 +60,7 @@ pub enum StripeSubscriptionPlan {
 /// call sites, and can be removed entirely once cloud cleanup is complete.
 #[derive(Debug)]
 pub struct PricingInfoModel {
+    #[allow(dead_code)] // field: set at construction or persisted
     pricing_info: Option<PricingInfo>,
 }
 
@@ -57,12 +69,7 @@ impl PricingInfoModel {
         Self { pricing_info: None }
     }
 
-    /// Updates the model with the latest pricing information from the server.
-    pub fn update_pricing_info(&mut self, pricing_info: PricingInfo, ctx: &mut ModelContext<Self>) {
-        self.pricing_info = Some(pricing_info);
-        ctx.emit(PricingInfoModelEvent::PricingInfoUpdated);
-    }
-
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn addon_credits_options(&self) -> Option<&[AddonCreditsOption]> {
         self.pricing_info
             .as_ref()
@@ -77,9 +84,7 @@ impl Default for PricingInfoModel {
 }
 
 #[derive(Debug, Clone)]
-pub enum PricingInfoModelEvent {
-    PricingInfoUpdated,
-}
+pub enum PricingInfoModelEvent {}
 
 impl Entity for PricingInfoModel {
     type Event = PricingInfoModelEvent;

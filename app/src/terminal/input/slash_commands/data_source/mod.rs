@@ -309,6 +309,7 @@ impl SlashCommandDataSource {
     /// fresh from session state rather than read from the (possibly stale until the next
     /// `recompute_active_commands`) cached set. Used by tests that need a same-tick
     /// answer for a single command.
+    #[allow(dead_code)] // used only by tests
     pub(crate) fn command_is_active(&self, command: &StaticCommand, ctx: &AppContext) -> bool {
         let is_cli_agent_input = self.is_cli_agent_input_open(ctx);
         let is_tui_surface = self.agent_view_controller.is_none();

@@ -10,7 +10,7 @@ use std::{
 use anyhow::{Result, anyhow};
 use itertools::Itertools;
 use markdown_parser::{Hyperlink, TableAlignment};
-use num_traits::SaturatingSub;
+
 use rangemap::RangeSet;
 use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
 use urlocator::{UrlLocation, UrlLocator};

@@ -138,6 +138,7 @@ fn macos_requested_languages() -> Vec<LanguageIdentifier> {
     }
 }
 
+#[allow(dead_code)] // used on other platforms
 fn parse_language_identifier(language: &str) -> Option<LanguageIdentifier> {
     match language.parse::<LanguageIdentifier>() {
         Ok(language) => Some(language),
@@ -148,6 +149,7 @@ fn parse_language_identifier(language: &str) -> Option<LanguageIdentifier> {
     }
 }
 
+#[allow(dead_code)] // used on other platforms
 fn languages_or_fallback(languages: Vec<LanguageIdentifier>) -> Vec<LanguageIdentifier> {
     if languages.is_empty() {
         vec![fallback_language()]
@@ -156,6 +158,7 @@ fn languages_or_fallback(languages: Vec<LanguageIdentifier>) -> Vec<LanguageIden
     }
 }
 
+#[allow(dead_code)] // used on other platforms
 fn fallback_language() -> LanguageIdentifier {
     "en".parse().expect("en is a valid language identifier")
 }

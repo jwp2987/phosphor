@@ -1008,6 +1008,7 @@ impl MakeScorer for MakePrefixTailMatch {
 
 /// Check if an array of lines matches a search string.
 /// This currently uses fuzzy matching.
+#[allow(dead_code)] // used only by tests
 fn section_similarity(search_text: &str, target_lines: &[&str]) -> f64 {
     let window_text = target_lines.join("\n");
     jaro_winkler(search_text, &window_text)

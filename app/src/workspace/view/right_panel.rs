@@ -341,6 +341,7 @@ pub struct RightPanelView {
     code_review_state: Option<CodeReviewState>,
     #[cfg(feature = "local_fs")]
     code_review_session_env: Option<CodeReviewSessionEnv>,
+    #[allow(dead_code)] // field: set at construction or persisted
     is_agent_management_view_open: bool,
     panel_position: super::PanelPosition,
 }
@@ -442,11 +443,6 @@ impl RightPanelView {
             is_agent_management_view_open: false,
             panel_position: super::PanelPosition::Right,
         }
-    }
-
-    pub fn set_agent_management_view_open(&mut self, is_open: bool, ctx: &mut ViewContext<Self>) {
-        self.is_agent_management_view_open = is_open;
-        ctx.notify();
     }
 
     pub fn set_panel_position(

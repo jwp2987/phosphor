@@ -42,6 +42,7 @@ static DEHYDRATED_LINE_QUERIES: AtomicU64 = AtomicU64::new(0);
 
 /// How many times glyph/caret geometry was requested from a dehydrated paragraph. Non-zero means
 /// some consumer ran before its lines were hydrated.
+#[allow(dead_code)] // used only by tests
 pub fn dehydrated_line_queries() -> u64 {
     DEHYDRATED_LINE_QUERIES.load(Ordering::Relaxed)
 }

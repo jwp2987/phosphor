@@ -12,6 +12,7 @@ use std::collections::HashSet;
 /// session ...`. `comm` may itself contain spaces and parentheses, so it is delimited by the
 /// first `(` and the LAST `)`.
 #[cfg(any(target_os = "linux", test))]
+#[allow(dead_code)] // used only by tests
 pub(crate) fn parse_proc_stat_group_and_session(stat: &str) -> Option<(i32, i32)> {
     let open = stat.find('(')?;
     let close = stat.rfind(')')?;

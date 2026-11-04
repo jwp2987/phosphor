@@ -37,7 +37,7 @@ use warp_util::path::LineAndColumnArg;
 use warpui::notification::UserNotification;
 use warpui::{SingletonEntity as _, TypedActionView, platform::TerminationMode};
 
-use warpui::{AppContext, EntityId, WindowId};
+use warpui::{AppContext, WindowId};
 
 use self::docker::open_docker_container;
 
@@ -1193,67 +1193,6 @@ fn execute_file(window_id: WindowId, path_str: &str, ctx: &mut AppContext) {
     send_telemetry_from_app_ctx!(TelemetryEvent::CommandFileRun, ctx);
 }
 
-fn open_window_with_action(active_window_id: Option<WindowId>, action: &str, ctx: &mut AppContext) {
-    if let Some(primary_window_id) = active_window_id {
-        // Dispatch action to primary window
-        if let Some(root_view_id) = ctx.root_view_id(primary_window_id) {
-            ctx.dispatch_action(
-                primary_window_id,
-                &[root_view_id],
-                action,
-                &(),
-                log::Level::Info,
-            );
-        }
-    } else {
-        log::warn!("no primary window id to dispatch action to");
-
-        // Open a new window and dispatch action there
-        ctx.dispatch_global_action("root_view:open_new", &());
-        // TODO: Note we cannot just dispatch here as it will be a no-op.
-        // Need to send a callback once window is fully open.
-    }
-}
-
-fn find_ambient_agent_terminal_in_workspace(
-    workspace: &Workspace,
-    ctx: &AppContext,
-) -> Option<EntityId> {
-    let mut fallback_ambient_terminal_id = None;
-
-    for pane_group_handle in workspace.tab_views() {
-        let pane_group = pane_group_handle.as_ref(ctx);
-        let ambient_terminal_id =
-            pane_group
-                .terminal_views(ctx)
-                .into_iter()
-                .find_map(|terminal_view| {
-                    terminal_view
-                        .as_ref(ctx)
-                        .ambient_agent_view_model()
-                        .as_ref(ctx)
-                        .is_ambient_agent()
-                        .then_some(terminal_view.id())
-                });
-
-        let Some(ambient_terminal_id) = ambient_terminal_id else {
-            continue;
-        };
-
-        let has_environment_management_pane = pane_group
-            .pane_ids()
-            .any(|pane_id| pane_id.is_environment_management_pane());
-        if has_environment_management_pane {
-            return Some(ambient_terminal_id);
-        }
-
-        if fallback_ambient_terminal_id.is_none() {
-            fallback_ambient_terminal_id = Some(ambient_terminal_id);
-        }
-    }
-
-    fallback_ambient_terminal_id
-}
 /// Opens a settings tab scrolled to a specific widget, resolved from a
 /// `zap://settings?widget=<slug>` deeplink. Reuses the active window's
 /// workspace when available, otherwise opens a new window.

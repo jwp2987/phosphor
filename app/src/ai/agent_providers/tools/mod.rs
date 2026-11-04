@@ -74,15 +74,6 @@ pub struct OpenAiTool {
     pub result_to_json: fn(&api::message::tool_call_result::Result) -> Option<Value>,
 }
 
-impl OpenAiTool {
-    /// Converts to a genai `Tool` (used to feed `ChatRequest.tools`).
-    pub fn to_genai_tool(&self) -> genai::chat::Tool {
-        genai::chat::Tool::new(self.name)
-            .with_description(self.description)
-            .with_schema((self.parameters)())
-    }
-}
-
 /// Registry: all currently supported BYOP tools.
 pub const REGISTRY: &[&OpenAiTool] = &[
     &shell::RUN_SHELL_COMMAND,
@@ -153,6 +144,7 @@ pub fn lookup(name: &str) -> Option<&'static OpenAiTool> {
 /// Given a ToolCallResult, first tries to find the matching tool in REGISTRY and serialize
 /// with its `result_to_json`; if not found, tries generic MCP serialization; falls back to a
 /// short description as a last resort to avoid panicking.
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub fn serialize_result(result: &api::message::ToolCallResult) -> String {
     let inner = match &result.result {
         Some(r) => r,

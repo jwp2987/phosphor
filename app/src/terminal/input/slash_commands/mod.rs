@@ -533,18 +533,16 @@ impl Input {
 
         // Handle the slash command action based on its kind
         match command.name {
-            add_mcp if command.name == commands::ADD_MCP.name => {
+            _ if command.name == commands::ADD_MCP.name => {
                 ctx.dispatch_typed_action(&TerminalAction::OpenAddMCPPane);
             }
-            add_prompt if command.name == commands::ADD_PROMPT.name => {
+            _ if command.name == commands::ADD_PROMPT.name => {
                 ctx.dispatch_typed_action(&TerminalAction::OpenAddPromptPane);
             }
-            add_rule if command.name == commands::ADD_RULE.name => {
+            _ if command.name == commands::ADD_RULE.name => {
                 ctx.dispatch_typed_action(&TerminalAction::OpenAddRulePane);
             }
-            agent_or_new
-                if command.name == commands::NEW.name || command.name == commands::AGENT.name =>
-            {
+            _ if command.name == commands::NEW.name || command.name == commands::AGENT.name => {
                 if !self
                     .ai_context_model
                     .as_ref(ctx)
@@ -610,17 +608,17 @@ impl Input {
                     origin,
                 });
             }
-            create_docker_sandbox if command.name == commands::CREATE_DOCKER_SANDBOX.name => {
+            _ if command.name == commands::CREATE_DOCKER_SANDBOX.name => {
                 ctx.emit(Event::CreateDockerSandbox);
             }
-            conversations if command.name == commands::CONVERSATIONS.name => {
+            _ if command.name == commands::CONVERSATIONS.name => {
                 if FeatureFlag::AgentView.is_enabled() {
                     self.open_conversation_menu(ctx);
                 } else {
                     ctx.dispatch_typed_action(&TerminalAction::OpenConversationsPalette);
                 }
             }
-            rename_tab if command.name == commands::RENAME_TAB.name => {
+            _ if command.name == commands::RENAME_TAB.name => {
                 let Some(name) = argument
                     .map(|name| name.trim())
                     .filter(|name| !name.is_empty())
@@ -634,7 +632,7 @@ impl Input {
 
                 ctx.dispatch_typed_action(&WorkspaceAction::SetActiveTabName(name.to_owned()));
             }
-            set_tab_color if command.name == commands::SET_TAB_COLOR.name => {
+            _ if command.name == commands::SET_TAB_COLOR.name => {
                 // Ported from the pinned oracle's `SlashCommandKind::SetTabColor` handler.
                 // Reuses the already-shipped, already-tested `WorkspaceAction::SetActiveTabColor`
                 // (see `app/src/workspace/view_test.rs`) -- only this dispatch arm was missing.
@@ -685,7 +683,7 @@ impl Input {
 
                 ctx.dispatch_typed_action(&WorkspaceAction::SetActiveTabColor(color));
             }
-            create_project if command.name == commands::CREATE_NEW_PROJECT.name => {
+            _ if command.name == commands::CREATE_NEW_PROJECT.name => {
                 if argument.is_none_or(|args| args.is_empty()) {
                     show_error_toast(
                         "Please describe the project you want to create after /create-new-project"
@@ -698,7 +696,7 @@ impl Input {
                 let args = argument.expect("args are Some()");
                 self.initiate_create_new_project(args.to_owned(), ctx);
             }
-            edit if command.name == commands::EDIT.name => {
+            _ if command.name == commands::EDIT.name => {
                 #[cfg(feature = "local_fs")]
                 match argument {
                     Some(args) if !args.is_empty() => {
@@ -797,7 +795,7 @@ impl Input {
                     return true;
                 }
             }
-            export_to_clipboard if command.name == commands::EXPORT_TO_CLIPBOARD.name => {
+            _ if command.name == commands::EXPORT_TO_CLIPBOARD.name => {
                 let history = BlocklistAIHistoryModel::handle(ctx);
                 let Some(conversation) = history
                     .as_ref(ctx)
@@ -822,7 +820,7 @@ impl Input {
                     toast_stack.add_ephemeral_toast(toast, window_id, ctx);
                 });
             }
-            copy_debugging_id if command.name == commands::COPY_DEBUGGING_ID.name => {
+            _ if command.name == commands::COPY_DEBUGGING_ID.name => {
                 let debugging_payload = BlocklistAIHistoryModel::as_ref(ctx)
                     .active_conversation(self.terminal_view_id)
                     .and_then(|conversation| conversation.debugging_server_conversation_token())
@@ -848,7 +846,7 @@ impl Input {
                     }
                 }
             }
-            export_to_file if command.name == commands::EXPORT_TO_FILE.name => {
+            _ if command.name == commands::EXPORT_TO_FILE.name => {
                 {
                     self.export_conversation_to_file(
                         argument.map(|filename| filename.to_owned()),
@@ -864,18 +862,18 @@ impl Input {
                     return true;
                 }
             }
-            changelog if command.name == commands::CHANGELOG.name => {
+            _ if command.name == commands::CHANGELOG.name => {
                 if !FeatureFlag::Changelog.is_enabled() {
                     return false;
                 }
                 ctx.dispatch_typed_action(&WorkspaceAction::ViewLatestChangelog);
             }
-            open_code_review if command.name == commands::OPEN_CODE_REVIEW.name => {
+            _ if command.name == commands::OPEN_CODE_REVIEW.name => {
                 ctx.dispatch_typed_action(&TerminalAction::ToggleCodeReviewPane {
                     entrypoint: CodeReviewPaneEntrypoint::SlashCommand,
                 });
             }
-            index if command.name == commands::INDEX.name => {
+            _ if command.name == commands::INDEX.name => {
                 // The pin routes this through `TerminalAction::IndexProjectSpeedbump`
                 // (`42effe840:app/src/terminal/view.rs:27486`), whose handler checks
                 // `FullSourceCodeEmbedding` + `is_codebase_context_enabled`, canonicalizes the
@@ -942,10 +940,10 @@ impl Input {
                     return false;
                 }
             }
-            open_mcp_servers if command.name == commands::OPEN_MCP_SERVERS.name => {
+            _ if command.name == commands::OPEN_MCP_SERVERS.name => {
                 ctx.dispatch_typed_action(&TerminalAction::OpenViewMCPPane);
             }
-            api_keys if command.name == commands::API_KEYS.name => {
+            _ if command.name == commands::API_KEYS.name => {
                 // `/api-keys` is the TUI's inline BYOP key picker
                 // (`crates/warp_tui/src/api_keys_menu.rs`). The GUI has no such
                 // inline surface, but it does have the same store behind a real
@@ -959,33 +957,33 @@ impl Input {
                     SettingsSection::AgentProviders,
                 ));
             }
-            open_settings_file if command.name == commands::OPEN_SETTINGS_FILE.name => {
+            _ if command.name == commands::OPEN_SETTINGS_FILE.name => {
                 if !FeatureFlag::SettingsFile.is_enabled() || !cfg!(feature = "local_fs") {
                     return false;
                 }
                 ctx.dispatch_typed_action(&WorkspaceAction::OpenSettingsFile);
             }
-            open_project_rules if command.name == commands::OPEN_PROJECT_RULES.name => {
+            _ if command.name == commands::OPEN_PROJECT_RULES.name => {
                 ctx.dispatch_typed_action(&TerminalAction::OpenProjectRulesPane);
             }
-            open_rules if command.name == commands::OPEN_RULES.name => {
+            _ if command.name == commands::OPEN_RULES.name => {
                 ctx.dispatch_typed_action(&TerminalAction::OpenRulesPane);
             }
-            edit_skill if command.name == commands::EDIT_SKILL.name => {
+            _ if command.name == commands::EDIT_SKILL.name => {
                 if !FeatureFlag::ListSkills.is_enabled() {
                     return false;
                 }
                 // Open the skill selector menu - user will select a skill from the inline menu
                 self.open_skill_selector(ctx);
             }
-            invoke_skill if command.name == commands::INVOKE_SKILL.name => {
+            _ if command.name == commands::INVOKE_SKILL.name => {
                 if !FeatureFlag::ListSkills.is_enabled() {
                     return false;
                 }
                 // Open the skill selector menu for invocation - skill command will be inserted into buffer
                 self.open_invoke_skill_selector(ctx);
             }
-            models if command.name == commands::MODEL.name => {
+            _ if command.name == commands::MODEL.name => {
                 if trigger.is_keybinding() {
                     // A keybinding may carry a pre-existing prompt in the buffer; open
                     // like the model chip so the prompt is parked for search and
@@ -1001,24 +999,24 @@ impl Input {
                     self.open_model_selector(ctx);
                 }
             }
-            profiles if command.name == commands::PROFILE.name => {
+            _ if command.name == commands::PROFILE.name => {
                 if !FeatureFlag::InlineProfileSelector.is_enabled() {
                     return false;
                 }
 
                 self.open_profile_selector(ctx);
             }
-            prompts if command.name == commands::PROMPTS.name => {
+            _ if command.name == commands::PROMPTS.name => {
                 if FeatureFlag::AgentView.is_enabled() {
                     self.open_prompts_menu(ctx);
                 } else {
                     return false;
                 }
             }
-            rewind if command.name == commands::REWIND.name => {
+            _ if command.name == commands::REWIND.name => {
                 self.open_rewind_menu(ctx);
             }
-            pr_comments if command.name == commands::PR_COMMENTS.name => {
+            _ if command.name == commands::PR_COMMENTS.name => {
                 if !FeatureFlag::PRCommentsSlashCommand.is_enabled() {
                     return false;
                 }
@@ -1041,7 +1039,7 @@ impl Input {
                     )
                 });
             }
-            fork if command.name == commands::FORK.name => {
+            _ if command.name == commands::FORK.name => {
                 let Some(conversation_id) = self
                     .ai_context_model
                     .as_ref(ctx)
@@ -1066,7 +1064,7 @@ impl Input {
                     destination,
                 });
             }
-            orchestrate if command.name == commands::ORCHESTRATE.name => {
+            _ if command.name == commands::ORCHESTRATE.name => {
                 // User-invoked only -- see `commands::ORCHESTRATE`'s doc comment for why
                 // this does NOT go through `SlashCommandKind::Orchestrate` / get submitted
                 // as a prompt for the model to act on.
@@ -1100,11 +1098,11 @@ impl Input {
                     argument: argument.to_owned(),
                 });
             }
-            fork_from if command.name == commands::FORK_FROM.name => {
+            _ if command.name == commands::FORK_FROM.name => {
                 self.open_user_query_menu(UserQueryMenuAction::ForkFrom, ctx);
                 return true;
             }
-            fork_and_compact if command.name == commands::FORK_AND_COMPACT.name => {
+            _ if command.name == commands::FORK_AND_COMPACT.name => {
                 let Some(conversation_id) = self
                     .ai_context_model
                     .as_ref(ctx)
@@ -1132,7 +1130,7 @@ impl Input {
                     destination,
                 });
             }
-            compact_and if command.name == commands::COMPACT_AND.name => {
+            _ if command.name == commands::COMPACT_AND.name => {
                 // A fired queued row carries its own conversation; a direct send uses the
                 // current selection.
                 let conversation_id = if is_queued_prompt {
@@ -1178,7 +1176,7 @@ impl Input {
                     });
                 }
             }
-            queue if command.name == commands::QUEUE.name => {
+            _ if command.name == commands::QUEUE.name => {
                 let Some(conversation_id) = self
                     .ai_context_model
                     .as_ref(ctx)
@@ -1213,13 +1211,13 @@ impl Input {
                     self.submit_queued_prompt(prompt, ctx);
                 }
             }
-            open_repo if command.name == commands::OPEN_REPO.name => {
+            _ if command.name == commands::OPEN_REPO.name => {
                 if !FeatureFlag::InlineRepoMenu.is_enabled() {
                     return false;
                 }
                 self.open_repos_menu(ctx);
             }
-            compact if command.name == commands::COMPACT.name => {
+            _ if command.name == commands::COMPACT.name => {
                 // Zap: `/compact` and `/compact-and` share the local conversation-compaction
                 // pipeline — dispatch `WorkspaceAction::SummarizeAIConversation`, with
                 // initial_prompt: None meaning "don't send a follow-up prompt after
@@ -1250,15 +1248,13 @@ impl Input {
                     initial_prompt: None,
                 });
             }
-            command_that_just_sends_ai_request_with_prefix
-                if command.name == commands::INIT.name || command.name == commands::PLAN.name =>
-            {
+            _ if command.name == commands::INIT.name || command.name == commands::PLAN.name => {
                 // These slash commands just send AI requests with the slash command text as a
                 // prefix, and special handling is done downstream as an implementation detail
                 // of handling user queries with specific slash command prefixes.
                 return false;
             }
-            usage if command.name == commands::USAGE.name => {
+            _ if command.name == commands::USAGE.name => {
                 // Reports the current conversation's context-window occupancy, reusing the
                 // fraction the usage footer already shows. See `commands::USAGE` for why this
                 // is not Warp's hosted billing-and-usage pane.
@@ -1270,7 +1266,7 @@ impl Input {
                 };
                 show_usage_cost_outcome(outcome, ctx);
             }
-            cost if command.name == commands::COST.name => {
+            _ if command.name == commands::COST.name => {
                 // Reports token spend at the user's configured provider rates. The
                 // no-conversation / empty / in-progress refusals live in
                 // `usage_cost::conversation_cost_report` so the TUI refuses identically.
@@ -1282,16 +1278,15 @@ impl Input {
                 };
                 show_usage_cost_outcome(outcome, ctx);
             }
-            tui_only
-                if command.name == commands::STATUSLINE.name
-                    || command.name == commands::VIM_MODE.name
-                    || command.name == commands::AUTO_APPROVE.name
-                    || command.name == commands::NATURAL_LANGUAGE_DETECTION.name
-                    || command.name == commands::EXIT.name
-                    || command.name == commands::MCP.name
-                    || command.name == commands::VIEW_LOGS.name
-                    || command.name == commands::CLEAR.name
-                    || command.name == commands::THEME.name =>
+            _ if command.name == commands::STATUSLINE.name
+                || command.name == commands::VIM_MODE.name
+                || command.name == commands::AUTO_APPROVE.name
+                || command.name == commands::NATURAL_LANGUAGE_DETECTION.name
+                || command.name == commands::EXIT.name
+                || command.name == commands::MCP.name
+                || command.name == commands::VIEW_LOGS.name
+                || command.name == commands::CLEAR.name
+                || command.name == commands::THEME.name =>
             {
                 debug_assert!(
                     false,

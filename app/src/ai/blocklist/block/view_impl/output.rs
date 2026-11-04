@@ -1315,6 +1315,7 @@ fn should_render_stopped_output(props: Props, app: &AppContext) -> bool {
 }
 
 // Helper function to style a requested action with standard styling when streaming and action blocked on user
+#[allow(dead_code)] // used by sibling unused code or shared name
 fn renderable_action(
     props: Props,
     id: &AIAgentActionId,
@@ -1401,6 +1402,7 @@ pub struct RenderReadFileArg<'a, A: Action> {
 }
 
 impl<'a, A: Action> RenderReadFileArg<'a, A> {
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn new(
         render_context: RenderContext<'a>,
         find_context: Option<FindContext<'a>>,

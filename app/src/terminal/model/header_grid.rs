@@ -247,7 +247,7 @@ impl HeaderGrid {
             .set_supports_emoji_presentation_selector(supports_emoji_presentation_selector);
     }
 
-    #[cfg(any(test, feature = "test-util"))]
+    #[cfg(test)]
     pub(super) fn set_prompt_grid(&mut self, grid: BlockGrid) {
         self.prompt_grid = grid;
     }
@@ -257,7 +257,7 @@ impl HeaderGrid {
         self.prompt_and_command_grid = grid;
     }
 
-    #[cfg(any(test, feature = "test-util"))]
+    #[cfg(test)]
     pub(super) fn set_raw_prompt_end_point(&mut self, point: Option<PromptEndPoint>) {
         self.cached_prompt_end_point = point;
     }

@@ -4,7 +4,6 @@ pub mod conversation_list;
 mod crash_recovery;
 pub(crate) mod feature_intro_modal;
 pub mod global_search;
-pub(crate) mod launch_modal;
 pub(crate) mod left_panel;
 pub(crate) mod onboarding;
 pub(crate) mod right_panel;
@@ -284,6 +283,7 @@ use crate::workspaces::user_workspaces::UserWorkspaces;
 use ::settings::{Setting, ToggleableSetting};
 use warp_core::features::FeatureFlag;
 
+use crate::ai::ask_ai::AskAIType;
 use crate::search::{self, QueryFilter};
 use crate::terminal::view::{
     NOTIFICATIONS_TROUBLESHOOT_URL, SyncEvent, SyncInputType, TerminalAction,
@@ -323,7 +323,6 @@ use crate::workspace::toast_stack::{
     ToastStack as WorkspaceToastStack, ToastStackEvent as WorkspaceToastStackEvent,
 };
 use crate::{GlobalResourceHandles, send_telemetry_from_ctx};
-use crate::{ai::ask_ai::AskAIType, settings, ui_components::blended_colors};
 
 use futures::Future;
 use itertools::Itertools;
@@ -344,7 +343,6 @@ use warpui::event::KeyState;
 use warpui::fonts::Weight;
 use warpui::modals::{AlertDialogWithCallbacks, AppModalCallback};
 
-use warp_core::user_preferences::GetUserPreferences as _;
 use warpui::clipboard::ClipboardContent;
 use warpui::elements::{
     CacheOption, DispatchEventResult, DraggableState, DropTarget, EventHandler, Image,
@@ -8785,9 +8783,6 @@ impl Workspace {
     fn close_vertical_tabs_settings_popup(&mut self) {
         self.vertical_tabs_panel.show_settings_popup = false;
     }
-
-    /// Stub: agent management view removed (BYOP).
-    fn set_is_agent_management_view_open(&mut self, _is_open: bool, _ctx: &mut ViewContext<Self>) {}
 
     fn toggle_left_panel(&mut self, ctx: &mut ViewContext<Self>) {
         let active_pane_group = self.active_tab_pane_group().clone();
@@ -17299,9 +17294,7 @@ impl Workspace {
         event: &UpdateManagerEvent,
         ctx: &mut ViewContext<Self>,
     ) {
-        let UpdateManagerEvent::ObjectOperationComplete { result } = event else {
-            return;
-        };
+        let UpdateManagerEvent::ObjectOperationComplete { result } = event;
 
         let object_store_model = ObjectStoreModel::as_ref(ctx);
 
