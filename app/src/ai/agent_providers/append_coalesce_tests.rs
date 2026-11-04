@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use futures::executor::block_on;
-use warp_multi_agent_api as api;
+use agent_proto as api;
 
 use super::{Event, coalesce_append_events};
 

@@ -11,7 +11,7 @@ fn persisted_conversation(conversation_id: AIConversationId) -> AgentConversatio
             last_modified_at: chrono::NaiveDateTime::default(),
             summary: None,
         },
-        tasks: vec![warp_multi_agent_api::Task {
+        tasks: vec![agent_proto::Task {
             id: task_id,
             messages: vec![],
             dependencies: None,
@@ -79,7 +79,7 @@ mod startup_restore {
         Connection as _, ExpressionMethods as _, QueryDsl as _, RunQueryDsl as _, SqliteConnection,
     };
     use diesel_migrations::MigrationHarness as _;
-    use warp_multi_agent_api as api;
+    use agent_proto as api;
 
     use super::*;
     use crate::ai::agent::{AIAgentActionResultType, AIAgentInput};

@@ -8,8 +8,8 @@ use itertools::Itertools as _;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use warp_cli::agent::Harness;
-use warp_multi_agent_api::response_event::stream_finished::ConversationUsageMetadata;
-use warp_multi_agent_api::{
+use agent_proto::response_event::stream_finished::ConversationUsageMetadata;
+use agent_proto::{
     client_action::{Action, StartNewConversation},
     response_event::stream_finished::TokenUsage,
 };
@@ -1186,7 +1186,7 @@ impl BlocklistAIHistoryModel {
         &mut self,
         conversation_id: AIConversationId,
         task_id: TaskId,
-        messages: Vec<warp_multi_agent_api::Message>,
+        messages: Vec<agent_proto::Message>,
         ctx: &mut ModelContext<Self>,
     ) -> Result<usize, UpdateHistoryError> {
         let conversation = self
@@ -1493,7 +1493,7 @@ impl BlocklistAIHistoryModel {
         stream_id: &ResponseStreamId,
         conversation_id: AIConversationId,
         terminal_view_id: EntityId,
-        init_event: warp_multi_agent_api::response_event::StreamInit,
+        init_event: agent_proto::response_event::StreamInit,
         ctx: &mut ModelContext<Self>,
     ) {
         // Hoisted out of the `&mut` borrow of `conversations_by_id` below:
@@ -1737,7 +1737,7 @@ impl BlocklistAIHistoryModel {
         app: &AppContext,
     ) -> Result<AIConversation, anyhow::Error> {
         Self::validate_fork_source(source_conversation)?;
-        let tasks: Vec<warp_multi_agent_api::Task> = source_conversation
+        let tasks: Vec<agent_proto::Task> = source_conversation
             .all_tasks()
             .filter_map(|t| t.source().cloned())
             .collect();
@@ -1897,11 +1897,11 @@ impl BlocklistAIHistoryModel {
         // Build truncated tasks by retaining only messages whose IDs are in
         // `allowed_message_ids`. Tasks whose message list becomes empty and
         // which are non-root tasks are dropped.
-        let source_tasks: Vec<warp_multi_agent_api::Task> = conversation
+        let source_tasks: Vec<agent_proto::Task> = conversation
             .all_tasks()
             .filter_map(|t| t.source().cloned())
             .collect();
-        let truncated_tasks: Vec<warp_multi_agent_api::Task> = source_tasks
+        let truncated_tasks: Vec<agent_proto::Task> = source_tasks
             .iter()
             .filter_map(|t| {
                 if let Some(message_ids_to_retain) =
@@ -2055,7 +2055,7 @@ impl BlocklistAIHistoryModel {
     pub fn apply_client_actions(
         &mut self,
         response_stream_id: &ResponseStreamId,
-        client_actions: Vec<warp_multi_agent_api::ClientAction>,
+        client_actions: Vec<agent_proto::ClientAction>,
         conversation_id: AIConversationId,
         terminal_view_id: EntityId,
         skill_path_origin: &SkillPathOrigin,
@@ -2894,7 +2894,7 @@ impl BlocklistAIHistoryModel {
     pub fn insert_forked_conversation_from_tasks(
         &mut self,
         conversation_id: AIConversationId,
-        tasks: Vec<warp_multi_agent_api::Task>,
+        tasks: Vec<agent_proto::Task>,
         conversation_data: AgentConversationData,
     ) -> anyhow::Result<AIConversation> {
         let mut conversation =
@@ -3362,11 +3362,11 @@ impl From<&AIAgentOutputStatus> for AIQueryHistoryOutputStatus {
 /// Reassigns new task IDs to each forked task to ensure task IDs remain globally unique and updates
 /// description of the root task, prepending it with the given prefix.
 fn update_forked_task_properties(
-    tasks: Vec<warp_multi_agent_api::Task>,
+    tasks: Vec<agent_proto::Task>,
     prefix: &str,
     preserve_task_ids: bool,
     title_override: Option<&str>,
-) -> Vec<warp_multi_agent_api::Task> {
+) -> Vec<agent_proto::Task> {
     let root_description = |current: &str| match title_override {
         Some(title) => title.to_owned(),
         None => format!("{prefix}{current}"),
@@ -3427,8 +3427,8 @@ fn update_forked_task_properties(
 }
 
 fn byop_fork_repair_state_json(
-    source_tasks: &[warp_multi_agent_api::Task],
-    forked_tasks: &[warp_multi_agent_api::Task],
+    source_tasks: &[agent_proto::Task],
+    forked_tasks: &[agent_proto::Task],
     source_repair_state: &RepairStateStatus,
     exchange_id: Option<String>,
 ) -> Option<String> {
@@ -3442,8 +3442,8 @@ fn byop_fork_repair_state_json(
 }
 
 fn collect_byop_fork_repair_records(
-    source_tasks: &[warp_multi_agent_api::Task],
-    forked_tasks: &[warp_multi_agent_api::Task],
+    source_tasks: &[agent_proto::Task],
+    forked_tasks: &[agent_proto::Task],
     source_repair_state: &RepairStateStatus,
     exchange_id: Option<String>,
 ) -> Vec<RepairRecord> {
@@ -3510,7 +3510,7 @@ fn push_unique_repair_record(
     }
 }
 
-fn byop_message_ids(tasks: &[warp_multi_agent_api::Task]) -> HashSet<String> {
+fn byop_message_ids(tasks: &[agent_proto::Task]) -> HashSet<String> {
     tasks
         .iter()
         .flat_map(|task| task.messages.iter().map(|message| message.id.clone()))
@@ -3518,7 +3518,7 @@ fn byop_message_ids(tasks: &[warp_multi_agent_api::Task]) -> HashSet<String> {
 }
 
 fn byop_result_message_ids_by_tool_call_key(
-    tasks: &[warp_multi_agent_api::Task],
+    tasks: &[agent_proto::Task],
 ) -> HashMap<ToolCallKey, HashSet<String>> {
     let mut result_ids = HashMap::new();
     for task in tasks {
@@ -3528,7 +3528,7 @@ fn byop_result_message_ids_by_tool_call_key(
         let mut active_saw_tool_result = false;
         for message in &task.messages {
             match message.message.as_ref() {
-                Some(warp_multi_agent_api::message::Message::ToolCall(tool_call)) => {
+                Some(agent_proto::message::Message::ToolCall(tool_call)) => {
                     if tool_call.subagent().is_some() {
                         continue;
                     }
@@ -3555,7 +3555,7 @@ fn byop_result_message_ids_by_tool_call_key(
                     }
                     active_tool_call_ids.push(tool_call.tool_call_id.clone());
                 }
-                Some(warp_multi_agent_api::message::Message::ToolCallResult(result)) => {
+                Some(agent_proto::message::Message::ToolCallResult(result)) => {
                     let Some(assistant_message_id) = active_assistant_message_id.as_ref() else {
                         continue;
                     };
@@ -3583,31 +3583,31 @@ fn byop_result_message_ids_by_tool_call_key(
                 // A skill invocation is a user turn boundary too (BYOP now persists it as a
                 // `Message::InvokeSkill` task message — see #778), so it must reset the
                 // active-turn tracking the same way `UserQuery` does.
-                Some(warp_multi_agent_api::message::Message::UserQuery(_))
-                | Some(warp_multi_agent_api::message::Message::InvokeSkill(_))
-                | Some(warp_multi_agent_api::message::Message::AgentOutput(_)) => {
+                Some(agent_proto::message::Message::UserQuery(_))
+                | Some(agent_proto::message::Message::InvokeSkill(_))
+                | Some(agent_proto::message::Message::AgentOutput(_)) => {
                     active_task_id = None;
                     active_assistant_message_id = None;
                     active_tool_call_ids.clear();
                     active_saw_tool_result = false;
                 }
-                Some(warp_multi_agent_api::message::Message::AgentReasoning(_))
-                | Some(warp_multi_agent_api::message::Message::ServerEvent(_))
-                | Some(warp_multi_agent_api::message::Message::SystemQuery(_))
-                | Some(warp_multi_agent_api::message::Message::UpdateTodos(_))
-                | Some(warp_multi_agent_api::message::Message::Summarization(_))
-                | Some(warp_multi_agent_api::message::Message::CodeReview(_))
-                | Some(warp_multi_agent_api::message::Message::UpdateReviewComments(_))
-                | Some(warp_multi_agent_api::message::Message::WebSearch(_))
-                | Some(warp_multi_agent_api::message::Message::WebFetch(_))
-                | Some(warp_multi_agent_api::message::Message::DebugOutput(_))
-                | Some(warp_multi_agent_api::message::Message::ArtifactEvent(_))
-                | Some(warp_multi_agent_api::message::Message::MessagesReceivedFromAgents(_))
-                | Some(warp_multi_agent_api::message::Message::ModelUsed(_))
-                | Some(warp_multi_agent_api::message::Message::EventsFromAgents(_))
-                | Some(warp_multi_agent_api::message::Message::PassiveSuggestionResult(_))
+                Some(agent_proto::message::Message::AgentReasoning(_))
+                | Some(agent_proto::message::Message::ServerEvent(_))
+                | Some(agent_proto::message::Message::SystemQuery(_))
+                | Some(agent_proto::message::Message::UpdateTodos(_))
+                | Some(agent_proto::message::Message::Summarization(_))
+                | Some(agent_proto::message::Message::CodeReview(_))
+                | Some(agent_proto::message::Message::UpdateReviewComments(_))
+                | Some(agent_proto::message::Message::WebSearch(_))
+                | Some(agent_proto::message::Message::WebFetch(_))
+                | Some(agent_proto::message::Message::DebugOutput(_))
+                | Some(agent_proto::message::Message::ArtifactEvent(_))
+                | Some(agent_proto::message::Message::MessagesReceivedFromAgents(_))
+                | Some(agent_proto::message::Message::ModelUsed(_))
+                | Some(agent_proto::message::Message::EventsFromAgents(_))
+                | Some(agent_proto::message::Message::PassiveSuggestionResult(_))
                 // Orchestration is server-side and unsupported here; see #11.
-                | Some(warp_multi_agent_api::message::Message::OrchestrationConfigSnapshot(_))
+                | Some(agent_proto::message::Message::OrchestrationConfigSnapshot(_))
                 | None => {}
             }
         }
@@ -3616,7 +3616,7 @@ fn byop_result_message_ids_by_tool_call_key(
 }
 
 fn byop_tool_call_keys_by_message_id(
-    tasks: &[warp_multi_agent_api::Task],
+    tasks: &[agent_proto::Task],
 ) -> HashMap<String, ToolCallKey> {
     let mut keys = HashMap::new();
     for task in tasks {
@@ -3624,7 +3624,7 @@ fn byop_tool_call_keys_by_message_id(
         let mut pending_assistant_message_id: Option<String> = None;
         for message in &task.messages {
             match message.message.as_ref() {
-                Some(warp_multi_agent_api::message::Message::ToolCall(tool_call)) => {
+                Some(agent_proto::message::Message::ToolCall(tool_call)) => {
                     if tool_call.subagent().is_some() {
                         continue;
                     }
@@ -3650,30 +3650,30 @@ fn byop_tool_call_keys_by_message_id(
                     );
                 }
                 // See the identical `InvokeSkill` note in `byop_result_message_ids_by_tool_call_key` above.
-                Some(warp_multi_agent_api::message::Message::UserQuery(_))
-                | Some(warp_multi_agent_api::message::Message::InvokeSkill(_))
-                | Some(warp_multi_agent_api::message::Message::AgentOutput(_))
-                | Some(warp_multi_agent_api::message::Message::ToolCallResult(_)) => {
+                Some(agent_proto::message::Message::UserQuery(_))
+                | Some(agent_proto::message::Message::InvokeSkill(_))
+                | Some(agent_proto::message::Message::AgentOutput(_))
+                | Some(agent_proto::message::Message::ToolCallResult(_)) => {
                     pending_task_id = None;
                     pending_assistant_message_id = None;
                 }
-                Some(warp_multi_agent_api::message::Message::AgentReasoning(_))
-                | Some(warp_multi_agent_api::message::Message::ServerEvent(_))
-                | Some(warp_multi_agent_api::message::Message::SystemQuery(_))
-                | Some(warp_multi_agent_api::message::Message::UpdateTodos(_))
-                | Some(warp_multi_agent_api::message::Message::Summarization(_))
-                | Some(warp_multi_agent_api::message::Message::CodeReview(_))
-                | Some(warp_multi_agent_api::message::Message::UpdateReviewComments(_))
-                | Some(warp_multi_agent_api::message::Message::WebSearch(_))
-                | Some(warp_multi_agent_api::message::Message::WebFetch(_))
-                | Some(warp_multi_agent_api::message::Message::DebugOutput(_))
-                | Some(warp_multi_agent_api::message::Message::ArtifactEvent(_))
-                | Some(warp_multi_agent_api::message::Message::MessagesReceivedFromAgents(_))
-                | Some(warp_multi_agent_api::message::Message::ModelUsed(_))
-                | Some(warp_multi_agent_api::message::Message::EventsFromAgents(_))
-                | Some(warp_multi_agent_api::message::Message::PassiveSuggestionResult(_))
+                Some(agent_proto::message::Message::AgentReasoning(_))
+                | Some(agent_proto::message::Message::ServerEvent(_))
+                | Some(agent_proto::message::Message::SystemQuery(_))
+                | Some(agent_proto::message::Message::UpdateTodos(_))
+                | Some(agent_proto::message::Message::Summarization(_))
+                | Some(agent_proto::message::Message::CodeReview(_))
+                | Some(agent_proto::message::Message::UpdateReviewComments(_))
+                | Some(agent_proto::message::Message::WebSearch(_))
+                | Some(agent_proto::message::Message::WebFetch(_))
+                | Some(agent_proto::message::Message::DebugOutput(_))
+                | Some(agent_proto::message::Message::ArtifactEvent(_))
+                | Some(agent_proto::message::Message::MessagesReceivedFromAgents(_))
+                | Some(agent_proto::message::Message::ModelUsed(_))
+                | Some(agent_proto::message::Message::EventsFromAgents(_))
+                | Some(agent_proto::message::Message::PassiveSuggestionResult(_))
                 // Orchestration is server-side and unsupported here; see #11.
-                | Some(warp_multi_agent_api::message::Message::OrchestrationConfigSnapshot(_))
+                | Some(agent_proto::message::Message::OrchestrationConfigSnapshot(_))
                 | None => {}
             }
         }
@@ -3710,8 +3710,8 @@ mod tests;
 ///    as-is. It is pre-existing history, not damage this fork caused, and
 ///    "repairing" it would rewrite what the user actually saw.
 fn reconcile_fork_point_tool_calls(
-    truncated_tasks: &mut [warp_multi_agent_api::Task],
-    source_tasks: &[warp_multi_agent_api::Task],
+    truncated_tasks: &mut [agent_proto::Task],
+    source_tasks: &[agent_proto::Task],
     root_task_id: &TaskId,
     fork_point_message_ids: &HashSet<MessageId>,
 ) {
@@ -3735,7 +3735,7 @@ fn reconcile_fork_point_tool_calls(
 
     // Collect first, mutate after: inserting while iterating would invalidate the
     // indices this depends on.
-    let mut insertions: Vec<(usize, warp_multi_agent_api::Message)> = Vec::new();
+    let mut insertions: Vec<(usize, agent_proto::Message)> = Vec::new();
     for (index, message) in root.messages.iter().enumerate() {
         // Case 4: only the fork-point exchange is reconciled.
         if !fork_point_message_ids.contains(&MessageId::new(message.id.clone())) {
@@ -3747,7 +3747,7 @@ fn reconcile_fork_point_tool_calls(
         // Case 3: never synthesize for a server tool_call.
         if matches!(
             tool_call.tool,
-            Some(warp_multi_agent_api::message::tool_call::Tool::Server(_))
+            Some(agent_proto::message::tool_call::Tool::Server(_))
         ) {
             continue;
         }
@@ -3772,12 +3772,12 @@ fn reconcile_fork_point_tool_calls(
             // envelope fields carry over; only identity and payload change.
             let mut cancel = message.clone();
             cancel.id = format!("{}_cancel", message.id);
-            cancel.message = Some(warp_multi_agent_api::message::Message::ToolCallResult(
-                warp_multi_agent_api::message::ToolCallResult {
+            cancel.message = Some(agent_proto::message::Message::ToolCallResult(
+                agent_proto::message::ToolCallResult {
                     tool_call_id: tool_call.tool_call_id.clone(),
                     context: None,
                     result: Some(
-                        warp_multi_agent_api::message::tool_call_result::Result::Cancel(()),
+                        agent_proto::message::tool_call_result::Result::Cancel(()),
                     ),
                 },
             ));

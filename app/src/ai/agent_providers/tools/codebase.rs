@@ -1,7 +1,7 @@
 //! `search_codebase` BYOP tool descriptor.
 //!
 //! Local-only codebase symbol search. The cloud `Tool::SearchCodebase` proto variant was
-//! deleted from the pinned `warp_multi_agent_api`, so this tool deliberately does NOT map to a
+//! deleted from the pinned `agent_proto`, so this tool deliberately does NOT map to a
 //! protobuf executor variant. Instead it mirrors the `webfetch` / `websearch` interception
 //! pattern: `chat_stream` catches it by name before `parse_incoming_tool_call` and answers it
 //! from a local `RepoOutlines`-derived symbol snapshot (see [`super::codebase_runtime`]).
@@ -14,7 +14,7 @@
 
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
-use warp_multi_agent_api as api;
+use agent_proto as api;
 
 use super::OpenAiTool;
 

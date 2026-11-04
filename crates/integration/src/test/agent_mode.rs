@@ -22,7 +22,7 @@ use warp::{
     },
     settings::SelectionSettings,
 };
-use warp_multi_agent_api as api;
+use agent_proto as api;
 use warpui::{async_assert, integration::TestStep, text::SelectionType, Event, SingletonEntity};
 
 cfg_if::cfg_if! {

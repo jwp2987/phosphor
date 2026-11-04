@@ -48,7 +48,6 @@ workarounds = [
 #   - warp-completion-metadata   MIT             (same workspace)
 #   - warp-workflows             Apache-2.0      (workspace: workflows)
 #   - warp-workflows-types       Apache-2.0      (same workspace)
-#   - warp_multi_agent_api       AGPL-3.0-only   (workspace: warp-proto-apis)
 #   - mermaid_to_svg             MIT
 #   - dagre_rust                 Apache-2.0      (same workspace as mermaid_to_svg)
 #

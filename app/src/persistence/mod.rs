@@ -33,7 +33,7 @@ use ai::project_context::model::ProjectRulePath;
 use chrono::{DateTime, Local, Utc};
 use uuid::Uuid;
 use warp_core::command::ExitCode;
-use warp_multi_agent_api as api;
+use agent_proto as api;
 use warpui::{AppContext, Entity, SingletonEntity};
 
 use lsp::supported_servers::LSPServerType;

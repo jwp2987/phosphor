@@ -45,7 +45,7 @@ pub mod websearch;
 
 use anyhow::Result;
 use serde_json::Value;
-use warp_multi_agent_api as api;
+use agent_proto as api;
 
 use crate::ai::agent::AIAgentActionResult;
 

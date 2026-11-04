@@ -12,7 +12,7 @@ use super::overflow::{
 use super::prompt::{build_continue_message, build_prompt, SUMMARY_TEMPLATE};
 use super::token::estimate;
 use crate::ai::agent::conversation::{AIConversation, AIConversationId};
-use warp_multi_agent_api as api;
+use agent_proto as api;
 
 // -- token ---------------------------------------------------------------
 

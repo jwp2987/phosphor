@@ -41,8 +41,8 @@ use chrono::{DateTime, Local, TimeZone};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use warp_core::command::ExitCode;
-use warp_multi_agent_api as api;
-use warp_multi_agent_api::ask_user_question_result::answer_item::Answer as AskUserQuestionAnswer;
+use agent_proto as api;
+use agent_proto::ask_user_question_result::answer_item::Answer as AskUserQuestionAnswer;
 
 use crate::ai::agent::UserQueryMode;
 
@@ -506,7 +506,7 @@ pub(crate) fn convert_tool_call_result_to_input(
     tool_call_map: &HashMap<String, &api::message::ToolCall>,
     document_versions: &mut HashMap<AIDocumentId, AIDocumentVersion>,
 ) -> Option<AIAgentInput> {
-    use warp_multi_agent_api::message::tool_call_result::Result as ToolCallResultType;
+    use agent_proto::message::tool_call_result::Result as ToolCallResultType;
 
     let tool_call_id = tool_call_result.tool_call_id.clone();
     let context = convert_input_context(tool_call_result.context.as_ref());
@@ -1391,7 +1391,7 @@ pub(crate) fn convert_tool_call_result_to_input(
         Some(ToolCallResultType::Subagent(_)) => None,
         Some(ToolCallResultType::AskUserQuestion(result)) => {
             let ask_result = match &result.result {
-                Some(warp_multi_agent_api::ask_user_question_result::Result::Success(success)) => {
+                Some(agent_proto::ask_user_question_result::Result::Success(success)) => {
                     AskUserQuestionResult::Success {
                         answers: success
                             .answers
@@ -1413,7 +1413,7 @@ pub(crate) fn convert_tool_call_result_to_input(
                             .collect(),
                     }
                 }
-                Some(warp_multi_agent_api::ask_user_question_result::Result::Error(err)) => {
+                Some(agent_proto::ask_user_question_result::Result::Error(err)) => {
                     AskUserQuestionResult::Error(err.message.clone())
                 }
                 None => AskUserQuestionResult::Cancelled,

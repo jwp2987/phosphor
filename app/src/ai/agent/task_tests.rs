@@ -1,4 +1,4 @@
-use warp_multi_agent_api as api;
+use agent_proto as api;
 
 use super::{ExtractMessagesError, Task};
 use crate::test_util::ai_agent_tasks::{
@@ -481,7 +481,7 @@ mod streamed_text {
     use ai::skills::SkillPathOrigin;
     use chrono::Local;
     use prost_types::FieldMask;
-    use warp_multi_agent_api as api;
+    use agent_proto as api;
 
     use crate::ai::agent::util::parse_markdown_into_text_and_code_sections;
     use crate::ai::agent::{

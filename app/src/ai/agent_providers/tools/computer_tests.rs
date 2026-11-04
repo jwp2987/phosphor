@@ -6,7 +6,7 @@
 //! A schema that only survives the first half produces valid-looking calls that die in
 //! conversion, which is exactly the failure mode these tests exist to catch.
 
-// `warp_multi_agent_api` is an external pinned proto crate
+// `agent_proto` is an external pinned proto crate
 // (warpdotdev/warp-proto-apis). Several of its fields carry `[deprecated = true]`
 // in the .proto, but the deprecation is aspirational -- e.g. `InputContext::
 // executed_shell_commands` is marked "TODO: these fields should be _attachments_,
@@ -17,7 +17,7 @@
 
 
 use ai::agent::action::UseComputerRequest;
-use warp_multi_agent_api as api;
+use agent_proto as api;
 
 use super::*;
 use crate::ai::agent::AIAgentActionType;

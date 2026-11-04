@@ -73,7 +73,7 @@ pub fn exit_agent_view() -> TestStep {
 /// See the agent_mode_eval README for more details.
 pub fn hydrate_ai_conversation(file_name: &str) -> TestStep {
     let file_bytes = get_input_data(file_name);
-    let Ok(request) = warp_multi_agent_api::Request::decode(file_bytes) else {
+    let Ok(request) = agent_proto::Request::decode(file_bytes) else {
         panic!("Failed to decode request from protobuf");
     };
 

@@ -129,7 +129,7 @@ struct TuiArgs {
 /// a construction.
 ///
 /// The key is also never sent. Its one other consumer is `RequestParams::api_keys`
-/// (`app/src/ai/agent/api.rs:161`), a `warp_multi_agent_api` field belonging to
+/// (`app/src/ai/agent/api.rs:161`), a `agent_proto` field belonging to
 /// the removed server path: `RequestParams` is `#[derive(Debug, Clone)]` with no
 /// `Serialize`, and nothing anywhere reads that field. The agent's BYOP send
 /// path resolves keys from `AgentProviderSecrets` instead

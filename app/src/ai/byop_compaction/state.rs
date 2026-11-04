@@ -2,7 +2,7 @@
 //! `api::Message` protocol.
 //!
 //! Because warp's `api::Message` comes from an external protobuf dependency
-//! (`warp_multi_agent_api`), fields like `is_summary` / `compacted` can't be added to
+//! (`agent_proto`), fields like `is_summary` / `compacted` can't be added to
 //! it; this sidecar indexes by message_id to attach this "compaction metadata" on the
 //! conversation side instead.
 //!

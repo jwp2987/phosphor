@@ -86,7 +86,7 @@ fn exchange_is_streaming_follows_the_output_status() {
                 &stream_id,
                 conversation_id,
                 terminal_view_id,
-                warp_multi_agent_api::response_event::StreamInit {
+                agent_proto::response_event::StreamInit {
                     request_id: String::new(),
                     conversation_id: String::new(),
                     run_id: String::new(),

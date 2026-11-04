@@ -78,7 +78,7 @@ use warpui_extras::secure_storage::SecureStorage;
 // wire format that tells Warp's *server* how to reach a custom endpoint on the
 // user's behalf; this fork calls the endpoint directly through genai
 // (`chat_stream::build_client`) and has no such proxy. The pinned
-// `warp_multi_agent_api` rev also has no `CustomModelProviders` message.
+// `agent_proto` rev also has no `CustomModelProviders` message.
 // Porting them would stand up a second, competing provider store. The
 // equivalent coverage lives on `AgentProviderSecrets`: 13 behaviour tests in
 // `app/src/ai/agent_providers/mod_test.rs` plus the persistence tests in

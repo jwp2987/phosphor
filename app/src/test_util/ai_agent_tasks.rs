@@ -1,4 +1,4 @@
-use warp_multi_agent_api as api;
+use agent_proto as api;
 
 pub fn create_message(id: &str, task_id: &str) -> api::Message {
     api::Message {

@@ -1,4 +1,4 @@
-use warp_multi_agent_api as api;
+use agent_proto as api;
 
 use super::*;
 use crate::ai::agent_events::AgentRunEvent;

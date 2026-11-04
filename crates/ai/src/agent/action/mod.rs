@@ -15,7 +15,7 @@ use uuid::Uuid;
 // succeeded/failed/…). Re-exported here (not cloud-bound) so
 // `orchestration_events` can build/interpret lifecycle events for children
 // running as local processes on this machine.
-pub use warp_multi_agent_api::LifecycleEventType;
+pub use agent_proto::LifecycleEventType;
 use warp_terminal::model::BlockId;
 
 use crate::{

@@ -35,7 +35,7 @@ use crate::{
     test_util::settings::initialize_settings_for_tests,
     GlobalResourceHandles, GlobalResourceHandlesProvider,
 };
-use warp_multi_agent_api as api;
+use agent_proto as api;
 
 use super::{
     convert_persisted_conversation_to_ai_conversation_with_metadata, AIConversationMetadata,
@@ -1286,7 +1286,7 @@ fn test_find_by_token_after_initialize_output_for_response_stream() {
                 &stream_id,
                 conversation_id,
                 terminal_view_id,
-                warp_multi_agent_api::response_event::StreamInit {
+                agent_proto::response_event::StreamInit {
                     request_id: String::new(),
                     conversation_id: server_token_str.clone(),
                     run_id: String::new(),
@@ -1374,7 +1374,7 @@ fn test_find_by_token_after_insert_forked_conversation_from_tasks() {
             byop_repair_state_json: None,
             cli_subagent_block_snapshots_json: None,
         };
-        let tasks = vec![warp_multi_agent_api::Task {
+        let tasks = vec![agent_proto::Task {
             id: "root-task".to_string(),
             messages: vec![],
             dependencies: None,
@@ -1598,7 +1598,7 @@ fn test_fork_conversation_preserves_task_ids_when_requested() {
                 .fork_conversation(&source, "[Fork] ", true, None, ctx)
                 .expect("fork must succeed when sqlite sender is wired up");
 
-            let forked_tasks: Vec<&warp_multi_agent_api::Task> =
+            let forked_tasks: Vec<&agent_proto::Task> =
                 forked.all_tasks().filter_map(|t| t.source()).collect();
             let forked_root = forked_tasks
                 .iter()
@@ -4729,7 +4729,7 @@ fn test_initialize_output_for_response_stream_persists_updated_conversation_stat
                 &stream_id,
                 conversation_id,
                 terminal_view_id,
-                warp_multi_agent_api::response_event::StreamInit {
+                agent_proto::response_event::StreamInit {
                     request_id: "request-1".to_string(),
                     conversation_id: server_token.clone(),
                     run_id: run_id.clone(),
@@ -5630,7 +5630,7 @@ fn forget_terminal_view_keeps_the_conversation_while_the_writer_has_not_answered
 #[test]
 fn update_task_description_action_persists_title_immediately() {
     use crate::ai::agent::conversation::AIConversation;
-    use warp_multi_agent_api::client_action::{Action, UpdateTaskDescription};
+    use agent_proto::client_action::{Action, UpdateTaskDescription};
     App::test((), |mut app| async move {
         initialize_settings_for_tests(&mut app);
 
@@ -5689,7 +5689,7 @@ fn update_task_description_action_persists_title_immediately() {
 #[test]
 fn conversation_writes_reach_the_writer_in_order_without_an_executor_hop() {
     use crate::ai::agent::conversation::AIConversation;
-    use warp_multi_agent_api::client_action::{Action, UpdateTaskDescription};
+    use agent_proto::client_action::{Action, UpdateTaskDescription};
     App::test((), |mut app| async move {
         initialize_settings_for_tests(&mut app);
 

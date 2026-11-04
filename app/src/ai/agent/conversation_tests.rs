@@ -19,7 +19,7 @@ use crate::terminal::model::block::{
 };
 use crate::terminal::model::BlockId;
 use warp_core::features::FeatureFlag;
-use warp_multi_agent_api as api;
+use agent_proto as api;
 
 fn restored_conversation(conversation_data: Option<AgentConversationData>) -> AIConversation {
     AIConversation::new_restored(

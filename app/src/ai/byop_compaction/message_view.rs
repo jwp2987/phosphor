@@ -19,7 +19,7 @@
 
 use std::collections::HashMap;
 
-use warp_multi_agent_api as api;
+use agent_proto as api;
 
 use super::algorithm::{MessageRef, Role, ToolOutputRef};
 use super::state::CompactionState;

@@ -1,4 +1,4 @@
-use warp_multi_agent_api as api;
+use agent_proto as api;
 use warp_util::host_id::HostId;
 use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warp_util::remote_path::RemotePath;

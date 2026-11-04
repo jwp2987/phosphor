@@ -25,7 +25,7 @@
 //! multi-run subscriber. Keeping the whole routing table in one place is the
 //! point: it is what makes every consumer agree on which wire strings mean
 //! what, rather than each one open-coding its own.
-use warp_multi_agent_api as api;
+use agent_proto as api;
 
 use crate::ai::agent_events::AgentRunEvent;
 

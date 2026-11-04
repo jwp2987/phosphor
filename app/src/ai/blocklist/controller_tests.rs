@@ -987,7 +987,7 @@ fn byop_conversation_awaiting_tool_result(
     super::RequestInput,
 ) {
     use settings::Setting as _;
-    use warp_multi_agent_api as api;
+    use agent_proto as api;
 
     use crate::ai::agent_providers::llm_id;
     use crate::settings::{AISettings, AgentProvider, AgentProviderApiType, AgentProviderModel};
@@ -1127,7 +1127,7 @@ fn call_1_result_count(
             .filter(|msg| {
                 matches!(
                     msg.message.as_ref(),
-                    Some(warp_multi_agent_api::message::Message::ToolCallResult(result))
+                    Some(agent_proto::message::Message::ToolCallResult(result))
                         if result.tool_call_id == "call_1"
                 )
             })
@@ -1716,10 +1716,10 @@ fn rejecting_the_only_tool_call_drops_the_deferred_compaction() {
 
 fn timestamped_message(
     id: &str,
-    message: warp_multi_agent_api::message::Message,
+    message: agent_proto::message::Message,
     seconds: i64,
-) -> warp_multi_agent_api::Message {
-    warp_multi_agent_api::Message {
+) -> agent_proto::Message {
+    agent_proto::Message {
         id: id.to_owned(),
         task_id: "root".to_owned(),
         request_id: "req".to_owned(),
@@ -1729,8 +1729,8 @@ fn timestamped_message(
     }
 }
 
-fn run_shell_tool_call(id: &str, call_id: &str, seconds: i64) -> warp_multi_agent_api::Message {
-    use warp_multi_agent_api::message::{Message, ToolCall, tool_call};
+fn run_shell_tool_call(id: &str, call_id: &str, seconds: i64) -> agent_proto::Message {
+    use agent_proto::message::{Message, ToolCall, tool_call};
     timestamped_message(
         id,
         Message::ToolCall(ToolCall {
@@ -1746,9 +1746,9 @@ fn run_shell_tool_call(id: &str, call_id: &str, seconds: i64) -> warp_multi_agen
     )
 }
 
-fn stream_done(prompt_tokens: u32) -> warp_multi_agent_api::response_event::StreamFinished {
-    use warp_multi_agent_api::response_event::stream_finished;
-    warp_multi_agent_api::response_event::StreamFinished {
+fn stream_done(prompt_tokens: u32) -> agent_proto::response_event::StreamFinished {
+    use agent_proto::response_event::stream_finished;
+    agent_proto::response_event::StreamFinished {
         reason: Some(stream_finished::Reason::Done(stream_finished::Done {})),
         token_usage: vec![stream_finished::TokenUsage {
             model_id: "mock-model".to_owned(),
@@ -1820,7 +1820,7 @@ fn drive_tool_loop_through_the_byop_path(outcome: SummaryStreamOutcome) {
     use crate::features::FeatureFlag;
     use crate::settings::{AISettings, AgentProvider, AgentProviderApiType, AgentProviderModel};
     use settings::Setting;
-    use warp_multi_agent_api as api;
+    use agent_proto as api;
 
     const PROVIDER_ID: &str = "tool-loop-provider";
     const MODEL_ID: &str = "tool-loop-model";
@@ -2086,7 +2086,7 @@ fn drive_tool_loop_through_the_byop_path(outcome: SummaryStreamOutcome) {
 
             let history = BlocklistAIHistoryModel::as_ref(ctx);
             let conversation = history.conversation(&conversation_id).unwrap();
-            let messages: Vec<&warp_multi_agent_api::Message> = conversation
+            let messages: Vec<&agent_proto::Message> = conversation
                 .get_task(&root_task_id)
                 .expect("root task")
                 .messages()
@@ -2101,7 +2101,7 @@ fn drive_tool_loop_through_the_byop_path(outcome: SummaryStreamOutcome) {
             assert_eq!(call_ids, ["call-1", "call-2"]);
             let mut result_message_ids = Vec::new();
             for call_id in &call_ids {
-                let results: Vec<&&warp_multi_agent_api::Message> = messages
+                let results: Vec<&&agent_proto::Message> = messages
                     .iter()
                     .filter(|msg| {
                         matches!(

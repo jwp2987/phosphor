@@ -26,7 +26,7 @@ use ai::agent::UnknownCitationTypeError;
 use ai::skills::{skill_reference_from_read_skill_ref, SkillPathOrigin};
 use api::ask_user_question::question::QuestionType;
 use warp_core::channel::ChannelState;
-use warp_multi_agent_api as api;
+use agent_proto as api;
 
 use crate::ai::agent::{AIAgentAttachment, UserQueryMode};
 

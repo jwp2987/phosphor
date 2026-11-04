@@ -5,7 +5,7 @@
 //! This module is independent from the controller, as a unit-testable helper (even
 //! though the real call site is in controller.rs).
 
-use warp_multi_agent_api as api;
+use agent_proto as api;
 
 use crate::ai::agent::conversation::AIConversation;
 

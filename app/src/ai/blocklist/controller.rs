@@ -89,7 +89,7 @@ use pending_response_streams::PendingResponseStreams;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use warp_core::assertions::safe_assert;
-use warp_multi_agent_api::{
+use agent_proto::{
     client_action::{Action, UpdateTaskDescription},
     message, ClientAction, Task, ToolType,
 };
@@ -4243,7 +4243,7 @@ impl BlocklistAIController {
         ctx: &mut ModelContext<Self>,
     ) -> anyhow::Result<usize> {
         let request_id = format!("byop-preflight:{}", uuid::Uuid::new_v4());
-        let mut grouped_messages: HashMap<TaskId, Vec<warp_multi_agent_api::Message>> =
+        let mut grouped_messages: HashMap<TaskId, Vec<agent_proto::Message>> =
             HashMap::new();
         for result in results {
             let task_id = result.task_id.to_string();
@@ -4388,7 +4388,7 @@ impl BlocklistAIController {
             }
         }
         let request_id = format!("byop-preflight:{}", uuid::Uuid::new_v4());
-        let mut grouped_messages: HashMap<TaskId, Vec<warp_multi_agent_api::Message>> =
+        let mut grouped_messages: HashMap<TaskId, Vec<agent_proto::Message>> =
             HashMap::new();
         let mut keys_to_remove = HashSet::new();
         // A cancellation result that's already been persisted also counts as
@@ -4461,7 +4461,7 @@ impl BlocklistAIController {
         ctx: &mut ModelContext<Self>,
     ) -> anyhow::Result<usize> {
         let request_id = format!("byop-preflight:{}", uuid::Uuid::new_v4());
-        let mut grouped_messages: HashMap<TaskId, Vec<warp_multi_agent_api::Message>> =
+        let mut grouped_messages: HashMap<TaskId, Vec<agent_proto::Message>> =
             HashMap::new();
         for tool_call in tool_calls {
             let task_id = &tool_call.key.task_id;
@@ -4504,13 +4504,13 @@ impl BlocklistAIController {
         request_id: &str,
         task_id: &str,
         tool_call_id: &str,
-    ) -> warp_multi_agent_api::Message {
+    ) -> agent_proto::Message {
         let server_message_data = serde_json::json!({
             "status": "cancelled",
             "reason": "interrupted_by_user",
         })
         .to_string();
-        warp_multi_agent_api::Message {
+        agent_proto::Message {
             id: uuid::Uuid::new_v4().to_string(),
             task_id: task_id.to_owned(),
             server_message_data,
@@ -4558,7 +4558,7 @@ impl BlocklistAIController {
     fn byop_action_result_message(
         request_id: &str,
         result: &AIAgentActionResult,
-    ) -> warp_multi_agent_api::Message {
+    ) -> agent_proto::Message {
         let structured_result =
             crate::ai::agent_providers::tools::action_result_to_msg_result(result);
         let server_message_data = if structured_result.is_none() {
@@ -4580,7 +4580,7 @@ impl BlocklistAIController {
             String::new()
         };
 
-        warp_multi_agent_api::Message {
+        agent_proto::Message {
             id: uuid::Uuid::new_v4().to_string(),
             task_id: result.task_id.to_string(),
             server_message_data,
@@ -5352,7 +5352,7 @@ impl BlocklistAIController {
                             return;
                         };
                         match event {
-                            warp_multi_agent_api::response_event::Type::Init(init_event) => {
+                            agent_proto::response_event::Type::Init(init_event) => {
                                 history_model.update(ctx, |history_model, ctx| {
                                     history_model.initialize_output_for_response_stream(
                                         &stream_id,
@@ -5373,13 +5373,13 @@ impl BlocklistAIController {
                                     }
                                 });
                             }
-                            warp_multi_agent_api::response_event::Type::Finished(
+                            agent_proto::response_event::Type::Finished(
                                 finished_event,
                             ) => {
                                 let completed_successfully = matches!(
                                     finished_event.reason.as_ref(),
                                     Some(
-                                        warp_multi_agent_api::response_event::stream_finished::Reason::Done(_)
+                                        agent_proto::response_event::stream_finished::Reason::Done(_)
                                     ) | None
                                 );
                                 if completed_successfully {
@@ -5408,7 +5408,7 @@ impl BlocklistAIController {
                                     ctx,
                                 );
                             }
-                            warp_multi_agent_api::response_event::Type::ClientActions(actions) => {
+                            agent_proto::response_event::Type::ClientActions(actions) => {
                                 let client_actions = actions.actions;
                                 let skill_path_origin = SessionContext::from_session(
                                     self.active_session.as_ref(ctx),
@@ -5800,7 +5800,7 @@ impl BlocklistAIController {
     pub(super) fn handle_response_stream_finished(
         &mut self,
         stream_id: &ResponseStreamId,
-        mut finished_event: warp_multi_agent_api::response_event::StreamFinished,
+        mut finished_event: agent_proto::response_event::StreamFinished,
         conversation_id: AIConversationId,
         did_request_contain_user_query: bool,
         summarize_overflow: Option<bool>,
@@ -5840,7 +5840,7 @@ impl BlocklistAIController {
 
         let history_model = BlocklistAIHistoryModel::handle(ctx);
         match finished_event.reason {
-            Some(warp_multi_agent_api::response_event::stream_finished::Reason::Done(_)) | None => {
+            Some(agent_proto::response_event::stream_finished::Reason::Done(_)) | None => {
                 // The messages this stream added: the summary text of a summarize stream, the
                 // tool calls of an agent turn.
                 let stream_message_ids: std::collections::HashSet<MessageId> =
@@ -6140,7 +6140,7 @@ impl BlocklistAIController {
                     );
                 }
             }
-            Some(warp_multi_agent_api::response_event::stream_finished::Reason::Other(_)) => {
+            Some(agent_proto::response_event::stream_finished::Reason::Other(_)) => {
                 let error_message = "Response stream finished unexpectedly (with finish reason `Other`).";
                 history_model.update(ctx, |history_model, ctx| {
                     history_model.mark_response_stream_completed_with_error(
@@ -6157,7 +6157,7 @@ impl BlocklistAIController {
                     );
                 });
             }
-            Some(warp_multi_agent_api::response_event::stream_finished::Reason::ContextWindowExceeded(_)) => {
+            Some(agent_proto::response_event::stream_finished::Reason::ContextWindowExceeded(_)) => {
                 let error_message = "Input exceeded context window limit.";
                 history_model.update(ctx, |history_model, ctx| {
                     history_model.mark_response_stream_completed_with_error(
@@ -6170,7 +6170,7 @@ impl BlocklistAIController {
                     );
                 });
             }
-            Some(warp_multi_agent_api::response_event::stream_finished::Reason::QuotaLimit(_)) => {
+            Some(agent_proto::response_event::stream_finished::Reason::QuotaLimit(_)) => {
                 history_model.update(ctx, |history_model, ctx| {
                     history_model.mark_response_stream_completed_with_error(
                         RenderableAIError::QuotaLimit,
@@ -6182,7 +6182,7 @@ impl BlocklistAIController {
                     );
                 });
             }
-            Some(warp_multi_agent_api::response_event::stream_finished::Reason::LlmUnavailable(_)) => {
+            Some(agent_proto::response_event::stream_finished::Reason::LlmUnavailable(_)) => {
                 let error_message = "The LLM is currently unavailable.";
                 history_model.update(ctx, |history_model, ctx| {
                     history_model.mark_response_stream_completed_with_error(
@@ -6199,8 +6199,8 @@ impl BlocklistAIController {
                     );
                 });
             }
-            Some(warp_multi_agent_api::response_event::stream_finished::Reason::InvalidApiKey(details)) => {
-                use warp_multi_agent_api::LlmProvider;
+            Some(agent_proto::response_event::stream_finished::Reason::InvalidApiKey(details)) => {
+                use agent_proto::LlmProvider;
                 let is_aws_bedrock = details
                     .provider
                     .try_into()
@@ -6241,8 +6241,8 @@ impl BlocklistAIController {
                     );
                 });
             }
-            Some(warp_multi_agent_api::response_event::stream_finished::Reason::InternalError(
-                warp_multi_agent_api::response_event::stream_finished::InternalError{ message})) => {
+            Some(agent_proto::response_event::stream_finished::Reason::InternalError(
+                agent_proto::response_event::stream_finished::InternalError{ message})) => {
                 let error_message = format!(
                     "Response stream finished unexpectedly with internal error: {message}",
                 );
@@ -6261,7 +6261,7 @@ impl BlocklistAIController {
                     );
                 });
             }
-            Some(warp_multi_agent_api::response_event::stream_finished::Reason::MaxTokenLimit(_)) => {
+            Some(agent_proto::response_event::stream_finished::Reason::MaxTokenLimit(_)) => {
                 let error_message = "Input exceeded context window limit.";
                 history_model.update(ctx, |history_model, ctx| {
                     history_model.mark_response_stream_completed_with_error(
@@ -6331,9 +6331,9 @@ fn input_for_query(
         .and_then(|c| c.get_task(task_id))
         .and_then(|task| {
             if task.is_root_task() {
-                Some(warp_multi_agent_api::AgentType::Primary)
+                Some(agent_proto::AgentType::Primary)
             } else if task.is_cli_subagent() {
-                Some(warp_multi_agent_api::AgentType::Cli)
+                Some(agent_proto::AgentType::Cli)
             } else {
                 None
             }

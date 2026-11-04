@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use futures::{Stream, StreamExt};
 use instant::Instant;
-use warp_multi_agent_api as api;
+use agent_proto as api;
 
 use crate::ai::api_error::AIApiError;
 

@@ -4,7 +4,7 @@ use std::pin::pin;
 use std::rc::Rc;
 
 use crate::ai::agent::conversation::ConversationStatus;
-use warp_multi_agent_api as api;
+use agent_proto as api;
 use warp_terminal::model::escape_sequences::{BRACKETED_PASTE_END, BRACKETED_PASTE_START, C0};
 use warpui::{Presenter, WindowInvalidation, notification::UserNotification};
 
@@ -12470,7 +12470,7 @@ fn updated_conversation_metadata_refreshes_selected_conversation_pane_title() {
         terminal.update(&mut app, |view, ctx| {
             let conversation = AIConversation::new_restored(
                 conversation_id,
-                vec![warp_multi_agent_api::Task {
+                vec![agent_proto::Task {
                     id: "root-task".to_string(),
                     messages: vec![],
                     dependencies: None,

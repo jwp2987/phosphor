@@ -2,7 +2,7 @@
 
 use ai::agent::convert::ConvertToAPITypeError;
 use chrono::{DateTime, Local};
-use warp_multi_agent_api as api;
+use agent_proto as api;
 
 use crate::ai::{
     agent::{AIAgentActionResult, AIAgentActionResultType},
@@ -56,16 +56,16 @@ impl TryFrom<AIAgentActionResult> for api::request::input::user_inputs::user_inp
                 Some(suggest_prompt_result.try_into()?)
             }
             AIAgentActionResultType::OpenCodeReview => Some(
-                warp_multi_agent_api::request::input::tool_call_result::Result::OpenCodeReview(
-                    warp_multi_agent_api::OpenCodeReviewResult {},
+                agent_proto::request::input::tool_call_result::Result::OpenCodeReview(
+                    agent_proto::OpenCodeReviewResult {},
                 ),
             ),
             AIAgentActionResultType::InsertReviewComments(insert_review_comments_result) => {
                 Some(insert_review_comments_result.try_into()?)
             }
             AIAgentActionResultType::InitProject => Some(
-                warp_multi_agent_api::request::input::tool_call_result::Result::InitProject(
-                    warp_multi_agent_api::InitProjectResult {},
+                agent_proto::request::input::tool_call_result::Result::InitProject(
+                    agent_proto::InitProjectResult {},
                 ),
             ),
             AIAgentActionResultType::ReadDocuments(read_documents_result) => {

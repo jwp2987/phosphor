@@ -28,6 +28,7 @@ publish = false
 
 [workspace.dependencies]
 # Local workspace crates. This lets us reference them in other crates without specifying a path.
+agent_proto = { path = "crates/agent_proto" }
 ai = { path = "crates/ai" }
 asset_cache = { path = "crates/asset_cache" }
 asset_macro = { path = "crates/asset_macro" }
@@ -361,7 +362,6 @@ version-compare = "0.1"
 vte = { git = "https://github.com/warpdotdev/vte.git", rev = "4b399c87b63ba88f45709edaa6383fc519f6c900", default-features = false }
 walkdir = "2"
 warp-workflows = { git = "https://github.com/warpdotdev/workflows", rev = "4d483f3268651b54c3ec07542f0f35dca7e49ce8" }
-warp_multi_agent_api = { git = "https://github.com/warpdotdev/warp-proto-apis.git", rev = "8320a94875bce9e730d9bfc4abda1544279e5db3" }
 wasm-bindgen = "0.2.89"
 wasm-bindgen-futures = "0.4.42"
 web-sys = { version = "0.3.69", features = [

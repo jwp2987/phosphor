@@ -5,7 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use warp_multi_agent_api as api;
+use agent_proto as api;
 
 use crate::ai::agent::task::helper::TaskExt as _;
 

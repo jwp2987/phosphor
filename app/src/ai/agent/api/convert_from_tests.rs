@@ -1,6 +1,6 @@
 use ai::agent::action::AskUserQuestionType;
 use ai::skills::SkillPathOrigin;
-use warp_multi_agent_api as api;
+use agent_proto as api;
 
 use super::{
     convert_api_question, ConversionParams, ConvertAPIMessageToClientOutputMessage,

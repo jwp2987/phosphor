@@ -1,6 +1,6 @@
 //! Local execution logic for the BYOP `webfetch` and `websearch` tools.
 //!
-//! These two BYOP tools don't go through the protobuf executor (`warp_multi_agent_api` has no
+//! These two BYOP tools don't go through the protobuf executor (`agent_proto` has no
 //! corresponding variant); `chat_stream.rs::handle_byop_web_tool_intercept` calls this module
 //! directly before `parse_incoming_tool_call`, synthesizing the result into a
 //! `(ToolCall carrier, ToolCallResult)` message pair pushed back into the stream.

@@ -3018,7 +3018,7 @@ fn writes_after_a_lock_episode_are_visible_to_a_fresh_connection() {
 #[test]
 fn lone_conversation_write_is_visible_to_a_fresh_connection_promptly() {
     use diesel::{Connection as _, sqlite::SqliteConnection};
-    use warp_multi_agent_api as api;
+    use agent_proto as api;
 
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let database_path = tempdir.path().join("warp.sqlite");

@@ -147,7 +147,7 @@ impl PassiveSuggestionsModel {
         &mut self,
         followup_conversation_id: Option<AIConversationId>,
         trigger: PassiveSuggestionTrigger,
-        supported_tools: Vec<warp_multi_agent_api::ToolType>,
+        supported_tools: Vec<agent_proto::ToolType>,
         ctx: &mut ModelContext<Self>,
     ) {
         // A closed (undo-restorable) pane makes no suggestion requests (#848).
@@ -429,7 +429,7 @@ impl PassiveSuggestionsModel {
                 PassiveSuggestionTrigger::AgentResponseCompleted {
                     exchange_id: latest_exchange_id,
                 },
-                vec![warp_multi_agent_api::ToolType::SuggestPrompt],
+                vec![agent_proto::ToolType::SuggestPrompt],
                 ctx,
             );
         }
@@ -440,7 +440,7 @@ impl PassiveSuggestionsModel {
         conversation_id: Option<AIConversationId>,
         block_context: Box<BlockContext>,
         relevant_files: Vec<FileContext>,
-        supported_tools: Vec<warp_multi_agent_api::ToolType>,
+        supported_tools: Vec<agent_proto::ToolType>,
         ctx: &mut ModelContext<Self>,
     ) {
         let trigger =
@@ -474,7 +474,7 @@ impl PassiveSuggestionsModel {
 
         let mut supported_tools = Vec::new();
         if is_prompt_suggestions_enabled {
-            supported_tools.push(warp_multi_agent_api::ToolType::SuggestPrompt);
+            supported_tools.push(agent_proto::ToolType::SuggestPrompt);
         }
 
         // Note: the lock is dropped before calling `BlockContext::from_completed_block` below,
@@ -550,7 +550,7 @@ impl PassiveSuggestionsModel {
                         me.pending_file_read_handle =
                             Some(ctx.spawn(read_files(file_locations, current_working_directory, shell), move |me, relevant_files, ctx| {
                                 me.pending_file_read_handle = None;
-                                supported_tools.push(warp_multi_agent_api::ToolType::ApplyFileDiffs);
+                                supported_tools.push(agent_proto::ToolType::ApplyFileDiffs);
                                 me.send_shell_command_completed_request(
                                     conversation_id,
                                     block_context,
@@ -596,7 +596,7 @@ enum ExtractedSuggestion {
         is_trigger_irrelevant: bool,
     },
     CodeDiff {
-        apply_file_diffs: warp_multi_agent_api::message::tool_call::ApplyFileDiffs,
+        apply_file_diffs: agent_proto::message::tool_call::ApplyFileDiffs,
     },
 }
 

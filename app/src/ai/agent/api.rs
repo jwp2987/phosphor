@@ -115,7 +115,7 @@ pub struct RequestParams {
     pub ambient_agent_task_id: Option<AmbientAgentTaskId>,
     /// Shared, immutable snapshot of the active tasks: cloning `RequestParams` or
     /// `ConversationData` is a refcount bump, not a copy of the whole history (#1156).
-    pub tasks: Arc<Vec<warp_multi_agent_api::Task>>,
+    pub tasks: Arc<Vec<agent_proto::Task>>,
     pub existing_suggestions: Option<Suggestions>,
     pub metadata: Option<RequestMetadata>,
     pub session_context: SessionContext,
@@ -161,10 +161,10 @@ pub struct RequestParams {
     pub should_redact_secrets: bool,
 
     /// User-provided API keys for AI providers (BYO API Key).
-    pub api_keys: Option<warp_multi_agent_api::request::settings::ApiKeys>,
+    pub api_keys: Option<agent_proto::request::settings::ApiKeys>,
     pub allow_use_of_warp_credits_with_byok: bool,
-    pub autonomy_level: warp_multi_agent_api::AutonomyLevel,
-    pub isolation_level: warp_multi_agent_api::IsolationLevel,
+    pub autonomy_level: agent_proto::AutonomyLevel,
+    pub isolation_level: agent_proto::IsolationLevel,
     pub web_search_enabled: bool,
     /// Zap BYOP-only, standalone local setting mirroring `web_search_enabled`: gates the local
     /// `search_codebase` tool. When false, `build_tools_array` / `available_tool_names` filter
@@ -210,7 +210,7 @@ pub struct RequestParams {
     pub computer_use_enabled: bool,
     pub ask_user_question_enabled: bool,
     pub research_agent_enabled: bool,
-    pub supported_tools_override: Option<Vec<warp_multi_agent_api::ToolType>>,
+    pub supported_tools_override: Option<Vec<agent_proto::ToolType>>,
     /// Zap BYOP-only: local conversation id, used only for request-readiness diagnostic logging.
     pub byop_conversation_id: Option<AIConversationId>,
     /// Zap BYOP-only: a non-persistent diagnostic correlation id scoped to a single request.
@@ -281,7 +281,7 @@ pub(crate) fn collect_user_rules(
     rules
 }
 
-pub type Event = Result<warp_multi_agent_api::ResponseEvent, Arc<AIApiError>>;
+pub type Event = Result<agent_proto::ResponseEvent, Arc<AIApiError>>;
 
 pub type ResponseStream = Pin<Box<dyn Stream<Item = Event> + Send + 'static>>;
 
@@ -294,7 +294,7 @@ pub type ResponseStream = Pin<Box<dyn Stream<Item = Event>>>;
 #[derive(Debug, Clone)]
 pub struct ConversationData {
     pub id: AIConversationId,
-    pub tasks: Arc<Vec<warp_multi_agent_api::Task>>,
+    pub tasks: Arc<Vec<agent_proto::Task>>,
     pub server_conversation_token: Option<ServerConversationToken>,
     pub forked_from_conversation_token: Option<ServerConversationToken>,
     pub ambient_agent_task_id: Option<AmbientAgentTaskId>,
@@ -376,7 +376,7 @@ impl RequestParams {
     #[cfg(test)]
     pub(crate) fn new_for_test(
         input: Vec<AIAgentInput>,
-        tasks: Vec<warp_multi_agent_api::Task>,
+        tasks: Vec<agent_proto::Task>,
     ) -> Self {
         Self {
             input,
@@ -403,8 +403,8 @@ impl RequestParams {
             should_redact_secrets: false,
             api_keys: None,
             allow_use_of_warp_credits_with_byok: false,
-            autonomy_level: warp_multi_agent_api::AutonomyLevel::Supervised,
-            isolation_level: warp_multi_agent_api::IsolationLevel::None,
+            autonomy_level: agent_proto::AutonomyLevel::Supervised,
+            isolation_level: agent_proto::IsolationLevel::None,
             web_search_enabled: false,
             codebase_context_enabled: false,
             codebase_symbols: std::sync::Arc::new(Vec::new()),
@@ -528,15 +528,15 @@ impl RequestParams {
 
         let app_execution_mode = AppExecutionMode::as_ref(app);
         let autonomy_level = if app_execution_mode.is_autonomous() {
-            warp_multi_agent_api::AutonomyLevel::Unsupervised
+            agent_proto::AutonomyLevel::Unsupervised
         } else {
-            warp_multi_agent_api::AutonomyLevel::Supervised
+            agent_proto::AutonomyLevel::Supervised
         };
 
         let isolation_level = if app_execution_mode.is_sandboxed() {
-            warp_multi_agent_api::IsolationLevel::Sandbox
+            agent_proto::IsolationLevel::Sandbox
         } else {
-            warp_multi_agent_api::IsolationLevel::None
+            agent_proto::IsolationLevel::None
         };
 
         let web_search_enabled =

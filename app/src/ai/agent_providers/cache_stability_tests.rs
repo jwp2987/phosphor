@@ -15,7 +15,7 @@
 //! prompt construction path that breaks byte-level stability will fail an assertion
 //! here.
 
-// `warp_multi_agent_api` is an external pinned proto crate
+// `agent_proto` is an external pinned proto crate
 // (warpdotdev/warp-proto-apis). Several of its fields carry `[deprecated = true]`
 // in the .proto, but the deprecation is aspirational -- e.g. `InputContext::
 // executed_shell_commands` is marked "TODO: these fields should be _attachments_,
@@ -27,7 +27,7 @@
 
 use crate::ai::agent::{MCPContext, MCPServer};
 use api::message;
-use warp_multi_agent_api as api;
+use agent_proto as api;
 
 use super::chat_stream;
 use super::tools;

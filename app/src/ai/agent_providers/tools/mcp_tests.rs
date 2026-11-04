@@ -214,7 +214,7 @@ fn read_resource_description_is_stable_and_sorted() {
 mod result_rendering {
     use super::super::serialize_result;
     use serde_json::json;
-    use warp_multi_agent_api as api;
+    use agent_proto as api;
 
     use api::call_mcp_tool_result::success::result::Result as Part;
 
@@ -330,7 +330,7 @@ fn mcp_call_arguments_are_coerced_against_the_tool_schema() {
     };
     let args_of = |arguments: &str| {
         let tool = super::parse_mcp_tool_call(&name, arguments, Some(&ctx)).unwrap();
-        let warp_multi_agent_api::message::tool_call::Tool::CallMcpTool(call) = tool else {
+        let agent_proto::message::tool_call::Tool::CallMcpTool(call) = tool else {
             panic!("expected CallMcpTool");
         };
         serde_json::Value::Object(super::prost_struct_to_json(&call.args.unwrap()))

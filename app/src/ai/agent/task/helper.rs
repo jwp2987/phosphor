@@ -1,6 +1,6 @@
 //! This module contains traits and trait implementations for exposing helper methods for accessing
 //! proto fields.
-use warp_multi_agent_api as api;
+use agent_proto as api;
 
 pub trait TaskExt {
     fn parent_id(&self) -> Option<&str>;

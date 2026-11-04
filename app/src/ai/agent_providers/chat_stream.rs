@@ -2,7 +2,7 @@
 //!
 //! Translates `RequestParams` into a genai `ChatRequest`, calls the user-configured
 //! provider through `Client::exec_chat_stream`, and translates the response back into
-//! `warp_multi_agent_api::ResponseEvent`. The controller's own logic (permissions/dialogs/
+//! `agent_proto::ResponseEvent`. The controller's own logic (permissions/dialogs/
 //! execution/result write-back/triggering the next turn) takes over the closed loop from there.
 //!
 //! ## Explicit routing across 5 API protocols
@@ -51,7 +51,7 @@ use futures::StreamExt;
 use instant::Instant;
 use serde_json::{json, Value};
 use uuid::Uuid;
-use warp_multi_agent_api as api;
+use agent_proto as api;
 
 use genai::adapter::AdapterKind;
 use genai::chat::{

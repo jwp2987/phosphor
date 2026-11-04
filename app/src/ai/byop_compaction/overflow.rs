@@ -25,7 +25,7 @@
 //!   return count >= usable(input)
 //! }
 //! ```
-use warp_multi_agent_api as api;
+use agent_proto as api;
 
 use super::consts::COMPACTION_BUFFER;
 use super::CompactionConfig;

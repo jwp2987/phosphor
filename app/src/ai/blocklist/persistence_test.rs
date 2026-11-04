@@ -8,15 +8,15 @@ use crate::ai::agent::{AIAgentActionType, UseComputerRequest};
 use crate::ai::blocklist::{BlocklistAIHistoryEvent, BlocklistAIHistoryModel};
 use crate::persistence::ModelEvent;
 
-fn user_query_message(task_id: &str, query: &str) -> warp_multi_agent_api::Message {
-    warp_multi_agent_api::Message {
+fn user_query_message(task_id: &str, query: &str) -> agent_proto::Message {
+    agent_proto::Message {
         fetched_memories: vec![],
         id: "message-id".to_owned(),
         task_id: task_id.to_owned(),
         server_message_data: String::new(),
         citations: Vec::new(),
-        message: Some(warp_multi_agent_api::message::Message::UserQuery(
-            warp_multi_agent_api::message::UserQuery {
+        message: Some(agent_proto::message::Message::UserQuery(
+            agent_proto::message::UserQuery {
                 query: query.to_owned(),
                 context: None,
                 referenced_attachments: HashMap::new(),
@@ -37,7 +37,7 @@ fn query_exchange_event_builds_persistence_upsert() {
         let task_id = "task-id";
         let conversation = AIConversation::new_restored(
             conversation_id,
-            vec![warp_multi_agent_api::Task {
+            vec![agent_proto::Task {
                 id: task_id.to_owned(),
                 messages: vec![user_query_message(task_id, "persist this prompt")],
                 dependencies: None,

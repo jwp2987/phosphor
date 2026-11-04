@@ -5,7 +5,7 @@
 //! whole file operation — see `hi.txt`'s write-up), while a genuinely malformed payload must
 //! still fail loudly enough for the caller to surface it to the user.
 
-use warp_multi_agent_api as api;
+use agent_proto as api;
 
 use super::*;
 

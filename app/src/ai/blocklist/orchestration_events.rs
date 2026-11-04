@@ -16,7 +16,7 @@
 //! out in this conversation's own output", not a network round trip.
 use std::collections::{HashMap, HashSet};
 
-use warp_multi_agent_api as api;
+use agent_proto as api;
 use warpui::{Entity, ModelContext, SingletonEntity};
 
 use super::history_model::{

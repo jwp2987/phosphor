@@ -64,7 +64,7 @@ use crate::{
     },
 };
 use warp_core::channel::ChannelState;
-use warp_multi_agent_api as api;
+use agent_proto as api;
 use warpui::units::IntoPixels;
 use warpui::{ModelHandle, SingletonEntity};
 

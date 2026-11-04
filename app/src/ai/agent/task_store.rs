@@ -1,6 +1,6 @@
 use hashbrown::HashMap;
 use indexmap::IndexMap;
-use warp_multi_agent_api as api;
+use agent_proto as api;
 use warp_util::hashed::Hashed;
 
 use super::{

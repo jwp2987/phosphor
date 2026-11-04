@@ -14,7 +14,7 @@
 //! stronger than before — they name the exact reason per file instead of
 //! requiring a catch-all phrase that covered all three causes at once.
 
-use warp_multi_agent_api as api;
+use agent_proto as api;
 
 use super::local_read_files_result;
 use crate::ai::{

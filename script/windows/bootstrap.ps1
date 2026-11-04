@@ -55,7 +55,7 @@ winget install -e --id Kitware.CMake
 winget install -e --id StrawberryPerl.StrawberryPerl `
     --accept-package-agreements --accept-source-agreements
 
-# protoc (the Protocol Buffers compiler) is used for build.rs code generation for proto deps (e.g. warp_multi_agent_api).
+# protoc (the Protocol Buffers compiler) is used for build.rs code generation for proto deps (e.g. agent_proto).
 # Pinned to the same version as script/linux/install_build_deps, to keep cross-platform codegen consistent;
 # prost-build requires protoc >= 3.15 (the proto3 optional field). winget's Google.Protobuf version is too new, so we grab the official release zip directly.
 $protocVersion = '25.1'

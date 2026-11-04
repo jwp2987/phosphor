@@ -39,7 +39,7 @@ strum.workspace = true
 strum_macros.workspace = true
 warpui.workspace = true
 warpui_extras = { workspace = true, features = ["default"] }
-warp_multi_agent_api.workspace = true
+agent_proto.workspace = true
 dirs.workspace = true
 lazy_static.workspace = true
 regex.workspace = true

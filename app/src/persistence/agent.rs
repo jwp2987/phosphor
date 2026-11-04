@@ -3,7 +3,7 @@ use diesel::associations::HasTable;
 use diesel::{prelude::*, result::Error, SqliteConnection};
 use prost::Message;
 use std::collections::{HashMap, HashSet};
-use warp_multi_agent_api as api;
+use agent_proto as api;
 
 use super::ConversationSummaryBackfill;
 use super::model::{AgentConversation, AgentConversationData, AgentConversationSummary};

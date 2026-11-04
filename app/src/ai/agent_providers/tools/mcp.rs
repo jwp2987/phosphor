@@ -47,7 +47,7 @@
 use anyhow::{anyhow, Result};
 use prost_types::value::Kind as ProstKind;
 use serde_json::{json, Map, Value};
-use warp_multi_agent_api as api;
+use agent_proto as api;
 
 use crate::ai::agent::{MCPContext, MCPServer};
 

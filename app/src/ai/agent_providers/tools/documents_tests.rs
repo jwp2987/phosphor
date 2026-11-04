@@ -6,7 +6,7 @@
 //! is created. `title` has no such alias -- a `name`-only payload must still fail loudly,
 //! since no synonym for it has ever been observed.
 
-use warp_multi_agent_api as api;
+use agent_proto as api;
 
 use super::*;
 

@@ -11,7 +11,7 @@
 use anyhow::Result;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use warp_multi_agent_api as api;
+use agent_proto as api;
 
 use super::OpenAiTool;
 

@@ -39,7 +39,7 @@ use base64::Engine;
 use crate::ai::agent::{AIAgentAttachment, AIAgentContext, DriveObjectPayload, ImageContext};
 use crate::ai::block_context::BlockContext;
 use ai::agent::action_result::{AnyFileContent, FileContext};
-use warp_multi_agent_api as api;
+use agent_proto as api;
 
 /// The dual-channel result returned by `collect_user_attachments`.
 ///

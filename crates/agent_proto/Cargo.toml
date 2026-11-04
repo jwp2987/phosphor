@@ -1,0 +1,15 @@
+[package]
+name = "agent_proto"
+edition = "2021"
+authors.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+prost.workspace = true
+prost-reflect = { workspace = true, features = ["derive"] }
+prost-types.workspace = true
+
+[build-dependencies]
+prost-reflect-build = "0.16.0"
+regex.workspace = true

@@ -28,7 +28,7 @@ use anyhow::Result;
 use api::message::tool_call::read_skill::SkillReference as ApiSkillReference;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use warp_multi_agent_api as api;
+use agent_proto as api;
 use warp_util::local_or_remote_path::LocalOrRemotePath;
 
 use super::OpenAiTool;

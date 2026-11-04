@@ -3,7 +3,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use chrono::Local;
-use warp_multi_agent_api::{FileContent, FileContentLineRange};
+use agent_proto::{FileContent, FileContentLineRange};
 
 use crate::ai::agent::{
     AIAgentContext, AIAgentExchange, AIAgentExchangeId, AIAgentOutput, AIAgentOutputMessage,

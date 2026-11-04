@@ -155,16 +155,16 @@ fn participant_for_restored_child_run_id_resolves_to_agent_name() {
                 last_modified_at: now,
                 summary: None,
             },
-            tasks: vec![warp_multi_agent_api::Task {
+            tasks: vec![agent_proto::Task {
                 id: format!("task-{child_id}"),
-                messages: vec![warp_multi_agent_api::Message {
+                messages: vec![agent_proto::Message {
                     fetched_memories: vec![],
                     id: "child-msg".to_string(),
                     task_id: format!("task-{child_id}"),
                     server_message_data: String::new(),
                     citations: vec![],
-                    message: Some(warp_multi_agent_api::message::Message::UserQuery(
-                        warp_multi_agent_api::message::UserQuery {
+                    message: Some(agent_proto::message::Message::UserQuery(
+                        agent_proto::message::UserQuery {
                             query: "Child query".to_string(),
                             context: None,
                             referenced_attachments: Default::default(),
@@ -212,16 +212,16 @@ fn participant_for_restored_child_run_id_resolves_to_agent_name() {
                 last_modified_at: now - chrono::Duration::seconds(1),
                 summary: None,
             },
-            tasks: vec![warp_multi_agent_api::Task {
+            tasks: vec![agent_proto::Task {
                 id: format!("task-{parent_id}"),
-                messages: vec![warp_multi_agent_api::Message {
+                messages: vec![agent_proto::Message {
                     fetched_memories: vec![],
                     id: "parent-msg".to_string(),
                     task_id: format!("task-{parent_id}"),
                     server_message_data: String::new(),
                     citations: vec![],
-                    message: Some(warp_multi_agent_api::message::Message::UserQuery(
-                        warp_multi_agent_api::message::UserQuery {
+                    message: Some(agent_proto::message::Message::UserQuery(
+                        agent_proto::message::UserQuery {
                             query: "Parent query".to_string(),
                             context: None,
                             referenced_attachments: Default::default(),
