@@ -1633,3 +1633,21 @@ Harness changes, plus one app LOG line (no behaviour change). `run.py --self-tes
   `maybe_handle_ctrl_c_in_rich_content_block`; names only). The case fails if a ^C while the reply streams went to the pty, or if the first press that logged a route did not
   cancel the conversation (#851). Without Pillow a "still changing" screen is UNVERIFIABLE (noref), not a fail: md5 can prove a still screen, never a moving one (r18u13 Mac:
   3 distinct hashes from the caret and the menu-bar capture indicator, while the app log showed the 120 fps stream redraw stopping at the first ^C).
+
+## r18u13 harness fixes (Windows live run, 5e9dfbb71)
+
+- **Git Bash pane cwd** (regression from 70dd2f253): the scratch rc moves a shell to the work dir only when it starts in `$HOME` or `/`, so restored tabs keep
+  their cwd. On Windows the app starts Git Bash in the OS profile folder (`%USERPROFILE%`, `/c/Users/<user>`), not in the scratch `$HOME`, so the Git Bash pass
+  stayed there: every relative-path effect file (`cad.txt`, `alive_*.txt`, `ie_*.txt`, ...) landed in `C:\Users\<user>`, and from `cadence` on each case reported
+  0 lines and a `pane_wedged_after_*` row although the pane worked (screenshot: block header `/c/Users/Winters`; r18u8's showed `~/w`). The rc now also treats
+  `cygpath -u "$USERPROFILE"` as a start in home (only when `USERPROFILE` is set and `cygpath` exists, so Linux/macOS run no extra command).
+- **winit trace in the Windows app log** (#1629): `WindowsApp.env` adds `winit=info` to `RUST_LOG`. The vendored winit's keyboard-layout trace (WM_INPUTLANGCHANGE
+  enter/exit, `LAYOUT_CACHE` takes, layout-build timing; `lib/winit/CHANGES-PHOSPHOR.md`) logs at info, and under the bare `warn` base the r18u13 AltGr hang run
+  carried none of it. winit logs nothing else through `log`, so the line count does not change outside a layout switch.
+- **#1629 root cause and unit tests**: the AltGr hang is the UI thread blocked in `DefWindowProc(WM_INPUTLANGCHANGEREQUEST)` on wgpu-hal's
+  never-pumped WGL instance thread (hidden top-level window). The app no longer initializes the GL backend on Windows by default
+  (`crates/warpui/src/rendering/wgpu/mod.rs` `default_backends`, kill switch `PHOSPHOR_WGPU_WINDOWS_GL=1`); `rendering/wgpu/mod_tests.rs` pins the
+  default set per platform. `intl_altgr_ps` / `intl_altgr_bash` are the real-app check.
+- **`intl_altgr_*` final key**: the unshifted layout probe after the AltGr string is VK_OEM_1 (`ü` on German, `;` on US English). It was VK_Y expecting `z`;
+  VK_Y types `y` on both layouts (the "Y key types z" rule is the physical key, which KBDGR reports as VK_Z), so a run that got every AltGr character
+  right failed on the last byte. Verified on the VM: with GL left out (`WGPU_BACKEND=dx12,vulkan` on the r18u13 build) both cases PASS.

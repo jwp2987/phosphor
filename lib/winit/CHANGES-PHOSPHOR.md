@@ -37,3 +37,10 @@ Record every change to this copy here, with the issue number.
   window-procedure calls and event-loop waits (enter/exit, message, depth, thread id); a new layout's preparation is timed
   (`keyboard_layout.rs`); and every `LAYOUT_CACHE` lock goes through `lock_layout_cache(site)`, which logs when the lock is
   already held (so a same-thread re-entry, which never returns, is the last line).
+- #1629 follow-up (2026-11-04, no source change here): the hang was not in winit. With `winit=info` in the CI log (r18u13 repro on
+  the Windows VM) the trace ends inside the UI thread's `DefWindowProc(WM_INPUTLANGCHANGEREQUEST)` right after two WM_IME_NOTIFY
+  calls; WM_INPUTLANGCHANGE never arrives and no LAYOUT_CACHE line follows. The stack sampler shows the UI thread in
+  `NtUserMessageCall`, and the window list shows the windows of wgpu-hal's "WGL Instance Thread" (a hidden top-level
+  "wgpu Device Class" window plus its Default IME window; the thread blocks in a channel `recv()` and never pumps) as hung: the
+  layout change is sent synchronously to that thread. Fixed in the app (`crates/warpui/src/rendering/wgpu/mod.rs`
+  `default_backends`: no GL backend on Windows by default). The fb78ecb port and the trace stay.

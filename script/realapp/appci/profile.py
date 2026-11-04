@@ -49,7 +49,12 @@ PROMPT_COMMAND="__pa_rec${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
 # prompt strings to the history number.
 if [ -n "${EPOCHREALTIME:-}" ]; then PS0+='${__pa_q[__pa_lf=${EPOCHREALTIME//[^0-9]/}]-}'; fi
 # Only a shell that starts in $HOME or / is moved to the work dir: a restored tab starts in its saved cwd and keeps it (r18u8 session_restore).
-if [ "$PWD" = "$HOME" ] || [ "$PWD" = / ]; then if [ -n "$APPCI_W" ]; then cd "$APPCI_W"; else cd "$HOME/w" 2>/dev/null; fi; fi
+# r18u13: on Windows the app starts Git Bash in the OS profile folder (%%USERPROFILE%%, /c/Users/<user>), not in the scratch $HOME, so that start
+# counts as "home" too; without it every relative-path effect file of the Git Bash pass landed in C:/Users/<user> and each case read as a wedged pane.
+__pa_up=
+if [ -n "${USERPROFILE:-}" ] && command -v cygpath >/dev/null 2>&1; then __pa_up=$(cygpath -u "$USERPROFILE" 2>/dev/null); fi
+if [ "$PWD" = "$HOME" ] || [ "$PWD" = / ] || { [ -n "$__pa_up" ] && [ "$PWD" = "$__pa_up" ]; }; then if [ -n "$APPCI_W" ]; then cd "$APPCI_W"; else cd "$HOME/w" 2>/dev/null; fi; fi
+unset __pa_up
 true
 '''
 BOOTSTRAP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "app", "assets", "bundled", "bootstrap")

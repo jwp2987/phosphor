@@ -138,7 +138,34 @@ fn get_wgpu_instance() -> Arc<wgpu::Instance> {
 
 /// Returns the set of wgpu backends that we can select from.
 fn wgpu_backend_options() -> wgpu::Backends {
-    wgpu::Backends::from_env().unwrap_or(wgpu::Backends::all())
+    wgpu::Backends::from_env().unwrap_or_else(|| {
+        default_backends(
+            cfg!(windows),
+            std::env::var("PHOSPHOR_WGPU_WINDOWS_GL").is_ok_and(|value| value == "1"),
+        )
+    })
+}
+
+/// The backends initialized when `WGPU_BACKEND` does not choose them.
+///
+/// #1629: on Windows the OpenGL (WGL) backend is left out. Initializing it makes wgpu-hal spawn
+/// "wgpu-hal WGL Instance Thread", which creates a hidden TOP-LEVEL window ("wgpu Device Class")
+/// and then blocks in a channel `recv()` for the life of the instance without ever pumping
+/// messages. A keyboard-layout switch (WM_INPUTLANGCHANGEREQUEST -> DefWindowProc on the UI
+/// thread) makes the system send the layout change synchronously to the windows of the
+/// process's other GUI threads, so the UI thread waited forever in `NtUserMessageCall` on that
+/// thread: the app hung on every switch to the German layout (r18u8 and r18u13 Windows runs;
+/// the winit trace shows DefWindowProc never returning, the stack sampler showed the UI thread in
+/// NtUserMessageCall and the WGL thread's windows as hung). DX12 (always present on Windows 10+,
+/// with the WARP software adapter as a floor) and Vulkan stay; the crash-recovery relaunch
+/// already drops GL the same way (`WGPU_BACKEND=vulkan,dx12`). `PHOSPHOR_WGPU_WINDOWS_GL=1`
+/// puts GL back (kill switch), as does naming it in `WGPU_BACKEND`.
+fn default_backends(windows: bool, windows_gl_opt_in: bool) -> wgpu::Backends {
+    if windows && !windows_gl_opt_in {
+        wgpu::Backends::all().difference(wgpu::Backends::GL)
+    } else {
+        wgpu::Backends::all()
+    }
 }
 
 pub async fn print_wgpu_adapters(
@@ -232,3 +259,7 @@ pub(crate) fn to_wgpu_backend(backend: GraphicsBackend) -> wgpu::Backend {
         GraphicsBackend::BrowserWebGpu => wgpu::Backend::BrowserWebGpu,
     }
 }
+
+#[cfg(test)]
+#[path = "mod_tests.rs"]
+mod tests;
