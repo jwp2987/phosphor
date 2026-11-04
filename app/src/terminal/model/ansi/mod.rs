@@ -712,6 +712,10 @@ impl<'a, H: Handler + 'a, W: io::Write> Performer<'a, H, W> {
             Ok(DProtoHook::PreInteractiveSSHSession { value }) => {
                 self.handler.pre_interactive_ssh_session(value)
             }
+            Ok(DProtoHook::ManagedSSHSessionStarting { .. }) => {
+                self.handler.ssh_wrapper_verdict(true)
+            }
+            Ok(DProtoHook::PlainSSHFallback { .. }) => self.handler.ssh_wrapper_verdict(false),
             Ok(DProtoHook::SSH { value }) => self.handler.ssh(value),
             Ok(DProtoHook::InitShell { value }) => self.handler.init_shell(value),
             Ok(DProtoHook::InputBuffer { value }) => self.handler.input_buffer(value),

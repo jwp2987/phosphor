@@ -1475,6 +1475,8 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
             fi
             if [[ -z "$remote_session_id" || "$remote_session_id" == "0" ]]; then
                 # If we cannot generate a non-zero random token, run plain SSH instead.
+                # #1641: the plain ssh runs, not the managed session: the app releases held keys when it owns the tty.
+                warp_send_json_message "{\"hook\": \"PlainSSHFallback\", \"value\": {\"session_id\": ${WARP_SESSION_ID:-}}}"
                 command ssh "${@:1}"
                 return
             fi
@@ -1483,6 +1485,8 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
             # step fails with "Failed to connect to new control master"), and the managed session
             # below depends on a control socket. Run the user's plain ssh, untouched.
             if [ "${WARP_IN_MSYS2:-}" = true ]; then
+                # #1641: the plain ssh runs, not the managed session: the app releases held keys when it owns the tty.
+                warp_send_json_message "{\"hook\": \"PlainSSHFallback\", \"value\": {\"session_id\": ${WARP_SESSION_ID:-}}}"
                 command ssh "${@:1}"
                 return
             fi
@@ -1499,6 +1503,8 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
             local user_remote_command
             warp_ssh_g_value user_remote_command remotecommand "$warp_ssh_g"
             if [[ -n "$user_remote_command" && "$user_remote_command" != "none" ]]; then
+                # #1641: the plain ssh runs, not the managed session: the app releases held keys when it owns the tty.
+                warp_send_json_message "{\"hook\": \"PlainSSHFallback\", \"value\": {\"session_id\": ${WARP_SESSION_ID:-}}}"
                 command ssh "${@:1}"
                 return
             fi
@@ -1602,6 +1608,8 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
                         command -p rm -f -- "$warp_socket_file"
                     fi
                     if [[ -e "$warp_socket_file" || -L "$warp_socket_file" ]]; then
+                        # #1641: the plain ssh runs, not the managed session: the app releases held keys when it owns the tty.
+                        warp_send_json_message "{\"hook\": \"PlainSSHFallback\", \"value\": {\"session_id\": ${WARP_SESSION_ID:-}}}"
                         command ssh "${@:1}"
                         return
                     fi
@@ -1618,6 +1626,8 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
                     # now means authentication succeeded and only multiplexing failed: then the user's
                     # plain ssh runs. It ran with -N, so no remote command ever ran and none runs twice.
                     if [[ -e "${control_path/#\~/$HOME}" || -L "${control_path/#\~/$HOME}" ]]; then
+                        # #1641: the plain ssh runs, not the managed session: the app releases held keys when it owns the tty.
+                        warp_send_json_message "{\"hook\": \"PlainSSHFallback\", \"value\": {\"session_id\": ${WARP_SESSION_ID:-}}}"
                         command ssh "${@:1}"
                         return
                     fi
@@ -1636,6 +1646,7 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
             fi
             if [[ $warp_owns_master -eq 1 || "$external_control_master" == "true" ]]; then
                 if warp_ssh_remote_is_non_posix_cached "$control_path" "${@:1}"; then
+                    warp_send_json_message "{\"hook\": \"PlainSSHFallback\", \"value\": {\"session_id\": ${WARP_SESSION_ID:-}}}"
                     command ssh -o ControlMaster=no -o ControlPath="$control_path" -t "${@:1}"
                     local warp_plain_rc=$?
                     if [[ $warp_owns_master -eq 1 ]]; then
@@ -1731,6 +1742,9 @@ TMPPREFIX="'$HOME/.zshtmp-'" WARP_SSH_RCFILES="'${ZDOTDIR:-$HOME}'" ZDOTDIR="'$W
       ;;
 esac
 "
+            # #1641: the master login is over; the managed session starts. Held keys stay held until the
+            # remote shell's first prompt (they must never reach the bootstrap payload).
+            warp_send_json_message "{\"hook\": \"ManagedSSHSessionStarting\", \"value\": {\"session_id\": ${WARP_SESSION_ID:-}}}"
             command ssh ${warp_ipqos_args[@]+"${warp_ipqos_args[@]}"} -o ControlMaster=$control_master_mode -o ControlPath="$control_path" \
             -t "${@:1}" "$warp_remote_bootstrap"
             local warp_session_rc=$?
@@ -1907,6 +1921,8 @@ esac
                     fi
                     warp_ssh_helper "$@"
                 else
+                    # #1641: PreInteractiveSSHSession was sent; say no managed session follows.
+                    warp_send_json_message "{\"hook\": \"PlainSSHFallback\", \"value\": {\"session_id\": ${WARP_SESSION_ID:-}}}"
                     command ssh "$@"
                 fi
             else

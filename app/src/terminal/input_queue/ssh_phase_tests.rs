@@ -280,3 +280,28 @@ fn nothing_moves_the_phase_but_an_edge() {
     let _ = m.phase(false);
     assert_eq!(m.phase(false), before);
 }
+
+/// #1641: under the ssh wrapper the view defers the ownership edge, so the window keeps holding;
+/// the one pass-through is a secret read observed while ssh owns the tty, and it lasts only as
+/// long as the observation says so. Held keys stay held whatever is observed (the view discards
+/// them first, as the termios guard does).
+#[test]
+fn a_secret_read_under_the_wrapper_hold_passes_and_only_while_it_lasts() {
+    let mut m = armed();
+    assert_eq!(m.phase(false), SshPhase::Holding);
+    m.apply(observed(|o| o.secret_pass_through = true));
+    assert_eq!(m.phase(false), SshPhase::Idle, "the password reaches ssh");
+    m.apply(observed(|_| {}));
+    assert_eq!(
+        m.phase(false),
+        SshPhase::Holding,
+        "held again after the read"
+    );
+    m.apply(SshEdge::HoldStarted);
+    m.apply(observed(|o| o.secret_pass_through = true));
+    assert_eq!(
+        m.phase(false),
+        SshPhase::Holding,
+        "a live hold is never overtaken"
+    );
+}

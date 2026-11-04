@@ -228,6 +228,15 @@ impl Handler for MockHandler {
             .push(DProtoHook::PreInteractiveSSHSession { value: data })
     }
 
+    fn ssh_wrapper_verdict(&mut self, managed: bool) {
+        let value = PreInteractiveSSHSessionValue::default();
+        self.d_proto_hooks.push(if managed {
+            DProtoHook::ManagedSSHSessionStarting { value }
+        } else {
+            DProtoHook::PlainSSHFallback { value }
+        })
+    }
+
     fn ssh(&mut self, data: SSHValue) {
         self.d_proto_hooks.push(DProtoHook::SSH { value: data });
     }
@@ -2044,4 +2053,22 @@ fn command_file_failed_is_delivered_for_an_unregistered_session() {
         handler.d_proto_hooks.as_slice(),
         [DProtoHook::CommandFileFailed { .. }]
     ));
+}
+
+/// #1641: the ssh wrapper's two verdict hooks are hex-encoded JSON hooks with the session id, like
+/// `PreInteractiveSSHSession`, and reach the handler as the managed / fallback verdict.
+#[test]
+fn parse_dcs_ssh_wrapper_verdict_hooks() {
+    for (name, managed) in [
+        ("ManagedSSHSessionStarting", true),
+        ("PlainSSHFallback", false),
+    ] {
+        let payload = format!(r#"{{"hook":"{name}","value":{{"session_id":7}}}}"#);
+        let (_, handler) = parse_bytes(&hex_encoded_dcs_string(&payload));
+        match handler.d_proto_hooks.as_slice() {
+            [DProtoHook::ManagedSSHSessionStarting { .. }] => assert!(managed, "{name}"),
+            [DProtoHook::PlainSSHFallback { .. }] => assert!(!managed, "{name}"),
+            other => panic!("{name}: unexpected hooks {other:?}"),
+        }
+    }
 }

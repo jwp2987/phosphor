@@ -19609,6 +19609,317 @@ fn ssh_secret_read_at_ownership_still_discards_the_held_keys_in_both_modes() {
     }
 }
 
+/// #1641: the start every managed-ssh hold test shares. `ssh host` is submitted, a key run typed
+/// right after the Enter, ssh runs (preexec), the wrapper announces itself
+/// (`PreInteractiveSSHSession`), and ssh owns the tty (`CommandBecameInteractive`): on Linux the
+/// latch fires there because the wrapper's ControlMaster login (`-N -f`) is in front. More keys
+/// follow. Nothing may reach the pty: the bootstrap payload of the managed session would eat it.
+/// Returns the connect window's block.
+fn managed_ssh_held_through_the_master_login_for_test(
+    view: &mut TerminalView,
+    ctx: &mut ViewContext<TerminalView>,
+) -> BlockId {
+    register_local_session_for_ssh_test(view, ctx);
+    submit_command(view, "ssh host", ctx);
+    view.typed_characters_on_terminal("echo T", ctx);
+    view.model
+        .lock()
+        .simulate_long_running_block("ssh host", "");
+    view.warpify_state
+        .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
+    view.handle_terminal_event(&ModelEvent::PreInteractiveSSHSession, ctx);
+    ssh_tty_owned_for_test(view, ctx);
+    assert!(
+        view.ssh_typeahead_holding,
+        "ownership under the wrapper keeps the hold"
+    );
+    view.typed_characters_on_terminal("258_ok", ctx);
+    view.keydown_on_terminal("\r", ctx);
+    assert!(
+        view.ssh_typeahead_holding,
+        "keys typed after ownership are held too"
+    );
+    assert_eq!(view.ssh_held_bytes(), "echo T258_ok\r".len());
+    let gate = view.ssh_connect_gate.as_ref().expect("the window is open");
+    assert!(!gate.tty_owned, "ownership is deferred, not applied");
+    assert!(gate.tty_owned_deferred);
+    assert_eq!(
+        view.build_route_facts(crate::terminal::input_queue::QueueFacts::default(), ctx)
+            .ssh,
+        crate::terminal::input_queue::SshPhase::Holding,
+        "the next key is held as well"
+    );
+    gate.block_id.clone().expect("the window's block")
+}
+
+/// #1641 (owner decision, option (b)): under the ssh wrapper, ssh owning the tty during the
+/// ControlMaster login releases nothing; `ManagedSSHSessionStarting` keeps the keys held, the
+/// managed hold takes over, and they are written once, in typed order, at the remote shell's first
+/// prompt, after its bootstrap (InitShell, Bootstrapped, Precmd). Legacy and Table.
+#[test]
+fn managed_ssh_keys_are_held_through_the_master_login_and_delivered_after_the_bootstrap() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            let remote_session = SessionId::from(167303092612202);
+            let armed = terminal.update(&mut app, |view, ctx| {
+                managed_ssh_held_through_the_master_login_for_test(view, ctx)
+            });
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{mode:?}: nothing written at ownership: {:?}",
+                pty_writes.borrow()
+            );
+            terminal.update(&mut app, |view, ctx| {
+                // The master login succeeded; the managed session (the bootstrap) starts.
+                view.handle_terminal_event(&ModelEvent::SshWrapperVerdict { managed: true }, ctx);
+                assert!(view.ssh_typeahead_holding, "{mode:?}: still held");
+                // The remote prints the ssh hook and announces its shell (InitShell).
+                simulate_ssh_hook(view);
+                view.refresh_ssh_connect_gate();
+                view.ssh_observe(ctx);
+                view.model.lock().init_shell(InitShellValue {
+                    session_id: remote_session,
+                    shell: "bash".to_owned(),
+                    user: "user".to_owned(),
+                    hostname: "host".to_owned(),
+                    ..Default::default()
+                });
+                assert!(view.refresh_ssh_connect_gate());
+                view.ssh_observe(ctx);
+                // The ssh block ends cleanly at the bootstrap's own precmd.
+                view.apply_block_completed_to_ssh_gate(&armed, 0);
+                view.warpify_state.clear_pending_ssh_host();
+                view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+                view.model.lock().bootstrapped(BootstrappedValue {
+                    shell: "bash".to_owned(),
+                    ..Default::default()
+                });
+                view.handle_terminal_event(
+                    &ModelEvent::Handler(AnsiHandlerEvent::Bootstrapped {
+                        session_id: remote_session,
+                        is_subshell: false,
+                    }),
+                    ctx,
+                );
+                assert!(
+                    view.ssh_typeahead_holding,
+                    "{mode:?}: held until the prompt"
+                );
+            });
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{mode:?}: nothing reached the bootstrap: {:?}",
+                pty_writes.borrow()
+            );
+            terminal.update(&mut app, |view, ctx| {
+                // A command runs in the foreground, so what is delivered goes to the pty.
+                view.model.lock().simulate_long_running_block("sleep 5", "");
+                // The remote shell's first prompt: the managed hold hands over (#1572).
+                view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+                assert!(
+                    view.ssh_connect_gate.is_none(),
+                    "{mode:?}: the first prompt ends the window"
+                );
+                assert!(!view.ssh_typeahead_holding, "{mode:?}");
+                assert!(view.ssh_held_is_empty(), "{mode:?}");
+            });
+            let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+            let written = String::from_utf8_lossy(&written).into_owned();
+            assert_eq!(
+                written.matches("echo T258_ok").count(),
+                1,
+                "{mode:?}: delivered exactly once: {written:?}"
+            );
+            assert!(
+                written.starts_with("echo T258_ok\r"),
+                "{mode:?}: whole, in typed order, Enter last: {written:?}"
+            );
+        })
+    }
+}
+
+/// #1641: the wrapper falls back to the user's plain ssh (`PlainSSHFallback`: #1551 mux failure,
+/// MSYS2, a RemoteCommand, ...): the window behaves like an unmanaged one, so the ownership seen
+/// during the master login applies at the announcement: the held keys go to ssh once, in typed
+/// order, and later keys pass straight through. Legacy and Table.
+#[test]
+fn managed_ssh_plain_fallback_releases_the_held_keys_at_ownership() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                managed_ssh_held_through_the_master_login_for_test(view, ctx);
+            });
+            assert!(pty_writes.borrow().is_empty(), "{mode:?}");
+            terminal.update(&mut app, |view, ctx| {
+                view.handle_terminal_event(&ModelEvent::SshWrapperVerdict { managed: false }, ctx);
+                assert!(!view.ssh_typeahead_holding, "{mode:?}: the hold ended");
+                assert!(view.ssh_held_is_empty(), "{mode:?}: delivered to ssh");
+                assert!(
+                    view.ssh_connect_gate.as_ref().is_some_and(|g| g.tty_owned),
+                    "{mode:?}: the window is owned by ssh now"
+                );
+                assert_eq!(
+                    view.build_route_facts(
+                        crate::terminal::input_queue::QueueFacts::default(),
+                        ctx
+                    )
+                    .ssh,
+                    crate::terminal::input_queue::SshPhase::Idle,
+                    "{mode:?}: later keys pass straight through"
+                );
+            });
+            let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+            assert_eq!(
+                written, b"echo T258_ok\r",
+                "{mode:?}: once, in typed order, at the fallback"
+            );
+        })
+    }
+}
+
+/// #1641: the connect ends (the master login failed: no verdict is ever printed) with keys held
+/// under the wrapper: the #1292 hand-back returns them to the editor as text, unexecuted, and
+/// nothing reaches the pty. Legacy and Table.
+#[test]
+fn managed_ssh_block_end_without_a_verdict_hands_the_keys_back_as_text() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                let armed = managed_ssh_held_through_the_master_login_for_test(view, ctx);
+                view.apply_block_completed_to_ssh_gate(&armed, 255);
+                assert!(
+                    view.ssh_connect_gate.is_none(),
+                    "{mode:?}: failure ends the window"
+                );
+                view.deliver_ssh_typeahead_if_ready("test", ctx);
+                assert!(!view.ssh_typeahead_holding, "{mode:?}");
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "echo T258_ok",
+                    "{mode:?}: the held text is back in the editor"
+                );
+            });
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{mode:?}: nothing written: {:?}",
+                pty_writes.borrow()
+            );
+        })
+    }
+}
+
+/// #1641: under the wrapper's hold the master login's password prompt keeps the termios guard's
+/// behaviour: when the tty is seen reading a secret (canonical, echo off: a `tcgetattr` fact, not
+/// the prompt's text) what was typed before it is discarded, as the kernel's flush would, and the
+/// keys typed while the secret is read reach ssh. Once the read is over, keys are held again for
+/// the managed session. Legacy and Table.
+#[test]
+fn managed_ssh_password_typed_during_the_master_login_reaches_ssh() {
+    use crate::terminal::input_queue::DestinationMode;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            let secret = Arc::new(AtomicBool::new(false));
+            terminal.update(&mut app, |view, ctx| {
+                let probe = secret.clone();
+                view.model
+                    .lock()
+                    .set_secret_read_probe(Arc::new(move || probe.load(Ordering::Relaxed)));
+                managed_ssh_held_through_the_master_login_for_test(view, ctx);
+                // ssh asks for the password: the tty reads a secret, and its output is the event.
+                secret.store(true, Ordering::Relaxed);
+                view.model.lock().process_bytes("user@host's password: ");
+                view.model.lock().publish_key_facts();
+                view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+                assert!(
+                    !view.ssh_typeahead_holding,
+                    "{mode:?}: the guard ended the hold"
+                );
+                assert!(view.ssh_held_is_empty(), "{mode:?}: the blind text is gone");
+                view.typed_characters_on_terminal("hunter2", ctx);
+                view.keydown_on_terminal("\r", ctx);
+                assert!(
+                    !view.ssh_typeahead_holding,
+                    "{mode:?}: the password passes to ssh"
+                );
+                // The read is over (echo back on): the managed session is still to come.
+                secret.store(false, Ordering::Relaxed);
+                view.typed_characters_on_terminal("ls", ctx);
+                assert!(view.ssh_typeahead_holding, "{mode:?}: held again");
+                assert_eq!(view.ssh_held_bytes(), "ls".len(), "{mode:?}");
+            });
+            let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+            assert_eq!(
+                written, b"hunter2\r",
+                "{mode:?}: only the password reached ssh, once"
+            );
+        })
+    }
+}
+
+/// #1641 control: an ssh the wrapper did not announce (unmanaged, no `PreInteractiveSSHSession`)
+/// keeps the plain terminal's rule: ownership releases the held keys, as before. Legacy and Table.
+#[test]
+fn unannounced_ssh_still_releases_held_keys_at_ownership() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                submit_command(view, "ssh host", ctx);
+                view.typed_characters_on_terminal("echo U", ctx);
+                view.model
+                    .lock()
+                    .simulate_long_running_block("ssh host", "");
+                view.warpify_state
+                    .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
+                // A verdict without an announcement changes nothing.
+                view.handle_terminal_event(&ModelEvent::SshWrapperVerdict { managed: true }, ctx);
+                ssh_tty_owned_for_test(view, ctx);
+                assert!(
+                    !view.ssh_typeahead_holding,
+                    "{mode:?}: released at ownership"
+                );
+                assert!(
+                    view.ssh_connect_gate.as_ref().is_some_and(|g| g.tty_owned),
+                    "{mode:?}"
+                );
+            });
+            let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+            assert_eq!(written, b"echo U", "{mode:?}: once, at ownership");
+        })
+    }
+}
+
 /// #1565: with the agent-view editor focused (the default mode), the keys typed while an ssh
 /// connects must be held for the remote shell like in terminal mode. The hold used to be armed
 /// only by the first terminal-routed key, and `key_target` sent a typed key to the terminal only

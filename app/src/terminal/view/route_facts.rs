@@ -102,9 +102,11 @@ impl TerminalView {
     /// event the gate recorded, nothing is read from the screen) and the alt screen from the
     /// facts. `false` without a gate.
     fn ssh_connect_gate_drops_keys_in(&self, alt_screen: bool) -> bool {
+        // #1641: a secret read under the wrapper's hold passes to ssh (`ssh_connect_gate_drops_keys`).
         self.ssh_connect_gate
             .as_ref()
             .is_some_and(|gate| gate.drops_keys(alt_screen))
+            && !self.ssh_wrapper_secret_pass_through()
     }
 
     /// `subshell_bootstrap_announced_age_in` is already pure; the PowerShell hold is read from the
@@ -223,6 +225,7 @@ impl TerminalView {
         let has_pending_ssh_command = self.has_pending_ssh_command_in(snapshot);
         let gate = self.ssh_connect_gate.as_ref();
         let drops_keys = self.ssh_connect_gate_drops_keys_in(alt_screen);
+        let secret_pass_through = self.ssh_wrapper_secret_pass_through();
         let pending_sid = if gate.is_some() || has_pending_ssh_command {
             pending_now
         } else {
@@ -271,6 +274,7 @@ impl TerminalView {
                 hook_seen: snapshot.has_pending_ssh_session,
                 dialog_up: ssh_dialog_up,
                 setup_in_flight: ssh_setup_in_flight,
+                secret_pass_through,
             },
         );
 

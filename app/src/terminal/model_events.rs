@@ -360,6 +360,7 @@ impl ModelEventDispatcher {
             Event::Bell => ModelEvent::Bell,
             Event::Exit { reason } => ModelEvent::Exit { reason },
             Event::PreInteractiveSSHSession => ModelEvent::PreInteractiveSSHSession,
+            Event::SshWrapperVerdict { managed } => ModelEvent::SshWrapperVerdict { managed },
             Event::SSH(ssh) => ModelEvent::SSH(ssh),
             Event::SSHControlMasterError => ModelEvent::SSHControlMasterError,
             Event::InputBufferOverflow => ModelEvent::InputBufferOverflow,
@@ -521,6 +522,11 @@ pub enum ModelEvent {
     /// An indication that we are about to initiate an interactive SSH session
     /// (which may or may not use the SSH wrapper).
     PreInteractiveSSHSession,
+    /// The ssh wrapper's verdict after `PreInteractiveSSHSession` (#1641): `managed` for
+    /// `ManagedSSHSessionStarting`, not for `PlainSSHFallback`.
+    SshWrapperVerdict {
+        managed: bool,
+    },
     /// An indication that a successful SSH connection was initiated via the
     /// SSH wrapper.  The argument is the name of the remote shell.
     SSH(String),

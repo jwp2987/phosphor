@@ -3253,6 +3253,11 @@ pub struct TerminalView {
     /// command (before the shell's preexec hook can say anything) and held until the remote
     /// session is ready, the connect shows the user a prompt, or the ceiling passes.
     ssh_connect_gate: Option<SshConnectGate>,
+    /// #1641: the pty's termios probe, taken (with the model's lock, on an event) when the ssh
+    /// wrapper's ownership is deferred, so the key path can read the secret-read pass-through
+    /// without that lock (`ssh_wrapper_secret_pass_through`).
+    ssh_wrapper_secret_probe:
+        Option<crate::terminal::model::block::interactive_latch::SecretReadProbe>,
     /// #1292: set from the first key held during an ssh connect until the held keys are
     /// delivered, discarded or turned into editor text. While set EVERY key is held, also in the
     /// stretches where the gate itself would let keys through (a banner printed before the
@@ -5177,6 +5182,7 @@ impl TerminalView {
             was_ever_visible: false,
             ssh_setup_drop_notified: false,
             ssh_connect_gate: None,
+            ssh_wrapper_secret_probe: None,
             ssh_typeahead_holding: false,
             fork_restore_persist: Default::default(),
             fullscreen_output_signal: None,
@@ -11359,6 +11365,16 @@ impl TerminalView {
         if !applies {
             return;
         }
+        // #1641: under the ssh wrapper this is the ControlMaster login owning the tty, not the
+        // session the keys are for: the hold waits for the wrapper's verdict.
+        if self
+            .ssh_connect_gate
+            .as_ref()
+            .is_some_and(|gate| gate.wrapper.defers_ownership())
+        {
+            self.ssh_defer_tty_owned_for_wrapper(ctx);
+            return;
+        }
         if let Some(gate) = self.ssh_connect_gate.as_mut() {
             gate.tty_owned = true;
         }
@@ -11383,6 +11399,104 @@ impl TerminalView {
     /// the model's termios probe. `false` without one (ConPTY; a test that installed none).
     fn ssh_tty_reading_secret(&self) -> bool {
         self.model.lock().tty_reading_secret()
+    }
+
+    /// #1641: the wrapper announced itself (`PreInteractiveSSHSession`) for the open connect
+    /// window: from now on ssh owning the tty does not release the hold; the wrapper's verdict
+    /// does (`ssh_on_wrapper_verdict`). A window already owned (ConPTY's `TTY_OWNED_AT_ARM`, or an
+    /// ownership event handled first) is left as it is.
+    fn ssh_on_wrapper_announced(&mut self) {
+        let Some(gate) = self.ssh_connect_gate.as_mut() else {
+            return;
+        };
+        if gate.tty_owned || gate.wrapper != SshWrapperHold::Off {
+            return;
+        }
+        gate.wrapper = SshWrapperHold::AwaitingVerdict;
+        warpui::input_order::log_hop("ssh_wrapper", || {
+            format!(
+                "announced holding={} held_bytes={}",
+                self.ssh_typeahead_holding,
+                self.ssh_held_bytes()
+            )
+        });
+    }
+
+    /// #1641: the wrapper's verdict. `managed` (`ManagedSSHSessionStarting`): the keys stay held
+    /// and the managed hold hands them over at the remote shell's first prompt, after the
+    /// bootstrap. Not managed (`PlainSSHFallback`): the user's plain ssh runs, so the window
+    /// behaves like an unmanaged one; an ownership seen meanwhile applies now (delivering what is
+    /// held to ssh, or the termios guard discarding it), else the next ownership event does.
+    fn ssh_on_wrapper_verdict(&mut self, managed: bool, ctx: &mut ViewContext<Self>) {
+        let Some(gate) = self.ssh_connect_gate.as_mut() else {
+            return;
+        };
+        if !gate.wrapper.defers_ownership() {
+            return;
+        }
+        warpui::input_order::log_hop("ssh_wrapper", || {
+            format!(
+                "verdict managed={managed} tty_owned_deferred={}",
+                gate.tty_owned_deferred
+            )
+        });
+        if managed {
+            gate.wrapper = SshWrapperHold::Managed;
+            return;
+        }
+        gate.wrapper = SshWrapperHold::Off;
+        let deferred = std::mem::take(&mut gate.tty_owned_deferred);
+        let block_id = gate.block_id.clone();
+        self.ssh_observe(ctx);
+        if deferred {
+            let block_id = block_id.unwrap_or_else(|| self.model.lock().active_block_id().clone());
+            self.ssh_on_tty_owned(&block_id, ctx);
+        }
+    }
+
+    /// #1641: ssh owns the tty under the wrapper: remembered for a fallback, never a release. The
+    /// one exception is the termios guard's: a secret being read now (canonical, echo off) is the
+    /// ssh login's password or passphrase prompt, so what is held is discarded as the kernel's
+    /// flush would, and the keys typed while the secret is read pass to ssh
+    /// (`ssh_wrapper_secret_pass_through`). Every other key stays held.
+    fn ssh_defer_tty_owned_for_wrapper(&mut self, ctx: &mut ViewContext<Self>) {
+        self.ssh_wrapper_secret_probe = self.model.lock().secret_read_probe();
+        if let Some(gate) = self.ssh_connect_gate.as_mut() {
+            gate.tty_owned_deferred = true;
+        }
+        warpui::input_order::log_hop("ssh_wrapper", || {
+            format!(
+                "tty_owned_deferred holding={} held_bytes={}",
+                self.ssh_typeahead_holding,
+                self.ssh_held_bytes()
+            )
+        });
+        self.ssh_wrapper_secret_read_guard(ctx);
+        self.ssh_observe(ctx);
+    }
+
+    /// #1641: while the wrapper defers ownership and ssh owns the tty, whether the tty is reading
+    /// a secret right now. Then the key goes to ssh (the password prompt of the master login), as
+    /// before the managed hold. A termios read (`tcgetattr`), never screen text; `false` without a
+    /// probe (ConPTY, a test that installed none).
+    fn ssh_wrapper_secret_pass_through(&self) -> bool {
+        self.ssh_connect_gate
+            .as_ref()
+            .is_some_and(|gate| gate.wrapper.defers_ownership() && gate.tty_owned_deferred)
+            && self
+                .ssh_wrapper_secret_probe
+                .as_ref()
+                .is_some_and(|probe| probe())
+    }
+
+    /// #1641: the termios guard under the wrapper, run on the ownership event and on output (the
+    /// password prompt's output is the event that shows the secret read began): what is held when a
+    /// secret read is seen is discarded, as the tty's `TCSAFLUSH` discards a plain terminal's
+    /// typeahead. Keys typed after it pass to ssh while the read lasts.
+    fn ssh_wrapper_secret_read_guard(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.ssh_typeahead_holding && self.ssh_wrapper_secret_pass_through() {
+            self.discard_held_ssh_typeahead_for_secret_read(ctx);
+        }
     }
 
     /// The termios guard of the ownership release: ssh is reading a secret, so the keys held since
@@ -12113,7 +12227,8 @@ impl TerminalView {
         } else {
             self.model.lock().is_alt_screen_active()
         };
-        gate.drops_keys(alt_screen)
+        // #1641: a secret read under the wrapper's hold passes to ssh.
+        gate.drops_keys(alt_screen) && !self.ssh_wrapper_secret_pass_through()
     }
 
     /// Where the remote (ssh) shell's bootstrap stands (#1001): `None` when no ssh-style session
@@ -14580,6 +14695,8 @@ impl TerminalView {
         }
         // #1348: output is the event that shows a host-key / password prompt (or ends a connect
         // silently); the held keys are judged on it, not on a timer or the next key.
+        // #1641: under the wrapper's hold that is where a secret read is first seen.
+        self.ssh_wrapper_secret_read_guard(ctx);
         self.ssh_observe_for_wakeup(ctx);
         if self.ssh_typeahead_holding {
             self.deliver_ssh_typeahead_if_ready("output", ctx);
@@ -18575,6 +18692,9 @@ impl TerminalView {
                 send_telemetry_from_ctx!(TelemetryEvent::BackgroundBlockStarted, ctx);
             }
             ModelEvent::PreInteractiveSSHSession => {
+                // #1641: the wrapper runs this ssh; its verdict, not ssh owning the tty, ends the
+                // hold.
+                self.ssh_on_wrapper_announced();
                 // #1035: the ssh wrapper may start a background ControlMaster at
                 // `$SSH_SOCKET_DIR/<this shell's session id>`; remember it so quitting the app
                 // ends it too (a plain Windows session is never registered anywhere else).
@@ -18588,6 +18708,9 @@ impl TerminalView {
                         ),
                     );
                 }
+            }
+            ModelEvent::SshWrapperVerdict { managed } => {
+                self.ssh_on_wrapper_verdict(*managed, ctx);
             }
             ModelEvent::SSH(remote_shell) => {
                 if let Some(shell) = ShellType::from_name(remote_shell) {
@@ -38444,6 +38567,35 @@ struct SshConnectGate {
     /// the editor (the next agent prompt), and a gate armed without a submit (preexec only) has
     /// no known origin.
     user_submitted: bool,
+    /// #1641: what the ssh wrapper announced for this window. While it is not `Off` the ownership
+    /// event does not release the hold (ssh owning the tty is the ControlMaster login, and keys
+    /// written then reach the managed session's bootstrap payload); see `SshWrapperHold`.
+    wrapper: SshWrapperHold,
+    /// #1641: ssh was seen owning the tty while the wrapper deferred it. A plain fallback applies
+    /// that ownership then; it also opens the secret-read pass-through.
+    tty_owned_deferred: bool,
+}
+
+/// #1641: the ssh wrapper's word on a connect window (owner decision, option (b): "hold until the
+/// wrapper says"). Announced by hooks the wrapper prints, never read from the screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SshWrapperHold {
+    /// No wrapper announced itself (an unmanaged ssh, a window born owned on ConPTY): ssh owning
+    /// the tty releases the hold, the plain terminal's rule.
+    Off,
+    /// `PreInteractiveSSHSession` was seen and no verdict yet: the wrapper's master login runs.
+    /// Keys stay held (except while a secret is being read), whoever owns the tty.
+    AwaitingVerdict,
+    /// `ManagedSSHSessionStarting`: the managed session starts. Keys stay held and the managed
+    /// hold takes over (SSH hook / InitShell, Bootstrapped, first Precmd, #1572): they are
+    /// delivered at the remote shell's first prompt. (`PlainSSHFallback` sets `Off` again.)
+    Managed,
+}
+
+impl SshWrapperHold {
+    fn defers_ownership(self) -> bool {
+        self != SshWrapperHold::Off
+    }
 }
 
 impl SshConnectGate {
@@ -38460,6 +38612,8 @@ impl SshConnectGate {
             bootstrap_done_at: None,
             first_prompt_seen: false,
             user_submitted: false,
+            wrapper: SshWrapperHold::Off,
+            tty_owned_deferred: false,
         }
     }
 

@@ -77,6 +77,12 @@ pub enum Event {
     /// An indication that we are about to initiate an interactive SSH session
     /// (which may or may not use the SSH wrapper).
     PreInteractiveSSHSession,
+    /// The ssh wrapper's verdict after `PreInteractiveSSHSession` (#1641): `managed` for
+    /// `ManagedSSHSessionStarting` (the managed session, whose remote command is the bootstrap,
+    /// starts now), not for `PlainSSHFallback` (the user's plain ssh runs).
+    SshWrapperVerdict {
+        managed: bool,
+    },
     /// An indication that a successful SSH connection was initiated via the
     /// SSH wrapper.  The argument is the name of the remote shell.
     SSH(String),
@@ -621,6 +627,9 @@ impl Debug for Event {
             Event::Exit { reason } => write!(f, "Exit({reason:?})"),
             Event::CursorBlinkingChange(blinking) => write!(f, "CursorBlinking({blinking})"),
             Event::PreInteractiveSSHSession => write!(f, "Pre-Interactive SSH Session"),
+            Event::SshWrapperVerdict { managed } => {
+                write!(f, "SshWrapperVerdict(managed: {managed})")
+            }
             Event::SSH(remote_shell) => write!(f, "SSH(remote shell: {remote_shell}"),
             Event::SSHControlMasterError => write!(f, "SSH ControlMaster error"),
             Event::InputBufferOverflow => write!(f, "Input buffer overflow"),

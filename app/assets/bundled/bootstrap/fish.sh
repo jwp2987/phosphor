@@ -848,6 +848,8 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
         set -l remote_session_id (command od -An -N8 -tu8 /dev/urandom 2>/dev/null | command tr -d ' \n')
         if test -z "$remote_session_id"; or test "$remote_session_id" = "0"
             # If we cannot generate a non-zero random token, run plain SSH instead.
+            # #1641: the plain ssh runs, not the managed session: the app releases held keys when it owns the tty.
+            warp_send_json_message "{\"hook\": \"PlainSSHFallback\", \"value\": {\"session_id\": $WARP_SESSION_ID}}"
             command ssh $argv
             return
         end
@@ -862,6 +864,8 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
         set -l warp_ssh_g (command ssh -G $argv 2>/dev/null)
         set -l user_remote_command (printf '%s\n' $warp_ssh_g | command sed -n 's/^remotecommand //p')
         if test -n "$user_remote_command"; and test "$user_remote_command" != "none"
+            # #1641: the plain ssh runs, not the managed session: the app releases held keys when it owns the tty.
+            warp_send_json_message "{\"hook\": \"PlainSSHFallback\", \"value\": {\"session_id\": $WARP_SESSION_ID}}"
             command ssh $argv
             return
         end
@@ -959,6 +963,8 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
                     command rm -f -- "$warp_socket_file"
                 end
                 if test -e "$warp_socket_file"; or test -L "$warp_socket_file"
+                    # #1641: the plain ssh runs, not the managed session: the app releases held keys when it owns the tty.
+                    warp_send_json_message "{\"hook\": \"PlainSSHFallback\", \"value\": {\"session_id\": $WARP_SESSION_ID}}"
                     command ssh $argv
                     return
                 end
@@ -973,6 +979,8 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
                 # only multiplexing failed (e.g. "Failed to connect to new control master"): then
                 # the user's plain ssh runs. -N: no remote command ever ran, none runs twice.
                 if test -e "$warp_socket_file"; or test -L "$warp_socket_file"
+                    # #1641: the plain ssh runs, not the managed session: the app releases held keys when it owns the tty.
+                    warp_send_json_message "{\"hook\": \"PlainSSHFallback\", \"value\": {\"session_id\": $WARP_SESSION_ID}}"
                     command ssh $argv
                     return
                 end
@@ -993,6 +1001,7 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
         if test $warp_owns_master -eq 1; or test "$external_control_master" = "true"
             set -g __warp_ssh_g $warp_ssh_g
             if warp_ssh_remote_is_non_posix_cached "$control_path" $argv
+                warp_send_json_message "{\"hook\": \"PlainSSHFallback\", \"value\": {\"session_id\": $WARP_SESSION_ID}}"
                 command ssh -o ControlMaster=no -o ControlPath="$control_path" -t $argv
                 set -l warp_plain_rc $status
                 if test $warp_owns_master -eq 1
@@ -1081,6 +1090,9 @@ TMPPREFIX="'$HOME/.zshtmp-'" WARP_SSH_RCFILES="'${ZDOTDIR:-$HOME}'" ZDOTDIR="'$W
     ;;
 esac
 "
+        # #1641: the master login is over; the managed session starts. Held keys stay held until the
+        # remote shell's first prompt (they must never reach the bootstrap payload).
+        warp_send_json_message "{\"hook\": \"ManagedSSHSessionStarting\", \"value\": {\"session_id\": $WARP_SESSION_ID}}"
         command ssh $warp_ipqos_args -o ControlMaster=$control_master_mode -o ControlPath="$control_path" \
         -t $argv $warp_remote_bootstrap
         set -l warp_session_rc $status
@@ -1248,6 +1260,8 @@ esac
                 end
                 warp_ssh_helper $argv
             else
+                # #1641: PreInteractiveSSHSession was sent; say no managed session follows.
+                warp_send_json_message "{\"hook\": \"PlainSSHFallback\", \"value\": {\"session_id\": $WARP_SESSION_ID}}"
                 command ssh $argv
             end
         else

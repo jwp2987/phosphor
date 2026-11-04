@@ -28,9 +28,23 @@ ssh_socket_dir_falls_back_to_the_passwd_home); these cases run the wrapper with 
     and the session multiplexes over it (`ControlMaster=no ... -t`), no second login;
   * auth failure / mux failure  -> as above.
 
+#1641: the wrapper tells the app which ssh follows its master login, so the app can hold the keys
+typed meanwhile instead of releasing them while the master logs in (they reached the managed
+session's bootstrap payload and were eaten). Every hook the wrapper prints and every connecting
+ssh call are recorded in one ordered log:
+
+  * login succeeds                 -> `ManagedSSHSessionStarting` exactly once, after the master
+    and immediately before the managed session (`ControlMaster=no ... -t`), no fallback;
+  * mux failure                    -> `PlainSSHFallback` exactly once, immediately before the
+    plain ssh;
+  * a RemoteCommand in the config, a non-POSIX remote (cmd.exe answers the probe), MSYS2 (bash)
+    -> `PlainSSHFallback` immediately before each plain ssh, never `ManagedSSHSessionStarting`;
+  * auth failure / Ctrl-C          -> no hook at all (the block's end hands the keys back).
+
 Needs python3 and at least one of bash/zsh/fish (missing shells are SKIPPED). No cargo.
 Usage: script/test_ssh_auth_once
 """
+import json
 import os
 import shutil
 import stat
@@ -50,10 +64,14 @@ case "$p" in "~"*) p="${PWHOME:-$HOME}${p#\~}";; esac
 case " $* " in
   *" -G "*) printf 'user u\nhostname h\nport 22\n'
             [ -n "$p" ] && printf 'controlpath %s\n' "$p"
+            [ "$MASTER" = remotecommand ] && printf 'remotecommand uptime\n'
             exit 0;;
 esac
 printf '%s\n' "$*" >> "$CALLS"
+printf 'ssh %s\n' "$*" >> "$EVENTS"
 case " $* " in
+  *" -T "*) [ "$MASTER" = nonposix ] && printf '%s\n' 'warp-probe-C:\WINDOWS\system32\cmd.exe-$PSVersionTable'
+            exit 0;;
   *" -O "*) exit 255;;
   *" -N "*)
     case "$MASTER" in
@@ -61,7 +79,7 @@ case " $* " in
       interrupt) exit 130;;
       muxfail) python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$p"
                echo "Failed to connect to new control master" >&2; exit 255;;
-      ok) python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$p"; exit 0;;
+      ok|nonposix) python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$p"; exit 0;;
     esac;;
 esac
 exit 0
@@ -75,15 +93,64 @@ SHELLS = [
 ]
 
 # (master behaviour, $HOME is not the passwd home, expected status, expected connecting ssh calls
-# (None: checked by `owns_master`), expected stderr)
+# (None: checked by `owns_master`), expected stderr, #1641 verdict hook expected: None, "managed"
+# or "fallback")
 CASES = [
-    ("authfail", False, 255, 1, "user@host: Permission denied (publickey,password).\n"),
-    ("interrupt", False, 130, 1, ""),
-    ("muxfail", False, 0, 2, "Failed to connect to new control master\n"),
-    ("authfail", True, 255, 1, "user@host: Permission denied (publickey,password).\n"),
-    ("muxfail", True, 0, 2, "Failed to connect to new control master\n"),
-    ("ok", True, 0, None, ""),
+    ("authfail", False, 255, 1, "user@host: Permission denied (publickey,password).\n", None),
+    ("interrupt", False, 130, 1, "", None),
+    ("muxfail", False, 0, 2, "Failed to connect to new control master\n", "fallback"),
+    ("authfail", True, 255, 1, "user@host: Permission denied (publickey,password).\n", None),
+    ("muxfail", True, 0, 2, "Failed to connect to new control master\n", "fallback"),
+    ("ok", True, 0, None, "", "managed"),
+    ("ok", False, 0, None, "", "managed"),
+    # #1641: the other plain-ssh paths. The first call is the plain ssh itself (no master).
+    ("remotecommand", False, 0, 1, "", "fallback"),
+    ("nonposix", False, 0, None, "", "fallback"),
+    ("msys2", False, 0, 1, "", "fallback"),
 ]
+
+MANAGED = "ManagedSSHSessionStarting"
+FALLBACK = "PlainSSHFallback"
+
+
+def verdict_problems(master, verdict, events):
+    """#1641: the hooks the wrapper printed, in order with the connecting ssh calls."""
+    problems = []
+    hooks = [e[5:] for e in events if e.startswith("hook ")]
+    names = []
+    for h in hooks:
+        try:
+            msg = json.loads(h)
+        except ValueError:
+            problems.append("unparseable hook %r" % h)
+            continue
+        names.append(msg.get("hook"))
+        if msg.get("value", {}).get("session_id") != 77:
+            problems.append("hook without the shell's session id: %r" % h)
+    if verdict is None:
+        if names:
+            problems.append("no verdict hook may be printed (the block's end hands the keys back): %r" % names)
+        return problems
+    want = MANAGED if verdict == "managed" else FALLBACK
+    if names != [want]:
+        problems.append("hooks %r, want exactly [%r]" % (names, want))
+        return problems
+    at = next(i for i, e in enumerate(events) if e.startswith("hook "))
+    after = events[at + 1] if at + 1 < len(events) else ""
+    if verdict == "managed":
+        # After the master login, immediately before the managed session over it.
+        if not any(" -N " in " %s " % e for e in events[:at]):
+            problems.append("%s before the master login: %r" % (want, events))
+        if not (after.startswith("ssh ") and "ControlMaster=no" in after and " -t " in " %s " % after):
+            problems.append("%s is not immediately followed by the managed session: %r" % (want, after[:120]))
+    else:
+        # Immediately before the plain ssh: the user's arguments, or the plain session over the
+        # master to a non-POSIX remote.
+        plain = after == "ssh -p 22 user@host" or (
+            master == "nonposix" and "ControlMaster=no" in after and " -t " in " %s " % after and "WarpTerminal" not in after)
+        if not plain:
+            problems.append("%s is not immediately followed by the plain ssh: %r" % (want, after[:120]))
+    return problems
 
 
 def owns_master(made):
@@ -112,17 +179,20 @@ def run(shell, function, master, isolated):
             os.mkdir(home)
         socks = os.path.join(d, "socks")
         calls = os.path.join(d, "calls")
+        events = os.path.join(d, "events")
         if shell == "fish":
             prelude = (
-                "function warp_init_shell; end; function warp_send_json_message; end; "
+                "function warp_init_shell; end; "
+                "function warp_send_json_message; printf 'hook %%s\\n' $argv[1] >> $EVENTS; end; "
                 "set -g SSH_SOCKET_DIR '%s'; set -g WARP_SESSION_ID 77;" % socks
             )
             status = "$status"
             argv = [shell, "--no-config", "-c"]
         else:
             prelude = (
-                "init_shell_hook(){ :; }; warp_send_json_message(){ :; }; __warp_hex_encode_to(){ __warp_hex=; }; "
-                "SSH_SOCKET_DIR='%s'; WARP_SESSION_ID=77;" % socks
+                "init_shell_hook(){ :; }; warp_send_json_message(){ printf 'hook %%s\\n' \"$1\" >> \"$EVENTS\"; }; "
+                "__warp_hex_encode_to(){ __warp_hex=; }; "
+                "SSH_SOCKET_DIR='%s'; WARP_SESSION_ID=77;%s" % (socks, " WARP_IN_MSYS2=true;" if master == "msys2" else "")
             )
             status = "$?"
             argv = [shell, "-c"]
@@ -132,11 +202,13 @@ def run(shell, function, master, isolated):
         env["HOME"] = home
         env["PWHOME"] = d
         env["CALLS"] = calls
+        env["EVENTS"] = events
         env["MASTER"] = master
         r = subprocess.run(argv + [script], env=env, capture_output=True, text=True,
                            stdin=subprocess.DEVNULL, timeout=60)
         made = open(calls).read().splitlines() if os.path.exists(calls) else []
-        return r.returncode, made, r.stdout, r.stderr
+        logged = open(events).read().splitlines() if os.path.exists(events) else []
+        return r.returncode, made, logged, r.stdout, r.stderr
     finally:
         shutil.rmtree(d)
 
@@ -151,9 +223,11 @@ def main():
         text = open(os.path.join(BOOT, fname)).read()
         a = text.index(start)
         function = text[a : a + text[a:].index(end)]
-        for master, isolated, want_rc, want_calls, want_err in CASES:
+        for master, isolated, want_rc, want_calls, want_err, verdict in CASES:
+            if master == "msys2" and shell != "bash":
+                continue  # only bash_body.sh has the Git Bash / MSYS2 branch (#1551)
             ran += 1
-            rc, made, out, err = run(shell, function, master, isolated)
+            rc, made, logged, out, err = run(shell, function, master, isolated)
             problems = []
             if rc != want_rc:
                 problems.append("status %d, want %d" % (rc, want_rc))
@@ -163,8 +237,14 @@ def main():
                 problems.append("%d connecting ssh calls, want %d" % (len(made), want_calls))
             elif want_calls == 2 and made[1] != "-p 22 user@host":
                 problems.append("fallback ssh must carry exactly the user's arguments: %r" % made[1])
-            if not made or " -N " not in " %s " % made[0]:
+            plain_first = master in ("remotecommand", "msys2")
+            if not plain_first and (not made or " -N " not in " %s " % made[0]):
                 problems.append("first call is not the master: %r" % made[:1])
+            if plain_first and made != ["-p 22 user@host"]:
+                problems.append("only the user's plain ssh may run: %r" % made)
+            if master == "nonposix" and not any("ControlMaster=no" in c and " -t " in " %s " % c and "WarpTerminal" not in c for c in made):
+                problems.append("no plain session over the master to the non-POSIX remote: %r" % [c[:100] for c in made])
+            problems += verdict_problems(master, verdict, logged)
             if err != want_err or out:
                 problems.append("output changed: stdout %r stderr %r" % (out, err))
             label = master + (" ($HOME is not the passwd home)" if isolated else "")

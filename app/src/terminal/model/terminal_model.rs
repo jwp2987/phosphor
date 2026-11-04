@@ -1992,6 +1992,12 @@ impl TerminalModel {
         self.secret_read_probe.as_ref().is_some_and(|probe| probe())
     }
 
+    /// The termios probe itself, for a holder that must sample it without this model's lock (the
+    /// managed-ssh hold's secret-read pass-through reads it on the key path, #1641).
+    pub fn secret_read_probe(&self) -> Option<super::block::interactive_latch::SecretReadProbe> {
+        self.secret_read_probe.clone()
+    }
+
     /// Exclusive access to the typeahead hand-off (its own leaf lock; see [`PaneHandoff`]).
     pub fn typeahead_handoff_mut(
         &mut self,
@@ -3949,6 +3955,11 @@ impl ansi::Handler for TerminalModel {
     fn pre_interactive_ssh_session(&mut self, _value: PreInteractiveSSHSessionValue) {
         self.event_proxy
             .send_terminal_event(Event::PreInteractiveSSHSession);
+    }
+
+    fn ssh_wrapper_verdict(&mut self, managed: bool) {
+        self.event_proxy
+            .send_terminal_event(Event::SshWrapperVerdict { managed });
     }
 
     fn ssh(&mut self, value: SSHValue) {

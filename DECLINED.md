@@ -2792,6 +2792,28 @@ the window ends without ownership (#1292). The real-app case `ssh_failing_not_lo
 plain-terminal result: the line runs locally exactly once, exactly as typed, and only after the
 ssh failed.
 
+**Managed ssh is the one exception: the hold waits for the wrapper's word (#1641, owner
+decision 2026-11-04, option (b) "hold until the wrapper says").** Under the ssh wrapper (managed
+ssh, on by default) the first thing that owns the tty is the wrapper's ControlMaster login
+(`ssh -N -f`); keys released then sit in the tty queue and are read by the managed session, whose
+remote command is Phosphor's bootstrap payload, which eats them (r18u13 lost `echo T258_o`). So for
+a window where `PreInteractiveSSHSession` was seen, `CommandBecameInteractive` releases nothing
+(`TerminalView::ssh_on_tty_owned` defers it, `SshConnectGate::wrapper`). The wrapper announces what
+follows with two hooks of the same family, in bash_body.sh, zsh_body.sh and fish.sh:
+`ManagedSSHSessionStarting` right before the managed session (after the master login succeeded):
+the keys stay held and the managed hold hands them over at the remote shell's first prompt, in
+order, once (#1572); `PlainSSHFallback` before every plain `command ssh` the wrapper runs instead
+(#1551 mux failure, MSYS2, a RemoteCommand, a busy socket, a non-POSIX remote, the wrapper turned
+off): the window becomes an unmanaged one and an ownership seen meanwhile applies at that moment
+(`ssh_on_wrapper_verdict`). An auth failure or Ctrl-C prints neither; the block's end hands the
+keys back as text (#1292). Password and passphrase reads keep the termios guard: while ssh owns the
+tty and it is canonical with echo off, what is held is discarded and the keys typed go to ssh
+(`ssh_wrapper_secret_pass_through`, a `tcgetattr` fact, never screen text); afterwards keys are held
+again. Known limit, not screen-guessed: an echo-ON question during the master login (the host-key
+`yes/no` of a first connection, an echoing OTP) is not a secret read, so its answer stays held until
+the window's 15 s give-up returns it to the editor as text; then typing reaches ssh. Unmanaged ssh
+(no announcement) and Windows (`TTY_OWNED_AT_ARM`) are unchanged.
+
 **Windows: ssh.exe does not flush typeahead before a password prompt; accepted (owner,
 2026-11-04: "Accept, note it").** Under the same plain-terminal rule, text typed on Windows before
 ssh.exe asks for a password is read by ssh.exe as a password attempt (Windows has no tty flush
@@ -2809,4 +2831,4 @@ second key decides, never a timer: a lone `~` stays in the editor, and `~` follo
 else is editor text, in order. `~~` stays editor text (ssh makes the one `~` of it when the line
 is sent); `~^Z` is not passed (Ctrl-Z is an editor binding). A line locked to the agent, a local
 session and a mid-line `~` are unchanged. The appci `ssh_drop_reconnect` escape arm runs by default.
-<!-- markers: sym:ssh_prompt_has_arrived sym:discard_ssh_typeahead_on_prompt sym:discard_held_ssh_typeahead_for_prompt sym:ssh_prompt_is_unmanaged_shell_prompt sym:output_tail_is_shell_prompt sym:StaleBeforePrompt keep:ssh_on_tty_owned keep:tty_is_reading_secret keep:ssh_escape_typed_at_line_start -->
+<!-- markers: sym:ssh_prompt_has_arrived sym:discard_ssh_typeahead_on_prompt sym:discard_held_ssh_typeahead_for_prompt sym:ssh_prompt_is_unmanaged_shell_prompt sym:output_tail_is_shell_prompt sym:StaleBeforePrompt keep:ssh_on_tty_owned keep:tty_is_reading_secret keep:ssh_escape_typed_at_line_start keep:ssh_on_wrapper_verdict keep:ssh_wrapper_secret_pass_through -->
