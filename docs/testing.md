@@ -194,7 +194,7 @@ pin protocol behaviour. Skips are reported as SKIPPED, never silent. A Skip rais
 
 | script | checks |
 |---|---|
-| `test_bash_bootstrap_nounset`, `test_zsh_bootstrap_strict_options` | hooks survive `set -u` / `err_return` / failing user precmd (#825, #836, #844); a detached HEAD under strict options reports git's hash every prompt (#1616) |
+| `test_bash_bootstrap_nounset`, `test_zsh_bootstrap_strict_options` | hooks survive `set -u` / `err_return` / failing user precmd (#825, #836, #844); a detached HEAD under strict options reports git's hash every prompt (#1616); zsh's `LineEditorReading` marker carries the right `typed_text_literal` for default/vi bindings, magic-space, a redefined self-insert and a binding added at a prompt (#1606) |
 | `test_fish_bootstrap` | fish hooks fire end to end in a pty (#829, #879) |
 | `test_bootstrap_hook_equivalence` (bash/zsh/fish), `test_nu_bootstrap_hook_equivalence`, `test_pwsh_hook_equivalence` (+ `testdata/pwsh_hooks_golden.json`) | fork-free hook helpers emit byte-identical DCS payloads to the old forking code (#1170, #1233, #1231); a detached HEAD runs git once per directory and HEAD commit, a moved HEAD is seen at the next prompt, `PHOSPHOR_GIT_HEAD_CACHE=0` restores git per prompt (#1616) |
 | `test_bash_bootstrap_builtins` | fork-free `sort -V`/os-release/`shopt` replacements match the commands (#1164) |
@@ -704,6 +704,14 @@ budget, previous build, baseline, verdict, n).
 - **Bracketed-paste cost (macOS zsh pane, terminal mode, #1583 M3).** After the Phosphor samples the case types `unset zle_bracketed_paste` (confirmed by a state
   file), measures a second batch of the same stamp line (`unset_bracketed_paste_enter_to_start_ms`, `unset_bracketed_paste_minus_default_ms`) and puts the parameter back
   (`zle_bracketed_paste=( $'\e[?2004h' $'\e[?2004l' )`, confirmed). Not a verdict input.
+- **Enter submit path (#1606).** Since #1606 a plain one-line command (printable ASCII, no `!`, no leading `^`, at most 1000 bytes) to a
+  zsh whose line editor vouched for literal typing (`typed_text_literal` on its `LineEditorReading` marker: builtin `self-insert`, no
+  binding a printable byte reaches) is written raw, `^P` + text + Enter, without the bracketed-paste wrapper; every other line keeps it.
+  The app logs `hop=enter_submit_path path=raw|wrapped|unbracketed [reason=kill_switch|in_band|shell|tmux|conpty|line_editor|text]`
+  per command write, and `latency_enter` records the counts as `metrics.enter_submit_paths` with one note. With the raw path taken the M3
+  batch above compares raw with raw (expect ~0); `PHOSPHOR_ENTER_BRACKETED_ALWAYS=1` restores the wrapper to measure the old path. Unit
+  tests: `pty_controller_enter_raw_tests.rs` (exact bytes in both `DestinationMode`s, the predicate, the reasons, the kill switch),
+  `terminal_model_test.rs` (the marker flag's lifetime) and `ansi/mod_test.rs` (the marker field); self-test `g11_enter_submit_paths`.
 - **Shell-side split for bash/zsh panes (#1492), opt-in.** The appci bash rc appends to `PS0` (`PS0+=`, so a system PS0 is kept) a
   no-fork record of when readline accepted the line (`$__pa_lf`, integer microseconds, bash >= 5.0; the zsh rc already records
   zle-line-finish). With `APPCI_ENTER_SPLIT=1`, in a Git Bash pane or a Linux pane identified as bash/zsh, the stamp line becomes

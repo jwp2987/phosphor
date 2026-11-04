@@ -1366,6 +1366,23 @@ def g11_bootstrap_reference_and_bracketed_paste_pieces():
 
 
 @check
+def g11_enter_submit_paths():
+    """#1606: the app's `hop=enter_submit_path` lines are counted per path (and per reason when wrapped), from t0 on, and a build without the hop gives {}"""
+    lines = ["x [DEBUG] input_order hop=enter_submit_path path=raw bytes=6 t=999000.0",
+             "x [DEBUG] input_order hop=enter_submit_path path=raw bytes=6 t=1000001.0",
+             "x [DEBUG] input_order hop=enter_submit_path path=raw bytes=81 t=1000002.0",
+             "x [DEBUG] input_order hop=enter_submit_path path=wrapped reason=line_editor bytes=6 t=1000003.0",
+             "x [DEBUG] input_order hop=enter_submit_path path=wrapped reason=text bytes=12 t=1000004.0",
+             "x [DEBUG] input_order hop=enter_submit_path path=unbracketed t=1000005.0",
+             "x [DEBUG] input_order hop=enter_submit_done since_submit_ms=0.70 t=1000006.0"]
+    got = cases.enter_submit_paths(lines, 1000.0)
+    assert got == {"raw": 2, "wrapped:line_editor": 1, "wrapped:text": 1, "unbracketed": 1}, got
+    assert cases.enter_submit_paths(lines[-1:], 0.0) == {}
+    # the new hop does not disturb the Enter split: enter_submit_done is still matched only by its own name
+    assert "hop=enter_submit_done" not in lines[1]
+
+
+@check
 def g11_startup_shell_passes():
     """#1534: the cmd / pwsh7 passes: settings TOML names the shell, the family drives the helpers, the case list and effect syntax are right"""
     import cases_shells
