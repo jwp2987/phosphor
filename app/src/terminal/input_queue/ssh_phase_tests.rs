@@ -273,7 +273,7 @@ fn a_release_keeps_the_session_and_the_hold_it_does_not_own() {
 
 #[test]
 fn nothing_moves_the_phase_but_an_edge() {
-    let mut m = owned();
+    let m = owned();
     let before = m.phase(false);
     // Reading the phase any number of times, with any alt-screen flag, changes nothing.
     let _ = m.phase(true);
