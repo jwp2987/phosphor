@@ -998,7 +998,6 @@ app/src/workspace/view.rs crate::server::telemetry::NotificationsTurnedOnSource
 app/src/workspace/view.rs crate::server::telemetry::PaletteSource
 app/src/workspace/view.rs crate::server::telemetry::TabRenameEvent
 app/src/workspace/view.rs crate::server::telemetry::WarpDriveSource
-app/src/workspace/view/launch_modal/cta_button.rs crate::server::telemetry::TelemetryEvent
 app/src/workspace/view/left_panel.rs crate::server::telemetry::CodePanelsFileOpenEntrypoint
 app/src/workspace/view/left_panel.rs crate::server::telemetry::FileTreeSource
 app/src/workspace/view/left_panel.rs crate::server::telemetry::WarpDriveSource

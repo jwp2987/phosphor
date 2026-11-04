@@ -4,7 +4,6 @@ pub mod conversation_list;
 mod crash_recovery;
 pub(crate) mod feature_intro_modal;
 pub mod global_search;
-pub(crate) mod launch_modal;
 pub(crate) mod left_panel;
 pub(crate) mod onboarding;
 pub(crate) mod right_panel;
