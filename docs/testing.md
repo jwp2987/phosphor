@@ -1143,7 +1143,7 @@ fallback for builds that predate the line.
   `mouse.ps1`, `lat.ps1` (BitBlt region hash, +-16 ms capture resolution), `inst.ps1`/`launch.ps1`, backup/restore set;
   `cases-r18ba/` and `cases-r18bj/` (per-wave cases: typing, paste, ssh, approval cards, scene analysis
   `an_scene.py`); `hooks/` (PowerShell bootstrap hook profiling `prof*.ps1`/`hk.ps1`, ConPTY driver `cpty.ps1`; measures per-prompt hook cost,
-  Warp-Precmd was 30-120 ms, #1163); `agentkey/` (agent-mode key delivery variants); `pwshmarker/` (line-end / ready
+  Warp-Precmd was 30-120 ms, #1163); `agentkey/` (agent-mode key delivery variants; `B2_ab_lat2.ps1` is the owner-approved #1225/#1279 key->paint A/B, `PHOSPHOR_FRAME_LATENCY=2` against the DX12 default 1, interleaved def/lat2 x2 relaunches, PowerShell and agent tab each, read with `dist.py`); `pwshmarker/` (line-end / ready
   marker experiments for the typeahead hand-off, #1162); `bashstall/` (Git Bash startup stall bisection, `rc_*`
   variants from `gen.sh`). Windows scripts contain `@WINUSER@`; render with `script/realapp/shared/render.sh`.
   Key to photon: `script/keylat/windows/lat.ps1` (`keybd_event`, needs the interactive session).
