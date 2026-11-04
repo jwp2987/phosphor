@@ -1297,6 +1297,7 @@ app-test-windows:
 # Manual, play it on the SAME runner right after the failed upload, before any other job checks out.
 .collect_run:
   stage: apptest
+  needs: []   # independent of the pipeline's builds: it only uploads what is already on disk
   when: manual
   allow_failure: true
   variables:
