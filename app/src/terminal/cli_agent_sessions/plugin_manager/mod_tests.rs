@@ -98,6 +98,9 @@ fn warp_plugin_source_matches_every_recorded_spelling() {
         "git@github.com:warpdotdev/claude-code-warp.git",
         "ssh://git@github.com/warpdotdev/claude-code-warp.git",
         "  https://github.com/warpdotdev/claude-code-warp  ",
+        "git+https://github.com/warpdotdev/claude-code-warp.git#v2",
+        "git+ssh://git@github.com/warpdotdev/claude-code-warp.git",
+        "http://github.com/warpdotdev/claude-code-warp",
     ] {
         assert!(
             is_warp_plugin_source(source, "claude-code-warp"),
@@ -118,6 +121,13 @@ fn warp_plugin_source_rejects_other_sources() {
         "https://gitlab.com/warpdotdev/claude-code-warp.git",
         "/home/dev/claude-code-warp",
         "",
+        // Mirrors and local paths whose path merely contains the GitHub one.
+        "https://git.corp/mirrors/github.com/warpdotdev/claude-code-warp.git",
+        "file:///home/dev/src/github.com/warpdotdev/claude-code-warp",
+        "/home/dev/src/github.com/warpdotdev/claude-code-warp",
+        "~/src/github.com/warpdotdev/claude-code-warp",
+        "ssh://git@git.corp/github.com/warpdotdev/claude-code-warp.git",
+        "gitlab:warpdotdev/claude-code-warp",
     ] {
         assert!(
             !is_warp_plugin_source(source, "claude-code-warp"),

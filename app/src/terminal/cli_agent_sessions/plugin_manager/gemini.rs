@@ -81,7 +81,9 @@ impl CliAgentPluginManager for GeminiPluginManager {
         let Ok(extensions_dir) = gemini_extensions_dir() else {
             return false;
         };
-        plugin_needs_update(&extensions_dir)
+        // The source half goes through the cached trait method: this is asked
+        // from the footer's render path too.
+        plugin_is_outdated(&extensions_dir) || self.needs_source_migration()
     }
 
     fn needs_source_migration(&self) -> bool {
@@ -212,15 +214,14 @@ fn check_installed(extensions_dir: &Path) -> bool {
     serde_json::from_str::<Value>(&contents).is_ok()
 }
 
-/// Whether `update()` has work to do: the extension is below the minimum
-/// version, or it was installed from Warp's GitHub.
-fn plugin_needs_update(extensions_dir: &Path) -> bool {
-    let outdated = match installed_version(extensions_dir) {
+/// Whether the installed extension is below the minimum version.
+/// `needs_update` adds the source half (`needs_source_migration`).
+fn plugin_is_outdated(extensions_dir: &Path) -> bool {
+    match installed_version(extensions_dir) {
         Some(v) => compare_versions(&v, MINIMUM_PLUGIN_VERSION).is_lt(),
         // No version field means very old or malformed extension.
         None => check_installed(extensions_dir),
-    };
-    outdated || plugin_needs_source_migration(extensions_dir)
+    }
 }
 
 fn plugin_needs_source_migration(extensions_dir: &Path) -> bool {

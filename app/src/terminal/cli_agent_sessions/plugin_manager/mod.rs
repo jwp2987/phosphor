@@ -105,38 +105,49 @@ pub(crate) fn compare_versions(a: &str, b: &str) -> Ordering {
 const WARP_PLUGIN_OWNER: &str = "warpdotdev";
 
 /// Whether `source` names Warp's GitHub copy of the plugin repository `repo`
-/// (`warpdotdev/<repo>`), in any spelling an agent CLI records for it:
-/// GitHub `owner/repo` shorthand (optionally `github:`-prefixed or with a
-/// `#ref`/`@ref` suffix), an `https://github.com/...` URL with or without
-/// `.git`, or an SSH `git@github.com:...` URL.
+/// (`warpdotdev/<repo>`), in any spelling an agent CLI records for it, and
+/// only those, anchored at the start:
+///
+/// - GitHub `owner/repo` shorthand, optionally `github:`-prefixed;
+/// - `(git+)http(s)://(www.)github.com/owner/repo`;
+/// - `(git+)ssh://git@github.com/owner/repo`;
+/// - `git@github.com:owner/repo`;
+///
+/// each optionally with `.git` and a `#ref`, `@ref`, `/` or `?` suffix.
 ///
 /// An install registered from such a source keeps receiving Warp's updates
 /// until it is re-registered from Phosphor's GitLab copy, which is what the
 /// managers' `needs_source_migration` reports. A similarly named repository
-/// (`claude-code-warp-internal`) does not match.
+/// (`claude-code-warp-internal`), a mirror whose path merely contains
+/// `github.com/warpdotdev/...` (`https://git.corp/mirrors/github.com/...`), and
+/// a local or `file://` path never match: the move removes what it matches.
 pub(crate) fn is_warp_plugin_source(source: &str, repo: &str) -> bool {
     let source = source.trim().to_ascii_lowercase();
     let shorthand = format!("{WARP_PLUGIN_OWNER}/{}", repo.to_ascii_lowercase());
-    let ends_repo_name = |rest: &str| {
-        let rest = rest.strip_prefix(".git").unwrap_or(rest);
-        rest.is_empty() || rest.starts_with(['/', '#', '@', '?'])
-    };
-    let bare = source.strip_prefix("github:").unwrap_or(&source);
-    if let Some(rest) = bare.strip_prefix(&shorthand)
-        && ends_repo_name(rest)
+    let source = source.strip_prefix("git+").unwrap_or(&source);
+    let path = if let Some(rest) = source.strip_prefix("github:") {
+        Some(rest)
+    } else if let Some(rest) = source
+        .strip_prefix("https://")
+        .or_else(|| source.strip_prefix("http://"))
     {
-        return true;
-    }
-    // The host must be github.com itself (`https://github.com`,
-    // `git@github.com`, `www.github.com`), not a host that merely ends in it.
-    let starts_host =
-        |at: usize| at == 0 || source[..at].ends_with(|c: char| matches!(c, '/' | '@' | '.'));
-    ["github.com/", "github.com:"].iter().any(|host| {
-        let needle = format!("{host}{shorthand}");
-        source
-            .match_indices(&needle)
-            .any(|(at, _)| starts_host(at) && ends_repo_name(&source[at + needle.len()..]))
-    })
+        let rest = rest.strip_prefix("www.").unwrap_or(rest);
+        rest.strip_prefix("github.com/")
+    } else if let Some(rest) = source.strip_prefix("ssh://git@github.com/") {
+        Some(rest)
+    } else if let Some(rest) = source.strip_prefix("git@github.com:") {
+        Some(rest)
+    } else if source.contains(':') || source.starts_with(['/', '.', '~', '\\']) {
+        // Some other scheme (`file:`, `gitlab:`, another host) or a path.
+        None
+    } else {
+        Some(source)
+    };
+    let Some(rest) = path.and_then(|path| path.strip_prefix(shorthand.as_str())) else {
+        return false;
+    };
+    let rest = rest.strip_prefix(".git").unwrap_or(rest);
+    rest.is_empty() || rest.starts_with(['/', '#', '@', '?'])
 }
 
 /// Memoises a check derived from a few small config files, keyed on each

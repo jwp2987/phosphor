@@ -3,8 +3,8 @@ use std::path::Path;
 
 use super::{
     CliAgentPluginManager, EXTENSION_REPO, GeminiPluginManager, MINIMUM_PLUGIN_VERSION,
-    check_installed, compare_versions, installed_from_warp, installed_version,
-    plugin_needs_source_migration, plugin_needs_update,
+    check_installed, compare_versions, installed_from_warp, installed_version, plugin_is_outdated,
+    plugin_needs_source_migration,
 };
 
 #[test]
@@ -262,7 +262,8 @@ fn current_extension_from_warp_needs_update() {
     );
 
     assert!(plugin_needs_source_migration(dir.path()));
-    assert!(plugin_needs_update(dir.path()));
+    // Current version: it is the source alone that makes `needs_update` true.
+    assert!(!plugin_is_outdated(dir.path()));
 }
 
 #[test]
@@ -272,7 +273,7 @@ fn current_extension_from_phosphor_copy_needs_no_update() {
     write_install_metadata(dir.path(), EXTENSION_REPO, "git");
 
     assert!(!plugin_needs_source_migration(dir.path()));
-    assert!(!plugin_needs_update(dir.path()));
+    assert!(!plugin_is_outdated(dir.path()));
 }
 
 #[test]
@@ -281,7 +282,7 @@ fn outdated_extension_from_phosphor_copy_still_needs_update() {
     write_extension(dir.path(), "0.9.0");
     write_install_metadata(dir.path(), EXTENSION_REPO, "git");
 
-    assert!(plugin_needs_update(dir.path()));
+    assert!(plugin_is_outdated(dir.path()));
 }
 
 fn write_extension(extensions_dir: &Path, version: &str) {

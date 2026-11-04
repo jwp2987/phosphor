@@ -159,6 +159,18 @@ fn plugin_chip_key(agent_prefix: &str, remote_host: &Option<String>) -> String {
     }
 }
 
+/// The dismissal key for the update chip that moves a plugin off Warp's
+/// GitHub/npm source. Kept apart from the version dismissal under `chip_key`,
+/// so a user who dismissed a version update at the current minimum still sees
+/// the move once, and dismissing the move does not hide a later version
+/// update. Stored in the same map; any non-empty value means dismissed.
+fn plugin_source_move_chip_key(chip_key: &str) -> String {
+    format!("{chip_key}#source-move")
+}
+
+/// Value recorded under [`plugin_source_move_chip_key`] when dismissed.
+const PLUGIN_SOURCE_MOVE_DISMISSED: &str = "gitlab";
+
 /// Footer control bar at the bottom of the agent input.
 ///
 /// Renders in two modes:
@@ -818,6 +830,12 @@ impl AgentInputFooter {
 
     /// Which plugin chip to show, if any.
     fn plugin_chip_kind(&self, app: &AppContext) -> Option<PluginChipKind> {
+        self.plugin_chip(app).map(|(kind, _)| kind)
+    }
+
+    /// The chip to show, and whether an Update chip is there only to move the
+    /// plugin off Warp's source (which has its own dismissal state).
+    fn plugin_chip(&self, app: &AppContext) -> Option<(PluginChipKind, bool)> {
         #[cfg(target_family = "wasm")]
         {
             let _ = (app, self.plugin_operation_in_progress);
@@ -841,6 +859,14 @@ impl AgentInputFooter {
             let manager = plugin_manager_for(session.agent)?;
             let min_version = manager.minimum_plugin_version();
             let chip_key = plugin_chip_key(session.agent.command_prefix(), &session.remote_host);
+            let source_move_dismissed = !ai_settings
+                .plugin_update_chip_dismissed_version(&plugin_source_move_chip_key(&chip_key))
+                .is_empty();
+            // The source check reads the agent's config on this machine, so it
+            // only describes a session whose agent runs here: not a remote one,
+            // and not one inside a Docker sandbox (its agent reads the
+            // container's config, not the host's).
+            let source_checkable = !session.is_remote() && !self.is_docker_sandbox();
 
             // If the plugin is connected (listener present) and this agent supports
             // version-based updates, check the reported version.
@@ -850,23 +876,24 @@ impl AgentInputFooter {
                     None => true,
                     Some(v) => compare_versions(v, min_version).is_lt(),
                 };
-                // A current plugin still installed from Warp's GitHub keeps
+                if needs_update {
+                    // Check update chip dismissal.
+                    let dismissed_version =
+                        ai_settings.plugin_update_chip_dismissed_version(&chip_key);
+                    if !dismissed_version.is_empty()
+                        && compare_versions(dismissed_version, min_version).is_ge()
+                    {
+                        return None;
+                    }
+                    return Some((PluginChipKind::Update, false));
+                }
+                // A current plugin still installed from Warp's source keeps
                 // taking Warp's updates; the update chip is what moves it to
-                // Phosphor's copy. Only checkable for a local session, since
-                // the check reads the agent's config on this machine.
-                let needs_source_migration =
-                    !session.is_remote() && manager.needs_source_migration();
-                if !needs_update && !needs_source_migration {
-                    return None;
+                // Phosphor's copy.
+                if source_checkable && !source_move_dismissed && manager.needs_source_migration() {
+                    return Some((PluginChipKind::Update, true));
                 }
-                // Check update chip dismissal.
-                let dismissed_version = ai_settings.plugin_update_chip_dismissed_version(&chip_key);
-                if !dismissed_version.is_empty()
-                    && compare_versions(dismissed_version, min_version).is_ge()
-                {
-                    return None;
-                }
-                return Some(PluginChipKind::Update);
+                return None;
             }
 
             // For agents without auto-install, wait for the debounce timer
@@ -879,13 +906,19 @@ impl AgentInputFooter {
 
             // For remote sessions, we can't check the filesystem.
             if session.is_remote() {
-                return (!install_chip_dismissed).then_some(PluginChipKind::Install);
+                return (!install_chip_dismissed).then_some((PluginChipKind::Install, false));
             }
 
             if manager.is_installed() {
                 // Installed but no listener yet. Check the on-disk version as a fallback
                 // — the plugin may be too old to send structured events.
-                if manager.needs_update() {
+                // `needs_update` includes the source move; a session whose
+                // source this machine cannot speak for ignores that half.
+                let source_move = manager.needs_source_migration();
+                if manager.needs_update() && (source_checkable || !source_move) {
+                    if source_move {
+                        return (!source_move_dismissed).then_some((PluginChipKind::Update, true));
+                    }
                     let dismissed_version =
                         ai_settings.plugin_update_chip_dismissed_version(&chip_key);
                     if !dismissed_version.is_empty()
@@ -893,14 +926,14 @@ impl AgentInputFooter {
                     {
                         return None;
                     }
-                    return Some(PluginChipKind::Update);
+                    return Some((PluginChipKind::Update, false));
                 }
                 // Up to date on disk — wait for the listener to connect.
                 return None;
             }
 
             // Not installed locally.
-            (!install_chip_dismissed).then_some(PluginChipKind::Install)
+            (!install_chip_dismissed).then_some((PluginChipKind::Install, false))
         }
     }
 
@@ -938,16 +971,20 @@ impl AgentInputFooter {
         //
         // `ShellLaunchData` is only available on native builds; wasm builds
         // can't produce a `DockerSandbox` variant either way.
-        {
-            let shell_data = {
-                let model = self.terminal_model.lock();
-                model.active_shell_launch_data().cloned()
-            };
-            if matches!(shell_data, Some(ShellLaunchData::DockerSandbox { .. })) {
-                return true;
-            }
+        if self.is_docker_sandbox() {
+            return true;
         }
         sessions_model.has_plugin_auto_failed(session.agent, &session.remote_host)
+    }
+
+    /// Whether this terminal's active shell runs inside a Docker sandbox.
+    /// Locks the terminal model: never call it with that lock held.
+    fn is_docker_sandbox(&self) -> bool {
+        let model = self.terminal_model.lock();
+        matches!(
+            model.active_shell_launch_data(),
+            Some(ShellLaunchData::DockerSandbox { .. })
+        )
     }
 
     /// Records that the auto plugin operation could not start, shows an error toast,
@@ -2183,8 +2220,10 @@ impl TypedActionView for AgentInputFooter {
                 }
             }
             AgentInputFooterAction::DismissPluginChip => {
-                let chip_kind = self.plugin_chip_kind(ctx);
+                let chip = self.plugin_chip(ctx);
+                let chip_kind = chip.map(|(kind, _)| kind);
                 let is_update = matches!(chip_kind, Some(PluginChipKind::Update));
+                let is_source_move = chip.is_some_and(|(_, source_move)| source_move);
                 if let Some(agent) = self.cli_agent(ctx) {
                     if let Some(kind) = chip_kind {
                         send_telemetry_from_ctx!(
@@ -2202,7 +2241,16 @@ impl TypedActionView for AgentInputFooter {
                 if let Some(session) = session {
                     let chip_key =
                         plugin_chip_key(session.agent.command_prefix(), &session.remote_host);
-                    if is_update {
+                    if is_source_move {
+                        let key = plugin_source_move_chip_key(&chip_key);
+                        AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                            settings.dismiss_plugin_update_chip(
+                                &key,
+                                PLUGIN_SOURCE_MOVE_DISMISSED.to_owned(),
+                                ctx,
+                            );
+                        });
+                    } else if is_update {
                         if let Some(manager) = plugin_manager_for(session.agent) {
                             let version = manager.minimum_plugin_version().to_owned();
                             AISettings::handle(ctx).update(ctx, |settings, ctx| {

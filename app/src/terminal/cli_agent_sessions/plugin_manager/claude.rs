@@ -164,7 +164,9 @@ impl CliAgentPluginManager for ClaudeCodePluginManager {
         let Ok(claude_dir) = claude_home_dir() else {
             return false;
         };
-        plugin_needs_update(&claude_dir)
+        // The source half goes through the cached trait method: this is asked
+        // from the footer's render path too.
+        plugin_is_outdated(&claude_dir) || self.needs_source_migration()
     }
 
     fn needs_source_migration(&self) -> bool {
@@ -235,15 +237,14 @@ fn check_installed(claude_dir: &Path) -> bool {
     check_plugin_installed(claude_dir, PLUGIN_KEY)
 }
 
-/// Whether `update()` has work to do: the plugin is below the minimum version,
-/// or it is installed from a marketplace still registered from Warp's GitHub.
-fn plugin_needs_update(claude_dir: &Path) -> bool {
-    let outdated = match installed_version(claude_dir) {
+/// Whether the installed plugin is below the minimum version. `needs_update`
+/// adds the source half (`needs_source_migration`).
+fn plugin_is_outdated(claude_dir: &Path) -> bool {
+    match installed_version(claude_dir) {
         Some(v) => compare_versions(&v, MINIMUM_PLUGIN_VERSION).is_lt(),
         // No version field means very old plugin.
         None => check_installed(claude_dir),
-    };
-    outdated || plugin_needs_source_migration(claude_dir)
+    }
 }
 
 fn plugin_needs_source_migration(claude_dir: &Path) -> bool {

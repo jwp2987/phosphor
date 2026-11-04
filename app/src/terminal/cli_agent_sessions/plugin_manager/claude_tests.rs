@@ -5,7 +5,7 @@ use std::path::Path;
 use super::{
     ClaudeCodePluginManager, CliAgentPluginManager, MARKETPLACE_URL, check_installed,
     claude_code_marketplace_has_local_override, installed_version,
-    marketplace_registered_from_warp, plugin_needs_source_migration, plugin_needs_update,
+    marketplace_registered_from_warp, plugin_is_outdated, plugin_needs_source_migration,
 };
 
 #[test]
@@ -417,7 +417,8 @@ fn current_plugin_from_warp_source_needs_update() {
     );
 
     assert!(plugin_needs_source_migration(dir.path()));
-    assert!(plugin_needs_update(dir.path()));
+    // Current version: it is the source alone that makes `needs_update` true.
+    assert!(!plugin_is_outdated(dir.path()));
 }
 
 #[test]
@@ -430,7 +431,7 @@ fn current_plugin_from_phosphor_source_does_not_need_update() {
     );
 
     assert!(!plugin_needs_source_migration(dir.path()));
-    assert!(!plugin_needs_update(dir.path()));
+    assert!(!plugin_is_outdated(dir.path()));
 }
 
 #[test]
@@ -442,7 +443,7 @@ fn outdated_plugin_from_phosphor_source_still_needs_update() {
         serde_json::json!({"source": "git", "url": MARKETPLACE_URL}),
     );
 
-    assert!(plugin_needs_update(dir.path()));
+    assert!(plugin_is_outdated(dir.path()));
 }
 
 #[test]

@@ -138,8 +138,10 @@ impl CliAgentPluginManager for CodexPluginManager {
         if codex_warp_marketplace_config(&codex_dir).is_some_and(|config| !config.is_git()) {
             return false;
         }
+        // The source half goes through the cached trait method: this is asked
+        // from the footer's render path too.
         plugin_needs_update(&codex_dir, PLUGIN_NAME, PLUGIN_KEY, MINIMUM_PLUGIN_VERSION)
-            || plugin_needs_source_migration(&codex_dir)
+            || self.needs_source_migration()
     }
 
     fn needs_source_migration(&self) -> bool {
