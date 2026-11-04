@@ -25,8 +25,15 @@ rustflags = ["--cfg=web_sys_unstable_apis"]
 # You need mold installed and on PATH first, otherwise linking will fail:
 #   sudo apt-get install -y mold      # or unpack a prebuilt mold to ~/.local
 # gcc 12+ / clang both support `-fuse-ld=mold`.
+# x86-64 builds target x86-64-v3 (owner decision 2026-11-01). script/linux/bundle and the CI
+# jobs that set RUSTFLAGS repeat it, because RUSTFLAGS replaces this table.
 [target.x86_64-unknown-linux-gnu]
-rustflags = ["-C", "symbol-mangling-version=v0", "-C", "link-arg=-fuse-ld=mold"]
+rustflags = ["-C", "symbol-mangling-version=v0", "-C", "link-arg=-fuse-ld=mold", "-C", "target-cpu=x86-64-v3"]
+
+# Windows x86-64: x86-64-v3 as on Linux. Without this table Windows inherited [build].rustflags,
+# whose -headerpad_max_install_names is a macOS linker flag.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "symbol-mangling-version=v0", "-C", "target-cpu=x86-64-v3"]
 
 # Static musl build (CLI / remote-server tarball).
 # The `-Wl,-headerpad_max_install_names` in `[build].rustflags` is a

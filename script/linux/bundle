@@ -322,6 +322,12 @@ if [[ "$BUILD" == "true" ]]; then
   # putting it in .cargo/config.toml would be silently ignored on Linux release builds, because
   # this variable replaces that file's rustflags entirely. The zigbuild/musl path inherits it.
   export RUSTFLAGS="-C symbol-mangling-version=v0"
+  # x86-64 GUI builds target x86-64-v3 (AVX2/FMA/BMI2, Haswell 2013+ / Zen; owner decision
+  # 2026-11-01, applied with the Rust 1.99 upgrade). The musl CLI/remote-server artifact stays
+  # baseline x86-64: it runs on whatever server the user ssh-es into.
+  if [[ "$BUILD_ARCH" == "x86_64" && "$BUILD_TARGET" != *musl* ]]; then
+    RUSTFLAGS="$RUSTFLAGS -C target-cpu=x86-64-v3"
+  fi
 
   if [[ "${USE_ZIGBUILD:-false}" == "true" ]]; then
     echo "Using cargo zigbuild (zig-backed cross toolchain)"

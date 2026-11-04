@@ -460,7 +460,7 @@ build-linux-profiling:
     # force-frame-pointers gives OUR code frame pointers (cheap `perf --call-graph fp`),
     # but the prebuilt std/libc have none, so fp unwinding stops at the first std frame.
     # samply's DWARF unwinder handles those frames; prefer it.
-    - export RUSTFLAGS="-C symbol-mangling-version=v0 -C force-frame-pointers=yes"
+    - export RUSTFLAGS="-C symbol-mangling-version=v0 -C force-frame-pointers=yes -C target-cpu=x86-64-v3"
     - export APPIMAGE_NAME="Phosphor-x86_64.AppImage"
     - FEATURES="release_bundle,gui,nld_improvements${PROFILING_FEATURES:+,$PROFILING_FEATURES}"
     - cargo build -p warp --profile profiling --bin phosphor-oss --features "$FEATURES"
