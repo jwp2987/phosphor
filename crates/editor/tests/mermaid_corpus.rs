@@ -412,22 +412,23 @@ fn large_sequence_diagram_renders_within_bound() {
 
 /// #1622: two nested `subgraph Backend` blocks, left unclosed by a typo (`nd` for `end`), made
 /// the renderer loop forever (the inner one became its own parent); the fuzz target timed out
-/// and the app's 8 s worker budget (#1479) was all that stopped it. It now renders in
-/// milliseconds. The bound sits well under the worker budget, so a regression fails here as a
-/// timeout rather than passing as the budget's error.
+/// and the app's 8 s worker budget (#1479) was all that stopped it. The fork now rejects the
+/// self-nesting at once with an error that names the subgraph (the app shows it in place of the
+/// diagram). The bound sits well under the worker budget, so a regression to the loop fails here
+/// as a timeout rather than passing as the budget's error.
 #[test]
 fn issue_1622_unclosed_subgraph_reuse_renders_quickly() {
     let src = fixture("issue_1622_unclosed_subgraph_reuse.mmd");
     let start = Instant::now();
-    let svg = app_render(&src).expect("the #1622 flowchart renders");
+    let result = app_render(&src);
     let elapsed = start.elapsed();
     assert!(
         elapsed < Duration::from_secs(2),
         "#1622 flowchart took {elapsed:?}"
     );
-    assert!(is_nonblank_svg(&svg));
-    let labels = text_labels(&svg);
-    for want in ["Client App", "API Gateway", "Auth", "Backend"] {
-        assert!(labels.iter().any(|l| l == want), "label {want} missing");
-    }
+    let err = result.expect_err("a subgraph nested inside itself is rejected, not laid out");
+    assert!(
+        err.contains("nests subgraph `Backend` inside itself"),
+        "the error names the self-nested subgraph: {err}"
+    );
 }
