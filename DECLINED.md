@@ -2791,4 +2791,13 @@ Keys still HELD (typed before ssh owned the tty) are still handed back to the ed
 the window ends without ownership (#1292). The real-app case `ssh_failing_not_local` checks the
 plain-terminal result: the line runs locally exactly once, exactly as typed, and only after the
 ssh failed.
+
+**Windows: ssh.exe does not flush typeahead before a password prompt; accepted (owner,
+2026-11-04: "Accept, note it").** Under the same plain-terminal rule, text typed on Windows before
+ssh.exe asks for a password is read by ssh.exe as a password attempt (Windows has no tty flush
+before a secret read, unlike a Unix tty). If that uses up the attempts and ssh fails, the next
+thing typed, which may be the real password, runs in the local shell and lands in its history.
+A plain Windows console (conhost / Windows Terminal) behaves the same. It is listed as a known
+issue in the release notes. Do not add a Windows-only drain or history scrub without a new owner
+decision (r18u8 Windows triage, ssh_password_prompt).
 <!-- markers: sym:ssh_prompt_has_arrived sym:discard_ssh_typeahead_on_prompt sym:discard_held_ssh_typeahead_for_prompt sym:ssh_prompt_is_unmanaged_shell_prompt sym:output_tail_is_shell_prompt sym:StaleBeforePrompt keep:ssh_on_tty_owned keep:tty_is_reading_secret -->
