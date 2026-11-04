@@ -29,7 +29,8 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-KNOWN="script/known_test_failures.txt"
+# PHOSPHOR_KNOWN_FAILURES: the macOS / Windows suite jobs keep their own lists (a failure that is platform-specific is not Linux debt).
+KNOWN="${PHOSPHOR_KNOWN_FAILURES:-script/known_test_failures.txt}"
 [[ -f "$KNOWN" ]] || { echo "error: $KNOWN is missing" >&2; exit 2; }
 
 out="$(mktemp)"; expected="$(mktemp)"; actual="$(mktemp)"
@@ -46,7 +47,7 @@ else
     CARGO_RUN=(cargo)
 fi
 # rustc scribbles temporaries into TMPDIR too, so keep those off the tmpfs.
-if [[ -z "${TMPDIR:-}" || "$TMPDIR" == /tmp* ]]; then
+if [[ "${PHOSPHOR_GOVERNOR:-1}" != 0 ]] && [[ -z "${TMPDIR:-}" || "$TMPDIR" == /tmp* ]]; then
     _tmp_root="${PHOSPHOR_TARGET_ROOT:-/cache/git/.phosphor-build}/tmp"
     mkdir -p "$_tmp_root" 2>/dev/null && export TMPDIR="$_tmp_root"
 fi
@@ -69,7 +70,8 @@ nextest_status="${PIPESTATUS[0]}"
 # red. That is the same false-green this script's other guards were written to stop,
 # arriving through a different door -- and it stayed hidden only because the run was
 # dying at `agent-cargo` before ever producing output to misparse.
-sed -i 's/\x1b\[[0-9;]*[mGKHF]//g' "$out"
+# BSD sed (macOS) has neither -i without a suffix nor \x escapes: write through a temp file and use a literal ESC.
+sed -E $'s/\x1b\\[[0-9;]*[mGKHF]//g' "$out" > "$out.clean" && mv "$out.clean" "$out"
 
 # This bit ALSO bit for real, and worse than the retry bug below.
 #
@@ -101,7 +103,7 @@ if [[ "$nextest_status" -ne 0 && "$nextest_status" -ne 100 ]]; then
     exit 2
 fi
 
-if ! grep -qE '^\s+Summary \[' "$out"; then
+if ! grep -qE '^[[:space:]]+Summary \[' "$out"; then
     echo "" >&2
     echo "=============================================================" >&2
     echo "NO TEST SUMMARY -- the suite did not run." >&2
@@ -127,8 +129,8 @@ fi
 # say: the gate was blind exactly where it most needed to see.
 #
 # Match both forms. Take the last whitespace-delimited field, ANSI stripped.
-sed -E 's/\x1b\[[0-9;]*m//g' "$out" \
-    | grep -E '^\s+(TRY [0-9]+ )?FAIL ' \
+sed -E $'s/\x1b\\[[0-9;]*m//g' "$out" \
+    | grep -E '^[[:space:]]+(TRY [0-9]+ )?FAIL ' \
     | awk '{print $NF}' \
     | LC_ALL=C sort -u > "$actual"
 

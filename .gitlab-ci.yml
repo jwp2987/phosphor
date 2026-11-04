@@ -385,40 +385,8 @@ check-windows:
     - .\script\windows\bundle.ps1 -CHANNEL oss -CHECK_ONLY
     - if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
-# nextest on Windows (#1534): the warp + warp_tui lib tests on the Windows runner, which already has cargo, MSVC, perl, cmake and protoc (it builds the
-# app). MANUAL and tier-driven, never automatic on a push: a debug build of the whole `warp` test binary is as heavy as the installer build. Scope by play-time
-# variable: WIN_TEST_FILTER = a nextest filter expression (default: the Windows-only code, ConPTY / pwsh / windows-named tests, which no other job runs);
-# WIN_TEST_FULL=1 = the whole -p warp -p warp_tui --lib suite. allow_failure: the suite has never run on Windows, so a red result is information, not a
-# gate (the log and the junit are artifacts); the job installs nothing: a missing cargo-nextest fails with the one-line install command for the owner.
-test-windows:
-  extends: .windows_job
-  stage: test
-  when: manual
-  allow_failure: true
-  timeout: 5h
-  interruptible: true
-  variables:
-    CARGO_BUILD_JOBS: "8"
-    WIN_TEST_FILTER: "test(conpty) or test(windows) or test(pwsh) or test(powershell)"
-    WIN_TEST_FULL: "0"
-  script:
-    - foreach ($t in "cargo","rustc","perl","cmake","cargo-nextest") { if (-not (Get-Command $t -ErrorAction SilentlyContinue)) { Write-Error "$t is missing on this runner; install it by hand (cargo-nextest via cargo install cargo-nextest --locked); not done automatically"; exit 1 } }
-    - if (-not (Test-Path "$env:PROTOC")) { Write-Error "PROTOC is not set to an existing protoc.exe on this runner"; exit 1 }
-    - |
-      $filter = @(); if ($env:WIN_TEST_FULL -ne "1" -and $env:WIN_TEST_FILTER) { $filter = @("-E", $env:WIN_TEST_FILTER) }
-      "nextest on Windows: filter=[$($filter -join ' ')] full=$env:WIN_TEST_FULL"
-      cargo nextest run --profile ci -p warp -p warp_tui --lib --features warp/gui --no-fail-fast @filter 2>&1 | Tee-Object -FilePath nextest-windows.log
-      $rc = $LASTEXITCODE
-      exit $rc
-  artifacts:
-    name: nextest-windows
-    when: always
-    expire_in: 14 days
-    paths:
-      - nextest-windows.log
-      - target/nextest/ci/junit.xml
-    reports:
-      junit: target/nextest/ci/junit.xml
+# test-windows (the warp + warp_tui lib tests, #1534) now sits with the other per-platform suites further down, and runs the same
+# command as test-linux (default nextest profile, TEST_FILTER, check_test_failures): script/ci/run_suite.sh.
 
 # Windows x86_64 installer (Inno Setup), unsigned. Like the other build jobs this is
 # NOT the release pipeline: no CLI tarballs or digest pins, nothing published; the
@@ -841,6 +809,14 @@ fuzz-smoke:
     paths:
       - fuzz/artifacts/
 
+# The scope of the `mutants` job (box, Mac and Windows): one definition so the three platforms mutate the same code.
+.mutants_scope:
+  variables:
+    MUTANTS_PACKAGE: "warp"
+    MUTANTS_FILES: "app/src/terminal/pane_key.rs app/src/terminal/model/key_facts.rs app/src/terminal/input_queue/gates.rs app/src/terminal/input_queue/table.rs app/src/terminal/input_queue/facts.rs app/src/terminal/input_queue/mod.rs app/src/terminal/input_queue/pane.rs app/src/terminal/input_queue/shadow.rs app/src/terminal/view/dest_table.rs"
+    MUTANTS_TEST_FILTER: "test(/terminal::(pane_key|model::key_facts|input_queue)::/) | test(/terminal::view::tests::.*(table_mode|shadow_mode|legacy_mode|route_facts|shadow_reports)/)"
+    MUTANTS_SHARD: ""
+
 # cargo-mutants, SCOPED (release tier). Default scope = the pure, self-contained input-path logic:
 # app/src/terminal/{pane_key.rs, model/key_facts.rs, view/dest_table.rs, input_queue/{gates,table,facts,mod,pane,shadow}.rs}
 # (the #1424 destination table and its plumbing; ~4,000 lines, so several hundred mutants: UNMEASURED, shard it with
@@ -851,15 +827,10 @@ fuzz-smoke:
 # MUTANTS_SHARD=k/n; see docs/testing.md "Test tiers". Misses are reported, not failed on;
 # `mutants.out/` is kept as the artifact.
 mutants:
-  extends: .box_job
+  extends: [.box_job, .mutants_scope]
   timeout: 5h
   when: manual
   allow_failure: true
-  variables:
-    MUTANTS_PACKAGE: "warp"
-    MUTANTS_FILES: "app/src/terminal/pane_key.rs app/src/terminal/model/key_facts.rs app/src/terminal/input_queue/gates.rs app/src/terminal/input_queue/table.rs app/src/terminal/input_queue/facts.rs app/src/terminal/input_queue/mod.rs app/src/terminal/input_queue/pane.rs app/src/terminal/input_queue/shadow.rs app/src/terminal/view/dest_table.rs"
-    MUTANTS_TEST_FILTER: "test(/terminal::(pane_key|model::key_facts|input_queue)::/) | test(/terminal::view::tests::.*(table_mode|shadow_mode|legacy_mode|route_facts|shadow_reports)/)"
-    MUTANTS_SHARD: ""
   script:
     - command -v cargo-mutants >/dev/null || ./script/install_cargo_binstall
     - command -v cargo-mutants >/dev/null || cargo binstall --force -y cargo-mutants
@@ -909,6 +880,224 @@ bench:
   artifacts:
     when: always
     expire_in: 30 days
+    paths:
+      - bench-results/
+
+# ===========================================================================
+# Every box suite on the Mac and Windows runners too (owner 2026-11-03: "the tests need to be the same on all boxes").
+# The command of each suite lives in script/ci/run_suite.sh (one definition for both platforms; it mirrors the box job of the
+# same name). All MANUAL and allow_failure, never automatic on a push; script/ci/ci_seq.py plays them: the three unit suites
+# from the candidate tier up, the heavy ones in the release tier, after that platform's app tests (each runner is one
+# machine; resource_group mac-gui / windows-gui also serialises them with the app tests). Failures are judged against
+# script/known_test_failures_<platform>.txt (empty at first: the first run files the platform's real failures).
+# Tools go only into the CI user's own ~/.cargo/bin when missing (cargo-binstall, cargo-nextest, cargo-mutants, cargo-fuzz).
+# fuzz-smoke-windows FAILS LOUDLY by design: cargo-fuzz supports only Unix-like systems.
+# ===========================================================================
+
+.mac_suite:
+  extends: .shim_github_env
+  stage: test
+  tags: [Mac]
+  when: manual
+  allow_failure: true
+  needs: []
+  resource_group: mac-gui
+  interruptible: true
+  variables:
+    # 16 GB Mac: same cap as build-macos-arm64 (script/ci/run_suite.sh sets PHOSPHOR_BUILD_JOBS from it).
+    CARGO_BUILD_JOBS: "4"
+    PHOSPHOR_BUILD_JOBS: "4"
+
+.windows_suite:
+  extends: .windows_job
+  stage: test
+  when: manual
+  allow_failure: true
+  resource_group: windows-gui
+  interruptible: true
+  variables:
+    CARGO_BUILD_JOBS: "8"
+    PHOSPHOR_BUILD_JOBS: "8"
+  before_script:
+    - !reference [.windows_job, before_script]
+    - foreach ($t in "cargo","rustc","perl","cmake") { if (-not (Get-Command $t -ErrorAction SilentlyContinue)) { Write-Error "$t is missing on this runner; install it by hand (not done automatically)"; exit 1 } }
+    - if (-not (Test-Path "$env:PROTOC")) { Write-Error "PROTOC is not set to an existing protoc.exe on this runner"; exit 1 }
+    - if (-not (Test-Path "C:\Program Files\Git\bin\bash.exe")) { Write-Error "Git for Windows bash is missing on this runner"; exit 1 }
+    - $env:PHOSPHOR_PYTHON = Join-Path $env:LOCALAPPDATA "phosphor-ci\python312\python.exe"
+
+
+test-macos:
+  extends: [.mac_suite]
+  timeout: 4h
+  script:
+    - script/ci/run_suite.sh macos test
+  artifacts:
+    when: always
+    expire_in: 14 days
+    paths:
+      - nextest-macos.log
+
+test-warpui-core-macos:
+  extends: [.mac_suite]
+  timeout: 2h
+  script:
+    - script/ci/run_suite.sh macos warpui-core
+  artifacts:
+    when: always
+    expire_in: 14 days
+    paths:
+      - nextest-warpui-core-macos.log
+
+test-workspace-rest-macos:
+  extends: [.mac_suite]
+  timeout: 4h
+  script:
+    - script/ci/run_suite.sh macos workspace-rest
+  artifacts:
+    when: always
+    expire_in: 14 days
+    paths:
+      - nextest-rest-macos.log
+
+test-shuttle-loom-macos:
+  extends: [.mac_suite]
+  timeout: 4h
+  script:
+    - script/ci/run_suite.sh macos shuttle-loom
+
+fuzz-smoke-macos:
+  extends: [.mac_suite]
+  timeout: 2h
+  script:
+    - script/ci/run_suite.sh macos fuzz-smoke
+  artifacts:
+    when: always
+    expire_in: 14 days
+    paths:
+      - fuzz/artifacts/
+
+mutants-macos:
+  extends: [.mac_suite, .mutants_scope]
+  timeout: 5h
+  script:
+    - script/ci/run_suite.sh macos mutants
+  artifacts:
+    when: always
+    expire_in: 14 days
+    paths:
+      - mutants.out/
+
+mutants-warpui-core-macos:
+  extends: [.mac_suite]
+  timeout: 2h
+  script:
+    - script/ci/run_suite.sh macos mutants-warpui-core
+  artifacts:
+    when: always
+    expire_in: 14 days
+    paths:
+      - mutants.out/
+
+bench-macos:
+  extends: [.mac_suite]
+  timeout: 2h
+  script:
+    - script/ci/run_suite.sh macos bench
+  artifacts:
+    when: always
+    expire_in: 14 days
+    paths:
+      - bench-results/
+
+
+test-windows:
+  extends: [.windows_suite]
+  timeout: 5h
+  script:
+    - '& "C:\Program Files\Git\bin\bash.exe" ./script/ci/run_suite.sh windows test'
+    - if ($LASTEXITCODE) { exit $LASTEXITCODE }
+  artifacts:
+    when: always
+    expire_in: 14 days
+    paths:
+      - nextest-windows.log
+
+test-warpui-core-windows:
+  extends: [.windows_suite]
+  timeout: 2h
+  script:
+    - '& "C:\Program Files\Git\bin\bash.exe" ./script/ci/run_suite.sh windows warpui-core'
+    - if ($LASTEXITCODE) { exit $LASTEXITCODE }
+  artifacts:
+    when: always
+    expire_in: 14 days
+    paths:
+      - nextest-warpui-core-windows.log
+
+test-workspace-rest-windows:
+  extends: [.windows_suite]
+  timeout: 4h
+  script:
+    - '& "C:\Program Files\Git\bin\bash.exe" ./script/ci/run_suite.sh windows workspace-rest'
+    - if ($LASTEXITCODE) { exit $LASTEXITCODE }
+  artifacts:
+    when: always
+    expire_in: 14 days
+    paths:
+      - nextest-rest-windows.log
+
+test-shuttle-loom-windows:
+  extends: [.windows_suite]
+  timeout: 4h
+  script:
+    - '& "C:\Program Files\Git\bin\bash.exe" ./script/ci/run_suite.sh windows shuttle-loom'
+    - if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+fuzz-smoke-windows:
+  extends: [.windows_suite]
+  timeout: 10m
+  script:
+    - '& "C:\Program Files\Git\bin\bash.exe" ./script/ci/run_suite.sh windows fuzz-smoke'
+    - if ($LASTEXITCODE) { exit $LASTEXITCODE }
+  artifacts:
+    when: always
+    expire_in: 14 days
+    paths:
+      - fuzz/artifacts/
+
+mutants-windows:
+  extends: [.windows_suite, .mutants_scope]
+  timeout: 5h
+  script:
+    - '& "C:\Program Files\Git\bin\bash.exe" ./script/ci/run_suite.sh windows mutants'
+    - if ($LASTEXITCODE) { exit $LASTEXITCODE }
+  artifacts:
+    when: always
+    expire_in: 14 days
+    paths:
+      - mutants.out/
+
+mutants-warpui-core-windows:
+  extends: [.windows_suite]
+  timeout: 2h
+  script:
+    - '& "C:\Program Files\Git\bin\bash.exe" ./script/ci/run_suite.sh windows mutants-warpui-core'
+    - if ($LASTEXITCODE) { exit $LASTEXITCODE }
+  artifacts:
+    when: always
+    expire_in: 14 days
+    paths:
+      - mutants.out/
+
+bench-windows:
+  extends: [.windows_suite]
+  timeout: 2h
+  script:
+    - '& "C:\Program Files\Git\bin\bash.exe" ./script/ci/run_suite.sh windows bench'
+    - if ($LASTEXITCODE) { exit $LASTEXITCODE }
+  artifacts:
+    when: always
+    expire_in: 14 days
     paths:
       - bench-results/
 

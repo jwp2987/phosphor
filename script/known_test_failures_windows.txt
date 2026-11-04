@@ -1,0 +1,4 @@
+# Tests that are KNOWN to fail on windows, with the issue tracking each one (same contract as known_test_failures.txt, which
+# is the Linux list). Used by the test-windows* CI jobs through PHOSPHOR_KNOWN_FAILURES (script/ci/run_suite.sh).
+# Starts EMPTY on purpose: the first run on this platform reports every failure as a regression, and each one gets an issue
+# and a line here only with maintainer sign-off (AGENTS.md 5.6). A line whose test passes must be deleted.
