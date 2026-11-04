@@ -5,6 +5,9 @@
 # r.metric(k, v) numbers, r.skip(msg) a skip. Typing is at the owner's stress rate: 10-25 ms/key, Enter in the same call.
 import hashlib, json, os, random, re, shutil, statistics, subprocess, sys, time
 
+# ACCEPTED_FOR_RELEASE v0.1.17 (#1606): see c_ctrl_c_d. Remove after the v0.1.17 release.
+CTRLC_FLOOD_RELEASE_MS = "45"
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lat  # noqa: E402
 import backend  # noqa: E402
@@ -1769,7 +1772,12 @@ def ctrlc_flood(ctx, r, n, warm):
         r.metric("reference_ctrl_c_flood_ms", stats(rs))
         r.metric("reference", ref.name)
     if fl:
-        rec = lat.evaluate("%s/ctrl_c_d/ctrl_c_flood" % ctx.label, fl, rs, float(os.environ.get("APPCI_CTRLC_MAX_MS", "20")), "overhead", plat(),
+        # ACCEPTED_FOR_RELEASE v0.1.17 (#1606, owner 2026-11-04): Ctrl-C under flood may be up to 45 ms over the reference
+        # for this release only (the main thread waits on the GPU's next drawable under a flood). Back to the 20 ms owner
+        # budget after v0.1.17: remove CTRLC_FLOOD_RELEASE_MS and this comment then.
+        flood_ms = float(os.environ.get("APPCI_CTRLC_FLOOD_MAX_MS", CTRLC_FLOOD_RELEASE_MS))
+        r.note("Ctrl-C under flood budget %.0f ms: ACCEPTED_FOR_RELEASE v0.1.17 (#1606); the owner budget is 20 ms" % flood_ms)
+        rec = lat.evaluate("%s/ctrl_c_d/ctrl_c_flood" % ctx.label, fl, rs, flood_ms, "overhead", plat(),
                            remeasure=None, ref_name=ref.name if ref and rs else None, floor=ctx.be.key_floor_ms, expected=n,
                            pane_shell=pane_shell_id(ctx), ref_shell=getattr(ctx, "ref_shell", None) if ref else None, mode=mode,
                            notes=["Ctrl-C while `yes` floods the terminal; the plain-sleep ctrl_c measurement is the control; " +

@@ -656,7 +656,7 @@ budget, previous build, baseline, verdict, n).
 
 - **Budgets.** Phosphor *overhead* = Phosphor median minus the reference terminal's median, measured in the same session with the
   same keys, cadence and timestamp command: Enter to command start <= 2 ms (`APPCI_ENTER_BUDGET_MS`), key to paint <= 2 ms
-  (`APPCI_KEY_BUDGET_MS`), Ctrl-C <= 20 ms (`APPCI_CTRLC_MAX_MS`; `ctrl_c` is a plain `sleep`, the control; `ctrl_c_flood` is the output flood of 3.6, #1514).
+  (`APPCI_KEY_BUDGET_MS`), Ctrl-C <= 20 ms (`APPCI_CTRLC_MAX_MS`; `ctrl_c` is a plain `sleep`, the control; `ctrl_c_flood` is the output flood of 3.6, #1514). **v0.1.17 exception (owner 2026-11-04, #1606):** `ctrl_c_flood` is judged at 45 ms (`APPCI_CTRLC_FLOOD_MAX_MS`, constant `CTRLC_FLOOD_RELEASE_MS` marked ACCEPTED_FOR_RELEASE in cases.py) for this release only; it returns to 20 ms after v0.1.17.
   Every one of the three is judged on overhead over the reference terminal (#1486): `ctrl_c_d` types the identical trap line in both
   terminals (macOS: zsh `$EPOCHREALTIME`, so no `python3` start inside the measurement; the old `~/bin/now` helper cost ~30 ms and
   was in every absolute number; Linux: `date +%s.%N`), `latency_paint` runs the same kl3 post/capture against Terminal.app's window
