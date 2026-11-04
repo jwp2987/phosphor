@@ -678,16 +678,20 @@ fn handle_terminal_view_event(
                 ctx.emit(pane_group::Event::ExecuteCommand(event.clone()));
             }
             Event::Exited => {
+                let bootstrapped = group
+                    .terminal_view_from_pane_id(terminal_pane_id, ctx)
+                    .is_none_or(|terminal_view| {
+                        terminal_view.as_ref(ctx).is_login_shell_bootstrapped()
+                    });
+                let keep = exited_shell_keeps_pane(
+                    bootstrapped,
+                    warpui::platform::session_end_gate::keep_exited_pane_open,
+                );
                 // If the shell process exited before it successfully bootstrapped,
                 // keep the pane open.  There might be useful information visible
                 // in the output, and if this was the first shell spawned when the
                 // user started the app, it will prevent it from suddenly quitting.
-                if group
-                    .terminal_view_from_pane_id(terminal_pane_id, ctx)
-                    .is_some_and(|terminal_view| {
-                        !terminal_view.as_ref(ctx).is_login_shell_bootstrapped()
-                    })
-                {
+                if keep == ExitedShellKeep::NotBootstrapped {
                     return;
                 }
 
@@ -696,7 +700,7 @@ fn handle_terminal_view_event(
                 // restart would then have lost everything running in it. Keep the pane (it shows
                 // the shell-terminated banner) while a session end is queried, under way (so the
                 // saved session still has the tab) or just cancelled (jwp2987/phosphor#1103).
-                if warpui::platform::session_end_gate::keep_exited_pane_open() {
+                if keep == ExitedShellKeep::SessionEnd {
                     log::info!("Keeping the pane of an exited shell open: Windows session end");
                     // Windows killed the shell itself, so what ran in it is gone; if the session
                     // end is cancelled the user can restart the shell in place from the banner.
@@ -1693,6 +1697,78 @@ mod tests;
 /// that never bootstrapped. A move keeps everything running; a permanent close already ends it.
 fn detach_type_skips_undo_grace(detach_type: DetachType, unbootstrapped_remote: bool) -> bool {
     unbootstrapped_remote && matches!(detach_type, DetachType::HiddenForClose)
+}
+
+/// Why the pane of a shell that just exited stays open, before the pane's own checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExitedShellKeep {
+    NotBootstrapped,
+    SessionEnd,
+    No,
+}
+
+/// `session_end_gate` is the Windows gate's verdict, which consumes one counted session-end exit
+/// per call. It is asked for every exit, a shell that never bootstrapped included: an exit left
+/// unconsumed would make a later ordinary exit (the user typed `exit`) keep its pane as if
+/// Windows had killed it (#1617).
+fn exited_shell_keeps_pane(
+    bootstrapped: bool,
+    session_end_gate: impl FnOnce() -> bool,
+) -> ExitedShellKeep {
+    let session_end = session_end_gate();
+    if !bootstrapped {
+        ExitedShellKeep::NotBootstrapped
+    } else if session_end {
+        ExitedShellKeep::SessionEnd
+    } else {
+        ExitedShellKeep::No
+    }
+}
+
+#[cfg(test)]
+mod exited_shell_tests {
+    use std::cell::Cell;
+
+    use super::*;
+
+    /// The gate's count, as `SessionEndGate::should_keep_exited_pane` consumes it after a
+    /// cancelled session end: one kept pane per counted exit.
+    fn cancelled_gate(counted: &Cell<u32>) -> impl FnOnce() -> bool + '_ {
+        || {
+            let had = counted.get();
+            counted.set(had.saturating_sub(1));
+            had > 0
+        }
+    }
+
+    #[test]
+    fn an_unbootstrapped_exit_consumes_its_session_end_count() {
+        // One shell killed by a queried-then-cancelled session end; it never bootstrapped.
+        let counted = Cell::new(1);
+        assert_eq!(
+            exited_shell_keeps_pane(false, cancelled_gate(&counted)),
+            ExitedShellKeep::NotBootstrapped
+        );
+        assert_eq!(counted.get(), 0);
+        // The user later types `exit` in another pane: it closes.
+        assert_eq!(
+            exited_shell_keeps_pane(true, cancelled_gate(&counted)),
+            ExitedShellKeep::No
+        );
+    }
+
+    #[test]
+    fn a_counted_exit_of_a_bootstrapped_shell_keeps_its_pane_once() {
+        let counted = Cell::new(1);
+        assert_eq!(
+            exited_shell_keeps_pane(true, cancelled_gate(&counted)),
+            ExitedShellKeep::SessionEnd
+        );
+        assert_eq!(
+            exited_shell_keeps_pane(true, cancelled_gate(&counted)),
+            ExitedShellKeep::No
+        );
+    }
 }
 
 #[cfg(test)]
