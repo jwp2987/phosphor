@@ -2532,6 +2532,26 @@ who sets `setopt errexit` in `.zshrc` therefore does NOT have errexit at the Pho
 failing command, including commands Phosphor runs for itself (generators outside a git repo), and
 on any typo. Reverse only together with auditing every internal command path.
 
+## zsh: a plain one-line command is typed raw, not as a bracketed paste (#1606) — IMPROVED
+
+**Upstream** writes every submitted command as `^P ESC[200~ text ESC[201~ \n` while the shell has
+bracketed paste on (`bytes_to_execute_command`, unchanged since the initial import): the wrapper
+keeps a multi-line command one block and keeps the user's key bindings off the text. zsh's zle
+takes ~15 ms longer over that wrapper on macOS (r18u13 `latency_enter` M3 control: −15.8 ms with
+`zle_bracketed_paste` unset, the whole gap to Terminal.app; Phosphor's own share 0.77 ms).
+**We do:** for a user command to zsh that is one line of printable ASCII (no `!`, no leading `^`,
+≤ 1000 bytes) the app types `^P text \n` raw, but only when the line editor said, in its
+`LineEditorReading` marker for that very prompt, that typed printable text is inserted literally
+(`_warp_check_typed_text_literal` in zsh_body.sh: `self-insert` is the builtin widget and no binding
+in the starting keymap is reachable from a printable byte, which rules out zsh-autopair, zsh-abbr,
+globalias, magic-space, url-quote-magic, `bindkey jk vi-cmd-mode`, and also zsh-autosuggestions /
+zsh-syntax-highlighting, which wrap `self-insert`). One marker vouches for one command write; any
+shell hook, continuation prompt or user write carrying Enter/^C/^D ends it. Bash, fish, nushell,
+PowerShell, tmux control mode, Windows (ConPTY), in-band commands and every other line keep the
+wrapper exactly as before. Kill switch: `PHOSPHOR_ENTER_BRACKETED_ALWAYS=1`. Reverse only with a
+measurement showing zle's paste cost gone.
+<!-- markers: keep:enter_submit_path keep:line_is_plain_for_raw_submit keep:typed_text_literal -->
+
 ## Words past 128 KiB are shaped only up to that cap (#940)
 
 A single unbroken word longer than `MAX_SHAPED_WORD_BYTES` (128 KiB, vendored

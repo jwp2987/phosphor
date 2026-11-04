@@ -99,7 +99,7 @@ use std::ops::{Range, RangeInclusive};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use warp_core::features::FeatureFlag;
 use warp_core::semantic_selection::SemanticSelection;
 pub use warp_terminal::model::BlockIndex;
@@ -469,6 +469,13 @@ pub struct TerminalModel {
     /// Whether the pty controller writes user commands as a bracketed paste: a mirror of the
     /// controller's own flag, kept in step with it (#1046).
     pty_bracketed_paste: bool,
+    /// #1606: the line editor's last `LineEditorReading` said printable ASCII typed at its line is
+    /// inserted literally (zsh only), and no shell hook, continuation prompt, command write or
+    /// line-ending write has come since. Only then may a plain one-line command be typed without
+    /// the bracketed-paste wrapper. Shared with the pty controller, which consumes it without this
+    /// model's lock (a key's write must not wait for the pty reader, #1403); see
+    /// [`Self::line_editor_literal_flag`].
+    line_editor_types_literally: Arc<AtomicBool>,
 
     /// List of blocks. All blocks are immutable except for the current block.
     /// Always non-empty (includes an invisible block).
@@ -1121,6 +1128,16 @@ impl TerminalModel {
         self.pty_bracketed_paste = value;
     }
 
+    /// #1606: the cell saying whether the line the shell is reading takes typed printable text
+    /// literally (see the `line_editor_types_literally` field). This model sets it from the
+    /// shell's markers and clears it on every shell hook; the pty controller consumes it (swaps
+    /// in `false`) on every command write and every write that can end the line, so one marker
+    /// vouches for at most one command: a second one written before the next prompt's marker
+    /// may meet a running program, or a line editor that changed its bindings.
+    pub fn line_editor_literal_flag(&self) -> Arc<AtomicBool> {
+        self.line_editor_types_literally.clone()
+    }
+
     pub fn is_input_dirty(&self) -> bool {
         self.is_input_dirty
     }
@@ -1258,6 +1275,7 @@ impl TerminalModel {
             alt_screen,
             is_input_dirty: false,
             pty_bracketed_paste: false,
+            line_editor_types_literally: Arc::new(AtomicBool::new(false)),
             block_list,
             lifecycle_coordinator: BlockLifecycleCoordinator::default(),
             typeahead_handoff: {
@@ -3196,6 +3214,10 @@ impl TerminalModel {
     /// prompt). On this thread, in stream order, so it is applied before the pty reader publishes
     /// these bytes as applied.
     fn note_shell_hook_parsed(&mut self, hook: ParsedShellHook) {
+        // #1606: a Precmd, CommandFinished or Preexec means the line editor that sent the last
+        // `LineEditorReading` is no longer reading that line.
+        self.line_editor_types_literally
+            .store(false, Ordering::SeqCst);
         if FeatureFlag::TypeaheadHandoff.is_enabled() {
             self.typeahead_handoff.write().note_shell_hook_parsed(hook);
         }
@@ -4013,6 +4035,11 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn line_editor_reading(&mut self, data: LineEditorMarkerValue) {
+        // #1606: only an attributable marker vouches for the line.
+        self.line_editor_types_literally.store(
+            data.session_id.is_some() && data.typed_text_literal,
+            Ordering::SeqCst,
+        );
         if let Some(session_id) = data.session_id {
             if FeatureFlag::TypeaheadHandoff.is_enabled() {
                 // In stream order with the Precmd / Preexec that frame it, on this thread.
@@ -4029,6 +4056,8 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn continuation_prompt(&mut self, data: LineEditorMarkerValue) {
+        self.line_editor_types_literally
+            .store(false, Ordering::SeqCst);
         if let Some(session_id) = data.session_id {
             if FeatureFlag::TypeaheadHandoff.is_enabled() {
                 self.typeahead_handoff.write().on_continuation_prompt();

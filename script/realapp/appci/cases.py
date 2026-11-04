@@ -271,6 +271,23 @@ def ssh_trial_facts(lines, expected, remote_new, enters_before=1):
     return f
 
 
+ENTER_SUBMIT_PATH_RE = re.compile(r"input_order hop=enter_submit_path path=(\w+)(?: reason=(\w+))?[^\n]*? t=(\d+(?:\.\d+)?)")
+
+
+def enter_submit_paths(lines, t0):
+    """#1606: app log lines -> how each submitted command line since wall time t0 was written, counted: `raw` (typed without the bracketed-paste
+    wrapper: zsh vouched for its line, the line is plain), `wrapped:<reason>` (kill_switch, in_band, shell, tmux, conpty, line_editor, text) or
+    `unbracketed` (the shell had bracketed paste off). {} for a build without the hop."""
+    out = {}
+    for l in lines:
+        m = ENTER_SUBMIT_PATH_RE.search(l)
+        if not m or float(m.group(3)) / 1000.0 < t0:
+            continue
+        key = m.group(1) if m.group(1) != "wrapped" else "wrapped:%s" % (m.group(2) or "?")
+        out[key] = out.get(key, 0) + 1
+    return out
+
+
 def enter_segments(lines, t0):
     """app log lines -> the split of Enter->command-start the APP can see, medians in ms (#1583 W3, #1606):
       event_age_ms             `hop=mac_enter stage=app_send_event ... age_ms=` (macOS, #1606): the OS's own timestamp of the Return key-down ->
@@ -3121,6 +3138,11 @@ def c_lat_enter(ctx, r):
     record_interleave(r, mode, blocks, fallback)
     r.metric("enter_to_start_ms", stats(ds))
     segs = ctx.app_enter_segments(t_lat0)
+    paths = enter_submit_paths(ctx.app_log_lines(), t_lat0)
+    if paths:
+        # #1606: a zsh pane whose line editor vouched for literal typing writes plain lines raw; anything else names why it kept the wrapper
+        r.metric("enter_submit_paths", paths)
+        r.note("Enter submit path (#1606): " + ", ".join("%s %d" % kv for kv in sorted(paths.items())))
     share = segs.get("enter_to_write_ms")
     if share is not None:
         # r18cj (Windows Git Bash): Phosphor 95-100 ms vs the conhost reference 69 ms for the SAME bash.exe/rc/`date +%s.%N`/injector. The app's own part is this number

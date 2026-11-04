@@ -486,6 +486,36 @@ def scenario_terminal_replies_in_typeahead():
         sh.close()
 
 
+LITERAL_MARK_RE = re.compile(rb'"hook": "LineEditorReading", "value": \{[^}]*"typed_text_literal": (true|false)\}')
+
+
+def scenario_typed_text_literal_marker():
+    """#1606: zsh's LineEditorReading marker says whether typed printable text is inserted literally, so the app may type a
+    plain line without the bracketed-paste wrapper. True for default emacs and vi bindings; false for a binding a printable
+    byte reaches (magic-space) or a redefined self-insert (url-quote-magic, zsh-autosuggestions); and a binding added at a
+    prompt turns it off from the next prompt on. Strict options on, so the check itself survives them."""
+    cases = [
+        ("default bindings", "setopt err_return nounset ksh_arrays", None, "true"),
+        ("bindkey -v", "bindkey -v\nsetopt err_return nounset", None, "true"),
+        ("bindkey ' ' magic-space", "bindkey ' ' magic-space", None, "false"),
+        ("a redefined self-insert", "_my_si() { zle .self-insert }\nzle -N self-insert _my_si", None, "false"),
+        ("bindkey '(' at a prompt", "", "bindkey '(' up-line", "false"),
+    ]
+    for title, zshrc, at_prompt, want in cases:
+        print(f"typed_text_literal marker: {title} (#1606)")
+        sh = Shell(zshrc)
+        try:
+            check(sh.bootstrap(), "bootstraps", sh)
+            if at_prompt:
+                sh.cycle(at_prompt)
+            sh.cycle("true")
+            sh.pump(0.5)
+            got = [v.decode() for v in LITERAL_MARK_RE.findall(sh.buf)]
+            check(bool(got) and got[-1] == want, f"the last marker says typed_text_literal={want} (got {got[-3:]})", sh)
+        finally:
+            sh.close()
+
+
 def main():
     print(f"zsh: {ZSH}\nbody: {BODY}")
     scenario_terminal_replies_in_typeahead()
@@ -513,6 +543,7 @@ def main():
     scenario_errexit_repair_agent_rc()
     scenario_hostile_home()
     scenario_print_exit_value_and_user_preexec_output()
+    scenario_typed_text_literal_marker()
     if failures:
         print(f"\ntest_zsh_bootstrap_strict_options: {len(failures)} check(s) FAILED")
         return 1

@@ -113,6 +113,10 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
     if [[ -f $_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE ]]; then
       command -p rm $_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE
     fi
+    # #1606: the key-binding listing of _warp_check_typed_text_literal.
+    if [[ -n ${_WARP_KEYMAP_DUMP_TMP_FILE-} && -f $_WARP_KEYMAP_DUMP_TMP_FILE ]]; then
+      command -p rm $_WARP_KEYMAP_DUMP_TMP_FILE
+    fi
   }
   trap __warp_generator_pid_file_cleanup EXIT
 
@@ -2111,10 +2115,114 @@ esac
   # and `select` have other contexts and are not the shell's line editor. `read -k`/`read -q` and
   # other builtins do not start ZLE, so they never send this: a Preexec with no LineEditorReading
   # after it is how the app tells a builtin raw read from the editor. builtin printf only.
+  #
+  # Phosphor (#1606): the marker also says whether printable ASCII typed at this line is inserted
+  # as itself (`typed_text_literal`). Only then may the app type a plain one-line command without
+  # the bracketed-paste wrapper, which zle handles ~15 ms slower on macOS. Typed text, unlike a
+  # paste, goes through the user's key bindings: zsh-autopair, zsh-abbr, globalias, magic-space,
+  # url-quote-magic or `bindkey jk vi-cmd-mode` would each change the command. So it is true only
+  # when the self-insert widget is the builtin one and every binding a printable byte can reach in
+  # the keymap this line starts in is a single-byte self-insert. Anything unrecognised: false.
+  __warp_typed_text_literal=false
+  _WARP_KEYMAP_DUMP_TMP_FILE=""
+  _warp_literal_dump_seen=""
+  _warp_literal_dump_verdict=false
+  # Sets REPLY to the inner text of the quoted key $1 starts with (the `bindkey` listing form:
+  # `"^X^B"`, `"\""`, `"\M-^@"`) and __warp_key_rest to what follows its closing quote.
+  _warp_bindkey_take_key() {
+    local s=$1
+    local -i i=2 n=${#1}
+    [[ ${s[1]} == '"' ]] || return 1
+    while (( i <= n )); do
+      case ${s[i]} in
+        ('\') (( i += 2 )) ;;
+        ('"') REPLY=${s[2,i-1]}; __warp_key_rest=${s[i+1,-1]}; return 0 ;;
+        (*) (( i++ )) ;;
+      esac
+    done
+    return 1
+  }
+  # REPLY: `print` (one printable byte), `ctl` (one byte below space), `del`, `ctlseq` (a longer
+  # key led by a control byte, ESC included), `meta` (led by a byte >= 0x80) or `printseq` (a
+  # longer key led by a printable byte). `bindkey` escapes a bare `"`, `\` and `^` key.
+  _warp_bindkey_key_class() {
+    case $1 in
+      ('\M-'*) REPLY=meta ;;
+      ('^?') REPLY=del ;;
+      ('^'?|'^\\\\') REPLY=ctl ;;
+      ('^'*) REPLY=ctlseq ;;
+      ('\"'|'\^'|'\\\\') REPLY=print ;;
+      ('\'*|'') REPLY=printseq ;;
+      (?) REPLY=print ;;
+      (*) REPLY=printseq ;;
+    esac
+  }
+  # Whether one line of a `bindkey -M <keymap>` listing leaves typed printable ASCII literal.
+  _warp_bindkey_line_literal() {
+    local REPLY __warp_key_rest c1 c2="" widget range=""
+    _warp_bindkey_take_key "$1" || return 1
+    _warp_bindkey_key_class "$REPLY"; c1=$REPLY
+    if [[ $__warp_key_rest == '-"'* ]]; then
+      range=1
+      _warp_bindkey_take_key "${__warp_key_rest[2,-1]}" || return 1
+      _warp_bindkey_key_class "$REPLY"; c2=$REPLY
+    fi
+    [[ $__warp_key_rest == ' '?* ]] || return 1
+    widget=${__warp_key_rest[2,-1]}
+    if [[ $widget == self-insert ]]; then
+      # Single bytes inserting themselves, or keys no printable byte starts.
+      [[ $c1 != printseq && $c2 != printseq ]]
+    elif [[ -z $range ]]; then
+      [[ $c1 != print && $c1 != printseq ]]
+    else
+      # A range of single bytes covers every byte between its ends; a range of longer keys
+      # (`bindkey` lists them only when they share all but the last byte) only keys with that
+      # prefix.
+      [[ ( $c1 == ctl && $c2 == ctl ) || ( $c1 == meta && $c2 == meta ) ||
+         ( $c1 == ctlseq && $c2 == ctlseq ) ]]
+    fi
+  }
+  # Sets __warp_typed_text_literal (see above). Builtins only, apart from one mktemp per shell:
+  # the listing goes through a file because `$(bindkey)` would fork on every prompt (~1 ms). The
+  # verdict is cached against the listing it was made from. PHOSPHOR_ENTER_BRACKETED_ALWAYS=1 (the
+  # app's kill switch, inherited by local shells) skips the check.
+  _warp_check_typed_text_literal() {
+    setopt localoptions noerrreturn noerrexit unset nopipefail noksharrays nowarncreateglobal noxtrace noshwordsplit
+    __warp_typed_text_literal=false
+    [[ ${PHOSPHOR_ENTER_BRACKETED_ALWAYS:-0} != 1 ]] || return 0
+    [[ ${widgets[self-insert]-} == builtin ]] || return 0
+    local km=${KEYMAP:-main} dump line verdict=true
+    # warp_kill_buffer_and_reset_insert_mode, which every typed command starts with, leaves vicmd
+    # for viins.
+    [[ $km == vicmd ]] && km=viins
+    if [[ -z $_WARP_KEYMAP_DUMP_TMP_FILE || ! -f $_WARP_KEYMAP_DUMP_TMP_FILE ]]; then
+      _WARP_KEYMAP_DUMP_TMP_FILE="$(command -p mktemp 2>/dev/null)"
+      [[ -n $_WARP_KEYMAP_DUMP_TMP_FILE ]] || return 0
+    fi
+    builtin bindkey -M "$km" >| "$_WARP_KEYMAP_DUMP_TMP_FILE" 2>/dev/null || return 0
+    dump="$(<$_WARP_KEYMAP_DUMP_TMP_FILE)"
+    [[ -n $dump ]] || return 0
+    if [[ $dump == "$_warp_literal_dump_seen" ]]; then
+      __warp_typed_text_literal=$_warp_literal_dump_verdict
+      return 0
+    fi
+    for line in "${(@f)dump}"; do
+      # Fast path: one key led by a control byte (ESC and DEL included), not a range.
+      [[ $line == '"^'* && $line != *'"-"'* ]] && continue
+      [[ $line == '" "-"~" self-insert' ]] && continue
+      _warp_bindkey_line_literal "$line" || { verdict=false; break; }
+    done
+    _warp_literal_dump_seen=$dump
+    _warp_literal_dump_verdict=$verdict
+    __warp_typed_text_literal=$verdict
+    return 0
+  }
   _warp_emit_line_editor_marker() {
     [[ -n ${WARP_SESSION_ID:-} && ${PHOSPHOR_LINE_EDITOR_MARKERS:-1} != 0 ]] || return 0
     case ${CONTEXT:-} in
-      start) __warp_emit '\e]9278;f;{"hook": "LineEditorReading", "value": {"session_id": %s, "seq": %s}}\a' "$WARP_SESSION_ID" "${__warp_seq:-0}" ;;
+      start)
+        _warp_check_typed_text_literal
+        __warp_emit '\e]9278;f;{"hook": "LineEditorReading", "value": {"session_id": %s, "seq": %s, "typed_text_literal": %s}}\a' "$WARP_SESSION_ID" "${__warp_seq:-0}" "$__warp_typed_text_literal" ;;
       cont) __warp_emit '\e]9278;f;{"hook": "ContinuationPrompt", "value": {"session_id": %s, "seq": %s}}\a' "$WARP_SESSION_ID" "${__warp_seq:-0}" ;;
     esac
     return 0
