@@ -1194,6 +1194,41 @@ def g11_startup_shell_passes():
     assert pr.gitbash_toml() is None
 
 
+@check
+def g11_upgrade_fixture_pack_unpack_and_migration_count():
+    """#1546: the previous build's state packs and unpacks (home-relative, state dirs only), a hostile archive is refused, and applied migrations are counted"""
+    import cases_coverage_b as cb
+    import sqlite3
+    import tarfile
+    src, dst = tempfile.mkdtemp(), tempfile.mkdtemp()
+    os.makedirs(os.path.join(src, ".local/share/phosphor"))
+    db = os.path.join(src, ".local/share/phosphor/warp.sqlite")
+    con = sqlite3.connect(db)
+    con.execute("create table __diesel_schema_migrations (version text)")
+    con.executemany("insert into __diesel_schema_migrations values (?)", [("1",), ("2",), ("3",)])
+    con.commit()
+    con.close()
+    open(os.path.join(src, "not_state.txt"), "w").write("x")
+    tarf = os.path.join(tempfile.mkdtemp(), "f.tar.gz")
+    assert cb.pack_state(src, tarf) == 1
+    assert cb.unpack_state(tarf, dst) == 1 and not os.path.exists(os.path.join(dst, "not_state.txt"))
+    assert cb.db_migrations(os.path.join(dst, ".local/share/phosphor/warp.sqlite")) == 3
+    assert cb.db_migrations(os.path.join(dst, "missing.sqlite")) is None
+    evil = os.path.join(tempfile.mkdtemp(), "evil.tar")
+    with tarfile.open(evil, "w") as t:
+        ti = tarfile.TarInfo("../escape.txt")
+        ti.size = 0
+        t.addfile(ti)
+    try:
+        cb.unpack_state(evil, dst)
+        raise AssertionError("a ../ member must be refused")
+    except ValueError:
+        pass
+    reg = {c["name"]: c for c in cases.CASES}
+    assert "upgrade_over_previous" in reg and "upgrade_over_previous" not in cases.SMOKE
+    assert winmap.skip_reason("upgrade_over_previous", "gitbash") is None
+
+
 def main():
     failed = 0
     for f in CHECKS:

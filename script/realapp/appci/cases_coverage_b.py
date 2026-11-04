@@ -3,7 +3,7 @@
 # bytes the shell / agent received (rec.log, the app log's `hop=enter_begin` line), typing at 10-25 ms/key with an instant Enter, screenshot proof
 # per step, a case that cannot run SKIPS with the precise reason. Registered by the one import line at the end of cases.py. Every case is full tier.
 # What is NOT here, and why, is in docs/testing.md 2.14 (upgrade-over-previous install, uninstall, `phosphor://` end to end, a real signed update).
-import os, re, sys, time
+import os, re, sqlite3, sys, tarfile, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cases as C  # noqa: E402  (cases.py imports this module as its LAST lines, so everything below is already defined)
@@ -295,6 +295,165 @@ def c_state_relaunch(ctx, r):
     shrunk = [os.path.basename(k) for k in first if k in after and after[k] < first[k] // 2 and first[k] > 65536]
     r.check(not gone, "database file(s) disappeared across relaunches: %s" % gone)
     r.check(not shrunk, "database file(s) shrank to under half across relaunches: %s" % shrunk)
+
+
+# ---------------------------------------------------------------- #1546 upgrade over a previous build's data
+STATE_SUBDIRS = (".local/share", ".local/state", "Library/Application Support")      # where the app keeps warp.sqlite and its state (Linux, macOS); Windows: the known folders
+
+
+def pack_state(home, out):
+    """tar.gz of the previous build's state directories under `home` (home-relative names), the fixture of option (a). -> number of files packed"""
+    n = 0
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    with tarfile.open(out, "w:gz") as t:
+        for sub in STATE_SUBDIRS:
+            base = os.path.join(home, sub)
+            for root, _d, files in os.walk(base):
+                for f in files:
+                    fp = os.path.join(root, f)
+                    if os.path.islink(fp):
+                        continue
+                    t.add(fp, arcname=os.path.relpath(fp, home))
+                    n += 1
+    return n
+
+
+def unpack_state(tar_path, home):
+    """extract a fixture made by pack_state into `home`; refuses any member that is not a plain file/dir under one of STATE_SUBDIRS (no absolute path, no
+    `..`, no link): the archive is data, not trusted. -> number of files extracted"""
+    n = 0
+    with tarfile.open(tar_path, "r:*") as t:
+        for m in t.getmembers():
+            name = m.name.replace("\\", "/")
+            ok = (m.isfile() or m.isdir()) and not name.startswith("/") and ".." not in name.split("/") and any(name == sub or name.startswith(sub + "/") for sub in STATE_SUBDIRS)
+            if not ok:
+                raise ValueError("fixture member %r is outside the state directories or not a plain file" % m.name)
+            dest = os.path.join(home, *name.split("/"))
+            if m.isdir():
+                os.makedirs(dest, exist_ok=True)
+                continue
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with t.extractfile(m) as src, open(dest, "wb") as dst:
+                dst.write(src.read())
+            n += 1
+    return n
+
+
+def db_migrations(path):
+    """number of applied schema migrations in a SQLite file (diesel's `__diesel_schema_migrations`), opened read-only; None when it cannot be read"""
+    try:
+        con = sqlite3.connect("file:%s?mode=ro" % path.replace("\\", "/"), uri=True, timeout=2)
+        try:
+            return con.execute("select count(*) from __diesel_schema_migrations").fetchone()[0]
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return None
+
+
+def state_files(ctx):
+    """{path: size} of every SQLite file in the app's state directories (home-relative dirs on Linux/macOS, the known folders on Windows)"""
+    out = {}
+    roots = R.data_roots(ctx) if ctx.win else [os.path.join(ctx.prof.home, sub) for sub in STATE_SUBDIRS]
+    for base in roots:
+        for root, _d, files in os.walk(base):
+            for f in files:
+                if f.endswith((".sqlite", ".db", ".sqlite3")):
+                    fp = os.path.join(root, f)
+                    try:
+                        out[fp] = os.path.getsize(fp)
+                    except OSError:
+                        pass
+    return out
+
+
+def old_app_like(app, binary, bundle=None):
+    """an App handle of the same kind as `app` that launches the PREVIOUS build on the same profile (same run dir, home, ctl)"""
+    import app as appmod
+    if isinstance(app, appmod.WindowsApp):
+        return appmod.WindowsApp(app.run, app.home, binary, app.pane, app.ctl)
+    if isinstance(app, appmod.MacApp):
+        return appmod.MacApp(app.run, app.home, bundle, binary)
+    return appmod.App(app.run, app.home, binary, app.display)
+
+
+@case("upgrade_over_previous", modes=("terminal",), order=90, gui=True)
+def c_upgrade_over_previous(ctx, r):
+    """#1546 option (a): the NEW build starts on the data directory of the PREVIOUS release. The old data comes from one of (checked in this order):
+    APPCI_PREV_FIXTURE=<state tarball> (made by an earlier run of this case, kept as a CI artifact), or APPCI_PREV_BIN=<previous release binary> (Windows: its
+    exe; macOS also APPCI_PREV_BUNDLE=<its .app>), which is launched on the scratch profile, used (three exact lines), stopped, and its state packed to
+    <run>/fixtures/prev-state.tar.gz (not on Windows: the state is in the user's known folders). Then the new build is launched: it must reach a prompt, take
+    exact typing, log no panic / migration / database ERROR, keep every database file (not moved aside as warp.sqlite.corrupt-*, not shrunk to under half) and
+    not have FEWER applied migrations than the old build left (the count is a metric). Where CI gets the previous release's artifact is the owner's
+    decision: without either variable the case SKIPS with that reason."""
+    fixture, prev_bin, prev_bundle = (os.environ.get(k, "") for k in ("APPCI_PREV_FIXTURE", "APPCI_PREV_BIN", "APPCI_PREV_BUNDLE"))
+    if ctx.app is None or not hasattr(ctx.app, "stop"):
+        r.skip("sim backend: no app process")
+    if not (fixture or prev_bin):
+        r.skip("no previous-release data: set APPCI_PREV_FIXTURE (state tarball) or APPCI_PREV_BIN (previous release binary; macOS also APPCI_PREV_BUNDLE) -- where CI gets the previous release's artifact is the owner's decision (#1546)")
+    if fixture and not os.path.isfile(fixture):
+        r.skip("APPCI_PREV_FIXTURE=%s does not exist" % fixture)
+    if not fixture and not os.path.isfile(prev_bin):
+        r.skip("APPCI_PREV_BIN=%s does not exist" % prev_bin)
+    if not fixture and ctx.be.name == "mac" and not os.path.isdir(prev_bundle):
+        r.skip("macOS needs APPCI_PREV_BUNDLE=<the previous release's .app> next to APPCI_PREV_BIN")
+    new_app = ctx.app
+    mig_old = None
+    try:
+        ctx.snapshot_log()
+        new_app.stop()
+        if ctx.win:
+            new_app.prepare()                                  # the known-folder data of the new build's earlier cases goes; the harness backs both up (app_test.ps1)
+        else:
+            import shutil
+            for sub in STATE_SUBDIRS:
+                shutil.rmtree(os.path.join(ctx.prof.home, sub), ignore_errors=True)
+        if fixture:
+            r.metric("fixture_files", unpack_state(fixture, ctx.prof.home))
+        else:
+            ctx.app = old_app_like(new_app, prev_bin, prev_bundle)
+            _n, up = R.start_app(ctx, r, "uo_old", restored_min=1)
+            if not up:
+                return
+            ctx.be.key("Escape")
+            U.exact_burst(ctx, r, "uo_old", 3)
+            time.sleep(4.0)                                    # the database writer and the session writer run at least once
+            ctx.app.stop()
+            ctx.app = new_app
+            if not ctx.win:
+                out = os.path.join(ctx.run, "fixtures", "prev-state.tar.gz")
+                r.metric("fixture_packed_files", pack_state(ctx.prof.home, out))
+                r.note("the previous build's state is packed in %s (keep it as a CI artifact for APPCI_PREV_FIXTURE)" % out)
+        before = state_files(ctx)
+        mig_old = {k: db_migrations(k) for k in before}
+        r.metric("prev_db_files", {os.path.basename(k): v for k, v in before.items()})
+        r.check(bool(before), "the previous build left no SQLite file in %s: nothing to upgrade" % ("the known folders" if ctx.win else "the state directories"))
+        n_new, up = R.start_app(ctx, r, "uo_new", restored_min=1)
+        r.check(up, "the new build did not reach a shell on the previous build's data")
+        if not up:
+            return
+        time.sleep(2)
+        ctx.be.key("Escape")
+        ctx.shot("uo_new_started")
+        U.exact_burst(ctx, r, "uo_new", 4)
+        probs = startup_log_problems(open(ctx.log_path, errors="replace").read() if ctx.log_path and os.path.exists(ctx.log_path) else "")
+        r.check(not probs, "the app log shows a failed start / migration on the previous build's data: %s" % probs[:2])
+        after = state_files(ctx)
+        gone = [os.path.basename(k) for k in before if k not in after]
+        aside = [os.path.basename(k) for k in after if ".corrupt-" in k]
+        shrunk = [os.path.basename(k) for k in before if k in after and after[k] < before[k] // 2 and before[k] > 65536]
+        r.check(not gone, "database file(s) of the previous build vanished: %s" % gone)
+        r.check(not aside, "the previous build's database was moved aside as corrupt: %s" % aside)
+        r.check(not shrunk, "database file(s) shrank to under half: %s" % shrunk)
+        mig_new = {k: db_migrations(k) for k in after}
+        r.metric("migrations_before_after", {os.path.basename(k): [mig_old.get(k), mig_new.get(k)] for k in after})
+        worse = [os.path.basename(k) for k in after if mig_old.get(k) is not None and mig_new.get(k) is not None and mig_new[k] < mig_old[k]]
+        r.check(not worse, "fewer applied migrations after the new build ran than the old build left: %s" % worse)
+        r.check(ctx.app.alive(), "the new build died on the previous build's data")
+    finally:
+        ctx.app = new_app
+        if not new_app.alive():
+            R.start_app(ctx, r, "uo_end", restored_min=1)
 
 
 # ---------------------------------------------------------------- #1547 auto-update
