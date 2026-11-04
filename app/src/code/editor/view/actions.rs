@@ -404,21 +404,26 @@ pub fn init(app: &mut AppContext) {
         .with_context_predicate(text_entry.clone())
         .with_key_binding("cmdorctrl-down"),
         // #1634: ctrl-home / ctrl-end move to the document start / end on Linux and Windows, as
-        // in the input editor (`editor_view:cmd_up` / `cmd_down`) and VSCode. macOS keeps
-        // cmd-up / cmd-down above.
+        // in the input editor and VSCode. These share the input editor's binding names,
+        // descriptions and per-platform keys (`editor_view:cmd_up` / `cmd_down`,
+        // editor/view/mod.rs), so the keybindings page shows one row per pair (it merges equal
+        // name + description) and a rebinding applies to both editors. On macOS that adds
+        // cmd-up / cmd-down for the same actions they already run here (cmdorctrl-up / -down).
         EditableBinding::new(
-            "editor_view:ctrl_home_to_buffer_start",
-            crate::t!("keybinding-desc-editor-cursor-at-buffer-start"),
+            "editor_view:cmd_up",
+            crate::t!("keybinding-desc-editor-cmd-up"),
             CodeEditorViewAction::CursorAtBufferStart,
         )
         .with_context_predicate(text_entry.clone())
+        .with_mac_key_binding("cmd-up")
         .with_linux_or_windows_key_binding("ctrl-home"),
         EditableBinding::new(
-            "editor_view:ctrl_end_to_buffer_end",
-            crate::t!("keybinding-desc-editor-cursor-at-buffer-end"),
+            "editor_view:cmd_down",
+            crate::t!("keybinding-desc-editor-cmd-down"),
             CodeEditorViewAction::CursorAtBufferEnd,
         )
         .with_context_predicate(text_entry.clone())
+        .with_mac_key_binding("cmd-down")
         .with_linux_or_windows_key_binding("ctrl-end"),
     ]);
 

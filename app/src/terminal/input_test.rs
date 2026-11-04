@@ -15040,6 +15040,74 @@ fn test_shared_queue_display_map_gate_replays_cursor_keys_in_order() {
     });
 }
 
+/// #1631 on the pane's shared queue (the production `EditorDisplayMap` gate path): a closing quote
+/// typed while a paste is read overtypes the auto-inserted closer AFTER the pasted text, as if it
+/// had been typed once the paste landed. Replayed in the paste's own update it read the pre-paste
+/// display map and the rest of the line landed inside the pasted text.
+#[test]
+fn test_shared_queue_closing_quote_typed_during_a_paste_overtypes_after_it() {
+    use warpui::clipboard::{BackgroundTextRead, BackgroundTextReader};
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        let editor = input.read(&app, |input, _| input.editor().clone());
+        let gate_path = editor.read(&app, |editor, _| editor.paste_hold().display_gate_enabled());
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+        });
+        // The opening quote auto-pairs: `'|'`.
+        editor.update(&mut app, |editor, ctx| editor.user_insert("'", ctx));
+        input.read(&app, |input, ctx| assert_eq!(input.buffer_text(ctx), "''"));
+
+        let (release, parked) = std::sync::mpsc::channel::<()>();
+        let reader: BackgroundTextReader = Box::new(move || {
+            let _ = parked.recv_timeout(Duration::from_secs(20));
+            BackgroundTextRead::Content(ClipboardContent::plain_text("PASTE".to_string()))
+        });
+        input.update(&mut app, |input, ctx| {
+            input.start_background_paste(reader, ctx)
+        });
+        editor.update(&mut app, |editor, ctx| {
+            editor.handle_action(&EditorAction::UserInsert(UserInput::new("'")), ctx);
+            editor.handle_action(&EditorAction::UserInsert(UserInput::new("x")), ctx);
+        });
+        input.read(&app, |input, ctx| assert_eq!(input.buffer_text(ctx), "''"));
+
+        release.send(()).unwrap();
+        for _ in 0..1000 {
+            let pending = editor.read(&app, |editor, _| editor.paste_hold().has_pending());
+            if !pending {
+                break;
+            }
+            warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+        }
+        for _ in 0..1000 {
+            let idle = editor.read(&app, |editor, _| {
+                let hold = editor.paste_hold();
+                hold.queue().peek().is_idle() && !hold.replay_pending()
+            });
+            if idle {
+                break;
+            }
+            warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+        }
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                "'PASTE'x",
+                "the closing quote overtypes after the paste (gate path: {gate_path})"
+            );
+        });
+        editor.read(&app, |editor, _| {
+            let hold = editor.paste_hold();
+            assert!(!hold.replay_pending());
+            assert!(hold.queue().peek().is_idle());
+        });
+    });
+}
+
 // ---- #1558: a deferred Enter the shell cannot take yet is held, never dropped --------------------
 
 // The held line of the #1558 / #1571 tests is NOT an ssh command: `ssh ...` opens the ssh connect
