@@ -1,0 +1,7 @@
+flowchart LR
+  ent App] --> Gateway[API Gateway]
+       subgraph Backend
+      Client[Client App] --> Gateway[API Gateway]
+       subgraph Backend
+        Auth
+nd

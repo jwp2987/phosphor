@@ -195,7 +195,7 @@ lazy_static = "1.4.0"
 libc = "0.2.81"
 line-ending = "1.4.0"
 log = { version = "0.4", features = ["serde", "std"] }
-mermaid_to_svg = { git = "https://gitlab.com/winters-phosphor/mermaid-to-svg.git", rev = "02c13c28bf0c751ee9d54b1f5e8877ba51a5f135" }
+mermaid_to_svg = { git = "https://gitlab.com/winters-phosphor/mermaid-to-svg.git", rev = "68cd096e01daffff547ca06340063f0cc004124e" }
 mime_guess = "2.0"
 minimp4 = "0.1.2"
 nix = { version = "0.26.4", default-features = false, features = ["signal"] }

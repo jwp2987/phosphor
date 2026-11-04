@@ -3682,7 +3682,7 @@ checksum = "5614204febbc33cc07a2806aa6440b904ac012b68eecc37f4493ea4a76455a3d"
 [[package]]
 name = "dagre_rust"
 version = "0.0.5"
-source = "git+https://gitlab.com/winters-phosphor/mermaid-to-svg.git?rev=02c13c28bf0c751ee9d54b1f5e8877ba51a5f135#02c13c28bf0c751ee9d54b1f5e8877ba51a5f135"
+source = "git+https://gitlab.com/winters-phosphor/mermaid-to-svg.git?rev=68cd096e01daffff547ca06340063f0cc004124e#68cd096e01daffff547ca06340063f0cc004124e"
 dependencies = [
  "graphlib_rust",
  "ordered_hashmap",
@@ -8052,7 +8052,7 @@ dependencies = [
 [[package]]
 name = "mermaid_to_svg"
 version = "0.1.0"
-source = "git+https://gitlab.com/winters-phosphor/mermaid-to-svg.git?rev=02c13c28bf0c751ee9d54b1f5e8877ba51a5f135#02c13c28bf0c751ee9d54b1f5e8877ba51a5f135"
+source = "git+https://gitlab.com/winters-phosphor/mermaid-to-svg.git?rev=68cd096e01daffff547ca06340063f0cc004124e#68cd096e01daffff547ca06340063f0cc004124e"
 dependencies = [
  "dagre_rust",
  "graphlib_rust",
