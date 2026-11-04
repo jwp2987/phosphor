@@ -219,6 +219,8 @@ features = [
 ]
 
 [target.'cfg(target_os = "windows")'.dependencies]
+# Phosphor #1629/#1632: diagnostics that reach Phosphor's log file (`tracing` is muted there).
+log = "0.4"
 unicode-segmentation = "1.7.1"
 windows-version = "0.1.1"
 

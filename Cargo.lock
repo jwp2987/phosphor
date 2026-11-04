@@ -16950,6 +16950,7 @@ dependencies = [
  "dpi",
  "js-sys",
  "libc",
+ "log",
  "memmap2",
  "ndk",
  "objc2 0.5.3",

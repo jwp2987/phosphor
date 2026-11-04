@@ -2,11 +2,14 @@ use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::os::windows::ffi::OsStringExt;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Mutex, MutexGuard, TryLockError};
+use std::time::Instant;
 
 use crate::utils::Lazy;
 use smol_str::SmolStr;
 use windows_sys::Win32::System::SystemServices::{LANG_JAPANESE, LANG_KOREAN};
+use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, GetKeyboardLayout, MapVirtualKeyExW, ToUnicodeEx, MAPVK_VK_TO_VSC_EX, VIRTUAL_KEY,
     VK_ACCEPT, VK_ADD, VK_APPS, VK_ATTN, VK_BACK, VK_BROWSER_BACK, VK_BROWSER_FAVORITES,
@@ -47,6 +50,75 @@ use crate::platform_impl::{loword, primarylangid, scancode_to_physicalkey};
 
 pub(crate) static LAYOUT_CACHE: Lazy<Mutex<LayoutCache>> =
     Lazy::new(|| Mutex::new(LayoutCache::default()));
+
+// Phosphor #1629 diagnostics. Switching the window's keyboard layout (WM_INPUTLANGCHANGEREQUEST
+// to German) hung the app within 0.5 s; the cause could not be pinned by reading the code. These
+// helpers log to the `log` crate (Phosphor's log file; `tracing` is muted there by a
+// `NoSubscriber`) so the next run shows where the UI thread stops.
+
+/// How many window-procedure calls are logged (enter/exit) after a layout change starts.
+const LAYOUT_TRACE_MESSAGES: u32 = 256;
+static LAYOUT_TRACE_BUDGET: AtomicU32 = AtomicU32::new(0);
+
+pub(crate) fn current_thread_id() -> u32 {
+    unsafe { GetCurrentThreadId() }
+}
+
+/// Starts (or restarts) the per-message trace that follows a keyboard-layout change.
+pub(crate) fn layout_trace_start(reason: &str) {
+    LAYOUT_TRACE_BUDGET.store(LAYOUT_TRACE_MESSAGES, Ordering::Relaxed);
+    log::info!(
+        "winit layout trace (#1629): {reason} on thread {}; logging the next \
+         {LAYOUT_TRACE_MESSAGES} window-procedure calls",
+        current_thread_id()
+    );
+}
+
+/// True while the trace is running; does not use up the budget.
+pub(crate) fn layout_trace_active() -> bool {
+    LAYOUT_TRACE_BUDGET.load(Ordering::Relaxed) > 0
+}
+
+/// Uses up one traced message; false (and nothing logged) when the trace is not running.
+pub(crate) fn layout_trace_take() -> bool {
+    LAYOUT_TRACE_BUDGET
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
+        .is_ok()
+}
+
+/// Locks `LAYOUT_CACHE`, logging when the lock is already held (with the thread id, so a
+/// same-thread re-entry, which never returns, is visible in the log as the last line).
+pub(crate) fn lock_layout_cache(site: &'static str) -> MutexGuard<'static, LayoutCache> {
+    match LAYOUT_CACHE.try_lock() {
+        Ok(guard) => {
+            if layout_trace_active() {
+                log::info!(
+                    "winit layout trace (#1629): LAYOUT_CACHE taken at {site} on thread {}",
+                    current_thread_id()
+                );
+            }
+            guard
+        },
+        Err(TryLockError::WouldBlock) => {
+            let started = Instant::now();
+            log::warn!(
+                "winit layout (#1629): LAYOUT_CACHE is held elsewhere; {site} on thread {} waits",
+                current_thread_id()
+            );
+            let guard = LAYOUT_CACHE.lock().unwrap();
+            log::warn!(
+                "winit layout (#1629): LAYOUT_CACHE taken at {site} on thread {} after {:.1} ms",
+                current_thread_id(),
+                started.elapsed().as_secs_f64() * 1000.0
+            );
+            guard
+        },
+        Err(TryLockError::Poisoned(_)) => {
+            log::error!("winit layout (#1629): LAYOUT_CACHE is poisoned (at {site})");
+            LAYOUT_CACHE.lock().unwrap()
+        },
+    }
+}
 
 fn key_pressed(vkey: VIRTUAL_KEY) -> bool {
     unsafe { (GetKeyState(vkey as i32) & (1 << 15)) == (1 << 15) }
@@ -266,7 +338,20 @@ impl LayoutCache {
         match self.layouts.entry(locale_id) {
             Entry::Occupied(entry) => (locale_id, entry.into_mut()),
             Entry::Vacant(entry) => {
+                // Phosphor #1629: a new layout is built once per HKL (thousands of
+                // `ToUnicodeEx` calls); log it so a hang in it shows.
+                let started = Instant::now();
+                log::info!(
+                    "winit layout (#1629): preparing keyboard layout {locale_id:#x} on thread {}",
+                    current_thread_id()
+                );
                 let layout = Self::prepare_layout(locale_id);
+                log::info!(
+                    "winit layout (#1629): prepared keyboard layout {locale_id:#x} in {:.1} ms \
+                     (AltGr: {})",
+                    started.elapsed().as_secs_f64() * 1000.0,
+                    layout.has_alt_graph
+                );
                 (locale_id, entry.insert(layout))
             },
         }

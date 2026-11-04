@@ -53,14 +53,15 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WMSZ_BOTTOM, WMSZ_BOTTOMLEFT, WMSZ_BOTTOMRIGHT, WMSZ_LEFT, WMSZ_RIGHT, WMSZ_TOP, WMSZ_TOPLEFT,
     WMSZ_TOPRIGHT, WM_CAPTURECHANGED, WM_CLOSE, WM_CREATE, WM_DESTROY, WM_DPICHANGED,
     WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_GETMINMAXINFO, WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION,
-    WM_IME_SETCONTEXT, WM_IME_STARTCOMPOSITION, WM_INPUT, WM_INPUT_DEVICE_CHANGE, WM_KEYDOWN,
-    WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
-    WM_MENUCHAR, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCACTIVATE, WM_NCCALCSIZE,
-    WM_NCCREATE, WM_NCDESTROY, WM_NCLBUTTONDOWN, WM_PAINT, WM_POINTERDOWN, WM_POINTERUP,
-    WM_POINTERUPDATE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SETTINGCHANGE,
-    WM_SIZE, WM_SIZING, WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TOUCH, WM_WINDOWPOSCHANGED,
-    WM_WINDOWPOSCHANGING, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW, WS_EX_LAYERED,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_OVERLAPPED, WS_POPUP, WS_VISIBLE,
+    WM_IME_SETCONTEXT, WM_IME_STARTCOMPOSITION, WM_INPUT, WM_INPUTLANGCHANGE,
+    WM_INPUTLANGCHANGEREQUEST, WM_INPUT_DEVICE_CHANGE, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MENUCHAR, WM_MOUSEHWHEEL,
+    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCCREATE, WM_NCDESTROY,
+    WM_NCLBUTTONDOWN, WM_PAINT, WM_POINTERDOWN, WM_POINTERUP, WM_POINTERUPDATE, WM_RBUTTONDOWN,
+    WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SETTINGCHANGE, WM_SIZE, WM_SIZING, WM_SYSCOMMAND,
+    WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TOUCH, WM_WINDOWPOSCHANGED, WM_WINDOWPOSCHANGING,
+    WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_EX_TRANSPARENT, WS_OVERLAPPED, WS_POPUP, WS_VISIBLE,
 };
 
 use crate::dpi::{PhysicalPosition, PhysicalSize};
@@ -77,7 +78,9 @@ use crate::platform_impl::platform::drop_handler::FileDropHandler;
 use crate::platform_impl::platform::icon::WinCursor;
 use crate::platform_impl::platform::ime::ImeContext;
 use crate::platform_impl::platform::keyboard::KeyEventBuilder;
-use crate::platform_impl::platform::keyboard_layout::LAYOUT_CACHE;
+use crate::platform_impl::platform::keyboard_layout::{
+    current_thread_id, layout_trace_start, layout_trace_take, lock_layout_cache,
+};
 use crate::platform_impl::platform::monitor::{self, MonitorHandle};
 use crate::platform_impl::platform::window::InitData;
 use crate::platform_impl::platform::window_state::{
@@ -747,6 +750,17 @@ fn wait_for_messages_impl(
         let (num_handles, raw_handles) =
             if use_timer { (1, [high_resolution_timer.unwrap()]) } else { (0, [ptr::null_mut()]) };
 
+        // Phosphor #1629: while a keyboard-layout change is being traced, log the event loop's
+        // waits too, so a UI thread parked here (not in a window procedure) is visible. Each
+        // logged wait uses up one traced message, so the trace always ends.
+        let traced = layout_trace_take();
+        if traced {
+            log::info!(
+                "winit layout trace (#1629): MsgWaitForMultipleObjectsEx enter ({wait_duration_ms} \
+                 ms) thread {}",
+                current_thread_id()
+            );
+        }
         // We must use `QS_ALLINPUT` to wake on accessibility messages.
         let result = MsgWaitForMultipleObjectsEx(
             num_handles,
@@ -755,6 +769,9 @@ fn wait_for_messages_impl(
             QS_ALLINPUT,
             MWMO_INPUTAVAILABLE,
         );
+        if traced {
+            log::info!("winit layout trace (#1629): MsgWaitForMultipleObjectsEx -> {result}");
+        }
         if result == WAIT_FAILED {
             // Well, nothing smart to do in such case.
             // Treat it as spurious wake up.
@@ -1004,7 +1021,7 @@ fn update_modifiers(window: HWND, userdata: &WindowData) {
     use crate::event::WindowEvent::ModifiersChanged;
 
     let modifiers = {
-        let mut layouts = LAYOUT_CACHE.lock().unwrap();
+        let mut layouts = lock_layout_cache("update_modifiers");
         layouts.get_agnostic_mods()
     };
 
@@ -1092,12 +1109,40 @@ pub(super) unsafe extern "system" fn public_window_callback(
         _ => userdata as *mut WindowData,
     };
 
+    // Phosphor #1629: a keyboard-layout change starts a short enter/exit trace of the window
+    // procedure, so the log shows the message (if any) the UI thread never returns from.
+    if msg == WM_INPUTLANGCHANGEREQUEST || msg == WM_INPUTLANGCHANGE {
+        layout_trace_start(if msg == WM_INPUTLANGCHANGEREQUEST {
+            "WM_INPUTLANGCHANGEREQUEST"
+        } else {
+            "WM_INPUTLANGCHANGE"
+        });
+    }
+    let traced = layout_trace_take();
+
     let (result, userdata_removed, recurse_depth) = {
         let userdata = unsafe { &*(userdata_ptr) };
 
         userdata.recurse_depth.set(userdata.recurse_depth.get() + 1);
 
+        if traced {
+            log::info!(
+                "winit layout trace (#1629): enter hwnd {:#x} msg {msg:#06x} wparam {wparam:#x} \
+                 lparam {lparam:#x} depth {} thread {}",
+                window as isize,
+                userdata.recurse_depth.get(),
+                current_thread_id()
+            );
+        }
+
         let result = unsafe { public_window_callback_inner(window, msg, wparam, lparam, userdata) };
+
+        if traced {
+            log::info!(
+                "winit layout trace (#1629): exit hwnd {:#x} msg {msg:#06x} -> {result:#x}",
+                window as isize
+            );
+        }
 
         let userdata_removed = userdata.userdata_removed.get();
         let recurse_depth = userdata.recurse_depth.get() - 1;
@@ -1615,6 +1660,35 @@ unsafe fn public_window_callback_inner(
             // IME UI visibility flags are in lparam.
             let lparam = lparam & !(ISC_SHOWUICOMPOSITIONWINDOW as isize);
             result = ProcResult::Value(unsafe { DefWindowProcW(window, msg, wparam, lparam) });
+        },
+
+        // Phosphor #1629: logged so a hang inside the layout switch (`DefWindowProc` activates
+        // the requested layout and sends WM_INPUTLANGCHANGE from inside this call) is visible.
+        WM_INPUTLANGCHANGEREQUEST => {
+            log::info!(
+                "winit layout (#1629): WM_INPUTLANGCHANGEREQUEST hkl {lparam:#x} flags {wparam:#x} \
+                 thread {}: DefWindowProc",
+                current_thread_id()
+            );
+            result = ProcResult::Value(unsafe { DefWindowProcW(window, msg, wparam, lparam) });
+            log::info!("winit layout (#1629): WM_INPUTLANGCHANGEREQUEST done");
+        },
+
+        // Phosphor #1629: port of rust-windowing/winit fb78ecb ("windows: fix freeze on keyboard
+        // layout switch"): refresh the cached layout for the newly activated input language here,
+        // then defer to `DefWindowProc` so the message still reaches first-level child windows.
+        WM_INPUTLANGCHANGE => {
+            log::info!(
+                "winit layout (#1629): WM_INPUTLANGCHANGE hkl {lparam:#x} charset {wparam} thread \
+                 {}: refreshing the layout cache",
+                current_thread_id()
+            );
+            {
+                let mut layouts = lock_layout_cache("WM_INPUTLANGCHANGE");
+                layouts.get_current_layout();
+            }
+            result = ProcResult::Value(unsafe { DefWindowProcW(window, msg, wparam, lparam) });
+            log::info!("winit layout (#1629): WM_INPUTLANGCHANGE done");
         },
 
         // this is necessary for us to maintain minimize/restore state
