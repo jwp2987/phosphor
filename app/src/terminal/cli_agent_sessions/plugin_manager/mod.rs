@@ -10,10 +10,11 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::PathBuf;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use parking_lot::Mutex;
+use warpui::r#async::Timer;
 
 use crate::features::FeatureFlag;
 use crate::terminal::CLIAgent;
@@ -191,6 +192,136 @@ impl ConfigFileCheckCache {
         let value = compute();
         *last = Some((stamps, value));
         value
+    }
+}
+
+/// Runs the agent CLIs (and `git`) for the plugin managers. The shell-backed
+/// [`ShellCommandRunner`] is what the app uses; tests substitute a scripted one
+/// so `install()` / `update()` can be driven without running any CLI.
+#[async_trait]
+pub(crate) trait PluginCommandRunner: Send + Sync {
+    /// Runs `cli_name args...`, appending the command and its output to `log`.
+    async fn run(
+        &self,
+        cli_name: &str,
+        args: &[&str],
+        log: &mut String,
+    ) -> Result<(), PluginInstallError>;
+}
+
+/// Runs plugin commands through the session's login shell, with the session's
+/// `PATH` when one was captured (nvm-installed CLIs are only on it there).
+pub(crate) struct ShellCommandRunner {
+    executor: LocalCommandExecutor,
+    path_env_var: Option<String>,
+}
+
+impl ShellCommandRunner {
+    pub(crate) fn new(
+        shell_path: Option<PathBuf>,
+        shell_type: Option<ShellType>,
+        path_env_var: Option<String>,
+    ) -> Self {
+        let shell_type = shell_type.unwrap_or(ShellType::Bash);
+        Self {
+            executor: LocalCommandExecutor::new(shell_path, shell_type),
+            path_env_var,
+        }
+    }
+}
+
+#[async_trait]
+impl PluginCommandRunner for ShellCommandRunner {
+    async fn run(
+        &self,
+        cli_name: &str,
+        args: &[&str],
+        log: &mut String,
+    ) -> Result<(), PluginInstallError> {
+        let env_vars = self
+            .path_env_var
+            .as_deref()
+            .map(|path| HashMap::from([("PATH".to_owned(), path.to_owned())]));
+        run_cli_command_logged(cli_name, args, &self.executor, env_vars, log).await
+    }
+}
+
+/// How long the pre-flight reachability check may take before the move is
+/// abandoned. `git`'s own low-speed limit (below) ends a stalled transfer;
+/// this also bounds a connect that never answers.
+const SOURCE_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Pre-flight for a source move: whether Phosphor's repository at `url`
+/// answers `git ls-remote` from this machine, through the same runner (and so
+/// the same shell and `PATH`) the move itself would use.
+///
+/// Every move removes or rewrites a working install before fetching the new
+/// one, and the background launch paths run it unattended, so a blocked or
+/// offline gitlab.com must stop it before anything changes: on `false` the
+/// caller leaves the current (Warp-sourced) install exactly as it is. The
+/// agents' own fetch also needs `git`, so a missing `git` correctly fails here
+/// too.
+pub(crate) async fn plugin_source_reachable(
+    runner: &dyn PluginCommandRunner,
+    url: &str,
+    log: &mut String,
+) -> bool {
+    log.push_str(&format!(
+        "Pre-flight: checking that {url} is reachable before changing anything\n"
+    ));
+    let outcome = {
+        let check = async {
+            Some(
+                runner
+                    .run(
+                        "git",
+                        &[
+                            "-c",
+                            "credential.interactive=never",
+                            "-c",
+                            "http.lowSpeedLimit=1",
+                            "-c",
+                            "http.lowSpeedTime=15",
+                            "ls-remote",
+                            "--exit-code",
+                            url,
+                            "HEAD",
+                        ],
+                        log,
+                    )
+                    .await,
+            )
+        };
+        let timeout = async {
+            Timer::after(SOURCE_PREFLIGHT_TIMEOUT).await;
+            None
+        };
+        futures_lite::future::or(check, timeout).await
+    };
+    match outcome {
+        Some(Ok(())) => true,
+        Some(Err(_)) => {
+            log.push_str(&format!(
+                "Pre-flight failed: {url} is not reachable; the current install was left as it is\n"
+            ));
+            false
+        }
+        None => {
+            log.push_str(&format!(
+                "Pre-flight timed out after {}s reaching {url}; the current install was left as it is\n",
+                SOURCE_PREFLIGHT_TIMEOUT.as_secs()
+            ));
+            false
+        }
+    }
+}
+
+/// The error a manager returns when the pre-flight fails.
+pub(crate) fn source_unreachable_error(log: String) -> PluginInstallError {
+    PluginInstallError {
+        message: "Phosphor's plugin source is unreachable; the installed plugin was left as it is"
+            .to_owned(),
+        log,
     }
 }
 
@@ -373,7 +504,11 @@ pub(crate) fn plugin_manager_for_with_shell(
             if FeatureFlag::OpenCodeNotifications.is_enabled()
                 && FeatureFlag::HOANotifications.is_enabled() =>
         {
-            Some(Box::new(OpenCodePluginManager))
+            Some(Box::new(OpenCodePluginManager::new(
+                shell_path,
+                shell_type,
+                path_env_var,
+            )))
         }
         CLIAgent::Codex
             if FeatureFlag::CodexNotifications.is_enabled()

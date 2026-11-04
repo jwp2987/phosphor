@@ -2,14 +2,16 @@ use std::env;
 use std::fs;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 use async_trait::async_trait;
 
 use super::{
-    CliAgentPluginManager, ConfigFileCheckCache, PluginInstallError, PluginInstructionStep,
-    PluginInstructions, is_warp_plugin_source,
+    CliAgentPluginManager, ConfigFileCheckCache, PluginCommandRunner, PluginInstallError,
+    PluginInstructionStep, PluginInstructions, ShellCommandRunner, is_warp_plugin_source,
+    plugin_source_reachable, source_unreachable_error,
 };
+use crate::terminal::shell::ShellType;
 
 /// The `plugin` entry for Phosphor's GitLab copy of the plugin (full-history
 /// mirror of `warpdotdev/opencode-warp`, MIT notices kept), pinned to a release
@@ -33,6 +35,8 @@ pub(crate) const PLUGIN_SPEC: &str =
 const WARP_NPM_PACKAGE: &str = "@warp-dot-dev/opencode-warp";
 /// The repository name, shared by Warp's and Phosphor's copies.
 const REPO_NAME: &str = "opencode-warp";
+/// What the pre-flight asks `git ls-remote`: the spec without `git+` and ref.
+const PREFLIGHT_URL: &str = "https://gitlab.com/winters-phosphor/opencode-warp.git";
 /// Phosphor's repository path on gitlab.com.
 const PHOSPHOR_REPO_PATH: &str = "winters-phosphor/opencode-warp";
 /// The global config files OpenCode reads, in its own order
@@ -47,7 +51,27 @@ const MINIMUM_PLUGIN_VERSION: &str = "0.1.5";
 
 static SOURCE_MIGRATION_CHECK: ConfigFileCheckCache = ConfigFileCheckCache::new();
 
-pub(super) struct OpenCodePluginManager;
+pub(super) struct OpenCodePluginManager {
+    runner: Arc<dyn PluginCommandRunner>,
+}
+
+impl OpenCodePluginManager {
+    pub(super) fn new(
+        shell_path: Option<PathBuf>,
+        shell_type: Option<ShellType>,
+        path_env_var: Option<String>,
+    ) -> Self {
+        Self::with_runner(Arc::new(ShellCommandRunner::new(
+            shell_path,
+            shell_type,
+            path_env_var,
+        )))
+    }
+
+    pub(super) fn with_runner(runner: Arc<dyn PluginCommandRunner>) -> Self {
+        Self { runner }
+    }
+}
 
 #[async_trait]
 impl CliAgentPluginManager for OpenCodePluginManager {
@@ -91,8 +115,15 @@ impl CliAgentPluginManager for OpenCodePluginManager {
     /// [`PLUGIN_SPEC`], in place: only that string literal changes, so the
     /// user's other plugins, options, comments and formatting stay as they
     /// were. A local `file://` or path entry is never touched.
+    ///
+    /// Only once Phosphor's repository answers the pre-flight: OpenCode
+    /// fetches the new entry on its next start, and with gitlab.com blocked
+    /// the plugin would stop loading where Warp's cached package still works.
     async fn update(&self) -> Result<(), PluginInstallError> {
         let mut log = String::new();
+        if !plugin_source_reachable(&*self.runner, PREFLIGHT_URL, &mut log).await {
+            return Err(source_unreachable_error(log));
+        }
         let mut changed = false;
         for path in global_config_files() {
             let Ok(text) = fs::read_to_string(&path) else {

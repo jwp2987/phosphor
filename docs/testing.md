@@ -79,7 +79,11 @@ Hard rules:
   `extraKnownMarketplaces` and `plugins/known_marketplaces.json`, Codex `[marketplaces.codex-warp]` in `config.toml`, Gemini
   `.gemini-extension-install.json`, OpenCode `opencode.json(c)` `plugin` arrays with comments, tuples and other plugins,
   rewritten byte-for-byte except the one entry), local-path overrides never reported, and `is_warp_plugin_source` over every spelling
-  the CLIs record. Pure file fixtures in temp dirs; no agent CLI is run.
+  the CLIs record (and the mirror/`file://` look-alikes it must reject). `install()` / `update()` are driven through
+  `FakeRunner` (`plugin_manager/mod_tests.rs`, a scripted `PluginCommandRunner` that records each command line, fails
+  chosen prefixes and applies a command's on-disk effect via a hook): pre-flight failure changes nothing, a failed
+  add/install restores the previous source, success moves it, and a move is attempted once per process. Pure file
+  fixtures in temp dirs; no agent CLI or `git` is run.
   `script/agent-cargo <name> nextest run -p warp --features gui plugin_manager`.
 - **warp_tui tests need the warp package in the same invocation** (feature unification of `test-util`):
 

@@ -1,32 +1,38 @@
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 
 use super::{
     OpenCodePluginManager, PLUGIN_SPEC, PluginEntryKind, classify_plugin_entry,
     migrate_plugin_entries, plugin_array_elements,
 };
 use crate::terminal::cli_agent_sessions::plugin_manager::CliAgentPluginManager;
+use crate::terminal::cli_agent_sessions::plugin_manager::tests::{FakeRunner, preflight_command};
+
+fn manager() -> OpenCodePluginManager {
+    OpenCodePluginManager::new(None, None, None)
+}
 
 #[test]
 fn can_auto_install_is_false() {
-    assert!(!OpenCodePluginManager.can_auto_install());
+    assert!(!manager().can_auto_install());
 }
 
 #[test]
 fn can_auto_update_is_true() {
-    assert!(OpenCodePluginManager.can_auto_update());
+    assert!(manager().can_auto_update());
 }
 
 #[test]
 fn install_instructions_has_steps() {
-    let instructions = OpenCodePluginManager.install_instructions();
+    let instructions = manager().install_instructions();
     assert!(!instructions.steps.is_empty());
     assert!(!instructions.title.is_empty());
 }
 
 #[test]
 fn update_instructions_has_steps() {
-    let instructions = OpenCodePluginManager.update_instructions();
+    let instructions = manager().update_instructions();
     assert!(!instructions.steps.is_empty());
     assert!(!instructions.title.is_empty());
 }
@@ -47,14 +53,8 @@ fn plugin_spec_is_a_git_spec_for_the_gitlab_tag() {
 #[test]
 fn instructions_name_the_gitlab_spec() {
     let expected = format!("\"plugin\": [\"{PLUGIN_SPEC}\"]");
-    assert_eq!(
-        OpenCodePluginManager.install_instructions().steps[1].command,
-        expected
-    );
-    assert_eq!(
-        OpenCodePluginManager.update_instructions().steps[1].command,
-        expected
-    );
+    assert_eq!(manager().install_instructions().steps[1].command, expected);
+    assert_eq!(manager().update_instructions().steps[1].command, expected);
 }
 
 #[test]
@@ -204,25 +204,31 @@ fn unreadable_config_is_left_alone() {
     assert!(plugin_array_elements("[]").is_none());
 }
 
+fn manager_with(runner: &Arc<FakeRunner>) -> OpenCodePluginManager {
+    OpenCodePluginManager::with_runner(runner.clone())
+}
+
 #[test]
 #[serial_test::serial]
 fn update_rewrites_the_global_config_in_place() {
     let dir = tempfile::tempdir().unwrap();
     let text = "{\n  \"plugin\": [\"other\", \"@warp-dot-dev/opencode-warp@0.1.5\"]\n}\n";
     write_config(dir.path(), "opencode.jsonc", text);
+    let runner = Arc::new(FakeRunner::new());
+    let manager = manager_with(&runner);
 
     // TODO: Audit that the environment access only happens in single-threaded code.
     unsafe { std::env::set_var("OPENCODE_CONFIG_DIR", dir.path()) };
     let before = (
-        OpenCodePluginManager.is_installed(),
-        OpenCodePluginManager.needs_source_migration(),
-        OpenCodePluginManager.needs_update(),
+        manager.is_installed(),
+        manager.needs_source_migration(),
+        manager.needs_update(),
     );
-    let result = futures::executor::block_on(OpenCodePluginManager.update());
+    let result = futures::executor::block_on(manager.update());
     let after = (
-        OpenCodePluginManager.is_installed(),
-        OpenCodePluginManager.needs_source_migration(),
-        OpenCodePluginManager.needs_update(),
+        manager.is_installed(),
+        manager.needs_source_migration(),
+        manager.needs_update(),
     );
     // TODO: Audit that the environment access only happens in single-threaded code.
     unsafe { std::env::remove_var("OPENCODE_CONFIG_DIR") };
@@ -231,8 +237,38 @@ fn update_rewrites_the_global_config_in_place() {
     assert_eq!(before, (true, true, true));
     assert_eq!(after, (true, false, false));
     assert_eq!(
+        runner.calls(),
+        vec![preflight_command(
+            "https://gitlab.com/winters-phosphor/opencode-warp.git"
+        )]
+    );
+    assert_eq!(
         fs::read_to_string(dir.path().join("opencode.jsonc")).unwrap(),
         text.replace("@warp-dot-dev/opencode-warp@0.1.5", PLUGIN_SPEC)
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn update_changes_nothing_when_the_preflight_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let text = "{\"plugin\": [\"@warp-dot-dev/opencode-warp@0.1.5\"]}";
+    write_config(dir.path(), "opencode.json", text);
+    let runner = Arc::new(FakeRunner::new().failing("git "));
+    let manager = manager_with(&runner);
+
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("OPENCODE_CONFIG_DIR", dir.path()) };
+    let result = futures::executor::block_on(manager.update());
+    let still_needs_move = manager.needs_source_migration();
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var("OPENCODE_CONFIG_DIR") };
+
+    assert!(result.is_err());
+    assert!(still_needs_move);
+    assert_eq!(
+        fs::read_to_string(dir.path().join("opencode.json")).unwrap(),
+        text
     );
 }
 
@@ -242,11 +278,13 @@ fn update_fails_without_an_entry_to_move() {
     let dir = tempfile::tempdir().unwrap();
     let text = "{\"plugin\": [\"file:///home/dev/opencode-warp/src/index.ts\"]}";
     write_config(dir.path(), "opencode.json", text);
+    let runner = Arc::new(FakeRunner::new());
+    let manager = manager_with(&runner);
 
     // TODO: Audit that the environment access only happens in single-threaded code.
     unsafe { std::env::set_var("OPENCODE_CONFIG_DIR", dir.path()) };
-    let result = futures::executor::block_on(OpenCodePluginManager.update());
-    let needs_migration = OpenCodePluginManager.needs_source_migration();
+    let result = futures::executor::block_on(manager.update());
+    let needs_migration = manager.needs_source_migration();
     // TODO: Audit that the environment access only happens in single-threaded code.
     unsafe { std::env::remove_var("OPENCODE_CONFIG_DIR") };
 

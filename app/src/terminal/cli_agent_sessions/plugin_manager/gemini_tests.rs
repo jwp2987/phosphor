@@ -1,11 +1,13 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use super::{
     CliAgentPluginManager, EXTENSION_REPO, GeminiPluginManager, MINIMUM_PLUGIN_VERSION,
     check_installed, compare_versions, installed_from_warp, installed_version, plugin_is_outdated,
-    plugin_needs_source_migration,
+    plugin_needs_source_migration, reset_source_move_attempt,
 };
+use crate::terminal::cli_agent_sessions::plugin_manager::tests::{FakeRunner, preflight_command};
 
 #[test]
 fn can_auto_install_is_true() {
@@ -177,11 +179,52 @@ fn install_instructions_install_from_phosphor_source() {
     assert_eq!(instructions.steps.len(), 1);
 }
 
+/// A Gemini CLI home whose `gemini-warp` extension (version `version`) was
+/// installed from `source`, plus its extensions directory.
+fn gemini_home(source: &str, install_type: &str, version: &str) -> (tempfile::TempDir, PathBuf) {
+    let home = tempfile::tempdir().unwrap();
+    let extensions_dir = home.path().join(".gemini").join("extensions");
+    write_extension(&extensions_dir, version);
+    write_install_metadata(&extensions_dir, source, install_type);
+    (home, extensions_dir)
+}
+
+const WARP_REPO: &str = "https://github.com/warpdotdev/gemini-cli-warp";
+
+/// Runs `body` with `GEMINI_CLI_HOME` at `home` and the move not yet attempted.
+fn with_gemini_home<T>(home: &Path, body: impl FnOnce() -> T) -> T {
+    reset_source_move_attempt();
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("GEMINI_CLI_HOME", home) };
+    let result = body();
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var("GEMINI_CLI_HOME") };
+    result
+}
+
 #[test]
+#[serial_test::serial]
+fn update_instructions_keep_extensions_update_unless_installed_from_warp() {
+    // A linked developer checkout must not be shown an uninstall step.
+    let (home, _) = gemini_home("/home/dev/gemini-cli-warp", "link", "1.0.0");
+    let command = with_gemini_home(home.path(), || {
+        GeminiPluginManager::new(None, None, None)
+            .update_instructions()
+            .steps[0]
+            .command
+    });
+    assert_eq!(command, "gemini extensions update gemini-warp");
+}
+
+#[test]
+#[serial_test::serial]
 fn update_instructions_reinstall_from_phosphor_source() {
     // `extensions update` would re-fetch from the recorded source (Warp's
-    // GitHub, for older installs), so the manual update reinstalls instead.
-    let instructions = GeminiPluginManager::new(None, None, None).update_instructions();
+    // GitHub), so for such an install the manual update reinstalls instead.
+    let (home, _) = gemini_home(WARP_REPO, "git", "1.0.0");
+    let instructions = with_gemini_home(home.path(), || {
+        GeminiPluginManager::new(None, None, None).update_instructions()
+    });
     assert_eq!(
         instructions.steps[0].command,
         "gemini extensions uninstall gemini-warp"
@@ -283,6 +326,123 @@ fn outdated_extension_from_phosphor_copy_still_needs_update() {
     write_install_metadata(dir.path(), EXTENSION_REPO, "git");
 
     assert!(plugin_is_outdated(dir.path()));
+}
+
+/// Runs `update()` on a manager backed by `runner`, returning its result and
+/// `needs_source_migration` afterwards.
+fn drive_update(home: &Path, runner: &Arc<FakeRunner>) -> (Result<(), String>, bool) {
+    with_gemini_home(home, || {
+        let manager = GeminiPluginManager::with_runner(runner.clone());
+        let result = futures::executor::block_on(manager.update());
+        (
+            result.map_err(|err| err.message),
+            manager.needs_source_migration(),
+        )
+    })
+}
+
+const UNINSTALL: &str = "gemini extensions uninstall gemini-warp";
+
+fn install_command() -> String {
+    format!("gemini extensions install {EXTENSION_REPO} --consent")
+}
+
+/// What `gemini extensions uninstall gemini-warp` does on disk.
+fn uninstall_hook(extensions_dir: PathBuf) -> impl Fn(&str) + Send + Sync + 'static {
+    move |command| {
+        if command == UNINSTALL {
+            fs::remove_dir_all(extensions_dir.join("gemini-warp")).unwrap();
+        }
+    }
+}
+
+#[test]
+#[serial_test::serial]
+fn move_changes_nothing_when_the_preflight_fails() {
+    let (home, extensions_dir) = gemini_home(WARP_REPO, "github-release", "1.0.0");
+    let runner = Arc::new(FakeRunner::new().failing("git "));
+
+    let (result, needs_move) = drive_update(home.path(), &runner);
+
+    assert!(result.is_err());
+    assert_eq!(runner.calls(), vec![preflight_command(EXTENSION_REPO)]);
+    assert!(installed_from_warp(&extensions_dir));
+    assert!(!needs_move, "attempted once, not retried every launch");
+}
+
+#[test]
+#[serial_test::serial]
+fn move_puts_the_previous_extension_back_when_the_install_fails() {
+    let (home, extensions_dir) = gemini_home(WARP_REPO, "git", "1.0.0");
+    let manifest =
+        fs::read_to_string(extensions_dir.join("gemini-warp/gemini-extension.json")).unwrap();
+    let runner = Arc::new(
+        FakeRunner::new()
+            .failing(&install_command())
+            .with_hook(uninstall_hook(extensions_dir.clone())),
+    );
+
+    let (result, _) = drive_update(home.path(), &runner);
+
+    assert!(result.is_err());
+    assert_eq!(
+        runner.calls(),
+        vec![
+            preflight_command(EXTENSION_REPO),
+            UNINSTALL.to_owned(),
+            install_command(),
+        ]
+    );
+    // The working Warp install is back, byte for byte.
+    assert!(installed_from_warp(&extensions_dir));
+    assert_eq!(
+        fs::read_to_string(extensions_dir.join("gemini-warp/gemini-extension.json")).unwrap(),
+        manifest
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn move_reinstalls_from_gitlab() {
+    let (home, extensions_dir) = gemini_home(WARP_REPO, "github-release", "1.0.0");
+    let uninstall = uninstall_hook(extensions_dir.clone());
+    let reinstall_dir = extensions_dir.clone();
+    let runner = Arc::new(FakeRunner::new().with_hook(move |command| {
+        uninstall(command);
+        if command == install_command() {
+            write_extension(&reinstall_dir, "1.0.0");
+            write_install_metadata(&reinstall_dir, EXTENSION_REPO, "git");
+        }
+    }));
+
+    let (result, needs_move) = drive_update(home.path(), &runner);
+
+    assert_eq!(result, Ok(()));
+    assert_eq!(
+        runner.calls(),
+        vec![
+            preflight_command(EXTENSION_REPO),
+            UNINSTALL.to_owned(),
+            install_command(),
+        ]
+    );
+    assert!(!installed_from_warp(&extensions_dir));
+    assert!(!needs_move);
+}
+
+#[test]
+#[serial_test::serial]
+fn update_from_phosphor_source_runs_extensions_update() {
+    let (home, _) = gemini_home(EXTENSION_REPO, "git", "1.0.0");
+    let runner = Arc::new(FakeRunner::new());
+
+    let (result, _) = drive_update(home.path(), &runner);
+
+    assert_eq!(result, Ok(()));
+    assert_eq!(
+        runner.calls(),
+        vec!["gemini extensions update gemini-warp".to_owned()]
+    );
 }
 
 fn write_extension(extensions_dir: &Path, version: &str) {

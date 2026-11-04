@@ -3,7 +3,13 @@ use std::cmp::Ordering;
 use std::cell::Cell;
 use std::fs;
 
-use super::{ConfigFileCheckCache, compare_versions, is_warp_plugin_source, plugin_manager_for};
+use async_trait::async_trait;
+use parking_lot::Mutex;
+
+use super::{
+    ConfigFileCheckCache, PluginCommandRunner, PluginInstallError, compare_versions,
+    is_warp_plugin_source, plugin_manager_for, plugin_source_reachable,
+};
 use crate::terminal::CLIAgent;
 
 #[test]
@@ -160,4 +166,102 @@ fn config_file_check_cache_recomputes_only_when_a_file_changes() {
     fs::write(&file, "{\"moved\": true}").unwrap();
     assert!(!check(false));
     assert_eq!(runs.get(), 2);
+}
+
+type FakeHook = Box<dyn Fn(&str) + Send + Sync>;
+
+/// A scripted [`PluginCommandRunner`] for driving the managers' `install()` /
+/// `update()` without running any CLI. Records every command line
+/// (`"<cli> <args...>"`), fails the ones that start with a registered prefix,
+/// and runs a hook for the others so a test can apply the command's on-disk
+/// effect (what the real CLI would have written).
+pub(crate) struct FakeRunner {
+    calls: Mutex<Vec<String>>,
+    failing: Vec<String>,
+    hook: Option<FakeHook>,
+}
+
+impl FakeRunner {
+    pub(crate) fn new() -> Self {
+        Self {
+            calls: Mutex::new(Vec::new()),
+            failing: Vec::new(),
+            hook: None,
+        }
+    }
+
+    /// Commands starting with `prefix` fail (and their hook does not run).
+    pub(crate) fn failing(mut self, prefix: &str) -> Self {
+        self.failing.push(prefix.to_owned());
+        self
+    }
+
+    pub(crate) fn with_hook(mut self, hook: impl Fn(&str) + Send + Sync + 'static) -> Self {
+        self.hook = Some(Box::new(hook));
+        self
+    }
+
+    pub(crate) fn calls(&self) -> Vec<String> {
+        self.calls.lock().clone()
+    }
+}
+
+#[async_trait]
+impl PluginCommandRunner for FakeRunner {
+    async fn run(
+        &self,
+        cli_name: &str,
+        args: &[&str],
+        log: &mut String,
+    ) -> Result<(), PluginInstallError> {
+        let command = format!("{cli_name} {}", args.join(" "));
+        log.push_str(&format!("$ {command}\n"));
+        self.calls.lock().push(command.clone());
+        if self
+            .failing
+            .iter()
+            .any(|prefix| command.starts_with(prefix.as_str()))
+        {
+            return Err(PluginInstallError {
+                message: format!("'{command}' failed"),
+                log: log.clone(),
+            });
+        }
+        if let Some(hook) = &self.hook {
+            hook(&command);
+        }
+        Ok(())
+    }
+}
+
+/// The pre-flight command line the managers run before a move.
+pub(crate) fn preflight_command(url: &str) -> String {
+    format!(
+        "git -c credential.interactive=never -c http.lowSpeedLimit=1 -c http.lowSpeedTime=15 ls-remote --exit-code {url} HEAD"
+    )
+}
+
+#[test]
+fn preflight_runs_git_ls_remote_through_the_runner() {
+    let runner = FakeRunner::new();
+    let mut log = String::new();
+    let url = "https://gitlab.com/winters-phosphor/codex-warp.git";
+
+    assert!(futures::executor::block_on(plugin_source_reachable(
+        &runner, url, &mut log
+    )));
+    assert_eq!(runner.calls(), vec![preflight_command(url)]);
+}
+
+#[test]
+fn preflight_reports_an_unreachable_source() {
+    let runner = FakeRunner::new().failing("git ");
+    let mut log = String::new();
+
+    assert!(!futures::executor::block_on(plugin_source_reachable(
+        &runner,
+        "https://gitlab.com/winters-phosphor/codex-warp.git",
+        &mut log
+    )));
+    assert!(log.contains("left as it is"), "{log}");
 }

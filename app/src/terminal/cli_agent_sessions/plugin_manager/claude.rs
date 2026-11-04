@@ -1,18 +1,18 @@
-use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock};
 
 use async_trait::async_trait;
 use serde_json::Value;
 
 use super::{
-    CliAgentPluginManager, ConfigFileCheckCache, PluginInstallError, PluginInstructionStep,
-    PluginInstructions, compare_versions, is_warp_plugin_source, run_cli_command_logged,
+    CliAgentPluginManager, ConfigFileCheckCache, PluginCommandRunner, PluginInstallError,
+    PluginInstructionStep, PluginInstructions, ShellCommandRunner, compare_versions,
+    is_warp_plugin_source, plugin_source_reachable, source_unreachable_error,
 };
-use crate::terminal::model::session::LocalCommandExecutor;
 use crate::terminal::shell::ShellType;
 
 const PLUGIN_KEY: &str = "warp@claude-code-warp";
@@ -30,13 +30,21 @@ const MARKETPLACE_NAME: &str = "claude-code-warp";
 
 static SOURCE_MIGRATION_CHECK: ConfigFileCheckCache = ConfigFileCheckCache::new();
 
+/// Set once this process has attempted the move (whatever the outcome), after
+/// which `needs_source_migration` stays `false`: a move that succeeded but
+/// left a stale record, or one that failed, is not retried on every launch
+/// and the chip does not come back. A restart tries again.
+static SOURCE_MOVE_ATTEMPTED: AtomicBool = AtomicBool::new(false);
+
+/// Logged at most once per process (see [`note_settings_still_declare_warp`]).
+static SETTINGS_NOTE_LOGGED: AtomicBool = AtomicBool::new(false);
+
 // Keep in sync with the plugin version in winters-phosphor/claude-code-warp.
 // (See the Versioning section of that repo's README.)
 const MINIMUM_PLUGIN_VERSION: &str = "2.0.0";
 
 pub(super) struct ClaudeCodePluginManager {
-    executor: LocalCommandExecutor,
-    path_env_var: Option<String>,
+    runner: Arc<dyn PluginCommandRunner>,
 }
 
 impl ClaudeCodePluginManager {
@@ -45,19 +53,81 @@ impl ClaudeCodePluginManager {
         shell_type: Option<ShellType>,
         path_env_var: Option<String>,
     ) -> Self {
-        let shell_type = shell_type.unwrap_or(ShellType::Bash);
-        Self {
-            executor: LocalCommandExecutor::new(shell_path, shell_type),
+        Self::with_runner(Arc::new(ShellCommandRunner::new(
+            shell_path,
+            shell_type,
             path_env_var,
-        }
+        )))
+    }
+
+    pub(super) fn with_runner(runner: Arc<dyn PluginCommandRunner>) -> Self {
+        Self { runner }
     }
 
     async fn run_logged(&self, args: &[&str], log: &mut String) -> Result<(), PluginInstallError> {
-        let env_vars = self
-            .path_env_var
-            .as_deref()
-            .map(|path| HashMap::from([("PATH".to_owned(), path.to_owned())]));
-        run_cli_command_logged("claude", args, &self.executor, env_vars, log).await
+        self.runner.run("claude", args, log).await
+    }
+
+    /// Puts the marketplace back on `original` (its recorded source before
+    /// this operation removed it) and reinstalls the plugin from it, after the
+    /// add from Phosphor's copy failed. Best effort: the outcome is logged.
+    async fn restore_marketplace(&self, original: Option<&Value>, log: &mut String) {
+        let Some(source) = original.and_then(marketplace_add_argument) else {
+            log.push_str(
+                "Restore: no recorded marketplace source to restore; run the update again once \
+                 gitlab.com is reachable\n",
+            );
+            return;
+        };
+        log.push_str(&format!(
+            "Restore: re-registering the marketplace from its previous source {source}\n"
+        ));
+        let _ = self
+            .run_logged(&["plugin", "marketplace", "remove", MARKETPLACE_NAME], log)
+            .await;
+        let restored = self
+            .run_logged(&["plugin", "marketplace", "add", source.as_str()], log)
+            .await
+            .is_ok()
+            && self
+                .run_logged(&["plugin", "install", PLUGIN_KEY], log)
+                .await
+                .is_ok();
+        log.push_str(if restored {
+            "Restore: the previous marketplace and plugin are back\n"
+        } else {
+            "Restore failed: the plugin is not installed; run the update again\n"
+        });
+    }
+
+    /// `marketplace remove` + `add` from Phosphor's copy + `plugin install`,
+    /// restoring the previous source when the add or install fails.
+    async fn readd_marketplace(
+        &self,
+        original: Option<&Value>,
+        log: &mut String,
+    ) -> Result<(), PluginInstallError> {
+        let _ = self
+            .run_logged(&["plugin", "marketplace", "remove", MARKETPLACE_NAME], log)
+            .await;
+        let added = match self
+            .run_logged(&["plugin", "marketplace", "add", MARKETPLACE_URL], log)
+            .await
+        {
+            Ok(()) => {
+                self.run_logged(&["plugin", "install", PLUGIN_KEY], log)
+                    .await
+            }
+            Err(err) => Err(err),
+        };
+        if let Err(err) = added {
+            self.restore_marketplace(original, log).await;
+            return Err(PluginInstallError {
+                message: err.message,
+                log: log.clone(),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -90,17 +160,22 @@ impl CliAgentPluginManager for ClaudeCodePluginManager {
         let mut log = String::new();
         // A `claude-code-warp` marketplace still registered from Warp's GitHub
         // (plugin uninstalled, marketplace left behind) would keep its source:
-        // drop it so the add below registers Phosphor's copy instead.
-        if claude_home_dir()
-            .ok()
-            .is_some_and(|dir| marketplace_registered_from_warp(&dir))
+        // drop it so the add below registers Phosphor's copy instead -- but
+        // only once Phosphor's copy is known to answer, and put it back if the
+        // add fails.
+        let claude_dir = claude_home_dir().ok();
+        if claude_dir
+            .as_deref()
+            .is_some_and(marketplace_registered_from_warp)
         {
-            let _ = self
-                .run_logged(
-                    &["plugin", "marketplace", "remove", MARKETPLACE_NAME],
-                    &mut log,
-                )
-                .await;
+            SOURCE_MOVE_ATTEMPTED.store(true, Ordering::Relaxed);
+            if !plugin_source_reachable(&*self.runner, MARKETPLACE_URL, &mut log).await {
+                return Err(source_unreachable_error(log));
+            }
+            let original = claude_dir
+                .as_deref()
+                .and_then(registered_marketplace_source);
+            return self.readd_marketplace(original.as_ref(), &mut log).await;
         }
         self.run_logged(&["plugin", "marketplace", "add", MARKETPLACE_URL], &mut log)
             .await?;
@@ -117,16 +192,28 @@ impl CliAgentPluginManager for ClaudeCodePluginManager {
         // We use `plugin install` (not `plugin update`) because `marketplace
         // remove` unlinks the plugin, so `plugin update` would fail with
         // "Plugin is not installed".
-        let _ = self
-            .run_logged(
-                &["plugin", "marketplace", "remove", MARKETPLACE_NAME],
-                &mut log,
-            )
-            .await;
-        self.run_logged(&["plugin", "marketplace", "add", MARKETPLACE_URL], &mut log)
-            .await?;
-        self.run_logged(&["plugin", "install", PLUGIN_KEY], &mut log)
-            .await?;
+        //
+        // The remove comes first, so nothing is touched until Phosphor's copy
+        // is known to answer (this also runs unattended from the background
+        // launch paths), and the previous source is restored if the add or
+        // install fails.
+        let claude_dir = claude_home_dir().ok();
+        let moving = claude_dir
+            .as_deref()
+            .is_some_and(marketplace_registered_from_warp);
+        if moving {
+            SOURCE_MOVE_ATTEMPTED.store(true, Ordering::Relaxed);
+        }
+        if !plugin_source_reachable(&*self.runner, MARKETPLACE_URL, &mut log).await {
+            return Err(source_unreachable_error(log));
+        }
+        let original = claude_dir
+            .as_deref()
+            .and_then(registered_marketplace_source);
+        self.readd_marketplace(original.as_ref(), &mut log).await?;
+        if let Some(dir) = claude_dir.as_deref() {
+            note_settings_still_declare_warp(dir);
+        }
 
         // Sanity check: verify the on-disk version actually changed.
         let still_outdated = claude_home_dir()
@@ -170,16 +257,32 @@ impl CliAgentPluginManager for ClaudeCodePluginManager {
     }
 
     fn needs_source_migration(&self) -> bool {
+        if SOURCE_MOVE_ATTEMPTED.load(Ordering::Relaxed) {
+            return false;
+        }
         let Ok(claude_dir) = claude_home_dir() else {
             return false;
         };
         let files = [
-            claude_dir.join("settings.json"),
             claude_dir.join("plugins").join("known_marketplaces.json"),
             claude_dir.join("plugins").join("installed_plugins.json"),
+            // Read for the local-override exclusion.
+            claude_dir.join("settings.json"),
         ];
-        SOURCE_MIGRATION_CHECK.get_or_compute(&files, || plugin_needs_source_migration(&claude_dir))
+        SOURCE_MIGRATION_CHECK.get_or_compute(&files, || {
+            let needed = plugin_needs_source_migration(&claude_dir);
+            if !needed {
+                note_settings_still_declare_warp(&claude_dir);
+            }
+            needed
+        })
     }
+}
+
+/// Forgets a move attempt, for tests that drive several in one process.
+#[cfg(test)]
+pub(super) fn reset_source_move_attempt() {
+    SOURCE_MOVE_ATTEMPTED.store(false, Ordering::Relaxed);
 }
 
 static INSTALL_INSTRUCTIONS: LazyLock<PluginInstructions> = LazyLock::new(|| PluginInstructions {
@@ -254,12 +357,14 @@ fn plugin_needs_source_migration(claude_dir: &Path) -> bool {
 /// Whether the `claude-code-warp` marketplace is registered from Warp's GitHub
 /// repository (`warpdotdev/claude-code-warp`) rather than Phosphor's copy.
 ///
-/// Claude Code records a marketplace's source in two places, and either can be
-/// the stale one: the user settings' `extraKnownMarketplaces` (which
-/// `plugin marketplace add` declares) and `plugins/known_marketplaces.json`
-/// (the installed checkout). GitHub shorthand is recorded as
+/// Decided from `plugins/known_marketplaces.json`, the record of what the CLI
+/// actually registered and cloned. GitHub shorthand is recorded as
 /// `{"source": "github", "repo": "warpdotdev/claude-code-warp"}`, a git URL as
-/// `{"source": "git", "url": "..."}`; older settings may hold a bare string.
+/// `{"source": "git", "url": "..."}`. A Warp entry still *declared* in
+/// `settings.json` `extraKnownMarketplaces` (say, one the user wrote, or a
+/// project or managed scope) does not count: Phosphor never rewrites that
+/// file, so counting it would re-run the move on every launch; it is logged
+/// once instead ([`note_settings_still_declare_warp`]).
 ///
 /// A local-directory override is never reported, so a developer's local
 /// marketplace is left alone exactly as `has_local_marketplace_override`
@@ -268,19 +373,73 @@ fn marketplace_registered_from_warp(claude_dir: &Path) -> bool {
     if claude_code_marketplace_has_local_override(claude_dir) {
         return false;
     }
-    let settings_source = read_json(&claude_dir.join("settings.json")).and_then(|settings| {
-        settings
-            .get("extraKnownMarketplaces")?
-            .get(MARKETPLACE_NAME)?
-            .get("source")
-            .cloned()
-    });
-    let known_source = read_json(&claude_dir.join("plugins").join("known_marketplaces.json"))
-        .and_then(|known| known.get(MARKETPLACE_NAME)?.get("source").cloned());
-    [settings_source, known_source]
-        .iter()
-        .flatten()
-        .any(marketplace_source_is_warp)
+    registered_marketplace_source(claude_dir)
+        .is_some_and(|source| marketplace_source_is_warp(&source))
+}
+
+/// The `source` recorded for the marketplace in `known_marketplaces.json`.
+fn registered_marketplace_source(claude_dir: &Path) -> Option<Value> {
+    read_json(&claude_dir.join("plugins").join("known_marketplaces.json"))?
+        .get(MARKETPLACE_NAME)?
+        .get("source")
+        .cloned()
+}
+
+/// Whether `settings.json` still declares the marketplace from Warp's GitHub.
+fn settings_declare_warp(claude_dir: &Path) -> bool {
+    read_json(&claude_dir.join("settings.json"))
+        .and_then(|settings| {
+            settings
+                .get("extraKnownMarketplaces")?
+                .get(MARKETPLACE_NAME)?
+                .get("source")
+                .cloned()
+        })
+        .is_some_and(|source| marketplace_source_is_warp(&source))
+}
+
+/// Logs, once per process, that `settings.json` still declares the
+/// marketplace from Warp's GitHub although the registered one is not (or no
+/// longer) Warp's. Phosphor leaves the user's settings alone; this says why a
+/// Claude Code reconcile could bring Warp's source back.
+fn note_settings_still_declare_warp(claude_dir: &Path) {
+    if marketplace_registered_from_warp(claude_dir) || !settings_declare_warp(claude_dir) {
+        return;
+    }
+    if !SETTINGS_NOTE_LOGGED.swap(true, Ordering::Relaxed) {
+        log::info!(
+            "[PLUGIN_INSTALL] {} still declares extraKnownMarketplaces[\"{MARKETPLACE_NAME}\"] \
+             from warpdotdev/claude-code-warp; Phosphor does not edit it. Point it at \
+             {MARKETPLACE_URL} to stop Claude Code re-registering the warpdotdev copy.",
+            claude_dir.join("settings.json").display()
+        );
+    }
+}
+
+/// The `claude plugin marketplace add` argument that registers `source` (a
+/// recorded marketplace source) again.
+fn marketplace_add_argument(source: &Value) -> Option<String> {
+    let with_ref = |location: &str, source: &serde_json::Map<String, Value>| match source
+        .get("ref")
+        .and_then(Value::as_str)
+    {
+        Some(git_ref) if !git_ref.is_empty() => format!("{location}#{git_ref}"),
+        _ => location.to_owned(),
+    };
+    match source {
+        Value::String(location) => Some(location.clone()),
+        Value::Object(source) => {
+            let field = match source.get("source").and_then(Value::as_str)? {
+                "github" => "repo",
+                "git" | "url" => "url",
+                "directory" | "file" => "path",
+                _ => return None,
+            };
+            let location = source.get(field).and_then(Value::as_str)?;
+            Some(with_ref(location, source))
+        }
+        _ => None,
+    }
 }
 
 fn marketplace_source_is_warp(source: &Value) -> bool {

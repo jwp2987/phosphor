@@ -704,7 +704,9 @@ Gemini CLI, `opencode-warp` for OpenCode. Phosphor fetches them from its own Git
 Warp's repositories, MIT notices kept), not from Warp's GitHub. Claude's installs
 automatically; Codex's is behind a build feature that is on by default; Gemini's
 needs an opt-in flag and is effectively off. A plugin you installed earlier from
-Warp's GitHub is offered an update, which re-registers it from the GitLab copy;
+Warp's GitHub is offered an update, which re-registers it from the GitLab copy
+(only after checking that gitlab.com answers, and putting the old install back
+if the new one fails to install);
 a marketplace or extension you pointed at a local checkout is left alone. For
 OpenCode the entry is the git spec
 `git+https://gitlab.com/winters-phosphor/opencode-warp.git#v0.2.0`; an older
