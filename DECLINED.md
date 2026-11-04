@@ -2800,7 +2800,6 @@ thing typed, which may be the real password, runs in the local shell and lands i
 A plain Windows console (conhost / Windows Terminal) behaves the same. It is listed as a known
 issue in the release notes. Do not add a Windows-only drain or history scrub without a new owner
 decision (r18u8 Windows triage, ssh_password_prompt).
-<!-- markers: sym:ssh_prompt_has_arrived sym:discard_ssh_typeahead_on_prompt sym:discard_held_ssh_typeahead_for_prompt sym:ssh_prompt_is_unmanaged_shell_prompt sym:output_tail_is_shell_prompt sym:StaleBeforePrompt keep:ssh_on_tty_owned keep:tty_is_reading_secret -->
 
 **ssh's escape sequences pass through too (#1638, owner 2026-11-04).** In a managed ssh session
 `~` typed as the first character of an empty input line, followed by an ssh escape character
