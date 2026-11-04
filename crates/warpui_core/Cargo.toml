@@ -113,12 +113,12 @@ warpui_core = { path = ".", features = ["test-util"] }
 [target.'cfg(shuttle)'.dependencies]
 shuttle = "0.8.0"
 
-# Exhaustive interleaving checks of tiny primitives (`RUSTFLAGS="--cfg loom"`).
-[target.'cfg(loom)'.dependencies]
+# Exhaustive interleaving checks of tiny primitives (`RUSTFLAGS="--cfg phosphor_loom"`).
+[target.'cfg(phosphor_loom)'.dependencies]
 loom = "0.7.2"
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(shuttle)', 'cfg(loom)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(shuttle)', 'cfg(phosphor_loom)'] }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 async-io.workspace = true

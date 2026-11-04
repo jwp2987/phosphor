@@ -3,7 +3,7 @@
 //!
 //! In every normal build this module re-exports `parking_lot`'s `Mutex`, `RwLock` and `Condvar`
 //! and `std`'s atomics, so code that imports them from here is byte-identical to code that
-//! imported them directly. Under `RUSTFLAGS="--cfg shuttle"` or `RUSTFLAGS="--cfg loom"` the
+//! imported them directly. Under `RUSTFLAGS="--cfg shuttle"` or `RUSTFLAGS="--cfg phosphor_loom"` the
 //! same names resolve to thin wrappers over the checker's primitives, with `parking_lot`'s
 //! calling convention (`lock()` returns the guard, `read_recursive`, `wait(&mut guard)`), so the
 //! code under test needs no other change.
@@ -17,24 +17,24 @@
 //!
 //! ```text
 //! RUSTFLAGS="--cfg shuttle" cargo test -p warpui_core --lib --release -- model_tests::
-//! RUSTFLAGS="--cfg loom"    cargo test -p warpui_core --lib --release -- model_tests::
+//! RUSTFLAGS="--cfg phosphor_loom"    cargo test -p warpui_core --lib --release -- model_tests::
 //! ```
 //!
 //! [`check`] runs a test body under the active checker: shuttle explores randomly scheduled
 //! interleavings, loom explores all of them (keep loom bodies tiny: two or three threads, a
 //! handful of operations each).
 
-#[cfg(not(any(shuttle, loom)))]
+#[cfg(not(any(shuttle, phosphor_loom)))]
 pub use parking_lot::{
     Condvar, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard, WaitTimeoutResult,
 };
 
-#[cfg(not(any(shuttle, loom)))]
+#[cfg(not(any(shuttle, phosphor_loom)))]
 pub mod atomic {
     pub use std::sync::atomic::*;
 }
 
-#[cfg(any(shuttle, loom))]
+#[cfg(any(shuttle, phosphor_loom))]
 pub use model::*;
 
 /// `const fn` in a normal build, a plain `fn` under a model checker (whose primitives cannot be
@@ -42,9 +42,9 @@ pub use model::*;
 #[macro_export]
 macro_rules! model_const_fn {
     ($(#[$attr:meta])* $vis:vis fn $name:ident($($arg:ident: $argty:ty),*) -> $ret:ty $body:block) => {
-        #[cfg(not(any(shuttle, loom)))]
+        #[cfg(not(any(shuttle, phosphor_loom)))]
         $(#[$attr])* $vis const fn $name($($arg: $argty),*) -> $ret $body
-        #[cfg(any(shuttle, loom))]
+        #[cfg(any(shuttle, phosphor_loom))]
         $(#[$attr])* $vis fn $name($($arg: $argty),*) -> $ret $body
     };
 }
@@ -55,25 +55,25 @@ macro_rules! model_const_fn {
 #[macro_export]
 macro_rules! model_static {
     ($(#[$attr:meta])* $vis:vis static $name:ident: $ty:ty = $init:expr;) => {
-        #[cfg(not(any(shuttle, loom)))]
+        #[cfg(not(any(shuttle, phosphor_loom)))]
         $(#[$attr])* $vis static $name: $ty = $init;
-        #[cfg(any(shuttle, loom))]
+        #[cfg(any(shuttle, phosphor_loom))]
         $(#[$attr])* $vis static $name: std::sync::LazyLock<$ty> = std::sync::LazyLock::new(|| $init);
     };
 }
 
-#[cfg(any(shuttle, loom))]
+#[cfg(any(shuttle, phosphor_loom))]
 mod model {
     use std::ops::{Deref, DerefMut};
 
-    #[cfg(loom)]
+    #[cfg(phosphor_loom)]
     use loom::sync as inner;
     #[cfg(shuttle)]
     use shuttle::sync as inner;
 
     pub use inner::Arc;
     pub use inner::atomic;
-    #[cfg(loom)]
+    #[cfg(phosphor_loom)]
     pub use loom::thread;
     #[cfg(shuttle)]
     pub use shuttle::thread;
@@ -85,7 +85,7 @@ mod model {
     }
 
     /// Runs `body` under the checker: random schedules (shuttle) or every schedule (loom).
-    #[cfg(loom)]
+    #[cfg(phosphor_loom)]
     pub fn check<F: Fn() + Send + Sync + 'static>(body: F) {
         loom::model(body);
     }
@@ -402,6 +402,6 @@ mod model {
 }
 
 // Interleaving tests of the modelled `RwLock` itself.
-#[cfg(all(test, any(shuttle, loom)))]
+#[cfg(all(test, any(shuttle, phosphor_loom)))]
 #[path = "sync_shim_model_tests.rs"]
 mod model_tests;

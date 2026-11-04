@@ -1153,10 +1153,10 @@ pub mod deferred_reads {
 
 // A shuttle / loom build compiles only the model tests (the ordinary ones build `static`
 // trackers in `const` contexts, which the checkers' primitives cannot).
-#[cfg(all(test, not(any(shuttle, loom))))]
+#[cfg(all(test, not(any(shuttle, phosphor_loom))))]
 #[path = "clipboard_tests.rs"]
 mod tests;
 
-#[cfg(all(test, any(shuttle, loom)))]
+#[cfg(all(test, any(shuttle, phosphor_loom)))]
 #[path = "clipboard_model_tests.rs"]
 mod model_tests;

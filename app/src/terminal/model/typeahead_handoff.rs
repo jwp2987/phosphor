@@ -3733,11 +3733,11 @@ fn scan_line_terminators(bytes: &[u8], mut dirty: bool, ctrl_u_kills: bool) -> (
     (enters, dirty)
 }
 
-#[cfg(all(test, not(any(shuttle, loom))))]
+#[cfg(all(test, not(any(shuttle, phosphor_loom))))]
 #[path = "typeahead_handoff_tests.rs"]
 mod tests;
 
-// Interleaving tests of the hand-off handle under `--cfg shuttle` / `--cfg loom`.
-#[cfg(all(test, any(shuttle, loom)))]
+// Interleaving tests of the hand-off handle under `--cfg shuttle` / `--cfg phosphor_loom`.
+#[cfg(all(test, any(shuttle, phosphor_loom)))]
 #[path = "typeahead_handoff_model_tests.rs"]
 mod model_tests;

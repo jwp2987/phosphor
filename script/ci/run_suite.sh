@@ -79,8 +79,8 @@ case "$suite" in
     # == test-shuttle-loom. RUSTFLAGS replaces .cargo/config.toml's flags (fine for tests). One target dir per cfg: --cfg rebuilds every crate.
     CARGO_TARGET_DIR="target/ci-shuttle" RUSTFLAGS="--cfg shuttle" ./script/agent-cargo ci-shuttle test -p warpui_core --lib --release -- model_tests::
     CARGO_TARGET_DIR="target/ci-shuttle" RUSTFLAGS="--cfg shuttle" ./script/agent-cargo ci-shuttle test -p warp --features gui --lib --release -- model_tests::
-    CARGO_TARGET_DIR="target/ci-loom" RUSTFLAGS="--cfg loom" ./script/agent-cargo ci-loom test -p warpui_core --lib --release -- model_tests::
-    CARGO_TARGET_DIR="target/ci-loom" RUSTFLAGS="--cfg loom" ./script/agent-cargo ci-loom test -p warp --features gui --lib --release -- model_tests::
+    CARGO_TARGET_DIR="target/ci-phosphor_loom" RUSTFLAGS="--cfg phosphor_loom" ./script/agent-cargo ci-phosphor_loom test -p warpui_core --lib --release -- model_tests::
+    CARGO_TARGET_DIR="target/ci-phosphor_loom" RUSTFLAGS="--cfg phosphor_loom" ./script/agent-cargo ci-phosphor_loom test -p warp --features gui --lib --release -- model_tests::
     ;;
   fuzz-smoke)
     if [[ "$plat" == windows ]]; then

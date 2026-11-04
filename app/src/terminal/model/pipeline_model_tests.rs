@@ -5,7 +5,7 @@
 //!
 //! ```text
 //! RUSTFLAGS="--cfg shuttle" cargo test -p warp --lib --features warp/gui --release -- model_tests::
-//! RUSTFLAGS="--cfg loom"    cargo test -p warp --lib --features warp/gui --release -- model_tests::
+//! RUSTFLAGS="--cfg phosphor_loom"    cargo test -p warp --lib --features warp/gui --release -- model_tests::
 //! ```
 //!
 //! The module name ends in `model_tests`, so the `test-shuttle-loom` job's `model_tests::` filter

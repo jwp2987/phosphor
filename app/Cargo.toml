@@ -451,8 +451,8 @@ windows-result = { workspace = true }
 winreg.workspace = true
 
 [lints.rust]
-# Model-checker builds (RUSTFLAGS="--cfg shuttle" / "--cfg loom"); see warpui_core::sync_shim.
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(shuttle)', 'cfg(loom)'] }
+# Model-checker builds (RUSTFLAGS="--cfg shuttle" / "--cfg phosphor_loom"); see warpui_core::sync_shim.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(shuttle)', 'cfg(phosphor_loom)'] }
 
 [dev-dependencies]
 ai = { workspace = true, features = ["test-util"] }

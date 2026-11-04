@@ -16,8 +16,8 @@ instead of the modules' ordinary tests (their `static`s need `const` constructor
 RUSTFLAGS="--cfg shuttle" cargo test -p warpui_core --lib --release -- model_tests::
 RUSTFLAGS="--cfg shuttle" cargo test -p warp --lib --features warp/gui --release -- model_tests::
 # every schedule (tiny bodies only)
-RUSTFLAGS="--cfg loom" cargo test -p warpui_core --lib --release -- model_tests::
-RUSTFLAGS="--cfg loom" cargo test -p warp --lib --features warp/gui --release -- model_tests::
+RUSTFLAGS="--cfg phosphor_loom" cargo test -p warpui_core --lib --release -- model_tests::
+RUSTFLAGS="--cfg phosphor_loom" cargo test -p warp --lib --features warp/gui --release -- model_tests::
 ```
 
 Use a separate `CARGO_TARGET_DIR` (the cfg changes every crate's build). Model builds do not
@@ -145,7 +145,7 @@ the default pipeline. Start them from the pipeline page of a protected ref (`mai
 
 | job | runs | artifacts |
 |---|---|---|
-| `test-shuttle-loom` | the `model_tests::` tests of `warpui_core` and `warp` under `--cfg shuttle`, then `--cfg loom` | none |
+| `test-shuttle-phosphor_loom` | the `model_tests::` tests of `warpui_core` and `warp` under `--cfg shuttle`, then `--cfg phosphor_loom` | none |
 | `fuzz-smoke` | each fuzz target for `FUZZ_SECONDS` (180) from the committed corpus; `RUSTC_BOOTSTRAP=1` so the pinned stable toolchain is used | `fuzz/artifacts/` (crashes) |
 | `mutants` | cargo-mutants on `MUTANTS_FILES` of `MUTANTS_PACKAGE`, tests limited by `MUTANTS_TEST_FILTER`, optional `MUTANTS_SHARD=k/n` (default scope: pane_key, key_facts, input_queue gates+destination) | `mutants.out/` |
 | `mutants-warpui-core` | cargo-mutants on the warpui_core clipboard with warpui_core's own tests | `mutants.out/` |

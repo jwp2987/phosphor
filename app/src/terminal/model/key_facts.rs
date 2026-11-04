@@ -850,19 +850,19 @@ impl ModelInbox {
     }
 }
 
-#[cfg(all(test, not(any(shuttle, loom))))]
+#[cfg(all(test, not(any(shuttle, phosphor_loom))))]
 #[path = "key_facts_tests.rs"]
 mod tests;
 
-// Interleaving tests under `RUSTFLAGS="--cfg shuttle"` / `"--cfg loom"` (see
+// Interleaving tests under `RUSTFLAGS="--cfg shuttle"` / `"--cfg phosphor_loom"` (see
 // `warpui_core::sync_shim`); a model build compiles these instead of the ordinary tests.
-#[cfg(all(test, any(shuttle, loom)))]
+#[cfg(all(test, any(shuttle, phosphor_loom)))]
 #[path = "key_facts_model_tests.rs"]
 mod model_tests;
 
 // Interleaving models of the input pipeline (pane queue drain, ssh hand-over, hand-off holds, the
 // stamp-then-decide gen order; #1512, #1531). The module name ends in `model_tests` so the
 // `model_tests::` filter of the `test-shuttle-loom` job selects it.
-#[cfg(all(test, any(shuttle, loom)))]
+#[cfg(all(test, any(shuttle, phosphor_loom)))]
 #[path = "pipeline_model_tests.rs"]
 mod pipeline_model_tests;
