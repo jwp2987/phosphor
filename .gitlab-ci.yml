@@ -103,7 +103,9 @@ guards:
     - ./script/check_outbound_redaction
     - ./script/check_queue_access
     # The tree is rustfmt-clean since the Rust 1.99 upgrade; this keeps it that way (whole tree, ~25 s).
-    - ./script/check_rustfmt
+    # rustfmt comes from the pinned toolchain through the maintainer's rustup proxy (read-only,
+    # as in check-linux); runner shells have no toolchain on PATH.
+    - RUSTUP_HOME=/home/winters/.rustup PATH="/home/winters/.cargo/bin:$PATH" ./script/check_rustfmt
     # #1521: both were precheck-only. check_workspace_clean is deliberately not here (it expects a hand-managed checkout, see docs/testing.md 2.3).
     - ./script/check_dangling_modules
     # The box has no pwsh (not approved for it): the parse gate runs where pwsh exists (script/precheck); here it is
