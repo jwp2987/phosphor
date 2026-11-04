@@ -441,3 +441,49 @@ fn remote_session_uses_the_remote_oss_rules() {
         "C:\\proj\\lib\\b.rs"
     );
 }
+
+/// A remote that has not reported its OS follows the shape of a path it did report, so a
+/// Windows client and a Linux client resolve the same remote path the same way (r18u16: a
+/// Windows client turned `~/a.txt` on `/home/u` into `\home\u\a.txt`).
+#[test]
+fn an_unknown_remote_os_follows_the_shape_of_its_paths() {
+    assert_eq!(
+        PathHost::for_remote_session(None, Some("/home/u")),
+        PathHost::RemoteUnix
+    );
+    assert_eq!(
+        PathHost::for_remote_session(None, Some("C:\\Users\\u")),
+        PathHost::RemoteWindows
+    );
+    assert_eq!(
+        PathHost::for_remote_session(None, Some("d:/work")),
+        PathHost::RemoteWindows
+    );
+    assert_eq!(PathHost::for_remote_session(None, None), PathHost::Local);
+    assert_eq!(
+        PathHost::for_remote_session(None, Some("relative")),
+        PathHost::Local
+    );
+    // A reported OS always wins over the path's shape.
+    assert_eq!(
+        PathHost::for_remote_session(Some("Windows"), Some("/c/Users/u")),
+        PathHost::RemoteWindows
+    );
+    assert_eq!(
+        PathHost::for_remote_session(Some("Linux"), Some("C:\\odd")),
+        PathHost::RemoteUnix
+    );
+
+    // The resolved remote path is the same whatever the local OS is.
+    let host = PathHost::for_remote_session(None, Some("/home/u"));
+    for local_os_is_unix in [true, false] {
+        assert_eq!(
+            normalize_for_test(
+                "/home/u/a.txt",
+                "/home/u",
+                remote_style_for_test(local_os_is_unix, host)
+            ),
+            "/home/u/a.txt"
+        );
+    }
+}

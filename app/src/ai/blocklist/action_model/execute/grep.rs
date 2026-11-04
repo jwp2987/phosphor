@@ -353,12 +353,16 @@ impl GrepExecutor {
 /// - otherwise, if the search is against the local file system, we run `ripgrep` via the library.
 ///   `ripgrep` is a more optimized version of `grep`.
 /// - otherwise, we run vanilla `grep` in the session
-/// The path rules of the host `session` runs on: its reported OS when remote and known.
+/// The path rules of the host `session` runs on: its reported OS when remote and known, else
+/// the shape of its home directory (see `PathHost::for_remote_session`).
 fn session_path_host(session: &Session) -> PathHost {
     if session.is_local() {
         PathHost::Local
     } else {
-        PathHost::for_remote(session.host_info().os_category.as_deref())
+        PathHost::for_remote_session(
+            session.host_info().os_category.as_deref(),
+            session.home_dir(),
+        )
     }
 }
 

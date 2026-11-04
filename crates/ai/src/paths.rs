@@ -27,9 +27,35 @@ impl PathHost {
         }
     }
 
+    /// [`Self::for_remote`], falling back to the shape of a path the remote reported (its
+    /// working directory or home) when the OS category is unknown. A `/`-rooted path is a unix
+    /// host's and a drive-letter path a Windows host's, so a remote's paths follow the same
+    /// rules whatever the local OS is. Without this, a Windows client whose Linux remote had
+    /// not reported its OS joined `~/a.txt` against `/home/u` into `\home\u\a.txt` and asked
+    /// the remote for a file that cannot exist. Neither shape (or no path) stays `Local`.
+    pub fn for_remote_session(os_category: Option<&str>, remote_path: Option<&str>) -> Self {
+        match Self::for_remote(os_category) {
+            Self::Local => match remote_path {
+                Some(path) if path.starts_with('/') => Self::RemoteUnix,
+                Some(path) if is_windows_drive_path(path) => Self::RemoteWindows,
+                _ => Self::Local,
+            },
+            known => known,
+        }
+    }
+
     fn is_remote(self) -> bool {
         self != Self::Local
     }
+}
+
+/// `C:\...` or `C:/...`.
+fn is_windows_drive_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'\\' | b'/')
 }
 
 /// Whether paths for this session use `/` separators and unix rules.
