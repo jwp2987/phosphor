@@ -21,7 +21,7 @@
 # `0` in a temporary copy so the parser sees what the shell will see.
 #
 # Also parsed (#1507): the Windows harness, build and CI scripts (script/realapp/windows/**/*.ps1,
-# script/windows/*.ps1, script/ci/*.ps1). The same set is parsed with the VM's own Windows PowerShell 5.1
+# script/windows/*.ps1, script/ci/*.ps1, script/ci/nodes/*.ps1 = the CI node bootstrap). The same set is parsed with the VM's own Windows PowerShell 5.1
 # parser by script/ci/parse_ps1.ps1 (guards-windows job, and the first step of every app-test-windows job). 53c0a38ca shipped an app_test.ps1 that did not parse and nothing noticed.
 # Templates carry @TOKEN@ placeholders (e.g. @WINUSER@, rendered before upload; nearly every
 # harness script does), so for the parse they are replaced with the word PLACEHOLDER, which is
@@ -79,7 +79,7 @@ while IFS= read -r -d '' script; do
         printf '%s\n' "$result"
         status=1
     fi
-done < <({ find app/assets/bundled script/realapp/windows script/windows -name '*.ps1' -print0 2>/dev/null
+done < <({ find app/assets/bundled script/realapp/windows script/windows script/ci/nodes -name '*.ps1' -print0 2>/dev/null
             find script/ci -maxdepth 1 -name '*.ps1' -print0; } | sort -z)
 
 if ((n_parsed == 0)); then

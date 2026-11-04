@@ -228,6 +228,10 @@ vertical tabs, theme, fonts, footer, agent and ssh settings). Present for `gitla
 Mac and the console user on the Windows VM. The harness starts its profile from them (2.8); their contents are never
 printed or uploaded. Re-seed all three when the owner changes their config.
 
+Rebuilding a lost CI node (box, Mac or Windows VM) from scratch: [`script/ci/nodes/README.md`](../script/ci/nodes/README.md)
+(dry-run-by-default bootstrap scripts with the versions observed on each machine, runner registration and tags, the
+machine-local files to restore, and the jobs that prove a rebuilt node).
+
 Build-box GUI stack for `app-test-linux-*` (installed by the owner 2026-11-01): `sway`, `wtype`, `grim`, `wl-clipboard`,
 `xwayland`, `xterm` (reference terminal); `gitlab-runner` is in the `video` and `render` groups for `/dev/dri`.
 
