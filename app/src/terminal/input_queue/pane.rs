@@ -139,6 +139,10 @@ pub enum SshDropThen {
     Discard,
     /// Shown in the editor as unexecuted text (the connect ended without a remote shell).
     HandBackText,
+    /// Written to the pty once, in typed order, for the LOCAL shell: a managed ssh that failed or
+    /// ended with no wrapper verdict, as plain ssh in a plain terminal leaves the typeahead in the
+    /// tty for the shell (#1641, owner decision after r18u16).
+    WriteToLocalPty,
 }
 
 /// Whether paste `id` belongs to the input editor.

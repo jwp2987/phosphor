@@ -19784,17 +19784,14 @@ fn managed_ssh_plain_fallback_releases_the_held_keys_at_ownership() {
     }
 }
 
-/// #1641: the connect ends (the master login failed: no verdict is ever printed) with keys held
-/// under the wrapper: the #1292 hand-back returns them as text, unexecuted, once, and nothing
-/// reaches the pty. Here the model's ssh block is still the running one (the helper made it long
-/// running and only the gate is told the block ended), so the hand-back keeps the text for the
-/// input until that block completes (`Input::stash_handed_back_text`, the #1596 kept-text banner),
-/// exactly as `ssh_bootstrap_failure_hands_held_typeahead_back_without_stty_sane` sees it; the
-/// block's completion puts it into the editor (`Input::restore_handed_back_text`). r18u16 read the
-/// editor too early: the log showed "12 handed-back char(s) kept until the running block ends".
-/// Legacy and Table.
+/// #1641 (owner, after r18u16 Mac `ssh_failing_not_local` / `ssh_hanging_host_not_local`): the
+/// master login fails (no verdict is ever printed) with keys held under the wrapper. As plain ssh
+/// in iTerm2 leaves the typeahead in the tty for the local shell when ssh exits, the held keys are
+/// written to the pty ONCE, in typed order, at the hand-over that follows the block's completion;
+/// nothing goes to the editor and nothing is kept for it. (This replaces the #1292 hand-back as
+/// text for this case; an unmanaged ssh is unchanged.) Legacy and Table.
 #[test]
-fn managed_ssh_block_end_without_a_verdict_hands_the_keys_back_as_text() {
+fn managed_ssh_block_end_without_a_verdict_releases_the_keys_to_the_local_shell() {
     use crate::terminal::input_queue::DestinationMode;
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
@@ -19810,28 +19807,72 @@ fn managed_ssh_block_end_without_a_verdict_hands_the_keys_back_as_text() {
                     view.ssh_connect_gate.is_none(),
                     "{mode:?}: failure ends the window"
                 );
-                view.deliver_ssh_typeahead_if_ready("test", ctx);
+                assert!(
+                    pty_writes.borrow().is_empty(),
+                    "{mode:?}: not before the hand-over"
+                );
+                view.deliver_ssh_typeahead_if_ready("block_completed", ctx);
                 assert!(!view.ssh_typeahead_holding, "{mode:?}");
                 assert!(view.ssh_held_is_empty(), "{mode:?}: nothing left held");
-                assert!(view.is_long_running(), "{mode:?}: the ssh block still runs");
                 let input = view.input.as_ref(ctx);
                 assert_eq!(
                     input.handed_back_text_for_test(),
-                    Some("echo T258_ok"),
-                    "{mode:?}: the held text is kept for the input, once, in typed order"
+                    None,
+                    "{mode:?}: nothing kept for the editor"
                 );
                 assert_eq!(
                     input.buffer_text(ctx),
                     "",
-                    "{mode:?}: not also in the editor (it comes back there when the block ends)"
+                    "{mode:?}: nothing in the editor"
                 );
+                // A later hand-over finds nothing: the keys went out once.
+                view.deliver_ssh_typeahead_if_ready("precmd", ctx);
             });
-            assert!(
-                pty_writes.borrow().is_empty(),
-                "{mode:?}: nothing written: {:?}",
-                pty_writes.borrow()
+            let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+            assert_eq!(
+                written, b"echo T258_ok\r",
+                "{mode:?}: written once, in typed order, for the local shell"
             );
         })
+    }
+}
+
+/// #1641 (owner, after r18u16): the same for every way a managed ssh ends with no remote shell
+/// announced: a non-zero exit after `ManagedSSHSessionStarting` (the managed session failed to
+/// connect), and a non-zero or clean exit with no verdict and no ssh hook. The held keys reach the
+/// local shell once, in order. A clean end after the ssh hook is not this case: the bootstrap is
+/// still coming and keeps its hold (`managed_ssh_keys_are_held_through_..._after_the_bootstrap`).
+/// Legacy and Table.
+#[test]
+fn managed_ssh_failing_without_a_remote_shell_releases_the_keys_locally_for_each_exit() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        for (managed_verdict, exit_code) in [(true, 255), (false, 1), (false, 0)] {
+            App::test((), move |mut app| async move {
+                let _mode =
+                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+                initialize_app_for_terminal_view(&mut app);
+                app.add_singleton_model(|_| crate::workspace::ToastStack);
+                let terminal = add_window_with_terminal(&mut app, None);
+                let pty_writes = record_pty_writes(&mut app, &terminal);
+                let case = format!("{mode:?} managed_verdict={managed_verdict} exit={exit_code}");
+                terminal.update(&mut app, |view, ctx| {
+                    let armed = managed_ssh_held_through_the_master_login_for_test(view, ctx);
+                    if managed_verdict {
+                        ssh_wrapper_verdict_for_test(view, true, ctx);
+                    }
+                    view.apply_block_completed_to_ssh_gate(&armed, exit_code);
+                    view.deliver_ssh_typeahead_if_ready("block_completed", ctx);
+                    assert!(!view.ssh_typeahead_holding, "{case}");
+                    assert!(view.ssh_held_is_empty(), "{case}");
+                    let input = view.input.as_ref(ctx);
+                    assert_eq!(input.handed_back_text_for_test(), None, "{case}");
+                    assert_eq!(input.buffer_text(ctx), "", "{case}");
+                });
+                let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+                assert_eq!(written, b"echo T258_ok\r", "{case}: once, in typed order");
+            })
+        }
     }
 }
 

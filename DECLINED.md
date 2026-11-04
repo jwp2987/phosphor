@@ -2814,7 +2814,8 @@ replaces the earlier #983/#1292 rule "a line typed behind a failing ssh is never
 Do NOT add a tty drain on ssh exit 255 (one was written and withdrawn the same night) or any other
 mechanism that discards or diverts that text: the plain-terminal behaviour is the decision.
 Keys still HELD (typed before ssh owned the tty) are still handed back to the editor as text when
-the window ends without ownership (#1292). The real-app case `ssh_failing_not_local` checks the
+the window ends without ownership (#1292) for an unmanaged ssh; under the ssh wrapper they are written to the
+pty for the local shell once the ssh block ends (#1641, see the managed-ssh paragraph below). The real-app case `ssh_failing_not_local` checks the
 plain-terminal result: the line runs locally exactly once, exactly as typed, and only after the
 ssh failed.
 
@@ -2831,39 +2832,44 @@ the keys stay held and the managed hold hands them over at the remote shell's fi
 order, once (#1572); `PlainSSHFallback` before every plain `command ssh` the wrapper runs instead
 (#1551 mux failure, MSYS2, a RemoteCommand, a busy socket, a non-POSIX remote, the wrapper turned
 off): the window becomes an unmanaged one and an ownership seen meanwhile applies at that moment
-(`ssh_on_wrapper_verdict`). An auth failure or Ctrl-C prints neither; the block's end hands the
-keys back as text (#1292). Password and passphrase reads keep the termios guard: while ssh owns
-the tty and it is canonical with echo off, what is held is discarded and the keys typed go to ssh
-(`ssh_wrapper_secret_pass_through`, a `tcgetattr` fact, never screen text); afterwards keys are
-held again. The host-key `yes/no` of a first connection is an echo-ON question, not a secret read,
-so its answer would stay held; the owner chose "master in strict host-key mode, retry"
-(2026-11-04): when the wrapper's one `ssh -G` reports the default `stricthostkeychecking ask`, the
-master runs with `StrictHostKeyChecking=yes` (not `BatchMode`: password and passphrase prompts
-still happen there; a user's `no` / `accept-new` / `yes` is left alone). If that master fails with
-255 and the host is not in the known_hosts files `ssh -G` names (`ssh-keygen -F` under its
-HostKeyAlias or HostName, `[host]:port` off port 22; never ssh's message), the wrapper prints
-`PlainSSHFallback` and runs the user's plain ssh ONCE, where the question is asked and keys pass
-through as in plain ssh; a known host (auth failure, network) returns the status as before and
-never prompts again (#1626). Echoing questions during the master login (a Duo "Passcode or
-option", a PAM question, an OTP) are answered the same way (owner, "detect tty read"): while the
-window waits for the verdict and the OS says ssh, the foreground group's leader, is blocked
-READING THE TTY (Linux: `/proc/<pid>/wchan` `n_tty_read`, or state `S` with `/proc/<pid>/syscall`
-a `read` on a tty fd; `terminal_attributes::foreground_reads_tty`), what is held is discarded
-(ssh's `readpassphrase` flushes) and the keys go to ssh; when it stops reading, keys are held
-again. Where that probe works (Linux with a readable `/proc`) the wait for the verdict has NO
-silence ceiling and no give-up timer (a slow password or a Duo push may take minutes): it ends at
-the verdict, the block's end, or a Ctrl-C (SIGINT to ssh, the hold flushed as the tty would).
-macOS (and any platform without the probe: `libc` has no `kinfo_proc`, and the kernel reports no
-wait message) keeps the 15 s silence ceiling for that wait, because an echoing answer (Duo, an
-OTP) would otherwise be held while ssh waits for it: the give-up hands the held keys back as text
-(never written to the pty) and releases the window, and typing then reaches ssh as in a plain
-terminal. Passwords and passphrases (the termios guard) and host keys (the strict-master retry)
-are covered there as before. The managed verdict restarts the 15 s clock for the bootstrap, and
-one arriving with no window for the announced, still-running ssh re-arms a window. Only the first
-verdict, from the announcing shell's session, counts. An announcement seen before the window arms
-is remembered for its block and applied when it arms; one handled after the ownership event takes
-the window back (keys typed from then on are held; what the event already released went to ssh).
-Unmanaged ssh (no announcement) and Windows (`TTY_OWNED_AT_ARM`) are unchanged.
+(`ssh_on_wrapper_verdict`). An auth failure or Ctrl-C prints neither. A managed ssh that fails, or
+ends with no verdict, before its remote shell announced itself (owner, after r18u16) behaves like
+plain ssh in iTerm2: the held keys are written to the pty ONCE, in typed order, at the hand-over
+that follows the block's completion, so the LOCAL shell reads them (`ssh_release_held_locally`,
+`SshDropThen::WriteToLocalPty`); never handed back as text, never by a timer. Ctrl-C keeps its
+flush, and a clean end after the ssh hook still waits for the bootstrap. Password and passphrase
+reads keep the termios guard: while ssh owns the tty and it is canonical with echo off, what is
+held is discarded and the keys typed go to ssh (`ssh_wrapper_secret_pass_through`, a `tcgetattr`
+fact, never screen text); afterwards keys are held again. The host-key `yes/no` of a first
+connection is an echo-ON question, not a secret read, so its answer would stay held; the owner
+chose "master in strict host-key mode, retry" (2026-11-04): when the wrapper's one `ssh -G`
+reports the default `stricthostkeychecking ask`, the master runs with `StrictHostKeyChecking=yes`
+(not `BatchMode`: password and passphrase prompts still happen there; a user's `no` / `accept-new`
+/ `yes` is left alone). If that master fails with 255 and the host is not in the known_hosts files
+`ssh -G` names (`ssh-keygen -F` under its HostKeyAlias or HostName, `[host]:port` off port 22;
+never ssh's message), the wrapper prints `PlainSSHFallback` and runs the user's plain ssh ONCE,
+where the question is asked and keys pass through as in plain ssh; a known host (auth failure,
+network) returns the status as before and never prompts again (#1626). Echoing questions during
+the master login (a Duo "Passcode or option", a PAM question, an OTP) are answered the same way
+(owner, "detect tty read"): while the window waits for the verdict and the OS says ssh, the
+foreground group's leader, is blocked READING THE TTY (Linux: `/proc/<pid>/wchan` `n_tty_read`, or
+state `S` with `/proc/<pid>/syscall` a `read` on a tty fd;
+`terminal_attributes::foreground_reads_tty`), what is held is discarded (ssh's `readpassphrase`
+flushes) and the keys go to ssh; when it stops reading, keys are held again. Where that probe
+works (Linux with a readable `/proc`) the wait for the verdict has NO silence ceiling and no
+give-up timer (a slow password or a Duo push may take minutes): it ends at the verdict, the
+block's end, or a Ctrl-C (SIGINT to ssh, the hold flushed as the tty would). macOS (and any
+platform without the probe: `libc` has no `kinfo_proc`, and the kernel reports no wait message)
+keeps the 15 s silence ceiling for that wait, because an echoing answer (Duo, an OTP) would
+otherwise be held while ssh waits for it: the give-up hands the held keys back as text (never
+written to the pty) and releases the window, and typing then reaches ssh as in a plain terminal.
+Passwords and passphrases (the termios guard) and host keys (the strict-master retry) are covered
+there as before. The managed verdict restarts the 15 s clock for the bootstrap, and one arriving
+with no window for the announced, still-running ssh re-arms a window. Only the first verdict, from
+the announcing shell's session, counts. An announcement seen before the window arms is remembered
+for its block and applied when it arms; one handled after the ownership event takes the window
+back (keys typed from then on are held; what the event already released went to ssh). Unmanaged
+ssh (no announcement) and Windows (`TTY_OWNED_AT_ARM`) are unchanged.
 
 **Windows: ssh.exe does not flush typeahead before a password prompt; accepted (owner,
 2026-11-04: "Accept, note it").** Under the same plain-terminal rule, text typed on Windows before
