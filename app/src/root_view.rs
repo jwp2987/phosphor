@@ -1398,6 +1398,7 @@ fn mark_local_onboarding_completed(ctx: &AppContext) {
 /// Whether auth and onboarding have completed and we should render the `Workspace`.
 enum AuthOnboardingState {
     Auth(Box<WorkspaceArgs>),
+    #[allow(dead_code)] // used by sibling unused code or shared name
     ConfirmIncomingAuth(Box<WorkspaceArgs>),
     /// The client is importing auth state from the host application.
     #[cfg(target_family = "wasm")]

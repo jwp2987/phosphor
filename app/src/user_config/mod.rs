@@ -70,6 +70,7 @@ pub enum WarpConfigUpdateEvent {
     /// `keybindings.yaml` exists but could not be read or parsed, so the
     /// user's custom bindings are not in effect and the file will not be
     /// rewritten until it is fixed (#858). Holds the reason.
+    #[allow(dead_code)] // used by sibling unused code or shared name
     KeybindingsFileError(String),
     /// `settings.toml` could not be written (read-only file or directory,
     /// a directory in its place, a full disk), so the change just made is
@@ -148,6 +149,7 @@ impl WarpConfig {
     /// `None` once the file has been read successfully again, or the current
     /// reason when a re-read found a different one. Toasts already shown stay
     /// until dismissed.
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn record_keybindings_file_error_quietly(&mut self, reason: Option<String>) {
         self.keybindings_file_error = reason;
     }
@@ -156,6 +158,7 @@ impl WarpConfig {
     /// workspace. Always announced, even when the reason is unchanged: each
     /// refused write must re-show the toast, which the user may have
     /// dismissed.
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn set_keybindings_file_error(&mut self, reason: String, ctx: &mut ModelContext<Self>) {
         self.keybindings_file_error = Some(reason.clone());
         ctx.emit(WarpConfigUpdateEvent::KeybindingsFileError(reason));

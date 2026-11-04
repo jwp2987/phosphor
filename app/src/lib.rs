@@ -1,14 +1,5 @@
 // Suppress warnings about rustdoc style.
 #![allow(clippy::doc_lazy_continuation)]
-// Orphaned code left over from upstream Zap trimming is temporarily kept; dead_code warnings are
-// suppressed globally. Absent from the pin (`42effe840:app/src/lib.rs` has no such attribute).
-//
-// Before removing this: it is not a three-module problem. 84 of the 108 module declarations below
-// are private, so lifting the blanket exposes `dead_code` across the whole private half of the
-// crate, not just `ui_components` / `uri` / `workspaces`. `uri::open_window_with_action`
-// (`uri/mod.rs`) is one confirmed orphan; the total is only knowable from a build, so size it with
-// one before swapping the blanket for per-site `#[allow(dead_code)]`.
-#![allow(dead_code)]
 
 mod ai;
 mod alloc;
@@ -216,7 +207,7 @@ pub(crate) use settings_write_failure::report_settings_write_error;
 pub use warp_core::errors::{report_error, report_if_error};
 
 use warp_core::user_preferences::GetUserPreferences as _;
-use warpui::modals::{AlertDialogWithCallbacks, AppModalCallback};
+
 use warpui::platform::app::ApproveTerminateResult;
 use window_settings::WindowSettings;
 use workflows::manager::WorkflowManager;
@@ -633,6 +624,7 @@ impl LaunchMode {
     /// see the comment on that arm -- so a fixture built on the Test mode does
     /// not model what it claims to.
     #[cfg(any(test, feature = "test-util"))]
+    #[allow(dead_code)] // used only by tests
     pub(crate) fn new_for_cli_unit_test() -> Self {
         LaunchMode::CommandLine {
             command: warp_cli::CliCommand::Whoami,
@@ -2940,34 +2932,6 @@ fn app_callbacks(is_integration_test: bool) -> warpui::platform::AppCallbacks {
             ctx.dispatch_global_action("workspace:save_app", &());
         })),
         ..Default::default()
-    }
-}
-
-/// Focuses the active window or if there isn't one then a window with a running process
-/// and then shows the native modal.
-fn focus_running_window_and_show_native_modal(
-    sessions_summary: RunningSessionSummary,
-    dialog_with_callbacks: AlertDialogWithCallbacks<AppModalCallback>,
-    ctx: &mut AppContext,
-) {
-    let windowing_model = ctx.windows();
-    let active_window_id = windowing_model.active_window();
-    // Show the nav palette in the active window. If there is no active window,
-    // arbitrarily pick one of the windows having a running process.
-    let window_id_to_focus = active_window_id.unwrap_or_else(|| {
-        *sessions_summary
-            .windows_running()
-            .iter()
-            .next()
-            .expect("already checked len > 0")
-    });
-    ctx.windows().show_window_and_focus_app(window_id_to_focus);
-    if let Some(workspaces) = ctx.views_of_type::<Workspace>(window_id_to_focus) {
-        if let Some(handle) = workspaces.first() {
-            handle.update(ctx, |view, ctx| {
-                view.show_native_modal(dialog_with_callbacks, ctx);
-            });
-        }
     }
 }
 

@@ -38,6 +38,7 @@ struct ExpiryData {
     id: ItemId,
     /// [`awake_now`] when the item was pushed; the grace period is measured on that clock so a
     /// suspend between close and undo does not use it up.
+    #[allow(dead_code)] // field: set at construction or persisted
     pushed_awake: std::time::Duration,
     task_handle: SpawnedFutureHandle,
 }

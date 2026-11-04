@@ -420,6 +420,7 @@ impl RefreshGate {
     }
 
     /// The metadata was set by other means: a result still in flight is older than it.
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub(super) fn retire_in_flight(&mut self) {
         self.token += 1;
     }

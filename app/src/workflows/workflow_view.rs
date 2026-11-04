@@ -303,6 +303,7 @@ pub struct WorkflowView {
     default_argument_id: usize,
     pub(super) ai_metadata_assist_state: AiAssistState,
     revision_ts: Option<Revision>,
+    #[allow(dead_code)] // field: set at construction or persisted
     pub(super) auth_state: Arc<AuthState>,
     owner: Option<Owner>,
     initial_folder_id: Option<SyncId>,

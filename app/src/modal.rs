@@ -196,6 +196,7 @@ impl<T: View> Modal<T> {
         self
     }
 
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn set_title(&mut self, title: Option<String>) {
         self.title = title;
     }

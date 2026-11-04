@@ -107,6 +107,7 @@ impl MouseState {
 
     /// Sets the click count. Used by the TUI hoverable to carry click state
     /// through synthetic hover events.
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub(crate) fn set_click_count(&mut self, click_count: Option<u32>) {
         self.click_count = click_count;
     }

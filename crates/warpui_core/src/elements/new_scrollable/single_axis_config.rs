@@ -200,6 +200,7 @@ impl SingleAxisConfig {
         }
     }
 
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     pub(super) fn scroll_offset(&self, axis: Axis) -> Vector2F {
         match self {
             Self::Manual { .. } => Vector2F::zero(),

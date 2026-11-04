@@ -4966,6 +4966,7 @@ impl SettingsWidget for WarpAgentHeaderWidget {
 
 #[derive(Default)]
 struct UsageWidget {
+    #[allow(dead_code)] // field: set at construction or persisted
     requests_highlight_index: HighlightedHyperlink,
 }
 
