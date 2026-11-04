@@ -1705,3 +1705,34 @@ quoted Windows home is expected with doubled backslashes (`path_test.rs`); the r
 overshoots on Windows (3000 ms gave up after 4.6-4.8 s), so one wait broke the 3 s budget. Setup now hands SQLite 25 ms slices and
 retries against its own `Instant` deadline, the migration transaction included (`BUSY_WAIT_SLICE`, `sqlite.rs`). New tests:
 `setup_busy_waits_are_short_slices_of_the_budget`, `setup_waits_out_a_lock_released_inside_the_budget`.
+
+## r18u19 macOS app-run fixes (pipeline 3028768440, 9eb5c3f50)
+
+Harness changes plus two small app changes. `run.py --self-test` covers the harness ones (`r18d2_routing_expectation_ocr_fuzz_and_ctrlc_window`,
+`r18u19_heredoc_dialog_is_read_from_the_app_log`, `r18u19_settings_probe_and_theme_diff`).
+
+- **`routing_table` (terminal)**: `cat the error log and tell me what is wrong` was typed in the PLAIN terminal for the first time (r18u8/r18u13
+  had it inside a conversation) and went to the agent by `request-shape (#834/#965)`. That is the documented route on both surfaces (the corpus
+  pins `sudo rm the old logs for me` "#1291 (plain terminal unchanged)" and `find the process that is eating my memory` #834 as Agent with an
+  installed head; the owner's #964 installed-head rule covers English-looking arguments, not a sentence addressed to someone). The case's
+  plain-terminal expectation was unpinned and fell back to "shell"; it is now pinned `("agent", "agent")`, and the routing corpus has the exact
+  line on both surfaces (`routing_corpus.rs`). No routing code changed.
+- **`remote_heredoc_paste`**: the `Run N lines one at a time?` dialog is read from the app log (the dialog's view in a `frame ... updated=[...]`
+  line; a `try_execute_done` ends the look) for `6 s + 1 s per 50 KB` (at most 40 s), OCR only without a log; r18u19's 600 KB dialog was drawn
+  just after the old 6 s OCR look ended, sat for 180 s and was then confirmed by the zsh step's Enter. A dialog still open after a failed step
+  is cancelled with Escape. While the case waits for a remote file it samples `ps` every 2 s and records the peak %cpu of the app, bash, sshd
+  and ssh (`hd_*_peak_cpu`), so the next run says whether the remote line editor or the app is the ~2 KB/s bottleneck (#1129). App side: the
+  dialog is no longer shown for a bash command over the base64 wrapper size (it reaches the shell as one line, so "runs each of the N lines
+  as a separate command" was untrue): `multiline_submit_needs_confirmation`, test
+  `multiline_submit_does_not_ask_when_bash_gets_the_wrapper_line` (`terminal/input_test.rs`).
+- **App log**: `describe_text` / `describe_bytes*` log text over 64 KiB by its count even with `WARP_INPUT_ORDER_LOG_TEXT=1` (the form the
+  harness already parses): every key of the 600 KB here-doc logged the whole buffer, ~50 MB in 13 s, and the rotation deleted the minutes that
+  showed the agent-mode failure (`opted_in_text_over_the_cap_is_logged_by_count`, `crates/warpui_core/src/input_order.rs`).
+- **`cb_settings_ui_open` (terminal)**: each probe is judged by its own line. Probe 1 went to the still-open settings page, probe 2 ran in the
+  shell after the palette close (the shot shows it), and the old `>= n lines` count read that as "did not take typing".
+- **`ui_settings_live`**: the theme and font steps use `img_diff(color=True)` (largest channel difference > 8). The shots show both changes
+  applied; the grey-level test (> 24) saw 0.3 % of a dark-to-dark theme recolour and 1.5 % of the font change, the channel test 18-67 % and
+  3.3-3.6 %, identical shots 0.03 %. Thresholds unchanged; vertical tabs keep the grey-level test.
+- **`key_loss_control`**: the macOS reference is ready when its own shell has drawn a prompt (`refctl/prompt.log`, up to 30 s), not when
+  Terminal.app is frontmost: Terminal.app had restored windows from an earlier session, so it was frontmost at once and the keys went to a
+  restored window while the `.command` shell was still starting.

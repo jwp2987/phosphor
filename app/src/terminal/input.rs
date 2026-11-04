@@ -6925,17 +6925,36 @@ impl Input {
     /// Whether submitting `command` would run it as many separate commands: it has more than
     /// [`MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD`] lines and the shell is not in bracketed paste
     /// mode, so each line is executed on its own (Windows PowerShell 5.1) (#1046).
+    ///
+    /// r18u19 (#1129): a bash command over the wrapper size is not run line by line either: it
+    /// goes to the shell as one base64 line that bash decodes and sources, so the question ("runs
+    /// each of the N lines as a separate command") would be untrue. On macOS (`/bin/bash` 3.2 over
+    /// ssh, no bracketed paste) it stopped every large here-doc behind a dialog.
     pub(crate) fn multiline_submit_needs_confirmation(
         &self,
         command: &str,
         ctx: &AppContext,
     ) -> bool {
-        submitted_line_count(command) > MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD
-            && !self.can_execute_command(ctx).is_no()
-            && !crate::terminal::writeable_pty::pty_controller::command_is_sent_as_bracketed_paste(
-                self.model.lock().pty_bracketed_paste(),
+        use crate::terminal::writeable_pty::pty_controller::{
+            command_is_sent_as_bracketed_paste, command_is_sent_as_one_wrapped_line,
+        };
+        if submitted_line_count(command) <= MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD
+            || self.can_execute_command(ctx).is_no()
+        {
+            return false;
+        }
+        let bracketed_paste = self.model.lock().pty_bracketed_paste();
+        if command_is_sent_as_bracketed_paste(bracketed_paste, command) {
+            return false;
+        }
+        let wrapped = self.active_session(ctx).is_some_and(|session| {
+            command_is_sent_as_one_wrapped_line(
+                session.shell().shell_type(),
+                bracketed_paste,
                 command,
             )
+        });
+        !wrapped
     }
 
     /// The user chose to run the waiting multi-line buffer line by line.

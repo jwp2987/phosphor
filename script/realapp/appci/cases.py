@@ -2518,6 +2518,9 @@ def ref_terminal(ctx):
             ctx.ref_shell = login
         os.chmod(cmdf, 0o755)
         subprocess.run(["xattr", "-c", cmdf], capture_output=True)
+        ctx.prof.ref_active = True
+        ref_prompts0 = ctx.prompts()        # the reference shell's own prompt.log (refctl), before this launch
+        ctx.prof.ref_active = False
         rr = subprocess.run(["open", "-a", "Terminal", cmdf], capture_output=True, timeout=20)
         if rr.returncode != 0:
             ctx.ref_reason = "open -a Terminal failed: %s" % rr.stderr.decode().strip()[:120]
@@ -2536,6 +2539,15 @@ def ref_terminal(ctx):
         time.sleep(1.5)
         ctx.be.guard_override = "Terminal"
         ctx.prof.ref_active = True          # commands()/read() now read refctl (#1550)
+        # r18u19 (Mac key_loss_control): the reference recorded NONE of 12 lines. Terminal.app was frontmost at once with windows it had RESTORED
+        # from an earlier session ("Restored session: ..." in the shot), so "frontmost" did not mean the .command window was up; with the Mac's CPU
+        # hogs its zsh started late and the keys went to a restored window. The reference is ready when ITS shell's rc has drawn a prompt
+        # (refctl/prompt.log); up to 30 s, then the case goes on and its own check reports a reference that recorded nothing.
+        ready = ctx.until(lambda: ctx.prompts() > ref_prompts0, 30, step=0.2)
+        ctx.ref_ready_note = None if ready else ("the reference shell drew no prompt (refctl/prompt.log) within 30 s of `open -a Terminal`: the keys may "
+                                                 "have gone to another Terminal.app window (restored windows are open)")
+        if ready:
+            time.sleep(0.3)
 
         def close():
             ctx.prof.ref_active = False
@@ -2717,6 +2729,8 @@ def c_key_loss(ctx, r):
     ref = ref_terminal(ctx)
     if ref:
         ref_note(ctx, r)
+        if getattr(ctx, "ref_ready_note", None):
+            r.note(ctx.ref_ready_note)
     if ref:
         try:
             time.sleep(2.5)

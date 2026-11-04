@@ -267,11 +267,16 @@ def _remote_bytes(ctx, name):
         return None
 
 
-def _wait_remote_file(ctx, name, want_len, timeout):
-    """until the remote file has want_len bytes (or stops growing for 3 s after reaching any size): returns the bytes or None"""
+def _wait_remote_file(ctx, name, want_len, timeout, on_tick=None):
+    """until the remote file has want_len bytes (or stops growing for 3 s after reaching any size): returns the bytes or None. on_tick() runs about
+    every 2 s while waiting (the #1129 CPU sampler)."""
     last, still = -1, 0.0
     t_end = time.time() + timeout
+    next_tick = time.time()
     while time.time() < t_end:
+        if on_tick is not None and time.time() >= next_tick:
+            on_tick()
+            next_tick = time.time() + 2.0
         b = _remote_bytes(ctx, name)
         n = -1 if b is None else len(b)
         if n == want_len:
@@ -287,19 +292,55 @@ def _wait_remote_file(ctx, name, want_len, timeout):
     return _remote_bytes(ctx, name)
 
 
-def confirm_unbracketed_paste(ctx, r, label, wait_s=6.0):
+DIALOG_VIEW = "MultilineSubmitConfirmationDialog"            # the dialog's view name in the app's `frame N: updated=[...]` debug lines
+DIALOG_ANSWERED = "MultilineSubmitConfirmationAction"          # `core_enter ... action_type=...MultilineSubmitConfirmationAction handled=true`
+SUBMITTED = "hop=try_execute_done executed=true"
+
+
+def dialog_state(text):
+    """From an app-log excerpt that starts at the paste: 'open' (the `Run N lines one at a time?` dialog was drawn after the last answer to it),
+    'submitted' (the editor submitted a command and no dialog is open), or None (neither yet). Pure, for the self-test."""
+    shown = text.rfind(DIALOG_VIEW + '"')
+    answered = text.rfind(DIALOG_ANSWERED)
+    if shown >= 0 and shown > answered:
+        return "open"
+    if text.rfind(SUBMITTED) > max(shown, answered):
+        return "submitted"
+    return None
+
+
+def dialog_wait_s(nbytes):
+    """How long to look for the dialog after a paste of `nbytes`. r18u19 (Mac, terminal): the 600 KB here-doc's dialog was drawn just after a
+    6 s look had ended (the Enter waits for the shell-or-chat verdict of the whole paste, #1604), stayed up for the case's 180 s and was then
+    confirmed by the next step's `zsh -f` Enter. 6 s plus 1 s per 50 KB, at most 40 s; the look ends early once the app logs a submit."""
+    return min(40.0, 6.0 + nbytes / 50_000.0)
+
+
+def confirm_unbracketed_paste(ctx, r, label, off=None, wait_s=6.0):
     """r18u8 (Mac): the remote /bin/bash 3.2 has no bracketed paste, so the app asks `Run N lines one at a time?` (Cancel / Run) before it runs a multi-line paste, and
     every payload sat behind that dialog until the case timed out (`got no file`). The dialog is the app's designed answer for a shell that cannot take a bracketed
-    paste, so the case answers it with Run (Return, the dialog's default) and says so; it is looked for by OCR only (the screenshot is the evidence). No OCR engine:
-    nothing is pressed (a blind Return could land in the shell) and the note says why a timeout may follow."""
+    paste, so the case answers it with Run (Return, the dialog's default) and says so. r18u19: read from the app log first (`off` = the log size before the
+    paste: the dialog's view in a frame line, a submit ends the look), OCR only without a log. Neither: nothing is pressed (a blind Return could land in the
+    shell) and the note says why a timeout may follow."""
     t_end = time.time() + wait_s
-    seen_ocr = False
+    use_log = off is not None and bool(getattr(ctx, "log_path", None)) and os.path.exists(ctx.log_path)
     while time.time() < t_end:
+        if use_log:
+            st = dialog_state(ctx.log_since(off))
+            if st == "submitted":
+                return False
+            if st == "open":
+                ctx.shot("heredoc_dialog")
+                ctx.be.key("Return")
+                r.note("%s: answered the app's `Run N lines one at a time?` dialog (the remote shell has no bracketed paste) with Run (dialog seen in the app log)" % label)
+                time.sleep(0.5)
+                return True
+            time.sleep(0.25)
+            continue
         txt = ctx.ocr("heredoc_dialog_probe")
         if txt is None:
-            r.note("%s: no OCR engine, so a `Run N lines one at a time?` dialog cannot be answered; a timeout below may be that dialog" % label)
+            r.note("%s: no app log and no OCR engine, so a `Run N lines one at a time?` dialog cannot be answered; a timeout below may be that dialog" % label)
             return False
-        seen_ocr = True
         low = " ".join(txt.lower().split())
         if "one at a time" in low:
             ctx.shot("heredoc_dialog")
@@ -311,23 +352,77 @@ def confirm_unbracketed_paste(ctx, r, label, wait_s=6.0):
     return False
 
 
+def dismiss_open_dialog(ctx, r, label, off):
+    """After a timeout: a dialog still open would take the next step's Enter as Run (r18u19: `zsh -f` + Enter confirmed the 600 KB here-doc three
+    minutes late and every later step cascaded). Escape is the dialog's Cancel; the text stays in the input and ctx.reset() clears it."""
+    if off is None or not getattr(ctx, "log_path", None) or dialog_state(ctx.log_since(off)) != "open":
+        return
+    ctx.shot("heredoc_dialog_left_open")
+    ctx.be.key("Escape")
+    time.sleep(0.5)
+    r.note("%s: the `Run N lines one at a time?` dialog was still open after the timeout; cancelled it with Escape so the next step's Enter cannot run it" % label)
+    ctx.reset()
+
+
+PS_CPU_RE = re.compile(r"^\s*(\d+)\s+([\d.]+)\s+(.+?)\s*$")
+
+
+def busy_sample(ctx):
+    """{'app': %cpu, '<command basename>': %cpu, ...} for the app and the shells / ssh processes on this machine (the harness's sshd runs the remote
+    shell locally), or {} when ps fails. #1129 rate diagnosis: a remote here-doc that arrives at ~2 KB/s is either the remote line editor (bash at
+    ~100 %) or the app consuming the echo (the app at ~100 %); ps %cpu is a decaying average on macOS, so the PEAK over the wait is recorded."""
+    try:
+        out = subprocess.run(["ps", "-A", "-o", "pid=,pcpu=,comm="], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    try:
+        app_pid = ctx.app.pid()
+    except Exception:
+        app_pid = None
+    got = {}
+    for line in out.splitlines():
+        m = PS_CPU_RE.match(line)
+        if not m:
+            continue
+        pid, cpu, comm = int(m.group(1)), float(m.group(2)), os.path.basename(m.group(3)).lstrip("-")
+        if pid == app_pid:
+            key = "app"
+        elif comm in ("bash", "sh", "zsh", "fish", "sshd", "ssh", "sshd-session"):
+            key = comm
+        else:
+            continue
+        got[key] = max(got.get(key, 0.0), cpu)
+    return got
+
+
 def _send_and_check(ctx, r, label, name, command, expected, timeout):
     rm_remote(ctx, name)
     t0 = time.time()
+    off = ctx.log_size() if getattr(ctx, "log_path", None) else None
     ctx.be.clip_set(command)
     ctx.be.paste(enter=True)
-    confirm_unbracketed_paste(ctx, r, label)
-    got = _wait_remote_file(ctx, name, len(expected), timeout)
+    confirm_unbracketed_paste(ctx, r, label, off, dialog_wait_s(len(command)))
+    peak = {}
+
+    def sample():
+        for k, v in busy_sample(ctx).items():
+            peak[k] = max(peak.get(k, 0.0), v)
+    got = _wait_remote_file(ctx, name, len(expected), timeout, on_tick=sample)
     secs = round(time.time() - t0, 2)
     r.metric("%s_s" % name.replace(".", "_"), secs)
     r.metric("%s_bytes_got" % name.replace(".", "_"), -1 if got is None else len(got))
+    if peak:
+        r.metric("%s_peak_cpu" % name.replace(".", "_"), {k: round(v, 1) for k, v in peak.items()})
     ok = got == expected
     first = None
     if got is not None and not ok:
         first = next((i for i, (a, b) in enumerate(zip(expected, got)) if a != b), min(len(expected), len(got)))
-    r.check(ok, "%s: remote file not byte-exact (expected %d bytes, got %s%s, %.1fs)" % (
-        label, len(expected), "no file" if got is None else "%d bytes" % len(got), "" if first is None else ", first difference at byte %d" % first, secs))
+    r.check(ok, "%s: remote file not byte-exact (expected %d bytes, got %s%s, %.1fs)%s" % (
+        label, len(expected), "no file" if got is None else "%d bytes" % len(got), "" if first is None else ", first difference at byte %d" % first, secs,
+        "" if ok or not peak else "; peak %%cpu while waiting: %s (the busy side is the bottleneck: the remote line editor or the app)" % peak))
     ctx.shot("heredoc_%s" % name.split(".")[0])
+    if not ok:
+        dismiss_open_dialog(ctx, r, label, off)
     return ok
 
 

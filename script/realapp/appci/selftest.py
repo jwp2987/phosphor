@@ -525,6 +525,9 @@ def r18d2_routing_expectation_ocr_fuzz_and_ctrlc_window():
     assert w("find the bug in main.rs", "PlainTerminal", "installed-head (#906/#964)") == "shell"
     assert w("make a PR", "AgentConversation", "no-evidence-in-conversation (#1183)") == "agent"
     assert w("cat the error log and tell me what is wrong", "AgentConversation", "request-shape (#834/#965)") == "agent"
+    # r18u19: the same request-shaped line typed in the plain terminal is the agent's too (#834/#965, routing corpus)
+    assert w("cat the error log and tell me what is wrong", "PlainTerminal", "request-shape (#834/#965)") == "agent"
+    assert w("make a PR", "PlainTerminal", "installed-head (#906/#964)") == "shell"
     assert w("some other line", "AgentConversation", "evidence-in-conversation (#1183)") == "shell"
     assert w("some other line", None, None) is None
     # OCR: tesseract read 'keepmet115_qmoods' for 'keepmet115_qm09d8'
@@ -585,6 +588,46 @@ def r18u8_harness_fixes_pure_pieces():
     import cases_caseremote as _cr
     import inspect
     assert 'PATH="$PATH"' in inspect.getsource(_cr.remote_session)
+
+
+@check
+def r18u19_heredoc_dialog_is_read_from_the_app_log():
+    import cases_caseremote as rm
+    shown = 'x frame 1: updated=["MultilineSubmitConfirmationDialog", "EditorView"] removed=0\n'
+    answered = 'x hop=core_enter stage=action_handled step=2 action_type=warp::workspace::multiline_submit_confirmation_dialog::MultilineSubmitConfirmationAction handled=true\n'
+    submitted = 'x input_order hop=try_execute_done executed=true took_ms=0.1 t=1\n'
+    assert rm.dialog_state("") is None
+    assert rm.dialog_state(shown) == "open"
+    assert rm.dialog_state(shown + answered) is None
+    assert rm.dialog_state(shown + answered + submitted) == "submitted"
+    assert rm.dialog_state(submitted) == "submitted"
+    assert rm.dialog_state(shown + answered + submitted + shown) == "open"          # asked again for the next paste
+    # the core_enter context names the dialog without a quote: not a drawing of it
+    assert rm.dialog_state("x hop=core_enter stage=match_step context=MultilineSubmitConfirmationDialog t=1\n") is None
+    assert rm.dialog_wait_s(10_000) < 7 and 17 < rm.dialog_wait_s(600_000) < 19 and rm.dialog_wait_s(10**8) == 40.0
+    assert rm.PS_CPU_RE.match("  123  98.5 /bin/bash").groups() == ("123", "98.5", "/bin/bash")
+
+
+@check
+def r18u19_settings_probe_and_theme_diff():
+    import cases_coverage_b as cb, cases_ui as ui
+    # probe 1 swallowed by the settings page, probe 2 ran: probe 2 is judged by its own line
+    assert cb.probe_landed(["probe2"], 2) and not cb.probe_landed(["probe2"], 1) and not cb.probe_landed(["probe1"], 2)
+    try:
+        from PIL import Image
+    except ImportError:
+        return
+    d = tempfile.mkdtemp()
+    try:
+        a, b, c = (os.path.join(d, n) for n in ("a.png", "b.png", "c.png"))
+        Image.new("RGB", (40, 40), (30, 32, 46)).save(a)           # one dark theme ...
+        Image.new("RGB", (40, 40), (10, 25, 15)).save(b)           # ... and another: ~14 grey levels apart
+        Image.new("RGB", (40, 40), (30, 32, 46)).save(c)
+        assert ui.img_diff(a, b) == 0.0                           # the grey-level test misses it (the r18u19 failure)
+        assert ui.img_diff(a, b, color=True) == 1.0               # the colour test sees the whole recolour
+        assert ui.img_diff(a, c, color=True) == 0.0               # and nothing between identical shots
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 @check

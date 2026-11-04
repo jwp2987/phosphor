@@ -940,6 +940,21 @@ pub(crate) const CASES: &[Case] = &[
         "#1291 (plain terminal unchanged)",
     )
     .expect(Expect::Agent),
+    // r18u19 appci routing_table: the same rule for an installed `cat` heading a request (`tell
+    // me what`): the agent's on both surfaces, like `look at the logs for me`. The macOS run
+    // logged `request-shape (#834/#965)` with surface PlainTerminal; r18u13 logged the same rule
+    // with surface AgentConversation.
+    Case::cmd(
+        "cat the error log and tell me what is wrong",
+        "#834 / #965 (request shape, plain terminal)",
+    )
+    .expect(Expect::Agent),
+    Case::cmd(
+        "cat the error log and tell me what is wrong",
+        "#834 / #965 (request shape, conversation)",
+    )
+    .in_conversation()
+    .expect(Expect::Agent),
     Case::cmd("for i in a b; do echo $i; done", "#1183").in_conversation(),
     Case::cmd("ls | grep a", "#1183").in_conversation(),
     Case::cmd("./run.sh --fast", "#1183").in_conversation(),
