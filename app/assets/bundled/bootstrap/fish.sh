@@ -848,6 +848,8 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
         set -l remote_session_id (command od -An -N8 -tu8 /dev/urandom 2>/dev/null | command tr -d ' \n')
         if test -z "$remote_session_id"; or test "$remote_session_id" = "0"
             # If we cannot generate a non-zero random token, run plain SSH instead.
+            # #1641: the plain ssh runs, not the managed session: the app releases held keys when it owns the tty.
+            warp_send_json_message "{\"hook\": \"PlainSSHFallback\", \"value\": {\"session_id\": $WARP_SESSION_ID}}"
             command ssh $argv
             return
         end
@@ -862,6 +864,8 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
         set -l warp_ssh_g (command ssh -G $argv 2>/dev/null)
         set -l user_remote_command (printf '%s\n' $warp_ssh_g | command sed -n 's/^remotecommand //p')
         if test -n "$user_remote_command"; and test "$user_remote_command" != "none"
+            # #1641: the plain ssh runs, not the managed session: the app releases held keys when it owns the tty.
+            warp_send_json_message "{\"hook\": \"PlainSSHFallback\", \"value\": {\"session_id\": $WARP_SESSION_ID}}"
             command ssh $argv
             return
         end
@@ -928,6 +932,18 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
         if test "$WARP_SSH_OBSCURE_KEYSTROKE_TIMING" = "0"; and string match -q -- 'obscurekeystroketiming yes' $warp_ssh_g
             set -a warp_ipqos_args -o ObscureKeystrokeTiming=no
         end
+        # #1641 (owner: "master in strict host-key mode, retry"): a host-key yes/no during the
+        # master login is not a secret read, so its answer would stay held. The master therefore runs
+        # with StrictHostKeyChecking=yes, ONLY when this one `ssh -G` reports ssh's default `ask` (a user's
+        # no / accept-new / yes, in config or on the command line, always wins). Not BatchMode: password
+        # and passphrase prompts still happen in the master. An unknown host makes it fail, and the plain
+        # ssh below asks the question instead.
+        set -l warp_master_args
+        set -l warp_strict_added 0
+        if contains -- 'stricthostkeychecking ask' $warp_ssh_g
+            set warp_master_args -o StrictHostKeyChecking=yes
+            set warp_strict_added 1
+        end
 
         # #1035: decide AFTER connecting, with ONE authentication. The bootstrap below is a POSIX
         # shell script, which a Windows OpenSSH server (default shell cmd.exe or PowerShell)
@@ -959,11 +975,13 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
                     command rm -f -- "$warp_socket_file"
                 end
                 if test -e "$warp_socket_file"; or test -L "$warp_socket_file"
+                    # #1641: the plain ssh runs, not the managed session: the app releases held keys when it owns the tty.
+                    warp_send_json_message "{\"hook\": \"PlainSSHFallback\", \"value\": {\"session_id\": $WARP_SESSION_ID}}"
                     command ssh $argv
                     return
                 end
             end
-            command ssh $warp_ipqos_args -o ControlMaster=yes -o ControlPath="$control_path" -o ControlPersist=10 -o ClearAllForwardings=yes -N -f $argv
+            command ssh $warp_ipqos_args $warp_master_args -o ControlMaster=yes -o ControlPath="$control_path" -o ControlPersist=10 -o ClearAllForwardings=yes -N -f $argv
             set -l warp_master_rc $status
             if test $warp_master_rc -ne 0
                 # #1626: plain ssh asks for credentials ONCE. The master step was the user's one
@@ -973,6 +991,16 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
                 # only multiplexing failed (e.g. "Failed to connect to new control master"): then
                 # the user's plain ssh runs. -N: no remote command ever ran, none runs twice.
                 if test -e "$warp_socket_file"; or test -L "$warp_socket_file"
+                    # #1641: the plain ssh runs, not the managed session: the app releases held keys when it owns the tty.
+                    warp_send_json_message "{\"hook\": \"PlainSSHFallback\", \"value\": {\"session_id\": $WARP_SESSION_ID}}"
+                    command ssh $argv
+                    return
+                end
+                # #1641: the master refused an UNKNOWN host (strict mode was ours): run the user's plain ssh
+                # ONCE, where the yes/no is asked and the keys pass through. Decided from known_hosts
+                # (`ssh-keygen -F`), never from ssh's message. A known host (auth failure, network) returns.
+                if test $warp_strict_added -eq 1; and test $warp_master_rc -eq 255; and not warp_ssh_host_is_known $warp_ssh_g
+                    warp_send_json_message "{\"hook\": \"PlainSSHFallback\", \"value\": {\"session_id\": $WARP_SESSION_ID}}"
                     command ssh $argv
                     return
                 end
@@ -993,6 +1021,7 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
         if test $warp_owns_master -eq 1; or test "$external_control_master" = "true"
             set -g __warp_ssh_g $warp_ssh_g
             if warp_ssh_remote_is_non_posix_cached "$control_path" $argv
+                warp_send_json_message "{\"hook\": \"PlainSSHFallback\", \"value\": {\"session_id\": $WARP_SESSION_ID}}"
                 command ssh -o ControlMaster=no -o ControlPath="$control_path" -t $argv
                 set -l warp_plain_rc $status
                 if test $warp_owns_master -eq 1
@@ -1081,6 +1110,9 @@ TMPPREFIX="'$HOME/.zshtmp-'" WARP_SSH_RCFILES="'${ZDOTDIR:-$HOME}'" ZDOTDIR="'$W
     ;;
 esac
 "
+        # #1641: the master login is over; the managed session starts. Held keys stay held until the
+        # remote shell's first prompt (they must never reach the bootstrap payload).
+        warp_send_json_message "{\"hook\": \"ManagedSSHSessionStarting\", \"value\": {\"session_id\": $WARP_SESSION_ID}}"
         command ssh $warp_ipqos_args -o ControlMaster=$control_master_mode -o ControlPath="$control_path" \
         -t $argv $warp_remote_bootstrap
         set -l warp_session_rc $status
@@ -1202,6 +1234,29 @@ esac
     end
 
     # Ends the Phosphor-owned master at $argv[1].
+    # #1641: 0 when the destination of the `ssh -G` output (the lines in $argv) is in a known_hosts
+    # file it names (userknownhostsfile, globalknownhostsfile), under its HostKeyAlias or HostName,
+    # as `[name]:port` off port 22: what ssh itself looks up. Hashed files work (`ssh-keygen -F`).
+    # Without ssh-keygen or a name the answer is "known", so nothing is retried.
+    function warp_ssh_host_is_known
+        command -sq ssh-keygen; or return 0
+        set -l name (string replace -r -f -- '^hostkeyalias ' '' $argv)
+        if test -z "$name"; or test "$name" = none
+            set name (string replace -r -f -- '^hostname ' '' $argv)
+        end
+        test -n "$name"; or return 0
+        set -l port (string replace -r -f -- '^port ' '' $argv)
+        if test -n "$port"; and test "$port" != 22
+            set name "[$name]:$port"
+        end
+        for f in (string split -n ' ' -- (string replace -r -f -- '^(user|global)knownhostsfile ' '' $argv))
+            set f (string replace -r -- '^~' $HOME $f)
+            test -r "$f"; or continue
+            command ssh-keygen -F "$name" -f "$f" >/dev/null 2>&1; and return 0
+        end
+        return 1
+    end
+
     function warp_ssh_stop_master
         warp_ssh_mux_command exit $argv[1]
         return 0
@@ -1248,6 +1303,8 @@ esac
                 end
                 warp_ssh_helper $argv
             else
+                # #1641: PreInteractiveSSHSession was sent; say no managed session follows.
+                warp_send_json_message "{\"hook\": \"PlainSSHFallback\", \"value\": {\"session_id\": $WARP_SESSION_ID}}"
                 command ssh $argv
             end
         else

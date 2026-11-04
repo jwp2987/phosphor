@@ -53,6 +53,17 @@ pub(super) enum DProtoHook {
     PreInteractiveSSHSession {
         value: PreInteractiveSSHSessionValue,
     },
+    /// The ssh wrapper's master login succeeded and it is about to run the managed session, whose
+    /// remote command is Phosphor's bootstrap (#1641). Same value as `PreInteractiveSSHSession`.
+    ManagedSSHSessionStarting {
+        value: PreInteractiveSSHSessionValue,
+    },
+    /// The ssh wrapper is about to run the user's plain `ssh` instead of a managed session (#1551
+    /// mux failure, MSYS2, a RemoteCommand, a busy socket, a non-POSIX remote, the wrapper off;
+    /// #1641). Same value as `PreInteractiveSSHSession`.
+    PlainSSHFallback {
+        value: PreInteractiveSSHSessionValue,
+    },
     SSH {
         value: SSHValue,
     },
@@ -126,6 +137,8 @@ impl DProtoHook {
             DProtoHook::Preexec { .. } => "Preexec",
             DProtoHook::Bootstrapped { .. } => "Bootstrapped",
             DProtoHook::PreInteractiveSSHSession { .. } => "PreInteractiveSSHSession",
+            DProtoHook::ManagedSSHSessionStarting { .. } => "ManagedSSHSessionStarting",
+            DProtoHook::PlainSSHFallback { .. } => "PlainSSHFallback",
             DProtoHook::SSH { .. } => "SSH",
             DProtoHook::InitShell { .. } => "InitShell",
             DProtoHook::InputBuffer { .. } => "InputBuffer",
@@ -171,7 +184,9 @@ impl DProtoHook {
             DProtoHook::InputBuffer { value } => value.session_id.map(SessionId::from),
             DProtoHook::Clear { value } => value.session_id.map(SessionId::from),
             DProtoHook::FinishUpdate { value } => value.session_id.map(SessionId::from),
-            DProtoHook::PreInteractiveSSHSession { value } => value.session_id.map(SessionId::from),
+            DProtoHook::PreInteractiveSSHSession { value }
+            | DProtoHook::ManagedSSHSessionStarting { value }
+            | DProtoHook::PlainSSHFallback { value } => value.session_id.map(SessionId::from),
             DProtoHook::SSH { value } => value.session_id.map(SessionId::from),
             DProtoHook::InitSubshell { value } => value.session_id.map(SessionId::from),
             DProtoHook::InitSsh { value } => value.session_id.map(SessionId::from),
@@ -201,6 +216,8 @@ impl DProtoHook {
             | DProtoHook::Preexec { .. }
             | DProtoHook::Bootstrapped { .. }
             | DProtoHook::PreInteractiveSSHSession { .. }
+            | DProtoHook::ManagedSSHSessionStarting { .. }
+            | DProtoHook::PlainSSHFallback { .. }
             | DProtoHook::SSH { .. }
             | DProtoHook::InitShell { .. }
             | DProtoHook::InputBuffer { .. }
@@ -236,6 +253,12 @@ impl DProtoHook {
                 value: Default::default(),
             }),
             "PreInteractiveSSHSession" => Some(DProtoHook::PreInteractiveSSHSession {
+                value: Default::default(),
+            }),
+            "ManagedSSHSessionStarting" => Some(DProtoHook::ManagedSSHSessionStarting {
+                value: Default::default(),
+            }),
+            "PlainSSHFallback" => Some(DProtoHook::PlainSSHFallback {
                 value: Default::default(),
             }),
             "SSH" => Some(DProtoHook::SSH {
@@ -431,7 +454,9 @@ impl DProtoHook {
                     log::warn!("Tried to add unknown field {key} to InputBuffer hook");
                 }
             },
-            DProtoHook::PreInteractiveSSHSession { value } => match key.as_ref() {
+            DProtoHook::PreInteractiveSSHSession { value }
+            | DProtoHook::ManagedSSHSessionStarting { value }
+            | DProtoHook::PlainSSHFallback { value } => match key.as_ref() {
                 "session_id" => value.session_id = v.parse::<u64>().ok(),
                 _ => {
                     log::warn!("Tried to add unknown field {key} to PreInteractiveSSHSession hook");

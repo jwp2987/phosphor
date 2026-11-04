@@ -528,6 +528,8 @@ pub struct TerminalModel {
     /// ssh typeahead release (#1611, #1612, #1621). None where the platform has no termios
     /// (ConPTY) and in tests that install none.
     secret_read_probe: Option<super::block::interactive_latch::SecretReadProbe>,
+    /// #1641: whether the foreground program is blocked reading the tty (an OS fact).
+    tty_read_probe: Option<super::block::interactive_latch::SecretReadProbe>,
 
     /// Stack of saved window titles. When a title is popped from this stack, the `title` for the
     /// term is set.
@@ -1280,6 +1282,7 @@ impl TerminalModel {
             alt_screen_active: false,
             interactive_probe: None,
             secret_read_probe: None,
+            tty_read_probe: None,
             title_stack: Vec::new(),
             title: None,
             custom_title: None,
@@ -1990,6 +1993,24 @@ impl TerminalModel {
     /// on a timer.
     pub fn tty_reading_secret(&self) -> bool {
         self.secret_read_probe.as_ref().is_some_and(|probe| probe())
+    }
+
+    /// #1641: installs the probe behind [`Self::tty_read_probe`] (unix local ptys,
+    /// `terminal_attributes::foreground_reads_tty`; a test installs a closure of its own).
+    pub fn set_tty_read_probe(&mut self, probe: super::block::interactive_latch::SecretReadProbe) {
+        self.tty_read_probe = Some(probe);
+    }
+
+    /// #1641: the probe that says whether the foreground program is blocked reading the tty (an
+    /// echoing question during the ssh wrapper's master login), for the managed-ssh hold.
+    pub fn tty_read_probe(&self) -> Option<super::block::interactive_latch::SecretReadProbe> {
+        self.tty_read_probe.clone()
+    }
+
+    /// The termios probe itself, for a holder that must sample it without this model's lock (the
+    /// managed-ssh hold's secret-read pass-through reads it on the key path, #1641).
+    pub fn secret_read_probe(&self) -> Option<super::block::interactive_latch::SecretReadProbe> {
+        self.secret_read_probe.clone()
     }
 
     /// Exclusive access to the typeahead hand-off (its own leaf lock; see [`PaneHandoff`]).
@@ -3949,6 +3970,14 @@ impl ansi::Handler for TerminalModel {
     fn pre_interactive_ssh_session(&mut self, _value: PreInteractiveSSHSessionValue) {
         self.event_proxy
             .send_terminal_event(Event::PreInteractiveSSHSession);
+    }
+
+    fn ssh_wrapper_verdict(&mut self, managed: bool, session_id: Option<u64>) {
+        self.event_proxy
+            .send_terminal_event(Event::SshWrapperVerdict {
+                managed,
+                session_id: session_id.map(SessionId::from),
+            });
     }
 
     fn ssh(&mut self, value: SSHValue) {

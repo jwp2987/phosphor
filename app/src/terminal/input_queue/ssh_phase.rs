@@ -12,7 +12,8 @@
 //! |---|---|
 //! | [`SshEdge::Submitted`] | the user submitted a command (an interactive `ssh ...` arms the window) |
 //! | [`SshEdge::ConnectStart`] | the shell's preexec showed an ssh command running that nothing armed |
-//! | [`SshEdge::TtyOwned`] | `CommandBecameInteractive` for the window's block: ssh owns the tty (#1611, #1612, #1621) |
+//! | [`SshEdge::TtyOwned`] | `CommandBecameInteractive` for the window's block: ssh owns the tty (#1611, #1612, #1621). Under the ssh wrapper (`PreInteractiveSSHSession` seen) the view defers it to the wrapper's `PlainSSHFallback` hook and never sends it for a managed session (#1641) |
+//! | [`SshEdge::TtyReclaimed`] | `PreInteractiveSSHSession` handled after `TtyOwned` for the same window: the wrapper's master login owns the tty, so the hold resumes until the verdict (#1641) |
 //! | [`SshEdge::Observed`] | the published facts at a model event or output wakeup: a remote session announced (InitShell) or gone (Bootstrapped / exit), the ssh hook, the setup dialog and the remote-setup state (`SessionsEvent`) |
 //! | [`SshEdge::BlockCompleted`] | the ssh block ended (the remote shell's first precmd, or a failed connect) |
 //! | [`SshEdge::BootstrapFailed`] | the bootstrap-failed timer of the pending session (#1494's path) |
@@ -107,6 +108,11 @@ pub struct SshObservation {
     pub dialog_up: bool,
     /// The pending session's remote-server setup is in flight (`SessionsEvent` state).
     pub setup_in_flight: bool,
+    /// #1641: the managed-ssh hold's one pass-through. Under the ssh wrapper the ownership edge is
+    /// deferred until the wrapper's verdict (the view sends [`SshEdge::TtyOwned`] only for a plain
+    /// fallback), but while ssh owns the tty AND it is canonical with echo off right now (a password
+    /// or passphrase read, a `tcgetattr` fact, never screen text) the keys go to ssh, as before.
+    pub secret_pass_through: bool,
 }
 
 /// One edge of the ssh connect window.
@@ -121,6 +127,10 @@ pub enum SshEdge {
     /// the shell is the foreground group, or the tty is raw / reading a secret). The pre-ownership
     /// hold ends here; the view delivers or discards what it held at this edge.
     TtyOwned,
+    /// #1641: the ssh wrapper announced itself after the ownership edge (the latch overtook the
+    /// announcement): ssh's tty is its ControlMaster login, so the window holds again until the
+    /// wrapper's verdict.
+    TtyReclaimed,
     /// The facts at an event.
     Observed(SshObservation),
     /// The armed ssh block completed. `clean` is whether it exited 0.
@@ -165,6 +175,8 @@ pub struct SshPhaseMachine {
     swallow_expired: bool,
     dialog_up: bool,
     setup_in_flight: bool,
+    /// The managed-ssh hold's secret-read pass-through ([`SshObservation::secret_pass_through`]).
+    secret_pass_through: bool,
     /// How the last window ended (for the log and the tests).
     last_release: Option<SshRelease>,
 }
@@ -197,9 +209,15 @@ impl SshPhaseMachine {
                     self.tty_owned = true;
                 }
             }
+            SshEdge::TtyReclaimed => {
+                if self.armed {
+                    self.tty_owned = false;
+                }
+            }
             SshEdge::Observed(observed) => {
                 self.dialog_up = observed.dialog_up;
                 self.setup_in_flight = observed.setup_in_flight;
+                self.secret_pass_through = observed.secret_pass_through;
                 if observed.hook_seen {
                     self.managed = true;
                 }
@@ -250,6 +268,7 @@ impl SshPhaseMachine {
             pending: self.pending,
             dialog_up: self.dialog_up,
             setup_in_flight: self.setup_in_flight,
+            secret_pass_through: self.secret_pass_through,
             ..Self::default()
         }
     }
@@ -290,11 +309,13 @@ impl SshPhaseMachine {
 
     /// The pre-session half of the gate: ssh does not own the tty yet, or the post-block
     /// bootstrap wait, or the stretch from the end of the remote bootstrap to its first prompt.
-    /// Full-screen programs never hold. (The legacy `SshConnectGate::drops_keys`.)
+    /// Full-screen programs never hold, and neither does a secret read under the managed-ssh hold
+    /// (#1641). (The legacy `SshConnectGate::drops_keys` and `ssh_wrapper_secret_pass_through`.)
     fn drops_keys(&self, alt_screen: bool) -> bool {
         self.armed
             && !alt_screen
             && !self.failed
+            && !self.secret_pass_through
             && (self.block_done || !self.tty_owned || self.bootstrap_done)
     }
 
