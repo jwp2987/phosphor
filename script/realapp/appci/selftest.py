@@ -1072,6 +1072,36 @@ def agent_code_recycle_log_parse():
     assert "agent_code_recycle" in winmap.BOTH
 
 
+@check
+def coverage_b_pure_helpers():
+    """g10 coverage cases: the legacy/truncated settings builders, the startup-log and updater-line filters, the picker verdict"""
+    import cases_coverage_b as cb
+    orig = '[appearance.text]\nfont_size = 14.0\n'
+    text, marks = cb.legacy_settings(orig, "t1")
+    assert all(m in text for m in marks) and orig in text and len(marks) == 4, text
+    bad = cb.corrupt_settings(orig)
+    try:
+        import tomllib
+        try:
+            tomllib.loads(bad)
+            raise AssertionError("the truncated settings file still parses")
+        except tomllib.TOMLDecodeError:
+            pass
+    except ImportError:
+        assert "unterminated" in bad
+    log = "INFO started\nthread 'main' panicked at app/x.rs:1\n2026 ERROR migration 0042 failed\n2026 INFO migration ok\n2026 ERROR network blip\n"
+    p = cb.startup_log_problems(log)
+    assert len(p) == 2 and "panicked" in p[0] and "migration 0042" in p[1], p
+    assert cb.startup_log_problems("INFO all fine\n") == []
+    assert cb.autoupdate_lines("INFO a\nWARN Checking for updates now\nDEBUG GET https://x/releases/latest\n") != [] and cb.autoupdate_lines("INFO nothing\n") == []
+    assert cb.picker_verdict(0.05, 0.001)[0] is True
+    assert cb.picker_verdict(0.0005, 0.0)[0] is False and cb.picker_verdict(0.05, 0.04)[0] is False and cb.picker_verdict(None, 0.0)[0] is None
+    reg = {c["name"]: c for c in cases.CASES}
+    for n in ("cb_agent_pickers", "cb_agent_file_mention", "cb_settings_ui_open", "cb_settings_migration", "cb_state_relaunch", "cb_no_autoupdate", "cb_ui_action_latency", "cb_editor_mac"):
+        assert n in reg, n
+    assert reg["cb_agent_pickers"]["modes"] == ("agent",) and "cb_agent_pickers" not in cases.SMOKE
+
+
 def main():
     failed = 0
     for f in CHECKS:

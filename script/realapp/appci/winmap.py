@@ -12,7 +12,7 @@ BOTH = {
     "ssh_connect_typing", "ssh_enter_then_immediate_command", "ssh_nested_typeahead", "ssh_failing_not_local",
     "idle_cpu", "enter_loss_control", "latency_enter", "latency_paint", "tabs_two_windows", "tabs_streaming",
     "paste_multiline_prompt", "intl_wide_type", "intl_wide_paste", "intl_wide_edit", "intl_altgr_bash", "intl_altgr_ps",
-    "approval_card_pause", "md_viewer", "md_viewer_big", "md_viewer_ai_answer", "agent_code_recycle", "editor_memory_7mb", "gitbash_subshell",
+    "cb_no_autoupdate", "approval_card_pause", "md_viewer", "md_viewer_big", "md_viewer_ai_answer", "agent_code_recycle", "editor_memory_7mb", "gitbash_subshell",
 }
 # POSIX syntax / rec.log / readline-style editing in the case: Git Bash pane only. Reason shown for the PowerShell pane.
 GITBASH_ONLY = {
@@ -45,6 +45,8 @@ GITBASH_ONLY = {
     "agent_stream_cancel": "uses rec.log to prove nothing reached the shell: runs in the Git Bash pane (needs the CI model)",
     "agent_input_exact": "reads the agent input from the app log and uses rec.log to prove nothing reached the shell: runs in the Git Bash pane",
     "agent_mode_switch": "asserts the exact shell line from rec.log after each view switch: runs in the Git Bash pane",
+    "cb_agent_pickers": "reads the agent input from the app log and uses rec.log to prove nothing reached the shell: runs in the Git Bash pane",
+    "cb_agent_file_mention": "reads the agent input from the app log and uses rec.log to prove nothing reached the shell: runs in the Git Bash pane",
     "agent_approval": "uses rec.log and effect files in bash syntax: runs in the Git Bash pane (needs the CI model)",
 }
 # PowerShell-only: the same idea as a case that already exists for the other pane
@@ -76,6 +78,11 @@ NOT_WINDOWS = {
     "ssh_drop_reconnect": "not yet ported: the `~.` escape and `kill -9 $$` need verifying against the msys/Win32 ssh clients (#1535)",
     "crash_kill9_restore": "not yet ported: needs the Linux quit key + SIGKILL of the app pid (#1541)",
     "crash_corrupt_db": "not yet ported: needs the Linux quit key and the scratch-home warp.sqlite path (#1541)",
+    "cb_settings_ui_open": "the Windows backend has no verified Ctrl-, chord and the page is not OCR-able there",
+    "cb_settings_migration": "needs a relaunch of the app on a rewritten settings file (the Linux/macOS App handle); the Windows relaunch is the separate runner flow",
+    "cb_state_relaunch": "needs the App stop/start handle on a profile with state; Windows has a separate flow",
+    "cb_ui_action_latency": "needs Pillow screenshot diffs of new-tab/switch chords not mapped in the Windows backend",
+    "cb_editor_mac": "macOS-only case (Linux has editor_edit_save); Windows has no verified file hand-over to the running instance",
 }
 
 
