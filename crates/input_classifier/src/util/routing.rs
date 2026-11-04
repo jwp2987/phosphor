@@ -412,6 +412,15 @@ pub fn route(input: &ParsedTokensSnapshot, ctx: &RoutingContext) -> Decision {
         if multi_line {
             return Decision::undecided(Rule::Model);
         }
+        // #1624: `what is in the file that I just mentioned T169_6rjko, it's short` (macOS
+        // `/usr/bin/what` installed) reached the shell here. The contraction's apostrophe made the
+        // quoting unsafe, which `lacks_command_evidence_in_agent_conversation` reads as "leave it to
+        // the classifier" and the sentence tests read as a quoted argument, so nothing above said
+        // prose. A shell reads that apostrophe as an open quote and parks at `PS2`; a person typed
+        // English.
+        if contraction_reads_as_prose(text, &words, first_index) {
+            return Decision::agent(Rule::SentenceShape);
+        }
         return Decision::shell(Rule::EvidenceInConversation);
     }
 
@@ -946,6 +955,80 @@ fn reads_as_sentence_with_command_head(
         weak += 1;
     }
     !strong.is_empty() && strong.len() + weak >= 2
+}
+
+/// The endings of English contractions: `it's`, `don't`, `I'm`, `you're`, `I've`, `we'll`, `he'd`.
+const CONTRACTION_SUFFIXES: [&str; 7] = ["s", "t", "m", "re", "ve", "ll", "d"];
+
+/// #1624: whether `text` holds an English contraction: a `'` (or `’`) with only letters between
+/// it and the start of its word, followed by a [`CONTRACTION_SUFFIXES`] ending that closes the
+/// word, sentence punctuation aside (`it's short`, `don't.`, `I'm`). `s'/a/b/'`, `hello'world'`,
+/// `'quoted'` and `Josh's.txt` are not one.
+/// Linear in the text: each apostrophe looks back only to the previous non-letter.
+fn has_contraction(text: &str) -> bool {
+    text.char_indices().any(|(index, c)| {
+        if c != '\'' && c != '’' {
+            return false;
+        }
+        let before = &text[..index];
+        let stem_start = before
+            .char_indices()
+            .rev()
+            .take_while(|(_, c)| c.is_alphabetic())
+            .last()
+            .map(|(start, _)| start);
+        let Some(stem_start) = stem_start else {
+            return false;
+        };
+        if before[..stem_start]
+            .chars()
+            .next_back()
+            .is_some_and(|c| !c.is_whitespace())
+        {
+            return false;
+        }
+        let after = &text[index + c.len_utf8()..];
+        let suffix_len = after
+            .char_indices()
+            .find(|(_, c)| !c.is_alphabetic())
+            .map_or(after.len(), |(end, _)| end);
+        suffix_len <= 2
+            && CONTRACTION_SUFFIXES.contains(&after[..suffix_len].to_lowercase().as_str())
+            && after[suffix_len..]
+                .chars()
+                .take_while(|c| !c.is_whitespace())
+                .all(|c| matches!(c, ',' | '.' | '!' | '?' | ';' | ':'))
+    })
+}
+
+/// #1624: in a conversation, a command-headed line with an English contraction among its words
+/// (`what is in the file that I just mentioned, it's short`) is a sentence: no command line spells
+/// one, and the shell would only park the line at `PS2` on the open quote. Shell syntax still wins
+/// (#1560: a pipe, redirect, `$VAR`, `--` or a flag), and heads that carry English by design (a
+/// one-off keyword such as `echo`, a free-text head such as `git commit -m`, an explicit path) keep
+/// their existing route.
+fn contraction_reads_as_prose(text: &str, words: &[ShellWord], first_index: usize) -> bool {
+    if has_shell_structure(text)
+        || text.contains('$')
+        || text
+            .split_whitespace()
+            .skip(1)
+            .any(|word| word.len() > 1 && word.starts_with('-'))
+        || !has_contraction(text)
+    {
+        return false;
+    }
+    !effective_head_chain(words, first_index)
+        .iter()
+        .any(|&index| {
+            let word = &words[index];
+            let basename = word_basename(word);
+            word.quoted
+                || is_explicit_path_token(&word.text)
+                || is_one_off_shell_command_keyword(basename)
+                || FREE_TEXT_ARG_HEADS.contains(&basename)
+                || takes_free_text(words, index)
+        })
 }
 
 /// `Chrome`, `Josh`: an uppercase first letter followed by lowercase letters only.
