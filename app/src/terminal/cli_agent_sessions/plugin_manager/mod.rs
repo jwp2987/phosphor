@@ -7,10 +7,13 @@ pub(crate) mod opencode;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt;
+use std::fs;
 use std::io;
 use std::path::PathBuf;
+use std::time::SystemTime;
 
 use async_trait::async_trait;
+use parking_lot::Mutex;
 
 use crate::features::FeatureFlag;
 use crate::terminal::CLIAgent;
@@ -89,6 +92,95 @@ pub(crate) fn compare_versions(a: &str, b: &str) -> Ordering {
         [major, minor, patch]
     };
     parse(a).cmp(&parse(b))
+}
+
+// The CLI-agent notification plugins are fetched from Phosphor's GitLab group
+// (`gitlab.com/winters-phosphor`), whose repositories are full-history mirrors
+// of the Warp repositories of the same names (MIT notices kept). Marketplace
+// names, plugin keys and the OSC 777 wire protocol are unchanged; only where the
+// agent CLIs fetch from moved. Each manager holds its own URL. See
+// `DECLINED.md`, "CLI agent notification plugins".
+
+/// The GitHub owner the plugins used to be fetched from.
+const WARP_PLUGIN_OWNER: &str = "warpdotdev";
+
+/// Whether `source` names Warp's GitHub copy of the plugin repository `repo`
+/// (`warpdotdev/<repo>`), in any spelling an agent CLI records for it:
+/// GitHub `owner/repo` shorthand (optionally `github:`-prefixed or with a
+/// `#ref`/`@ref` suffix), an `https://github.com/...` URL with or without
+/// `.git`, or an SSH `git@github.com:...` URL.
+///
+/// An install registered from such a source keeps receiving Warp's updates
+/// until it is re-registered from Phosphor's GitLab copy, which is what the
+/// managers' `needs_source_migration` reports. A similarly named repository
+/// (`claude-code-warp-internal`) does not match.
+pub(crate) fn is_warp_plugin_source(source: &str, repo: &str) -> bool {
+    let source = source.trim().to_ascii_lowercase();
+    let shorthand = format!("{WARP_PLUGIN_OWNER}/{}", repo.to_ascii_lowercase());
+    let ends_repo_name = |rest: &str| {
+        let rest = rest.strip_prefix(".git").unwrap_or(rest);
+        rest.is_empty() || rest.starts_with(['/', '#', '@', '?'])
+    };
+    let bare = source.strip_prefix("github:").unwrap_or(&source);
+    if let Some(rest) = bare.strip_prefix(&shorthand)
+        && ends_repo_name(rest)
+    {
+        return true;
+    }
+    // The host must be github.com itself (`https://github.com`,
+    // `git@github.com`, `www.github.com`), not a host that merely ends in it.
+    let starts_host =
+        |at: usize| at == 0 || source[..at].ends_with(|c: char| matches!(c, '/' | '@' | '.'));
+    ["github.com/", "github.com:"].iter().any(|host| {
+        let needle = format!("{host}{shorthand}");
+        source
+            .match_indices(&needle)
+            .any(|(at, _)| starts_host(at) && ends_repo_name(&source[at + needle.len()..]))
+    })
+}
+
+/// Memoises a check derived from a few small config files, keyed on each
+/// file's modification time and length.
+///
+/// `needs_source_migration` is asked from the agent footer's render path, where
+/// a connected, up-to-date plugin is the common case, so re-reading and
+/// re-parsing the agent's settings on every frame would be pure overhead. A
+/// `stat` per file is all a repeat call costs; any write to one of the files
+/// (the agent CLI re-registering its marketplace, say) changes the key and the
+/// check runs again.
+pub(crate) struct ConfigFileCheckCache {
+    last: Mutex<Option<(Vec<FileStamp>, bool)>>,
+}
+
+type FileStamp = (PathBuf, Option<(SystemTime, u64)>);
+
+impl ConfigFileCheckCache {
+    pub(crate) const fn new() -> Self {
+        Self {
+            last: Mutex::new(None),
+        }
+    }
+
+    pub(crate) fn get_or_compute(&self, files: &[PathBuf], compute: impl FnOnce() -> bool) -> bool {
+        let stamps: Vec<FileStamp> = files
+            .iter()
+            .map(|path| {
+                let stamp = fs::metadata(path)
+                    .ok()
+                    .and_then(|meta| Some((meta.modified().ok()?, meta.len())));
+                (path.clone(), stamp)
+            })
+            .collect();
+        let mut last = self.last.lock();
+        if let Some((cached_stamps, value)) = last.as_ref()
+            && *cached_stamps == stamps
+        {
+            return *value;
+        }
+        let value = compute();
+        *last = Some((stamps, value));
+        value
+    }
 }
 
 /// Runs a CLI subcommand through [`LocalCommandExecutor`], appending the
@@ -172,6 +264,17 @@ pub(crate) trait CliAgentPluginManager: Send + Sync {
     /// Whether the on-disk plugin version is below the minimum required.
     /// Default returns `false` (no filesystem check).
     fn needs_update(&self) -> bool {
+        false
+    }
+
+    /// Whether the installed plugin is still registered from Warp's GitHub
+    /// repository rather than Phosphor's GitLab copy, so that it keeps taking
+    /// Warp's updates until it is re-registered. `update()` performs that move,
+    /// which is why every implementation also folds this into `needs_update()`;
+    /// it is asked separately by the footer, where a connected plugin reporting
+    /// a current version would otherwise never be offered the move.
+    /// Never true for a local-path override. Default returns `false`.
+    fn needs_source_migration(&self) -> bool {
         false
     }
 

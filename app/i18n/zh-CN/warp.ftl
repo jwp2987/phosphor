@@ -2896,6 +2896,7 @@ cli-agent-plugin-install-warp-extension-step = 安装扩展
 cli-agent-plugin-gemini-restart-note = 重启 Gemini CLI 以启用插件。
 cli-agent-plugin-gemini-update-title = 更新 Gemini CLI 的通知插件
 cli-agent-plugin-update-warp-extension-step = 更新扩展
+cli-agent-plugin-uninstall-warp-extension-step = 卸载已有扩展（如果存在）
 cli-agent-plugin-gemini-restart-update-note = 重启 Gemini CLI 以启用更新。
 cli-agent-plugin-opencode-install-title = 安装 OpenCode 的通知插件
 cli-agent-plugin-opencode-install-subtitle = 将插件加入 OpenCode 配置，然后重启 OpenCode。

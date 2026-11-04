@@ -7,8 +7,8 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use super::{
-    CliAgentPluginManager, PluginInstallError, PluginInstructionStep, PluginInstructions,
-    compare_versions, run_cli_command_logged,
+    CliAgentPluginManager, ConfigFileCheckCache, PluginInstallError, PluginInstructionStep,
+    PluginInstructions, compare_versions, is_warp_plugin_source, run_cli_command_logged,
 };
 use crate::features::FeatureFlag;
 use crate::terminal::model::session::LocalCommandExecutor;
@@ -16,13 +16,22 @@ use crate::terminal::shell::ShellType;
 
 const PLUGIN_NAME: &str = "warp";
 const PLUGIN_KEY: &str = "warp@codex-warp";
-const MARKETPLACE_REPO: &str = "warpdotdev/codex-warp";
+/// Phosphor's GitLab copy of the marketplace (full-history mirror of
+/// `warpdotdev/codex-warp`). `codex plugin marketplace add` takes any
+/// `https://` git URL; `owner/repo` shorthand is expanded to github.com only.
+/// Codex records it verbatim as `source` under `[marketplaces.codex-warp]`
+/// with `source_type = "git"`. Keep the instruction commands below in step with
+/// this (a test pins them).
+const MARKETPLACE_URL: &str = "https://gitlab.com/winters-phosphor/codex-warp.git";
+/// The marketplace's `name` in its `marketplace.json`, unchanged by the move.
 const MARKETPLACE_NAME: &str = "codex-warp";
+
+static SOURCE_MIGRATION_CHECK: ConfigFileCheckCache = ConfigFileCheckCache::new();
 
 const CODEX_CONFIG_DIR: &str = ".codex";
 const CODEX_HOME_ENV: &str = "CODEX_HOME";
 
-// Keep in sync with the plugin version in warpdotdev/codex-warp.
+// Keep in sync with the plugin version in winters-phosphor/codex-warp.
 const MINIMUM_PLUGIN_VERSION: &str = "0.4.0";
 
 pub(super) struct CodexPluginManager {
@@ -53,23 +62,45 @@ impl CodexPluginManager {
 
     /// Ensures the codex-warp marketplace is registered, while preserving a
     /// non-Git/local marketplace override. If the marketplace is already a
-    /// Git repo, upgrade it; if it is a non-Git source, leave it alone; otherwise
-    /// add it from the canonical repository.
+    /// Git repo, upgrade it (moving it to Phosphor's copy first if it still
+    /// points at Warp's GitHub); if it is a non-Git source, leave it alone;
+    /// otherwise add it from Phosphor's repository.
     async fn ensure_marketplace(&self, log: &mut String) -> Result<(), PluginInstallError> {
         match codex_home_dir()
             .ok()
             .and_then(|dir| codex_warp_marketplace_config(&dir))
         {
-            Some(config) if config.is_git() => {
-                self.run_logged(&["plugin", "marketplace", "upgrade", MARKETPLACE_NAME], log)
-                    .await
-            }
+            Some(config) if config.is_git() => self.upgrade_marketplace(log).await,
             Some(_) => Ok(()),
             None => {
-                self.run_logged(&["plugin", "marketplace", "add", MARKETPLACE_REPO], log)
+                self.run_logged(&["plugin", "marketplace", "add", MARKETPLACE_URL], log)
                     .await
             }
         }
+    }
+
+    /// Refreshes the Git marketplace. `marketplace upgrade` re-fetches from the
+    /// recorded `source`, so one still registered from Warp's GitHub is instead
+    /// re-registered from Phosphor's copy: Codex has no command that re-points
+    /// a marketplace, and `marketplace add` refuses a name that is "already
+    /// added from a different source; remove it before adding this source", so
+    /// the move is `remove` then `add`. `remove` drops only the marketplace
+    /// entry and its checkout; the `[plugins."warp@codex-warp"]` entry and the
+    /// plugin cache stay, and the caller's `plugin add` refreshes the plugin.
+    async fn upgrade_marketplace(&self, log: &mut String) -> Result<(), PluginInstallError> {
+        let registered_from_warp = codex_home_dir()
+            .ok()
+            .and_then(|dir| codex_warp_marketplace_config(&dir))
+            .is_some_and(|config| config.is_registered_from_warp());
+        if registered_from_warp {
+            self.run_logged(&["plugin", "marketplace", "remove", MARKETPLACE_NAME], log)
+                .await?;
+            return self
+                .run_logged(&["plugin", "marketplace", "add", MARKETPLACE_URL], log)
+                .await;
+        }
+        self.run_logged(&["plugin", "marketplace", "upgrade", MARKETPLACE_NAME], log)
+            .await
     }
 }
 
@@ -108,6 +139,18 @@ impl CliAgentPluginManager for CodexPluginManager {
             return false;
         }
         plugin_needs_update(&codex_dir, PLUGIN_NAME, PLUGIN_KEY, MINIMUM_PLUGIN_VERSION)
+            || plugin_needs_source_migration(&codex_dir)
+    }
+
+    fn needs_source_migration(&self) -> bool {
+        if !FeatureFlag::CodexPlugin.is_enabled() {
+            return false;
+        }
+        let Ok(codex_dir) = codex_home_dir() else {
+            return false;
+        };
+        let files = [codex_dir.join("config.toml")];
+        SOURCE_MIGRATION_CHECK.get_or_compute(&files, || plugin_needs_source_migration(&codex_dir))
     }
 
     fn has_local_marketplace_override(&self) -> bool {
@@ -136,11 +179,7 @@ impl CliAgentPluginManager for CodexPluginManager {
         }
         let mut log = String::new();
         ensure_codex_home_dir()?;
-        self.run_logged(
-            &["plugin", "marketplace", "upgrade", MARKETPLACE_NAME],
-            &mut log,
-        )
-        .await?;
+        self.upgrade_marketplace(&mut log).await?;
         self.run_logged(&["plugin", "add", PLUGIN_KEY], &mut log)
             .await?;
 
@@ -188,14 +227,14 @@ impl CliAgentPluginManager for CodexPluginManager {
     }
 }
 
-static PLUGIN_INSTALL_INSTRUCTIONS: LazyLock<PluginInstructions> =
-    LazyLock::new(|| PluginInstructions {
+static PLUGIN_INSTALL_INSTRUCTIONS: LazyLock<PluginInstructions> = LazyLock::new(|| {
+    PluginInstructions {
         title: crate::t_static!("cli-agent-plugin-codex-plugin-install-title"),
         subtitle: crate::t_static!("cli-agent-plugin-codex-plugin-run-commands-subtitle"),
         steps: vec![
             PluginInstructionStep {
                 description: crate::t_static!("cli-agent-plugin-codex-add-marketplace-step"),
-                command: "codex plugin marketplace add warpdotdev/codex-warp",
+                command: "codex plugin marketplace add https://gitlab.com/winters-phosphor/codex-warp.git",
                 executable: true,
                 link: None,
             },
@@ -209,7 +248,8 @@ static PLUGIN_INSTALL_INSTRUCTIONS: LazyLock<PluginInstructions> =
         post_install_notes: vec![crate::t_static!(
             "cli-agent-plugin-codex-plugin-restart-note"
         )],
-    });
+    }
+});
 
 static NATIVE_INSTALL_INSTRUCTIONS: LazyLock<PluginInstructions> =
     LazyLock::new(|| PluginInstructions {
@@ -239,14 +279,24 @@ static EMPTY_INSTRUCTIONS: LazyLock<PluginInstructions> = LazyLock::new(|| Plugi
     post_install_notes: vec![],
 });
 
-static PLUGIN_UPDATE_INSTRUCTIONS: LazyLock<PluginInstructions> =
-    LazyLock::new(|| PluginInstructions {
+static PLUGIN_UPDATE_INSTRUCTIONS: LazyLock<PluginInstructions> = LazyLock::new(|| {
+    PluginInstructions {
         title: crate::t_static!("cli-agent-plugin-codex-plugin-update-title"),
         subtitle: crate::t_static!("cli-agent-plugin-codex-plugin-run-commands-subtitle"),
+        // Remove and re-add rather than `marketplace upgrade`: an upgrade
+        // re-fetches from whatever source the marketplace was registered from,
+        // which for older installs is Warp's GitHub. Re-adding registers
+        // Phosphor's copy whatever the old source was.
         steps: vec![
             PluginInstructionStep {
-                description: crate::t_static!("cli-agent-plugin-codex-upgrade-marketplace-step"),
-                command: "codex plugin marketplace upgrade codex-warp",
+                description: crate::t_static!("cli-agent-plugin-remove-existing-marketplace-step"),
+                command: "codex plugin marketplace remove codex-warp",
+                executable: true,
+                link: None,
+            },
+            PluginInstructionStep {
+                description: crate::t_static!("cli-agent-plugin-readd-marketplace-step"),
+                command: "codex plugin marketplace add https://gitlab.com/winters-phosphor/codex-warp.git",
                 executable: true,
                 link: None,
             },
@@ -257,11 +307,11 @@ static PLUGIN_UPDATE_INSTRUCTIONS: LazyLock<PluginInstructions> =
                 link: None,
             },
         ],
-        post_install_notes: vec![
-            crate::t_static!("cli-agent-plugin-codex-plugin-restart-update-note"),
-            crate::t_static!("cli-agent-plugin-codex-marketplace-not-git-note"),
-        ],
-    });
+        post_install_notes: vec![crate::t_static!(
+            "cli-agent-plugin-codex-plugin-restart-update-note"
+        )],
+    }
+});
 
 fn check_installed(codex_dir: &Path) -> bool {
     check_plugin_enabled(codex_dir, PLUGIN_KEY)
@@ -340,13 +390,32 @@ fn plugin_needs_update(
     }
 }
 
+/// Whether `update()` must move the marketplace: the plugin is enabled and its
+/// Git marketplace is still registered from Warp's GitHub.
+fn plugin_needs_source_migration(codex_dir: &Path) -> bool {
+    check_plugin_enabled(codex_dir, PLUGIN_KEY)
+        && codex_warp_marketplace_config(codex_dir)
+            .is_some_and(|config| config.is_registered_from_warp())
+}
+
 struct CodexWarpMarketplaceConfig {
     source_type: Option<String>,
+    source: Option<String>,
 }
 
 impl CodexWarpMarketplaceConfig {
     fn is_git(&self) -> bool {
         self.source_type.as_deref() == Some("git")
+    }
+
+    /// A Git marketplace whose recorded `source` is Warp's GitHub repository.
+    /// A local (non-Git) override is never reported, whatever its path.
+    fn is_registered_from_warp(&self) -> bool {
+        self.is_git()
+            && self
+                .source
+                .as_deref()
+                .is_some_and(|source| is_warp_plugin_source(source, MARKETPLACE_NAME))
     }
 }
 
@@ -359,6 +428,10 @@ fn codex_warp_marketplace_config(codex_dir: &Path) -> Option<CodexWarpMarketplac
         source_type: marketplace
             .get("source_type")
             .and_then(|source_type| source_type.as_str())
+            .map(str::to_owned),
+        source: marketplace
+            .get("source")
+            .and_then(|source| source.as_str())
             .map(str::to_owned),
     })
 }

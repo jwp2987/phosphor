@@ -3753,7 +3753,8 @@ const UNSTABLE_FEATURES: &[(&str, FeatureFlag)] = &[
     // This entry restores that validation path and nothing more: it is off
     // unless `ZAP_UNSTABLE_FEATURES=gemini_notifications` is set. The rest of
     // the path is present and was traced end to end -- the install command
-    // matches the published `warpdotdev/gemini-cli-warp` extension, whose
+    // matches the published `gemini-cli-warp` extension (now fetched from
+    // Phosphor's GitLab copy, `winters-phosphor/gemini-cli-warp`), whose
     // manifest `name` (`gemini-warp`) and `version` (`1.0.0`) match
     // `EXTENSION_NAME` and `MINIMUM_PLUGIN_VERSION`, and the consumer is the
     // local OSC 777 listener, which already accepts `CLIAgent::Gemini` under

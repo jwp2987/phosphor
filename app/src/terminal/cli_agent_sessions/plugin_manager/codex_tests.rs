@@ -74,7 +74,11 @@ fn install_instructions_has_marketplace_and_plugin_add_steps() {
     let instructions = CodexPluginManager::new(None, None, None).install_instructions();
     assert_eq!(
         instructions.steps[0].command,
-        "codex plugin marketplace add warpdotdev/codex-warp"
+        "codex plugin marketplace add https://gitlab.com/winters-phosphor/codex-warp.git"
+    );
+    assert_eq!(
+        instructions.steps[0].command,
+        format!("codex plugin marketplace add {}", super::MARKETPLACE_URL)
     );
     assert_eq!(
         instructions.steps[1].command,
@@ -85,18 +89,25 @@ fn install_instructions_has_marketplace_and_plugin_add_steps() {
 }
 
 #[test]
-fn update_instructions_has_marketplace_and_plugin_add_steps() {
+fn update_instructions_readd_marketplace_from_phosphor_source_then_plugin_add() {
+    // `marketplace upgrade` would re-fetch from whatever source the marketplace
+    // was registered from (Warp's GitHub, for older installs), so the manual
+    // update re-registers it from Phosphor's copy instead.
     let _guard = FeatureFlag::CodexPlugin.override_enabled(true);
     let instructions = CodexPluginManager::new(None, None, None).update_instructions();
     assert_eq!(
         instructions.steps[0].command,
-        "codex plugin marketplace upgrade codex-warp"
+        "codex plugin marketplace remove codex-warp"
     );
     assert_eq!(
         instructions.steps[1].command,
+        format!("codex plugin marketplace add {}", super::MARKETPLACE_URL)
+    );
+    assert_eq!(
+        instructions.steps[2].command,
         "codex plugin add warp@codex-warp"
     );
-    assert_eq!(instructions.steps.len(), 2);
+    assert_eq!(instructions.steps.len(), 3);
     assert!(!instructions.title.is_empty());
 }
 
@@ -352,6 +363,141 @@ fn does_not_need_update_for_non_git_marketplace_override() {
 
     assert!(!result);
     assert!(has_override);
+}
+
+#[test]
+fn marketplace_from_warp_github_url_is_registered_from_warp() {
+    let dir = tempfile::tempdir().unwrap();
+    write_git_marketplace_config(dir.path(), "https://github.com/warpdotdev/codex-warp.git");
+
+    let config = super::codex_warp_marketplace_config(dir.path()).unwrap();
+    assert!(config.is_git());
+    assert!(config.is_registered_from_warp());
+}
+
+#[test]
+fn marketplace_from_warp_ssh_url_is_registered_from_warp() {
+    let dir = tempfile::tempdir().unwrap();
+    write_git_marketplace_config(dir.path(), "git@github.com:warpdotdev/codex-warp.git");
+
+    let config = super::codex_warp_marketplace_config(dir.path()).unwrap();
+    assert!(config.is_registered_from_warp());
+}
+
+#[test]
+fn marketplace_from_phosphor_copy_is_not_registered_from_warp() {
+    let dir = tempfile::tempdir().unwrap();
+    write_git_marketplace_config(dir.path(), super::MARKETPLACE_URL);
+
+    let config = super::codex_warp_marketplace_config(dir.path()).unwrap();
+    assert!(config.is_git());
+    assert!(!config.is_registered_from_warp());
+}
+
+#[test]
+fn local_marketplace_is_never_registered_from_warp() {
+    // A non-Git override is left alone, whatever its source says.
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(
+        dir.path().join("config.toml"),
+        "[marketplaces.codex-warp]\nsource_type = \"local\"\nsource = \"/src/github.com/warpdotdev/codex-warp\"\n",
+    )
+    .unwrap();
+
+    let config = super::codex_warp_marketplace_config(dir.path()).unwrap();
+    assert!(!config.is_registered_from_warp());
+}
+
+#[test]
+fn enabled_plugin_from_warp_marketplace_needs_source_migration() {
+    let dir = tempfile::tempdir().unwrap();
+    write_enabled_plugin_with_git_marketplace(
+        dir.path(),
+        "https://github.com/warpdotdev/codex-warp.git",
+    );
+
+    assert!(super::plugin_needs_source_migration(dir.path()));
+}
+
+#[test]
+fn enabled_plugin_from_phosphor_marketplace_needs_no_source_migration() {
+    let dir = tempfile::tempdir().unwrap();
+    write_enabled_plugin_with_git_marketplace(dir.path(), super::MARKETPLACE_URL);
+
+    assert!(!super::plugin_needs_source_migration(dir.path()));
+}
+
+#[test]
+fn warp_marketplace_without_enabled_plugin_needs_no_source_migration() {
+    // Not installed: `install()`'s `ensure_marketplace` moves it instead.
+    let dir = tempfile::tempdir().unwrap();
+    write_git_marketplace_config(dir.path(), "https://github.com/warpdotdev/codex-warp.git");
+
+    assert!(!super::plugin_needs_source_migration(dir.path()));
+}
+
+#[test]
+#[serial_test::serial]
+fn current_plugin_from_warp_marketplace_needs_update_via_trait() {
+    let _guard = FeatureFlag::CodexPlugin.override_enabled(true);
+    let dir = tempfile::tempdir().unwrap();
+    write_enabled_plugin_with_git_marketplace(
+        dir.path(),
+        "https://github.com/warpdotdev/codex-warp.git",
+    );
+    write_cache_manifest(dir.path(), super::PLUGIN_NAME, "0.4.0");
+
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("CODEX_HOME", dir.path()) };
+    let manager = CodexPluginManager::new(None, None, None);
+    let before = (manager.needs_source_migration(), manager.needs_update());
+    write_enabled_plugin_with_git_marketplace(dir.path(), super::MARKETPLACE_URL);
+    let after = (manager.needs_source_migration(), manager.needs_update());
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var("CODEX_HOME") };
+
+    assert_eq!(before, (true, true));
+    assert_eq!(after, (false, false));
+}
+
+#[test]
+#[serial_test::serial]
+fn no_source_migration_without_codex_plugin() {
+    let _guard = FeatureFlag::CodexPlugin.override_enabled(false);
+    let dir = tempfile::tempdir().unwrap();
+    write_enabled_plugin_with_git_marketplace(
+        dir.path(),
+        "https://github.com/warpdotdev/codex-warp.git",
+    );
+
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("CODEX_HOME", dir.path()) };
+    let result = CodexPluginManager::new(None, None, None).needs_source_migration();
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var("CODEX_HOME") };
+
+    assert!(!result);
+}
+
+/// The shape `codex plugin marketplace add <url>` writes, plus the enabled
+/// plugin entry `codex plugin add warp@codex-warp` writes.
+fn write_enabled_plugin_with_git_marketplace(dir: &Path, source: &str) {
+    fs::write(
+        dir.join("config.toml"),
+        format!(
+            "[marketplaces.codex-warp]\nsource_type = \"git\"\nsource = \"{source}\"\n\n[plugins.\"{}\"]\nenabled = true\n",
+            super::PLUGIN_KEY
+        ),
+    )
+    .unwrap();
+}
+
+fn write_git_marketplace_config(dir: &Path, source: &str) {
+    fs::write(
+        dir.join("config.toml"),
+        format!("[marketplaces.codex-warp]\nsource_type = \"git\"\nsource = \"{source}\"\n"),
+    )
+    .unwrap();
 }
 
 fn write_plugin_config(dir: &Path, plugin_key: &str, enabled: bool) {

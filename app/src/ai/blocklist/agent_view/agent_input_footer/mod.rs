@@ -850,7 +850,13 @@ impl AgentInputFooter {
                     None => true,
                     Some(v) => compare_versions(v, min_version).is_lt(),
                 };
-                if !needs_update {
+                // A current plugin still installed from Warp's GitHub keeps
+                // taking Warp's updates; the update chip is what moves it to
+                // Phosphor's copy. Only checkable for a local session, since
+                // the check reads the agent's config on this machine.
+                let needs_source_migration =
+                    !session.is_remote() && manager.needs_source_migration();
+                if !needs_update && !needs_source_migration {
                     return None;
                 }
                 // Check update chip dismissal.

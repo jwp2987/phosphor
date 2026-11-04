@@ -2891,6 +2891,7 @@ cli-agent-plugin-install-warp-extension-step = 拡張機能をインストール
 cli-agent-plugin-gemini-restart-note = プラグインを有効化するため Gemini CLI を再起動します。
 cli-agent-plugin-gemini-update-title = Gemini CLI 用通知プラグインを更新
 cli-agent-plugin-update-warp-extension-step = 拡張機能を更新
+cli-agent-plugin-uninstall-warp-extension-step = 既存の拡張機能をアンインストール (存在する場合)
 cli-agent-plugin-gemini-restart-update-note = 更新を有効化するため Gemini CLI を再起動します。
 cli-agent-plugin-opencode-install-title = OpenCode 用通知プラグインをインストール
 cli-agent-plugin-opencode-install-subtitle = OpenCode の設定にプラグインを追加し、OpenCode を再起動してください。

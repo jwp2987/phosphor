@@ -697,11 +697,16 @@ quick-launch button for a command you can type anyway would withhold nothing.
 Their visibility is controlled only by the per-agent settings above.
 
 Richer status (a working indicator that tracks the agent's turn) needs the
-vendor's Phosphor notification plugin: `warpdotdev/claude-code-warp` ≥ 2.0.0 for
-Claude Code, `warpdotdev/codex-warp` ≥ 0.4.0 for Codex,
-`warpdotdev/gemini-cli-warp` ≥ 1.0.0 for Gemini CLI. Claude's installs
+vendor's Phosphor notification plugin: `claude-code-warp` ≥ 2.0.0 for
+Claude Code, `codex-warp` ≥ 0.4.0 for Codex, `gemini-cli-warp` ≥ 1.0.0 for
+Gemini CLI. Phosphor fetches them from its own GitLab copies under
+[`gitlab.com/winters-phosphor`](https://gitlab.com/winters-phosphor) (mirrors of
+Warp's repositories, MIT notices kept), not from Warp's GitHub. Claude's installs
 automatically; Codex's is behind a build feature that is on by default; Gemini's
-needs an opt-in flag and is effectively off.
+needs an opt-in flag and is effectively off. A plugin you installed earlier from
+Warp's GitHub is offered an update, which re-registers it from the GitLab copy;
+a marketplace or extension you pointed at a local checkout is left alone. The
+opencode plugin is still the npm package `@warp-dot-dev/opencode-warp`.
 
 ### 2. Driving a CLI agent *as* Phosphor's harness
 

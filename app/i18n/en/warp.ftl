@@ -3248,6 +3248,7 @@ cli-agent-plugin-install-warp-extension-step = Install the extension
 cli-agent-plugin-gemini-restart-note = Restart Gemini CLI to activate the plugin.
 cli-agent-plugin-gemini-update-title = Update Notification Plugin for Gemini CLI
 cli-agent-plugin-update-warp-extension-step = Update the extension
+cli-agent-plugin-uninstall-warp-extension-step = Uninstall the existing extension (if present)
 cli-agent-plugin-gemini-restart-update-note = Restart Gemini CLI to activate the update.
 cli-agent-plugin-opencode-install-title = Install Notification Plugin for OpenCode
 cli-agent-plugin-opencode-install-subtitle = Add the plugin to your OpenCode configuration, then restart OpenCode.

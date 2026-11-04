@@ -8,16 +8,29 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use super::{
-    CliAgentPluginManager, PluginInstallError, PluginInstructionStep, PluginInstructions,
-    compare_versions, run_cli_command_logged,
+    CliAgentPluginManager, ConfigFileCheckCache, PluginInstallError, PluginInstructionStep,
+    PluginInstructions, compare_versions, is_warp_plugin_source, run_cli_command_logged,
 };
 use crate::terminal::model::session::LocalCommandExecutor;
 use crate::terminal::shell::ShellType;
 
-const EXTENSION_REPO: &str = "https://github.com/warpdotdev/gemini-cli-warp";
+/// Phosphor's GitLab copy of the extension (full-history mirror of
+/// `warpdotdev/gemini-cli-warp`). `gemini extensions install` treats any
+/// `https://` source as git and clones a non-GitHub one with `git clone`
+/// (GitHub URLs alone try a release download first). Keep the instruction
+/// commands below in step with this (a test pins them).
+const EXTENSION_REPO: &str = "https://gitlab.com/winters-phosphor/gemini-cli-warp";
+/// The repository name, shared by Warp's and Phosphor's copies.
+const EXTENSION_REPO_NAME: &str = "gemini-cli-warp";
+/// The extension's `name` in its `gemini-extension.json`, which is also its
+/// directory under `~/.gemini/extensions`. Unchanged by the move.
 const EXTENSION_NAME: &str = "gemini-warp";
+/// Where Gemini CLI records an installed extension's source.
+const INSTALL_METADATA_FILE: &str = ".gemini-extension-install.json";
 
-// Keep in sync with the plugin version in warpdotdev/gemini-warp.
+static SOURCE_MIGRATION_CHECK: ConfigFileCheckCache = ConfigFileCheckCache::new();
+
+// Keep in sync with the plugin version in winters-phosphor/gemini-cli-warp.
 const MINIMUM_PLUGIN_VERSION: &str = "1.0.0";
 
 pub(super) struct GeminiPluginManager {
@@ -68,11 +81,20 @@ impl CliAgentPluginManager for GeminiPluginManager {
         let Ok(extensions_dir) = gemini_extensions_dir() else {
             return false;
         };
-        match installed_version(&extensions_dir) {
-            Some(v) => compare_versions(&v, MINIMUM_PLUGIN_VERSION).is_lt(),
-            // No version field means very old or malformed extension.
-            None => check_installed(&extensions_dir),
-        }
+        plugin_needs_update(&extensions_dir)
+    }
+
+    fn needs_source_migration(&self) -> bool {
+        let Ok(extensions_dir) = gemini_extensions_dir() else {
+            return false;
+        };
+        let extension_dir = extensions_dir.join(EXTENSION_NAME);
+        let files = [
+            extension_dir.join("gemini-extension.json"),
+            extension_dir.join(INSTALL_METADATA_FILE),
+        ];
+        SOURCE_MIGRATION_CHECK
+            .get_or_compute(&files, || plugin_needs_source_migration(&extensions_dir))
     }
 
     async fn install(&self) -> Result<(), PluginInstallError> {
@@ -87,8 +109,28 @@ impl CliAgentPluginManager for GeminiPluginManager {
 
     async fn update(&self) -> Result<(), PluginInstallError> {
         let mut log = String::new();
-        self.run_logged(&["extensions", "update", EXTENSION_NAME], &mut log)
+        let move_source = gemini_extensions_dir()
+            .ok()
+            .is_some_and(|dir| installed_from_warp(&dir));
+        if move_source {
+            // `extensions update` re-fetches from the recorded source, so an
+            // extension installed from Warp's GitHub would stay on it. Gemini
+            // CLI has no command that re-points an extension (its own
+            // `migratedTo` hand-off must be published by the OLD repository),
+            // and `extensions install` refuses an extension that "is already
+            // installed. Please uninstall it first." So: uninstall, then
+            // install from Phosphor's copy.
+            self.run_logged(&["extensions", "uninstall", EXTENSION_NAME], &mut log)
+                .await?;
+            self.run_logged(
+                &["extensions", "install", EXTENSION_REPO, "--consent"],
+                &mut log,
+            )
             .await?;
+        } else {
+            self.run_logged(&["extensions", "update", EXTENSION_NAME], &mut log)
+                .await?;
+        }
 
         // Sanity check: verify the on-disk version actually changed.
         let still_outdated = gemini_extensions_dir()
@@ -128,7 +170,7 @@ static INSTALL_INSTRUCTIONS: LazyLock<PluginInstructions> = LazyLock::new(|| Plu
     subtitle: crate::t_static!("cli-agent-plugin-gemini-run-command-restart"),
     steps: vec![PluginInstructionStep {
         description: crate::t_static!("cli-agent-plugin-install-warp-extension-step"),
-        command: "gemini extensions install https://github.com/warpdotdev/gemini-cli-warp --consent",
+        command: "gemini extensions install https://gitlab.com/winters-phosphor/gemini-cli-warp --consent",
         executable: true,
         link: None,
     }],
@@ -138,12 +180,23 @@ static INSTALL_INSTRUCTIONS: LazyLock<PluginInstructions> = LazyLock::new(|| Plu
 static UPDATE_INSTRUCTIONS: LazyLock<PluginInstructions> = LazyLock::new(|| PluginInstructions {
     title: crate::t_static!("cli-agent-plugin-gemini-update-title"),
     subtitle: crate::t_static!("cli-agent-plugin-gemini-run-command-restart"),
-    steps: vec![PluginInstructionStep {
-        description: crate::t_static!("cli-agent-plugin-update-warp-extension-step"),
-        command: "gemini extensions update gemini-warp",
-        executable: true,
-        link: None,
-    }],
+    // Uninstall and reinstall rather than `extensions update`: an update
+    // re-fetches from the source the extension was installed from, which for
+    // older installs is Warp's GitHub.
+    steps: vec![
+        PluginInstructionStep {
+            description: crate::t_static!("cli-agent-plugin-uninstall-warp-extension-step"),
+            command: "gemini extensions uninstall gemini-warp",
+            executable: true,
+            link: None,
+        },
+        PluginInstructionStep {
+            description: crate::t_static!("cli-agent-plugin-install-warp-extension-step"),
+            command: "gemini extensions install https://gitlab.com/winters-phosphor/gemini-cli-warp --consent",
+            executable: true,
+            link: None,
+        },
+    ],
     post_install_notes: vec![crate::t_static!(
         "cli-agent-plugin-gemini-restart-update-note"
     )],
@@ -157,6 +210,52 @@ fn check_installed(extensions_dir: &Path) -> bool {
         return false;
     };
     serde_json::from_str::<Value>(&contents).is_ok()
+}
+
+/// Whether `update()` has work to do: the extension is below the minimum
+/// version, or it was installed from Warp's GitHub.
+fn plugin_needs_update(extensions_dir: &Path) -> bool {
+    let outdated = match installed_version(extensions_dir) {
+        Some(v) => compare_versions(&v, MINIMUM_PLUGIN_VERSION).is_lt(),
+        // No version field means very old or malformed extension.
+        None => check_installed(extensions_dir),
+    };
+    outdated || plugin_needs_source_migration(extensions_dir)
+}
+
+fn plugin_needs_source_migration(extensions_dir: &Path) -> bool {
+    check_installed(extensions_dir) && installed_from_warp(extensions_dir)
+}
+
+/// Whether the installed extension's recorded source is Warp's GitHub
+/// repository. Gemini CLI writes `{"source": ..., "type": ...}` to
+/// `.gemini-extension-install.json` in the extension's directory; only a
+/// `git` or `github-release` install is reported, so a `local` or `link`
+/// install (a developer's checkout) is left alone.
+fn installed_from_warp(extensions_dir: &Path) -> bool {
+    let metadata_path = extensions_dir
+        .join(EXTENSION_NAME)
+        .join(INSTALL_METADATA_FILE);
+    let Ok(contents) = fs::read_to_string(metadata_path) else {
+        return false;
+    };
+    let Ok(metadata) = serde_json::from_str::<Value>(&contents) else {
+        return false;
+    };
+    let remote = matches!(
+        metadata.get("type").and_then(Value::as_str),
+        Some("git" | "github-release")
+    );
+    remote
+        && metadata
+            .get("source")
+            .and_then(Value::as_str)
+            .is_some_and(|source| {
+                // Warp's repository was planned as `gemini-warp` (the
+                // extension's own name) before it shipped as `gemini-cli-warp`.
+                is_warp_plugin_source(source, EXTENSION_REPO_NAME)
+                    || is_warp_plugin_source(source, EXTENSION_NAME)
+            })
 }
 
 /// Reads the installed version string for the Zap extension, if present.
