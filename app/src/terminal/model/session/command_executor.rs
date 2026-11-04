@@ -465,28 +465,35 @@ pub mod testing {
             environment_variables: Option<HashMap<String, String>>,
             _execute_command_options: ExecuteCommandOptions,
         ) -> Result<CommandOutput> {
-            let mut command_process = Command::new(match shell.shell_type() {
-                ShellType::PowerShell => "pwsh",
-                _ => "bash",
-            });
+            let run = |program: &str| {
+                let mut command_process = Command::new(program);
 
-            // Set environment variables, including $PATH.
-            if let Some(environment_variables) = environment_variables {
-                command_process.envs(&environment_variables);
-            }
+                // Set environment variables, including $PATH.
+                if let Some(environment_variables) = &environment_variables {
+                    command_process.envs(environment_variables);
+                }
 
-            // Set the current dir, if any.
-            if let Some(current_directory_path) = current_directory_path {
-                command_process.current_dir(current_directory_path);
-            }
+                // Set the current dir, if any.
+                if let Some(current_directory_path) = current_directory_path {
+                    command_process.current_dir(current_directory_path);
+                }
 
-            command_process
-                .arg("-c")
-                .arg(command)
-                .output()
-                .await
-                .map(|output| output.into())
-                .map_err(|e| anyhow!(e))
+                command_process.arg("-c").arg(command);
+                command_process
+            };
+            let output = match shell.shell_type() {
+                // PowerShell 7 (`pwsh`) when installed, else the Windows PowerShell every
+                // Windows machine has: a test box without PowerShell 7 must not read as
+                // "no executables on PATH".
+                ShellType::PowerShell => match run("pwsh").output().await {
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                        run("powershell").output().await
+                    }
+                    result => result,
+                },
+                _ => run("bash").output().await,
+            };
+            output.map(|output| output.into()).map_err(|e| anyhow!(e))
         }
 
         fn as_any(&self) -> &dyn Any {

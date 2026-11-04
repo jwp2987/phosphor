@@ -117,6 +117,10 @@ fn test_unique_skills_keeps_same_provider_skills_from_different_dirs() {
     let project_dir = PathBuf::from("/home/user/projects/repo");
     let home_path = home_dir.join(".agents/skills/my-skill/SKILL.md");
     let project_path = project_dir.join(".agents/skills/my-skill/SKILL.md");
+    // `join` keeps the platform separator between the parts, so the expected
+    // prefixes are built the same way (`\` on Windows).
+    let home_agents = home_dir.join(".agents").to_string_lossy().into_owned();
+    let project_agents = project_dir.join(".agents").to_string_lossy().into_owned();
 
     let content = "---\nname: test-skill\ndescription: A test skill\n---\nContent here";
     let home_skill = ParsedSkill {
@@ -157,14 +161,13 @@ fn test_unique_skills_keeps_same_provider_skills_from_different_dirs() {
     assert!(
         result
             .iter()
-            .any(|skill| skill.reference.to_string().contains("/home/user/.agents")),
+            .any(|skill| skill.reference.to_string().contains(&home_agents)),
         "Should keep the same-name skill in the home directory, actual={result:?}"
     );
     assert!(
-        result.iter().any(|skill| skill
-            .reference
-            .to_string()
-            .contains("/home/user/projects/repo/.agents")),
+        result
+            .iter()
+            .any(|skill| skill.reference.to_string().contains(&project_agents)),
         "Should keep the same-name skill in the project directory, actual={result:?}"
     );
 }

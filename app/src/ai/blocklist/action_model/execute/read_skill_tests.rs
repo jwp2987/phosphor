@@ -119,7 +119,9 @@ Example usage of the skill.
         name, description, name
     );
 
-    let skill_dir = dir.path().join(format!(".claude/skills/{}", name));
+    // Joined per component, so the path uses the platform separator throughout
+    // (the executor reports the path it read, rebuilt from its components).
+    let skill_dir = dir.path().join(".claude").join("skills").join(name);
     fs::create_dir_all(&skill_dir).unwrap();
     let skill_path = skill_dir.join("SKILL.md");
     let mut file = fs::File::create(&skill_path).unwrap();

@@ -1727,7 +1727,8 @@ fn is_remote_session(active_session: &ActiveSession, ctx: &AppContext) -> bool {
     )
 }
 
-/// The path rules for the session's host: its reported OS when remote and known, else local.
+/// The path rules for the session's host: its reported OS when remote and known, else the
+/// shape of its working directory or home (see `PathHost::for_remote_session`), else local.
 pub(super) fn session_path_host(
     active_session: &ActiveSession,
     ctx: &AppContext,
@@ -1735,11 +1736,16 @@ pub(super) fn session_path_host(
     if !is_remote_session(active_session, ctx) {
         return crate::ai::paths::PathHost::Local;
     }
-    crate::ai::paths::PathHost::for_remote(
-        active_session
-            .session(ctx)
+    let session = active_session.session(ctx);
+    let remote_path = active_session
+        .current_working_directory()
+        .cloned()
+        .or_else(|| remote_session_home(active_session, ctx));
+    crate::ai::paths::PathHost::for_remote_session(
+        session
             .and_then(|session| session.host_info().os_category)
             .as_deref(),
+        remote_path.as_deref(),
     )
 }
 

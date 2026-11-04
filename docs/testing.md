@@ -1668,3 +1668,24 @@ Harness changes, plus one app LOG line (no behaviour change). `run.py --self-tes
 - **`intl_altgr_*` final key**: the unshifted layout probe after the AltGr string is VK_OEM_1 (`ü` on German, `;` on US English). It was VK_Y expecting `z`;
   VK_Y types `y` on both layouts (the "Y key types z" rule is the physical key, which KBDGR reports as VK_Z), so a run that got every AltGr character
   right failed on the last byte. Verified on the VM: with GL left out (`WGPU_BACKEND=dx12,vulkan` on the r18u13 build) both cases PASS.
+
+## r18u16 Windows unit-suite fixes (first complete `test-windows` run, job 17737862347)
+
+The first `test-windows` run to finish had 51 failures in 10795 tests. Each one is either a test that assumed a Unix
+host (now portable, or gated with the reason) or a Windows app defect (fixed, test kept):
+
+- **App fixes.** Skill publishing (`skill_dirs_publish.rs`) falls back to a directory junction when Windows refuses a
+  symlink (`ERROR_PRIVILEGE_NOT_HELD`, no Developer Mode), so `WARP_SKILL_DIRS` publishes for Claude Code / Codex there;
+  `create_junction_*` tests cover the junction directly (Windows only). A remote whose OS is not reported yet follows the
+  shape of its working directory / home (`PathHost::for_remote_session`, `crates/ai/src/paths.rs`), so a Windows client
+  no longer turns `~/a.txt` on a Linux remote into `\home\u\a.txt`. `FileStatusInfo` decoding (`remote_server/diff_state_proto.rs`)
+  checks absoluteness in the path's own encoding, so a Windows client accepts a Linux remote's `/repo/...`. Generated
+  worktree paths are written with `/` on Windows (`tab_configs/tab_config.rs`), so a `'` in the user or repo name no
+  longer makes every worktree command unquotable; saved configs with the old `\` form are still upgraded.
+- **Test isolation.** The input tests' bootstrapped terminal points its history file at a path that does not exist
+  (the shell's default history file is the real user's: PSReadLine's on the VM held 3016 lines). `TestCommandExecutor`
+  uses `powershell` when `pwsh` is not installed. A remote path in a test is built with `StandardizedPath::try_new`,
+  never `from_local_absolute_unchecked`. Paths are joined per component where the code under test rebuilds them.
+- **Gated, with the reason in the test.** The relative-symlink publish case is skipped at run time where only a
+  junction can be made; the #911 abandoned-connection test and two `repo_metadata` symlink tests are `#[cfg(unix)]`
+  (Windows cannot delete a file SQLite holds open; the symlink tests need a real symlink).

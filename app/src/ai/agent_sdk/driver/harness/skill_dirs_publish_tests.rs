@@ -17,6 +17,21 @@ fn write_skill(dir: &Path, name: &str) -> PathBuf {
     skill_dir
 }
 
+/// Whether this machine can create real directory symlinks. Windows refuses
+/// them without Developer Mode (`SeCreateSymbolicLinkPrivilege`), and
+/// `create_symlink` then makes a junction, which always stores an absolute
+/// destination.
+#[cfg(unix)]
+fn real_symlinks_available() -> bool {
+    true
+}
+
+#[cfg(windows)]
+fn real_symlinks_available() -> bool {
+    let dir = TempDir::new().unwrap();
+    std::os::windows::fs::symlink_dir(dir.path(), dir.path().join("probe")).is_ok()
+}
+
 #[test]
 fn publish_skill_creates_symlink() {
     let source_root = TempDir::new().unwrap();
@@ -396,6 +411,15 @@ fn publish_skill_is_a_noop_when_target_symlink_uses_relative_dotdot_path_to_our_
     // (but resolving-to-the-same-place) path representation is still
     // recognized as ours and left alone — not treated as a foreign conflict
     // that gets shadowed under an alternate name.
+    if !real_symlinks_available() {
+        // A junction (the Windows fallback without the symlink privilege)
+        // cannot hold a relative destination, so there is no relative link
+        // to recognise. The absolute-link no-op case still runs.
+        eprintln!(
+            "SKIPPED: this Windows account cannot create symlinks (no Developer Mode), so a relative link cannot exist"
+        );
+        return;
+    }
     let source_root = TempDir::new().unwrap();
     let skill_root = TempDir::new().unwrap();
     let skill_dir = write_skill(source_root.path(), "github");
@@ -686,12 +710,17 @@ fn publish_skill_dirs_publishes_normally_outside_any_git_repo() {
 #[serial_test::serial]
 fn warp_skill_source_dirs_resolves_relative_entries_against_working_dir() {
     let working_dir = TempDir::new().unwrap();
+    // A real absolute path on every platform: `/abs/skills` is only
+    // drive-relative on Windows, so it is (correctly) joined onto the
+    // working directory's drive there.
+    let absolute_root = TempDir::new().unwrap();
+    let absolute_skills = absolute_root.path().join("skills");
     let old = std::env::var_os(ai::skills::WARP_SKILL_DIRS_ENV);
     // TODO: Audit that the environment access only happens in single-threaded code.
     unsafe {
         std::env::set_var(
             ai::skills::WARP_SKILL_DIRS_ENV,
-            "relative-skills,/abs/skills",
+            format!("relative-skills,{}", absolute_skills.display()),
         )
     };
 
@@ -706,10 +735,7 @@ fn warp_skill_source_dirs_resolves_relative_entries_against_working_dir() {
 
     assert_eq!(
         dirs,
-        vec![
-            working_dir.path().join("relative-skills"),
-            PathBuf::from("/abs/skills"),
-        ]
+        vec![working_dir.path().join("relative-skills"), absolute_skills,]
     );
 }
 
@@ -731,4 +757,52 @@ fn warp_skill_source_dirs_is_empty_when_env_var_is_unset() {
     }
 
     assert!(dirs.is_empty());
+}
+
+// --- Windows: the junction fallback when symlinks need a privilege ---
+
+#[cfg(windows)]
+#[test]
+fn create_junction_makes_a_link_the_ownership_checks_understand() {
+    // Exercised directly so it runs even on a machine with Developer Mode,
+    // where `create_symlink` never needs the fallback.
+    let source_root = TempDir::new().unwrap();
+    let skill_root = TempDir::new().unwrap();
+    let skill_dir = write_skill(source_root.path(), "github");
+    let target = skill_root.path().join("github");
+
+    create_junction(&skill_dir, &target).unwrap();
+
+    assert!(
+        fs::symlink_metadata(&target)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(fs::read_link(&target).unwrap(), skill_dir);
+    assert!(target.join("SKILL.md").is_file());
+    assert!(points_at_our_source(&target, &skill_dir));
+    // A repeat publish recognises the junction as ours.
+    assert_eq!(
+        publish_skill(skill_root.path(), "github", &skill_dir).unwrap(),
+        Some(target.clone())
+    );
+    assert!(!skill_root.path().join("warp-github").exists());
+}
+
+#[cfg(windows)]
+#[test]
+fn create_junction_resolves_a_relative_destination_against_the_link_directory() {
+    let root = TempDir::new().unwrap();
+    let skill_dir = write_skill(&root.path().join("source"), "github");
+    let links = root.path().join("links");
+    fs::create_dir_all(&links).unwrap();
+    let target = links.join("github");
+
+    create_junction(Path::new(r"..\source\github"), &target).unwrap();
+
+    assert_eq!(
+        target.canonicalize().unwrap(),
+        skill_dir.canonicalize().unwrap()
+    );
 }

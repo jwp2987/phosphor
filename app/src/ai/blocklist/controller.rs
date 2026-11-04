@@ -260,11 +260,18 @@ impl SessionContext {
         )
     }
 
-    /// Which host's path rules this session's file paths follow. `Local` for a local session
-    /// and for a remote whose OS is unknown (the previous behaviour).
+    /// Which host's path rules this session's file paths follow. `Local` for a local session.
+    /// A remote whose OS is unknown follows the shape of its reported working directory or
+    /// home (`/...` is unix), so the answer does not depend on the local OS; `Local` only when
+    /// neither is known.
     pub fn path_host(&self) -> crate::ai::paths::PathHost {
         if self.is_remote() {
-            crate::ai::paths::PathHost::for_remote(self.remote_os_category.as_deref())
+            crate::ai::paths::PathHost::for_remote_session(
+                self.remote_os_category.as_deref(),
+                self.current_working_directory
+                    .as_deref()
+                    .or(self.remote_home.as_deref()),
+            )
         } else {
             crate::ai::paths::PathHost::Local
         }

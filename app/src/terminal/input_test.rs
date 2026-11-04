@@ -505,9 +505,18 @@ pub async fn add_window_with_bootstrapped_terminal_and_window_id(
     // up the detected machine shell.
     let session_info = match session_info {
         Some(info) => info.with_session_type(BootstrapSessionType::Local),
+        // A history file that does not exist: without one the shell's default history file is
+        // read, which is the real user's (on Windows, PSReadLine's thousands of CI lines), and
+        // the tests' own history would no longer be the whole history.
         None => SessionInfo::new_for_test()
             .with_session_type(BootstrapSessionType::Local)
-            .with_shell_type(shell_type),
+            .with_shell_type(shell_type)
+            .with_histfile(Some(
+                std::env::temp_dir()
+                    .join("phosphor-input-test-no-such-histfile")
+                    .to_string_lossy()
+                    .into_owned(),
+            )),
     };
     let history_file_commands = history_file_commands.unwrap_or_default();
 

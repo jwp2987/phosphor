@@ -391,12 +391,19 @@ fn run_bash_subshell_bootstrap(locale: &str, drop_a_chunk: bool) -> Option<Strin
 /// UTF-8 locale counts characters. The script here has non-ASCII text so the two differ.
 #[test]
 fn bash_subshell_bootstrap_runs_under_c_and_utf8_locales() {
+    // The hook's envelope: a DCS, or on Windows the OSC 9278 form, because the lines carry
+    // `WARP_USING_WINDOWS_CON_PTY=true` there and ConPTY does not pass a DCS through.
+    let hook_start = if cfg!(windows) {
+        "\u{1b}]9278;d;"
+    } else {
+        "\u{1b}P$d"
+    };
     for locale in ["C", "C.UTF-8", "POSIX"] {
         let Some(out) = run_bash_subshell_bootstrap(locale, false) else {
             return;
         };
         assert!(
-            out.contains("\u{1b}P$d") && out.contains("PROMPT-REACHED"),
+            out.contains(hook_start) && out.contains("PROMPT-REACHED"),
             "LC_ALL={locale}: the InitShell hook was not emitted: {out:?}"
         );
     }

@@ -411,15 +411,18 @@ pub(crate) fn file_status_info_to_proto(info: &FileStatusInfo) -> proto::FileSta
 /// `FileStatusInfo::path` is still a plain `PathBuf` (see
 /// `code_review::diff_state`), actively used by the local discard-files flow
 /// in `code_review_view.rs`. Migrating that field to `StandardizedPath` would
-/// ripple into that unrelated, already-working call site, so this checks
-/// `Path::is_absolute()` directly instead — same rejection behavior, no
-/// domain-type change.
+/// ripple into that unrelated, already-working call site, so this keeps the
+/// `PathBuf` and only borrows the pin's absoluteness rule: a path is absolute
+/// under the encoding it is written in (`StandardizedPath::try_new`), never
+/// under the local OS's `Path::is_absolute()`. These paths come from the
+/// remote host, so a Windows client must accept a Linux remote's `/repo/...`
+/// (`Path::is_absolute()` on Windows rejects every one of them, r18u16).
 impl TryFrom<&proto::FileStatusInfo> for FileStatusInfo {
     type Error = String;
 
     fn try_from(info: &proto::FileStatusInfo) -> Result<Self, Self::Error> {
         let path = PathBuf::from(&info.path);
-        if !path.is_absolute() {
+        if !is_absolute_on_its_host(&info.path) {
             return Err(format!(
                 "FileStatusInfo path is not absolute: {}",
                 info.path
@@ -435,13 +438,19 @@ impl TryFrom<&proto::FileStatusInfo> for FileStatusInfo {
         // Renamed/Copied old_path also flows into git restore/checkout
         // commands during discard, so it must be absolute too.
         if let GitFileStatus::Renamed { old_path } | GitFileStatus::Copied { old_path } = &status {
-            if !PathBuf::from(old_path).is_absolute() {
+            if !is_absolute_on_its_host(old_path) {
                 return Err(format!("old_path is not absolute: {old_path}"));
             }
         }
 
         Ok(FileStatusInfo { path, status })
     }
+}
+
+/// Whether a path the remote host sent is absolute under its own encoding
+/// (unix `/...` or Windows `C:\...`), whatever OS this client runs on.
+fn is_absolute_on_its_host(path: &str) -> bool {
+    warp_util::standardized_path::StandardizedPath::try_new(path).is_ok()
 }
 
 // ── FileChangeEntry (util/git.rs) ────────────────────────────────
