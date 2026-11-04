@@ -177,18 +177,6 @@ pub(crate) fn validate_cli_installed(
     Ok(())
 }
 
-fn insert_non_empty_task_env_var(
-    env_vars: &mut HashMap<OsString, OsString>,
-    key: &'static str,
-    value: String,
-) {
-    if value.is_empty() {
-        return;
-    }
-
-    env_vars.insert(OsString::from(key), OsString::from(value));
-}
-
 fn insert_task_env_var_aliases(
     env_vars: &mut HashMap<OsString, OsString>,
     keys: &[&'static str],

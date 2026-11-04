@@ -46,6 +46,7 @@ impl ReadinessTriggerLayer {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReadinessDiagnosticLevel {
     Debug,
+    #[allow(dead_code)] // used by sibling unused code or shared name
     Info,
     Error,
 }
@@ -276,6 +277,7 @@ impl ProjectedToolResult {
         }
     }
 
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     pub fn current_input(
         index: usize,
         task_id: impl Into<String>,
@@ -315,7 +317,9 @@ impl ProjectedToolResult {
 pub enum ProjectionItemKind {
     UserBoundary,
     AssistantBoundary,
+    #[allow(dead_code)] // used only by tests
     SystemBoundary,
+    #[allow(dead_code)] // used only by tests
     OtherBoundary,
     AssistantToolCalls(Vec<ProjectedToolCall>),
     ToolResult(ProjectedToolResult),
@@ -345,6 +349,7 @@ impl ProjectionItem {
         }
     }
 
+    #[allow(dead_code)] // used only by tests
     pub fn other_boundary(task_id: impl Into<String>, message_id: impl Into<String>) -> Self {
         Self {
             task_id: task_id.into(),

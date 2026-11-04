@@ -16,8 +16,11 @@ use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::agent_conversations_model::AgentRunDisplayStatus;
 use crate::ai::ambient_agents::AmbientAgentTaskId;
 
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub(super) const DEFAULT_RESULT_COUNT: usize = 50;
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub(super) const MAX_SEARCH_RESULTS: usize = 500;
+#[allow(dead_code)] // used by sibling unused code or shared name
 const MINIMUM_FUZZY_SCORE: i64 = 25;
 
 /// Stable projection identity used by list and navigation surfaces.
@@ -37,18 +40,6 @@ impl AgentConversationEntryId {
             AgentConversationEntryId::Conversation(id) => format!("conv_{id}"),
         }
     }
-}
-
-/// Navigation request input for resolving an entry to a `WorkspaceAction` at action time.
-///
-/// Upstream also has a `ServerToken(ServerConversationToken)` variant, used as a
-/// cloud-transcript-viewer fallback when there is no local entry for a raw server
-/// token. BYOP has no such fallback path (`AgentConversationIdentity::server_conversation_token`
-/// is always `None` here, see its doc comment), and upstream marks that variant
-/// `#[allow(dead_code)]` itself, so it is not carried over.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum AgentConversationNavigationSubject {
-    Entry(AgentConversationEntryId),
 }
 
 /// Cross-system identifiers that may refer to the same underlying conversation.
@@ -105,6 +96,7 @@ pub trait AgentConversationListPolicy: 'static {
 }
 
 /// A normalized conversation entry paired with optional title-match metadata.
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub struct AgentConversationQueryResult {
     pub entry: AgentConversationEntry,
     pub title_match: Option<FuzzyMatchResult>,
@@ -115,6 +107,7 @@ pub struct AgentConversationQueryResult {
 /// Ported verbatim from upstream `agent_conversations_model::query`: empty query returns the
 /// most-recent `DEFAULT_RESULT_COUNT` entries oldest-first; a non-empty query fuzzy-matches
 /// titles above `MINIMUM_FUZZY_SCORE`, ranked by (score, recency).
+#[allow(dead_code)] // used by warp_tui (tui feature)
 pub fn query_conversation_entries(
     mut entries: Vec<AgentConversationEntry>,
     query: &str,

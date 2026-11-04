@@ -132,6 +132,7 @@ impl<U, K> Default for RevertSequence<U, K> {
 
 impl<U, K: Eq + Hash> RevertSequence<U, K> {
     /// A sequence holding `reverts`; see [`Self::add`].
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn new<L: IntoIterator<Item = K>>(reverts: impl IntoIterator<Item = (L, U)>) -> Self {
         let mut sequence = Self::default();
         sequence.add(reverts);

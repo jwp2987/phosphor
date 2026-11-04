@@ -166,6 +166,7 @@ impl TokenUsage {
 pub struct WireEntry {
     /// Monotonic sequence number; also the stable UI key.
     pub seq: u64,
+    #[allow(dead_code)] // field: set at construction or persisted
     pub at: DateTime<Local>,
     pub direction: Direction,
     pub kind: Kind,

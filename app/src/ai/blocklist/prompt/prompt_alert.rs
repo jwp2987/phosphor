@@ -40,6 +40,7 @@ pub enum PromptAlertState {
     /// This doesn't use a primary text to avoid being too in-your-face.
     AnonymousUserRequestLimitSoftGate,
     /// An anonymous user has reached the request limit.
+    #[allow(dead_code)] // used by sibling unused code or shared name
     AnonymousUserRequestLimitHardGate,
     /// The user has reached the request limit.
     RequestLimitReached,

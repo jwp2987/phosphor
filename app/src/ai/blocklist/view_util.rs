@@ -63,10 +63,12 @@ pub fn error_color(theme: &WarpTheme) -> ColorU {
         .into()
 }
 
+#[allow(dead_code)] // used by sibling unused code or shared name
 const ERROR_APOLOGY_TEXT: &str = "I'm sorry, I couldn't complete that request.";
 
 /// Shown alongside a failed Agent Mode response. Ported from warp; BYOP has no
 /// usage metering, but the string is carried for parity with the TUI renderer.
+#[allow(dead_code)] // used by warp_tui (tui feature)
 pub const FAILED_OUTPUT_USAGE_NOTICE_TEXT: &str = "This response won't count towards your usage.";
 
 /// Renderer-neutral content for a failed Agent Mode request.
@@ -76,6 +78,7 @@ pub const FAILED_OUTPUT_USAGE_NOTICE_TEXT: &str = "This response won't count tow
 /// BYOP [`failed_output_presentation`] below never produces the cloud-only
 /// `OutOfCredits` / `GeminiEnterpriseCredentialsExpiredOrInvalid` arms.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // used by warp_tui (tui feature)
 pub enum FailedOutputPresentation {
     Message(String),
     OutOfCredits {
@@ -107,6 +110,7 @@ pub enum FailedOutputPresentation {
 /// automatic resume isn't interrupted by an alarming error — but only on
 /// non-dogfood channels, so Local/Dev builds still show developers every
 /// transport failure. See `RenderableAIError::should_suppress_during_recovery`.
+#[allow(dead_code)] // used by warp_tui (tui feature)
 pub fn failed_output_presentation(
     error: &crate::ai::agent::RenderableAIError,
     _app: &warpui::AppContext,
@@ -165,6 +169,7 @@ pub fn failed_output_presentation(
 /// provider — so "This response won't count towards your usage" is meaningless
 /// and misleading here. Zap never shows the notice. (Parameters are kept so the
 /// call sites match warp's, in case the notice is ever reintroduced.)
+#[allow(dead_code)] // used by warp_tui (tui feature)
 pub fn should_show_failed_output_usage_notice(
     _error: &crate::ai::agent::RenderableAIError,
     _is_latest_visible_exchange_in_root_task: bool,

@@ -1356,6 +1356,7 @@ impl BlocklistAIPermissions {
 ///
 /// Both are lexical. Symlinks are not followed for the destination, exactly as they are not
 /// for the source — see the residue notes in [`super::protected_paths`].
+#[allow(dead_code)] // used only by tests
 pub(crate) fn file_edit_guard_paths(
     file_edits: &[FileEdit],
     shell: &Option<ShellLaunchData>,

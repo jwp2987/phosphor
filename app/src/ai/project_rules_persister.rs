@@ -91,6 +91,7 @@ impl ProjectRulesPersister {
 
     /// Test-only: doesn't bind a persistence channel, and doesn't subscribe to any model.
     #[cfg(test)]
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn new_for_test(_ctx: &mut ModelContext<Self>) -> Self {
         Self {
             persistence_tx: None,

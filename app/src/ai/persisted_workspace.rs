@@ -260,6 +260,7 @@ pub enum PersistedWorkspaceEvent {
     /// Toast notification is shown directly by PersistedWorkspace.
     InstallationFailed,
     /// Emitted when async detection of available servers for a workspace completes.
+    #[allow(dead_code)] // used by sibling unused code or shared name
     AvailableServersDetected {
         workspace_path: PathBuf,
         servers: Vec<LSPServerType>,
@@ -1213,106 +1214,6 @@ impl PersistedWorkspace {
                 me.handle_spawn_lsp(&file_path, path_env_var, ctx);
             }
         });
-    }
-
-    /// Asynchronously detects which LSP server types are relevant for the given workspaces
-    /// by calling `should_suggest_for_repo` on each `LSPServerType`. Results are stored
-    /// as `Suggested` entries in the workspaces map and emitted via `AvailableServersDetected`.
-    ///
-    /// Workspaces that already have language server entries are skipped (results emitted
-    /// immediately) unless `skip_cached` is true, in which case all workspaces are scanned
-    /// unconditionally. The workspaces to scan share a single background task and one
-    /// interactive PATH capture.
-    #[cfg(feature = "local_fs")]
-    pub fn detect_available_servers_for_workspaces(
-        &mut self,
-        workspace_paths: Vec<PathBuf>,
-        skip_cached: bool,
-        ctx: &mut ModelContext<Self>,
-    ) {
-        // Workspaces that already have entries get an immediate emit; the rest need scanning.
-        // When skip_cached is true (initial startup), always scan to pick up new server types.
-        let mut paths_to_scan = Vec::new();
-        for workspace_path in workspace_paths {
-            if !skip_cached
-                && let Some(workspace) = self.workspaces.get(&workspace_path)
-                && !workspace.language_servers.is_empty()
-            {
-                let servers: Vec<LSPServerType> =
-                    workspace.language_servers.keys().copied().collect();
-                ctx.emit(PersistedWorkspaceEvent::AvailableServersDetected {
-                    workspace_path,
-                    servers,
-                });
-                continue;
-            }
-            paths_to_scan.push(workspace_path);
-        }
-
-        if paths_to_scan.is_empty() {
-            return;
-        }
-
-        // Get interactive PATH for should_suggest_for_repo checks
-        let path_future = LocalShellState::handle(ctx).update(ctx, |shell_state, ctx| {
-            shell_state.get_interactive_path_env_var(ctx)
-        });
-        let http_client = Arc::new(http_client::Client::new());
-
-        ctx.spawn(
-            async move {
-                let path_env_var = path_future.await;
-                let executor = lsp::CommandBuilder::new(path_env_var);
-
-                let mut results: Vec<(PathBuf, Vec<LSPServerType>)> = Vec::new();
-                for workspace_path in paths_to_scan {
-                    let mut suggested = Vec::new();
-                    for server_type in LSPServerType::all() {
-                        let candidate = server_type.candidate(http_client.clone());
-                        if candidate
-                            .should_suggest_for_repo(&workspace_path, &executor)
-                            .await
-                        {
-                            suggested.push(server_type);
-                        }
-                    }
-                    if !suggested.is_empty() {
-                        results.push((workspace_path, suggested));
-                    }
-                }
-                results
-            },
-            move |me, results, ctx| {
-                for (workspace_path, servers) in results {
-                    // Insert Suggested entries into the workspace, without
-                    // overwriting existing Yes/No entries.
-                    let workspace =
-                        me.workspaces
-                            .entry(workspace_path.clone())
-                            .or_insert_with(|| Workspace {
-                                metadata: WorkspaceMetadata {
-                                    path: workspace_path.clone(),
-                                    navigated_ts: None,
-                                    modified_ts: None,
-                                    queried_ts: None,
-                                },
-                                language_servers: HashMap::new(),
-                            });
-
-                    for &server_type in &servers {
-                        workspace
-                            .language_servers
-                            .entry(server_type)
-                            .or_insert(EnablementState::Suggested);
-                    }
-
-                    ctx.emit(PersistedWorkspaceEvent::AvailableServersDetected {
-                        workspace_path,
-                        servers,
-                    });
-                }
-            },
-        );
     }
 
     /// Kicks off detection (deduped via Checking) and returns the best immediate status.

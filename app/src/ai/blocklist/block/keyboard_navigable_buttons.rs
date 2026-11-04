@@ -80,49 +80,6 @@ impl KeyboardNavigableButtonBuilder {
     }
 }
 
-/// Creates a simple navigation button with standard styling.
-/// This is a convenience function for the common case of a text-only button
-/// that dispatches an action when clicked.
-pub fn simple_navigation_button<A: warpui::Action + Clone + 'static>(
-    text_label: String,
-    mouse_state: MouseStateHandle,
-    action: A,
-    disabled: bool,
-) -> KeyboardNavigableButtonBuilder {
-    KeyboardNavigableButtonBuilder::new(
-        move |is_selected, app| {
-            let appearance = Appearance::as_ref(app);
-            let mut button = appearance
-                .ui_builder()
-                .button(ButtonVariant::Secondary, mouse_state.clone())
-                .with_style(UiComponentStyles {
-                    font_size: Some(appearance.monospace_font_size()),
-                    ..UiComponentStyles::default()
-                })
-                .with_hovered_styles(UiComponentStyles {
-                    font_size: Some(appearance.monospace_font_size()),
-                    ..UiComponentStyles::default()
-                });
-            if disabled {
-                button = button.disabled();
-            } else if is_selected {
-                button = button.with_style(UiComponentStyles {
-                    border_color: Some(appearance.theme().accent().into()),
-                    border_width: Some(1.0),
-                    background: Some(appearance.theme().surface_2().into()),
-                    ..UiComponentStyles::default()
-                });
-            }
-            button.with_text_label(text_label.clone())
-        },
-        move |ctx: &mut ViewContext<KeyboardNavigableButtons>| {
-            if !disabled {
-                ctx.dispatch_typed_action(&action);
-            }
-        },
-    )
-}
-
 /// Builds the label for a [`rich_navigation_button`]: a title row (with
 /// optional `Recommended` badge) above an optional muted sub-label, plus
 /// an enter-key indicator centered vertically within the full label area.

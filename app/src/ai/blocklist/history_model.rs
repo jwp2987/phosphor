@@ -188,6 +188,7 @@ pub enum ForkConversationError {
 
 /// Reasons an optimistic conversation rename cannot begin.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[allow(dead_code)] // used only by tests
 pub enum BeginConversationRenameError {
     #[error("a rename is already in flight for this conversation")]
     RenameInProgress,
@@ -208,10 +209,13 @@ pub enum BeginConversationRenameError {
 struct InFlightConversationRename {
     /// The title the user attempted to apply. Used to decide whether a
     /// server-normalized title on completion differs and must be re-applied.
+    #[allow(dead_code)] // field: set at construction or persisted
     attempted_title: String,
     /// Previous root task description (the conversation title source of truth).
+    #[allow(dead_code)] // field: set at construction or persisted
     previous_root_task_description: String,
     /// Previous cached metadata title, if the conversation had cached metadata.
+    #[allow(dead_code)] // field: set at construction or persisted
     previous_cached_metadata_title: Option<String>,
 }
 
@@ -332,6 +336,7 @@ pub struct BlocklistAIHistoryModel {
     /// conversation ID. Present between `begin_conversation_rename` and the
     /// matching `complete_conversation_rename` / `fail_conversation_rename`.
     /// Holds the rollback snapshot used if the rename fails.
+    #[allow(dead_code)] // field: set at construction or persisted
     in_flight_conversation_renames: HashMap<AIConversationId, InFlightConversationRename>,
 
     #[cfg(feature = "local_fs")]
@@ -576,10 +581,6 @@ impl BlocklistAIHistoryModel {
         }
     }
 
-    pub(crate) fn is_conversation_killed(&self, conversation_id: &AIConversationId) -> bool {
-        self.killed_conversation_ids.contains(conversation_id)
-    }
-
     pub fn start_new_child_conversation(
         &mut self,
         terminal_view_id: EntityId,
@@ -804,6 +805,7 @@ impl BlocklistAIHistoryModel {
     /// conversation token, which the caller uses to identify the conversation
     /// to whatever rename backend is in use. Callers must follow up with
     /// [`Self::complete_conversation_rename`] or [`Self::fail_conversation_rename`].
+    #[allow(dead_code)] // used only by tests
     pub(crate) fn begin_conversation_rename(
         &mut self,
         conversation_id: AIConversationId,
@@ -853,6 +855,7 @@ impl BlocklistAIHistoryModel {
     }
 
     /// Completes an in-flight rename and applies any normalized title.
+    #[allow(dead_code)] // used only by tests
     pub(crate) fn complete_conversation_rename(
         &mut self,
         conversation_id: AIConversationId,
@@ -872,6 +875,7 @@ impl BlocklistAIHistoryModel {
     }
 
     /// Reverts an in-flight rename to the captured previous title snapshot.
+    #[allow(dead_code)] // used only by tests
     pub(crate) fn fail_conversation_rename(
         &mut self,
         conversation_id: AIConversationId,
@@ -921,6 +925,7 @@ impl BlocklistAIHistoryModel {
     }
 
     /// Applies a conversation title locally and notifies title observers.
+    #[allow(dead_code)] // used only by tests
     pub(crate) fn apply_conversation_title(
         &mut self,
         conversation_id: AIConversationId,
@@ -2932,6 +2937,7 @@ impl BlocklistAIHistoryModel {
 
     /// Clears all stored conversation-related data in memory.
     /// This is used when logging out to ensure no AI history persists across users.
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     pub(crate) fn reset(&mut self) {
         self.live_conversation_ids_for_terminal_view.clear();
         self.cleared_conversation_ids_for_terminal_view.clear();

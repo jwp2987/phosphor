@@ -59,6 +59,7 @@ pub enum WireInspectorAction {
 
 #[derive(Debug, Clone)]
 pub enum WireInspectorEvent {
+    #[allow(dead_code)] // used by sibling unused code or shared name
     Close,
 }
 

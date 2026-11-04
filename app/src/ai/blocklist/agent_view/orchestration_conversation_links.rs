@@ -20,6 +20,7 @@ use crate::ui_components::blended_colors;
 use crate::ui_components::icons::Icon;
 use crate::workspace::{WorkspaceAction, WorkspaceRegistry};
 
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub(crate) fn conversation_id_for_agent_id(
     agent_id: &str,
     app: &AppContext,
@@ -103,6 +104,7 @@ pub(crate) fn dispatch_focus_or_open_child_agent_pane(
     ctx.dispatch_typed_action(TerminalAction::OpenChildAgentInNewPane { conversation_id });
 }
 
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub(crate) fn parent_conversation_id(
     active_conversation: &AIConversation,
     app: &AppContext,
@@ -120,6 +122,7 @@ pub(crate) fn parent_conversation_id(
 /// `defer_events_to_children` so the trailing element can handle its own
 /// click without also triggering the card's `on_click`.
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub(crate) fn conversation_navigation_card_with_icon(
     icon: Option<(Icon, ColorU)>,
     title: String,

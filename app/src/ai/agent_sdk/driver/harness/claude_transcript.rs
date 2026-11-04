@@ -36,6 +36,7 @@ use super::json_utils::entries_to_jsonl;
 /// Bundles the main session transcript, any subagent transcripts, and
 /// per-agent TODO lists assembled from the Claude state directory.
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[allow(dead_code)] // used only by tests
 pub(crate) struct ClaudeTranscriptEnvelope {
     /// The directory that the Claude Code session started in.
     pub(crate) cwd: PathBuf,
@@ -56,6 +57,7 @@ pub(crate) struct ClaudeTranscriptEnvelope {
 /// Claude CLI convention of replacing every `/` with `-`.
 ///
 /// Example: `/Users/ben/src/foo` → `-Users-ben-src-foo`
+#[allow(dead_code)] // used only by tests
 pub(crate) fn encode_cwd(cwd: &Path) -> String {
     cwd.to_string_lossy().replace(['/', '.'], "-")
 }
@@ -175,6 +177,7 @@ pub(crate) fn read_envelope(
 /// - `<config_root>/projects/<encoded_cwd>/<uuid>.jsonl` - main transcript
 /// - `<config_root>/projects/<encoded_cwd>/<uuid>/subagents/<stem>.jsonl` - subagents
 /// - `<config_root>/todos/<stem>.json` - per-agent todo lists
+#[allow(dead_code)] // used only by tests
 pub(crate) fn write_envelope(
     envelope: &ClaudeTranscriptEnvelope,
     config_root: &Path,
@@ -295,6 +298,7 @@ pub(crate) fn write_session_index_entry(
 ///
 /// Lines that fail to parse as JSON are skipped with a warning rather than
 /// causing the entire read to fail. A missing file returns an empty [`Vec`].
+#[allow(dead_code)] // used only by tests
 pub(crate) fn read_jsonl(path: &Path) -> Result<Vec<Value>> {
     let file = match std::fs::File::open(path) {
         Ok(f) => f,

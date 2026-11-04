@@ -485,6 +485,7 @@ impl BlocklistAIActionExecutor {
         &self.ask_user_question_executor
     }
 
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn send_message_executor(&self) -> &ModelHandle<SendMessageToAgentExecutor> {
         &self.send_message_executor
     }

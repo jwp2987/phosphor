@@ -1612,6 +1612,7 @@ impl AIConversation {
 
     /// Updates the conversation title (the root task description) and persists
     /// the conversation. Used by optimistic conversation renames.
+    #[allow(dead_code)] // used only by tests
     pub(crate) fn update_conversation_title(
         &mut self,
         title: String,
@@ -1624,6 +1625,7 @@ impl AIConversation {
 
     /// Restores a previous title snapshot (root task description) and persists
     /// the conversation. Used to roll back a failed optimistic rename.
+    #[allow(dead_code)] // used only by tests
     pub(crate) fn restore_conversation_title(
         &mut self,
         root_task_description: String,

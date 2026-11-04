@@ -15,6 +15,7 @@ use crate::ai::agent::conversation::{AIConversation, AIConversationId, Conversat
 use crate::ai::blocklist::BlocklistAIHistoryModel;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // used only by tests
 pub enum OrchestrationNavigationDirection {
     Previous,
     Next,
@@ -109,6 +110,7 @@ pub fn resolve_orchestration_participant(
 ///
 /// Conversations without descendants are not orchestration roots. Malformed
 /// parent cycles and missing ancestors fail closed.
+#[allow(dead_code)] // used by warp_tui (tui feature)
 pub fn orchestration_root_conversation_id(
     history: &BlocklistAIHistoryModel,
     conversation_id: AIConversationId,
@@ -127,8 +129,10 @@ pub fn orchestration_root_conversation_id(
     None
 }
 
+#[allow(dead_code)] // used only by tests
 const DONE_STATUS_KEY: u8 = 3;
 
+#[allow(dead_code)] // used only by tests
 fn pill_status_sort_key(status: Option<&ConversationStatus>) -> u8 {
     match status {
         Some(ConversationStatus::Blocked { .. }) => 0,
@@ -142,6 +146,7 @@ fn pill_status_sort_key(status: Option<&ConversationStatus>) -> u8 {
     }
 }
 
+#[allow(dead_code)] // used only by tests
 fn pill_secondary_sort_key(status_key: u8, last_modified_ms: Option<i64>) -> i64 {
     if status_key == DONE_STATUS_KEY {
         last_modified_ms.unwrap_or(0).saturating_neg()
@@ -238,6 +243,7 @@ fn collect_descendant_conversation_ids_in_spawn_order(
 ///
 /// Descendants whose `AIConversation` is not loaded are ignored — active
 /// local children are always loaded in this client.
+#[allow(dead_code)] // used only by tests
 pub fn has_local_orchestrated_children(
     history: &BlocklistAIHistoryModel,
     orchestrator_id: AIConversationId,
@@ -253,6 +259,7 @@ pub fn has_local_orchestrated_children(
 
 /// One descendant in canonical orchestration pill order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub struct OrderedOrchestrationDescendant {
     pub conversation_id: AIConversationId,
     pub spawn_index: usize,
@@ -268,6 +275,7 @@ pub struct OrderedOrchestrationDescendant {
 /// children of its drill-down anchor) while keyboard cycling walks the whole
 /// tree; the bar follows the selection by re-anchoring. Callers should
 /// preserve the returned order rather than sorting the conversations again.
+#[allow(dead_code)] // used by warp_tui (tui feature)
 pub fn descendant_conversations_in_pill_order(
     history: &BlocklistAIHistoryModel,
     parent_id: AIConversationId,
@@ -281,6 +289,7 @@ pub fn descendant_conversations_in_pill_order(
 /// Returns only the DIRECT children of `parent_id` in the same canonical pill
 /// order as [`descendant_conversations_in_pill_order`]. Used by the
 /// drill-down pill bar, which renders one level of the tree at a time.
+#[allow(dead_code)] // used by warp_tui (tui feature)
 pub fn child_conversations_in_pill_order(
     history: &BlocklistAIHistoryModel,
     parent_id: AIConversationId,
@@ -291,6 +300,7 @@ pub fn child_conversations_in_pill_order(
     )
 }
 
+#[allow(dead_code)] // used by sibling unused code or shared name
 fn conversations_in_pill_order(
     history: &BlocklistAIHistoryModel,
     conversation_ids: Vec<AIConversationId>,
@@ -341,6 +351,7 @@ fn conversations_in_pill_order(
 ///   [orchestrator, descendants in pill-bar order]
 /// where descendants use the same pinned/status/recency ordering rendered by
 /// the orchestration pill bar. Navigation wraps within this full list.
+#[allow(dead_code)] // used only by tests
 pub fn adjacent_orchestration_child_conversation_id(
     history: &BlocklistAIHistoryModel,
     active_conversation_id: AIConversationId,
@@ -407,6 +418,7 @@ pub fn adjacent_orchestration_child_conversation_id(
 ///   6. `Success` — everything finished successfully.
 ///
 /// Returns `Success` if the orchestrator is not loaded and has no descendants.
+#[allow(dead_code)] // used by warp_tui (tui feature)
 pub fn aggregated_orchestrator_status(
     history: &BlocklistAIHistoryModel,
     orchestrator_id: AIConversationId,
@@ -419,6 +431,7 @@ pub fn aggregated_orchestrator_status(
 /// ([`aggregated_orchestrator_status`] semantics) across the node and those
 /// descendants.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // used by warp_tui (tui feature)
 pub struct LoadedSubtreeRollup {
     pub descendant_count: usize,
     pub status: ConversationStatus,
@@ -430,6 +443,7 @@ pub struct LoadedSubtreeRollup {
 /// so a badge never advertises nodes the rollup did not account for (ids
 /// can appear in the parent → children index before their conversations
 /// load).
+#[allow(dead_code)] // used by warp_tui (tui feature)
 pub fn loaded_subtree_rollup(
     history: &BlocklistAIHistoryModel,
     orchestrator_id: AIConversationId,
@@ -443,6 +457,7 @@ pub fn loaded_subtree_rollup(
 
 /// Single walk over the orchestrator and its loaded descendants, returning
 /// the loaded-descendant count together with the aggregated status.
+#[allow(dead_code)] // used by sibling unused code or shared name
 fn aggregate_loaded_subtree(
     history: &BlocklistAIHistoryModel,
     orchestrator_id: AIConversationId,
@@ -520,6 +535,7 @@ fn aggregate_loaded_subtree(
 ///
 /// Used by top-level chrome (tab/header icons, status rows) so the badge keeps
 /// reflecting active children after the orchestrator's own turn finishes.
+#[allow(dead_code)] // used only by tests
 pub fn orchestration_aware_conversation_status(
     history: &BlocklistAIHistoryModel,
     conversation: &AIConversation,

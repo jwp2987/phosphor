@@ -618,6 +618,7 @@ impl QueuedQueryModel {
     /// Returns true when a queued row would auto-fire for `conversation_id` the next time the
     /// conversation finishes successfully. Mirrors [`Self::peek_autofire`]'s gating: false for an
     /// empty queue or a locked head row (which never auto-fires).
+    #[allow(dead_code)] // used only by tests
     pub fn has_autofireable_prompt(&self, conversation_id: AIConversationId) -> bool {
         self.queues
             .get(&conversation_id)

@@ -51,12 +51,14 @@ impl Default for FixedInterval {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // used by warp_tui (tui feature)
 pub struct ExponentialBackoff {
     pub max_times: Option<usize>,
     pub base_duration: Duration,
 }
 
 impl ExponentialBackoff {
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub const DEFAULT_DURATION: Duration = Duration::from_millis(1000);
 }
 
@@ -77,15 +79,6 @@ impl SseRetryPolicy for ExponentialBackoff {
             return None;
         }
         Some(self.base_duration * (2u32.pow(current_times as u32)))
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct NeverRetry;
-
-impl SseRetryPolicy for NeverRetry {
-    fn retry(&self, _current_times: usize) -> Option<Duration> {
-        None
     }
 }
 

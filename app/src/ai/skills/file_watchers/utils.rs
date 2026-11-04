@@ -123,6 +123,7 @@ fn is_project_provider_path(path: &Path) -> bool {
 /// Finds all skill directories in a repository by querying the RepoMetadataModel tree.
 ///
 /// Returns a list of paths to skill directories (e.g., `/repo/.agents/skills/`, `/repo/sub/.claude/skills/`).
+#[allow(dead_code)] // used only by tests
 pub fn find_skill_directories_in_tree(
     repo_path: &Path,
     repo_metadata: &RepoMetadataModel,
@@ -173,6 +174,7 @@ pub fn read_skills_from_directories(
 }
 
 /// Reads all skills from the given concrete skill files.
+#[allow(dead_code)] // used only by tests
 pub fn read_skills_from_files(skill_files: impl IntoIterator<Item = PathBuf>) -> Vec<ParsedSkill> {
     skill_files
         .into_iter()

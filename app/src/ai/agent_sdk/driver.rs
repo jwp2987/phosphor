@@ -308,8 +308,6 @@ pub enum AgentDriverError {
     BootstrapFailed,
     #[error("Error loading Library")]
     WarpDriveSyncFailed,
-    #[error("Requested environment not found: {0}")]
-    EnvironmentNotFound(String),
     // `EnvironmentSetupFailed(String)` was removed 2026-08-17: nothing in this
     // fork could construct it. At the pin its sole producer is
     // `impl From<PrepareEnvironmentError> for AgentDriverError`

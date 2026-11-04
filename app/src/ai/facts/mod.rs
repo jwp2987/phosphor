@@ -40,12 +40,6 @@ pub struct AIMemory {
     pub suggested_logging_id: Option<SuggestedLoggingId>,
 }
 
-impl AIFact {
-    pub fn is_memory(&self) -> bool {
-        matches!(self, AIFact::Memory { .. })
-    }
-}
-
 pub type AIFactObject = GenericStoredObject<GenericStringObjectId, AIFactObjectModel>;
 pub type AIFactObjectModel = GenericStringModel<AIFact, JsonSerializer>;
 

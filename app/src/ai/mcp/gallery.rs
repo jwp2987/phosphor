@@ -124,6 +124,7 @@ impl MCPGalleryManager {
 }
 
 pub enum MCPGalleryManagerEvent {
+    #[allow(dead_code)] // used by sibling unused code or shared name
     ItemsRefreshed,
 }
 

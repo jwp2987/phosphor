@@ -205,7 +205,9 @@ struct ClaudeHarnessRunner {
     agent_event_stream_client: Arc<dyn AgentEventStreamClient>,
     terminal_driver: ModelHandle<TerminalDriver>,
     state: Mutex<ClaudeRunnerState>,
+    #[allow(dead_code)] // field: set at construction or persisted
     session_id: Uuid,
+    #[allow(dead_code)] // field: set at construction or persisted
     working_dir: PathBuf,
     parent_bridge: Option<MessageBridge>,
     /// Lazily cached output of `claude --version`.

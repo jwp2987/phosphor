@@ -10,6 +10,7 @@ const WARP_ERROR_CODE_OUT_OF_CREDITS: &str = "OUT_OF_CREDITS";
 
 #[derive(thiserror::Error, Debug, Serialize, Deserialize)]
 #[error("{error}")]
+#[allow(dead_code)] // used by warp_tui (tui feature)
 pub struct ClientError {
     pub error: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -149,39 +150,6 @@ impl AIApiError {
             AIApiError::QuotaLimit
         } else {
             AIApiError::ServerOverloaded
-        }
-    }
-
-    pub(crate) async fn from_stream_error(
-        stream_type: &'static str,
-        err: reqwest_eventsource::Error,
-    ) -> Self {
-        match err {
-            reqwest_eventsource::Error::InvalidStatusCode(
-                http::StatusCode::TOO_MANY_REQUESTS,
-                ref res,
-            ) => Self::error_for_429(res.headers()),
-            reqwest_eventsource::Error::InvalidStatusCode(status, res) => {
-                let retry_after = res
-                    .headers()
-                    .get(::http::header::RETRY_AFTER)
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|v| parse_retry_after(v, chrono::Utc::now()));
-                Self::ErrorStatus(
-                    status,
-                    res.text()
-                        .await
-                        .unwrap_or_else(|e| format!("(no response body: {e:#})")),
-                    retry_after,
-                )
-            }
-            reqwest_eventsource::Error::Transport(err) => Self::from_transport_error(err),
-            err => AIApiError::Stream {
-                stream_type,
-                #[cfg(target_family = "wasm")]
-                source: anyhow!("{err:#?}"),
-                source: anyhow!(err),
-            },
         }
     }
 

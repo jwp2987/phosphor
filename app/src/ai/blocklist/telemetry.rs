@@ -44,7 +44,9 @@ use crate::ai::agent::conversation::AIConversationId;
 
 #[derive(Debug)]
 pub(crate) enum BlocklistOrchestrationTelemetryEvent {
+    #[allow(dead_code)] // field: set at construction or persisted
     PillBarInteraction(PillBarInteractionEvent),
+    #[allow(dead_code)] // field: set at construction or persisted
     TeamAgentCommunicationFailed(TeamAgentCommunicationFailedEvent),
 }
 
@@ -104,16 +106,20 @@ pub(crate) struct TeamAgentCommunicationFailedEvent {
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum PillBarPillKind {
+    #[allow(dead_code)] // persisted or derived enum
     Orchestrator,
+    #[allow(dead_code)] // persisted or derived enum
     Child,
     /// A leading breadcrumb pill navigating back up the drill-down tree
     /// (to the tree root or the anchor's parent level).
+    #[allow(dead_code)] // persisted or derived enum
     Breadcrumb,
 }
 
 /// Concrete user actions against an orchestration pill bar entry.
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[allow(dead_code)] // members used on other cfgs or tests
 pub(crate) enum PillBarActionKind {
     /// User clicked the pill body. See `switch_outcome` for what
     /// happened next.
@@ -145,9 +151,11 @@ pub(crate) enum PillBarActionKind {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum PillSwitchOutcome {
     /// Pill click navigated within the current pane.
+    #[allow(dead_code)] // persisted or derived enum
     SwitchedInPlace,
     /// Target conversation was already owned by another visible
     /// terminal view; focus moved there instead of switching in place.
+    #[allow(dead_code)] // persisted or derived enum
     FocusedExistingPane,
 }
 

@@ -14,6 +14,7 @@ use crate::ai::blocklist::{BlocklistAIHistoryEvent, BlocklistAIHistoryModel};
 /// Toggle `id` in `pinned` — insert when absent, remove when present.
 /// Returns the new membership state (`true` = now pinned).
 /// Extracted so toggle semantics can be unit tested without a singleton.
+#[allow(dead_code)] // used only by tests
 pub(super) fn toggle_pin_in_set(
     pinned: &mut HashSet<AIConversationId>,
     id: AIConversationId,
@@ -73,6 +74,7 @@ impl OrchestrationPillBarModel {
     }
 
     /// Returns `true` if the given conversation id is currently pinned.
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn is_pinned(&self, conversation_id: &AIConversationId) -> bool {
         self.pinned.contains(conversation_id)
     }
@@ -81,6 +83,7 @@ impl OrchestrationPillBarModel {
     /// orchestration tree, lazily creating one on first access. Every
     /// pill bar in that tree clones the same handle, so panning in one
     /// pane stays in sync with sibling panes.
+    #[allow(dead_code)] // used only by tests
     pub fn horizontal_scroll_state_for(
         &self,
         orchestrator_id: AIConversationId,
@@ -94,6 +97,7 @@ impl OrchestrationPillBarModel {
 
     /// Toggle whether `conversation_id` is pinned, persist the new state to
     /// the underlying conversation, and notify subscribers.
+    #[allow(dead_code)] // used only by tests
     pub fn toggle_pin(&mut self, conversation_id: AIConversationId, ctx: &mut ModelContext<Self>) {
         let now_pinned = toggle_pin_in_set(&mut self.pinned, conversation_id);
         // Push the change down to the conversation so the next session
@@ -116,6 +120,7 @@ impl OrchestrationPillBarModel {
     /// Kept for the same reason: the persisted/topology shape otherwise matches
     /// the pin exactly, and dropping it would mean re-adding it the moment a
     /// real consumer (e.g. a "switch local profile" feature) needs it.
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     pub fn reset(&mut self) {
         self.pinned.clear();
         self.horizontal_scroll_states.borrow_mut().clear();

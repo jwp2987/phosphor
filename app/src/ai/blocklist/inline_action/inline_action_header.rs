@@ -153,11 +153,6 @@ impl HeaderConfig {
         }
     }
 
-    pub fn with_soft_wrap_title(mut self) -> Self {
-        self.soft_wrap_title = true;
-        self
-    }
-
     pub fn with_font_family(mut self, font: FamilyId) -> Self {
         self.font_family = font;
         self

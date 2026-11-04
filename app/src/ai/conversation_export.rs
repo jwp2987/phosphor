@@ -5,32 +5,38 @@ use std::path::{Path, PathBuf};
 use chrono::Local;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)] // used by warp_tui (tui feature)
 pub struct ConversationFileExport {
     path: PathBuf,
     overwrote_existing: bool,
 }
 
 impl ConversationFileExport {
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn path(&self) -> &Path {
         &self.path
     }
 
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     pub fn overwrote_existing(&self) -> bool {
         self.overwrote_existing
     }
 }
 
 #[derive(Debug)]
+#[allow(dead_code)] // persisted or derived enum
 pub struct ConversationFileExportError {
     path: PathBuf,
     source: io::Error,
 }
 
 impl ConversationFileExportError {
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn path(&self) -> &Path {
         &self.path
     }
 
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     pub fn user_message(&self) -> String {
         match self.source.kind() {
             io::ErrorKind::PermissionDenied => format!(
@@ -73,6 +79,7 @@ impl std::error::Error for ConversationFileExportError {
     }
 }
 
+#[allow(dead_code)] // used by warp_tui (tui feature)
 pub fn export_conversation_markdown(
     current_directory: Option<&str>,
     filename_arg: Option<&str>,
@@ -105,6 +112,7 @@ pub fn export_conversation_markdown(
     })
 }
 
+#[allow(dead_code)] // used only by tests
 fn conversation_export_filename_at(
     filename_arg: Option<&str>,
     conversation_title: Option<&str>,

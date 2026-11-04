@@ -622,6 +622,7 @@ pub(crate) fn command_approval_preview(command: &str, mode: PreviewMode) -> Comm
 /// What the terminal UI draws to review a command (#865): the full escaped preview, whether any
 /// character had to be escaped, and an escaped echo of the command's end.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub struct TuiCommandReview {
     /// The full preview text, with the renderer-only line-break hints removed.
     pub text: String,
@@ -633,6 +634,7 @@ pub struct TuiCommandReview {
 
 /// Builds the [`TuiCommandReview`] of `command`. Always uses the full preview, so the text is
 /// what a user who asked to see everything would see.
+#[allow(dead_code)] // used by warp_tui (tui feature)
 pub fn tui_command_review(command: &str) -> TuiCommandReview {
     let preview = command_approval_preview(command, PreviewMode::Full);
     let chars: Vec<char> = preview.text.chars().collect();
@@ -833,6 +835,7 @@ impl ApprovalPreviewCache {
     }
 
     /// Same answer as [`approval_requires_full_view`] for this command, without re-tokenizing.
+    #[allow(dead_code)] // used only by tests
     pub fn requires_full_view(&self, full_command_shown: bool) -> bool {
         !full_command_shown && self.is_truncated()
     }

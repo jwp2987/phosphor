@@ -118,31 +118,6 @@ pub fn render_results_body_container(body: Box<dyn Element>, app: &AppContext) -
         .finish()
 }
 
-pub fn render_loading_header(
-    text: String,
-    icon: warpui::elements::Icon,
-    app: &AppContext,
-) -> Box<dyn Element> {
-    // Old-signature fallback: degrades to static Text when no shimmer handle is
-    // passed. New code should use `render_loading_header_shimmer` to give the title
-    // text shimmer feedback, or `render_loading_header_animated` to also give the
-    // icon spinner frame animation.
-    render_loading_header_inner(text, IconOrSpinner::Icon(icon), None, app)
-}
-
-/// Loading card header, with a shimmer animation on the title text (icon stays static).
-/// The caller must persist the `ShimmeringTextStateHandle` in the view struct
-/// (otherwise `new` every frame would reset animation_start_time to zero forever,
-/// and the animation wouldn't move).
-pub fn render_loading_header_shimmer(
-    text: String,
-    icon: warpui::elements::Icon,
-    shimmer_handle: ShimmeringTextStateHandle,
-    app: &AppContext,
-) -> Box<dyn Element> {
-    render_loading_header_inner(text, IconOrSpinner::Icon(icon), Some(shimmer_handle), app)
-}
-
 /// Loading card header, with **dual animation**: icon = `BrailleSpinner` (80ms
 /// frame switching ⠋⠙⠹⠸⠼...), title text = `ShimmeringTextElement`. Visually
 /// equivalent to opencode TUI's `<spinner>` + text.
@@ -164,67 +139,8 @@ pub fn render_loading_header_animated(
     )
 }
 
-/// Terminal-state header (cancelled / denied): icon is static, title text has a
-/// **strikethrough**. Matches opencode TUI's use of STRIKETHROUGH: for
-/// permission-denied / cancelled tool cards, a strikethrough conveys the visual
-/// meaning of "this action never happened / was rejected".
-pub fn render_terminal_header_strikethrough(
-    text: String,
-    icon: warpui::elements::Icon,
-    app: &AppContext,
-) -> Box<dyn Element> {
-    use warpui::elements::{Highlight, HighlightedRange};
-    use warpui::text_layout::TextStyle;
-    let appearance = Appearance::as_ref(app);
-    let theme = appearance.theme();
-    let header_background = theme.surface_2();
-
-    let mut header_row = Flex::row()
-        .with_main_axis_alignment(MainAxisAlignment::Start)
-        .with_cross_axis_alignment(CrossAxisAlignment::Center);
-
-    let icon_box = ConstrainedBox::new(icon.finish())
-        .with_width(icon_size(app))
-        .with_height(icon_size(app))
-        .finish();
-    header_row.add_child(
-        Container::new(icon_box)
-            .with_margin_right(ICON_MARGIN)
-            .finish(),
-    );
-
-    let text_color = appearance
-        .theme()
-        .sub_text_color(header_background)
-        .into_solid();
-    let strike_style = TextStyle::new()
-        .with_show_strikethrough(true)
-        .with_foreground_color(text_color);
-    let highlight = Highlight::default().with_text_style(strike_style);
-    let text_len = text.chars().count();
-    let title = Text::new_inline(
-        text,
-        appearance.ui_font_family(),
-        appearance.monospace_font_size(),
-    )
-    .with_color(text_color)
-    .with_highlights(vec![HighlightedRange {
-        highlight,
-        highlight_indices: (0..text_len).collect(),
-    }])
-    .finish();
-
-    header_row.add_child(Shrinkable::new(1.0, title).finish());
-
-    Container::new(header_row.finish())
-        .with_horizontal_padding(INLINE_ACTION_HORIZONTAL_PADDING)
-        .with_vertical_padding(INLINE_ACTION_HEADER_VERTICAL_PADDING)
-        .with_background(header_background)
-        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.)))
-        .finish()
-}
-
 enum IconOrSpinner {
+    #[allow(dead_code)] // used by sibling unused code or shared name
     Icon(warpui::elements::Icon),
     Spinner(SpinnerStateHandle),
 }

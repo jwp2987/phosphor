@@ -158,6 +158,7 @@ impl ExplanationState {
         }
     }
 
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     pub(crate) fn is_loading(&self) -> bool {
         matches!(self, ExplanationState::Loading { .. })
     }

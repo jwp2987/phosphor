@@ -171,6 +171,7 @@ impl ReasoningDepthSelector {
         me
     }
 
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn is_menu_open(&self) -> bool {
         self.is_menu_open
     }

@@ -26,29 +26,19 @@ use crate::ai::agent::conversation::{AIConversationId, ConversationStatus};
 use crate::ai::agent::task::TaskId;
 use crate::ai::agent::{
     AIAgentExchangeId, AIAgentInput, AIAgentOutputMessageType, LifecycleEventType,
-    ReceivedMessageInput,
 };
-
-const MAX_RETRY_ATTEMPTS: i32 = 3;
-const MAX_PENDING_LIFECYCLE_EVENTS_PER_TARGET: usize = 200;
 
 /// Stage associated with a lifecycle error detail.
 /// This keeps persisted/runtime metadata consistent across API payloads and DB rows.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[allow(dead_code)] // persisted or derived enum
 pub enum LifecycleEventDetailStage {
     Runtime,
 }
 
-#[derive(Debug, Clone, Default)]
-pub(super) struct LifecycleEventDetailPayload {
-    pub(crate) stage: Option<LifecycleEventDetailStage>,
-    pub(crate) reason: Option<String>,
-    pub(crate) error_message: Option<String>,
-    pub(crate) blocked_action: Option<String>,
-}
-
 impl LifecycleEventDetailStage {
     /// Canonical lowercase representation used in persistence/API payloads.
+    #[allow(dead_code)] // used by sibling unused code or shared name
     fn as_str(self) -> &'static str {
         match self {
             Self::Runtime => "runtime",
@@ -58,11 +48,15 @@ impl LifecycleEventDetailStage {
 
 /// Type-specific queued data.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub enum PendingEventDetail {
     Message {
         message_id: String,
+        #[allow(dead_code)] // field: set at construction or persisted
         addresses: Vec<String>,
+        #[allow(dead_code)] // field: set at construction or persisted
         subject: String,
+        #[allow(dead_code)] // field: set at construction or persisted
         message_body: String,
     },
     Lifecycle {
@@ -72,26 +66,34 @@ pub enum PendingEventDetail {
 
 /// A queued event consumed by the controller.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub struct PendingEvent {
     pub event_id: String,
+    #[allow(dead_code)] // field: set at construction or persisted
     pub source_agent_id: String,
     pub attempt_count: i32,
     pub detail: PendingEventDetail,
 }
 
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub enum OrchestrationEventServiceEvent {
     /// Signals that a conversation may have pending orchestration events
     /// ready to drain.
+    #[allow(dead_code)] // used by sibling unused code or shared name
     EventsReady { conversation_id: AIConversationId },
 }
 
 /// Synchronous state manager for orchestration event queuing, delivery tracking, and readiness detection.
+#[allow(dead_code)] // used only by tests
 pub struct OrchestrationEventService {
     pending_events: HashMap<AIConversationId, Vec<PendingEvent>>,
+    #[allow(dead_code)] // field: set at construction or persisted
     awaiting_server_echo_events: HashMap<AIConversationId, Vec<PendingEvent>>,
+    #[allow(dead_code)] // field: set at construction or persisted
     conversation_statuses: HashMap<AIConversationId, ConversationStatus>,
 }
 
+#[allow(dead_code)] // members used on other cfgs or tests
 impl OrchestrationEventService {
     pub fn new(ctx: &mut ModelContext<Self>) -> Self {
         let history_model = BlocklistAIHistoryModel::handle(ctx);
@@ -206,172 +208,11 @@ impl OrchestrationEventService {
         }
     }
 
-    fn enqueue_lifecycle_event(
-        &mut self,
-        target_conversation_id: AIConversationId,
-        pending: PendingEvent,
-    ) {
-        // Lifecycle queues are maintained separately per target conversation.
-        // Coalescing and cap enforcement happen before queue insertion.
-        let dropped_for_cap = {
-            let queue = self
-                .pending_events
-                .entry(target_conversation_id)
-                .or_default();
-            let _ = coalesce_lifecycle_events(queue, &pending);
-            queue.push(pending);
-            enforce_lifecycle_queue_cap(queue, MAX_PENDING_LIFECYCLE_EVENTS_PER_TARGET)
-        };
-        if !dropped_for_cap.is_empty() {
-            log::warn!(
-                "Dropped {} coalescable lifecycle events due to queue cap for target conversation {target_conversation_id:?}",
-                dropped_for_cap.len()
-            );
-        }
-    }
-
-    /// Accepts pre-built events and enqueues them for drain by the
-    /// controller via the normal injection path. Lifecycle events go
-    /// through coalescing and cap enforcement.
-    pub fn enqueue_event_batch(
-        &mut self,
-        conversation_id: AIConversationId,
-        events: Vec<PendingEvent>,
-        ctx: &mut ModelContext<Self>,
-    ) {
-        if events.is_empty() {
-            return;
-        }
-        for event in events {
-            if matches!(event.detail, PendingEventDetail::Lifecycle { .. }) {
-                self.enqueue_lifecycle_event(conversation_id, event);
-            } else {
-                self.pending_events
-                    .entry(conversation_id)
-                    .or_default()
-                    .push(event);
-            }
-        }
-        ctx.emit(OrchestrationEventServiceEvent::EventsReady { conversation_id });
-    }
-
     #[cfg(any(test, not(target_family = "wasm")))]
     pub fn has_pending_events(&self, conversation_id: AIConversationId) -> bool {
         self.pending_events
             .get(&conversation_id)
             .is_some_and(|events| !events.is_empty())
-    }
-
-    /// Drain and return all pending events for a conversation.
-    fn drain_pending_events(&mut self, conversation_id: &AIConversationId) -> Vec<PendingEvent> {
-        self.pending_events
-            .remove(conversation_id)
-            .unwrap_or_default()
-    }
-
-    /// Drains pending events for a conversation, resolves the root task ID,
-    /// and converts them to AIAgentInput variants ready for injection.
-    /// Returns None if there are no events or the conversation cannot be found
-    /// (in which case events are requeued automatically).
-    pub fn drain_events_for_request(
-        &mut self,
-        conversation_id: AIConversationId,
-        ctx: &mut ModelContext<Self>,
-    ) -> Option<(Vec<AIAgentInput>, TaskId)> {
-        let inputs = self.drain_and_convert_events(conversation_id);
-        if inputs.is_empty() {
-            return None;
-        }
-        let Some(conversation) =
-            BlocklistAIHistoryModel::as_ref(ctx).conversation(&conversation_id)
-        else {
-            self.requeue_awaiting_events(conversation_id, ctx);
-            return None;
-        };
-        Some((inputs, conversation.get_root_task_id().clone()))
-    }
-
-    /// Drains pending events for a conversation and converts them to
-    /// AIAgentInput variants ready for injection. Moves the drained events
-    /// to awaiting_server_echo_events for delivery confirmation.
-    fn drain_and_convert_events(&mut self, conversation_id: AIConversationId) -> Vec<AIAgentInput> {
-        let deliverable = self.drain_pending_events(&conversation_id);
-        if deliverable.is_empty() {
-            return vec![];
-        }
-
-        let mut messages = Vec::new();
-        let mut lifecycle_events = Vec::new();
-        for event in &deliverable {
-            match &event.detail {
-                PendingEventDetail::Message {
-                    message_id,
-                    addresses,
-                    subject,
-                    message_body,
-                } => messages.push(ReceivedMessageInput {
-                    message_id: message_id.clone(),
-                    sender_agent_id: event.source_agent_id.clone(),
-                    addresses: addresses.clone(),
-                    subject: subject.clone(),
-                    message_body: message_body.clone(),
-                }),
-                PendingEventDetail::Lifecycle { event } => lifecycle_events.push(event.clone()),
-            }
-        }
-
-        // Move to awaiting echo for delivery confirmation.
-        self.awaiting_server_echo_events
-            .entry(conversation_id)
-            .or_default()
-            .extend(deliverable);
-
-        let mut inputs = Vec::new();
-        if !messages.is_empty() {
-            inputs.push(AIAgentInput::MessagesReceivedFromAgents { messages });
-        }
-        if !lifecycle_events.is_empty() {
-            inputs.push(AIAgentInput::EventsFromAgents {
-                events: lifecycle_events,
-            });
-        }
-        inputs
-    }
-
-    /// Moves all awaiting events back to pending for retry after a failed
-    /// send attempt. Increments attempt counts and drops events that have
-    /// exhausted their retry limit.
-    pub fn requeue_awaiting_events(
-        &mut self,
-        conversation_id: AIConversationId,
-        ctx: &mut ModelContext<Self>,
-    ) {
-        let events = self
-            .awaiting_server_echo_events
-            .remove(&conversation_id)
-            .unwrap_or_default();
-        if events.is_empty() {
-            return;
-        }
-
-        let (retryable, exhausted) =
-            increment_attempt_and_partition_by_retry_limit(events, MAX_RETRY_ATTEMPTS);
-
-        if !exhausted.is_empty() {
-            log::warn!(
-                "Dropping {} orchestration events after exhausting retries",
-                exhausted.len()
-            );
-        }
-
-        if !retryable.is_empty() {
-            let queue = self.pending_events.entry(conversation_id).or_default();
-            let mut combined = retryable;
-            combined.append(queue);
-            *queue = combined;
-
-            ctx.emit(OrchestrationEventServiceEvent::EventsReady { conversation_id });
-        }
     }
 
     /// Scans the exchange output for orchestration IDs echoed back in this
@@ -485,6 +326,7 @@ impl OrchestrationEventService {
     }
 }
 
+#[allow(dead_code)] // used only by tests
 fn did_event_round_trip_through_server(
     pending_event: &PendingEvent,
     echoed_message_ids: &HashSet<&str>,
@@ -500,78 +342,8 @@ fn did_event_round_trip_through_server(
     }
 }
 
-pub(super) fn build_lifecycle_event(
-    event_id: String,
-    sender_agent_id: String,
-    event_type: LifecycleEventType,
-    occurred_at: prost_types::Timestamp,
-    detail_payload: &LifecycleEventDetailPayload,
-) -> api::AgentEvent {
-    // Build the API envelope that is forwarded to recipients and stored in memory.
-    // This keeps `occurred_at` attached
-    // to the event itself (not inferred at formatting time).
-    let detail = lifecycle_event_detail_from_type(event_type, detail_payload);
-    api::AgentEvent {
-        event_id,
-        occurred_at: Some(occurred_at),
-        event: Some(api::agent_event::Event::LifecycleEvent(
-            api::agent_event::LifecycleEvent {
-                sender_agent_id,
-                detail,
-            },
-        )),
-    }
-}
-
 #[allow(deprecated)]
-fn lifecycle_event_detail_from_type(
-    event_type: LifecycleEventType,
-    detail_payload: &LifecycleEventDetailPayload,
-) -> Option<api::agent_event::lifecycle_event::Detail> {
-    match event_type {
-        LifecycleEventType::InProgress => {
-            Some(api::agent_event::lifecycle_event::Detail::InProgress(()))
-        }
-        LifecycleEventType::Succeeded => {
-            Some(api::agent_event::lifecycle_event::Detail::Succeeded(()))
-        }
-        LifecycleEventType::Failed => Some(api::agent_event::lifecycle_event::Detail::Failed(
-            api::agent_event::lifecycle_event::Failed {
-                reason: detail_payload.reason.clone().unwrap_or_default(),
-                error_message: detail_payload.error_message.clone().unwrap_or_default(),
-            },
-        )),
-        // Legacy variants delegate to their new equivalents.
-        LifecycleEventType::Started => {
-            Some(api::agent_event::lifecycle_event::Detail::InProgress(()))
-        }
-        LifecycleEventType::Idle => Some(api::agent_event::lifecycle_event::Detail::Succeeded(())),
-        LifecycleEventType::Restarted => {
-            Some(api::agent_event::lifecycle_event::Detail::InProgress(()))
-        }
-        LifecycleEventType::Cancelled => {
-            Some(api::agent_event::lifecycle_event::Detail::Cancelled(()))
-        }
-        LifecycleEventType::Blocked => Some(api::agent_event::lifecycle_event::Detail::Blocked(
-            api::agent_event::lifecycle_event::Blocked {
-                blocked_action: detail_payload.blocked_action.clone().unwrap_or_default(),
-            },
-        )),
-        LifecycleEventType::Errored => Some(api::agent_event::lifecycle_event::Detail::Errored(
-            api::agent_event::lifecycle_event::Errored {
-                stage: detail_payload
-                    .stage
-                    .map(|stage| stage.as_str().to_string())
-                    .unwrap_or_default(),
-                reason: detail_payload.reason.clone().unwrap_or_default(),
-                error_message: detail_payload.error_message.clone().unwrap_or_default(),
-            },
-        )),
-        LifecycleEventType::Unspecified => None,
-    }
-}
-
-#[allow(deprecated)]
+#[allow(dead_code)] // used only by tests
 pub(super) fn lifecycle_event_type_from_proto(
     lifecycle_event: &api::agent_event::LifecycleEvent,
 ) -> api::LifecycleEventType {
@@ -611,6 +383,7 @@ pub(super) fn lifecycle_event_type_from_proto(
 /// True when a pending event is a lifecycle succeeded/in_progress event and
 /// therefore eligible to be superseded by a newer lifecycle transition from
 /// the same sender.
+#[allow(dead_code)] // used by sibling unused code or shared name
 fn is_coalescable_lifecycle_pending_event(event: &PendingEvent) -> bool {
     let PendingEventDetail::Lifecycle { event: agent_event } = &event.detail else {
         return false;
@@ -624,6 +397,7 @@ fn is_coalescable_lifecycle_pending_event(event: &PendingEvent) -> bool {
     )
 }
 
+#[allow(dead_code)] // used only by tests
 fn coalesce_lifecycle_events(
     queue: &mut Vec<PendingEvent>,
     new_event: &PendingEvent,
@@ -681,6 +455,7 @@ fn coalesce_lifecycle_events(
 
 /// Enforce an upper bound on pending lifecycle events while preferentially dropping
 /// supersedable lifecycle states first, preserving critical transitions.
+#[allow(dead_code)] // used only by tests
 fn enforce_lifecycle_queue_cap(
     queue: &mut Vec<PendingEvent>,
     max_pending_lifecycle_events: usize,
@@ -701,6 +476,7 @@ fn enforce_lifecycle_queue_cap(
 }
 
 /// Count lifecycle entries in a mixed pending queue (message + lifecycle).
+#[allow(dead_code)] // used by sibling unused code or shared name
 fn count_pending_lifecycle_events(queue: &[PendingEvent]) -> usize {
     queue
         .iter()
@@ -710,6 +486,7 @@ fn count_pending_lifecycle_events(queue: &[PendingEvent]) -> usize {
 
 /// Increment attempt counts and split events into retryable vs exhausted buckets.
 /// Exhaustion is based on `max_retry_attempts` after incrementing this attempt.
+#[allow(dead_code)] // used only by tests
 fn increment_attempt_and_partition_by_retry_limit(
     mut attempted_events: Vec<PendingEvent>,
     max_retry_attempts: i32,

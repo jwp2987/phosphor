@@ -62,42 +62,64 @@ use crate::ui_components::icon_with_status::{self, BadgeInnerShape, StatusBadgeS
 use crate::ui_components::icons::Icon;
 use crate::workspace::WorkspaceAction;
 
+#[allow(dead_code)] // used by sibling unused code or shared name
 const PILL_HEIGHT: f32 = 22.;
+#[allow(dead_code)] // used by sibling unused code or shared name
 const PILL_RADIUS: f32 = PILL_HEIGHT / 2.;
+#[allow(dead_code)] // used by sibling unused code or shared name
 const AVATAR_SIZE: f32 = 16.;
+#[allow(dead_code)] // used by sibling unused code or shared name
 const PILL_AVATAR_SLOT_SIZE: f32 = 20.;
 
 /// Visible avatar disc diameter, per design.
+#[allow(dead_code)] // used by sibling unused code or shared name
 const PILL_AVATAR_DISC_SIZE: f32 = 15.;
 /// Gap between the avatar disc and each of the pill's horizontal edges. The
 /// disc is dead-centre in the pill, so this is symmetric: (22 - 15) / 2 = 3.5.
+#[allow(dead_code)] // used by sibling unused code or shared name
 const PILL_AVATAR_VERTICAL_PADDING: f32 = (PILL_HEIGHT - PILL_AVATAR_DISC_SIZE) / 2.;
 /// Square box the status badge is sized and anchored against. It does *not*
 /// size the avatar disc (that is [`PILL_AVATAR_DISC_SIZE`]) — it only reserves
 /// the square whose bottom-right corner the badge hangs off.
+#[allow(dead_code)] // used by sibling unused code or shared name
 const AVATAR_WITH_STATUS_TOTAL_SIZE: f32 = PILL_AVATAR_SLOT_SIZE;
+#[allow(dead_code)] // used by sibling unused code or shared name
 const PILL_LABEL_MAX_WIDTH: f32 = 83.;
+#[allow(dead_code)] // used by sibling unused code or shared name
 const PILL_ROW_GAP: f32 = 8.;
+#[allow(dead_code)] // used by sibling unused code or shared name
 const PILL_CONTENT_GAP: f32 = 2.;
+#[allow(dead_code)] // used by sibling unused code or shared name
 const PILL_SELECTED_HOVER_CONTENT_GAP: f32 = 4.;
+#[allow(dead_code)] // used by sibling unused code or shared name
 const PILL_HORIZONTAL_PADDING_LEFT: f32 = 4.;
+#[allow(dead_code)] // used by sibling unused code or shared name
 const PILL_HORIZONTAL_PADDING_RIGHT: f32 = 6.;
+#[allow(dead_code)] // used by sibling unused code or shared name
 const PILL_ICON_BUTTON_SIZE: f32 = 16.;
+#[allow(dead_code)] // used by sibling unused code or shared name
 const PILL_ICON_SIZE: f32 = 12.;
+#[allow(dead_code)] // used by sibling unused code or shared name
 const PILL_OVERFLOW_BUTTON_RIGHT_OFFSET: f32 = 4.;
 /// Width of the overlaid horizontal scrollbar; thin hairline by design.
+#[allow(dead_code)] // used by sibling unused code or shared name
 const PILL_BAR_SCROLLBAR_WIDTH: f32 = 4.;
 /// Desired gap between the pills and the scrollbar thumb.
+#[allow(dead_code)] // used by sibling unused code or shared name
 const PILL_BAR_SCROLLBAR_GAP: f32 = 1.;
 /// Bottom gutter for the overlaid scrollbar. Its track sits 2px below the thumb
 /// (NewScrollable's `RIGHT_PADDING`), so gap = gutter - width - 2.
+#[allow(dead_code)] // used by sibling unused code or shared name
 const PILL_BAR_SCROLLBAR_GUTTER: f32 = PILL_BAR_SCROLLBAR_GAP + PILL_BAR_SCROLLBAR_WIDTH + 2.;
 /// Width of the per-pill 3-dot overflow menu when expanded.
+#[allow(dead_code)] // used by sibling unused code or shared name
 const OVERFLOW_MENU_WIDTH: f32 = 200.;
 /// Size in logical pixels of the 3-dot button at the trailing edge of each
 /// child pill.
+#[allow(dead_code)] // used by sibling unused code or shared name
 const OVERFLOW_BUTTON_SIZE: f32 = PILL_ICON_BUTTON_SIZE;
 /// How much of the label slot the overflow button overlays.
+#[allow(dead_code)] // used by sibling unused code or shared name
 const OVERFLOW_BUTTON_LABEL_RESERVE: f32 =
     OVERFLOW_BUTTON_SIZE + PILL_OVERFLOW_BUTTON_RIGHT_OFFSET - PILL_HORIZONTAL_PADDING_RIGHT;
 
@@ -105,6 +127,7 @@ const OVERFLOW_BUTTON_LABEL_RESERVE: f32 =
 /// specific child pill's overflow button. The id is global within the
 /// position cache, so we include the conversation id to keep it unique
 /// across multiple sibling pills.
+#[allow(dead_code)] // used by sibling unused code or shared name
 fn overflow_button_position_id(conversation_id: AIConversationId) -> String {
     format!("orchestration-pill-overflow-{conversation_id}")
 }
@@ -112,10 +135,12 @@ fn overflow_button_position_id(conversation_id: AIConversationId) -> String {
 /// Returns the saved-position id used to anchor the hover details card
 /// to a specific pill's body. Unique per conversation so neighbouring
 /// pills don't fight over the same id.
+#[allow(dead_code)] // used by sibling unused code or shared name
 fn pill_body_position_id(conversation_id: AIConversationId) -> String {
     format!("orchestration-pill-body-{conversation_id}")
 }
 
+#[allow(dead_code)] // used on other platforms
 fn pill_label_width(
     label: &str,
     font_size: f32,
@@ -152,20 +177,28 @@ fn pill_label_width(
 }
 
 /// Width of the per-pill hover details card.
+#[allow(dead_code)] // used by sibling unused code or shared name
 const HOVER_CARD_WIDTH: f32 = 280.;
+#[allow(dead_code)] // used by sibling unused code or shared name
 const HOVER_CARD_HORIZONTAL_PADDING: f32 = 12.;
+#[allow(dead_code)] // used by sibling unused code or shared name
 const HOVER_CARD_VERTICAL_PADDING: f32 = 10.;
+#[allow(dead_code)] // used by sibling unused code or shared name
 const HOVER_CARD_CONTENT_WIDTH: f32 = HOVER_CARD_WIDTH - 2. * HOVER_CARD_HORIZONTAL_PADDING;
+#[allow(dead_code)] // used by sibling unused code or shared name
 const HOVER_CARD_HEADER_AVATAR_NAME_GAP: f32 = 8.;
+#[allow(dead_code)] // used by sibling unused code or shared name
 const HOVER_CARD_HEADER_NAME_BADGE_GAP: f32 = 8.;
 /// Slightly larger than the longest expected status label ("In progress") plus
 /// its icon and padding.
+#[allow(dead_code)] // used by sibling unused code or shared name
 const HOVER_CARD_STATUS_BADGE_MAX_WIDTH: f32 = 96.;
 
 /// Typed actions dispatched by the pill bar's widgets. Each action carries
 /// the targeted child pill's conversation id so a single shared `Menu`
 /// instance can serve every child.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub enum OrchestrationPillBarAction {
     /// Open the 3-dot menu for the given child conversation.
     OpenMenu(AIConversationId),
@@ -201,6 +234,7 @@ pub enum OrchestrationPillBarAction {
 
 /// Renders the pill bar above the agent view: one pill for the orchestrator
 /// and one per child agent. Clicking a non-active pill switches to its pane.
+#[allow(dead_code)] // used only by tests
 pub struct OrchestrationPillBar {
     agent_view_controller: ModelHandle<AgentViewController>,
     /// Hover state per pill, persisted across renders. `RefCell` so
@@ -223,6 +257,7 @@ impl Entity for OrchestrationPillBar {
     type Event = ();
 }
 
+#[allow(dead_code)] // members used on other cfgs or tests
 impl OrchestrationPillBar {
     fn overflow_menu_item(
         label: &'static str,
@@ -576,6 +611,7 @@ impl OrchestrationPillBar {
 /// parent is a distinct intermediate level (anchor 2+ levels below the
 /// root). When the parent IS the root only the root breadcrumb is returned,
 /// so the bar never shows duplicate affordances.
+#[allow(dead_code)] // used only by tests
 fn breadcrumb_ids(
     history: &BlocklistAIHistoryModel,
     anchor_id: AIConversationId,
@@ -594,6 +630,7 @@ fn breadcrumb_ids(
 /// leaf anchors its parent's level so sibling navigation stays symmetric. With
 /// a single orchestration level this matches the historical root-anchored
 /// behavior exactly.
+#[allow(dead_code)] // used by warp_tui (tui feature)
 fn drill_down_anchor_id(
     active_id: AIConversationId,
     active_conversation: &AIConversation,
@@ -610,6 +647,7 @@ fn drill_down_anchor_id(
 /// Returns the label to use for the orchestrator pill. Prefers the explicitly
 /// set agent name, falling back to "Orchestrator" so the pill is meaningful
 /// even before any naming has happened.
+#[allow(dead_code)] // used by sibling unused code or shared name
 fn orchestrator_label(orchestrator: &AIConversation) -> String {
     orchestrator
         .agent_name()
@@ -625,6 +663,7 @@ impl OrchestrationPillBar {
     /// so drilled-down interactions stay attributable to their tree.
     /// Returns `None` when there is no active orchestration tree to
     /// attribute the interaction to.
+    #[allow(dead_code)] // used by sibling unused code or shared name
     fn pill_bar_telemetry_context(
         &self,
         app: &AppContext,
@@ -642,6 +681,7 @@ impl OrchestrationPillBar {
 
     /// Pill kind for `target_id` in the current pill specs. Defaults
     /// to `Child` if the id is no longer in the bar.
+    #[allow(dead_code)] // used by sibling unused code or shared name
     fn pill_kind_for(&self, target_id: AIConversationId, app: &AppContext) -> PillBarPillKind {
         self.pill_specs(app)
             .and_then(|contents| {
@@ -654,6 +694,7 @@ impl OrchestrationPillBar {
             .unwrap_or(PillBarPillKind::Child)
     }
 
+    #[allow(dead_code)] // used by sibling unused code or shared name
     fn emit_pill_bar_interaction(
         &self,
         action: PillBarActionKind,
@@ -674,6 +715,7 @@ impl OrchestrationPillBar {
     /// `switch_outcome` on the payload. Use for `Switch` actions where
     /// the analyst needs to know whether the click navigated in place
     /// or focused an existing pane.
+    #[allow(dead_code)] // used by sibling unused code or shared name
     fn emit_pill_switch(
         &self,
         pill_kind: PillBarPillKind,
@@ -690,6 +732,7 @@ impl OrchestrationPillBar {
         );
     }
 
+    #[allow(dead_code)] // used by sibling unused code or shared name
     fn emit_pill_bar_interaction_with_outcome(
         &self,
         action: PillBarActionKind,
@@ -722,6 +765,7 @@ impl OrchestrationPillBar {
     /// the `FocusOpenedConversation` handler so the `PillClicked`
     /// handler can reuse the same nav logic without emitting the
     /// menu-driven `FocusOpenedConversation` telemetry event.
+    #[allow(dead_code)] // used by sibling unused code or shared name
     fn navigate_to_conversation_pane(&self, id: AIConversationId, ctx: &mut ViewContext<Self>) {
         // "Focus pane" is purely a focus operation: the conversation
         // already lives in some other visible terminal view (verified
@@ -1147,6 +1191,7 @@ impl View for OrchestrationPillBar {
 /// Local enum used by `View::render` to model the at-most-one overlay
 /// rendered on top of the pill bar (the 3-dot menu *or* the hover details
 /// card).
+#[allow(dead_code)] // used by sibling unused code or shared name
 enum MenuOrCard {
     Menu(AIConversationId),
     Card {
@@ -1158,6 +1203,7 @@ enum MenuOrCard {
 /// Builds the hover details card overlay for the given conversation, or
 /// returns `None` if there's no conversation to summarise (e.g. the id
 /// has just been removed from history).
+#[allow(dead_code)] // used by sibling unused code or shared name
 fn render_hover_card(
     conversation_id: AIConversationId,
     _agent_view_controller: &AgentViewController,
@@ -1393,6 +1439,7 @@ fn render_hover_card(
 
 /// Renders the colored "Working / Done / Error / Cancelled / Blocked"
 /// status badge that sits in the top-right of the hover card.
+#[allow(dead_code)] // used by sibling unused code or shared name
 fn render_status_badge(
     status: &ConversationStatus,
     theme: &WarpTheme,
@@ -1437,6 +1484,7 @@ fn render_status_badge(
 /// The box is bottom-aligned rather than centered: the status badge hangs off
 /// its bottom-right corner and design wants that badge flush with the pill's
 /// bottom edge, so the box's bottom has to be the pill's bottom.
+#[allow(dead_code)] // used by sibling unused code or shared name
 fn render_avatar_slot(avatar: Box<dyn Element>) -> Box<dyn Element> {
     ConstrainedBox::new(Align::new(avatar).bottom_left().finish())
         .with_width(PILL_AVATAR_SLOT_SIZE)
@@ -1445,6 +1493,7 @@ fn render_avatar_slot(avatar: Box<dyn Element>) -> Box<dyn Element> {
 }
 
 /// Renders a small icon + label chip used inside the hover details card.
+#[allow(dead_code)] // used by warp_tui (tui feature)
 fn render_chip(
     icon: Icon,
     label: String,
@@ -1487,6 +1536,7 @@ fn render_chip(
         .finish()
 }
 
+#[allow(dead_code)] // used only by tests
 fn navigation_action_for_pill(kind: PillKind, conversation_id: AIConversationId) -> TerminalAction {
     match kind {
         // The orchestrator pill is the "home" conversation for the tree, so
@@ -1505,6 +1555,7 @@ fn navigation_action_for_pill(kind: PillKind, conversation_id: AIConversationId)
 /// of the orchestration tree. Clicking it navigates to `target_id` — the
 /// tree root (`PillKind::Orchestrator`) or an intermediate parent
 /// (`PillKind::Child`, revealed via its hidden pane like any child pill).
+#[allow(dead_code)] // used by sibling unused code or shared name
 fn render_breadcrumb_pill(
     target_id: AIConversationId,
     pill_kind: PillKind,
@@ -1588,11 +1639,13 @@ fn render_breadcrumb_pill(
 }
 
 /// Horizontal padding inside the subtree badge around its count text.
+#[allow(dead_code)] // used by sibling unused code or shared name
 const SUBTREE_BADGE_HORIZONTAL_PADDING: f32 = 5.;
 
 /// Fixed slot width for a group pill's subtree badge: fits the count text
 /// and is never narrower than the trailing slice the hover 3-dot overlay
 /// occupies, so swapping the badge out for the dots never resizes the pill.
+#[allow(dead_code)] // used by sibling unused code or shared name
 fn subtree_rollup_badge_slot_width(
     rollup: &LoadedSubtreeRollup,
     appearance: &Appearance,
@@ -1610,6 +1663,7 @@ fn subtree_rollup_badge_slot_width(
 
 /// Compact trailing badge on a "group" pill: the number of agents in the
 /// child's subtree, tinted with the subtree's aggregated status color.
+#[allow(dead_code)] // used by sibling unused code or shared name
 fn render_subtree_rollup_badge(
     rollup: &LoadedSubtreeRollup,
     theme: &WarpTheme,
@@ -1637,6 +1691,7 @@ fn render_subtree_rollup_badge(
 }
 
 /// 1px vertical divider between the pinned and unpinned sections.
+#[allow(dead_code)] // used by sibling unused code or shared name
 fn render_pinned_divider(app: &AppContext) -> Box<dyn Element> {
     const DIVIDER_HEIGHT: f32 = 16.;
     let appearance = Appearance::as_ref(app);
@@ -1664,6 +1719,7 @@ fn render_pinned_divider(app: &AppContext) -> Box<dyn Element> {
 /// container, which keeps it exact regardless of how the surrounding box
 /// behaves, and lets [`PIN_GLYPH_OPTICAL_DROP`] bias it downward without
 /// moving the circle.
+#[allow(dead_code)] // used by sibling unused code or shared name
 fn render_pin_button(
     is_pinned: bool,
     icon_color: ColorU,
@@ -1711,6 +1767,7 @@ fn render_pin_button(
     render_avatar_slot(render_avatar_lockup_box(button))
 }
 
+#[allow(dead_code)] // used by sibling unused code or shared name
 fn render_pill(
     spec: PillSpec,
     mouse_state: MouseStateHandle,
@@ -1971,6 +2028,7 @@ fn render_pill(
 }
 
 /// Renders the trailing 3-dot button on a child pill.
+#[allow(dead_code)] // used by sibling unused code or shared name
 fn render_overflow_button(
     mouse_state: MouseStateHandle,
     conversation_id: AIConversationId,
@@ -2011,6 +2069,7 @@ fn render_overflow_button(
 /// read too *small*, because a thin outline carries less visual weight than a
 /// solid letterform, so design asked for roughly 4px more. This is the knob to
 /// nudge if it still reads wrong.
+#[allow(dead_code)] // used by sibling unused code or shared name
 const PIN_GLYPH_RATIO: f32 = 0.71;
 
 /// Downward nudge of the pin glyph inside its circle.
@@ -2022,22 +2081,27 @@ const PIN_GLYPH_RATIO: f32 = 0.71;
 /// Absolute pixels rather than a ratio because the pin is only ever drawn in
 /// the chip's [`PILL_AVATAR_DISC_SIZE`] circle. If it gains another size, this
 /// needs revisiting rather than silently scaling.
+#[allow(dead_code)] // used by sibling unused code or shared name
 const PIN_GLYPH_OPTICAL_DROP: f32 = 1.;
 
 /// Opacity of the pin button's hover tint, over the pill's contrasting colour.
 /// A little stronger than the 5% `fg_overlay_1` used to apply, because that
 /// colour is nearer the pill's own background than the contrasting one is.
+#[allow(dead_code)] // used by sibling unused code or shared name
 const PIN_BUTTON_HOVER_OPACITY: u8 = 8;
 
 /// Cutout-ring diameter of the status badge, per design.
+#[allow(dead_code)] // used by sibling unused code or shared name
 const PILL_BADGE_RING_SIZE: f32 = 11.;
 /// Bounding box of the status icon inside that ring, per design. The 1px it
 /// leaves on each side is the visible cutout.
+#[allow(dead_code)] // used by sibling unused code or shared name
 const PILL_BADGE_ICON_SIZE: f32 = 9.;
 
 /// `icon_with_status` expresses badge geometry as fractions of the box the
 /// badge is anchored to, so convert the designed absolute sizes once here
 /// rather than restating them as ratios.
+#[allow(dead_code)] // used by sibling unused code or shared name
 const PILL_BADGE_STYLE: StatusBadgeStyle = StatusBadgeStyle {
     ring_ratio: PILL_BADGE_RING_SIZE / AVATAR_WITH_STATUS_TOTAL_SIZE,
     icon_ratio: PILL_BADGE_ICON_SIZE / AVATAR_WITH_STATUS_TOTAL_SIZE,
@@ -2052,6 +2116,7 @@ const PILL_BADGE_STYLE: StatusBadgeStyle = StatusBadgeStyle {
 /// built-in `0.19` default, putting the badge's bottom-right corner on the
 /// lockup box's own bottom-right corner. Since the box is bottom-aligned in
 /// the slot, that is what makes the ring flush with the pill's bottom edge.
+#[allow(dead_code)] // used by sibling unused code or shared name
 const PILL_BADGE_OVERHANG_RATIO: f32 = 0.05;
 
 /// Top inset of the avatar disc inside the [`AVATAR_WITH_STATUS_TOTAL_SIZE`]
@@ -2059,6 +2124,7 @@ const PILL_BADGE_OVERHANG_RATIO: f32 = 0.05;
 /// badge anchored to its bottom-right corner reaches the pill's bottom edge,
 /// so this inset plus that bottom-alignment offset has to add up to
 /// [`PILL_AVATAR_VERTICAL_PADDING`]: 2 + 1.5 = 3.5.
+#[allow(dead_code)] // used by sibling unused code or shared name
 const PILL_AVATAR_LOCKUP_TOP_INSET: f32 =
     PILL_AVATAR_VERTICAL_PADDING - (PILL_HEIGHT - AVATAR_WITH_STATUS_TOTAL_SIZE);
 
@@ -2073,6 +2139,7 @@ const PILL_AVATAR_LOCKUP_TOP_INSET: f32 =
 /// because the badge is anchored to the box's bottom-right corner and every
 /// pixel the disc moves right is a pixel more of it the badge's cutout ring
 /// eats — enough to swallow the agent's initial.
+#[allow(dead_code)] // used by sibling unused code or shared name
 fn render_avatar_lockup_box(disc: Box<dyn Element>) -> Box<dyn Element> {
     ConstrainedBox::new(
         Container::new(Align::new(disc).top_left().finish())
@@ -2085,6 +2152,7 @@ fn render_avatar_lockup_box(disc: Box<dyn Element>) -> Box<dyn Element> {
 }
 
 /// Renders the leading avatar for a pill with no status badge.
+#[allow(dead_code)] // used by sibling unused code or shared name
 fn render_pill_avatar(
     avatar_color: ColorU,
     glyph: AvatarGlyph,
@@ -2123,6 +2191,7 @@ fn render_pill_avatar(
 ///   x < 11 is governed by the cap's arc).
 /// * Status icon: [`PILL_BADGE_ICON_SIZE`] = 9 bounding box centred in the
 ///   ring, leaving the 1px cutout.
+#[allow(dead_code)] // used by sibling unused code or shared name
 fn render_avatar_with_status_overlay(
     avatar_color: ColorU,
     glyph: AvatarGlyph,
@@ -2157,12 +2226,14 @@ fn render_avatar_with_status_overlay(
 
 /// What kind of pill we are rendering, which determines click behavior.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub(crate) enum PillKind {
     Orchestrator,
     Child,
 }
 
 impl PillKind {
+    #[allow(dead_code)] // used by sibling unused code or shared name
     fn telemetry_kind(self) -> PillBarPillKind {
         match self {
             Self::Orchestrator => PillBarPillKind::Orchestrator,
@@ -2173,12 +2244,14 @@ impl PillKind {
 
 /// Whether the user has pinned this pill to the leading section of the bar.
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // used by sibling unused code or shared name
 enum PillPinState {
     Unpinned,
     Pinned,
 }
 
 /// Pre-computed data for one pill in the bar.
+#[allow(dead_code)] // used by sibling unused code or shared name
 struct PillSpec {
     conversation_id: AIConversationId,
     label: String,
@@ -2199,6 +2272,7 @@ struct PillSpec {
 /// drill-down view: it anchors on one conversation and renders only that
 /// conversation's DIRECT children, with breadcrumbs back up the tree when
 /// the anchored level sits below the root.
+#[allow(dead_code)] // used by sibling unused code or shared name
 struct PillBarContents {
     anchor_id: AIConversationId,
     /// Root of the orchestration tree when the anchor is not itself the

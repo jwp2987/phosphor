@@ -75,6 +75,7 @@ pub enum OpenAiCompatibleError {
          loopback endpoint (localhost/127.0.0.1) may carry a key; use https, or point this \
          provider at a local runtime"
     )]
+    #[allow(dead_code)] // used only by tests
     InsecureEndpoint(String),
 }
 

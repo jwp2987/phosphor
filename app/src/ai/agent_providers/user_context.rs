@@ -67,6 +67,7 @@ pub struct UserBinary {
 }
 
 impl UserAttachments {
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn is_empty(&self) -> bool {
         self.prefix.is_none() && self.binaries.is_empty()
     }
