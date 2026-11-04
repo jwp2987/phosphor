@@ -610,7 +610,7 @@ fn plugin_array_elements(text: &str) -> Option<Vec<PluginArrayElement>> {
     let open = array_open?;
     let close = matching_close(&tokens, open)?;
 
-    let mut elements = Vec::new();
+    let mut elements: Vec<PluginArrayElement> = Vec::new();
     let mut index = open + 1;
     while index < close {
         let token = &tokens[index];
