@@ -548,6 +548,50 @@ def r18d2_routing_expectation_ocr_fuzz_and_ctrlc_window():
 
 
 @check
+def r18u22_probe_ctrl_c_waits_out_the_exit_window():
+    """r18u22 (Windows agent@gitbash left_agent_mode_after_fast_typing / _read_x): pane_responsive's FIRST Ctrl-C came 0.8 s after the previous case's reset()
+    Ctrl-C and exited the empty agent view. Every probe Ctrl-C in agent mode now waits until the last one is outside EXIT_WINDOW_S + 0.4."""
+    slept = []
+    c = types.SimpleNamespace(ctrlc_ts=[100.0], mode="agent", EXIT_WINDOW_S=cases.Ctx.EXIT_WINDOW_S)
+    left = cases.Ctx.wait_out_exit_window(c, now=100.8, sleep=slept.append)
+    assert abs(left - 0.6) < 1e-6 and slept == [left], (left, slept)
+    assert cases.Ctx.wait_out_exit_window(c, now=101.5, sleep=slept.append) == 0.0 and len(slept) == 1
+    c.mode = "terminal"
+    assert cases.Ctx.wait_out_exit_window(c, now=100.1, sleep=slept.append) == 0.0 and len(slept) == 1
+    c.mode, c.ctrlc_ts = "agent", []
+    assert cases.Ctx.wait_out_exit_window(c, now=100.1, sleep=slept.append) == 0.0
+    # the probe itself: a Ctrl-C the case sent just now -> the probe's Ctrl-C goes out only after the window (recorded time, not counted presses)
+    sent, t = [], [200.0]
+    real_time, real_sleep = cases.time.time, cases.time.sleep
+    cases.time.time = lambda: t[0]
+
+    def fake_sleep(d):
+        t[0] += d
+    cases.time.sleep = fake_sleep
+    try:
+        be = types.SimpleNamespace(key=lambda spec, *a, **k: sent.append((t[0], spec)), keys=lambda specs, *a, **k: [sent.append((t[0], x)) for x in specs],
+                                   type=lambda *a, **k: None)
+        ctx = types.SimpleNamespace(ctrlc_ts=[], mode="agent", be=be, EXIT_WINDOW_S=cases.Ctx.EXIT_WINDOW_S, pane="gitbash")
+        cases.Ctx._wrap_ctrlc(ctx, be)
+        ctx.wait_out_exit_window = lambda: cases.Ctx.wait_out_exit_window(ctx)
+        ctx.tok = lambda n: "abcdefgh"[:n]
+        ctx.cmd_mark = lambda: 0
+        ctx.pane_shell = lambda: "bash"
+        ctx.append_cmd = lambda shell, tok, fname: "echo %s >> %s" % (tok, fname)
+        ctx.until = lambda pred, timeout=10, step=0.05: pred()
+        ctx.local_lines = lambda fname: ["abcdefgh"]
+        ctx.prof = types.SimpleNamespace(commands=lambda: [])
+        be.key("ctrl+c")                      # the case's own reset() Ctrl-C at t=200.0
+        t[0] += 0.8                           # the runner calls the probe 0.8 s later
+        assert cases.Ctx.pane_responsive(ctx) == 0
+        cc = [ts for ts, k in sent if k == "ctrl+c"]
+        assert len(cc) == 2 and cc[1] - cc[0] >= cases.Ctx.EXIT_WINDOW_S + 0.3, cc
+        assert not cases.Ctx.double_ctrlc_since(ctx, 0.0), ctx.ctrlc_ts
+    finally:
+        cases.time.time, cases.time.sleep = real_time, real_sleep
+
+
+@check
 def r18u8_harness_fixes_pure_pieces():
     import types as _t
     # Mac injector records of keys aimed at the reference carry ref=True, so the accounting does not expect Phosphor to have seen them

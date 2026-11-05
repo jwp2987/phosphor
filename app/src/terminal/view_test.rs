@@ -25184,10 +25184,35 @@ enum KeyDuringRead {
     Backspace,
     /// Text typed on the terminal.
     Typed(&'static str),
+    /// The key, pressed only after the paste's read finished (the paste already delivered into
+    /// the prompt hold): the order of the r18u22 Windows agent@gitbash run, where each Enter came
+    /// after its clipboard read.
+    AfterRead(&'static KeyDuringRead),
 }
 
 /// A pasted text and the keys pressed while its read was in flight.
 type PasteWithKeys = (&'static str, &'static [KeyDuringRead]);
+
+/// Presses one `KeyDuringRead` on the terminal, in the destination mode's own form.
+fn press_on_terminal(
+    view: &mut TerminalView,
+    key: KeyDuringRead,
+    ctx: &mut ViewContext<TerminalView>,
+) {
+    match key {
+        KeyDuringRead::Enter => view.keydown_on_terminal("\r", ctx),
+        KeyDuringRead::EnterEntry => {
+            let queue = view.paste_queue.queue.clone();
+            let mut host = paste_queue::PtyQueueHost::new(view, ctx);
+            queue
+                .borrow_mut()
+                .offer(&mut host, crate::terminal::input_queue::EntryKind::Enter);
+        }
+        KeyDuringRead::Backspace => view.keydown_on_terminal("\u{7f}", ctx),
+        KeyDuringRead::Typed(text) => view.typed_characters_on_terminal(text, ctx),
+        KeyDuringRead::AfterRead(inner) => press_on_terminal(view, *inner, ctx),
+    }
+}
 
 /// #1628: pastes, each with keys pressed while the clipboard was still being read, all held for
 /// the prompt (ConPTY). The keys behind the first paste are swept with it under the prompt hold's
@@ -25236,20 +25261,14 @@ fn pastes_held_for_the_prompt_in(
                         .with_cap(None),
                     );
                 }
-                for key in keys {
-                    match *key {
-                        KeyDuringRead::Enter => view.keydown_on_terminal("\r", ctx),
-                        KeyDuringRead::EnterEntry => {
-                            let mut host = paste_queue::PtyQueueHost::new(view, ctx);
-                            queue
-                                .borrow_mut()
-                                .offer(&mut host, crate::terminal::input_queue::EntryKind::Enter);
-                        }
-                        KeyDuringRead::Backspace => view.keydown_on_terminal("\u{7f}", ctx),
-                        KeyDuringRead::Typed(text) => view.typed_characters_on_terminal(text, ctx),
-                    }
+                let after_read = |key: &&KeyDuringRead| matches!(key, KeyDuringRead::AfterRead(_));
+                for key in keys.iter().filter(|key| !after_read(key)) {
+                    press_on_terminal(view, *key, ctx);
                 }
                 view.finish_queued_background_paste(id, Ok(line.as_bytes().to_vec()), ctx);
+                for key in keys.iter().filter(after_read) {
+                    press_on_terminal(view, *key, ctx);
+                }
             }
             assert!(prompt_gate_open(view), "{mode:?}: held for the prompt");
             if cap_first {
@@ -25347,6 +25366,29 @@ fn an_enter_entry_in_a_prompt_hold_is_released_as_its_byte_in_both_modes() {
 fn a_swept_enter_keeps_the_prompt_hold_past_its_cap_in_both_modes() {
     for mode in [DestMode::Legacy, DestMode::Table] {
         pastes_held_for_the_prompt_in(mode, PASTE_ENTER_PASTE_ENTER, true, b"echo a\recho b\r");
+    }
+}
+
+/// r18u22 Windows agent@gitbash paste_instant_enter: in the agent view each paste is read while
+/// the pane's previous command still runs, so it is delivered to the terminal and held for the
+/// prompt, and its Enter arrives AFTER the read (`deliver kind=paste`, then `kh_table_decide
+/// class=Enter row=H8 outcome=Hold(LineEditorActive)`). Two such pastes, a short line and a long
+/// one, each with its Enter after the read: one release, each line once, each Enter in its
+/// place, the same bytes in both modes. (That run's "5/6" was the harness reading rec.log before
+/// the last command's prompt hook wrote it; the shell received all six lines exactly.)
+#[test]
+fn enters_after_paste_reads_in_a_prompt_hold_keep_their_places_in_both_modes() {
+    const AFTER_ENTER: KeyDuringRead = KeyDuringRead::AfterRead(&KeyDuringRead::Enter);
+    const SHORT: &str = "echo T85_short | md5sum >> pe.txt";
+    const LONG: &str = "echo T86_long_wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww | md5sum >> pe.txt";
+    const PASTES: &[PasteWithKeys] = &[(SHORT, &[AFTER_ENTER]), (LONG, &[AFTER_ENTER])];
+    for mode in [DestMode::Legacy, DestMode::Table] {
+        pastes_held_for_the_prompt_in(
+            mode,
+            PASTES,
+            false,
+            b"echo T85_short | md5sum >> pe.txt\recho T86_long_wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww | md5sum >> pe.txt\r",
+        );
     }
 }
 
