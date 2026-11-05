@@ -52,8 +52,8 @@ use crate::view_components::DismissibleToast;
 use crate::workspace::ToastStack;
 
 /// The longest an Enter gate may stay closed whatever happens: a net for a bug that would leave
-/// it open, far beyond every real hold (the hold backstops are 250 / 500 ms, the route-settle
-/// cap 300 ms). Logged by the queue when it fires.
+/// it open, far beyond every real hold (the hold backstops are 2 s plus the size allowance for a
+/// verdict, 500 ms for a Tab completion; the route-settle cap 300 ms). Logged by the queue when it fires.
 pub(super) const ENTER_GATE_LEAK_NET: Duration = Duration::from_secs(10);
 
 /// The Enter gate this input has open on the queue. The gate's key is the wait's id (#1206), so a
@@ -318,6 +318,16 @@ impl Input {
     pub(crate) fn detection_compute(&self, ctx: &AppContext) -> (bool, Duration) {
         let clock = self.ai_input_model.as_ref(ctx).detection_clock();
         (clock.is_running(), clock.spent())
+    }
+
+    /// The wall time the current input-type detection's stages have run (#1651 review): a young
+    /// line's Enter gives up at the detection's wall ceiling too, for a classifier that waits off
+    /// the CPU.
+    pub(crate) fn detection_stage_wall(&self, ctx: &AppContext) -> Duration {
+        self.ai_input_model
+            .as_ref(ctx)
+            .detection_clock()
+            .stage_wall()
     }
 
     /// Sends a unit on `tx` each time a stage of the current detection begins running.

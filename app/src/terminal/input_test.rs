@@ -11538,9 +11538,9 @@ fn test_stale_verdict_wait_tick_does_not_release_a_later_enter() {
 }
 
 /// #1351: a main-thread stall between the Enter and the verdict's delivery must not decide the
-/// route. The Enter is 50 ms old (well past the 20 ms cap, which used to be counted from the
-/// Enter) while the classifier spent no compute at all: it keeps waiting, and the verdict that
-/// then lands routes the line.
+/// route. The Enter is three caps old (150 ms, well past the 50 ms cap, which used to be counted
+/// from the Enter) while the classifier spent no compute at all: it keeps waiting, and the verdict
+/// that then lands routes the line.
 #[test]
 fn test_stall_between_enter_and_verdict_still_routes_by_the_verdict() {
     use crate::ai::blocklist::input_model::ENTER_VERDICT_BUDGET;
@@ -11552,7 +11552,9 @@ fn test_stall_between_enter_and_verdict_still_routes_by_the_verdict() {
         let line = "is it true";
         // The fixture inherits AI; the verdict below is Shell, so the route shows who decided.
         let input = waiting_prose_enter_fixture(&mut app, line).await;
-        let stall = std::time::Duration::from_millis(50);
+        // Three caps (the cap was 20 ms and this stall a fixed 50 ms until the owner raised the
+        // cap to 50 ms on 2026-11-05; the stall must stay well past it).
+        let stall = ENTER_VERDICT_BUDGET * 3;
         assert!(stall > ENTER_VERDICT_BUDGET);
 
         input.update(&mut app, |input, ctx| {
@@ -11609,7 +11611,7 @@ fn test_verdict_give_up_cap_counts_only_classifier_compute() {
         let line = "is it true";
         let input = waiting_prose_enter_fixture(&mut app, line).await;
 
-        // A stage that has run 5 ms: not at the cap. One timer for the remaining ~15 ms.
+        // A stage that has run 5 ms: not at the cap. One timer for the remaining ~45 ms.
         let (clock, guard) = ComputeClock::running_for_test(std::time::Duration::from_millis(5));
         input.update(&mut app, |input, ctx| {
             let wait = input.verdict_wait.as_mut().unwrap();
@@ -11648,6 +11650,138 @@ fn test_verdict_give_up_cap_counts_only_classifier_compute() {
         });
         input.read(&app, |input, ctx| {
             assert!(input.verdict_wait.is_none());
+            assert!(
+                !input.detection_pending_for_buffer(ctx),
+                "the late verdict is dropped"
+            );
+        });
+    });
+}
+
+/// #1651/#1662: the verdict hold's wall-clock backstop is a lost-job net only (2 s plus the size
+/// allowance): it stays clearly above its compute cap at every size, so it never pre-empts a
+/// classifier that is merely slow to get a CPU. The Tab hold's backstop is not this test's.
+#[test]
+fn test_verdict_hold_backstop_stays_clearly_above_the_compute_cap() {
+    use crate::ai::blocklist::input_model::ENTER_VERDICT_BUDGET;
+
+    let hold = EnterHold::Verdict {
+        since: Instant::now(),
+    };
+    assert_eq!(hold.compute_cap(10), ENTER_VERDICT_BUDGET);
+    assert_eq!(hold.backstop(10), std::time::Duration::from_secs(2));
+    assert_eq!(
+        hold.backstop(1024 * 1024),
+        std::time::Duration::from_secs(2)
+            + crate::ai::blocklist::input_model::large_text_compute_allowance(1024 * 1024),
+        "the backstop grows with the text like the cap"
+    );
+    for len in [0, 40, 4096, 4097, 21_600, 1024 * 1024, 10 * 1024 * 1024] {
+        assert!(
+            hold.backstop(len) >= hold.compute_cap(len) + std::time::Duration::from_millis(150),
+            "{len} bytes: backstop {:?}, cap {:?}",
+            hold.backstop(len),
+            hold.compute_cap(len)
+        );
+        // The wall ceiling (#1651 review) sits between the CPU cap and the lost-job backstop.
+        let ceiling = crate::ai::blocklist::input_model::enter_verdict_wall_ceiling_for(len);
+        assert!(
+            hold.backstop(len) >= ceiling + std::time::Duration::from_millis(150),
+            "{len} bytes: backstop {:?}, wall ceiling {ceiling:?}",
+            hold.backstop(len)
+        );
+    }
+    // #1651 review: for any paste size the hold gives up before the Enter gate's leak net
+    // force-opens the gate, so the leak net can never release keys first.
+    for len in [32 * 1024 * 1024, 64 * 1024 * 1024, usize::MAX / 2] {
+        assert!(
+            hold.backstop(len) < super::enter_queue::ENTER_GATE_LEAK_NET,
+            "{len} bytes: backstop {:?}",
+            hold.backstop(len)
+        );
+    }
+}
+
+/// #1651 review: a classifier that waits off the CPU (a cold filesystem, the model loading)
+/// spends no CPU; the held Enter gives it up at the 1 s wall ceiling of its stages (handed back,
+/// #1577), not at the 2 s backstop. One starved of CPU under the ceiling keeps its 50 ms of CPU.
+#[test]
+fn test_verdict_wall_ceiling_gives_up_on_a_job_waiting_off_the_cpu() {
+    use crate::ai::blocklist::input_model::{ENTER_VERDICT_BUDGET, ENTER_VERDICT_WALL_CEILING};
+
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
+        initialize_app(&mut app);
+        let line = "is it true";
+        let input = waiting_prose_enter_fixture(&mut app, line).await;
+
+        // Starved under the ceiling: 600 ms of stage wall time, 10 ms of CPU. Kept waiting; the
+        // timer is for the CPU budget's rest, not a fresh cap and not the backstop.
+        let (clock, guard) = ComputeClock::thread_cpu_running_for_test(
+            std::time::Duration::from_millis(10),
+            std::time::Duration::from_millis(600),
+        );
+        input.update(&mut app, |input, ctx| {
+            let wait = input.verdict_wait.as_mut().unwrap();
+            wait.compute = clock.clone();
+            let id = wait.id;
+            input.hold_timers_armed_for_test.clear();
+            input.compute_cap_fired(id, ctx);
+        });
+        input.read(&app, |input, _| {
+            assert!(
+                input.verdict_wait.is_some(),
+                "starved of CPU under the ceiling: still waiting"
+            );
+            for (timer, delay) in &input.hold_timers_armed_for_test {
+                assert_eq!(*timer, "compute cap");
+                assert!(
+                    *delay <= ENTER_VERDICT_BUDGET - std::time::Duration::from_millis(10),
+                    "{delay:?}"
+                );
+            }
+        });
+        drop(guard);
+
+        // Near the ceiling with no CPU spent: the timer is for the ceiling's rest.
+        let (clock, guard) = ComputeClock::thread_cpu_running_for_test(
+            std::time::Duration::ZERO,
+            ENTER_VERDICT_WALL_CEILING - std::time::Duration::from_millis(20),
+        );
+        input.update(&mut app, |input, ctx| {
+            let wait = input.verdict_wait.as_mut().unwrap();
+            wait.compute = clock.clone();
+            let id = wait.id;
+            input.hold_timers_armed_for_test.clear();
+            input.arm_compute_cap(id, ctx);
+        });
+        input.read(&app, |input, _| {
+            let armed = &input.hold_timers_armed_for_test;
+            assert_eq!(armed.len(), 1, "{armed:?}");
+            assert!(
+                armed[0].1 <= std::time::Duration::from_millis(20),
+                "armed for the ceiling's rest: {armed:?}"
+            );
+        });
+        drop(guard);
+
+        // Past the ceiling with no CPU spent: given up on, the late verdict dropped.
+        let (clock, _guard) = ComputeClock::thread_cpu_running_for_test(
+            std::time::Duration::ZERO,
+            ENTER_VERDICT_WALL_CEILING + std::time::Duration::from_millis(10),
+        );
+        input.update(&mut app, |input, ctx| {
+            let wait = input.verdict_wait.as_mut().unwrap();
+            wait.compute = clock.clone();
+            let id = wait.id;
+            input.compute_cap_fired(id, ctx);
+        });
+        input.read(&app, |input, ctx| {
+            assert!(
+                input.verdict_wait.is_none(),
+                "a job waiting off the CPU is given up on at the wall ceiling"
+            );
             assert!(
                 !input.detection_pending_for_buffer(ctx),
                 "the late verdict is dropped"
@@ -15647,9 +15781,9 @@ fn test_enter_queue_keys_typed_behind_a_verdict_held_enter_keep_order_at_10ms_pe
 
         // The classification job is parked on the gate while it counts as running, so on the real
         // clock its compute would reach the cap during the typing below and give the Enter up by
-        // itself; and the 250 ms backstop, armed at the Enter, is wall-clock too: on Windows the
-        // 10 ms sleeps below round up to the ~15.6 ms timer tick, and in r18u19 it fired while
-        // the test was still typing, handing everything back before the stall's check. Both nets
+        // itself; and the backstop (250 ms then, 2 s since #1662), armed at the Enter, is
+        // wall-clock too: on Windows the 10 ms sleeps below round up to the ~15.6 ms timer tick,
+        // and in r18u19 it fired while the test was still typing, handing everything back before the stall's check. Both nets
         // are disarmed (an idle clock, a new watch epoch), so the wait is left to the explicit
         // give-up further down.
         input.update(&mut app, |input, _| {
