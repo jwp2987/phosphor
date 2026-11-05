@@ -396,9 +396,9 @@ impl Input {
                 let compute_clock = self.ai_input_model.as_ref(ctx).detection_clock();
 
                 self.decorations_future_handle = Some(ctx.spawn_abortable(
-                    async move {
-                        // The parse is a stage of the detection request's compute (#1351).
-                        let _compute = compute_clock.begin();
+                    // The parse is a stage of the detection request's compute (#1351), counted
+                    // in the CPU time its polls run (#1651).
+                    compute_clock.measure(async move {
                         // #1019: a program installed since the bootstrap scan is a command.
                         completion_context
                             .session
@@ -412,7 +412,7 @@ impl Input {
                             .await,
                             completion_context,
                         )
-                    },
+                    }),
                     move |input, (parsed_tokens, completion_context), ctx| {
                         // A cancelled parse was superseded (or the buffer was cleared); its
                         // newer replacement owns the decorations.
@@ -450,16 +450,16 @@ impl Input {
                     let cancel = Arc::new(AtomicBool::new(false));
                     self.decorations_cancel = Some(cancel.clone());
                     ctx.spawn(
-                        async move {
-                            // The parse is a stage of the detection request's compute (#1351).
-                            let _compute = compute_clock.begin();
+                        // The parse is a stage of the detection request's compute (#1351),
+                        // counted in the CPU time its polls run (#1651).
+                        compute_clock.measure(async move {
                             parse_current_commands_and_tokens_cancellable(
                                 buffer_text,
                                 &detection_ctx,
                                 &cancel,
                             )
                             .await
-                        },
+                        }),
                         move |input, parsed_tokens, ctx| {
                             let Some(parsed_tokens) = parsed_tokens else {
                                 return;

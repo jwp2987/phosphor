@@ -825,14 +825,27 @@ const AFTER_ENTER_REPLAY_PTY_WAIT: Duration = Duration::from_millis(300);
 /// [`YOUNG_DETECTION_CAP`](crate::terminal::model::typeahead_handoff::YOUNG_DETECTION_CAP) of
 /// classifier compute (grown with the text, #1604). #1577: a give-up
 /// with the input type undecided hands the line back to the editor (never submitted by the clock).
-const YOUNG_DETECTION_BACKSTOP: Duration = Duration::from_millis(500);
+/// A lost-job net only (#1664, busy-machine audit 2026-11-05): the cap is the classifier's CPU
+/// time (#1651), so this wall-clock net must not be what hands text back on a loaded machine.
+/// Was 500 ms; 2 s stays far above the 250 ms young cap.
+const YOUNG_DETECTION_BACKSTOP: Duration = Duration::from_secs(2);
 
 /// [`YOUNG_DETECTION_BACKSTOP`] for a buffer of `text_len` chars: grows with the text like the
 /// compute cap (#1604, `large_text_compute_allowance`), so a large paste's linear classification
 /// is waited for rather than given up on by the lost-signal net.
 fn young_detection_backstop_for(text_len: usize) -> Duration {
-    YOUNG_DETECTION_BACKSTOP
-        + crate::ai::blocklist::input_model::large_text_compute_allowance(text_len)
+    // Clamped under the Enter gate's leak net, so the leak net never fires first for a paste
+    // over ~32 MiB (#1651 review).
+    (YOUNG_DETECTION_BACKSTOP
+        + crate::ai::blocklist::input_model::large_text_compute_allowance(text_len))
+    .min(crate::terminal::input::HOLD_BACKSTOP_LIMIT)
+}
+
+/// Whether a young line's wait has hit the detection's wall ceiling (#1651 review): the same
+/// ceiling an editor Enter applies (`enter_verdict_wall_ceiling_for`), for a classifier that
+/// waits off the CPU and so never spends its CPU cap.
+fn young_wall_ceiling_reached(stage_wall: Duration, text_len: usize) -> bool {
+    stage_wall >= crate::ai::blocklist::input_model::enter_verdict_wall_ceiling_for(text_len)
 }
 
 pub const WARP_PROMPT_HEIGHT_LINES: f32 = 0.9;
@@ -14492,17 +14505,22 @@ impl TerminalView {
         self.input.update(ctx, |input, ctx| {
             input.start_detection_for_unparsed_buffer(true, ctx)
         });
-        let (can_run, pending, compute, text_len) = self.input.read(ctx, |input, ctx| {
-            (
-                input.can_classify_buffer(ctx),
-                input.detection_pending_for_buffer(ctx),
-                input.detection_compute(ctx).1,
-                input.buffer_char_len(ctx),
-            )
-        });
-        // The give-up is measured on the classifier's compute, never on the age of the Enter.
+        let (can_run, pending, compute, stage_wall, text_len) =
+            self.input.read(ctx, |input, ctx| {
+                (
+                    input.can_classify_buffer(ctx),
+                    input.detection_pending_for_buffer(ctx),
+                    input.detection_compute(ctx).1,
+                    input.detection_stage_wall(ctx),
+                    input.buffer_char_len(ctx),
+                )
+            });
+        // The give-up is measured on the classifier's compute, never on the age of the Enter; or
+        // on the wall time its stages have run, for a classifier waiting off the CPU (#1651
+        // review).
         let waited = compute;
-        let decision = if force_give_up && can_run && pending {
+        let ceiling = young_wall_ceiling_reached(stage_wall, text_len);
+        let decision = if (force_give_up || ceiling) && can_run && pending {
             YoungSubmit::SubmitWithoutVerdict
         } else {
             young_submit_decision_for(can_run, pending, waited, text_len)
@@ -14519,6 +14537,13 @@ impl TerminalView {
                         "young Enter backstop fired after {} ms: no input-type verdict arrived \
                          (classifier compute {} ms)",
                         young_detection_backstop_for(text_len).as_millis(),
+                        compute.as_millis()
+                    );
+                } else if ceiling {
+                    log::info!(
+                        "young Enter gave up at the detection's wall ceiling: stages ran {} ms \
+                         for {} ms of classifier CPU (#1651)",
+                        stage_wall.as_millis(),
                         compute.as_millis()
                     );
                 }
@@ -14591,18 +14616,28 @@ impl TerminalView {
     /// Arms the give-up timer for the rest of the compute cap, if a stage is running now. When none
     /// is, its start (or the verdict) is an event of its own.
     fn arm_young_compute_cap(&mut self, id: u64, ctx: &mut ViewContext<Self>) {
-        let ((running, spent), text_len) = self.input.read(ctx, |input, ctx| {
-            (input.detection_compute(ctx), input.buffer_char_len(ctx))
+        let ((running, spent), stage_wall, text_len) = self.input.read(ctx, |input, ctx| {
+            (
+                input.detection_compute(ctx),
+                input.detection_stage_wall(ctx),
+                input.buffer_char_len(ctx),
+            )
         });
         if !running {
             return;
         }
-        self.arm_young_timer(
-            id,
-            young_detection_cap_for(text_len).saturating_sub(spent),
-            false,
-            ctx,
+        // #1651: on the classifier's CPU clock a starved job can sit just under its cap; a floor
+        // keeps the re-check from becoming a tight loop (the backstop still bounds the wait).
+        let remaining = young_detection_cap_for(text_len).saturating_sub(spent).min(
+            crate::ai::blocklist::input_model::enter_verdict_wall_ceiling_for(text_len)
+                .saturating_sub(stage_wall),
         );
+        let delay = if remaining.is_zero() {
+            remaining
+        } else {
+            remaining.max(crate::terminal::input::COMPUTE_CAP_RECHECK_FLOOR)
+        };
+        self.arm_young_timer(id, delay, false, ctx);
     }
 
     fn arm_young_timer(
@@ -14623,10 +14658,16 @@ impl TerminalView {
                 me.finish_young_detection_wait(true, Instant::now(), ctx);
                 return;
             }
-            let ((_, spent), text_len) = me.input.read(ctx, |input, ctx| {
-                (input.detection_compute(ctx), input.buffer_char_len(ctx))
+            let ((_, spent), stage_wall, text_len) = me.input.read(ctx, |input, ctx| {
+                (
+                    input.detection_compute(ctx),
+                    input.detection_stage_wall(ctx),
+                    input.buffer_char_len(ctx),
+                )
             });
-            if spent < young_detection_cap_for(text_len) {
+            if spent < young_detection_cap_for(text_len)
+                && !young_wall_ceiling_reached(stage_wall, text_len)
+            {
                 // A stage that finished meanwhile, or a cap not yet reached: the verdict event or
                 // the next stage start decides.
                 me.arm_young_compute_cap(id, ctx);
