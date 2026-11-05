@@ -4533,6 +4533,12 @@ def c_editor_mem(ctx, r):
                 r.metric("%s_app_breakdown_open" % tag, br["open"][-1])
             if dropped:
                 r.metric("%s_app_buffer_dropped" % tag, dropped[-1])
+                left_open = dropped[-1].get("registered")
+                if isinstance(left_open, int) and left_open > 0:
+                    # #1607: every Mac/Windows run that blamed the .rs path for ~70-90 MB held after close had registered=1 here: an
+                    # earlier cycle judged "did not open" had in fact opened the 7 MB file, and its editor stayed open under this measurement.
+                    r.note("%s: %d other editor buffer(s) still registered when this one dropped: an earlier editor is still open, so the held-after-"
+                           "close figure below includes its memory (#1607)" % (tag, left_open))
                 # #1607: a large buffer's drop starts (trim=true) or joins (coalesced) one heap trim on a worker; its line carries freed_estimate
                 if str(dropped[-1].get("trim")) in ("true", "coalesced"):
                     trims = editor_wait_close_trim(ctx, off)
