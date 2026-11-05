@@ -486,13 +486,9 @@ impl Input {
     }
 
     /// #1652: the dialog was answered (`confirm`). What was typed while it waited is taken out of
-    /// the gate, and never run:
-    ///
-    /// * Confirm (owner: "safe fallback"): the buffer runs as the waiting Enter's own submit,
-    ///   once; the held keys are discarded, with a log line and a toast that say how many.
-    /// * Cancel (owner: "own line, like #1571"): the visible text of the keys goes on a NEW line
-    ///   after the buffer, an Enter among them a line break; nothing runs, no second dialog, no
-    ///   key reaches the buffer above (vim mode included).
+    /// the gate and DISCARDED (owner: "if you type something in there that isn't part of the
+    /// approval throw it away"), with a log line and a toast that say how many. Confirm then runs
+    /// the buffer as the waiting Enter's own submit, once; Cancel leaves it exactly as it was.
     ///
     /// A paste behind the gate still being read, or a busy queue, defers the answer to the
     /// queue's next free moment (`flush_deferred_programmatic_edits`, which the read's result,
@@ -538,61 +534,56 @@ impl Input {
         warpui::input_order::log_hop("enter_dialog_answered", || {
             format!("confirm={confirm} held_behind={}", taken.len())
         });
+        // Owner rule: "if you type something in there that isn't part of the approval throw it
+        // away". What was typed while the dialog was open (anything but the dialog's own Enter,
+        // Escape and buttons) is DISCARDED on Confirm and on Cancel alike, with a log line and a
+        // toast; it never runs and never reaches the editor.
+        let discarded = self.discard_dialog_typeahead(&taken);
+        self.report_discarded_dialog_typeahead(
+            discarded,
+            if confirm { "confirm" } else { "cancel" },
+            ctx,
+        );
         if confirm {
-            // Owner decision ("safe fallback"): the keys typed while the dialog was open are
-            // DISCARDED on Confirm, never run. A model of them cannot match the editor (select-all,
-            // undo, word boundaries, the clipboard, escaped drops), and on this path its output
-            // would be executed. The confirmed buffer runs exactly as it would have, once.
-            let discarded = self.discard_dialog_typeahead(&taken);
+            // The confirmed buffer runs exactly as it would have, once.
             self.run_confirmed_multiline_submit(ctx);
-            if discarded > 0 {
-                log::warn!(
-                    "input: {discarded} key(s) typed while the multi-line dialog was open were \
-                     discarded on Confirm (#1652)"
-                );
-                warpui::input_order::log_hop("enter_dialog_typeahead_discarded", || {
-                    format!("keys={discarded}")
-                });
-                if ctx.has_singleton_model::<ToastStack>() {
-                    let window_id = ctx.window_id();
-                    let text = dialog_typeahead_discarded_toast(discarded);
-                    ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
-                        toast_stack.add_ephemeral_toast(
-                            DismissibleToast::default(text),
-                            window_id,
-                            ctx,
-                        );
-                    });
-                }
+            if self.enter_gate.is_some() {
+                // An unready shell's refusal made its own gate: its event releases the edits.
+                return;
             }
-            if self.enter_gate.is_none() {
-                self.flush_deferred_programmatic_edits(ctx);
-            }
-            return;
         }
-        // Cancel: the visible text of what was typed (the line model, text only, no clipboard) on
-        // a line of its own after the buffer; nothing runs. The same in vim mode: no held key is
-        // replayed, so no normal-mode command can edit the buffer above.
-        let typeahead = resolve_dialog_typeahead(taken.iter().map(|entry| &entry.kind), |id| {
-            self.take_paste_payload_text(id)
-        });
-        self.discard_dialog_typeahead(&taken);
-        let typed = typeahead.as_own_line();
-        if !typed.is_empty() {
-            let script = self.editor.as_ref(ctx).buffer_text(ctx);
-            let text = if script.is_empty() {
-                typed
-            } else {
-                format!("{script}\n{typed}")
-            };
-            self.editor
-                .update(ctx, |editor, ctx| editor.set_buffer_text(&text, ctx));
-        }
+        // Cancel: the buffer stays exactly as it was.
         self.flush_deferred_programmatic_edits(ctx);
     }
 
-    /// #1652: the held entries are gone (discarded, or resolved into text): the content of a paste
-    /// among them that waits in this input's map goes with them. Returns how many keys they were.
+    /// #1652: says (log and toast) how many keys typed while the dialog was open were discarded.
+    fn report_discarded_dialog_typeahead(
+        &mut self,
+        discarded: usize,
+        by: &'static str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if discarded == 0 {
+            return;
+        }
+        log::warn!(
+            "input: {discarded} key(s) typed while the multi-line dialog was open were discarded \
+             ({by}) (#1652)"
+        );
+        warpui::input_order::log_hop("enter_dialog_typeahead_discarded", || {
+            format!("keys={discarded} by={by}")
+        });
+        if ctx.has_singleton_model::<ToastStack>() {
+            let window_id = ctx.window_id();
+            let text = dialog_typeahead_discarded_toast(discarded);
+            ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                toast_stack.add_ephemeral_toast(DismissibleToast::default(text), window_id, ctx);
+            });
+        }
+    }
+
+    /// #1652: the held entries are discarded: the content of a paste among them that waits in this
+    /// input's map goes with them. Returns how many keys they were.
     fn discard_dialog_typeahead(&mut self, taken: &[InputEntry]) -> usize {
         for entry in taken {
             if let EntryKind::Paste { paste_id, .. } = &entry.kind {
@@ -650,12 +641,7 @@ impl Input {
                 let taken = guard.close_gate_taking(&mut host, gate.kind, gate.key);
                 drop(guard);
                 let dropped = self.discard_dialog_typeahead(&taken);
-                if dropped > 0 {
-                    log::info!(
-                        "input queue: {dropped} entr(ies) typed behind an Enter waiting for the \
-                         multi-line dialog were dropped with it by ^C (#1652)"
-                    );
-                }
+                self.report_discarded_dialog_typeahead(dropped, why, ctx);
             }
             None => queue.defer(crate::terminal::input_queue::Deferred::VoidEnterGate {
                 kind: gate.kind,
@@ -1309,235 +1295,11 @@ pub(crate) fn text_of_entries_typed_after(
     text.trim_end_matches('\n').to_owned()
 }
 
-/// #1652: the toast of a Confirm that discarded the keys typed while the dialog was open.
+/// #1652: the toast of an answer that discarded the keys typed while the dialog was open.
 pub(crate) fn dialog_typeahead_discarded_toast(keys: usize) -> String {
     if keys == 1 {
         "1 key typed while the confirmation was open was discarded".to_string()
     } else {
         format!("{keys} keys typed while the confirmation was open were discarded")
-    }
-}
-
-/// #1652: the visible text of the keys typed while the multi-line submit dialog waited, for a
-/// Cancel's line of its own (never run, never on the clipboard). A model, not the editor: the
-/// post-release plan is to replay the held keys through the real editor on a scratch line.
-/// The keys are replayed on a line model of their own (text, a cursor, and the editing keys a
-/// line editor has), an Enter ending a line. Keys with no effect on the text of a line (selection,
-/// undo, history, folding, Escape) are applied as no-ops; Up / Down (history) likewise. A paste
-/// inserts what it read, or, after a cut typed before it, the cut text (what the clipboard held
-/// when the paste would have run); Yank inserts the last cut.
-#[derive(Debug, Default, PartialEq, Eq)]
-pub(crate) struct DialogTypeahead {
-    /// The lines ended by a typed Enter, in order.
-    pub(crate) lines: Vec<String>,
-    /// The line still being typed (no Enter after it).
-    pub(crate) tail: String,
-    /// The last text cut by a held key (inside the model only: a later paste or Yank inserts it).
-    pub(crate) last_cut: Option<String>,
-}
-
-impl DialogTypeahead {
-    /// The text of a line of its own (Cancel, as #1571's hand-back): each Enter a line break, the
-    /// trailing breaks dropped.
-    pub(crate) fn as_own_line(&self) -> String {
-        let mut text = self.lines.join("\n");
-        if !self.lines.is_empty() {
-            text.push('\n');
-        }
-        text.push_str(&self.tail);
-        text.trim_end_matches('\n').to_owned()
-    }
-}
-
-/// The line model [`resolve_dialog_typeahead`] replays the keys on.
-#[derive(Default)]
-struct HeldLine {
-    lines: Vec<String>,
-    line: Vec<char>,
-    cursor: usize,
-    last_cut: Option<String>,
-}
-
-impl HeldLine {
-    fn insert(&mut self, text: &str) {
-        for ch in text.chars() {
-            self.line.insert(self.cursor, ch);
-            self.cursor += 1;
-        }
-    }
-
-    fn enter(&mut self) {
-        self.lines.push(self.line.drain(..).collect());
-        self.cursor = 0;
-    }
-
-    fn take(&mut self, from: usize, to: usize, cut: bool) {
-        let taken: String = self.line.drain(from..to).collect();
-        self.cursor = from;
-        if cut && !taken.is_empty() {
-            self.last_cut = Some(taken);
-        }
-    }
-
-    fn word_left(&self) -> usize {
-        let mut at = self.cursor;
-        while at > 0 && self.line[at - 1].is_whitespace() {
-            at -= 1;
-        }
-        while at > 0 && !self.line[at - 1].is_whitespace() {
-            at -= 1;
-        }
-        at
-    }
-
-    fn word_right(&self) -> usize {
-        let mut at = self.cursor;
-        while at < self.line.len() && self.line[at].is_whitespace() {
-            at += 1;
-        }
-        while at < self.line.len() && !self.line[at].is_whitespace() {
-            at += 1;
-        }
-        at
-    }
-
-    fn backspace(&mut self) {
-        if self.cursor > 0 {
-            self.take(self.cursor - 1, self.cursor, false);
-        }
-    }
-
-    fn delete(&mut self) {
-        if self.cursor < self.line.len() {
-            self.take(self.cursor, self.cursor + 1, false);
-        }
-    }
-
-    fn paste(&mut self, read: &str) {
-        match self.last_cut.clone() {
-            Some(cut) => self.insert(&cut),
-            None => self.insert(read),
-        }
-    }
-
-    /// A tty key (the bytes a held key or a pty key carries).
-    fn tty_key(&mut self, key: &str) {
-        match key {
-            "\r" | "\n" | "\r\n" => self.enter(),
-            "\u{7f}" | "\u{8}" => self.backspace(),
-            "\u{15}" => self.take(0, self.cursor, false),
-            "\u{17}" => self.take(self.word_left(), self.cursor, false),
-            "\u{b}" => self.take(self.cursor, self.line.len(), false),
-            "\u{1b}[D" => self.cursor = self.cursor.saturating_sub(1),
-            "\u{1b}[C" => self.cursor = (self.cursor + 1).min(self.line.len()),
-            "\u{1b}[H" => self.cursor = 0,
-            "\u{1b}[F" => self.cursor = self.line.len(),
-            "\u{1b}[3~" => self.delete(),
-            "\t" => self.insert("\t"),
-            // Up / Down and other sequences have no effect on the text of a line.
-            _ => {}
-        }
-    }
-
-    fn action(&mut self, action: &crate::editor::EditorAction) {
-        use crate::editor::EditorAction as A;
-        match action {
-            A::UserInsert(text) | A::VimUserInsert(text) | A::ImeCommit(text) => {
-                self.insert(text.as_str())
-            }
-            A::Enter | A::CmdEnter | A::CtrlEnter | A::AltEnter => self.enter(),
-            A::Newline | A::ShiftEnter => self.insert("\n"),
-            A::Backspace | A::VimBackspace => self.backspace(),
-            A::Delete => self.delete(),
-            A::Left => self.cursor = self.cursor.saturating_sub(1),
-            A::Right => self.cursor = (self.cursor + 1).min(self.line.len()),
-            A::MoveToLineStart
-            | A::MoveToVisualLineStart
-            | A::MoveToBufferStart
-            | A::MoveToParagraphStart => self.cursor = 0,
-            A::MoveToLineEnd
-            | A::MoveToVisualLineEnd
-            | A::MoveToBufferEnd
-            | A::MoveToParagraphEnd => self.cursor = self.line.len(),
-            A::MoveBackwardOneWord | A::MoveBackwardOneSubword => self.cursor = self.word_left(),
-            A::MoveForwardOneWord | A::MoveForwardOneSubword => self.cursor = self.word_right(),
-            A::DeleteAllLeft => self.take(0, self.cursor, false),
-            A::CutAllLeft => self.take(0, self.cursor, true),
-            A::DeleteAllRight => self.take(self.cursor, self.line.len(), false),
-            A::CutAllRight => self.take(self.cursor, self.line.len(), true),
-            A::DeleteWordLeft => self.take(self.word_left(), self.cursor, false),
-            A::CutWordLeft => self.take(self.word_left(), self.cursor, true),
-            A::DeleteWordRight => self.take(self.cursor, self.word_right(), false),
-            A::CutWordRight => self.take(self.cursor, self.word_right(), true),
-            A::ClearLines => self.take(0, self.line.len(), false),
-            A::ClearAndCopyLines => self.take(0, self.line.len(), true),
-            A::Tab => self.insert("\t"),
-            A::Yank => {
-                if let Some(cut) = self.last_cut.clone() {
-                    self.insert(&cut);
-                }
-            }
-            A::DragAndDropFiles(paths) => {
-                let joined = paths
-                    .iter()
-                    .map(|path| path.as_str())
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                self.insert(&joined);
-            }
-            // No effect on the text of a line (selection, undo, history, folding, Escape, ...).
-            _ => {}
-        }
-    }
-}
-
-/// #1652: resolves the entries held behind the multi-line dialog's Enter (see
-/// [`DialogTypeahead`]). `paste_text` gives a read paste's content by id.
-pub(crate) fn resolve_dialog_typeahead<'a>(
-    kinds: impl IntoIterator<Item = &'a EntryKind>,
-    mut paste_text: impl FnMut(u64) -> Option<String>,
-) -> DialogTypeahead {
-    let mut held = HeldLine::default();
-    for kind in kinds {
-        match kind {
-            EntryKind::Text(typed) => held.insert(typed),
-            EntryKind::Enter => held.enter(),
-            EntryKind::Paste {
-                paste_id,
-                payload: Some(bytes),
-            } => {
-                let read = paste_text(*paste_id)
-                    .unwrap_or_else(|| String::from_utf8_lossy(bytes).into_owned());
-                held.paste(&read);
-            }
-            EntryKind::Held { class, text } => match *class {
-                HELD_TYPED => held.insert(text),
-                HELD_PASTE => held.paste(text),
-                _ => held.tty_key(text),
-            },
-            EntryKind::Control(key) | EntryKind::Seq(key) => held.tty_key(key),
-            EntryKind::PtyBytes { bytes, .. } | EntryKind::Raw(bytes) => {
-                for ch in String::from_utf8_lossy(bytes).chars() {
-                    match ch {
-                        '\r' | '\n' => held.enter(),
-                        '\u{7f}' | '\u{8}' => held.backspace(),
-                        ch if !ch.is_control() => held.insert(&ch.to_string()),
-                        _ => {}
-                    }
-                }
-            }
-            EntryKind::EditorKey(payload) => match payload.take() {
-                Some(HeldPasteKey::Text(typed)) => held.insert(&typed),
-                Some(HeldPasteKey::Action(action)) => held.action(&action),
-                None => {}
-            },
-            // A paste never read (its read failed) and signals carry no text.
-            EntryKind::Paste { payload: None, .. } | EntryKind::Signal(_) => {}
-        }
-    }
-    DialogTypeahead {
-        lines: held.lines,
-        tail: held.line.into_iter().collect(),
-        last_cut: held.last_cut,
     }
 }
