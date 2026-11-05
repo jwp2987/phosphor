@@ -15499,7 +15499,14 @@ impl Workspace {
             }
             // If focused pane contains an object, then set selected state in WD to that object
             pane_group::Event::PaneFocused => {
-                self.current_workspace_state.close_all_modals();
+                // Not a tab group's rename: it ends when its editor is blurred. Creating a group
+                // focuses its new tab and then opens the rename; the new tab's focus reaches its
+                // pane group before the first frame (`PaneView::new` adopts its child), so this
+                // event lands after the rename began and before its editor's focus does, and
+                // closing it here ended the rename at once (r18u23: "creating a group must start
+                // its rename").
+                self.current_workspace_state
+                    .close_all_modals_but_tab_group_rename();
 
                 // Re-evaluate which region is focused and update pane dimming accordingly.
                 self.update_pane_dimming_for_current_focus_region(ctx);

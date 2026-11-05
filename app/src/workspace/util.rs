@@ -196,6 +196,17 @@ impl WorkspaceState {
         self.is_remove_tab_config_dialog_open = false;
     }
 
+    /// [`Self::close_all_modals`], except a tab group's rename. That rename ends when its editor
+    /// loses focus (`EditorEvent::Blurred`, `Workspace::handle_tab_group_rename_editor_event`), so
+    /// focus that really moves into a pane ends it there. A pane's focus event can arrive after a
+    /// rename began and before its editor's queued focus lands (creating a group focuses its new
+    /// tab, then opens the rename), and must not end the rename the user just asked for.
+    pub fn close_all_modals_but_tab_group_rename(&mut self) {
+        let tab_group_being_renamed = self.tab_group_being_renamed;
+        self.close_all_modals();
+        self.tab_group_being_renamed = tab_group_being_renamed;
+    }
+
     pub fn is_right_panel_open(&self) -> bool {
         self.is_resource_center_open
     }
