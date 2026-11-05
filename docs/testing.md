@@ -1936,6 +1936,13 @@ came out as `[Text("lspwd")]` (r18u23; the confirm test's Enter was silently los
   grid, truncated, or a normal 1,000-line block); control: the marker is off screen; Find + an immediate Enter must put
   it on screen and leave nothing pending. `async_find_without_match_leaves_no_pending_scroll`: a match-less scan clears
   the pending scroll, so later streaming output cannot pull the view.
+- r18u26 (test-linux): the first version of these tests did everything in ONE update. The input mode's subscription
+  (`set_is_inverted`) and the commands' model events (block completed, wakeups, the first layout) then ran after the
+  Find instead of before it, unlike the app: the inverted controls failed (the list was not inverted yet, and an
+  inverted list follows the newest block's bottom, which borders the marker), and the async scans reported 0 matches.
+  Now each step is its own update with the app settling in between; the inverted cases first show the flood's head
+  (its far end from the marker), so the control means the same in both layouts; the async wait needs 100 ms of
+  steady `Complete`; and the precondition messages print the async find's per-block state.
 
 ## Busy-machine data-loss timers: pane-close hang-up grace and the quit-time clipboard hand-off (#1685, #1692, #1693)
 
