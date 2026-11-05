@@ -256,3 +256,38 @@ fn streaming_a_megabyte_in_4k_chunks_parses_each_byte_a_bounded_number_of_times(
         markdown.len()
     );
 }
+
+/// r18u27 (fuzz target `markdown_parser`): a delimiter row whose last cell has no closing `|` used
+/// to borrow the `|` of the NEXT line, so the whole document parsed a table that a document cut
+/// after that row (as the streaming path sees it) did not. The tab before the row is incidental.
+#[test]
+fn a_delimiter_row_never_reads_its_closing_pipe_from_the_next_line_r18u27() {
+    let text = "\n| | |\n\t|---|-\n|\n<\u{5}\0&\0\0\0\u{8}n $ i=";
+    let cut = text.len() / 2;
+    for parse_gfm_tables in [false, true] {
+        let head = &text[..cut];
+        let first =
+            parse_markdown_tail(head, &MarkdownResumePoint::default(), parse_gfm_tables, cut)
+                .unwrap();
+        let second =
+            parse_markdown_tail(text, &first.resume, parse_gfm_tables, text.len()).unwrap();
+        let mut lines = first.lines;
+        lines.truncate(first.resume.line_count());
+        lines.extend(second.lines);
+        let full = full_lines(text, parse_gfm_tables).unwrap();
+        let mut full_trimmed = full.clone();
+        if let Some(FormattedTextLine::LineBreak) = lines.last() {
+            lines.pop();
+        }
+        if let Some(FormattedTextLine::LineBreak) = full_trimmed.last() {
+            full_trimmed.pop();
+        }
+        assert_eq!(lines, full_trimmed);
+        // Neither parse sees a table: the delimiter row has one cell for two headers.
+        assert!(
+            !full
+                .iter()
+                .any(|l| matches!(l, FormattedTextLine::Table(_)))
+        );
+    }
+}
