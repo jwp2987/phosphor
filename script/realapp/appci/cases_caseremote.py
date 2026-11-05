@@ -424,7 +424,16 @@ def sshd_io_lines(ctx, off):
     return [l.strip() for l in text.splitlines() if SSHD_IO_RE.search(l)]
 
 
-def _send_and_check(ctx, r, label, name, command, expected, timeout):
+def sshd_input_bytes(lines):
+    """the most client bytes the Windows fake sshd says it received, from its accounting lines (sshd_io_lines), or None when it logged none"""
+    got = [int(m.group(1)) for l in lines for m in [re.search(r"client input (?:so far|ended): (\d+) bytes", l)] if m]
+    return max(got) if got else None
+
+
+def _send_step(ctx, r, label, name, command, expected, timeout, grace=0.0):
+    """#1129: one paste + instant Enter into the pane's remote shell, then wait for ~/<name> in the remote home. NO verdict here (judge_step gives it,
+    after the plain-ssh control has run). `timeout` is the verdict's budget; with `grace` the wait goes on up to `grace` s longer so the remote shell
+    finishes the command and the session stays usable for the next step (the real duration is recorded either way). Returns the step's record."""
     rm_remote(ctx, name)
     t0 = time.time()
     sshd_off = sshd_log_size(ctx)
@@ -439,57 +448,554 @@ def _send_and_check(ctx, r, label, name, command, expected, timeout):
             peak[k] = max(peak.get(k, 0.0), v)
     got = _wait_remote_file(ctx, name, len(expected), timeout, on_tick=sample)
     secs = round(time.time() - t0, 2)
-    r.metric("%s_s" % name.replace(".", "_"), secs)
-    r.metric("%s_bytes_got" % name.replace(".", "_"), -1 if got is None else len(got))
+    late = None
+    if got is None and grace > 0:
+        got_late = _wait_remote_file(ctx, name, len(expected), grace, on_tick=sample)
+        if got_late is not None:
+            late = round(time.time() - t0, 2)
+            got = got_late
+    key = name.replace(".", "_")
+    r.metric("%s_s" % key, secs)
+    if late is not None:
+        r.metric("%s_s_after_budget" % key, late)       # done only after the verdict's budget: the verdict is still the budget's
+    r.metric("%s_bytes_got" % key, -1 if got is None else len(got))
     if peak:
-        r.metric("%s_peak_cpu" % name.replace(".", "_"), {k: round(v, 1) for k, v in peak.items()})
-    ok = got == expected
-    first = None
-    if got is not None and not ok:
-        first = next((i for i, (a, b) in enumerate(zip(expected, got)) if a != b), min(len(expected), len(got)))
-    r.check(ok, "%s: remote file not byte-exact (expected %d bytes, got %s%s, %.1fs)%s" % (
-        label, len(expected), "no file" if got is None else "%d bytes" % len(got), "" if first is None else ", first difference at byte %d" % first, secs,
-        "" if ok or not peak else "; peak %%cpu while waiting: %s (the busy side is the bottleneck: the remote line editor or the app)" % peak))
+        r.metric("%s_peak_cpu" % key, {k: round(v, 1) for k, v in peak.items()})
     ctx.shot("heredoc_%s" % name.split(".")[0])
-    if not ok:
-        io = sshd_io_lines(ctx, sshd_off)
-        if io:
-            r.note("%s: test sshd input/output since the paste: %s" % (label, " | ".join(io[-6:])))
+    rec = dict(label=label, name=name, sent=len(command), want=len(expected), got=None if got is None else len(got), secs=secs, late=late, timeout=timeout,
+               peak=peak, wrapped_len=len(wrapper_line(command)), ok=got == expected and late is None, exact=got == expected, first=None, sshd_off=sshd_off,
+               timed_out=got is None or (late is not None))
+    if got is not None and got != expected:
+        rec["first"] = next((i for i, (a, b) in enumerate(zip(expected, got)) if a != b), min(len(expected), len(got)))
+    if not rec["exact"]:
         dismiss_open_dialog(ctx, r, label, off)
-    return ok
+    return rec
+
+
+# ------------------------------------------------------------------ #1129 the app's one-line wrapper, mirrored (the self-test compares it with the Rust source)
+WRAPPER_SCRIPT_HEAD = 'rm -f "$__pc"; unset __pc\n'
+WRAPPED_MIN, WRAPPED_MIN_BRACKETED = 128 * 1024, 512 * 1024       # posix_long_command.rs MIN_WRAPPED_BYTES / MIN_WRAPPED_BYTES_BRACKETED
+
+
+def wrapper_from_encoded(encoded):
+    """app/src/terminal/writeable_pty/posix_long_command.rs wrapper_line's format string with `encoded` in place"""
+    return ('__pc=$(mktemp "${TMPDIR:-/tmp}/.phosphor-cmd-XXXXXX") && { '
+            "if printf %s '" + encoded + "' | { base64 -d 2>/dev/null || base64 -D; } > \"$__pc\"; "
+            'then . "$__pc"; '
+            'else rm -f "$__pc"; unset __pc; '
+            "echo 'phosphor: could not decode a long command' >&2; false; fi; }")
+
+
+def wrapper_line(command):
+    """the ONE line the app types for a bash command it wraps (#1129 / #1255), byte for byte"""
+    import base64
+    return wrapper_from_encoded(base64.b64encode((WRAPPER_SCRIPT_HEAD + command + "\n").encode()).decode())
+
+
+BASH_WRAPPER_STEPS = ("hd_2k.txt", "hd_big.txt")             # the remote-bash here-doc steps (zsh / fish / the 10 KB line are never wrapped)
+
+
+def app_wraps_len(nbytes, multiline, bracketed_paste):
+    """posix_long_command.rs needs_wrapper_for, by size: whether the app sends a bash command of `nbytes` through the wrapper"""
+    if bracketed_paste:
+        return nbytes >= WRAPPED_MIN_BRACKETED and multiline
+    return nbytes >= WRAPPED_MIN
+
+
+def app_wraps(command, bracketed_paste):
+    """posix_long_command.rs needs_wrapper_for: whether the app sends `command` to a bash through the wrapper"""
+    return app_wraps_len(len(command.encode()), "\n" in command or "\r" in command, bracketed_paste)
+
+
+def remote_bash_bracketed(ctx):
+    """whether the remote bash turns bracketed paste on by default: True for bash >= 5.1, False below 4.4, None when unknown (4.4 / 5.0 depend on the
+    user's inputrc; Windows: the fake sshd's Git Bash, not asked here). The harness's sshd runs /bin/bash as the remote shell (sshd.py)."""
+    if getattr(ctx, "win", False):
+        return None
+    try:
+        v = subprocess.run(["/bin/bash", "-c", "echo ${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}"], capture_output=True, text=True, timeout=10).stdout.strip()
+        major, minor = (int(x) for x in v.split(".")[:2])
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    if (major, minor) >= (5, 1):
+        return True
+    if (major, minor) < (4, 4):
+        return False
+    return None
+
+
+# ------------------------------------------------------------------ #1129 the remote session's own shell: recorded, and ended by the harness after a timeout
+RPID_FILE = ".appci_rpid"
+RPID_LINE = "echo $$ $(cat /proc/$$/winpid 2>/dev/null) > ~/%s"        # msys: /proc/$$/winpid is the Windows pid taskkill needs; elsewhere empty
+
+
+def read_rpid(ctx, fname=RPID_FILE):
+    """(posix pid, windows pid or None) the remote shell wrote with RPID_LINE, or (None, None)"""
+    b = _remote_bytes(ctx, fname)
+    parts = (b or b"").decode(errors="replace").split()
+    pid = int(parts[0]) if parts and parts[0].isdigit() else None
+    wpid = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+    return pid, wpid
+
+
+def record_rpid(ctx, fname=RPID_FILE, timeout=8):
+    rm_remote(ctx, fname)
+    ctx.be.type(RPID_LINE % fname, 12, enter=True)
+    ctx.until(lambda: read_rpid(ctx, fname)[0] is not None, timeout)
+    return read_rpid(ctx, fname)
+
+
+def _pid_is_shell(pid):
+    try:
+        comm = subprocess.run(["ps", "-o", "comm=", "-p", str(pid)], capture_output=True, text=True, timeout=10).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return os.path.basename(comm).lstrip("-") in ("bash", "sh", "zsh", "fish")
+
+
+def kill_remote_shell(ctx, pid, wpid):
+    """end the remote session's shell from the harness (the remote shell runs on THIS machine under the harness's sshd). POSIX: SIGHUP, then SIGKILL
+    after 3 s, only when the pid is still a shell; Windows: taskkill /T /F of the msys shell's Windows pid. Returns what was done (for the note)."""
+    import signal
+    if getattr(ctx, "win", False):
+        if not wpid:
+            return "no Windows pid recorded for the remote shell: not killed"
+        p = subprocess.run(["taskkill", "/PID", str(wpid), "/T", "/F"], capture_output=True, text=True, timeout=30)
+        return "taskkill /T /F of the remote shell (Windows pid %d): exit %d" % (wpid, p.returncode)
+    if not pid:
+        return "no pid recorded for the remote shell: not killed"
+    if not _pid_is_shell(pid):
+        return "pid %d is no longer a shell: not killed" % pid
+    # its descendants first (a `zsh -f` / `fish` started inside it would keep the session open, and bash resends SIGHUP only to its jobs)
+    kids = descendants(pid)
+    for k in kids:
+        try:
+            os.kill(k, signal.SIGKILL)
+        except OSError:
+            pass
+    try:
+        os.kill(pid, signal.SIGHUP)
+        for _ in range(30):
+            time.sleep(0.1)
+            os.kill(pid, 0)
+        if _pid_is_shell(pid):
+            os.kill(pid, signal.SIGKILL)
+            return "SIGKILL to %d descendant(s), SIGHUP then SIGKILL to the remote shell (pid %d)" % (len(kids), pid)
+    except ProcessLookupError:
+        pass
+    except PermissionError as e:
+        return "could not signal the remote shell (pid %d): %s" % (pid, e)
+    return "SIGKILL to %d descendant(s), SIGHUP to the remote shell (pid %d): it exited" % (len(kids), pid)
+
+
+def descendants(pid):
+    """every descendant pid of `pid` (POSIX ps), deepest last; [] when ps fails"""
+    try:
+        out = subprocess.run(["ps", "-A", "-o", "pid=,ppid="], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    kids = {}
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+            kids.setdefault(int(parts[1]), []).append(int(parts[0]))
+    seen, todo = [], [pid]
+    while todo:
+        for c in kids.get(todo.pop(), []):
+            if c not in seen and c != pid:
+                seen.append(c)
+                todo.append(c)
+    return seen
+
+
+def end_stuck_session(ctx, r, label):
+    """#1129 r18u22: after a step timed out the remote shell is still chewing the payload (a 600 KB wrapper line takes bash 3.2 over 15 min), so the
+    case's next keys (`zsh -f`, the `exit`, run.py's where-probe) queued behind it and every later check failed, then pane_not_local_after_remote_heredoc_paste.
+    The harness ends that remote shell (the remote is this machine) and proves the pane LOCAL again. Returns "local", "remote" or "none"."""
+    pid, wpid = read_rpid(ctx)
+    what = kill_remote_shell(ctx, pid, wpid)
+    time.sleep(2.0)
+    where = ctx.where_now()
+    if where == "none":
+        ctx.reset()
+        where = ctx.where_now()
+    if where == "remote":           # a remote parent shell took over: leave it the proven way
+        leave(ctx)
+        where = ctx.where_now()
+    r.note("%s: the remote shell was still busy with the payload after the timeout; the harness ended it (%s) so the pane is not left inside it; pane now: %s" % (label, what, where))
+    return where
+
+
+# ------------------------------------------------------------------ #1129 the CONTROL: the same bytes through plain ssh, no Phosphor
+class _PtyPump(threading.Thread):
+    """reads everything the plain ssh client prints (as fast as it comes: a faster consumer than any terminal) and writes the queued input when the
+    pty takes it. Non-blocking both ways, so a full pty never deadlocks the reader; stop() ends it before the fd is closed."""
+
+    def __init__(self, fd):
+        super().__init__(daemon=True)
+        self.fd, self.pending, self.lock, self.halt = fd, bytearray(), threading.Lock(), threading.Event()
+        self.read_n = 0
+
+    def put(self, data):
+        with self.lock:
+            self.pending += data
+
+    def left(self):
+        with self.lock:
+            return len(self.pending)
+
+    def stop(self):
+        self.halt.set()
+        self.join(3)
+
+    def run(self):
+        import select
+        while not self.halt.is_set():
+            with self.lock:
+                want_w = bool(self.pending)
+            try:
+                rd, wr, _ = select.select([self.fd], [self.fd] if want_w else [], [], 0.2)
+            except (OSError, ValueError):
+                return
+            if rd:
+                try:
+                    d = os.read(self.fd, 65536)
+                except BlockingIOError:
+                    d = None
+                except OSError:
+                    return
+                if d == b"":
+                    return
+                if d:
+                    self.read_n += len(d)
+            if wr:
+                with self.lock:
+                    chunk = bytes(self.pending[:4096])
+                try:
+                    n = os.write(self.fd, chunk)
+                except BlockingIOError:
+                    n = 0
+                except OSError:
+                    return
+                with self.lock:
+                    del self.pending[:n]
+
+
+def plain_ssh_send(ctx, label, name, text, expected, timeout, cols=160, rows=48):
+    """#1129 CONTROL (POSIX): `ssh -tt fake` in a pty the harness drains as fast as the client prints, the same remote shell (the harness's sshd, same
+    rc), `text` written as a paste (LF -> CR, as a terminal sends it) plus CR, then the same wait for ~/<name>. Nothing of Phosphor is involved, so if
+    this is as slow as the app the remote shell is the bottleneck (ENV). Returns dict(s=seconds or None, got=bytes or -1, exact, peak, out, why)."""
+    import fcntl, pty, signal, struct, termios
+    res = dict(label=label, sent=len(text), s=None, got=-1, exact=False, peak={}, out=0, why=None)
+    ssh = shutil.which("ssh")
+    if getattr(ctx, "win", False) or not ssh:
+        res["why"] = "no POSIX ssh client for the harness"
+        return res
+    rm_remote(ctx, name, ".appci_ctl_ready")
+    env = dict(os.environ, HOME=ctx.prof.home, TERM="xterm-256color")
+    argv = [ssh, "-F", os.path.join(ctx.prof.home, ".ssh", "config"), "-tt", "fake"]
+    try:
+        pid, fd = pty.fork()
+    except OSError as e:
+        res["why"] = "pty.fork failed: %s" % e
+        return res
+    if pid == 0:
+        try:
+            os.execve(ssh, argv, env)
+        finally:
+            os._exit(127)
+    pump, rpid = None, None
+    try:
+        try:
+            fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+            fcntl.fcntl(fd, fcntl.F_SETFL, fcntl.fcntl(fd, fcntl.F_GETFL) | os.O_NONBLOCK)
+        except OSError:
+            pass
+        pump = _PtyPump(fd)
+        pump.start()
+        tok = ctx.tok(8).lower()
+        for _ in range(3):
+            pump.put(("echo %s $$ > ~/.appci_ctl_ready\r" % tok).encode())
+            if ctx.until(lambda: tok in (_remote_bytes(ctx, ".appci_ctl_ready") or b"").decode(errors="replace"), 15):
+                break
+        ready = (_remote_bytes(ctx, ".appci_ctl_ready") or b"").decode(errors="replace").split()
+        if len(ready) < 2 or ready[0] != tok:
+            res["why"] = "the plain ssh session never ran a probe line"
+            return res
+        rpid = int(ready[1]) if ready[1].isdigit() else None
+        time.sleep(0.5)
+        peak = res["peak"]
+
+        def sample():
+            for k, v in busy_sample(ctx).items():
+                peak[k] = max(peak.get(k, 0.0), v)
+        t0 = time.time()
+        pump.put((text.replace("\r\n", "\n").replace("\n", "\r") + "\r").encode())
+        got = _wait_remote_file(ctx, name, len(expected), timeout, on_tick=sample)
+        if got is not None:
+            res["got"], res["exact"] = len(got), got == expected
+            if got == expected:
+                res["s"] = round(time.time() - t0, 2)
+        if got is None:
+            res["why"] = "no file within %d s (%d of %d bytes still unwritten to the pty)" % (timeout, pump.left(), len(text) + 1)
+        res["out"] = pump.read_n
+        return res
+    finally:
+        if rpid and _pid_is_shell(rpid):
+            try:
+                os.kill(rpid, signal.SIGKILL)      # a bash still in the line editor would burn a core for minutes after the client is gone
+            except OSError:
+                pass
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+        if pump is not None:
+            pump.stop()
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.waitpid(pid, 0)
+        except OSError:
+            pass
+
+
+def conhost_ssh_send(ctx, label, name, text, expected, timeout):
+    """#1129 CONTROL (Windows Git Bash): the same `ssh fake` + paste + Enter in the reference console (conhost or Windows Terminal running Git Bash
+    with the pane's rc, so the same msys ssh client and the same fake sshd), as big_paste's control does for a local paste. Same result dict as
+    plain_ssh_send; why is set when it could not run."""
+    from cases import ref_terminal
+    res = dict(label=label, sent=len(text), s=None, got=-1, exact=False, peak={}, out=0, why=None)
+    ref = None
+    rm_remote(ctx, name, ".appci_ctl_ready")
+    try:
+        ref = ref_terminal(ctx)
+        if ref is None:
+            res["why"] = "reference console not available: %s" % (getattr(ctx, "ref_reason", None) or "unknown")
+            return res
+        ctx.be.type("ssh fake", 12, enter=True)
+        tok = ctx.tok(8).lower()
+        for _ in range(4):
+            time.sleep(3)
+            ctx.be.type((RPID_LINE % ".appci_ctl_ready").replace("echo ", "echo %s " % tok, 1), 12, enter=True)
+            if ctx.until(lambda: tok in (_remote_bytes(ctx, ".appci_ctl_ready") or b"").decode(errors="replace"), 12):
+                break
+        if tok not in (_remote_bytes(ctx, ".appci_ctl_ready") or b"").decode(errors="replace"):
+            res["why"] = "ssh in the reference console never ran a probe line in the remote shell"
+            return res
+        t0 = time.time()
+        ctx.be.clip_set(text)
+        ctx.be.paste(enter=True)
+        got = _wait_remote_file(ctx, name, len(expected), timeout)
+        if got is not None:
+            res["got"], res["exact"] = len(got), got == expected
+            if got == expected:
+                res["s"] = round(time.time() - t0, 2)
+        else:
+            res["why"] = "no file within %d s" % timeout
+        return res
+    except Exception as e:
+        res["why"] = "control failed: %s: %s" % (type(e).__name__, str(e)[:120])
+        return res
+    finally:
+        parts = (_remote_bytes(ctx, ".appci_ctl_ready") or b"").decode(errors="replace").split()
+        if len(parts) >= 3 and parts[2].isdigit():
+            subprocess.run(["taskkill", "/PID", parts[2], "/T", "/F"], capture_output=True, timeout=30)
+        if ref is not None:
+            try:
+                ref.close()
+            except Exception:
+                pass
+
+
+_CONTROL_CACHE = {}         # run dir -> control results: the control does not depend on the app, so the second mode reuses the first's
+
+
+def heredoc_control(ctx, r, eof, lines2k):
+    """#1129: the plain-ssh / reference-console control for the 2,000-line here-doc, cached per run. POSIX runs two variants: W = the app's wrapper
+    line for that here-doc (the same ONE long line the app types for a bash without bracketed paste) and H = the here-doc itself (what a plain
+    terminal's paste sends: 2,000 short lines). Windows runs H in the reference console."""
+    key = getattr(ctx, "run", "") or ""
+    if key in _CONTROL_CACHE:
+        r.note("plain-ssh control: reused from the first mode of this run (it does not involve the app)")
+        return _CONTROL_CACHE[key]
+    heredoc = lambda name: "cat > ~/%s <<'%s'\n%s\n%s" % (name, eof, "\n".join(lines2k), eof)      # noqa: E731
+    expected = ("\n".join(lines2k) + "\n").encode()
+    ctl = {}
+    if getattr(ctx, "win", False):
+        ctl["H"] = conhost_ssh_send(ctx, "reference console + ssh, the here-doc pasted", "ctl_h.txt", heredoc("ctl_h.txt"), expected, 120)
+    else:
+        ctl["H"] = plain_ssh_send(ctx, "plain ssh, the here-doc pasted", "ctl_h.txt", heredoc("ctl_h.txt"), expected, 120)
+        w = wrapper_line(heredoc("ctl_w.txt"))
+        ctl["W"] = plain_ssh_send(ctx, "plain ssh, the app's %d-byte wrapper line" % len(w), "ctl_w.txt", w, expected, 200)
+        ctl["W"]["line"] = len(w)
+    for k, v in ctl.items():
+        r.metric("control_%s_s" % k, -1 if v["s"] is None else v["s"])
+        r.metric("control_%s_bytes_got" % k, v["got"])
+        if v["peak"]:
+            r.metric("control_%s_peak_cpu" % k, {a: round(b, 1) for a, b in v["peak"].items()})
+        r.note("control %s (%s): %s%s" % (k, v["label"], "%.1f s" % v["s"] if v["s"] is not None else "not done", "" if not v["why"] else " (%s)" % v["why"]))
+    _CONTROL_CACHE[key] = ctl
+    return ctl
+
+
+def classify_timeout(rec, ctl, bracketed):
+    """#1129: why a step that produced no file in its budget was slow, from the control. -> (class, text). class is
+    'env'      the remote shell is the bottleneck: plain ssh needed as long (measured for the same line, or scaled from the 2k wrapper line);
+    'app'      plain ssh with the same bytes was clearly faster: Phosphor is the slow side;
+    'platform' Windows: the reference console's ssh did not get it through either (as big_paste's ConPTY/msys finding);
+    None       no control evidence: the plain failure stands.
+    The app's own wrapper is what turns the here-doc into one long line on a bash without bracketed paste: that is said whenever H shows it."""
+    if ctl is None:
+        return None, "no control ran"
+    h, w = ctl.get("H"), ctl.get("W")
+    big_enough = rec["name"] in BASH_WRAPPER_STEPS          # the 2k here-doc itself, or the bigger one
+    if "W" not in ctl:      # Windows: only the reference-console paste of the 2k here-doc
+        if h is None:
+            return None, "no reference-console control ran"
+        if h["exact"]:
+            return "app", "the reference console's ssh delivered the same here-doc in %.1f s" % h["s"]
+        if h["got"] < 0 and not (h["why"] or "").startswith("no file"):
+            return None, "the reference-console control could not run (%s)" % h["why"]
+        if not big_enough:
+            return None, "the reference console's ssh failed the 2,000-line here-doc too, but this step's payload is a different kind/size, so that does not cover it"
+        return "platform", ("the reference console's ssh did not deliver the 2,000-line here-doc either (%s): the msys ssh client under a Windows console does not take "
+                            "a paste this size, as big_paste's control showed for msys `cat`; not shown to be the app" % (h["why"] or "%d of %d bytes" % (h["got"], rec["want"])))
+    if rec["name"] not in BASH_WRAPPER_STEPS:
+        return None, "not a bash wrapper-path step, so the wrapper-line control does not apply"
+    if bracketed is None:
+        wrapped = rec["sent"] >= WRAPPED_MIN_BRACKETED          # a multi-line command this size is wrapped with or without bracketed paste
+    else:
+        wrapped = app_wraps_len(rec["sent"], True, bracketed)
+    if not wrapped:
+        return None, "the step was not (provably) sent through the app's wrapper, so the wrapper-line control does not apply"
+    if w is None or (w["s"] is None and "no file" not in (w["why"] or "")):
+        return None, "the wrapper-line control could not run (%s)" % (w or {}).get("why")
+    w_s = w["s"] if w["s"] is not None else 200.0          # a control that timed out is a lower bound
+    scaled = w_s * rec["wrapped_len"] / float(w["line"])    # linear: a LOWER bound (bash 3.2 measured super-linear, r18u22: 10 KB 0.54 s, 190 KB 86 s)
+    hs = "" if h is None else (" A plain paste of the here-doc itself (no wrapper: 2,000 short lines) took %.1f s in the same plain ssh, so on this remote bash the app's one-line wrapper is the slow path (design, #1129)" % h["s"]
+                               if h["s"] is not None and h["s"] < w_s / 2 else " A plain paste of the here-doc itself: %s." % ("%.1f s" % h["s"] if h["s"] is not None else (h["why"] or "not done")))
+    t_app = rec["late"] if rec["late"] is not None else rec["secs"]      # what the app took (late) or was given (no file at all: a lower bound)
+    allowed = 1.5 * scaled + 10                                           # the same tolerance a finished step is held to
+    if allowed >= t_app:
+        return "env", ("plain ssh (no Phosphor) needed %s%.1f s for the app's %d-byte wrapper line of the 2,000-line here-doc%s; scaled linearly (a lower bound) to this "
+                       "%d-byte line: >= %.0f s, so plain ssh could not have done it in the %.0f s the app %s (budget %d s): the remote shell's line editor is the "
+                       "bottleneck, not the app.%s" % ("over " if w["s"] is None else "", w_s, w["line"],
+                                                       "" if not w["peak"] else " (peak %%cpu %s)" % {a: round(b) for a, b in w["peak"].items()},
+                                                       rec["wrapped_len"], scaled, t_app, "took" if rec["late"] is not None else "was given", rec["timeout"], hs))
+    return "app", "plain ssh took %.1f s for the %d-byte wrapper line (scaled to this line: %.0f s; 1.5x + 10 s = %.0f s) where the app %s %.0f s: Phosphor was the slow side.%s" % (
+        w_s, w["line"], scaled, allowed, "took" if rec["late"] is not None else "had no file after", t_app, hs)
+
+
+def judge_step(ctx, r, rec, ctl, bracketed, io_lines=None):
+    """#1129 verdict for one step. Wrong bytes always FAIL. A step that got no file in its budget is KNOWN (numbers + class) only when the control
+    proves the remote shell is the bottleneck (class env) and ACCEPTED_FOR_RELEASE['remote_heredoc_remote_editor'] is in force, NOREF on Windows when
+    the reference console's ssh fails the same way (platform), else FAIL. A step that finished is also compared with the control: much slower
+    than plain ssh with the same wrapper line FAILS (the app starving the session)."""
+    from cases import accepted_for_release
+    label = rec["label"]
+    io = ""
+    if io_lines:
+        n = sshd_input_bytes(io_lines)
+        io = "; test sshd: %s client bytes received of the %d-byte paste (%s)" % ("no accounting line" if n is None else n, rec["sent"], " | ".join(io_lines[-4:]))
+        if n is not None:
+            r.metric("%s_sshd_got" % rec["name"].replace(".", "_"), n)
+    peak = "" if not rec["peak"] else "; peak %%cpu while waiting: %s (the busy side is the bottleneck: the remote line editor or the app)" % {k: round(v, 1) for k, v in rec["peak"].items()}
+    if rec["got"] is not None and not rec["exact"]:
+        r.check(False, "%s: remote file not byte-exact (expected %d bytes, got %d bytes, first difference at byte %s, %.1fs)%s%s" % (
+            label, rec["want"], rec["got"], rec["first"], rec["secs"], peak, io))
+        return
+    if rec["ok"]:
+        w = (ctl or {}).get("W")
+        if w and w["s"] is not None and rec["name"] == "hd_2k.txt" and bracketed is False and rec["secs"] > 1.5 * w["s"] + 10:
+            r.check(False, "%s: took %.1f s where plain ssh took %.1f s for the same wrapper line (more than 1.5x + 10 s): Phosphor is the slow side%s" % (label, rec["secs"], w["s"], peak))
+        return
+    late = "" if rec["late"] is None else " (the file arrived after %.1f s, past the budget)" % rec["late"]
+    base = "%s: remote file not byte-exact (expected %d bytes, got no file in the %d s budget, %.1fs)%s%s%s" % (label, rec["want"], rec["timeout"], rec["secs"], late, peak, io)
+    cls, why = classify_timeout(rec, ctl, bracketed)
+    if cls == "env":
+        acc = accepted_for_release("remote_heredoc_remote_editor")
+        if acc:
+            r.known("%s. ENV: %s [ACCEPTED_FOR_RELEASE #%d v%s: %s]" % (base, why, acc["issue"], acc["release"], acc["why"]))
+            return
+        r.check(False, "%s. ENV by the control (%s), but no ACCEPTED_FOR_RELEASE entry is in force for it" % (base, why))
+        return
+    if cls == "platform":
+        r.no_reference("%s. PLATFORM: %s" % (base, why))
+        return
+    if cls == "app":
+        r.check(False, "%s. APP: %s" % (base, why))
+    else:
+        r.check(False, "%s (control: %s)" % (base, why))
 
 
 @case("remote_heredoc_paste", order=62)
 def c_remote_heredoc(ctx, r):
     """#1129: a large here-doc and a long single line sent to the REMOTE shell over ssh (the way an agent writes a file) arrive byte-exact. Pasted into the
     input and submitted with an instant Enter, so they take the same command-write path as an agent's command: a 2,000-line here-doc (~140 KB: above the
-    128 KB no-bracketed-paste wrapper size), a 10 KB single line, and a ~600 KB here-doc (above the 512 KB size from which a bracketed multi-line command
-    goes through the base64 wrapper, #1255). Then, when installed, the same 2,000-line payload in zsh and fish started inside the remote session (fish has
-    no here-docs: a multi-line single-quoted printf). Every file is compared byte for byte with what was sent; the time each took is a metric."""
+    128 KB no-bracketed-paste wrapper size), a 10 KB single line, the same 2,000-line payload in zsh and fish started inside the remote session (when
+    installed; fish has no here-docs: a multi-line single-quoted printf) and LAST a ~600 KB here-doc (above the 512 KB size from which a bracketed
+    multi-line command goes through the base64 wrapper, #1255). Every file is compared byte for byte with what was sent; the time each took is a metric.
+    r18u22: a step with no file in its budget is judged against a CONTROL (the same bytes through plain ssh, no Phosphor; Windows: the reference
+    console), and a remote shell still busy after a timeout is ended by the harness so the pane is left LOCAL."""
     need_ssh(ctx, r)
     import random as _random
     rr = _random.Random(1129)
-    secs = connect(ctx, "fake", 60)
-    r.check(secs is not None, "no remote shell prompt after `ssh fake`. Test host: %s" % ("" if secs is not None else ctx.ssh_diag()))
-    if secs is None:
-        ctx.reset()
-        return
-    time.sleep(1.0)
     eof = "PHOSPHOR_EOF_1129"
     lines2k = _payload_lines(rr, 200_000, (40, 100))[:2000]
-    heredoc = lambda name, ls: "cat > ~/%s <<'%s'\n%s\n%s" % (name, eof, "\n".join(ls), eof)
-    expect = lambda ls: ("\n".join(ls) + "\n").encode()
-    _send_and_check(ctx, r, "bash: %d-line here-doc (%d bytes)" % (len(lines2k), len(expect(lines2k))), "hd_2k.txt", heredoc("hd_2k.txt", lines2k), expect(lines2k), 90)
     long_line = "".join(rr.choice("abcdefghijklmnopqrstuvwxyz0123456789") for _ in range(10_000))
-    _send_and_check(ctx, r, "bash: 10 KB single line", "hd_line.txt", "printf '%%s\\n' '%s' > ~/hd_line.txt" % long_line, (long_line + "\n").encode(), 60)
     big = _payload_lines(rr, 600_000)
-    _send_and_check(ctx, r, "bash: %d-line here-doc (%d bytes, wrapper path)" % (len(big), len(expect(big))), "hd_big.txt", heredoc("hd_big.txt", big), expect(big), 180)
+    heredoc = lambda name, ls: "cat > ~/%s <<'%s'\n%s\n%s" % (name, eof, "\n".join(ls), eof)      # noqa: E731
+    expect = lambda ls: ("\n".join(ls) + "\n").encode()                                              # noqa: E731
+    bracketed = remote_bash_bracketed(ctx)
+    r.metric("remote_bash_bracketed_paste", "unknown" if bracketed is None else bracketed)
+    state = {"up": False}
+
+    def session():
+        """a usable remote session for the next step: connected, its shell's pid recorded (to end it after a timeout)"""
+        if state["up"]:
+            return True
+        secs = connect(ctx, "fake", 60)
+        r.check(secs is not None, "no remote shell prompt after `ssh fake`. Test host: %s" % ("" if secs is not None else ctx.ssh_diag()))
+        if secs is None:
+            return False
+        time.sleep(1.0)
+        record_rpid(ctx)
+        state["up"] = True
+        return True
+
+    recs = []
+
+    def step(label, name, command, expected, timeout, grace=0.0):
+        if state.get("dead"):
+            r.note("%s: not run, the pane could not be brought back from the stuck remote session (%s)" % (label, state["dead"]))
+            return None
+        if not session():
+            return None
+        rec = _send_step(ctx, r, label, name, command, expected, timeout, grace)
+        if rec["got"] is None:          # the remote shell is still in the payload: end it, or every later key queues behind it
+            where = end_stuck_session(ctx, r, label)
+            state["up"] = False
+            if where != "local":
+                state["dead"] = where
+        rec["io"] = sshd_io_lines(ctx, rec["sshd_off"]) if not rec["ok"] else []
+        recs.append(rec)
+        return rec
+
+    # the 2k here-doc gets a grace period: bash 3.2 took 86 s for its 190 KB wrapper line (r18u22) against the 90 s budget, so a run that is just
+    # over keeps a usable session and records the real time; the verdict is still the 90 s budget's
+    step("bash: %d-line here-doc (%d bytes)" % (len(lines2k), len(expect(lines2k))), "hd_2k.txt", heredoc("hd_2k.txt", lines2k), expect(lines2k), 90, grace=150)
+    step("bash: 10 KB single line", "hd_line.txt", "printf '%%s\\n' '%s' > ~/hd_line.txt" % long_line, (long_line + "\n").encode(), 60)
     # zsh / fish inside the remote session (same machine: the harness's sshd runs the remote shell locally, so find_bin applies)
     for key in ("zsh", "fish"):
         path, adddir = find_bin(key)
         if not path:
             r.note("%s not installed: the remote %s step is skipped" % (key, key))
             continue
+        if not session():
+            break
         probe = "hd_%s_probe.txt" % key
         rm_remote(ctx, probe)
         # zsh -f: the remote home has no .zshrc, and an interactive zsh would start zsh-newuser-install and swallow the probe lines
@@ -512,13 +1018,31 @@ def c_remote_heredoc(ctx, r):
             cmd = "printf '%%s\\n' '%s' > ~/%s" % ("\n".join(lines2k), name)
         else:
             cmd = heredoc(name, lines2k)
-        _send_and_check(ctx, r, "remote %s: %d-line payload" % (key, len(lines2k)), name, cmd, expect(lines2k), 120)
+        rec = step("remote %s: %d-line payload" % (key, len(lines2k)), name, cmd, expect(lines2k), 120)
+        if rec is not None and rec["got"] is None:
+            continue            # the session (with the inner shell) was ended
         ctx.be.type("exit", 12, enter=True)
         time.sleep(1.5)
-    ok = leave(ctx)
-    r.check(ok, "no local prompt after `exit` from the remote shell" if ctx.left_unproven is None else
-            "the pane is not provably REMOTE (probe ran in: %s), so `exit` was NOT typed" % ctx.left_unproven)
+    # LAST: on a bash without bracketed paste its ~800 KB wrapper line can keep the remote shell busy far past the budget (r18u22 macOS: bash 3.2 at
+    # 100 % cpu), and that must not take the steps above with it
+    step("bash: %d-line here-doc (%d bytes, wrapper path)" % (len(big), len(expect(big))), "hd_big.txt", heredoc("hd_big.txt", big), expect(big), 180)
+    if state.get("dead"):
+        r.check(False, "after the harness ended the stuck remote shell the pane is not provably LOCAL (probe ran in: %s)" % state["dead"])
+    elif state["up"]:
+        ok = leave(ctx)
+        r.check(ok, "no local prompt after `exit` from the remote shell" if ctx.left_unproven is None else
+                "the pane is not provably REMOTE (probe ran in: %s), so `exit` was NOT typed" % ctx.left_unproven)
+    else:
+        where = ctx.where_now()
+        r.check(where == "local", "after the harness ended the stuck remote shell the pane is not provably LOCAL (probe ran in: %s)" % where)
     ctx.reset()
+    # the verdicts: a slow step is compared with the same bytes through plain ssh (run now, with the pane local and idle)
+    ctl = None
+    if any(not x["ok"] for x in recs) or any(x["name"] == "hd_2k.txt" and x["secs"] > 20 for x in recs):
+        ctl = heredoc_control(ctx, r, eof, lines2k)
+        ctx.reset()
+    for rec in recs:
+        judge_step(ctx, r, rec, ctl, bracketed, rec.get("io"))
 
 
 # ------------------------------------------------------------------ ssh Enter latency against a plain-ssh control (#1532)
