@@ -837,6 +837,7 @@ mutants:
   when: manual
   allow_failure: true
   script:
+    - ./script/ci/clean_mutants_tmp.sh   # #1764: stale cargo-mutants-*.tmp from a cancelled run
     - command -v cargo-mutants >/dev/null || ./script/install_cargo_binstall
     - command -v cargo-mutants >/dev/null || cargo binstall --force -y cargo-mutants
     - |
@@ -858,6 +859,7 @@ mutants-warpui-core:
   when: manual
   allow_failure: true
   script:
+    - ./script/ci/clean_mutants_tmp.sh   # #1764: stale cargo-mutants-*.tmp from a cancelled run
     - command -v cargo-mutants >/dev/null || ./script/install_cargo_binstall
     - command -v cargo-mutants >/dev/null || cargo binstall --force -y cargo-mutants
     - ./script/agent-cargo ci-mutants-core mutants -p warpui_core --no-shuffle --cargo-test-arg=--features --cargo-test-arg=tui --file crates/warpui_core/src/clipboard.rs --file crates/warpui_core/src/clipboard_utils.rs || echo "cargo-mutants exited $? (missed mutants are reported in mutants.out/)"

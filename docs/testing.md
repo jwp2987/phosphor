@@ -907,6 +907,12 @@ the log is the artifact (`nextest-<plat>.log`, `nextest-warpui-core-<plat>.log`,
 profile has no junit section), plus `fuzz/artifacts/`, `mutants.out/`, `bench-results/`. `check_test_failures` and `agent-cargo` were made BSD/Git-Bash
 portable for this (`sed -i`, `\x1b` and `\s` replaced). `collect_results.py` archives the new jobs like the box ones (`unit/<job>.json`, per-job history).
 
+**Stale mutants scratch (#1764).** cargo-mutants copies the tree to `<temp>/cargo-mutants-<name>-*.tmp` and removes it only on a clean exit; a cancelled
+job left an 18.65 GB one that filled the Windows VM disk. Every mutants job (`mutants`, `mutants-warpui-core` and their `-macos` / `-windows` twins) now
+starts with `script/ci/clean_mutants_tmp.sh`: it deletes `cargo-mutants-*` directories in `$TMPDIR` / `$TEMP` / `/tmp` (Git Bash maps `$TEMP` on Windows),
+only when no `cargo-mutants` process runs for this user, and logs what it removed and the free space before and after. On Windows, check free space
+on the runner's system drive before a release-tier run; the script's log line is the preflight.
+
 Tools are installed by the job into the CI user's OWN `~/.cargo/bin` when missing (pinned `script/install_cargo_binstall`, then `cargo binstall`
 of `cargo-nextest`, `cargo-mutants`, `cargo-fuzz`), never system-wide, never with sudo. The runner must already have cargo/rustc (the pinned toolchain
 installs itself through rustup on first use), protoc (Mac: on PATH; Windows: `$env:PROTOC`), perl and cmake (Windows), Git for Windows' bash and the VM
