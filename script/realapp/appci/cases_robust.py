@@ -422,6 +422,23 @@ def flood_tail_on_screen(ocr_text):
     return any(FLOOD_TAIL_LINE.match(line.strip()) for line in (ocr_text or "").splitlines())
 
 
+def find_scroll_geometry(hop):
+    """The app's own placement of the focused Find match, from one `hop=find_scroll result=scroll ...` line (r18u28, Mac agent mode:
+    the view moved off the flood's tail but OCR read no marker, not even in the Find field, and no screenshot reached the laptop).
+    TerminalView::find_match_geometry logs `viewport_lines=H ... match_line=M` for the viewport that is DRAWN (`rendered_mode`; the
+    full-screen agent view always draws PinnedToBottom) next to the mode the scroll was computed with (`scroll_mode`).
+    Returns a dict (match_line / viewport_lines floats or None, the two modes, agent_fullscreen, on_screen True/False/None), or
+    None when the line has no geometry (a build older than r18u29, or a rich-content match)."""
+    m = re.search(r"viewport_lines=([0-9.]+) rendered_mode=(\w+) scroll_mode=(\w+) agent_fullscreen=(true|false)(?: match_line=(-?[0-9.]+|busy|no_block))?", hop or "")
+    if not m:
+        return None
+    vl = float(m.group(1))
+    ml = m.group(5)
+    ml = float(ml) if ml and ml not in ("busy", "no_block") else None
+    return dict(viewport_lines=vl, rendered_mode=m.group(2), scroll_mode=m.group(3), agent_fullscreen=m.group(4) == "true",
+                match_line=ml, on_screen=None if ml is None else (0 <= ml < vl))
+
+
 def touch(ctx, name):
     open(os.path.join(ctx.W, name), "w").close()
 
@@ -600,12 +617,34 @@ def c_flood_find(ctx, r):
         else:
             late = "; still not 12 s after the Enter (shots/%s_find_late.png)" % ctx.mode
     # #1775: the app logs what each Find scroll did (`hop=find_scroll result=scroll block=N moved=... from=... to=...`, or `result=no_match`).
-    hops = [l.split("hop=find_scroll", 1)[1].strip()[:240] for l in ctx.log_since(find_log_off).splitlines() if "hop=find_scroll" in l]
+    hops = [l.split("hop=find_scroll", 1)[1].strip()[:400] for l in ctx.log_since(find_log_off).splitlines() if "hop=find_scroll" in l]
     r.metric("find_scroll_hops", len(hops))
     app_said = ("; app log: %d find_scroll hop(s), moved=true in %d, last: %s" % (len(hops), sum("moved=true" in h for h in hops), hops[-1])) if hops else \
         "; app log: no find_scroll hop (a build older than #1775's logging, or the Find never ran)"
     if hops:
         r.note("flood_scrollback_find%s" % app_said)
+    scroll_hops = [h for h in hops if h.startswith("result=scroll")]
+    geo = find_scroll_geometry(scroll_hops[-1]) if scroll_hops else None
+    if geo:
+        r.metric("find_match_geometry", geo)
+        if geo["rendered_mode"] != geo["scroll_mode"]:
+            r.note("flood_scrollback_find: the Find scroll was computed for %s but the drawn viewport is %s (agent_fullscreen=%s): the two "
+                   "disagree on where the match is" % (geo["scroll_mode"], geo["rendered_mode"], geo["agent_fullscreen"]))
+        if not seen and geo["on_screen"]:
+            r.note("flood_scrollback_find: the app placed the match ON screen (line %.1f of a %.1f-line viewport, agent_fullscreen=%s) "
+                   "and OCR read the marker nowhere, not even in the Find field it was typed into: look at the screenshot (covered, "
+                   "not frontmost, or unreadable) before the scroll" % (geo["match_line"], geo["viewport_lines"], geo["agent_fullscreen"]))
+        elif geo["on_screen"] is False:
+            r.note("flood_scrollback_find: by the app's own geometry the match is OFF screen after the Find (line %.1f of a %.1f-line "
+                   "viewport): an app scroll bug" % (geo["match_line"], geo["viewport_lines"]))
+    if ctx.mode == "agent" and hops and not scroll_hops:
+        # Owner 2026-11-05: in agent mode, first make sure the marker's block still exists in this pane (the agent view could keep less
+        # history, or the block could be evicted/cleared). Find matched nothing anywhere (every hop is result=no_match), so the scroll
+        # has nothing to go to. The checks above stand (a FAIL recorded before a Skip stays FAIL, run.skip_status).
+        ctx.be.key("Escape")
+        time.sleep(0.3)
+        raise cases.Skip("agent mode: Find matched no block for the marker (%d find_scroll hop(s), all result=no_match): the marker's "
+                         "block is no longer in this pane, so there is nothing to scroll to%s" % (len(hops), app_said))
     r.check(seen and scrolled, "Find for the marker printed before a %d-line flood did not bring it on screen: marker read=%s, view scrolled away from the flood's tail=%s (see shots/%s_find_after.png)%s%s" % (n, seen, scrolled, ctx.mode, late, app_said))
     ctx.be.key("Escape")
     time.sleep(0.3)
