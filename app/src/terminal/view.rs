@@ -825,7 +825,10 @@ const AFTER_ENTER_REPLAY_PTY_WAIT: Duration = Duration::from_millis(300);
 /// [`YOUNG_DETECTION_CAP`](crate::terminal::model::typeahead_handoff::YOUNG_DETECTION_CAP) of
 /// classifier compute (grown with the text, #1604). #1577: a give-up
 /// with the input type undecided hands the line back to the editor (never submitted by the clock).
-const YOUNG_DETECTION_BACKSTOP: Duration = Duration::from_millis(500);
+/// A lost-job net only (#1664, busy-machine audit 2026-11-05): the cap is the classifier's CPU
+/// time (#1651), so this wall-clock net must not be what hands text back on a loaded machine.
+/// Was 500 ms; 2 s stays far above the 250 ms young cap.
+const YOUNG_DETECTION_BACKSTOP: Duration = Duration::from_secs(2);
 
 /// [`YOUNG_DETECTION_BACKSTOP`] for a buffer of `text_len` chars: grows with the text like the
 /// compute cap (#1604, `large_text_compute_allowance`), so a large paste's linear classification
@@ -14597,12 +14600,15 @@ impl TerminalView {
         if !running {
             return;
         }
-        self.arm_young_timer(
-            id,
-            young_detection_cap_for(text_len).saturating_sub(spent),
-            false,
-            ctx,
-        );
+        // #1651: on the classifier's CPU clock a starved job can sit just under its cap; a floor
+        // keeps the re-check from becoming a tight loop (the backstop still bounds the wait).
+        let remaining = young_detection_cap_for(text_len).saturating_sub(spent);
+        let delay = if remaining.is_zero() {
+            remaining
+        } else {
+            remaining.max(crate::terminal::input::COMPUTE_CAP_RECHECK_FLOOR)
+        };
+        self.arm_young_timer(id, delay, false, ctx);
     }
 
     fn arm_young_timer(

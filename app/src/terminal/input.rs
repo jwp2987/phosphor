@@ -1453,9 +1453,14 @@ struct TabCompletionRequest {
 const TAB_COMPLETION_ENTER_BUDGET: std::time::Duration = std::time::Duration::from_millis(150);
 /// A hold longer than this is logged at WARN, so slow completers can be traced.
 const TAB_COMPLETION_ENTER_WARN: std::time::Duration = std::time::Duration::from_millis(50);
+/// The wall-clock net of an Enter held for its verdict, before the size allowance (#1662, busy-
+/// machine audit 2026-11-05): long enough that only a lost or never-scheduled job reaches it, not
+/// a classifier that is merely slow to get a CPU (its cap is CPU time, #1651). Was 250 ms.
+const VERDICT_HOLD_BACKSTOP: std::time::Duration = std::time::Duration::from_secs(2);
 /// The shortest compute-cap timer re-armed while the awaited job's cap is not yet spent (#1651):
 /// on a CPU-time clock a starved job can sit just under its cap for as long as it gets no CPU.
-const COMPUTE_CAP_RECHECK_FLOOR: std::time::Duration = std::time::Duration::from_millis(5);
+pub(crate) const COMPUTE_CAP_RECHECK_FLOOR: std::time::Duration =
+    std::time::Duration::from_millis(5);
 
 impl EnterHold {
     /// The most compute the awaited job may spend before the Enter gives up on it (#1351). For a
@@ -1475,15 +1480,17 @@ impl EnterHold {
     /// How long an Enter holds before giving up on a result that never arrived, whether or not
     /// any job was seen running (#1351). A safety net for a lost signal, never the way a hold is
     /// normally released; it is logged when it fires. Grows with the text like the compute cap
-    /// (#1604), so it cannot fire inside a large buffer's allowed compute. It is wall time: with
-    /// the verdict's cap counted on the classifier's CPU clock (#1651), it is also the net for a
-    /// job that gets no CPU at all, and like every give-up it only hands the text back to the
-    /// editor while the input type is undecided (#1577). 250 ms stays five times the 50 ms
-    /// verdict budget.
+    /// (#1604), so it cannot fire inside a large buffer's allowed compute.
+    ///
+    /// For a verdict it is [`VERDICT_HOLD_BACKSTOP`] of wall time: a lost-job net only (#1662).
+    /// The verdict's cap counts the classifier's CPU time (#1651), and at the old 250 ms this wall
+    /// net, not the cap, handed text back on a loaded machine ("the app shouldn't need a perfect
+    /// machine to run on"). Its expiry, like every give-up, only hands the text back to the
+    /// editor while the input type is undecided (#1577); it never routes.
     fn backstop(self, text_len: usize) -> std::time::Duration {
         match self {
             EnterHold::Verdict { .. } => {
-                std::time::Duration::from_millis(250) + large_text_compute_allowance(text_len)
+                VERDICT_HOLD_BACKSTOP + large_text_compute_allowance(text_len)
             }
             EnterHold::TabCompletion { .. } => std::time::Duration::from_millis(500),
         }

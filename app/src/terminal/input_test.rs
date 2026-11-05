@@ -11658,9 +11658,9 @@ fn test_verdict_give_up_cap_counts_only_classifier_compute() {
     });
 }
 
-/// #1651: the verdict hold's wall-clock backstop (the net for a job that gets no CPU) stays clearly
-/// above its compute cap at every size, so it never pre-empts a classifier that is merely within
-/// its budget on a quiet machine.
+/// #1651/#1662: the verdict hold's wall-clock backstop is a lost-job net only (2 s plus the size
+/// allowance): it stays clearly above its compute cap at every size, so it never pre-empts a
+/// classifier that is merely slow to get a CPU. The Tab hold's backstop is not this test's.
 #[test]
 fn test_verdict_hold_backstop_stays_clearly_above_the_compute_cap() {
     use crate::ai::blocklist::input_model::ENTER_VERDICT_BUDGET;
@@ -11669,7 +11669,13 @@ fn test_verdict_hold_backstop_stays_clearly_above_the_compute_cap() {
         since: Instant::now(),
     };
     assert_eq!(hold.compute_cap(10), ENTER_VERDICT_BUDGET);
-    assert!(hold.backstop(10) >= ENTER_VERDICT_BUDGET * 5);
+    assert_eq!(hold.backstop(10), std::time::Duration::from_secs(2));
+    assert_eq!(
+        hold.backstop(1024 * 1024),
+        std::time::Duration::from_secs(2)
+            + crate::ai::blocklist::input_model::large_text_compute_allowance(1024 * 1024),
+        "the backstop grows with the text like the cap"
+    );
     for len in [0, 40, 4096, 4097, 21_600, 1024 * 1024, 10 * 1024 * 1024] {
         assert!(
             hold.backstop(len) >= hold.compute_cap(len) + std::time::Duration::from_millis(150),
@@ -15276,9 +15282,9 @@ fn test_enter_queue_keys_typed_behind_a_verdict_held_enter_keep_order_at_10ms_pe
 
         // The classification job is parked on the gate while it counts as running, so on the real
         // clock its compute would reach the cap during the typing below and give the Enter up by
-        // itself; and the 250 ms backstop, armed at the Enter, is wall-clock too: on Windows the
-        // 10 ms sleeps below round up to the ~15.6 ms timer tick, and in r18u19 it fired while
-        // the test was still typing, handing everything back before the stall's check. Both nets
+        // itself; and the backstop (250 ms then, 2 s since #1662), armed at the Enter, is
+        // wall-clock too: on Windows the 10 ms sleeps below round up to the ~15.6 ms timer tick,
+        // and in r18u19 it fired while the test was still typing, handing everything back before the stall's check. Both nets
         // are disarmed (an idle clock, a new watch epoch), so the wait is left to the explicit
         // give-up further down.
         input.update(&mut app, |input, _| {

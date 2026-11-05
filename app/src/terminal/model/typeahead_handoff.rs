@@ -400,7 +400,7 @@ impl QueuedLineBytesStamp {
 /// (#1158); the young line's parse only starts when the report lands (no debounce head start) and
 /// the line is rare, so it gets a few budgets, not the seconds it had before #1158. Five budgets:
 /// 250 ms of classifier CPU since the owner raised the budget to 50 ms (2026-11-05, #1651; it was
-/// 100 ms of wall time), still under the young line's 500 ms wall-clock backstop in the view.
+/// 100 ms of wall time), far under the young line's 2 s wall-clock backstop in the view (#1664).
 pub const YOUNG_DETECTION_CAP: Duration = ENTER_VERDICT_BUDGET.saturating_mul(5);
 
 /// [`YOUNG_DETECTION_CAP`] for a buffer of `text_len` bytes (#1604): a buffer over the sync
