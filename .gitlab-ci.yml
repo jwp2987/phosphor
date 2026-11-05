@@ -1255,7 +1255,7 @@ app-test-windows:
   when: manual
   allow_failure: true
   resource_group: windows-gui
-  timeout: 4h   # r18e0: the full tier (both modes, soak) was killed at 90m with ~47 cases unrun; run.py also stops itself early (appci/deadline.py, CI_JOB_TIMEOUT)
+  timeout: 8h   # r18u19: 4h ran out with 152 Windows agent-mode cases unrun (the Windows pass covers PowerShell + Git Bash in both modes); r18e0: the full tier (both modes, soak) was killed at 90m with ~47 cases unrun; run.py also stops itself early (appci/deadline.py, CI_JOB_TIMEOUT)
   needs:
     - job: build-windows-x86_64
       artifacts: false
