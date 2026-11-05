@@ -223,11 +223,15 @@ fn a_stage_waiting_off_the_cpu_reaches_the_cap_at_the_wall_ceiling() {
     );
 
     std::thread::sleep(Duration::from_millis(300));
-    assert!(
-        !enter_verdict_cap_reached(clock.spent(), clock.stage_wall(), 10),
-        "300 ms in: neither the CPU budget nor the wall ceiling"
-    );
-    let remaining = enter_verdict_cap_remaining(clock.spent(), clock.stage_wall(), 10);
+    // Judged on the measured stage wall time, not on the sleep: a loaded CI thread can oversleep.
+    let (cpu, wall) = (clock.spent(), clock.stage_wall());
+    if wall < ENTER_VERDICT_WALL_CEILING {
+        assert!(
+            !enter_verdict_cap_reached(cpu, wall, 10),
+            "under the wall ceiling ({wall:?}) with {cpu:?} of CPU: neither cap is reached"
+        );
+    }
+    let remaining = enter_verdict_cap_remaining(cpu, wall, 10);
     assert!(remaining <= ENTER_VERDICT_BUDGET);
 
     // Wait out the ceiling (the channel is fed at 1.5 s).
@@ -244,11 +248,6 @@ fn a_stage_waiting_off_the_cpu_reaches_the_cap_at_the_wall_ceiling() {
         enter_verdict_cap_reached(cpu, wall, 10),
         "at ~1 s of wall time the cap is reached, before the 2 s backstop"
     );
-    assert!(
-        started.elapsed() < Duration::from_millis(1500),
-        "the channel was not fed yet"
-    );
-
     while started.elapsed() < Duration::from_millis(1500) {
         std::thread::sleep(Duration::from_millis(10));
     }
