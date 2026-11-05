@@ -124,8 +124,10 @@ impl crate::Clipboard for Clipboard {
 const OFF_MAIN_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
 unsafe extern "C" {
-    /// AppKit's global application instance; nil until `NSApplication.sharedApplication` runs
-    /// (never, in the headless TUI).
+    /// AppKit's global application instance; nil until `NSApplication.sharedApplication` runs.
+    /// Not nil in the TUI: `mark_process_as_background_only` creates it, although the TUI's main
+    /// thread never drains the main queue. The TUI is safe because all its reads start on its main
+    /// thread (read inline); this nil check only covers processes with no NSApplication at all.
     #[allow(non_upper_case_globals)]
     static NSApp: id;
 }
@@ -182,8 +184,9 @@ fn read_on_main_thread(kind: ReadKind) -> Result<ClipboardContent, ReadOutcome> 
 }
 
 /// Runs `read` on the main thread: at once when the caller is the main thread. Off the main
-/// thread: with no NSApplication (the headless TUI, whose main thread never drains the main
-/// queue, and there is no AppKit main-thread work to race) it reads in place; otherwise it is an
+/// thread: with no NSApplication at all (no AppKit main-thread work to race) it reads in place;
+/// otherwise (including the headless TUI, which has an NSApplication but never drains the main
+/// queue, so its reads must start on its main thread) it is an
 /// error, queued on the main dispatch queue with a bounded wait (`TimedOut` after `wait`). The
 /// main thread never waits for a worker here, so this cannot deadlock.
 fn read_on_main_thread_with(

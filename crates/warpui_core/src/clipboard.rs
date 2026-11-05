@@ -32,7 +32,7 @@ pub trait Clipboard: 'static {
     /// returned closure only hands the copied content on, because an NSPasteboard read on a
     /// worker crashed the app (SIGBUS). A request from another thread while an NSApplication
     /// runs is logged as an error and queued for the main thread with a bounded wait; without
-    /// one (the headless TUI) it reads in place. The blocked-reader cap does not bound a macOS
+    /// one it reads in place (the headless TUI does have one, so its reads start on its main thread). The blocked-reader cap does not bound a macOS
     /// read: it has already happened when the reader is built.
     fn reader(&mut self, kind: ReadKind) -> ClipboardReader;
 
