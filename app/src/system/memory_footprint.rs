@@ -8,6 +8,15 @@ pub fn memory_footprint_bytes() -> u64 {
     platform::memory_footprint_bytes()
 }
 
+/// macOS only: `(resident_size, reusable)` from `task_info(TASK_VM_INFO)`, in bytes (#1607).
+/// `reusable` is memory the allocator freed and marked `MADV_FREE_REUSABLE`: it has left
+/// `phys_footprint` but stays in `resident_size` (what `ps` reports as RSS) until the kernel
+/// needs the pages. `None` when the call fails.
+#[cfg(target_os = "macos")]
+pub fn resident_and_reusable_bytes() -> Option<(u64, u64)> {
+    platform::resident_and_reusable_bytes()
+}
+
 /// Returns a platform-specific JSON object with a detailed breakdown of the
 /// current process's memory usage.
 ///
@@ -55,6 +64,15 @@ mod platform {
             .unwrap_or(0)
     }
 
+    pub fn resident_and_reusable_bytes() -> Option<(u64, u64)> {
+        // Copy the fields out of the packed struct (repr(C, packed(4))) before using them.
+        query_task_vm_info().map(|info| {
+            let resident = info.resident_size;
+            let reusable = info.reusable;
+            (resident, reusable)
+        })
+    }
+
     pub fn memory_breakdown() -> serde_json::Value {
         let Some(info) = query_task_vm_info() else {
             return serde_json::json!({});
@@ -72,6 +90,7 @@ mod platform {
         let media_memory = info.ledger_tag_media_footprint;
         let neural_memory = info.ledger_tag_neural_footprint;
         let purgeable = info.ledger_purgeable_nonvolatile;
+        let reusable = info.reusable;
 
         serde_json::json!({
             "total_footprint": total_footprint,
@@ -84,6 +103,7 @@ mod platform {
             "media_memory": media_memory,
             "neural_memory": neural_memory,
             "purgeable": purgeable,
+            "reusable": reusable,
         })
     }
 }

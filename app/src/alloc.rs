@@ -85,41 +85,51 @@ pub(crate) fn tune_glibc_malloc() {
 /// `free`, so a big transient structure leaves RSS high even though it is free; this walks every
 /// arena and releases the free pages in the middle too. Runs on a worker (it takes each arena's
 /// lock while it walks); callers use it only after a large release, never per allocation.
+/// Returns `None`: glibc does not say how much it released.
 #[cfg(all(
     target_os = "linux",
     target_env = "gnu",
     not(feature = "jemalloc"),
     not(feature = "dhat_heap_profiling")
 ))]
-pub(crate) fn trim_free_memory() {
+pub(crate) fn trim_free_memory() -> Option<u64> {
     if !heap_trim_enabled() {
-        return;
+        return None;
     }
     // SAFETY: `malloc_trim` is thread-safe and only releases memory glibc already considers free.
     let _ = unsafe { libc::malloc_trim(0) };
+    None
 }
 
 /// macOS (#1607): the system allocator keeps freed tiny/small-region pages resident until memory
 /// pressure, so a file-sized transient (opening a 7 MB file) stays in the footprint after it is
 /// freed. `malloc_zone_pressure_relief(NULL, 0)` asks every zone to hand back all the free pages it
 /// can, the call the OS itself makes under memory pressure. Same callers and rules as the glibc
-/// arm: a worker thread, only after a large release.
+/// arm: a worker thread, only after a large release. Returns the bytes libmalloc says it released.
+///
+/// What it cannot do (#1607, appci r18u23 Mac): libmalloc already marks most freed pages
+/// `MADV_FREE_REUSABLE` when they are freed, which takes them out of `phys_footprint` at once but
+/// leaves them in `resident_size` (`ps` RSS) until the kernel reclaims them under pressure. This
+/// call releases nothing more for those pages (r18u23: `freed_estimate=0` on every close while
+/// RSS stayed ~170 MB over the baseline and `phys_footprint` fell below it); the
+/// `resident` / `reusable` fields of the `heap_trim` line measure that share.
 #[cfg(all(
     target_os = "macos",
     not(feature = "jemalloc"),
     not(feature = "dhat_heap_profiling")
 ))]
-pub(crate) fn trim_free_memory() {
+pub(crate) fn trim_free_memory() -> Option<u64> {
     unsafe extern "C" {
         fn malloc_zone_pressure_relief(zone: *mut std::ffi::c_void, goal: usize) -> usize;
     }
     if !heap_trim_enabled() {
-        return;
+        return None;
     }
     // SAFETY: a null zone means "all zones"; the call only returns pages the allocator already
     // considers free and is thread-safe (libmalloc takes each zone's lock).
     let released = unsafe { malloc_zone_pressure_relief(std::ptr::null_mut(), 0) };
     log::debug!(target: "editor_memory", "malloc_zone_pressure_relief released {released} bytes");
+    Some(released as u64)
 }
 
 /// Windows (#1607): Rust's system allocator there is `HeapAlloc` on the process heap
@@ -129,29 +139,31 @@ pub(crate) fn trim_free_memory() {
 /// after a 7 MB file's editor is dropped. Only the process heap is compacted: another heap in the
 /// process may have been created with `HEAP_NO_SERIALIZE`, and compacting it from this worker
 /// would race its owner. Same callers and rules as the other arms: a worker, after a large release.
+/// Returns `None`: `HeapCompact` reports the largest free block, not what it decommitted.
 #[cfg(all(
     target_os = "windows",
     not(feature = "jemalloc"),
     not(feature = "dhat_heap_profiling")
 ))]
-pub(crate) fn trim_free_memory() {
+pub(crate) fn trim_free_memory() -> Option<u64> {
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn GetProcessHeap() -> *mut std::ffi::c_void;
         fn HeapCompact(heap: *mut std::ffi::c_void, flags: u32) -> usize;
     }
     if !heap_trim_enabled() {
-        return;
+        return None;
     }
     // SAFETY: `GetProcessHeap` returns the process heap's handle (never closed); the process heap
     // is serialized, so `HeapCompact` takes its lock and only touches blocks that are free.
     let heap = unsafe { GetProcessHeap() };
     if heap.is_null() {
-        return;
+        return None;
     }
     // SAFETY: as above; flags 0 = serialized access.
     let largest_free = unsafe { HeapCompact(heap, 0) };
     log::debug!(target: "editor_memory", "HeapCompact largest free block {largest_free} bytes");
+    None
 }
 
 /// No-op elsewhere: jemalloc and the remaining platforms' allocators return memory on their own.
@@ -173,7 +185,9 @@ pub(crate) fn trim_free_memory() {
         not(feature = "dhat_heap_profiling")
     )
 )))]
-pub(crate) fn trim_free_memory() {}
+pub(crate) fn trim_free_memory() -> Option<u64> {
+    None
+}
 
 /// [`trim_free_memory`] plus one `input_order hop=heap_trim why=<why> ms=<ms> freed_estimate=<bytes>
 /// t=<end>` line (only while input-order logging is on), so the appci editor_memory trim A/B can judge
@@ -183,13 +197,16 @@ pub(crate) fn trim_free_memory() {}
 /// `freed_estimate` is the process footprint (macOS phys_footprint, Linux RSS + swap, Windows
 /// private bytes) before minus after the trim: other threads allocate meanwhile, so it is an
 /// estimate and can be negative. Nothing is logged when `PHOSPHOR_HEAP_TRIM=0` turned trims off.
+/// The `editor_memory` line also carries what the allocator says it released (`released=<bytes>`,
+/// macOS) and, on macOS, `resident=<bytes> reusable=<bytes>` after the trim: the share of RSS that
+/// is freed-but-reusable malloc memory (#1607), which only the kernel takes back.
 pub(crate) fn trim_free_memory_timed(why: &'static str) {
     if !heap_trim_enabled() {
         return;
     }
     let before = footprint_bytes();
     let start = std::time::Instant::now();
-    trim_free_memory();
+    let released = trim_free_memory();
     let ms = start.elapsed().as_secs_f64() * 1000.0;
     let freed_estimate = before as i128 - footprint_bytes() as i128;
     warpui::input_order::log_hop("heap_trim", || {
@@ -197,8 +214,27 @@ pub(crate) fn trim_free_memory_timed(why: &'static str) {
     });
     log::debug!(
         target: "editor_memory",
-        "editor_memory heap_trim why={why} ms={ms:.2} freed_estimate={freed_estimate}"
+        "editor_memory heap_trim why={why} ms={ms:.2} freed_estimate={freed_estimate}{}",
+        trim_detail(released)
     );
+}
+
+/// The extra `key=value` fields of the `editor_memory heap_trim` line: ` released=<bytes>` when
+/// the allocator reports it, and on macOS ` resident=<bytes> reusable=<bytes>` (#1607).
+fn trim_detail(released: Option<u64>) -> String {
+    let mut out = String::new();
+    if let Some(released) = released {
+        out.push_str(&format!(" released={released}"));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if let Some((resident, reusable)) =
+            crate::system::memory_footprint::resident_and_reusable_bytes()
+        {
+            out.push_str(&format!(" resident={resident} reusable={reusable}"));
+        }
+    }
+    out
 }
 
 /// The process footprint in bytes (0 where it cannot be read), for `freed_estimate`.
@@ -378,7 +414,7 @@ mod tests;
 
 #[cfg(test)]
 mod switch_tests {
-    use super::{TrimCoalescer, env_flag_enabled, env_flag_opted_in};
+    use super::{TrimCoalescer, env_flag_enabled, env_flag_opted_in, trim_detail};
 
     #[test]
     fn close_trim_starts_one_worker_and_folds_a_burst_into_one_more_pass() {
@@ -423,6 +459,23 @@ mod switch_tests {
         assert!(!env_flag_enabled(Some("0")));
         assert!(!env_flag_enabled(Some(" off ")));
         assert!(!env_flag_enabled(Some("FALSE")));
+    }
+
+    /// #1607: the `editor_memory heap_trim` line carries what the allocator released (when it says)
+    /// and, on macOS, the resident and freed-but-reusable bytes the appci case puts next to RSS.
+    #[test]
+    fn heap_trim_line_carries_released_bytes_and_the_macos_reusable_share() {
+        let with = trim_detail(Some(4096));
+        assert!(with.starts_with(" released=4096"), "{with}");
+        let without = trim_detail(None);
+        assert!(!without.contains("released="), "{without}");
+        #[cfg(target_os = "macos")]
+        assert!(
+            without.starts_with(" resident=") && without.contains(" reusable="),
+            "{without}"
+        );
+        #[cfg(not(target_os = "macos"))]
+        assert!(without.is_empty(), "{without}");
     }
 
     #[test]
