@@ -1211,7 +1211,8 @@ impl GridHandler {
             .get(cols.start)
             .is_some_and(|cell| cell.flags.contains(Flags::WIDE_CHAR_SPACER))
         {
-            cols.start -= 1;
+            // A spacer in column 0 has no wide char to its left (hostile input).
+            cols.start = cols.start.saturating_sub(1);
         }
 
         let mut tab_mode = false;
@@ -1293,7 +1294,8 @@ impl GridHandler {
                 .is_some_and(|cell| cell.flags.contains(Flags::LEADING_WIDE_CHAR_SPACER))
             && include_wrapped_wide
         {
-            if let Some(row) = self.row(row - 1) {
+            // Row 0 has no previous row (r18u27 fuzz: `hook_parsers`).
+            if let Some(row) = row.checked_sub(1).and_then(|prev| self.row(prev)) {
                 if let Some(cell) = row.get(0) {
                     text.push(cell.c);
                 }
@@ -2696,7 +2698,7 @@ impl GridHandler {
     {
         let mut point = self.maybe_translate_point_from_displayed_to_original(point);
         // Limit the starting point to the last line in the history
-        point.row = min(point.row, self.total_rows() - 1);
+        point.row = min(point.row, self.total_rows().saturating_sub(1));
 
         let mut cursor = self.grapheme_cursor_from(point, grapheme_cursor::Wrap::Soft);
 
@@ -2720,7 +2722,7 @@ impl GridHandler {
     {
         let mut point = self.maybe_translate_point_from_displayed_to_original(point);
         // Limit the starting point to the last line in the history
-        point.row = min(point.row, self.total_rows() - 1);
+        point.row = min(point.row, self.total_rows().saturating_sub(1));
 
         let mut cursor = self.grapheme_cursor_from(point, grapheme_cursor::Wrap::Soft);
 
