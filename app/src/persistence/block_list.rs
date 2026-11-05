@@ -465,10 +465,30 @@ pub(super) const ORPHAN_BLOCK_MIN_AGE: chrono::Duration = chrono::Duration::days
 /// are an explicit pane close and the per-pane cap, so sessions that ended by quit
 /// or crash leave their blocks behind forever (#1155). Rows with no `start_ts` are
 /// kept. Returns the number of rows deleted.
+///
+/// A plain read decides first whether anything is due: a `DELETE` takes the write lock even when
+/// it matches nothing, and this runs on every launch, so without the check each start briefly
+/// blocked every other writer of the file (a second instance, a `sqlite3` shell) for nothing.
 pub(super) fn delete_orphaned_blocks(
     conn: &mut SqliteConnection,
     older_than: NaiveDateTime,
 ) -> Result<usize, Error> {
+    #[derive(diesel::QueryableByName)]
+    struct Due {
+        #[diesel(sql_type = diesel::sql_types::Bool)]
+        due: bool,
+    }
+    let due = diesel::sql_query(
+        "SELECT EXISTS (SELECT 1 FROM blocks \
+         WHERE start_ts IS NOT NULL AND start_ts < ? \
+         AND pane_leaf_uuid NOT IN (SELECT uuid FROM terminal_panes)) AS due",
+    )
+    .bind::<diesel::sql_types::Timestamp, _>(older_than)
+    .get_result::<Due>(conn)?
+    .due;
+    if !due {
+        return Ok(0);
+    }
     // Raw SQL: Diesel can't build a DELETE whose filter is a `NOT IN (subquery)`. A NULL
     // `start_ts` or pane id never satisfies the comparisons, so such rows are kept.
     diesel::sql_query(

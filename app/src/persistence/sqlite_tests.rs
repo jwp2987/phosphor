@@ -2344,6 +2344,55 @@ fn setup_busy_waits_are_short_slices_of_the_budget() {
     );
 }
 
+/// #1650: setup's short busy slices are for setup only. The connection it hands the writer waits
+/// the normal 1 s on a lock, both for a fresh file (migrations run) and an existing one (none
+/// pending); with a 25 ms timeout every write would give up on a lock almost at once.
+#[test]
+fn setup_hands_the_writer_the_normal_busy_timeout() {
+    use diesel::RunQueryDsl;
+    #[derive(diesel::QueryableByName)]
+    struct BusyTimeout {
+        #[diesel(sql_type = diesel::sql_types::Integer)]
+        timeout: i32,
+    }
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    for open in ["fresh", "existing"] {
+        let mut conn = setup_database(&database_path).expect("database should initialize");
+        let timeout = diesel::sql_query("PRAGMA busy_timeout")
+            .get_result::<BusyTimeout>(&mut conn)
+            .expect("read busy_timeout")
+            .timeout;
+        assert_eq!(timeout, 1000, "{open} database: the writer's busy_timeout");
+    }
+}
+
+/// The writer's startup GC (#1155) takes no write lock when there is nothing to collect: a
+/// `DELETE` locks even when it matches nothing, which on every launch briefly blocked any other
+/// writer of the file (and raced the lock-holding tests above, whose locker does not wait).
+#[test]
+fn startup_gc_with_nothing_due_takes_no_write_lock() {
+    use diesel::{Connection as _, connection::SimpleConnection as _, sqlite::SqliteConnection};
+
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let mut conn = setup_database(&database_path).expect("database should initialize");
+    // No waiting: any attempt to take the write lock fails at once.
+    conn.batch_execute("PRAGMA busy_timeout = 0;")
+        .expect("busy_timeout");
+    let mut locker =
+        SqliteConnection::establish(database_path.to_str().unwrap()).expect("locker connects");
+    locker.batch_execute("BEGIN EXCLUSIVE;").expect("lock");
+
+    let cutoff =
+        (chrono::Utc::now() - crate::persistence::block_list::ORPHAN_BLOCK_MIN_AGE).naive_utc();
+    let deleted = crate::persistence::block_list::delete_orphaned_blocks(&mut conn, cutoff)
+        .expect("nothing due: the GC must not need the write lock");
+    assert_eq!(deleted, 0);
+
+    locker.batch_execute("COMMIT;").expect("release");
+}
+
 /// #1650: with one slice per SQLite wait, a lock held for longer than a slice but released
 /// inside the budget is still waited out: setup succeeds, it does not give up early.
 #[test]

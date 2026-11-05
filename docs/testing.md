@@ -1763,6 +1763,14 @@ overshoots on Windows (3000 ms gave up after 4.6-4.8 s), so one wait broke the 3
 retries against its own `Instant` deadline, the migration transaction included (`BUSY_WAIT_SLICE`, `sqlite.rs`). New tests:
 `setup_busy_waits_are_short_slices_of_the_budget`, `setup_waits_out_a_lock_released_inside_the_budget`.
 
+Follow-up (RC r18u22 macOS, `terminate_flushes_queued_events_once_the_lock_is_gone` failed at its own `BEGIN EXCLUSIVE`). Not the
+slices: the writer's connection already went back to `busy_timeout = 1000` after setup. The race was the writer thread's startup
+orphan-block GC (#1155): its `DELETE` takes the write lock even when it matches nothing, and the test's locker (a bare diesel
+connection, `busy_timeout = 0`) failed at once if it landed in that window. The GC now reads first and deletes only when something
+is due. The one setup path that could leave a 25 ms slice in force (a lost migration race that someone else then finished) now
+restores the normal timeout too. New tests: `setup_hands_the_writer_the_normal_busy_timeout`,
+`startup_gc_with_nothing_due_takes_no_write_lock`.
+
 ## r18u19 macOS app-run fixes (pipeline 3028768440, 9eb5c3f50)
 
 Harness changes plus two small app changes. `run.py --self-test` covers the harness ones (`r18d2_routing_expectation_ocr_fuzz_and_ctrlc_window`,
