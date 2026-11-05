@@ -11744,34 +11744,53 @@ fn test_tab_then_enter_with_completion_delivered_after_a_stall_submits_the_compl
     });
 }
 
-/// #1351: a completer that spent its cap is given up on (visible text submitted); one still
-/// within it is waited for.
+/// #1351: a completer that spent its cap is given up on; one still within it is waited for.
+/// #1666: the give-up runs nothing (it used to submit the visible, uncompleted `git checkout fe`,
+/// a command the user did not mean): the line is handed back to the editor. Both modes.
 #[test]
 fn test_tab_completion_cap_counts_only_completer_compute() {
-    App::test((), |mut app| async move {
-        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
-        let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, true).await;
-        let (clock, guard) = ComputeClock::running_for_test(std::time::Duration::from_millis(40));
-        input.update(&mut app, |input, ctx| {
-            input.input_enter(ctx);
-            let wait = input.verdict_wait.as_mut().unwrap();
-            wait.compute = clock.clone();
-            let id = wait.id;
-            input.compute_cap_fired(id, ctx);
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+            let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, true).await;
+            let (clock, guard) =
+                ComputeClock::running_for_test(std::time::Duration::from_millis(40));
+            input.update(&mut app, |input, ctx| {
+                input.input_enter(ctx);
+                let wait = input.verdict_wait.as_mut().unwrap();
+                wait.compute = clock.clone();
+                let id = wait.id;
+                input.compute_cap_fired(id, ctx);
+            });
+            assert!(
+                executed.borrow().is_empty(),
+                "{mode:?}: 40 ms of compute is within the 150 ms cap"
+            );
+            input.read(&app, |input, _| {
+                assert!(input.verdict_wait.is_some(), "{mode:?}: still waiting")
+            });
+            drop(guard);
+            input.update(&mut app, |input, ctx| {
+                let wait = input.verdict_wait.as_mut().unwrap();
+                wait.compute = ComputeClock::with_spent_for_test(TAB_COMPLETION_ENTER_BUDGET);
+                let id = wait.id;
+                input.compute_cap_fired(id, ctx);
+            });
+            assert!(
+                executed.borrow().is_empty(),
+                "{mode:?}: the cap's give-up runs nothing (#1666)"
+            );
+            input.read(&app, |input, ctx| {
+                assert!(
+                    input.verdict_wait.is_none(),
+                    "{mode:?}: the Enter is dropped"
+                );
+                assert_eq!(input.buffer_text(ctx), "git checkout fe", "{mode:?}");
+            });
         });
-        assert!(
-            executed.borrow().is_empty(),
-            "40 ms of compute is within the 150 ms cap"
-        );
-        drop(guard);
-        input.update(&mut app, |input, ctx| {
-            let wait = input.verdict_wait.as_mut().unwrap();
-            wait.compute = ComputeClock::with_spent_for_test(TAB_COMPLETION_ENTER_BUDGET);
-            let id = wait.id;
-            input.compute_cap_fired(id, ctx);
-        });
-        assert_eq!(executed.borrow().as_slice(), ["git checkout fe"]);
-    });
+    }
 }
 
 /// #1207: what counts as keys typed behind a waiting Enter: a suffix (cursor at the end) or an
@@ -13337,28 +13356,209 @@ fn test_tab_then_enter_multiple_matches_submits_visible_text() {
     });
 }
 
-/// #1165/#1351: a completer that spent its compute cap without answering: the visible text is
-/// submitted and a late result is dropped.
+/// #1165/#1351/#1666 (H6): a completer that spent its compute cap without answering. The timer
+/// runs NOTHING (#1577): it used to submit the visible `git checkout fe` where the user meant the
+/// completed line, which is a command the user did not mean. The line stays in the editor, a
+/// toast says to press Enter, a late result is dropped (it neither completes nor runs the line),
+/// and the user's next Enter runs the line as shown. Both modes.
 #[test]
-fn test_tab_then_enter_timeout_submits_visible_text_and_drops_late_result() {
-    App::test((), |mut app| async move {
-        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
-        let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, true).await;
-        input.update(&mut app, |input, ctx| {
-            input.input_enter(ctx);
-            let wait = input.verdict_wait.as_mut().unwrap();
-            wait.compute = ComputeClock::with_spent_for_test(TAB_COMPLETION_ENTER_BUDGET * 2);
-            let id = wait.id;
-            input.compute_cap_fired(id, ctx);
+fn test_tab_then_enter_timeout_hands_the_line_back_and_drops_late_result() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+            let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, true).await;
+            let toasts = count_toasts(&mut app);
+            input.update(&mut app, |input, ctx| {
+                input.input_enter(ctx);
+                let wait = input.verdict_wait.as_mut().unwrap();
+                wait.compute = ComputeClock::with_spent_for_test(TAB_COMPLETION_ENTER_BUDGET * 2);
+                let id = wait.id;
+                input.compute_cap_fired(id, ctx);
+            });
+            assert!(
+                executed.borrow().is_empty(),
+                "{mode:?}: the clock must not run the uncompleted line"
+            );
+            input.read(&app, |input, ctx| {
+                assert!(
+                    input.verdict_wait.is_none(),
+                    "{mode:?}: the Enter is dropped"
+                );
+                assert!(input.tab_completion_request.is_none(), "{mode:?}");
+                assert!(!input.enter_queue_holds_keys(ctx), "{mode:?}: gate closed");
+                assert_eq!(input.buffer_text(ctx), "git checkout fe", "{mode:?}");
+            });
+            assert!(
+                *toasts.borrow() >= 1,
+                "{mode:?}: a toast says to press Enter"
+            );
+
+            deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);
+            assert!(
+                executed.borrow().is_empty(),
+                "{mode:?}: a late result runs nothing"
+            );
+            input.read(&app, |input, ctx| {
+                // The late result was dropped: it did not complete the handed-back line.
+                assert_eq!(input.buffer_text(ctx), "git checkout fe", "{mode:?}");
+            });
+
+            // The user's own Enter, after the toast, runs the line as shown.
+            input.update(&mut app, |input, ctx| input.input_enter(ctx));
+            assert_eq!(
+                executed.borrow().as_slice(),
+                ["git checkout fe"],
+                "{mode:?}"
+            );
         });
-        assert_eq!(executed.borrow().as_slice(), ["git checkout fe"]);
-        deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);
-        assert_eq!(executed.borrow().len(), 1);
-        input.read(&app, |input, ctx| {
-            // The late result was dropped: it did not complete the submitted line.
-            assert_eq!(input.buffer_text(ctx), "git checkout fe");
+    }
+}
+
+/// #1667 (H7): the Tab completion hold's backstop (a result that never arrives) gives up like the
+/// cap: nothing runs, the line stays in the editor, a toast shows, and a late result is dropped.
+/// Both modes.
+#[test]
+fn test_tab_then_enter_backstop_hands_the_line_back_and_runs_nothing() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+            let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, true).await;
+            let toasts = count_toasts(&mut app);
+            input.update(&mut app, |input, ctx| {
+                input.input_enter(ctx);
+                let id = input
+                    .verdict_wait
+                    .as_ref()
+                    .expect("the Enter holds for the Tab")
+                    .id;
+                input.hold_backstop_fired(id, ctx);
+            });
+            assert!(
+                executed.borrow().is_empty(),
+                "{mode:?}: the backstop must not run the uncompleted line"
+            );
+            input.read(&app, |input, ctx| {
+                assert!(input.verdict_wait.is_none(), "{mode:?}");
+                assert!(!input.enter_queue_holds_keys(ctx), "{mode:?}");
+                assert_eq!(input.buffer_text(ctx), "git checkout fe", "{mode:?}");
+            });
+            assert!(*toasts.borrow() >= 1, "{mode:?}: toast");
+            deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);
+            assert!(executed.borrow().is_empty(), "{mode:?}");
+            input.read(&app, |input, ctx| {
+                assert_eq!(input.buffer_text(ctx), "git checkout fe", "{mode:?}");
+            });
         });
-    });
+    }
+}
+
+/// #1666: a completion that lands inside the cap still runs the COMPLETED line (owner rule
+/// 2026-10-31: Tab then a fast Enter runs the completed line), in both modes.
+#[test]
+fn test_tab_then_enter_completion_in_time_runs_the_completed_line_in_both_modes() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+            let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, true).await;
+            let (clock, _guard) =
+                ComputeClock::running_for_test(std::time::Duration::from_millis(40));
+            input.update(&mut app, |input, ctx| {
+                input.input_enter(ctx);
+                let wait = input.verdict_wait.as_mut().unwrap();
+                wait.compute = clock.clone();
+                let id = wait.id;
+                // Within the cap: the timer leaves the wait to the result.
+                input.compute_cap_fired(id, ctx);
+            });
+            assert!(executed.borrow().is_empty(), "{mode:?}");
+            deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);
+            assert_eq!(executed.borrow().len(), 1, "{mode:?}");
+            assert_eq!(
+                executed.borrow()[0].trim_end(),
+                "git checkout feature",
+                "{mode:?}"
+            );
+        });
+    }
+}
+
+/// #1666: keys typed behind an Enter held for a Tab completion that then gives up are not run
+/// and not lost: they come back to the editor after the uncompleted line in typed order (the
+/// Enter among them as a new line), nothing is released to the pty, and the next Enter is held
+/// by the hand-back guard (several lines submit as one command). Both modes.
+#[test]
+fn test_tab_then_enter_give_up_keeps_the_keys_typed_after_it_in_order() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+            let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, true).await;
+            let editor = input.read(&app, |input, _| input.editor().clone());
+            let released = record_released_enter_entries(&mut app, &input);
+            input.update(&mut app, |input, ctx| {
+                input.input_enter(ctx);
+                // Only the explicit give-up below may end the wait.
+                input.disarm_hold_give_ups_for_test();
+            });
+            input.read(&app, |input, ctx| {
+                assert!(
+                    input
+                        .verdict_wait
+                        .as_ref()
+                        .is_some_and(VerdictWait::holds_for_tab_completion),
+                    "{mode:?}"
+                );
+                assert!(input.enter_queue_holds_keys(ctx), "{mode:?}");
+            });
+            type_into_editor(&mut app, &editor, HeldPasteKey::Text("l".to_string()));
+            type_into_editor(&mut app, &editor, HeldPasteKey::Text("s".to_string()));
+            type_into_editor(&mut app, &editor, HeldPasteKey::Action(EditorAction::Enter));
+            type_into_editor(&mut app, &editor, HeldPasteKey::Text("pwd".to_string()));
+            input.read(&app, |input, ctx| {
+                assert_eq!(input.buffer_text(ctx), "git checkout fe", "{mode:?}");
+                assert_eq!(input.enter_gate_held_len_for_test(ctx), 4, "{mode:?}");
+            });
+
+            input.update(&mut app, |input, ctx| {
+                let wait = input.verdict_wait.as_mut().unwrap();
+                wait.compute = ComputeClock::with_spent_for_test(TAB_COMPLETION_ENTER_BUDGET * 2);
+                let id = wait.id;
+                input.compute_cap_fired(id, ctx);
+            });
+            assert!(executed.borrow().is_empty(), "{mode:?}: nothing ran");
+            assert!(
+                released.borrow().is_empty(),
+                "{mode:?}: nothing was released to a destination: {:?}",
+                released.borrow()
+            );
+            input.read(&app, |input, ctx| {
+                assert!(input.verdict_wait.is_none(), "{mode:?}");
+                assert!(!input.enter_queue_holds_keys(ctx), "{mode:?}: gate closed");
+                assert_eq!(
+                    input.buffer_text(ctx),
+                    "git checkout fe\nls\npwd",
+                    "{mode:?}: handed back in typed order"
+                );
+                assert!(input.ssh_handover_enter_guard_armed(), "{mode:?}");
+            });
+            deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);
+            assert!(executed.borrow().is_empty(), "{mode:?}");
+            input.read(&app, |input, ctx| {
+                assert_eq!(
+                    input.buffer_text(ctx),
+                    "git checkout fe\nls\npwd",
+                    "{mode:?}"
+                );
+            });
+        });
+    }
 }
 
 /// #1165: keys typed during the hold go behind the submitted command, in order, never into the

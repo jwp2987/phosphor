@@ -94,6 +94,11 @@ const ENTER_GATE_GIVE_UP_TOAST: &str = "The shell did not take the command in ti
 const VERDICT_GIVE_UP_TOAST: &str =
     "Couldn't tell shell from chat in time; press Enter again to send";
 
+/// #1666/#1667: the toast of an Enter held for a Tab completion that did not land in time: the
+/// uncompleted line was not run.
+const COMPLETION_GIVE_UP_TOAST: &str =
+    "Completion took too long, so the line was not run; press Enter to run it as shown";
+
 const UNREADY_ENTER_GIVE_UP_TOAST: &str = "The shell was not ready, so the line was not run; it is \
      back in the input with what you typed after it";
 
@@ -766,6 +771,7 @@ impl Input {
         });
         let toast = match why {
             "verdict_cap" => VERDICT_GIVE_UP_TOAST,
+            "completion_cap" | "completion_backstop" => COMPLETION_GIVE_UP_TOAST,
             _ => ENTER_GATE_GIVE_UP_TOAST,
         };
         self.hand_back_enter_gate(gate, toast, ctx);
@@ -788,6 +794,31 @@ impl Input {
         self.ai_input_model.update(ctx, |model, _| {
             model.abandon_pending_detection_after_give_up()
         });
+        self.hand_back_held_enter(why, VERDICT_GIVE_UP_TOAST, ctx);
+    }
+
+    /// #1666/#1667: an Enter held for a Tab completion that did not land within its cap or
+    /// backstop is not submitted by the clock (the visible line is not the one the user meant to
+    /// run). It is handed back exactly like a verdict give-up, with its own toast; the partial
+    /// line's verdict is kept, since the classifier is not what was slow.
+    pub(super) fn hand_back_completion_held_enter(
+        &mut self,
+        why: &'static str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        warpui::input_order::log_key_hop("enter_completion_give_up", || format!("editor {why}"));
+        self.hand_back_held_enter(why, COMPLETION_GIVE_UP_TOAST, ctx);
+    }
+
+    /// The shared body of the held-Enter hand-backs: with its gate open, the text typed behind
+    /// the Enter comes back with the line ([`Self::give_up_enter_gate_to_editor`]); otherwise
+    /// the wait is dropped, the line stays in the editor, and `toast` is shown.
+    fn hand_back_held_enter(
+        &mut self,
+        why: &'static str,
+        toast: &'static str,
+        ctx: &mut ViewContext<Self>,
+    ) {
         if self.enter_gate.is_some() {
             self.give_up_enter_gate_to_editor(why, ctx);
             return;
@@ -797,7 +828,7 @@ impl Input {
             let window_id = ctx.window_id();
             ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
                 toast_stack.add_ephemeral_toast(
-                    DismissibleToast::error(VERDICT_GIVE_UP_TOAST.to_string()),
+                    DismissibleToast::error(toast.to_string()),
                     window_id,
                     ctx,
                 );

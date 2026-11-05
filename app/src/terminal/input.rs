@@ -1430,8 +1430,9 @@ enum EnterHold {
     /// on the Enter-time rules once `ENTER_VERDICT_BUDGET` is spent (#1158).
     Verdict { since: Instant },
     /// The local Tab completion in flight for `text` has not landed (#1165): the Enter then
-    /// submits the completed line (or the visible text on an ambiguous, empty, failed or late
-    /// result), after the completed line's own verdict wait.
+    /// submits the completed line (or the visible text on an ambiguous, empty or failed result),
+    /// after the completed line's own verdict wait. A completion that does not land in time is
+    /// given up by a timer, which never submits (#1666/#1667): the line is handed back.
     TabCompletion { since: Instant },
 }
 
@@ -1448,8 +1449,10 @@ struct TabCompletionRequest {
     compute: ComputeClock,
 }
 
-/// The most compute the Tab completer may spend before an Enter holding for it submits the visible
-/// text (#1351). Measured from when the completer job started running, never from the Enter.
+/// The most compute the Tab completer may spend before an Enter holding for it gives up (#1351).
+/// Measured from when the completer job started running, never from the Enter. Wall time on
+/// purpose: completion does I/O. The give-up hands the uncompleted line back to the editor and
+/// runs nothing (#1666): the clock must not run a line the user meant to complete.
 const TAB_COMPLETION_ENTER_BUDGET: std::time::Duration = std::time::Duration::from_millis(150);
 /// A hold longer than this is logged at WARN, so slow completers can be traced.
 const TAB_COMPLETION_ENTER_WARN: std::time::Duration = std::time::Duration::from_millis(50);
@@ -1477,6 +1480,8 @@ impl EnterHold {
             EnterHold::Verdict { .. } => {
                 std::time::Duration::from_millis(250) + large_text_compute_allowance(text_len)
             }
+            // #1667: kept at 500 ms. Its give-up hands the line back and runs nothing, so a busy
+            // machine that outlasts it costs one more Enter, never a wrong command.
             EnterHold::TabCompletion { .. } => std::time::Duration::from_millis(500),
         }
     }
@@ -14483,7 +14488,8 @@ impl Input {
     /// #1165: an Enter that arrives while the Tab completion for the exact current buffer and
     /// cursor is in flight holds for it, as a real shell runs the completed line. The result is
     /// applied (a single match), or the visible text is submitted (several matches, none, an
-    /// error, or no answer within `TAB_COMPLETION_ENTER_BUDGET`). A remote completer cannot
+    /// error). No answer within `TAB_COMPLETION_ENTER_BUDGET` (or the backstop) runs nothing: the
+    /// line is handed back with a toast (#1666/#1667). A remote completer cannot
     /// answer quickly: it is cancelled and the Enter submits the visible text at once. Keys typed
     /// during the hold queue behind the Enter through the verdict wait's bookkeeping (#1016).
     /// Returns whether the Enter was taken.
@@ -14687,7 +14693,7 @@ impl Input {
         let (text, hold) = (wait.text.clone(), wait.hold);
         match hold {
             EnterHold::Verdict { .. } => self.wait_for_verdict_then_enter(text, ctx),
-            EnterHold::TabCompletion { .. } => self.give_up_completion_hold(ctx),
+            EnterHold::TabCompletion { .. } => self.give_up_completion_hold("completion_cap", ctx),
         }
     }
 
@@ -14722,23 +14728,49 @@ impl Input {
                     self.submit_held_enter(ctx);
                 }
             }
-            EnterHold::TabCompletion { .. } => self.give_up_completion_hold(ctx),
+            EnterHold::TabCompletion { .. } => {
+                self.give_up_completion_hold("completion_backstop", ctx)
+            }
         }
     }
 
-    /// The Tab completer spent its compute cap (or never answered): the visible text is submitted
-    /// and a late result is dropped.
-    fn give_up_completion_hold(&mut self, ctx: &mut ViewContext<Self>) {
+    /// The Tab completer spent its compute cap (or never answered). The timer runs NOTHING
+    /// (#1666/#1667, the #1577 rule): submitting the visible text would run `cd proj` where the
+    /// user meant `cd project-x/`. The Enter is dropped, the uncompleted line stays in the editor
+    /// with the keys typed behind it in order, a toast says to press Enter, and a late result is
+    /// dropped (the completion is cancelled). The partial line's own verdict is kept.
+    fn give_up_completion_hold(&mut self, why: &'static str, ctx: &mut ViewContext<Self>) {
         // Void (Ctrl-C, an edit of the text): the completion is cancelled with it.
         if !self.reconcile_verdict_wait(ctx) {
             return;
         }
+        let (waited, spent) = self
+            .verdict_wait
+            .as_ref()
+            .map(|wait| {
+                (
+                    wait.tab_completion_since()
+                        .map(|since| since.elapsed())
+                        .unwrap_or_default(),
+                    wait.compute.spent(),
+                )
+            })
+            .unwrap_or_default();
+        log::warn!(
+            "Enter held {} ms for a local Tab completion gave up ({why}; completer compute {} ms, \
+             cap {} ms); the line is handed back, not run (#1666)",
+            waited.as_millis(),
+            spent.as_millis(),
+            TAB_COMPLETION_ENTER_BUDGET.as_millis()
+        );
+        self.tab_completion_request = None;
         self.cancel_pending_completions_for_deferred_enter();
-        self.finish_completion_hold(None, ctx);
+        self.hand_back_completion_held_enter(why, ctx);
     }
 
     /// Ends the hold of an Enter on the Tab completion and runs the Enter. `result` is the
-    /// completion that landed, `None` when the wait timed out. A single match is applied first;
+    /// completion that landed (a timeout never comes here: it hands the line back, #1666). A
+    /// single match is applied first;
     /// the verdict for the COMPLETED text then decides the route (the partial line's verdict is
     /// dropped), within the usual verdict budget.
     fn finish_completion_hold(

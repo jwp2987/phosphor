@@ -1124,6 +1124,22 @@ the held keys. A setup with no marker token (`PHOSPHOR_BOOTSTRAP_TIMED=1`, or ma
 | view, Legacy and Table | `group2_timer_tests.rs`: `ctrl_c_on_a_timed_powershell_setup_hands_the_held_and_later_keys_back_after_the_settle` | the real path: `ls`, Ctrl-C, `x`, the spawned 500 ms timer: the editor holds `lsx`, the pty got only `\x03` |
 | view | `view_test.rs`: `powershell_abort_settle_ends_on_the_read_marker_not_the_clock` (existing) | the marker after the Ctrl-C writes the held keys; time and line markers do not |
 
+**#1666 / #1667 (Tab completion give-up, busy-machine audit H6/H7).** Tab then a fast Enter holds the Enter for the local
+completion (`TAB_COMPLETION_ENTER_BUDGET`, 150 ms of completer wall time, unchanged; backstop 500 ms, unchanged) and runs the
+COMPLETED line when it lands. When either net fires first, the timer runs NOTHING (#1577 rule): the Enter is dropped, the
+uncompleted line stays in the editor, keys typed behind the Enter come back after it in typed order (Enter guard armed), the
+late result is dropped, and the toast says "Completion took too long, so the line was not run; press Enter to run it as shown".
+It used to submit the visible line (`cd proj` instead of `cd project-x/`). In an appci log the give-up is
+`enter_completion_give_up editor completion_cap` / `completion_backstop`, or `kh_enter_gate_give_up by=completion_cap`.
+The appci `tab_enter` case treats a give-up as a missing completed line (it fails the count check).
+
+| layer | test | asserts |
+|---|---|---|
+| input, Legacy and Table | `input_test.rs`: `test_tab_then_enter_timeout_hands_the_line_back_and_drops_late_result` (was `..._submits_visible_text_...`, whose expectation was the defect), `test_tab_completion_cap_counts_only_completer_compute` (expectation changed the same way) | cap spent: nothing executed, wait and gate gone, `git checkout fe` in the editor, a toast; the late `feature` result neither completes nor runs it; the user's next Enter runs `git checkout fe` |
+| input, Legacy and Table | `input_test.rs`: `test_tab_then_enter_backstop_hands_the_line_back_and_runs_nothing` | the 500 ms backstop gives up the same way |
+| input, Legacy and Table | `input_test.rs`: `test_tab_then_enter_completion_in_time_runs_the_completed_line_in_both_modes` | a completer within its cap is waited for and `git checkout feature` runs once |
+| input, Legacy and Table | `input_test.rs`: `test_tab_then_enter_give_up_keeps_the_keys_typed_after_it_in_order` | `l`,`s`,Enter,`pwd` typed behind the held Enter, then the cap: editor `git checkout fe\nls\npwd`, guard armed, nothing executed or released |
+
 **#1391 (PS2 continued line).** bash and zsh send `ContinuationPrompt` (PS2 head / zle `CONTEXT=cont`) and the hand-off re-baselines
 its counts on it; on Unix a stale count is also corrected from the sampled line-editor state (#1614). fish and PowerShell continue a
 line inside their editor with no hook, so on ConPTY the 5 s logged give-up is still what resolves it. Evidence to look for in a log:
