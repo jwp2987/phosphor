@@ -15439,14 +15439,21 @@ impl Input {
     /// An empty buffer has nothing to run, so the guard is simply dropped.
     fn hold_back_enter_after_ssh_handover(&mut self, ctx: &mut ViewContext<Self>) -> bool {
         // #1666: a glue guard is neither taken nor applied by an Enter that only accepts a menu
-        // item; accepting it inserts into the line, which drops the guard.
+        // item; accepting it inserts into the line, which drops the guard. The menu is judged as
+        // the rest of this Enter will see it: a stale menu dropped and a pending refilter flushed
+        // first (both idempotent, so `input_enter`'s own calls become no-ops). Judged on the old
+        // list, a refilter that empties the menu closed it after the guard was skipped and the
+        // glued line ran (#1666 third review).
         if self
             .ssh_handover_enter_guard
             .as_ref()
             .is_some_and(|guard| guard.kind == EnterGuardKind::Glue)
-            && self.enter_accepts_a_menu_item(ctx)
         {
-            return false;
+            self.drop_stale_completion_menu(ctx);
+            self.flush_pending_suggestion_refilter(ctx);
+            if self.enter_accepts_a_menu_item(ctx) {
+                return false;
+            }
         }
         let Some(guard) = self.ssh_handover_enter_guard.take() else {
             return false;

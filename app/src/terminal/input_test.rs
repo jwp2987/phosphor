@@ -13826,6 +13826,92 @@ fn test_glue_guard_lets_an_enter_accept_a_completion_menu_item() {
     }
 }
 
+/// #1666 third review: the menu the glue guard lets an Enter through for is judged as that Enter
+/// will see it. A Tab menu over a large result set, `zz` typed onto the handed-back line while its
+/// refilter runs in the background (the old, non-empty list still shown, an item highlighted),
+/// then Enter: the flush empties and closes the menu first, so the guard holds the Enter. Nothing
+/// runs and `git checkout fezz` stays in the editor. Both modes.
+#[test]
+fn test_glue_guard_judges_the_menu_after_a_pending_refilter_empties_it() {
+    use crate::input_suggestions::INLINE_REFILTER_MAX_ENTRIES;
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+            let _classic = FeatureFlag::ForceClassicCompletions.override_enabled(true);
+            let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, true).await;
+            let toasts = record_toast_texts(&mut app);
+            input.update(&mut app, |input, ctx| input.input_enter(ctx));
+            fire_tab_completion_cap(&input, &mut app);
+            // The Tab menu: large enough that typing refilters it off the UI thread, and with no
+            // common prefix past `fe`, so opening it inserts nothing.
+            input.update(&mut app, |input, ctx| {
+                let suggestions = (0..INLINE_REFILTER_MAX_ENTRIES + 500)
+                    .map(|i| {
+                        argument_suggestion(format!("fe{}{i}", if i % 2 == 0 { "a" } else { "n" }))
+                    })
+                    .collect();
+                input.handle_completion_suggestions_results(
+                    build_suggestion_results(suggestions, (13, 15), MatchStrategy::CaseInsensitive),
+                    CompletionsTrigger::Keybinding,
+                    editor_model_snapshot(input, ctx),
+                    ctx,
+                );
+            });
+            input.update(&mut app, |input, ctx| {
+                input
+                    .input_suggestions
+                    .update(ctx, |suggestions, ctx| suggestions.select_next(ctx));
+                // The give-up's guard over the line (re-armed: opening the menu is not the
+                // subject here).
+                input.arm_enter_guard(
+                    "git checkout fe".to_string(),
+                    EnterGuardKind::Glue,
+                    GLUE_GUARD_TOAST,
+                );
+            });
+            input.update(&mut app, |input, ctx| input.user_insert("zz", ctx));
+            input.read(&app, |input, ctx| {
+                assert_eq!(input.buffer_text(ctx), "git checkout fezz", "{mode:?}");
+                assert!(
+                    input.input_suggestions.as_ref(ctx).has_pending_refilter(),
+                    "{mode:?}: the refilter is still in the background"
+                );
+                assert!(
+                    input.should_enter_accept_completion_suggestion(ctx),
+                    "{mode:?}: the old list still offers its highlighted item"
+                );
+                assert_eq!(
+                    input.enter_guard_for_test().map(|(kind, _)| kind),
+                    Some(EnterGuardKind::Glue),
+                    "{mode:?}"
+                );
+            });
+            input.update(&mut app, |input, ctx| input.input_enter(ctx));
+            assert!(
+                executed.borrow().is_empty(),
+                "{mode:?}: the glued line must not run"
+            );
+            input.read(&app, |input, ctx| {
+                assert_eq!(input.buffer_text(ctx), "git checkout fezz", "{mode:?}");
+                assert!(
+                    matches!(
+                        input.suggestions_mode_model.as_ref(ctx).mode(),
+                        InputSuggestionsMode::Closed
+                    ),
+                    "{mode:?}: the emptied menu is closed"
+                );
+            });
+            assert_eq!(
+                toasts.borrow().last().map(String::as_str),
+                Some(GLUE_GUARD_TOAST),
+                "{mode:?}: the guard held the Enter"
+            );
+        });
+    }
+}
+
 /// #1666 re-review: an accepted autosuggestion grows the handed-back line like a completion; it
 /// was not typed onto it. It drops the glue guard and the Enter runs the line at once. Both modes.
 #[test]
