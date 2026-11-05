@@ -12368,6 +12368,10 @@ async fn multiline_dialog_fixture(
         });
     });
     app.update(crate::workspace::multiline_submit_confirmation_dialog::init);
+    // The editor's own key bindings (Enter, Backspace, ...): `enter_in_editor` is the real
+    // keystroke dispatch on the editor's responder chain, and without them that Enter matched
+    // nothing and never reached the input at all.
+    app.update(crate::editor::init);
     let window_id = terminal.read(app, |_, ctx| terminal.window_id(ctx));
     let dialog = app.add_typed_action_view(window_id, |_| MultilineDialog::new());
     let asking = input.downgrade();
@@ -12398,7 +12402,7 @@ fn offer_to_dialog(
 fn enter_in_editor(app: &mut App, terminal: &ViewHandle<TerminalView>, input: &ViewHandle<Input>) {
     let window_id = terminal.read(app, |_, ctx| terminal.window_id(ctx));
     let editor = input.read(app, |input, _| input.editor().clone());
-    let _ = app
+    let handled = app
         .dispatch_keystroke(
             window_id,
             &[terminal.id(), input.id(), editor.id()],
@@ -12406,6 +12410,7 @@ fn enter_in_editor(app: &mut App, terminal: &ViewHandle<TerminalView>, input: &V
             false,
         )
         .unwrap();
+    assert!(handled, "the editor's Enter binding took the key");
 }
 
 /// #1652: waits (bounded; the drain's continuation runs on the executor) until `done` holds.
@@ -13845,12 +13850,15 @@ fn test_glue_guard_judges_the_menu_after_a_pending_refilter_empties_it() {
             input.update(&mut app, |input, ctx| input.input_enter(ctx));
             fire_tab_completion_cap(&input, &mut app);
             // The Tab menu: large enough that typing refilters it off the UI thread, and with no
-            // common prefix past `fe`, so opening it inserts nothing.
+            // common prefix past `fe`, so opening it inserts nothing. Its first item is `fe`
+            // itself: classic completions write the highlighted item into the line as they cycle
+            // to it (`fea0` made the line `git checkout fea0zz`), and cycling to `fe` highlights
+            // an item while the handed-back line stays `git checkout fe`.
             input.update(&mut app, |input, ctx| {
-                let suggestions = (0..INLINE_REFILTER_MAX_ENTRIES + 500)
-                    .map(|i| {
+                let suggestions = std::iter::once(argument_suggestion("fe"))
+                    .chain((0..INLINE_REFILTER_MAX_ENTRIES + 500).map(|i| {
                         argument_suggestion(format!("fe{}{i}", if i % 2 == 0 { "a" } else { "n" }))
-                    })
+                    }))
                     .collect();
                 input.handle_completion_suggestions_results(
                     build_suggestion_results(suggestions, (13, 15), MatchStrategy::CaseInsensitive),
