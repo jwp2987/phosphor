@@ -81,6 +81,45 @@ async fn layout_model(app: &mut App, model: &ModelHandle<CodeEditorModel>) {
         .await;
 }
 
+/// #1607: the code pane's file editor is not lazy, so a file-sized delta is laid out inline and
+/// only `LayoutUpdated` follows (`PendingEditsFlushed` is the lazy path's event). The large-layout
+/// hook (the `editor_memory open` breakdown and the opt-in trim after open) must still run once
+/// per file-sized delta, and not for a small edit. Without it the appci editor_memory_7mb case saw
+/// no open line, judged a heap-reusing reopen "did not open" and left a 7 MB editor open under the
+/// .rs measurement.
+#[test]
+fn a_non_lazy_editor_runs_the_large_layout_hook_once_per_file_sized_delta() {
+    App::test((), |mut app| async move {
+        initialize_deps(&mut app);
+        let model = mock_model(&mut app, "", ContentVersion::new());
+        layout_model(&mut app, &model).await;
+        let before = model.read(&app, |model, _| model.large_layouts_handled());
+
+        let big = "fn a() { let x = 1; }\n"
+            .repeat(warp_editor::render::layout::LAZY_LAYOUT_MIN_BLOCKS + 100);
+        let buffer = model.read(&app, |model, _| model.content().clone());
+        buffer.update(&mut app, |buffer, ctx| {
+            buffer.replace_all(big.clone(), ctx);
+        });
+        layout_model(&mut app, &model).await;
+        model.read(&app, |model, _| {
+            assert_eq!(model.large_layouts_handled(), before + 1);
+        });
+
+        model.update(&mut app, |model, ctx| {
+            model.insert("x", EditOrigin::UserTyped, ctx);
+        });
+        layout_model(&mut app, &model).await;
+        model.read(&app, |model, _| {
+            assert_eq!(
+                model.large_layouts_handled(),
+                before + 1,
+                "a one-character edit is not a file-sized layout"
+            );
+        });
+    })
+}
+
 #[test]
 fn test_two_editors_sharing_a_buffer_both_lay_out_a_large_content_replace() {
     // Regression test for APP-4844: `CodeEditorModel::new` can be handed an existing shared

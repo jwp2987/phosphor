@@ -329,6 +329,9 @@ pub struct CodeEditorModel {
     /// Set by [`Self::release_memory`]: the editor is closed, so edits to a shared buffer made
     /// elsewhere must not be laid out or parsed here again (#1407).
     released: bool,
+    /// How many times [`Self::after_large_layout`] ran (for tests).
+    #[cfg(test)]
+    large_layouts_handled: usize,
 }
 
 #[allow(dead_code)] // members used on other cfgs or tests
@@ -418,6 +421,8 @@ impl CodeEditorModel {
             lazy_layout_initialized: false,
             pending_syntax_tree_bootstrap: false,
             released: false,
+            #[cfg(test)]
+            large_layouts_handled: 0,
         }
     }
 
@@ -499,6 +504,8 @@ impl CodeEditorModel {
             lazy_layout_initialized: true,
             pending_syntax_tree_bootstrap: false,
             released: false,
+            #[cfg(test)]
+            large_layouts_handled: 0,
         }
     }
 
@@ -737,6 +744,13 @@ impl CodeEditorModel {
                 }
             }
             RenderEvent::LayoutUpdated => {
+                // A non-lazy editor (the code pane's file editor) lays a delta out inline and only
+                // emits `LayoutUpdated`; `PendingEditsFlushed` is the lazy path's event. Taking the
+                // flag only there meant a file opened in the code pane never logged
+                // `editor_memory open` nor ran the opt-in trim after open (#1607).
+                if self.render_state.as_ref(ctx).take_large_layout_done() {
+                    self.after_large_layout(ctx);
+                }
                 ctx.emit(CodeEditorModelEvent::LayoutInvalidated);
             }
             RenderEvent::NeedsResize => {}
@@ -748,7 +762,11 @@ impl CodeEditorModel {
     /// `PHOSPHOR_EDITOR_TRIM_AFTER_OPEN=1`, hands the freed transients of the load (the read text,
     /// the formatted-text copy, the delta's styled blocks, the per-line layout tasks) back to the
     /// OS on a worker. Once per large delta, never per frame.
-    fn after_large_layout(&self, ctx: &mut ModelContext<Self>) {
+    fn after_large_layout(&mut self, ctx: &mut ModelContext<Self>) {
+        #[cfg(test)]
+        {
+            self.large_layouts_handled += 1;
+        }
         if log::log_enabled!(target: "editor_memory", log::Level::Debug) {
             let buffer = self.content.as_ref(ctx).memory_stats();
             let render = self.render_state.as_ref(ctx).memory_stats();
@@ -2141,6 +2159,12 @@ impl CodeEditorModel {
     #[cfg(test)]
     pub(crate) fn syntax_tree_count(&self, ctx: &AppContext) -> usize {
         self.syntax_tree.as_ref(ctx).tree_count()
+    }
+
+    /// How many file-sized layouts [`Self::after_large_layout`] handled (for tests).
+    #[cfg(test)]
+    pub(crate) fn large_layouts_handled(&self) -> usize {
+        self.large_layouts_handled
     }
 
     /// Whether [`Self::release_memory`] ran.
