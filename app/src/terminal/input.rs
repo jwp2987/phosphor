@@ -2217,6 +2217,9 @@ pub struct Input {
     /// Test-only: a window without a workspace shows no multi-line dialog; treat it as shown.
     #[cfg(test)]
     multiline_dialog_shown_for_test: bool,
+    /// #1652: the multi-line dialog's answer (`true`: Confirm), waiting for a paste behind its
+    /// gate to be read (or for a busy queue); applied at the queue's next free moment.
+    pending_multiline_dialog_answer: Option<bool>,
     /// #1181: macOS activity assertion held while an Enter is deferred (App Nap and timer
     /// coalescing stranded the backstop timers on a late wake).
     deferred_enter_activity: DeferredEnterActivity,
@@ -4000,6 +4003,7 @@ impl Input {
             replayed_sink_for_test: None,
             #[cfg(test)]
             multiline_dialog_shown_for_test: false,
+            pending_multiline_dialog_answer: None,
             deferred_enter_activity: DeferredEnterActivity::default(),
             handoff_enter_started: None,
             running_deferred_enter: false,
@@ -6969,21 +6973,16 @@ impl Input {
         if !std::mem::take(&mut self.awaiting_multiline_submit_confirmation) {
             return;
         }
-        self.multiline_submit_confirmed = true;
-        let was_deferred = std::mem::replace(&mut self.running_deferred_enter, true);
-        let submitted = self.input_enter_as_shell_command(ctx);
-        self.running_deferred_enter = was_deferred;
-        self.multiline_submit_confirmed = false;
-        self.release_multiline_dialog_gate(submitted, ctx);
+        self.answer_multiline_dialog(true, ctx);
     }
 
     /// The user declined: the text stays in the input exactly as it was, and what was typed while
-    /// the dialog was open is released to it in typed order, an Enter among it acting as a typed
-    /// Enter after the keys before it (#1652).
+    /// the dialog was open goes on a line of its own after it; nothing runs (#1652, owner: "own
+    /// line, like #1571").
     pub(crate) fn cancel_multiline_submit(&mut self, ctx: &mut ViewContext<Self>) {
         self.awaiting_multiline_submit_confirmation = false;
         ctx.focus(&self.editor);
-        self.release_multiline_dialog_gate(false, ctx);
+        self.answer_multiline_dialog(false, ctx);
     }
 
     /// #1652: the Enter that waited for the dialog was voided (^C): nothing waits for an answer
@@ -11921,6 +11920,8 @@ impl Input {
     /// Attempts to write the EOT (End-of-Transmission) char to the PTY, which is canonically mapped
     /// to Ctrl-D. If successful, the session is terminated.
     fn ctrl_d(&mut self, ctx: &mut ViewContext<Self>) {
+        // #1652: an EOF voids the Enter waiting for the multi-line dialog first (as ^C does).
+        self.cancel_multiline_dialog("editor_eof", ctx);
         ctx.emit(Event::CtrlD);
     }
 
@@ -14170,8 +14171,20 @@ impl Input {
                 #[cfg(not(test))]
                 let shown_for_test = false;
                 if shown.load(Ordering::SeqCst) || shown_for_test {
-                    self.awaiting_multiline_submit_confirmation = true;
-                    self.gate_enter_for_multiline_dialog(ctx);
+                    if self.gate_enter_for_multiline_dialog(ctx) {
+                        self.awaiting_multiline_submit_confirmation = true;
+                    } else {
+                        // L1: a dialog is never open without its gate (every key held): it
+                        // closes, nothing runs, the text stays.
+                        log::warn!(
+                            "input: the multi-line dialog's gate could not be set; the dialog is \
+                             closed and nothing runs (#1652)"
+                        );
+                        let input = ctx.handle();
+                        ctx.dispatch_typed_action(
+                            &WorkspaceAction::DismissMultilineSubmitConfirmationDialog { input },
+                        );
+                    }
                 } else {
                     log::warn!(
                         "input: the multi-line submit dialog was not shown; nothing is run and the \

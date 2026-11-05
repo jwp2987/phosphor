@@ -1045,8 +1045,9 @@ pub fn init(ctx: &mut AppContext) {
     )]);
 }
 
-/// Actions that can be performed on an [`EditorView`].
-#[derive(Debug)]
+/// Actions that can be performed on an [`EditorView`]. `Clone` so a key typed while the
+/// multi-line submit dialog waits can be held as itself (#1652).
+#[derive(Clone, Debug)]
 pub enum EditorAction {
     Scroll(Vector2F),
     Select(SelectAction),
@@ -3287,23 +3288,57 @@ impl EditorView {
             use crate::terminal::input_queue::GateKind;
             let (behind_enter, behind_unready_enter, behind_dialog) =
                 queue.try_peek().map_or((false, false, false), |held| {
-                    let behind = (held.has_gate_kind(GateKind::EnterVerdict)
-                        || held.has_gate_kind(GateKind::TabCompletion))
-                        && !held.has_editor_paste_reading();
-                    (
-                        behind,
-                        behind && held.has_unready_enter_gate(),
-                        behind && held.has_multiline_dialog_gate(),
-                    )
+                    // #1652: the multi-line dialog's rule holds whatever else is open behind it (a
+                    // paste being read included): every key waits for the answer.
+                    let dialog = held.has_multiline_dialog_gate();
+                    let behind = dialog
+                        || ((held.has_gate_kind(GateKind::EnterVerdict)
+                            || held.has_gate_kind(GateKind::TabCompletion))
+                            && !held.has_editor_paste_reading());
+                    (behind, behind && held.has_unready_enter_gate(), dialog)
                 });
+            if behind_dialog {
+                // #1652: behind the Enter that waits for the multi-line dialog EVERY key counts and
+                // none acts on the waiting buffer: text is text, an Enter is an entry, and any
+                // other key waits as itself. The answer resolves them (`resolve_dialog_typeahead`):
+                // into the next line(s) on Confirm, onto a line of their own on Cancel. A signal
+                // (^C above), a paste (its own read, above) and scrolling are not keys of the line.
+                let kind = match action {
+                    EditorAction::UserInsert(text) => EntryKind::Text(String::clone(text)),
+                    EditorAction::Enter => EntryKind::Enter,
+                    // Not keys of the line: the pointer, the deferred replay step, and actions
+                    // that do not touch the buffer.
+                    EditorAction::Scroll(_)
+                    | EditorAction::ReplayHeldKeys
+                    | EditorAction::Select(_)
+                    | EditorAction::TryToShowXRay(_)
+                    | EditorAction::HideXRay
+                    | EditorAction::UnhandledModifierKey(_)
+                    | EditorAction::Copy
+                    | EditorAction::SetAIContextMenuOpen(_)
+                    | EditorAction::AttachFiles
+                    | EditorAction::ReadAndProcessImagesAsync { .. }
+                    | EditorAction::ProcessNonImageFiles { .. } => return false,
+                    other => EntryKind::EditorKey(EditorKeyPayload::new(HeldPasteKey::Action(
+                        other.clone(),
+                    ))),
+                };
+                match queue.try_lock_ordered() {
+                    Some(mut guard) => {
+                        let mut host = paste_hold::EditorQueueHost { editor: self, ctx };
+                        guard.offer(&mut host, kind);
+                    }
+                    None => queue.defer(crate::terminal::input_queue::Deferred::Offer {
+                        kind,
+                        origin: crate::terminal::input_queue::Origin::Keyboard,
+                        stamp: queue.stamp_now(),
+                    }),
+                }
+                return true;
+            }
             if behind_enter {
                 let kind = match action {
                     EditorAction::UserInsert(text) => EntryKind::Text(String::clone(text)),
-                    // #1652: vim's typed text too, behind the dialog's Enter (it is routed as typed
-                    // text after the answer, where vim takes it again).
-                    EditorAction::VimUserInsert(text) if behind_dialog => {
-                        EntryKind::Text(String::clone(text))
-                    }
                     EditorAction::Enter => EntryKind::Enter,
                     // #1571: behind an Enter the shell could not take yet, the line it holds was
                     // submitted: an editing key belongs to the NEXT line, as on a tty. It waits in
@@ -3312,15 +3347,6 @@ impl EditorView {
                     // edits the held line. A key with no such form acts at once, as before.
                     _ if behind_unready_enter => match held_form_of_editor_key(action) {
                         Some((class, text)) => EntryKind::Held { class, text },
-                        // #1652: behind the Enter that waits for the multi-line dialog every key
-                        // counts: one with no tty form waits as an editor key, in order, and acts
-                        // on the editor after the answer (never on the waiting buffer).
-                        None if behind_dialog && paste_hold::held_form(action).is_some() => {
-                            match paste_hold::held_form(action) {
-                                Some(key) => EntryKind::EditorKey(EditorKeyPayload::new(key)),
-                                None => return false,
-                            }
-                        }
                         // #1586: navigation and editing keys with no tty form carry no text; the
                         // held line must not change, so they are swallowed.
                         None if matches!(

@@ -15120,6 +15120,7 @@ impl Workspace {
         event: &pane_group::Event,
         ctx: &mut ViewContext<Self>,
     ) {
+        self.close_multiline_dialog_if_asker_gone(ctx);
         match event {
             pane_group::Event::AppStateChanged => {
                 ctx.dispatch_global_action("workspace:save_app", ());
@@ -17539,11 +17540,21 @@ impl Workspace {
 
     fn restore_previous_workspace_state(&mut self, ctx: &mut ViewContext<Self>) {
         if let Some(previous_state) = self.previous_workspace_state.take() {
+            // #1652 (L2): the multi-line dialog is not part of the state being restored: its
+            // asking Enter still holds every key behind its gate, so the dialog stays up (and
+            // keeps focus) until it is answered.
+            let multiline_dialog_open = self
+                .current_workspace_state
+                .is_multiline_submit_confirmation_dialog_open;
             self.current_workspace_state = previous_state;
+            self.current_workspace_state
+                .is_multiline_submit_confirmation_dialog_open = multiline_dialog_open;
 
             // Assumption: at most one of the states will be active.
             // If none are, then we focus the terminal view instead.
-            if self.current_workspace_state.is_palette_open {
+            if multiline_dialog_open {
+                ctx.focus(&self.multiline_submit_confirmation_dialog);
+            } else if self.current_workspace_state.is_palette_open {
                 self.open_command_palette(ctx);
             } else if self.current_workspace_state.is_theme_chooser_open {
                 self.focus_theme_chooser(ctx);
@@ -17718,6 +17729,32 @@ impl Workspace {
         ctx.focus(&self.multiline_submit_confirmation_dialog);
         ctx.notify();
         true
+    }
+
+    /// #1652 (L2): a dialog whose asking input is gone (its pane or tab closed) closes; its answer
+    /// would go nowhere. Checked on every pane-group event (a close is one) and when the dialog
+    /// reports its asker gone.
+    fn close_multiline_dialog_if_asker_gone(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self
+            .current_workspace_state
+            .is_multiline_submit_confirmation_dialog_open
+        {
+            return;
+        }
+        let gone = self
+            .multiline_submit_confirmation_dialog
+            .as_ref(ctx)
+            .asker_is_gone(ctx);
+        if !gone {
+            return;
+        }
+        log::info!("workspace: the multi-line dialog's asking input is gone; closed (#1652)");
+        self.multiline_submit_confirmation_dialog
+            .update(ctx, |view, _| view.set_asking_input(None));
+        self.current_workspace_state
+            .is_multiline_submit_confirmation_dialog_open = false;
+        self.focus_active_tab(ctx);
+        ctx.notify();
     }
 
     /// #1652: the input whose Enter waited for the dialog voided it (^C): the dialog closes

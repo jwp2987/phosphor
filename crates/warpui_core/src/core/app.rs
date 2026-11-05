@@ -1688,7 +1688,6 @@ impl AppContext {
         }
     }
 
-    /// Dispatch a typed action using the given view as the base of the responder_chain
     /// The responder chain of `view_id` (root first, the view last): what a key typed while that
     /// view has focus is matched against. A modal that holds keys for a view behind it (#1652)
     /// dispatches them on this chain, so they act exactly as if typed there.
@@ -1696,6 +1695,7 @@ impl AppContext {
         self.responder_chain_for_view(window_id, view_id)
     }
 
+    /// Dispatch a typed action using the given view as the base of the responder_chain
     pub fn dispatch_typed_action_for_view(
         &mut self,
         window_id: WindowId,

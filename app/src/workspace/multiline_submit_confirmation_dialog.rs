@@ -45,7 +45,7 @@ pub fn init(app: &mut AppContext) {
         FixedBinding::custom(
             CustomAction::Paste,
             MultilineSubmitConfirmationAction::PasteIntoInput,
-            crate::t!("keybinding-desc-editor-paste"),
+            DIALOG_PASTE_DESCRIPTION,
             id!(MultilineSubmitConfirmationDialog::ui_name()),
         ),
         FixedBinding::standard(
@@ -57,13 +57,17 @@ pub fn init(app: &mut AppContext) {
         FixedBinding::custom(
             CustomAction::WindowsPaste,
             MultilineSubmitConfirmationAction::PasteIntoInput,
-            crate::t!("keybinding-desc-editor-paste"),
+            DIALOG_PASTE_DESCRIPTION,
             id!(MultilineSubmitConfirmationDialog::ui_name()),
         ),
     ]);
 }
 
 const DIALOG_WIDTH: f32 = 460.;
+
+/// The description of the dialog's paste bindings: its own (the editor's "Paste" is listed once,
+/// by the editor), since this paste goes to the input that asked, behind its waiting Enter.
+const DIALOG_PASTE_DESCRIPTION: &str = "Paste into the input waiting for the multi-line answer";
 
 pub struct MultilineSubmitConfirmationDialog {
     cancel_mouse_state: MouseStateHandle,
@@ -110,6 +114,11 @@ impl MultilineSubmitConfirmationDialog {
         self.asking_input
             .take()
             .and_then(|input| input.upgrade(ctx))
+    }
+
+    /// The dialog asks for an input that no longer exists (#1652, L2).
+    pub fn asker_is_gone(&self, ctx: &AppContext) -> bool {
+        self.asking_input.is_some() && self.asking_input(ctx).is_none()
     }
 
     /// The asking input, if it still exists.
@@ -161,6 +170,11 @@ impl View for MultilineSubmitConfirmationDialog {
         ctx: &mut ViewContext<Self>,
     ) -> PaneKeyOutcome {
         let Some(input) = self.asking_input(ctx) else {
+            if self.asker_is_gone(ctx) {
+                // L2: the input that asked is gone (its pane closed): the dialog closes, its
+                // answer going nowhere.
+                ctx.emit(MultilineSubmitConfirmationEvent::Cancel);
+            }
             return PaneKeyOutcome::NotMine;
         };
         let editor = input.as_ref(ctx).editor().clone();

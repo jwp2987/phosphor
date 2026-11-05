@@ -515,7 +515,7 @@ impl RemoteSelections {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum SelectAction {
     Begin {
         position: DisplayPointAndClampDirection,

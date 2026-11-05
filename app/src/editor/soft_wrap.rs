@@ -283,7 +283,7 @@ impl FrameLayouts {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct DisplayPointAndClampDirection {
     pub point: DisplayPoint,
     pub clamp_direction: ClampDirection,

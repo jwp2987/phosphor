@@ -2741,6 +2741,10 @@ impl TerminalView {
                 if !self.complete_queued_paste_read(id, ok, ctx) {
                     return Err(Deferred::PasteRead { id, ok });
                 }
+                // #1652: a multi-line dialog answer that waited for this read goes now.
+                self.input.update(ctx, |input, ctx| {
+                    input.apply_pending_multiline_dialog_answer(ctx)
+                });
             }
             Deferred::ReleasePromptHold { hold_id, gave_up } => {
                 let how = if gave_up {

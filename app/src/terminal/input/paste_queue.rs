@@ -523,8 +523,17 @@ impl Input {
             guard.on_paste_read(&mut host, id, result);
         }
         drop(guard);
-        self.paste_payloads.remove(&id);
-        self.paste_refused.remove(&id);
+        // #1652: a paste that is still queued (behind a gate) keeps its content until it is
+        // delivered or taken; only a delivered or discarded one is gone.
+        let still_queued = queue.try_peek().is_some_and(|held| {
+            held.entries().any(
+                |entry| matches!(&entry.kind, EntryKind::Paste { paste_id, .. } if *paste_id == id),
+            )
+        });
+        if !still_queued {
+            self.paste_payloads.remove(&id);
+            self.paste_refused.remove(&id);
+        }
         // The paste landed: programmatic edits and a pending command that waited behind it go
         // now (#1434, #1435).
         self.flush_deferred_programmatic_edits(ctx);

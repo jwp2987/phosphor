@@ -1742,7 +1742,9 @@ Harness changes plus two small app changes. `run.py --self-test` covers the harn
 The `Run N lines one at a time?` dialog takes focus; a key its bindings did not take was dropped
 (`kh_editor_elem_typed ... live_focus=no accepted=false`) and the next Enter answered it. The first fix
 (fa7534097) kept the keys in a side list and was redesigned after review: the asking Enter is now a gate on the
-pane queue (decision and rules in `DECLINED.md`, "Keys typed while the multi-line submit dialog is open").
+pane queue (decision and rules in `DECLINED.md`, "Keys typed while the multi-line submit dialog is open"); the
+answer resolves what waited before releasing it (`resolve_dialog_typeahead`). `TerminalView::settle_enter_queue_for_test`
+drives the view's after-Enter settle so a test does not depend on the order of its hops.
 The dialog is a pane key sink that hands each key to the asking input's editor (typed text as typed text, a key
 down dispatched on the editor's responder chain, `AppContext::responder_chain_of`), so it queues behind the gate
 like a key typed in the editor; Confirm releases the gate as after any submitted Enter, Cancel to the editor.
@@ -1753,10 +1755,12 @@ A test window has no workspace, so `multiline_submit_fixture_with_terminal` mark
 
 | guarantee | test |
 |---|---|
-| keys on the dialog and in the editor wait behind the asking Enter in typed order; an editor Enter is an entry; Cancel replays them, the held Enter asking again about the buffer with the text before it only (both `DestinationMode`s) | `multiline_dialog_holds_keys_behind_its_enter_and_cancel_replays_them_in_order` (`terminal/input_test.rs`) |
-| Confirm runs the waiting buffer alone, once, nothing glued to it; the held text / Enter / text reach the running command as `ls\rpwd` once the pty has it (hand-off on, both modes) | `multiline_dialog_confirm_runs_the_buffer_then_the_held_keys_follow_it` |
-| keys the dialog has no binding for count: ctrl-w through the real dispatch (cut word left) and a paste wait in order and act after Cancel (both modes) | `multiline_dialog_holds_unmapped_keys_and_a_paste_in_order` |
-| ^C voids the waiting Enter and what followed it | `ctrl_c_voids_the_enter_waiting_for_the_multiline_dialog` |
+| keys on the dialog and in the editor wait behind the asking Enter in typed order; an editor Enter is an entry; Cancel puts them on a line of their own (`{text}\nls\npwd`), no second ask, nothing runs (both `DestinationMode`s) | `multiline_dialog_cancel_puts_the_held_keys_on_a_line_of_their_own` (`terminal/input_test.rs`) |
+| held Backspace / Left (real dispatch) act on the new line only; surplus Backspaces never reach the buffer (both modes) | `multiline_dialog_held_editing_keys_act_on_the_new_line_only` |
+| VimBackspace, a file drop, Ctrl-U (clear and copy: the new line only, the clipboard gets it), Escape are held, not applied to the buffer (both modes) | `multiline_dialog_holds_editor_only_keys` |
+| Confirm runs the buffer alone, once; the held keys are resolved (ctrl-w cut, the paste after it inserts the cut) and follow as Text / Enter only, to one destination: `echo Xhi\rpwd` to the running command once the view settles (driven explicitly; hand-off on, both modes) | `multiline_dialog_confirm_runs_the_buffer_then_the_resolved_keys_follow_it` |
+| the line model the held keys are resolved on | `dialog_typeahead_resolution_rules` |
+| ^C / ^D void the waiting Enter and what followed it; a signal reaching the queue directly keeps the gate | `ctrl_c_voids_the_enter_waiting_for_the_multiline_dialog`, `ctrl_d_voids_the_enter_waiting_for_the_multiline_dialog`, `a_signal_at_the_queue_keeps_the_multiline_dialog_gate` |
 | no dialog shown, nothing held (F9) | `an_unshown_multiline_dialog_holds_nothing` |
 | the answer goes to the asking input only, to nobody when it is gone (F6) | `the_multiline_dialog_answers_only_the_input_that_asked` |
 | the dialog's Enter confirms and Escape cancels (F7) | `multiline_dialog_enter_confirms_and_escape_cancels` |

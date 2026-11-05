@@ -13116,6 +13116,12 @@ impl TerminalView {
     /// taken it. Event driven: called when the Enter has run, when the typeahead hand-off engages
     /// (`TypeaheadHandoffChanged`) and when the command's block starts. The only timer is the
     /// give-up cap for a pty that never takes the command, armed once and logged when it fires.
+    /// Test-only: the settle the view runs on the pty's events (#1652 tests drive it explicitly).
+    #[cfg(test)]
+    pub(crate) fn settle_enter_queue_for_test(&mut self, ctx: &mut ViewContext<Self>) {
+        self.settle_enter_queue(ctx);
+    }
+
     fn settle_enter_queue(&mut self, ctx: &mut ViewContext<Self>) {
         if !self.input.as_ref(ctx).enter_queue_awaits_route(ctx) {
             return;

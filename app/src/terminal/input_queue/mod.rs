@@ -1423,7 +1423,15 @@ impl InputQueue {
                 return;
             }
             let held_before = self.entries.len();
-            match gate.kind.signal_plan() {
+            // #1652: the gate of an Enter waiting for the multi-line dialog is the Input's: only
+            // the Input ends it (the answer, or its own void on ^C / ^D, which closes the dialog
+            // too), so the queue never drops it under an Input that still waits for an answer.
+            let plan = if gate.kind == GateKind::EnterVerdict && is_multiline_dialog_key(gate.key) {
+                SignalPlan::SignalThenKeepGate
+            } else {
+                gate.kind.signal_plan()
+            };
+            match plan {
                 SignalPlan::CancelPasteThenFlush => {
                     self.gates.retain(|g| g.token != gate.token);
                     self.discard_where(host, DiscardReason::PasteCancelled, |held| {
