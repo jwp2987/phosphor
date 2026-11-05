@@ -1843,3 +1843,30 @@ queues; the answer discards them all with a log line and a toast. A test window 
 
 - **`flood_scrollback_find` (terminal, Mac): HARNESS, and the case was vacuous.** The marker was the first output line of the same block as the 500,000-line flood, and a block keeps at most `terminal.maximum_grid_size` rows (default 50,000, `terminal/settings.rs`), so the marker was evicted before Find ran. The r18u19 "pass" was OCR reading the marker in the Find FIELD (`shots/terminal_find_after.png` of r18u19: the output still shows 499967..500000, nothing scrolled); r18u22 failed because OCR missed that field text behind a macOS notification banner. The injector's "Enter: sent 2, app saw 1" is not a loss: the second Enter is the Find field's (`mac_enter app_send_event` + `core_enter ... handled` in the app log, no `enter_begin`), and the agent pass shows the same 210/205. Now the marker is its own command (its own block), proven to have run in the shell (rec.log; an Enter lost before the app is retyped, up to 3 tries, each noted), the flood is the next block, and the check needs the marker AND a view that scrolled away from the flood's tail (499999/500000 on screen before the Find, gone after).
 - **`ssh_nested_typeahead` (terminal, Mac): APP-side designed give-up under load, not a connect failure and not the `local_where` change.** In the app log the first ssh connected and the hand-over released the 5 held keys; the second `ssh fake` Enter arrived 38 ms later, the shell-or-chat verdict had spent 20.4 ms of its 20 ms compute cap, and by #1577 the clock never chooses: `kh_enter_gate_give_up by=verdict_cap submitted=false`, the line stayed in the editor and `ssh fakeecho T..` ran at the first remote. Nothing ran in a wrong place. The case now notices a verdict give-up in the app log, recovers (probe + proven `exit`) and runs the trial again, up to 3 trials, every give-up noted and in the metric `verdict_give_up_retries`; the third give-up fails it.
+
+## Busy-machine data-loss timers: pane-close hang-up grace and the quit-time clipboard hand-off (#1685, #1692, #1693)
+
+From the busy-machine timer audit (`docs/audits/2026-11-05-busy-machine-timers.md`, H25, H32, H33). Owner
+principle: the app must not need a quiet machine. Each timer is a give-up net that ends early on its event, so
+raising it costs a normal close or quit nothing.
+
+- **#1685 `HANGUP_GRACE` (300 ms → 5 s, `app/src/terminal/local_tty/process_tree.rs`).** On a pane close the
+  foreground program gets SIGHUP and is SIGKILLed only if it is still alive after the grace; it used to be killed
+  mid-save after 300 ms. The grace runs on the "PTY child reaper" thread, so the close is instant, and it ends as
+  soon as the foreground group exits. Only groups still alive at the grace (plus the shell's own group) are
+  SIGKILLed. At app quit nothing waits on a reaper: if the process exits inside a grace the SIGKILL is never sent;
+  the program has had its SIGHUP, and one that ignores it keeps running, as after closing a plain terminal
+  emulator. Tests (`process_tree_tests.rs`): fake-clock policy `program_that_exits_within_the_grace_is_never_killed`,
+  `program_that_ignores_sighup_is_killed_after_the_grace`, `only_the_groups_alive_at_the_grace_are_killed`,
+  `no_foreground_group_means_no_wait`, `hangup_grace_survives_a_loaded_machine`; real processes on a pty (Linux):
+  `close_returns_at_once_while_the_reaper_sits_in_the_grace` (sits out the full 5 s grace in the background),
+  `foreground_cleanup_after_sighup_is_not_killed` (a 1 s cleanup finishes), and
+  `foreground_program_ignoring_sighup_is_killed_after_the_grace` (500 ms grace via `terminate_shell_tree_with_grace`).
+- **#1692 / #1693 Linux clipboard at quit (`crates/warpui/src/windowing/winit/linux/clipboard.rs`).**
+  `EXIT_PENDING_WRITE_WAIT` 300 ms → 2 s (woken by the serial writer's Condvar), `EXIT_HANDOFF_BUDGET` 600 ms → 3 s
+  (woken by the helper thread's done message, `run_with_budget`), and arboard's clipboard-manager handover wait
+  100 ms → 1 s (`lib/arboard/src/platform/linux/x11.rs`, woken by `handover_cv`). The budget covers the pending wait
+  plus the handover and stays under the 5 s signal `SHUTDOWN_DEADLINE`. Tests (`clipboard_tests.rs`,
+  `bounded_wait_tests`): `exit_waits_survive_a_loaded_machine_within_the_shutdown_deadline`,
+  `exit_handoff_wait_ends_when_the_work_does`, `exit_handoff_wait_gives_up_at_its_budget`, with the existing
+  `exit_wait_is_woken_by_the_writer_finishing_not_polled`.
