@@ -2126,8 +2126,11 @@ Harness only; `run.py --self-test` covers it (`r18u23_paste_backlog_and_bash_age
 - **`agent_approval` in a bash pane.** The app keeps the agent's command wrapper out of the shell history by design (#904: HISTIGNORE on
   `__phosphor_ap_`), and the bash rc hook builds `rec.log` from `history 1`. A bash pane's `rec.log` therefore never shows an approved
   command; the zsh hook logs from preexec, so macOS is unaffected. In a bash pane (Windows Git Bash, Linux), if `rec.log` does not show
-  the command, it must instead appear in exactly one of the app's `hop=pty_write_bytes class=UserCommand` writes. The rejected command
-  must appear in none. The effect-file check (exactly the token, once) is unchanged.
+  the command, it must instead appear in exactly one of the app's `hop=pty_write_bytes class=UserCommand` writes, **but that hop is
+  Windows-only** (`event_loop.rs`: `if cfg!(windows)`), so a Linux log has none (the case reported "0 pty writes" although the command ran).
+  `approved_once_verdict` therefore counts the hop only when the log carries it; otherwise the effect file (`echo tok >> ap_ok.txt`, one
+  line per run) is the count: exactly `[tok]` passes, no line or two lines fail (selftest `r18u23_...`). The rejected command's hop check
+  likewise runs only where the hop exists; the empty `ap_rej.txt` check covers the rest.
 - **Triaged, not harness:** `tabs_streaming` (Git Bash, both modes, 8/10) and `tabs_two_windows` (PowerShell, 15/16) are the #1658
   mechanism. A young Enter hold on ConPTY (`TimingWindow`) reaches `young_hold_cap` before the Preexec that would have released it.
   It hands the Enter and the keys behind it back to the editor, while later keys still go to the pty, so the line is reordered or
