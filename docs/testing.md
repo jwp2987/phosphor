@@ -1908,6 +1908,23 @@ came out as `[Text("lspwd")]` (r18u23; the confirm test's Enter was silently los
 - **`flood_scrollback_find` (terminal, Mac): HARNESS, and the case was vacuous.** The marker was the first output line of the same block as the 500,000-line flood, and a block keeps at most `terminal.maximum_grid_size` rows (default 50,000, `terminal/settings.rs`), so the marker was evicted before Find ran. The r18u19 "pass" was OCR reading the marker in the Find FIELD (`shots/terminal_find_after.png` of r18u19: the output still shows 499967..500000, nothing scrolled); r18u22 failed because OCR missed that field text behind a macOS notification banner. The injector's "Enter: sent 2, app saw 1" is not a loss: the second Enter is the Find field's (`mac_enter app_send_event` + `core_enter ... handled` in the app log, no `enter_begin`), and the agent pass shows the same 210/205. Now the marker is its own command (its own block), proven to have run in the shell (rec.log; an Enter lost before the app is retyped, up to 3 tries, each noted), the flood is the next block, and the check needs the marker AND a view that scrolled away from the flood's tail (499999/500000 on screen before the Find, gone after).
 - **`ssh_nested_typeahead` (terminal, Mac): APP-side designed give-up under load, not a connect failure and not the `local_where` change.** In the app log the first ssh connected and the hand-over released the 5 held keys; the second `ssh fake` Enter arrived 38 ms later, the shell-or-chat verdict had spent 20.4 ms of its 20 ms compute cap, and by #1577 the clock never chooses: `kh_enter_gate_give_up by=verdict_cap submitted=false`, the line stayed in the editor and `ssh fakeecho T..` ran at the first remote. Nothing ran in a wrong place. The case now notices a verdict give-up in the app log, recovers (probe + proven `exit`) and runs the trial again, up to 3 trials, every give-up noted and in the metric `verdict_give_up_retries`; the third give-up fails it.
 
+## r18u24: `flood_scrollback_find` is APP (#1775)
+
+- **The r18u23 failure (Mac both modes, Wayland) was the app, not the case.** With the default async find
+  (`async_find` is a default cargo feature, so `FeatureFlag::AsyncFind` forces it on) `TerminalView::scroll_to_match`
+  read the focused match from the sync `block_list_find_run` only, which the async path never fills: Find found and
+  highlighted the marker in its older block but never moved the view (`view scrolled away from the flood's tail=False`).
+  The async port (e2226e40a) missed the pin's `focused_block_list_match`, and e12a0f2cb removed that helper as
+  zero-caller. It is restored and used; a find or Enter that runs before the background scan has reported leaves the
+  scroll pending until the find model's next `RanFind` (cleared on scroll, on a scan that ends with no match, and on
+  find-bar close). The injector's "Enter: sent 3, app saw 2" is the Find field's Enter, as in the r18u23 note: not a loss.
+- Unit tests (`app/src/terminal/view_test.rs`): `find_scrolls_to_older_block_above_{huge,normal}_block_async` (+
+  `_inverted_blocklist`), `find_scrolls_to_older_block_above_huge_block_sync`,
+  `find_scrolls_to_older_block_above_normal_block_sync_inverted_blocklist`: a marker block, then a flood block (capped
+  grid, truncated, or a normal 1,000-line block); control: the marker is off screen; Find + an immediate Enter must put
+  it on screen and leave nothing pending. `async_find_without_match_leaves_no_pending_scroll`: a match-less scan clears
+  the pending scroll, so later streaming output cannot pull the view.
+
 ## Busy-machine data-loss timers: pane-close hang-up grace and the quit-time clipboard hand-off (#1685, #1692, #1693)
 
 From the busy-machine timer audit (`docs/audits/2026-11-05-busy-machine-timers.md`, H25, H32, H33). Owner
