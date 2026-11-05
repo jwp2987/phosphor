@@ -4380,6 +4380,8 @@ ACCEPTED_FOR_RELEASE = {"editor_open_cost": {"issue": 1607, "release": "0.1.17",
                                                        "why": "owner 2026-11-05: Enter-over-ssh overhead accepted for this release (the gap is OS event delivery before the app, #1606)"},
                         "ctrl_c_flood": {"issue": 1653, "release": "0.1.17", "platforms": ("macos", "linux", "windows"),
                                          "why": "owner 2026-11-04: Ctrl-C under flood over %s ms accepted for this release (#1653 / #1606)" % CTRLC_FLOOD_RELEASE_MS},
+                        "tabs_streaming_reorder_1658": {"issue": 1658, "release": "0.1.17", "platforms": ("windows",),
+                                                        "why": "owner 2026-11-04: the Windows streaming-tabs young-hold reorder (#1658) is known for v0.1.17; design after the release"},
                         "editor_close_trim_ui": {"issue": 1607, "release": "0.1.17", "platforms": ("linux",),
                                                  "why": "owner 2026-11-05: the one-off close-trim UI pause on Linux is accepted"},
                         "remote_heredoc_remote_editor": {"issue": 1129, "release": "0.1.17",
@@ -4912,6 +4914,26 @@ def stream_cmd(ctx, i):
     return "while :; do echo streaming_%d_line; sleep 0.02; done" % i
 
 
+def streaming_exact_lines(ctx, r, got, exp, what, log_off):
+    """the tabs_streaming / tabs_two_windows 'N/M exact lines' verdict. Owner 2026-11-04 (#1658, v0.1.17, Windows only): the young-hold REORDER (every key
+    arrives, a command line lands out of order or glued) is KNOWN with its numbers, but ONLY when the app log since `log_off` shows no discarded keys. A
+    'typed after Enter were discarded' / 'was discarded' line is a real loss under the new drop rule and still FAILS; so does an unreadable log (fail
+    closed), any other platform, and any release after 0.1.17."""
+    msg = "%s: %d/%d exact lines" % (what, sum(a == b for a, b in zip(got, exp)), len(exp))
+    if got == exp:
+        r.check(True, msg)
+        return
+    missing = len(exp) - len([g for g in got if g in exp])
+    msg += " (%d got, %d expected line(s) missing)" % (len(got), missing)
+    acc = accepted_for_release("tabs_streaming_reorder_1658")
+    log = ctx.log_since(log_off) if getattr(ctx, "log_path", None) else None
+    discarded = log is None or "typed after Enter were discarded" in log or "was discarded" in log
+    if acc and not discarded and any(plat().startswith(p_) for p_ in acc.get("platforms", ("",))):
+        r.known("%s, no key discarded in the app log [ACCEPTED_FOR_RELEASE #%d v%s: %s]" % (msg, acc["issue"], acc["release"], acc["why"]))
+    else:
+        r.check(False, msg + (" (a discard is logged or the log is unreadable)" if discarded else ""))
+
+
 @case("tabs_streaming", order=91, gui=True)
 def c_tabs_streaming(ctx, r):
     """12 tabs each streaming a line every 20 ms, then ONE more tab: 10 fast-typed commands in it arrive exactly, in order, and the app survives
@@ -4924,6 +4946,7 @@ def c_tabs_streaming(ctx, r):
         time.sleep(0.7)
         ctx.be.type(stream_cmd(ctx, i), 10, enter=True)
     ctx.rm("tw_s.txt")
+    log_off = ctx.log_size()
     ctx.be.key(newtab)
     time.sleep(1.0)
     exp = []
@@ -4936,7 +4959,7 @@ def c_tabs_streaming(ctx, r):
     ctx.shot("tabs_streaming")
     r.check(ctx.app.alive(), "app died with %d streaming tabs" % ntabs)
     got = ctx.lines("tw_s.txt")
-    r.check(got == exp, "typing under %d streaming tabs: %d/%d exact lines" % (ntabs, len(got), len(exp)))
+    streaming_exact_lines(ctx, r, got, exp, "typing under %d streaming tabs" % ntabs, log_off)
 
 
 @case("tabs_two_windows", order=90, gui=True)
@@ -4960,6 +4983,7 @@ def c_tabs(ctx, r):
     if w:
         r.check(len(w) >= 2, "second window did not open (%d windows; key %s)" % (len(w), newwin))
     ctx.rm("tw.txt")
+    log_off = ctx.log_size()
     exp = []
     mark = ctx.cmd_mark()
     for i in range(ctx.count(15)):
@@ -4970,7 +4994,7 @@ def c_tabs(ctx, r):
     ctx.be.paste(enter=True)
     exp.append("PASTED_ok")
     ctx.until(lambda: len(ctx.lines("tw.txt")) >= len(exp), 30)
-    r.check(ctx.lines("tw.txt") == exp, "typing/paste in window 2 under %d streaming tabs: %d/%d exact lines" % (ntabs, len(ctx.lines("tw.txt")), len(exp)))
+    streaming_exact_lines(ctx, r, ctx.lines("tw.txt"), exp, "typing/paste in window 2 under %d streaming tabs" % ntabs, log_off)
     ctx.shot("two_windows")
     r.check(ctx.app.alive(), "app not alive at the end of the tabs/windows case")
 
