@@ -621,7 +621,8 @@ SKIP on macOS/Windows (Cmd-Q is forbidden by the Mac safety rules; the editor op
 - `flood_scrollback_find` (62): (r18u23: the marker is the output of its OWN command, printed and proven to have run before the flood; the earlier same-block form lost it to the 50,000-row block cap, see the r18u23 notes) a random uppercase marker is printed before a flood of at least 300k lines AND 3 s (r18e4: a fast macOS finished 300k lines before the screen scrolled); control: it is NOT on screen after
   the flood; `ctrl+shift+f` + the marker + Enter must bring it on screen (OCR) and move the view off the flood's tail (an OCR line of just
   499999/500000, never the flood command's `seq 1 500000`: see the r18u27 note). On a miss it keeps looking for 12 s (diagnosis only) and quotes
-  the app's `hop=find_scroll` lines. SKIPs without tesseract (package `tesseract-ocr`).
+  the app's `hop=find_scroll` lines, with the app's own placement of the match (r18u29 note). Agent mode SKIPs when Find matched no block
+  at all (every hop `result=no_match`: the marker's block is gone from the pane; owner 2026-11-05). SKIPs without tesseract (package `tesseract-ocr`).
 - `editor_edit_save` (70; also Windows, #1544: `phosphor.exe file:///C:/...` is forwarded to the running instance over its single-instance named pipe, `cases.open_file_in_windows_app`; the second process is killed by exact pid after 30 s if it does not hand over): opens a file in the code editor (`<bin> file://PATH` forwarded over the app's D-Bus session; the opener has no
   display in its env and is killed after 30 s), types an edit at 10-25 ms/key, `ctrl+s`, byte-exact on disk; undo xN + save = original, redo
   xN + save = edited; closes the pane, changes the file outside, reopens, edits again: the disk must hold the second edit on top of the
@@ -2025,6 +2026,30 @@ came out as `[Text("lspwd")]` (r18u23; the confirm test's Enter was silently los
   `result=no_match pending=<bool>`; `TerminalView::scroll_to_match`), and the case quotes them, so a red run says whether
   the app scrolled. Wayland r18u26 read no marker at all (also not in the Find field, as in r18u22): the next run's
   `find_scroll` lines decide whether that is OCR or the app.
+
+## r18u29: `flood_scrollback_find` red in agent mode only (r18u28, Mac RC 3d6d6ed21)
+
+- r18u28 agent pass: `marker read=False`, the flood's tail gone (`tail_visible_before=True`, `after=False`), still no marker 12 s
+  later; the app log: the Find matched the marker in block 16 and scrolled (`moved=true`, `FollowsBottomOfMostRecentBlock` ->
+  `ScrollTop(30.45)`), the same shape as the terminal pass (block 17, `ScrollTop(31.9)`). So the marker's block exists in the
+  agent pane (the owner's "scrollback wiped" hypothesis is ruled out for this run: Find only matches blocks of non-zero height
+  in the current transcript, `find/model/block_list.rs run_find_on_sumtree`). r18u26 (commit 479fc797d) shows the same agent
+  pass putting the highlighted marker on screen (`shots/agent_find_after.jpg`), and no find/scroll/agent-view code changed
+  between 479fc797d and 3d6d6ed21 except the hop line. OCR read the marker nowhere, not even in the Find field it was typed
+  into, as in Wayland r18u22/r18u26; the r18u28 screenshots were not readable from the laptop. Not pinned to the app.
+- LOGGING: the `find_scroll` hop now carries the app's placement of the match in the DRAWN viewport
+  (`TerminalView::find_match_geometry`: `viewport_lines= rendered_mode= scroll_mode= agent_fullscreen= match_line= block_visible=`).
+  The case parses it (`cases_robust.find_scroll_geometry`, self-tested) and notes "the app placed the match ON screen ... OCR read
+  the marker nowhere" (look at the screenshot) or "OFF screen by the app's own geometry" (an app bug), and any disagreement
+  between the mode the scroll was computed with and the mode drawn. The verdict is unchanged.
+- Agent mode: when every hop is `result=no_match` the marker's block is not in the pane and the case SKIPs with that reason
+  (owner 2026-11-05); a check that failed before it stays FAIL (`run.skip_status`).
+- Unit tests (`view_test.rs`): `find_scrolls_to_older_block_above_huge_block_async_in_agent_view`,
+  `find_scrolls_to_older_block_above_normal_block_sync_in_agent_view`: the #1775 marker + flood test with both commands run in a
+  full-screen agent view (their blocks belong to its conversation), judged in the viewport that view draws.
+- Found on the way (latent, not this run's cause: the owner profile is the default `PinnedToBottom`): the full-screen agent
+  view DRAWS `PinnedToBottom` (`current_input_mode`) but `apply_scroll_update` computes every scroll, the Find scroll included,
+  with the `input_mode` SETTING. With `PinnedToTop` (or a Waterfall gap) the two disagree in the agent view.
 
 ## Busy-machine data-loss timers: pane-close hang-up grace and the quit-time clipboard hand-off (#1685, #1692, #1693)
 

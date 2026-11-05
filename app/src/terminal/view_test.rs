@@ -4239,10 +4239,31 @@ fn run_find_scrolls_to_older_block_test(
     max_grid_size: Option<usize>,
     flood_lines: usize,
 ) {
+    run_find_scrolls_to_older_block_test_in_view(
+        input_mode,
+        async_find,
+        max_grid_size,
+        flood_lines,
+        false,
+    );
+}
+
+/// As [`run_find_scrolls_to_older_block_test`]; with `agent_view` both commands run inside a
+/// full-screen agent view, as in the appci agent pass (`default_session_mode = "agent"`):
+/// their blocks belong to its conversation and the view draws its own input mode
+/// (`current_input_mode`), so "on screen" is judged in the viewport that is drawn.
+fn run_find_scrolls_to_older_block_test_in_view(
+    input_mode: InputMode,
+    async_find: bool,
+    max_grid_size: Option<usize>,
+    flood_lines: usize,
+    agent_view: bool,
+) {
     App::test((), |mut app| async move {
         const MARKER: &str = "QZXMARKERJWVQ";
         initialize_app_for_terminal_view(&mut app);
         let _async_find = FeatureFlag::AsyncFind.override_enabled(async_find);
+        let _agent_view = agent_view.then(|| FeatureFlag::AgentView.override_enabled(true));
         let terminal = add_window_with_terminal(&mut app, None);
 
         terminal.update(&mut app, |view, ctx| {
@@ -4259,6 +4280,28 @@ fn run_find_scrolls_to_older_block_test(
             );
         });
         let_app_settle(&mut app).await;
+
+        if agent_view {
+            terminal.update(&mut app, |view, ctx| {
+                view.enter_agent_view_for_new_conversation(
+                    None,
+                    AgentViewEntryOrigin::Input {
+                        was_prompt_autodetected: false,
+                    },
+                    ctx,
+                );
+            });
+            let_app_settle(&mut app).await;
+            terminal.read(&app, |view, ctx| {
+                assert!(
+                    view.agent_view_controller().as_ref(ctx).is_fullscreen(),
+                    "precondition: the full-screen agent view is up"
+                );
+            });
+        }
+        // The input mode of the viewport that is drawn: the setting, except in the
+        // full-screen agent view.
+        let drawn_mode = terminal.read(&app, |view, ctx| view.current_input_mode(ctx));
 
         let marker_block = terminal.update(&mut app, |view, _ctx| {
             let flood: String = (1..=flood_lines).map(|i| format!("{i}\r\n")).collect();
@@ -4286,6 +4329,25 @@ fn run_find_scrolls_to_older_block_test(
         });
         let_app_settle(&mut app).await;
 
+        if agent_view {
+            terminal.read(&app, |view, _ctx| {
+                let model = view.model.lock();
+                let block_list = model.block_list();
+                assert!(
+                    block_list.transcript_scope().is_conversation(),
+                    "precondition: the block list shows the agent view's conversation"
+                );
+                for index in [marker_block, BlockIndex(marker_block.0 + 1)] {
+                    assert!(
+                        block_list
+                            .block_at(index)
+                            .is_some_and(|block| block.is_visible(block_list.transcript_scope())),
+                        "precondition: block {index:?}, run inside the agent view, is shown in it"
+                    );
+                }
+            });
+        }
+
         let find_model = terminal.update(&mut app, |view, ctx| {
             if input_mode.is_inverted_blocklist() {
                 // The inverted list puts the newest block on top and follows its BOTTOM, which
@@ -4295,7 +4357,7 @@ fn run_find_scrolls_to_older_block_test(
                 view.scroll_to(BlockIndex(marker_block.0 + 1), ctx);
             }
             assert!(
-                !is_block_on_screen(view, marker_block, input_mode, ctx),
+                !is_block_on_screen(view, marker_block, drawn_mode, ctx),
                 "control: the flood scrolled the marker's block off screen"
             );
 
@@ -4336,9 +4398,10 @@ fn run_find_scrolls_to_older_block_test(
                 describe_find_state(view, ctx)
             );
             assert!(
-                is_block_on_screen(view, marker_block, input_mode, ctx),
+                is_block_on_screen(view, marker_block, drawn_mode, ctx),
                 "Find for a match in an older block must scroll it on screen \
-                 (input mode {input_mode:?}, async find {async_find}, grid cap {max_grid_size:?})"
+                 (input mode {input_mode:?}, drawn {drawn_mode:?}, agent view {agent_view}, \
+                 async find {async_find}, grid cap {max_grid_size:?})"
             );
             assert!(
                 !view.find_scroll_pending,
@@ -4376,6 +4439,31 @@ fn find_scrolls_to_older_block_above_huge_block_sync() {
 #[test]
 fn find_scrolls_to_older_block_above_normal_block_sync_inverted_blocklist() {
     run_find_scrolls_to_older_block_test(InputMode::PinnedToTop, false, None, 1_000);
+}
+
+/// r18u28 (Mac, agent pass): the appci case failed in agent mode only. The same Find, run
+/// in the full-screen agent view the agent pass starts in, must put the marker's block on
+/// screen in the viewport that view draws.
+#[test]
+fn find_scrolls_to_older_block_above_huge_block_async_in_agent_view() {
+    run_find_scrolls_to_older_block_test_in_view(
+        InputMode::PinnedToBottom,
+        true,
+        Some(200),
+        2_000,
+        true,
+    );
+}
+
+#[test]
+fn find_scrolls_to_older_block_above_normal_block_sync_in_agent_view() {
+    run_find_scrolls_to_older_block_test_in_view(
+        InputMode::PinnedToBottom,
+        false,
+        None,
+        1_000,
+        true,
+    );
 }
 
 /// A find with no match must not leave a scroll pending once the scan is done, or a match

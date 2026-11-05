@@ -2096,6 +2096,17 @@ def r18u13_mac_harness_fixes():
     assert not _R.flood_tail_on_screen("3 ]; do seq 1 500000; __i=$((__i+500000)); done; now >> ff_end.txt\n450001\n450002")
     assert not _R.flood_tail_on_screen("") and not _R.flood_tail_on_screen(None) and not _R.flood_tail_on_screen("1500000\n4999990")
     assert "flood_tail_on_screen(before)" in src and "flood_tail_on_screen(after)" in src and "hop=find_scroll" in src
+    # r18u29: the find_scroll hop carries the app's own placement of the match in the DRAWN viewport; agent mode skips when Find matched no block
+    _g = _R.find_scroll_geometry("result=scroll block=16 moved=true viewport_lines=37.00 rendered_mode=PinnedToBottom scroll_mode=PinnedToBottom "
+                                 "agent_fullscreen=true match_line=32.00 block_visible=true from=FollowsBottomOfMostRecentBlock to=FixedAtPosition { }")
+    assert _g == dict(viewport_lines=37.0, rendered_mode="PinnedToBottom", scroll_mode="PinnedToBottom", agent_fullscreen=True, match_line=32.0, on_screen=True), _g
+    assert _R.find_scroll_geometry("result=scroll block=3 moved=true viewport_lines=20.00 rendered_mode=PinnedToBottom scroll_mode=PinnedToTop "
+                                   "agent_fullscreen=true match_line=-4.50 block_visible=true")["on_screen"] is False
+    assert _R.find_scroll_geometry("result=scroll block=3 moved=false viewport_lines=20.00 rendered_mode=Waterfall scroll_mode=Waterfall "
+                                   "agent_fullscreen=false match_line=busy")["on_screen"] is None
+    assert _R.find_scroll_geometry("result=scroll block=16 moved=true from=FollowsBottomOfMostRecentBlock to=FixedAtPosition { }") is None
+    assert _R.find_scroll_geometry("result=no_match pending=false") is None and _R.find_scroll_geometry(None) is None
+    assert 'ctx.mode == "agent" and hops and not scroll_hops' in src and "raise cases.Skip" in src and src.index("raise cases.Skip") < src.index("r.check(seen and scrolled")
     import cases as _C
     assert _C.verdict_gave_up("input_order hop=kh_enter_gate_give_up seq=16685 by=verdict_cap behind=0 submitted=false t=1") is True
     assert _C.verdict_gave_up("input_order hop=kh_enter_gate_give_up seq=6 by=route_wait behind=1 submitted=true t=5") is False

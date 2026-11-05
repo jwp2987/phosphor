@@ -32071,6 +32071,13 @@ impl TerminalView {
         );
         // #1775: what the Find did to the view, so a real-app run can tell a scroll that
         // happened from one that did not (the case's screenshot check alone cannot).
+        // r18u28 (Mac, agent mode): the view moved but the screenshot showed no marker; the
+        // geometry says where the app itself put the match in the viewport that is drawn.
+        let geometry = if warpui::input_order::enabled() {
+            self.find_match_geometry(find_match_location, ctx)
+        } else {
+            String::new()
+        };
         warpui::input_order::log_hop("find_scroll", || {
             let target = match find_match_location {
                 FindMatchScrollLocation::Block { block_index, .. } => {
@@ -32080,10 +32087,54 @@ impl TerminalView {
             };
             let position_after = self.scroll_position.position();
             format!(
-                "result=scroll {target} moved={} from={position_before:?} to={position_after:?}",
+                "result=scroll {target} moved={} {geometry} from={position_before:?} to={position_after:?}",
                 position_after != position_before
             )
         });
+    }
+
+    /// For the `find_scroll` hop: where the focused match sits in the viewport that is drawn,
+    /// after the find scroll. `match_line` is the match's line counted from that viewport's top
+    /// and `viewport_lines` its height, so `0 <= match_line < viewport_lines` means the app put
+    /// the match on screen. Also names the input mode the drawn viewport uses
+    /// (`current_input_mode`: the full-screen agent view always draws `PinnedToBottom`), the
+    /// one the scroll was computed with (the setting, see `apply_scroll_update`) and whether
+    /// the full-screen agent view is up, so an agent-mode miss can be told from a terminal one.
+    fn find_match_geometry(&self, location: FindMatchScrollLocation, app: &AppContext) -> String {
+        let rendered_mode = self.current_input_mode(app);
+        let scroll_mode = *InputModeSettings::as_ref(app).input_mode.value();
+        let agent_fullscreen = FeatureFlag::AgentView.is_enabled()
+            && self.agent_view_controller.as_ref(app).is_fullscreen();
+        let viewport_lines = self.content_element_height_lines(app);
+        let summary = format!(
+            "viewport_lines={:.2} rendered_mode={rendered_mode:?} scroll_mode={scroll_mode:?} \
+             agent_fullscreen={agent_fullscreen}",
+            viewport_lines.as_f64()
+        );
+        let FindMatchScrollLocation::Block {
+            block_index,
+            section,
+        } = location
+        else {
+            return summary;
+        };
+        // Never wait for the pty reader here: a find scroll can run on the key path (#1440).
+        let Some(model) = self.model.try_lock() else {
+            return format!("{summary} match_line=busy");
+        };
+        let block_list = model.block_list();
+        let Some(block) = block_list.block_at(block_index) else {
+            return format!("{summary} match_line=no_block");
+        };
+        let viewport = self.viewport_state(block_list, rendered_mode, app);
+        let match_line = viewport.top_of_block_in_lines(block_index)
+            + block.block_section_offset_from_top(section)
+            - viewport.scroll_top_in_lines();
+        format!(
+            "{summary} match_line={:.2} block_visible={}",
+            match_line.as_f64(),
+            block.is_visible(block_list.transcript_scope())
+        )
     }
 
     /// Completes a scroll that `scroll_to_match` left pending because the async find had not
