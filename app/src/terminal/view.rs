@@ -14910,7 +14910,16 @@ impl TerminalView {
     /// took it for a query (#826 N1); one unfinished line goes back into the editor. `held` is
     /// one chunk per key entry, in typed order: on ConPTY each key is its own write, so no write
     /// carries an Enter with the next line's keys behind it (#1189).
-    fn release_held_keys(&mut self, held: Vec<Vec<u8>>, ctx: &mut ViewContext<Self>) {
+    ///
+    /// `in_mailbox_flush`: called by the pane queue's mailbox flush (a deferred take), which
+    /// applies operations in order, so text queued behind a waiting Enter is offered at once
+    /// rather than behind later mailbox operations (r18u27 review).
+    fn release_held_keys(
+        &mut self,
+        held: Vec<Vec<u8>>,
+        in_mailbox_flush: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
         let has_enter = held
             .iter()
             .any(|chunk| chunk.iter().any(|byte| matches!(byte, b'\r' | b'\n')));
@@ -14940,9 +14949,26 @@ impl TerminalView {
                 // shell is ready, and DISCARDED with it by its give-up (owner decision
                 // 2026-11-05). Inserted, they became a programmatic edit deferred behind the
                 // gate and were applied by the give-up, i.e. handed back to the editor.
-                if input.enter_queue_holds_keys(ctx)
-                    && input.queue_behind_enter(AfterEnterInput::Text(text.clone()), ctx)
-                {
+                //
+                // Not behind the multi-line dialog's gate: that dialog asks about a later Enter,
+                // and keys typed before it opened must not be discarded with its answer.
+                //
+                // `submit_next_enter_as_shell_command` is not carried with the queued text: an
+                // `EntryKind::Text` has no room for it, and adding a field to the shared queue's
+                // entry kinds for one flag is not cheap. Released at readiness, the text is
+                // routed as typed keys are at that moment; discarded, no stale flag is left
+                // armed (r18u27 review: decided to leave it).
+                let queued = input.enter_queue_holds_keys(ctx)
+                    && !input.multiline_dialog_gate_open()
+                    && if in_mailbox_flush {
+                        input.queue_behind_enter_in_mailbox_flush(
+                            AfterEnterInput::Text(text.clone()),
+                            ctx,
+                        )
+                    } else {
+                        input.queue_behind_enter(AfterEnterInput::Text(text.clone()), ctx)
+                    };
+                if queued {
                     return;
                 }
                 input.system_insert(&text, ctx);
