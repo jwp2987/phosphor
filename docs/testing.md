@@ -617,7 +617,9 @@ SKIP on macOS/Windows (Cmd-Q is forbidden by the Mac safety rules; the editor op
   complete and in order; gap p50/p95/max are metrics, a stall above `APPCI_FLOOD_STALL_MS` (1000) fails. No reference terminal is measured, so
   no latency verdict against one is made.
 - `flood_scrollback_find` (62): (r18u23: the marker is the output of its OWN command, printed and proven to have run before the flood; the earlier same-block form lost it to the 50,000-row block cap, see the r18u23 notes) a random uppercase marker is printed before a flood of at least 300k lines AND 3 s (r18e4: a fast macOS finished 300k lines before the screen scrolled); control: it is NOT on screen after
-  the flood; `ctrl+shift+f` + the marker + Enter must bring it on screen (OCR). SKIPs without tesseract (package `tesseract-ocr`).
+  the flood; `ctrl+shift+f` + the marker + Enter must bring it on screen (OCR) and move the view off the flood's tail (an OCR line of just
+  499999/500000, never the flood command's `seq 1 500000`: see the r18u27 note). On a miss it keeps looking for 12 s (diagnosis only) and quotes
+  the app's `hop=find_scroll` lines. SKIPs without tesseract (package `tesseract-ocr`).
 - `editor_edit_save` (70; also Windows, #1544: `phosphor.exe file:///C:/...` is forwarded to the running instance over its single-instance named pipe, `cases.open_file_in_windows_app`; the second process is killed by exact pid after 30 s if it does not hand over): opens a file in the code editor (`<bin> file://PATH` forwarded over the app's D-Bus session; the opener has no
   display in its env and is killed after 30 s), types an edit at 10-25 ms/key, `ctrl+s`, byte-exact on disk; undo xN + save = original, redo
   xN + save = edited; closes the pane, changes the file outside, reopens, edits again: the disk must hold the second edit on top of the
@@ -1993,6 +1995,22 @@ came out as `[Text("lspwd")]` (r18u23; the confirm test's Enter was silently los
   Now each step is its own update with the app settling in between; the inverted cases first show the flood's head
   (its far end from the marker), so the control means the same in both layouts; the async wait needs 100 ms of
   steady `Complete`; and the precondition messages print the async find's per-block state.
+
+## r18u27: `flood_scrollback_find` still red after the #1775 fix (r18u26, Mac + Wayland) — the scroll check
+
+- **HARNESS: the "scrolled away from the flood's tail" check could never pass.** It was a substring test for
+  `500000`/`499999` on the whole OCR text. The flood's own command (`... do seq 1 500000; __i=$((__i+500000)); done ...`)
+  contains `500000`, the block header keeps that command on screen, and a Find that does scroll to the marker block puts
+  the match 5 lines above the viewport's bottom (`block_list_viewport.rs` `scroll_to_match_if_not_visible`, `SCROLL_OFFSET`)
+  with the flood block's command header right below it. So `scrolled` read False whether or not the view moved (r18u26
+  Mac: `marker read=True, scrolled=False`). The tail is now an OCR line of just `499999`/`500000`
+  (`cases_robust.flood_tail_on_screen`, self-tested against the command text).
+- On a miss the case now keeps taking screenshots for up to 12 s after the Enter (`shots/<mode>_find_late.png`) and says
+  whether the view got there later (a slow scan of the 50,000-row block) or never; the 1.5 s verdict is unchanged.
+- The app logs each Find scroll (`input_order hop=find_scroll result=scroll block=N moved=<bool> from=<pos> to=<pos>`, or
+  `result=no_match pending=<bool>`; `TerminalView::scroll_to_match`), and the case quotes them, so a red run says whether
+  the app scrolled. Wayland r18u26 read no marker at all (also not in the Find field, as in r18u22): the next run's
+  `find_scroll` lines decide whether that is OCR or the app.
 
 ## Busy-machine data-loss timers: pane-close hang-up grace and the quit-time clipboard hand-off (#1685, #1692, #1693)
 
