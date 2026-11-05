@@ -1765,7 +1765,7 @@ impl TerminalView {
             return;
         }
         match self.take_deferred_gate_entries_now(gate_id, ctx) {
-            Some(taken) => self.finish_taken_gate_keys(taken, then, ctx),
+            Some(taken) => self.finish_taken_gate_keys(taken, then, false, ctx),
             None => queue.defer(Deferred::TakeGateKeys { gate_id, then }),
         }
     }
@@ -1778,12 +1778,13 @@ impl TerminalView {
         &mut self,
         taken: Vec<InputEntry>,
         then: GateKeysThen,
+        in_mailbox_flush: bool,
         ctx: &mut ViewContext<Self>,
     ) {
         match then {
             GateKeysThen::Release => {
                 let held = self.pty_bytes_of_taken_entries(taken, ctx);
-                self.release_held_keys(held, ctx)
+                self.release_held_keys(held, in_mailbox_flush, ctx)
             }
             GateKeysThen::GiveUpToEditor => self.give_up_deferred_enter_keys_to_editor(taken, ctx),
             GateKeysThen::GiveUpHandBack(why) => {
@@ -3011,7 +3012,8 @@ impl TerminalView {
                 let Some(taken) = self.take_deferred_gate_entries_now(gate_id, ctx) else {
                     return Err(Deferred::TakeGateKeys { gate_id, then });
                 };
-                self.finish_taken_gate_keys(taken, then, ctx);
+                // Applied by the mailbox flush, in mailbox order (r18u27 review).
+                self.finish_taken_gate_keys(taken, then, true, ctx);
             }
             Deferred::TakePowershellKeys { then } => {
                 let Some(held) = self.take_powershell_held_bytes_now(ctx) else {
