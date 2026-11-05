@@ -694,7 +694,21 @@ impl AvailableShells {
     /// shell object.
     pub fn get_user_preferred_shell(&self, ctx: &AppContext) -> AvailableShell {
         let preference = self.get_user_preferred_shell_setting(ctx);
+        self.shell_for_preference(preference)
+    }
 
+    /// The [`AvailableShell`] a saved preference starts: the scanned entry for it when the scan
+    /// lists it, else the saved path resolved directly, else the system default.
+    ///
+    /// r18u19 (Windows): the scan does not list every shell a user may name. On Windows it finds
+    /// Git Bash only as the MSYS2 `Git\usr\bin\bash.exe`, so a saved
+    /// `{ executable = "C:/Program Files/Git/bin/bash.exe" }` matched nothing once the scan had
+    /// finished, and every new and restored-from-new tab silently started the system default
+    /// (PowerShell), while the first tab -- resolved before the scan finished -- started bash.
+    /// Bash lines typed into those tabs then ran in PowerShell. The answer must not depend on
+    /// whether the scan has finished, so a finished scan that lacks the shell falls back to the
+    /// same direct resolution the unfinished scan uses (one `stat` of the saved path).
+    fn shell_for_preference(&self, preference: NewSessionShell) -> AvailableShell {
         match preference {
             NewSessionShell::SystemDefault => AvailableShell::default(),
             NewSessionShell::Custom(_) => AvailableShell::try_from(preference).unwrap_or_default(),
@@ -705,6 +719,7 @@ impl AvailableShells {
                     .iter()
                     .find(|shell| shell.matches_preference(&preference))
                     .cloned()
+                    .or_else(|| self.resolve_preferred_directly(&preference))
                     .unwrap_or_default(),
                 // The background scan has not finished (#1310). The first tab must still start
                 // the shell the user chose, so resolve just that one directly.
@@ -724,8 +739,8 @@ impl AvailableShells {
     /// `file_exists_and_is_executable` check of the saved path (a single `stat`, microseconds
     /// unless the path itself sits on a hung mount -- the case the scan was moved off the UI
     /// thread to avoid, but here only one entry is touched, not every PATH directory). `None`
-    /// when the shell no longer exists, so the caller falls back to the default exactly as it
-    /// does for a finished scan that lacks it.
+    /// when the shell no longer exists, so the caller falls back to the default. Also the fallback
+    /// for a finished scan that does not list the saved shell (r18u19).
     fn resolve_preferred_directly(&self, preference: &NewSessionShell) -> Option<AvailableShell> {
         match preference {
             NewSessionShell::Executable(path) | NewSessionShell::MSYS2(path) => {

@@ -1737,6 +1737,43 @@ Harness changes plus two small app changes. `run.py --self-test` covers the harn
   Terminal.app is frontmost: Terminal.app had restored windows from an earlier session, so it was frontmost at once and the keys went to a
   restored window while the `.command` shell was still starting.
 
+## r18u19 Windows app-run fixes (job 17754316946, 9eb5c3f50)
+
+77 pass, 12 fail. One app defect (H8 of r18u8, now pinned) and harness fixes; `run.py --self-test` covers the harness ones
+(`r18u19_windows_where_probe_ignores_earlier_runs`, `r18u19_windows_relaunch_heredoc_io_and_back_line`).
+
+- **App: new tabs in the Git Bash pass opened PowerShell (H8).** The harness writes `new_session_shell_override =
+  { executable = "C:/Program Files/Git/bin/bash.exe" }`. The background shell scan lists Git Bash only as the MSYS2
+  `Git\usr\bin\bash.exe`, so once the scan had finished the saved path matched nothing and every new tab and window fell back
+  to the system default (PowerShell); the first tab, resolved before the scan finished (#1310), started bash. Evidence: the new
+  tabs' commands went through `hop=pwsh_command_via_pipe`, their prompts are `C:\...\w` in the tabs_streaming shot, and the
+  bash `while :; do` lines went to the agent (AI=12). A finished scan that does not list the saved shell now resolves the saved
+  path directly, as the unfinished scan does (`AvailableShells::shell_for_preference`, test
+  `saved_shell_the_finished_scan_does_not_list_is_still_used`). This was also the cause of `tabs_two_windows`, `tabs_streaming`,
+  their `pane_wedged_after_*`, `session_restore` (the `cd X && echo` setup lines ran in PowerShell 5.1, where `&&` is a parse
+  error) and `crash_kill9_restore` (the restored session's active tab was one of those PowerShell tabs, so the bash key proof failed).
+- **`ssh_nested_typeahead` (PowerShell pane, H3): harness.** After the inner `exit` the inner Windows ssh client, still tearing down
+  inside the fake sshd's pseudo console (`client_input_channel_req: channel 0: unknown channel`), swallowed the first 18 characters of
+  the outer probe (`y01 >> ~/.appci_where` ran in the remote bash). The retry's probe was then reported "ran in the LOCAL shell" because
+  the probe tokens are seeded (seed 1, the same in every run) and the PowerShell pane's `~/.appci_where` is in the real home, which no run
+  clears: an earlier run's copy of that token was found. `exit` was not typed, the pane stayed remote, and the wedge probe's
+  `Add-Content` lines ran in the remote bash (remote rec.log). `Ctx.local_where` now reads only what was appended to each
+  `.appci_where` after the pass started (`Ctx.where_skip`, `where_tokens`).
+- **`remote_session_legacy` (Git Bash pane): harness race.** The local command after `exit` ran exactly (effect file right) and is in
+  the local rec.log; the check read rec.log once, but the rc hook writes the line at the NEXT prompt (`PROMPT_COMMAND` forks
+  `history 1`, slow under msys). The check now waits up to 5 s for the exact line, as `local_cmd_exact` does. The clean-env step stays
+  NOT RUN on Windows (H6, noref).
+- **`remote_heredoc_paste` (Git Bash pane, H7): harness/platform, not pinned.** The app wrote the whole 142 KB paste to its pty in one
+  write; the fake sshd's session had sent 68 bytes in total (the pseudo console's start-up output and the `~$` prompt) and sent nothing
+  more until the case ended 5.5 minutes later: not one byte of the paste was echoed. The fake sshd now accounts the input side
+  (`client input so far` every 64 KB, logged before the write; `conpty input: writing ... took` for a write over 2 s; `client input
+  ended` per session; `conpty output: sending ... took` for a client that stops taking output), and a failing heredoc step adds those
+  lines to its detail, so the next run says whether the paste reached the test sshd and whether its pseudo console stopped reading it.
+- **`editor_memory_7mb` trim A/B (PowerShell pane): harness.** `editor_mem_relaunch` waited for `prompts()` to grow, which never happens
+  in the PowerShell pane (no rc hook), so every relaunch read as "reached no prompt". On Windows it now waits as `run.py` and
+  `cases_robust.start_app` do: the main window, a prompt (Git Bash) or the fixed settle (PowerShell), then the key proof (which also
+  puts a PowerShell pane back in the case dir).
+
 ## #1652: keys typed while the multi-line submit dialog is open
 
 The `Run N lines one at a time?` dialog takes focus; a key its bindings did not take was dropped unseen

@@ -424,6 +424,26 @@ def age_stats(ages):
     return dict(n=len(xs), p50=round(statistics.median(xs), 2), p95=round(xs[min(len(xs) - 1, int(len(xs) * 0.95))], 2), max=round(xs[-1], 2))
 
 
+def where_file_size(path):
+    """size of a probe file now (0 when there is none): where_tokens skips that much, so tokens from earlier runs or passes never count"""
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return 0
+
+
+def where_tokens(path, skip=0):
+    """the whitespace-separated tokens appended to `path` after its first `skip` bytes; UTF-16 (Windows PowerShell 5.1 `>>`) is read by dropping NULs and
+    the BOM. A file now shorter than `skip` was replaced since the snapshot: all of it is new."""
+    try:
+        raw = open(path, "rb").read()
+    except OSError:
+        return []
+    if len(raw) < skip:
+        skip = 0
+    return raw[skip:].replace(b"\x00", b"").replace(b"\xff\xfe", b"").decode("utf-8", "replace").split()
+
+
 class Ctx:
     def __init__(self, be, prof, app, run, mode, seed=1, ssh=None, ollama=False, log_path=None, ssh_why=None, pane=None, variant=None):
         self.be, self.prof, self.app, self.run, self.mode = be, prof, app, run, mode
@@ -446,6 +466,11 @@ class Ctx:
         self.left_unproven = None     # leave(): where the probe ran when the pane was NOT provably remote (no `exit` typed)
         self.extra_logs = []          # earlier app launches' log copies made by this case (snapshot_log), cleared per case by run.py
         self.typed_log = []           # (time, text) of every be.type() (r18e9: tells "the case's own `exit` closed the pane" from an app death)
+        # r18u19 (Windows ssh_nested_typeahead): the tokens are SEEDED (seed 1), so every run and every pass types the same probe tokens in the same
+        # order, and the PowerShell pane's `~/.appci_where` lives in the REAL home, which no run ever clears. A probe the remote shell never ran was
+        # found there from an EARLIER run ("ran in the LOCAL shell"), `exit` was not typed, the pane stayed remote and the wedge probe's PowerShell
+        # lines ran in the remote bash. local_where reads only what was appended after this pass started.
+        self.where_skip = {h: where_file_size(os.path.join(h, ".appci_where")) for h in self.where_homes()}
         self._wrap_ctrlc(be)
         self._wrap_type(be)
         try:
@@ -580,20 +605,21 @@ class Ctx:
             return "remote"
         return "local" if probe in local_where() else "none"
 
-    def local_where(self):
-        """tokens of the LOCAL shell's `~/.appci_where`: the scratch home, and in a Windows PowerShell pane also the user's real home (PowerShell
-        resolves `~` to USERPROFILE) in UTF-16 (`>>` in Windows PowerShell 5.1) -- r18cz: the PowerShell pane was never provably local because only
-        the scratch home was read"""
-        out = []
+    def where_homes(self):
+        """the homes whose `~/.appci_where` a LOCAL probe can land in: the scratch home, and in a Windows PowerShell pane also the user's real home"""
         homes = [self.prof.home]
         if self.pane == "powershell":
             homes.append(os.path.expanduser("~"))
-        for h in homes:
-            try:
-                raw = open(os.path.join(h, ".appci_where"), "rb").read()
-            except OSError:
-                continue
-            out += raw.replace(b"\x00", b"").replace(b"\xff\xfe", b"").decode("utf-8", "replace").split()
+        return homes
+
+    def local_where(self):
+        """tokens of the LOCAL shell's `~/.appci_where`: the scratch home, and in a Windows PowerShell pane also the user's real home (PowerShell
+        resolves `~` to USERPROFILE) in UTF-16 (`>>` in Windows PowerShell 5.1) -- r18cz: the PowerShell pane was never provably local because only
+        the scratch home was read. Only what was appended since this pass started counts (where_skip, r18u19)."""
+        out = []
+        skip = getattr(self, "where_skip", {})
+        for h in self.where_homes():
+            out += where_tokens(os.path.join(h, ".appci_where"), skip.get(h, 0))
         return out
 
     def return_to_local(self, max_levels=3):
@@ -4327,7 +4353,20 @@ def editor_mem_relaunch(ctx, env):
     ctx.app.stop()
     time.sleep(1.0)
     ctx.app.start()
-    up = ctx.until(lambda: ctx.prompts() > n, 90, step=0.5)
+    if getattr(ctx, "win", False):
+        # r18u19 (Windows PowerShell pane): that pane has no prompt hook (the app starts PowerShell with -NoProfile), so prompts() never moved and every
+        # relaunch here read as "reached no prompt" (the trim A/B never ran there, and the default-environment relaunch failed the case). Windows waits as
+        # run.py and cases_robust.start_app do: the main window, then a prompt (Git Bash pane) or the fixed settle (PowerShell pane), then the key proof,
+        # which also puts a PowerShell pane back in the case dir.
+        up = ctx.app.wait_window(60) and (ctx.until(lambda: ctx.prompts() > n, 90, step=0.5) if ctx.prof.local_prompts
+                                          else (time.sleep(12) or ctx.app.alive()))
+        if up:
+            time.sleep(4)
+            ctx.be.guard()
+            if getattr(ctx, "reprove", None) and ctx.reprove():
+                up = False
+    else:
+        up = ctx.until(lambda: ctx.prompts() > n, 90, step=0.5)
     time.sleep(3)
     ctx.reset()
     return bool(up)
