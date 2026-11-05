@@ -81,6 +81,12 @@ impl<P: BackingView> PaneView<P> {
         pane_configuration: ModelHandle<PaneConfiguration>,
         ctx: &mut ViewContext<Self>,
     ) -> Self {
+        // This view renders `child` (`ChildView` in `render`), but the child was built elsewhere
+        // (a terminal view by its manager model), so until the first frame lays it out its
+        // responder chain stops at the child and the workspace's bindings (new tab, new window)
+        // never see a key typed into it (r18u22 Windows: Ctrl+Shift+T / Ctrl+Shift+N lost in a tab
+        // whose pty spawn held the main thread before its first frame).
+        ctx.adopt_child_view_before_layout(child.id());
         // Create the pane stack model
         let pane_stack = ctx.add_model(|ctx| PaneStack::new(child_data, child, ctx));
 
@@ -181,6 +187,8 @@ impl<P: BackingView> PaneView<P> {
     fn handle_pane_stack_event(&mut self, event: &PaneStackEvent<P>, ctx: &mut ViewContext<Self>) {
         // Set the focus handle for newly added views
         if let PaneStackEvent::ViewAdded(view) = event {
+            // The pushed view is rendered here from now on: reachable before its first frame.
+            ctx.adopt_child_view_before_layout(view.id());
             if let Some(focus_handle) = &self.focus_handle {
                 view.update(ctx, |child, ctx| {
                     child.set_focus_handle(focus_handle.clone(), ctx);

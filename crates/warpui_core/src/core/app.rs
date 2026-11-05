@@ -1695,6 +1695,27 @@ impl AppContext {
         self.responder_chain_for_view(window_id, view_id)
     }
 
+    /// Records `parent_id` as the parent of `view_id` in the window's presenter before the first
+    /// layout that will record the same link (the layout overwrites it on every pass).
+    ///
+    /// A view built outside its renderer's context (a terminal view is built by its manager
+    /// model, not by the pane view that renders it) has no parent until a frame lays it out, so a
+    /// key typed into it before that frame is matched on a responder chain that stops at the view
+    /// itself: the window's own bindings (new tab, new window) never see it and the key is lost
+    /// (r18u22 Windows `tabs_two_windows`: Ctrl+Shift+T and Ctrl+Shift+N typed into a tab whose
+    /// pty spawn held the main thread for 2 s before its first frame). No-op for a window without
+    /// a presenter.
+    pub fn set_view_parent_before_layout(
+        &mut self,
+        window_id: WindowId,
+        view_id: EntityId,
+        parent_id: EntityId,
+    ) {
+        if let Some(presenter) = self.presenter(window_id) {
+            presenter.borrow_mut().set_parent(view_id, parent_id);
+        }
+    }
+
     /// Dispatch a typed action using the given view as the base of the responder_chain
     pub fn dispatch_typed_action_for_view(
         &mut self,

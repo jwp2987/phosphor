@@ -3117,3 +3117,39 @@ fn open_url_rewritten_by_hook_opens_the_rewrite() {
         );
     });
 }
+
+/// r18u22 (Windows `tabs_two_windows`): a view built outside the view that renders it (a terminal
+/// view is built by its manager model, then rendered by its pane view) has no presenter parent
+/// until a frame lays it out. A key typed into it before that frame was matched on a one-view
+/// responder chain, so the window's bindings (new tab, new window) never saw it and it was lost.
+/// Adopting the child before layout gives the chain its ancestors at once.
+#[test]
+fn test_adopted_child_reaches_its_ancestors_before_the_first_layout() {
+    App::test((), |mut app| async move {
+        let events: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(vec![]));
+        let app = &mut app;
+        let (window_id, root) = app.add_window(WindowStyle::NotStealFocus, |_| {
+            NestedView::new("Root".to_string(), vec![], events.clone())
+        });
+        // Built with no parent context, as a model builds a terminal view.
+        let detached = app.add_typed_action_view(window_id, |_| {
+            NestedView::new("Detached".to_string(), vec![], events.clone())
+        });
+        let (root_id, detached_id) = (root.id(), detached.id());
+        assert_eq!(
+            app.read(|ctx| ctx.responder_chain_of(window_id, detached_id)),
+            vec![detached_id],
+            "precondition: before any layout the detached view's chain is only itself"
+        );
+
+        root.update(app, |_, ctx| {
+            ctx.adopt_child_view_before_layout(detached_id)
+        });
+
+        assert_eq!(
+            app.read(|ctx| ctx.responder_chain_of(window_id, detached_id)),
+            vec![root_id, detached_id],
+            "an adopted child must reach its renderer's bindings before its first frame"
+        );
+    });
+}

@@ -179,6 +179,16 @@ impl<'a, T: Entity> ViewContext<'a, T> {
             .add_typed_action_view_with_parent(self.window_id, build_view, self.view_id)
     }
 
+    /// Makes this view the parent of `child_id` for key dispatch before the first frame lays the
+    /// child out (see [`AppContext::set_view_parent_before_layout`]). For a view this view renders
+    /// with a `ChildView` but did not build itself: until that frame, a key typed into the child
+    /// would not reach this view's ancestors' bindings. The first layout records the same link.
+    pub fn adopt_child_view_before_layout(&mut self, child_id: EntityId) {
+        let (window_id, parent_id) = (self.window_id, self.view_id);
+        self.app
+            .set_view_parent_before_layout(window_id, child_id, parent_id);
+    }
+
     pub fn add_option_view<S, F>(&mut self, build_view: F) -> Option<ViewHandle<S>>
     where
         S: View,
