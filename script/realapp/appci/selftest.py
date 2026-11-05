@@ -1635,6 +1635,50 @@ def coverage_b_pure_helpers():
     p = cb.startup_log_problems(log)
     assert len(p) == 2 and "panicked" in p[0] and "migration 0042" in p[1], p
     assert cb.startup_log_problems("INFO all fine\n") == []
+    # r18u22: the app's notice for a broken settings file is not a failed start when the case broke the file on purpose; everything else still counts
+    notice = "2026-11-05T04:10:45Z [ERROR] Settings file could not be parsed: invalid TOML at line 3, column 9: invalid key\n"
+    assert len(cb.startup_log_problems(notice)) == 1
+    assert cb.startup_log_problems(notice, broken_settings=True) == []
+    assert cb.startup_log_problems("[ERROR] Settings file cannot be used: x is not a file\n", broken_settings=True) == []
+    assert len(cb.startup_log_problems(notice + "[ERROR] migration 0042 failed\n", broken_settings=True)) == 1
+    assert len(cb.startup_log_problems(notice + "thread 'main' panicked at a.rs:1\n", broken_settings=True)) == 1
+    assert cb.settings_notices(notice + "INFO x\n") == [notice.strip()] and cb.settings_notices("INFO x\n") == []
+    # r18u22: MacApp copies the profile settings only when the profile changed, so a case's own write to the app's file survives a relaunch
+    import tempfile as _tf
+    import app as _appmod
+    with _tf.TemporaryDirectory() as h:
+        os.makedirs(os.path.join(h, ".config", "phosphor"))
+        prof_f = os.path.join(h, ".config", "phosphor", "settings.toml")
+        open(prof_f, "w").write("[general]\na = 1\n")
+        m = _appmod.MacApp(h, h, "/nonexistent.app", "/nonexistent")
+        m._install_settings()
+        assert open(m.settings).read() == "[general]\na = 1\n"
+        open(m.settings, "w").write("[broken\n")
+        m._install_settings()
+        assert open(m.settings).read() == "[broken\n", "a case's write was replaced by the profile copy"
+        open(prof_f, "w").write("[general]\na = 2\n")
+        m._install_settings()
+        assert open(m.settings).read() == "[general]\na = 2\n", "a new profile was not installed"
+        os.remove(m.settings)
+        m._install_settings()
+        assert os.path.isfile(m.settings)
+    # r18u22 (Wayland agent shell_nu): the Linux App puts the CI users' shell dirs on the app's PATH (was Windows-class dead code), appended, no duplicates
+    lb = os.path.expanduser("~/.local/bin")
+    got = _appmod.with_user_bin_dirs("/usr/bin:/bin", isdir=lambda d: d == lb)
+    assert got == "/usr/bin:/bin" + os.pathsep + lb, got
+    assert _appmod.with_user_bin_dirs("/usr/bin:" + lb, isdir=lambda d: True).split(os.pathsep).count(lb) == 1
+    assert _appmod.with_user_bin_dirs("/usr/bin", isdir=lambda d: False) == "/usr/bin"
+    # r18u22 (Wayland ui_mouse_select_copy / ui_right_click_paste): OCR-safe tokens and a one-glyph-tolerant on-screen match
+    import cases_ui as _ui
+    t = _ui.ocr_safe("t409jy2dwo")
+    assert len(t) == 10 and set(t) <= set(_ui.OCR_SAFE) and t == _ui.ocr_safe("t409jy2dwo"), t
+    row = lambda txt, y: (txt, 10, y, 0, 20, y - 5, y + 5)  # noqa: E731
+    tok = "msel" + t
+    assert _ui.token_hits([row("x", 1), row(tok, 5), row("'" + tok + "'", 9)], tok)[-1][2] == 9
+    one_off = tok[:6] + ("a" if tok[6] != "a" else "c") + tok[7:]
+    assert _ui.token_hits([row(one_off, 3)], tok) and _ui.token_hits([row(tok[:-1], 3)], tok) and _ui.token_hits([row(tok + "x", 3)], tok)
+    two_off = "zz" + tok[2:]
+    assert _ui.token_hits([row(two_off, 3), row("msel", 4)], tok) == []
     assert cb.autoupdate_lines("INFO a\nWARN Checking for updates now\nDEBUG GET https://x/releases/latest\n") != [] and cb.autoupdate_lines("INFO nothing\n") == []
     # r18u8: the startup line's `autoupdate_configured: false` is the updater OFF, not the updater doing something; `: true` still counts
     assert cb.autoupdate_lines("INFO Starting warp with channel state ChannelState { channel: Oss, autoupdate_configured: false, mcp_static_configured: false }\n") == []

@@ -177,6 +177,14 @@ pub enum Error {
         limit: u64,
     },
 
+    /// The settings file is not valid TOML. Carries where and why
+    /// (`line L, column C: <parser message>`), never the offending text: the
+    /// log line it ends up in must not quote the user's file. Before r18u22 a
+    /// syntax error was an `Unknown`, whose message is the fixed "unknown
+    /// error", so the log of a broken settings file said nothing useful.
+    #[error("invalid TOML at {0}")]
+    Syntax(String),
+
     /// Catch-all for unclassifiable errors.
     #[error("unknown error")]
     Unknown(#[from] anyhow::Error),

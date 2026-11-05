@@ -28,6 +28,18 @@ def passthrough_env(environ=None):
     return {k: environ[k] for k in keys if k in environ and environ[k] != ""}
 
 
+# where the CI users keep shells (nu in ~/.local/bin on the box). On the app's own PATH, as on a real user's machine: added only inside the pane
+# (`export PATH`), the app's classifier does not know the command, and agent view sends a bare `nu` to the agent as a prompt (r18cz Linux).
+USER_BIN_DIRS = ("~/.local/bin", "/home/gitlab-runner/.local/bin", "/opt/homebrew/bin", "~/.cargo/bin")
+
+
+def with_user_bin_dirs(path, isdir=os.path.isdir):
+    """PATH plus every existing USER_BIN_DIRS entry it lacks, appended (the system's own directories keep precedence)"""
+    have = path.split(os.pathsep) if path else []
+    extra = [d for d in (os.path.expanduser(x) for x in USER_BIN_DIRS) if isdir(d) and d not in have]
+    return os.pathsep.join(have + list(dict.fromkeys(extra)))
+
+
 class App:
     def __init__(self, run, home, binary, display="wayland"):
         self.run, self.home, self.bin, self.display = run, home, binary, display
@@ -37,7 +49,9 @@ class App:
         inner = os.path.join(self.run, "inner.sh")
         open(inner, "w").write(INNER % {"home": self.home, "run": self.run, "bin": self.bin})
         os.chmod(inner, 0o755)
-        env = dict(os.environ, APPCI_APP_DISPLAY=self.display)
+        # r18u22 (Wayland agent shell_nu): the r18cz fix below lived only in WindowsApp.env (its `os.name != "nt"` branch never ran), so on
+        # Linux nu stayed off the app's PATH and the agent pass sent `nu` to the agent: "nu never executed a probe line".
+        env = dict(os.environ, APPCI_APP_DISPLAY=self.display, PATH=with_user_bin_dirs(os.environ.get("PATH", "")))
         try:
             os.remove(os.path.join(self.run, "app.pid"))
         except FileNotFoundError:
@@ -105,17 +119,27 @@ class MacApp:
     def __init__(self, run, home, app_bundle, binary, display=None):
         self.run, self.home, self.bundle, self.bin = run, home, app_bundle, binary
         self.settings = os.path.join(home, ".phosphor", "settings.toml")
+        self._installed_src = None       # the profile settings.toml bytes last copied over self.settings (see _install_settings)
         self._pid = None
         self.last_pid = None
         self.warn = None
         self.log_path = os.path.join(home, "Library", "Logs", "phosphor.log")
 
     def _install_settings(self):
+        """Copy the profile's settings.toml to the app's path when the PROFILE file changed since the last copy (or the app's file is missing).
+        r18u22: this copied on EVERY start(), so a case that wrote the app's settings file and relaunched (cb_settings_migration: a legacy file,
+        then a truncated one) had it replaced by the profile copy before the app read it. The Mac pass therefore never tested either file: it
+        passed with truncated_file_unchanged False and legacy_entries_kept 0 while Linux, which reads the profile path directly, saw both.
+        A case's own write now survives its relaunch, as it does on Linux; a new pass (profile.build rewrites the source) still installs."""
         import shutil
         src = os.path.join(self.home, ".config/phosphor/settings.toml")     # written by profile.py (same schema on every OS)
+        data = open(src, "rb").read()
+        if data == self._installed_src and os.path.isfile(self.settings):
+            return
         os.makedirs(os.path.dirname(self.settings), exist_ok=True)
         shutil.copy2(src, self.settings)
         os.chmod(self.settings, 0o600)
+        self._installed_src = data
 
     def start(self):
         self._install_settings()
@@ -278,13 +302,7 @@ class WindowsApp:
         tail = os.pathsep.join(winapi.git_dirs())
         e["PATH"] = os.path.join(self.home, "bin") + os.pathsep + e.get("PATH", "") + (os.pathsep + tail if tail else "")
         if os.name != "nt":
-            # where the CI users keep shells (nu in ~/.local/bin): on the app's own PATH, as on a real user's machine. Added only inside the pane
-            # (`export PATH`) the app's classifier does not see it, and agent view sends a bare `nu` to the agent as a prompt (r18cz Linux).
-            have = e["PATH"].split(os.pathsep)
-            extra = [d for d in (os.path.expanduser(x) for x in ("~/.local/bin", "/home/gitlab-runner/.local/bin", "/opt/homebrew/bin", "~/.cargo/bin"))
-                     if os.path.isdir(d) and d not in have]
-            if extra:
-                e["PATH"] = e["PATH"] + os.pathsep + os.pathsep.join(dict.fromkeys(extra))
+            e["PATH"] = with_user_bin_dirs(e["PATH"])       # USER_BIN_DIRS (the Linux App does the same)
         if self.pane == "gitbash":
             e["HOME"] = self.home
             e["SHELL"] = "/usr/bin/bash"

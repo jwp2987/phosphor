@@ -259,7 +259,27 @@ impl TomlBackedUserPreferences {
 
         file_contents
             .parse::<DocumentMut>()
-            .map_err(|err| Error::Unknown(anyhow::anyhow!(err)))
+            .map_err(|err| Error::Syntax(Self::syntax_error_location(&file_contents, &err)))
+    }
+
+    /// `line L, column C: <message>` for a TOML parse error (1-based, the
+    /// column counted in characters). The parser's own `Display` quotes the
+    /// offending line of the file; this deliberately does not, because it is
+    /// logged and a settings file is the user's to keep private.
+    fn syntax_error_location(contents: &str, err: &toml_edit::TomlError) -> String {
+        let message = err.message().trim();
+        let Some(span) = err.span() else {
+            return message.to_owned();
+        };
+        let mut start = span.start.min(contents.len());
+        while !contents.is_char_boundary(start) {
+            start -= 1;
+        }
+        let before = &contents[..start];
+        let line = before.matches('\n').count() + 1;
+        let line_start = before.rfind('\n').map_or(0, |i| i + 1);
+        let column = before[line_start..].chars().count() + 1;
+        format!("line {line}, column {column}: {message}")
     }
 
     /// Hashes the settings file content on disk.
@@ -405,8 +425,14 @@ impl TomlBackedUserPreferences {
                 );
                 // A file too big to parse or not a file is never rewritten
                 // from the in-memory document: the next setting change must
-                // not replace what the user has there (#863).
-                if matches!(err, Error::TooLarge { .. } | Error::NotAFile(_)) {
+                // not replace what the user has there (#863). Neither is a
+                // file the user saved with a syntax error (r18u22): the next
+                // setting change made in the app wrote the old in-memory
+                // document over it and silently threw away their edit.
+                if matches!(
+                    err,
+                    Error::TooLarge { .. } | Error::NotAFile(_) | Error::Syntax(_)
+                ) {
                     self.write_inhibited.set(true);
                 }
                 Err(err)

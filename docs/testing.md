@@ -1102,7 +1102,7 @@ Full tier only (none is in `SMOKE`). Same rules as 3.1: exact bytes from `rec.lo
 | `cb_agent_pickers` (agent) | #1542 slash/@ pickers | `/` and `@` change the screen (Pillow diff), Escape closes them, nothing reaches the shell, a prose line afterwards arrives in the agent input byte for byte |
 | `cb_agent_file_mention` (agent) | #1542 attachments | `@<file prefix>` lists a real file (OCR when present); Enter accepts the row without submitting to the agent or the shell (an AI `hop=enter_begin` counts as a submit only when no `hop=enter_menu_accept` follows it before the next Enter, #1633; unit: `test_enter_on_the_at_picker_in_agent_mode_never_submits` hands the picker the typed query as the app does and checks the Enter waits in the picker, `terminal/input_test.rs`; the editor re-reporting the unchanged filter after that Enter must not cancel it, `query_gate_tests.rs` `the_same_query_again_*`); the next prose line is exact |
 | `cb_settings_ui_open` (both) | #1545 settings UI | Ctrl-, / Cmd-, opens the page (screen change, OCR), Escape closes it, typing in the pane behind is exact. Windows: not mapped |
-| `cb_settings_migration` (both) | #1545 migration | a settings.toml with unknown comment/key/table, then a truncated unparsable one: the app starts, types exactly, logs no panic and no migration/settings ERROR; `legacy_entries_kept` is a metric. The original file is restored |
+| `cb_settings_migration` (both) | #1545 migration | a settings.toml with unknown comment/key/table, then a truncated unparsable one: the app starts, types exactly, logs no panic and no migration/settings ERROR (on the truncated file the app's own `Settings file could not be parsed` notice is required, not counted as a failure), and leaves the truncated file byte for byte (a check since r18u22); `legacy_entries_kept` is a metric. The original file is restored |
 | `cb_state_relaunch` (terminal) | #1546 DB migration path | three relaunches on the same state dirs: prompt, exact typing, no migration/database ERROR in the app log, database files neither vanish nor halve |
 | `cb_no_autoupdate` (terminal) | #1547 | the whole run's app log has no updater line (the GUI updater is declined: DECLINED.md `FeatureFlag::Autoupdate`, `script/check_no_autoupdate`) |
 | `cb_ui_action_latency` (terminal) | #1548 | new tab and tab switch seen from screenshots: bound `APPCI_UI_ACTION_MAX_S` (1.5 s, first guess), numbers as metrics. An UPPER bound on the app's time (each screenshot costs 50-300 ms), not a 4 ms proof |
@@ -1935,3 +1935,38 @@ raising it costs a normal close or quit nothing.
   `bounded_wait_tests`): `exit_waits_survive_a_loaded_machine_within_the_shutdown_deadline`,
   `exit_handoff_wait_ends_when_the_work_does`, `exit_handoff_wait_gives_up_at_its_budget`, with the existing
   `exit_wait_is_woken_by_the_writer_finishing_not_polled`.
+
+## r18u22 Wayland app-run triage (job 17757564474, 2ecf74940)
+
+- **`cb_settings_migration`.** The truncated arm failed in both modes on the app's own `[ERROR] Settings file could not be parsed: ...` line, which is
+  its notice of the broken file (it started in 0.9 s, kept the file byte for byte, showed the banner). `startup_log_problems(text, broken_settings=True)`
+  no longer counts that notice on the truncated arm (every other ERROR, and any panic, still counts); the arm now requires the notice
+  (`settings_notices`) and checks `truncated_file_unchanged` instead of only recording it. The agent pass's 0/4 typed lines on the truncated file
+  stays a failure; the arm now notes the view before/after and the burst's agent submits (`ai_submits`), because on defaults
+  (`restore_session = true`, no per-pass overrides) where a typed line goes is the open question. **macOS:** `MacApp._install_settings` copied the
+  profile file over `~/.phosphor/settings.toml` on EVERY start, so the Mac pass never tested the legacy or truncated file (it passed with
+  `truncated_file_unchanged False`, `legacy_entries_kept 0`). It now copies only when the profile file changed (a new pass) or the app's file is
+  missing. App side: the log said `unknown error` for every syntax error; `user_preferences::Error::Syntax` now says `invalid TOML at line L,
+  column C: <parser message>` without quoting the file, and a syntax error found by a RELOAD (the user saved a broken file while the app ran)
+  inhibits writes as the startup one does, so the next setting change in the app can no longer overwrite the user's edit
+  (`toml_backed_tests.rs` `test_syntax_error_names_line_and_column_without_quoting_the_file`,
+  `test_runtime_syntax_error_inhibits_writes_until_reload_succeeds`).
+- **`ssh_drop_reconnect`.** On Wayland the `<Enter>~.` escape left the session up, and the rest of both arms ran inside it (the reconnect nested a
+  second ssh, the kill arm's `kill -9 $$` returned to the first remote shell): one failure read as nine. When the escape does not drop the session
+  the arm now quotes the app's `ssh_escape*` hops from the log, clears the line, leaves with `exit` and skips to the kill arm, which is then judged
+  on its own. The app logs `hop=ssh_escape_refused char=. why=not_insert_char|ai_locked|no_active_session|not_managed_ssh|shared_viewer` whenever
+  the editor holds exactly `~X` and keeps it (`terminal/input.rs ssh_escape_typed_at_line_start`), so the next run says why.
+- **`session_restore`** (Wayland, intermittent, both modes): every tab key answered from one middle tab. The case records the app windows before the
+  quit and after the restore (`windows_before_quit` / `windows_after_restore`, sway titles) and, on a mismatch, the `hop=tab_activate index= count=
+  active= window=` lines the app now logs for every tab activation (`workspace/view.rs activate_tab`): no line = the key never reached the
+  workspace; `count=1` = the focused window had one tab (a restore that split or dropped tabs).
+- **`shell_nu`** (agent): the Linux `App` now puts `USER_BIN_DIRS` (`~/.local/bin`, `/home/gitlab-runner/.local/bin`, ...) on the app's PATH
+  (`app.with_user_bin_dirs`). The r18cz fix for this lived only in `WindowsApp.env` under `os.name != "nt"`, i.e. never ran, so on the box nu
+  was not on the app's PATH and the agent view sent a bare `nu` to the agent.
+- **`ui_mouse_select_copy` / `ui_right_click_paste`** (Wayland): the terminal pass failed three runs running on the same token (`mselt409jy2dwo`,
+  seed 1: tesseract misreads glyphs of the terminal font). Tokens the case must find on screen are drawn from `OCR_SAFE` glyphs (`ocr_safe`,
+  the seeded rng sequence unchanged) and `find_token` accepts one misread glyph. `ui_right_click_paste` looked for the prompt text `~/w$`, which a
+  Phosphor-drawn prompt does not show; it now types an OCR-safe probe into the input, finds it, clears it with Ctrl-U and right-clicks where it
+  began. The agent pass's copy (clipboard kept the sentinel) is unresolved: sway `seat - cursor` pointer synthesis had never got this far on
+  Wayland; the case now records `dblclick_screen_diff` (0 = no selection drawn) and notes it when the sentinel survives.
+

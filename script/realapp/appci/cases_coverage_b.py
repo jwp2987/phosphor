@@ -29,16 +29,30 @@ def corrupt_settings(orig):
     return orig[: max(1, len(orig) // 2)] + '\n[broken\nkey = "unterminated\n'
 
 
-def startup_log_problems(text):
-    """lines of an app-log excerpt that mean a failed start/migration: a panic, or a migration / database / settings line at ERROR level"""
+SETTINGS_NOTICE_RE = re.compile(r"(?i)settings file (could not be parsed|cannot be used)")
+
+
+def startup_log_problems(text, broken_settings=False):
+    """lines of an app-log excerpt that mean a failed start/migration: a panic, or a migration / database / settings line at ERROR level.
+    broken_settings=True (the case wrote an unparsable settings.toml on purpose): the app's own `Settings file could not be parsed: ...` /
+    `Settings file cannot be used: ...` ERROR is its NOTICE of that file (settings/init.rs logs it and shows the banner, then starts on defaults
+    with writes to the file inhibited), not a failed start. r18u22 (Wayland, both modes): the app reached a prompt in 0.9 s, kept the file
+    byte for byte and took the typing, and the case still failed on that one notice line. Every other ERROR line still counts."""
     out = []
     for line in text.splitlines():
         low = line.lower()
         if "panicked at" in line:
             out.append(line.strip()[:200])
         elif (" error " in low or "[error]" in low or " error:" in low) and any(k in low for k in ("migrat", "sqlite", "diesel", "database", "settings file", "settings.toml")):
+            if broken_settings and SETTINGS_NOTICE_RE.search(line):
+                continue
             out.append(line.strip()[:200])
     return out
+
+
+def settings_notices(text):
+    """the app's notice lines for an unusable settings file (see startup_log_problems)"""
+    return [l.strip()[:200] for l in text.splitlines() if SETTINGS_NOTICE_RE.search(l)]
 
 
 AUTOUPDATE_RE = re.compile(r"(?i)(auto[-_ ]?update|check(?:ing)? for updates?|update available|downloading update|releases/latest|SHA256SUMS)")
@@ -282,15 +296,33 @@ def c_settings_migration(ctx, r):
             time.sleep(3)
             ctx.be.key("Escape")
             ctx.shot("cb_settings_%s_started" % name)
-            U.exact_burst(ctx, r, "cb_settings_%s" % name, 4)
-            probs = startup_log_problems(open(ctx.log_path, errors="replace").read() if ctx.log_path and os.path.exists(ctx.log_path) else "")
+            # r18u22 (Wayland agent pass): the truncated arm's 4 lines reached no shell (0/4) while the terminal pass typed them exactly. On the
+            # truncated file the app runs on DEFAULTS (restore_session = true brings back the previous session; the agent pass's per-pass
+            # overrides are gone), so the destination of a typed line is the thing to see. Record the view and the agent submits of the burst.
+            view0 = ctx.log_view_mode()
+            off0 = ctx.log_size()
+            if not U.exact_burst(ctx, r, "cb_settings_%s" % name, 4):
+                seg = ctx.log_since(off0)
+                subs = ai_submits(seg)
+                r.note("%s settings file: the burst did not land in the shell; view before it %r, after it %r; %d of its Enters submitted to the agent %s" % (
+                    name, view0, ctx.log_view_mode(), len(subs), [b[:60] for b, _t in subs[:4]]))
+                r.metric("%s_burst_agent_submits" % name, len(subs))
+            log_text = open(ctx.log_path, errors="replace").read() if ctx.log_path and os.path.exists(ctx.log_path) else ""
+            probs = startup_log_problems(log_text, broken_settings=(name == "truncated"))
             r.check(not probs, "%s settings file: the app log shows a failed start: %s" % (name, probs[:2]))
             r.check(ctx.app.alive(), "app died on the %s settings file" % name)
             now = open(p, "rb").read().decode("utf-8", "replace")
             if name == "legacy":
                 r.metric("legacy_entries_kept", sum(1 for m in markers if m in now))
             else:
+                notice = settings_notices(log_text)
+                r.metric("truncated_notice", notice[:1])
+                if log_text:
+                    r.check(bool(notice), "truncated settings file: the app logged no 'Settings file could not be parsed' notice (it did not see the broken file?)")
                 r.metric("truncated_file_unchanged", now == body)
+                # the user's broken file is theirs to fix: the app must start on defaults WITHOUT rewriting it (settings/init.rs, toml_backed write
+                # inhibition). A metric until r18u22; a check now that the Mac harness no longer reinstalls the profile file over it on start.
+                r.check(now == body, "truncated settings file: the app rewrote the user's unparsable settings.toml (%d bytes -> %d bytes)" % (len(body), len(now)))
     finally:
         open(p, "wb").write(orig)
         ctx.snapshot_log()

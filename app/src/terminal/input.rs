@@ -6728,22 +6728,37 @@ impl Input {
             return None;
         }
         let editor = self.editor.as_ref(ctx);
-        // Cheap checks first: this runs on every typed key.
-        if editor.buffer_size(ctx).as_usize() != 2
-            || editor.get_last_action(ctx) != Some(PlainTextEditorViewAction::InsertChar)
-        {
+        // Cheap check first: this runs on every typed key.
+        if editor.buffer_size(ctx).as_usize() != 2 {
             return None;
         }
         let bytes = ssh_escape_bytes(editor.last_buffer_text(ctx), &editor.buffer_text(ctx))?;
+        // r18u22 (Wayland ssh_drop_reconnect): `<Enter>~.` left the session up on Wayland
+        // while the Mac run of the same build dropped it. From here on the buffer IS `~X`, so a
+        // refusal is logged with its reason (no text: the two bytes are ssh's escape) and the
+        // next run shows which condition kept the escape in the editor.
+        let refuse = |why: &str| -> Option<[u8; 2]> {
+            warpui::input_order::log_hop("ssh_escape_refused", || {
+                format!("char={:?} why={why}", bytes[1] as char)
+            });
+            None
+        };
+        if editor.get_last_action(ctx) != Some(PlainTextEditorViewAction::InsertChar) {
+            return refuse("not_insert_char");
+        }
         let ai_input = self.ai_input_model.as_ref(ctx);
         if ai_input.is_ai_input_enabled() && ai_input.is_input_type_locked() {
-            return None;
+            return refuse("ai_locked");
         }
-        let is_managed_ssh = self
-            .active_session(ctx)
-            .is_some_and(|s| matches!(s.session_type(), SessionType::WarpifiedRemote { .. }));
-        if !is_managed_ssh || self.model.lock().shared_session_status().is_viewer() {
-            return None;
+        let session_type = self.active_session(ctx).map(|s| s.session_type());
+        if !matches!(session_type, Some(SessionType::WarpifiedRemote { .. })) {
+            return refuse(match session_type {
+                None => "no_active_session",
+                Some(_) => "not_managed_ssh",
+            });
+        }
+        if self.model.lock().shared_session_status().is_viewer() {
+            return refuse("shared_viewer");
         }
         Some(bytes)
     }

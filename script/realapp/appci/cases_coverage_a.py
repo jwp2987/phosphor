@@ -381,6 +381,7 @@ def c_ssh_drop(ctx, r):
         remote_lines_exact(ctx, r, variant + "_1", ctx.count(5))
         ctx.shot("ssh_drop_%s_connected" % variant)
         before = ctx.prompts()
+        off = ctx.log_size()
         if variant == "escape":
             ctx.be.key("Return")
             time.sleep(0.3)
@@ -390,6 +391,22 @@ def c_ssh_drop(ctx, r):
         up = ctx.until(lambda: ctx.prompts() > before, 20, step=0.1)
         r.check(bool(up), "[%s] no local prompt within 20 s after the connection was lost" % variant)
         ctx.shot("ssh_drop_%s_dropped" % variant)
+        if variant == "escape" and not up:
+            # r18u22 (Wayland): the escape left the session up and every later step of BOTH arms ran inside it (the reconnect nested a second
+            # ssh, the kill arm's `kill -9 $$` returned to the first remote shell), so one failure read as nine. What the app did with `~.` is
+            # quoted from its log (hop=ssh_escape_to_pty: written to ssh; hop=ssh_escape_refused why=...: kept in the editor and why), then the
+            # line is cleared and the session left with `exit`, so the kill arm starts from the local shell and is judged on its own.
+            esc = [l.strip()[-160:] for l in ctx.log_since(off).splitlines() if "ssh_escape" in l]
+            r.note("[escape] app log after `<Enter>~.`: %s" % (esc[:4] or "no ssh_escape hop (a build without the r18u22 refusal log, the input_order log off, or the keys never reached the editor)"))
+            r.metric("escape_hops", esc[:4])
+            ctx.reset()
+            left = CR.leave(ctx)
+            r.note("[escape] the rest of this arm is not run (it would nest inside the live session); `exit` back to the local shell: %s" % (
+                "ok" if left else "FAILED (%s)" % ctx.left_unproven))
+            if not left:
+                r.check(False, "[escape] the session the escape did not end could not be left with `exit` either (%s): the kill arm is not run" % ctx.left_unproven)
+                return
+            continue
         where = ctx.where_now()
         r.check(where == "local", "[%s] after the drop the pane is %r, expected local" % (variant, where))
         local_cmd_exact(ctx, r, "ssh_drop_%s" % variant)

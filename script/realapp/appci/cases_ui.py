@@ -140,6 +140,44 @@ def find_word(ctx, tag, sub, last=True):
     return ((hits[-1] if last else hits[0]) if hits else None), p
 
 
+# r18u22 (Wayland): ui_mouse_select_copy failed in three runs on the SAME token ('mselt409jy2dwo', seed 1) with "not found on screen by OCR",
+# while the agent pass found its token ('mselt246eectwt') on the same screen: tesseract reads some glyphs of the terminal font as others
+# (0/O, 1/l/I, 5/S, 9/g, ...), and the exact-substring match then never hits. Tokens a case must FIND on screen are drawn from glyphs
+# tesseract does not confuse, and the match tolerates one misread glyph.
+OCR_SAFE = "acdefhkmnprtuwxy2347"
+
+
+def ocr_safe(s):
+    """s mapped onto OCR_SAFE glyphs, one for one (deterministic: the seeded rng sequence of the run is unchanged)"""
+    return "".join(OCR_SAFE[ord(c) % len(OCR_SAFE)] for c in s)
+
+
+def find_token(ctx, tag, token, last=True):
+    """(word, path) like find_word, for a whole token: an exact substring hit first, else the word that differs from the token by at most one glyph
+    (a misread or a dropped/added glyph at either end). OCR noise around the word (a quote, a colon) is stripped before comparing."""
+    ws, p = words(ctx, tag)
+    hits = token_hits(ws, token)
+    return ((hits[-1] if last else hits[0]) if hits else None), p
+
+
+def token_hits(ws, token):
+    """the words of `ws` (words() rows) that are `token`, top to bottom: exact substring hits if any, else the one-glyph-off ones (find_token)"""
+    tl = token.lower()
+    exact = sorted((w for w in ws if tl in w[0].lower()), key=lambda w: w[2])
+    if exact:
+        return exact
+
+    def near(word):
+        w = re.sub(r"[^0-9a-z]", "", word.lower())
+        if abs(len(w) - len(tl)) > 1 or len(tl) < 6:
+            return False
+        if len(w) == len(tl):
+            return sum(a != b for a, b in zip(w, tl)) <= 1
+        short, long_ = (w, tl) if len(w) < len(tl) else (tl, w)
+        return any(long_[:i] + long_[i + 1:] == short for i in range(len(long_)))
+    return sorted((w for w in ws if near(w[0])), key=lambda w: w[2])
+
+
 class Mouse:
     """pointer synthesis in the job's own display: xdotool (X11) or sway's seat cursor commands (headless Wayland)"""
 
@@ -434,18 +472,28 @@ def c_mouse_copy(ctx, r):
     token; then a drag across the word -> copy contains the token. The clipboard is pre-set to a sentinel so a no-op copy cannot pass."""
     m = mouse_or_skip(ctx, r)
     need_tesseract(r)
-    tok = "msel" + ctx.tok(6).lower().replace("_", "")
+    tok = "msel" + ocr_safe(ctx.tok(6).lower().replace("_", ""))
     run_cmd(ctx, "printf 'msel%%s\\n' %s" % tok[4:])
     time.sleep(0.8)
-    w, _ = find_word(ctx, "mouse_find", tok[:9])
+    w, _ = find_token(ctx, "mouse_find", tok)
     if not w:
         r.check(False, "token %r not found on screen by OCR (shots/*mouse_find.png): cannot place the pointer" % tok)
         return
     r.metric("word", w[0])
+    # r18u22 (Wayland agent pass): both copies left the sentinel. Pointer synthesis on Wayland (sway `seat - cursor`) had never got this far
+    # (the terminal pass always stopped at the OCR step), so whether the clicks reached the app is unproven. The screen before and after the
+    # double-click is compared: no change at all means no selection was drawn (pointer events not delivered, or the app drew none).
+    before = ctx.shot("select_before")
     got = copy_check(ctx, r, "dblclick", lambda: m.click(w[1], w[2], 1, 2), tok)
-    r.check(got.strip() == tok, "double-click + copy: clipboard holds %r, expected exactly %r" % (got[:80], tok))
+    d = img_diff(before, ctx.shot("select_dblclick_after")) if before else None
+    r.metric("dblclick_screen_diff", d if d is not None else -1)
+    ok1 = r.check(got.strip() == tok, "double-click + copy: clipboard holds %r, expected exactly %r" % (got[:80], tok))
     got = copy_check(ctx, r, "drag", lambda: m.drag(w[3] - 2, w[2], w[4] + 2, w[2]), tok)
-    r.check(tok in got and len(got) <= len(tok) + 4, "drag across the word + copy: clipboard holds %r, expected the token %r (+- a char)" % (got[:80], tok))
+    ok2 = r.check(tok in got and len(got) <= len(tok) + 4, "drag across the word + copy: clipboard holds %r, expected the token %r (+- a char)" % (got[:80], tok))
+    if not (ok1 and ok2) and got == "SENTINEL_NOT_COPIED":
+        r.note("the clipboard kept the sentinel: nothing was copied. Screen change from the double-click: %s (0 = no selection drawn: the pointer "
+               "events did not reach the app, or it drew no selection; > 0 = a selection was drawn and the copy key did not copy it)" % (
+                   "n/a (no Pillow)" if d is None else "%.4f" % d))
     exact_burst(ctx, r, "after_mouse", 4)
 
 
@@ -459,12 +507,20 @@ def c_right_click_paste(ctx, r):
     cmd = "echo rc%s >> rc.txt" % tok
     ctx.rm("rc.txt")
     ctx.be.clip_set(cmd)
-    p, _ = find_word(ctx, "rc_prompt", "w$")
+    # r18u22 (Wayland, every run): the input was located by the prompt text '~/w$', which a Phosphor-drawn prompt (owner settings) does not
+    # show, so the case never reached the right-click. The input is located by what is typed INTO it instead: an OCR-safe probe word, found
+    # on screen, then cleared with Ctrl-U; the right-click goes where the probe began (inside the now empty input).
+    probe = "rcpw" + ocr_safe(ctx.tok(6).lower().replace("_", ""))
+    ctx.be.type(probe, 12)
+    time.sleep(0.6)
+    p, _ = find_token(ctx, "rc_prompt", probe)
+    ctx.be.key("ctrl+u")
+    time.sleep(0.3)
     if not p:
-        r.check(False, "prompt '~/w$' not found on screen (shots/*rc_prompt.png)")
+        r.check(False, "the probe %r typed into the input was not found on screen by OCR (shots/*rc_prompt.png): cannot place the pointer" % probe)
         return
     mark = ctx.cmd_mark()
-    m.click(p[4] + 40, p[2], 3)
+    m.click(p[3] + 4, p[2], 3)
     time.sleep(0.6)
     item, _ = find_word(ctx, "rc_menu", "paste")
     if not item:
