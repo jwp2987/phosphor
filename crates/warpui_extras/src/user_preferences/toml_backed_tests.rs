@@ -1182,3 +1182,73 @@ fn test_background_write_failure_is_reported_asynchronously() {
     assert!(prefs.write_value("zoom", "1".to_string()).is_ok());
     assert!(prefs.flush_pending().is_err());
 }
+
+/// r18u22 (Wayland cb_settings_migration): a truncated settings file was logged
+/// as "Settings file could not be parsed: unknown error". The error now says
+/// where the file broke, and never quotes the file's text.
+#[test]
+fn test_syntax_error_names_line_and_column_without_quoting_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("settings.toml");
+    let contents = "[font]\nfont_size = 17.0\nfont_name = = \"secret_value\"\n";
+    std::fs::write(&file_path, contents).unwrap();
+
+    let (_, error) = TomlBackedUserPreferences::new(file_path.clone());
+    let Some(Error::Syntax(detail)) = &error else {
+        panic!("expected a syntax error, got {error:?}");
+    };
+    assert!(detail.starts_with("line 3, column "), "{detail}");
+    assert!(detail.len() > "line 3, column 1: ".len(), "{detail}");
+    let message = error.as_ref().unwrap().to_string();
+    assert!(
+        message.starts_with("invalid TOML at line 3, column "),
+        "{message}"
+    );
+    assert!(!message.contains("unknown error"), "{message}");
+    assert!(!message.contains("secret_value"), "{message}");
+    assert!(!message.contains("font_size"), "{message}");
+    assert_eq!(std::fs::read_to_string(&file_path).unwrap(), contents);
+}
+
+/// r18u22: a syntax error the user saves while the app runs must not be
+/// overwritten by the next setting change made in the app (the in-memory
+/// document from before the edit). Writes stay inhibited, and fail loudly,
+/// until the file parses again.
+#[test]
+fn test_runtime_syntax_error_inhibits_writes_until_reload_succeeds() {
+    use super::super::UserPreferences;
+
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("settings.toml");
+    std::fs::write(&file_path, "[font]\nfont_size = 17.0\n").unwrap();
+    let (prefs, error) = TomlBackedUserPreferences::new(file_path.clone());
+    assert!(error.is_none());
+
+    let edited = "[font]\nfont_size = 17.0\nfont_name = \"Hack\n";
+    std::fs::write(&file_path, edited).unwrap();
+    assert!(matches!(prefs.reload_from_disk(), Err(Error::Syntax(_))));
+    assert!(prefs.write_inhibited.get());
+    assert!(
+        prefs
+            .write_value_with_hierarchy("font_size", "12.0".to_string(), Some("font"), None)
+            .is_err(),
+        "a write while the file is broken must be reported, not silently dropped"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&file_path).unwrap(),
+        edited,
+        "the user's broken-but-fixable edit is kept"
+    );
+
+    std::fs::write(&file_path, "[font]\nfont_size = 18.0\n").unwrap();
+    prefs.reload_from_disk().unwrap();
+    assert!(!prefs.write_inhibited.get());
+    prefs
+        .write_value_with_hierarchy("font_size", "12.0".to_string(), Some("font"), None)
+        .unwrap();
+    assert!(
+        std::fs::read_to_string(&file_path)
+            .unwrap()
+            .contains("12.0")
+    );
+}
