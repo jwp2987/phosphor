@@ -3,8 +3,8 @@
 //! deadlocks with parking_lot (a thread re-entering its own write, or writing while it reads).
 //!
 //! ```text
-//! RUSTFLAGS="--cfg shuttle" cargo test -p warpui_core --lib --release -- model_tests::
-//! RUSTFLAGS="--cfg phosphor_loom"    cargo test -p warpui_core --lib --release -- model_tests::
+//! RUSTFLAGS="--cfg shuttle" cargo test -p warpui_core --lib --release -- model_tests::model_
+//! RUSTFLAGS="--cfg phosphor_loom"    cargo test -p warpui_core --lib --release -- model_tests::model_
 //! ```
 
 use super::*;

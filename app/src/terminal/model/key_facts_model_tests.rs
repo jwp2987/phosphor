@@ -3,10 +3,10 @@
 //! for the main thread's user key.
 //!
 //! ```text
-//! RUSTFLAGS="--cfg shuttle" cargo nextest run -p warp --lib --features warp/gui -E 'test(model_tests::)'
+//! RUSTFLAGS="--cfg shuttle" cargo nextest run -p warp --lib --features warp/gui -E 'test(model_tests::model_)'
 //! ```
 //!
-//! (or `cargo test -p warp --lib --features warp/gui --release -- model_tests::`; the filter matters: the rest of the
+//! (or `cargo test -p warp --lib --features warp/gui --release -- model_tests::model_`; the filter matters: the rest of the
 //! suite runs real primitives outside a model.)
 
 use warpui_core::sync_shim::{Arc, check, thread};

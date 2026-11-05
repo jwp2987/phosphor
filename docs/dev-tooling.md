@@ -13,11 +13,11 @@ instead of the modules' ordinary tests (their `static`s need `const` constructor
 
 ```
 # random schedules (broad, fast)
-RUSTFLAGS="--cfg shuttle" cargo test -p warpui_core --lib --release -- model_tests::
-RUSTFLAGS="--cfg shuttle" cargo test -p warp --lib --features warp/gui --release -- model_tests::
+RUSTFLAGS="--cfg shuttle" cargo test -p warpui_core --lib --release -- model_tests::model_
+RUSTFLAGS="--cfg shuttle" cargo test -p warp --lib --features warp/gui --release -- model_tests::model_
 # every schedule (tiny bodies only)
-RUSTFLAGS="--cfg phosphor_loom" cargo test -p warpui_core --lib --release -- model_tests::
-RUSTFLAGS="--cfg phosphor_loom" cargo test -p warp --lib --features warp/gui --release -- model_tests::
+RUSTFLAGS="--cfg phosphor_loom" cargo test -p warpui_core --lib --release -- model_tests::model_
+RUSTFLAGS="--cfg phosphor_loom" cargo test -p warp --lib --features warp/gui --release -- model_tests::model_
 # CI bounds loom to LOOM_MAX_PREEMPTIONS=2 (the unbounded warp model tests never finished in 150 min, r18u19); set it higher to dig.
 ```
 
@@ -146,7 +146,7 @@ the default pipeline. Start them from the pipeline page of a protected ref (`mai
 
 | job | runs | artifacts |
 |---|---|---|
-| `test-shuttle-phosphor_loom` | the `model_tests::` tests of `warpui_core` and `warp` under `--cfg shuttle`, then `--cfg phosphor_loom` | none |
+| `test-shuttle-phosphor_loom` | the `model_tests::model_` tests (module `*model_tests`, fn `model_*`) of `warpui_core` and `warp` under `--cfg shuttle`, then `--cfg phosphor_loom` | none |
 | `fuzz-smoke` | each fuzz target for `FUZZ_SECONDS` (180) from the committed corpus; `RUSTC_BOOTSTRAP=1` so the pinned stable toolchain is used | `fuzz/artifacts/` (crashes) |
 | `mutants` | cargo-mutants on `MUTANTS_FILES` of `MUTANTS_PACKAGE`, tests limited by `MUTANTS_TEST_FILTER`, optional `MUTANTS_SHARD=k/n` (default scope: pane_key, key_facts, input_queue gates+destination) | `mutants.out/` |
 | `mutants-warpui-core` | cargo-mutants on the warpui_core clipboard with warpui_core's own tests | `mutants.out/` |

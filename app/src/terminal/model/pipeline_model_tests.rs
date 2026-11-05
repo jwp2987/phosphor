@@ -4,12 +4,14 @@
 //! and the reader retry) and `typeahead_handoff_model_tests.rs` (the `RwLock` handle).
 //!
 //! ```text
-//! RUSTFLAGS="--cfg shuttle" cargo test -p warp --lib --features warp/gui --release -- model_tests::
-//! RUSTFLAGS="--cfg phosphor_loom"    cargo test -p warp --lib --features warp/gui --release -- model_tests::
+//! RUSTFLAGS="--cfg shuttle" cargo test -p warp --lib --features warp/gui --release -- model_tests::model_
+//! RUSTFLAGS="--cfg phosphor_loom"    cargo test -p warp --lib --features warp/gui --release -- model_tests::model_
 //! ```
 //!
-//! The module name ends in `model_tests`, so the `test-shuttle-loom` job's `model_tests::` filter
-//! selects it with no change to the job.
+//! The module name ends in `model_tests` and every test is named `model_*`, so the
+//! `test-shuttle-loom` job's `model_tests::model_` filter selects it with no change to the job.
+//! Both halves matter: `model_tests::` alone also matched the ordinary
+//! `file_search_model_tests::test_*`, which crashes outside a loom model (r18u22).
 //!
 //! WHAT IS A MODEL HERE. `PaneQueue` is an `Rc` and `InputQueue` holds `Rc` payloads: neither is
 //! `Send`, and every real call runs on the main thread. The interleavings that matter are
