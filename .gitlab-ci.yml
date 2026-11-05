@@ -855,7 +855,7 @@ mutants:
 # mutants, ~1 min each (unmeasured).
 mutants-warpui-core:
   extends: .box_job
-  timeout: 90m
+  timeout: 4h   # 250 mutants x ~43 s (build + test) is ~3 h; 90m timed out in r18u23 (job_token_expired)
   when: manual
   allow_failure: true
   script:
