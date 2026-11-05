@@ -985,7 +985,11 @@ impl Inner {
 		self.server.conn.flush().map_err(into_unknown)?;
 
 		*handover_state = ManagerHandoverState::InProgress;
-		let max_handover_duration = Duration::from_millis(100);
+		// Phosphor (#1693): 100 ms upstream. This runs only at quit, on a helper thread, and is
+		// woken by the manager finishing (`handover_cv`), so it is a give-up for a clipboard
+		// manager that is slow on a loaded machine, not a pace. The caller bounds the whole
+		// handoff (`EXIT_HANDOFF_BUDGET` in warpui's linux clipboard).
+		let max_handover_duration = Duration::from_millis(1_000);
 
 		// Note that we are using a parking_lot condvar here, which doesn't wake up
 		// spuriously

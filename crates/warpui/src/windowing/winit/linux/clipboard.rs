@@ -38,8 +38,17 @@ const FULL_READ_BUDGET: Duration = Duration::from_millis(2_000);
 
 /// How long quitting waits for an in-flight copy to land before handing the clipboard to the
 /// clipboard manager, and for the whole handoff (#1330). Quit must never hang on the clipboard.
-const EXIT_PENDING_WRITE_WAIT: Duration = Duration::from_millis(300);
-const EXIT_HANDOFF_BUDGET: Duration = Duration::from_millis(600);
+///
+/// Both are give-up nets, not paces (#1692, #1693): the pending-write wait is woken by the serial
+/// writer finishing the copy (a Condvar notify) and the handoff budget by the helper thread's
+/// done message, so a normal quit -- no copy in flight, or one that lands at once -- is no
+/// slower for them. They only need to outlast a loaded machine, where a copy that takes a few
+/// hundred ms to land used to be dropped at quit (300 ms / 600 ms). The handoff budget covers the
+/// pending wait plus arboard's own clipboard-manager handover wait (1 s, also event-driven), and
+/// stays under the signal shutdown deadline (`termination_signals::SHUTDOWN_DEADLINE`, 5 s) so a
+/// SIGTERM quit still gets to the end of its steps.
+const EXIT_PENDING_WRITE_WAIT: Duration = Duration::from_millis(2_000);
+const EXIT_HANDOFF_BUDGET: Duration = Duration::from_millis(3_000);
 
 /// Whether a read that came back with nothing was a timeout. arboard flags the first slow failure,
 /// but once `FULL_READ_BUDGET` is spent the retries fail instantly (which looks like an empty
@@ -61,6 +70,23 @@ fn flush_for_exit(wait_for_pending: impl FnOnce() -> bool, handoff: impl FnOnce(
     }
     handoff();
     true
+}
+
+/// Runs `work` on a helper thread and waits for it until it finishes or `budget` passes,
+/// whichever is first. Returns whether it finished in time. The wait is the thread's done
+/// message (`recv_timeout`), so it ends the moment the work does; `budget` is only the give-up
+/// for a wedged X connection. A failed spawn returns `false` without running the work (quit
+/// must not hang on the clipboard, and running it inline would have no bound).
+fn run_with_budget(work: impl FnOnce() + Send + 'static, budget: Duration) -> bool {
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new()
+        .name("clipboard-exit".into())
+        .spawn(move || {
+            work();
+            let _ = done_tx.send(());
+        })
+        .is_ok();
+    spawned && done_rx.recv_timeout(budget).is_ok()
 }
 
 /// Kill switch for the targets-based availability query (#1306): `PHOSPHOR_CLIPBOARD_TARGETS_QUERY=0`
@@ -377,10 +403,8 @@ impl Clipboard for LinuxClipboard {
         // (ICCCM SAVE_TARGETS). arboard only does that when its last handle drops, which never
         // happens for a long-lived app (#1330). Run it on a helper thread so a wedged X
         // connection cannot hold the quit past the budget. Wayland has no such protocol.
-        let (done_tx, done_rx) = std::sync::mpsc::channel();
-        let spawned = std::thread::Builder::new()
-            .name("clipboard-exit".into())
-            .spawn(move || {
+        let finished = run_with_budget(
+            || {
                 flush_for_exit(
                     || {
                         // Woken by the serial writer finishing the copy (a Condvar notify), not
@@ -392,10 +416,10 @@ impl Clipboard for LinuxClipboard {
                     },
                     arboard::hand_over_to_clipboard_manager,
                 );
-                let _ = done_tx.send(());
-            })
-            .is_ok();
-        if spawned && done_rx.recv_timeout(EXIT_HANDOFF_BUDGET).is_err() {
+            },
+            EXIT_HANDOFF_BUDGET,
+        );
+        if !finished {
             log::warn!("Clipboard handoff on exit did not finish in time; quitting anyway");
         }
     }

@@ -287,7 +287,10 @@ mod read_retry_tests {
 }
 
 mod bounded_wait_tests {
-    use super::super::{flush_for_exit, read_timed_out};
+    use super::super::{
+        EXIT_HANDOFF_BUDGET, EXIT_PENDING_WRITE_WAIT, flush_for_exit, read_timed_out,
+        run_with_budget,
+    };
     use std::time::Duration;
 
     #[test]
@@ -318,6 +321,51 @@ mod bounded_wait_tests {
         let mut ran = false;
         flush_for_exit(|| true, || ran = true);
         assert!(ran);
+    }
+
+    /// #1692 / #1693: the quit-time waits outlast a copy that takes a few hundred ms to land on a
+    /// loaded machine (they were 300 ms / 600 ms), the handoff budget covers the pending wait plus
+    /// arboard's 1 s manager handover, and the whole handoff fits inside the 5 s signal shutdown
+    /// deadline.
+    #[test]
+    fn exit_waits_survive_a_loaded_machine_within_the_shutdown_deadline() {
+        assert!(EXIT_PENDING_WRITE_WAIT >= Duration::from_secs(2));
+        assert!(EXIT_HANDOFF_BUDGET >= EXIT_PENDING_WRITE_WAIT + Duration::from_secs(1));
+        assert!(EXIT_HANDOFF_BUDGET < crate::platform::termination_signals::SHUTDOWN_DEADLINE);
+    }
+
+    /// #1693: the handoff budget is a give-up, not a pace. Work that finishes at once ends the
+    /// wait at once, so a normal quit is no slower for the larger budget.
+    #[test]
+    fn exit_handoff_wait_ends_when_the_work_does() {
+        use std::time::Instant;
+        let start = Instant::now();
+        assert!(run_with_budget(|| {}, Duration::from_secs(30)));
+        assert!(start.elapsed() < Duration::from_secs(5));
+
+        let start = Instant::now();
+        assert!(run_with_budget(
+            || std::thread::sleep(Duration::from_millis(50)),
+            Duration::from_secs(30)
+        ));
+        assert!(start.elapsed() < Duration::from_secs(5));
+    }
+
+    /// #1693: a handoff that never finishes (a wedged X connection) is given up at the budget.
+    #[test]
+    fn exit_handoff_wait_gives_up_at_its_budget() {
+        use std::time::Instant;
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let start = Instant::now();
+        let finished = run_with_budget(
+            move || {
+                let _ = release_rx.recv();
+            },
+            Duration::from_millis(50),
+        );
+        assert!(!finished);
+        assert!(start.elapsed() >= Duration::from_millis(50));
+        drop(release_tx);
     }
 
     #[test]
