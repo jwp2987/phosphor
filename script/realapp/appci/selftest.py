@@ -1658,6 +1658,13 @@ def coverage_b_pure_helpers():
     assert len(cb.startup_log_problems(notice + "[ERROR] migration 0042 failed\n", broken_settings=True)) == 1
     assert len(cb.startup_log_problems(notice + "thread 'main' panicked at a.rs:1\n", broken_settings=True)) == 1
     assert cb.settings_notices(notice + "INFO x\n") == [notice.strip()] and cb.settings_notices("INFO x\n") == []
+    # r18u23: the relaunched shell's start cwd is recorded and the shell moved to the case dir before the burst (a restored tab keeps its saved cwd)
+    line = cb.start_cwd_line("/h/w", "/h/w/cb_settings_truncated_cwd.txt")
+    assert line == "pwd > /h/w/cb_settings_truncated_cwd.txt; cd /h/w", line
+    assert "'/h/my w'" in cb.start_cwd_line("/h/my w", "/h/my w/x.txt")
+    assert cb.start_cwd_note("truncated", "/h/w", "/h/w") is None
+    assert "started in /h/w/sub" in cb.start_cwd_note("truncated", "/h/w/sub", "/h/w")
+    assert "did not run" in cb.start_cwd_note("truncated", None, "/h/w")
     # r18u22: MacApp copies the profile settings only when the profile changed, so a case's own write to the app's file survives a relaunch
     import tempfile as _tf
     import app as _appmod

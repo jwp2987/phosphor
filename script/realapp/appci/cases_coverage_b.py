@@ -265,6 +265,26 @@ def c_settings_ui_open(ctx, r):
     r.check(ctx.app.alive(), "app died while opening/closing the settings page")
 
 
+def start_cwd_line(w, out):
+    """the shell line that records where the relaunched app's shell started (`pwd` into `out`, an absolute path) and then moves it to the case dir
+    `w`. POSIX shells (bash, zsh, fish)."""
+    import shlex
+    return "pwd > %s; cd %s" % (shlex.quote(out), shlex.quote(w))
+
+
+def start_cwd_note(name, started, w):
+    """None when the shell started in the case dir `w`, else the note naming where it started. r18u23 Mac / r18u22 Wayland agent pass: on the
+    truncated (unparsable) settings file the app runs on DEFAULTS, restore_session = true, and the restored tab starts in its saved cwd (the rc only
+    moves a $HOME or / start to the case dir): rec.log had the 4 typed lines exactly (no rec.log note, no command mismatch) while the effect file
+    in the case dir had 0/4."""
+    if started is None:
+        return "%s settings file: the start-cwd probe line did not run (no cwd file); the burst's cwd is unknown" % name
+    if os.path.realpath(started) == os.path.realpath(w):
+        return None
+    return ("%s settings file: the relaunched shell started in %s, not the case dir (a restored session keeps its saved cwd); moved to the case dir "
+            "before the burst" % (name, started))
+
+
 def _relaunch_ok(ctx, r, tag):
     t = U.relaunch(ctx, False)
     r.metric("%s_start_s" % tag, t if t is not None else -1)
@@ -300,6 +320,24 @@ def c_settings_migration(ctx, r):
             # truncated file the app runs on DEFAULTS (restore_session = true brings back the previous session; the agent pass's per-pass
             # overrides are gone), so the destination of a typed line is the thing to see. Record the view and the agent submits of the burst.
             view0 = ctx.log_view_mode()
+            # r18u23 (Mac agent pass): the shell DID run the 4 lines (rec.log exact) but the effect file in the case dir stayed empty: the restored
+            # tab's shell started in its saved cwd. Record where the shell started, move it to the case dir, then type the burst.
+            cwd_f = os.path.join(ctx.W, "cb_settings_%s_cwd.txt" % name)
+            try:
+                os.remove(cwd_f)
+            except OSError:
+                pass
+            ctx.be.type(start_cwd_line(ctx.W, cwd_f), 12, enter=True)
+            ctx.until(lambda: os.path.isfile(cwd_f) and os.path.getsize(cwd_f) > 0, 5)
+            try:
+                started = open(cwd_f).read().strip() or None
+            except OSError:
+                started = None
+            r.metric("%s_start_cwd" % name, started)
+            note = start_cwd_note(name, started, ctx.W)
+            if note:
+                r.note(note)
+            ctx.reset()
             off0 = ctx.log_size()
             if not U.exact_burst(ctx, r, "cb_settings_%s" % name, 4):
                 seg = ctx.log_since(off0)
