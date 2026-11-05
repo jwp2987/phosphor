@@ -25,7 +25,7 @@
 //!
 //! | decision | timing path (kept) | prompt-sequence path |
 //! |---|---|---|
-//! | young Enter held for a prompt? | 600 ms window since the last activity, hold sized by 3x the p90 round trip (only where the platform can sample nothing, see below) | positive evidence only ([`YoungHoldEvidence`], #1614): the request is due (the counts say the prompt is back and nothing is queued, or the sample proves them stale), or a Precmd may be in flight (the line editor reads and the reader-side barrier says the stream is not applied yet); anything else is delivered to the pty as typed. Released by the report, the barrier's next publish, a Preexec, a program taking the tty, a command, a signal; give-up [`YOUNG_HOLD_GIVE_UP`] (10 s) discards the Enter and what followed it (#1661) |
+//! | young Enter held for a prompt? | 600 ms window since the last activity, hold sized by 3x the p90 round trip (only where the platform can sample nothing, see below) | positive evidence only ([`YoungHoldEvidence`], #1614): the request is due (the counts say the prompt is back and nothing is queued, or the sample proves them stale), or a Precmd may be in flight (the line editor reads and the reader-side barrier says the stream is not applied yet); anything else is delivered to the pty as typed. Released by the report, the barrier's next publish, a Preexec, a program taking the tty, a command, a signal; give-up [`YOUNG_HOLD_GIVE_UP`] (10 s) discards the Enter and what followed it, except the fish no-barrier hold (2 s) and a no-sequence window hold, whose cap is their normal end and hands back (#1661) |
 //! | line begun at an unnoticed prompt ("young line")? | began within the window | same facts |
 //! | hand-back after Ctrl-C at the prompt | 250 ms settle | prompt cycle shells: the cycle's Precmd; zsh: the report of a request written behind the interrupt; one 2 s logged give-up |
 //! | Enters consumed by a program | 250 ms quiet period | the finished command was interactive (latch, read on the model thread), the sampled state at decision time; one 5 s logged give-up |
@@ -262,16 +262,16 @@ pub fn prompt_seq_env_enabled() -> bool {
 
 /// The wait of a young Enter held by an event ([`TypeaheadHandoff::young_hold_wait`]): the
 /// prompt's Precmd, or the report, normally releases it within milliseconds, so reaching this
-/// means the signal is not coming. Logged by the view when it fires. Owner decision 2026-11-05
-/// (#1661): 10 s (was 2 s), since the give-up now DISCARDS the Enter and the keys typed after it,
-/// and a busy machine must not drop typeahead whose release event is merely late.
-pub const EVENT_HOLD_GIVE_UP: Duration = Duration::from_secs(10);
+/// means the signal is not coming. Logged by the view when it fires. It stays the cap of the
+/// fish no-barrier hold ([`YoungHoldEvidence::PrecmdMaybeInFlight`]), whose cap is its NORMAL end
+/// (owner decision 2026-11-05, #1661); every other evidence gets [`YOUNG_HOLD_GIVE_UP`].
+pub const EVENT_HOLD_GIVE_UP: Duration = Duration::from_secs(2);
 
-/// Owner decision 2026-11-05 (#1661): the give-up net of every queued young hold, whatever
-/// [`TypeaheadHandoff::young_hold_wait`] expects. The hold is released by events (the report, the
-/// barrier's publish, a Preexec, a program taking the tty, a command, a signal); its give-up
-/// discards the young Enter and the keys typed after it, so it is a long safety net, not the
-/// 20-600 ms timing estimate it used to be (a busy Windows box missed that and dropped keys).
+/// Owner decision 2026-11-05 (#1661): the give-up net of a queued young hold whose cap is a
+/// GIVE-UP ([`TypeaheadHandoff::young_hold_cap_is_normal_end`] false). The hold is released by
+/// events (the report, the barrier's publish, a Preexec, a program taking the tty, a command, a
+/// signal); its give-up discards the young Enter and the keys typed after it, so it is a long
+/// safety net (a busy machine must not drop typeahead whose release event is merely late).
 pub const YOUNG_HOLD_GIVE_UP: Duration = Duration::from_secs(10);
 
 /// Tags the ids of a deferred Enter's `HandoffReport` gate; a young hold's ids never carry it.
@@ -878,12 +878,15 @@ pub enum YoungHoldEvidence {
     /// line is unanswered, but no barrier is installed for this shell (fish writes its Precmd
     /// after raw mode, #1392), so whether that Precmd is still in the stream cannot be told. Held
     /// as before #1614 (owner decision 2026-11-03): released by the Precmd, then the request and
-    /// the report; the 2 s hand-back cap is the net for counts that turn out stale.
+    /// the report. Its 2 s cap is its NORMAL end for counts that turn out stale (owner decision
+    /// 2026-11-05, #1661): it hands the keys back to the editor, it does not drop them.
     PrecmdMaybeInFlight,
     /// The platform can say nothing about the shell (ConPTY, a session with no sample): the
     /// elapsed-time window of [`YOUNG_ENTER_WINDOW`], as before #1614. The one remaining timing
     /// hold, kept as the documented special case; its release is the prompt's Precmd (then the
-    /// request) within the window, or a Preexec.
+    /// request) within the window, or a Preexec. In a session without prompt sequence numbers
+    /// the window's end is the hold's NORMAL end and hands the keys back (owner decision
+    /// 2026-11-05, #1661); with sequence numbers its cap is the 10 s give-up net, which drops.
     TimingWindow,
 }
 
@@ -1552,8 +1555,8 @@ impl TypeaheadHandoff {
     /// [`YOUNG_ENTER_FLOOR`] and what is left of [`YOUNG_ENTER_WINDOW`] counted from the last
     /// activity. Before any round trip was measured it is that remainder, never less than
     /// [`YOUNG_ENTER_MIN_HOLD`]. A prompt or report arriving first releases the hold at once.
-    /// #1661: this is the expected wait (traced); the gate's give-up cap is
-    /// [`Self::young_hold_give_up`], the 10 s net.
+    /// #1661: the gate's cap is [`Self::young_hold_give_up`]: this wait for the two holds whose
+    /// cap is their normal end, the 10 s net for every other.
     pub fn young_hold_wait(&self, now: Instant) -> Duration {
         if matches!(
             self.young_hold_evidence,
@@ -1577,10 +1580,37 @@ impl TypeaheadHandoff {
         }
     }
 
-    /// The give-up cap of the young hold just started: [`YOUNG_HOLD_GIVE_UP`], never shorter than
-    /// the wait [`Self::young_hold_wait`] expects (owner decision 2026-11-05, #1661).
+    /// Owner decision 2026-11-05 (#1661): whether the current young hold's cap is its NORMAL end,
+    /// not a give-up. Two holds end at their cap by design: the fish no-barrier hold
+    /// ([`YoungHoldEvidence::PrecmdMaybeInFlight`], 2 s) and the [`YoungHoldEvidence::TimingWindow`]
+    /// hold of a session without prompt sequence numbers (the window, at most
+    /// [`YOUNG_ENTER_WINDOW`]). They keep their short cap and its hand-back of the keys to the
+    /// editor. Every other hold's cap is a real give-up: the 10 s net, which drops the keys.
+    pub fn young_hold_cap_is_normal_end(&self) -> bool {
+        match self.young_hold_evidence {
+            Some(YoungHoldEvidence::PrecmdMaybeInFlight) => true,
+            Some(YoungHoldEvidence::TimingWindow) => !self.prompt_seq_mode(),
+            _ => false,
+        }
+    }
+
+    /// The cap of the young hold just started: [`Self::young_hold_wait`] when that cap is the
+    /// hold's normal end ([`Self::young_hold_cap_is_normal_end`]), otherwise the
+    /// [`YOUNG_HOLD_GIVE_UP`] net (owner decision 2026-11-05, #1661).
     pub fn young_hold_give_up(&self, now: Instant) -> Duration {
-        self.young_hold_wait(now).max(YOUNG_HOLD_GIVE_UP)
+        let wait = self.young_hold_wait(now);
+        if self.young_hold_cap_is_normal_end() {
+            wait
+        } else {
+            wait.max(YOUNG_HOLD_GIVE_UP)
+        }
+    }
+
+    /// Test-only: the current young hold's evidence is `evidence` (#1661 tests of the cap's
+    /// two classes).
+    #[cfg(test)]
+    pub(crate) fn force_young_hold_evidence_for_test(&mut self, evidence: YoungHoldEvidence) {
+        self.young_hold_evidence = Some(evidence);
     }
 
     #[cfg(test)]

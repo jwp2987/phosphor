@@ -2914,11 +2914,15 @@ keys, Enters) into editor text was a guess, and each patch of it (#1577, #1630, 
   completing); the timer is a 10 s net only, and it never routes or writes.
 - Also covered (owner decision A, 2026-11-05): the young-Enter hold's cap and the paced
   CLI-agent submit's cap discard the keys typed after the Enter the same way; a line typed
-  before the young Enter stays in the editor. The young hold's cap is a 10 s net (was a
-  20-600 ms timing window / 2 s), released by its events. Not covered: the ConPTY
-  `LineEditorActive` prompt hold (keys at a prompt, no Enter before them).
+  before the young Enter stays in the editor. The young hold's cap is a 10 s net, released by
+  its events. Not covered: the ConPTY `LineEditorActive` prompt hold (keys at a prompt, no
+  Enter before them).
+- Exception (owner decision 2026-11-05): a cap that is a hold's NORMAL end is not a give-up.
+  The fish no-barrier young hold (`PrecmdMaybeInFlight`, 2 s) and the `TimingWindow` young hold
+  of a session without prompt sequence numbers (the window) keep their short cap and the old
+  hand-back of the keys to the editor (`young_hold_cap_is_normal_end`).
 - The unready-shell net is 60 s (owner decision B, 2026-11-05; was 15 s), so a slow shell
   startup (nvm, conda) does not drop typeahead.
 - Not reopened by: restoring `text_of_entries_typed_after` or any other held-entry-to-text
   conversion for an Enter gate's give-up. A visible "keys waiting" indicator is deferred.
-<!-- markers: sym:text_of_entries_typed_after keep:typed_after_enter_discarded_toast keep:report_enter_gate_discard keep:discard_gate_keys_after_enter keep:YOUNG_HOLD_GIVE_UP -->
+<!-- markers: sym:text_of_entries_typed_after keep:typed_after_enter_discarded_toast keep:report_enter_gate_discard keep:discard_gate_keys_after_enter keep:YOUNG_HOLD_GIVE_UP keep:young_hold_cap_is_normal_end keep:close_gate_discarding -->

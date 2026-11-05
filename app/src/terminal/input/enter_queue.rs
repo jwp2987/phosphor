@@ -734,7 +734,7 @@ impl Input {
         match queue.try_lock_ordered() {
             Some(mut guard) => {
                 let mut host = InputQueueHost::new(self, ctx);
-                let taken = guard.close_gate_taking(&mut host, gate.kind, gate.key);
+                let taken = guard.close_gate_discarding(&mut host, gate.kind, gate.key);
                 drop(guard);
                 Some(self.report_enter_gate_discard(&taken, report, ctx))
             }
@@ -1326,6 +1326,20 @@ impl Input {
                 takes_over_agent_control: true,
             },
         );
+    }
+
+    /// Offers `kind` to the pane queue through the EDITOR host (behind an open Enter gate it is
+    /// held there), for tests (#1661 review: a `Held` Tab behind an Enter).
+    #[cfg(test)]
+    pub(crate) fn offer_entry_through_editor_host_for_test(
+        &mut self,
+        kind: EntryKind,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let queue = self.enter_queue_handle(ctx);
+        let mut guard = queue.lock();
+        let mut host = InputQueueHost::new(self, ctx);
+        guard.offer(&mut host, kind);
     }
 
     /// The gate of an Enter that waits for its input-type verdict (nothing submitted, nothing

@@ -2310,6 +2310,10 @@ pub struct Input {
     /// Where the view records the entries it routes after an Enter that waited, for tests.
     #[cfg(test)]
     replayed_sink_for_test: Option<Rc<std::cell::RefCell<Vec<AfterEnterInput>>>>,
+    /// Test-only: how many Tabs reached [`Self::input_tab`] (#1661 review: a Tab released from
+    /// the queue into the editor runs it).
+    #[cfg(test)]
+    pub(crate) tabs_seen_for_test: usize,
     /// Test-only: a window without a workspace shows no multi-line dialog; treat it as shown.
     #[cfg(test)]
     multiline_dialog_shown_for_test: bool,
@@ -4098,6 +4102,8 @@ impl Input {
             stashed_gate: None,
             #[cfg(test)]
             replayed_sink_for_test: None,
+            #[cfg(test)]
+            tabs_seen_for_test: 0,
             #[cfg(test)]
             multiline_dialog_shown_for_test: false,
             pending_multiline_dialog_answer: None,
@@ -13401,6 +13407,10 @@ impl Input {
     }
 
     fn input_tab(&mut self, ctx: &mut ViewContext<Self>) {
+        #[cfg(test)]
+        {
+            self.tabs_seen_for_test += 1;
+        }
         self.drop_stale_completion_menu(ctx);
         self.flush_pending_suggestion_refilter(ctx);
         if matches!(

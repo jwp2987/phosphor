@@ -3375,7 +3375,9 @@ impl EditorView {
                         ) =>
                         {
                             log::info!(
-                                "editor: {action:?} typed behind an Enter held for an unready shell was ignored (#1586)"
+                                "editor: {action:?} typed behind an Enter that holds keys (an \
+                                 unready shell's, or a verdict / Tab wait with keys typed behind \
+                                 it) was ignored: it has no tty form (#1586, #1661)"
                             );
                             warpui::input_order::log_key_hop(
                                 "kh_editor_ignored_behind_held_enter",
@@ -3383,6 +3385,13 @@ impl EditorView {
                             );
                             return true;
                         }
+                        // #1661 review: an editing key with no tty form and no meaning on keys
+                        // that are not in the buffer yet (Undo, Cut, a selection edit) acts at once
+                        // on the buffer, i.e. on the waiting line: a verdict / Tab wait is then void
+                        // and what was typed behind it is discarded with the counted toast (an
+                        // unready Enter's line is the pending command and is not touched by it).
+                        // Queued, it would replay into the line typed AFTER the Enter, where it
+                        // edits something the user did not aim it at.
                         None => return false,
                     },
                     _ => return false,

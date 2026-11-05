@@ -17944,6 +17944,55 @@ fn multiline_dialog_cancel_on_a_busy_queue_discards_like_on_a_free_one() {
     }
 }
 
+/// #1661 review: a Tab typed behind an Enter that holds keys waits in its tty form (a `Held`
+/// sequence, `\t`). Released where the editor takes the keys, it runs the editor's own Tab
+/// (`input_tab`, i.e. completion) after the text before it, exactly as typing it there would; it
+/// used to be routed as a control sequence and dropped. Both modes.
+#[test]
+fn test_a_tab_held_behind_an_enter_runs_the_editors_tab_when_released_to_it() {
+    use crate::terminal::input_queue::{DestinationMode, EntryKind, HELD_SEQ};
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app(&mut app);
+            let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+            let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+            input.update(&mut app, |input, ctx| {
+                input.clear_buffer_and_reset_undo_stack(ctx);
+                input.open_submitted_enter_gate_for_test(
+                    vec![AfterEnterInput::Text("ls".to_string())],
+                    false,
+                    ctx,
+                );
+                input.offer_entry_through_editor_host_for_test(
+                    EntryKind::Held {
+                        class: HELD_SEQ,
+                        text: "\t".to_owned(),
+                    },
+                    ctx,
+                );
+                assert_eq!(input.enter_gate_held_len_for_test(ctx), 2, "{mode:?}");
+                input.release_enter_gate(ctx);
+            });
+            for _ in 0..400 {
+                if input.read(&app, |input, _| input.tabs_seen_for_test > 0) {
+                    break;
+                }
+                warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+            }
+            input.read(&app, |input, ctx| {
+                assert_eq!(input.tabs_seen_for_test, 1, "{mode:?}: the Tab ran once");
+                assert!(
+                    input.buffer_text(ctx).starts_with("ls"),
+                    "{mode:?}: after the text typed before it: {:?}",
+                    input.buffer_text(ctx)
+                );
+                assert!(!input.enter_queue_holds_keys(ctx), "{mode:?}");
+            });
+        });
+    }
+}
+
 /// #1425: a ready paste answered while the pane queue is held (a drain delivering, or a peek out)
 /// must not take the queue with the panicking `lock()`: it is offered through the deferred
 /// mailbox, and the paste still lands once the queue is free.

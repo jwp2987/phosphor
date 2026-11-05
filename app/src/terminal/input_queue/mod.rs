@@ -1192,6 +1192,48 @@ impl InputQueue {
         taken
     }
 
+    /// #1661 review: [`Self::close_gate_taking`] for a gate whose entries are DISCARDED (keys
+    /// typed after an Enter). A paste typed behind the gate whose read is still pending sits at
+    /// the barrier of its own `PasteReading` gate, inside what this gate held, with everything
+    /// typed after it: that gate is taken too (and each next `PasteReading` gate after it), so
+    /// nothing typed after the Enter is left to drain when the read ends. Each unread paste is
+    /// reported discarded (`PasteCancelled`: silent, its records go; the caller's counted toast
+    /// covers it), and its late read result then finds nothing to claim.
+    pub fn close_gate_discarding<H: Host>(
+        &mut self,
+        host: &mut H,
+        kind: GateKind,
+        key: u64,
+    ) -> Vec<InputEntry> {
+        let Some(barrier) = self
+            .gates
+            .iter()
+            .find(|gate| gate.kind == kind && gate.key == key)
+            .map(|gate| gate.barrier)
+        else {
+            return Vec::new();
+        };
+        let mut taken = self.close_gate_taking(host, kind, key);
+        loop {
+            let next = self
+                .gates
+                .iter()
+                .filter(|gate| gate.barrier > barrier)
+                .min_by_key(|gate| gate.barrier)
+                .copied();
+            let Some(next) = next.filter(|gate| gate.kind == GateKind::PasteReading) else {
+                break;
+            };
+            taken.extend(self.close_gate_taking(host, next.kind, next.key));
+        }
+        for entry in &taken {
+            if matches!(entry.kind, EntryKind::Paste { payload: None, .. }) {
+                host.discarded(entry, DiscardReason::PasteCancelled);
+            }
+        }
+        taken
+    }
+
     /// Focus moved. The epoch is stamped on later arrivals; entries already queued are NOT
     /// re-targeted (line-run pinning). A re-drain is harmless and lets a head that waited on
     /// destination facts go.

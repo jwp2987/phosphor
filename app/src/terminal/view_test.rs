@@ -26572,12 +26572,14 @@ fn hold_a_young_enter(
     );
 }
 
-/// No prompt came: the give-up (the gate's cap) DISCARDS the held Enter and the key typed after
-/// it, once, and writes nothing. (Owner rule 2026-11-01, #1577: a timer never writes to a pty;
-/// owner decision 2026-11-05, #1661: what a give-up held after an Enter is discarded, no longer
-/// handed back as text. The event-driven ends still write, see the tests below.)
+/// No prompt came: the give-up (the gate's cap) HANDS the held Enter and the key behind it back
+/// to the editor as text, once, and writes nothing. (Owner rule 2026-11-01, #1577: a timer may
+/// close a segment and hand text back, never write to a pty. This test asserted the old
+/// typeahead write; the event-driven ends still write, see the tests below.) This pane has no
+/// prompt sequence numbers, so this window hold's cap is its NORMAL end and keeps the hand-back
+/// (owner decision 2026-11-05, #1661; round 2 of #1661 had made it a discard).
 #[test]
-fn a_young_enter_and_its_keys_are_discarded_when_no_prompt_comes() {
+fn a_young_enter_and_its_keys_are_handed_back_when_no_prompt_comes() {
     App::test((), move |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
@@ -26593,12 +26595,10 @@ fn a_young_enter_and_its_keys_are_discarded_when_no_prompt_comes() {
             assert!(!young_gate_open(view));
             assert!(view.paste_queue.queue.borrow().is_idle());
             assert!(!view.model.lock().typeahead_handoff().has_young_hold());
-            // Owner decision 2026-11-05 (#1661): the young Enter and the key typed after it are
-            // discarded (they used to come back to the editor as `\nx`).
             assert_eq!(
                 view.input.as_ref(ctx).buffer_text(ctx),
-                "",
-                "nothing came back"
+                "\nx",
+                "the Enter (a newline) and the key, in typed order, once"
             );
         });
         assert!(

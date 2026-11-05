@@ -350,7 +350,7 @@ impl Input {
             };
             let taken = {
                 let mut host = InputQueueHost::new(self, ctx);
-                guard.close_gate_taking(&mut host, kind, key)
+                guard.close_gate_discarding(&mut host, kind, key)
             };
             drop(guard);
             log::warn!(
