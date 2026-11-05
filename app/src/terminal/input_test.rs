@@ -12329,7 +12329,7 @@ fn multiline_dialog_cancel_discards_the_held_keys() {
             assert_eq!(
                 offer_to_dialog(&mut app, &dialog, dialog_key_down("backspace", "\u{7f}")),
                 warpui::pane_key::PaneKeyOutcome::Consumed,
-                "{mode:?}: the editor's binding took backspace"
+                "{mode:?}: backspace on the dialog is swallowed (#1652 discards it)"
             );
             enter_in_editor(&mut app, &terminal, &input);
             offer_to_dialog(&mut app, &dialog, dialog_typed("pwd"));
@@ -12397,7 +12397,7 @@ fn multiline_dialog_holds_unmapped_keys_then_discards_them() {
             assert_eq!(
                 offer_to_dialog(&mut app, &dialog, dialog_key_down("ctrl-u", "\u{15}")),
                 warpui::pane_key::PaneKeyOutcome::Consumed,
-                "{mode:?}: ctrl-u is the editor's clear-and-copy"
+                "{mode:?}: ctrl-u on the dialog is swallowed (#1652 discards it)"
             );
             editor.update(&mut app, |editor, ctx| {
                 editor.handle_action(&EditorAction::VimBackspace, ctx);
@@ -12411,8 +12411,8 @@ fn multiline_dialog_holds_unmapped_keys_then_discards_them() {
                 assert_eq!(input.buffer_text(ctx), text, "{mode:?}: the waiting buffer");
                 assert_eq!(
                     input.enter_gate_held_len_for_test(ctx),
-                    5,
-                    "{mode:?}: every key held"
+                    4,
+                    "{mode:?}: every editor key held (ctrl-u on the dialog is swallowed there: #1652 discards it)"
                 );
             });
             input.update(&mut app, |input, ctx| input.cancel_multiline_submit(ctx));

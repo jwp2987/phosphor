@@ -153,12 +153,13 @@ impl View for MultilineSubmitConfirmationDialog {
         ctx.focus_self();
     }
 
-    /// #1652: while the dialog has focus it is the key sink. Its own bindings (Enter, Escape) have
-    /// already had the key; every other key is handed to the asking input's editor exactly as if
-    /// it had been typed there: a key down is dispatched on the editor's responder chain (its
-    /// bindings decide, unbound keys included), typed text is the editor's typed text. The editor
-    /// then queues it behind the Enter that waits for this dialog, in typed order, so nothing is
-    /// dropped and nothing edits the waiting buffer.
+    /// #1652 (owner rule: anything typed into the dialog that is not its own answer is thrown
+    /// away): while the dialog has focus it is the key sink. Its own bindings (Enter, Escape) have
+    /// already had the key. Typed text is handed to the asking input's editor, which queues it
+    /// behind the Enter that waits for this dialog (discarded, and counted for the toast, when the
+    /// dialog is answered). Every other key down (Backspace, arrows, modified keys) is swallowed
+    /// here: it would only be discarded, and it must never reach the waiting buffer. A plain
+    /// printable key down is left to the typed-text event that follows it.
     fn is_pane_key_sink(&self) -> bool {
         true
     }
@@ -183,17 +184,17 @@ impl View for MultilineSubmitConfirmationDialog {
                 editor.update(ctx, |editor, ctx| editor.pane_typed(chars, ctx));
                 PaneKeyOutcome::Consumed
             }
-            PaneKeyKind::KeyDown {
-                keystroke,
-                is_composing,
-                ..
-            } => {
-                let window_id = ctx.window_id();
-                let chain = ctx.responder_chain_of(window_id, editor.id());
-                match ctx.dispatch_keystroke(window_id, &chain, keystroke, *is_composing) {
-                    Ok(true) => PaneKeyOutcome::Consumed,
-                    // Unbound: a printable key's typed event follows and is the key.
-                    _ => PaneKeyOutcome::NotMine,
+            PaneKeyKind::KeyDown { keystroke, .. } => {
+                let plain_printable = !keystroke.ctrl
+                    && !keystroke.alt
+                    && !keystroke.cmd
+                    && !keystroke.meta
+                    && keystroke.key.chars().count() == 1;
+                if plain_printable {
+                    // Its typed event follows and is the key.
+                    PaneKeyOutcome::NotMine
+                } else {
+                    PaneKeyOutcome::Consumed
                 }
             }
             // A composition shows nowhere while the dialog has focus; its commit arrives as typed
