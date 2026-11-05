@@ -1539,6 +1539,50 @@ def editor_memory_close_trim_and_accepted_open_cost():
 
 
 @check
+def editor_memory_owner_2026_11_05():
+    """owner 2026-11-05 (#1607): macOS after-close judged on phys_footprint only (RSS reported); Linux/Windows keep every figure; the default close
+    trim's UI pause is KNOWN on Linux only (the entry is Linux-scoped; the A/B routing is in editor_trim_ab)."""
+    orig = cases.app_version
+    try:
+        cases.app_version = lambda repo=None: "0.1.17"
+        w = "held %.0f MB of %s"
+        r = cases.Result("t", "terminal")      # the r18u23 shape: RSS +170, phys_footprint -290
+        assert cases.mem_judge_closed(r, {"rss": 170.0, "phys_footprint": -290.0}, {"rss": 0.0, "phys_footprint": 0.0}, 60, w)
+        assert not r.fails and len(r.notes) == 1 and r.notes[0].startswith("rss: +170 MB") and "not judged" in r.notes[0], (r.fails, r.notes)
+        r = cases.Result("t", "terminal")      # phys_footprint over still fails
+        assert not cases.mem_judge_closed(r, {"rss": 0.0, "phys_footprint": 90.0}, {"rss": 0.0, "phys_footprint": 0.0}, 60, w)
+        assert r.fails == ["held 90 MB of phys_footprint"], r.fails
+        r = cases.Result("t", "terminal")      # Linux / Windows: rss is judged
+        assert not cases.mem_judge_closed(r, {"rss": 90.0}, {"rss": 0.0}, 60, w) and r.fails == ["held 90 MB of rss"] and not r.notes, (r.fails, r.notes)
+        acc = cases.ACCEPTED_FOR_RELEASE["editor_close_trim_ui"]
+        assert acc["issue"] == 1607 and acc["release"] == "0.1.17" and acc["platforms"] == ("linux",), acc
+        orig_p = cases.plat
+        try:
+            for plat_, close, known in (("linux-x11", True, True), ("linux-wayland", True, True), ("linux-x11", False, False), ("macos", True, False), ("windows", True, False)):
+                cases.plat = lambda p=plat_: p
+                r = cases.Result("t", "terminal")
+                cases.trim_ui_verdict(r, close, True, "trim A/B: put 9.0 ms")
+                if known:
+                    assert not r.fails and len(r.notes) == 1 and r.notes[0].startswith("KNOWN: trim A/B: put 9.0 ms") and "ACCEPTED_FOR_RELEASE #1607 v0.1.17" in r.notes[0], (plat_, r.fails, r.notes)
+                else:
+                    assert r.fails == ["trim A/B: put 9.0 ms"] and not r.notes, (plat_, close, r.fails, r.notes)
+            cases.plat = lambda: "linux-x11"
+            r = cases.Result("t", "terminal")
+            cases.trim_ui_verdict(r, True, False, "m")
+            assert not r.fails and not r.notes
+            cases.app_version = lambda repo=None: "0.1.18"     # past the release: FAIL again
+            r = cases.Result("t", "terminal")
+            cases.trim_ui_verdict(r, True, True, "m")
+            assert r.fails == ["m"], r.fails
+            cases.app_version = lambda repo=None: "0.1.17"
+        finally:
+            cases.plat = orig_p
+        assert cases.accepted_for_release("editor_close_trim_ui") and cases.accepted_for_release("editor_close_trim_ui", "0.1.18") is None
+    finally:
+        cases.app_version = orig
+
+
+@check
 def latency_known_v0117_enter_and_flood():
     """v0.1.17 (#1606, #1653): an over-budget latency_enter overhead (macOS / Linux) or Ctrl-C-under-flood overhead is KNOWN at 0.1.17 and FAIL at 0.1.18;
     other verdicts (regression vs baseline) and other platforms still fail."""

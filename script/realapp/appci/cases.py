@@ -4343,6 +4343,8 @@ ACCEPTED_FOR_RELEASE = {"editor_open_cost": {"issue": 1607, "release": "0.1.17",
                                                        "why": "owner 2026-11-05: Enter-over-ssh overhead accepted for this release (the gap is OS event delivery before the app, #1606)"},
                         "ctrl_c_flood": {"issue": 1653, "release": "0.1.17", "platforms": ("macos", "linux", "windows"),
                                          "why": "owner 2026-11-04: Ctrl-C under flood over %s ms accepted for this release (#1653 / #1606)" % CTRLC_FLOOD_RELEASE_MS},
+                        "editor_close_trim_ui": {"issue": 1607, "release": "0.1.17", "platforms": ("linux",),
+                                                 "why": "owner 2026-11-05: the one-off close-trim UI pause on Linux is accepted"},
                         "remote_heredoc_remote_editor": {"issue": 1129, "release": "0.1.17",
                                                          "why": "owner rule for STUCK items, relayed 2026-11-04 (fixed, or proven ENV and KNOWN): the remote shell's line editor is the "
                                                                 "bottleneck, proven by the plain-ssh control; the wrapper's design for bash < 4.4 is open"}}
@@ -4394,6 +4396,20 @@ def mem_judge_known(r, sample, base, limit, what, key):
             ok = False
             r.known("%s [ACCEPTED_FOR_RELEASE #%d v%s: %s]" % (what % (v - base[k], k), acc["issue"], acc["release"], acc["why"]))
     return ok
+
+
+def mem_judge_closed(r, sample, base, limit, what):
+    """the after-close 'memory given back' check (#1607, owner 2026-11-05). macOS: judged on phys_footprint (what Activity Monitor shows). macOS marks
+    freed pages MADV_FREE_REUSABLE: out of phys_footprint at once, still in RSS until memory pressure (r18u23: RSS +170 MB while phys_footprint was
+    290 MB BELOW baseline), so RSS is only REPORTED there (a note, never a failure). Linux / Windows (no phys_footprint in the sample): every figure
+    is judged as before (mem_judge)."""
+    if "phys_footprint" not in sample:
+        return mem_judge(r, sample, base, limit, what)
+    for k, v in sample.items():
+        if k != "phys_footprint" and k in base:
+            r.note("%s: %+.0f MB over the pre-open baseline after close (reported, not judged on macOS: freed pages marked reusable stay in RSS; "
+                   "phys_footprint is the judged figure)" % (k, v - base[k]))
+    return mem_judge(r, {"phys_footprint": sample["phys_footprint"]}, base, limit, what)
 
 
 def _log_value(v):
@@ -4560,6 +4576,16 @@ def editor_mem_relaunch(ctx, env):
     return bool(up)
 
 
+def trim_ui_verdict(r, is_close_trim, over, msg):
+    """one trim A/B UI-budget verdict. Owner 2026-11-05 (#1607): the DEFAULT close trim's one-off pause is accepted on Linux (KNOWN with its numbers);
+    the opt-in open trim is not covered and still fails."""
+    acc = accepted_for_release("editor_close_trim_ui") if is_close_trim else None
+    if over and acc and any(plat().startswith(p_) for p_ in acc.get("platforms", ("",))):
+        r.known("%s [ACCEPTED_FOR_RELEASE #%d v%s: %s]" % (msg, acc["issue"], acc["release"], acc["why"]))
+    else:
+        r.check(not over, msg)
+
+
 def editor_trim_ab(ctx, r, palette, path):
     """#1607 perf rule: UI-thread cost of the heap trims, A/B by relaunch. One open/close of the plain-text file per variant: default (trim on
     close only), PHOSPHOR_EDITOR_TRIM_AFTER_OPEN=1 (opt-in trim after the load) and PHOSPHOR_HEAP_TRIM=0 (no trim at all, the control for the
@@ -4614,8 +4640,9 @@ def editor_trim_ab(ctx, r, palette, path):
         got, base = res[name][key], res[ctrl][ctrl_key]
         if base > UI_BUDGET_MS:
             r.note("trim A/B: the control %s is itself over the %.0f ms UI budget after %s (%.1f ms)" % (ctrl, UI_BUDGET_MS, ctrl_key.split("_")[0], base))
-        r.check(not (got > UI_BUDGET_MS and got > base + 1.0), "trim A/B: %s put a %.1f ms UI item on screen while it ran (> %.0f ms budget; control %s: %.1f ms)" % (
-            what, got, UI_BUDGET_MS, ctrl, base))
+        msg = "trim A/B: %s put a %.1f ms UI item on screen while it ran (> %.0f ms budget; control %s: %.1f ms)" % (what, got, UI_BUDGET_MS, ctrl, base)
+        over = got > UI_BUDGET_MS and got > base + 1.0
+        trim_ui_verdict(r, name == "default", over, msg)
     # the load's own layout frame, which spawns the open trim, against the control's load frame (same rule)
     if "trim_after_open" in res and "default" in res:
         got, base = res["trim_after_open"].get("load_frame_ms"), res["default"].get("load_frame_ms")
@@ -4630,8 +4657,8 @@ def c_editor_mem(ctx, r):
     the pane, record memory right after close and after the undo-close grace window, and repeat open/close APPCI_EDITOR_MEM_CYCLES times
     (default 3, plain-text file only) to measure growth per cycle. Thresholds are the #1340 targets (7 MB plain text <= ~100 MB over baseline,
     7 MB Rust <= ~150 MB, <= 60 MB held after close, APPCI_EDITOR_MEM_CYCLE_GROWTH_MAX_MB = 30 MB growth from the first to the last cycle).
-    Judged: RSS (Windows: working set) everywhere, and on macOS ALSO phys_footprint (owner 2026-11-03: either over a budget fails; both are
-    reported). A close through the command palette must be followed by the app's buffer_dropped log line. The app's own breakdown (log target
+    Judged: RSS (Windows: working set) on Linux/Windows; on macOS the open cost is judged on RSS and phys_footprint (owner 2026-11-03), the
+    after-close check on phys_footprint only (owner 2026-11-05: RSS keeps freed MADV_FREE_REUSABLE pages; reported, not judged). Both are reported. A close through the command palette must be followed by the app's buffer_dropped log line. The app's own breakdown (log target
     editor_memory: buffer tree, render tree, parked chunks, hydrated frames) is attached as metrics. Then the heap-trim UI A/B (editor_trim_ab;
     APPCI_EDITOR_MEM_TRIM_AB=0 skips it). Skips (APPCI_EDITOR_MEM_STRICT=1: fails) when the file does not open, since the palette / close key
     sequence is platform specific: APPCI_KEY_PALETTE (default ctrl+shift+p; mac cmd+p), APPCI_KEY_CLOSE (default ctrl+shift+w; empty on macOS)
@@ -4752,7 +4779,7 @@ def c_editor_mem(ctx, r):
         after = settle_rss(ctx)
         mem_metrics(r, "%s_rss_close" % kind, after, base)
         ctx.shot("editor_mem_%s_closed" % kind)
-        mem_judge(r, after, base, close_max, "%s: %%.0f MB of %%s still held %.0f s after closing the editor (> %.0f MB over the pre-open baseline; close via %s)" % (
+        mem_judge_closed(r, after, base, close_max, "%s: %%.0f MB of %%s still held %.0f s after closing the editor (> %.0f MB over the pre-open baseline; close via %s)" % (
             kind, grace, close_max, how))
         if kind == "txt":
             ab_path = path
