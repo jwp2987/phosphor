@@ -3300,9 +3300,9 @@ impl EditorView {
             if behind_dialog {
                 // #1652: behind the Enter that waits for the multi-line dialog EVERY key counts and
                 // none acts on the waiting buffer: text is text, an Enter is an entry, and any
-                // other key waits as itself. The answer resolves them (`resolve_dialog_typeahead`):
-                // into the next line(s) on Confirm, onto a line of their own on Cancel. A signal
-                // (^C above), a paste (its own read, above) and scrolling are not keys of the line.
+                // other key waits as itself. The answer discards them all (owner: what is typed
+                // there and is not part of the approval is thrown away). A signal (^C above), a
+                // paste (its own read, above) and scrolling are not keys of the line.
                 let kind = match action {
                     EditorAction::UserInsert(text) => EntryKind::Text(String::clone(text)),
                     EditorAction::Enter => EntryKind::Enter,

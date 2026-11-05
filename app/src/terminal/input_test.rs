@@ -12280,15 +12280,26 @@ fn ask_multiline_dialog(app: &mut App, input: &ViewHandle<Input>) {
     });
 }
 
+/// #1652: a ToastStack subscription counting the toasts shown.
+fn count_toasts(app: &mut App) -> Rc<RefCell<usize>> {
+    let toasts = Rc::new(RefCell::new(0usize));
+    let toast_count = toasts.clone();
+    app.update(|ctx| {
+        let stack = ToastStack::handle(ctx);
+        ctx.subscribe_to_model(&stack, move |_, _, _| *toast_count.borrow_mut() += 1);
+    });
+    toasts
+}
+
 /// #1652: the dialog takes focus, so a key its own bindings do not take used to be dropped
-/// (`live_focus=no accepted=false`). Now every key typed while it is open, whether the dialog has
-/// focus (its key sink hands the key to the input's editor) or the editor does, waits behind the
-/// Enter that asked, in typed order, and nothing touches the waiting buffer; an Enter typed in the
-/// editor neither answers the dialog nor submits the buffer. Cancel (owner: "own line, like
-/// #1571") puts them on a NEW line after the buffer, the held Enter a line break: nothing runs and
-/// there is no second question. Both destination modes (resolved before release: no route split).
+/// unseen (`live_focus=no accepted=false`). Owner rule: "if you type something in there that isn't
+/// part of the approval throw it away". Every key typed while the dialog is open, whether the
+/// dialog has focus (its key sink hands it to the input's editor) or the editor does, waits behind
+/// the Enter that asked, never touching the waiting buffer; an Enter typed in the editor neither
+/// answers the dialog nor submits the buffer. Cancel then DISCARDS them all: the buffer is exactly
+/// as it was, nothing runs, nothing reaches the pty, and a toast says how many. Both modes.
 #[test]
-fn multiline_dialog_cancel_puts_the_held_keys_on_a_line_of_their_own() {
+fn multiline_dialog_cancel_discards_the_held_keys() {
     use crate::terminal::input_queue::DestinationMode;
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
@@ -12296,6 +12307,18 @@ fn multiline_dialog_cancel_puts_the_held_keys_on_a_line_of_their_own() {
             let text = comment_lines(MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD + 1);
             let (terminal, input, dialog, executed) =
                 multiline_dialog_fixture(&mut app, &text).await;
+            let writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+            let sink = writes.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&terminal, move |_, event, _| match event {
+                    crate::terminal::view::Event::WriteBytesToPty { bytes }
+                    | crate::terminal::view::Event::WriteHandoffUserBytesToPty { bytes } => {
+                        sink.borrow_mut().push(bytes.to_vec());
+                    }
+                    _ => {}
+                });
+            });
+            let toasts = count_toasts(&mut app);
             ask_multiline_dialog(&mut app, &input);
 
             assert_eq!(
@@ -12303,12 +12326,13 @@ fn multiline_dialog_cancel_puts_the_held_keys_on_a_line_of_their_own() {
                 warpui::pane_key::PaneKeyOutcome::Consumed,
                 "{mode:?}"
             );
-            enter_in_editor(&mut app, &terminal, &input);
             assert_eq!(
-                offer_to_dialog(&mut app, &dialog, dialog_typed("pwd")),
+                offer_to_dialog(&mut app, &dialog, dialog_key_down("backspace", "\u{7f}")),
                 warpui::pane_key::PaneKeyOutcome::Consumed,
-                "{mode:?}"
+                "{mode:?}: the editor's binding took backspace"
             );
+            enter_in_editor(&mut app, &terminal, &input);
+            offer_to_dialog(&mut app, &dialog, dialog_typed("pwd"));
             assert!(executed.borrow().is_empty(), "{mode:?}: nothing ran");
             input.read(&app, |input, ctx| {
                 assert_eq!(input.buffer_text(ctx), text, "{mode:?}: the waiting buffer");
@@ -12322,14 +12346,11 @@ fn multiline_dialog_cancel_puts_the_held_keys_on_a_line_of_their_own() {
                     "{mode:?}: typed order, behind the Enter"
                 );
             });
+            writes.borrow_mut().clear();
 
             input.update(&mut app, |input, ctx| input.cancel_multiline_submit(ctx));
             input.read(&app, |input, ctx| {
-                assert_eq!(
-                    input.buffer_text(ctx),
-                    format!("{text}\nls\npwd"),
-                    "{mode:?}: a line of their own"
-                );
+                assert_eq!(input.buffer_text(ctx), text, "{mode:?}: exactly as it was");
                 assert!(
                     !input.awaiting_multiline_submit_confirmation,
                     "{mode:?}: no second ask"
@@ -12340,59 +12361,25 @@ fn multiline_dialog_cancel_puts_the_held_keys_on_a_line_of_their_own() {
                     "{mode:?}: nothing left held"
                 );
             });
+            assert!(executed.borrow().is_empty(), "{mode:?}: nothing runs");
             assert!(
-                executed.borrow().is_empty(),
-                "{mode:?}: nothing runs until Enter"
+                writes.borrow().is_empty(),
+                "{mode:?}: nothing reached the pty"
+            );
+            assert!(
+                *toasts.borrow() >= 1,
+                "{mode:?}: a toast says keys were discarded"
             );
         });
     }
 }
 
-/// #1652 (M2): held editing keys act on the new line only. Typed "abc", Backspace and Left on the
-/// dialog (real dispatch: the editor's bindings), "X"; an Enter in the editor; then "z" and more
-/// Backspaces than the line has. Cancel gives the line "aXb", and the surplus Backspaces never eat
-/// into the buffer above. Both modes.
-#[test]
-fn multiline_dialog_held_editing_keys_act_on_the_new_line_only() {
-    use crate::terminal::input_queue::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            let text = comment_lines(MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD + 1);
-            let (terminal, input, dialog, executed) =
-                multiline_dialog_fixture(&mut app, &text).await;
-            ask_multiline_dialog(&mut app, &input);
-            offer_to_dialog(&mut app, &dialog, dialog_typed("abc"));
-            for (key, chars) in [("backspace", "\u{7f}"), ("left", "")] {
-                assert_eq!(
-                    offer_to_dialog(&mut app, &dialog, dialog_key_down(key, chars)),
-                    warpui::pane_key::PaneKeyOutcome::Consumed,
-                    "{mode:?}: the editor's binding took {key}"
-                );
-            }
-            offer_to_dialog(&mut app, &dialog, dialog_typed("X"));
-            enter_in_editor(&mut app, &terminal, &input);
-            offer_to_dialog(&mut app, &dialog, dialog_typed("z"));
-            for _ in 0..3 {
-                offer_to_dialog(&mut app, &dialog, dialog_key_down("backspace", "\u{7f}"));
-            }
-            input.read(&app, |input, ctx| {
-                assert_eq!(input.buffer_text(ctx), text, "{mode:?}: the waiting buffer");
-            });
-            input.update(&mut app, |input, ctx| input.cancel_multiline_submit(ctx));
-            input.read(&app, |input, ctx| {
-                assert_eq!(input.buffer_text(ctx), format!("{text}\naXb"), "{mode:?}");
-            });
-            assert!(executed.borrow().is_empty(), "{mode:?}");
-        });
-    }
-}
-
 /// #1652 (H1/H2): keys typed into the editor while the dialog waits that have no tty form are held
-/// too, never applied to the waiting buffer: VimBackspace, a file drop, Ctrl-U (clear the line:
-/// the new line only; the system clipboard is not touched), Escape. Both modes.
+/// too, never applied to the waiting buffer (VimBackspace, a file drop, Ctrl-U through the real
+/// dispatch, Escape), and then discarded with the rest. The system clipboard is not touched.
+/// Both modes.
 #[test]
-fn multiline_dialog_holds_editor_only_keys() {
+fn multiline_dialog_holds_unmapped_keys_then_discards_them() {
     use crate::terminal::input_queue::DestinationMode;
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
@@ -12400,6 +12387,10 @@ fn multiline_dialog_holds_editor_only_keys() {
             let text = comment_lines(MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD + 1);
             let (_terminal, input, dialog, executed) =
                 multiline_dialog_fixture(&mut app, &text).await;
+            app.update(|ctx| {
+                ctx.clipboard()
+                    .write(ClipboardContent::plain_text("keep".to_string()));
+            });
             let editor = input.read(&app, |input, _| input.editor().clone());
             ask_multiline_dialog(&mut app, &input);
             offer_to_dialog(&mut app, &dialog, dialog_typed("gone"));
@@ -12409,7 +12400,6 @@ fn multiline_dialog_holds_editor_only_keys() {
                 "{mode:?}: ctrl-u is the editor's clear-and-copy"
             );
             editor.update(&mut app, |editor, ctx| {
-                editor.handle_action(&EditorAction::UserInsert(UserInput::new("ab")), ctx);
                 editor.handle_action(&EditorAction::VimBackspace, ctx);
                 editor.handle_action(&EditorAction::Escape, ctx);
                 editor.handle_action(
@@ -12419,28 +12409,26 @@ fn multiline_dialog_holds_editor_only_keys() {
             });
             input.read(&app, |input, ctx| {
                 assert_eq!(input.buffer_text(ctx), text, "{mode:?}: the waiting buffer");
-                assert!(input.enter_queue_holds_keys(ctx), "{mode:?}");
+                assert_eq!(
+                    input.enter_gate_held_len_for_test(ctx),
+                    5,
+                    "{mode:?}: every key held"
+                );
             });
             input.update(&mut app, |input, ctx| input.cancel_multiline_submit(ctx));
             input.read(&app, |input, ctx| {
-                assert_eq!(
-                    input.buffer_text(ctx),
-                    format!("{text}\na/tmp/f"),
-                    "{mode:?}"
-                );
+                assert_eq!(input.buffer_text(ctx), text, "{mode:?}: discarded");
+                assert!(!input.enter_queue_holds_keys(ctx), "{mode:?}");
             });
             let clipboard =
                 app.update(|ctx| warpui::clipboard::read_full_blocking(ctx.clipboard()).plain_text);
-            assert_ne!(
-                clipboard, "gone",
-                "{mode:?}: the held keys' model never touches the system clipboard"
-            );
+            assert_eq!(clipboard, "keep", "{mode:?}: the clipboard is not touched");
             assert!(executed.borrow().is_empty(), "{mode:?}");
         });
     }
 }
 
-/// #1652 (owner: "safe fallback"): Confirm runs the waiting buffer alone, exactly once, and the
+/// #1652 (owner: "throw it away"): Confirm runs the waiting buffer alone, exactly once, and the
 /// keys typed while the dialog was open (text, an Enter, Ctrl-W, a paste) are DISCARDED: none
 /// reaches the pty or the editor, even once the command runs and the view settles (driven here),
 /// and one toast says how many were dropped. Both modes.
@@ -12535,7 +12523,7 @@ fn multiline_dialog_confirm_discards_the_held_keys() {
     }
 }
 
-/// #1652: the toast of a Confirm that discarded keys.
+/// #1652: the toast of an answer that discarded keys.
 #[test]
 fn dialog_typeahead_discarded_toast_text() {
     use super::enter_queue::dialog_typeahead_discarded_toast;
@@ -12547,39 +12535,6 @@ fn dialog_typeahead_discarded_toast_text() {
         dialog_typeahead_discarded_toast(5),
         "5 keys typed while the confirmation was open were discarded"
     );
-}
-
-/// #1652: in vim mode Cancel inserts the held keys' visible text as LITERAL text on a line of its
-/// own (no held key is replayed through vim): `dd` typed in normal mode while the dialog waited
-/// does not delete a line of the buffer above. Both modes.
-#[test]
-fn multiline_dialog_cancel_in_vim_inserts_literal_text_and_keeps_the_buffer() {
-    use crate::terminal::input_queue::DestinationMode;
-    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
-            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            let text = comment_lines(MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD + 1);
-            let (_terminal, input, _dialog, executed) =
-                multiline_dialog_fixture(&mut app, &text).await;
-            enable_vim_mode(&mut app);
-            let editor = input.read(&app, |input, _| input.editor().clone());
-            editor.update(&mut app, |editor, ctx| {
-                editor.vim_keystroke(&Keystroke::parse("escape").unwrap(), ctx);
-            });
-            ask_multiline_dialog(&mut app, &input);
-            editor.update(&mut app, |editor, ctx| {
-                editor.handle_action(&EditorAction::VimUserInsert(UserInput::new("dd")), ctx);
-            });
-            input.read(&app, |input, ctx| {
-                assert_eq!(input.buffer_text(ctx), text, "{mode:?}: the waiting buffer");
-            });
-            input.update(&mut app, |input, ctx| input.cancel_multiline_submit(ctx));
-            input.read(&app, |input, ctx| {
-                assert_eq!(input.buffer_text(ctx), format!("{text}\ndd"), "{mode:?}");
-            });
-            assert!(executed.borrow().is_empty(), "{mode:?}");
-        });
-    }
 }
 
 /// #1652 (M1): ^D while the dialog waits voids the waiting Enter as ^C does (what followed it goes
@@ -12631,35 +12586,6 @@ fn a_signal_at_the_queue_keeps_the_multiline_dialog_gate() {
             );
         });
     });
-}
-
-/// #1652 (pure): the line model the held keys are resolved on.
-#[test]
-fn dialog_typeahead_resolution_rules() {
-    use super::enter_queue::resolve_dialog_typeahead;
-    use crate::terminal::input_queue::{EditorKeyPayload, EntryKind};
-    let key = |action: EditorAction| {
-        EntryKind::EditorKey(EditorKeyPayload::new(HeldPasteKey::Action(action)))
-    };
-    let kinds = vec![
-        EntryKind::Text("ab".into()),
-        key(EditorAction::Backspace),
-        key(EditorAction::Backspace),
-        key(EditorAction::Backspace),
-        EntryKind::Text("cd".into()),
-        key(EditorAction::MoveToLineStart),
-        EntryKind::Text(">".into()),
-        EntryKind::Enter,
-        EntryKind::Text("one two".into()),
-        key(EditorAction::CutWordLeft),
-        key(EditorAction::Yank),
-        key(EditorAction::Yank),
-    ];
-    let resolved = resolve_dialog_typeahead(kinds.iter(), |_| None);
-    assert_eq!(resolved.lines, vec![">cd".to_string()]);
-    assert_eq!(resolved.tail, "one twotwo");
-    assert_eq!(resolved.last_cut.as_deref(), Some("two"));
-    assert_eq!(resolved.as_own_line(), ">cd\none twotwo");
 }
 
 /// #1652: ^C while the dialog waits voids the waiting Enter (as the tty flushes typed-ahead input
