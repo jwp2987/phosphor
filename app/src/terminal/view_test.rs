@@ -4155,10 +4155,22 @@ fn is_block_on_screen(
         || viewport.is_block_in_view(block_index, BlockVisibilityMode::BottomOfBlockVisible)
 }
 
-/// Waits for the async scan to complete, then for the 50 ms `RanFind` throttle to deliver
-/// its last event (which a pending find scroll waits for).
+/// Lets the test app run what an update queued: model events (block completed, wakeups),
+/// the first layout and its resize, subscriptions to settings changes, timers.
+async fn let_app_settle(app: &mut App) {
+    for _ in 0..20 {
+        warpui::r#async::Timer::after(std::time::Duration::from_millis(10)).await;
+        app.update(|_| {});
+    }
+}
+
+/// Waits until the async find reports `Complete` and stays so for 100 ms (a block
+/// invalidated by a late event rescans and goes back to `Scanning`), so the 50 ms `RanFind`
+/// throttle has delivered its last event, which a pending find scroll waits for. Gives up
+/// after 3 s; the caller's assertions then report the state.
 async fn wait_for_async_find_to_settle(app: &mut App, find_model: &ModelHandle<TerminalFindModel>) {
-    for _ in 0..200 {
+    let mut complete_for = 0;
+    for _ in 0..300 {
         let is_complete = find_model.update(app, |model, _ctx| {
             model.async_find_controller().is_some_and(|controller| {
                 matches!(
@@ -4167,21 +4179,60 @@ async fn wait_for_async_find_to_settle(app: &mut App, find_model: &ModelHandle<T
                 )
             })
         });
-        if is_complete {
+        complete_for = if is_complete { complete_for + 1 } else { 0 };
+        if complete_for >= 10 {
             break;
         }
         warpui::r#async::Timer::after(std::time::Duration::from_millis(10)).await;
     }
-    for _ in 0..10 {
-        warpui::r#async::Timer::after(std::time::Duration::from_millis(10)).await;
-    }
+}
+
+/// The find model's state, for a failure message.
+fn describe_find_state(view: &TerminalView, app: &AppContext) -> String {
+    let find_model = view.find_model.as_ref(app);
+    let Some(controller) = find_model.async_find_controller() else {
+        return "sync find".to_owned();
+    };
+    let model = view.model.lock();
+    let block_list = model.block_list();
+    let blocks = (0..block_list.blocks().len())
+        .map(|i| {
+            let index = BlockIndex(i);
+            format!(
+                "#{i}: output matches {:?}, command matches {:?}, height {:?}",
+                controller
+                    .matches_for_block_grid(index, GridType::Output)
+                    .map(|m| m.len()),
+                controller
+                    .matches_for_block_grid(index, GridType::PromptAndCommand)
+                    .map(|m| m.len()),
+                block_list
+                    .block_at(index)
+                    .map(|block| block.height(block_list.transcript_scope()).as_f64()),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    format!(
+        "async find status {:?}, query {:?}, find bar open {}; blocks: {blocks}",
+        controller.status(),
+        controller
+            .find_options()
+            .map(|options| options.query.clone()),
+        find_model.is_find_bar_open(),
+    )
 }
 
 /// What the appci case `flood_scrollback_find` does: a command prints MARKER, the next
 /// command prints `flood_lines` lines (with `max_grid_size` set, more than the block keeps),
-/// then Find is opened, the marker searched for and Enter pressed at once. The marker's
-/// block must end up on screen. Before the fix the view never moved on the async path
-/// (the default): `scroll_to_match` read only the sync run, which async find never fills.
+/// and once the app has settled, Find is opened, the marker searched for and Enter pressed
+/// at once. The marker's block must end up on screen. Before the fix the view never moved
+/// on the async path (the default): `scroll_to_match` read only the sync run, which async
+/// find never fills.
+///
+/// Each step is its own update with the app settling in between, as in the app: the input
+/// mode's subscription (which inverts the block list) and the model events of the two
+/// commands run before the Find, not after it.
 fn run_find_scrolls_to_older_block_test(
     input_mode: InputMode,
     async_find: bool,
@@ -4194,36 +4245,55 @@ fn run_find_scrolls_to_older_block_test(
         let _async_find = FeatureFlag::AsyncFind.override_enabled(async_find);
         let terminal = add_window_with_terminal(&mut app, None);
 
-        let (marker_block, find_model) = terminal.update(&mut app, |view, ctx| {
+        terminal.update(&mut app, |view, ctx| {
             InputModeSettings::handle(ctx).update(ctx, |input_mode_settings, ctx| {
                 let _ = input_mode_settings.input_mode.set_value(input_mode, ctx);
             });
             assert_eq!(
-                view.find_model.as_ref(ctx).async_find_controller().is_some(),
+                view.find_model
+                    .as_ref(ctx)
+                    .async_find_controller()
+                    .is_some(),
                 async_find,
                 "precondition: the find path under test"
             );
+        });
+        let_app_settle(&mut app).await;
 
+        let marker_block = terminal.update(&mut app, |view, _ctx| {
             let flood: String = (1..=flood_lines).map(|i| format!("{i}\r\n")).collect();
-            let marker_block = {
-                let mut model = view.model.lock();
-                if let Some(size) = max_grid_size {
-                    model.update_max_grid_size(size);
-                }
-                model.simulate_block("echo marker", MARKER);
-                let marker_block = BlockIndex(model.block_list().active_block_index().0 - 1);
-                model.simulate_block("seq", flood.as_str());
-                let flood_block = model
-                    .block_list()
-                    .block_at(BlockIndex(marker_block.0 + 1))
-                    .expect("the flood block follows the marker block");
-                assert_eq!(
-                    flood_block.output_grid().grid_handler().num_lines_truncated() > 0,
-                    max_grid_size.is_some(),
-                    "precondition: the flood block is truncated exactly when the grid size is capped"
-                );
-                marker_block
-            };
+            let mut model = view.model.lock();
+            if let Some(size) = max_grid_size {
+                model.update_max_grid_size(size);
+            }
+            model.simulate_block("echo marker", MARKER);
+            let marker_block = BlockIndex(model.block_list().active_block_index().0 - 1);
+            model.simulate_block("seq", flood.as_str());
+            let flood_block = model
+                .block_list()
+                .block_at(BlockIndex(marker_block.0 + 1))
+                .expect("the flood block follows the marker block");
+            assert_eq!(
+                flood_block
+                    .output_grid()
+                    .grid_handler()
+                    .num_lines_truncated()
+                    > 0,
+                max_grid_size.is_some(),
+                "precondition: the flood block is truncated exactly when the grid size is capped"
+            );
+            marker_block
+        });
+        let_app_settle(&mut app).await;
+
+        let find_model = terminal.update(&mut app, |view, ctx| {
+            if input_mode.is_inverted_blocklist() {
+                // The inverted list puts the newest block on top and follows its BOTTOM, which
+                // borders the older marker block: there the flood's tail and the marker share
+                // the screen. Show the flood's head, its far end from the marker, so the
+                // marker is a whole flood away as in the non-inverted layout.
+                view.scroll_to(BlockIndex(marker_block.0 + 1), ctx);
+            }
             assert!(
                 !is_block_on_screen(view, marker_block, input_mode, ctx),
                 "control: the flood scrolled the marker's block off screen"
@@ -4243,7 +4313,7 @@ fn run_find_scrolls_to_older_block_test(
                 },
                 ctx,
             );
-            (marker_block, view.find_model.clone())
+            view.find_model.clone()
         });
 
         if async_find {
@@ -4254,14 +4324,16 @@ fn run_find_scrolls_to_older_block_test(
             assert_eq!(
                 view.find_model.as_ref(ctx).visible_block_list_match_count(),
                 1,
-                "precondition: the marker is the only match"
+                "precondition: the marker is the only match ({})",
+                describe_find_state(view, ctx)
             );
             assert!(
                 view.find_model
                     .as_ref(ctx)
                     .focused_block_list_match()
                     .is_some(),
-                "precondition: the marker's match is focused"
+                "precondition: the marker's match is focused ({})",
+                describe_find_state(view, ctx)
             );
             assert!(
                 is_block_on_screen(view, marker_block, input_mode, ctx),
