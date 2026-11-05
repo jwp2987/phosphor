@@ -2160,3 +2160,24 @@ Harness only; `run.py --self-test` covers it (`r18u23_paste_backlog_and_bash_age
   mechanism. A young Enter hold on ConPTY (`TimingWindow`) reaches `young_hold_cap` before the Preexec that would have released it.
   It hands the Enter and the keys behind it back to the editor, while later keys still go to the pty, so the line is reordered or
   left in the editor. A1 (bdf6f4fac) did fix the second window: it opened this time.
+
+## r18u28 Windows app-run fixes (ssh/schtasks run, 3d6d6ed21)
+
+Harness only; `run.py --self-test` covers both (`app_log_readers`, `mac_close_key_empty_never_crashes_and_latency_guards`).
+
+- **`Ctx.log_size` / `Ctx.log_since` survive the app's log rotation.** The app renames its log to `<log>.in_session.0` at 10 MB (#1187)
+  and opens a fresh active file. `log_since(off)` used to seek into the NEW file and returned `""` until it grew past the old offset, so
+  every log-read check after a rotation saw nothing. `agent@gitbash agent_approval` counted 0 `pty_write_bytes` of an approved command
+  whose effect file showed it ran exactly once, and reported "the follow-up question did not open a model request within 60 s" (r18u27:
+  1.05 s); its case row also lost the `pty writes` / `enter_route` evidence. `log_size()` now returns a `LogOffset`, an int that also
+  carries the identity of the file it measured (inode / NTFS file index, else its first 256 bytes). `log_since` resolves it to that
+  file wherever the rotation moved it and reads every newer chunk after it. A plain int still reads the active file as before.
+- **`intl_wide_edit`'s lead word is unique per run, not just per seed.** The lead (H12) came from the seeded token stream, so every
+  seed-1 run typed the same `Write-Output k2t241_86giBq | ForEach-Object { ...('<run dir>\ie_2.txt'...) }`. PowerShell writes every
+  accepted line to the user's real PSReadLine history (`%APPDATA%\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt`; the
+  harness wipes only `%APPDATA%\phosphor`), and the app reads that file for autosuggestions (`ShellType::history_files`). In edit 2 the
+  End key lands at the end of the line, so it accepted the earlier run's line, path included. CI runs share one build directory, so the
+  doubled pipeline still wrote the right file. The ssh/schtasks run used another directory, so the accepted text wrote to the OLD path
+  and the new file never appeared (`edit 2 (BackSpace): file bytes None`, PowerShell pane, both modes; Git Bash keeps its history in the
+  run's HOME). The lead now ends in `EDIT_LEAD_NONCE` (6 hex digits from `os.urandom`, not the seeded rng, so no other case's tokens
+  change). The case notes when the history already holds a line with the seed's lead, which confirms the cause on the next PowerShell run.
