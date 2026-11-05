@@ -121,3 +121,51 @@ fn probe_of_a_sleeping_thread_barely_moves() {
     exit_tx.send(()).unwrap();
     worker.join().unwrap();
 }
+
+/// #1651 review: a probe read while its thread is STILL spinning (not parked) rises past 40 ms;
+/// only then is the worker stopped. On macOS this is `thread_info` on a running thread.
+#[test]
+fn probe_rises_while_its_thread_is_still_spinning() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let (probe_tx, probe_rx) = mpsc::channel();
+    let worker = {
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            probe_tx.send(ThreadCpuProbe::current()).unwrap();
+            let mut x = 1u64;
+            while !stop.load(Ordering::Relaxed) {
+                for i in 0..10_000u64 {
+                    x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(i);
+                }
+                std::hint::black_box(x);
+            }
+        })
+    };
+    if let Some(probe) = probe_rx.recv().unwrap() {
+        let start = probe.read().expect("the worker is alive");
+        let wall = Instant::now();
+        loop {
+            let spent = probe
+                .read()
+                .expect("the worker is alive")
+                .saturating_sub(start);
+            assert!(
+                !worker.is_finished(),
+                "the worker cannot stop before it is told"
+            );
+            if spent >= Duration::from_millis(40) {
+                break;
+            }
+            assert!(
+                wall.elapsed() < Duration::from_secs(30),
+                "a spinning thread's probe never rose: {spent:?}"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+    stop.store(true, Ordering::Relaxed);
+    worker.join().unwrap();
+}

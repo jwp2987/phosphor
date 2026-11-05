@@ -253,6 +253,16 @@ impl Input {
         (clock.is_running(), clock.spent())
     }
 
+    /// The wall time the current input-type detection's stages have run (#1651 review): a young
+    /// line's Enter gives up at the detection's wall ceiling too, for a classifier that waits off
+    /// the CPU.
+    pub(crate) fn detection_stage_wall(&self, ctx: &AppContext) -> Duration {
+        self.ai_input_model
+            .as_ref(ctx)
+            .detection_clock()
+            .stage_wall()
+    }
+
     /// Sends a unit on `tx` each time a stage of the current detection begins running.
     pub(crate) fn notify_on_detection_stage_start(
         &self,

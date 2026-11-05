@@ -39,8 +39,8 @@ use crate::ai::blocklist::block::cli_controller::CLISubagentController;
 use crate::ai::blocklist::block::status_bar::BlocklistAIStatusBar;
 use crate::ai::blocklist::compute_clock::ComputeClock;
 use crate::ai::blocklist::input_model::{
-    EnterProvenance, EnterVerdictWait, enter_verdict_wait_decision_for,
-    large_text_compute_allowance, routes_off_thread, shell_family,
+    EnterProvenance, EnterVerdictWait, enter_verdict_cap_reached, enter_verdict_cap_remaining,
+    enter_verdict_wait_decision_at, large_text_compute_allowance, routes_off_thread, shell_family,
     should_wait_for_verdict_before_submit,
 };
 use crate::ai::blocklist::{
@@ -1457,6 +1457,11 @@ const TAB_COMPLETION_ENTER_WARN: std::time::Duration = std::time::Duration::from
 /// machine audit 2026-11-05): long enough that only a lost or never-scheduled job reaches it, not
 /// a classifier that is merely slow to get a CPU (its cap is CPU time, #1651). Was 250 ms.
 const VERDICT_HOLD_BACKSTOP: std::time::Duration = std::time::Duration::from_secs(2);
+/// The longest any Enter hold's backstop may be: a second under the Enter gate's leak net
+/// ([`enter_queue::ENTER_GATE_LEAK_NET`]), so for any paste size the hold gives up (handing the
+/// text back in order) before the leak net force-opens the gate (#1651 review).
+pub(crate) const HOLD_BACKSTOP_LIMIT: std::time::Duration =
+    enter_queue::ENTER_GATE_LEAK_NET.saturating_sub(std::time::Duration::from_secs(1));
 /// The shortest compute-cap timer re-armed while the awaited job's cap is not yet spent (#1651):
 /// on a CPU-time clock a starved job can sit just under its cap for as long as it gets no CPU.
 pub(crate) const COMPUTE_CAP_RECHECK_FLOOR: std::time::Duration =
@@ -1489,10 +1494,38 @@ impl EnterHold {
     /// editor while the input type is undecided (#1577); it never routes.
     fn backstop(self, text_len: usize) -> std::time::Duration {
         match self {
-            EnterHold::Verdict { .. } => {
-                VERDICT_HOLD_BACKSTOP + large_text_compute_allowance(text_len)
-            }
+            // Clamped under the Enter gate's leak net, so the leak net never fires first (and
+            // releases keys out of order) for a paste over ~32 MiB (#1651 review).
+            EnterHold::Verdict { .. } => (VERDICT_HOLD_BACKSTOP
+                + large_text_compute_allowance(text_len))
+            .min(HOLD_BACKSTOP_LIMIT),
             EnterHold::TabCompletion { .. } => std::time::Duration::from_millis(500),
+        }
+    }
+}
+
+impl EnterHold {
+    /// Whether the awaited job has used up its give-up cap on `clock` (#1351). A verdict's cap
+    /// is its CPU budget OR its wall ceiling, whichever comes first (#1651 review: a job waiting
+    /// off the CPU never spends CPU); a Tab completion's clock is wall time already.
+    fn cap_reached(self, clock: &ComputeClock, text_len: usize) -> bool {
+        match self {
+            EnterHold::Verdict { .. } => {
+                enter_verdict_cap_reached(clock.spent(), clock.stage_wall(), text_len)
+            }
+            EnterHold::TabCompletion { .. } => clock.spent() >= self.compute_cap(text_len),
+        }
+    }
+
+    /// The delay until [`Self::cap_reached`] can next be true while the job keeps running.
+    fn cap_remaining(self, clock: &ComputeClock, text_len: usize) -> std::time::Duration {
+        match self {
+            EnterHold::Verdict { .. } => {
+                enter_verdict_cap_remaining(clock.spent(), clock.stage_wall(), text_len)
+            }
+            EnterHold::TabCompletion { .. } => {
+                self.compute_cap(text_len).saturating_sub(clock.spent())
+            }
         }
     }
 }
@@ -14415,10 +14448,12 @@ impl Input {
     /// submitting on the inherited input type: prose must never
     /// be run by the shell because Enter beat the classifier. Typeahead for a running command
     /// keeps its shell rules; typeahead that began right after a command is classified like
-    /// anything typed. The wait is bounded by `ENTER_VERDICT_BUDGET` (#1158); if the verdict is
-    /// late the Enter submits on the Enter-time rules above and the late verdict is dropped. It is
-    /// never kept in the editor, and never waits on remote I/O (the classification parse runs no
-    /// generators).
+    /// anything typed. The wait is bounded by `ENTER_VERDICT_BUDGET` of classifier CPU (#1158,
+    /// #1651) or `ENTER_VERDICT_WALL_CEILING` of wall time, whichever comes first: the parse runs
+    /// no generators (no remote I/O), but local waits off the CPU (a slow filesystem, the model
+    /// loading) are possible and the ceiling bounds them. If the verdict is late the late verdict
+    /// is dropped and, with the input type undecided, the line is handed back to the editor
+    /// (#1577).
     fn defer_enter_for_classification(&mut self, ctx: &mut ViewContext<Self>) -> bool {
         // #1016: an Enter is already waiting. This one belongs to the line typed after it: it
         // queues behind that Enter (after the text typed before it), and never submits the
@@ -14648,10 +14683,7 @@ impl Input {
         if !wait.compute.is_running() {
             return;
         }
-        let remaining = wait
-            .hold
-            .compute_cap(wait.text.len())
-            .saturating_sub(wait.compute.spent());
+        let remaining = wait.hold.cap_remaining(&wait.compute, wait.text.len());
         // #1651: the verdict's clock counts only the job's CPU time, so a job waiting for a CPU
         // finds its cap unreached when this timer fires, and the timer is armed again for the
         // rest. A floor keeps a starved job's last sliver of cap from re-arming in a tight loop;
@@ -14704,7 +14736,7 @@ impl Input {
         let Some(wait) = self.verdict_wait.as_ref().filter(|wait| wait.id == id) else {
             return;
         };
-        if wait.compute.spent() < wait.hold.compute_cap(wait.text.len()) {
+        if !wait.hold.cap_reached(&wait.compute, wait.text.len()) {
             self.arm_compute_cap(id, ctx);
             return;
         }
@@ -15056,12 +15088,12 @@ impl Input {
             .ai_input_model
             .as_ref(ctx)
             .is_detection_pending_for(&text, ctx);
-        let spent = self
+        let (spent, stage_wall) = self
             .verdict_wait
             .as_ref()
-            .map(|wait| wait.compute.spent())
+            .map(|wait| (wait.compute.spent(), wait.compute.stage_wall()))
             .unwrap_or_default();
-        let decision = enter_verdict_wait_decision_for(pending, spent, text.len());
+        let decision = enter_verdict_wait_decision_at(pending, spent, stage_wall, text.len());
         if decision != EnterVerdictWait::Wait {
             let waited = self.verdict_wait.as_ref().map(|wait| match wait.hold {
                 EnterHold::Verdict { since } | EnterHold::TabCompletion { since } => {

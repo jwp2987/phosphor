@@ -2379,12 +2379,16 @@ pub fn should_wait_for_verdict_before_submit(
 /// between its polls, does not count. It is never measured from the Enter: a main-thread stall
 /// (frame, reflow, big paste) that delays the Enter's handling of a verdict already computed and
 /// queued must not count against the classifier. A verdict that lands, or is already queued,
-/// always decides the route. Past the cap the classifier is slow and the Enter decides on the
-/// Enter-time rules that already ran (known head, history, syntax, request shape) instead of
-/// holding: it is never kept in the editor and never waits on I/O. It used to be 5 s, on a verdict that waited for remote completion
-/// generators (0.8-3.8 s), then 20 ms of wall time; the owner raised it to 50 ms on 2026-11-05
-/// ("the app shouldn't need a perfect machine to run on"). A job that never gets a CPU is caught
-/// by the Enter's wall-clock hold backstop, which only hands the text back to the editor (#1577).
+/// always decides the route. Past the cap the classifier is slow and the Enter gives up on it
+/// (with the input type undecided the text is handed back to the editor, #1577).
+///
+/// The jobs are not purely CPU-bound: they can wait off the CPU (a local directory listing on a
+/// slow filesystem, `$PATH` metadata probes, the model still loading, the model's helper
+/// threads), which the CPU clock does not charge. So the Enter also gives up once the request's
+/// stages have run for [`ENTER_VERDICT_WALL_CEILING`] of wall time, whichever comes first
+/// ([`enter_verdict_cap_reached`]). It used to be 5 s, on a verdict that waited for remote
+/// completion generators (0.8-3.8 s), then 20 ms of wall time; the owner raised it to 50 ms on
+/// 2026-11-05 ("the app shouldn't need a perfect machine to run on").
 pub const ENTER_VERDICT_BUDGET: Duration = Duration::from_millis(50);
 
 /// What a waiting Enter does when it is woken (#1158).
@@ -2417,13 +2421,69 @@ pub fn enter_verdict_wait_decision_for(
     classifier_compute: Duration,
     text_len: usize,
 ) -> EnterVerdictWait {
+    enter_verdict_wait_decision_at(
+        verdict_pending,
+        classifier_compute,
+        Duration::ZERO,
+        text_len,
+    )
+}
+
+/// [`enter_verdict_wait_decision_for`] that also applies the wall ceiling: `stage_wall` is the
+/// wall time the request's stages have been running ([`ComputeClock::stage_wall`]).
+pub fn enter_verdict_wait_decision_at(
+    verdict_pending: bool,
+    classifier_compute: Duration,
+    stage_wall: Duration,
+    text_len: usize,
+) -> EnterVerdictWait {
     if !verdict_pending {
         EnterVerdictWait::Submit
-    } else if classifier_compute >= enter_verdict_budget_for(text_len) {
+    } else if enter_verdict_cap_reached(classifier_compute, stage_wall, text_len) {
         EnterVerdictWait::SubmitWithoutVerdict
     } else {
         EnterVerdictWait::Wait
     }
+}
+
+/// The most wall time the stages of a detection request may run before an Enter waiting for its
+/// verdict gives up, however little CPU they used (#1651 review). The CPU budget
+/// ([`ENTER_VERDICT_BUDGET`]) does not see a job that waits off the CPU on something outside the
+/// classifier (a cold filesystem, a `$PATH` probe, the model loading); this ceiling does. 1 s:
+/// far above a classifier that is merely starved of CPU on a loaded machine, far below the
+/// Enter's 2 s lost-job backstop. Its expiry is the same give-up: a hand-back to the editor while
+/// the input type is undecided (#1577), never a route.
+pub const ENTER_VERDICT_WALL_CEILING: Duration = Duration::from_secs(1);
+
+/// [`ENTER_VERDICT_WALL_CEILING`] plus the large-text allowance for a buffer of `text_len` bytes
+/// (#1604), so a large paste's linear classification is not cut off by it.
+pub fn enter_verdict_wall_ceiling_for(text_len: usize) -> Duration {
+    ENTER_VERDICT_WALL_CEILING + large_text_compute_allowance(text_len)
+}
+
+/// Whether an Enter waiting for the verdict of a `text_len`-byte buffer gives up: the classifier
+/// spent its CPU budget ([`enter_verdict_budget_for`]) OR its stages have run for the wall
+/// ceiling ([`enter_verdict_wall_ceiling_for`]), whichever comes first.
+pub fn enter_verdict_cap_reached(
+    classifier_compute: Duration,
+    stage_wall: Duration,
+    text_len: usize,
+) -> bool {
+    classifier_compute >= enter_verdict_budget_for(text_len)
+        || stage_wall >= enter_verdict_wall_ceiling_for(text_len)
+}
+
+/// How long until [`enter_verdict_cap_reached`] can next be true, if the stages keep running:
+/// the rest of the CPU budget or of the wall ceiling, whichever is shorter. A timer for this
+/// delay re-checks [`enter_verdict_cap_reached`] when it fires and is armed again if not.
+pub fn enter_verdict_cap_remaining(
+    classifier_compute: Duration,
+    stage_wall: Duration,
+    text_len: usize,
+) -> Duration {
+    enter_verdict_budget_for(text_len)
+        .saturating_sub(classifier_compute)
+        .min(enter_verdict_wall_ceiling_for(text_len).saturating_sub(stage_wall))
 }
 
 fn shell_history_candidates<'a>(

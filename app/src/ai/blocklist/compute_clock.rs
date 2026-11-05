@@ -16,13 +16,17 @@
 //!   CPU time the stage's polls ran on their thread (#1651), read from the thread's own CPU clock
 //!   ([`super::thread_cpu`]). Time the job spends runnable but waiting for a CPU (a loaded
 //!   machine), or queued between polls behind other work, does not count. Used by the
-//!   input-type detection request, whose stages are CPU-bound (the classification parse runs no
-//!   generators). Where the platform has no thread CPU clock a poll is measured on wall time
-//!   instead (still only while it runs), and that is logged once.
+//!   input-type detection request. Where the platform has no thread CPU clock a poll is measured
+//!   on wall time instead (still only while it runs), and that is logged once.
 //!
-//! A job that never gets a CPU never reaches its cap on the thread CPU clock: the waiting Enter's
-//! wall-clock backstop is the safety net for it, and it only hands the text back to the editor
-//! (#1577).
+//! The detection stages are NOT purely CPU-bound: they can block or wait off the CPU on things
+//! outside the classifier (a local directory listing on a slow or cold filesystem, `$PATH`
+//! metadata probes, the classifier model still loading, the model's helper threads). None of that
+//! is charged on the CPU clock, so every clock also keeps its stages' wall time
+//! ([`ComputeClock::stage_wall`]): the waiting Enter gives up on whichever comes first, the CPU
+//! budget or a wall ceiling (`ENTER_VERDICT_WALL_CEILING`, 1 s), and a job that never runs at all
+//! is caught by the Enter's lost-job backstop. Every give-up only hands the text back to the
+//! editor (#1577).
 //!
 //! The clock also tells the waiting Enter when a stage starts running ([`ComputeClock::notify_on_stage_start`]),
 //! so the give-up deadline is armed from that event instead of being polled.
@@ -64,10 +68,13 @@ struct ClockState {
     measure: Measure,
     /// Guards currently alive (stages of the job running right now).
     active: u32,
-    /// When the first of the active guards began (wall clocks only).
+    /// When the first of the active guards began (every clock).
     running_since: Option<Instant>,
-    /// Compute of the stages (wall) or polls (thread CPU) that have finished.
-    spent: Duration,
+    /// Wall time of the stages that have finished (every clock): a wall clock's compute, and a
+    /// thread CPU clock's [`ComputeClock::stage_wall`].
+    wall_spent: Duration,
+    /// CPU time of the polls that have finished (thread CPU clocks only).
+    cpu_spent: Duration,
     /// Polls running right now (thread CPU clocks only).
     polls: Vec<PollInProgress>,
     next_poll_id: u64,
@@ -118,7 +125,7 @@ impl ComputeClock {
     pub fn begin(&self) -> ComputeGuard {
         let mut state = self.0.lock();
         state.active += 1;
-        if state.active == 1 && state.measure == Measure::Wall {
+        if state.active == 1 {
             state.running_since = Some(Instant::now());
         }
         if let Some(tx) = &state.stage_started {
@@ -140,29 +147,45 @@ impl ComputeClock {
         }
     }
 
-    /// Compute spent so far, including the stage (or polls) running now.
+    /// Compute spent so far, including the stage (or polls) running now: wall time on a wall
+    /// clock, CPU time on a thread CPU clock.
     pub fn spent(&self) -> Duration {
         let state = self.0.lock();
-        let running = match state.measure {
-            Measure::Wall => state
-                .running_since
-                .map(|since| since.elapsed())
-                .unwrap_or_default(),
+        match state.measure {
+            Measure::Wall => Self::stage_wall_locked(&state),
             // Read under the lock: a poll's end takes it before the poll is unlisted, so the
             // probed thread is still inside the poll (and alive) here.
-            Measure::ThreadCpu => state
-                .polls
-                .iter()
-                .map(|poll| {
-                    poll.probe
-                        .and_then(|(probe, start)| {
-                            probe.read().map(|now| now.saturating_sub(start))
+            Measure::ThreadCpu => {
+                state.cpu_spent
+                    + state
+                        .polls
+                        .iter()
+                        .map(|poll| {
+                            poll.probe
+                                .and_then(|(probe, start)| {
+                                    probe.read().map(|now| now.saturating_sub(start))
+                                })
+                                .unwrap_or_else(|| poll.wall_start.elapsed())
                         })
-                        .unwrap_or_else(|| poll.wall_start.elapsed())
-                })
-                .sum::<Duration>(),
-        };
-        state.spent + running
+                        .sum::<Duration>()
+            }
+        }
+    }
+
+    /// Wall time the clock's stages have been running, from each stage's first poll to its end,
+    /// including the stage running now and any time it spends off the CPU (waiting on I/O, a
+    /// lock, a loading model, or for a CPU). The waiting Enter's wall ceiling is measured on it
+    /// (#1651 review). On a wall clock it equals [`Self::spent`].
+    pub fn stage_wall(&self) -> Duration {
+        Self::stage_wall_locked(&self.0.lock())
+    }
+
+    fn stage_wall_locked(state: &ClockState) -> Duration {
+        state.wall_spent
+            + state
+                .running_since
+                .map(|since| since.elapsed())
+                .unwrap_or_default()
     }
 
     /// Whether a stage is running right now.
@@ -204,6 +227,7 @@ impl ComputeClock {
         Some(PollGuard {
             clock: self.clone(),
             id,
+            probe,
             cpu_start,
             wall_start,
         })
@@ -213,8 +237,22 @@ impl ComputeClock {
     #[cfg(test)]
     pub fn with_spent_for_test(spent: Duration) -> Self {
         let clock = Self::default();
-        clock.0.lock().spent = spent;
+        clock.0.lock().wall_spent = spent;
         clock
+    }
+
+    /// A thread CPU clock whose current stage began `wall` ago and has spent `cpu` of CPU, for
+    /// tests of the CPU budget and the wall ceiling.
+    #[cfg(test)]
+    pub fn thread_cpu_running_for_test(cpu: Duration, wall: Duration) -> (Self, ComputeGuard) {
+        let clock = Self::thread_cpu();
+        let guard = clock.begin();
+        {
+            let mut state = clock.0.lock();
+            state.cpu_spent = cpu;
+            state.running_since = Some(Instant::now() - wall);
+        }
+        (clock, guard)
     }
 
     /// A clock whose current stage began `running_for` ago, for tests.
@@ -227,7 +265,7 @@ impl ComputeClock {
     }
 }
 
-/// Keeps the clock running; dropping it books the elapsed time as spent (wall clocks).
+/// Keeps the clock running; dropping it books the stage's wall time.
 pub struct ComputeGuard(ComputeClock);
 
 impl Drop for ComputeGuard {
@@ -237,7 +275,7 @@ impl Drop for ComputeGuard {
         if state.active == 0
             && let Some(since) = state.running_since.take()
         {
-            state.spent += since.elapsed();
+            state.wall_spent += since.elapsed();
         }
     }
 }
@@ -247,23 +285,38 @@ impl Drop for ComputeGuard {
 struct PollGuard {
     clock: ComputeClock,
     id: u64,
-    /// The polling thread's CPU clock when the poll began; `None` without a thread CPU clock,
-    /// when the poll's wall time is booked instead.
+    /// The cross-thread probe of the polling thread and its reading when the poll began: the
+    /// same source [`ComputeClock::spent`] reads a running poll from.
+    probe: Option<(ThreadCpuProbe, Duration)>,
+    /// The polling thread's own CPU clock when the poll began; `None` without a thread CPU
+    /// clock, when the poll's wall time is booked instead.
     cpu_start: Option<Duration>,
     wall_start: Instant,
 }
 
 impl Drop for PollGuard {
     fn drop(&mut self) {
-        // Sampled on the thread that ran the poll, before the lock is taken.
-        let spent = self
-            .cpu_start
-            .and_then(|start| thread_cpu::current_thread_cpu().map(|end| end.saturating_sub(start)))
+        // Sampled on the thread that ran the poll, before the lock is taken. The poll is booked
+        // from the same source a reader saw it running on (the probe), so `spent()` never goes
+        // backwards at the poll's end. Without a probe reading it falls back to the thread's own
+        // clock: a reader then saw the running poll at its wall time, at least its CPU time, so
+        // the booked value can be a little lower than a read taken during the poll. That only
+        // ever over-estimated the compute for a moment (a give-up that came early hands the text
+        // back, #1577; it never routes), and no decision compares two readings.
+        let probed = self
+            .probe
+            .and_then(|(probe, start)| probe.read().map(|end| end.saturating_sub(start)));
+        let spent = probed
+            .or_else(|| {
+                self.cpu_start.and_then(|start| {
+                    thread_cpu::current_thread_cpu().map(|end| end.saturating_sub(start))
+                })
+            })
             .unwrap_or_else(|| self.wall_start.elapsed());
         let mut state = self.clock.0.lock();
         let id = self.id;
         state.polls.retain(|poll| poll.id != id);
-        state.spent += spent;
+        state.cpu_spent += spent;
     }
 }
 

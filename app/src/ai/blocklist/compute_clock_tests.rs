@@ -188,3 +188,173 @@ fn wall_clock_measure_counts_the_stage_wall_time() {
     assert!(!clock.is_running());
     assert!(clock.spent() >= Duration::from_millis(30));
 }
+
+/// #1651 review: a detection stage that waits off the CPU on something outside the classifier (a
+/// channel fed 1.5 s later stands in for a cold filesystem or a loading model) spends no CPU, but
+/// its wall time runs, and the Enter's cap is reached at the 1 s wall ceiling, well before the
+/// 2 s lost-job backstop. The timer the Enter arms at the stage's start is for that ceiling.
+#[test]
+fn a_stage_waiting_off_the_cpu_reaches_the_cap_at_the_wall_ceiling() {
+    use crate::ai::blocklist::input_model::{
+        ENTER_VERDICT_BUDGET, ENTER_VERDICT_WALL_CEILING, enter_verdict_cap_reached,
+        enter_verdict_cap_remaining,
+    };
+
+    let clock = ComputeClock::thread_cpu();
+    let (feed_tx, feed_rx) = async_channel::bounded::<()>(1);
+    let (started_tx, started_rx) = mpsc::channel();
+    let job = {
+        let clock = clock.clone();
+        std::thread::spawn(move || {
+            futures::executor::block_on(clock.measure(async move {
+                started_tx.send(()).unwrap();
+                let _ = feed_rx.recv().await;
+            }));
+        })
+    };
+    started_rx.recv().unwrap();
+    let started = Instant::now();
+    assert!(clock.is_running());
+    // The Enter's timer is armed for whichever runs out first. With no CPU spent that is the
+    // CPU budget's rest (<= 50 ms, so it re-checks at that pace, never in a tight loop), until the
+    // ceiling's rest is the shorter one.
+    assert!(
+        enter_verdict_cap_remaining(clock.spent(), clock.stage_wall(), 10) <= ENTER_VERDICT_BUDGET
+    );
+
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        !enter_verdict_cap_reached(clock.spent(), clock.stage_wall(), 10),
+        "300 ms in: neither the CPU budget nor the wall ceiling"
+    );
+    let remaining = enter_verdict_cap_remaining(clock.spent(), clock.stage_wall(), 10);
+    assert!(remaining <= ENTER_VERDICT_BUDGET);
+
+    // Wait out the ceiling (the channel is fed at 1.5 s).
+    while started.elapsed() < ENTER_VERDICT_WALL_CEILING + Duration::from_millis(50) {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let (cpu, wall) = (clock.spent(), clock.stage_wall());
+    assert!(
+        cpu < ENTER_VERDICT_BUDGET,
+        "a stage waiting on a channel spent {cpu:?} of CPU"
+    );
+    assert!(wall >= ENTER_VERDICT_WALL_CEILING, "{wall:?}");
+    assert!(
+        enter_verdict_cap_reached(cpu, wall, 10),
+        "at ~1 s of wall time the cap is reached, before the 2 s backstop"
+    );
+    assert!(
+        started.elapsed() < Duration::from_millis(1500),
+        "the channel was not fed yet"
+    );
+
+    while started.elapsed() < Duration::from_millis(1500) {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    feed_tx.try_send(()).unwrap();
+    job.join().unwrap();
+    assert!(!clock.is_running());
+}
+
+/// #1651 review: a stage starved of CPU (yielded and queued, or descheduled) under the wall
+/// ceiling is not given up on before it has spent its 50 ms of CPU.
+#[test]
+fn a_cpu_starved_stage_under_the_ceiling_keeps_its_cpu_budget() {
+    use crate::ai::blocklist::input_model::{ENTER_VERDICT_BUDGET, enter_verdict_cap_reached};
+
+    // Injected: 600 ms of wall time with only 10 ms of CPU, then the budget reached.
+    let (clock, guard) = ComputeClock::thread_cpu_running_for_test(
+        Duration::from_millis(10),
+        Duration::from_millis(600),
+    );
+    assert!(!enter_verdict_cap_reached(
+        clock.spent(),
+        clock.stage_wall(),
+        10
+    ));
+    drop(guard);
+    let (clock, _guard) =
+        ComputeClock::thread_cpu_running_for_test(ENTER_VERDICT_BUDGET, Duration::from_millis(600));
+    assert!(enter_verdict_cap_reached(
+        clock.spent(),
+        clock.stage_wall(),
+        10
+    ));
+
+    // Real: a stage that yields between polls for 300 ms of wall time spends almost no CPU.
+    if current_thread_cpu().is_none() {
+        // Without a thread CPU clock a poll is timed on wall time, sleeps included.
+        return;
+    }
+    let clock = ComputeClock::thread_cpu();
+    let mut stage = Box::pin(clock.measure(async {
+        let until = Instant::now() + Duration::from_millis(300);
+        while Instant::now() < until {
+            futures_lite::future::yield_now().await;
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }));
+    let mut cx = Context::from_waker(Waker::noop());
+    while stage.as_mut().poll(&mut cx).is_pending() {
+        // Queued behind other work between polls.
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(
+            !enter_verdict_cap_reached(clock.spent(), clock.stage_wall(), 10),
+            "starved under the ceiling: CPU {:?}, wall {:?}",
+            clock.spent(),
+            clock.stage_wall()
+        );
+    }
+}
+
+/// #1651 review: the main thread reads a poll that is STILL running and still on the CPU: the
+/// clock (through the job thread's probe) rises past 40 ms while the worker spins, and only then
+/// is the worker stopped. This is what the macOS `thread_info` path is for.
+#[test]
+fn spent_rises_while_the_poll_is_still_spinning() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    if current_thread_cpu().is_none() || ThreadCpuProbe::current().is_none() {
+        return;
+    }
+    let clock = ComputeClock::thread_cpu();
+    let stop = Arc::new(AtomicBool::new(false));
+    let finished = Arc::new(AtomicBool::new(false));
+    let job = {
+        let (clock, stop, finished) = (clock.clone(), stop.clone(), finished.clone());
+        std::thread::spawn(move || {
+            futures::executor::block_on(clock.measure(async move {
+                let mut x = 1u64;
+                while !stop.load(Ordering::Relaxed) {
+                    for i in 0..10_000u64 {
+                        x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(i);
+                    }
+                    std::hint::black_box(x);
+                }
+            }));
+            finished.store(true, Ordering::Relaxed);
+        })
+    };
+    let wall = Instant::now();
+    loop {
+        let spent = clock.spent();
+        assert!(
+            !finished.load(Ordering::Relaxed),
+            "the worker cannot stop before it is told"
+        );
+        if spent >= Duration::from_millis(40) {
+            break;
+        }
+        assert!(
+            wall.elapsed() < Duration::from_secs(30),
+            "a spinning poll never showed on the clock: {spent:?}"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(clock.is_running(), "read while the poll is still running");
+    stop.store(true, Ordering::Relaxed);
+    job.join().unwrap();
+    assert!(clock.spent() >= Duration::from_millis(40));
+}
