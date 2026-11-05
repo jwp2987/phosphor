@@ -1338,6 +1338,23 @@ def r18e9_pane_closed_by_own_exit_is_not_an_app_death():
 
 
 @check
+def i1782_launchd_exit_record_names_the_signal_and_the_sender():
+    """#1782: the dead app's exit status comes from launchd's unified-log line (the harness cannot wait() an `open`-launched app); the app's own
+    fatal-signal line counts as crash evidence"""
+    import run as runmod
+    line = ("2026-11-05 08:23:05.940 Df launchd[1:35582ae] [gui/501/application.dev.phosphor.Phosphor.533091616.533091621.7DA0F36B [94694]:] "
+            "exited due to SIGBUS | sent by exc handler[94694], ran for 1251994ms\n")
+    other = "2026-11-05 08:23:05.762 Df launchd[1:35582ae] [system/us.electronic.eveusb.daemon [6856]:] exited due to SIGSEGV | sent by exc handler[6856], ran for 310ms\n"
+    assert runmod.launchd_exit_record(other + line, 94694) == ("due to SIGBUS | sent by exc handler[94694]", "SIGBUS"), runmod.launchd_exit_record(other + line, 94694)
+    assert runmod.launchd_exit_record(other, 94694) == (None, None)
+    assert runmod.launchd_exit_record("[gui/501/application.x [77]:] exited with exit code: 0\n", 77) == ("with exit code: 0", None)
+    killed = "[gui/501/application.x [88]:] exited due to SIGKILL | sent by runningboardd[123], ran for 5ms\n"
+    assert runmod.launchd_exit_record(killed, 88) == ("due to SIGKILL | sent by runningboardd[123]", "SIGKILL")
+    fatal = "2026-11-05T14:23:05Z [ERROR] fatal signal SIGBUS (10) code=2 addr=0x16f60bff0 thread='clipboard-read' pid=94694 (fault); the process is about to die"
+    assert runmod.FATAL_LINE_RX.search("x\n" + fatal + "\n").group(0) == fatal
+
+
+@check
 def r18e9_injector_accounting_spans_relaunches():
     """r18e9: ui_startup_time relaunches 5 times and the app log is overwritten each time; accounting over [earlier copies..., live log] counts every launch, and the
     per-launch seq counters do not collide"""

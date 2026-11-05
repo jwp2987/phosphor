@@ -1407,7 +1407,13 @@ fallback for builds that predate the line.
   own the LAN connection, and it is a plain CLI child of the runner, which is not prompt-gated.
 - **Mac harness PID/ref notes.** The app PID is resolved by the exact private bundle path inside the job dir (never by name),
   kept while verified (`kill -0` + command prefix), re-resolved on demand; "APP DIED" is only claimed when that PID is gone AND
-  no process of the bundle exists, otherwise "PID lookup failed". One instance per pass is enforced. The window rect comes
+  no process of the bundle exists, otherwise "PID lookup failed". The harness cannot `wait()` an `open`-launched app, so on an
+  APP DIED it reads the exit status from the unified log (#1782, `run.mac_exit_evidence`, read only, bounded): launchd's
+  `exited due to SIG... | sent by ...` line for that PID (a fault says `sent by exc handler[<pid>]`; a kill names the sender)
+  and the app's last system-log lines; a signal there counts as crash evidence. The app itself writes one
+  `[ERROR] fatal signal SIG... code= addr= thread='...'` line to its log on SIGBUS/SIGSEGV/SIGILL/SIGFPE/SIGABRT/SIGTRAP
+  (`warp_logging::fatal_signal`, all Unix; kill switch `PHOSPHOR_FATAL_SIGNAL_LOG=0`), which the death classifier quotes
+  first. One instance per pass is enforced. The window rect comes
   from `winrect` (CGWindowList; no System Events). The latency_enter reference is Terminal.app launched with
   `open -a Terminal x.command` (no Apple Events, no Automation grant), closed by typing `exit`; if it cannot be reached the
   verdict is "no-reference" with the reason. mode_proof reads the PRE-key screenshot (Escape leaves a fresh agent view).
