@@ -1154,7 +1154,7 @@ usage-test-macos:
   # r18d8: GitLab `timeout:` is static per job. The full tier (APPCI_TIER=full: candidate/release) of app-test-linux-wayland runs both modes
   # (terminal alone ~75 min, soak 2 x ~70 min) plus the xwayland pass and was killed at 90 min; 4h fits it. The fix tier (smoke) is not
   # lengthened: it ends by itself in well under 90 min, so the larger limit only matters for a hung job.
-  timeout: 4h
+  timeout: 6h   # r18u23: app-test-linux-wayland ran both modes plus both soaks and was killed at 4h with no artifacts uploaded (404); run.py's deadline still stops it early
   variables:
     GIT_DEPTH: "1"
   artifacts:
