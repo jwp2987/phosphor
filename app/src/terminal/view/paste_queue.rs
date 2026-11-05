@@ -2062,7 +2062,7 @@ impl TerminalView {
                 // with the "check the line" toast, never run (#1577).
                 self.input.update(ctx, |input, ctx| {
                     let buffer = input.editor().as_ref(ctx).buffer_text(ctx);
-                    input.arm_ssh_handover_enter_guard(buffer);
+                    input.arm_handed_back_enter_guard(buffer);
                 });
             }
         }
@@ -2806,13 +2806,20 @@ impl TerminalView {
                 });
                 if !text.is_empty() {
                     self.input.update(ctx, |input, ctx| {
+                        input.forget_hand_back_line_break();
                         input.system_insert(&text, ctx);
                         if text.contains('\n') {
                             // Several lines in one buffer submit as one command: the first Enter
                             // on them is held with the "check the line" toast.
                             let buffer = input.buffer_text(ctx);
-                            input.arm_ssh_handover_enter_guard(buffer);
+                            input.arm_handed_back_enter_guard(buffer);
                         }
+                    });
+                } else {
+                    // #1666 review: the busy-queue hand-back put a line break after the held line
+                    // for this text; nothing came, so the break goes (the line is as it was).
+                    self.input.update(ctx, |input, ctx| {
+                        input.drop_unused_hand_back_line_break(ctx)
                     });
                 }
             }

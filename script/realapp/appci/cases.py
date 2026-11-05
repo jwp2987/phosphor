@@ -1677,24 +1677,51 @@ def big_paste_control(ctx, data, want):
 
 @case("tab_enter", order=16)
 def c_tab(ctx, r):
-    """Tab then Enter must run the COMPLETED line (gap 0 / 50 / 150 ms); no stray file from the uncompleted line"""
+    """Tab then Enter must run the COMPLETED line (gap 0 / 50 / 150 ms); no stray file from the uncompleted line.
+    #1666/#1667: when the completion does not land within its cap the app runs NOTHING: the line stays in the editor with the "Completion took too
+    long" toast (`enter_completion_give_up` in the app log). That is reported as a GIVE-UP, not as "ran the UNCOMPLETED line", and it still FAILS
+    the case (the completed line did not run). The handed-back line is cleared (Ctrl-C) so the next trial is not typed onto it."""
     target = "tc/zzcompl_alpha_unique.txt"
     ctx.rm(target)
     open(os.path.join(ctx.W, target), "w").close()
-    exp = []
+    trials, gave_up = [], set()     # trials: (gap, tok, start wall time); gave_up: indices of trials whose completion gave up
+
+    def settle(i, t_end=None):
+        """attribute a give-up to trial i from ITS log window only: [its start, the next trial's start) (#1666 review: a late give-up, e.g. the
+        500 ms backstop, must not be read as the next trial's). A give-up found leaves the line in the editor: clear it before the next trial."""
+        if i < 0 or i in gave_up:
+            return
+        if completion_give_ups("\n".join(ctx.app_log_window(trials[i][2], t_end))):
+            gave_up.add(i)
+            ctx.be.key("ctrl+c")
+            time.sleep(0.2)
+
     for gap in (0, 0.05, 0.15):
-        for i in range(ctx.count(4)):
+        for _ in range(ctx.count(4)):
+            # the previous trial's window closes here, before this trial types: a give-up logged since its own check is still its own
+            settle(len(trials) - 1, time.time())
             tok = ctx.tok(6)
-            exp.append(tok)
+            t_trial = time.time()
+            trials.append((gap, tok, t_trial))
             ctx.be.type(("Add-Content -Value %s -Path tc/zzcompl_alpha_u" if ctx.pane == "powershell" else "echo %s >> tc/zzcompl_alpha_u") % tok, 15)
             ctx.be.key("Tab")
             if gap:
                 time.sleep(gap)
             ctx.be.key("Return")
             time.sleep(0.5)
+            settle(len(trials) - 1)
+    time.sleep(0.6)     # past the 500 ms backstop of the last trial
+    settle(len(trials) - 1)
+    exp = [tok for i, (_g, tok, _t) in enumerate(trials) if i not in gave_up]
+    give_ups = [(trials[i][0], trials[i][1]) for i in sorted(gave_up)]
     ctx.until(lambda: len(ctx.lines(target)) >= len(exp), 10)
     got = ctx.lines(target)
-    r.check(got == exp, "Tab+Enter: completed file has %d/%d expected lines" % (len(got), len(exp)))
+    r.metric("completion_give_ups", len(give_ups))
+    for gap, tok in give_ups:
+        r.note("GIVE-UP (#1666): the Tab completion for %s (gap %d ms) did not land within its cap; the app handed the line back, nothing ran" % (tok, gap * 1000))
+    r.check(not give_ups, "Tab+Enter: %d completion give-up(s) (#1666): the completion did not land in time and the line was handed back, not run "
+            "(the app did not run the uncompleted line; the completed one did not run either)" % len(give_ups))
+    r.check(got == exp, "Tab+Enter: completed file has %d/%d expected lines (give-ups excluded)" % (len(got), len(exp)))
     stray = [f for f in os.listdir(os.path.join(ctx.W, "tc")) if f != "zzcompl_alpha_unique.txt"]
     r.check(not stray, "Tab+Enter ran the UNCOMPLETED line, stray files: %s" % stray)
 
@@ -2252,6 +2279,16 @@ VERDICT_GIVE_UP_RE = re.compile(r'hop=(?:enter_verdict_give_up\b[^\n]*?\b(?:youn
 def verdict_gave_up(text):
     """whether an app-log excerpt shows a verdict give-up"""
     return VERDICT_GIVE_UP_RE.search(text) is not None
+
+
+# #1666/#1667: a Tab-completion give-up in the app log (the Enter held for the completion was not submitted by the clock; the "Completion took too
+# long" toast). Each give-up logs `enter_completion_give_up` once (its gate's `kh_enter_gate_give_up by=completion_*` is the same give-up).
+COMPLETION_GIVE_UP_RE = re.compile(r'hop=enter_completion_give_up\b')
+
+
+def completion_give_ups(text):
+    """how many Tab-completion give-ups an app-log excerpt shows"""
+    return len(COMPLETION_GIVE_UP_RE.findall(text))
 
 
 @case("ssh_nested_typeahead", order=30)

@@ -86,6 +86,9 @@ use crate::workspace::view::{
 pub use one_time_modal_model::OneTimeModalModel;
 pub use registry::WorkspaceRegistry;
 pub use toast_stack::ToastStack;
+/// For tests that read what a toast said.
+#[cfg(test)]
+pub use toast_stack::ToastStackEvent;
 
 pub fn init(app: &mut AppContext) {
     app.add_singleton_model(|_| WorkspaceRegistry::new());

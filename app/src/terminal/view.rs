@@ -14388,7 +14388,7 @@ impl TerminalView {
             // next Enter sends it.
             let buffer = input.editor().as_ref(ctx).buffer_text(ctx);
             if buffer.contains('\n') {
-                input.arm_ssh_handover_enter_guard(buffer);
+                input.arm_handed_back_enter_guard(buffer);
             }
         });
         let toast = match why {

@@ -211,6 +211,19 @@ def routing_classification():
 
 
 @check
+def tab_enter_completion_give_up_is_detected():
+    """#1666: the tab_enter case names a Tab-completion give-up (one per give-up, not counting its gate's hop); other give-ups are not it"""
+    log = ("input_order hop=enter_completion_give_up seq=4 editor completion_cap t=1\n"
+           "input_order hop=kh_enter_gate_give_up seq=4 by=completion_cap behind=0 submitted=false t=2\n"
+           "input_order hop=enter_completion_give_up seq=7 editor completion_backstop t=3\n")
+    assert cases.completion_give_ups(log) == 2
+    assert cases.completion_give_ups("input_order hop=enter_verdict_give_up seq=5 editor verdict_cap t=4\n"
+                                     "input_order hop=kh_enter_gate_give_up seq=6 by=verdict_cap behind=0 submitted=false t=5") == 0
+    assert cases.completion_give_ups("") == 0
+    assert "GIVE-UP" in cases.c_tab.__doc__ or "give-up" in cases.c_tab.__doc__.lower()
+
+
+@check
 def agent_input_exact_log_judgement():
     """#1510: the Rust Debug string in hop=enter_begin is unescaped and compared byte for byte"""
     sent = 'please explain why "build 7f3a" isn\'t passing, it\'s odd (really)?'
