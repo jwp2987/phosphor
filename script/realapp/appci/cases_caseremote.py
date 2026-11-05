@@ -207,7 +207,10 @@ def remote_session(ctx, r, variant):
     exact(r, "[%s] local command after exit ran locally" % variant, [tok], ctx.lines(tag + "_back.txt"))
     r.check(not ctx.lines(tag + "_back.txt", remote=True), "[%s] local command after exit ran on the REMOTE: %r" % (variant, ctx.lines(tag + "_back.txt", remote=True)))
     if ctx.prof.commands():
-        r.check(("echo %s >> %s_back.txt" % (tok, tag)) in ctx.cmds_since(lmark), "[%s] local rec.log lacks the exact command typed after exit" % variant)
+        # r18u19 (Windows Git Bash): the rc hook logs a command at the NEXT prompt (PROMPT_COMMAND forks `history 1`, slow under msys), so the effect file
+        # can be there before its rec.log line: wait for the line (as local_cmd_exact does) instead of reading rec.log once. Same exact-line verdict.
+        back = "echo %s >> %s_back.txt" % (tok, tag)
+        r.check(bool(ctx.until(lambda: back in ctx.cmds_since(lmark), 5)), "[%s] local rec.log lacks the exact command typed after exit" % variant)
     # ---- 8. and vice versa: connect again, a remote command runs remotely only
     if connect(ctx, "fake", 90) is None:
         r.check(False, "[%s] second connect never reached a remote prompt. Test host: %s" % (variant, ctx.ssh_diag()))
@@ -395,9 +398,36 @@ def busy_sample(ctx):
     return got
 
 
+def sshd_log_path(ctx):
+    return os.path.join(getattr(ctx, "run", "") or "", "ssh", "sshd.log")
+
+
+def sshd_log_size(ctx):
+    try:
+        return os.path.getsize(sshd_log_path(ctx))
+    except OSError:
+        return 0
+
+
+SSHD_IO_RE = re.compile(r"client input|conpty input|conpty output")
+
+
+def sshd_io_lines(ctx, off):
+    """r18u19 (H7): the Windows fake sshd's input/output accounting lines written since byte `off` of its log: whether the paste reached the
+    test sshd at all and whether its pseudo console took it (fakesshd_win.py). Empty for the POSIX sshd, which writes no such lines."""
+    try:
+        with open(sshd_log_path(ctx), "rb") as f:
+            f.seek(off)
+            text = f.read().decode("utf-8", "replace")
+    except OSError:
+        return []
+    return [l.strip() for l in text.splitlines() if SSHD_IO_RE.search(l)]
+
+
 def _send_and_check(ctx, r, label, name, command, expected, timeout):
     rm_remote(ctx, name)
     t0 = time.time()
+    sshd_off = sshd_log_size(ctx)
     off = ctx.log_size() if getattr(ctx, "log_path", None) else None
     ctx.be.clip_set(command)
     ctx.be.paste(enter=True)
@@ -422,6 +452,9 @@ def _send_and_check(ctx, r, label, name, command, expected, timeout):
         "" if ok or not peak else "; peak %%cpu while waiting: %s (the busy side is the bottleneck: the remote line editor or the app)" % peak))
     ctx.shot("heredoc_%s" % name.split(".")[0])
     if not ok:
+        io = sshd_io_lines(ctx, sshd_off)
+        if io:
+            r.note("%s: test sshd input/output since the paste: %s" % (label, " | ".join(io[-6:])))
         dismiss_open_dialog(ctx, r, label, off)
     return ok
 

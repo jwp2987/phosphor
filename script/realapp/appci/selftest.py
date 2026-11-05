@@ -631,6 +631,86 @@ def r18u19_settings_probe_and_theme_diff():
 
 
 @check
+def r18u19_windows_where_probe_ignores_earlier_runs():
+    # the seeded tokens repeat in every run: a token an EARLIER run left in the real home's ~/.appci_where must not make a probe "LOCAL"
+    d = tempfile.mkdtemp()
+    try:
+        f = os.path.join(d, ".appci_where")
+        open(f, "wb").write("wT235_x9nmejpp\r\n".encode("utf-16"))         # an earlier run, Windows PowerShell 5.1 `>>` (UTF-16, BOM)
+        skip = cases.where_file_size(f)
+        assert cases.where_tokens(f) == ["wT235_x9nmejpp"]
+        assert cases.where_tokens(f, skip) == []
+        open(f, "ab").write("wT236_bpz32gdl\r\n".encode("utf-16-le"))       # this run's append: no BOM
+        assert cases.where_tokens(f, skip) == ["wT236_bpz32gdl"]
+        open(f, "wb").write(b"wT1_new\n")                                    # replaced since the snapshot: all of it is new
+        assert cases.where_tokens(f, skip) == ["wT1_new"]
+        assert cases.where_file_size(os.path.join(d, "none")) == 0 and cases.where_tokens(os.path.join(d, "none")) == []
+        c = types.SimpleNamespace(prof=types.SimpleNamespace(home=os.path.join(d, "scratch")), pane="gitbash")
+        assert cases.Ctx.where_homes(c) == [c.prof.home]
+        c.pane = "powershell"
+        assert cases.Ctx.where_homes(c) == [c.prof.home, os.path.expanduser("~")]
+        c.where_homes = lambda: [d]
+        c.where_skip = {d: skip}
+        open(f, "wb").write("wT235_x9nmejpp\r\n".encode("utf-16"))
+        skip = cases.where_file_size(f)
+        c.where_skip = {d: skip}
+        assert cases.Ctx.local_where(c) == []
+        open(f, "ab").write("wT236_bpz32gdl\r\n".encode("utf-16-le"))
+        assert cases.Ctx.local_where(c) == ["wT236_bpz32gdl"]
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+@check
+def r18u19_windows_relaunch_heredoc_io_and_back_line():
+    import cases_caseremote as rm
+    import inspect
+    # editor_memory_7mb trim A/B: a Windows PowerShell pane never moves prompts(); the relaunch waits for the window + fixed settle + key proof instead
+    calls = []
+    sleeps = []
+    real_sleep = time.sleep
+    c = types.SimpleNamespace(win=True, prof=types.SimpleNamespace(local_prompts=False), prompts=lambda: 0, snapshot_log=lambda: None,
+                              app=types.SimpleNamespace(stop=lambda: calls.append("stop"), start=lambda: calls.append("start"),
+                                                        wait_window=lambda t: calls.append("window") or True, alive=lambda: True),
+                              be=types.SimpleNamespace(guard=lambda: calls.append("guard")), reprove=lambda: calls.append("reprove") or None,
+                              reset=lambda: calls.append("reset"))
+    c.until = lambda pred, timeout=10, step=0.05: pred()
+    saved = dict(os.environ)
+    try:
+        time.sleep = lambda s: sleeps.append(s)
+        assert cases.editor_mem_relaunch(c, {"PHOSPHOR_HEAP_TRIM": "0"}) is True
+        assert calls == ["stop", "start", "window", "guard", "reprove", "reset"], calls
+        assert os.environ.get("PHOSPHOR_HEAP_TRIM") == "0" and 12 in sleeps
+        c.reprove = lambda: "keys not delivered: x"
+        assert cases.editor_mem_relaunch(c, {}) is False and "PHOSPHOR_HEAP_TRIM" not in os.environ
+    finally:
+        time.sleep = real_sleep
+        os.environ.clear()
+        os.environ.update(saved)
+    # remote_heredoc_paste: the Windows fake sshd's input/output accounting since the paste is attached to a failing step
+    d = tempfile.mkdtemp()
+    try:
+        os.makedirs(os.path.join(d, "ssh"))
+        log = os.path.join(d, "ssh", "sshd.log")
+        open(log, "w").write("19:39:40 connect from x\n19:39:41 conpty first output after 0.58 s: 68 bytes\n")
+        cx = types.SimpleNamespace(run=d)
+        off = rm.sshd_log_size(cx)
+        open(log, "a").write("19:39:42 client input so far: 131072 bytes in 3 chunks, 65536 written to the pseudo console\n19:39:43 auth x\n"
+                             "19:45:22 conpty output ended: 68 bytes sent to the client in total\n")
+        got = rm.sshd_io_lines(cx, off)
+        assert len(got) == 2 and "131072" in got[0] and "68 bytes" in got[1], got
+        assert rm.sshd_io_lines(types.SimpleNamespace(run=os.path.join(d, "none")), 0) == []
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    # remote_session: the local command after `exit` is looked for in rec.log until the hook (at the NEXT prompt) has written it
+    src = inspect.getsource(rm.remote_session)
+    assert "ctx.until(lambda: back in ctx.cmds_since(lmark), 5)" in src
+    # the fake sshd accounts every client byte (received vs written) for the next H7 run
+    fs = open(os.path.join(HERE, "fakesshd_win.py")).read()
+    assert "client input so far" in fs and "client input ended" in fs and "conpty input: writing" in fs
+
+
+@check
 def interleaved_block_schedule_and_runner():
     import lat
     sch = lat.block_schedule(60, block=5, warm=3, lead=1)

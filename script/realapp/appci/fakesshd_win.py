@@ -256,10 +256,13 @@ def handle(ch, srv):
                     if not sent:
                         log("conpty first output after %.2f s: %d bytes" % (time.time() - t_open, len(d)))   # r18ct: 0 bytes ever = the shell's output is not on the pseudo console
                     sent += len(d)
+                    t_s = time.time()
                     try:
                         ch.sendall(d)
                     except Exception:
                         break
+                    if time.time() - t_s > 2.0:      # r18u19 (H7): the CLIENT stopped taking output (channel window full)
+                        log("conpty output: sending %d bytes to the client took %.1f s (%d sent in total)" % (len(d), time.time() - t_s, sent))
                 log("conpty output ended: %d bytes sent to the client in total" % sent)
                 # r18cz: EOF alone leaves the channel open (the main loop below blocks in recv until the CLIENT closes), so ssh.exe stayed in front for ~40 s
                 # after the remote `exit` and the next trial's `ssh fake` was typed into the dead client. A real sshd sends the exit status and closes.
@@ -287,6 +290,10 @@ def handle(ch, srv):
                 cp.close()          # closing the pseudo console ends pump_out's read
             threading.Thread(target=pump_out, daemon=True).start()
             threading.Thread(target=watch, daemon=True).start()
+            # r18u19 (H7, remote_heredoc_paste): a 142 KB paste left the session at its first 68 bytes of output for minutes, and nothing said whether
+            # the client never sent the paste, or the pseudo console stopped reading it. The input side is now accounted: received vs written, logged
+            # BEFORE a write every 64 KB (so a write that never returns shows as received > written), and any write that took over 2 s.
+            got, wrote, chunks, next_log = 0, 0, 0, 65536
             while not ch.closed:
                 try:
                     d = ch.recv(65536)
@@ -294,7 +301,17 @@ def handle(ch, srv):
                     break
                 if not d:
                     break
+                got += len(d)
+                chunks += 1
+                if got >= next_log:
+                    log("client input so far: %d bytes in %d chunks, %d written to the pseudo console" % (got, chunks, wrote))
+                    next_log = got + 65536
+                t_w = time.time()
                 cp.write(d)
+                wrote += len(d)
+                if time.time() - t_w > 2.0:
+                    log("conpty input: writing %d bytes took %.1f s (the pseudo console stopped reading input; %d of %d written)" % (len(d), time.time() - t_w, wrote, got))
+            log("client input ended: %d bytes in %d chunks, %d written to the pseudo console" % (got, chunks, wrote))
             code = cp.exit_code() if cp.exited() else 0
             try:
                 cp.close()
