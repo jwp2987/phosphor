@@ -109,6 +109,17 @@ case "$suite" in
         fuzz_host=aarch64-apple-darwin
       fi
       fuzz_target_args=(--target "$fuzz_host")
+      # r18 "fuzz-smoke-macos never links": Apple's new ld (ld-1267, Xcode 26) rejects the ASan build with "initializer pointer
+      # has no target in libai-*.rlib" (also warp_core and others). The classic linker accepts it, so use it when it exists.
+      # If it is gone (Apple removes -ld_classic in a later release), run without ASan: libFuzzer still finds panics and
+      # asserts, which is what these targets check; only memory-error detection is lost.
+      if ld -ld_classic -v >/dev/null 2>&1; then
+        export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-C link-arg=-Wl,-ld_classic"
+        echo "fuzz-smoke (macOS): linking with ld_classic (the new ld fails on the ASan build: 'initializer pointer has no target')"
+      else
+        fuzz_target_args+=(--sanitizer none)
+        echo "fuzz-smoke (macOS): ASan is OFF. The new ld fails on the ASan build ('initializer pointer has no target') and ld_classic is not available, so fuzzing runs with --sanitizer none (panics and asserts are still found; memory errors are not)."
+      fi
     fi
     # Each target's libFuzzer output goes to fuzz/logs/<target>.log (an artifact), not the trace: only the final stats and,
     # on a crash, its panic text reach the trace (the box job overran GitLab's 4 MB trace limit, r18u23).
