@@ -418,7 +418,7 @@ def enter_begin_types(text):
 # with "Couldn't tell shell from chat in time; press Enter again" (`enter_verdict_give_up ... verdict_cap` /
 # `young_verdict_cap`, or the Enter gate's `kh_enter_gate_give_up by=verdict_cap`). Correct per the owner's rule; counted so the
 # agent-mode round can see whether the toast is frequent (then the budget, not the rule, is wrong).
-VERDICT_GIVE_UP_RE = re.compile(r'hop=(?:enter_verdict_give_up\b[^\n]*?\b(?:young_)?verdict_cap\b|kh_enter_gate_give_up\b[^\n]*?\bby=verdict_cap\b)')
+VERDICT_GIVE_UP_RE = cases.VERDICT_GIVE_UP_RE      # one definition, in cases.py (ssh_nested_typeahead uses it too)
 
 
 def verdict_give_ups(text):

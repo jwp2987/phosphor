@@ -502,7 +502,7 @@ def c_flood_lat(ctx, r):
 
 @case("flood_scrollback_find", order=62, gui=True)
 def c_flood_find(ctx, r):
-    """MARKER is the first output line of a flood; after the flood, Find (ctrl+shift+f; Cmd-F on macOS) for it must bring it on screen (OCR of the
+    """MARKER is the output of its own command, printed BEFORE the flood (its own block: a block keeps at most 50,000 rows); after the flood, Find (ctrl+shift+f; Cmd-F on macOS) for it must bring it on screen (OCR of the
     screenshot; before the Find the marker is NOT on screen: control). Needs tesseract (package tesseract-ocr)."""
     if ctx.ocr("find_probe") is None:
         raise cases.Skip("no OCR engine (install tesseract-ocr): the marker can only be verified on the screenshot")
@@ -514,9 +514,24 @@ def c_flood_find(ctx, r):
     mark = ctx.cmd_mark()
     # r18u8 (Mac): Phosphor keeps the running command's text as the block header, so a marker typed in the command line stays visible however far the output
     # scrolls and the control "marker not on screen" could never hold. r18u13 (Mac): splitting it with an empty string (`ABC""DEF`) was not enough, OCR
-    # drops the thin quotes and read the header as the joined marker. The command now carries the marker REVERSED and `rev` prints it: the header (and
+    # drops the thin quotes and read the header as the joined marker. The command carries the marker REVERSED and `rev` prints it: the header (and
     # the tab title) never contain the marker in any OCR reading, so only the OUTPUT line can match the control and the Find.
-    ctx.be.type("echo %s | rev; %s; %s >> ff_end.txt" % (marker[::-1], endless_flood("seq", "ff_stop.txt", n, 3), now), 12, enter=True)
+    # r18u23 (Mac, both modes): the marker used to be the first line of the SAME block as the flood. The app keeps at most terminal.maximum_grid_size
+    # (default 50,000) rows per block, so the first line of a 500,000-line block is evicted: Find could never find it. The r18u19 "pass" was OCR reading the
+    # marker in the Find FIELD (shots/terminal_find_after.png of that run: the output had not scrolled at all), and r18u22 failed only because OCR missed the
+    # field. The marker is now its own command and block, printed BEFORE the flood and proven to have run (the shell's rec.log has the line; an Enter the
+    # injector lost is retyped, noted) and the flood is the next block; Find must bring the older block's output line on screen.
+    marker_cmd = "echo %s | rev" % marker[::-1]
+    for attempt in range(3):
+        m0 = ctx.cmd_mark()
+        ctx.be.type(marker_cmd, 12, enter=True)
+        if ctx.until(lambda: marker_cmd in ctx.cmds_since(m0), 10, step=0.1):
+            break
+        r.note("flood_scrollback_find: the marker command did not reach the shell within 10 s (attempt %d of 3: its Enter was lost before the app or the shell was busy); retyping it after a Ctrl-C/Ctrl-U reset" % (attempt + 1))
+        ctx.reset()
+    r.check(marker_cmd in ctx.cmds_since(mark), "the marker command never ran in the shell, so the Find below has nothing to find: %r" % ctx.cmds_since(mark))
+    time.sleep(1.0)
+    ctx.be.type("%s; %s >> ff_end.txt" % (endless_flood("seq", "ff_stop.txt", n, 3), now), 12, enter=True)
     ctx.until(lambda: os.path.exists(os.path.join(ctx.W, "ff_end.txt")), 200, step=0.5)
     time.sleep(1.0)
     r.check(os.path.exists(os.path.join(ctx.W, "ff_end.txt")), "the flood did not finish")
@@ -535,13 +550,24 @@ def c_flood_find(ctx, r):
     ctx.be.type(marker, 20, enter=True)
     time.sleep(1.5)
     after = ctx.ocr("find_after") or ""
-    seen = marker in after.replace(" ", "").upper()
+    after_flat = after.replace(" ", "").upper()
+    seen = marker in after_flat
     r.metric("marker_visible_after_find", seen)
-    r.check(seen, "Find for the marker printed before a %d-line flood did not bring it on screen (see shots/%s_find_after.png)" % (n, ctx.mode))
+    # The marker is also typed in the Find field, so seeing it proves nothing about the output: the view must have SCROLLED. The flood's last lines
+    # (499999 / 500000) are on screen before the Find; after a Find that went to the older block they are not.
+    tail = ("500000", "499999")
+    tail_before = any(t in before for t in tail)
+    tail_after = any(t in after for t in tail)
+    r.metric("tail_visible_before_find", tail_before)
+    r.metric("tail_visible_after_find", tail_after)
+    scrolled = not (tail_before and tail_after)
+    if not tail_before:
+        r.note("flood_scrollback_find: OCR did not read the flood's last lines before the Find, so the scroll cannot be checked from the screenshot (the marker check stands alone)")
+    r.check(seen and scrolled, "Find for the marker printed before a %d-line flood did not bring it on screen: marker read=%s, view scrolled away from the flood's tail=%s (see shots/%s_find_after.png)" % (n, seen, scrolled, ctx.mode))
     ctx.be.key("Escape")
     time.sleep(0.3)
     got = ctx.cmds_since(mark)
-    r.check(len(got) == 1, "the Find typed into the shell: %r" % got)
+    r.check(len(got) == 2, "the Find typed into the shell (expected only the marker and flood commands): %r" % got)
 
 
 # ------------------------------------------------------------------ code editor

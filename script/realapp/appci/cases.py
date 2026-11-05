@@ -2220,6 +2220,16 @@ def c_ssh_enter_immediate(ctx, r):
     ctx.reset()
 
 
+# #1577/#1593: a verdict give-up in the app log (the Enter was not submitted by the clock; the "Couldn't tell shell from chat in time" toast).
+# cases_caseagent.VERDICT_GIVE_UP_RE is this one.
+VERDICT_GIVE_UP_RE = re.compile(r'hop=(?:enter_verdict_give_up\b[^\n]*?\b(?:young_)?verdict_cap\b|kh_enter_gate_give_up\b[^\n]*?\bby=verdict_cap\b)')
+
+
+def verdict_gave_up(text):
+    """whether an app-log excerpt shows a verdict give-up"""
+    return VERDICT_GIVE_UP_RE.search(text) is not None
+
+
 @case("ssh_nested_typeahead", order=30)
 def c_ssh_nested(ctx, r):
     """#1421: `ssh fake` Enter, then `ssh fake` Enter and `echo <tok>` Enter typed during that first
@@ -2233,15 +2243,45 @@ def c_ssh_nested(ctx, r):
         pass
     ctx.rm("rn.txt")
     base = ctx.shell_count()
-    tok = ctx.tok(6)
-    line = "echo %s >> ~/rn.txt" % tok
-    t0, r0 = time.time(), len(ctx.prof.commands(remote=True))
-    ctx.be.type("ssh fake", 12, enter=True)
-    ctx.be.type("ssh fake", 12, enter=True)
-    ctx.be.type(line, 12, enter=True)
-    ctx.until(lambda: tok in ctx.lines("rn.txt", remote=True), 30)
+    verdicts, give_ups = [], 0
+    # r18u23 (Mac r18u22, terminal): the second `ssh fake` Enter arrived 38 ms after the hand-over, while the shell-or-chat classifier (autodetection is on
+    # in the owner's setup) was still computing (20.4 ms > its 20 ms compute cap on the loaded Mac). By #1577 the clock never chooses, so that Enter was
+    # NOT submitted (`kh_enter_gate_give_up by=verdict_cap submitted=false`, the "Couldn't tell shell from chat in time" toast): nothing ran anywhere wrong,
+    # the line stayed in the editor and `ssh fakeecho T..` ran at the first remote. That is the designed outcome of a slow classifier, not a lost key or a
+    # failed connect; this case is about where the typeahead goes. A trial the app gave up on is therefore recovered (the remote shell is left on a
+    # proven `exit`) and run again, up to 3 trials, every give-up noted and counted in the metric `verdict_give_up_retries`. A third give-up fails the case.
+    for attempt in range(3):
+        tok = ctx.tok(6)
+        line = "echo %s >> ~/rn.txt" % tok
+        t0, r0 = time.time(), len(ctx.prof.commands(remote=True))
+        ctx.be.type("ssh fake", 12, enter=True)
+        ctx.be.type("ssh fake", 12, enter=True)
+        ctx.be.type(line, 12, enter=True)
+        gave_up = lambda: verdict_gave_up("\n".join(ctx.app_log_window(t0)))
+        ctx.until(lambda: tok in ctx.lines("rn.txt", remote=True) or gave_up(), 30)
+        if tok in ctx.lines("rn.txt", remote=True) or attempt == 2 or not gave_up():
+            break
+        give_ups += 1
+        r.note("ssh_nested_typeahead: trial %d: the app gave up on an Enter whose shell-or-chat verdict missed its 20 ms compute cap (#1577, by design: nothing ran); "
+               "leaving the remote shell on a proven `exit` and running the trial again" % (attempt + 1))
+        ssh_trial_note(ctx, r, verdicts, "ssh_nested_typeahead (given-up trial %d)" % (attempt + 1), t0, line, r0, enters_before=2)
+        ctx.reset()
+        pt = ctx.tok(6)
+        for _ in range(2):
+            ctx.be.type("echo %s >> ~/rn_retry.txt" % pt, 12, enter=True)
+            if ctx.until(lambda: pt in ctx.lines("rn_retry.txt", remote=True), 6):
+                break
+            ctx.reset()
+        if not ctx.leave_remote(r, "ssh_nested_typeahead (recover after give-up)", "rn_retry.txt", pt, base):
+            ctx.reset()
+            return
+        ctx.rm("rn.txt")
+        try:
+            os.remove(os.path.join(ctx.prof.rhome, "rn.txt"))
+        except FileNotFoundError:
+            pass
+    r.metric("verdict_give_up_retries", give_ups)
     time.sleep(1.0)
-    verdicts = []
     ssh_trial_note(ctx, r, verdicts, "ssh_nested_typeahead", t0, line, r0, enters_before=2)
     ssh_trial_summary(r, verdicts)
     got = ctx.lines("rn.txt", remote=True)
