@@ -29,13 +29,14 @@ use std::path::Path;
 use std::sync::OnceLock;
 
 /// The signals that end the process through a fault or an abort.
-const FATAL_SIGNALS: [libc::c_int; 6] = [
+/// Not SIGTRAP: a breakpoint trap (a debugger, `brk`) does not repeat when the handler returns,
+/// and a debugger may resume past it; re-raising would turn a resumable trap into a death.
+const FATAL_SIGNALS: [libc::c_int; 5] = [
     libc::SIGBUS,
     libc::SIGSEGV,
     libc::SIGILL,
     libc::SIGFPE,
     libc::SIGABRT,
-    libc::SIGTRAP,
 ];
 
 struct Installed {
@@ -174,7 +175,6 @@ pub(crate) fn signal_name(sig: libc::c_int) -> &'static str {
         libc::SIGILL => "SIGILL",
         libc::SIGFPE => "SIGFPE",
         libc::SIGABRT => "SIGABRT",
-        libc::SIGTRAP => "SIGTRAP",
         _ => "signal",
     }
 }

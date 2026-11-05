@@ -1411,7 +1411,7 @@ fallback for builds that predate the line.
   APP DIED it reads the exit status from the unified log (#1782, `run.mac_exit_evidence`, read only, bounded): launchd's
   `exited due to SIG... | sent by ...` line for that PID (a fault says `sent by exc handler[<pid>]`; a kill names the sender)
   and the app's last system-log lines; a signal there counts as crash evidence. The app itself writes one
-  `[ERROR] fatal signal SIG... code= addr= thread='...'` line to its log on SIGBUS/SIGSEGV/SIGILL/SIGFPE/SIGABRT/SIGTRAP
+  `[ERROR] fatal signal SIG... code= addr= thread='...'` line to its log on SIGBUS/SIGSEGV/SIGILL/SIGFPE/SIGABRT
   (`warp_logging::fatal_signal`, all Unix; kill switch `PHOSPHOR_FATAL_SIGNAL_LOG=0`), which the death classifier quotes
   first. One instance per pass is enforced. The window rect comes
   from `winrect` (CGWindowList; no System Events). The latency_enter reference is Terminal.app launched with
@@ -1761,7 +1761,8 @@ Every item below is a harness change; none touches app code. Anything not listed
 - **`big_paste` macOS paste-read budget (#1782, owner decision 2026-11-05)**: macOS reads the pasteboard on the main thread again (a worker's
   NSPasteboard read crashed the app with SIGBUS; DECLINED.md). The app logs `input_order hop=pasteboard_read kind= ms= bytes=`; `big_paste` judges
   the slowest one against `cases.PASTE_READ_UI_BUDGET_MS` (macOS 250 ms) and fails over it. Every other platform and every other UI budget stays
-  at 4 ms (`paste_read_budget_ms`; Linux and Windows log no such read). Self-test `i1782_macos_paste_read_budget_is_raised_only_for_the_pasteboard_read`.
+  at 4 ms (`paste_read_budget_ms`; Linux and Windows log no such read). A macOS run with no `pasteboard_read` line gets a note that the
+  budget was NOT judged. Self-test `i1782_macos_paste_read_budget_is_raised_only_for_the_pasteboard_read`.
 - **Not changed, by design**: H7 (fake sshd ConPTY heredoc stall) and H8 (Git Bash pass opens PowerShell tabs/restored tabs) need run evidence the artifacts do not contain;
   `profile.gitbash_toml` already writes `startup_shell_override` and `new_session_shell_override` for that pass.
 

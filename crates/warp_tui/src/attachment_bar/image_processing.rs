@@ -136,6 +136,23 @@ pub(super) async fn process_paths(paths: Vec<PathBuf>) -> Result<Vec<ImageContex
     Ok(images)
 }
 
+/// macOS (#1782): the pasteboard is read on the calling thread, the TUI's main thread, when this
+/// is called (not when the future is first polled); the future only hands the answer on. A read
+/// started on a blocking-pool thread would be queued for a main dispatch queue the headless
+/// platform never drains.
+#[cfg(target_os = "macos")]
+pub(super) fn read_clipboard_content()
+-> impl std::future::Future<Output = Result<ClipboardContent, String>> + Send + 'static {
+    let pending = warpui::platform::create_system_clipboard()
+        .map(|mut clipboard| {
+            warpui::clipboard::request_read(&mut *clipboard, warpui::clipboard::ReadKind::Full)
+                .into_future()
+        })
+        .map_err(|_| "The system clipboard is unavailable.".to_owned());
+    async move { Ok(pending?.await.into_content()) }
+}
+
+#[cfg(not(target_os = "macos"))]
 pub(super) async fn read_clipboard_content() -> Result<ClipboardContent, String> {
     blocking::unblock(|| -> Result<ClipboardContent, String> {
         let mut clipboard = warpui::platform::create_system_clipboard()

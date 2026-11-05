@@ -3932,6 +3932,10 @@ def judge_paste_read(r, txt, platform, label):
     the budget. None (nothing judged) where the app logs no such read (Linux, Windows, a build before #1782)."""
     reads = pasteboard_reads(txt)
     if not reads:
+        if platform.startswith("macos"):
+            # #1782 review F6: a macOS build with the main-thread read logs every read; none means no read, logging off, or an older build
+            r.note("%s: no hop=pasteboard_read line on macOS: the paste-read budget was NOT judged (no read logged, input_order logging off, or a "
+                   "build before #1782)" % label)
         return None
     budget = paste_read_budget_ms(platform)
     kind, ms, nbytes = max(reads, key=lambda x: x[1])

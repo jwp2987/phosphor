@@ -688,7 +688,7 @@ def mac_exit_evidence(pid, t0, timeout=120):
     `sent by exc handler[<pid>]`, a kill names the sender, jetsam says so) and the app's own last system-log lines (r18u26: AppKit's NSPasteboard
     read 1 ms before the SIGBUS). Read only; bounded; '' when `log` is unavailable."""
     start = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t0 - 5))
-    pred = 'processID == %d OR (process == "launchd" AND eventMessage CONTAINS "[%d]") OR (process == "kernel" AND eventMessage CONTAINS "%d")' % (pid, pid, pid)
+    pred = 'processIdentifier == %d OR (process == "launchd" AND eventMessage CONTAINS "[%d]") OR (process == "kernel" AND eventMessage CONTAINS "%d")' % (pid, pid, pid)
     try:
         out = subprocess.run(["log", "show", "--style", "compact", "--start", start, "--predicate", pred],
                              capture_output=True, text=True, timeout=timeout).stdout
@@ -702,7 +702,7 @@ def mac_exit_evidence(pid, t0, timeout=120):
     return "; ".join(parts), sig
 
 
-def classify_death(dead, ctx, t0, log_off):
+def classify_death(dead, ctx, t0, log_off, exit_evidence=None):
     """r18e9 (macOS remote_session_*, shell_zsh): the case's trailing `exit` ran in the pane's own shell, the pane closed, the app quit, and the harness reported
     "APP DIED". Name a pane closed by the case's own `exit` (no panic/signal/crash report in the case's app-log slice, window-close line present) as that, a
     HARNESS defect of the case, never a crash; keep the crash wording otherwise and say what was checked."""
@@ -717,7 +717,7 @@ def classify_death(dead, ctx, t0, log_off):
             pm = re.search(r"pid (\d+)", dead)
             if pm:
                 # #1782: the exit status the harness cannot wait for (`open` launches the app under launchd): launchd's record of it
-                ev, sig = mac_exit_evidence(int(pm.group(1)), t0)
+                ev, sig = (exit_evidence or mac_exit_evidence)(int(pm.group(1)), t0)
                 if ev:
                     dead = "%s; %s" % (dead, ev)
                 if sig:

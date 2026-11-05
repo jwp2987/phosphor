@@ -2934,8 +2934,11 @@ the way Terminal.app and iTerm do it. The read happens when the reader is reques
 (`Clipboard::reader` in `crates/warpui/src/platform/mac/clipboard.rs`, from the main-thread-only
 AppContext); the request's worker only hands the copied text and bytes on (and parses image
 filenames out of the copied HTML), so the paste gate, typed order and the size cap are unchanged.
-A request from another thread is queued on the main dispatch queue with a bounded wait
-(`OFF_MAIN_WAIT`) and never runs the read on that thread.
+A request from another thread while an NSApplication runs is a bug: it is logged as an error
+(and asserted in debug builds), queued on the main dispatch queue with a bounded wait
+(`OFF_MAIN_WAIT`), and never runs the read on that thread. With no NSApplication (the headless
+TUI, which also starts its image-paste read on its main thread) there is no AppKit main-thread
+work to race and nothing drains the main queue, so such a read runs in place.
 
 - Reason: appci r18u26 `shell_nu` died of SIGBUS (`exited due to SIGBUS | sent by exc handler`)
   1 ms after a worker's NSPasteboard read (#1305's off-thread design) overlapped main-thread
@@ -2943,6 +2946,9 @@ A request from another thread is queued on the main dispatch queue with a bounde
 - Accepted cost: a slow lazy provider (an app that promises data and renders it on request) can
   briefly freeze the window during a paste, as in Terminal.app and iTerm. appci's macOS budget for
   the main-thread pasteboard copy of a large paste is raised accordingly (same decision).
+- What no longer bounds a macOS read: the blocked-reader cap and the paste backstop act on the
+  worker, after the read has already happened on the main thread. A provider that never answers
+  is bounded only by the pasteboard server's own timeout, and the main thread waits that long.
 - Linux and Windows still read on a worker (X11/Wayland/Win32 owners can stall; they are not
   AppKit).
 - Not reopened by: moving the macOS pasteboard read back onto a worker thread (#1305/#1306).

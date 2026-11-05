@@ -101,8 +101,9 @@ impl crate::Clipboard for Clipboard {
 
     fn reader(&mut self, kind: ReadKind) -> ClipboardReader {
         // #1782 (owner decision 2026-11-05): the pasteboard is read HERE, on the calling thread,
-        // which is the main thread (the app's clipboard lives on the main-thread-only
-        // AppContext), the way Terminal.app and iTerm read it. #1305 had moved this read onto a
+        // which must be the main thread (the GUI's clipboard lives on the main-thread-only
+        // AppContext; the TUI asks from its main thread), the way Terminal.app and iTerm read it.
+        // An off-main request is logged as an error (see `read_on_main_thread_with`). #1305 had moved this read onto a
         // worker so a slow lazy provider could not hold the UI; r18u26 then died of SIGBUS 1 ms
         // after such a worker read overlapped main-thread AppKit work. Accepted cost (DECLINED.md):
         // a slow lazy provider can briefly freeze the window. The returned closure touches no
@@ -117,10 +118,23 @@ impl crate::Clipboard for Clipboard {
     }
 }
 
-/// How long a read requested off the main thread waits for the main thread to perform it. Never
-/// reached in the app (every request comes from the main thread); bounds a headless or test
-/// caller whose main thread does not run the main queue, so it can never deadlock.
+/// How long a read requested off the main thread waits for the main thread to perform it, while
+/// an NSApplication runs. The GUI's own requests come from the main thread and never wait; an
+/// off-main request is a bug (logged as an error), and this bounds it so it cannot deadlock.
 const OFF_MAIN_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+unsafe extern "C" {
+    /// AppKit's global application instance; nil until `NSApplication.sharedApplication` runs
+    /// (never, in the headless TUI).
+    #[allow(non_upper_case_globals)]
+    static NSApp: id;
+}
+
+/// Whether an NSApplication exists, i.e. a main thread that drains the main dispatch queue.
+fn app_running() -> bool {
+    // SAFETY: a plain read of AppKit's global pointer.
+    unsafe { !NSApp.is_null() }
+}
 
 /// Whether the calling thread is the process's main thread.
 fn on_main_thread() -> bool {
@@ -143,7 +157,17 @@ fn read_pasteboard(kind: ReadKind) -> Result<ClipboardContent, ReadOutcome> {
 
 fn read_on_main_thread(kind: ReadKind) -> Result<ClipboardContent, ReadOutcome> {
     let started = std::time::Instant::now();
-    let read = read_on_main_thread_with(kind, on_main_thread, read_pasteboard, OFF_MAIN_WAIT);
+    debug_assert!(
+        on_main_thread() || !app_running(),
+        "a pasteboard read was requested off the main thread while the app runs (#1782)"
+    );
+    let read = read_on_main_thread_with(
+        kind,
+        on_main_thread,
+        app_running,
+        read_pasteboard,
+        OFF_MAIN_WAIT,
+    );
     // The accepted cost of #1782, measured: how long the main thread spent in the read. appci
     // big_paste judges it against its macOS paste-read budget.
     warpui_core::input_order::log_hop("pasteboard_read", || {
@@ -157,24 +181,33 @@ fn read_on_main_thread(kind: ReadKind) -> Result<ClipboardContent, ReadOutcome> 
     read
 }
 
-/// Runs `read` on the main thread: at once when the caller is the main thread, otherwise queued
-/// on the main dispatch queue with a bounded wait (`TimedOut` after `wait`). The main thread
-/// never waits for a worker here, so this cannot deadlock.
+/// Runs `read` on the main thread: at once when the caller is the main thread. Off the main
+/// thread: with no NSApplication (the headless TUI, whose main thread never drains the main
+/// queue, and there is no AppKit main-thread work to race) it reads in place; otherwise it is an
+/// error, queued on the main dispatch queue with a bounded wait (`TimedOut` after `wait`). The
+/// main thread never waits for a worker here, so this cannot deadlock.
 fn read_on_main_thread_with(
     kind: ReadKind,
     on_main: impl Fn() -> bool,
+    app_running: impl Fn() -> bool,
     read: fn(ReadKind) -> Result<ClipboardContent, ReadOutcome>,
     wait: std::time::Duration,
 ) -> Result<ClipboardContent, ReadOutcome> {
-    if on_main() {
+    if on_main() || !app_running() {
         return read(kind);
     }
+    let caller = std::thread::current();
+    log::error!(
+        "clipboard read ({kind:?}) requested off the main thread by thread '{}' while the app \
+         runs: queued for the main thread (#1782; requests must come from the main thread)",
+        caller.name().unwrap_or("<unnamed>")
+    );
     let (tx, rx) = std::sync::mpsc::channel();
     dispatch::Queue::main().exec_async(move || {
         let _ = tx.send(read(kind));
     });
     rx.recv_timeout(wait).unwrap_or_else(|_| {
-        log::warn!(
+        log::error!(
             "clipboard read ({kind:?}) requested off the main thread: the main thread did not \
              perform it within {wait:?}"
         );
@@ -197,6 +230,22 @@ fn finish_read(mut content: ClipboardContent) -> ClipboardContent {
     content
 }
 
+/// An NSString's UTF-8 text, or `""` when `UTF8String` returns null (it may, for a string that
+/// cannot be converted): these reads run on the main thread (#1782), where a null `CStr` would
+/// take the whole app down.
+fn ns_string_to_string(string: &NSString) -> String {
+    // SAFETY: `UTF8String` returns null or a NUL-terminated buffer that lives at least as long
+    // as the enclosing autorelease pool; it is copied out at once.
+    unsafe {
+        let ptr = string.UTF8String();
+        if ptr.is_null() {
+            String::new()
+        } else {
+            CStr::from_ptr(ptr).to_string_lossy().into_owned()
+        }
+    }
+}
+
 /// The read primitives: main thread only (#1782; see `Clipboard::reader`).
 impl Clipboard {
     pub(crate) fn read_text_and_paths(&mut self) -> ClipboardContent {
@@ -210,12 +259,7 @@ impl Clipboard {
 
             let html = self.0.stringForType(NSPasteboardTypeHTML);
             if let Some(html) = html.as_deref() {
-                content.html = Some(
-                    CStr::from_ptr(html.UTF8String())
-                        .to_str()
-                        .unwrap_or("")
-                        .to_string(),
-                )
+                content.html = Some(ns_string_to_string(html))
             }
 
             // Try to read image data from clipboard
@@ -235,26 +279,18 @@ impl Clipboard {
             let available_paths = file_paths.count();
 
             let text = self.0.stringForType(NSPasteboardTypeString);
-            let mut content = ClipboardContent::plain_text(if let Some(text) = text.as_deref() {
-                CStr::from_ptr(text.UTF8String())
-                    .to_str()
-                    .unwrap_or("")
-                    .to_string()
-            } else {
-                String::from("")
-            });
+            let mut content = ClipboardContent::plain_text(
+                text.as_deref().map(ns_string_to_string).unwrap_or_default(),
+            );
 
             if available_paths > 0 {
                 content.paths = Some(
                     (0..available_paths)
                         .map(|i| {
-                            // #1782: `len()` counts UTF-16 units, not the UTF-8 bytes
+                            // #1784: `len()` counts UTF-16 units, not the UTF-8 bytes
                             // `UTF8String` returns: a non-ASCII path was cut mid-character into
                             // a `String` that is not UTF-8. Read up to the NUL instead.
-                            let directory = file_paths.objectAtIndex(i);
-                            CStr::from_ptr(directory.UTF8String())
-                                .to_string_lossy()
-                                .into_owned()
+                            ns_string_to_string(&file_paths.objectAtIndex(i))
                         })
                         .collect::<Vec<String>>(),
                 );
@@ -289,10 +325,7 @@ impl Clipboard {
                 if let Some(data) = self.0.dataForType(pasteboard_type) {
                     let length = data.len();
                     if length > 0 {
-                        let mime_type = match CStr::from_ptr(pasteboard_type.UTF8String())
-                            .to_str()
-                            .unwrap_or("")
-                        {
+                        let mime_type = match ns_string_to_string(pasteboard_type).as_str() {
                             "public.png" => "image/png",
                             "public.jpeg" => "image/jpeg",
                             "public.gif" | "com.compuserve.gif" => "image/gif",

@@ -1331,9 +1331,10 @@ def r18e9_pane_closed_by_own_exit_is_not_an_app_death():
         def log_since(s, off): return s.log
         def last_typed_exit_since(s, t0): return s.ex
     t0 = time.time() - 1
-    m = runmod.classify_death("APP DIED: pid 1 is gone", C("13:51:34 enter_begin buffer=\"exit\"\n13:51:34 WindowId(0) will close\n", True), t0, 0)
+    no_log_show = lambda pid, t0: ("", None)      # #1782 review F7: never `log show` for pid 1 from the self-test
+    m = runmod.classify_death("APP DIED: pid 1 is gone", C("13:51:34 enter_begin buffer=\"exit\"\n13:51:34 WindowId(0) will close\n", True), t0, 0, no_log_show)
     assert "OWN `exit`" in m and "NOT an app crash" in m, m
-    m = runmod.classify_death("APP DIED: pid 1 is gone", C("thread 'main' panicked at x.rs:1\nWindowId(0) will close", True), t0, 0)
+    m = runmod.classify_death("APP DIED: pid 1 is gone", C("thread 'main' panicked at x.rs:1\nWindowId(0) will close", True), t0, 0, no_log_show)
     assert "OWN" not in m and "crash evidence" in m, m
 
 
@@ -1364,11 +1365,12 @@ def i1782_macos_paste_read_budget_is_raised_only_for_the_pasteboard_read():
     assert cases.pasteboard_reads("x\n" + line) == [("TextAndPaths", 31.5, 1000000)]
 
     class R:
-        def __init__(s): s.fails, s.metrics = [], {}
+        def __init__(s): s.fails, s.metrics, s.notes = [], {}, []
         def check(s, ok, msg):
             if not ok:
                 s.fails.append(msg)
         def metric(s, k, v): s.metrics[k] = v
+        def note(s, msg): s.notes.append(msg)
     r = R()
     assert cases.judge_paste_read(r, line, "macos", "big_paste") == 31.5 and not r.fails, r.fails
     assert r.metrics["big_paste_pasteboard_read"]["budget_ms"] == 250.0
@@ -1379,7 +1381,10 @@ def i1782_macos_paste_read_budget_is_raised_only_for_the_pasteboard_read():
     cases.judge_paste_read(r, line.replace("ms=31.50", "ms=300.00"), "macos", "big_paste")
     assert r.fails and "250 ms" in r.fails[0], r.fails
     r = R()
-    assert cases.judge_paste_read(r, "input_order hop=ui_item kind=event ms=9 t=1\n", "macos", "big_paste") is None and not r.fails and not r.metrics
+    assert cases.judge_paste_read(r, "input_order hop=ui_item kind=event ms=9 t=1\n", "linux", "big_paste") is None and not r.fails and not r.metrics and not r.notes
+    r = R()      # #1782 review F6: a macOS run with no read logged says so instead of passing silently
+    assert cases.judge_paste_read(r, "input_order hop=ui_item kind=event ms=9 t=1\n", "macos", "big_paste") is None and not r.fails
+    assert r.notes and "NOT judged" in r.notes[0], r.notes
 
 
 @check

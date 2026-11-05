@@ -90,6 +90,8 @@ fn a_read_requested_off_the_main_thread_never_touches_the_pasteboard_there() {
         read_on_main_thread_with(
             ReadKind::TextAndPaths,
             on_main_thread,
+            // An NSApplication runs (the GUI): the main thread is the only place to read.
+            || true,
             read_recording_off_main,
             Duration::from_millis(100),
         )
@@ -110,6 +112,7 @@ fn read_inline(kind: ReadKind) -> Result<ClipboardContent, ReadOutcome> {
 fn a_read_requested_on_the_main_thread_runs_at_once() {
     let result = read_on_main_thread_with(
         ReadKind::Full,
+        || true,
         || true,
         read_inline,
         Duration::from_millis(1),
@@ -134,4 +137,38 @@ fn image_filenames_are_parsed_from_the_copied_html_off_the_main_thread() {
     let expected = crate::clipboard_utils::extract_filename_from_html(html);
     assert!(expected.is_some());
     assert_eq!(content.images.unwrap()[0].filename, expected);
+}
+
+static READS_ON_WORKER_WITHOUT_APP: AtomicUsize = AtomicUsize::new(0);
+
+fn read_counting_worker_reads(_kind: ReadKind) -> Result<ClipboardContent, ReadOutcome> {
+    if !on_main_thread() {
+        READS_ON_WORKER_WITHOUT_APP.fetch_add(1, Ordering::SeqCst);
+    }
+    Ok(ClipboardContent::plain_text("read in place".to_string()))
+}
+
+#[test]
+fn without_an_nsapplication_an_off_main_read_runs_in_place() {
+    // The headless TUI: no NSApplication, so nothing drains the main queue and there is no
+    // AppKit main-thread work to race. The read runs on the asking thread, at once, instead of
+    // stalling for the bounded wait and failing.
+    let started = std::time::Instant::now();
+    let result = std::thread::spawn(|| {
+        read_on_main_thread_with(
+            ReadKind::Full,
+            on_main_thread,
+            || false,
+            read_counting_worker_reads,
+            Duration::from_secs(30),
+        )
+    })
+    .join()
+    .unwrap();
+    match result {
+        Ok(content) => assert_eq!(content.plain_text, "read in place"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(READS_ON_WORKER_WITHOUT_APP.load(Ordering::SeqCst), 1);
+    assert!(started.elapsed() < Duration::from_secs(30));
 }
