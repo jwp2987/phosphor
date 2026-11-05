@@ -132,3 +132,8 @@ before trusting it.
 - **Partition disks or set up FileVault/BitLocker.** These are notes in the scripts.
 - **Recreate the stale 2018 Intel Homebrew in the Mac's `/usr/local`.** A rebuilt Mac has only
   `/usr/local/bin/gitlab-runner` there (see `macos.sh` step 3).
+
+## Disk space on the Windows VM (#1764)
+A cancelled cargo-mutants job once left an 18.65 GB `cargo-mutants-*.tmp` in the temp dir and filled the VM disk. The mutants jobs now run
+`script/ci/clean_mutants_tmp.sh` first (removes stale ones when no cargo-mutants runs, logs the free space). If a Windows job fails with
+"no space left", look in `$env:TEMP` for `cargo-mutants-*` before anything else.

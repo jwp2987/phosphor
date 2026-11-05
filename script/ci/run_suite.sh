@@ -123,6 +123,7 @@ case "$suite" in
     "$PY" script/bench_gate.py target/ci-bench/criterion
     ;;
   mutants)
+    ./script/ci/clean_mutants_tmp.sh   # #1764: stale cargo-mutants-*.tmp from a cancelled run
     need_tool cargo-mutants cargo-mutants
     FILE_ARGS=()
     for f in ${MUTANTS_FILES:?MUTANTS_FILES is not set}; do FILE_ARGS+=(--file "$f"); done
@@ -133,6 +134,7 @@ case "$suite" in
     [[ $st -eq 0 ]] || echo "cargo-mutants exited $st (missed mutants are reported in mutants.out/)"
     ;;
   mutants-warpui-core)
+    ./script/ci/clean_mutants_tmp.sh   # #1764
     need_tool cargo-mutants cargo-mutants
     st=0
     CARGO_TARGET_DIR="target/ci-mutants-core" ./script/agent-cargo ci-mutants-core mutants -p warpui_core --no-shuffle --cargo-test-arg=--features --cargo-test-arg=tui \
