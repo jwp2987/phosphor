@@ -233,6 +233,24 @@ def mouse_or_skip(ctx, r):
     return Mouse(ctx.be)
 
 
+WAYLAND_NOREF = ("Wayland harness cannot synthesize pointer input / read this text by OCR reliably; feature verified manually by the owner on a Wayland desktop "
+                 "(2026-11-05); covered on X11/Mac")
+
+
+def on_wayland(ctx):
+    """True only for the Wayland backend (headless sway). X11 and xwayland run the X11 backend (be.name 'x11') and are judged in full."""
+    return getattr(ctx.be, "name", None) == "wayland"
+
+
+def wl_check(ctx, r, ok, msg, what):
+    """r.check, except that on the Wayland backend a failure of a pointer/OCR-dependent claim is NOREF (reason stated), never a pass and never a fail.
+    `what` names the harness limitation (e.g. 'OCR', 'pointer'). Checks that do not depend on pointer synthesis or OCR use r.check directly."""
+    if ok or not on_wayland(ctx):
+        return r.check(ok, msg)
+    r.no_reference("%s [%s: %s]" % (WAYLAND_NOREF, what, msg))
+    return False
+
+
 def settings_path(ctx):
     return getattr(ctx.app, "settings", None) or os.path.join(ctx.prof.home, ".config", "phosphor", "settings.toml")
 
@@ -417,8 +435,8 @@ def c_palette(ctx, r):
         chips = [n for n in chip_names if n in flat]
         opened = bool(re.search(r"\w{0,3}earch for a comm|for a command", flat)) or len(shown) >= 3 or len(chips) >= 3 or rendered
         r.metric("palette_open_markers", dict(placeholder=bool(re.search(r"for a command", flat)), command_rows=shown, filter_chips=chips, log_rendered=rendered))
-        r.check(opened, "palette did not open: neither 'Search for a command' (tail), >=3 command rows %s, >=3 filter chips %s on screen, nor a "
-                "CommandPaletteView frame in the app log (see shots/*palette_open.png)" % (list(cmd_names), list(chip_names)))
+        wl_check(ctx, r, opened, "palette did not open: neither 'Search for a command' (tail), >=3 command rows %s, >=3 filter chips %s on screen, nor a "
+                "CommandPaletteView frame in the app log (see shots/*palette_open.png)" % (list(cmd_names), list(chip_names)), "OCR")
     else:
         shown = []
         r.metric("palette_open_markers", dict(log_rendered=rendered))
@@ -432,8 +450,8 @@ def c_palette(ctx, r):
         flat2 = " ".join(t2.lower().split())
         left = [n for n in cmd_names if n in flat2]
         r.metric("palette_nonsense_command_rows", left)
-        r.check(not left, "nonsense filter still lists command rows %s (see shots/*palette_noresults.png)" % left)
-        r.check("no results" in flat2 or "create" in flat2 or "zzqqxx" in flat2, "nonsense filter shows neither 'No results', a 'Create ...' row nor the typed filter: the palette may have lost the keys")
+        wl_check(ctx, r, not left, "nonsense filter still lists command rows %s (see shots/*palette_noresults.png)" % left, "OCR")
+        wl_check(ctx, r, "no results" in flat2 or "create" in flat2 or "zzqqxx" in flat2, "nonsense filter shows neither 'No results', a 'Create ...' row nor the typed filter: the palette may have lost the keys", "OCR")
         if t is not None and not shown:
             r.note("control: no command row was readable in the UNFILTERED palette, so 'no command rows after the filter' is weak evidence here (OCR)")
     ctx.be.keys(["ctrl+a", "BackSpace"], delay_ms=30) if not mac(ctx) else ctx.be.keys(["cmd+a", "BackSpace"], delay_ms=30)
@@ -477,7 +495,9 @@ def c_mouse_copy(ctx, r):
     time.sleep(0.8)
     w, _ = find_token(ctx, "mouse_find", tok)
     if not w:
-        r.check(False, "token %r not found on screen by OCR (shots/*mouse_find.png): cannot place the pointer" % tok)
+        wl_check(ctx, r, False, "token %r not found on screen by OCR (shots/*mouse_find.png): cannot place the pointer" % tok, "OCR")
+        if on_wayland(ctx):
+            exact_burst(ctx, r, "after_mouse", 4)
         return
     r.metric("word", w[0])
     # r18u22 (Wayland agent pass): both copies left the sentinel. Pointer synthesis on Wayland (sway `seat - cursor`) had never got this far
@@ -487,9 +507,13 @@ def c_mouse_copy(ctx, r):
     got = copy_check(ctx, r, "dblclick", lambda: m.click(w[1], w[2], 1, 2), tok)
     d = img_diff(before, ctx.shot("select_dblclick_after")) if before else None
     r.metric("dblclick_screen_diff", d if d is not None else -1)
-    ok1 = r.check(got.strip() == tok, "double-click + copy: clipboard holds %r, expected exactly %r" % (got[:80], tok))
+    # Wayland: a copy that left the sentinel means the pointer events never reached the app (unobservable here): NOREF. Any OTHER wrong clipboard is a real failure.
+    ptr = lambda g: on_wayland(ctx) and g == "SENTINEL_NOT_COPIED"
+    msg1 = "double-click + copy: clipboard holds %r, expected exactly %r" % (got[:80], tok)
+    ok1 = wl_check(ctx, r, False, msg1, "pointer") if ptr(got) else r.check(got.strip() == tok, msg1)
     got = copy_check(ctx, r, "drag", lambda: m.drag(w[3] - 2, w[2], w[4] + 2, w[2]), tok)
-    ok2 = r.check(tok in got and len(got) <= len(tok) + 4, "drag across the word + copy: clipboard holds %r, expected the token %r (+- a char)" % (got[:80], tok))
+    msg2 = "drag across the word + copy: clipboard holds %r, expected the token %r (+- a char)" % (got[:80], tok)
+    ok2 = wl_check(ctx, r, False, msg2, "pointer") if ptr(got) else r.check(tok in got and len(got) <= len(tok) + 4, msg2)
     if not (ok1 and ok2) and got == "SENTINEL_NOT_COPIED":
         r.note("the clipboard kept the sentinel: nothing was copied. Screen change from the double-click: %s (0 = no selection drawn: the pointer "
                "events did not reach the app, or it drew no selection; > 0 = a selection was drawn and the copy key did not copy it)" % (
@@ -517,14 +541,14 @@ def c_right_click_paste(ctx, r):
     ctx.be.key("ctrl+u")
     time.sleep(0.3)
     if not p:
-        r.check(False, "the probe %r typed into the input was not found on screen by OCR (shots/*rc_prompt.png): cannot place the pointer" % probe)
+        wl_check(ctx, r, False, "the probe %r typed into the input was not found on screen by OCR (shots/*rc_prompt.png): cannot place the pointer" % probe, "OCR")
         return
     mark = ctx.cmd_mark()
     m.click(p[3] + 4, p[2], 3)
     time.sleep(0.6)
     item, _ = find_word(ctx, "rc_menu", "paste")
     if not item:
-        r.check(False, "no 'Paste' entry in the context menu (shots/*rc_menu.png)")
+        wl_check(ctx, r, False, "no 'Paste' entry in the context menu (shots/*rc_menu.png)", "pointer/OCR")
         ctx.be.key("Escape")
         return
     m.click(item[1], item[2], 1)
@@ -533,8 +557,12 @@ def c_right_click_paste(ctx, r):
     ctx.be.key("Return")
     ctx.until(lambda: len(ctx.cmds_since(mark)) >= 1, 8)
     got = ctx.cmds_since(mark)
-    r.check(got == [cmd], "right-click Paste + Enter: shell received %r, expected [%r]" % (got, cmd))
-    r.check(ctx.lines("rc.txt") == ["rc" + tok], "rc.txt = %r" % ctx.lines("rc.txt"))
+    # Wayland: nothing received at all = the click did not paste (pointer unobservable): NOREF; a WRONG command is still a failure.
+    if on_wayland(ctx) and not got:
+        wl_check(ctx, r, False, "right-click Paste + Enter: shell received nothing, expected [%r]" % cmd, "pointer")
+    else:
+        r.check(got == [cmd], "right-click Paste + Enter: shell received %r, expected [%r]" % (got, cmd))
+        r.check(ctx.lines("rc.txt") == ["rc" + tok], "rc.txt = %r" % ctx.lines("rc.txt"))
 
 
 @case("ui_drag_drop_file", modes=("terminal",), order=72, gui=True)

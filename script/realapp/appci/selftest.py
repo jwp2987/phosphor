@@ -1633,6 +1633,25 @@ def editor_memory_owner_2026_11_05():
 
 
 @check
+def wayland_pointer_ocr_cases_noref_x11_judged():
+    """2026-11-05: on the Wayland backend only, a failed pointer/OCR-dependent claim (ui_mouse_select_copy, ui_right_click_paste, ui_palette OCR,
+    alt_screen_mouse_reporting) is NOREF with the stated reason, never a pass or a fail; X11 (and xwayland, which is the x11 backend) still judge."""
+    import cases_ui as UI
+    for be_name, wl in (("wayland", True), ("x11", False), ("mac", False)):
+        ctx = types.SimpleNamespace(be=types.SimpleNamespace(name=be_name))
+        assert UI.on_wayland(ctx) is wl
+        r = cases.Result("t", "terminal")
+        assert UI.wl_check(ctx, r, False, "no OCR hit", "OCR") is False
+        if wl:
+            assert not r.fails and len(r.noref) == 1 and "Wayland harness cannot synthesize pointer input" in r.noref[0] and "verified manually by the owner" in r.noref[0] \
+                and "no OCR hit" in r.noref[0], (r.fails, r.noref)
+        else:
+            assert len(r.fails) == 1 and not r.noref, (be_name, r.fails, r.noref)
+        r = cases.Result("t", "terminal")      # a claim that holds passes everywhere
+        assert UI.wl_check(ctx, r, True, "ok", "OCR") and not r.fails and not r.noref
+
+
+@check
 def tabs_streaming_reorder_known_1658():
     """#1658 (owner 2026-11-04): the Windows streaming-tabs reorder is KNOWN at 0.1.17; FAIL on Linux, after 0.1.17, and whenever the app log shows a discard"""
     exp = ["a1", "b2", "c3", "d4"]
