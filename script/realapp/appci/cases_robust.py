@@ -409,6 +409,19 @@ def endless_flood(kind, stop_f, min_lines=0, min_s=0):
     return ("__s=$SECONDS; __i=0; while [ ! -e %s ] || [ $__i -lt %d ] || [ $((SECONDS-__s)) -lt %d ]; do %s; __i=$((__i+%d)); done" % (stop_f, min_lines, min_s, chunk, n))
 
 
+# The last OUTPUT lines of a `seq` flood: a line that is only 499999 or 500000 (OCR may add stray punctuation around it).
+FLOOD_TAIL_LINE = re.compile(r"^\W*(?:500000|499999)\W*$")
+
+
+def flood_tail_on_screen(ocr_text):
+    """True when the `seq` flood's last output lines (a line of just 499999 / 500000) are in the OCR text.
+    r18u26 (#1775, Mac + Wayland): the check was a substring test, which also matched the flood's own COMMAND
+    (`... do seq 1 500000; __i=$((__i+500000)); done ...`). The block header keeps that command on screen, and a Find that scrolls to
+    the marker block puts the marker 5 lines above the viewport's bottom (block_list_viewport.rs scroll_to_match_if_not_visible), with
+    the flood block's command header right below it: 'view scrolled away from the flood's tail' read False whether or not the view moved."""
+    return any(FLOOD_TAIL_LINE.match(line.strip()) for line in (ocr_text or "").splitlines())
+
+
 def touch(ctx, name):
     open(os.path.join(ctx.W, name), "w").close()
 
@@ -554,25 +567,46 @@ def c_flood_find(ctx, r):
     # r18u8 fix sent Cmd-Shift-F, which is the workspace's GLOBAL SEARCH (workspace/mod.rs OpenGlobalSearch, mac binding cmd-shift-F): the app log has
     # "GlobalSearch: starting warp_ripgrep CLI search with pattern=<marker>", the panel kept the focus after Escape, and the next case's `ssh fake` +
     # Enter went into that search field too (remote_heredoc_paste "no remote shell prompt", both modes).
+    find_log_off = ctx.log_size()
     ctx.be.key(os.environ.get("APPCI_KEY_FIND", "cmd+f" if ctx.be.name == "mac" else "ctrl+shift+f"))
     time.sleep(0.8)
     ctx.be.type(marker, 20, enter=True)
+    t_enter = time.time()
     time.sleep(1.5)
     after = ctx.ocr("find_after") or ""
     after_flat = after.replace(" ", "").upper()
     seen = marker in after_flat
     r.metric("marker_visible_after_find", seen)
-    # The marker is also typed in the Find field, so seeing it proves nothing about the output: the view must have SCROLLED. The flood's last lines
-    # (499999 / 500000) are on screen before the Find; after a Find that went to the older block they are not.
-    tail = ("500000", "499999")
-    tail_before = any(t in before for t in tail)
-    tail_after = any(t in after for t in tail)
+    # The marker is also typed in the Find field, so seeing it proves nothing about the output: the view must have SCROLLED. The flood's last
+    # OUTPUT lines (a line of just 499999 / 500000) are on screen before the Find; after a Find that went to the older block they are not.
+    # r18u26 (#1775): a substring test also matched the flood's command header (`seq 1 500000`), which stays in view below the marker.
+    tail_before = flood_tail_on_screen(before)
+    tail_after = flood_tail_on_screen(after)
     r.metric("tail_visible_before_find", tail_before)
     r.metric("tail_visible_after_find", tail_after)
     scrolled = not (tail_before and tail_after)
     if not tail_before:
         r.note("flood_scrollback_find: OCR did not read the flood's last lines before the Find, so the scroll cannot be checked from the screenshot (the marker check stands alone)")
-    r.check(seen and scrolled, "Find for the marker printed before a %d-line flood did not bring it on screen: marker read=%s, view scrolled away from the flood's tail=%s (see shots/%s_find_after.png)" % (n, seen, scrolled, ctx.mode))
+    late = ""
+    if not (seen and scrolled):
+        # Diagnosis only, the verdict above stands: does the view get there LATER (a slow scan of the 50,000-row flood block) or never?
+        deadline = t_enter + 12.0
+        while time.time() < deadline:
+            time.sleep(1.0)
+            again = ctx.ocr("find_late") or ""
+            if marker in again.replace(" ", "").upper() and not (tail_before and flood_tail_on_screen(again)):
+                late = "; it did %.1f s after the Enter (shots/%s_find_late.png): the Find is slow, not broken" % (time.time() - t_enter, ctx.mode)
+                break
+        else:
+            late = "; still not 12 s after the Enter (shots/%s_find_late.png)" % ctx.mode
+    # #1775: the app logs what each Find scroll did (`hop=find_scroll result=scroll block=N moved=... from=... to=...`, or `result=no_match`).
+    hops = [l.split("hop=find_scroll", 1)[1].strip()[:240] for l in ctx.log_since(find_log_off).splitlines() if "hop=find_scroll" in l]
+    r.metric("find_scroll_hops", len(hops))
+    app_said = ("; app log: %d find_scroll hop(s), moved=true in %d, last: %s" % (len(hops), sum("moved=true" in h for h in hops), hops[-1])) if hops else \
+        "; app log: no find_scroll hop (a build older than #1775's logging, or the Find never ran)"
+    if hops:
+        r.note("flood_scrollback_find%s" % app_said)
+    r.check(seen and scrolled, "Find for the marker printed before a %d-line flood did not bring it on screen: marker read=%s, view scrolled away from the flood's tail=%s (see shots/%s_find_after.png)%s%s" % (n, seen, scrolled, ctx.mode, late, app_said))
     ctx.be.key("Escape")
     time.sleep(0.3)
     got = ctx.cmds_since(mark)

@@ -31987,6 +31987,11 @@ impl TerminalView {
         };
         let Some(focused_match) = focused_match else {
             self.find_scroll_pending = may_still_focus;
+            // #1775: the real-app case `flood_scrollback_find` reads this line to tell "the app
+            // never had a match to scroll to" from "it scrolled but the screenshot misread".
+            warpui::input_order::log_hop("find_scroll", || {
+                format!("result=no_match pending={may_still_focus}")
+            });
             return;
         };
         self.find_scroll_pending = false;
@@ -32021,10 +32026,26 @@ impl TerminalView {
             }
         };
 
+        let position_before = self.scroll_position.position();
         self.update_scroll_position_locking(
             ScrollPositionUpdate::ScrollToFindMatchIfNotVisible(find_match_location),
             ctx,
         );
+        // #1775: what the Find did to the view, so a real-app run can tell a scroll that
+        // happened from one that did not (the case's screenshot check alone cannot).
+        warpui::input_order::log_hop("find_scroll", || {
+            let target = match find_match_location {
+                FindMatchScrollLocation::Block { block_index, .. } => {
+                    format!("block={}", block_index.0)
+                }
+                FindMatchScrollLocation::RichContent { .. } => "rich_content".to_string(),
+            };
+            let position_after = self.scroll_position.position();
+            format!(
+                "result=scroll {target} moved={} from={position_before:?} to={position_after:?}",
+                position_after != position_before
+            )
+        });
     }
 
     /// Completes a scroll that `scroll_to_match` left pending because the async find had not

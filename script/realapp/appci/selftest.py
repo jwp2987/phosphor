@@ -1989,6 +1989,11 @@ def r18u13_mac_harness_fixes():
     assert "marker[::-1]" in src and "| rev" in src and '"cmd+f" if ctx.be.name == "mac"' in src and "cmd+shift+f" not in src.split("APPCI_KEY_FIND")[1][:80]
     # r18u23: the marker is its own proven command before the flood; Find must also have scrolled the view away from the flood's tail
     assert "marker_cmd in ctx.cmds_since" in src and "scrolled" in src and "tail_before" in src and src.index("marker_cmd") < src.index("endless_flood")
+    # r18u26 (#1775): the flood's tail is a line of just 499999/500000, never the flood COMMAND's `seq 1 500000` (the block header keeps it on screen)
+    assert _R.flood_tail_on_screen("499998\n499999\n500000\n") and _R.flood_tail_on_screen("  500000 |\n")
+    assert not _R.flood_tail_on_screen("3 ]; do seq 1 500000; __i=$((__i+500000)); done; now >> ff_end.txt\n450001\n450002")
+    assert not _R.flood_tail_on_screen("") and not _R.flood_tail_on_screen(None) and not _R.flood_tail_on_screen("1500000\n4999990")
+    assert "flood_tail_on_screen(before)" in src and "flood_tail_on_screen(after)" in src and "hop=find_scroll" in src
     import cases as _C
     assert _C.verdict_gave_up("input_order hop=kh_enter_gate_give_up seq=16685 by=verdict_cap behind=0 submitted=false t=1") is True
     assert _C.verdict_gave_up("input_order hop=kh_enter_gate_give_up seq=6 by=route_wait behind=1 submitted=true t=5") is False
