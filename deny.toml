@@ -36,6 +36,7 @@ ignore = [
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser is unmaintained; font parsing in cosmic-text, fontdb, rustybuzz and usvg. Same remedy as rustybuzz (text-stack upgrade)." },
     { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml is unmaintained; via serde_yaml 0.9 (itself deprecated). Remedy is a serde_yaml replacement across ai/languages/markdown_parser/warp_core/warp_editor." },
     { id = "RUSTSEC-2025-0119", reason = "number_prefix is unmaintained; via indicatif 0.17 <- tokenizers 0.21 (progress bars, not used by our inference path)." },
+    { id = "RUSTSEC-2026-0441", reason = "pin-utils is unmaintained (advisory published 2026-11-05, no safe upgrade); only via nix 0.26.4, a direct workspace dependency (ai, computer_use, integration, lsp, warp, warp_ripgrep, warpui) plus pprof and ptyprocess. Small pinning macros, no runtime surface of note. Remedy: move the workspace to nix >= 0.29 after v0.1.17 (owner: dependency work deferred), #1781." },
     { id = "RUSTSEC-2026-0370", reason = "zvariant is unmaintained as a standalone crate (merged into zbus 6 as zbus::wire). Via zbus 5; drop with the zbus 6 migration (zbus, ashpd, notify-rust, secret-service all have to move together)." },
     { id = "RUSTSEC-2026-0371", reason = "zbus_names is unmaintained as a standalone crate (merged into zbus 6). Same as RUSTSEC-2026-0370." },
     { id = "RUSTSEC-2026-0372", reason = "zvariant_derive is unmaintained as a standalone crate (merged into zbus 6). Same as RUSTSEC-2026-0370." },
