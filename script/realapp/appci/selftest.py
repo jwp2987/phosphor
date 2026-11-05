@@ -2139,6 +2139,14 @@ def r18u23_paste_backlog_and_bash_agent_command_count():
     assert ca.approved_command_writes(log, "APPROVEMEX1") == 1
     assert ca.approved_command_writes(log + log, "APPROVEMEX1") == 2
     assert ca.approved_command_writes(log, "REJECTMEX1") == 0 and ca.approved_command_writes("", "A") == 0
+    # Linux-style log: no pty_write_bytes hop at all; the effect file decides
+    linux = 'x [DEBUG] input_order hop=enter_begin deferred=false t=1\n'
+    assert not ca.pty_write_hop_logged(linux) and ca.pty_write_hop_logged(log)
+    assert ca.approved_once_verdict(linux, "APPROVEMEX1", ["APPROVEMEX1"])[0]
+    assert not ca.approved_once_verdict(linux, "APPROVEMEX1", [])[0]
+    assert not ca.approved_once_verdict(linux, "APPROVEMEX1", ["APPROVEMEX1", "APPROVEMEX1"])[0]
+    assert ca.approved_once_verdict(log, "APPROVEMEX1", [])[0]            # Windows: the hop count wins
+    assert not ca.approved_once_verdict(log + log, "APPROVEMEX1", ["APPROVEMEX1"])[0]
     assert ca.bash_rec_hook(types.SimpleNamespace(win=True, pane="gitbash"))
     assert not ca.bash_rec_hook(types.SimpleNamespace(win=True, pane="powershell"))
     assert not ca.bash_rec_hook(types.SimpleNamespace(win=False, be=types.SimpleNamespace(name="mac")))

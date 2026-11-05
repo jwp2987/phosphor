@@ -330,11 +330,10 @@ def c_agent_approval(ctx, r):
             # history BY DESIGN (#904: HISTIGNORE on HISTORY_MARKER, agent_shell_wrap.rs), and the bash rc hook logs rec.log from `history 1`, so a bash
             # pane's rec.log can never show an approved command (the zsh hook can: it logs from preexec, r18u13). The same "reached the shell exactly
             # once" is read from the app's own pty writes of the wrapper instead; the effect file above still has to hold the token exactly once.
-            writes = approved_command_writes(ctx.log_since(off), tok_a)
+            ok_once, how, detail = approved_once_verdict(ctx.log_since(off), tok_a, got)
             r.note("approved command: a bash pane's rec.log cannot show an agent command (#904 keeps the wrapper out of history; the rc hook reads "
-                   "`history 1`): counted from the app's pty writes of the command instead (%d)" % writes)
-            r.check(writes == 1, "approved command was written to the shell %d times by the app (hop=pty_write_bytes class=UserCommand carrying %s; expected "
-                    "exactly once; a bash pane's rec.log cannot show it, #904)" % (writes, tok_a))
+                   "`history 1`): counted by %s instead" % how)
+            r.check(ok_once, "approved command did not reach the shell exactly once: %s (a bash pane's rec.log cannot show it, #904)" % detail)
         else:
             r.check(len(shell_cmds) == 1, "approved command appears %d times in the shell's rec.log (expected exactly once): %r" % (len(shell_cmds), shell_cmds[:3]))
         # follow-up in the same conversation (wait for the agent to finish reporting first: never type into a busy conversation)
@@ -366,7 +365,7 @@ def c_agent_approval(ctx, r):
         ctx.shot("reject_done")
         r.check(not ctx.lines("ap_rej.txt"), "the rejected command's effect file exists: %r" % ctx.lines("ap_rej.txt"))
         r.check(not [c for c in ctx.cmds_since(mark2) if tok_r in c], "the rejected command reached the shell's rec.log")
-        if bash_rec_hook(ctx):      # a bash pane's rec.log cannot show an agent command (#904): the app's own writes must not carry it either
+        if bash_rec_hook(ctx) and pty_write_hop_logged(ctx.log_since(off2)):  # the hop is Windows-only; elsewhere the effect-file check above stands
             r.check(approved_command_writes(ctx.log_since(off2), tok_r) == 0, "the rejected command was written to the shell by the app (hop=pty_write_bytes "
                     "class=UserCommand carrying %s)" % tok_r)
     finally:
@@ -389,6 +388,22 @@ def approved_command_writes(log_text, tok):
     """how many of the app's pty writes of a command (`hop=pty_write_bytes class=UserCommand ... bytes="..."`, the agent's wrapper among them) carry
     `tok`; needs WARP_INPUT_ORDER_LOG_TEXT=1 (the harness sets it on every backend)"""
     return sum(1 for m in USER_COMMAND_WRITE_RE.finditer(log_text or "") if tok in m.group(1))
+
+
+def pty_write_hop_logged(log_text):
+    """True when the app log carries any `hop=pty_write_bytes` line. The hop is Windows-only (event_loop.rs: `if cfg!(windows)`), so a Linux/Mac log never has it"""
+    return "hop=pty_write_bytes" in (log_text or "")
+
+
+def approved_once_verdict(log_text, tok, effect_lines):
+    """(ok, how, detail): did the approved command reach the shell exactly once, for a pane whose rec.log cannot show it (#904). Windows logs the app's pty
+    writes (hop=pty_write_bytes), so those are counted. Linux has no such hop (0 for the whole case, even though the command ran), so the side-effect file
+    (`echo tok >> file`, one line per run) is the count: exactly [tok] = once; no line or two lines fail."""
+    if pty_write_hop_logged(log_text):
+        n = approved_command_writes(log_text, tok)
+        return n == 1, "the app's pty writes (hop=pty_write_bytes class=UserCommand)", "%d pty writes carrying %s" % (n, tok)
+    got = list(effect_lines or [])
+    return got == [tok], "the command's effect file (this platform logs no pty_write_bytes hop)", "effect file lines %r, expected [%r]" % (got, tok)
 
 
 # ---------------------------------------------------------------- autodetect routing table
