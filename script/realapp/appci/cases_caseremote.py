@@ -609,7 +609,7 @@ def c_lat_enter_ssh(ctx, r):
                                   ("reference interleaved with Phosphor in blocks of %d (A/B/A/B, same session)" % lat.interleave_block() if mode == "interleaved"
                                    else "NOREF: the reference was not interleaved (%s), so no overhead is judged" % fallback)])
         r.metrics.setdefault("lat", {})["ssh_enter_to_start"] = rec
-        lat_checks(r, rec, "Enter to command start over ssh")
+        lat_checks(r, rec, "Enter to command start over ssh", known_key="latency_enter_ssh_overhead")
     ctx.reset()
 
 

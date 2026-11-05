@@ -4199,6 +4199,8 @@ def editor_open(ctx, palette, path):
 ACCEPTED_FOR_RELEASE = {"editor_open_cost": {"issue": 1607, "release": "0.1.17", "why": "owner 2026-11-04: open cost accepted, release after close required"},
                         "latency_enter_overhead": {"issue": 1606, "release": "0.1.17", "platforms": ("macos", "linux"),
                                                    "why": "owner 2026-11-04: Enter-to-command-start overhead accepted for this release"},
+                        "latency_enter_ssh_overhead": {"issue": 1606, "release": "0.1.17", "platforms": ("macos", "linux"),
+                                                       "why": "owner 2026-11-05: Enter-over-ssh overhead accepted for this release (the gap is OS event delivery before the app, #1606)"},
                         "ctrl_c_flood": {"issue": 1653, "release": "0.1.17", "platforms": ("macos", "linux", "windows"),
                                          "why": "owner 2026-11-04: Ctrl-C under flood over %s ms accepted for this release (#1653 / #1606)" % CTRLC_FLOOD_RELEASE_MS}}
 _REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
