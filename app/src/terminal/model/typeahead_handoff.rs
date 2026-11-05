@@ -833,6 +833,11 @@ pub struct TypeaheadHandoff {
     /// The evidence the live young hold stands on (#1614), `None` while no hold is live. It names
     /// the event that releases the hold and decides the cap ([`Self::young_hold_wait`]).
     young_hold_evidence: Option<YoungHoldEvidence>,
+    /// #1661 review: the live young hold's cap is its NORMAL end (owner decision 2026-11-05),
+    /// classified ONCE, when the hold starts, from its evidence and whether this session sends
+    /// prompt sequence numbers then. A sequence-numbered Precmd parsed while the hold waits does
+    /// not reclassify it: the cap it was given at its start stays the hold's end.
+    young_hold_normal_end: bool,
     /// #1615 measurement, no decision: the last Enter delivered to the pty while an unsampled
     /// process group (a warpified ssh's remote shell, an inner shell) was in front and a line was
     /// unanswered, followed through the hooks that come after it (see
@@ -888,6 +893,17 @@ pub enum YoungHoldEvidence {
     /// the window's end is the hold's NORMAL end and hands the keys back (owner decision
     /// 2026-11-05, #1661); with sequence numbers its cap is the 10 s give-up net, which drops.
     TimingWindow,
+}
+
+/// #1661 (owner decision 2026-11-05): whether a young hold standing on `evidence` ends at its cap
+/// by design: the fish no-barrier hold, and the window hold of a session that sends no prompt
+/// sequence numbers (`prompt_seq_mode` false when the hold starts).
+fn cap_is_normal_end(evidence: YoungHoldEvidence, prompt_seq_mode: bool) -> bool {
+    match evidence {
+        YoungHoldEvidence::PrecmdMaybeInFlight => true,
+        YoungHoldEvidence::TimingWindow => !prompt_seq_mode,
+        _ => false,
+    }
 }
 
 /// What [`TypeaheadHandoff::on_stream_applied`] decided for a hold waiting on the barrier.
@@ -1586,12 +1602,11 @@ impl TypeaheadHandoff {
     /// hold of a session without prompt sequence numbers (the window, at most
     /// [`YOUNG_ENTER_WINDOW`]). They keep their short cap and its hand-back of the keys to the
     /// editor. Every other hold's cap is a real give-up: the 10 s net, which drops the keys.
+    ///
+    /// Classified when the hold starts (`young_hold_normal_end`), never recomputed at the
+    /// cap (#1661 review).
     pub fn young_hold_cap_is_normal_end(&self) -> bool {
-        match self.young_hold_evidence {
-            Some(YoungHoldEvidence::PrecmdMaybeInFlight) => true,
-            Some(YoungHoldEvidence::TimingWindow) => !self.prompt_seq_mode(),
-            _ => false,
-        }
+        self.young_hold_evidence.is_some() && self.young_hold_normal_end
     }
 
     /// The cap of the young hold just started: [`Self::young_hold_wait`] when that cap is the
@@ -1611,6 +1626,7 @@ impl TypeaheadHandoff {
     #[cfg(test)]
     pub(crate) fn force_young_hold_evidence_for_test(&mut self, evidence: YoungHoldEvidence) {
         self.young_hold_evidence = Some(evidence);
+        self.young_hold_normal_end = cap_is_normal_end(evidence, self.prompt_seq_mode());
     }
 
     #[cfg(test)]
@@ -2557,6 +2573,7 @@ impl TypeaheadHandoff {
             self.should_hold_young_enter_sampled(bytes, reaches_shell_line, Instant::now());
         if let Some(evidence) = young_evidence {
             self.young_hold_evidence = Some(evidence);
+            self.young_hold_normal_end = cap_is_normal_end(evidence, self.prompt_seq_mode());
             self.young_hold_id = self.young_hold_id.wrapping_add(1);
             self.young_hold_started = true;
             // #1353 phase 5b: the bytes are not stored here; the view puts this key at the front

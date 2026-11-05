@@ -5282,3 +5282,34 @@ fn only_the_two_normal_end_young_holds_keep_their_short_cap() {
     assert!(legacy.young_hold_cap_is_normal_end());
     assert!(legacy.young_hold_give_up(Instant::now()) <= YOUNG_ENTER_WINDOW);
 }
+
+/// #1661 review: a hold's class is decided when it starts. A window hold of a session without
+/// prompt sequence numbers stays a normal-end hold (short cap, hand-back) when a
+/// sequence-numbered Precmd is parsed while it waits; recomputed at the cap it was dropped.
+#[test]
+fn a_young_holds_normal_end_class_is_fixed_when_it_starts() {
+    let mut handoff = young_after_submit();
+    handoff.set_prompt_seq_enabled(true);
+    type_and_flush(&mut handoff, b"explain");
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    assert_eq!(
+        handoff.young_hold_evidence(),
+        Some(YoungHoldEvidence::TimingWindow)
+    );
+    assert!(!handoff.prompt_seq_mode());
+    assert!(handoff.young_hold_cap_is_normal_end());
+    let cap = handoff.young_hold_give_up(Instant::now());
+    assert!(cap <= YOUNG_ENTER_WINDOW);
+
+    // The shell starts sending sequence numbers before the cap.
+    handoff.on_precmd_seq(Some(7), Some(1));
+    assert!(handoff.prompt_seq_mode());
+    assert_eq!(
+        handoff.young_hold_evidence(),
+        Some(YoungHoldEvidence::TimingWindow)
+    );
+    assert!(
+        handoff.young_hold_cap_is_normal_end(),
+        "the class the hold started with is kept: its cap hands back, it does not drop"
+    );
+}

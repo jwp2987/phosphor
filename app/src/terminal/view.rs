@@ -14993,6 +14993,13 @@ impl TerminalView {
             b"\x1b[C" | b"\x1bOC" => EditorAction::Right,
             b"\x1b[H" | b"\x1bOH" | b"\x1b[1~" => EditorAction::MoveToLineStart,
             b"\x1b[F" | b"\x1bOF" | b"\x1b[4~" => EditorAction::MoveToLineEnd,
+            // #1661 review: a Tab (a held one released from the queue behind an Enter, or a live
+            // one in this window) runs the editor's own Tab, exactly as typing it there would
+            // (`input_tab`: completion); it used to be dropped. Only where the route already
+            // chose the editor (this window; the table's `EditorAction` plan calls this too), so
+            // every route before it (the pty, an approval card, an agent-owned pty, a setup) is
+            // unchanged. Outside the window a sequence has no editor route and is dropped, logged.
+            b"\t" => EditorAction::Tab,
             _ => return false,
         };
         self.input.update(ctx, |input, ctx| {

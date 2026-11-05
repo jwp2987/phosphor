@@ -534,6 +534,8 @@ impl TerminalView {
                 );
             }
             Outcome::EditorAction => {
+                // #1661 review: a held Tab the plan sends to the editor runs the editor's Tab
+                // (`apply_key_to_editor_after_handoff` maps it).
                 if !self.apply_key_to_editor_after_handoff(seq.as_bytes(), ctx) {
                     log::info!("input queue: a held control sequence had no editor action");
                 }

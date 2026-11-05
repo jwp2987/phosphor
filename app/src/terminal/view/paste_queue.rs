@@ -38,7 +38,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use warpui::r#async::Timer;
-use warpui::{SingletonEntity as _, TypedActionView as _, ViewContext};
+use warpui::{SingletonEntity as _, ViewContext};
 
 use super::dest_table::Replayed;
 use super::{AfterEnterInput, Event, KeyPathScope, TerminalView, held_bytes_through_last_enter};
@@ -550,22 +550,6 @@ impl<'a, 'b> PtyQueueHost<'a, 'b> {
             }
             // The ssh connect typeahead (phase 4): delivered at the hand-over, routed from the
             // facts of this moment.
-            // #1661 review: a Tab queued behind an Enter in its tty form and released where the
-            // editor takes the keys runs the editor's own Tab (completion), exactly as typing it
-            // there would; routed as a sequence it was dropped ("ignoring control seq"). Where
-            // the pty takes the keys it is written as typed, below.
-            EntryKind::Held { class, text }
-                if *class == HELD_SEQ
-                    && text == "\t"
-                    && !self.view.replayed_enter_goes_to_pty(self.ctx) =>
-            {
-                note_shadow_leaf(DestClass::Editor);
-                self.view.input.update(self.ctx, |input, ctx| {
-                    input.editor().update(ctx, |editor, ctx| {
-                        editor.handle_action(&EditorAction::Tab, ctx)
-                    })
-                });
-            }
             EntryKind::Held { class, text } => {
                 if destination_mode() == DestinationMode::Table {
                     self.view
@@ -1891,7 +1875,12 @@ impl TerminalView {
             YoungHoldExpiry::Gone => {
                 self.drain_young_hold_ends(ctx);
                 if self.young_hold_gate_has_key(hold_id) {
-                    // The gate outlived a hold with no recorded end: never lose what was typed.
+                    // A defect path: the gate outlived a hold the hand-off has no record of (no
+                    // recorded end, so no class to say the cap is its normal end). Its cap is a
+                    // give-up, and by the owner's rule of 2026-11-05 (#1661) a give-up DISCARDS
+                    // the held Enter and the keys typed after it, with the counted toast (a line
+                    // typed before the Enter in the held bytes stays in the editor). Deliberate:
+                    // the keys are not handed back here.
                     log::warn!(
                         "input queue: young hold {hold_id} is gone but its gate is open; its \
                          Enter and the keys after it are discarded (#1661)"
