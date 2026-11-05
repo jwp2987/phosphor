@@ -968,6 +968,18 @@ warpui_core's tests only: estimated 25-40 mutants, under an hour. Widen by playi
 `MUTANTS_TEST_FILTER` set, and split a wide run with `MUTANTS_SHARD=k/n` over several jobs; `cargo mutants --list --file ...` counts
 mutants without running them.
 
+**Clipboard mutants (#1778).** The first `mutants-warpui-core` run left 51 clipboard mutants surviving; the tests added to
+`crates/warpui_core/src/clipboard_tests.rs` kill them, none touching the real system clipboard (`InMemoryClipboard`, stubs, local
+`PendingWrites` / `WriteOrder`, pure functions, so no nextest group): the deferred-read gate (`read_gate_*`, `deferral_is_active_until_released`,
+`in_memory_reads_inline_unless_deferred`, `deferred_in_memory_read_answers_only_after_release`; every wait is bounded by a 2 s `within` or channel
+timeout, so a regression fails instead of hanging), `should_insert_text_on_paste_truth_table`, the `ClipboardContent` accessors
+(`text_bytes_*`, `has_image_data_*`, `num_paths_*`, `has_non_image_filepaths_*`), `PendingWrites::wait_until_idle` (`idle_wait_*`),
+`WriteOrder` (`generations_start_at_one_*`, `a_write_of_the_same_generation_*`), the legacy readers and trait defaults, `paste_cap_is_64_mib`,
+`abandon_pending_reads_bumps_the_global_epoch`, and the global-static ones (`global_pending_write_*`, `menu_entry_follows_*`,
+`availability_events_and_own_writes_*`; they own one target each and retry, so plain `cargo test` threads cannot flake them). Five mutants stay
+unkillable by design: the `>` in `abandon_pending_reads` and the `!=` / `>=` in `tracked_reader_with` (lines 233, 312, 321) only change a
+`log::warn!`, and `warpui_core` cannot install a capture logger (`src/test.rs` `#[ctor]`, see `report_error.rs`).
+
 ### 2.10 Markdown and Mermaid readers (#1460)
 
 What is covered, where, and how to update it. Nothing here runs cargo on the laptop; the box does (section 1).
