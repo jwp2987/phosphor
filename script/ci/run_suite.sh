@@ -110,9 +110,9 @@ case "$suite" in
       fi
       fuzz_target_args=(--target "$fuzz_host")
     fi
-    for target in ansi_parser hook_parsers input_queue key_facts_cell markdown_parser mermaid_render route_decide typeahead_handoff; do
-      CARGO_TARGET_DIR="target/ci-fuzz" ./script/agent-cargo ci-fuzz fuzz run ${fuzz_target_args[@]+"${fuzz_target_args[@]}"} --fuzz-dir fuzz "$target" -- -max_total_time="${FUZZ_SECONDS:-180}" -timeout=20
-    done
+    # Each target's libFuzzer output goes to fuzz/logs/<target>.log (an artifact), not the trace: only the final stats and,
+    # on a crash, its panic text reach the trace (the box job overran GitLab's 4 MB trace limit, r18u23).
+    CARGO_TARGET_DIR="target/ci-fuzz" ./script/ci/fuzz_smoke.sh ${fuzz_target_args[@]+"${fuzz_target_args[@]}"}
     ;;
   bench)
     # == bench: criterion benches, then the order-of-magnitude gate.

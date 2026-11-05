@@ -5106,3 +5106,115 @@ fn held_keys_released_after_an_unsubmitted_enter_keep_their_key_boundaries_on_co
         Vec::<Vec<u8>>::new()
     );
 }
+
+/// The r18u23 fuzz-smoke crash input (kept as the seed
+/// `fuzz/corpus/typeahead_handoff/regression_r18u23_signal_behind_deferred_enter`), decoded
+/// event by event up to the key before the one the fuzz model rejected: a young hold's report
+/// turned the hold into a deferred Enter (`SubmitOnReport`) and the keys typed after it reached
+/// the hand-off. Returns the hand-off and the deferred Enter's gate.
+fn replay_r18u23_fuzz_to_deferred_gate() -> (TypeaheadHandoff, u64) {
+    let mut h = TypeaheadHandoff::default();
+    let _ = h.on_report(); // 0
+    let _ = h.adopt_untracked_typeahead(); // 1
+    h.on_precmd_seq(Some(115), Some(26)); // 2
+    h.set_conpty_input(true); // 3
+    h.set_prompt_seq_enabled(true); // 4
+    h.reset_on_exit(); // 5
+    h.on_precmd_seq(Some(100), Some(24)); // 6
+    let _ = h.cancel_deferred_enter(); // 7
+    let _ = h.defer_enter(); // 8
+    h.on_precmd(); // 9
+    let _ = h.on_interrupt(); // 10
+    let _ = h.adopt_untracked_typeahead(); // 11
+    let _ = h.on_line_editor_reading(Some(116), Some(182)); // 12
+    assert_eq!(h.on_user_bytes(b"\x1b[A"), UserBytesRoute::WriteCounted); // 13
+    let _ = h.cancel_deferred_enter(); // 14
+    h.on_new_session(); // 15
+    h.set_conpty_prompt_hold_shell_signals(true); // 16
+    let _ = h.on_stream_applied(); // 17
+    assert_eq!(h.on_user_bytes(b"\r"), UserBytesRoute::Held); // 18
+    assert!(h.take_young_hold_started().is_some());
+    h.note_interactive_command_finished(); // 19
+    h.set_prompt_seq_enabled(true); // 20
+    let _ = h.cancel_deferred_enter(); // 21
+    let _ = h.on_preexec(false); // 22: ends the hold as typeahead
+    assert!(!h.young_hold_queued());
+    let _ = h.try_commit_at_prompt(); // 23
+    h.note_command_interactive(); // 24
+    if let Some(id) = h.release_queued_prompt_hold_on_signal() {
+        h.finish_queued_prompt_hold(id); // 25
+    }
+    h.set_conpty_prompt_hold(true); // 26
+    let _ = h.on_report(); // 27
+    let _ = h.on_user_bytes_to_full_screen_program(b"ls"); // 28
+    h.set_prompt_seq_enabled(true); // 29
+    let _ = h.release_after_unsubmitted_enter(); // 30
+    h.note_interactive_command_finished(); // 31
+    h.set_conpty_prompt_hold(false); // 32
+    h.set_conpty_prompt_hold_shell_signals(false); // 33
+    let _ = h.on_report(); // 34
+    let _ = h.defer_enter(); // 35
+    let _ = h.on_user_write_flushed(); // 36
+    h.on_precmd(); // 37
+    let _ = h.try_commit_at_prompt(); // 38
+    let _ = h.cancel_deferred_enter(); // 39
+    let _ = h.defer_enter(); // 40
+    assert_eq!(h.on_user_bytes(b"\r"), UserBytesRoute::Held); // 41: a young hold
+    assert!(h.take_young_hold_started().is_some());
+    h.on_new_session(); // 42
+    let _ = h.on_user_write_flushed(); // 43
+    let _ = h.on_report(); // 44: the pty owns input; stashed
+    assert_eq!(
+        h.on_line_editor_active(true, true), // 45
+        ActiveDecision::SendRequest
+    );
+    assert_eq!(h.on_report(), ReportDisposition::InsertThenSubmitYoung); // 46
+    let gate = h.deferred_gate().expect("the report made a deferred Enter");
+    let _ = h.adopt_untracked_typeahead(); // 47
+    h.on_precmd_seq(Some(115), Some(26)); // 48
+    for key in [&b"a"[..], &b"a"[..], &b"a"[..], &b"\r"[..]] {
+        // 49..52: keys typed behind the deferred Enter, reported for its gate.
+        assert_eq!(h.on_user_bytes(key), UserBytesRoute::Held);
+        assert_eq!(h.take_deferred_key_started(), Some(gate));
+    }
+    assert_eq!(h.state(), &HandoffState::HoldAfterEnter { released: true });
+    let _ = h.take_young_hold_ends();
+    (h, gate)
+}
+
+/// r18u23 fuzz-smoke crash ("a signal was held: [4]", event 53): the fuzz model said a signal byte
+/// is never held, but behind a deferred Enter's gate an EOF (and ^Z, ^\, which the legacy queue's
+/// `signal_must_wait` also keeps behind a `HandoffReport` gate) is typed after the keys that gate
+/// holds and must go out after them, in typed order (the gate table's `HandoffReport` + EOF =
+/// `WaitInOrder`). The hand-off holds it and reports it for that gate, so it is not lost, and it
+/// follows the deferred command with the other keys. The model was corrected, not the app.
+#[test]
+fn a_signal_behind_a_deferred_enter_waits_in_order_r18u23_fuzz() {
+    for signal in [0x04u8, 0x1a, 0x1c] {
+        let (mut h, gate) = replay_r18u23_fuzz_to_deferred_gate();
+        assert_eq!(h.on_user_bytes(&[signal]), UserBytesRoute::Held); // 53
+        assert_eq!(
+            h.take_deferred_key_started(),
+            Some(gate),
+            "the held signal is reported for the deferred Enter's gate"
+        );
+        assert_eq!(h.deferred_gate(), Some(gate));
+        assert_eq!(h.state(), &HandoffState::HoldAfterEnter { released: true });
+        // The deferred command is written: the gate's keys, the signal last, follow it.
+        h.on_command_written();
+        assert_eq!(
+            h.take_young_hold_ends(),
+            vec![(gate, YoungHoldEnd::FollowCommand)]
+        );
+    }
+    // ^C is never held there: the view cancels the deferred Enter first (`TerminalView::ctrl_c`),
+    // which drops the gate's keys, and the ^C then goes out at once.
+    let (mut h, gate) = replay_r18u23_fuzz_to_deferred_gate();
+    assert!(h.cancel_deferred_enter());
+    assert_eq!(
+        h.take_young_hold_ends(),
+        vec![(gate, YoungHoldEnd::Dropped)]
+    );
+    assert_eq!(h.on_user_bytes(&[0x03]), UserBytesRoute::Write);
+    assert_eq!(h.take_deferred_key_started(), None);
+}
