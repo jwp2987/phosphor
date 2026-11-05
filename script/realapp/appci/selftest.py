@@ -1680,6 +1680,12 @@ def r18u13_mac_harness_fixes():
     import inspect, cases_robust as _R
     src = inspect.getsource(_R.c_flood_find)
     assert "marker[::-1]" in src and "| rev" in src and '"cmd+f" if ctx.be.name == "mac"' in src and "cmd+shift+f" not in src.split("APPCI_KEY_FIND")[1][:80]
+    # r18u23: the marker is its own proven command before the flood; Find must also have scrolled the view away from the flood's tail
+    assert "marker_cmd in ctx.cmds_since" in src and "scrolled" in src and "tail_before" in src and src.index("marker_cmd") < src.index("endless_flood")
+    import cases as _C
+    assert _C.verdict_gave_up("input_order hop=kh_enter_gate_give_up seq=16685 by=verdict_cap behind=0 submitted=false t=1") is True
+    assert _C.verdict_gave_up("input_order hop=kh_enter_gate_give_up seq=6 by=route_wait behind=1 submitted=true t=5") is False
+    assert "verdict_give_up_retries" in inspect.getsource(_C.c_ssh_nested) and "range(3)" in inspect.getsource(_C.c_ssh_nested)
     # crash_kill9_restore / crash_corrupt_db: the post-restore line names its effect file absolutely (a restored pane keeps its saved cwd)
     import cases_coverage_a as _A
     assert 'local_cmd_exact(ctx, r, "ck_after", absolute=True)' in inspect.getsource(_A.c_crash_kill9)
