@@ -2457,7 +2457,11 @@ impl TypeaheadHandoff {
     }
 
     fn route_user_bytes(&mut self, bytes: &[u8], reaches_shell_line: bool) -> UserBytesRoute {
-        // A signal or EOF byte is never held: it drops a held Enter and goes out at once.
+        // A signal or EOF byte is never held for a prompt or a young Enter: it drops a held Enter
+        // and goes out at once. Behind an Enter deferred for the report (`HoldAfterEnter` with its
+        // gate) it is routed like any key there: held behind the gate, after the keys typed before
+        // it, in typed order (the gate table's `HandoffReport` + EOF = `WaitInOrder`); the view
+        // cancels the deferred Enter before a ^C reaches here (`TerminalView::ctrl_c`).
         if bytes.iter().any(is_signal_byte) {
             self.drop_young_hold();
             self.log_route_decision("signal_unheld", bytes);

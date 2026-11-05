@@ -7,7 +7,14 @@
 //! * a key answered `Held` has a live hold to carry it (a queued young hold, a queued prompt
 //!   hold, or a deferred Enter's gate): the view puts the key behind that gate, so a `Held` with
 //!   no hold would drop it;
-//! * a signal byte is never held;
+//! * a signal byte is never held, except behind a deferred Enter's `HandoffReport` gate: it was
+//!   typed after the keys that gate holds and waits behind them in typed order (the gate table's
+//!   `HandoffReport` + EOF = `WaitInOrder`; the view cancels the deferred Enter before a ^C reaches
+//!   the hand-off, `TerminalView::ctrl_c`), and it is reported to the view for that gate
+//!   (`take_deferred_key_started`), or it would be lost. r18u23's fuzz-smoke crash: the model said
+//!   "never held" unconditionally, and a ^D typed after a young hold's report (`SubmitOnReport`)
+//!   turned the hold into a deferred gate was held behind it, as designed; replayed in
+//!   `typeahead_handoff_tests.rs` (`a_signal_behind_a_deferred_enter_waits_in_order_r18u23_fuzz`);
 //! * `WriteCounted` is only ever answered while the pty owns input;
 //! * a hold that STARTS on a key is reported to the view (`take_*_hold_started`), or the key that
 //!   started it would never be queued behind its gate;
@@ -80,10 +87,24 @@ fuzz_target!(|data: &[u8]| {
                 match route {
                     UserBytesRoute::Held => {
                         assert!(live, "a key was held with no live hold: {bytes:?}");
-                        assert!(
-                            !bytes.iter().any(|byte| SIGNAL_BYTES.contains(byte)),
-                            "a signal was held: {bytes:?}"
-                        );
+                        if bytes.iter().any(|byte| SIGNAL_BYTES.contains(byte)) {
+                            // Only behind a deferred Enter's gate, and reported to the view for
+                            // that very gate, so it is queued behind the keys typed before it.
+                            let gate = h.deferred_gate();
+                            assert!(
+                                matches!(h.state(), HandoffState::HoldAfterEnter { .. })
+                                    && gate.is_some(),
+                                "a signal was held outside a deferred Enter's gate: {bytes:?} \
+                                 in {:?}",
+                                h.state()
+                            );
+                            assert_eq!(
+                                h.take_deferred_key_started(),
+                                gate,
+                                "a signal held behind a deferred Enter was not reported for its \
+                                 gate: {bytes:?}"
+                            );
+                        }
                     }
                     UserBytesRoute::WriteCounted => {
                         assert!(

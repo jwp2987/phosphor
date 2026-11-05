@@ -804,15 +804,15 @@ fuzz-smoke:
     - command -v cargo-fuzz >/dev/null || cargo binstall --force -y cargo-fuzz
     # The fuzz crate has its own lockfile; start from the app's so versions match.
     - cp Cargo.lock fuzz/Cargo.lock
-    - |
-      for target in ansi_parser hook_parsers input_queue key_facts_cell markdown_parser mermaid_render route_decide typeahead_handoff; do
-        ./script/agent-cargo ci-fuzz fuzz run --fuzz-dir fuzz "$target" -- -max_total_time="$FUZZ_SECONDS" -timeout=20
-      done
+    # libFuzzer's progress lines go to fuzz/logs/<target>.log, not the trace (they overran GitLab's 4 MB trace limit and
+    # cut off the r18u23 crash's panic message); the trace keeps the final stats and any crash's panic text.
+    - ./script/ci/fuzz_smoke.sh
   artifacts:
     when: always
     expire_in: 14 days
     paths:
       - fuzz/artifacts/
+      - fuzz/logs/
 
 # The scope of the `mutants` job (box, Mac and Windows): one definition so the three platforms mutate the same code.
 .mutants_scope:
@@ -982,6 +982,7 @@ fuzz-smoke-macos:
     expire_in: 14 days
     paths:
       - fuzz/artifacts/
+      - fuzz/logs/
 
 mutants-macos:
   extends: [.mac_suite, .mutants_scope]
