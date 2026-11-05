@@ -481,7 +481,7 @@ use crate::terminal::event::TerminalMode;
 use crate::terminal::event::UserBlockCompleted;
 use crate::terminal::event_listener::Wakeup;
 use crate::terminal::find::{BlockGridMatch, BlockListMatch, TerminalFindModel};
-use crate::terminal::input::{InputState, MenuPositioning, MenuPositioningProvider};
+use crate::terminal::input::{EnterDiscard, InputState, MenuPositioning, MenuPositioningProvider};
 use crate::terminal::keys::TerminalKeybindings;
 use crate::terminal::meta_shortcuts::handle_keystroke_despite_composing;
 #[cfg(unix)]
@@ -817,9 +817,60 @@ async fn wait_frame_or_give_up(frame_rx: async_channel::Receiver<()>, cap: Durat
 const AGENT_INTERRUPT_GRACE: Duration = Duration::from_secs(3);
 
 /// The longest input typed after a deferred Enter waits for the pty to take the command that
-/// Enter submitted, before it is handed back to the editor as text (#1016; #1577: the timer no
-/// longer routes it by the facts of that moment, which could write it to the pty).
-const AFTER_ENTER_REPLAY_PTY_WAIT: Duration = Duration::from_millis(300);
+/// Enter submitted (#1016; #1577: the timer never routes it by the facts of that moment, which
+/// could write it to the pty).
+///
+/// #1661: a give-up NET, never how the wait normally ends. The keys are released, in typed order,
+/// by events: the pty controller taking the command (`TypeaheadHandoffChanged`, or the hand-off
+/// saying it will not engage), the shell's Preexec, the command's block starting, or that block
+/// completing. It was 300 ms, inside the stalls of a busy machine. When it fires the keys typed
+/// after the Enter are DISCARDED with a toast that gives the count (owner decision 2026-11-05),
+/// never handed back as editor text and never written. Together with the gate's own leak net
+/// (`enter_queue::ENTER_GATE_LEAK_NET`) it means a hold always ends.
+const AFTER_ENTER_REPLAY_PTY_WAIT: Duration = Duration::from_secs(10);
+
+/// [`AFTER_ENTER_REPLAY_PTY_WAIT`], or the calling thread's test override.
+fn enter_route_wait_net() -> Duration {
+    #[cfg(test)]
+    if let Some(net) = ENTER_ROUTE_WAIT_NET_FOR_TEST.with(|slot| slot.get()) {
+        return net;
+    }
+    AFTER_ENTER_REPLAY_PTY_WAIT
+}
+
+#[cfg(test)]
+thread_local! {
+    static ENTER_ROUTE_WAIT_NET_FOR_TEST: std::cell::Cell<Option<Duration>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Shortens the route-settle net on the calling thread until the guard drops (tests that wait
+/// for the give-up itself).
+#[cfg(test)]
+pub(crate) fn set_enter_route_wait_net_for_test(net: Duration) -> EnterRouteWaitNetGuard {
+    EnterRouteWaitNetGuard(ENTER_ROUTE_WAIT_NET_FOR_TEST.with(|slot| slot.replace(Some(net))))
+}
+
+#[cfg(test)]
+pub(crate) struct EnterRouteWaitNetGuard(Option<Duration>);
+
+#[cfg(test)]
+impl Drop for EnterRouteWaitNetGuard {
+    fn drop(&mut self) {
+        let previous = self.0;
+        ENTER_ROUTE_WAIT_NET_FOR_TEST.with(|slot| slot.set(previous));
+    }
+}
+
+/// #1661: the block of the command a submitted Enter ran, for the gate (`gate_key`) holding the
+/// keys typed after that Enter.
+#[derive(Clone, Debug)]
+struct EnterCommandBlock {
+    gate_key: u64,
+    block_id: BlockId,
+    /// The block has completed: the route has settled, whatever the pty facts say.
+    completed: bool,
+}
 
 /// How long a young line's Enter waits for a verdict that never arrives at all before it gives up
 /// (#1353 phase 3). A safety net for a lost signal, never how the wait normally ends; logged when
@@ -3320,6 +3371,10 @@ pub struct TerminalView {
     /// #1579: the origin of the last command submitted from this pane (`Some(true)`: the user's
     /// own submit), until the block it started is seen starting.
     ssh_submit_user_origin: Option<bool>,
+    /// #1661: the block of the command a submitted Enter ran while its gate holds keys typed after
+    /// it, captured where the view starts the command (`InputEvent::ExecuteCommand`), with the
+    /// gate's key. Its completion releases those keys (`settle_enter_queue`).
+    enter_command_block: Option<EnterCommandBlock>,
     /// #1579: the running block was started by the user's own submit. A connect gate armed at
     /// preexec for it (an ssh the submit's text did not show, e.g. an alias) inherits it as
     /// `user_submitted`, so keys typed in the focused editor are held for the remote (#1565) in
@@ -5236,6 +5291,7 @@ impl TerminalView {
             ssh_connect_gate_released_at: None,
             ssh_handover_after_release: false,
             ssh_submit_user_origin: None,
+            enter_command_block: None,
             running_block_user_submitted: false,
             young_enter_released: true,
             young_enter_wait_id: 0,
@@ -13141,8 +13197,88 @@ impl TerminalView {
     /// #1353 phase 3: the Enter whose gate holds keys has run. They are released (in order, by the
     /// queue's one drain) once the route it took has settled: for a shell command, once the pty has
     /// taken it. Event driven: called when the Enter has run, when the typeahead hand-off engages
-    /// (`TypeaheadHandoffChanged`) and when the command's block starts. The only timer is the
-    /// give-up cap for a pty that never takes the command, armed once and logged when it fires.
+    /// (`TypeaheadHandoffChanged`), at the shell's Preexec, when the command's block starts and
+    /// (#1661) when it completes. The only timer is the give-up net for a pty that never takes the
+    /// command ([`AFTER_ENTER_REPLAY_PTY_WAIT`], 10 s), armed once and logged when it fires; it
+    /// discards the keys (#1661).
+    /// #1661: the view starts a command. While a submitted Enter's gate holds the keys typed
+    /// after it, the active block is the one that runs the Enter's command: it is recorded with
+    /// the gate's key (once per gate), so that block's completion releases the keys. Read here,
+    /// on the view's own thread with the model locked as for the ssh gate, not by a `try_lock`
+    /// from the input (#1661 review F3).
+    fn note_command_started_for_enter_gate(&mut self, ctx: &mut ViewContext<Self>) {
+        let input = self.input.as_ref(ctx);
+        let Some(gate_key) = input.enter_gate_key() else {
+            return;
+        };
+        if !input.enter_queue_awaits_pty() {
+            return;
+        }
+        if self
+            .enter_command_block
+            .as_ref()
+            .is_some_and(|block| block.gate_key == gate_key)
+        {
+            return;
+        }
+        let block_id = self.model.lock().active_block_id().clone();
+        self.enter_command_block = Some(EnterCommandBlock {
+            gate_key,
+            block_id,
+            completed: false,
+        });
+    }
+
+    /// #1661: the block `block_id` completed. Returns whether it ran the command of the Enter
+    /// whose gate is open (the view then settles that gate).
+    fn note_block_completed_for_enter_gate(
+        &mut self,
+        block_id: &BlockId,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        let gate_key = self.input.as_ref(ctx).enter_gate_key();
+        match self.enter_command_block.as_mut() {
+            Some(block) if Some(block.gate_key) == gate_key && &block.block_id == block_id => {
+                block.completed = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// #1661: the command of the Enter whose gate is open has completed.
+    fn enter_command_completed(&self, ctx: &AppContext) -> bool {
+        let gate_key = self.input.as_ref(ctx).enter_gate_key();
+        self.enter_command_block
+            .as_ref()
+            .is_some_and(|block| block.completed && Some(block.gate_key) == gate_key)
+    }
+
+    /// Test-only: records the active block as the command block of the open Enter gate, as the
+    /// view's `ExecuteCommand` handling does (#1661).
+    #[cfg(test)]
+    pub(crate) fn note_command_started_for_enter_gate_for_test(
+        &mut self,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.note_command_started_for_enter_gate(ctx);
+    }
+
+    /// Test-only: the view's `BlockCompleted` handling for the open Enter gate's block (#1661).
+    #[cfg(test)]
+    pub(crate) fn complete_enter_command_block_for_test(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(block_id) = self
+            .enter_command_block
+            .as_ref()
+            .map(|block| block.block_id.clone())
+        else {
+            return;
+        };
+        if self.note_block_completed_for_enter_gate(&block_id, ctx) {
+            self.settle_enter_queue(ctx);
+        }
+    }
+
     /// Test-only: the settle the view runs on the pty's events (#1652 tests drive it explicitly).
     #[cfg(test)]
     pub(crate) fn settle_enter_queue_for_test(&mut self, ctx: &mut ViewContext<Self>) {
@@ -13154,21 +13290,21 @@ impl TerminalView {
             return;
         }
         if self.input.as_ref(ctx).enter_queue_awaits_pty() {
+            // #1661: the command's own block has completed: the route has settled (the keys go
+            // where keys typed now go), whatever the pty facts of this moment say.
             let pty_ready = self.should_write_typed_chars_to_pty(ctx)
                 || self.is_long_running()
-                || self.typeahead_handoff_routes_keys_to_pty();
+                || self.typeahead_handoff_routes_keys_to_pty()
+                || self.enter_command_completed(ctx);
             if !pty_ready {
                 let arm = self
                     .input
                     .update(ctx, |input, _| input.take_enter_route_cap_arm());
                 if let Some(key) = arm {
-                    ctx.spawn(
-                        Timer::after(AFTER_ENTER_REPLAY_PTY_WAIT),
-                        move |me, _, ctx| {
-                            me.input
-                                .update(ctx, |input, ctx| input.give_up_enter_route_wait(key, ctx));
-                        },
-                    );
+                    ctx.spawn(Timer::after(enter_route_wait_net()), move |me, _, ctx| {
+                        me.input
+                            .update(ctx, |input, ctx| input.give_up_enter_route_wait(key, ctx));
+                    });
                 }
                 return;
             }
@@ -14331,87 +14467,97 @@ impl TerminalView {
         );
     }
 
-    /// The tail of the report-patience give-up (#1215), with the keys that were held behind the
-    /// Enter: they join the editor as text and a notice says the Enter did not run.
+    /// The tail of the report-patience give-up (#1215), with the entries that were held behind the
+    /// Enter: the Enter did not run and its text stays where it is; what was typed after it is
+    /// DISCARDED (owner decision 2026-11-05, #1661), never put into the editor, and the toast
+    /// says the Enter did not run and gives the count.
     pub(super) fn give_up_deferred_enter_keys_to_editor(
         &mut self,
-        held: Vec<u8>,
+        taken: Vec<crate::terminal::input_queue::InputEntry>,
         ctx: &mut ViewContext<Self>,
     ) {
         log::warn!(
             "Enter not run: the shell did not report its line within {} ms; the text \
-             stays in the input",
-            TYPEAHEAD_REPORT_PATIENCE.as_millis()
+             stays in the input, {} entr(ies) typed after it discarded",
+            TYPEAHEAD_REPORT_PATIENCE.as_millis(),
+            taken.len()
         );
-        self.input.update(ctx, |input, ctx| {
-            input.clear_handoff_enter_hold();
-            let text = text_for_editor(&held);
-            if !text.is_empty() {
-                input.system_insert(&text, ctx);
-            }
-        });
-        if ctx.has_singleton_model::<ToastStack>() {
-            let window_id = ctx.window_id();
-            ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
-                toast_stack.add_ephemeral_toast(
-                    DismissibleToast::new(
-                        "Enter not run: the shell did not report its line. The text is \
-                         in the input; press Enter to run it"
-                            .to_string(),
-                        ToastFlavor::Default,
-                    ),
-                    window_id,
-                    ctx,
-                );
-            });
-        }
+        self.input
+            .update(ctx, |input, _| input.clear_handoff_enter_hold());
+        let discarded = self.discard_taken_enter_gate_entries(
+            &taken,
+            EnterDiscard::GiveUp {
+                reason: "Enter not run: the shell did not report its line. The text is in the \
+                         input; press Enter to run it",
+                always: true,
+            },
+            ctx,
+        );
+        self.guard_line_after_deferred_enter_give_up(discarded, ctx);
         self.note_editor_took_over();
         self.redetermine_terminal_focus(ctx);
     }
 
     /// #1577: a timer gave up on the deferred Enter before the verdict / report it waited for
-    /// (`why` names which): the Enter does not run, the text stays in the editor, the keys held
-    /// behind the Enter follow it as text, the next Enter is consumed once with a toast, and it is
-    /// logged with counts. Nothing is written to the pty, nothing is routed by the clock.
+    /// (`why` names which): the Enter does not run and the text stays in the editor. #1661 (owner
+    /// decision 2026-11-05): the entries held behind the Enter are DISCARDED, never put into the
+    /// editor, with a toast that gives the count; it is logged with counts. Nothing is written
+    /// to the pty, nothing is routed by the clock.
     pub(super) fn hand_back_deferred_enter_keys_to_editor(
         &mut self,
-        held: Vec<u8>,
+        taken: Vec<crate::terminal::input_queue::InputEntry>,
         why: &'static str,
         ctx: &mut ViewContext<Self>,
     ) {
-        let text = text_for_editor(&held);
         log::warn!(
-            "Enter not run ({why}): the text stays in the input; {} held byte(s) handed back to \
-             the editor",
-            held.len()
+            "Enter not run ({why}): the text stays in the input; {} entr(ies) typed after it \
+             discarded",
+            taken.len()
         );
         warpui::input_order::log_key_hop("enter_verdict_give_up", || {
-            format!(
-                "{why} held_bytes={} chars={}",
-                held.len(),
-                text.chars().count()
-            )
+            format!("{why} discarded_entries={}", taken.len())
         });
-        self.input.update(ctx, |input, ctx| {
-            input.clear_handoff_enter_hold();
-            if !text.is_empty() {
-                input.system_insert(&text, ctx);
-            }
-            // Several lines in one buffer would submit as ONE command: the first Enter on them
-            // is held with the "check the line" toast. One line is what the user typed: the
-            // next Enter sends it.
-            let buffer = input.editor().as_ref(ctx).buffer_text(ctx);
-            if buffer.contains('\n') {
-                input.arm_handed_back_enter_guard(buffer);
-            }
-        });
-        let toast = match why {
+        self.input
+            .update(ctx, |input, _| input.clear_handoff_enter_hold());
+        let reason = match why {
             "uncovered_report" => "The shell did not report its line; the text stays in the input",
             _ => "Couldn't tell shell from chat in time; press Enter again to send",
         };
-        self.show_error_toast(toast.to_string(), ctx);
+        let discarded = self.discard_taken_enter_gate_entries(
+            &taken,
+            EnterDiscard::GiveUp {
+                reason,
+                always: true,
+            },
+            ctx,
+        );
+        self.guard_line_after_deferred_enter_give_up(discarded, ctx);
         self.note_editor_took_over();
         self.redetermine_terminal_focus(ctx);
+    }
+
+    /// The guard of the line a deferred Enter's give-up left in the editor, unrun (#1598, #1661):
+    /// several lines in one buffer would submit as ONE command, so the first Enter on them is held
+    /// with the "check the line" toast; one line is what the user typed and the next Enter sends
+    /// it, unless keys typed after the Enter were discarded (the user was still typing): then a
+    /// key typed now onto its end holds that Enter (the glue guard).
+    fn guard_line_after_deferred_enter_give_up(
+        &mut self,
+        discarded: usize,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.input.update(ctx, |input, ctx| {
+            let buffer = input.editor().as_ref(ctx).buffer_text(ctx);
+            if buffer.contains('\n') {
+                input.arm_handed_back_enter_guard(buffer);
+            } else if discarded > 0 {
+                input.arm_enter_guard(
+                    buffer,
+                    crate::terminal::input::EnterGuardKind::Glue,
+                    crate::terminal::input::GLUE_GUARD_TOAST,
+                );
+            }
+        });
     }
 
     /// [`Self::keep_deferred_enter_text`] for a timer's give-up (#1577): the keys behind the Enter
@@ -18003,6 +18149,11 @@ impl TerminalView {
                 self.input.update(ctx, |input, ctx| {
                     input.handle_block_completed_event(block_completed_event_clone, ctx);
                 });
+                // #1661: the command a submitted Enter ran has completed: the keys typed after
+                // that Enter wait no longer (they go where keys typed now go).
+                if self.note_block_completed_for_enter_gate(&block_completed_event.block_id, ctx) {
+                    self.settle_enter_queue(ctx);
+                }
 
                 // Notify find model that this block completed so it gets scanned with final output.
                 let completed_block_index = block_completed_event.block_index;
@@ -19362,6 +19513,12 @@ impl TerminalView {
                 // opened) is applied to the queue now: its keys are that command's typeahead.
                 self.drain_young_hold_ends(ctx);
                 self.focus_terminal_if_typeahead_handoff_wants_it(ctx);
+                // #1661: the shell started the command: the keys typed after its Enter follow it.
+                self.settle_enter_queue(ctx);
+            }
+            ModelEvent::Handler(AnsiHandlerEvent::Preexec) => {
+                // #1661: as above, without the hand-off.
+                self.settle_enter_queue(ctx);
             }
             ModelEvent::Handler(_) => {}
             ModelEvent::FinishUpdate(data) => {
@@ -30466,6 +30623,9 @@ impl TerminalView {
                     &event.command,
                     matches!(event.source, CommandExecutionSource::User),
                 );
+                // #1661: the block of a submitted Enter's command, whose completion releases the
+                // keys typed after that Enter.
+                self.note_command_started_for_enter_gate(ctx);
                 self.update_scroll_position_locking(
                     ScrollPositionUpdate::AfterCommandExecutionStarted,
                     ctx,

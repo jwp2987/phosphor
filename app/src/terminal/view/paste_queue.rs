@@ -43,6 +43,7 @@ use warpui::{SingletonEntity as _, ViewContext};
 use super::dest_table::Replayed;
 use super::{AfterEnterInput, Event, KeyPathScope, TerminalView, held_bytes_through_last_enter};
 use crate::editor::{EditorAction, HeldPasteKey};
+use crate::terminal::input::{ENTER_GATE_GIVE_UP_TOAST, EnterDiscard};
 use crate::terminal::input_queue::shadow::{DestClass, note_leaf as note_shadow_leaf};
 use crate::terminal::input_queue::table::{Class, Outcome};
 use crate::terminal::input_queue::{
@@ -1056,7 +1057,9 @@ impl TerminalView {
                     input.give_up_enter_gate_by_key(kind, gate_key, "leak_net", ctx)
                 });
                 if !handled {
-                    self.hand_back_gate_keys(kind, gate_key, "leak_net", ctx);
+                    // An Enter gate the input no longer tracks: what was typed behind that Enter
+                    // is discarded, as by every Enter give-up (owner decision 2026-11-05, #1661).
+                    self.discard_orphan_enter_gate(kind, gate_key, ctx);
                 }
                 return;
             }
@@ -1131,6 +1134,52 @@ impl TerminalView {
             let mut host = PtyQueueHost::new(self, ctx);
             guard.give_up(&mut host, token);
         }
+    }
+
+    /// #1661 (owner decision 2026-11-05): the entries `taken` out of a voided Enter gate are
+    /// discarded, never put back into the editor or routed: a paste's content waiting in the view's
+    /// maps goes with them, then the input drops its own and reports the count as `report` says.
+    pub(super) fn discard_taken_enter_gate_entries(
+        &mut self,
+        taken: &[InputEntry],
+        report: EnterDiscard,
+        ctx: &mut ViewContext<Self>,
+    ) -> usize {
+        for entry in taken {
+            if let EntryKind::Paste { paste_id, .. } = &entry.kind {
+                self.paste_queue.routed_pastes.remove(paste_id);
+                self.paste_queue.ssh_pastes.remove(paste_id);
+                self.paste_queue.payloads.remove(paste_id);
+            }
+        }
+        self.input.update(ctx, |input, ctx| {
+            input.report_enter_gate_discard(taken, report, ctx)
+        })
+    }
+
+    /// #1661: the leak net of an Enter gate (`kind`, `key`) the input no longer tracks fired. What
+    /// waited behind it is discarded with the shared toast; nothing goes to the editor or the pty.
+    fn discard_orphan_enter_gate(&mut self, kind: GateKind, key: u64, ctx: &mut ViewContext<Self>) {
+        let report = EnterDiscard::GiveUp {
+            reason: ENTER_GATE_GIVE_UP_TOAST,
+            always: false,
+        };
+        let queue = self.paste_queue.queue.clone();
+        let Some(mut guard) = queue.try_lock() else {
+            queue.defer(Deferred::VoidEnterGate { kind, key, report });
+            return;
+        };
+        let taken = {
+            let mut host = PtyQueueHost::new(self, ctx);
+            guard.close_gate_taking(&mut host, kind, key)
+        };
+        drop(guard);
+        log::warn!(
+            "input queue: the leak net of an Enter gate the input no longer tracks fired \
+             ({kind:?} {key}); {} entr(ies) behind it discarded (#1661)",
+            taken.len()
+        );
+        let _ = self.discard_taken_enter_gate_entries(&taken, report, ctx);
     }
 
     /// #1577: a setup hold (PowerShell or subshell) gave up on a timer: setup is treated as over
@@ -1561,55 +1610,50 @@ impl TerminalView {
             queue.defer(Deferred::TakeGateKeys { gate_id, then });
             return;
         }
-        match self.take_deferred_gate_bytes_now(gate_id, ctx) {
-            Some(held) => self.finish_taken_gate_keys(held, then, ctx),
+        match self.take_deferred_gate_entries_now(gate_id, ctx) {
+            Some(taken) => self.finish_taken_gate_keys(taken, then, ctx),
             None => queue.defer(Deferred::TakeGateKeys { gate_id, then }),
         }
     }
 
-    /// The continuation of [`Self::take_deferred_gate_keys_then`]. `held` is one chunk per key
-    /// entry, in typed order: a release to the pty keeps the key boundaries (ConPTY, #1189); the
-    /// editor hand-backs take the keys as one text.
+    /// The continuation of [`Self::take_deferred_gate_keys_then`], with the entries taken, in
+    /// typed order. A release to the pty turns them into one chunk per key entry (the key
+    /// boundaries kept, ConPTY #1189). A give-up DISCARDS them (owner decision 2026-11-05,
+    /// #1661): no editor key among them acts and nothing becomes editor text.
     fn finish_taken_gate_keys(
         &mut self,
-        held: Vec<Vec<u8>>,
+        taken: Vec<InputEntry>,
         then: GateKeysThen,
         ctx: &mut ViewContext<Self>,
     ) {
         match then {
-            GateKeysThen::Release => self.release_held_keys(held, ctx),
-            GateKeysThen::GiveUpToEditor => {
-                self.give_up_deferred_enter_keys_to_editor(held.concat(), ctx)
+            GateKeysThen::Release => {
+                let held = self.pty_bytes_of_taken_entries(taken, ctx);
+                self.release_held_keys(held, ctx)
             }
+            GateKeysThen::GiveUpToEditor => self.give_up_deferred_enter_keys_to_editor(taken, ctx),
             GateKeysThen::GiveUpHandBack(why) => {
-                self.hand_back_deferred_enter_keys_to_editor(held.concat(), why, ctx)
+                self.hand_back_deferred_enter_keys_to_editor(taken, why, ctx)
             }
         }
     }
 
-    /// The take itself, one chunk per key entry in typed order; `None` when the queue could not
-    /// be locked (nothing was changed).
-    fn take_deferred_gate_bytes_now(
+    /// The take itself, the entries in typed order; `None` when the queue could not be locked
+    /// (nothing was changed).
+    fn take_deferred_gate_entries_now(
         &mut self,
         gate_id: u64,
         ctx: &mut ViewContext<Self>,
-    ) -> Option<Vec<Vec<u8>>> {
+    ) -> Option<Vec<InputEntry>> {
         let queue = self.paste_queue.queue.clone();
-        let entries = {
-            let mut guard = queue.try_lock()?;
-            let mut host = PtyQueueHost::new(self, ctx);
-            let mut entries = Vec::new();
-            // A key held mid-delivery may have opened a second gate under the same id.
-            while guard.has_gate(GateKind::HandoffReport, gate_id) {
-                entries.extend(guard.close_gate_taking(
-                    &mut host,
-                    GateKind::HandoffReport,
-                    gate_id,
-                ));
-            }
-            entries
-        };
-        Some(self.pty_bytes_of_taken_entries(entries, ctx))
+        let mut guard = queue.try_lock()?;
+        let mut host = PtyQueueHost::new(self, ctx);
+        let mut entries = Vec::new();
+        // A key held mid-delivery may have opened a second gate under the same id.
+        while guard.has_gate(GateKind::HandoffReport, gate_id) {
+            entries.extend(guard.close_gate_taking(&mut host, GateKind::HandoffReport, gate_id));
+        }
+        Some(entries)
     }
 
     /// As [`Self::bytes_of_taken_entries`], for keys that go to the pty as typed or come back as
@@ -2771,10 +2815,10 @@ impl TerminalView {
             }
             Deferred::ApplyYoungHoldEnds => self.drain_young_hold_ends(ctx),
             Deferred::TakeGateKeys { gate_id, then } => {
-                let Some(held) = self.take_deferred_gate_bytes_now(gate_id, ctx) else {
+                let Some(taken) = self.take_deferred_gate_entries_now(gate_id, ctx) else {
                     return Err(Deferred::TakeGateKeys { gate_id, then });
                 };
-                self.finish_taken_gate_keys(held, then, ctx);
+                self.finish_taken_gate_keys(taken, then, ctx);
             }
             Deferred::TakePowershellKeys { then } => {
                 let Some(held) = self.take_powershell_held_bytes_now(ctx) else {
@@ -2782,46 +2826,14 @@ impl TerminalView {
                 };
                 self.finish_taken_powershell_keys(held, then, ctx);
             }
-            Deferred::VoidEnterGate { kind, key } => {
+            Deferred::VoidEnterGate { kind, key, report } => {
                 let Some(mut guard) = queue.try_lock() else {
-                    return Err(Deferred::VoidEnterGate { kind, key });
+                    return Err(Deferred::VoidEnterGate { kind, key, report });
                 };
                 let mut host = PtyQueueHost::new(self, ctx);
                 let taken = guard.close_gate_taking(&mut host, kind, key);
                 drop(guard);
-                // #1571 / #1446: everything typed behind the void Enter comes back as text: its
-                // Enters as line breaks, the editing keys' effect, pastes (never only the text
-                // entries, which lost the rest).
-                let text = crate::terminal::input::text_of_entries_typed_after(&taken, |id| {
-                    self.paste_queue.routed_pastes.remove(&id);
-                    self.paste_queue.ssh_pastes.remove(&id);
-                    self.paste_queue
-                        .payloads
-                        .remove(&id)
-                        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-                        .or_else(|| {
-                            self.input
-                                .update(ctx, |input, _| input.take_paste_payload_text(id))
-                        })
-                });
-                if !text.is_empty() {
-                    self.input.update(ctx, |input, ctx| {
-                        input.forget_hand_back_line_break();
-                        input.system_insert(&text, ctx);
-                        if text.contains('\n') {
-                            // Several lines in one buffer submit as one command: the first Enter
-                            // on them is held with the "check the line" toast.
-                            let buffer = input.buffer_text(ctx);
-                            input.arm_handed_back_enter_guard(buffer);
-                        }
-                    });
-                } else {
-                    // #1666 review: the busy-queue hand-back put a line break after the held line
-                    // for this text; nothing came, so the break goes (the line is as it was).
-                    self.input.update(ctx, |input, ctx| {
-                        input.drop_unused_hand_back_line_break(ctx)
-                    });
-                }
+                let _ = self.discard_taken_enter_gate_entries(&taken, report, ctx);
             }
             Deferred::DropSshGate {
                 gate,

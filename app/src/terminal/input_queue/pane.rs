@@ -100,8 +100,14 @@ pub enum Deferred {
     TakeGateKeys { gate_id: u64, then: GateKeysThen },
     /// Closes the PowerShell setup gate and hands the keys it held to `then`.
     TakePowershellKeys { then: PowershellKeysThen },
-    /// The waiting Enter's gate is void: closes it and puts the text typed behind it in the editor.
-    VoidEnterGate { kind: GateKind, key: u64 },
+    /// The waiting Enter's gate is void (a give-up, ^C, an edit of its line): closes it and
+    /// DISCARDS everything typed behind it, reported as `report` says (owner decision 2026-11-05,
+    /// #1661; #1768: the busy queue gives the free one's result).
+    VoidEnterGate {
+        kind: GateKind,
+        key: u64,
+        report: crate::terminal::input::EnterDiscard,
+    },
     /// Drops the ssh connect gate `gate` and the pastes still reading behind it (`paste_ids`),
     /// then does `then` with what they held. The view's own state was already detached.
     DropSshGate {

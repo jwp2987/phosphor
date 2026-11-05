@@ -160,10 +160,34 @@ fn paste_cap_hands_the_keys_behind_the_unread_paste_back() {
     }
 }
 
-/// A3 (#1577): the 10 s leak net of an Enter's gate hands the text typed behind the Enter back;
-/// the queue's own give-up used to deliver it through the stages.
+/// What an Enter gate's give-up must leave (#1661, owner decision 2026-11-05): the keys typed
+/// behind the Enter DISCARDED (the editor as it was, no guard: nothing came back), nothing written
+/// to the pty, the queue idle.
+fn assert_enter_gate_discarded(
+    terminal: &ViewHandle<TerminalView>,
+    app: &App,
+    writes: &Rc<RefCell<Vec<&'static str>>>,
+) {
+    assert!(
+        writes.borrow().is_empty(),
+        "a timer wrote to the pty: {:?}",
+        writes.borrow()
+    );
+    terminal.read(app, |view, ctx| {
+        view.input.read(ctx, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "", "nothing went to the editor");
+            assert!(!input.ssh_handover_enter_guard_armed());
+            assert!(!input.enter_queue_holds_keys(ctx));
+        });
+        assert!(ssh_queue_is_idle(view), "the queue still holds entries");
+    });
+}
+
+/// A3 (#1577) / #1661 (owner decision 2026-11-05): the 10 s leak net of an Enter's gate DISCARDS
+/// what was typed behind the Enter (text and pty keys); the queue's own give-up used to deliver it
+/// through the stages, and #1577 handed it back as editor text. Both modes.
 #[test]
-fn enter_gate_leak_net_hands_the_keys_behind_the_enter_back() {
+fn enter_gate_leak_net_discards_the_keys_behind_the_enter() {
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
             let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
@@ -178,12 +202,46 @@ fn enter_gate_leak_net_hands_the_keys_behind_the_enter_back() {
                     false,
                     ctx,
                 );
+                // A key typed for the pty behind the Enter (terminal focus).
+                input.offer_pty_bytes_through_editor_host_for_test(b"y".to_vec(), ctx);
             });
             terminal.update(&mut app, |view, ctx| {
                 let token = gate_token_of(view, input_queue::GateKind::EnterVerdict);
                 view.on_paste_queue_give_up(token, ctx);
             });
-            assert_handed_back(&terminal, &app, &writes, "x");
+            assert_enter_gate_discarded(&terminal, &app, &writes);
+        });
+    }
+}
+
+/// #1661: the leak net of an Enter gate the input no longer tracks discards what waited behind it
+/// too; it is never delivered by the queue's own give-up nor put into the editor. Both modes.
+#[test]
+fn orphan_enter_gate_leak_net_discards_the_keys_behind_it() {
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let writes = record_pty_writes(&mut app, &terminal);
+            let input = terminal.read(&app, |view, _| view.input.clone());
+            input.update(&mut app, |input, ctx| {
+                input.clear_buffer_and_reset_undo_stack(ctx);
+                input.open_submitted_enter_gate_for_test(
+                    vec![
+                        AfterEnterInput::Text("x".to_owned()),
+                        AfterEnterInput::Enter,
+                    ],
+                    false,
+                    ctx,
+                );
+                input.forget_enter_gate_for_test();
+            });
+            terminal.update(&mut app, |view, ctx| {
+                let token = gate_token_of(view, input_queue::GateKind::EnterVerdict);
+                view.on_paste_queue_give_up(token, ctx);
+            });
+            assert_enter_gate_discarded(&terminal, &app, &writes);
         });
     }
 }
@@ -257,7 +315,8 @@ fn young_hold_cap_hands_the_enter_and_keys_back_with_the_guard_armed() {
 }
 
 /// A6 (#1577): the uncovered-report patience (3 s) no longer RUNS the deferred Enter. The text
-/// stays in the editor, the keys held behind the Enter follow it, nothing is written or executed.
+/// stays in the editor; the keys held behind the Enter are DISCARDED (#1661, owner decision
+/// 2026-11-05), never put into the editor; nothing is written or executed.
 #[test]
 fn uncovered_report_patience_keeps_the_text_instead_of_running_the_enter() {
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
@@ -300,10 +359,9 @@ fn uncovered_report_patience_keeps_the_text_instead_of_running_the_enter() {
                 // A second firing changes nothing.
                 view.uncovered_report_patience_fired(id, ctx);
                 let buffer = view.input.as_ref(ctx).buffer_text(ctx);
-                assert!(buffer.starts_with("ho 47"), "{buffer:?}");
-                assert!(
-                    buffer.contains("ls"),
-                    "the key behind the Enter is back: {buffer:?}"
+                assert_eq!(
+                    buffer, "ho 47",
+                    "the text stays and the key behind the Enter is discarded"
                 );
                 assert!(view.paste_queue.queue.borrow().is_idle());
             });

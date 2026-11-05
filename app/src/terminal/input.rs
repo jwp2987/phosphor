@@ -4,7 +4,7 @@ mod classic;
 mod cli_agent;
 mod common;
 mod enter_queue;
-pub(crate) use enter_queue::text_of_entries_typed_after;
+pub(crate) use enter_queue::{ENTER_GATE_GIVE_UP_TOAST, EnterDiscard};
 pub mod conversations;
 pub mod decorations;
 pub mod inline_history;
@@ -2325,10 +2325,6 @@ pub struct Input {
     /// The text handed back to the editor when the ssh connect ended; `Some` while armed (#1395).
     /// Other hand-backs arm it too, each with its own kind and toast (#1666).
     ssh_handover_enter_guard: Option<EnterGuard>,
-    /// #1666 review: the buffer a busy-queue hand-back left, with the line break it added for the
-    /// text the deferred take brings; `Some` until that take runs. A take that brings nothing
-    /// removes the break, if the buffer is still exactly this.
-    hand_back_line_break: Option<String>,
     /// Whether the last Enter submitted a shell command; read by `input_enter_as_shell_command`.
     last_enter_submitted_shell_command: bool,
     /// What the editor held when it last submitted a command. The editor is cleared when that
@@ -4102,7 +4098,6 @@ impl Input {
             handoff_enter_started: None,
             running_deferred_enter: false,
             ssh_handover_enter_guard: None,
-            hand_back_line_break: None,
             last_enter_submitted_shell_command: false,
             editor_submission: None,
             editor_submission_from_pending: false,
@@ -15052,8 +15047,8 @@ impl Input {
     /// Moves what was typed behind the waiting Enter out of the buffer (#1016). The Enter
     /// submits exactly the text typed before it; text typed after it is queued, in order, and
     /// replayed once the Enter has run. Returns whether the waiting Enter is still valid; if the
-    /// user edited the text itself (Ctrl-C, Backspace) it is void, as before, and what was typed
-    /// behind it stays in the buffer.
+    /// user edited the text itself (Ctrl-C, Backspace) it is void, as before: the buffer stays as
+    /// edited and what was queued behind the Enter is discarded with a toast (#1661).
     fn reconcile_verdict_wait(&mut self, ctx: &mut ViewContext<Self>) -> bool {
         let Some(wait) = self.verdict_wait.as_ref() else {
             return false;
@@ -15093,11 +15088,9 @@ impl Input {
                     self.cancel_pending_completions_for_deferred_enter();
                     self.end_deferred_enter_activity();
                 }
-                // Typed behind the void Enter on the queue: kept in the editor too.
-                let rest = self.void_enter_gate(ctx);
-                if !rest.is_empty() {
-                    self.system_insert(&rest, ctx);
-                }
+                // Typed behind the void Enter on the queue: discarded, with a toast that gives the
+                // count (owner decision 2026-11-05, #1661 / #1767: never glued onto the line).
+                self.void_enter_gate(ctx);
                 false
             }
         }
@@ -15370,34 +15363,6 @@ impl Input {
             .is_some_and(|guard| guard.kind == EnterGuardKind::Glue)
         {
             self.ssh_handover_enter_guard = None;
-        }
-    }
-
-    /// #1666 review: a busy-queue hand-back added a line break after the held line for the text
-    /// its deferred take brings back; remembers the buffer it left.
-    pub(crate) fn note_hand_back_line_break(&mut self, buffer: String) {
-        self.hand_back_line_break = Some(buffer);
-    }
-
-    /// The deferred take brought text: the line break is used.
-    pub(crate) fn forget_hand_back_line_break(&mut self) {
-        self.hand_back_line_break = None;
-    }
-
-    /// The deferred take brought nothing: the line break the hand-back added is removed, only if
-    /// the buffer is still exactly what the hand-back left (nothing typed since is touched).
-    pub(crate) fn drop_unused_hand_back_line_break(&mut self, ctx: &mut ViewContext<Self>) {
-        let Some(left) = self.hand_back_line_break.take() else {
-            return;
-        };
-        let buffer = self.editor.as_ref(ctx).buffer_text(ctx);
-        if buffer != left {
-            return;
-        }
-        if let Some(line) = left.strip_suffix('\n') {
-            let line = line.to_string();
-            self.editor
-                .update(ctx, |editor, ctx| editor.set_buffer_text(&line, ctx));
         }
     }
 

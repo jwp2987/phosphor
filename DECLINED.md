@@ -2894,3 +2894,24 @@ paste behind it is being read), and an Enter is an entry, never an answer. The a
 - Earlier rounds (replaying the keys, then a text model of them) were withdrawn: a model cannot
   match the editor, and its output would have been executed on Confirm.
 <!-- markers: keep:gate_enter_for_multiline_dialog keep:answer_multiline_dialog keep:discard_dialog_typeahead keep:cancel_multiline_dialog keep:MULTILINE_DIALOG_KEY_FLAG keep:take_answer_target keep:dialog_typeahead_discarded_toast -->
+
+## Keys typed after an Enter are DROPPED when its gate gives up — DECIDED 2026-11-05 (#1661; resolves #1766, #1767, #1768, #1769, #1770)
+
+Owner decision (2026-11-05), for v0.1.17: when an Enter gate gives up (the 10 s route-settle net,
+the gate's leak net, a verdict / Tab-completion / unready-shell give-up, a void of the waiting
+Enter, the hand-off's report give-ups), the keys typed AFTER the Enter are **discarded**, with one
+toast that says so and gives the count ("The shell didn't take the command in time — 12 keys typed
+after Enter were discarded"). They are never converted back into editor text. The owner's reason:
+"we won't know every use case" — every conversion of held entries (text, pty keys, pastes, editing
+keys, Enters) into editor text was a guess, and each patch of it (#1577, #1630, #1652, #1666, the
+#1766 attempt) found another case it glued or lost.
+
+- The line typed BEFORE the Enter, if it did not run, stays in the editor, unrun, with its own
+  toast and guard. Only keys typed after the Enter are dropped.
+- Free and busy queues give the same result (#1768): the deferred `VoidEnterGate` carries the
+  report and discards the same keys with the same toast.
+- Normal release is event-driven (the hand-off, Preexec, the command's block starting or
+  completing); the timer is a 10 s net only, and it never routes or writes.
+- Not reopened by: restoring `text_of_entries_typed_after` or any other held-entry-to-text
+  conversion for an Enter gate's give-up. A visible "keys waiting" indicator is deferred.
+<!-- markers: sym:text_of_entries_typed_after keep:typed_after_enter_discarded_toast keep:report_enter_gate_discard -->

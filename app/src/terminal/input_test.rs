@@ -14088,15 +14088,15 @@ fn test_tab_then_enter_completion_in_time_runs_the_completed_line_in_both_modes(
     }
 }
 
-/// #1666: keys typed behind an Enter held for a Tab completion that then gives up are not run
-/// and not lost: they come back to the editor after the uncompleted line in typed order (the
-/// Enter among them as a new line), nothing is released to the pty. The give-up's toast does not
-/// promise that Enter runs the line, because the next Enter is held by the hand-back guard (with
-/// a toast that agrees), and that held Enter runs nothing. Both modes.
+/// #1666 / #1661 (owner decision 2026-11-05): keys typed behind an Enter held for a Tab
+/// completion that then gives up are not run and not routed: they are DISCARDED (text, an Enter,
+/// all of them), and the one toast gives the count. The uncompleted line stays in the editor,
+/// unrun, with the glue guard: an Enter on it as shown runs it, text typed onto it holds that
+/// Enter. Nothing is released to a destination. Both modes.
 #[test]
-fn test_tab_then_enter_give_up_keeps_the_keys_typed_after_it_in_order() {
+fn test_tab_then_enter_give_up_discards_the_keys_typed_after_it() {
     use crate::terminal::input::enter_queue::{
-        COMPLETION_GIVE_UP_WITH_TYPED_TOAST, COMPLETION_GUARD_TOAST,
+        COMPLETION_GIVE_UP_TOAST, typed_after_enter_discarded_toast,
     };
     use crate::terminal::input_queue::DestinationMode;
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
@@ -14143,49 +14143,42 @@ fn test_tab_then_enter_give_up_keeps_the_keys_typed_after_it_in_order() {
                 assert!(!input.enter_queue_holds_keys(ctx), "{mode:?}: gate closed");
                 assert_eq!(
                     input.buffer_text(ctx),
-                    "git checkout fe\nls\npwd",
-                    "{mode:?}: handed back in typed order"
+                    "git checkout fe",
+                    "{mode:?}: the line typed before the Enter stays; nothing typed after it \
+                     came back"
                 );
                 assert_eq!(
                     input.enter_guard_for_test(),
-                    Some((EnterGuardKind::HandedBackText, COMPLETION_GUARD_TOAST)),
+                    Some((EnterGuardKind::Glue, GLUE_GUARD_TOAST)),
                     "{mode:?}"
                 );
             });
             assert_eq!(
                 *toasts.borrow(),
-                [COMPLETION_GIVE_UP_WITH_TYPED_TOAST.to_string()],
-                "{mode:?}: exactly one toast, and it does not promise Enter runs the line"
+                [typed_after_enter_discarded_toast(
+                    COMPLETION_GIVE_UP_TOAST,
+                    4
+                )],
+                "{mode:?}: exactly one toast, with the count"
             );
             deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);
             assert!(executed.borrow().is_empty(), "{mode:?}");
             input.read(&app, |input, ctx| {
-                assert_eq!(
-                    input.buffer_text(ctx),
-                    "git checkout fe\nls\npwd",
-                    "{mode:?}"
-                );
+                assert_eq!(input.buffer_text(ctx), "git checkout fe", "{mode:?}");
             });
 
-            // The next Enter is held by the guard, with the toast that matches the give-up's.
-            input.update(&mut app, |input, ctx| input.input_enter(ctx));
+            // Text typed onto the line after the give-up does not run glued to it.
+            input.update(&mut app, |input, ctx| {
+                input.user_insert("x", ctx);
+                input.input_enter(ctx);
+            });
             assert!(
                 executed.borrow().is_empty(),
-                "{mode:?}: the held Enter runs nothing"
+                "{mode:?}: the glued line must not run"
             );
-            input.read(&app, |input, ctx| {
-                assert_eq!(
-                    input.buffer_text(ctx),
-                    "git checkout fe\nls\npwd",
-                    "{mode:?}"
-                );
-            });
             assert_eq!(
-                *toasts.borrow(),
-                [
-                    COMPLETION_GIVE_UP_WITH_TYPED_TOAST.to_string(),
-                    COMPLETION_GUARD_TOAST.to_string()
-                ],
+                toasts.borrow().last().map(String::as_str),
+                Some(GLUE_GUARD_TOAST),
                 "{mode:?}"
             );
         });
@@ -16032,11 +16025,15 @@ async fn wait_until(app: &App, mut done: impl FnMut(&App) -> bool) {
 /// #1353 phase 3, agent mode: an Enter that waits for the autodetect verdict holds the keys typed
 /// behind it, at 10 ms per key, as queue entries. They never enter the buffer (so the line the
 /// Enter submits is exactly the line), a 50 ms stall between the Enter and the verdict releases
-/// nothing. If the verdict never comes within the cap (#1577) they are handed back to the editor
-/// in typed order, the Enter among them as a new line, instead of being released by the clock.
+/// nothing. If the verdict never comes within the cap (#1577) they are not released by the clock:
+/// the line stays and they are DISCARDED, with one toast that gives the count (#1661, owner
+/// decision 2026-11-05).
 #[test]
 fn test_enter_queue_keys_typed_behind_a_verdict_held_enter_keep_order_at_10ms_per_key() {
     use crate::ai::blocklist::InputConfig;
+    use crate::terminal::input::enter_queue::{
+        VERDICT_GIVE_UP_TOAST, typed_after_enter_discarded_toast,
+    };
 
     App::test((), |mut app| async move {
         let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
@@ -16052,6 +16049,7 @@ fn test_enter_queue_keys_typed_behind_a_verdict_held_enter_keep_order_at_10ms_pe
         let input = terminal.read(&app, |terminal, _| terminal.input().clone());
         let editor = input.read(&app, |input, _| input.editor().clone());
         let released = record_released_enter_entries(&mut app, &input);
+        let toasts = record_toast_texts(&mut app);
 
         let line = "is it true";
         input.update(&mut app, |input, ctx| {
@@ -16114,9 +16112,9 @@ fn test_enter_queue_keys_typed_behind_a_verdict_held_enter_keep_order_at_10ms_pe
         });
 
         // The classifier spent its compute cap (#1577): the clock never picks shell or agent, so
-        // the Enter does NOT go ahead. The line and what was typed behind it come back to the
-        // editor in typed order (the Enters as new lines), the next Enter is held with the
-        // toast, and nothing was released to either destination.
+        // the Enter does NOT go ahead. The line stays; what was typed behind it is discarded
+        // (#1661), the toast gives the count, the glue guard holds an Enter on text typed onto the
+        // line next, and nothing was released to either destination.
         input.update(&mut app, |input, ctx| {
             if let Some(wait) = input.verdict_wait.as_mut() {
                 wait.compute = ComputeClock::with_spent_for_test(
@@ -16132,15 +16130,25 @@ fn test_enter_queue_keys_typed_behind_a_verdict_held_enter_keep_order_at_10ms_pe
             assert!(!input.enter_queue_holds_keys(ctx), "the gate is closed");
             assert_eq!(
                 input.buffer_text(ctx),
-                "is it true\necho hi\nls",
-                "handed back in typed order, one line each"
+                "is it true",
+                "the line stays; nothing typed after the Enter came back"
             );
-            assert!(input.ssh_handover_enter_guard_armed());
+            assert_eq!(
+                input.enter_guard_for_test(),
+                Some((EnterGuardKind::Glue, GLUE_GUARD_TOAST))
+            );
         });
         assert!(
             released.borrow().is_empty(),
             "nothing was released to a destination: {:?}",
             released.borrow()
+        );
+        // `echo hi` (seven keys), the Enter, `ls` (two keys).
+        let expected = typed_after_enter_discarded_toast(VERDICT_GIVE_UP_TOAST, 10);
+        assert!(
+            toasts.borrow().contains(&expected),
+            "the toast gives the count: {:?}",
+            toasts.borrow()
         );
     });
 }
@@ -16190,8 +16198,8 @@ fn test_enter_queue_tab_enter_then_typing_releases_the_keys_after_the_completed_
             assert_eq!(input.buffer_text(ctx).trim_end(), "git checkout feature");
         });
         // The completed line's command starts and takes the pty: that event releases the keys
-        // behind it. Without it the keys are handed back to the editor after
-        // `AFTER_ENTER_REPLAY_PTY_WAIT` instead of routed by the clock (#1577, A2).
+        // behind it. Without it the keys are discarded after `AFTER_ENTER_REPLAY_PTY_WAIT`
+        // instead of routed by the clock (#1577 A2, #1661).
         terminal.update(&mut app, |terminal, _| {
             terminal
                 .model
@@ -16256,39 +16264,59 @@ fn test_enter_queue_ctrl_c_voids_the_held_enter_and_the_keys_behind_it() {
     });
 }
 
-/// #1353 phase 3: an edit of the waiting line itself voids the Enter, and the text that was
-/// already queued behind it is kept in the editor, not lost.
+/// #1353 phase 3 / #1661 / #1767 (owner decision 2026-11-05): an edit of the waiting line itself
+/// voids the Enter. The line stays as the user edited it; what was queued behind the Enter is
+/// DISCARDED (never glued onto the line), with one toast that gives the count. Both modes.
 #[test]
-fn test_enter_queue_voided_enter_keeps_the_typed_text_in_the_editor() {
-    App::test((), |mut app| async move {
-        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
-        let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, true).await;
-        let editor = input.read(&app, |input, _| input.editor().clone());
-        input.update(&mut app, |input, ctx| {
-            input.input_enter(ctx);
-        });
-        type_into_editor(&mut app, &editor, HeldPasteKey::Text("l".to_string()));
-        type_into_editor(&mut app, &editor, HeldPasteKey::Text("s".to_string()));
-        // Backspace is not held: it edits the waiting line, which voids the Enter.
-        type_into_editor(
-            &mut app,
-            &editor,
-            HeldPasteKey::Action(EditorAction::Backspace),
-        );
-        input.update(&mut app, |input, ctx| {
-            input.reconcile_verdict_wait(ctx);
-        });
-        input.read(&app, |input, ctx| {
-            assert!(input.verdict_wait.is_none(), "the edit voids the Enter");
-            assert!(!input.enter_queue_holds_keys(ctx));
-            assert!(
-                input.buffer_text(ctx).ends_with("ls"),
-                "what was typed behind the void Enter is kept, got {:?}",
-                input.buffer_text(ctx)
+fn test_enter_queue_voided_enter_discards_the_keys_typed_behind_it() {
+    use crate::terminal::input::enter_queue::{
+        ENTER_VOIDED_TOAST, typed_after_enter_discarded_toast,
+    };
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+            let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, true).await;
+            let editor = input.read(&app, |input, _| input.editor().clone());
+            let released = record_released_enter_entries(&mut app, &input);
+            let toasts = record_toast_texts(&mut app);
+            input.update(&mut app, |input, ctx| {
+                input.input_enter(ctx);
+            });
+            type_into_editor(&mut app, &editor, HeldPasteKey::Text("l".to_string()));
+            type_into_editor(&mut app, &editor, HeldPasteKey::Text("s".to_string()));
+            // Backspace is not held: it edits the waiting line, which voids the Enter.
+            type_into_editor(
+                &mut app,
+                &editor,
+                HeldPasteKey::Action(EditorAction::Backspace),
+            );
+            input.update(&mut app, |input, ctx| {
+                input.reconcile_verdict_wait(ctx);
+            });
+            input.read(&app, |input, ctx| {
+                assert!(
+                    input.verdict_wait.is_none(),
+                    "{mode:?}: the edit voids the Enter"
+                );
+                assert!(!input.enter_queue_holds_keys(ctx), "{mode:?}");
+                assert_eq!(
+                    input.buffer_text(ctx),
+                    "git checkout f",
+                    "{mode:?}: the edited line stays and nothing typed behind the void Enter \
+                     is glued onto it"
+                );
+            });
+            assert!(executed.borrow().is_empty(), "{mode:?}");
+            assert!(released.borrow().is_empty(), "{mode:?}: nothing routed");
+            assert_eq!(
+                *toasts.borrow(),
+                [typed_after_enter_discarded_toast(ENTER_VOIDED_TOAST, 2)],
+                "{mode:?}"
             );
         });
-        assert!(executed.borrow().is_empty());
-    });
+    }
 }
 
 /// #1389: cursor keys typed behind a LARGE paste (100 KB and 1 MB) are applied after the paste's
@@ -16714,8 +16742,8 @@ fn deferred_enter_on_unready_shell(
         input.update(&mut app, |input, ctx| input.execute_pending_command(ctx));
         let still_pending = input.read(&app, |input, _| input.has_pending_command());
         // The held line's command starts and takes the pty; what was typed after it follows. (Left
-        // unstarted, the keys are handed back to the editor after `AFTER_ENTER_REPLAY_PTY_WAIT`
-        // rather than routed by the clock, #1577 A2.)
+        // unstarted, the keys are discarded after `AFTER_ENTER_REPLAY_PTY_WAIT` rather than
+        // routed by the clock, #1577 A2, #1661.)
         terminal.update(&mut app, |terminal, _| {
             terminal
                 .model
@@ -17256,12 +17284,16 @@ fn test_unready_enter_holds_or_swallows_keys_with_no_text() {
     }
 }
 
-/// #1571, both destination modes: the held Enter's give-up never runs anything. The line and what
-/// was typed after it go back to the editor as text (one line each), the pending command is gone,
-/// and the readiness event that comes later runs nothing.
+/// #1571, both destination modes: the held Enter's give-up never runs anything. The line stays in
+/// the editor; what was typed after it is DISCARDED (owner decision 2026-11-05, #1661), with one
+/// toast that gives the count. The pending command is gone, and the readiness event that comes
+/// later runs nothing.
 #[test]
-fn test_unready_enter_give_up_hands_the_lines_back_and_runs_nothing() {
+fn test_unready_enter_give_up_keeps_the_line_discards_the_rest_and_runs_nothing() {
     use crate::ai::blocklist::InputConfig;
+    use crate::terminal::input::enter_queue::{
+        UNREADY_ENTER_GIVE_UP_TOAST, typed_after_enter_discarded_toast,
+    };
     use crate::terminal::input_queue::facts::DestinationMode;
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
@@ -17273,6 +17305,7 @@ fn test_unready_enter_give_up_hands_the_lines_back_and_runs_nothing() {
             let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
             let input = terminal.read(&app, |terminal, _| terminal.input().clone());
             let editor = input.read(&app, |input, _| input.editor().clone());
+            let toasts = record_toast_texts(&mut app);
             let executed = Rc::new(RefCell::new(Vec::<String>::new()));
             {
                 let executed = executed.clone();
@@ -17333,27 +17366,44 @@ fn test_unready_enter_give_up_hands_the_lines_back_and_runs_nothing() {
                 }
             });
             input.update(&mut app, |input, ctx| input.execute_pending_command(ctx));
-            *sink.borrow_mut() = Some((after_give_up, executed.borrow().clone()));
+            *sink.borrow_mut() = Some((
+                after_give_up,
+                executed.borrow().clone(),
+                toasts.borrow().clone(),
+            ));
         });
-        let ((buffer, pending, gated, holds), executed) =
+        let ((buffer, pending, gated, holds), executed, toasts) =
             result.borrow_mut().take().expect("the test body ran");
         assert_eq!(
-            buffer, "ssh fake\necho T",
-            "{mode:?}: handed back, one line each"
+            buffer, "ssh fake",
+            "{mode:?}: the line stays; nothing typed after it came back"
         );
         assert!(!pending, "{mode:?}: the held line is no longer pending");
         assert!(!gated, "{mode:?}: the gate is closed");
         assert!(!holds, "{mode:?}: nothing is held");
         assert!(executed.is_empty(), "{mode:?}: nothing ran: {executed:?}");
+        // `echo T` (six keys) and the Enter.
+        assert_eq!(
+            toasts,
+            [typed_after_enter_discarded_toast(
+                UNREADY_ENTER_GIVE_UP_TOAST,
+                7
+            )],
+            "{mode:?}"
+        );
     }
 }
 
-/// #1577 (A2): the route-settle net of a submitted Enter whose gate holds keys waiting for the pty
-/// to take its command (`AFTER_ENTER_REPLAY_PTY_WAIT`, 300 ms) hands them back to the editor
-/// instead of routing them by the facts of that moment. Nothing is run or written, the gate is
-/// gone, the next Enter is consumed once with the toast.
+/// #1577 (A2) / #1661 (owner decision 2026-11-05): the route-settle net of a submitted Enter whose
+/// gate holds keys waiting for the pty to take its command (`AFTER_ENTER_REPLAY_PTY_WAIT`, 10 s)
+/// DISCARDS them, with one toast that gives the count: never handed back to the editor, never
+/// routed by the facts of that moment. Nothing is run or written, the gate is gone, and no guard
+/// is armed (nothing came back).
 #[test]
-fn test_route_wait_give_up_hands_the_keys_behind_a_submitted_enter_to_the_editor() {
+fn test_route_wait_give_up_discards_the_keys_behind_a_submitted_enter() {
+    use crate::terminal::input::enter_queue::{
+        ENTER_GATE_GIVE_UP_TOAST, typed_after_enter_discarded_toast,
+    };
     use crate::terminal::input_queue::facts::DestinationMode;
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
@@ -17364,6 +17414,8 @@ fn test_route_wait_give_up_hands_the_keys_behind_a_submitted_enter_to_the_editor
             initialize_app(&mut app);
             let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
             let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+            let toasts = record_toast_texts(&mut app);
+            let released = record_released_enter_entries(&mut app, &input);
             let executed = Rc::new(RefCell::new(Vec::<String>::new()));
             {
                 let executed = executed.clone();
@@ -17388,17 +17440,31 @@ fn test_route_wait_give_up_hands_the_keys_behind_a_submitted_enter_to_the_editor
                     input.enter_queue_holds_keys(ctx),
                 )
             });
-            *sink.borrow_mut() = Some((state, executed.borrow().clone()));
+            *sink.borrow_mut() = Some((
+                state,
+                executed.borrow().clone(),
+                toasts.borrow().clone(),
+                released.borrow().len(),
+            ));
         });
-        let ((buffer, guard, holds), executed) =
+        let ((buffer, guard, holds), executed, toasts, released) =
             result.borrow_mut().take().expect("the test body ran");
         assert_eq!(
-            buffer, "x",
-            "{mode:?}: the key behind the Enter is back in the editor"
+            buffer, "",
+            "{mode:?}: the key behind the Enter is not put into the editor"
         );
-        assert!(guard, "{mode:?}: the next Enter is held with the toast");
+        assert!(!guard, "{mode:?}: nothing came back, so nothing is guarded");
         assert!(!holds, "{mode:?}: the gate is gone");
         assert!(executed.is_empty(), "{mode:?}: nothing ran: {executed:?}");
+        assert_eq!(released, 0, "{mode:?}: nothing was routed");
+        assert_eq!(
+            toasts,
+            [typed_after_enter_discarded_toast(
+                ENTER_GATE_GIVE_UP_TOAST,
+                1
+            )],
+            "{mode:?}"
+        );
     }
 }
 
@@ -17479,11 +17545,11 @@ fn unready_enter_then(
     outcome.expect("the test body ran")
 }
 
-/// #1571 review, both destination modes: a paste queued behind the held Enter is part of what the
-/// give-up hands back (it used to be dropped: only text entries were kept). Its content waits in
-/// the input's paste map, not in the entry.
+/// #1571 review / #1661 (owner decision 2026-11-05), both destination modes: a paste queued behind
+/// the held Enter is discarded by the give-up with the keys around it (never handed back as
+/// text); the line typed before the Enter stays.
 #[test]
-fn test_unready_enter_give_up_keeps_a_paste_typed_behind_it() {
+fn test_unready_enter_give_up_discards_a_paste_typed_behind_it() {
     use crate::terminal::input_queue::facts::DestinationMode;
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         let (buffer, pending, gated, executed) = unready_enter_then(
@@ -17505,17 +17571,17 @@ fn test_unready_enter_give_up_keeps_a_paste_typed_behind_it() {
             |input, ctx| input.execute_pending_command(ctx),
         );
         assert_eq!(
-            buffer, "ssh fake\necho PASTED",
-            "{mode:?}: the paste was kept"
+            buffer, "ssh fake",
+            "{mode:?}: the paste and the keys around it were discarded"
         );
         assert!(!pending && !gated, "{mode:?}");
         assert!(executed.is_empty(), "{mode:?}: nothing ran: {executed:?}");
     }
 }
 
-/// #1571 review, both destination modes: the handed-back lines are ONE buffer, which an Enter
-/// would submit as one command. The first Enter on it is held by the hand-back guard (with the
-/// "check the line" toast): nothing runs, the text stays.
+/// #1571 review, both destination modes: the line an unready shell's give-up leaves in the editor
+/// keeps its guard: the first Enter on it is held (with the "check the line" toast): nothing runs,
+/// the line stays. What was typed after the Enter is discarded (#1661), never merged into it.
 #[test]
 fn test_blind_enter_after_an_unready_give_up_is_held_by_the_guard() {
     use crate::terminal::input_queue::facts::DestinationMode;
@@ -17535,7 +17601,7 @@ fn test_blind_enter_after_an_unready_give_up_is_held_by_the_guard() {
             // The user presses Enter at once, the shell now ready.
             |input, ctx| input.input_enter(ctx),
         );
-        assert_eq!(buffer, "ssh fake\necho T", "{mode:?}: the text stays");
+        assert_eq!(buffer, "ssh fake", "{mode:?}: the line stays");
         assert!(!pending && !gated, "{mode:?}");
         assert!(
             executed.is_empty(),
@@ -17564,6 +17630,254 @@ fn test_ctrl_c_voids_an_unready_enter_and_its_gate() {
         assert!(!pending, "{mode:?}: the held line is void");
         assert!(!gated, "{mode:?}: the gate is closed");
         assert!(executed.is_empty(), "{mode:?}: nothing ran: {executed:?}");
+    }
+}
+
+/// #1768 / #1661: waits (bounded) until the pane queue's deferred operations have run and the
+/// input's Enter gate is gone from it: a busy-queue take runs when the view next looks at the
+/// mailbox (the queue's defer waker).
+async fn wait_for_enter_gate_take(
+    app: &mut App,
+    input: &ViewHandle<Input>,
+    queue: &crate::terminal::input_queue::PaneQueue,
+) {
+    for _ in 0..1000 {
+        if !queue.has_deferred() && input.read(app, |input, ctx| !input.enter_queue_holds_keys(ctx))
+        {
+            return;
+        }
+        warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+    }
+}
+
+/// #1768 / #1661 (owner decision 2026-11-05): a Tab-completion give-up on a BUSY queue (a peek out,
+/// so the take is deferred to the mailbox) discards exactly what the same give-up discards on a
+/// free queue: the line stays with its glue guard, the keys typed after the Enter go, one toast
+/// with the same count, nothing is released. Both modes.
+#[test]
+fn test_completion_give_up_on_a_busy_queue_discards_like_on_a_free_one() {
+    use crate::terminal::input::enter_queue::{
+        COMPLETION_GIVE_UP_TOAST, typed_after_enter_discarded_toast,
+    };
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        for busy in [false, true] {
+            App::test((), move |mut app| async move {
+                let _mode =
+                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+                let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+                let (input, executed, _generation, _snapshot) =
+                    tab_enter_fixture(&mut app, true).await;
+                let editor = input.read(&app, |input, _| input.editor().clone());
+                let released = record_released_enter_entries(&mut app, &input);
+                let toasts = record_toast_texts(&mut app);
+                input.update(&mut app, |input, ctx| {
+                    input.input_enter(ctx);
+                    input.disarm_hold_give_ups_for_test();
+                });
+                type_into_editor(&mut app, &editor, HeldPasteKey::Text("l".to_string()));
+                type_into_editor(&mut app, &editor, HeldPasteKey::Action(EditorAction::Enter));
+                let queue = editor.read(&app, |editor, _| editor.paste_hold().queue());
+                {
+                    let _held = busy.then(|| queue.peek());
+                    fire_tab_completion_cap(&input, &mut app);
+                    if busy {
+                        assert!(
+                            queue.has_deferred(),
+                            "{mode:?}: the take waits for the busy queue"
+                        );
+                        assert!(toasts.borrow().is_empty(), "{mode:?}: no toast before it");
+                    }
+                }
+                wait_for_enter_gate_take(&mut app, &input, &queue).await;
+                input.read(&app, |input, ctx| {
+                    assert_eq!(
+                        input.buffer_text(ctx),
+                        "git checkout fe",
+                        "{mode:?} busy={busy}: the line stays, nothing glued onto it"
+                    );
+                    assert_eq!(
+                        input.enter_guard_for_test(),
+                        Some((EnterGuardKind::Glue, GLUE_GUARD_TOAST)),
+                        "{mode:?} busy={busy}"
+                    );
+                    assert!(!input.enter_queue_holds_keys(ctx), "{mode:?} busy={busy}");
+                });
+                assert!(executed.borrow().is_empty(), "{mode:?} busy={busy}");
+                assert!(
+                    released.borrow().is_empty(),
+                    "{mode:?} busy={busy}: nothing routed"
+                );
+                assert_eq!(
+                    *toasts.borrow(),
+                    [typed_after_enter_discarded_toast(
+                        COMPLETION_GIVE_UP_TOAST,
+                        2
+                    )],
+                    "{mode:?} busy={busy}"
+                );
+            });
+        }
+    }
+}
+
+/// #1768 (owner decision 2026-11-05): ^C on an Enter held for an unready shell discards what was
+/// typed behind it the same way whether the queue is free or busy (it used to be handed back to
+/// the editor when busy): the buffer is untouched, nothing is routed, no toast (the tty flushes
+/// typed-ahead input on INTR), and the readiness event runs nothing. Both modes.
+#[test]
+fn test_unready_enter_cancel_on_a_busy_queue_discards_like_on_a_free_one() {
+    use crate::ai::blocklist::InputConfig;
+    use crate::terminal::input_queue::facts::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        for busy in [false, true] {
+            App::test((), move |mut app| async move {
+                let _mode =
+                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+                let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+                initialize_app(&mut app);
+                let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+                let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+                let editor = input.read(&app, |input, _| input.editor().clone());
+                let released = record_released_enter_entries(&mut app, &input);
+                let toasts = record_toast_texts(&mut app);
+                let executed = Rc::new(RefCell::new(Vec::<String>::new()));
+                {
+                    let executed = executed.clone();
+                    app.update(|ctx| {
+                        ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| {
+                            if let super::Event::ExecuteCommand(event) = event {
+                                executed.borrow_mut().push(event.command.clone());
+                            }
+                        });
+                    });
+                }
+                let real_session = terminal.update(&mut app, |terminal, _| {
+                    let mut model = terminal.model.lock();
+                    let block = model.block_list_mut().active_block_for_test();
+                    let real = block.session_id();
+                    block.set_session_id(SessionId::from(1571));
+                    real
+                });
+                input.update(&mut app, |input, ctx| {
+                    input.ai_input_model().update(ctx, |ai_input, ctx| {
+                        ai_input.set_input_config(
+                            InputConfig {
+                                input_type: InputType::Shell,
+                                is_locked: true,
+                            },
+                            true, /* is_input_buffer_empty */
+                            ctx,
+                        );
+                    });
+                    input.clear_buffer_and_reset_undo_stack(ctx);
+                    input.user_insert("ssh fake", ctx);
+                    input.input_enter(ctx);
+                });
+                for ch in "echo T".chars() {
+                    type_into_editor(&mut app, &editor, HeldPasteKey::Text(ch.to_string()));
+                }
+                type_into_editor(&mut app, &editor, HeldPasteKey::Action(EditorAction::Enter));
+                let queue = editor.read(&app, |editor, _| editor.paste_hold().queue());
+                {
+                    let _held = busy.then(|| queue.peek());
+                    input.update(&mut app, |input, ctx| {
+                        input.cancel_unready_enter("test", ctx)
+                    });
+                    if busy {
+                        assert!(queue.has_deferred(), "{mode:?}: the take is deferred");
+                    }
+                }
+                wait_for_enter_gate_take(&mut app, &input, &queue).await;
+                // The shell becomes ready: nothing is pending, so nothing runs.
+                terminal.update(&mut app, |terminal, _| {
+                    let mut model = terminal.model.lock();
+                    if let Some(real) = real_session {
+                        model
+                            .block_list_mut()
+                            .active_block_for_test()
+                            .set_session_id(real);
+                    }
+                });
+                input.update(&mut app, |input, ctx| input.execute_pending_command(ctx));
+                input.read(&app, |input, ctx| {
+                    assert_eq!(
+                        input.buffer_text(ctx),
+                        "ssh fake",
+                        "{mode:?} busy={busy}: nothing typed behind the Enter came back"
+                    );
+                    assert!(!input.unready_enter_gate_open(), "{mode:?} busy={busy}");
+                    assert!(!input.enter_queue_holds_keys(ctx), "{mode:?} busy={busy}");
+                    assert!(!input.has_pending_command(), "{mode:?} busy={busy}");
+                });
+                assert!(executed.borrow().is_empty(), "{mode:?} busy={busy}");
+                assert!(released.borrow().is_empty(), "{mode:?} busy={busy}");
+                assert!(
+                    toasts.borrow().is_empty(),
+                    "{mode:?} busy={busy}: {:?}",
+                    toasts.borrow()
+                );
+            });
+        }
+    }
+}
+
+/// #1768 (owner rule 2026-11-04, decision 2026-11-05): ^C on the Enter waiting for the multi-line
+/// dialog discards the keys typed while it was open the same way whether the queue is free or
+/// busy (it used to hand them back to the editor when busy): the buffer is exactly as it was,
+/// nothing runs or reaches a destination, and the same discard toast is shown. Both modes.
+#[test]
+fn multiline_dialog_cancel_on_a_busy_queue_discards_like_on_a_free_one() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        let outcomes = Rc::new(RefCell::new(Vec::new()));
+        for busy in [false, true] {
+            let sink = outcomes.clone();
+            App::test((), move |mut app| async move {
+                let _mode =
+                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+                let text = comment_lines(MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD + 1);
+                let (terminal, input, dialog, executed) =
+                    multiline_dialog_fixture(&mut app, &text).await;
+                let released = record_released_enter_entries(&mut app, &input);
+                let toasts = record_toast_texts(&mut app);
+                ask_multiline_dialog(&mut app, &input);
+                offer_to_dialog(&mut app, &dialog, dialog_typed("ls"));
+                enter_in_editor(&mut app, &terminal, &input);
+                offer_to_dialog(&mut app, &dialog, dialog_typed("pwd"));
+                let editor = input.read(&app, |input, _| input.editor().clone());
+                let queue = editor.read(&app, |editor, _| editor.paste_hold().queue());
+                {
+                    let _held = busy.then(|| queue.peek());
+                    input.update(&mut app, |input, ctx| {
+                        assert!(input.cancel_multiline_dialog("editor_interrupt", ctx));
+                    });
+                    if busy {
+                        assert!(queue.has_deferred(), "{mode:?}: the take is deferred");
+                    }
+                }
+                wait_for_enter_gate_take(&mut app, &input, &queue).await;
+                input.read(&app, |input, ctx| {
+                    assert_eq!(
+                        input.buffer_text(ctx),
+                        text,
+                        "{mode:?} busy={busy}: exactly as it was"
+                    );
+                    assert!(!input.multiline_dialog_gate_open(), "{mode:?} busy={busy}");
+                    assert!(!input.enter_queue_holds_keys(ctx), "{mode:?} busy={busy}");
+                });
+                assert!(executed.borrow().is_empty(), "{mode:?} busy={busy}");
+                assert!(released.borrow().is_empty(), "{mode:?} busy={busy}");
+                assert_eq!(toasts.borrow().len(), 1, "{mode:?} busy={busy}");
+                sink.borrow_mut().push(toasts.borrow().clone());
+            });
+        }
+        let outcomes = outcomes.borrow();
+        assert_eq!(outcomes.len(), 2, "{mode:?}");
+        assert_eq!(
+            outcomes[0], outcomes[1],
+            "{mode:?}: the busy queue reports the same discard as the free one"
+        );
     }
 }
 

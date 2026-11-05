@@ -15249,7 +15249,7 @@ fn typeahead_handoff_not_engaged_releases_the_keys_waiting_for_the_route() {
         input.read(&app, |input, ctx| {
             assert!(
                 !input.enter_queue_holds_keys(ctx),
-                "released by the negative event, not by the 300 ms give-up"
+                "released by the negative event, not by the give-up net"
             );
         });
     })
@@ -15262,8 +15262,15 @@ enum AfterRunEnter {
     CommandTaken,
     /// No event: the deferred settle alone releases the keys (the facts say the pty takes them).
     NoEvent,
-    /// No event and the pty does not take keys: the 300 ms cap hands them back to the editor.
+    /// No event and the pty does not take keys: the route net (shortened here) DISCARDS them
+    /// (#1661, owner decision 2026-11-05).
     PtyNotReady,
+    /// #1661: a slow shell: the pty does not take keys at first, and the command is taken 2 s
+    /// later, inside the default 10 s net: the keys follow it, in order.
+    SlowCommandTaken,
+    /// #1661: the pty never takes keys, but the command's own block completes: that event
+    /// releases the keys at once, where keys typed now go (the editor).
+    BlockCompleted,
 }
 
 /// #1630: the Enter's own replay request arrives in the flush that carries its command to the pty
@@ -15274,12 +15281,17 @@ enum AfterRunEnter {
 fn keys_behind_a_run_enter_in(mode: DestMode, after: AfterRunEnter) {
     App::test((), move |mut app| async move {
         let _mode = force_dest_mode(mode);
+        // The default net is 10 s; the give-up case waits for a shortened one.
+        let _net = (after == AfterRunEnter::PtyNotReady)
+            .then(|| super::set_enter_route_wait_net_for_test(Duration::from_millis(300)));
         initialize_app_for_terminal_view(&mut app);
         let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(false);
         let terminal = add_window_with_terminal(&mut app, None);
         let pty_writes = collect_pty_writes(&mut app, &terminal);
+        let pty_ready_at_start =
+            matches!(after, AfterRunEnter::CommandTaken | AfterRunEnter::NoEvent);
         terminal.update(&mut app, |view, ctx| {
-            if after != AfterRunEnter::PtyNotReady {
+            if pty_ready_at_start {
                 register_local_session_for_ssh_test(view, ctx);
                 view.model
                     .lock()
@@ -15287,13 +15299,18 @@ fn keys_behind_a_run_enter_in(mode: DestMode, after: AfterRunEnter) {
             }
             view.input.update(ctx, |input, ctx| {
                 input.clear_buffer_and_reset_undo_stack(ctx);
-                // With no pty to take it, only text: the give-up hands it back as it was typed.
+                // Where the keys end in the editor, only text (an Enter would submit it).
                 let mut queued = vec![AfterEnterInput::Text("ls".to_string())];
-                if after != AfterRunEnter::PtyNotReady {
+                if !matches!(
+                    after,
+                    AfterRunEnter::PtyNotReady | AfterRunEnter::BlockCompleted
+                ) {
                     queued.push(AfterEnterInput::Enter);
                 }
                 input.open_submitted_enter_gate_for_test(queued, true, ctx)
             });
+            // The view starts the Enter's command: its block is recorded (#1661).
+            view.note_command_started_for_enter_gate_for_test(ctx);
             // The Enter has run: its replay request, in the flush its command is still in.
             view.replay_after_deferred_enter(ctx);
         });
@@ -15308,28 +15325,60 @@ fn keys_behind_a_run_enter_in(mode: DestMode, after: AfterRunEnter) {
             "{mode:?} {after:?}: nothing ahead of the command: {:?}",
             pty_writes.borrow()
         );
-        if after == AfterRunEnter::CommandTaken {
-            // The controller takes the command (written, or parked behind the line editor).
-            terminal.update(&mut app, |view, ctx| {
-                pty_writes.borrow_mut().push(b"<command>".to_vec());
-                view.settle_enter_queue(ctx);
-            });
+        match after {
+            AfterRunEnter::CommandTaken => {
+                // The controller takes the command (written, or parked behind the line editor).
+                terminal.update(&mut app, |view, ctx| {
+                    pty_writes.borrow_mut().push(b"<command>".to_vec());
+                    view.settle_enter_queue(ctx);
+                });
+            }
+            AfterRunEnter::SlowCommandTaken => {
+                // 2 s with no event: the keys are still held, nothing is written.
+                warpui::r#async::Timer::after(Duration::from_secs(2)).await;
+                terminal.read(&app, |view, ctx| {
+                    assert!(
+                        view.input.as_ref(ctx).enter_queue_awaits_pty(),
+                        "{mode:?}: a 2 s stall is inside the net: the keys still wait"
+                    );
+                });
+                assert!(pty_writes.borrow().is_empty(), "{mode:?}");
+                // Then the shell starts the command and the controller takes it.
+                terminal.update(&mut app, |view, ctx| {
+                    register_local_session_for_ssh_test(view, ctx);
+                    view.model
+                        .lock()
+                        .simulate_long_running_block("sleep 100", "");
+                    pty_writes.borrow_mut().push(b"<command>".to_vec());
+                    view.settle_enter_queue(ctx);
+                });
+            }
+            AfterRunEnter::BlockCompleted => {
+                terminal.update(&mut app, |view, ctx| {
+                    view.complete_enter_command_block_for_test(ctx);
+                });
+            }
+            AfterRunEnter::NoEvent | AfterRunEnter::PtyNotReady => {}
         }
+        let ends_without_pty = matches!(
+            after,
+            AfterRunEnter::PtyNotReady | AfterRunEnter::BlockCompleted
+        );
         for _ in 0..400 {
             let done = terminal.read(&app, |view, ctx| {
                 !view.input.as_ref(ctx).enter_queue_holds_keys(ctx)
             });
             let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
-            if done && (after == AfterRunEnter::PtyNotReady || written.ends_with(b"\r")) {
+            if done && (ends_without_pty || written.ends_with(b"\r")) {
                 break;
             }
             warpui::r#async::Timer::after(std::time::Duration::from_millis(5)).await;
         }
         let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
         let expected = match after {
-            AfterRunEnter::CommandTaken => "<command>ls\r",
+            AfterRunEnter::CommandTaken | AfterRunEnter::SlowCommandTaken => "<command>ls\r",
             AfterRunEnter::NoEvent => "ls\r",
-            AfterRunEnter::PtyNotReady => "",
+            AfterRunEnter::PtyNotReady | AfterRunEnter::BlockCompleted => "",
         };
         assert_eq!(
             String::from_utf8_lossy(&written),
@@ -15342,12 +15391,18 @@ fn keys_behind_a_run_enter_in(mode: DestMode, after: AfterRunEnter) {
                 !input.enter_queue_holds_keys(ctx),
                 "{mode:?} {after:?}: released"
             );
-            if after == AfterRunEnter::PtyNotReady {
-                assert_eq!(
+            match after {
+                AfterRunEnter::PtyNotReady => assert_eq!(
+                    input.buffer_text(ctx),
+                    "",
+                    "{mode:?}: the net discarded the keys; nothing went to the editor"
+                ),
+                AfterRunEnter::BlockCompleted => assert_eq!(
                     input.buffer_text(ctx),
                     "ls",
-                    "{mode:?}: the cap handed the keys back to the editor"
-                );
+                    "{mode:?}: the block's completion released the keys to the editor"
+                ),
+                _ => {}
             }
         });
     })
@@ -15372,12 +15427,31 @@ fn keys_behind_a_run_enter_are_released_by_the_deferred_settle_alone_in_both_mod
     }
 }
 
-/// #1630 review: the pty never takes the command and no event comes: the 300 ms cap hands the keys
-/// back to the editor and nothing reaches the pty.
+/// #1630 review / #1661 (owner decision 2026-11-05): the pty never takes the command and no event
+/// comes: the route net DISCARDS the keys (never handed back to the editor) and nothing reaches the
+/// pty.
 #[test]
-fn keys_behind_a_run_enter_go_back_to_the_editor_at_the_cap_in_both_modes() {
+fn keys_behind_a_run_enter_are_discarded_at_the_net_in_both_modes() {
     for mode in [DestMode::Legacy, DestMode::Table] {
         keys_behind_a_run_enter_in(mode, AfterRunEnter::PtyNotReady);
+    }
+}
+
+/// #1661: a slow-but-healthy machine: the command is taken 2 s after its Enter, inside the 10 s
+/// net (it was 300 ms): the keys typed after the Enter follow it, in order. Both modes.
+#[test]
+fn keys_behind_a_run_enter_follow_a_command_taken_after_two_seconds_in_both_modes() {
+    for mode in [DestMode::Legacy, DestMode::Table] {
+        keys_behind_a_run_enter_in(mode, AfterRunEnter::SlowCommandTaken);
+    }
+}
+
+/// #1661: the command's own block completing releases the keys at once (no timer), to where keys
+/// typed now go. Both modes.
+#[test]
+fn keys_behind_a_run_enter_are_released_by_its_block_completing_in_both_modes() {
+    for mode in [DestMode::Legacy, DestMode::Table] {
+        keys_behind_a_run_enter_in(mode, AfterRunEnter::BlockCompleted);
     }
 }
 
@@ -17226,10 +17300,10 @@ fn typeahead_handoff_releases_held_shell_lines_to_the_pty_when_the_submit_runs_n
 }
 
 /// The report arrived and the submit wrote no command, but only an unfinished line was typed
-/// behind the Enter: it goes back into the editor as text (a shell line would have gone to the
-/// pty), and nothing is written.
+/// behind the Enter: it waits behind the held Enter (a shell line would have gone to the pty), and
+/// nothing is written. The hold's give-up DISCARDS it (#1661, owner decision 2026-11-05).
 #[test]
-fn typeahead_handoff_returns_an_unfinished_held_line_to_the_editor_when_the_submit_runs_nothing() {
+fn typeahead_handoff_holds_an_unfinished_line_behind_the_enter_and_its_give_up_discards_it() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
@@ -17244,13 +17318,13 @@ fn typeahead_handoff_returns_an_unfinished_held_line_to_the_editor_when_the_subm
 
             // #1571: the test view is not ready for a command, so the Enter that ran nothing is
             // held as a gate (a refused Enter of an unready shell); the unfinished line is the
-            // text typed after it and reaches the editor behind it -- not before, not lost, and
-            // never written to the pty -- when the hold hands back.
+            // text typed after it and waits behind it, never written to the pty. #1661: the
+            // hold's give-up discards it (never handed back as editor text).
             assert!(view.input.as_ref(ctx).unready_enter_gate_open());
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
             view.input
                 .update(ctx, |input, ctx| input.give_up_unready_enter("test", ctx));
-            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls -l");
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
             assert_eq!(
                 view.model.lock().typeahead_handoff().state(),
                 &HandoffState::EditorOwned
