@@ -1633,6 +1633,39 @@ def editor_memory_owner_2026_11_05():
 
 
 @check
+def tabs_streaming_reorder_known_1658():
+    """#1658 (owner 2026-11-04): the Windows streaming-tabs reorder is KNOWN at 0.1.17; FAIL on Linux, after 0.1.17, and whenever the app log shows a discard"""
+    exp = ["a1", "b2", "c3", "d4"]
+    got = ["a1", "c3", "b2", "d4"]
+
+    class Ctx:
+        def __init__(s, log): s.log, s.log_path = log, "x.log"
+        def log_since(s, off): return s.log
+    orig_v, orig_p = cases.app_version, cases.plat
+    try:
+        def run(plat_, ver, log):
+            cases.plat, cases.app_version = (lambda: plat_), (lambda repo=None: ver)
+            r = cases.Result("t", "terminal")
+            cases.streaming_exact_lines(Ctx(log), r, got, exp, "typing", 0)
+            return r
+        r = run("windows", "0.1.17", "young_hold_handed_back\n")
+        assert not r.fails and len(r.notes) == 1 and r.notes[0].startswith("KNOWN: typing: 2/4 exact lines") and "ACCEPTED_FOR_RELEASE #1658 v0.1.17" in r.notes[0], (r.fails, r.notes)
+        r = run("linux-x11", "0.1.17", "")
+        assert len(r.fails) == 1 and not r.notes, (r.fails, r.notes)
+        r = run("windows", "0.1.18", "")
+        assert len(r.fails) == 1 and not r.notes, (r.fails, r.notes)
+        for line in ("3 keys typed after Enter were discarded", "key X was discarded"):
+            r = run("windows", "0.1.17", line)
+            assert len(r.fails) == 1 and not r.notes, (line, r.fails, r.notes)
+        r = run("windows", "0.1.17", "")
+        r2 = cases.Result("t", "terminal")
+        cases.streaming_exact_lines(Ctx(""), r2, exp, exp, "typing", 0)
+        assert not r2.fails and not r2.notes
+    finally:
+        cases.app_version, cases.plat = orig_v, orig_p
+
+
+@check
 def latency_known_v0117_enter_and_flood():
     """v0.1.17 (#1606, #1653): an over-budget latency_enter overhead (macOS / Linux) or Ctrl-C-under-flood overhead is KNOWN at 0.1.17 and FAIL at 0.1.18;
     other verdicts (regression vs baseline) and other platforms still fail."""
