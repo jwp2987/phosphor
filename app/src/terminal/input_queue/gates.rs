@@ -60,6 +60,18 @@ pub fn is_unready_enter_key(key: u64) -> bool {
     key & UNREADY_ENTER_KEY_FLAG != 0
 }
 
+/// #1652: the key flag of the gate of an Enter that waits for the multi-line submit dialog's
+/// answer. Always set together with [`UNREADY_ENTER_KEY_FLAG`] (the keys behind it are the NEXT
+/// line's, as behind an unready Enter); it adds one rule: an editor key with no tty form is
+/// queued as an editor key rather than acting at once on (or being dropped from) the waiting
+/// buffer, since every key typed while the dialog is open counts.
+pub const MULTILINE_DIALOG_KEY_FLAG: u64 = 1 << 61;
+
+/// Whether `key` names the gate of an Enter waiting for the multi-line dialog (#1652).
+pub fn is_multiline_dialog_key(key: u64) -> bool {
+    key & MULTILINE_DIALOG_KEY_FLAG != 0
+}
+
 /// What a signal (^C, ^D, ^Z, ^\) does to the entries held behind the gate it meets (design 2.5).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SignalPlan {

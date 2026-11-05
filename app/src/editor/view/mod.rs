@@ -1045,8 +1045,9 @@ pub fn init(ctx: &mut AppContext) {
     )]);
 }
 
-/// Actions that can be performed on an [`EditorView`].
-#[derive(Debug)]
+/// Actions that can be performed on an [`EditorView`]. `Clone` so a key typed while the
+/// multi-line submit dialog waits can be held as itself (#1652).
+#[derive(Clone, Debug)]
 pub enum EditorAction {
     Scroll(Vector2F),
     Select(SelectAction),
@@ -3111,34 +3112,6 @@ impl EditorView {
         }
     }
 
-    /// #1652: delivers the keys held while the multi-line submit dialog was open, in typed order,
-    /// exactly as if they had just been typed here (the display-map rule of
-    /// [`Self::apply_held_paste_key`] included). The hold is closed first, so none is held again.
-    pub fn deliver_modal_held_keys(
-        &mut self,
-        keys: Vec<HeldPasteKey>,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        let _ = self.paste_hold.end_modal_hold();
-        if keys.is_empty() {
-            return;
-        }
-        warpui::input_order::log_hop("modal_hold_deliver", || format!("keys={}", keys.len()));
-        let vim = self.vim_mode(ctx).is_some();
-        for key in keys {
-            let key = match key {
-                HeldPasteKey::Text(text) if vim => {
-                    HeldPasteKey::Action(EditorAction::VimUserInsert(UserInput::new(text)))
-                }
-                HeldPasteKey::Action(EditorAction::Backspace) if vim => {
-                    HeldPasteKey::Action(EditorAction::VimBackspace)
-                }
-                key => key,
-            };
-            self.apply_held_paste_key(key, ctx);
-        }
-    }
-
     fn schedule_held_replay(&mut self, ctx: &mut ViewContext<Self>) {
         if self.paste_hold.replay_mark_scheduled() {
             ctx.dispatch_typed_action_deferred(EditorAction::ReplayHeldKeys);
@@ -3191,25 +3164,6 @@ impl EditorView {
     /// pasted text, in order (#1300). Ctrl-C cancels the paste: what was typed before it is
     /// applied first and the Ctrl-C then acts normally.
     fn hold_key_for_paste(&mut self, action: &EditorAction, ctx: &mut ViewContext<Self>) -> bool {
-        // #1652: the multi-line submit dialog is open. A key that reaches the editor meanwhile
-        // (focus is here, not on the dialog, or a key replayed from behind the Enter that opened
-        // it) belongs after the answer: held with the keys the dialog took, in typed order, and
-        // never applied to the buffer that waits for the answer. An Enter is held too, so it can
-        // neither confirm the dialog nor submit that buffer again.
-        if self.paste_hold.modal_hold_open() {
-            let held = match action {
-                EditorAction::VimUserInsert(text) => Some(HeldPasteKey::Text(String::clone(text))),
-                EditorAction::VimBackspace => Some(HeldPasteKey::Action(EditorAction::Backspace)),
-                EditorAction::ReplayHeldKeys => None,
-                _ => paste_hold::held_form(action),
-            };
-            if let Some(key) = held {
-                warpui::input_order::log_hop("modal_hold_key", || {
-                    format!("source=editor kind={key:?}")
-                });
-                return self.paste_hold.modal_hold_push(key);
-            }
-        }
         // Replayed keys still waiting for the display map (#1389): a key typed now goes behind
         // them; one that acts at once (Ctrl-C, scrolling) sees them applied first.
         if self.paste_hold.replay_pending()
@@ -3332,13 +3286,56 @@ impl EditorView {
         // it are the editor keys below.)
         {
             use crate::terminal::input_queue::GateKind;
-            let (behind_enter, behind_unready_enter) =
-                queue.try_peek().map_or((false, false), |held| {
-                    let behind = (held.has_gate_kind(GateKind::EnterVerdict)
-                        || held.has_gate_kind(GateKind::TabCompletion))
-                        && !held.has_editor_paste_reading();
-                    (behind, behind && held.has_unready_enter_gate())
+            let (behind_enter, behind_unready_enter, behind_dialog) =
+                queue.try_peek().map_or((false, false, false), |held| {
+                    // #1652: the multi-line dialog's rule holds whatever else is open behind it (a
+                    // paste being read included): every key waits for the answer.
+                    let dialog = held.has_multiline_dialog_gate();
+                    let behind = dialog
+                        || ((held.has_gate_kind(GateKind::EnterVerdict)
+                            || held.has_gate_kind(GateKind::TabCompletion))
+                            && !held.has_editor_paste_reading());
+                    (behind, behind && held.has_unready_enter_gate(), dialog)
                 });
+            if behind_dialog {
+                // #1652: behind the Enter that waits for the multi-line dialog EVERY key counts and
+                // none acts on the waiting buffer: text is text, an Enter is an entry, and any
+                // other key waits as itself. The answer resolves them (`resolve_dialog_typeahead`):
+                // into the next line(s) on Confirm, onto a line of their own on Cancel. A signal
+                // (^C above), a paste (its own read, above) and scrolling are not keys of the line.
+                let kind = match action {
+                    EditorAction::UserInsert(text) => EntryKind::Text(String::clone(text)),
+                    EditorAction::Enter => EntryKind::Enter,
+                    // Not keys of the line: the pointer, the deferred replay step, and actions
+                    // that do not touch the buffer.
+                    EditorAction::Scroll(_)
+                    | EditorAction::ReplayHeldKeys
+                    | EditorAction::Select(_)
+                    | EditorAction::TryToShowXRay(_)
+                    | EditorAction::HideXRay
+                    | EditorAction::UnhandledModifierKey(_)
+                    | EditorAction::Copy
+                    | EditorAction::SetAIContextMenuOpen(_)
+                    | EditorAction::AttachFiles
+                    | EditorAction::ReadAndProcessImagesAsync { .. }
+                    | EditorAction::ProcessNonImageFiles { .. } => return false,
+                    other => EntryKind::EditorKey(EditorKeyPayload::new(HeldPasteKey::Action(
+                        other.clone(),
+                    ))),
+                };
+                match queue.try_lock_ordered() {
+                    Some(mut guard) => {
+                        let mut host = paste_hold::EditorQueueHost { editor: self, ctx };
+                        guard.offer(&mut host, kind);
+                    }
+                    None => queue.defer(crate::terminal::input_queue::Deferred::Offer {
+                        kind,
+                        origin: crate::terminal::input_queue::Origin::Keyboard,
+                        stamp: queue.stamp_now(),
+                    }),
+                }
+                return true;
+            }
             if behind_enter {
                 let kind = match action {
                     EditorAction::UserInsert(text) => EntryKind::Text(String::clone(text)),

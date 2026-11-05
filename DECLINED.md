@@ -2863,3 +2863,35 @@ else is editor text, in order. `~~` stays editor text (ssh makes the one `~` of 
 is sent); `~^Z` is not passed (Ctrl-Z is an editor binding). A line locked to the agent, a local
 session and a mid-line `~` are unchanged. The appci `ssh_drop_reconnect` escape arm runs by default.
 <!-- markers: sym:ssh_prompt_has_arrived sym:discard_ssh_typeahead_on_prompt sym:discard_held_ssh_typeahead_for_prompt sym:ssh_prompt_is_unmanaged_shell_prompt sym:output_tail_is_shell_prompt sym:StaleBeforePrompt keep:ssh_on_tty_owned keep:tty_is_reading_secret keep:ssh_escape_typed_at_line_start keep:ssh_on_wrapper_verdict keep:ssh_wrapper_secret_pass_through -->
+
+## Keys typed while the multi-line submit dialog is open wait behind its Enter — DECIDED 2026-11-04 (#1652)
+
+The "Run N lines one at a time?" dialog takes focus. The Enter that asked is a GATE on the pane
+queue (`Input::gate_enter_for_multiline_dialog`, an `EnterVerdict` gate keyed with
+`UNREADY_ENTER_KEY_FLAG | MULTILINE_DIALOG_KEY_FLAG`, no cap). Everything typed after it waits there
+in typed order: keys pressed on the dialog are handed to the asking input's editor (typed text as
+typed text, a key down dispatched on the editor's responder chain), keys typed in the editor queue
+the same way, every editor key with no tty form waits as itself (`EditorKey`), also while a paste
+behind it is being read, and an Enter is an entry, never an answer or a submit of the waiting
+buffer. Only the answer ends the gate. Owner decision 2026-11-04, **"safe fallback"**:
+- **Confirm discards what was typed while the dialog was open.** The buffer runs as the Enter's own
+  submit, exactly once; the held keys are dropped with a log line and a toast ("N keys typed while
+  the confirmation was open were discarded"). A model of them cannot match the editor (select-all,
+  undo, word boundaries, the clipboard, escaped drops, newlines in held text), and on this path its
+  output would be executed, so it is not.
+- **Cancel: own line, like #1571.** The VISIBLE TEXT of the held keys (`resolve_dialog_typeahead`, a
+  text-only line model, never the system clipboard) goes on a new line after the buffer, a held
+  Enter a line break (no second dialog); nothing runs until Enter, and nothing edits the buffer
+  above. Vim mode is the same: no held key is replayed through vim.
+- **Post-release plan:** replay the held keys through the REAL editor on a scratch line (so they
+  mean exactly what they would have), then decide Confirm delivery again.
+- **The dialog's own Enter and Escape answer it** while it has focus, even after typed text (F7).
+- **^C / ^D void the waiting Enter** and drop what was typed behind it, as a tty flushes typeahead
+  on INTR; the dialog closes unanswered (`Input::cancel_multiline_dialog`). ^C also CLEARS the
+  multi-line buffer (the editor's own ^C, unchanged). A signal that reaches the queue by another
+  path never removes the gate (`SignalThenKeepGate` for the dialog's key).
+- **A second ask while the dialog is open is refused**; **the answer goes to the asking input
+  only** (to nobody if it is gone); the dialog stays up while its gate holds and closes when its
+  asker is gone.
+- **No timer.** An answer given while a held paste is read waits for the read's result.
+<!-- markers: keep:gate_enter_for_multiline_dialog keep:answer_multiline_dialog keep:resolve_dialog_typeahead keep:cancel_multiline_dialog keep:MULTILINE_DIALOG_KEY_FLAG keep:take_answer_target keep:dialog_typeahead_discarded_toast -->

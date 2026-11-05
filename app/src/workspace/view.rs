@@ -10881,8 +10881,8 @@ impl Workspace {
         }
     }
 
-    /// #1046: the answer to "run N lines one at a time?" goes back to the focused session's input,
-    /// which still holds the text.
+    /// #1046: the answer to "run N lines one at a time?" goes back to the input that asked, which
+    /// still holds the text (#1652: that input only).
     fn handle_multiline_submit_confirmation_dialog_event(
         &mut self,
         event: &MultilineSubmitConfirmationEvent,
@@ -10890,19 +10890,11 @@ impl Workspace {
     ) {
         self.current_workspace_state
             .is_multiline_submit_confirmation_dialog_open = false;
-        // #1652: the answer goes to the input that asked (it holds the keys typed meanwhile), not
-        // to whichever session is focused now; the focused one only if that input is gone.
-        let asking = self
+        // #1652: the answer goes to the input that asked and to nothing else: when that input is
+        // gone (its pane closed), the answer goes nowhere.
+        let input = self
             .multiline_submit_confirmation_dialog
-            .update(ctx, |view, _| view.set_asking_input(None));
-        let input = match asking.and_then(|input| input.upgrade(ctx)) {
-            Some(input) => Some(input),
-            None => self
-                .active_tab_pane_group()
-                .as_ref(ctx)
-                .focused_session_view(ctx)
-                .map(|terminal_view| terminal_view.as_ref(ctx).input().clone()),
-        };
+            .update(ctx, |view, ctx| view.take_answer_target(ctx));
         if let Some(input) = input {
             input.update(ctx, |input, ctx| match event {
                 MultilineSubmitConfirmationEvent::Confirm => input.confirm_multiline_submit(ctx),
@@ -15128,6 +15120,7 @@ impl Workspace {
         event: &pane_group::Event,
         ctx: &mut ViewContext<Self>,
     ) {
+        self.close_multiline_dialog_if_asker_gone(ctx);
         match event {
             pane_group::Event::AppStateChanged => {
                 ctx.dispatch_global_action("workspace:save_app", ());
@@ -17547,11 +17540,21 @@ impl Workspace {
 
     fn restore_previous_workspace_state(&mut self, ctx: &mut ViewContext<Self>) {
         if let Some(previous_state) = self.previous_workspace_state.take() {
+            // #1652 (L2): the multi-line dialog is not part of the state being restored: its
+            // asking Enter still holds every key behind its gate, so the dialog stays up (and
+            // keeps focus) until it is answered.
+            let multiline_dialog_open = self
+                .current_workspace_state
+                .is_multiline_submit_confirmation_dialog_open;
             self.current_workspace_state = previous_state;
+            self.current_workspace_state
+                .is_multiline_submit_confirmation_dialog_open = multiline_dialog_open;
 
             // Assumption: at most one of the states will be active.
             // If none are, then we focus the terminal view instead.
-            if self.current_workspace_state.is_palette_open {
+            if multiline_dialog_open {
+                ctx.focus(&self.multiline_submit_confirmation_dialog);
+            } else if self.current_workspace_state.is_palette_open {
                 self.open_command_palette(ctx);
             } else if self.current_workspace_state.is_theme_chooser_open {
                 self.focus_theme_chooser(ctx);
@@ -17696,14 +17699,26 @@ impl Workspace {
         ctx.notify();
     }
 
+    /// Shows the multi-line submit dialog for `input` and returns whether it did. A second ask
+    /// while one is open is refused (#1652): the first input keeps its question, the second runs
+    /// nothing and keeps its text. The asking input is mid-update here (the action comes from inside
+    /// it): it is only remembered, never read.
     pub fn show_multiline_submit_confirmation_dialog(
         &mut self,
         line_count: usize,
         input: WeakViewHandle<Input>,
         ctx: &mut ViewContext<Self>,
-    ) {
-        // The asking input is still mid-update here (the action comes from inside it): it is only
-        // remembered, never read (#1652).
+    ) -> bool {
+        if self
+            .current_workspace_state
+            .is_multiline_submit_confirmation_dialog_open
+        {
+            log::warn!(
+                "workspace: a second multi-line submit dialog was asked while one is open; refused \
+                 (#1652)"
+            );
+            return false;
+        }
         self.multiline_submit_confirmation_dialog
             .update(ctx, |view, ctx| {
                 view.set_line_count(line_count, ctx);
@@ -17712,6 +17727,62 @@ impl Workspace {
         self.current_workspace_state
             .is_multiline_submit_confirmation_dialog_open = true;
         ctx.focus(&self.multiline_submit_confirmation_dialog);
+        ctx.notify();
+        true
+    }
+
+    /// #1652 (L2): a dialog whose asking input is gone (its pane or tab closed) closes; its answer
+    /// would go nowhere. Checked on every pane-group event (a close is one) and when the dialog
+    /// reports its asker gone.
+    fn close_multiline_dialog_if_asker_gone(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self
+            .current_workspace_state
+            .is_multiline_submit_confirmation_dialog_open
+        {
+            return;
+        }
+        let gone = self
+            .multiline_submit_confirmation_dialog
+            .as_ref(ctx)
+            .asker_is_gone(ctx);
+        if !gone {
+            return;
+        }
+        log::info!("workspace: the multi-line dialog's asking input is gone; closed (#1652)");
+        self.multiline_submit_confirmation_dialog
+            .update(ctx, |view, _| view.set_asking_input(None));
+        self.current_workspace_state
+            .is_multiline_submit_confirmation_dialog_open = false;
+        self.focus_active_tab(ctx);
+        ctx.notify();
+    }
+
+    /// #1652: the input whose Enter waited for the dialog voided it (^C): the dialog closes
+    /// unanswered. Only that input's dialog.
+    fn dismiss_multiline_submit_confirmation_dialog(
+        &mut self,
+        input_id: EntityId,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if !self
+            .current_workspace_state
+            .is_multiline_submit_confirmation_dialog_open
+        {
+            return;
+        }
+        let ours = self
+            .multiline_submit_confirmation_dialog
+            .as_ref(ctx)
+            .asking_input_id()
+            == Some(input_id);
+        if !ours {
+            return;
+        }
+        self.multiline_submit_confirmation_dialog
+            .update(ctx, |view, _| view.set_asking_input(None));
+        self.current_workspace_state
+            .is_multiline_submit_confirmation_dialog_open = false;
+        self.focus_active_tab(ctx);
         ctx.notify();
     }
 
@@ -23581,8 +23652,17 @@ impl TypedActionView for Workspace {
                     );
                 }
             }
-            ShowMultilineSubmitConfirmationDialog { line_count, input } => {
-                self.show_multiline_submit_confirmation_dialog(*line_count, input.clone(), ctx);
+            ShowMultilineSubmitConfirmationDialog {
+                line_count,
+                input,
+                shown,
+            } => {
+                if self.show_multiline_submit_confirmation_dialog(*line_count, input.clone(), ctx) {
+                    shown.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+            DismissMultilineSubmitConfirmationDialog { input } => {
+                self.dismiss_multiline_submit_confirmation_dialog(input.id(), ctx);
             }
             ShowRewindConfirmationDialog {
                 ai_block_view_id,

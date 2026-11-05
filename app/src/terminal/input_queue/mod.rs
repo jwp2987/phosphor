@@ -177,7 +177,8 @@ pub use facts::{
     SshPhase, Stamp, SubshellPhase, destination_mode,
 };
 pub use gates::{
-    Gate, GateKind, GateSpec, GateToken, SignalPlan, UNREADY_ENTER_KEY_FLAG, is_unready_enter_key,
+    Gate, GateKind, GateSpec, GateToken, MULTILINE_DIALOG_KEY_FLAG, SignalPlan,
+    UNREADY_ENTER_KEY_FLAG, is_multiline_dialog_key, is_unready_enter_key,
 };
 pub use pane::{
     Deferred, GateKeysThen, PaneQueue, PasteOwner, PowershellKeysThen, SshDropThen,
@@ -828,6 +829,14 @@ impl InputQueue {
             .any(|gate| gate.kind == GateKind::EnterVerdict && is_unready_enter_key(gate.key))
     }
 
+    /// Whether an Enter waiting for the multi-line submit dialog holds the queue (#1652,
+    /// [`is_multiline_dialog_key`]).
+    pub fn has_multiline_dialog_gate(&self) -> bool {
+        self.gates
+            .iter()
+            .any(|gate| gate.kind == GateKind::EnterVerdict && is_multiline_dialog_key(gate.key))
+    }
+
     /// Entries and content bytes queued, for trace lines (counts only, never content). A paste
     /// that has not been read yet counts as an entry with no bytes.
     pub fn queued_summary(&self) -> (usize, usize) {
@@ -1414,7 +1423,15 @@ impl InputQueue {
                 return;
             }
             let held_before = self.entries.len();
-            match gate.kind.signal_plan() {
+            // #1652: the gate of an Enter waiting for the multi-line dialog is the Input's: only
+            // the Input ends it (the answer, or its own void on ^C / ^D, which closes the dialog
+            // too), so the queue never drops it under an Input that still waits for an answer.
+            let plan = if gate.kind == GateKind::EnterVerdict && is_multiline_dialog_key(gate.key) {
+                SignalPlan::SignalThenKeepGate
+            } else {
+                gate.kind.signal_plan()
+            };
+            match plan {
                 SignalPlan::CancelPasteThenFlush => {
                     self.gates.retain(|g| g.token != gate.token);
                     self.discard_where(host, DiscardReason::PasteCancelled, |held| {

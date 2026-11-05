@@ -8253,3 +8253,65 @@ fn test_closing_a_code_pane_releases_a_retained_editors_heavy_state() {
         });
     });
 }
+
+/// #1652 (F5): a second "run N lines one at a time?" ask while the dialog is open is refused: the
+/// first input keeps its question (and its held keys), the second runs nothing. ^C on the first
+/// input closes the dialog unanswered, and only that input's ^C does.
+#[test]
+fn a_second_multiline_dialog_ask_is_refused_and_only_the_asker_dismisses_it() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let workspace = mock_workspace(&mut app);
+        let input = workspace.read(&app, |workspace, ctx| {
+            workspace
+                .active_tab_pane_group()
+                .as_ref(ctx)
+                .focused_session_view(ctx)
+                .expect("workspace should start with a terminal view")
+                .as_ref(ctx)
+                .input()
+                .clone()
+        });
+        workspace.update(&mut app, |workspace, ctx| {
+            assert!(workspace.show_multiline_submit_confirmation_dialog(
+                12,
+                input.downgrade(),
+                ctx
+            ));
+            assert!(
+                !workspace.show_multiline_submit_confirmation_dialog(30, input.downgrade(), ctx),
+                "a second ask while one is open is refused"
+            );
+            assert!(
+                workspace
+                    .current_workspace_state
+                    .is_multiline_submit_confirmation_dialog_open
+            );
+            let dialog = workspace.multiline_submit_confirmation_dialog.as_ref(ctx);
+            assert_eq!(dialog.asking_input_id(), Some(input.id()));
+            assert_eq!(dialog.line_count(), 12, "the first question stands");
+
+            // Another input's ^C does not close it; the asker's does.
+            let not_the_asker = ctx.view_id();
+            workspace.dismiss_multiline_submit_confirmation_dialog(not_the_asker, ctx);
+            assert!(
+                workspace
+                    .current_workspace_state
+                    .is_multiline_submit_confirmation_dialog_open
+            );
+            workspace.dismiss_multiline_submit_confirmation_dialog(input.id(), ctx);
+            assert!(
+                !workspace
+                    .current_workspace_state
+                    .is_multiline_submit_confirmation_dialog_open
+            );
+            assert_eq!(
+                workspace
+                    .multiline_submit_confirmation_dialog
+                    .as_ref(ctx)
+                    .asking_input_id(),
+                None
+            );
+        });
+    });
+}

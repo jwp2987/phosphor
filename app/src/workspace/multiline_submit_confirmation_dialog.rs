@@ -1,8 +1,9 @@
 use pathfinder_geometry::vector::vec2f;
 use warp_core::ui::{color::coloru_with_opacity, theme::Fill};
 use warpui::{
-    AppContext, Element, Entity, SingletonEntity, TypedActionView, View, ViewContext,
+    AppContext, Element, Entity, EntityId, SingletonEntity, TypedActionView, View, ViewContext,
     WeakViewHandle,
+    actions::StandardAction,
     elements::{
         Align, ChildAnchor, Container, CrossAxisAlignment, Flex, Hoverable, MouseStateHandle,
         OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds, Stack, Text,
@@ -19,9 +20,10 @@ use warpui::{
 
 use crate::{
     appearance::Appearance,
-    editor::{EditorAction, HeldPasteKey},
+    editor::EditorAction,
     terminal::input::Input,
     ui_components::dialog::{Dialog, dialog_styles},
+    util::bindings::CustomAction,
 };
 
 pub fn init(app: &mut AppContext) {
@@ -38,18 +40,42 @@ pub fn init(app: &mut AppContext) {
             MultilineSubmitConfirmationAction::Confirm,
             id!(MultilineSubmitConfirmationDialog::ui_name()),
         ),
+        // #1652: a paste while the dialog has focus (a menu or platform paste, not a key event the
+        // key sink sees) is the asking input's, held behind its waiting Enter like a typed key.
+        FixedBinding::custom(
+            CustomAction::Paste,
+            MultilineSubmitConfirmationAction::PasteIntoInput,
+            DIALOG_PASTE_DESCRIPTION,
+            id!(MultilineSubmitConfirmationDialog::ui_name()),
+        ),
+        FixedBinding::standard(
+            StandardAction::Paste,
+            MultilineSubmitConfirmationAction::PasteIntoInput,
+            id!(MultilineSubmitConfirmationDialog::ui_name()),
+        ),
+        #[cfg(any(windows, target_os = "linux"))]
+        FixedBinding::custom(
+            CustomAction::WindowsPaste,
+            MultilineSubmitConfirmationAction::PasteIntoInput,
+            DIALOG_PASTE_DESCRIPTION,
+            id!(MultilineSubmitConfirmationDialog::ui_name()),
+        ),
     ]);
 }
 
 const DIALOG_WIDTH: f32 = 460.;
+
+/// The description of the dialog's paste bindings: its own (the editor's "Paste" is listed once,
+/// by the editor), since this paste goes to the input that asked, behind its waiting Enter.
+const DIALOG_PASTE_DESCRIPTION: &str = "Paste into the input waiting for the multi-line answer";
 
 pub struct MultilineSubmitConfirmationDialog {
     cancel_mouse_state: MouseStateHandle,
     confirm_mouse_state: MouseStateHandle,
     /// Lines in the buffer being submitted; shown in the dialog text.
     line_count: usize,
-    /// The input that asked (#1652): the keys typed while the dialog has focus are held in its
-    /// editor's hold and delivered to it once the dialog is answered.
+    /// The input whose Enter asked (#1652): the answer goes to it, and the keys typed while the
+    /// dialog has focus are handed to its editor, where they queue behind that Enter.
     asking_input: Option<WeakViewHandle<Input>>,
 }
 
@@ -77,6 +103,31 @@ impl MultilineSubmitConfirmationDialog {
         std::mem::replace(&mut self.asking_input, input)
     }
 
+    /// The view id of the input the dialog answers, if any.
+    pub fn asking_input_id(&self) -> Option<EntityId> {
+        self.asking_input.as_ref().map(WeakViewHandle::id)
+    }
+
+    /// The input the answer goes to, taken (the dialog then answers nobody): the input that asked,
+    /// or `None` when it is gone. Never another input (#1652).
+    pub fn take_answer_target(&mut self, ctx: &AppContext) -> Option<warpui::ViewHandle<Input>> {
+        self.asking_input
+            .take()
+            .and_then(|input| input.upgrade(ctx))
+    }
+
+    /// The dialog asks for an input that no longer exists (#1652, L2).
+    pub fn asker_is_gone(&self, ctx: &AppContext) -> bool {
+        self.asking_input.is_some() && self.asking_input(ctx).is_none()
+    }
+
+    /// The asking input, if it still exists.
+    fn asking_input(&self, ctx: &AppContext) -> Option<warpui::ViewHandle<Input>> {
+        self.asking_input
+            .as_ref()
+            .and_then(|input| input.upgrade(ctx))
+    }
+
     /// Sets the count shown and schedules a re-render: without the notify the dialog's cached
     /// render kept the previous count (0 on the first show, then the last one) (#1046).
     pub fn set_line_count(&mut self, line_count: usize, ctx: &mut ViewContext<Self>) {
@@ -102,9 +153,12 @@ impl View for MultilineSubmitConfirmationDialog {
         ctx.focus_self();
     }
 
-    /// #1652: while the dialog has focus it is the key sink, so a key its own bindings (Enter,
-    /// Escape) do not take is never dropped: it is held for the asking input's editor and
-    /// delivered there, in typed order, once the dialog is answered.
+    /// #1652: while the dialog has focus it is the key sink. Its own bindings (Enter, Escape) have
+    /// already had the key; every other key is handed to the asking input's editor exactly as if
+    /// it had been typed there: a key down is dispatched on the editor's responder chain (its
+    /// bindings decide, unbound keys included), typed text is the editor's typed text. The editor
+    /// then queues it behind the Enter that waits for this dialog, in typed order, so nothing is
+    /// dropped and nothing edits the waiting buffer.
     fn is_pane_key_sink(&self) -> bool {
         true
     }
@@ -115,25 +169,45 @@ impl View for MultilineSubmitConfirmationDialog {
         _key_ctx: &PaneKeyContext,
         ctx: &mut ViewContext<Self>,
     ) -> PaneKeyOutcome {
-        let Some(held) = dialog_held_key(&key.kind) else {
+        let Some(input) = self.asking_input(ctx) else {
+            if self.asker_is_gone(ctx) {
+                // L2: the input that asked is gone (its pane closed): the dialog closes, its
+                // answer going nowhere.
+                ctx.emit(MultilineSubmitConfirmationEvent::Cancel);
+            }
             return PaneKeyOutcome::NotMine;
         };
-        let Some(input) = self
-            .asking_input
-            .as_ref()
-            .and_then(|input| input.upgrade(ctx))
-        else {
-            return PaneKeyOutcome::NotMine;
+        let editor = input.as_ref(ctx).editor().clone();
+        let outcome = match &key.kind {
+            PaneKeyKind::Typed { chars, .. } if !chars.is_empty() => {
+                editor.update(ctx, |editor, ctx| editor.pane_typed(chars, ctx));
+                PaneKeyOutcome::Consumed
+            }
+            PaneKeyKind::KeyDown {
+                keystroke,
+                is_composing,
+                ..
+            } => {
+                let window_id = ctx.window_id();
+                let chain = ctx.responder_chain_of(window_id, editor.id());
+                match ctx.dispatch_keystroke(window_id, &chain, keystroke, *is_composing) {
+                    Ok(true) => PaneKeyOutcome::Consumed,
+                    // Unbound: a printable key's typed event follows and is the key.
+                    _ => PaneKeyOutcome::NotMine,
+                }
+            }
+            // A composition shows nowhere while the dialog has focus; its commit arrives as typed
+            // text and is handed over above.
+            _ => PaneKeyOutcome::NotMine,
         };
-        let hold = input.as_ref(ctx).multiline_dialog_key_hold(ctx);
-        warpui::input_order::log_key_hop("kh_multiline_dialog_hold", || {
-            format!("seq={} kind={held:?}", key.seq)
+        warpui::input_order::log_key_hop("kh_multiline_dialog_key", || {
+            format!(
+                "seq={} handed_to_editor={}",
+                key.seq,
+                outcome == PaneKeyOutcome::Consumed
+            )
         });
-        if hold.modal_hold_push(held) {
-            PaneKeyOutcome::Consumed
-        } else {
-            PaneKeyOutcome::NotMine
-        }
+        outcome
     }
 
     fn render(&self, app: &AppContext) -> Box<dyn Element> {
@@ -271,35 +345,6 @@ impl View for MultilineSubmitConfirmationDialog {
     }
 }
 
-/// #1652: what a key that reaches the dialog's sink is held as, or `None` for a key the dialog
-/// leaves alone (it continues to the elements, as before). Typed text (and an IME commit) is held as
-/// text. A key down is held when it is one of the editor's fixed editing keys (the binding it would
-/// have had in the editor, so it does there what it would have done); a printable key down is left
-/// alone because its typed event follows and is the key. Enter and Escape never get here: the
-/// dialog's own bindings take them first.
-pub(crate) fn dialog_held_key(kind: &PaneKeyKind) -> Option<HeldPasteKey> {
-    match kind {
-        PaneKeyKind::Typed { chars, .. } if !chars.is_empty() => {
-            Some(HeldPasteKey::Text(chars.clone()))
-        }
-        PaneKeyKind::KeyDown { keystroke, .. } => {
-            let action = match keystroke.normalized().as_str() {
-                "backspace" => EditorAction::Backspace,
-                "delete" => EditorAction::Delete,
-                "left" => EditorAction::Left,
-                "right" => EditorAction::Right,
-                "up" => EditorAction::Up,
-                "down" => EditorAction::Down,
-                "tab" => EditorAction::Tab,
-                "shift-tab" => EditorAction::ShiftTab,
-                _ => return None,
-            };
-            Some(HeldPasteKey::Action(action))
-        }
-        _ => None,
-    }
-}
-
 pub enum MultilineSubmitConfirmationEvent {
     Confirm,
     Cancel,
@@ -309,6 +354,8 @@ pub enum MultilineSubmitConfirmationEvent {
 pub enum MultilineSubmitConfirmationAction {
     Confirm,
     Cancel,
+    /// A paste while the dialog has focus goes to the asking input's editor (#1652).
+    PasteIntoInput,
 }
 
 impl TypedActionView for MultilineSubmitConfirmationDialog {
@@ -325,6 +372,14 @@ impl TypedActionView for MultilineSubmitConfirmationDialog {
             }
             MultilineSubmitConfirmationAction::Cancel => {
                 ctx.emit(MultilineSubmitConfirmationEvent::Cancel);
+            }
+            MultilineSubmitConfirmationAction::PasteIntoInput => {
+                if let Some(input) = self.asking_input(ctx) {
+                    let editor = input.as_ref(ctx).editor().clone();
+                    editor.update(ctx, |editor, ctx| {
+                        editor.handle_action(&EditorAction::Paste, ctx)
+                    });
+                }
             }
         }
     }

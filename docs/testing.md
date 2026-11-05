@@ -1739,14 +1739,31 @@ Harness changes plus two small app changes. `run.py --self-test` covers the harn
 
 ## #1652: keys typed while the multi-line submit dialog is open
 
-The `Run N lines one at a time?` dialog (`MultilineSubmitConfirmationDialog`) took focus and dropped every key its own bindings did not
-take (`kh_editor_elem_typed ... live_focus=no accepted=false`); the next Enter then answered it. The owner's decision is hold, deliver
-after: the dialog is now a pane key sink and holds typed text and the editor's fixed editing keys (Backspace, Delete, arrows, Tab,
-Shift-Tab) in the asking input's editor hold (`EditorPasteHold::begin_modal_hold`, opened when the input asks); a key that reaches the
-editor while the dialog is open (focus is there instead) joins the same hold, an Enter included, so it neither confirms the dialog nor
-submits the waiting buffer. The answer goes to the input that asked (not to whichever session is focused then); Cancel delivers the held
-keys behind the buffer, Confirm after the run is submitted (the text newer than the submission, #934). No timer is involved: only the
-answer delivers. Log hops: `kh_multiline_dialog_hold`, `modal_hold_key`, `modal_hold_deliver`. Tests (`terminal/input_test.rs`; the three
-key tests run in both `DestinationMode`s): `multiline_dialog_holds_text_and_editing_keys_only`,
-`keys_typed_while_the_multiline_dialog_is_open_follow_a_cancel`, `keys_typed_while_the_multiline_dialog_is_open_follow_the_confirmed_run`,
-`an_enter_outside_the_multiline_dialog_does_not_confirm_it`, `multiline_dialog_enter_confirms_and_escape_cancels`.
+The `Run N lines one at a time?` dialog takes focus; a key its bindings did not take was dropped
+(`kh_editor_elem_typed ... live_focus=no accepted=false`) and the next Enter answered it. The first fix
+(fa7534097) kept the keys in a side list and was redesigned after review: the asking Enter is now a gate on the
+pane queue (decision and rules in `DECLINED.md`, "Keys typed while the multi-line submit dialog is open"); the
+answer takes what waited: Confirm discards it (owner: "safe fallback"), Cancel puts its visible text on a line of its own
+(`resolve_dialog_typeahead`). `TerminalView::settle_enter_queue_for_test`
+drives the view's after-Enter settle so a test does not depend on the order of its hops.
+The dialog is a pane key sink that hands each key to the asking input's editor (typed text as typed text, a key
+down dispatched on the editor's responder chain, `AppContext::responder_chain_of`), so it queues behind the gate
+like a key typed in the editor; Confirm releases the gate as after any submitted Enter, Cancel to the editor.
+A test window has no workspace, so `multiline_submit_fixture_with_terminal` marks the dialog as shown
+(`Input::set_multiline_dialog_shown_for_test`); without that the Enter now waits for nothing (F9), which is what
+`an_unshown_multiline_dialog_holds_nothing` pins. Log hops: `enter_dialog_gate`, `enter_dialog_answered`,
+`enter_dialog_cancelled`, `enter_queued_behind_dialog`, `kh_multiline_dialog_key`.
+
+| guarantee | test |
+|---|---|
+| keys on the dialog and in the editor wait behind the asking Enter in typed order; an editor Enter is an entry; Cancel puts them on a line of their own (`{text}\nls\npwd`), no second ask, nothing runs (both `DestinationMode`s) | `multiline_dialog_cancel_puts_the_held_keys_on_a_line_of_their_own` (`terminal/input_test.rs`) |
+| held Backspace / Left (real dispatch) act on the new line only; surplus Backspaces never reach the buffer (both modes) | `multiline_dialog_held_editing_keys_act_on_the_new_line_only` |
+| VimBackspace, a file drop, Ctrl-U (the new line only; the system clipboard untouched), Escape are held, not applied to the buffer (both modes) | `multiline_dialog_holds_editor_only_keys` |
+| Confirm (safe fallback) runs exactly the buffer, once; the held keys (text, Enter, ctrl-w, a paste) are discarded: nothing reaches the pty or the editor, even after the view settles (driven explicitly), and a toast fires (hand-off on, both modes) | `multiline_dialog_confirm_discards_the_held_keys`, `dialog_typeahead_discarded_toast_text` |
+| vim mode: Cancel inserts the held keys' text literally on its own line; `dd` never edits the buffer (both modes) | `multiline_dialog_cancel_in_vim_inserts_literal_text_and_keeps_the_buffer` |
+| the line model the held keys are resolved on | `dialog_typeahead_resolution_rules` |
+| ^C / ^D void the waiting Enter and what followed it; a signal reaching the queue directly keeps the gate | `ctrl_c_voids_the_enter_waiting_for_the_multiline_dialog`, `ctrl_d_voids_the_enter_waiting_for_the_multiline_dialog`, `a_signal_at_the_queue_keeps_the_multiline_dialog_gate` |
+| no dialog shown, nothing held (F9) | `an_unshown_multiline_dialog_holds_nothing` |
+| the answer goes to the asking input only, to nobody when it is gone (F6) | `the_multiline_dialog_answers_only_the_input_that_asked` |
+| the dialog's Enter confirms and Escape cancels (F7) | `multiline_dialog_enter_confirms_and_escape_cancels` |
+| a second ask is refused; only the asker's ^C dismisses (F5) | `a_second_multiline_dialog_ask_is_refused_and_only_the_asker_dismisses_it` (`workspace/view_test.rs`) |
