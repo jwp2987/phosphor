@@ -696,10 +696,12 @@ class Ctx:
             try:
                 if tries:
                     for _ in range(3):
+                        self.wait_out_exit_window()
                         self.be.key("ctrl+c")
                         # r18u8 (H16): in agent mode two Ctrl-C within the 1 s confirmation window EXIT an empty agent conversation; 0.8 s apart did exactly that
                         time.sleep(self.EXIT_WINDOW_S + 0.4 if self.mode == "agent" else 0.8)
                 else:
+                    self.wait_out_exit_window()
                     self.be.key("ctrl+c")
                     time.sleep(0.3)
                 self.be.key("ctrl+u")
@@ -1013,6 +1015,21 @@ class Ctx:
         leave agent view (first press arms a confirmation, the second within 1 s exits; view.rs should_ctrl_c_exit_agent_view)"""
         t = [x for x in self.ctrlc_ts if x >= t0]
         return any(b - a < self.EXIT_WINDOW_S + 0.3 for a, b in zip(t, t[1:]))
+
+    def wait_out_exit_window(self, now=None, sleep=None):
+        """Agent mode only: sleep until the last Ctrl-C the harness sent is outside the exit-confirmation window, so the NEXT Ctrl-C cannot be the second
+        press that exits an empty agent conversation. r18u22 (Windows agent@gitbash): pane_responsive's probe runs right after cadence and ctrl_c_d, whose
+        own reset() had pressed Ctrl-C 0.8-0.9 s earlier; the probe's first Ctrl-C was the second press, the app left agent view (hop=view_mode
+        mode=terminal at that very keydown), and the runner, which checks the view BEFORE the probe, blamed the NEXT case (left_agent_mode_after_fast_typing
+        / _read_x). H16 had spaced only the retry's three presses. Returns the seconds slept."""
+        if self.mode != "agent" or not self.ctrlc_ts:
+            return 0.0
+        now = time.time() if now is None else now
+        left = self.ctrlc_ts[-1] + self.EXIT_WINDOW_S + 0.4 - now
+        if left > 0:
+            (sleep or time.sleep)(left)
+            return left
+        return 0.0
 
     def reset(self):
         # r18d2 (Wayland): the agent pass left agent view after cadence/fast_typing because reset() sent Ctrl-C twice within the 1 s exit-confirmation window of an
@@ -1505,7 +1522,14 @@ def c_paste_enter(ctx, r):
         # compare the DIGEST: Git for Windows' md5sum prints "<hash> *-" (binary marker), GNU coreutils "<hash>  -" (r18cj: 0/6 in both Git Bash panes while the
         # shell's own rec.log showed all six pasted lines arrived byte-exact, 10/500/5000-character pads)
         got = [l.split()[0] if l.split() else l for l in got]
-        recv = [c for c in ctx.cmds_since(mark) if "alive_" not in c] if (ctx.win and ctx.prof.commands()) else None     # a wedge probe's line can be logged late (r18co)
+        recv = None
+        if ctx.win and ctx.prof.commands():
+            # r18u22 (Windows agent@gitbash, "5/6 byte-exact (count 5 vs 6)"): rec.log is written by PROMPT_COMMAND, AFTER the command ran, so the last line's
+            # pe.txt digest can land before its rec.log entry (Git Bash forks are slow). That run's rec.log had all six lines, exact and in order, the sixth
+            # logged after the case had already compared. Wait for the shell's own record to catch up first; a line that never comes still fails below.
+            pasted = lambda: [c for c in ctx.cmds_since(mark) if "alive_" not in c]     # a wedge probe's line can be logged late (r18co)
+            ctx.until(lambda: len(pasted()) >= len(sent), 5)
+            recv = pasted()
         if recv is not None:
             r.check(recv == sent, "pasted lines reached the shell exactly: %d/%d byte-exact (first mismatch: %r)" % (
                 sum(a == b for a, b in zip(sent, recv)), len(sent), next(((b[:60], len(b)) for a, b in zip(sent, recv) if a != b), "count %d vs %d" % (len(recv), len(sent)))))

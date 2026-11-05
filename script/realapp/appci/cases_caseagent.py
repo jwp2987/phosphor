@@ -701,18 +701,29 @@ def c_agent_code_recycle(ctx, r):
         r.metric("snippets_visible_after_answer", first)
         if first is not None and not first:
             r.skip("the model's answer shows none of the RCY%s_NN snippets (model nondeterminism): nothing to recycle" % tok)
-        for i in range(fillers):
+        # r18u22 (Windows agent pass, PowerShell pane): 9 one-word answers were not enough. The app recycles a block more than 6 rich-content entries from the
+        # NEAREST VISIBLE one (view.rs AI_CODE_RECYCLE_DISTANCE), and in that agent view several short filler answers were on screen at once, so the snippet
+        # answer stayed within 6 of a visible one: correctly kept. The very next layout that changed the visible set (the case's own Escape, 11 s later) logged
+        # `agent_code_recycled ... dropped=14`. How many fillers it takes depends on how many answers fit on the screen, so after the first `fillers` the case
+        # adds more, one at a time, until the recycle line comes (cap APPCI_RECYCLE_MAX_FILLERS, default 24); the count it needed is a metric.
+        max_fillers = max(fillers, int(os.environ.get("APPCI_RECYCLE_MAX_FILLERS", "24")))
+        used = 0
+        while used < max_fillers:
+            if used >= fillers and any(e[0] == "recycled" for e in recycle_events(ctx.log_since(off))):
+                break
             reqs = count_in_log(ctx, off, "[byop] opening stream")
-            type_fast(ctx, "Reply with just the word FILL%s%d and nothing else." % (tok, i))
+            type_fast(ctx, "Reply with just the word FILL%s%d and nothing else." % (tok, used))
             if not wait_marker(ctx, off, "[byop] opening stream", n=reqs + 1, timeout=60):
-                r.skip("filler %d opened no model request in 60 s" % i)
+                r.skip("filler %d opened no model request in 60 s" % used)
             settled(ctx, "rcy_fill", timeout=120)
+            used += 1
+        r.metric("fillers_used", used)
         ev = recycle_events(ctx.log_since(off))
         recycled = [e for e in ev if e[0] == "recycled"]
         r.metric("recycle_events_after_fillers", ev)
         if not recycled:
             r.check(False, "no 'editor_memory agent_code_recycled' line after %d later answers: the snippet answer's editors were never recycled "
-                           "(a build before #1267, PHOSPHOR_AGENT_CODE_EDITOR_RECYCLE=0, or the answer is not > 6 rich-content entries away)" % fillers)
+                           "(a build before #1267, PHOSPHOR_AGENT_CODE_EDITOR_RECYCLE=0, or the answer is never > 6 rich-content entries from a visible one)" % used)
             return
         block = recycled[0][1]
         r.metric("recycled_editors", recycled[0][2])
@@ -720,7 +731,7 @@ def c_agent_code_recycle(ctx, r):
         off2 = ctx.log_size()
         rebuilt = False
         vis_first = None      # the snippets on the first frame the answer is back on screen: still the RECYCLED plain rendering (review)
-        for _ in range(fillers + 6):
+        for _ in range(used + 6):
             ctx.be.key(up)
             time.sleep(0.6)
             if vis_first is None:
