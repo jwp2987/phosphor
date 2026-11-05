@@ -983,9 +983,10 @@ impl Input {
                 if held_behind > 0 && !submitted {
                     let line = self.editor.as_ref(ctx).buffer_text(ctx);
                     if !line.is_empty() {
-                        self.editor.update(ctx, |editor, ctx| {
-                            editor.set_buffer_text(&format!("{line}\n"), ctx)
-                        });
+                        let left = format!("{line}\n");
+                        self.editor
+                            .update(ctx, |editor, ctx| editor.set_buffer_text(&left, ctx));
+                        self.note_hand_back_line_break(left);
                     }
                 }
                 queue.defer(crate::terminal::input_queue::Deferred::VoidEnterGate {
@@ -1025,6 +1026,14 @@ impl Input {
                 EnterGuardKind::HandedBackText,
                 hand_back.guard_toast,
             );
+        } else if !submitted && deferred_typed {
+            // The queue was busy: what was typed behind the Enter comes back with the deferred
+            // take, after the line (which got its line break above). Guard the line now with the
+            // give-up's own toast, so the first Enter on it plus what follows is held whatever
+            // the take brings (#1666 review). The baseline is the line itself, without the break.
+            let line = self.editor.as_ref(ctx).buffer_text(ctx);
+            let line = line.strip_suffix('\n').unwrap_or(&line).to_string();
+            self.arm_enter_guard(line, EnterGuardKind::HandedBackText, hand_back.guard_toast);
         } else if !submitted && gate.held_unready {
             // The held line alone (an unready shell's Enter): its next Enter is held with the
             // toast. A line given up for a verdict is what the user typed: Enter sends it.

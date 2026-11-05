@@ -1684,23 +1684,36 @@ def c_tab(ctx, r):
     target = "tc/zzcompl_alpha_unique.txt"
     ctx.rm(target)
     open(os.path.join(ctx.W, target), "w").close()
-    exp, give_ups = [], []
+    trials, gave_up = [], set()     # trials: (gap, tok, start wall time); gave_up: indices of trials whose completion gave up
+
+    def settle(i, t_end=None):
+        """attribute a give-up to trial i from ITS log window only: [its start, the next trial's start) (#1666 review: a late give-up, e.g. the
+        500 ms backstop, must not be read as the next trial's). A give-up found leaves the line in the editor: clear it before the next trial."""
+        if i < 0 or i in gave_up:
+            return
+        if completion_give_ups("\n".join(ctx.app_log_window(trials[i][2], t_end))):
+            gave_up.add(i)
+            ctx.be.key("ctrl+c")
+            time.sleep(0.2)
+
     for gap in (0, 0.05, 0.15):
-        for i in range(ctx.count(4)):
+        for _ in range(ctx.count(4)):
+            # the previous trial's window closes here, before this trial types: a give-up logged since its own check is still its own
+            settle(len(trials) - 1, time.time())
             tok = ctx.tok(6)
             t_trial = time.time()
+            trials.append((gap, tok, t_trial))
             ctx.be.type(("Add-Content -Value %s -Path tc/zzcompl_alpha_u" if ctx.pane == "powershell" else "echo %s >> tc/zzcompl_alpha_u") % tok, 15)
             ctx.be.key("Tab")
             if gap:
                 time.sleep(gap)
             ctx.be.key("Return")
             time.sleep(0.5)
-            if completion_give_ups("\n".join(ctx.app_log_window(t_trial))):
-                give_ups.append((gap, tok))
-                ctx.be.key("ctrl+c")
-                time.sleep(0.2)
-            else:
-                exp.append(tok)
+            settle(len(trials) - 1)
+    time.sleep(0.6)     # past the 500 ms backstop of the last trial
+    settle(len(trials) - 1)
+    exp = [tok for i, (_g, tok, _t) in enumerate(trials) if i not in gave_up]
+    give_ups = [(trials[i][0], trials[i][1]) for i in sorted(gave_up)]
     ctx.until(lambda: len(ctx.lines(target)) >= len(exp), 10)
     got = ctx.lines(target)
     r.metric("completion_give_ups", len(give_ups))

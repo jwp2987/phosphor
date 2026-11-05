@@ -1140,18 +1140,25 @@ line, `cd proj` instead of `cd project-x/`): the wait is voided, the Enter is dr
   line was not run. Press Tab to complete it, or Enter to run it as shown." and a GLUE guard (`EnterGuardKind::Glue`) over the
   line. An Enter on the unchanged line runs it at once; an Enter after text was typed onto its end (`ls` → `cd projls`) is held
   once, runs nothing, keeps the buffer, with "Text was typed onto a line that was not run; check it and press Enter again"; a
-  completion inserted into the line (the toast's Tab) drops the guard. Only this give-up arms the glue guard
+  completion inserted into the line (the toast's Tab), an accepted menu item (completion or enum) or an accepted
+  autosuggestion drops the guard, and an Enter that only accepts a highlighted menu item is neither held nor consumed by it;
+  Ctrl-C, a clear, or an edit that leaves the buffer not starting with the line (or empty) drops it as stale; finishing the
+  word by hand costs exactly one extra Enter, with the glue toast (pinned). Only this give-up arms the glue guard
   (`HandBack::glue_guard_on_line_alone`); the verdict give-up could opt in later (owner: deferred to the design pass);
 - keys were typed during the hold: they come back after the line in typed order, the toast says the line and what was typed
   after it are in the input (it does not promise Enter runs it), and the next Enter is held by the hand-back guard with a toast
-  that agrees ("the completion did not finish, so this text was not run").
+  that agrees ("the completion did not finish, so this text was not run"). When the queue was busy (the typed keys come back with a
+  deferred take) the line is guarded the same way at once; if the take brings nothing, the line break added for it is removed
+  (only while the buffer is still exactly what the hand-back left).
 
 Every held-back-Enter guard now carries its own toast, set when it is armed (`Input::arm_enter_guard`): ssh hand-backs keep the
 ssh text, an unready shell's give-up and the other hand-backs say their own reason (the guard used to say "the SSH session ended"
 for all of them). In an appci log the give-up is `enter_completion_give_up editor completion_cap` / `completion_backstop` (plus
 `kh_enter_gate_give_up by=completion_cap` with a gate) and a held Enter is `enter_guard_held kind=..`. The appci `tab_enter` case
 detects a give-up from the app log (`completion_give_ups`), reports it as a GIVE-UP note and the `completion_give_ups` metric,
-clears the handed-back line with Ctrl-C so the next trial is not typed onto it, and FAILS the case on any give-up; "ran the
+clears the handed-back line with Ctrl-C so the next trial is not typed onto it, and FAILS the case on any give-up (each trial's
+give-up is read from its own log window, its start to the next trial's start, so a late backstop give-up is not blamed on the
+next trial); "ran the
 UNCOMPLETED line" is now reserved for a stray file (self-test `tab_enter_completion_give_up_is_detected`).
 
 | layer | test | asserts |
@@ -1159,6 +1166,8 @@ UNCOMPLETED line" is now reserved for a stray file (self-test `tab_enter_complet
 | input, Legacy and Table | `input_test.rs`: `test_tab_then_enter_timeout_hands_the_line_back_and_drops_late_result` (was `..._submits_visible_text_...`, whose expectation was the defect), `test_tab_completion_cap_counts_only_completer_compute` (expectation changed the same way) | cap spent: nothing executed, wait and gate gone, `git checkout fe` in the editor, glue guard armed, exactly one toast with the exact text; the late `feature` result neither completes nor runs it; the user's next Enter on the unchanged line runs `git checkout fe` |
 | input, Legacy and Table | `input_test.rs`: `test_tab_then_enter_backstop_hands_the_line_back_and_runs_nothing`, `test_tab_then_enter_cap_then_backstop_on_one_wait_shows_one_toast` | the 500 ms backstop gives up the same way; cap then backstop on one wait: one hand-back, one toast |
 | input, Legacy and Table | `input_test.rs`: `test_tab_completion_give_up_then_typing_onto_the_line_does_not_run_it_glued`, `test_tab_completion_give_up_then_tab_completes_and_enter_runs_it` | `ls` + Enter onto the handed-back line: nothing runs, buffer `git checkout fels` kept, the glue toast; the next Enter runs it. A Tab whose single match is inserted drops the guard and Enter runs `git checkout feature` |
+| input, Legacy and Table | `input_test.rs`: `test_glue_guard_lets_an_enter_accept_a_completion_menu_item`, `test_glue_guard_is_dropped_by_an_accepted_autosuggestion` | `a` typed onto the line, a classic menu with a highlighted item: Enter accepts it (nothing runs, guard dropped), the next Enter runs the accepted line; an accepted autosuggestion drops the guard and Enter runs `git checkout feature` at once |
+| input, Legacy and Table | `input_test.rs`: `test_glue_guard_is_dropped_when_the_line_is_cleared_or_edited_away`, `test_tab_completion_give_up_then_finishing_the_word_by_hand_costs_one_enter` | after a clear, `git checkout feature/foo` + Enter runs at once; after a Backspace (`git checkout f`) the guard is gone and `eature` + Enter runs; `ature` typed by hand: one Enter held with the glue toast, the second runs `git checkout feature` |
 | input, Legacy and Table | `input_test.rs`: `test_tab_then_enter_completion_in_time_runs_the_completed_line_in_both_modes` | a completer within its cap is waited for and `git checkout feature` runs once |
 | input, Legacy and Table | `input_test.rs`: `test_tab_then_enter_give_up_keeps_the_keys_typed_after_it_in_order` | `l`,`s`,Enter,`pwd` typed behind the held Enter, then the cap: editor `git checkout fe\nls\npwd`, nothing executed or released, one toast (the with-typed text); the next Enter is held with the matching guard toast and runs nothing |
 

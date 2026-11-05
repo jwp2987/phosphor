@@ -2325,6 +2325,10 @@ pub struct Input {
     /// The text handed back to the editor when the ssh connect ended; `Some` while armed (#1395).
     /// Other hand-backs arm it too, each with its own kind and toast (#1666).
     ssh_handover_enter_guard: Option<EnterGuard>,
+    /// #1666 review: the buffer a busy-queue hand-back left, with the line break it added for the
+    /// text the deferred take brings; `Some` until that take runs. A take that brings nothing
+    /// removes the break, if the buffer is still exactly this.
+    hand_back_line_break: Option<String>,
     /// Whether the last Enter submitted a shell command; read by `input_enter_as_shell_command`.
     last_enter_submitted_shell_command: bool,
     /// What the editor held when it last submitted a command. The editor is cleared when that
@@ -4098,6 +4102,7 @@ impl Input {
             handoff_enter_started: None,
             running_deferred_enter: false,
             ssh_handover_enter_guard: None,
+            hand_back_line_break: None,
             last_enter_submitted_shell_command: false,
             editor_submission: None,
             editor_submission_from_pending: false,
@@ -8413,6 +8418,9 @@ impl Input {
         executing: Executing,
         ctx: &mut ViewContext<Input>,
     ) -> bool {
+        // #1666: an accepted menu item (completion or enum) is not text typed onto a handed-back
+        // line.
+        self.disarm_glue_enter_guard();
         match self.suggestions_mode_model.as_ref(ctx).mode() {
             InputSuggestionsMode::Closed => false,
             InputSuggestionsMode::HistoryUp { .. } => true,
@@ -8585,6 +8593,8 @@ impl Input {
     }
 
     pub fn clear_buffer_and_reset_undo_stack(&mut self, ctx: &mut ViewContext<Self>) {
+        // #1666: a cleared buffer no longer holds the line a glue guard was armed over.
+        self.disarm_glue_enter_guard();
         self.bump_input_generation();
         self.clear_cached_hint_text();
         self.editor.update(ctx, |view, ctx| {
@@ -10113,6 +10123,9 @@ impl Input {
                     ctx.emit(Event::SshEscapeToPty { bytes });
                     return;
                 }
+                // #1666: an edit that left the buffer without the glue guard's line (or empty)
+                // made it stale; text typed onto the line keeps it.
+                self.drop_stale_glue_enter_guard(ctx);
 
                 // We should ideally be handling all `Edited` events, not just those that are
                 // marked EditOrigin. However, we receive the notification that the block has
@@ -10920,6 +10933,9 @@ impl Input {
                 buffer_char_length,
                 autosuggestion_type,
             } => {
+                // #1666: an accepted autosuggestion grows the line the way a completion does; it
+                // was not typed onto it.
+                self.disarm_glue_enter_guard();
                 send_telemetry_from_ctx!(
                     TelemetryEvent::AutosuggestionInserted {
                         insertion_length: *insertion_length,
@@ -11026,6 +11042,8 @@ impl Input {
             EditorEvent::CtrlEnter => self.input_ctrl_enter(ctx),
             EditorEvent::Escape => self.editor_escape(ctx),
             EditorEvent::CtrlC { cleared_buffer_len } => {
+                // #1666: ^C drops the line a glue guard was armed over; the next line is new.
+                self.disarm_glue_enter_guard();
                 // #1571: ^C voids an Enter held for an unready shell (never run later).
                 self.cancel_unready_enter("editor_interrupt", ctx);
                 // #1652: and one waiting for the multi-line dialog (the dialog closes).
@@ -15340,6 +15358,68 @@ impl Input {
         }
     }
 
+    /// #1666 review: a busy-queue hand-back added a line break after the held line for the text
+    /// its deferred take brings back; remembers the buffer it left.
+    pub(crate) fn note_hand_back_line_break(&mut self, buffer: String) {
+        self.hand_back_line_break = Some(buffer);
+    }
+
+    /// The deferred take brought text: the line break is used.
+    pub(crate) fn forget_hand_back_line_break(&mut self) {
+        self.hand_back_line_break = None;
+    }
+
+    /// The deferred take brought nothing: the line break the hand-back added is removed, only if
+    /// the buffer is still exactly what the hand-back left (nothing typed since is touched).
+    pub(crate) fn drop_unused_hand_back_line_break(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(left) = self.hand_back_line_break.take() else {
+            return;
+        };
+        let buffer = self.editor.as_ref(ctx).buffer_text(ctx);
+        if buffer != left {
+            return;
+        }
+        if let Some(line) = left.strip_suffix('\n') {
+            let line = line.to_string();
+            self.editor
+                .update(ctx, |editor, ctx| editor.set_buffer_text(&line, ctx));
+        }
+    }
+
+    /// #1666: drops a [`EnterGuardKind::Glue`] guard whose line the buffer no longer starts with
+    /// (or that is empty): the user replaced the line, and a later Enter belongs to the new one.
+    fn drop_stale_glue_enter_guard(&mut self, ctx: &AppContext) {
+        let Some(guard) = self
+            .ssh_handover_enter_guard
+            .as_ref()
+            .filter(|guard| guard.kind == EnterGuardKind::Glue)
+        else {
+            return;
+        };
+        let buffer = self.editor.as_ref(ctx).buffer_text(ctx);
+        if buffer.is_empty() || !buffer.starts_with(&guard.baseline) {
+            self.ssh_handover_enter_guard = None;
+        }
+    }
+
+    /// #1666: whether this Enter only accepts an item of an open completion or enum menu. A glue
+    /// guard leaves such an Enter alone (neither held nor consumed): the accepted item's insert
+    /// drops the guard.
+    fn enter_accepts_a_menu_item(&self, ctx: &ViewContext<Self>) -> bool {
+        match self.suggestions_mode_model.as_ref(ctx).mode() {
+            InputSuggestionsMode::StaticWorkflowEnumSuggestions { .. }
+            | InputSuggestionsMode::DynamicWorkflowEnumSuggestions { .. } => true,
+            // A stale menu is dropped by the Enter (`drop_stale_completion_menu`), which then
+            // submits: the guard applies to that Enter.
+            InputSuggestionsMode::CompletionSuggestions { .. } => {
+                !self.completion_menu_stale
+                    && !self.as_you_type_menu_lags_buffer(ctx)
+                    && self.should_enter_accept_completion_suggestion(ctx)
+            }
+            _ => false,
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn ssh_handover_enter_guard_armed(&self) -> bool {
         self.ssh_handover_enter_guard.is_some()
@@ -15358,6 +15438,16 @@ impl Input {
     /// locally because the connect ended mid-line. Decided by the hand-back event, not by timing.
     /// An empty buffer has nothing to run, so the guard is simply dropped.
     fn hold_back_enter_after_ssh_handover(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        // #1666: a glue guard is neither taken nor applied by an Enter that only accepts a menu
+        // item; accepting it inserts into the line, which drops the guard.
+        if self
+            .ssh_handover_enter_guard
+            .as_ref()
+            .is_some_and(|guard| guard.kind == EnterGuardKind::Glue)
+            && self.enter_accepts_a_menu_item(ctx)
+        {
+            return false;
+        }
         let Some(guard) = self.ssh_handover_enter_guard.take() else {
             return false;
         };

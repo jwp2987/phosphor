@@ -13754,6 +13754,214 @@ fn test_tab_completion_give_up_then_tab_completes_and_enter_runs_it() {
     }
 }
 
+/// #1666 re-review: with a glue guard armed (text typed onto the handed-back line), an Enter that
+/// only accepts a highlighted completion-menu item is neither held nor consumed by the guard: the
+/// item is accepted, nothing runs, the insert drops the guard, and the next Enter runs the
+/// completed line. Both modes.
+#[test]
+fn test_glue_guard_lets_an_enter_accept_a_completion_menu_item() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+            let _classic = FeatureFlag::ForceClassicCompletions.override_enabled(true);
+            let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, true).await;
+            input.update(&mut app, |input, ctx| input.input_enter(ctx));
+            fire_tab_completion_cap(&input, &mut app);
+            input.update(&mut app, |input, ctx| input.user_insert("a", ctx));
+            input.update(&mut app, |input, ctx| {
+                input.handle_completion_suggestions_results(
+                    build_suggestion_results(
+                        // No common prefix past `fea`: the Tab opens the menu and inserts nothing.
+                        vec![argument_suggestion("feature"), argument_suggestion("fear")],
+                        (13, 16),
+                        MatchStrategy::CaseInsensitive,
+                    ),
+                    CompletionsTrigger::Keybinding,
+                    editor_model_snapshot(input, ctx),
+                    ctx,
+                );
+            });
+            input.update(&mut app, |input, ctx| {
+                input
+                    .input_suggestions
+                    .update(ctx, |suggestions, ctx| suggestions.select_next(ctx));
+            });
+            input.read(&app, |input, ctx| {
+                assert!(
+                    input.should_enter_accept_completion_suggestion(ctx),
+                    "{mode:?}: a highlighted item"
+                );
+                assert_eq!(
+                    input.enter_guard_for_test().map(|(kind, _)| kind),
+                    Some(EnterGuardKind::Glue),
+                    "{mode:?}"
+                );
+            });
+            input.update(&mut app, |input, ctx| input.input_enter(ctx));
+            assert!(
+                executed.borrow().is_empty(),
+                "{mode:?}: accepting runs nothing"
+            );
+            let accepted = input.read(&app, |input, ctx| {
+                let buffer = input.buffer_text(ctx);
+                assert!(
+                    matches!(
+                        buffer.trim_end(),
+                        "git checkout feature" | "git checkout fear"
+                    ),
+                    "{mode:?}: the item was accepted: {buffer:?}"
+                );
+                assert!(
+                    input.enter_guard_for_test().is_none(),
+                    "{mode:?}: the insert dropped the guard"
+                );
+                buffer.trim_end().to_string()
+            });
+            input.update(&mut app, |input, ctx| input.input_enter(ctx));
+            assert_eq!(executed.borrow().len(), 1, "{mode:?}");
+            assert_eq!(executed.borrow()[0].trim_end(), accepted, "{mode:?}");
+        });
+    }
+}
+
+/// #1666 re-review: an accepted autosuggestion grows the handed-back line like a completion; it
+/// was not typed onto it. It drops the glue guard and the Enter runs the line at once. Both modes.
+#[test]
+fn test_glue_guard_is_dropped_by_an_accepted_autosuggestion() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+            let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, true).await;
+            let editor = input.read(&app, |input, _| input.editor().clone());
+            input.update(&mut app, |input, ctx| input.input_enter(ctx));
+            fire_tab_completion_cap(&input, &mut app);
+            input.update(&mut app, |input, ctx| {
+                input.set_autosuggestion(
+                    "ature",
+                    AutosuggestionType::Command {
+                        was_intelligent_autosuggestion: false,
+                    },
+                    ctx,
+                )
+            });
+            editor.update(&mut app, |editor, ctx| {
+                editor.handle_action(&EditorAction::InsertAutosuggestion, ctx)
+            });
+            input.read(&app, |input, ctx| {
+                assert_eq!(input.buffer_text(ctx), "git checkout feature", "{mode:?}");
+                assert!(input.enter_guard_for_test().is_none(), "{mode:?}");
+            });
+            input.update(&mut app, |input, ctx| input.input_enter(ctx));
+            assert_eq!(
+                executed.borrow().as_slice(),
+                ["git checkout feature"],
+                "{mode:?}"
+            );
+        });
+    }
+}
+
+/// #1666 re-review: a glue guard goes stale when the line it was armed over is gone: cleared
+/// (Ctrl-C) or edited so the buffer no longer starts with it. A new line that happens to start
+/// with the old one then runs at once. Both modes.
+#[test]
+fn test_glue_guard_is_dropped_when_the_line_is_cleared_or_edited_away() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        // Cleared (what Ctrl-C does to the editor).
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+            let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, true).await;
+            input.update(&mut app, |input, ctx| input.input_enter(ctx));
+            fire_tab_completion_cap(&input, &mut app);
+            input.update(&mut app, |input, ctx| {
+                input.clear_buffer_and_reset_undo_stack(ctx)
+            });
+            input.read(&app, |input, _| {
+                assert!(input.enter_guard_for_test().is_none(), "{mode:?}: cleared")
+            });
+            input.update(&mut app, |input, ctx| {
+                input.user_insert("git checkout feature/foo", ctx)
+            });
+            input.update(&mut app, |input, ctx| input.input_enter(ctx));
+            assert_eq!(
+                executed.borrow().as_slice(),
+                ["git checkout feature/foo"],
+                "{mode:?}: the new line runs at once"
+            );
+        });
+        // Edited away: a Backspace leaves `git checkout f`, then the user types on.
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+            let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, true).await;
+            let editor = input.read(&app, |input, _| input.editor().clone());
+            input.update(&mut app, |input, ctx| input.input_enter(ctx));
+            fire_tab_completion_cap(&input, &mut app);
+            type_into_editor(
+                &mut app,
+                &editor,
+                HeldPasteKey::Action(EditorAction::Backspace),
+            );
+            input.read(&app, |input, ctx| {
+                assert_eq!(input.buffer_text(ctx), "git checkout f", "{mode:?}");
+                assert!(
+                    input.enter_guard_for_test().is_none(),
+                    "{mode:?}: edited away"
+                );
+            });
+            input.update(&mut app, |input, ctx| input.user_insert("eature", ctx));
+            input.update(&mut app, |input, ctx| input.input_enter(ctx));
+            assert_eq!(
+                executed.borrow().as_slice(),
+                ["git checkout feature"],
+                "{mode:?}"
+            );
+        });
+    }
+}
+
+/// #1666 re-review: the user finishes the word by hand after a give-up (`ature` typed onto
+/// `git checkout fe`). That is text typed onto the handed-back line, so it costs exactly one extra
+/// Enter, with the glue toast; the second Enter runs the line. Pinned on purpose. Both modes.
+#[test]
+fn test_tab_completion_give_up_then_finishing_the_word_by_hand_costs_one_enter() {
+    use crate::terminal::input::enter_queue::COMPLETION_GIVE_UP_TOAST;
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+            let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, true).await;
+            let toasts = record_toast_texts(&mut app);
+            input.update(&mut app, |input, ctx| input.input_enter(ctx));
+            fire_tab_completion_cap(&input, &mut app);
+            input.update(&mut app, |input, ctx| input.user_insert("ature", ctx));
+            input.update(&mut app, |input, ctx| input.input_enter(ctx));
+            assert!(executed.borrow().is_empty(), "{mode:?}: one Enter held");
+            assert_eq!(
+                *toasts.borrow(),
+                [
+                    COMPLETION_GIVE_UP_TOAST.to_string(),
+                    GLUE_GUARD_TOAST.to_string()
+                ],
+                "{mode:?}"
+            );
+            input.update(&mut app, |input, ctx| input.input_enter(ctx));
+            assert_eq!(
+                executed.borrow().as_slice(),
+                ["git checkout feature"],
+                "{mode:?}"
+            );
+        });
+    }
+}
+
 /// #1666: a completion that lands inside the cap still runs the COMPLETED line (owner rule
 /// 2026-10-31: Tab then a fast Enter runs the completed line), in both modes.
 #[test]
