@@ -437,6 +437,53 @@ fn test_basic_input_and_newline() {
     );
 }
 
+/// r18u27 (fuzz `hook_parsers`): a full-width row 0 whose last cell is a
+/// leading wide-char spacer looked up row `0 - 1`.
+#[test]
+fn row_zero_leading_wide_spacer_does_not_underflow_r18u27() {
+    let mut blockgrid = mock_blockgrid("abcd");
+    let columns = blockgrid.grid_handler.columns();
+    blockgrid.grid_handler.grid[VisibleRow(0)][columns - 1]
+        .flags_mut()
+        .insert(Flags::LEADING_WIDE_CHAR_SPACER);
+    let text = blockgrid.grid_handler.line_to_string(
+        0,
+        0..columns - 1,
+        true,
+        false,
+        RespectObfuscatedSecrets::No,
+        false,
+    );
+    assert!(text.is_some());
+    let _ = blockgrid.grid_handler.bounds_to_string(
+        Point::new(0, 0),
+        Point::new(0, columns - 1),
+        false,
+        RespectObfuscatedSecrets::No,
+        false,
+        RespectDisplayedOutput::No,
+    );
+}
+
+/// A trailing spacer in column 0 has nothing to its left to include.
+#[test]
+fn spacer_in_column_zero_does_not_underflow_r18u27() {
+    let mut blockgrid = mock_blockgrid("abcd");
+    let columns = blockgrid.grid_handler.columns();
+    blockgrid.grid_handler.grid[VisibleRow(0)][0]
+        .flags_mut()
+        .insert(Flags::WIDE_CHAR_SPACER);
+    let text = blockgrid.grid_handler.line_to_string(
+        0,
+        0..columns - 1,
+        true,
+        false,
+        RespectObfuscatedSecrets::No,
+        false,
+    );
+    assert!(text.is_some());
+}
+
 #[test]
 fn test_empty_grid_bounds_to_string() {
     let size = SizeInfo::new_without_font_metrics(0, 0);
