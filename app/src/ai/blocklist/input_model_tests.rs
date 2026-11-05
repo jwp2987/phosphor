@@ -1668,9 +1668,13 @@ fn enter_verdict_wait_is_bounded_and_never_swallows_the_enter() {
         decide(true, Duration::from_secs(5)),
         EnterVerdictWait::SubmitWithoutVerdict
     );
-    assert!(
-        ENTER_VERDICT_BUDGET <= Duration::from_millis(20),
-        "the budget is local compute plus the 10 ms debounce, never I/O"
+    // Owner 2026-11-05 ("the app shouldn't need a perfect machine to run on"): 50 ms, raised
+    // from 20 ms, and counted on the classifier's own CPU clock (#1651). Still a bound on local
+    // compute, never on I/O.
+    assert_eq!(
+        ENTER_VERDICT_BUDGET,
+        Duration::from_millis(50),
+        "the budget is local compute, never I/O"
     );
 }
 

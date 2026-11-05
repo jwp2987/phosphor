@@ -2262,7 +2262,7 @@ def c_ssh_nested(ctx, r):
         if tok in ctx.lines("rn.txt", remote=True) or attempt == 2 or not gave_up():
             break
         give_ups += 1
-        r.note("ssh_nested_typeahead: trial %d: the app gave up on an Enter whose shell-or-chat verdict missed its 20 ms compute cap (#1577, by design: nothing ran); "
+        r.note("ssh_nested_typeahead: trial %d: the app gave up on an Enter whose shell-or-chat verdict missed its compute cap (50 ms of classifier CPU since #1651; #1577, by design: nothing ran); "
                "leaving the remote shell on a proven `exit` and running the trial again" % (attempt + 1))
         ssh_trial_note(ctx, r, verdicts, "ssh_nested_typeahead (given-up trial %d)" % (attempt + 1), t0, line, r0, enters_before=2)
         ctx.reset()

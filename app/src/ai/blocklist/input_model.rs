@@ -386,7 +386,7 @@ impl BlocklistAIInputModel {
             terminal_view_id,
             policy,
             autodetect_abort_handle: None,
-            detection_clock: ComputeClock::default(),
+            detection_clock: ComputeClock::thread_cpu(),
             model,
         })
     }
@@ -599,7 +599,7 @@ impl BlocklistAIInputModel {
             was_lock_set_with_empty_buffer: false,
             misroute: MisrouteMemory::default(),
             autodetect_abort_handle: None,
-            detection_clock: ComputeClock::default(),
+            detection_clock: ComputeClock::thread_cpu(),
             model,
         }
     }
@@ -980,7 +980,8 @@ impl BlocklistAIInputModel {
             return;
         }
         self.pending_detection_buffer = Some(buffer_text);
-        self.detection_clock = ComputeClock::default();
+        // The detection request's compute is its jobs' CPU time, not wall time (#1651).
+        self.detection_clock = ComputeClock::thread_cpu();
         self.config_when_requested = self.input_config;
     }
 
@@ -1860,9 +1861,9 @@ impl BlocklistAIInputModel {
         let compute_clock = self.detection_clock.clone();
         let handle = ctx
             .spawn(
-                async move {
-                    // The clock starts when this job runs, not when it was queued (#1351).
-                    let _compute = compute_clock.begin();
+                // The clock starts when this job runs, not when it was queued (#1351), and counts
+                // only the CPU its polls run, not time waiting for a CPU (#1651).
+                compute_clock.measure(async move {
                     // #1604: a buffer over the sync cap is routed here, off the UI thread, by the
                     // same rules the keystroke path applies synchronously to shorter text.
                     if let Some((routing_context, surface)) = off_thread_routing {
@@ -1983,7 +1984,7 @@ impl BlocklistAIInputModel {
                     futures_lite::future::yield_now().await;
 
                     new_input_type
-                },
+                }),
                 move |me, new_input_type, ctx| {
                     // In theory, we shouldn't need to check this, as we only run autodetection if the input
                     // is not locked, and we should abort the autodetect future if the input is locked, but
@@ -2373,15 +2374,18 @@ pub fn should_wait_for_verdict_before_submit(
 /// verdict gives up on it (#1158, #1351).
 ///
 /// This caps the classifier's OWN work (parse without generators, alias expansion, history match,
-/// model), measured on the request's [`ComputeClock`] from when a job actually started running to
-/// now. It is never measured from the Enter: a main-thread stall (frame, reflow, big paste) that
-/// delays the Enter's handling of a verdict already computed and queued must not count against
-/// the classifier. A verdict that lands, or is already queued, always decides the route. Past the
-/// cap the classifier is slow and the Enter decides on the Enter-time rules that already ran
-/// (known head, history, syntax, request shape) instead of holding: it is never kept in the editor
-/// and never waits on I/O. It used to be 5 s, on a verdict that waited for remote completion
-/// generators (0.8-3.8 s).
-pub const ENTER_VERDICT_BUDGET: Duration = Duration::from_millis(20);
+/// model), measured on the request's [`ComputeClock`]: the CPU time the request's jobs have run
+/// on their threads (#1651), so time a job waits for a CPU on a loaded machine, or waits queued
+/// between its polls, does not count. It is never measured from the Enter: a main-thread stall
+/// (frame, reflow, big paste) that delays the Enter's handling of a verdict already computed and
+/// queued must not count against the classifier. A verdict that lands, or is already queued,
+/// always decides the route. Past the cap the classifier is slow and the Enter decides on the
+/// Enter-time rules that already ran (known head, history, syntax, request shape) instead of
+/// holding: it is never kept in the editor and never waits on I/O. It used to be 5 s, on a verdict that waited for remote completion
+/// generators (0.8-3.8 s), then 20 ms of wall time; the owner raised it to 50 ms on 2026-11-05
+/// ("the app shouldn't need a perfect machine to run on"). A job that never gets a CPU is caught
+/// by the Enter's wall-clock hold backstop, which only hands the text back to the editor (#1577).
+pub const ENTER_VERDICT_BUDGET: Duration = Duration::from_millis(50);
 
 /// What a waiting Enter does when it is woken (#1158).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2407,7 +2411,7 @@ pub fn enter_verdict_wait_decision(
 
 /// [`enter_verdict_wait_decision`] for a buffer of `text_len` bytes: the compute cap is
 /// [`enter_verdict_budget_for`] (#1604), so a 10 MB paste's linear classification is waited for
-/// instead of handed back after the 20 ms a typed line gets.
+/// instead of handed back after the 50 ms a typed line gets.
 pub fn enter_verdict_wait_decision_for(
     verdict_pending: bool,
     classifier_compute: Duration,

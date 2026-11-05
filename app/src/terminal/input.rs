@@ -1453,12 +1453,16 @@ struct TabCompletionRequest {
 const TAB_COMPLETION_ENTER_BUDGET: std::time::Duration = std::time::Duration::from_millis(150);
 /// A hold longer than this is logged at WARN, so slow completers can be traced.
 const TAB_COMPLETION_ENTER_WARN: std::time::Duration = std::time::Duration::from_millis(50);
+/// The shortest compute-cap timer re-armed while the awaited job's cap is not yet spent (#1651):
+/// on a CPU-time clock a starved job can sit just under its cap for as long as it gets no CPU.
+const COMPUTE_CAP_RECHECK_FLOOR: std::time::Duration = std::time::Duration::from_millis(5);
 
 impl EnterHold {
     /// The most compute the awaited job may spend before the Enter gives up on it (#1351). For a
     /// verdict the cap grows with the text (#1604, `enter_verdict_budget_for`): a buffer over the
     /// sync routing cap is classified by a linear background job the Enter waits for, and the
-    /// 20 ms a typed line gets would hand a 1 MB paste back on every Enter.
+    /// 50 ms a typed line gets would hand a 1 MB paste back on every Enter. A verdict's compute is
+    /// the classifier's CPU time (#1651); the Tab completer's is its wall time while it runs.
     fn compute_cap(self, text_len: usize) -> std::time::Duration {
         match self {
             EnterHold::Verdict { .. } => {
@@ -1471,7 +1475,11 @@ impl EnterHold {
     /// How long an Enter holds before giving up on a result that never arrived, whether or not
     /// any job was seen running (#1351). A safety net for a lost signal, never the way a hold is
     /// normally released; it is logged when it fires. Grows with the text like the compute cap
-    /// (#1604), so it cannot fire inside a large buffer's allowed compute.
+    /// (#1604), so it cannot fire inside a large buffer's allowed compute. It is wall time: with
+    /// the verdict's cap counted on the classifier's CPU clock (#1651), it is also the net for a
+    /// job that gets no CPU at all, and like every give-up it only hands the text back to the
+    /// editor while the input type is undecided (#1577). 250 ms stays five times the 50 ms
+    /// verdict budget.
     fn backstop(self, text_len: usize) -> std::time::Duration {
         match self {
             EnterHold::Verdict { .. } => {
@@ -14637,7 +14645,16 @@ impl Input {
             .hold
             .compute_cap(wait.text.len())
             .saturating_sub(wait.compute.spent());
-        self.arm_hold_timer(id, remaining, "compute cap", ctx);
+        // #1651: the verdict's clock counts only the job's CPU time, so a job waiting for a CPU
+        // finds its cap unreached when this timer fires, and the timer is armed again for the
+        // rest. A floor keeps a starved job's last sliver of cap from re-arming in a tight loop;
+        // the wall-clock backstop still bounds the hold.
+        let delay = if remaining.is_zero() {
+            remaining
+        } else {
+            remaining.max(COMPUTE_CAP_RECHECK_FLOOR)
+        };
+        self.arm_hold_timer(id, delay, "compute cap", ctx);
     }
 
     /// Arms a one-shot give-up timer of wait `id`. It finds another wait, or none, when the wait
@@ -14957,12 +14974,12 @@ impl Input {
             .should_run_input_autodetection(ctx)
     }
 
-    /// Test-only: the give-up nets of the current wait can no longer fire. Its compute cap and
-    /// backstop are wall-clock (the cap counts the job's running time, descheduled time
-    /// included), so on a loaded test box they overrun and the app hands the text back, which
-    /// is right but not what a test of the verdict's route or of the queue's order is about
-    /// (r18u19: a 21 KB paste's job ran 122 ms against its 100 ms cap; a Windows backstop fired
-    /// at 250 ms while the test was still typing). The wait gets an idle clock (the cap timer
+    /// Test-only: the give-up nets of the current wait can no longer fire. Its backstop is
+    /// wall-clock (and the cap was too until #1651 counted the classifier's CPU time instead), so
+    /// on a loaded test box it can overrun and the app hands the text back, which is right but
+    /// not what a test of the verdict's route or of the queue's order is about (r18u19: a 21 KB
+    /// paste's job ran 122 ms of wall time against its 100 ms cap; a Windows backstop fired at
+    /// 250 ms while the test was still typing). The wait gets an idle clock (the cap timer
     /// finds it not running) and a new watch epoch (the armed timers find the wait is not theirs),
     /// so it ends only on its result event or an explicit give-up the test calls.
     #[cfg(test)]

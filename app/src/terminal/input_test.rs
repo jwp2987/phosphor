@@ -11538,9 +11538,9 @@ fn test_stale_verdict_wait_tick_does_not_release_a_later_enter() {
 }
 
 /// #1351: a main-thread stall between the Enter and the verdict's delivery must not decide the
-/// route. The Enter is 50 ms old (well past the 20 ms cap, which used to be counted from the
-/// Enter) while the classifier spent no compute at all: it keeps waiting, and the verdict that
-/// then lands routes the line.
+/// route. The Enter is three caps old (150 ms, well past the 50 ms cap, which used to be counted
+/// from the Enter) while the classifier spent no compute at all: it keeps waiting, and the verdict
+/// that then lands routes the line.
 #[test]
 fn test_stall_between_enter_and_verdict_still_routes_by_the_verdict() {
     use crate::ai::blocklist::input_model::ENTER_VERDICT_BUDGET;
@@ -11552,7 +11552,9 @@ fn test_stall_between_enter_and_verdict_still_routes_by_the_verdict() {
         let line = "is it true";
         // The fixture inherits AI; the verdict below is Shell, so the route shows who decided.
         let input = waiting_prose_enter_fixture(&mut app, line).await;
-        let stall = std::time::Duration::from_millis(50);
+        // Three caps (the cap was 20 ms and this stall a fixed 50 ms until the owner raised the
+        // cap to 50 ms on 2026-11-05; the stall must stay well past it).
+        let stall = ENTER_VERDICT_BUDGET * 3;
         assert!(stall > ENTER_VERDICT_BUDGET);
 
         input.update(&mut app, |input, ctx| {
@@ -11609,7 +11611,7 @@ fn test_verdict_give_up_cap_counts_only_classifier_compute() {
         let line = "is it true";
         let input = waiting_prose_enter_fixture(&mut app, line).await;
 
-        // A stage that has run 5 ms: not at the cap. One timer for the remaining ~15 ms.
+        // A stage that has run 5 ms: not at the cap. One timer for the remaining ~45 ms.
         let (clock, guard) = ComputeClock::running_for_test(std::time::Duration::from_millis(5));
         input.update(&mut app, |input, ctx| {
             let wait = input.verdict_wait.as_mut().unwrap();
@@ -11654,6 +11656,28 @@ fn test_verdict_give_up_cap_counts_only_classifier_compute() {
             );
         });
     });
+}
+
+/// #1651: the verdict hold's wall-clock backstop (the net for a job that gets no CPU) stays clearly
+/// above its compute cap at every size, so it never pre-empts a classifier that is merely within
+/// its budget on a quiet machine.
+#[test]
+fn test_verdict_hold_backstop_stays_clearly_above_the_compute_cap() {
+    use crate::ai::blocklist::input_model::ENTER_VERDICT_BUDGET;
+
+    let hold = EnterHold::Verdict {
+        since: Instant::now(),
+    };
+    assert_eq!(hold.compute_cap(10), ENTER_VERDICT_BUDGET);
+    assert!(hold.backstop(10) >= ENTER_VERDICT_BUDGET * 5);
+    for len in [0, 40, 4096, 4097, 21_600, 1024 * 1024, 10 * 1024 * 1024] {
+        assert!(
+            hold.backstop(len) >= hold.compute_cap(len) + std::time::Duration::from_millis(150),
+            "{len} bytes: backstop {:?}, cap {:?}",
+            hold.backstop(len),
+            hold.compute_cap(len)
+        );
+    }
 }
 
 /// #1351: nothing polls. Holding an Enter for a verdict arms the give-up backstop once; waking the
