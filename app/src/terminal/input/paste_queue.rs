@@ -317,7 +317,8 @@ impl Input {
         }
         // #1577: the leak net of an Enter's verdict / completion gate is a give-up, and a timer
         // never routes what waited behind the Enter (the queue's own give-up delivers it through
-        // the stages, which can write it to the pty): it is handed back to the editor as text.
+        // the stages, which can write it to the pty). #1661 (owner decision 2026-11-05): what
+        // waited behind the Enter is discarded, with a toast that gives the count.
         if let Some(gate) = self.enter_gate.filter(|gate| !gate.held_unready) {
             let ours = queue.try_peek().is_some_and(|queue| {
                 queue.gates().iter().any(|open| {
@@ -325,9 +326,49 @@ impl Input {
                 })
             });
             if ours {
-                self.give_up_enter_gate_to_editor("leak_net", ctx);
+                self.give_up_enter_gate("leak_net", ctx);
                 return;
             }
+        }
+        // #1661: an Enter gate this input no longer tracks: the same discard, never the queue's
+        // own give-up (which would deliver what was typed behind that Enter).
+        let orphan_enter_gate = queue.try_peek().and_then(|queue| {
+            queue
+                .gates()
+                .iter()
+                .find(|open| {
+                    open.token == token
+                        && matches!(open.kind, GateKind::EnterVerdict | GateKind::TabCompletion)
+                })
+                .map(|open| (open.kind, open.key))
+        });
+        if let Some((kind, key)) = orphan_enter_gate {
+            // Ordered: earlier operations waiting in the mailbox go first (#1661 review).
+            let Some(mut guard) = queue.try_lock_ordered() else {
+                queue.defer(crate::terminal::input_queue::Deferred::GiveUpCap(token));
+                return;
+            };
+            let taken = {
+                let mut host = InputQueueHost::new(self, ctx);
+                guard.close_gate_discarding(&mut host, kind, key)
+            };
+            drop(guard);
+            log::warn!(
+                "input queue: the leak net of an Enter gate the input no longer tracks fired \
+                 ({kind:?} {key}); {} entr(ies) behind it discarded (#1661)",
+                taken.len()
+            );
+            self.report_enter_gate_discard(
+                &taken,
+                super::EnterDiscard::GiveUp {
+                    reason: super::ENTER_GATE_GIVE_UP_TOAST,
+                    always: false,
+                    glue_if_discarded: false,
+                },
+                ctx,
+            );
+            self.flush_deferred_programmatic_edits(ctx);
+            return;
         }
         // #1353 phase 6 (INP-A4): a paste that gives up on its clipboard read signals the reader's
         // cancel flag, so the blocked-reader count and the log reflect an abandoned read.

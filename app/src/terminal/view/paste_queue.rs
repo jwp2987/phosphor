@@ -43,6 +43,7 @@ use warpui::{SingletonEntity as _, ViewContext};
 use super::dest_table::Replayed;
 use super::{AfterEnterInput, Event, KeyPathScope, TerminalView, held_bytes_through_last_enter};
 use crate::editor::{EditorAction, HeldPasteKey};
+use crate::terminal::input::{ENTER_GATE_GIVE_UP_TOAST, EnterDiscard};
 use crate::terminal::input_queue::shadow::{DestClass, note_leaf as note_shadow_leaf};
 use crate::terminal::input_queue::table::{Class, Outcome};
 use crate::terminal::input_queue::{
@@ -67,6 +68,51 @@ const GATE_GIVE_UP_TOAST: &str = "Input was waiting too long, so it was not sent
 pub(super) const SUBSHELL_BOOTSTRAP_ABANDONED_TOAST: &str = "Phosphorize failed: the shell setup \
      stalled, so this tab continues as a plain shell. Anything typed during the setup is in the \
      input, not run.";
+
+/// #1661: the reason of a young Enter's hold that gave up (its toast gives the discarded count).
+pub(super) const YOUNG_HOLD_GIVE_UP_TOAST: &str =
+    "The shell didn't show its prompt in time, so the Enter was not run";
+
+/// #1661: the reason of a paced CLI-agent submit's gate that gave up.
+pub(super) const CLI_SUBMIT_GIVE_UP_TOAST: &str = "The submit to the agent didn't finish in time";
+
+/// #1661: splits entries held behind a young Enter's gate at the first Enter: the text typed in
+/// front of it (typed text and pty bytes only) and every entry from the Enter on (the Enter, and
+/// what was typed after it). A pty-bytes entry holding the Enter is split inside. An entry with no
+/// plain text form before the Enter ends the line there (it and what follows are discarded).
+fn split_line_before_first_enter(entries: Vec<InputEntry>) -> (Vec<u8>, Vec<InputEntry>) {
+    let mut line = Vec::new();
+    let mut rest = Vec::new();
+    let mut entries = entries.into_iter();
+    for entry in entries.by_ref() {
+        match entry.kind {
+            EntryKind::Text(text) => line.extend_from_slice(text.as_bytes()),
+            EntryKind::PtyBytes {
+                bytes,
+                takes_over_agent_control,
+            } => match bytes.iter().position(|byte| matches!(byte, b'\r' | b'\n')) {
+                None => line.extend_from_slice(&bytes),
+                Some(at) => {
+                    line.extend_from_slice(&bytes[..at]);
+                    rest.push(InputEntry {
+                        kind: EntryKind::PtyBytes {
+                            bytes: bytes[at..].to_vec(),
+                            takes_over_agent_control,
+                        },
+                        ..entry
+                    });
+                    break;
+                }
+            },
+            kind => {
+                rest.push(InputEntry { kind, ..entry });
+                break;
+            }
+        }
+    }
+    rest.extend(entries);
+    (line, rest)
+}
 
 /// The toast for keys a timer handed back from a gate (#1577), by the give-up's `why`. `None`
 /// when the caller shows its own notice: the stall ceiling's abandon notice (#1119).
@@ -1056,7 +1102,9 @@ impl TerminalView {
                     input.give_up_enter_gate_by_key(kind, gate_key, "leak_net", ctx)
                 });
                 if !handled {
-                    self.hand_back_gate_keys(kind, gate_key, "leak_net", ctx);
+                    // An Enter gate the input no longer tracks: what was typed behind that Enter
+                    // is discarded, as by every Enter give-up (owner decision 2026-11-05, #1661).
+                    self.discard_orphan_enter_gate(kind, gate_key, ctx);
                 }
                 return;
             }
@@ -1069,8 +1117,15 @@ impl TerminalView {
             }
             Some(GateKind::CliSubmit) => {
                 // The paced submit's own gate: its pieces are protocol writes and are not held
-                // here; the keys typed behind it come back.
-                self.hand_back_gate_keys(GateKind::CliSubmit, gate_key, "cli_submit_cap", ctx);
+                // here. Owner decision 2026-11-05 (#1661): the keys typed behind the submit are
+                // DISCARDED with the counted toast, never handed back as editor text.
+                self.discard_gate_keys_after_enter(
+                    GateKind::CliSubmit,
+                    gate_key,
+                    "cli_submit_cap",
+                    false,
+                    ctx,
+                );
                 return;
             }
             Some(GateKind::PowershellSetup) => {
@@ -1131,6 +1186,154 @@ impl TerminalView {
             let mut host = PtyQueueHost::new(self, ctx);
             guard.give_up(&mut host, token);
         }
+    }
+
+    /// #1661 (owner decision 2026-11-05): the entries `taken` out of a voided Enter gate are
+    /// discarded, never put back into the editor or routed: a paste's content waiting in the view's
+    /// maps goes with them, then the input drops its own and reports the count as `report` says.
+    pub(super) fn discard_taken_enter_gate_entries(
+        &mut self,
+        taken: &[InputEntry],
+        report: EnterDiscard,
+        ctx: &mut ViewContext<Self>,
+    ) -> usize {
+        for entry in taken {
+            if let EntryKind::Paste { paste_id, .. } = &entry.kind {
+                self.paste_queue.routed_pastes.remove(paste_id);
+                self.paste_queue.ssh_pastes.remove(paste_id);
+                self.paste_queue.payloads.remove(paste_id);
+            }
+        }
+        self.input.update(ctx, |input, ctx| {
+            input.report_enter_gate_discard(taken, report, ctx)
+        })
+    }
+
+    /// #1661 (owner decision 2026-11-05): a timer gave up on gate `kind`/`key`, whose entries are
+    /// keys typed after an Enter (a young Enter's hold, `PromptSeen`; a paced CLI-agent submit,
+    /// `CliSubmit`). The gate is closed and those keys are DISCARDED, in every form, with the
+    /// shared counted toast: never handed back as editor text, never written. With
+    /// `keep_line_before_enter`, the text in front of the first Enter in the held entries (a line
+    /// typed before the young Enter, held with it) goes to the editor as text, unrun, guarded,
+    /// for the shell. Nothing is run. Busy: asked again shortly (a discard, never a write).
+    pub(super) fn discard_gate_keys_after_enter(
+        &mut self,
+        kind: GateKind,
+        key: u64,
+        why: &'static str,
+        keep_line_before_enter: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let queue = self.paste_queue.queue.clone();
+        let entries = {
+            let Some(mut guard) = queue.try_lock_ordered() else {
+                // #1661 review: one deferred operation, applied in FIFO order once the queue is
+                // free. A key typed after this give-up waits in the mailbox BEHIND it and is
+                // offered once the gate is closed, so it is never discarded with what it held (a
+                // timer retry let such a key land behind the still-open gate).
+                queue.defer(Deferred::DiscardGateKeysAfterEnter {
+                    kind,
+                    key,
+                    why,
+                    keep_line: keep_line_before_enter,
+                });
+                return;
+            };
+            let mut host = PtyQueueHost::new(self, ctx);
+            guard.close_gate_discarding(&mut host, kind, key)
+        };
+        self.finish_discard_gate_keys_after_enter(
+            entries,
+            kind,
+            key,
+            why,
+            keep_line_before_enter,
+            ctx,
+        );
+    }
+
+    /// The tail of [`Self::discard_gate_keys_after_enter`], with the entries taken out of the
+    /// gate (at once, or by the deferred `DiscardGateKeysAfterEnter`).
+    fn finish_discard_gate_keys_after_enter(
+        &mut self,
+        entries: Vec<InputEntry>,
+        kind: GateKind,
+        key: u64,
+        why: &'static str,
+        keep_line_before_enter: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let (line, after_enter) = if keep_line_before_enter {
+            split_line_before_first_enter(entries)
+        } else {
+            (Vec::new(), entries)
+        };
+        let reason = match kind {
+            GateKind::CliSubmit => CLI_SUBMIT_GIVE_UP_TOAST,
+            _ => YOUNG_HOLD_GIVE_UP_TOAST,
+        };
+        let discarded = self.discard_taken_enter_gate_entries(
+            &after_enter,
+            EnterDiscard::GiveUp {
+                reason,
+                always: false,
+                glue_if_discarded: false,
+            },
+            ctx,
+        );
+        let line = text_for_editor(&line);
+        let kept_line = !line.is_empty() && forces_shell_submit(&line);
+        if kept_line {
+            // The line typed before the Enter, unrun: for the shell, and its first Enter is held
+            // with the "check the line" toast (it never ran, and the user was still typing).
+            // Known gap, tracked under #1658: while the hand-off still owns input for the pty, a
+            // key typed at the terminal before the request decision below commits the editor can
+            // reach the pty ahead of this line. The old hand-back (and `hand_back_gate_keys`) had
+            // the same window; the `RetryTypeaheadHandoffRequest` emitted below closes it.
+            self.input.update(ctx, |input, ctx| {
+                input.system_insert(&line, ctx);
+                input.submit_next_enter_as_shell_command();
+                let buffer = input.editor().as_ref(ctx).buffer_text(ctx);
+                input.arm_handed_back_enter_guard(buffer);
+            });
+        }
+        log::warn!(
+            "input queue: gate {kind:?} {key} gave up ({why}): {discarded} key(s) typed after the \
+             Enter discarded, line before it kept={kept_line}; nothing written to the pty (#1661)"
+        );
+        warpui::input_order::log_hop("gate_typed_after_enter_discarded", || {
+            format!("gate={key} kind={kind:?} why={why} keys={discarded} line_kept={kept_line}")
+        });
+        self.note_editor_took_over();
+        self.redetermine_terminal_focus(ctx);
+        ctx.emit(Event::RetryTypeaheadHandoffRequest);
+    }
+
+    /// #1661: the leak net of an Enter gate (`kind`, `key`) the input no longer tracks fired. What
+    /// waited behind it is discarded with the shared toast; nothing goes to the editor or the pty.
+    fn discard_orphan_enter_gate(&mut self, kind: GateKind, key: u64, ctx: &mut ViewContext<Self>) {
+        let report = EnterDiscard::GiveUp {
+            reason: ENTER_GATE_GIVE_UP_TOAST,
+            always: false,
+            glue_if_discarded: false,
+        };
+        let queue = self.paste_queue.queue.clone();
+        // Ordered: earlier operations waiting in the mailbox go first (#1661 review).
+        let Some(mut guard) = queue.try_lock_ordered() else {
+            queue.defer(Deferred::VoidEnterGate { kind, key, report });
+            return;
+        };
+        let taken = {
+            let mut host = PtyQueueHost::new(self, ctx);
+            guard.close_gate_discarding(&mut host, kind, key)
+        };
+        drop(guard);
+        log::warn!(
+            "input queue: the leak net of an Enter gate the input no longer tracks fired \
+             ({kind:?} {key}); {} entr(ies) behind it discarded (#1661)",
+            taken.len()
+        );
+        let _ = self.discard_taken_enter_gate_entries(&taken, report, ctx);
     }
 
     /// #1577: a setup hold (PowerShell or subshell) gave up on a timer: setup is treated as over
@@ -1561,55 +1764,50 @@ impl TerminalView {
             queue.defer(Deferred::TakeGateKeys { gate_id, then });
             return;
         }
-        match self.take_deferred_gate_bytes_now(gate_id, ctx) {
-            Some(held) => self.finish_taken_gate_keys(held, then, ctx),
+        match self.take_deferred_gate_entries_now(gate_id, ctx) {
+            Some(taken) => self.finish_taken_gate_keys(taken, then, ctx),
             None => queue.defer(Deferred::TakeGateKeys { gate_id, then }),
         }
     }
 
-    /// The continuation of [`Self::take_deferred_gate_keys_then`]. `held` is one chunk per key
-    /// entry, in typed order: a release to the pty keeps the key boundaries (ConPTY, #1189); the
-    /// editor hand-backs take the keys as one text.
+    /// The continuation of [`Self::take_deferred_gate_keys_then`], with the entries taken, in
+    /// typed order. A release to the pty turns them into one chunk per key entry (the key
+    /// boundaries kept, ConPTY #1189). A give-up DISCARDS them (owner decision 2026-11-05,
+    /// #1661): no editor key among them acts and nothing becomes editor text.
     fn finish_taken_gate_keys(
         &mut self,
-        held: Vec<Vec<u8>>,
+        taken: Vec<InputEntry>,
         then: GateKeysThen,
         ctx: &mut ViewContext<Self>,
     ) {
         match then {
-            GateKeysThen::Release => self.release_held_keys(held, ctx),
-            GateKeysThen::GiveUpToEditor => {
-                self.give_up_deferred_enter_keys_to_editor(held.concat(), ctx)
+            GateKeysThen::Release => {
+                let held = self.pty_bytes_of_taken_entries(taken, ctx);
+                self.release_held_keys(held, ctx)
             }
+            GateKeysThen::GiveUpToEditor => self.give_up_deferred_enter_keys_to_editor(taken, ctx),
             GateKeysThen::GiveUpHandBack(why) => {
-                self.hand_back_deferred_enter_keys_to_editor(held.concat(), why, ctx)
+                self.hand_back_deferred_enter_keys_to_editor(taken, why, ctx)
             }
         }
     }
 
-    /// The take itself, one chunk per key entry in typed order; `None` when the queue could not
-    /// be locked (nothing was changed).
-    fn take_deferred_gate_bytes_now(
+    /// The take itself, the entries in typed order; `None` when the queue could not be locked
+    /// (nothing was changed).
+    fn take_deferred_gate_entries_now(
         &mut self,
         gate_id: u64,
         ctx: &mut ViewContext<Self>,
-    ) -> Option<Vec<Vec<u8>>> {
+    ) -> Option<Vec<InputEntry>> {
         let queue = self.paste_queue.queue.clone();
-        let entries = {
-            let mut guard = queue.try_lock()?;
-            let mut host = PtyQueueHost::new(self, ctx);
-            let mut entries = Vec::new();
-            // A key held mid-delivery may have opened a second gate under the same id.
-            while guard.has_gate(GateKind::HandoffReport, gate_id) {
-                entries.extend(guard.close_gate_taking(
-                    &mut host,
-                    GateKind::HandoffReport,
-                    gate_id,
-                ));
-            }
-            entries
-        };
-        Some(self.pty_bytes_of_taken_entries(entries, ctx))
+        let mut guard = queue.try_lock()?;
+        let mut host = PtyQueueHost::new(self, ctx);
+        let mut entries = Vec::new();
+        // A key held mid-delivery may have opened a second gate under the same id.
+        while guard.has_gate(GateKind::HandoffReport, gate_id) {
+            entries.extend(guard.close_gate_taking(&mut host, GateKind::HandoffReport, gate_id));
+        }
+        Some(entries)
     }
 
     /// As [`Self::bytes_of_taken_entries`], for keys that go to the pty as typed or come back as
@@ -1661,48 +1859,79 @@ impl TerminalView {
         {
             return;
         }
-        let (expiry, evidence) = {
+        let (expiry, evidence, normal_end) = {
             let mut handoff = self.handoff.write();
             let evidence = handoff.young_hold_evidence();
-            (handoff.expire_queued_young_hold(hold_id), evidence)
+            // Owner decision 2026-11-05 (#1661): read before the expiry, with the evidence.
+            let normal_end = handoff.young_hold_cap_is_normal_end();
+            (
+                handoff.expire_queued_young_hold(hold_id),
+                evidence,
+                normal_end,
+            )
         };
         match expiry {
             YoungHoldExpiry::Keep => {}
             YoungHoldExpiry::Gone => {
                 self.drain_young_hold_ends(ctx);
                 if self.young_hold_gate_has_key(hold_id) {
-                    // The gate outlived a hold with no recorded end: never lose what was typed.
+                    // A defect path: the gate outlived a hold the hand-off has no record of (no
+                    // recorded end, so no class to say the cap is its normal end). Its cap is a
+                    // give-up, and by the owner's rule of 2026-11-05 (#1661) a give-up DISCARDS
+                    // the held Enter and the keys typed after it, with the counted toast (a line
+                    // typed before the Enter in the held bytes stays in the editor). Deliberate:
+                    // the keys are not handed back here.
                     log::warn!(
-                        "input queue: young hold {hold_id} is gone but its gate is open; handing \
-                         its keys back to the editor"
+                        "input queue: young hold {hold_id} is gone but its gate is open; its \
+                         Enter and the keys after it are discarded (#1661)"
                     );
-                    self.hand_back_young_hold_keys(hold_id, "young_hold_gone", evidence, ctx);
+                    self.hand_back_young_hold_keys(
+                        hold_id,
+                        "young_hold_gone",
+                        evidence,
+                        false,
+                        ctx,
+                    );
                 }
             }
-            // #1577: the cap is a give-up, and a timer never writes user bytes to the pty: the
-            // held Enter and the keys behind it come back to the editor as text (the Enter a
-            // newline, the next Enter consumed once with a toast). The event-driven ends
+            // #1577: the cap is a give-up, and a timer never writes user bytes to the pty. Owner
+            // decision 2026-11-05 (#1661): the held Enter and the keys typed after it are
+            // DISCARDED with the counted toast (a line typed before the Enter stays in the
+            // editor). The cap is a 10 s net (`YOUNG_HOLD_GIVE_UP`); the event-driven ends
             // (`drain_young_hold_ends`: a command, the report, a Preexec, the barrier) still
             // write them as typeahead.
             YoungHoldExpiry::Release => {
                 // #1614: the hold engaged on named evidence whose event did not come within the
                 // cap: a defect indicator, named so a run can be failed on it (appci greps it).
+                // #1661: except the two holds whose cap is their normal end (hand-back).
                 log::warn!(
                     "typeahead young hold {hold_id} ({evidence:?}) ran to its cap with no release \
-                     event; handing the keys back to the editor (young_hold_cap)"
+                     event; normal_end={normal_end}: the keys are handed back if the cap is the \
+                     hold's normal end, else the Enter and the keys after it are discarded \
+                     (young_hold_cap)"
                 );
-                self.hand_back_young_hold_keys(hold_id, "young_hold_cap", evidence, ctx);
+                self.hand_back_young_hold_keys(
+                    hold_id,
+                    "young_hold_cap",
+                    evidence,
+                    normal_end,
+                    ctx,
+                );
             }
         }
     }
 
-    /// The give-up of young hold `hold_id` as a hand-back (#1577), then the hand-off's own
-    /// bookkeeping: the hold ended without a write.
-    fn hand_back_young_hold_keys(
+    /// The cap of young hold `hold_id` (#1577), then the hand-off's own bookkeeping: the hold
+    /// ended without a write. Owner decision 2026-11-05 (#1661): when the cap is the hold's
+    /// NORMAL end (`normal_end`: the fish no-barrier hold, a window hold with no prompt sequence
+    /// numbers) the keys go back to the editor as before (the Enter a newline, guarded); every
+    /// other cap is a give-up and DISCARDS the Enter and what was typed after it.
+    pub(super) fn hand_back_young_hold_keys(
         &mut self,
         hold_id: u64,
         why: &'static str,
         evidence: Option<YoungHoldEvidence>,
+        normal_end: bool,
         ctx: &mut ViewContext<Self>,
     ) {
         // `evidence` is the caller's, read before the expiry cleared the hold's record.
@@ -1716,7 +1945,15 @@ impl TerminalView {
             )
         });
         self.handoff.write().finish_young_hold_handed_back(hold_id);
-        self.hand_back_gate_keys(GateKind::PromptSeen, hold_id, why, ctx);
+        if normal_end {
+            // The cap is how this hold ends: the keys come back as they did before #1661.
+            self.hand_back_gate_keys(GateKind::PromptSeen, hold_id, why, ctx);
+        } else {
+            // Owner decision 2026-11-05 (#1661): the young Enter and the keys typed after it are
+            // DISCARDED with the counted toast; a line typed before it in the held bytes stays in
+            // the editor, unrun.
+            self.discard_gate_keys_after_enter(GateKind::PromptSeen, hold_id, why, true, ctx);
+        }
         self.input
             .update(ctx, |input, _| input.clear_handoff_enter_hold());
         // #1614: the hold is gone, so a decision now cannot write held keys (it can only commit
@@ -2771,10 +3008,10 @@ impl TerminalView {
             }
             Deferred::ApplyYoungHoldEnds => self.drain_young_hold_ends(ctx),
             Deferred::TakeGateKeys { gate_id, then } => {
-                let Some(held) = self.take_deferred_gate_bytes_now(gate_id, ctx) else {
+                let Some(taken) = self.take_deferred_gate_entries_now(gate_id, ctx) else {
                     return Err(Deferred::TakeGateKeys { gate_id, then });
                 };
-                self.finish_taken_gate_keys(held, then, ctx);
+                self.finish_taken_gate_keys(taken, then, ctx);
             }
             Deferred::TakePowershellKeys { then } => {
                 let Some(held) = self.take_powershell_held_bytes_now(ctx) else {
@@ -2782,46 +3019,35 @@ impl TerminalView {
                 };
                 self.finish_taken_powershell_keys(held, then, ctx);
             }
-            Deferred::VoidEnterGate { kind, key } => {
+            Deferred::VoidEnterGate { kind, key, report } => {
                 let Some(mut guard) = queue.try_lock() else {
-                    return Err(Deferred::VoidEnterGate { kind, key });
+                    return Err(Deferred::VoidEnterGate { kind, key, report });
                 };
                 let mut host = PtyQueueHost::new(self, ctx);
-                let taken = guard.close_gate_taking(&mut host, kind, key);
+                let taken = guard.close_gate_discarding(&mut host, kind, key);
                 drop(guard);
-                // #1571 / #1446: everything typed behind the void Enter comes back as text: its
-                // Enters as line breaks, the editing keys' effect, pastes (never only the text
-                // entries, which lost the rest).
-                let text = crate::terminal::input::text_of_entries_typed_after(&taken, |id| {
-                    self.paste_queue.routed_pastes.remove(&id);
-                    self.paste_queue.ssh_pastes.remove(&id);
-                    self.paste_queue
-                        .payloads
-                        .remove(&id)
-                        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-                        .or_else(|| {
-                            self.input
-                                .update(ctx, |input, _| input.take_paste_payload_text(id))
-                        })
-                });
-                if !text.is_empty() {
-                    self.input.update(ctx, |input, ctx| {
-                        input.forget_hand_back_line_break();
-                        input.system_insert(&text, ctx);
-                        if text.contains('\n') {
-                            // Several lines in one buffer submit as one command: the first Enter
-                            // on them is held with the "check the line" toast.
-                            let buffer = input.buffer_text(ctx);
-                            input.arm_handed_back_enter_guard(buffer);
-                        }
+                let _ = self.discard_taken_enter_gate_entries(&taken, report, ctx);
+            }
+            Deferred::DiscardGateKeysAfterEnter {
+                kind,
+                key,
+                why,
+                keep_line,
+            } => {
+                let Some(mut guard) = queue.try_lock() else {
+                    return Err(Deferred::DiscardGateKeysAfterEnter {
+                        kind,
+                        key,
+                        why,
+                        keep_line,
                     });
-                } else {
-                    // #1666 review: the busy-queue hand-back put a line break after the held line
-                    // for this text; nothing came, so the break goes (the line is as it was).
-                    self.input.update(ctx, |input, ctx| {
-                        input.drop_unused_hand_back_line_break(ctx)
-                    });
-                }
+                };
+                let entries = {
+                    let mut host = PtyQueueHost::new(self, ctx);
+                    guard.close_gate_discarding(&mut host, kind, key)
+                };
+                drop(guard);
+                self.finish_discard_gate_keys_after_enter(entries, kind, key, why, keep_line, ctx);
             }
             Deferred::DropSshGate {
                 gate,

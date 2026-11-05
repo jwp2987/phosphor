@@ -13,8 +13,10 @@
 //! * the Enter submitted a shell command: the keys behind it are routed (editor or pty) only once
 //!   the pty has taken the command. The signal for that is an event the view already receives:
 //!   the pty controller's `TypeaheadHandoffChanged` (it fires when the hand-off engages) and the
-//!   block-started event. Nothing is polled. The 300 ms the old 5 ms poll gave up after is now
-//!   one logged give-up timer, armed once ([`TerminalView::settle_enter_queue`]). The Enter's own
+//!   block-started event, the shell's Preexec and (#1661) the command's block completing.
+//!   Nothing is polled. The only timer is one logged 10 s give-up net, armed once
+//!   ([`TerminalView::settle_enter_queue`]); a give-up DISCARDS the keys typed after the Enter
+//!   with a toast that gives the count (owner decision 2026-11-05). The Enter's own
 //!   `ReplayAfterDeferredEnter` is handled in the flush that carries the command to the pty
 //!   controller, ahead of it, so for such a gate the view settles it only after that flush (an
 //!   executor hop, not a timer, and only that gate): by then the controller has taken the command
@@ -28,9 +30,12 @@
 //! a replayed Enter that waits again returns its new gate as the delivery's `OpensGate`
 //! ([`Input::take_stashed_gate`]), and everything behind it waits for that gate.
 //!
-//! Timers: none here. The give-ups are the #1351 compute caps and backstops (they submit the
-//! Enter, which closes the gate), the route-settle cap in the view, and a long leak net on the
-//! gate itself ([`ENTER_GATE_LEAK_NET`]) so a bug can never swallow keys for good.
+//! Timers: none here. The give-ups are the #1351 compute caps and backstops, the route-settle net
+//! in the view, and a long leak net on the gate itself ([`ENTER_GATE_LEAK_NET`]) so a bug can
+//! never hold keys for good. Owner decision 2026-11-05 (#1661): every give-up DISCARDS the keys
+//! typed after the Enter, in all their forms, with one toast that gives the count
+//! ([`typed_after_enter_discarded_toast`]); they are never converted into editor text. The line
+//! typed before an Enter that did not run stays in the editor, unrun.
 
 use std::time::Duration;
 
@@ -40,21 +45,23 @@ use warpui::SingletonEntity as _;
 use warpui::r#async::Timer;
 
 use super::paste_queue::InputQueueHost;
-use super::{
-    AfterEnterInput, EnterGuardKind, Event, GLUE_GUARD_TOAST, HANDED_BACK_GUARD_TOAST, Input,
-};
+use super::{AfterEnterInput, EnterGuardKind, Event, GLUE_GUARD_TOAST, Input};
 use crate::editor::HeldPasteKey;
 use crate::terminal::input_queue::{
-    EditorKeyPayload, EntryKind, GateKind, GateSpec, HELD_KEY, HELD_PASTE, HELD_SEQ, HELD_TYPED,
-    InputEntry, MULTILINE_DIALOG_KEY_FLAG, PaneQueue, UNREADY_ENTER_KEY_FLAG,
+    EditorKeyPayload, EntryKind, GateKind, GateSpec, InputEntry, MULTILINE_DIALOG_KEY_FLAG,
+    PaneQueue, UNREADY_ENTER_KEY_FLAG,
 };
 use crate::view_components::DismissibleToast;
 use crate::workspace::ToastStack;
 
 /// The longest an Enter gate may stay closed whatever happens: a net for a bug that would leave
-/// it open, far beyond every real hold (the hold backstops are 2 s plus the size allowance for a
-/// verdict, 500 ms for a Tab completion; the route-settle cap 300 ms). Logged by the queue when it fires.
-pub(super) const ENTER_GATE_LEAK_NET: Duration = Duration::from_secs(10);
+/// it open, beyond every real hold (the hold backstops are 2 s plus the size allowance for a
+/// verdict, clamped at `HOLD_BACKSTOP_LIMIT` 9 s; 500 ms for a Tab completion). Logged by the
+/// queue when it fires. It runs from the Enter (the gate's opening), so it is 20 s (#1661 review):
+/// the view's route-settle net (`AFTER_ENTER_REPLAY_PTY_WAIT`, 10 s from the submit) is the one
+/// that normally gives up on a command the pty never takes, and this net only ends a gate a bug
+/// left open. Either give-up discards what was typed behind the Enter, so no hold lasts longer.
+pub(super) const ENTER_GATE_LEAK_NET: Duration = Duration::from_secs(20);
 
 /// The Enter gate this input has open on the queue. The gate's key is the wait's id (#1206), so a
 /// late event of an earlier wait cannot close a later one.
@@ -83,85 +90,107 @@ pub(super) struct EnterGate {
 
 /// #1571: the give-up net of an Enter held because the shell was not ready. The readiness events
 /// (the session's registration, its first Precmd) end the hold long before this; when it fires
-/// nothing is run: the held line and what was typed after it go back to the editor as text, with
-/// a toast, and it is logged. Long enough for a slow remote bootstrap (the ssh connect's own
-/// ceilings are 15 s).
-pub(super) const UNREADY_ENTER_GIVE_UP: Duration = Duration::from_secs(15);
+/// nothing is run: the held line stays in the editor, what was typed after it is discarded
+/// (owner decision 2026-11-05, #1661), with a toast, and it is logged. Owner decision
+/// 2026-11-05: 60 s (was 15 s), so a slow shell startup (nvm, conda, a slow remote bootstrap) does
+/// not drop the typeahead; the readiness event, not this net, is how the hold normally ends.
+pub(super) const UNREADY_ENTER_GIVE_UP: Duration = Duration::from_secs(60);
 
-/// #1577: the toast of an Enter gate that gave up without routing what was typed behind the Enter.
-const ENTER_GATE_GIVE_UP_TOAST: &str = "The shell did not take the command in time; what you typed \
-     after it is in the input, not sent";
+/// #1577: the reason of an Enter gate that gave up because the shell never took the command.
+pub(crate) const ENTER_GATE_GIVE_UP_TOAST: &str = "The shell didn't take the command in time";
 
 /// #1577: the toast of an Enter that was not submitted because its verdict never came.
-const VERDICT_GIVE_UP_TOAST: &str =
+pub(crate) const VERDICT_GIVE_UP_TOAST: &str =
     "Couldn't tell shell from chat in time; press Enter again to send";
 
 /// #1666/#1667: the toast of an Enter held for a Tab completion that did not land in time: the
-/// uncompleted line was not run. Nothing was typed behind it, so the Enter on the line as shown
-/// runs it (the glue guard holds only text typed onto it).
+/// uncompleted line was not run. Nothing typed behind it is ever put back (#1661), so the Enter on
+/// the line as shown runs it (the glue guard holds only text typed onto it).
 pub(crate) const COMPLETION_GIVE_UP_TOAST: &str = "Completion took too long, so the line was not \
      run. Press Tab to complete it, or Enter to run it as shown.";
 
-/// #1666: the same give-up with keys typed behind the Enter: they come back after the line and the
-/// next Enter is held by the guard, so this toast must not promise that Enter runs the line.
-pub(crate) const COMPLETION_GIVE_UP_WITH_TYPED_TOAST: &str = "Completion took too long, so nothing \
-     was run. The line and what you typed after it are in the input; check them before you press \
-     Enter.";
-
-/// #1666: the toast of the Enter the guard holds after [`COMPLETION_GIVE_UP_WITH_TYPED_TOAST`].
-pub(crate) const COMPLETION_GUARD_TOAST: &str = "Enter was held back: the completion did not \
-     finish, so this text was not run. Check it, then press Enter again to run it.";
-
-const UNREADY_ENTER_GIVE_UP_TOAST: &str = "The shell was not ready, so the line was not run; it is \
-     back in the input with what you typed after it";
+/// #1571: the reason of an Enter held for an unready shell that gave up.
+pub(crate) const UNREADY_ENTER_GIVE_UP_TOAST: &str =
+    "The shell was not ready, so the line was not run; it is still in the input";
 
 /// #1666: the toast of the Enter the guard holds after an unready shell's give-up.
 const UNREADY_GUARD_TOAST: &str = "Enter was held back: the shell was not ready, so this line did \
      not run. Check it, then press Enter to run it";
 
-/// What a hand-back of a held Enter tells the user and which guard it arms (#1666): each give-up
-/// says its own reason, and the guard's toast agrees with the give-up's.
+/// #1661: the reason of a waiting Enter the user voided (an edit of its line).
+pub(crate) const ENTER_VOIDED_TOAST: &str = "The Enter was cancelled";
+
+/// What a give-up of a held Enter tells the user and which guard the line typed BEFORE the Enter
+/// keeps when it did not run (#1666). Owner decision 2026-11-05 (#1661): the keys typed AFTER the
+/// Enter are discarded, never handed back as editor text, so nothing is ever glued onto the line
+/// and only the line's own guard is decided here.
 #[derive(Clone, Copy, Debug)]
-struct HandBack {
-    /// The give-up's toast when only the line comes back.
+struct GiveUp {
+    /// The give-up's reason: the toast, with the count of discarded keys appended when keys typed
+    /// after the Enter were discarded ([`typed_after_enter_discarded_toast`]).
     toast: &'static str,
-    /// The give-up's toast when keys typed behind the Enter come back after the line (the next
-    /// Enter is then held by the guard).
-    toast_with_typed: &'static str,
-    /// The toast of the Enter the guard holds when keys came back with the line.
-    guard_toast: &'static str,
-    /// Whether the line alone arms the [`EnterGuardKind::Glue`] guard (#1666). The Tab-completion
-    /// give-up does; the verdict give-up does not (yet: the owner deferred it to the design pass).
-    glue_guard_on_line_alone: bool,
+    /// The guard the unrun line gets when nothing typed after the Enter was discarded: the
+    /// Tab-completion give-up arms the [`EnterGuardKind::Glue`] guard, an unready shell's the
+    /// [`EnterGuardKind::HandedBackText`] one, the verdict give-up none (the owner deferred it).
+    /// When keys WERE discarded the user was still typing: a line with no guard of its own gets
+    /// the Glue guard, so a key typed after the give-up cannot run glued onto it.
+    line_guard: Option<(EnterGuardKind, &'static str)>,
 }
 
-impl HandBack {
-    /// A give-up whose toast is the same with or without keys behind it, and no glue guard.
-    const fn plain(toast: &'static str, guard_toast: &'static str) -> Self {
-        Self {
-            toast,
-            toast_with_typed: toast,
-            guard_toast,
-            glue_guard_on_line_alone: false,
+impl GiveUp {
+    /// The give-up named `why`.
+    fn for_give_up(why: &str) -> Self {
+        match why {
+            "verdict_cap" => Self::VERDICT,
+            "completion_cap" | "completion_backstop" => Self::COMPLETION,
+            _ => Self {
+                toast: ENTER_GATE_GIVE_UP_TOAST,
+                line_guard: None,
+            },
         }
     }
 
-    /// The hand-back of the gate give-up named `why`.
-    fn for_give_up(why: &str) -> Self {
-        match why {
-            "verdict_cap" => Self::plain(VERDICT_GIVE_UP_TOAST, HANDED_BACK_GUARD_TOAST),
-            "completion_cap" | "completion_backstop" => Self::COMPLETION,
-            _ => Self::plain(ENTER_GATE_GIVE_UP_TOAST, HANDED_BACK_GUARD_TOAST),
-        }
-    }
+    /// The verdict give-up (#1577).
+    const VERDICT: Self = Self {
+        toast: VERDICT_GIVE_UP_TOAST,
+        line_guard: None,
+    };
 
     /// The Tab-completion give-up (#1666/#1667).
     const COMPLETION: Self = Self {
         toast: COMPLETION_GIVE_UP_TOAST,
-        toast_with_typed: COMPLETION_GIVE_UP_WITH_TYPED_TOAST,
-        guard_toast: COMPLETION_GUARD_TOAST,
-        glue_guard_on_line_alone: true,
+        line_guard: Some((EnterGuardKind::Glue, GLUE_GUARD_TOAST)),
     };
+
+    /// An unready shell's give-up (#1571).
+    const UNREADY: Self = Self {
+        toast: UNREADY_ENTER_GIVE_UP_TOAST,
+        line_guard: Some((EnterGuardKind::HandedBackText, UNREADY_GUARD_TOAST)),
+    };
+}
+
+/// #1661 (owner decision 2026-11-05): what the discard of the keys typed behind an Enter gate
+/// reports, decided when the gate is voided and applied when its entries are taken (at once, or by
+/// the busy queue's deferred `VoidEnterGate`): the same keys go, with the same report, whether
+/// the queue was free or busy (#1768).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EnterDiscard {
+    /// ^C / ^D met an Enter held for an unready shell (#1571): the tty flushes typed-ahead input
+    /// on INTR. Logged, no toast.
+    Interrupt,
+    /// The multi-line dialog's Enter was voided (#1652): its own toast (`by` names the cause).
+    Dialog(&'static str),
+    /// A give-up or a void of a waiting Enter: the shared toast, `reason` first, with the count
+    /// ([`typed_after_enter_discarded_toast`]). `always`: the reason is shown even when nothing
+    /// was discarded (the line did not run, and the user must know why). `glue_if_discarded`:
+    /// the unrun line has no guard of its own, so when keys WERE discarded (the user was still
+    /// typing) the glue guard is armed over it, decided when the take completes so a free and a
+    /// busy queue arm the same guard (#1661 review).
+    GiveUp {
+        reason: &'static str,
+        always: bool,
+        glue_if_discarded: bool,
+    },
 }
 
 /// A programmatic edit of the editor's buffer that waits for the Enter in front of it (#1434).
@@ -667,10 +696,120 @@ impl Input {
                 let _ = self.take_paste_payload_text(*paste_id);
             }
         }
-        taken
+        count_discarded_keys(taken)
+    }
+
+    /// #1661 review: the pty pastes among the discarded entries: the view drops their content
+    /// and routing records (the editor's own pastes are dropped from this input's map above).
+    fn forget_discarded_pty_pastes(&mut self, taken: &[InputEntry], ctx: &mut ViewContext<Self>) {
+        let ids: Vec<u64> = taken
             .iter()
-            .filter(|entry| !matches!(entry.kind, EntryKind::Signal(_)))
-            .count()
+            .filter_map(|entry| match &entry.kind {
+                EntryKind::Paste { paste_id, .. }
+                    if !crate::terminal::input_queue::is_editor_paste_id(*paste_id) =>
+                {
+                    Some(*paste_id)
+                }
+                _ => None,
+            })
+            .collect();
+        if !ids.is_empty() {
+            ctx.emit(Event::DiscardedPtyPastes(ids));
+        }
+    }
+
+    /// #1661 (owner decision 2026-11-05): closes Enter gate `gate` and DISCARDS everything that
+    /// waited behind it: text typed into the editor, keys for the pty (`PtyBytes`), pastes and
+    /// Enters alike. Nothing goes to the editor and nothing is routed. With the queue busy the
+    /// take is one deferred operation (`Deferred::VoidEnterGate`) that discards the same keys and
+    /// reports them the same way once the queue is free (#1768: free and busy give one result).
+    /// Returns how many keys were discarded, or `None` when the take was deferred.
+    fn discard_enter_gate(
+        &mut self,
+        gate: EnterGate,
+        report: EnterDiscard,
+        ctx: &mut ViewContext<Self>,
+    ) -> Option<usize> {
+        let queue = self.enter_queue_handle(ctx);
+        match queue.try_lock_ordered() {
+            Some(mut guard) => {
+                let mut host = InputQueueHost::new(self, ctx);
+                let taken = guard.close_gate_discarding(&mut host, gate.kind, gate.key);
+                drop(guard);
+                Some(self.report_enter_gate_discard(&taken, report, ctx))
+            }
+            None => {
+                queue.defer(crate::terminal::input_queue::Deferred::VoidEnterGate {
+                    kind: gate.kind,
+                    key: gate.key,
+                    report,
+                });
+                None
+            }
+        }
+    }
+
+    /// #1661: the entries `taken` out of a voided Enter gate are discarded (a paste's content
+    /// waiting in this input's map goes with them) and `report` says so: a log line with the
+    /// count and, for a give-up, the shared toast. Also what the view's deferred `VoidEnterGate`
+    /// runs once a busy queue is free. Returns how many keys were discarded.
+    pub(crate) fn report_enter_gate_discard(
+        &mut self,
+        taken: &[InputEntry],
+        report: EnterDiscard,
+        ctx: &mut ViewContext<Self>,
+    ) -> usize {
+        let discarded = self.discard_dialog_typeahead(taken);
+        self.forget_discarded_pty_pastes(taken, ctx);
+        match report {
+            EnterDiscard::Interrupt => {
+                if discarded > 0 {
+                    log::info!(
+                        "input queue: {discarded} key(s) typed behind a cancelled unready Enter \
+                         were dropped with it (#1571)"
+                    );
+                }
+            }
+            EnterDiscard::Dialog(by) => {
+                self.report_discarded_dialog_typeahead(discarded, by, ctx);
+            }
+            EnterDiscard::GiveUp {
+                reason,
+                always,
+                glue_if_discarded,
+            } => {
+                if glue_if_discarded && discarded > 0 {
+                    // A key typed after the give-up must not run glued onto the unrun line.
+                    let line = self.editor.as_ref(ctx).buffer_text(ctx);
+                    self.arm_enter_guard(line, EnterGuardKind::Glue, GLUE_GUARD_TOAST);
+                }
+                let toast = if discarded > 0 {
+                    log::warn!(
+                        "input: {discarded} key(s) typed after an Enter were discarded ({reason}); \
+                         nothing was handed back or routed (#1661)"
+                    );
+                    warpui::input_order::log_hop("enter_gate_typed_after_discarded", || {
+                        format!("keys={discarded}")
+                    });
+                    Some(typed_after_enter_discarded_toast(reason, discarded))
+                } else {
+                    always.then(|| reason.to_string())
+                };
+                if let Some(toast) = toast
+                    && ctx.has_singleton_model::<ToastStack>()
+                {
+                    let window_id = ctx.window_id();
+                    ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                        toast_stack.add_ephemeral_toast(
+                            DismissibleToast::error(toast),
+                            window_id,
+                            ctx,
+                        );
+                    });
+                }
+            }
+        }
+        discarded
     }
 
     /// #1652: the confirmed buffer runs as the waiting Enter's own submit (never queued behind its
@@ -711,20 +850,8 @@ impl Input {
         warpui::input_order::log_hop("enter_dialog_cancelled", || format!("by={why}"));
         self.enter_gate = None;
         self.pending_multiline_dialog_answer = None;
-        let queue = self.enter_queue_handle(ctx);
-        match queue.try_lock_ordered() {
-            Some(mut guard) => {
-                let mut host = InputQueueHost::new(self, ctx);
-                let taken = guard.close_gate_taking(&mut host, gate.kind, gate.key);
-                drop(guard);
-                let dropped = self.discard_dialog_typeahead(&taken);
-                self.report_discarded_dialog_typeahead(dropped, why, ctx);
-            }
-            None => queue.defer(crate::terminal::input_queue::Deferred::VoidEnterGate {
-                kind: gate.kind,
-                key: gate.key,
-            }),
-        }
+        // #1768: a busy queue discards the same keys with the same toast, when it is free.
+        let _ = self.discard_enter_gate(gate, EnterDiscard::Dialog(why), ctx);
         self.end_multiline_dialog_wait(ctx);
         // L3: edits that waited behind the void Enter apply now.
         self.flush_deferred_programmatic_edits(ctx);
@@ -758,25 +885,8 @@ impl Input {
         warpui::input_order::log_hop("enter_held_cancelled", || format!("by={why}"));
         self.clear_held_unready_enter();
         self.enter_gate = None;
-        let queue = self.enter_queue_handle(ctx);
-        match queue.try_lock_ordered() {
-            Some(mut guard) => {
-                let mut host = InputQueueHost::new(self, ctx);
-                let dropped = guard
-                    .close_gate_taking(&mut host, gate.kind, gate.key)
-                    .len();
-                if dropped > 0 {
-                    log::info!(
-                        "input queue: {dropped} entr(ies) typed behind a cancelled unready Enter \
-                         were dropped with it (#1571)"
-                    );
-                }
-            }
-            None => queue.defer(crate::terminal::input_queue::Deferred::VoidEnterGate {
-                kind: gate.kind,
-                key: gate.key,
-            }),
-        }
+        // #1768: a busy queue discards them too, when it is free (never a hand-back).
+        let _ = self.discard_enter_gate(gate, EnterDiscard::Interrupt, ctx);
     }
 
     /// The pending-command state of an Enter held for an unready shell, cleared.
@@ -789,41 +899,35 @@ impl Input {
     }
 
     /// #1571: the give-up of an Enter held for an unready shell (its net fired, or its gate is
-    /// gone). NOTHING runs: the held line stays in the editor as text and what was typed after it
-    /// follows it on the next line(s), visible and editable, with a toast. Logged.
+    /// gone). NOTHING runs: the held line stays in the editor as text, with a toast; what was
+    /// typed after it is discarded (owner decision 2026-11-05, #1661), the toast giving the count.
+    /// Logged.
     pub(crate) fn give_up_unready_enter(&mut self, why: &'static str, ctx: &mut ViewContext<Self>) {
         let Some(gate) = self.enter_gate.filter(|gate| gate.held_unready) else {
             return;
         };
         log::warn!(
-            "input: an Enter held because the shell was not ready gave up ({why}); the line is \
-             handed back to the input, not run (#1571)"
+            "input: an Enter held because the shell was not ready gave up ({why}); the line stays \
+             in the input, not run (#1571)"
         );
         warpui::input_order::log_hop("enter_held_give_up", || format!("by={why}"));
-        self.hand_back_enter_gate(
-            gate,
-            HandBack::plain(UNREADY_ENTER_GIVE_UP_TOAST, UNREADY_GUARD_TOAST),
-            ctx,
-        );
+        self.discard_enter_gate_on_give_up(gate, GiveUp::UNREADY, ctx);
     }
 
     /// #1577 (A2): a timer gave up on the Enter gate (the route-settle net, the verdict cap, the
-    /// generic leak net). NOTHING is routed or run: what was typed behind the Enter comes back to
-    /// the editor as text, the next Enter is consumed once with the "check the line" toast, and it
-    /// is logged with counts only. An Enter held for an unready shell has its own give-up.
-    pub(crate) fn give_up_enter_gate_to_editor(
-        &mut self,
-        why: &'static str,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        self.give_up_enter_gate_with(why, HandBack::for_give_up(why), ctx);
+    /// generic leak net). NOTHING is routed or run, and what was typed behind the Enter is
+    /// DISCARDED with a toast that gives the count (owner decision 2026-11-05, #1661: never handed
+    /// back as editor text). An Enter that did not run leaves its line in the editor. Logged with
+    /// counts only. An Enter held for an unready shell has its own give-up.
+    pub(crate) fn give_up_enter_gate(&mut self, why: &'static str, ctx: &mut ViewContext<Self>) {
+        self.give_up_enter_gate_with(why, GiveUp::for_give_up(why), ctx);
     }
 
-    /// [`Self::give_up_enter_gate_to_editor`] with the hand-back's texts and guard given.
+    /// [`Self::give_up_enter_gate`] with the give-up's toast and line guard given.
     fn give_up_enter_gate_with(
         &mut self,
         why: &'static str,
-        hand_back: HandBack,
+        give_up: GiveUp,
         ctx: &mut ViewContext<Self>,
     ) {
         let Some(gate) = self.enter_gate else {
@@ -835,8 +939,8 @@ impl Input {
         }
         if gate.held_for_dialog {
             // #1652: the dialog is on screen and its answer ends this gate. A net that fires here
-            // (the verdict gate's, kept when its retag found the queue busy) must not hand the
-            // keys back into the buffer the dialog asks about.
+            // (the verdict gate's, kept when its retag found the queue busy) must not discard the
+            // keys the dialog's answer reports on.
             log::warn!(
                 "input: an Enter gate net fired while the multi-line dialog waits ({why}); kept (#1652)"
             );
@@ -845,23 +949,23 @@ impl Input {
         let held_behind = self.enter_gate_held_len(ctx);
         if !gate.submitted {
             // The Enter is still waiting for its verdict / completion: it is void now, so a late
-            // result cannot submit a buffer that holds the handed-back text.
+            // result cannot submit the line.
             self.void_verdict_wait_for_give_up();
         }
         log::warn!(
             "input: the Enter gate gave up ({why}) with {held_behind} entr(ies) behind it; they \
-             are handed back to the input, nothing is routed (#1577)"
+             are discarded, nothing is routed (#1577, #1661)"
         );
         warpui::input_order::log_key_hop("kh_enter_gate_give_up", || {
             format!("by={why} behind={held_behind} submitted={}", gate.submitted)
         });
-        self.hand_back_enter_gate(gate, hand_back, ctx);
+        self.discard_enter_gate_on_give_up(gate, give_up, ctx);
     }
 
     /// #1577: an Enter whose verdict / completion never came within the cap is not submitted by
-    /// the clock. With its gate open the text typed behind it comes back with it
-    /// ([`Self::give_up_enter_gate_to_editor`]); otherwise the wait is dropped and the line stays
-    /// in the editor. The next Enter submits it, with the verdict by then in.
+    /// the clock. The line stays in the editor; with its gate open, what was typed behind the
+    /// Enter is discarded ([`Self::give_up_enter_gate`], #1661); otherwise the wait is dropped.
+    /// The next Enter submits the line, with the verdict by then in.
     pub(super) fn hand_back_unsubmitted_enter(
         &mut self,
         why: &'static str,
@@ -875,16 +979,12 @@ impl Input {
         self.ai_input_model.update(ctx, |model, _| {
             model.abandon_pending_detection_after_give_up()
         });
-        self.hand_back_held_enter(
-            why,
-            HandBack::plain(VERDICT_GIVE_UP_TOAST, HANDED_BACK_GUARD_TOAST),
-            ctx,
-        );
+        self.hand_back_held_enter(why, GiveUp::VERDICT, ctx);
     }
 
     /// #1666/#1667: an Enter held for a Tab completion that did not land within its cap or
     /// backstop is not submitted by the clock (the visible line is not the one the user meant to
-    /// run). It is handed back exactly like a verdict give-up, with its own toast; the partial
+    /// run). It is given up exactly like a verdict give-up, with its own toast; the partial
     /// line's verdict is kept, since the classifier is not what was slow.
     pub(super) fn hand_back_completion_held_enter(
         &mut self,
@@ -899,33 +999,33 @@ impl Input {
                 .is_none_or(|gate| !gate.held_for_dialog && !gate.held_unready),
             "a Tab-completion give-up found a dialog / unready gate"
         );
-        self.hand_back_held_enter(why, HandBack::COMPLETION, ctx);
+        self.hand_back_held_enter(why, GiveUp::COMPLETION, ctx);
     }
 
-    /// The shared body of the held-Enter hand-backs: with its gate open, the text typed behind
-    /// the Enter comes back with the line ([`Self::give_up_enter_gate_with`]); otherwise the wait
-    /// is dropped, the line stays in the editor (with the glue guard if `hand_back` asks for it),
-    /// and its toast is shown.
+    /// The shared body of the held-Enter give-ups: with its gate open, what was typed behind the
+    /// Enter is discarded and the line stays ([`Self::give_up_enter_gate_with`]); otherwise the
+    /// wait is dropped, the line stays in the editor (with its guard, if `give_up` has one), and
+    /// its toast is shown.
     fn hand_back_held_enter(
         &mut self,
         why: &'static str,
-        hand_back: HandBack,
+        give_up: GiveUp,
         ctx: &mut ViewContext<Self>,
     ) {
         if self.enter_gate.is_some() {
-            self.give_up_enter_gate_with(why, hand_back, ctx);
+            self.give_up_enter_gate_with(why, give_up, ctx);
             return;
         }
         self.void_verdict_wait_for_give_up();
-        if hand_back.glue_guard_on_line_alone {
+        if let Some((kind, toast)) = give_up.line_guard {
             let line = self.editor.as_ref(ctx).buffer_text(ctx);
-            self.arm_enter_guard(line, EnterGuardKind::Glue, GLUE_GUARD_TOAST);
+            self.arm_enter_guard(line, kind, toast);
         }
         if ctx.has_singleton_model::<ToastStack>() {
             let window_id = ctx.window_id();
             ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
                 toast_stack.add_ephemeral_toast(
-                    DismissibleToast::error(hand_back.toast.to_string()),
+                    DismissibleToast::error(give_up.toast.to_string()),
                     window_id,
                     ctx,
                 );
@@ -933,8 +1033,8 @@ impl Input {
         }
     }
 
-    /// [`Self::give_up_enter_gate_to_editor`] for the gate `(kind, key)` a cap named: only when it
-    /// is this input's own Enter gate. Returns whether it was.
+    /// [`Self::give_up_enter_gate`] for the gate `(kind, key)` a cap named: only when it is this
+    /// input's own Enter gate. Returns whether it was.
     pub(crate) fn give_up_enter_gate_by_key(
         &mut self,
         kind: GateKind,
@@ -948,115 +1048,42 @@ impl Input {
         {
             return false;
         }
-        self.give_up_enter_gate_to_editor(why, ctx);
+        self.give_up_enter_gate(why, ctx);
         true
     }
 
-    /// The shared body of the Enter-gate give-ups: the gate is closed taking what waited behind
-    /// it and that text goes back into the editor, with the Enter guard armed and a toast. Both
-    /// texts, and whether the line alone arms the glue guard, come from `hand_back` (#1666).
+    /// The shared body of the Enter-gate give-ups (owner decision 2026-11-05, #1661): the gate is
+    /// closed and everything that waited behind it is DISCARDED ([`Self::discard_enter_gate`]),
+    /// in every form (editor text, pty keys, pastes, Enters), with one toast that gives the
+    /// reason and the count. Nothing is handed back to the editor and nothing is routed.
     ///
-    /// An Enter that was already SUBMITTED (the command is in flight; the buffer still holds the
-    /// submitted line until its block completes) is not part of the hand-back: the text follows
-    /// the submitted line directly, which is where typing it would have put it, so the block's
-    /// completion keeps exactly the text typed after it.
-    fn hand_back_enter_gate(
+    /// The line typed BEFORE the Enter is a separate case: an Enter that did not run (a verdict,
+    /// completion or unready give-up) leaves it in the editor, unrun, with its own guard
+    /// ([`GiveUp::line_guard`]). An Enter that was already SUBMITTED ran its line: nothing about
+    /// it changes (the buffer holds it until its block completes, as for any command).
+    fn discard_enter_gate_on_give_up(
         &mut self,
         gate: EnterGate,
-        hand_back: HandBack,
+        give_up: GiveUp,
         ctx: &mut ViewContext<Self>,
     ) {
         let submitted = gate.submitted && !gate.held_unready;
-        let held_behind = self.enter_gate_held_len(ctx);
         self.clear_held_unready_enter();
         self.enter_gate = None;
-        let queue = self.enter_queue_handle(ctx);
-        let taken = match queue.try_lock_ordered() {
-            Some(mut guard) => {
-                let mut host = InputQueueHost::new(self, ctx);
-                Some(guard.close_gate_taking(&mut host, gate.kind, gate.key))
-            }
-            None => {
-                // Busy: the take and the insert are one deferred operation (the text typed behind
-                // the gate comes back into the editor, #1446), at the cursor: put it at the end of
-                // the held line, on a line of its own.
-                if held_behind > 0 && !submitted {
-                    let line = self.editor.as_ref(ctx).buffer_text(ctx);
-                    if !line.is_empty() {
-                        let left = format!("{line}\n");
-                        self.editor
-                            .update(ctx, |editor, ctx| editor.set_buffer_text(&left, ctx));
-                        self.note_hand_back_line_break(left);
-                    }
-                }
-                queue.defer(crate::terminal::input_queue::Deferred::VoidEnterGate {
-                    kind: gate.kind,
-                    key: gate.key,
-                });
-                None
-            }
-        };
-        // Whether keys typed behind the Enter come back after the line (now, or with the deferred
-        // take when the queue was busy).
-        let deferred_typed = taken.is_none() && held_behind > 0;
-        let typed_after = taken.map_or_else(String::new, |taken| {
-            text_of_entries_typed_after(&taken, |id| self.take_paste_payload_text(id))
-        });
-        let toast = if !submitted && (deferred_typed || !typed_after.is_empty()) {
-            hand_back.toast_with_typed
-        } else {
-            hand_back.toast
-        };
-        if !typed_after.is_empty() {
+        // The unrun line's own guard is armed now. A line with none gets the glue guard only if
+        // keys typed after the Enter are discarded (the user was still typing), decided by the
+        // take itself, so a busy queue's deferred take arms exactly what a free one does.
+        if !submitted && let Some((kind, toast)) = give_up.line_guard {
             let line = self.editor.as_ref(ctx).buffer_text(ctx);
-            let (text, baseline) = if submitted {
-                (format!("{line}{typed_after}"), typed_after)
-            } else if line.is_empty() {
-                (typed_after.clone(), typed_after)
-            } else {
-                let text = format!("{line}\n{typed_after}");
-                (text.clone(), text)
-            };
-            self.editor
-                .update(ctx, |editor, ctx| editor.set_buffer_text(&text, ctx));
-            // Several lines in one buffer submit as ONE command: the first Enter on the handed-back
-            // text is held with the give-up's own "check the line" toast.
-            self.arm_enter_guard(
-                baseline,
-                EnterGuardKind::HandedBackText,
-                hand_back.guard_toast,
-            );
-        } else if !submitted && deferred_typed {
-            // The queue was busy: what was typed behind the Enter comes back with the deferred
-            // take, after the line (which got its line break above). Guard the line now with the
-            // give-up's own toast, so the first Enter on it plus what follows is held whatever
-            // the take brings (#1666 review). The baseline is the line itself, without the break.
-            let line = self.editor.as_ref(ctx).buffer_text(ctx);
-            let line = line.strip_suffix('\n').unwrap_or(&line).to_string();
-            self.arm_enter_guard(line, EnterGuardKind::HandedBackText, hand_back.guard_toast);
-        } else if !submitted && gate.held_unready {
-            // The held line alone (an unready shell's Enter): its next Enter is held with the
-            // toast. A line given up for a verdict is what the user typed: Enter sends it.
-            let line = self.editor.as_ref(ctx).buffer_text(ctx);
-            self.arm_enter_guard(line, EnterGuardKind::HandedBackText, hand_back.guard_toast);
-        } else if !submitted && hand_back.glue_guard_on_line_alone {
-            // #1666: the line alone, which the user may run as shown: only text typed onto its end
-            // holds the next Enter (`cd proj` handed back, then `ls` Enter must not run
-            // `cd projls`).
-            let line = self.editor.as_ref(ctx).buffer_text(ctx);
-            let line = line.strip_suffix('\n').unwrap_or(&line).to_string();
-            self.arm_enter_guard(line, EnterGuardKind::Glue, GLUE_GUARD_TOAST);
+            self.arm_enter_guard(line, kind, toast);
         }
-        if ctx.has_singleton_model::<ToastStack>() {
-            let window_id = ctx.window_id();
-            ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
-                toast_stack.add_ephemeral_toast(
-                    DismissibleToast::error(toast.to_string()),
-                    window_id,
-                    ctx,
-                );
-            });
-        }
+        let report = EnterDiscard::GiveUp {
+            reason: give_up.toast,
+            always: !submitted,
+            glue_if_discarded: !submitted && give_up.line_guard.is_none(),
+        };
+        // The queue busy: the deferred take discards and reports once it is free.
+        let _ = self.discard_enter_gate(gate, report, ctx);
         // Edits that waited behind the line apply now.
         self.flush_deferred_programmatic_edits(ctx);
     }
@@ -1165,38 +1192,28 @@ impl Input {
             .map_or(0, |queue| queue.held_behind_gate(gate.kind, gate.key))
     }
 
-    /// The waiting Enter is void (^C, an edit of its line): closes the gate and hands back the text
-    /// that was typed behind it, which stays in the editor rather than being lost (Enters typed
-    /// behind it have nothing to submit and go).
-    pub(super) fn void_enter_gate(&mut self, ctx: &mut ViewContext<Self>) -> String {
+    /// The waiting Enter is void (^C, an edit of its line): closes the gate and DISCARDS what was
+    /// typed behind it, in every form, with the shared toast and its count (owner decision
+    /// 2026-11-05, #1661, #1767: never put back into the editor, where it glued onto the line).
+    /// The line itself is the user's edit and stays as it is. A busy queue discards the same keys
+    /// with the same toast once it is free.
+    pub(super) fn void_enter_gate(&mut self, ctx: &mut ViewContext<Self>) {
         let Some(gate) = self.enter_gate.take() else {
-            return String::new();
+            return;
         };
-        let queue = self.enter_queue_handle(ctx);
-        let Some(mut guard) = queue.try_lock_ordered() else {
-            // Busy (mid-drain) or earlier operations wait: the take and the editor insert are one
-            // deferred operation the view runs when the queue is free (#1446); the text typed
-            // behind the void Enter is neither lost nor left in the queue.
-            queue.defer(crate::terminal::input_queue::Deferred::VoidEnterGate {
-                kind: gate.kind,
-                key: gate.key,
-            });
-            queue.defer(crate::terminal::input_queue::Deferred::FlushProgrammaticEdits);
-            return String::new();
+        let report = EnterDiscard::GiveUp {
+            reason: ENTER_VOIDED_TOAST,
+            always: false,
+            glue_if_discarded: false,
         };
-        let mut host = InputQueueHost::new(self, ctx);
-        let typed_behind: String = guard
-            .close_gate_taking(&mut host, gate.kind, gate.key)
-            .into_iter()
-            .filter_map(|entry| match entry.kind {
-                EntryKind::Text(text) => Some(text),
-                _ => None,
-            })
-            .collect();
-        drop(guard);
+        if self.discard_enter_gate(gate, report, ctx).is_none() {
+            // Deferred: the programmatic edits that waited behind the void Enter follow the take.
+            self.enter_queue_handle(ctx)
+                .defer(crate::terminal::input_queue::Deferred::FlushProgrammaticEdits);
+            return;
+        }
         // The Enter is void: the programmatic edits that waited behind it apply now (#1434).
         self.flush_deferred_programmatic_edits(ctx);
-        typed_behind
     }
 
     /// The Enter has run. With nothing typed behind it the gate closes now; otherwise it is kept
@@ -1255,9 +1272,9 @@ impl Input {
         }
         log::warn!(
             "input queue: keys typed behind an Enter waited for the pty to take its command and \
-             gave up; handing them back to the input (#1577)"
+             gave up; they are discarded (#1577, #1661)"
         );
-        self.give_up_enter_gate_to_editor("route_wait", ctx);
+        self.give_up_enter_gate("route_wait", ctx);
     }
 
     /// ^C / ^D reached the terminal while keys wait behind an Enter: what was typed behind it is
@@ -1311,6 +1328,20 @@ impl Input {
         );
     }
 
+    /// Offers `kind` to the pane queue through the EDITOR host (behind an open Enter gate it is
+    /// held there), for tests (#1661 review: a `Held` Tab behind an Enter).
+    #[cfg(test)]
+    pub(crate) fn offer_entry_through_editor_host_for_test(
+        &mut self,
+        kind: EntryKind,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let queue = self.enter_queue_handle(ctx);
+        let mut guard = queue.lock();
+        let mut host = InputQueueHost::new(self, ctx);
+        guard.offer(&mut host, kind);
+    }
+
     /// The gate of an Enter that waits for its input-type verdict (nothing submitted, nothing
     /// queued behind it yet), for tests of what must wait for it.
     #[cfg(test)]
@@ -1346,6 +1377,13 @@ impl Input {
             assert!(self.queue_behind_enter(item, ctx));
         }
         self.finish_enter_gate_after_submit(awaits_pty, ctx);
+    }
+
+    /// The input forgets its Enter gate while the gate stays open on the queue (an orphan gate,
+    /// for tests of its leak net, #1661).
+    #[cfg(test)]
+    pub(crate) fn forget_enter_gate_for_test(&mut self) {
+        self.enter_gate = None;
     }
 
     /// The entries behind the Enter, for tests.
@@ -1394,62 +1432,23 @@ impl Input {
     }
 }
 
-/// #1571: what the entries typed behind an Enter held for an unready shell spell, as editor text:
-/// text as typed, each Enter a line break, the tty editing keys applied to the text before them
-/// (Backspace, ^U, ^W). Cursor keys have no text form and are left out. Nothing here is run.
-/// Also what the view's deferred `VoidEnterGate` gives back (#1446): every queued kind with a text
-/// form keeps it, pastes included. A ready paste's content usually waits in its owner's map, not
-/// in the entry (`Some(empty)` is the "read" marker): `paste_text` takes it from there by id.
-pub(crate) fn text_of_entries_typed_after(
-    entries: &[InputEntry],
-    mut paste_text: impl FnMut(u64) -> Option<String>,
-) -> String {
-    let mut text = String::new();
-    for entry in entries {
-        match &entry.kind {
-            EntryKind::Text(typed) => text.push_str(typed),
-            EntryKind::Paste {
-                paste_id,
-                payload: Some(bytes),
-            } => match paste_text(*paste_id) {
-                Some(pasted) => text.push_str(&pasted),
-                None => text.push_str(&String::from_utf8_lossy(bytes)),
-            },
-            EntryKind::Enter => text.push('\n'),
-            EntryKind::Held { class, text: held } => match *class {
-                HELD_TYPED | HELD_PASTE => text.push_str(held),
-                HELD_KEY => match held.as_str() {
-                    "\r" | "\n" | "\r\n" => text.push('\n'),
-                    "\u{7f}" | "\u{8}" => {
-                        if !text.ends_with('\n') {
-                            text.pop();
-                        }
-                    }
-                    "\u{15}" => {
-                        let line_start = text.rfind('\n').map_or(0, |at| at + 1);
-                        text.truncate(line_start);
-                    }
-                    "\u{17}" => {
-                        let line_start = text.rfind('\n').map_or(0, |at| at + 1);
-                        let line = &text[line_start..];
-                        let kept = line.trim_end_matches(' ');
-                        let word_start = kept.rfind(' ').map_or(0, |at| at + 1);
-                        text.truncate(line_start + word_start);
-                    }
-                    _ => {}
-                },
-                HELD_SEQ => {}
-                _ => {}
-            },
-            EntryKind::EditorKey(payload) => {
-                if let Some(HeldPasteKey::Text(typed)) = payload.take() {
-                    text.push_str(&typed);
-                }
-            }
-            _ => {}
-        }
+/// The keys among `entries` taken out of a gate to be discarded: every entry but a signal (#1652,
+/// #1661).
+fn count_discarded_keys(entries: &[InputEntry]) -> usize {
+    entries
+        .iter()
+        .filter(|entry| !matches!(entry.kind, EntryKind::Signal(_)))
+        .count()
+}
+
+/// #1661 (owner decision 2026-11-05): the one toast of every Enter give-up that discarded the keys
+/// typed after the Enter: the give-up's `reason`, then how many keys went.
+pub(crate) fn typed_after_enter_discarded_toast(reason: &str, keys: usize) -> String {
+    if keys == 1 {
+        format!("{reason} \u{2014} 1 key typed after Enter was discarded")
+    } else {
+        format!("{reason} \u{2014} {keys} keys typed after Enter were discarded")
     }
-    text.trim_end_matches('\n').to_owned()
 }
 
 /// #1652: the toast of an answer that discarded the keys typed while the dialog was open.

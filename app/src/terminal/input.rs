@@ -4,7 +4,7 @@ mod classic;
 mod cli_agent;
 mod common;
 mod enter_queue;
-pub(crate) use enter_queue::text_of_entries_typed_after;
+pub(crate) use enter_queue::{ENTER_GATE_GIVE_UP_TOAST, EnterDiscard};
 pub mod conversations;
 pub mod decorations;
 pub mod inline_history;
@@ -1252,6 +1252,9 @@ pub enum Event {
     /// The Enter has now run; its gate on the pane queue holds the keys typed behind it until the
     /// pty route is settled (`TerminalView::settle_enter_queue`).
     ReplayAfterDeferredEnter,
+    /// #1661 review: pty pastes (their ids) were discarded with the keys typed behind an Enter;
+    /// their content and routing records in the view's paste maps go with them.
+    DiscardedPtyPastes(Vec<u64>),
     /// #1638: `~` and one of ssh's escape characters were typed as the first two characters of an
     /// empty line in a managed ssh session. The editor has been cleared; the view writes these
     /// two bytes to the pty, where the local ssh client reads its escape, as plain ssh would.
@@ -1460,11 +1463,15 @@ const TAB_COMPLETION_ENTER_WARN: std::time::Duration = std::time::Duration::from
 /// machine audit 2026-11-05): long enough that only a lost or never-scheduled job reaches it, not
 /// a classifier that is merely slow to get a CPU (its cap is CPU time, #1651). Was 250 ms.
 const VERDICT_HOLD_BACKSTOP: std::time::Duration = std::time::Duration::from_secs(2);
-/// The longest any Enter hold's backstop may be: a second under the Enter gate's leak net
-/// ([`enter_queue::ENTER_GATE_LEAK_NET`]), so for any paste size the hold gives up (handing the
-/// text back in order) before the leak net force-opens the gate (#1651 review).
-pub(crate) const HOLD_BACKSTOP_LIMIT: std::time::Duration =
-    enter_queue::ENTER_GATE_LEAK_NET.saturating_sub(std::time::Duration::from_secs(1));
+/// The longest any Enter hold's backstop may be: 9 s, under the Enter gate's leak net
+/// ([`enter_queue::ENTER_GATE_LEAK_NET`], 20 s since the #1661 review; it was the net minus 1 s
+/// when the net was 10 s, and keeps that value), so for any paste size the hold gives up (the
+/// line stays in the input) before the leak net force-opens the gate (#1651 review).
+pub(crate) const HOLD_BACKSTOP_LIMIT: std::time::Duration = std::time::Duration::from_secs(9);
+const _: () = assert!(
+    HOLD_BACKSTOP_LIMIT.as_millis() < enter_queue::ENTER_GATE_LEAK_NET.as_millis(),
+    "an Enter hold's backstop must give up before the gate's leak net"
+);
 /// The shortest compute-cap timer re-armed while the awaited job's cap is not yet spent (#1651):
 /// on a CPU-time clock a starved job can sit just under its cap for as long as it gets no CPU.
 pub(crate) const COMPUTE_CAP_RECHECK_FLOOR: std::time::Duration =
@@ -2303,6 +2310,10 @@ pub struct Input {
     /// Where the view records the entries it routes after an Enter that waited, for tests.
     #[cfg(test)]
     replayed_sink_for_test: Option<Rc<std::cell::RefCell<Vec<AfterEnterInput>>>>,
+    /// Test-only: how many Tabs reached [`Self::input_tab`] (#1661 review: a Tab released from
+    /// the queue into the editor runs it).
+    #[cfg(test)]
+    pub(crate) tabs_seen_for_test: usize,
     /// Test-only: a window without a workspace shows no multi-line dialog; treat it as shown.
     #[cfg(test)]
     multiline_dialog_shown_for_test: bool,
@@ -2325,10 +2336,6 @@ pub struct Input {
     /// The text handed back to the editor when the ssh connect ended; `Some` while armed (#1395).
     /// Other hand-backs arm it too, each with its own kind and toast (#1666).
     ssh_handover_enter_guard: Option<EnterGuard>,
-    /// #1666 review: the buffer a busy-queue hand-back left, with the line break it added for the
-    /// text the deferred take brings; `Some` until that take runs. A take that brings nothing
-    /// removes the break, if the buffer is still exactly this.
-    hand_back_line_break: Option<String>,
     /// Whether the last Enter submitted a shell command; read by `input_enter_as_shell_command`.
     last_enter_submitted_shell_command: bool,
     /// What the editor held when it last submitted a command. The editor is cleared when that
@@ -4096,13 +4103,14 @@ impl Input {
             #[cfg(test)]
             replayed_sink_for_test: None,
             #[cfg(test)]
+            tabs_seen_for_test: 0,
+            #[cfg(test)]
             multiline_dialog_shown_for_test: false,
             pending_multiline_dialog_answer: None,
             deferred_enter_activity: DeferredEnterActivity::default(),
             handoff_enter_started: None,
             running_deferred_enter: false,
             ssh_handover_enter_guard: None,
-            hand_back_line_break: None,
             last_enter_submitted_shell_command: false,
             editor_submission: None,
             editor_submission_from_pending: false,
@@ -13399,6 +13407,10 @@ impl Input {
     }
 
     fn input_tab(&mut self, ctx: &mut ViewContext<Self>) {
+        #[cfg(test)]
+        {
+            self.tabs_seen_for_test += 1;
+        }
         self.drop_stale_completion_menu(ctx);
         self.flush_pending_suggestion_refilter(ctx);
         if matches!(
@@ -15052,8 +15064,9 @@ impl Input {
     /// Moves what was typed behind the waiting Enter out of the buffer (#1016). The Enter
     /// submits exactly the text typed before it; text typed after it is queued, in order, and
     /// replayed once the Enter has run. Returns whether the waiting Enter is still valid; if the
-    /// user edited the text itself (Ctrl-C, Backspace) it is void, as before, and what was typed
-    /// behind it stays in the buffer.
+    /// user edited the text itself (Ctrl-C, a Backspace before anything was typed behind it) it
+    /// is void, as before: the buffer stays as edited and what was queued behind the Enter is
+    /// discarded with a toast (#1661).
     fn reconcile_verdict_wait(&mut self, ctx: &mut ViewContext<Self>) -> bool {
         let Some(wait) = self.verdict_wait.as_ref() else {
             return false;
@@ -15078,8 +15091,10 @@ impl Input {
                 true
             }
             None => {
-                // The user edited the waiting text itself: the Enter is void. Keep what was
-                // typed behind it in the editor rather than losing it.
+                // The user edited the waiting text itself: the Enter is void. (An editing key
+                // typed after keys already queued behind the Enter is queued with them instead,
+                // #1661 review, so this is an edit of the line before anything was typed behind
+                // it, or one that did not come through the editor's keys.)
                 let wait = self.verdict_wait.take();
                 if let Some(wait) = wait.as_ref() {
                     wait.compute.stop_notifying();
@@ -15093,11 +15108,9 @@ impl Input {
                     self.cancel_pending_completions_for_deferred_enter();
                     self.end_deferred_enter_activity();
                 }
-                // Typed behind the void Enter on the queue: kept in the editor too.
-                let rest = self.void_enter_gate(ctx);
-                if !rest.is_empty() {
-                    self.system_insert(&rest, ctx);
-                }
+                // Typed behind the void Enter on the queue: discarded, with a toast that gives the
+                // count (owner decision 2026-11-05, #1661 / #1767: never glued onto the line).
+                self.void_enter_gate(ctx);
                 false
             }
         }
@@ -15370,34 +15383,6 @@ impl Input {
             .is_some_and(|guard| guard.kind == EnterGuardKind::Glue)
         {
             self.ssh_handover_enter_guard = None;
-        }
-    }
-
-    /// #1666 review: a busy-queue hand-back added a line break after the held line for the text
-    /// its deferred take brings back; remembers the buffer it left.
-    pub(crate) fn note_hand_back_line_break(&mut self, buffer: String) {
-        self.hand_back_line_break = Some(buffer);
-    }
-
-    /// The deferred take brought text: the line break is used.
-    pub(crate) fn forget_hand_back_line_break(&mut self) {
-        self.hand_back_line_break = None;
-    }
-
-    /// The deferred take brought nothing: the line break the hand-back added is removed, only if
-    /// the buffer is still exactly what the hand-back left (nothing typed since is touched).
-    pub(crate) fn drop_unused_hand_back_line_break(&mut self, ctx: &mut ViewContext<Self>) {
-        let Some(left) = self.hand_back_line_break.take() else {
-            return;
-        };
-        let buffer = self.editor.as_ref(ctx).buffer_text(ctx);
-        if buffer != left {
-            return;
-        }
-        if let Some(line) = left.strip_suffix('\n') {
-            let line = line.to_string();
-            self.editor
-                .update(ctx, |editor, ctx| editor.set_buffer_text(&line, ctx));
         }
     }
 

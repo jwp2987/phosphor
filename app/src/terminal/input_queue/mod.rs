@@ -829,6 +829,16 @@ impl InputQueue {
             .any(|gate| gate.kind == GateKind::EnterVerdict && is_unready_enter_key(gate.key))
     }
 
+    /// #1661 review: whether an Enter gate (verdict or Tab completion) already holds keys typed
+    /// behind it. An editing key typed then belongs to those keys (the next line), not to the
+    /// waiting line, so the editor queues it behind the gate in its `Held` form.
+    pub fn enter_gate_holds_typed_keys(&self) -> bool {
+        self.gates.iter().any(|gate| {
+            matches!(gate.kind, GateKind::EnterVerdict | GateKind::TabCompletion)
+                && self.held_behind_gate(gate.kind, gate.key) > 0
+        })
+    }
+
     /// Whether an Enter waiting for the multi-line submit dialog holds the queue (#1652,
     /// [`is_multiline_dialog_key`]).
     pub fn has_multiline_dialog_gate(&self) -> bool {
@@ -1179,6 +1189,48 @@ impl InputQueue {
         self.entries = kept;
         self.close_gates(host, kind, key, "taken");
         self.drain(host);
+        taken
+    }
+
+    /// #1661 review: [`Self::close_gate_taking`] for a gate whose entries are DISCARDED (keys
+    /// typed after an Enter). A paste typed behind the gate whose read is still pending sits at
+    /// the barrier of its own `PasteReading` gate, inside what this gate held, with everything
+    /// typed after it: that gate is taken too (and each next `PasteReading` gate after it), so
+    /// nothing typed after the Enter is left to drain when the read ends. Each unread paste is
+    /// reported discarded (`PasteCancelled`: silent, its records go; the caller's counted toast
+    /// covers it), and its late read result then finds nothing to claim.
+    pub fn close_gate_discarding<H: Host>(
+        &mut self,
+        host: &mut H,
+        kind: GateKind,
+        key: u64,
+    ) -> Vec<InputEntry> {
+        let Some(barrier) = self
+            .gates
+            .iter()
+            .find(|gate| gate.kind == kind && gate.key == key)
+            .map(|gate| gate.barrier)
+        else {
+            return Vec::new();
+        };
+        let mut taken = self.close_gate_taking(host, kind, key);
+        loop {
+            let next = self
+                .gates
+                .iter()
+                .filter(|gate| gate.barrier > barrier)
+                .min_by_key(|gate| gate.barrier)
+                .copied();
+            let Some(next) = next.filter(|gate| gate.kind == GateKind::PasteReading) else {
+                break;
+            };
+            taken.extend(self.close_gate_taking(host, next.kind, next.key));
+        }
+        for entry in &taken {
+            if matches!(entry.kind, EntryKind::Paste { payload: None, .. }) {
+                host.discarded(entry, DiscardReason::PasteCancelled);
+            }
+        }
         taken
     }
 

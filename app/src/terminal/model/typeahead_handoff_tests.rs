@@ -5218,3 +5218,98 @@ fn a_signal_behind_a_deferred_enter_waits_in_order_r18u23_fuzz() {
     assert_eq!(h.on_user_bytes(&[0x03]), UserBytesRoute::Write);
     assert_eq!(h.take_deferred_key_started(), None);
 }
+
+/// #1661 (owner decision 2026-11-05): two young holds end at their cap by design and keep their
+/// short cap (and, in the view, the hand-back): the fish no-barrier hold (2 s) and the window hold
+/// of a session without prompt sequence numbers. Every other young hold's cap is a give-up: the
+/// 10 s net (which drops the keys).
+#[test]
+fn only_the_two_normal_end_young_holds_keep_their_short_cap() {
+    // Fish, no barrier: `PrecmdMaybeInFlight`, the 2 s cap is its normal end.
+    let mut fish = seq_after_submit(ShellPromptFact::LineEditorReading);
+    type_and_flush(&mut fish, b"explain");
+    fish.age_last_activity_for_test();
+    fish.young_line = false;
+    assert_eq!(fish.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    assert_eq!(
+        fish.young_hold_evidence(),
+        Some(YoungHoldEvidence::PrecmdMaybeInFlight)
+    );
+    assert!(fish.young_hold_cap_is_normal_end());
+    assert_eq!(fish.young_hold_give_up(Instant::now()), EVENT_HOLD_GIVE_UP);
+
+    // A barrier says a Precmd may be in flight: a sequence-path hold, the 10 s give-up net.
+    let probe = RawReadProbe::new(ShellPromptFact::LineEditorReading, Some(false));
+    let mut barriered = seq_after_submit(ShellPromptFact::LineEditorReading);
+    probe.install(&mut barriered);
+    type_and_flush(&mut barriered, b"explain");
+    barriered.age_last_activity_for_test();
+    barriered.young_line = false;
+    assert_eq!(barriered.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    assert_eq!(
+        barriered.young_hold_evidence(),
+        Some(YoungHoldEvidence::PrecmdInFlight)
+    );
+    assert!(!barriered.young_hold_cap_is_normal_end());
+    assert_eq!(
+        barriered.young_hold_give_up(Instant::now()),
+        YOUNG_HOLD_GIVE_UP
+    );
+
+    // The window with prompt sequence numbers (ConPTY that sends them): a give-up, 10 s.
+    let mut unsampled = seq_unsampled_after_submit();
+    type_and_flush(&mut unsampled, b"explain");
+    assert_eq!(unsampled.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    assert_eq!(
+        unsampled.young_hold_evidence(),
+        Some(YoungHoldEvidence::TimingWindow)
+    );
+    assert!(!unsampled.young_hold_cap_is_normal_end());
+    assert_eq!(
+        unsampled.young_hold_give_up(Instant::now()),
+        YOUNG_HOLD_GIVE_UP
+    );
+
+    // The window without prompt sequence numbers: its end is the hold's normal end, at most
+    // `YOUNG_ENTER_WINDOW`.
+    let mut legacy = young_after_submit();
+    type_and_flush(&mut legacy, b"explain");
+    assert_eq!(legacy.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    assert_eq!(
+        legacy.young_hold_evidence(),
+        Some(YoungHoldEvidence::TimingWindow)
+    );
+    assert!(legacy.young_hold_cap_is_normal_end());
+    assert!(legacy.young_hold_give_up(Instant::now()) <= YOUNG_ENTER_WINDOW);
+}
+
+/// #1661 review: a hold's class is decided when it starts. A window hold of a session without
+/// prompt sequence numbers stays a normal-end hold (short cap, hand-back) when a
+/// sequence-numbered Precmd is parsed while it waits; recomputed at the cap it was dropped.
+#[test]
+fn a_young_holds_normal_end_class_is_fixed_when_it_starts() {
+    let mut handoff = young_after_submit();
+    handoff.set_prompt_seq_enabled(true);
+    type_and_flush(&mut handoff, b"explain");
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    assert_eq!(
+        handoff.young_hold_evidence(),
+        Some(YoungHoldEvidence::TimingWindow)
+    );
+    assert!(!handoff.prompt_seq_mode());
+    assert!(handoff.young_hold_cap_is_normal_end());
+    let cap = handoff.young_hold_give_up(Instant::now());
+    assert!(cap <= YOUNG_ENTER_WINDOW);
+
+    // The shell starts sending sequence numbers before the cap.
+    handoff.on_precmd_seq(Some(7), Some(1));
+    assert!(handoff.prompt_seq_mode());
+    assert_eq!(
+        handoff.young_hold_evidence(),
+        Some(YoungHoldEvidence::TimingWindow)
+    );
+    assert!(
+        handoff.young_hold_cap_is_normal_end(),
+        "the class the hold started with is kept: its cap hands back, it does not drop"
+    );
+}
