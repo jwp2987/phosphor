@@ -47,6 +47,29 @@ def wide_parts_edit(ctx, fname):
     return "echo ", " >> " + fname
 
 
+# r18u28 (Windows, PowerShell pane, both modes, `edit 2 (BackSpace): file bytes None`): the per-edit lead word below came from the SEEDED token
+# stream, so every run with seed 1 types the same `Write-Output k2t241_86giBq | ForEach-Object { ...AppendAllText('<run dir>\ie_2.txt'...) }`.
+# PowerShell keeps every accepted line in the user's real PSReadLine history (%APPDATA%\...\PSReadLine\ConsoleHost_history.txt; the harness wipes
+# only %APPDATA%\phosphor), and the app reads that file for its autosuggestions (warp_terminal ShellType::history_files). Edit 2 is the one edit
+# whose End lands at the end of the line after an earlier run's identical ASCII line is a prefix match, so End ACCEPTED the old line, path
+# included. Every earlier CI run used the same build directory, so the doubled pipeline still wrote the right file (the second ForEach-Object gets
+# no input); the r18u28 run's directory differed, the accepted text wrote to the OLD directory, and the new file never appeared. Gitbash panes keep
+# their history in the run's own HOME, so they never saw it. A nonce from the OS (not from the seeded rng, so the reproducible token sequence of
+# every other case is unchanged) makes the lead unique per run, not just per seed.
+EDIT_LEAD_NONCE = "%06x" % int.from_bytes(os.urandom(3), "big")
+
+
+def edit_lead(i, tok, nonce=None):
+    """intl_wide_edit's lead word for edit i: unique per run (EDIT_LEAD_NONCE), so no line typed by an earlier run, in any shell history the app
+    reads, is a prefix of the line being edited"""
+    return "k%d%s%s" % (i, tok.lower(), EDIT_LEAD_NONCE if nonce is None else nonce)
+
+
+def stale_history_hits(ctx, prefix):
+    """the PowerShell pane's PSReadLine history lines (an earlier run's) that start with `prefix`: [] off the PowerShell pane"""
+    return [l for l in ctx.ps_history_lines() if l.startswith(prefix)] if hasattr(ctx, "ps_history_lines") else []
+
+
 def fbytes(ctx, name):
     try:
         return open(os.path.join(ctx.W, name), "rb").read()
@@ -156,7 +179,13 @@ def c_wide_edit(ctx, r):
         # r18u8 (H12, Git Bash): End at the end of the line ACCEPTS the autosuggestion, and the previous case's command (`echo A日本Z語 >> ie_0.txt`) is a prefix match for
         # `echo A日本` -> the shell got `echo A日本Z語 >> ie_0.txt >> ie_1.txt`. A per-edit unique lead word makes no history line a prefix of the line being edited, so
         # no suggestion exists to be accepted; it is part of the expected text on both sides.
-        lead = "k%d%s" % (i, ctx.tok(4).lower())
+        # r18u28: the seeded token alone repeated across runs, and the user's PSReadLine history kept the earlier run's line (EDIT_LEAD_NONCE).
+        tok = ctx.tok(4)
+        lead = edit_lead(i, tok)
+        seeded = stale_history_hits(ctx, pre + edit_lead(i, tok, nonce=""))
+        if seeded:
+            r.note("edit %d: the PowerShell history already holds %d line(s) typed with this seed's lead (%r...): without the per-run nonce End would "
+                   "accept one as an autosuggestion" % (i, len(seeded), seeded[0][:60]))
         head, want = "echo " + lead + head[len("echo "):], lead + want
         ctx.be.type(pre + head[len("echo "):], 12)
         ctx.be.keys(keys, delay_ms=20)

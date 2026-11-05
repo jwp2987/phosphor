@@ -444,6 +444,83 @@ def where_tokens(path, skip=0):
     return raw[skip:].replace(b"\x00", b"").replace(b"\xff\xfe", b"").decode("utf-8", "replace").split()
 
 
+class LogOffset(int):
+    """a byte offset into the app log that also carries the identity of the file it was measured in (log_file_ident), so a reader can find
+    that file again after the app's in-session rotation renamed it to <log>.in_session.N (r18u28). Behaves as the plain int everywhere else."""
+    def __new__(cls, n, ident=None):
+        o = int.__new__(cls, n)
+        o.ident = ident
+        return o
+
+
+def log_file_ident(path):
+    """an identity of one log FILE that survives a rename: (st_dev, st_ino) where the OS gives an inode (Linux, macOS; the NTFS file index on
+    Windows), else the file's first 256 bytes (a log starts with a timestamped line). None for a missing file, or an empty one without an inode."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    if st.st_ino:
+        return ("ino", st.st_dev, st.st_ino)
+    try:
+        with open(path, "rb") as f:
+            head = f.read(256)
+    except OSError:
+        return None
+    return ("head", head) if head else None
+
+
+def same_log_file(ident, now):
+    """whether the file whose identity is now `now` is the one `ident` was taken from. A head identity is a prefix match: the file has grown since"""
+    if ident is None or now is None or ident[0] != now[0]:
+        return False
+    return now[1].startswith(ident[1]) if ident[0] == "head" else ident == now
+
+
+def log_parts(src):
+    """the app log's files, oldest first: the in-session rotations (<log>.in_session.N, N=0 the newest) then the active file"""
+    import glob
+
+    def idx(f):
+        tail = f.rsplit(".", 1)[1]
+        return int(tail) if tail.isdigit() else -1
+    return sorted(glob.glob(glob.escape(src) + ".in_session.*"), key=idx, reverse=True) + [src]
+
+
+def log_offset(src):
+    """LogOffset of the active log `src` now. The identity is read before and after the size, so a rotation in between cannot pair the new
+    file's identity with the old file's size (one retry, then the plain size)."""
+    for _ in range(2):
+        before = log_file_ident(src)
+        n = os.path.getsize(src)
+        if before is not None and same_log_file(before, log_file_ident(src)):
+            return LogOffset(n, before)
+    return LogOffset(os.path.getsize(src))
+
+
+def log_text_since(src, off):
+    """the app log after LogOffset `off`, across rotations: the rest of the file `off` was measured in (wherever it is now), then every newer
+    chunk and the active file. When that file has been rotated out of retention, everything still kept is newer than `off`, so all of it.
+    None when nothing has rotated since `off` (the caller's plain read is right)."""
+    parts = [p for p in log_parts(src) if os.path.exists(p)]
+    hits = [k for k, p in enumerate(parts) if same_log_file(off.ident, log_file_ident(p))]
+    if hits and hits[-1] == len(parts) - 1:
+        return None
+    start = hits[-1] if hits else None
+    out = []
+    for k, p in enumerate(parts):
+        if start is not None and k < start:
+            continue
+        try:
+            with open(p, "rb") as f:
+                if k == start:
+                    f.seek(int(off))
+                out.append(f.read())
+        except OSError:
+            continue
+    return b"".join(out).decode(errors="replace")
+
+
 class Ctx:
     def __init__(self, be, prof, app, run, mode, seed=1, ssh=None, ollama=False, log_path=None, ssh_why=None, pane=None, variant=None):
         self.be, self.prof, self.app, self.run, self.mode = be, prof, app, run, mode
@@ -1081,13 +1158,24 @@ class Ctx:
             return []
 
     def log_size(self):
+        """the active app log's size as a LogOffset: an int that also remembers WHICH file it measured, so log_since() still finds the case's
+        lines after the app rotates the log (r18u28)"""
         try:
-            return os.path.getsize(self.log_path)
+            return log_offset(self.log_path)
         except Exception:
             return 0
 
     def log_since(self, off):
+        """the app log after `off` (from log_size()). r18u28 (Windows agent@gitbash agent_approval): the app rotates its log at 10 MB (#1187: the
+        active file is renamed to <log>.in_session.0 and a fresh one opened), and a plain seek into the NEW active file returned "" until it grew
+        past the old offset: the case counted 0 pty writes of a command whose effect file showed it ran once, and 'no model request in 60 s' for a
+        follow-up that r18u27 saw in 1 s. A LogOffset is resolved to the file it measured, wherever the rotation moved it, and every newer chunk
+        follows; a plain int (or an offset whose file cannot be told apart) reads the active file as before."""
         try:
+            if getattr(off, "ident", None) is not None and self.log_path:
+                rotated = log_text_since(self.log_path, off)
+                if rotated is not None:
+                    return rotated
             with open(self.log_path, "rb") as f:
                 f.seek(off)
                 return f.read().decode(errors="replace")

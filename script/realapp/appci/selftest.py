@@ -158,6 +158,38 @@ def app_log_readers():
         off = c.log_size()
         open(log, "a").write("tail\n")
         assert c.log_since(off) == "tail\n"
+        # r18u28: the app rotates the active file to .in_session.0 (older slots shift up) and opens a fresh one; an offset taken before the
+        # rotation still reads the rest of ITS file, then the new active file (a plain seek into the new file returned "")
+        off = c.log_size()
+        assert isinstance(off, cases.LogOffset) and int(off) == os.path.getsize(log)
+        open(log, "a").write("before rotation\n")
+        os.rename(log + ".in_session.1", log + ".in_session.2")
+        os.rename(log + ".in_session.0", log + ".in_session.1")
+        os.rename(log, log + ".in_session.0")
+        open(log, "w").write("after rotation\n")
+        assert c.log_since(off) == "before rotation\nafter rotation\n", repr(c.log_since(off))
+        # two rotations later, still the same lines in order
+        os.rename(log + ".in_session.0", log + ".in_session.9")
+        os.rename(log, log + ".in_session.0")
+        os.rename(log + ".in_session.9", log + ".in_session.1")
+        open(log, "w").write("newest\n")
+        assert c.log_since(off) == "before rotation\nafter rotation\nnewest\n", repr(c.log_since(off))
+        # the measured file rotated out of retention (the app drops the OLDEST slots first, so nothing older is left): everything kept is newer
+        os.remove(log + ".in_session.2")
+        os.remove(log + ".in_session.1")
+        assert c.log_since(off) == "after rotation\nnewest\n", repr(c.log_since(off))
+        # no rotation since the offset: the plain read of the active file
+        off2 = c.log_size()
+        open(log, "a").write("x\n")
+        assert c.log_since(off2) == "x\n"
+        # a plain int (callers that pass 0 or their own number) reads the active file only, as before
+        assert c.log_since(0) == "newest\nx\n"
+        # a head identity (no inode) matches the same file after it has grown
+        h = ("head", b"2026-11-05T00:00:00Z [INFO] a")
+        assert cases.same_log_file(h, ("head", b"2026-11-05T00:00:00Z [INFO] a longer head"))
+        assert not cases.same_log_file(h, ("head", b"2026-11-05T00:00:01Z [INFO] b"))
+        assert not cases.same_log_file(None, h) and not cases.same_log_file(("ino", 1, 2), ("ino", 1, 3))
+        open(log, "a").write("y input_order hop=view_mode mode=terminal pane=1\n")      # the rotations above dropped the view_mode lines
         # mode_now prefers the log; it must not need OCR when the log answers
         c.ocr = lambda tag: (_ for _ in ()).throw(AssertionError("OCR used although the log has a view_mode line"))
         assert cases.Ctx.mode_now(c, "t") == "terminal"
@@ -1290,6 +1322,15 @@ def mac_close_key_empty_never_crashes_and_latency_guards():
     assert not rec2.get("implausible"), rec2
     assert "e29d8d" not in ci.dbg("a") and "e2808d" in ci.dbg("a\u200db"), ci.dbg("a\u200db")
     assert ci.WIDE[3][1].count("\u200d") == 2        # the family sequence really contains two U+200D scalars
+    # r18u28: intl_wide_edit's lead is unique per RUN: the seeded part repeats across runs, and an earlier run's line in the PSReadLine history was a
+    # prefix match that End accepted. The nonce comes from the OS, not the seeded rng, and is plain alphanumeric (a PowerShell / bash bareword).
+    assert ci.edit_lead(2, "T241_86gi", nonce="") == "k2t241_86gi" and ci.edit_lead(2, "T241_86gi", nonce="ab12") == "k2t241_86giab12"
+    assert ci.edit_lead(2, "T241_86gi").startswith("k2t241_86gi") and ci.edit_lead(2, "T241_86gi") != "k2t241_86gi"
+    assert ci.EDIT_LEAD_NONCE.isalnum() and len(ci.EDIT_LEAD_NONCE) == 6
+    old_line = "Write-Output k2t241_86giBq | ForEach-Object { [IO.File]::AppendAllText('C:\\old\\ie_2.txt', $_) }"
+    assert not old_line.startswith("Write-Output " + ci.edit_lead(2, "T241_86gi") + "Bq"), "an earlier run's line must not prefix-match this run's"
+    hist = types.SimpleNamespace(ps_history_lines=lambda: [old_line, "Write-Output other"])
+    assert ci.stale_history_hits(hist, "Write-Output k2t241_86gi") == [old_line] and ci.stale_history_hits(object(), "x") == []
     res = cases.Result("t", "terminal")
     if res is not None:
         res.unverifiable("trace missing")
