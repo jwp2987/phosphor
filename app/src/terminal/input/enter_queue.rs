@@ -1127,6 +1127,28 @@ impl Input {
         input: AfterEnterInput,
         ctx: &mut ViewContext<Self>,
     ) -> bool {
+        self.queue_behind_enter_with(input, false, ctx)
+    }
+
+    /// [`Self::queue_behind_enter`] for a caller that runs INSIDE the pane queue's mailbox flush
+    /// (r18u27 review): the flush applies the deferred operations in their order, so this offer
+    /// is in order now and takes the queue with a plain `try_lock`. The ordered lock fails while
+    /// later operations wait in the mailbox and would put the offer behind them, i.e. behind keys
+    /// typed later.
+    pub(crate) fn queue_behind_enter_in_mailbox_flush(
+        &mut self,
+        input: AfterEnterInput,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        self.queue_behind_enter_with(input, true, ctx)
+    }
+
+    fn queue_behind_enter_with(
+        &mut self,
+        input: AfterEnterInput,
+        in_mailbox_flush: bool,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
         if !self.enter_queue_holds_keys(ctx) {
             return false;
         }
@@ -1135,7 +1157,12 @@ impl Input {
             AfterEnterInput::Text(text) => EntryKind::Text(text),
             AfterEnterInput::Enter => EntryKind::Enter,
         };
-        let Some(mut guard) = queue.try_lock_ordered() else {
+        let guard = if in_mailbox_flush {
+            queue.try_lock()
+        } else {
+            queue.try_lock_ordered()
+        };
+        let Some(mut guard) = guard else {
             queue.defer(crate::terminal::input_queue::Deferred::Offer {
                 kind,
                 origin: crate::terminal::input_queue::Origin::Keyboard,

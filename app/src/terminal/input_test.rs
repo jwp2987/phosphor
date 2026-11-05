@@ -17445,13 +17445,14 @@ fn test_unready_enter_give_up_keeps_the_line_discards_the_rest_and_runs_nothing(
         assert!(!gated, "{mode:?}: the gate is closed");
         assert!(!holds, "{mode:?}: nothing is held");
         assert!(executed.is_empty(), "{mode:?}: nothing ran: {executed:?}");
-        // `echo T` (six keys) and the Enter.
+        // The refused Enter's own notice at the Enter (pre-existing), then, at the give-up, the
+        // discard: `echo T` (six keys) and the Enter.
         assert_eq!(
             toasts,
-            [typed_after_enter_discarded_toast(
-                UNREADY_ENTER_GIVE_UP_TOAST,
-                7
-            )],
+            [
+                "Cannot run `ssh fake` yet: the shell is still starting.".to_string(),
+                typed_after_enter_discarded_toast(UNREADY_ENTER_GIVE_UP_TOAST, 7)
+            ],
             "{mode:?}"
         );
     }
@@ -17875,10 +17876,12 @@ fn test_unready_enter_cancel_on_a_busy_queue_discards_like_on_a_free_one() {
                 });
                 assert!(executed.borrow().is_empty(), "{mode:?} busy={busy}");
                 assert!(released.borrow().is_empty(), "{mode:?} busy={busy}");
-                assert!(
-                    toasts.borrow().is_empty(),
-                    "{mode:?} busy={busy}: {:?}",
-                    toasts.borrow()
+                // The refused Enter's own notice (pre-existing, at the Enter) is the only toast:
+                // a ^C discard shows none, busy or free.
+                assert_eq!(
+                    *toasts.borrow(),
+                    ["Cannot run `ssh fake` yet: the shell is still starting.".to_string()],
+                    "{mode:?} busy={busy}"
                 );
             });
         }

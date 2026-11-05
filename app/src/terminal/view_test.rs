@@ -15456,8 +15456,12 @@ fn keys_behind_a_run_enter_in(mode: DestMode, after: AfterRunEnter) {
                 | AfterRunEnter::RealBlockCompleted
         );
         for _ in 0..400 {
+            // r18u27: released AND delivered. A release from the input's side stops the drain at
+            // the first entry only the view routes and the view continues it on a later turn, so
+            // "the gate is gone" alone was read before the text reached the editor.
             let done = terminal.read(&app, |view, ctx| {
                 !view.input.as_ref(ctx).enter_queue_holds_keys(ctx)
+                    && view.paste_queue.queue.borrow().is_idle()
             });
             let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
             if done && (ends_without_pty || written.ends_with(b"\r")) {
@@ -17481,6 +17485,63 @@ fn typeahead_handoff_a_command_written_behind_a_deferred_enter_takes_its_gated_k
         });
         assert_eq!(*pty_writes.borrow(), vec![b"ls\rp".to_vec()]);
     })
+}
+
+/// r18u27 review (MEDIUM): keys released from a deferred Enter's gate by a take the busy queue
+/// deferred (`Deferred::TakeGateKeys`, applied by the mailbox flush) and queued behind a waiting
+/// Enter keep their typed place: a key typed later, already waiting in the mailbox behind the
+/// take, lands after them. (An ordered lock inside the flush failed while that later key waited
+/// and pushed the released text to the end of the mailbox, behind it.) Both modes.
+#[test]
+fn keys_released_by_a_deferred_take_keep_typed_order_behind_a_waiting_enter() {
+    use crate::terminal::input_queue::{
+        Deferred, DestinationMode, EntryKind, GateKeysThen, GateKind, Origin,
+    };
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            terminal.update(&mut app, |view, ctx| {
+                hold_after_deferred_enter(view);
+                view.open_deferred_enter_gate(ctx);
+                view.write_user_bytes_to_pty(b"ls".to_vec(), ctx);
+                let gate_id = view
+                    .paste_queue
+                    .queue
+                    .borrow()
+                    .gates()
+                    .iter()
+                    .find(|gate| gate.kind == GateKind::HandoffReport)
+                    .map(|gate| gate.key)
+                    .expect("the deferred Enter's gate");
+                // A later Enter waits for its verdict: what is released goes behind it.
+                view.input.update(ctx, |input, ctx| {
+                    input.open_waiting_enter_gate_for_test(ctx)
+                });
+                let queue = view.paste_queue.queue.clone();
+                {
+                    let _busy = queue.peek();
+                    view.take_deferred_gate_keys_then(gate_id, GateKeysThen::Release, ctx);
+                    assert!(queue.has_deferred(), "{mode:?}: the take is deferred");
+                    // Typed after the take was recorded, while the queue is busy.
+                    queue.defer(Deferred::Offer {
+                        kind: EntryKind::Text("x".to_string()),
+                        origin: Origin::Keyboard,
+                        stamp: queue.stamp_now(),
+                    });
+                }
+                view.flush_deferred_queue_ops(ctx);
+                assert!(!queue.has_deferred(), "{mode:?}");
+                assert_eq!(
+                    view.input.as_ref(ctx).enter_gate_held_for_test(ctx),
+                    vec![AfterEnterInput::Text("lsx".to_string())],
+                    "{mode:?}: the released `ls` first, then the later `x`"
+                );
+            });
+        });
+    }
 }
 
 /// Ctrl-C cancels a deferred Enter and voids the keys behind its gate with it.
