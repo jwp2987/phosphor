@@ -4389,6 +4389,18 @@ def editor_opened(grew_mb, app_open_lines):
     return grew_mb >= 8 or bool(app_open_lines)
 
 
+def reusable_note(tag, trim):
+    """#1607 (macOS): the app's heap_trim line carries resident=<bytes> reusable=<bytes> after the trim. `reusable` is freed malloc memory marked
+    MADV_FREE_REUSABLE: already out of phys_footprint, still counted in RSS until the kernel reclaims it, and no trim can hand it back. r18u23 Mac txt:
+    170 MB of RSS over the baseline 75 s after close while phys_footprint was 290 MB UNDER it and every close trim freed 0. The note puts that share
+    next to the judged figures; it changes no verdict. None when the line has no such fields (other platforms, older builds)."""
+    res, reu = trim.get("resident"), trim.get("reusable")
+    if not isinstance(res, int) or not isinstance(reu, int):
+        return None
+    return ("%s: at the close trim the app was %.0f MB resident, %.0f MB of it freed-but-reusable malloc pages (MADV_FREE_REUSABLE: out of "
+            "phys_footprint, still in RSS until the kernel reclaims them; no trim returns them)" % (tag, res / 1048576.0, reu / 1048576.0))
+
+
 def editor_wait_close_trim(ctx, off, timeout=15.0):
     """the `editor_memory heap_trim why=close` lines since `off`, waiting up to `timeout` for the first (logged when the worker's trim ends)"""
     t0 = time.time()
@@ -4441,16 +4453,27 @@ def heap_trims(text):
     return out
 
 
-def ui_trim_max(items, trims, why, pad_s=0.25):
+def ui_trim_max(items, trims, why, pad_s=0.25, exclude=()):
     """max ms of the UI items (each logged when it ENDS) that ended while a `why` trim ran, or within pad_s after it: [end - ms, end + pad_s].
-    0.0 when none did (no UI item over 4 ms during the trim)"""
+    0.0 when none did (no UI item over 4 ms during the trim). `exclude`: items judged elsewhere (the load's own layout frame, see
+    ui_load_frame)"""
     worst = 0.0
     for end, ms, w in trims:
         if w != why:
             continue
         lo, hi = end - ms / 1000.0, end + pad_s
-        worst = max([worst] + [i[1] for i in items if lo <= i[0] <= hi])
+        worst = max([worst] + [i[1] for i in items if lo <= i[0] <= hi and i not in exclude])
     return worst
+
+
+def ui_load_frame(items, t0, seconds=5.0, t_end=None):
+    """the load's own layout frame after an open: the largest UI item in [t0, min(t0 + seconds, t_end)] (the item ui_window_max(after_largest=True)
+    skips), or None. #1607 r18u23: the opt-in open trim is SPAWNED from inside this frame (CodeEditorModel::after_large_layout runs in the
+    LayoutUpdated handler), so the frame ends just after the trim and fell in the trim's window: Mac 'the open trim put a 4.1 ms UI item on
+    screen' was that frame (load_frame_ms 4.07, trim 0.01 ms). The trim's effect on that frame is judged against the control's load frame."""
+    end = t0 + seconds if t_end is None else min(t0 + seconds, t_end)
+    xs = [i for i in items if t0 <= i[0] <= end]
+    return max(xs, key=lambda i: i[1]) if xs else None
 
 
 UI_BUDGET_MS = 4.0     # owner perf budget: UI work <= 4 ms (warn 16)
@@ -4535,8 +4558,10 @@ def editor_trim_ab(ctx, r, palette, path):
                 r.note("trim A/B %s: no hop=ui_item line (nothing over 4 ms, a build older than the ui_item hop, or input_order logging off)" % name)
             o_max, o_over, load_ms = ui_window_max(items, t_open, after_largest=True, t_end=t_close)
             c_max, c_over, _ = ui_window_max(items, t_close)
+            load = ui_load_frame(items, t_open, t_end=t_close)
             res[name] = dict(open_max_ms=o_max, open_over=o_over, load_frame_ms=load_ms, close_max_ms=c_max, close_over=c_over,
-                             trim_open_max_ms=ui_trim_max(items, trims, "open"), trim_close_max_ms=ui_trim_max(items, trims, "close"),
+                             trim_open_max_ms=ui_trim_max(items, trims, "open", exclude=(load,) if load else ()),
+                             trim_close_max_ms=ui_trim_max(items, trims, "close"),
                              trims=[(w, ms) for _, ms, w in trims], audit=ui_item_audit(txt))
             ctx.reset()
     finally:
@@ -4555,6 +4580,12 @@ def editor_trim_ab(ctx, r, palette, path):
             r.note("trim A/B: the control %s is itself over the %.0f ms UI budget after %s (%.1f ms)" % (ctrl, UI_BUDGET_MS, ctrl_key.split("_")[0], base))
         r.check(not (got > UI_BUDGET_MS and got > base + 1.0), "trim A/B: %s put a %.1f ms UI item on screen while it ran (> %.0f ms budget; control %s: %.1f ms)" % (
             what, got, UI_BUDGET_MS, ctrl, base))
+    # the load's own layout frame, which spawns the open trim, against the control's load frame (same rule)
+    if "trim_after_open" in res and "default" in res:
+        got, base = res["trim_after_open"].get("load_frame_ms"), res["default"].get("load_frame_ms")
+        if got is not None and base is not None:
+            r.check(not (got > UI_BUDGET_MS and got > base + 1.0), "trim A/B: the load's layout frame took %.1f ms with the open trim (> %.0f ms budget; "
+                    "control default: %.1f ms)" % (got, UI_BUDGET_MS, base))
 
 
 @case("editor_memory_7mb", modes=("terminal",), order=85, gui=True)
@@ -4656,6 +4687,10 @@ def c_editor_mem(ctx, r):
                         fe = trims[-1].get("freed_estimate")
                         if isinstance(fe, int):
                             r.metric("%s_app_heap_trim_freed_mb" % tag, fe / 1048576.0)
+                        note = reusable_note(tag, trims[-1])
+                        if note:
+                            r.metric("%s_app_reusable_mb" % tag, trims[-1]["reusable"] / 1048576.0)
+                            r.note(note)
                     else:
                         r.check(False, "%s: the buffer drop asked for a heap trim (trim=%s) but no 'editor_memory heap_trim why=close' line followed (#1607)" % (
                             tag, dropped[-1].get("trim")))

@@ -1443,6 +1443,21 @@ def editor_memory_breakdown_close_and_cycles():
         assert cases.ui_trim_max(items, trims, "open") == 6.5            # the 6.5 ms frame at t+2.0 ended inside the open trim
         assert cases.ui_trim_max(items, trims, "close") == 9.0           # the 9 ms action at t+8.0 ended at the close trim's end
         assert cases.ui_trim_max(items, [], "open") == 0.0
+        # #1607 r18u23: the open trim is spawned from inside the load's layout frame, so that frame ends in the trim's window; it is excluded there
+        # (and judged against the control's load frame instead)
+        load = cases.ui_load_frame(items, t)
+        assert load == (t + 0.5, 250.0, "frame"), load
+        assert cases.ui_load_frame(later, t, t_end=t + 5.5) == load and cases.ui_load_frame([], t) is None
+        spawned = [(t + 0.5, 0.01, "open")]
+        assert cases.ui_trim_max(items, spawned, "open") == 250.0
+        assert cases.ui_trim_max(items, spawned, "open", exclude=(load,)) == 0.0
+        assert cases.ui_trim_max(items, trims, "open", exclude=(load,)) == 6.5      # a real item during the trim still counts
+        # macOS: the reusable share of RSS at the close trim is a note, never a verdict
+        assert cases.reusable_note("txt", {"why": "close", "freed_estimate": 0}) is None
+        n = cases.reusable_note("txt", {"why": "close", "resident": 1800 * 1048576, "reusable": 460 * 1048576})
+        assert n and "1800 MB resident" in n and "460 MB" in n, n
+        br2 = cases.editor_mem_log(_ctx(tmp, log_path=log), 0)
+        assert br2["trim"] == [], br2
         assert cases.ui_item_audit(logtxt)["max_ms"] == 250.0 and cases.ui_items("input_order hop=ui_item what=frame ms=9 t=1") == []
         sent = []
         be = types.SimpleNamespace(key=lambda k: sent.append(k), type=lambda *a, **k: sent.append(("type", a)))
@@ -1643,6 +1658,13 @@ def coverage_b_pure_helpers():
     assert len(cb.startup_log_problems(notice + "[ERROR] migration 0042 failed\n", broken_settings=True)) == 1
     assert len(cb.startup_log_problems(notice + "thread 'main' panicked at a.rs:1\n", broken_settings=True)) == 1
     assert cb.settings_notices(notice + "INFO x\n") == [notice.strip()] and cb.settings_notices("INFO x\n") == []
+    # r18u23: the relaunched shell's start cwd is recorded and the shell moved to the case dir before the burst (a restored tab keeps its saved cwd)
+    line = cb.start_cwd_line("/h/w", "/h/w/cb_settings_truncated_cwd.txt")
+    assert line == "pwd > /h/w/cb_settings_truncated_cwd.txt; cd /h/w", line
+    assert "'/h/my w'" in cb.start_cwd_line("/h/my w", "/h/my w/x.txt")
+    assert cb.start_cwd_note("truncated", "/h/w", "/h/w") is None
+    assert "started in /h/w/sub" in cb.start_cwd_note("truncated", "/h/w/sub", "/h/w")
+    assert "did not run" in cb.start_cwd_note("truncated", None, "/h/w")
     # r18u22: MacApp copies the profile settings only when the profile changed, so a case's own write to the app's file survives a relaunch
     import tempfile as _tf
     import app as _appmod
