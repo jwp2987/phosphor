@@ -2193,12 +2193,15 @@ fn run_migrations_single_writer(conn: &mut SqliteConnection, deadline: LockDeadl
         log::info!("Another process migrated the database first; re-checking (attempt {attempt})");
         std::thread::sleep(std::time::Duration::from_millis(50 * (attempt as u64 + 1)));
     }
-    // Restore the normal timeout for the writer's lifetime.
+    // Someone else may have finished the job while this migrator was failing. Checked before
+    // the restore below: the check waits in setup slices and leaves one in force.
+    let finished_elsewhere = result.is_err() && !pending(conn).unwrap_or(true);
+    // Restore the normal timeout for the writer's lifetime: setup's short slices (#1650) are for
+    // setup only, and a writer left with one would give up on a lock after 25 ms.
     if let Err(err) = conn.batch_execute("PRAGMA busy_timeout = 1000;") {
         log::warn!("Failed to restore SQLite busy_timeout: {err:#}");
     }
-    if result.is_err() && !pending(conn).unwrap_or(true) {
-        // Someone else finished the job while this migrator was failing.
+    if finished_elsewhere {
         return Ok(());
     }
     result
