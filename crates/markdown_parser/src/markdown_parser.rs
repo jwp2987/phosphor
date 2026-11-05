@@ -1128,8 +1128,16 @@ fn parse_table_separator<'a, E: ContextError<&'a str> + ParseError<&'a str>>(
 fn parse_separator_cell<'a, E: ContextError<&'a str> + ParseError<&'a str>>(
     input: &'a str,
 ) -> IResult<&'a str, TableAlignment, E> {
-    let (input, content) = take_until("|")(input)?;
-    let (input, _) = tag("|")(input)?;
+    // A delimiter row is one line: the cell ends at a `|` on THIS line. `take_until("|")` would
+    // run on across a line ending (whitespace is valid cell content), so a row such as `|---|-`
+    // took the next line's `|` as its closing pipe. A document cut after that row then parsed it
+    // as text while the whole document parsed a table, and `block_final_after` (which waits only
+    // for the line after the header) could not know.
+    let line_end = input.find(['\n', '\r']).unwrap_or(input.len());
+    let Some(pipe) = input[..line_end].find('|') else {
+        return Err(nom::Err::Error(make_error(input, ErrorKind::TakeUntil)));
+    };
+    let (content, input) = (&input[..pipe], &input[pipe + 1..]);
 
     let trimmed = content.trim();
 
