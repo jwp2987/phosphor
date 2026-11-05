@@ -1,3 +1,9 @@
+[test-groups]
+# Tests that write and read back the REAL system clipboard share one global resource: run in
+# parallel, one test's content is read back by another (r18u22 Windows: test_clipboard_round_trip
+# read "Test HTML" from test_html_content_handling). Serialize them; no assertion changes.
+system-clipboard = { max-threads = 1 }
+
 [profile.default]
 # Mark a test as slow if it takes longer than 30s to execute, and terminate it
 # if it takes 2x as long as the slow timeout (i.e.: 60s total).
@@ -39,6 +45,10 @@ filter = 'test(real_shells::pwsh_survives_every_form_of_the_attack_list)'
 threads-required = 8
 slow-timeout = { period = "60s", terminate-after = 3 }
 
+[[profile.default.overrides]]
+filter = 'package(warpui) & test(/windowing::winit::.*clipboard::tests::clipboard_tests::/)'
+test-group = 'system-clipboard'
+
 [profile.ci]
 # Print out output for failing tests as soon as they fail, and also at the end
 # of the run (for easy scrollability).
@@ -72,3 +82,7 @@ path = "junit.xml"
 filter = 'test(update_manager)'
 platform = { host = 'cfg(target_os = "windows")' }
 retries = 2
+
+[[profile.ci.overrides]]
+filter = 'package(warpui) & test(/windowing::winit::.*clipboard::tests::clipboard_tests::/)'
+test-group = 'system-clipboard'
