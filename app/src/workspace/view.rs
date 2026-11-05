@@ -4828,6 +4828,17 @@ impl Workspace {
 
     /// This is meant to be dispatched directly by actions.
     pub fn activate_tab(&mut self, index: usize, ctx: &mut ViewContext<Self>) {
+        // r18u22 (Wayland session_restore): after a restore every Ctrl-1..9 answered from the
+        // same tab. Whether the key reached the workspace, and how many tabs this window had
+        // then, decides between a lost key and a restore that split or dropped tabs.
+        warpui::input_order::log_hop("tab_activate", || {
+            format!(
+                "index={index} count={} active={} window={:?}",
+                self.tab_count(),
+                self.active_tab_index,
+                ctx.window_id()
+            )
+        });
         self.activate_tab_internal(index, ctx);
         ctx.notify();
     }
