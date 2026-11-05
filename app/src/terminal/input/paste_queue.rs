@@ -523,14 +523,16 @@ impl Input {
             guard.on_paste_read(&mut host, id, result);
         }
         drop(guard);
-        // #1652: a paste that is still queued (behind a gate) keeps its content until it is
-        // delivered or taken; only a delivered or discarded one is gone.
-        let still_queued = queue.try_peek().is_some_and(|held| {
-            held.entries().any(
-                |entry| matches!(&entry.kind, EntryKind::Paste { paste_id, .. } if *paste_id == id),
-            )
+        // #1652: behind the multi-line dialog's gate (only there) a paste that is still queued
+        // keeps its content: the dialog's answer takes it (`answer_multiline_dialog`). Elsewhere
+        // unchanged.
+        let held_for_dialog = queue.try_peek().is_some_and(|held| {
+            held.has_multiline_dialog_gate()
+                && held.entries().any(|entry| {
+                    matches!(&entry.kind, EntryKind::Paste { paste_id, .. } if *paste_id == id)
+                })
         });
-        if !still_queued {
+        if !held_for_dialog {
             self.paste_payloads.remove(&id);
             self.paste_refused.remove(&id);
         }

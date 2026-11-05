@@ -12389,8 +12389,8 @@ fn multiline_dialog_held_editing_keys_act_on_the_new_line_only() {
 }
 
 /// #1652 (H1/H2): keys typed into the editor while the dialog waits that have no tty form are held
-/// too, never applied to the waiting buffer: VimBackspace, a file drop, Ctrl-U (clear and copy the
-/// line: the new line only; the cut is what the clipboard holds afterwards), Escape. Both modes.
+/// too, never applied to the waiting buffer: VimBackspace, a file drop, Ctrl-U (clear the line:
+/// the new line only; the system clipboard is not touched), Escape. Both modes.
 #[test]
 fn multiline_dialog_holds_editor_only_keys() {
     use crate::terminal::input_queue::DestinationMode;
@@ -12431,20 +12431,21 @@ fn multiline_dialog_holds_editor_only_keys() {
             });
             let clipboard =
                 app.update(|ctx| warpui::clipboard::read_full_blocking(ctx.clipboard()).plain_text);
-            assert_eq!(clipboard, "gone", "{mode:?}: Ctrl-U copied what it cleared");
+            assert_ne!(
+                clipboard, "gone",
+                "{mode:?}: the held keys' model never touches the system clipboard"
+            );
             assert!(executed.borrow().is_empty(), "{mode:?}");
         });
     }
 }
 
-/// #1652 (M5): Confirm runs the waiting buffer alone, exactly once, nothing glued to it, and what
-/// was typed while the dialog was open follows it as the keys typed after any submitted Enter do:
-/// resolved first (Ctrl-W cut "hi" through the real dispatch, and the paste after it inserts the
-/// cut text, as it would have), then Text and Enter only, so the whole line goes to one
-/// destination: here the running command, once the view settles (driven explicitly), as
-/// `echo Xhi\r` + `pwd`. With the typeahead hand-off on. Both modes.
+/// #1652 (owner: "safe fallback"): Confirm runs the waiting buffer alone, exactly once, and the
+/// keys typed while the dialog was open (text, an Enter, Ctrl-W, a paste) are DISCARDED: none
+/// reaches the pty or the editor, even once the command runs and the view settles (driven here),
+/// and one toast says how many were dropped. Both modes.
 #[test]
-fn multiline_dialog_confirm_runs_the_buffer_then_the_resolved_keys_follow_it() {
+fn multiline_dialog_confirm_discards_the_held_keys() {
     use crate::terminal::input_queue::DestinationMode;
     use crate::workspace::multiline_submit_confirmation_dialog::MultilineSubmitConfirmationAction;
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
@@ -12469,80 +12470,114 @@ fn multiline_dialog_confirm_runs_the_buffer_then_the_resolved_keys_follow_it() {
                     _ => {}
                 });
             });
+            let toasts = Rc::new(RefCell::new(0usize));
+            let toast_count = toasts.clone();
+            app.update(|ctx| {
+                let stack = ToastStack::handle(ctx);
+                ctx.subscribe_to_model(&stack, move |_, _, _| *toast_count.borrow_mut() += 1);
+            });
             ask_multiline_dialog(&mut app, &input);
-            offer_to_dialog(&mut app, &dialog, dialog_typed("echo hi"));
+            offer_to_dialog(&mut app, &dialog, dialog_typed("rm -rf x"));
             offer_to_dialog(&mut app, &dialog, dialog_key_down("ctrl-w", "\u{17}"));
-            offer_to_dialog(&mut app, &dialog, dialog_typed("X"));
             dialog.update(&mut app, |dialog, ctx| {
                 dialog.handle_action(&MultilineSubmitConfirmationAction::PasteIntoInput, ctx)
             });
             enter_in_editor(&mut app, &terminal, &input);
             offer_to_dialog(&mut app, &dialog, dialog_typed("pwd"));
             assert!(executed.borrow().is_empty(), "{mode:?}");
+            // Whatever reached the pty before the answer is not this test's subject.
+            writes.borrow_mut().clear();
 
             input.update(&mut app, |input, ctx| input.confirm_multiline_submit(ctx));
-            // The paste may still be read: the answer then waits for its result (an event).
-            wait_for_input(&mut app, &input, |input, ctx| {
-                !input.multiline_dialog_gate_open() && input.enter_queue_awaits_pty()
-                    || !input.enter_queue_holds_keys(ctx) && !input.multiline_dialog_gate_open()
+            // A paste still being read makes the answer wait for its result (an event).
+            wait_for_input(&mut app, &input, |input, _| {
+                !input.multiline_dialog_gate_open()
             })
             .await;
             assert_eq!(
                 executed.borrow().as_slice(),
                 [text.clone()],
-                "{mode:?}: the run is the waiting buffer alone"
+                "{mode:?}: the run is the waiting buffer alone, once"
             );
             input.read(&app, |input, ctx| {
                 assert_eq!(
                     input.buffer_text(ctx),
                     text,
-                    "{mode:?}: nothing glued to it"
+                    "{mode:?}: nothing reached the editor"
                 );
                 assert!(!input.awaiting_multiline_submit_confirmation, "{mode:?}");
                 assert!(
-                    input.enter_queue_awaits_pty(),
-                    "{mode:?}: waits for the pty"
+                    !input.enter_queue_holds_keys(ctx),
+                    "{mode:?}: nothing is held"
                 );
-                assert_eq!(
-                    input.enter_gate_held_for_test(ctx),
-                    vec![
-                        AfterEnterInput::Text("echo Xhi".to_string()),
-                        AfterEnterInput::Enter,
-                        AfterEnterInput::Text("pwd".to_string()),
-                    ],
-                    "{mode:?}: resolved, Text and Enter only"
-                );
+                assert!(input.enter_gate_held_for_test(ctx).is_empty(), "{mode:?}");
             });
-            let clipboard =
-                app.update(|ctx| warpui::clipboard::read_full_blocking(ctx.clipboard()).plain_text);
-            assert_eq!(clipboard, "hi", "{mode:?}: the cut is on the clipboard");
+            assert!(
+                *toasts.borrow() >= 1,
+                "{mode:?}: a toast says keys were discarded"
+            );
 
-            // The pty has the command (a running block); the view settles, driven here.
-            writes.borrow_mut().clear();
+            // The command runs and the view settles: still nothing of the held keys follows.
             terminal.update(&mut app, |view, ctx| {
                 view.model
                     .lock()
                     .simulate_long_running_block("bash -c script", "");
                 view.settle_enter_queue_for_test(ctx);
             });
-            wait_for_input(&mut app, &input, |input, ctx| {
-                !input.enter_queue_holds_keys(ctx)
-            })
-            .await;
             let written: Vec<u8> = writes.borrow().iter().flatten().copied().collect();
-            assert_eq!(
-                String::from_utf8_lossy(&written),
-                "echo Xhi\rpwd",
-                "{mode:?}: once, in typed order, to one destination"
+            let written = String::from_utf8_lossy(&written).into_owned();
+            assert!(
+                !written.contains("rm") && !written.contains("pwd") && !written.contains('P'),
+                "{mode:?}: no held key reached the pty: {written:?}"
             );
-            input.read(&app, |input, ctx| {
-                assert_eq!(
-                    input.buffer_text(ctx),
-                    text,
-                    "{mode:?}: not into the editor"
-                );
-            });
             assert_eq!(executed.borrow().len(), 1, "{mode:?}: run exactly once");
+        });
+    }
+}
+
+/// #1652: the toast of a Confirm that discarded keys.
+#[test]
+fn dialog_typeahead_discarded_toast_text() {
+    use super::enter_queue::dialog_typeahead_discarded_toast;
+    assert_eq!(
+        dialog_typeahead_discarded_toast(1),
+        "1 key typed while the confirmation was open was discarded"
+    );
+    assert_eq!(
+        dialog_typeahead_discarded_toast(5),
+        "5 keys typed while the confirmation was open were discarded"
+    );
+}
+
+/// #1652: in vim mode Cancel inserts the held keys' visible text as LITERAL text on a line of its
+/// own (no held key is replayed through vim): `dd` typed in normal mode while the dialog waited
+/// does not delete a line of the buffer above. Both modes.
+#[test]
+fn multiline_dialog_cancel_in_vim_inserts_literal_text_and_keeps_the_buffer() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            let text = comment_lines(MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD + 1);
+            let (_terminal, input, _dialog, executed) =
+                multiline_dialog_fixture(&mut app, &text).await;
+            enable_vim_mode(&mut app);
+            let editor = input.read(&app, |input, _| input.editor().clone());
+            editor.update(&mut app, |editor, ctx| {
+                editor.vim_keystroke(&Keystroke::parse("escape").unwrap(), ctx);
+            });
+            ask_multiline_dialog(&mut app, &input);
+            editor.update(&mut app, |editor, ctx| {
+                editor.handle_action(&EditorAction::VimUserInsert(UserInput::new("dd")), ctx);
+            });
+            input.read(&app, |input, ctx| {
+                assert_eq!(input.buffer_text(ctx), text, "{mode:?}: the waiting buffer");
+            });
+            input.update(&mut app, |input, ctx| input.cancel_multiline_submit(ctx));
+            input.read(&app, |input, ctx| {
+                assert_eq!(input.buffer_text(ctx), format!("{text}\ndd"), "{mode:?}");
+            });
+            assert!(executed.borrow().is_empty(), "{mode:?}");
         });
     }
 }
@@ -12625,14 +12660,6 @@ fn dialog_typeahead_resolution_rules() {
     assert_eq!(resolved.tail, "one twotwo");
     assert_eq!(resolved.last_cut.as_deref(), Some("two"));
     assert_eq!(resolved.as_own_line(), ">cd\none twotwo");
-    assert_eq!(
-        resolved.as_after_enter(),
-        vec![
-            AfterEnterInput::Text(">cd".into()),
-            AfterEnterInput::Enter,
-            AfterEnterInput::Text("one twotwo".into()),
-        ]
-    );
 }
 
 /// #1652: ^C while the dialog waits voids the waiting Enter (as the tty flushes typed-ahead input
