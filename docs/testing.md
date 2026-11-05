@@ -1407,7 +1407,13 @@ fallback for builds that predate the line.
   own the LAN connection, and it is a plain CLI child of the runner, which is not prompt-gated.
 - **Mac harness PID/ref notes.** The app PID is resolved by the exact private bundle path inside the job dir (never by name),
   kept while verified (`kill -0` + command prefix), re-resolved on demand; "APP DIED" is only claimed when that PID is gone AND
-  no process of the bundle exists, otherwise "PID lookup failed". One instance per pass is enforced. The window rect comes
+  no process of the bundle exists, otherwise "PID lookup failed". The harness cannot `wait()` an `open`-launched app, so on an
+  APP DIED it reads the exit status from the unified log (#1782, `run.mac_exit_evidence`, read only, bounded): launchd's
+  `exited due to SIG... | sent by ...` line for that PID (a fault says `sent by exc handler[<pid>]`; a kill names the sender)
+  and the app's last system-log lines; a signal there counts as crash evidence. The app itself writes one
+  `[ERROR] fatal signal SIG... code= addr= thread='...'` line to its log on SIGBUS/SIGSEGV/SIGILL/SIGFPE/SIGABRT
+  (`warp_logging::fatal_signal`, all Unix; kill switch `PHOSPHOR_FATAL_SIGNAL_LOG=0`), which the death classifier quotes
+  first. One instance per pass is enforced. The window rect comes
   from `winrect` (CGWindowList; no System Events). The latency_enter reference is Terminal.app launched with
   `open -a Terminal x.command` (no Apple Events, no Automation grant), closed by typing `exit`; if it cannot be reached the
   verdict is "no-reference" with the reason. mode_proof reads the PRE-key screenshot (Escape leaves a fresh agent view).
@@ -1752,6 +1758,11 @@ Every item below is a harness change; none touches app code. Anything not listed
   split across the shell hand-back, ran as `T180_x >> tc/zzcompl_alpha_u`, and that stray file made every later Tab ambiguous (0/12). `big_paste` now waits for the
   shell's own prompt (`prompt.log`) after the Ctrl-C, presses Ctrl-C again (up to 3 more, agent-mode spacing) and FAILS by name if no prompt comes; panes without the
   rc hook do not run the case.
+- **`big_paste` macOS paste-read budget (#1782, owner decision 2026-11-05)**: macOS reads the pasteboard on the main thread again (a worker's
+  NSPasteboard read crashed the app with SIGBUS; DECLINED.md). The app logs `input_order hop=pasteboard_read kind= ms= bytes=`; `big_paste` judges
+  the slowest one against `cases.PASTE_READ_UI_BUDGET_MS` (macOS 250 ms) and fails over it. Every other platform and every other UI budget stays
+  at 4 ms (`paste_read_budget_ms`; Linux and Windows log no such read). A macOS run with no `pasteboard_read` line gets a note that the
+  budget was NOT judged. Self-test `i1782_macos_paste_read_budget_is_raised_only_for_the_pasteboard_read`.
 - **Not changed, by design**: H7 (fake sshd ConPTY heredoc stall) and H8 (Git Bash pass opens PowerShell tabs/restored tabs) need run evidence the artifacts do not contain;
   `profile.gitbash_toml` already writes `startup_shell_override` and `new_session_shell_override` for that pass.
 

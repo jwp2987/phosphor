@@ -666,17 +666,62 @@ def pty_write_cr(text):
 CRASH_RX = re.compile(r"panicked at|\bSIGSEGV\b|\bSIGABRT\b|\bSIGBUS\b|fatal runtime error|stack overflow|Segmentation fault|EXC_BAD_ACCESS", re.I)
 
 
-def classify_death(dead, ctx, t0, log_off):
+LAUNCHD_EXIT_RX = re.compile(r"exited (due to (SIG[A-Z0-9]+)(?: \| sent by ([^,]+))?|with exit code:? -?\d+)")
+FATAL_LINE_RX = re.compile(r"^.*\[ERROR\] fatal signal .*$", re.M)
+
+
+def launchd_exit_record(text, pid):
+    """#1782 (r18u26 macOS shell_nu): the app died with no app-log line and no crash report; only launchd's line in the unified log said why:
+    `[gui/501/application.dev.phosphor...[94694]:] exited due to SIGBUS | sent by exc handler[94694], ran for 1251994ms`. Returns
+    (what, signal) for `pid` from `log show` output, e.g. ("due to SIGBUS | sent by exc handler[94694]", "SIGBUS"), or (None, None)."""
+    for l in text.splitlines():
+        if "[%d]" % pid not in l:
+            continue
+        m = LAUNCHD_EXIT_RX.search(l)
+        if m:
+            return m.group(1).strip(), m.group(2)
+    return None, None
+
+
+def mac_exit_evidence(pid, t0, timeout=120):
+    """macOS: what the unified log says about the dead `pid` since the case began: launchd's exit record (the signal and who sent it: a fault is
+    `sent by exc handler[<pid>]`, a kill names the sender, jetsam says so) and the app's own last system-log lines (r18u26: AppKit's NSPasteboard
+    read 1 ms before the SIGBUS). Read only; bounded; '' when `log` is unavailable."""
+    start = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t0 - 5))
+    pred = 'processIdentifier == %d OR (process == "launchd" AND eventMessage CONTAINS "[%d]") OR (process == "kernel" AND eventMessage CONTAINS "%d")' % (pid, pid, pid)
+    try:
+        out = subprocess.run(["log", "show", "--style", "compact", "--start", start, "--predicate", pred],
+                             capture_output=True, text=True, timeout=timeout).stdout
+    except Exception as e:
+        return "log show failed: %r" % (e,), None
+    what, sig = launchd_exit_record(out, pid)
+    own = [l.strip()[:200] for l in out.splitlines() if "[%d:" % pid in l][-4:]
+    parts = ["launchd: pid %d exited %s" % (pid, what) if what else "launchd logged no exit record for pid %d" % pid]
+    if own:
+        parts.append("the app's last system-log lines: " + " | ".join(own))
+    return "; ".join(parts), sig
+
+
+def classify_death(dead, ctx, t0, log_off, exit_evidence=None):
     """r18e9 (macOS remote_session_*, shell_zsh): the case's trailing `exit` ran in the pane's own shell, the pane closed, the app quit, and the harness reported
     "APP DIED". Name a pane closed by the case's own `exit` (no panic/signal/crash report in the case's app-log slice, window-close line present) as that, a
     HARNESS defect of the case, never a crash; keep the crash wording otherwise and say what was checked."""
     try:
         sl = ctx.log_since(log_off) if log_off is not None else ""
-        crash = [l for l in sl.splitlines() if CRASH_RX.search(l)][:3]
+        # #1782: the app's own fatal-signal line (warp_logging fatal_signal) first: it names the signal, address and thread
+        crash = ([m.group(0) for m in FATAL_LINE_RX.finditer(sl)] + [l for l in sl.splitlines() if CRASH_RX.search(l)])[:3]
         reports = []
         if sys.platform == "darwin":       # a real crash leaves a report; a clean quit does not
             import glob
             reports = [p for p in glob.glob(os.path.expanduser("~/Library/Logs/DiagnosticReports/*hosphor*")) if os.path.getmtime(p) >= t0 - 5]
+            pm = re.search(r"pid (\d+)", dead)
+            if pm:
+                # #1782: the exit status the harness cannot wait for (`open` launches the app under launchd): launchd's record of it
+                ev, sig = (exit_evidence or mac_exit_evidence)(int(pm.group(1)), t0)
+                if ev:
+                    dead = "%s; %s" % (dead, ev)
+                if sig:
+                    reports.append("launchd: exited due to %s" % sig)
         closing = [l for l in sl.splitlines() if re.search(r"will close|window.*clos|all windows closed", l, re.I)][:1]
         if crash or reports:
             return "%s; crash evidence: %s" % (dead, "; ".join([c[:160] for c in crash] + reports))

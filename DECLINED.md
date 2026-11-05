@@ -2926,3 +2926,30 @@ keys, Enters) into editor text was a guess, and each patch of it (#1577, #1630, 
 - Not reopened by: restoring `text_of_entries_typed_after` or any other held-entry-to-text
   conversion for an Enter gate's give-up. A visible "keys waiting" indicator is deferred.
 <!-- markers: sym:text_of_entries_typed_after keep:typed_after_enter_discarded_toast keep:report_enter_gate_discard keep:discard_gate_keys_after_enter keep:YOUNG_HOLD_GIVE_UP keep:young_hold_cap_is_normal_end keep:close_gate_discarding -->
+
+## macOS reads the pasteboard on the main thread (#1782) — owner decision 2026-11-05
+
+Every NSPasteboard access on macOS (paste reads, `availability`, writes) runs on the main thread,
+the way Terminal.app and iTerm do it. The read happens when the reader is requested
+(`Clipboard::reader` in `crates/warpui/src/platform/mac/clipboard.rs`, from the main-thread-only
+AppContext); the request's worker only hands the copied text and bytes on (and parses image
+filenames out of the copied HTML), so the paste gate, typed order and the size cap are unchanged.
+A request from another thread while an NSApplication runs is a bug: it is logged as an error
+(and asserted in debug builds), queued on the main dispatch queue with a bounded wait
+(`OFF_MAIN_WAIT`), and never runs the read on that thread. With no NSApplication (the headless
+TUI, which also starts its image-paste read on its main thread) there is no AppKit main-thread
+work to race and nothing drains the main queue, so such a read runs in place.
+
+- Reason: appci r18u26 `shell_nu` died of SIGBUS (`exited due to SIGBUS | sent by exc handler`)
+  1 ms after a worker's NSPasteboard read (#1305's off-thread design) overlapped main-thread
+  AppKit work. A crash on a normal paste is worse than a rare freeze.
+- Accepted cost: a slow lazy provider (an app that promises data and renders it on request) can
+  briefly freeze the window during a paste, as in Terminal.app and iTerm. appci's macOS budget for
+  the main-thread pasteboard copy of a large paste is raised accordingly (same decision).
+- What no longer bounds a macOS read: the blocked-reader cap and the paste backstop act on the
+  worker, after the read has already happened on the main thread. A provider that never answers
+  is bounded only by the pasteboard server's own timeout, and the main thread waits that long.
+- Linux and Windows still read on a worker (X11/Wayland/Win32 owners can stall; they are not
+  AppKit).
+- Not reopened by: moving the macOS pasteboard read back onto a worker thread (#1305/#1306).
+<!-- markers: keep:read_on_main_thread_with keep:OFF_MAIN_WAIT -->
