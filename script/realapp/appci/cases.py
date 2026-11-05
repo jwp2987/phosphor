@@ -1552,6 +1552,7 @@ def c_big(ctx, r):
         tot += len(l) + 1
     data = "\n".join(out)[:size]
     ctx.rm("big.out")
+    nb = ctx.prompts() if ctx.prof.local_prompts else None
     ctx.be.type("cat > big.out", 12, enter=True)
     time.sleep(1.0)
     ctx.be.clip_set(data)
@@ -1587,6 +1588,25 @@ def c_big(ctx, r):
     else:
         r.check(got == want, "%.0f MB paste not byte-exact (expected %d bytes, got %d)" % (mb, len(data) + 1, len(got)))
     ctx.reset()
+    big_paste_back_at_prompt(ctx, r, nb)
+
+
+def big_paste_back_at_prompt(ctx, r, nb):
+    """r18u22 (Windows Git Bash): under ConPTY Ctrl-D is not EOF for msys `cat`, so the case ends with `cat` still reading, and reset()'s Ctrl-C reached it
+    only after the 1 MB paste backlog drained (3.7 s; 68 ms in r18u19). The next case (tab_enter) typed its first line into the dying `cat`; the line was
+    split across the shell's hand-back and ran as `T180_x >> tc/zzcompl_alpha_u`, whose stray file then made every later Tab ambiguous (0/12). The case
+    must leave the pane where it found it: wait for the shell's own prompt (prompt.log) after the Ctrl-C, pressing Ctrl-C again while `cat` still runs,
+    and fail here, by name, if the prompt never comes. Panes without the rc hook (PowerShell, cmd) have no prompt.log and do not run this case."""
+    if nb is None:
+        return
+    back = lambda: ctx.prompts() > nb       # noqa: E731
+    for _ in range(3):
+        if ctx.until(back, 10):
+            return
+        # agent mode: two Ctrl-C within the exit window would leave an empty agent view (r18u8 H16); a running `cat` takes them, but keep the spacing
+        ctx.be.key("ctrl+c")
+        time.sleep(ctx.EXIT_WINDOW_S + 0.4 if ctx.mode == "agent" else 0.8)
+    r.check(ctx.until(back, 10), "big_paste: the shell never came back to a prompt after `cat` was interrupted (Ctrl-C x4 over ~45 s): the next case would type into `cat`")
 
 
 def big_paste_control(ctx, data, want):

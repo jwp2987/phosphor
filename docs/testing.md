@@ -1626,6 +1626,11 @@ Every item below is a harness change; none touches app code. Anything not listed
   Phosphor's cost. Against Windows Terminal the budget verdict is unchanged.
 - **`big_paste` under ConPTY (U2)**: when the Windows pane gets less than the whole paste, the same paste into `cat` in a conhost Git Bash window is the control. Same shortfall
   -> noref (platform, with the byte counts); conhost gets every byte -> the failure stands; no usable control (no reference window, or it received nothing) -> noref with the reason.
+- **`big_paste` leaves the pane at a prompt (r18u22)**: under ConPTY Ctrl-D is not EOF for msys `cat`, so the case ends with `cat` still reading and reset()'s Ctrl-C
+  reached it only after the paste backlog drained (3.7 s in r18u22, 68 ms in r18u19). `tab_enter`, next in order, typed its first line into the dying `cat`; the line
+  split across the shell hand-back, ran as `T180_x >> tc/zzcompl_alpha_u`, and that stray file made every later Tab ambiguous (0/12). `big_paste` now waits for the
+  shell's own prompt (`prompt.log`) after the Ctrl-C, presses Ctrl-C again (up to 3 more, agent-mode spacing) and FAILS by name if no prompt comes; panes without the
+  rc hook do not run the case.
 - **Not changed, by design**: H7 (fake sshd ConPTY heredoc stall) and H8 (Git Bash pass opens PowerShell tabs/restored tabs) need run evidence the artifacts do not contain;
   `profile.gitbash_toml` already writes `startup_shell_override` and `new_session_shell_override` for that pass.
 
