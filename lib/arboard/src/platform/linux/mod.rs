@@ -18,7 +18,7 @@ const KDE_EXCLUSION_MIME: &str = "x-kde-passwordManagerHint";
 const KDE_EXCLUSION_HINT: &[u8] = b"secret";
 
 mod x11;
-pub use x11::{hand_over_to_clipboard_manager, set_first_answer_deadline};
+pub use x11::{hand_over_to_clipboard_manager, set_first_answer_deadline, MANAGER_HANDOVER_WAIT};
 
 #[cfg(feature = "wayland-data-control")]
 mod wayland;

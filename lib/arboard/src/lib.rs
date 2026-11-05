@@ -26,7 +26,7 @@ mod platform;
 	not(any(target_os = "macos", target_os = "android", target_os = "emscripten")),
 ))]
 pub use platform::{
-	hand_over_to_clipboard_manager, set_first_answer_deadline, ClearExtLinux, ClipboardFormats, GetExtLinux, LinuxClipboardKind, SetExtLinux,
+	hand_over_to_clipboard_manager, set_first_answer_deadline, ClearExtLinux, MANAGER_HANDOVER_WAIT, ClipboardFormats, GetExtLinux, LinuxClipboardKind, SetExtLinux,
 };
 
 #[cfg(windows)]

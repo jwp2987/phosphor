@@ -2603,10 +2603,13 @@ enough" for correctness.
 - **Hung-up poll, 100 ms** (`HUNG_UP_POLL`, same file). After a pty hang-up the exit event may
   already have been consumed; the loop asks the child directly rather than wait for a signal that
   will not come.
-- **Hang-up grace probe, 10 ms steps up to 300 ms** (`process_tree::terminate_shell_tree`).
-  Foreground process groups are not our children, so their exit can only be probed with
-  `killpg(.., 0)`. It runs on a "PTY child reaper" thread (`terminate_and_reap`), never on the
-  pty loop, the terminal server loop or the UI thread. The shell's own exit is waited for with a
+- **Hang-up grace probe, 10 ms steps up to 5 s** (`process_tree::wait_for_tree_to_exit`, called
+  from `terminate_tree_with_grace`; #1685 raised it from 300 ms). Foreground process groups are
+  not our children, so their exit can only be probed with `killpg(.., 0)`; the shell is probed
+  with `try_wait` and its own group gets the same grace. The wait ends as soon as everything hung
+  up has exited (an idle shell: a few ms). It runs on a "PTY child reaper" thread
+  (`terminate_and_reap`), never on the pty loop, the terminal server loop or the UI thread (the
+  inline fallback when that thread cannot be spawned uses no grace). The final reap is a
   blocking `waitpid`, which the kernel wakes. SIGHUP (not SIGTERM) is the signal because it is
   what a closing terminal sends and what shells forward to their jobs (#975).
 - **tmux `command sleep 1`** (`model/tmux/commands.rs`). Keeps the background window's pane alive

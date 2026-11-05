@@ -82,6 +82,7 @@ fn pane_kill_ends_foreground_but_spares_nohup_and_disowned_jobs() {
     let mut cmd = Command::new("/bin/bash");
     cmd.args(["--norc", "--noprofile", "-i"])
         .env("TERM", "dumb")
+        .env("HISTFILE", "/dev/null")
         .stdin(Stdio::from(slave.try_clone().unwrap()))
         .stdout(Stdio::from(slave.try_clone().unwrap()))
         .stderr(Stdio::from(slave.try_clone().unwrap()));
@@ -196,18 +197,33 @@ const SHELL: i32 = 500;
 /// Runs [`wait_for_tree_to_exit`] on a fake clock over `tree`. Returns the survivors and the time
 /// spent waiting.
 fn fake_wait(tree: FakeTree, grace: Duration) -> (HangupSurvivors, Duration) {
+    fake_wait_with(tree, grace, true)
+}
+
+/// [`fake_wait`] with `shell_leads_group` given.
+fn fake_wait_with(
+    tree: FakeTree,
+    grace: Duration,
+    shell_leads_group: bool,
+) -> (HangupSurvivors, Duration) {
     let start = Instant::now();
     let clock = Cell::new(start);
     let alive_at = |exits: Option<Duration>| exits.is_none_or(|at| clock.get() - start < at);
     let survivors = wait_for_tree_to_exit(
         SHELL,
+        shell_leads_group,
         tree.others.iter().map(|(g, _)| *g).collect(),
         grace,
         Duration::from_millis(10),
         || alive_at(tree.shell),
         |g| {
             if g == SHELL {
-                // Only asked once the shell is gone (reaped), so only the rest of the group.
+                // Only asked once the shell is gone (reaped), so only the rest of the group, and
+                // never for a shell that leads no group.
+                assert!(
+                    shell_leads_group,
+                    "probed the group of a shell that leads none"
+                );
                 assert!(
                     !alive_at(tree.shell),
                     "shell group probed while the shell runs"
@@ -340,6 +356,31 @@ fn shell_group_is_killed_only_if_something_in_it_outlived_the_grace() {
     let (survivors, _) = fake_wait(tree, HANGUP_GRACE);
     assert!(!survivors.shell_running && survivors.shell_group);
     assert_eq!(groups_to_kill(&[SHELL], SHELL, &survivors), vec![SHELL]);
+}
+
+/// #1685 re-review R1: a shell that leads no group (not a session leader) is waited for itself
+/// only; its id is never probed as a group (it may be another process's group), and nothing is
+/// left to SIGKILL as a group once it exits.
+#[test]
+fn shell_that_leads_no_group_is_never_group_probed() {
+    let tree = FakeTree {
+        shell: Some(Duration::from_secs(1)),
+        // Would keep the wait going if it were probed (and the probe asserts it is not).
+        shell_group: None,
+        others: vec![],
+    };
+    let (survivors, waited) = fake_wait_with(tree, HANGUP_GRACE, false);
+    assert!(!survivors.shell_running && !survivors.shell_group);
+    assert!(waited >= Duration::from_secs(1) && waited < HANGUP_GRACE);
+
+    let tree = FakeTree {
+        shell: None,
+        shell_group: None,
+        others: vec![],
+    };
+    let (survivors, waited) = fake_wait_with(tree, HANGUP_GRACE, false);
+    assert!(survivors.shell_running);
+    assert!(waited >= HANGUP_GRACE);
 }
 
 /// #1685 review F2: an idle shell (exits at once on SIGHUP, nothing else hung up) ends the wait
@@ -497,17 +538,20 @@ fn foreground_program_ignoring_sighup_is_killed_after_the_grace() {
 
     // A short grace keeps the test fast; the policy is the same as for `HANGUP_GRACE`.
     let grace = Duration::from_secs(1);
+    let start = Instant::now();
     let checker = std::thread::spawn(move || {
         std::thread::sleep(grace - Duration::from_millis(200));
-        process_is_live(sleeper)
+        (Instant::now(), process_is_live(sleeper))
     });
-    let start = Instant::now();
     super::terminate_tree_with_grace(pty.shell.as_mut().expect("shell"), grace);
     let waited = start.elapsed();
 
+    // A checker that overslept past the grace proves nothing either way.
+    let (observed, live) = checker.join().expect("checker thread");
     assert!(
-        checker.join().expect("checker thread"),
-        "the SIGHUP-ignoring program was killed before the {grace:?} grace"
+        live || observed >= start + grace,
+        "the SIGHUP-ignoring program was killed {:?} in, before the {grace:?} grace",
+        observed - start
     );
     assert!(
         waited >= grace,
@@ -555,6 +599,7 @@ impl InteractiveBash {
         let mut cmd = Command::new("/bin/bash");
         cmd.args(["--norc", "--noprofile", "-i"])
             .env("TERM", "dumb")
+            .env("HISTFILE", "/dev/null")
             .stdin(Stdio::from(slave.try_clone().unwrap()))
             .stdout(Stdio::from(slave.try_clone().unwrap()))
             .stderr(Stdio::from(slave.try_clone().unwrap()));

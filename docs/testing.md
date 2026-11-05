@@ -1877,7 +1877,10 @@ raising it costs a normal close or quit nothing.
   `foreground_cleanup_after_sighup_is_not_killed` and `shell_group_cleanup_after_sighup_is_not_killed` (a 1 s
   cleanup finishes, in the foreground job and in the shell's own group after `exec`), and
   `foreground_program_ignoring_sighup_is_killed_after_the_grace` (1 s grace; a second thread sees the program alive
-  200 ms before the grace ends).
+  200 ms before the grace ends, or overslept past the grace). A shell that is not a session leader leads no group
+  and its `/proc` tpgid is the inherited terminal's (under nextest, possibly the runner's own group), so it is hung
+  up alone with `kill`, no group is targeted or probed (`shell_that_leads_no_group_is_never_group_probed`). The
+  real-pty bash spawns set `HISTFILE=/dev/null` so a run never writes the developer's history.
 - **#1692 / #1693 Linux clipboard at quit (`crates/warpui/src/windowing/winit/linux/clipboard.rs`).**
   `EXIT_PENDING_WRITE_WAIT` 300 ms → 2 s (woken by the serial writer's Condvar), `EXIT_HANDOFF_BUDGET` 600 ms → 3.5 s
   (woken by the helper thread's done message, `run_with_budget`), and arboard's clipboard-manager handover wait
@@ -1885,7 +1888,7 @@ raising it costs a normal close or quit nothing.
   data). The handover is skipped when nothing owns `CLIPBOARD_MANAGER` (review F1): without a manager the X server
   answers with a None-property `SelectionNotify` that arboard rightly does not take as "done" (KDE 5.18 sends one and
   then requests anyway), so every quit after a copy would otherwise wait out the whole handover. `EXIT_HANDOFF_BUDGET`
-  is derived: pending wait + handover (`ARBOARD_MANAGER_HANDOVER_WAIT`) + 500 ms margin = 3.5 s, under the 5 s signal
+  is derived: pending wait + handover (`arboard::MANAGER_HANDOVER_WAIT`) + 500 ms margin = 3.5 s, under the 5 s signal
   `SHUTDOWN_DEADLINE`. Not capped by the time left on that deadline: when the watchdog fires the process exits,
   and the clipboard handoff is the last quit step. Tests (`clipboard_tests.rs`,
   `bounded_wait_tests`): `exit_waits_survive_a_loaded_machine_within_the_shutdown_deadline`,

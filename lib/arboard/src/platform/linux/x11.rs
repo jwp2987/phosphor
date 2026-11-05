@@ -130,11 +130,20 @@ pub fn set_first_answer_deadline(deadline: Option<Instant>) {
 	FIRST_ANSWER_DEADLINE.with(|d| d.set(deadline));
 }
 
+/// How long the clipboard-manager handover waits for the manager to fetch the data (PHOSPHOR,
+/// #1693; 100 ms upstream). It runs only at quit, on a helper thread, and only when a clipboard
+/// manager owns CLIPBOARD_MANAGER. It is woken by the manager finishing (`handover_cv`), so it is
+/// a give-up for a manager that is slow on a loaded machine, not a pace; a manager that never
+/// fetches the data waits it out. Callers bound the whole handoff (`EXIT_HANDOFF_BUDGET` in
+/// warpui's linux clipboard, which is derived from this).
+pub const MANAGER_HANDOVER_WAIT: Duration = Duration::from_millis(1_000);
+
 /// Asks the clipboard manager (ICCCM `SAVE_TARGETS`) to take over the CLIPBOARD data this process
 /// owns, without tearing the clipboard down (PHOSPHOR, #1330). Upstream does this only when the
 /// LAST `Clipboard` handle drops; a long-lived app keeps handles for its whole life and exits
-/// without dropping them, so a copy was lost on quit. Bounded: the handover waits at most 100 ms
-/// for the manager. A no-op when this process owns nothing or no X11 clipboard was ever opened.
+/// without dropping them, so a copy was lost on quit. Bounded: the handover waits at most
+/// [`MANAGER_HANDOVER_WAIT`] for the manager. A no-op when this process owns nothing, no X11
+/// clipboard was ever opened, or no clipboard manager is running.
 pub fn hand_over_to_clipboard_manager() {
 	let global = CLIPBOARD.lock();
 	if let Some(global) = global.as_ref() {
@@ -1003,16 +1012,9 @@ impl Inner {
 		self.server.conn.flush().map_err(into_unknown)?;
 
 		*handover_state = ManagerHandoverState::InProgress;
-		// Phosphor (#1693): 100 ms upstream. This runs only at quit, on a helper thread, and
-		// only when a clipboard manager owns CLIPBOARD_MANAGER (checked above). It is woken by
-		// the manager finishing (`handover_cv`), so it is a give-up for a manager that is slow
-		// on a loaded machine, not a pace; a manager that never fetches the data waits it out.
-		// The caller bounds the whole handoff (`EXIT_HANDOFF_BUDGET` in warpui's linux
-		// clipboard).
-		let max_handover_duration = Duration::from_millis(1_000);
+		// Phosphor (#1693): see `MANAGER_HANDOVER_WAIT`.
+		let max_handover_duration = MANAGER_HANDOVER_WAIT;
 
-		// Note that we are using a parking_lot condvar here, which doesn't wake up
-		// spuriously
 		let result = self.handover_cv.wait_for(&mut handover_state, max_handover_duration);
 
 		if *handover_state == ManagerHandoverState::Finished {

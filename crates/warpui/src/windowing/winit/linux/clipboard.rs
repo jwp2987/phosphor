@@ -53,9 +53,8 @@ const FULL_READ_BUDGET: Duration = Duration::from_millis(2_000);
 /// (`termination_signals::SHUTDOWN_DEADLINE`, 5 s) so a SIGTERM quit still gets to the end of its
 /// steps.
 const EXIT_PENDING_WRITE_WAIT: Duration = Duration::from_millis(2_000);
-/// arboard's own wait for the clipboard manager to fetch the data
-/// (`max_handover_duration` in `lib/arboard/src/platform/linux/x11.rs`); keep the two in step.
-const ARBOARD_MANAGER_HANDOVER_WAIT: Duration = Duration::from_millis(1_000);
+/// arboard's own wait for the clipboard manager to fetch the data.
+const ARBOARD_MANAGER_HANDOVER_WAIT: Duration = arboard::MANAGER_HANDOVER_WAIT;
 /// Slack for the helper thread's start and the X round trips around the two waits.
 const EXIT_HANDOFF_MARGIN: Duration = Duration::from_millis(500);
 const EXIT_HANDOFF_BUDGET: Duration = Duration::from_millis(

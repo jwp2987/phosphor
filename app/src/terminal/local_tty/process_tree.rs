@@ -155,11 +155,14 @@ struct HangupSurvivors {
 /// that the zombie no longer counts as a member of its group and `group_alive(shell_group)` then
 /// answers for the rest of the group only. A reaped shell's pid cannot be recycled while its
 /// group still has members (the kernel keeps a pid in use as a group id), and once the group is
-/// seen empty it is not probed or signalled again. `group_alive` is `killpg(g, 0)`. The clock and
+/// seen empty it is not probed or signalled again. When `shell_leads_group` is false (the shell
+/// is not a session leader), `shell_group` is never probed: only the shell itself is waited for.
+/// `group_alive` is `killpg(g, 0)`. The clock and
 /// sleep are injected so the policy is testable without real processes or real time.
 #[allow(clippy::too_many_arguments)]
 fn wait_for_tree_to_exit(
     shell_group: i32,
+    shell_leads_group: bool,
     mut others: Vec<i32>,
     grace: std::time::Duration,
     interval: std::time::Duration,
@@ -170,8 +173,9 @@ fn wait_for_tree_to_exit(
 ) -> HangupSurvivors {
     let deadline = now() + grace;
     let mut shell = true;
-    // Unknown (so assumed) while the shell runs: its own group contains it.
-    let mut shell_group_members = true;
+    // Unknown (so assumed) while the shell runs: its own group contains it. A shell that leads no
+    // group has no group of that id to probe (the id may even be someone else's group).
+    let mut shell_group_members = shell_leads_group;
     loop {
         if shell {
             shell = shell_running();
@@ -230,18 +234,40 @@ fn terminate_tree_with_grace(child: &mut std::process::Child, grace: std::time::
 }
 
 fn hang_up_tree(child: &mut std::process::Child, shell_pid: i32, grace: std::time::Duration) {
+    // SAFETY: `getsid` has no preconditions; `shell_pid` is our unreaped child.
+    let leads_session = unsafe { libc::getsid(shell_pid) } == shell_pid;
+    if !leads_session {
+        // Not a session leader (the pty spawner always calls `setsid`, so only an unusual
+        // caller): it leads no process group of its id, and `/proc` tpgid would be the
+        // INHERITED terminal's foreground group -- possibly our own launcher's. Hang up the
+        // shell alone, give it the grace, and leave every group alone.
+        // SAFETY: plain signal delivery to our own unreaped child.
+        unsafe { libc::kill(shell_pid, libc::SIGHUP) };
+        let survivors = wait_for_tree_to_exit(
+            shell_pid,
+            false,
+            Vec::new(),
+            grace,
+            HANGUP_PROBE_INTERVAL,
+            || matches!(child.try_wait(), Ok(None)),
+            |g| killpg(g, 0),
+            std::time::Instant::now,
+            std::thread::sleep,
+        );
+        if survivors.shell_running {
+            log::info!(
+                "Pty shell {shell_pid} was still running {grace:?} after SIGHUP; killing it"
+            );
+        }
+        // The caller kills a shell that still runs, directly.
+        return;
+    }
     let targets = target_groups(shell_pid, foreground_group(shell_pid), own_pgrp());
     let alive: Vec<i32> = targets
         .iter()
         .copied()
         .filter(|&g| killpg(g, libc::SIGHUP))
         .collect();
-    if !alive.contains(&shell_pid) {
-        // The shell leads no group of that id (not a session leader): hang it up directly. It is
-        // our unreaped child, so its pid is still its own.
-        // SAFETY: plain signal delivery to our own unreaped child.
-        unsafe { libc::kill(shell_pid, libc::SIGHUP) };
-    }
     // A stopped job would never act on SIGHUP.
     for &pgrp in &alive {
         killpg(pgrp, libc::SIGCONT);
@@ -251,6 +277,7 @@ fn hang_up_tree(child: &mut std::process::Child, shell_pid: i32, grace: std::tim
     // the shell or init and they are reaped promptly; the grace bounds the wait regardless.
     let survivors = wait_for_tree_to_exit(
         shell_pid,
+        true,
         others,
         grace,
         HANGUP_PROBE_INTERVAL,
