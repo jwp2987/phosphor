@@ -543,7 +543,9 @@ use crate::terminal::{
     shell::ShellType,
     terminal_size_element::TerminalSizeElement,
 };
-use crate::view_components::find::{Event as FindEvent, Find, FindDirection, FindWithinBlockState};
+use crate::view_components::find::{
+    Event as FindEvent, Find, FindDirection, FindEvent as FindModelEvent, FindWithinBlockState,
+};
 use settings::{Setting, ToggleableSetting};
 use warp_core::semantic_selection::SemanticSelection;
 use warpui::text::SelectionType;
@@ -3559,6 +3561,12 @@ pub struct TerminalView {
 
     find_model: ModelHandle<TerminalFindModel>,
 
+    /// Set when a find or a next/previous-match step had nothing focused to scroll to yet
+    /// because the async find was still scanning (it focuses the first match when results
+    /// first arrive). The find model's next `RanFind` scrolls to the match then; cleared once
+    /// a scroll happens, the scan ends without a match, or the find bar closes.
+    find_scroll_pending: bool,
+
     warpify_state: WarpifyState,
 
     /// The window-footer-bar color for this session's currently resolved host, per
@@ -4792,6 +4800,11 @@ impl TerminalView {
         ctx.subscribe_to_view(&find_bar, move |me, _, event, ctx| {
             me.handle_find_event(event, ctx);
         });
+        // The async find reports results after `run_find` returns: scroll to the focused
+        // match once it is known (see `find_scroll_pending`).
+        ctx.subscribe_to_model(&find_model, |me, _, event, ctx| {
+            me.handle_find_model_event(event, ctx);
+        });
 
         let block_filter_editor = ctx.add_typed_action_view(BlockFilterEditor::new);
         ctx.subscribe_to_view(&block_filter_editor, move |me, _, event, ctx| {
@@ -5306,6 +5319,7 @@ impl TerminalView {
             input_position_id,
             input_hoverable_handle: Default::default(),
             find_model,
+            find_scroll_pending: false,
             warpify_state: Default::default(),
             // Recomputed just below, once `Self` exists and `ctx.notify()` is
             // callable; `None` here is never rendered.
@@ -28440,6 +28454,7 @@ impl TerminalView {
     }
 
     fn close_find_bar(&mut self, ctx: &mut ViewContext<Self>) {
+        self.find_scroll_pending = false;
         self.find_model.update(ctx, |find_model, ctx| {
             find_model.set_is_find_bar_open(false);
             // Notify rich-content child views (e.g. AI blocks) to repaint and
@@ -31764,21 +31779,29 @@ impl TerminalView {
         ctx.notify();
     }
 
-    /// Scrolls to the focused match
+    /// Scrolls to the focused match, on the sync and the async find path. If the async find
+    /// is still scanning and nothing is focused yet, the scroll is left pending for the find
+    /// model's next `RanFind` (see `find_scroll_pending`).
     fn scroll_to_match(&mut self, ctx: &mut ViewContext<Self>) {
         // Scrolling to matches is not done for the alt screen.
         if self.model.lock().is_alt_screen_active() {
+            self.find_scroll_pending = false;
             return;
         }
 
-        let Some(focused_match) = self
-            .find_model
-            .as_ref(ctx)
-            .block_list_find_run()
-            .and_then(|run| run.focused_match())
-        else {
+        let (focused_match, may_still_focus) = {
+            let find_model = self.find_model.as_ref(ctx);
+            (
+                find_model.focused_block_list_match(),
+                find_model.may_still_focus_a_match(),
+            )
+        };
+        let Some(focused_match) = focused_match else {
+            self.find_scroll_pending = may_still_focus;
             return;
         };
+        self.find_scroll_pending = false;
+        let focused_match = &focused_match;
 
         let find_match_location = match focused_match {
             BlockListMatch::RichContent { index, .. } => {
@@ -31813,6 +31836,23 @@ impl TerminalView {
             ScrollPositionUpdate::ScrollToFindMatchIfNotVisible(find_match_location),
             ctx,
         );
+    }
+
+    /// Completes a scroll that `scroll_to_match` left pending because the async find had not
+    /// focused a match yet. Only a pending scroll acts: the find re-runs on every pty chunk
+    /// while the bar is open and must not pull the view back to the match each time.
+    fn handle_find_model_event(&mut self, event: &FindModelEvent, ctx: &mut ViewContext<Self>) {
+        if !matches!(event, FindModelEvent::RanFind) || !self.find_scroll_pending {
+            return;
+        }
+        if !self.find_model.as_ref(ctx).is_find_bar_open() {
+            self.find_scroll_pending = false;
+            return;
+        }
+        self.scroll_to_match(ctx);
+        if !self.find_scroll_pending {
+            ctx.notify();
+        }
     }
 
     /// Scrolls the view to the top of the block at `block_index`.

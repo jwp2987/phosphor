@@ -388,6 +388,66 @@ impl TerminalFindModel {
         self.block_list_find_run.as_ref()
     }
 
+    /// Returns the currently focused match as a [`BlockListMatch`], on both the sync and the
+    /// async find path.
+    ///
+    /// The view scrolls to this match. The async-find port read only `block_list_find_run`,
+    /// which the async path never fills, so with `async_find` on (the default) Find never
+    /// scrolled to a match outside the viewport: a match in an older block above a flood
+    /// stayed off screen (appci `flood_scrollback_find`). The pin had this helper; it was
+    /// dropped as zero-caller in e12a0f2cb because the scroll had never been wired to it.
+    ///
+    /// On the async path the terminal match's range is converted with
+    /// [`AbsoluteMatch::to_range`], i.e. into displayed rows, which is what the scroll offset
+    /// (`Block::block_section_offset_from_top`) counts; `None` if the match was truncated
+    /// from scrollback.
+    pub(crate) fn focused_block_list_match(&self) -> Option<BlockListMatch> {
+        let model = self.terminal_model.lock();
+        if model.is_alt_screen_active() {
+            // The alt screen has its own find run and is never scrolled to a match.
+            return None;
+        }
+
+        if let Some(controller) = &self.async_find_controller {
+            if let Some(async_match) = controller.focused_terminal_match() {
+                let block = model.block_list().block_at(async_match.block_index)?;
+                let grid = match async_match.grid_type {
+                    GridType::PromptAndCommand => block.prompt_and_command_grid().grid_handler(),
+                    GridType::Output => block.output_grid().grid_handler(),
+                    _ => return None,
+                };
+                let range = async_match.range.to_range(grid)?;
+                return Some(BlockListMatch::CommandBlock(BlockGridMatch {
+                    block_index: async_match.block_index,
+                    grid_type: async_match.grid_type,
+                    range,
+                    is_filtered: false,
+                }));
+            }
+            controller
+                .focused_ai_match()
+                .map(|ai_match| BlockListMatch::RichContent {
+                    match_id: ai_match.match_id,
+                    view_id: ai_match.view_id,
+                    index: ai_match.total_index,
+                })
+        } else {
+            self.block_list_find_run
+                .as_ref()
+                .and_then(|run| run.focused_match())
+                .cloned()
+        }
+    }
+
+    /// Returns `true` while an async find is still scanning, so a focused match may yet
+    /// arrive (the controller focuses the first match when results first come in). Always
+    /// `false` on the sync path, whose run is complete when `run_find` returns.
+    pub(crate) fn may_still_focus_a_match(&self) -> bool {
+        self.async_find_controller
+            .as_ref()
+            .is_some_and(|controller| controller.has_active_find() && controller.is_scanning())
+    }
+
     /// Returns the focused rich content (AI) match id, if any.
     ///
     /// This works for both sync and async find paths and is used by AI block

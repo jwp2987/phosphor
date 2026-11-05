@@ -4139,6 +4139,209 @@ fn test_find_in_blocks_inverted_blocklist() {
     run_find_test(InputMode::PinnedToTop);
 }
 
+// ── Find scrolls to a match in an older block (appci flood_scrollback_find) ──────────
+
+/// The block is on screen (its top or bottom edge in the viewport). The marker block is
+/// one command row and one output row, so either edge in view puts its output in view.
+fn is_block_on_screen(
+    view: &TerminalView,
+    block_index: BlockIndex,
+    input_mode: InputMode,
+    app: &AppContext,
+) -> bool {
+    let model = view.model.lock();
+    let viewport = view.viewport_state(model.block_list(), input_mode, app);
+    viewport.is_block_in_view(block_index, BlockVisibilityMode::TopOfBlockVisible)
+        || viewport.is_block_in_view(block_index, BlockVisibilityMode::BottomOfBlockVisible)
+}
+
+/// Waits for the async scan to complete, then for the 50 ms `RanFind` throttle to deliver
+/// its last event (which a pending find scroll waits for).
+async fn wait_for_async_find_to_settle(app: &mut App, find_model: &ModelHandle<TerminalFindModel>) {
+    for _ in 0..200 {
+        let is_complete = find_model.update(app, |model, _ctx| {
+            model.async_find_controller().is_some_and(|controller| {
+                matches!(
+                    controller.status(),
+                    crate::terminal::find::model::AsyncFindStatus::Complete
+                )
+            })
+        });
+        if is_complete {
+            break;
+        }
+        warpui::r#async::Timer::after(std::time::Duration::from_millis(10)).await;
+    }
+    for _ in 0..10 {
+        warpui::r#async::Timer::after(std::time::Duration::from_millis(10)).await;
+    }
+}
+
+/// What the appci case `flood_scrollback_find` does: a command prints MARKER, the next
+/// command prints `flood_lines` lines (with `max_grid_size` set, more than the block keeps),
+/// then Find is opened, the marker searched for and Enter pressed at once. The marker's
+/// block must end up on screen. Before the fix the view never moved on the async path
+/// (the default): `scroll_to_match` read only the sync run, which async find never fills.
+fn run_find_scrolls_to_older_block_test(
+    input_mode: InputMode,
+    async_find: bool,
+    max_grid_size: Option<usize>,
+    flood_lines: usize,
+) {
+    App::test((), |mut app| async move {
+        const MARKER: &str = "QZXMARKERJWVQ";
+        initialize_app_for_terminal_view(&mut app);
+        let _async_find = FeatureFlag::AsyncFind.override_enabled(async_find);
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        let (marker_block, find_model) = terminal.update(&mut app, |view, ctx| {
+            InputModeSettings::handle(ctx).update(ctx, |input_mode_settings, ctx| {
+                let _ = input_mode_settings.input_mode.set_value(input_mode, ctx);
+            });
+            assert_eq!(
+                view.find_model.as_ref(ctx).async_find_controller().is_some(),
+                async_find,
+                "precondition: the find path under test"
+            );
+
+            let flood: String = (1..=flood_lines).map(|i| format!("{i}\r\n")).collect();
+            let marker_block = {
+                let mut model = view.model.lock();
+                if let Some(size) = max_grid_size {
+                    model.update_max_grid_size(size);
+                }
+                model.simulate_block("echo marker", MARKER);
+                let marker_block = BlockIndex(model.block_list().active_block_index().0 - 1);
+                model.simulate_block("seq", flood.as_str());
+                let flood_block = model
+                    .block_list()
+                    .block_at(BlockIndex(marker_block.0 + 1))
+                    .expect("the flood block follows the marker block");
+                assert_eq!(
+                    flood_block.output_grid().grid_handler().num_lines_truncated() > 0,
+                    max_grid_size.is_some(),
+                    "precondition: the flood block is truncated exactly when the grid size is capped"
+                );
+                marker_block
+            };
+            assert!(
+                !is_block_on_screen(view, marker_block, input_mode, ctx),
+                "control: the flood scrolled the marker's block off screen"
+            );
+
+            view.show_find_bar(ctx);
+            view.handle_find_event(
+                &FindEvent::Update {
+                    query: Some(MARKER.to_string()),
+                },
+                ctx,
+            );
+            // Enter in the find bar, before an async scan has reported anything.
+            view.handle_find_event(
+                &FindEvent::NextMatch {
+                    direction: FindDirection::Down,
+                },
+                ctx,
+            );
+            (marker_block, view.find_model.clone())
+        });
+
+        if async_find {
+            wait_for_async_find_to_settle(&mut app, &find_model).await;
+        }
+
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(
+                view.find_model.as_ref(ctx).visible_block_list_match_count(),
+                1,
+                "precondition: the marker is the only match"
+            );
+            assert!(
+                view.find_model
+                    .as_ref(ctx)
+                    .focused_block_list_match()
+                    .is_some(),
+                "precondition: the marker's match is focused"
+            );
+            assert!(
+                is_block_on_screen(view, marker_block, input_mode, ctx),
+                "Find for a match in an older block must scroll it on screen \
+                 (input mode {input_mode:?}, async find {async_find}, grid cap {max_grid_size:?})"
+            );
+            assert!(
+                !view.find_scroll_pending,
+                "the scroll is done: nothing may stay pending to move the view later"
+            );
+        });
+    })
+}
+
+#[test]
+fn find_scrolls_to_older_block_above_huge_block_async() {
+    run_find_scrolls_to_older_block_test(InputMode::PinnedToBottom, true, Some(200), 2_000);
+}
+
+#[test]
+fn find_scrolls_to_older_block_above_huge_block_async_inverted_blocklist() {
+    run_find_scrolls_to_older_block_test(InputMode::PinnedToTop, true, Some(200), 2_000);
+}
+
+#[test]
+fn find_scrolls_to_older_block_above_normal_block_async() {
+    run_find_scrolls_to_older_block_test(InputMode::PinnedToBottom, true, None, 1_000);
+}
+
+#[test]
+fn find_scrolls_to_older_block_above_normal_block_async_inverted_blocklist() {
+    run_find_scrolls_to_older_block_test(InputMode::PinnedToTop, true, None, 1_000);
+}
+
+#[test]
+fn find_scrolls_to_older_block_above_huge_block_sync() {
+    run_find_scrolls_to_older_block_test(InputMode::PinnedToBottom, false, Some(200), 2_000);
+}
+
+#[test]
+fn find_scrolls_to_older_block_above_normal_block_sync_inverted_blocklist() {
+    run_find_scrolls_to_older_block_test(InputMode::PinnedToTop, false, None, 1_000);
+}
+
+/// A find with no match must not leave a scroll pending once the scan is done, or a match
+/// that shows up later in streaming output would pull the view to it on its own.
+#[test]
+fn async_find_without_match_leaves_no_pending_scroll() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _async_find = FeatureFlag::AsyncFind.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        let find_model = terminal.update(&mut app, |view, ctx| {
+            view.model.lock().simulate_block("ls", "foo");
+            view.show_find_bar(ctx);
+            view.handle_find_event(
+                &FindEvent::Update {
+                    query: Some("nomatchanywhere".to_string()),
+                },
+                ctx,
+            );
+            assert!(
+                view.find_scroll_pending,
+                "precondition: the async scan is running, so the scroll waits for it"
+            );
+            view.find_model.clone()
+        });
+
+        wait_for_async_find_to_settle(&mut app, &find_model).await;
+
+        terminal.read(&app, |view, _ctx| {
+            assert!(
+                !view.find_scroll_pending,
+                "a scan that ended without a match must clear the pending scroll"
+            );
+        });
+    })
+}
+
 #[test]
 fn test_case_sensitive_find() {
     App::test((), |mut app| async move {
