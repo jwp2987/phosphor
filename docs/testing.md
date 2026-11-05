@@ -2003,3 +2003,31 @@ raising it costs a normal close or quit nothing.
   began. The agent pass's copy (clipboard kept the sentinel) is unresolved: sway `seat - cursor` pointer synthesis had never got this far on
   Wayland; the case now records `dblclick_screen_diff` (0 = no selection drawn) and notes it when the sentinel survives.
 
+
+## r18u23 Windows app-run fixes (job 17761810079, 0a37554a5)
+
+Harness only; `run.py --self-test` covers it (`r18u23_paste_backlog_and_bash_agent_command_count`).
+
+- **`big_paste`'s control logs to its own files.** The Git Bash reference console sourced the pane's `~/.bashrc`, so its prompts and
+  `cat > big_ref.out` went to the pane's `prompt.log` / `rec.log`. `big_paste_back_at_prompt` (r18u22) counted those prompts as the
+  pane's and returned while the pane's `cat` was still running. It ran for another 14-19 s, the time ConPTY took to reach the Ctrl-C
+  behind the 1 MB paste. `tab_enter` then typed all 12 trials into it (0/12 in both modes, `completion_give_ups 0`, no Enter reached the
+  editor). The control now uses `prof.ref_rc`, which logs to `refctl`, as the Linux and macOS references do (#1500, #1550).
+- **A paste backlog relaunches the app.** Under ConPTY, the part of a paste that the receiving program (`cat`, an ssh client) never read
+  stays queued as console input. Once that program ends, Git Bash reads the rest line by line as commands, one fork per line.
+  `rec.log` showed this twice. After `big_paste`, the payload lines ran into `tab_enter` and the wedge probe
+  (`pane_wedged_after_tab_enter`). After `remote_heredoc_paste` ended its stuck remote shell, ssh had read only 284 KB of 600 KB, and the
+  local shell then ran 541 payload lines over 150 s (`pane_not_local_after_remote_heredoc_paste`).
+  `paste_backlog_count` detects this: it counts the payload lines in `rec.log` since the step's mark, waiting up to 5 s. If it finds
+  any, `relaunch_after_paste_backlog` notes the count and relaunches the app (`cases_robust.start_app`: prompt, key proof, pane state).
+  Windows only; `big_paste` checks after its prompt wait, and `end_stuck_session` checks after it kills the remote shell. The backlog
+  is the platform's, and the conhost control queues the paste the same way, so it is not a verdict on the app.
+- **`agent_approval` in a bash pane.** The app keeps the agent's command wrapper out of the shell history by design (#904: HISTIGNORE on
+  `__phosphor_ap_`), and the bash rc hook builds `rec.log` from `history 1`. A bash pane's `rec.log` therefore never shows an approved
+  command; the zsh hook logs from preexec, so macOS is unaffected. In a bash pane (Windows Git Bash, Linux), if `rec.log` does not show
+  the command, it must instead appear in exactly one of the app's `hop=pty_write_bytes class=UserCommand` writes. The rejected command
+  must appear in none. The effect-file check (exactly the token, once) is unchanged.
+- **Triaged, not harness:** `tabs_streaming` (Git Bash, both modes, 8/10) and `tabs_two_windows` (PowerShell, 15/16) are the #1658
+  mechanism. A young Enter hold on ConPTY (`TimingWindow`) reaches `young_hold_cap` before the Preexec that would have released it.
+  It hands the Enter and the keys behind it back to the editor, while later keys still go to the pty, so the line is reordered or
+  left in the editor. A1 (bdf6f4fac) did fix the second window: it opened this time.

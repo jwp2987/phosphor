@@ -8,6 +8,7 @@
 import os, re, shutil, socket, subprocess, sys, threading, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import cases  # noqa: E402
 from cases import case, stats  # noqa: E402
 import toml_text as T  # noqa: E402
 
@@ -608,13 +609,18 @@ def descendants(pid):
     return seen
 
 
-def end_stuck_session(ctx, r, label):
+def end_stuck_session(ctx, r, label, mark=None, payload=None):
     """#1129 r18u22: after a step timed out the remote shell is still chewing the payload (a 600 KB wrapper line takes bash 3.2 over 15 min), so the
     case's next keys (`zsh -f`, the `exit`, run.py's where-probe) queued behind it and every later check failed, then pane_not_local_after_remote_heredoc_paste.
-    The harness ends that remote shell (the remote is this machine) and proves the pane LOCAL again. Returns "local", "remote" or "none"."""
+    The harness ends that remote shell (the remote is this machine) and proves the pane LOCAL again. Returns "local", "remote" or "none".
+    r18u23 (Windows): the ssh client had read only part of the paste (284 KB of 600 KB); the rest stayed queued as console input of the LOCAL pane,
+    so once ssh exited the local Git Bash ran it line by line as commands (541 payload lines over 150 s) and the where-probe found "none". `mark`
+    (rec.log count before the step) and `payload` (the step's lines) detect that backlog; the app is then relaunched (cases.relaunch_after_paste_backlog)."""
     pid, wpid = read_rpid(ctx)
     what = kill_remote_shell(ctx, pid, wpid)
     time.sleep(2.0)
+    if ctx.win and payload and cases.relaunch_after_paste_backlog(ctx, r, label, mark, payload):
+        what += "; the local shell then ran the unread rest of the paste as commands, so the app was relaunched"
     where = ctx.where_now()
     if where == "none":
         ctx.reset()
@@ -974,9 +980,10 @@ def c_remote_heredoc(ctx, r):
             return None
         if not session():
             return None
+        mark = ctx.cmd_mark() if ctx.prof.local_prompts else None
         rec = _send_step(ctx, r, label, name, command, expected, timeout, grace)
         if rec["got"] is None:          # the remote shell is still in the payload: end it, or every later key queues behind it
-            where = end_stuck_session(ctx, r, label)
+            where = end_stuck_session(ctx, r, label, mark, command.split("\n"))
             state["up"] = False
             if where != "local":
                 state["dead"] = where

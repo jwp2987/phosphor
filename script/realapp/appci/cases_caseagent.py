@@ -325,7 +325,18 @@ def c_agent_approval(ctx, r):
         shell_cmds = [c for c in ctx.cmds_since(mark) if tok_a in c]
         ctx.shot("approve_done")
         r.check(bool(ran) and got == [tok_a], "approved command effect file: expected [%r], got %r" % (tok_a, got))
-        r.check(len(shell_cmds) == 1, "approved command appears %d times in the shell's rec.log (expected exactly once): %r" % (len(shell_cmds), shell_cmds[:3]))
+        if not shell_cmds and bash_rec_hook(ctx):
+            # r18u23 (Windows Git Bash, the first run that got an approval card there): the app keeps the agent's command wrapper out of the shell's
+            # history BY DESIGN (#904: HISTIGNORE on HISTORY_MARKER, agent_shell_wrap.rs), and the bash rc hook logs rec.log from `history 1`, so a bash
+            # pane's rec.log can never show an approved command (the zsh hook can: it logs from preexec, r18u13). The same "reached the shell exactly
+            # once" is read from the app's own pty writes of the wrapper instead; the effect file above still has to hold the token exactly once.
+            writes = approved_command_writes(ctx.log_since(off), tok_a)
+            r.note("approved command: a bash pane's rec.log cannot show an agent command (#904 keeps the wrapper out of history; the rc hook reads "
+                   "`history 1`): counted from the app's pty writes of the command instead (%d)" % writes)
+            r.check(writes == 1, "approved command was written to the shell %d times by the app (hop=pty_write_bytes class=UserCommand carrying %s; expected "
+                    "exactly once; a bash pane's rec.log cannot show it, #904)" % (writes, tok_a))
+        else:
+            r.check(len(shell_cmds) == 1, "approved command appears %d times in the shell's rec.log (expected exactly once): %r" % (len(shell_cmds), shell_cmds[:3]))
         # follow-up in the same conversation (wait for the agent to finish reporting first: never type into a busy conversation)
         wait_marker(ctx, off, "[byop] opening stream", n=2, timeout=60)
         if not settled(ctx, "idle1", timeout=120):
@@ -355,9 +366,29 @@ def c_agent_approval(ctx, r):
         ctx.shot("reject_done")
         r.check(not ctx.lines("ap_rej.txt"), "the rejected command's effect file exists: %r" % ctx.lines("ap_rej.txt"))
         r.check(not [c for c in ctx.cmds_since(mark2) if tok_r in c], "the rejected command reached the shell's rec.log")
+        if bash_rec_hook(ctx):      # a bash pane's rec.log cannot show an agent command (#904): the app's own writes must not carry it either
+            r.check(approved_command_writes(ctx.log_since(off2), tok_r) == 0, "the rejected command was written to the shell by the app (hop=pty_write_bytes "
+                    "class=UserCommand carrying %s)" % tok_r)
     finally:
         cleanup_tmp(ctx)
         ctx.be.key("ctrl+c")
+
+
+def bash_rec_hook(ctx):
+    """True when the pane's rc hook is the bash one (profile.BASHRC, rec.log from `history 1`): the Windows Git Bash pane, and the Linux app (SHELL=/bin/bash).
+    The macOS app runs zsh (profile.ZSHRC, logged from preexec)."""
+    if getattr(ctx, "win", False):
+        return getattr(ctx, "pane", None) == "gitbash"
+    return getattr(getattr(ctx, "be", None), "name", "") != "mac"
+
+
+USER_COMMAND_WRITE_RE = re.compile(r'hop=pty_write_bytes class=UserCommand\b[^\n]*?\bbytes="([^\n]*)"')
+
+
+def approved_command_writes(log_text, tok):
+    """how many of the app's pty writes of a command (`hop=pty_write_bytes class=UserCommand ... bytes="..."`, the agent's wrapper among them) carry
+    `tok`; needs WARP_INPUT_ORDER_LOG_TEXT=1 (the harness sets it on every backend)"""
+    return sum(1 for m in USER_COMMAND_WRITE_RE.finditer(log_text or "") if tok in m.group(1))
 
 
 # ---------------------------------------------------------------- autodetect routing table

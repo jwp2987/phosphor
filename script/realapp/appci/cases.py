@@ -1577,6 +1577,7 @@ def c_big(ctx, r):
     data = "\n".join(out)[:size]
     ctx.rm("big.out")
     nb = ctx.prompts() if ctx.prof.local_prompts else None
+    mark = ctx.cmd_mark() if ctx.prof.local_prompts else None
     ctx.be.type("cat > big.out", 12, enter=True)
     time.sleep(1.0)
     ctx.be.clip_set(data)
@@ -1613,6 +1614,35 @@ def c_big(ctx, r):
         r.check(got == want, "%.0f MB paste not byte-exact (expected %d bytes, got %d)" % (mb, len(data) + 1, len(got)))
     ctx.reset()
     big_paste_back_at_prompt(ctx, r, nb)
+    if ctx.win and got != want:
+        relaunch_after_paste_backlog(ctx, r, "big_paste", mark, out)
+
+
+def paste_backlog_count(ctx, mark, payload_lines, wait=5.0):
+    """r18u23 (Windows Git Bash): how many lines of an undelivered paste the LOCAL shell has run as commands since `mark` (its rec.log), waiting up
+    to `wait` s for the first. Under ConPTY the part of a paste the receiving program (`cat`, an ssh client) never read stays queued as console input;
+    when that program ends, bash reads it line by line as commands (r18u23: 541 payload lines run over 150 s after remote_heredoc_paste ended its
+    remote shell, and big_paste's 1 MB left the pane running junk into tab_enter and the wedge probe). 0 when nothing ran or there is no rec.log."""
+    if mark is None:
+        return 0
+    want = {l.strip() for l in payload_lines if l.strip()}
+    count = lambda: sum(1 for c in ctx.cmds_since(mark) if c.strip() in want)      # noqa: E731
+    ctx.until(lambda: count() > 0, wait)
+    return count()
+
+
+def relaunch_after_paste_backlog(ctx, r, label, mark, payload_lines):
+    """When the local shell is running a paste backlog as commands (paste_backlog_count), the pane cannot take the next case's keys for many minutes
+    (one Git Bash fork per line): say so and relaunch the app (cases_robust.start_app: prompt, key proof, pane state), so the next case starts clean
+    instead of typing into the backlog. The backlog is the platform's (the conhost control queues the paste the same way); this is not a verdict on
+    the app. Returns True when the app was relaunched."""
+    n = paste_backlog_count(ctx, mark, payload_lines)
+    if not n:
+        return False
+    r.note("%s: the local shell ran %d line(s) of the undelivered paste as COMMANDS (ConPTY kept the unread rest of the paste as console input, and "
+           "the shell read it once the receiving program ended): the app is relaunched so the next case does not type into that backlog" % (label, n))
+    _n, ok = cases_robust.start_app(ctx, r, "%s: relaunch after the paste backlog" % label)      # cases_robust: imported at the end of this module
+    return ok
 
 
 def big_paste_back_at_prompt(ctx, r, nb):
@@ -1637,7 +1667,13 @@ def big_paste_control(ctx, data, want):
     """U2: the same `cat > file` + paste in a conhost Git Bash window. -> ("same-shortfall" | "exact" | "none", why). Never raises: a failed control is "none"."""
     ref = None
     try:
-        ref = ref_terminal(ctx)
+        # r18u23: the Git Bash reference sourced the PANE's ~/.bashrc, so its prompts and `cat > big_ref.out` went to the pane's prompt.log/rec.log;
+        # big_paste_back_at_prompt then counted the reference's prompts as the pane's and returned while the pane's `cat` still ran (tab_enter 0/12).
+        # Its own rc logs to refctl, as the Linux and macOS references do (#1500, #1550).
+        if ctx.win and ctx.pane == "gitbash":
+            ref = ref_terminal_windows(ctx, rcfile=ctx.prof.ref_rc.replace("\\", "/"))
+        else:
+            ref = ref_terminal(ctx)
         if ref is None:
             return "none", "reference console not available: %s" % (getattr(ctx, "ref_reason", None) or "unknown")
         out = os.path.join(ctx.W, "big_ref.out")

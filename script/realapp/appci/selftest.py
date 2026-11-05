@@ -873,7 +873,7 @@ def r18u22_heredoc_wrapper_mirror_and_control_verdicts():
     # the remote shell's pid is recorded on connect, and the verdicts come after the control
     src = inspect.getsource(rm.c_remote_heredoc)
     assert src.index('"hd_big.txt"') > src.index('for key in ("zsh", "fish")'), "the 600 KB step must run after the zsh/fish steps"
-    assert "end_stuck_session(ctx, r, label)" in src and "record_rpid(ctx)" in src and src.index("heredoc_control(") < src.index("judge_step(")
+    assert "end_stuck_session(ctx, r, label, mark, command.split(" in src and "record_rpid(ctx)" in src and src.index("heredoc_control(") < src.index("judge_step(")
     assert "r.check(" not in inspect.getsource(rm._send_step), "_send_step records; judge_step decides"
     if os.name != "nt":
         p = subprocess.Popen(["sleep", "30"])
@@ -1963,6 +1963,35 @@ def r18u13_mac_harness_fixes():
     assert sent == ["echo tok123 >> /w/dir/ca_local_ck_after.txt", "echo tok123 >> ca_local_ck_after.txt"], sent
     # ui_settings_live: the theme step switches following the system theme off before it writes `theme`
     assert '"system_theme", "false"' in inspect.getsource(_U.c_settings)
+
+
+@check
+def r18u23_paste_backlog_and_bash_agent_command_count():
+    """r18u23 (Windows Git Bash): big_paste's conhost control logs to refctl (its prompts made the pane look back at a prompt while `cat` ran); an undelivered
+    paste run by the local shell as commands is detected from rec.log (big_paste, remote_heredoc_paste relaunch on it); a bash pane counts an approved agent
+    command from the app's UserCommand pty writes, since #904 keeps the wrapper out of the history its rc hook reads"""
+    import inspect
+    import cases_caseremote as _R
+    src = inspect.getsource(cases.big_paste_control)
+    assert "rcfile=ctx.prof.ref_rc" in src and 'ctx.pane == "gitbash"' in src, "the Git Bash big_paste control must use its own rc (refctl)"
+    assert "relaunch_after_paste_backlog" in inspect.getsource(cases.c_big)
+    assert "payload" in inspect.signature(_R.end_stuck_session).parameters
+    cmds = ["echo kept >> x.txt", "abc def ghi", "  jkl  "]
+    fake = types.SimpleNamespace(cmds_since=lambda m: cmds[m:], until=lambda pred, t: pred())
+    assert cases.paste_backlog_count(fake, 0, ["abc def ghi", "jkl", "", "zzz"]) == 2
+    assert cases.paste_backlog_count(fake, 2, ["abc def ghi", "jkl"]) == 1
+    assert cases.paste_backlog_count(fake, None, ["abc def ghi"]) == 0
+    assert cases.paste_backlog_count(fake, 0, ["nothing here"]) == 0
+    log = ('x hop=pty_write_bytes class=UserCommand wrote=9 of_job=9 bytes="\\x10{ echo APPROVEMEX1 >> ap_ok.txt; }" t=1.0\n'
+           'x hop=pty_write_bytes class=UserKey wrote=1 of_job=1 bytes="APPROVEMEX1" t=2.0\n'
+           'x hop=pty_write_bytes class=UserCommand wrote=3 of_job=3 bytes="ls" t=3.0\n')
+    assert ca.approved_command_writes(log, "APPROVEMEX1") == 1
+    assert ca.approved_command_writes(log + log, "APPROVEMEX1") == 2
+    assert ca.approved_command_writes(log, "REJECTMEX1") == 0 and ca.approved_command_writes("", "A") == 0
+    assert ca.bash_rec_hook(types.SimpleNamespace(win=True, pane="gitbash"))
+    assert not ca.bash_rec_hook(types.SimpleNamespace(win=True, pane="powershell"))
+    assert not ca.bash_rec_hook(types.SimpleNamespace(win=False, be=types.SimpleNamespace(name="mac")))
+    assert ca.bash_rec_hook(types.SimpleNamespace(win=False, be=types.SimpleNamespace(name="wayland")))
 
 
 def main():
