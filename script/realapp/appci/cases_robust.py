@@ -291,6 +291,7 @@ def c_session_restore(ctx, r):
         have = [(t, c) for t, c in ctx.prof.commands() if not ctx.APP_BOOTSTRAP_RE.search(c)][-n:]      # r18u8: not the app's own bootstrap lines
         r.check([c for _, c in have] == expect_cmds, "setup: shell received %r, expected %r" % ([c for _, c in have], expect_cmds))
         ctx.shot("sr_tabs_before_quit")
+        r.metric("windows_before_quit", [w.get("name") for w in ctx.be.windows()])
         # 3. quit with the app's own path, then relaunch on the same profile
         keep_off = ctx.log_size()
         q = stop_for_restart(ctx, r, bound, "sr")
@@ -319,6 +320,11 @@ def c_session_restore(ctx, r):
         else:
             r.check(newp >= 1, "no restored shell started (prompts +%d)" % newp)
         # 5. the tabs and their cwds: ctrl+1..n, then ctrl+9 (last tab). Each answers with its own pwd.
+        # r18u22 (Wayland, intermittent in both modes): every tab key answered from ONE middle tab (sr_dir_1 or sr_dir_2). The app's windows
+        # after the restore and its `hop=tab_activate index= count= active= window=` lines (one per tab key that reached the workspace) are
+        # recorded, so the next failure says whether the keys arrived and how many tabs the focused window had.
+        r.metric("windows_after_restore", [w.get("name") for w in ctx.be.windows()])
+        tabs_off = ctx.log_size()
         got = []
         for i in range(n):
             ctx.be.guard()
@@ -328,7 +334,10 @@ def c_session_restore(ctx, r):
             ctx.until(lambda: ctx.lines("sr_pwd_%d.txt" % i), 8)
             got.append((ctx.lines("sr_pwd_%d.txt" % i) or ["<none>"])[0])
         got_r = [norm_path(g) if g != "<none>" else g for g in got]
-        r.check(got_r == dirs, "tabs/cwds not restored as they were: expected %r got %r" % (dirs, got_r))
+        if not r.check(got_r == dirs, "tabs/cwds not restored as they were: expected %r got %r" % (dirs, got_r)):
+            hops = [l.strip()[-120:] for l in ctx.log_since(tabs_off).splitlines() if "hop=tab_activate" in l]
+            r.note("tab keys after the restore: %d hop=tab_activate line(s) for %d keys %s; app windows %r" % (
+                len(hops), n, hops[:n], r.metrics.get("windows_after_restore")))
         ctx.be.guard()
         ctx.be.key(tab_key(ctx, 9))
         time.sleep(0.8)
