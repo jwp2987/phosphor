@@ -1,6 +1,6 @@
 use super::{
-    HANGUP_GRACE, groups_to_kill, parse_proc_stat_foreground_group,
-    parse_proc_stat_group_and_session, target_groups, wait_for_groups_to_exit,
+    HANGUP_GRACE, HangupSurvivors, groups_to_kill, parse_proc_stat_foreground_group,
+    parse_proc_stat_group_and_session, target_groups, wait_for_tree_to_exit,
 };
 use std::cell::Cell;
 use std::time::{Duration, Instant};
@@ -133,7 +133,7 @@ fn pane_kill_ends_foreground_but_spares_nohup_and_disowned_jobs() {
     }
 
     assert!(matches!(shell.try_wait(), Ok(None)));
-    super::terminate_shell_tree(shell_pid);
+    super::terminate_tree_with_grace(&mut shell, super::HANGUP_GRACE);
     let _ = shell.kill();
     let _ = shell.wait();
 
@@ -180,25 +180,58 @@ fn terminate_and_reap_returns_at_once_and_reaps_the_shell() {
     }
 }
 
-/// Runs [`wait_for_groups_to_exit`] on a fake clock: `exits_at(group)` is when that group exits
-/// (`None`: it ignores SIGHUP and never does). Returns the survivors and the time spent waiting.
-fn fake_wait(
-    alive: Vec<i32>,
-    grace: Duration,
-    exits_at: impl Fn(i32) -> Option<Duration>,
-) -> (Vec<i32>, Duration) {
+/// When each part of a fake process tree exits after SIGHUP (`None`: it ignores SIGHUP and never
+/// does).
+struct FakeTree {
+    /// The shell itself.
+    shell: Option<Duration>,
+    /// The last other member of the shell's own group (`Some(ZERO)`: it has none).
+    shell_group: Option<Duration>,
+    /// The other groups, by id.
+    others: Vec<(i32, Option<Duration>)>,
+}
+
+const SHELL: i32 = 500;
+
+/// Runs [`wait_for_tree_to_exit`] on a fake clock over `tree`. Returns the survivors and the time
+/// spent waiting.
+fn fake_wait(tree: FakeTree, grace: Duration) -> (HangupSurvivors, Duration) {
     let start = Instant::now();
     let clock = Cell::new(start);
-    let survivors = wait_for_groups_to_exit(
-        alive,
+    let alive_at = |exits: Option<Duration>| exits.is_none_or(|at| clock.get() - start < at);
+    let survivors = wait_for_tree_to_exit(
+        SHELL,
+        tree.others.iter().map(|(g, _)| *g).collect(),
         grace,
         Duration::from_millis(10),
-        |g| exits_at(g).is_none_or(|at| clock.get() - start < at),
+        || alive_at(tree.shell),
+        |g| {
+            if g == SHELL {
+                // Only asked once the shell is gone (reaped), so only the rest of the group.
+                assert!(
+                    !alive_at(tree.shell),
+                    "shell group probed while the shell runs"
+                );
+                alive_at(tree.shell_group)
+            } else {
+                let exits = tree
+                    .others
+                    .iter()
+                    .find(|(o, _)| *o == g)
+                    .and_then(|(_, e)| *e);
+                let known = tree.others.iter().any(|(o, _)| *o == g);
+                assert!(known, "probed an unknown group {g}");
+                alive_at(exits)
+            }
+        },
         || clock.get(),
         |d| clock.set(clock.get() + d),
     );
     (survivors, clock.get() - start)
 }
+
+const QUICK: Option<Duration> = Some(Duration::from_millis(5));
+const NONE_LEFT: Option<Duration> = Some(Duration::ZERO);
 
 /// #1685: the grace outlasts a cleanup on a loaded machine (it was 300 ms), and stays a bounded
 /// give-up.
@@ -208,52 +241,125 @@ fn hangup_grace_survives_a_loaded_machine() {
     assert!(HANGUP_GRACE <= Duration::from_secs(5));
 }
 
-/// #1685: a program that exits within the grace (an editor saving for 2 s after SIGHUP) is never
-/// killed, and the wait ends when it exits rather than at the grace.
+/// #1685: a foreground program that exits within the grace (an editor saving for 2 s after
+/// SIGHUP) is never killed, and the wait ends when it exits rather than at the grace.
 #[test]
 fn program_that_exits_within_the_grace_is_never_killed() {
-    let (survivors, waited) = fake_wait(vec![700], HANGUP_GRACE, |_| Some(Duration::from_secs(2)));
-    assert!(survivors.is_empty());
+    let tree = FakeTree {
+        shell: QUICK,
+        shell_group: NONE_LEFT,
+        others: vec![(700, Some(Duration::from_secs(2)))],
+    };
+    let (survivors, waited) = fake_wait(tree, HANGUP_GRACE);
+    assert!(survivors.others.is_empty() && !survivors.shell_group);
     assert!(waited >= Duration::from_secs(2));
     assert!(waited < HANGUP_GRACE);
-    assert_eq!(groups_to_kill(&[500, 700], 500, &survivors), vec![500]);
+    assert!(groups_to_kill(&[SHELL, 700], SHELL, &survivors).is_empty());
 }
 
-/// #1685: a program that ignores SIGHUP is killed once the grace is over, and not before.
+/// #1685: a foreground program that ignores SIGHUP is killed once the grace is over, and not
+/// before; the shell that exited at once is not.
 #[test]
 fn program_that_ignores_sighup_is_killed_after_the_grace() {
-    let (survivors, waited) = fake_wait(vec![700], HANGUP_GRACE, |_| None);
-    assert_eq!(survivors, vec![700]);
+    let tree = FakeTree {
+        shell: QUICK,
+        shell_group: NONE_LEFT,
+        others: vec![(700, None)],
+    };
+    let (survivors, waited) = fake_wait(tree, HANGUP_GRACE);
+    assert_eq!(survivors.others, vec![700]);
+    assert!(!survivors.shell_running && !survivors.shell_group);
     assert!(waited >= HANGUP_GRACE);
     assert!(waited < HANGUP_GRACE + Duration::from_millis(100));
-    assert_eq!(groups_to_kill(&[500, 700], 500, &survivors), vec![500, 700]);
+    assert_eq!(groups_to_kill(&[SHELL, 700], SHELL, &survivors), vec![700]);
 }
 
 /// #1685: with several groups, only the one still alive at the grace is killed.
 #[test]
 fn only_the_groups_alive_at_the_grace_are_killed() {
-    let (survivors, _) = fake_wait(vec![700, 800], HANGUP_GRACE, |g| {
-        (g == 700).then_some(Duration::from_millis(500))
-    });
-    assert_eq!(survivors, vec![800]);
+    let tree = FakeTree {
+        shell: QUICK,
+        shell_group: NONE_LEFT,
+        others: vec![(700, Some(Duration::from_millis(500))), (800, None)],
+    };
+    let (survivors, _) = fake_wait(tree, HANGUP_GRACE);
+    assert_eq!(survivors.others, vec![800]);
     assert_eq!(
-        groups_to_kill(&[500, 700, 800], 500, &survivors),
-        vec![500, 800]
+        groups_to_kill(&[SHELL, 700, 800], SHELL, &survivors),
+        vec![800]
     );
 }
 
-/// Nothing to wait for (no foreground group besides the shell's own): no wait at all.
+/// #1685 review F2: the shell's own group gets the same grace. A program in it (`exec vim`, a
+/// launch command run as the pty child, a shell without job control) that exits within the grace
+/// is never killed.
 #[test]
-fn no_foreground_group_means_no_wait() {
-    let (survivors, waited) = fake_wait(vec![], HANGUP_GRACE, |_| None);
-    assert!(survivors.is_empty());
-    assert_eq!(waited, Duration::ZERO);
-    assert_eq!(groups_to_kill(&[500], 500, &survivors), vec![500]);
+fn program_in_the_shell_group_that_exits_within_the_grace_is_never_killed() {
+    // `exec vim`: the shell IS the program.
+    let tree = FakeTree {
+        shell: Some(Duration::from_secs(2)),
+        shell_group: NONE_LEFT,
+        others: vec![],
+    };
+    let (survivors, waited) = fake_wait(tree, HANGUP_GRACE);
+    assert!(!survivors.shell_running && !survivors.shell_group);
+    assert!(waited >= Duration::from_secs(2) && waited < HANGUP_GRACE);
+    assert!(groups_to_kill(&[SHELL], SHELL, &survivors).is_empty());
+
+    // No job control: the shell exits at once, the program it ran in its group saves for 2 s.
+    let tree = FakeTree {
+        shell: QUICK,
+        shell_group: Some(Duration::from_secs(2)),
+        others: vec![],
+    };
+    let (survivors, waited) = fake_wait(tree, HANGUP_GRACE);
+    assert!(!survivors.shell_group);
+    assert!(waited >= Duration::from_secs(2) && waited < HANGUP_GRACE);
+    assert!(groups_to_kill(&[SHELL], SHELL, &survivors).is_empty());
+}
+
+/// #1685 review F2: the shell's group is SIGKILLed after the grace only if the shell still runs
+/// or other members remain.
+#[test]
+fn shell_group_is_killed_only_if_something_in_it_outlived_the_grace() {
+    let tree = FakeTree {
+        shell: None,
+        shell_group: NONE_LEFT,
+        others: vec![],
+    };
+    let (survivors, waited) = fake_wait(tree, HANGUP_GRACE);
+    assert!(survivors.shell_running && survivors.shell_group);
+    assert!(waited >= HANGUP_GRACE);
+    assert_eq!(groups_to_kill(&[SHELL], SHELL, &survivors), vec![SHELL]);
+
+    let tree = FakeTree {
+        shell: QUICK,
+        shell_group: None,
+        others: vec![],
+    };
+    let (survivors, _) = fake_wait(tree, HANGUP_GRACE);
+    assert!(!survivors.shell_running && survivors.shell_group);
+    assert_eq!(groups_to_kill(&[SHELL], SHELL, &survivors), vec![SHELL]);
+}
+
+/// #1685 review F2: an idle shell (exits at once on SIGHUP, nothing else hung up) ends the wait
+/// at once and nothing is SIGKILLed.
+#[test]
+fn idle_shell_close_ends_the_wait_at_once() {
+    let tree = FakeTree {
+        shell: QUICK,
+        shell_group: NONE_LEFT,
+        others: vec![],
+    };
+    let (survivors, waited) = fake_wait(tree, HANGUP_GRACE);
+    assert!(!survivors.shell_running && !survivors.shell_group && survivors.others.is_empty());
+    assert!(waited < Duration::from_millis(50));
+    assert!(groups_to_kill(&[SHELL], SHELL, &survivors).is_empty());
 }
 
 /// #1685: closing a pane never waits on the grace. `terminate_and_reap` hands everything to the
 /// reaper thread and returns at once, even for a shell whose foreground program will take the
-/// whole grace.
+/// whole grace. A 1 s grace keeps the test short; the hand-off is the same for `HANGUP_GRACE`.
 #[cfg(target_os = "linux")]
 #[test]
 fn close_returns_at_once_while_the_reaper_sits_in_the_grace() {
@@ -268,15 +374,16 @@ fn close_returns_at_once_while_the_reaper_sits_in_the_grace() {
     let shell_pid = pty.shell_pid();
     let sleeper = wait_for_sleep_in_session("7781", shell_pid);
 
+    let grace = Duration::from_secs(1);
     let start = Instant::now();
-    super::terminate_and_reap(pty.take_shell());
+    super::terminate_and_reap_with_grace(pty.take_shell(), grace);
     assert!(
         start.elapsed() < Duration::from_millis(500),
         "terminate_and_reap blocked for {:?}",
         start.elapsed()
     );
     // The reaper still kills the SIGHUP-ignoring program once the grace is over.
-    let deadline = Instant::now() + HANGUP_GRACE + Duration::from_secs(10);
+    let deadline = Instant::now() + grace + Duration::from_secs(10);
     while process_is_live(sleeper) {
         assert!(
             Instant::now() < deadline,
@@ -284,6 +391,28 @@ fn close_returns_at_once_while_the_reaper_sits_in_the_grace() {
         );
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// #1685 review F2, real processes: closing an idle interactive shell is fast (it exits on
+/// SIGHUP; the grace is not waited out).
+#[cfg(target_os = "linux")]
+#[test]
+fn idle_shell_close_is_fast() {
+    let mut pty = InteractiveBash::spawn();
+    let dir = TestDir::new("idle_shell_close");
+    let ready = dir.path("ready");
+    pty.run(&format!("echo ready > {}\n", ready.display()));
+    wait_for_file(&ready);
+    // Let the shell get back to its prompt.
+    std::thread::sleep(Duration::from_millis(200));
+
+    let start = Instant::now();
+    super::terminate_tree_with_grace(pty.shell.as_mut().expect("shell"), HANGUP_GRACE);
+    let took = start.elapsed();
+    assert!(
+        took < Duration::from_secs(2),
+        "closing an idle shell took {took:?} (grace {HANGUP_GRACE:?})"
+    );
 }
 
 /// #1685, real processes: a foreground program that spends a second cleaning up after SIGHUP
@@ -304,10 +433,8 @@ fn foreground_cleanup_after_sighup_is_not_killed() {
         ready = ready.display()
     ));
     wait_for_file(&ready);
-    let shell_pid = pty.shell_pid();
 
-    super::terminate_shell_tree(shell_pid);
-    pty.kill_and_reap();
+    super::terminate_tree_with_grace(pty.shell.as_mut().expect("shell"), HANGUP_GRACE);
 
     let saved_text = std::fs::read_to_string(&saved).unwrap_or_default();
     assert_eq!(
@@ -317,8 +444,43 @@ fn foreground_cleanup_after_sighup_is_not_killed() {
     );
 }
 
+/// #1685 review F2, real processes: a program in the shell's OWN process group (`exec` replaces
+/// the shell with it, as with `exec vim` or a launch command run as the pty child) that spends a
+/// second cleaning up after SIGHUP finishes its cleanup.
+#[cfg(target_os = "linux")]
+#[test]
+fn shell_group_cleanup_after_sighup_is_not_killed() {
+    let mut pty = InteractiveBash::spawn();
+    let dir = TestDir::new("shell_group_cleanup");
+    let ready = dir.path("ready");
+    let saved = dir.path("saved");
+    pty.run(&format!(
+        r#"exec sh -c 'trap "trap \"\" HUP; sleep 1; echo saved > {saved}; exit 0" HUP; echo ready > {ready}; while :; do sleep 0.1; done'
+"#,
+        saved = saved.display(),
+        ready = ready.display()
+    ));
+    wait_for_file(&ready);
+
+    let start = Instant::now();
+    super::terminate_tree_with_grace(pty.shell.as_mut().expect("shell"), HANGUP_GRACE);
+    let took = start.elapsed();
+
+    let saved_text = std::fs::read_to_string(&saved).unwrap_or_default();
+    assert_eq!(
+        saved_text.trim(),
+        "saved",
+        "the program in the shell's group was killed before it finished its cleanup \
+         (after {took:?})"
+    );
+    assert!(
+        took < HANGUP_GRACE,
+        "the wait did not end when the program exited"
+    );
+}
+
 /// #1685, real processes: a foreground program that ignores SIGHUP is SIGKILLed after the grace,
-/// and not before it.
+/// and not before it: a second thread sees it still alive shortly before the grace ends.
 #[cfg(target_os = "linux")]
 #[test]
 fn foreground_program_ignoring_sighup_is_killed_after_the_grace() {
@@ -334,12 +496,19 @@ fn foreground_program_ignoring_sighup_is_killed_after_the_grace() {
     let sleeper = wait_for_sleep_in_session("7782", shell_pid);
 
     // A short grace keeps the test fast; the policy is the same as for `HANGUP_GRACE`.
-    let grace = Duration::from_millis(500);
+    let grace = Duration::from_secs(1);
+    let checker = std::thread::spawn(move || {
+        std::thread::sleep(grace - Duration::from_millis(200));
+        process_is_live(sleeper)
+    });
     let start = Instant::now();
-    super::terminate_shell_tree_with_grace(shell_pid, grace);
+    super::terminate_tree_with_grace(pty.shell.as_mut().expect("shell"), grace);
     let waited = start.elapsed();
-    pty.kill_and_reap();
 
+    assert!(
+        checker.join().expect("checker thread"),
+        "the SIGHUP-ignoring program was killed before the {grace:?} grace"
+    );
     assert!(
         waited >= grace,
         "SIGKILL came after {waited:?}, before the {grace:?} grace"

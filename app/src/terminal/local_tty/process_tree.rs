@@ -120,91 +120,149 @@ pub(crate) fn signal_shell_tree(shell_pid: u32, signal: libc::c_int) {
     }
 }
 
-/// How long the foreground program gets to react to SIGHUP before it is SIGKILLed (#1685).
+/// How long the shell and the foreground program get to react to SIGHUP before they are
+/// SIGKILLed (#1685).
 ///
 /// SIGHUP is the program's cue to clean up: an editor writes its swap or recovery file, git
-/// finishes or rolls back its index write, a database flushes. On a loaded machine that can take
-/// seconds, and a SIGKILL in the middle of it loses or corrupts the data (300 ms used to). The
-/// grace costs nothing visible: it runs on the reaper thread (see [`terminate_and_reap`]), so
-/// the pane closes at once, and it ends as soon as the foreground group has exited -- only a
-/// program that ignores SIGHUP waits it out.
+/// finishes or rolls back its index write, a database flushes, zsh saves its HISTFILE. On a loaded
+/// machine that can take seconds, and a SIGKILL in the middle of it loses or corrupts the data
+/// (300 ms used to). The grace costs nothing visible: it runs on the reaper thread (see
+/// [`terminate_and_reap`]), so the pane closes at once, and it ends as soon as everything hung up
+/// has exited (an idle shell: a few ms) -- only a program that ignores SIGHUP waits it out.
 const HANGUP_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// How often the foreground groups are probed for exit during [`HANGUP_GRACE`]. A process group
-/// that is not our child has no exit event, so it can only be probed.
+/// How often the tree is probed for exit during [`HANGUP_GRACE`]. A process group that is not our
+/// child has no exit event, so it can only be probed.
 const HANGUP_PROBE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
 
-/// Waits until every group in `alive` has exited (`probe` returns false for it) or `grace` has
-/// passed, sleeping `interval` between probes. Returns the groups still alive at the end: the
-/// only ones that may be SIGKILLed. A group that exits within the grace is dropped from the list
-/// and never killed. The clock and sleep are injected so the policy is testable without real
-/// processes or real time.
-fn wait_for_groups_to_exit(
-    mut alive: Vec<i32>,
-    grace: std::time::Duration,
-    interval: std::time::Duration,
-    mut probe: impl FnMut(i32) -> bool,
-    mut now: impl FnMut() -> std::time::Instant,
-    mut sleep: impl FnMut(std::time::Duration),
-) -> Vec<i32> {
-    let deadline = now() + grace;
-    while !alive.is_empty() && now() < deadline {
-        sleep(interval);
-        alive.retain(|&g| probe(g));
-    }
-    alive
+/// What is still alive when the hang-up wait ends: only these may be SIGKILLed.
+#[derive(Debug, PartialEq, Eq)]
+struct HangupSurvivors {
+    /// The shell itself has not exited (it is still our unreaped child).
+    shell_running: bool,
+    /// The shell's own process group still has members: the running shell, or, once the shell
+    /// is gone, what it ran in its own group (`exec`-less programs of a shell without job
+    /// control, `$(...)` children).
+    shell_group: bool,
+    /// The other hung-up groups (the pty's foreground job) still alive.
+    others: Vec<i32>,
 }
 
-/// The groups to SIGKILL once the grace is over: the shell's own group (its unreaped shell is
-/// killed directly by the caller anyway, and anything else in that group goes with it) and the
-/// groups that outlived the grace. A group that already exited is not signalled again, so a
-/// recycled group id is never hit.
-fn groups_to_kill(targets: &[i32], shell_pid: i32, survivors: &[i32]) -> Vec<i32> {
+/// Waits until the shell has exited, its own group `shell_group` has no members left, and every
+/// group in `others` has exited, or until `grace` has passed, sleeping `interval` between probes.
+///
+/// `shell_running` answers for the shell itself and reaps it once it has exited (`try_wait`), so
+/// that the zombie no longer counts as a member of its group and `group_alive(shell_group)` then
+/// answers for the rest of the group only. A reaped shell's pid cannot be recycled while its
+/// group still has members (the kernel keeps a pid in use as a group id), and once the group is
+/// seen empty it is not probed or signalled again. `group_alive` is `killpg(g, 0)`. The clock and
+/// sleep are injected so the policy is testable without real processes or real time.
+#[allow(clippy::too_many_arguments)]
+fn wait_for_tree_to_exit(
+    shell_group: i32,
+    mut others: Vec<i32>,
+    grace: std::time::Duration,
+    interval: std::time::Duration,
+    mut shell_running: impl FnMut() -> bool,
+    mut group_alive: impl FnMut(i32) -> bool,
+    mut now: impl FnMut() -> std::time::Instant,
+    mut sleep: impl FnMut(std::time::Duration),
+) -> HangupSurvivors {
+    let deadline = now() + grace;
+    let mut shell = true;
+    // Unknown (so assumed) while the shell runs: its own group contains it.
+    let mut shell_group_members = true;
+    loop {
+        if shell {
+            shell = shell_running();
+        }
+        if !shell && shell_group_members {
+            shell_group_members = group_alive(shell_group);
+        }
+        others.retain(|&g| group_alive(g));
+        let all_gone = !shell && !shell_group_members && others.is_empty();
+        if all_gone || now() >= deadline {
+            break;
+        }
+        sleep(interval);
+    }
+    HangupSurvivors {
+        shell_running: shell,
+        shell_group: shell || shell_group_members,
+        others,
+    }
+}
+
+/// The groups to SIGKILL once the grace is over: those among `targets` still alive at its end.
+/// A group is not signalled again once seen gone.
+fn groups_to_kill(targets: &[i32], shell_pid: i32, survivors: &HangupSurvivors) -> Vec<i32> {
     targets
         .iter()
         .copied()
-        .filter(|g| *g == shell_pid || survivors.contains(g))
+        .filter(|g| {
+            if *g == shell_pid {
+                survivors.shell_group
+            } else {
+                survivors.others.contains(g)
+            }
+        })
         .collect()
 }
 
-/// Ends the pty shell's own group and the pty's foreground group: SIGHUP first (so programs can
-/// clean up), then SIGKILL after [`HANGUP_GRACE`] if the foreground group is still alive. Same
-/// reaping precondition as [`signal_shell_tree`]. Blocks for up to the grace: callers run it on
-/// the reaper thread ([`terminate_and_reap`]), never on a loop or the UI thread.
-pub(crate) fn terminate_shell_tree(shell_pid: u32) {
-    terminate_shell_tree_with_grace(shell_pid, HANGUP_GRACE);
+/// Ends `child` (a pty shell, the session leader) and its tree, and reaps it: SIGHUP to the
+/// shell's own group and the pty's foreground group (so programs can clean up), then, after at
+/// most `grace`, SIGKILL to whichever of them is still alive, and a direct kill of a shell that
+/// still runs. A shell, or a program in the shell's own group (`exec vim`, a launch command run
+/// as the pty child, a shell without job control), gets the same grace as the foreground job.
+/// Blocks for up to `grace` plus the reap: callers run it on the reaper thread
+/// ([`terminate_and_reap`]), never on a loop or the UI thread.
+fn terminate_tree_with_grace(child: &mut std::process::Child, grace: std::time::Duration) {
+    let still_running = matches!(child.try_wait(), Ok(None));
+    match i32::try_from(child.id()) {
+        Ok(shell_pid) if still_running => hang_up_tree(child, shell_pid, grace),
+        _ => {}
+    }
+    // Direct kill so the shell dies even if the group signals failed (a no-op once reaped).
+    let _ = child.kill();
+    if let Err(err) = child.wait() {
+        log::warn!("Failed to reap pty shell {}: {err}", child.id());
+    }
 }
 
-fn terminate_shell_tree_with_grace(shell_pid: u32, grace: std::time::Duration) {
-    let Ok(shell_pid) = i32::try_from(shell_pid) else {
-        return;
-    };
+fn hang_up_tree(child: &mut std::process::Child, shell_pid: i32, grace: std::time::Duration) {
     let targets = target_groups(shell_pid, foreground_group(shell_pid), own_pgrp());
-    let mut alive: Vec<i32> = targets
+    let alive: Vec<i32> = targets
         .iter()
         .copied()
         .filter(|&g| killpg(g, libc::SIGHUP))
         .collect();
-    // A stopped foreground job would never act on SIGHUP.
+    if !alive.contains(&shell_pid) {
+        // The shell leads no group of that id (not a session leader): hang it up directly. It is
+        // our unreaped child, so its pid is still its own.
+        // SAFETY: plain signal delivery to our own unreaped child.
+        unsafe { libc::kill(shell_pid, libc::SIGHUP) };
+    }
+    // A stopped job would never act on SIGHUP.
     for &pgrp in &alive {
         killpg(pgrp, libc::SIGCONT);
     }
-    // The shell's own group contains the (unreaped) shell, which the caller kills directly; only
-    // wait on other groups.
-    alive.retain(|&g| g != shell_pid);
-    // Signal 0 only probes existence. Zombies still count, but their parent is the shell or init
-    // and they are reaped promptly; the grace bounds the wait regardless.
-    let survivors = wait_for_groups_to_exit(
-        alive,
+    let others: Vec<i32> = alive.into_iter().filter(|&g| g != shell_pid).collect();
+    // Signal 0 only probes existence. Zombies of other groups still count, but their parent is
+    // the shell or init and they are reaped promptly; the grace bounds the wait regardless.
+    let survivors = wait_for_tree_to_exit(
+        shell_pid,
+        others,
         grace,
         HANGUP_PROBE_INTERVAL,
+        || matches!(child.try_wait(), Ok(None)),
         |g| killpg(g, 0),
         std::time::Instant::now,
         std::thread::sleep,
     );
-    if !survivors.is_empty() {
+    if survivors.shell_group || !survivors.others.is_empty() {
         log::info!(
-            "Foreground process group(s) {survivors:?} ignored SIGHUP for {grace:?}; sending SIGKILL"
+            "Pty shell {shell_pid}'s tree was still running {grace:?} after SIGHUP \
+             ({survivors:?}); sending SIGKILL"
         );
     }
     for pgrp in groups_to_kill(&targets, shell_pid, &survivors) {
@@ -214,46 +272,42 @@ fn terminate_shell_tree_with_grace(shell_pid: u32, grace: std::time::Duration) {
 
 /// Ends `child`'s process tree and reaps the shell on a short-lived "PTY child reaper" thread, so
 /// no caller (the pty event loop, the terminal server's single loop, the UI thread) ever sits in
-/// the hang-up grace period or in `wait`. The thread owns the child, so the reaping precondition
-/// of [`terminate_shell_tree`] holds by construction.
+/// the hang-up grace period or in `wait`. The thread owns the child, so no one else can reap it
+/// while its pid is being signalled.
 ///
-/// The exit itself is waited for with a blocking `waitpid` (woken by the kernel, no polling);
-/// the only polling left is the existence probe of non-child foreground groups inside
-/// [`terminate_shell_tree`], which has no event source (a process group can only be probed, and
-/// those processes are not our children), bounded by [`HANGUP_GRACE`] and now off every loop.
+/// The shell's exit is probed with `try_wait` and finally waited for with a blocking `waitpid`;
+/// non-child foreground groups can only be probed (no event source), bounded by
+/// [`HANGUP_GRACE`] and off every loop.
 ///
 /// At app quit (#1685) nothing waits for this thread: it is detached, and the host's and the
 /// terminal server's quit budgets do not include it. If the process exits while a reaper is
 /// still inside the grace, the thread dies with it and the SIGKILL is never sent. That is the
-/// deliberate, safe outcome: the foreground program has already had its SIGHUP and finishes its
-/// cleanup; one that ignores SIGHUP keeps running, exactly as after closing a plain terminal
-/// emulator, which hangs up and never SIGKILLs. Quit never waits on a grace and never kills a
-/// program mid-save.
-pub(crate) fn terminate_and_reap(mut child: std::process::Child) {
-    let work = move || {
-        if matches!(child.try_wait(), Ok(None)) {
-            terminate_shell_tree(child.id());
-        }
-        // Direct kill so the shell dies even if the group signals failed.
-        let _ = child.kill();
-        if let Err(err) = child.wait() {
-            log::warn!("Failed to reap pty shell {}: {err}", child.id());
-        }
-    };
+/// deliberate, safe outcome: the shell and the foreground program have already had their SIGHUP
+/// and finish their cleanup; one that ignores SIGHUP keeps running, exactly as after closing a
+/// plain terminal emulator, which hangs up and never SIGKILLs. Quit never waits on a grace and
+/// never kills a program mid-save.
+pub(crate) fn terminate_and_reap(child: std::process::Child) {
+    terminate_and_reap_with_grace(child, HANGUP_GRACE);
+}
+
+fn terminate_and_reap_with_grace(mut child: std::process::Child, grace: std::time::Duration) {
+    let work = move |grace: std::time::Duration| terminate_tree_with_grace(&mut child, grace);
     let work = std::sync::Arc::new(std::sync::Mutex::new(Some(work)));
     let thread_work = work.clone();
     let spawned = std::thread::Builder::new()
         .name("PTY child reaper".into())
         .spawn(move || {
             if let Some(mut work) = thread_work.lock().ok().and_then(|mut w| w.take()) {
-                work();
+                work(grace);
             }
         });
     if let Err(err) = spawned {
-        // Out of threads: do it here rather than leak a zombie and a live process tree.
+        // Out of threads: do it here rather than leak a zombie and a live process tree, but with
+        // no grace: this is the caller's thread (a pty loop or the server's single loop), which
+        // must not sit in a grace period per pane.
         log::error!("Failed to spawn the child reaper thread ({err}); reaping inline");
         if let Some(mut work) = work.lock().ok().and_then(|mut w| w.take()) {
-            work();
+            work(std::time::Duration::ZERO);
         }
     }
 }

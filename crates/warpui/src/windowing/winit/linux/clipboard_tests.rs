@@ -288,8 +288,8 @@ mod read_retry_tests {
 
 mod bounded_wait_tests {
     use super::super::{
-        EXIT_HANDOFF_BUDGET, EXIT_PENDING_WRITE_WAIT, flush_for_exit, read_timed_out,
-        run_with_budget,
+        ARBOARD_MANAGER_HANDOVER_WAIT, EXIT_HANDOFF_BUDGET, EXIT_PENDING_WRITE_WAIT,
+        flush_for_exit, read_timed_out, run_with_budget,
     };
     use std::time::Duration;
 
@@ -325,12 +325,19 @@ mod bounded_wait_tests {
 
     /// #1692 / #1693: the quit-time waits outlast a copy that takes a few hundred ms to land on a
     /// loaded machine (they were 300 ms / 600 ms), the handoff budget covers the pending wait plus
-    /// arboard's 1 s manager handover, and the whole handoff fits inside the 5 s signal shutdown
-    /// deadline.
+    /// arboard's 1 s manager handover plus slack, and the whole handoff fits inside the 5 s signal
+    /// shutdown deadline.
     #[test]
     fn exit_waits_survive_a_loaded_machine_within_the_shutdown_deadline() {
         assert!(EXIT_PENDING_WRITE_WAIT >= Duration::from_secs(2));
-        assert!(EXIT_HANDOFF_BUDGET >= EXIT_PENDING_WRITE_WAIT + Duration::from_secs(1));
+        assert!(ARBOARD_MANAGER_HANDOVER_WAIT >= Duration::from_secs(1));
+        // The pending wait, the manager handover, and slack for the hops around them.
+        assert!(
+            EXIT_HANDOFF_BUDGET
+                >= EXIT_PENDING_WRITE_WAIT
+                    + ARBOARD_MANAGER_HANDOVER_WAIT
+                    + Duration::from_millis(250)
+        );
         assert!(EXIT_HANDOFF_BUDGET < crate::platform::termination_signals::SHUTDOWN_DEADLINE);
     }
 

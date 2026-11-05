@@ -966,6 +966,24 @@ impl Inner {
 			}
 		}
 
+		// Phosphor (#1693 review): with no clipboard manager running there is nobody to take
+		// the data. The X server would answer the SAVE_TARGETS request with a None-property
+		// SelectionNotify, which is not treated as "done" below (KDE 5.18 sends one and then
+		// requests anyway), so the handover would wait out its whole timeout on every quit after
+		// a copy. Ask who owns CLIPBOARD_MANAGER first and skip the handover when nobody does.
+		let manager = self
+			.server
+			.conn
+			.get_selection_owner(self.atoms.CLIPBOARD_MANAGER)
+			.map_err(into_unknown)?
+			.reply()
+			.map_err(into_unknown)?
+			.owner;
+		if manager == NONE {
+			trace!("No clipboard manager owns CLIPBOARD_MANAGER; nothing to hand over to");
+			return Ok(());
+		}
+
 		// It's important that we lock the state before sending the request
 		// because we don't want the request server thread to lock the state
 		// after the request but before we can lock it here.
@@ -985,10 +1003,12 @@ impl Inner {
 		self.server.conn.flush().map_err(into_unknown)?;
 
 		*handover_state = ManagerHandoverState::InProgress;
-		// Phosphor (#1693): 100 ms upstream. This runs only at quit, on a helper thread, and is
-		// woken by the manager finishing (`handover_cv`), so it is a give-up for a clipboard
-		// manager that is slow on a loaded machine, not a pace. The caller bounds the whole
-		// handoff (`EXIT_HANDOFF_BUDGET` in warpui's linux clipboard).
+		// Phosphor (#1693): 100 ms upstream. This runs only at quit, on a helper thread, and
+		// only when a clipboard manager owns CLIPBOARD_MANAGER (checked above). It is woken by
+		// the manager finishing (`handover_cv`), so it is a give-up for a manager that is slow
+		// on a loaded machine, not a pace; a manager that never fetches the data waits it out.
+		// The caller bounds the whole handoff (`EXIT_HANDOFF_BUDGET` in warpui's linux
+		// clipboard).
 		let max_handover_duration = Duration::from_millis(1_000);
 
 		// Note that we are using a parking_lot condvar here, which doesn't wake up

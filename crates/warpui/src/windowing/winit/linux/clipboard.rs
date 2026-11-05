@@ -43,12 +43,26 @@ const FULL_READ_BUDGET: Duration = Duration::from_millis(2_000);
 /// writer finishing the copy (a Condvar notify) and the handoff budget by the helper thread's
 /// done message, so a normal quit -- no copy in flight, or one that lands at once -- is no
 /// slower for them. They only need to outlast a loaded machine, where a copy that takes a few
-/// hundred ms to land used to be dropped at quit (300 ms / 600 ms). The handoff budget covers the
-/// pending wait plus arboard's own clipboard-manager handover wait (1 s, also event-driven), and
-/// stays under the signal shutdown deadline (`termination_signals::SHUTDOWN_DEADLINE`, 5 s) so a
-/// SIGTERM quit still gets to the end of its steps.
+/// hundred ms to land used to be dropped at quit (300 ms / 600 ms).
+///
+/// The handoff itself is arboard's clipboard-manager handover ([`ARBOARD_MANAGER_HANDOVER_WAIT`]).
+/// It is skipped when no clipboard manager owns `CLIPBOARD_MANAGER`, so quitting without a manager
+/// costs nothing; with one, it ends when the manager has fetched the data, and only a manager that
+/// never does waits it out. The handoff budget is the pending wait plus that handover plus a
+/// margin for the thread hops, and stays under the signal shutdown deadline
+/// (`termination_signals::SHUTDOWN_DEADLINE`, 5 s) so a SIGTERM quit still gets to the end of its
+/// steps.
 const EXIT_PENDING_WRITE_WAIT: Duration = Duration::from_millis(2_000);
-const EXIT_HANDOFF_BUDGET: Duration = Duration::from_millis(3_000);
+/// arboard's own wait for the clipboard manager to fetch the data
+/// (`max_handover_duration` in `lib/arboard/src/platform/linux/x11.rs`); keep the two in step.
+const ARBOARD_MANAGER_HANDOVER_WAIT: Duration = Duration::from_millis(1_000);
+/// Slack for the helper thread's start and the X round trips around the two waits.
+const EXIT_HANDOFF_MARGIN: Duration = Duration::from_millis(500);
+const EXIT_HANDOFF_BUDGET: Duration = Duration::from_millis(
+    EXIT_PENDING_WRITE_WAIT.as_millis() as u64
+        + ARBOARD_MANAGER_HANDOVER_WAIT.as_millis() as u64
+        + EXIT_HANDOFF_MARGIN.as_millis() as u64,
+);
 
 /// Whether a read that came back with nothing was a timeout. arboard flags the first slow failure,
 /// but once `FULL_READ_BUDGET` is spent the retries fail instantly (which looks like an empty

@@ -1851,22 +1851,36 @@ principle: the app must not need a quiet machine. Each timer is a give-up net th
 raising it costs a normal close or quit nothing.
 
 - **#1685 `HANGUP_GRACE` (300 ms → 5 s, `app/src/terminal/local_tty/process_tree.rs`).** On a pane close the
-  foreground program gets SIGHUP and is SIGKILLed only if it is still alive after the grace; it used to be killed
-  mid-save after 300 ms. The grace runs on the "PTY child reaper" thread, so the close is instant, and it ends as
-  soon as the foreground group exits. Only groups still alive at the grace (plus the shell's own group) are
-  SIGKILLed. At app quit nothing waits on a reaper: if the process exits inside a grace the SIGKILL is never sent;
-  the program has had its SIGHUP, and one that ignores it keeps running, as after closing a plain terminal
-  emulator. Tests (`process_tree_tests.rs`): fake-clock policy `program_that_exits_within_the_grace_is_never_killed`,
-  `program_that_ignores_sighup_is_killed_after_the_grace`, `only_the_groups_alive_at_the_grace_are_killed`,
-  `no_foreground_group_means_no_wait`, `hangup_grace_survives_a_loaded_machine`; real processes on a pty (Linux):
-  `close_returns_at_once_while_the_reaper_sits_in_the_grace` (sits out the full 5 s grace in the background),
-  `foreground_cleanup_after_sighup_is_not_killed` (a 1 s cleanup finishes), and
-  `foreground_program_ignoring_sighup_is_killed_after_the_grace` (500 ms grace via `terminate_shell_tree_with_grace`).
+  shell's own group and the pty's foreground group get SIGHUP, and whatever is still alive after the grace is
+  SIGKILLed; it used to be killed mid-save after 300 ms. The shell's own group gets the same grace as the foreground
+  job (review F2): `exec vim`, a launch command run as the pty child, a shell without job control, zsh saving its
+  HISTFILE. The shell is probed with `try_wait` (reaped once it exits, so its zombie no longer counts) and its group
+  with `killpg(g, 0)`; the shell group is SIGKILLed only if the shell still runs or other members remain. An idle
+  shell exits in ms, so the wait ends at once. The grace runs on the "PTY child reaper" thread, so the close is
+  instant; the inline fallback when that thread cannot be spawned uses no grace (it runs on a pty or server loop).
+  At app quit nothing waits on a reaper: if the process exits inside a grace the SIGKILL is never sent; the programs
+  have had their SIGHUP, and one that ignores it keeps running, as after closing a plain terminal emulator.
+  Tests (`process_tree_tests.rs`): fake-clock policy (`wait_for_tree_to_exit`)
+  `program_that_exits_within_the_grace_is_never_killed`, `program_that_ignores_sighup_is_killed_after_the_grace`,
+  `only_the_groups_alive_at_the_grace_are_killed`,
+  `program_in_the_shell_group_that_exits_within_the_grace_is_never_killed`,
+  `shell_group_is_killed_only_if_something_in_it_outlived_the_grace`, `idle_shell_close_ends_the_wait_at_once`,
+  `hangup_grace_survives_a_loaded_machine`; real processes on a pty (Linux): `idle_shell_close_is_fast`,
+  `close_returns_at_once_while_the_reaper_sits_in_the_grace` (1 s grace via `terminate_and_reap_with_grace`),
+  `foreground_cleanup_after_sighup_is_not_killed` and `shell_group_cleanup_after_sighup_is_not_killed` (a 1 s
+  cleanup finishes, in the foreground job and in the shell's own group after `exec`), and
+  `foreground_program_ignoring_sighup_is_killed_after_the_grace` (1 s grace; a second thread sees the program alive
+  200 ms before the grace ends).
 - **#1692 / #1693 Linux clipboard at quit (`crates/warpui/src/windowing/winit/linux/clipboard.rs`).**
-  `EXIT_PENDING_WRITE_WAIT` 300 ms → 2 s (woken by the serial writer's Condvar), `EXIT_HANDOFF_BUDGET` 600 ms → 3 s
+  `EXIT_PENDING_WRITE_WAIT` 300 ms → 2 s (woken by the serial writer's Condvar), `EXIT_HANDOFF_BUDGET` 600 ms → 3.5 s
   (woken by the helper thread's done message, `run_with_budget`), and arboard's clipboard-manager handover wait
-  100 ms → 1 s (`lib/arboard/src/platform/linux/x11.rs`, woken by `handover_cv`). The budget covers the pending wait
-  plus the handover and stays under the 5 s signal `SHUTDOWN_DEADLINE`. Tests (`clipboard_tests.rs`,
+  100 ms → 1 s (`lib/arboard/src/platform/linux/x11.rs`, woken by `handover_cv` when the manager has fetched the
+  data). The handover is skipped when nothing owns `CLIPBOARD_MANAGER` (review F1): without a manager the X server
+  answers with a None-property `SelectionNotify` that arboard rightly does not take as "done" (KDE 5.18 sends one and
+  then requests anyway), so every quit after a copy would otherwise wait out the whole handover. `EXIT_HANDOFF_BUDGET`
+  is derived: pending wait + handover (`ARBOARD_MANAGER_HANDOVER_WAIT`) + 500 ms margin = 3.5 s, under the 5 s signal
+  `SHUTDOWN_DEADLINE`. Not capped by the time left on that deadline: when the watchdog fires the process exits,
+  and the clipboard handoff is the last quit step. Tests (`clipboard_tests.rs`,
   `bounded_wait_tests`): `exit_waits_survive_a_loaded_machine_within_the_shutdown_deadline`,
   `exit_handoff_wait_ends_when_the_work_does`, `exit_handoff_wait_gives_up_at_its_budget`, with the existing
   `exit_wait_is_woken_by_the_writer_finishing_not_polled`.
