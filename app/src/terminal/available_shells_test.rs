@@ -407,3 +407,47 @@ fn saved_shell_is_used_while_the_scan_is_unfinished() {
         assert!(shells.resolve_preferred_directly(&gone).is_none());
     });
 }
+
+#[test]
+fn saved_shell_the_finished_scan_does_not_list_is_still_used() {
+    // r18u19 (Windows Git Bash pass): the scan lists Git Bash only as the MSYS2
+    // `Git\usr\bin\bash.exe`, so a saved `Git\bin\bash.exe` matched nothing once the scan had
+    // finished and new tabs started PowerShell. A finished scan must give the same answer as an
+    // unfinished one: the saved shell when it exists, the default only when it is gone.
+    VirtualFS::test("saved_shell_not_in_finished_scan", |dirs, mut sandbox| {
+        sandbox.mkdir("bin");
+        sandbox.with_files(vec![Stub::MockExecutable("bin/zsh")]);
+        let zsh = dirs.tests().join("bin").join("zsh");
+        let pref = NewSessionShell::Executable(zsh.display().to_string());
+
+        let scanned = make_available_shells(bash_scan().shells); // finished, lacks the saved zsh
+        let unscanned = unscanned_available_shells();
+        let got = scanned.shell_for_preference(pref.clone());
+        assert!(
+            got.matches_preference(&pref),
+            "the saved shell, not the default"
+        );
+        assert!(
+            unscanned
+                .shell_for_preference(pref.clone())
+                .matches_preference(&pref)
+        );
+
+        // A shell the scan does list is still the scanned entry.
+        let bash = NewSessionShell::Executable("/bin/bash".to_string());
+        assert!(
+            scanned
+                .shell_for_preference(bash.clone())
+                .matches_preference(&bash)
+        );
+
+        // A saved shell that no longer exists falls back to the default, scanned or not.
+        let gone = NewSessionShell::Executable(
+            dirs.tests().join("bin").join("fish").display().to_string(),
+        );
+        for shells in [&scanned, &unscanned] {
+            let got = shells.shell_for_preference(gone.clone());
+            assert!(matches!(got.state.as_ref(), Config::SystemDefault));
+        }
+    });
+}
