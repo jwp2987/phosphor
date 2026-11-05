@@ -711,6 +711,146 @@ def r18u19_windows_relaunch_heredoc_io_and_back_line():
 
 
 @check
+def r18u22_heredoc_wrapper_mirror_and_control_verdicts():
+    """#1129 (r18u22): the harness's copy of the app's one-line wrapper is byte-identical to posix_long_command.rs (format string, script head, both
+    size thresholds); a step with no file is KNOWN only when the plain-ssh control proves the remote line editor is the bottleneck (and only up to
+    v0.1.17), FAIL when plain ssh was clearly faster or the bytes are wrong, NOREF on Windows when the reference console's ssh fails the same way."""
+    import re as _re
+    import cases_caseremote as rm
+    import inspect
+    rs = open(os.path.join(HERE, "..", "..", "..", "app", "src", "terminal", "writeable_pty", "posix_long_command.rs")).read()
+
+    def rust_fmt(holder):
+        """the format! string literal of wrapper_line that holds `holder`, unescaped"""
+        body = rs[rs.index("pub(super) fn wrapper_line"):]
+        for m in _re.finditer(r'format!\(\s*"((?:[^"\\]|\\.)*)"', body, _re.S):
+            if holder in m.group(1):
+                lit = _re.sub(r"\\\n\s*", "", m.group(1))     # a Rust string's backslash-newline skips the newline and the next line's indent
+                return lit.replace('\\"', '"').replace("\\n", "\n")
+        raise AssertionError("no format! holding %s in wrapper_line" % holder)
+    tmpl = rust_fmt("{encoded}").replace("{encoded}", "\0").replace("{{", "{").replace("}}", "}")
+    assert tmpl.replace("\0", "QUJD") == rm.wrapper_from_encoded("QUJD"), (tmpl, rm.wrapper_from_encoded("QUJD"))
+    head = rust_fmt("{command}").replace("{command}", "\0")
+    assert head == rm.WRAPPER_SCRIPT_HEAD + "\0\n", (head, rm.WRAPPER_SCRIPT_HEAD)
+    assert "MIN_WRAPPED_BYTES: usize = 128 * 1024;" in rs and rm.WRAPPED_MIN == 128 * 1024
+    assert "MIN_WRAPPED_BYTES_BRACKETED: usize = 512 * 1024;" in rs and rm.WRAPPED_MIN_BRACKETED == 512 * 1024
+    import base64
+    line = rm.wrapper_line("cat > f <<'E'\na\nE")
+    enc = _re.search(r"printf %s '([A-Za-z0-9+/=]+)'", line).group(1)
+    assert base64.b64decode(enc).decode() == 'rm -f "$__pc"; unset __pc\ncat > f <<\'E\'\na\nE\n'
+    assert rm.app_wraps("x" * (128 * 1024), False) and not rm.app_wraps("x" * (128 * 1024 - 1), False)
+    assert not rm.app_wraps("x" * (600 * 1024), True) and rm.app_wraps("x\n" * (300 * 1024), True) and not rm.app_wraps("x\n" * 1000, True)
+    # the Windows fake sshd's accounting
+    assert rm.sshd_input_bytes(["client input so far: 131072 bytes in 3 chunks, 65536 written", "client input ended: 68 bytes in 2 chunks, 68 written"]) == 131072
+    assert rm.sshd_input_bytes(["conpty output ended: 9 bytes sent"]) is None
+    # verdicts, with the r18u22 macOS numbers: bash 3.2 at 100 %, the app at 52 %, 190 KB wrapper line 86 s, the 600 KB step no file after 180 s
+
+    def rec(name, secs, got=None, want=600008, late=None, ok=False, exact=False, wrapped_len=800_400, sent=600_050, peak=None):
+        return dict(label="L", name=name, sent=sent, want=want, got=got, secs=secs, late=late, timeout=180 if name == "hd_big.txt" else 90, peak=peak or {},
+                    wrapped_len=wrapped_len, ok=ok, exact=exact, first=None if got is None or exact else 7)
+    ctl_env = {"H": dict(s=4.0, got=142166, exact=True, peak={}, why=None, label="h"),
+               "W": dict(s=86.0, got=142166, exact=True, peak={"bash": 100.0}, why=None, label="w", line=190_000)}
+    ctl_fast = {"H": ctl_env["H"], "W": dict(ctl_env["W"], s=3.0)}
+    orig_v = cases.app_version
+    try:
+        cases.app_version = lambda repo=None: "0.1.17"
+        r = cases.Result("t", "terminal")
+        rm.judge_step(None, r, rec("hd_big.txt", 180.6, peak={"bash": 100.0, "app": 292.5}), ctl_env, False)
+        assert not r.fails and len(r.notes) == 1 and r.notes[0].startswith("KNOWN: L: remote file not byte-exact") and "ENV: plain ssh" in r.notes[0], (r.fails, r.notes)
+        assert "ACCEPTED_FOR_RELEASE #1129 v0.1.17" in r.notes[0] and "the app's one-line wrapper is the slow path" in r.notes[0], r.notes
+        assert "'bash': 100.0" in r.notes[0], r.notes                               # the numbers travel with the verdict
+        cases.app_version = lambda repo=None: "0.1.18"
+        r = cases.Result("t", "terminal")
+        rm.judge_step(None, r, rec("hd_big.txt", 180.6), ctl_env, False)
+        assert len(r.fails) == 1 and "but no ACCEPTED_FOR_RELEASE entry is in force" in r.fails[0] and not r.notes, (r.fails, r.notes)
+        cases.app_version = lambda repo=None: "0.1.17"
+        for ctl, bracketed, want in ((ctl_fast, False, "APP: plain ssh took 3.0 s"), (None, False, "(control: no control ran)")):
+            r = cases.Result("t", "terminal")
+            rm.judge_step(None, r, rec("hd_big.txt", 180.6), ctl, bracketed)
+            assert len(r.fails) == 1 and want in r.fails[0] and not r.notes, (want, r.fails, r.notes)
+        # wrong bytes are never KNOWN
+        r = cases.Result("t", "terminal")
+        rm.judge_step(None, r, rec("hd_big.txt", 12.0, got=600008), ctl_env, False)
+        assert len(r.fails) == 1 and "first difference at byte 7" in r.fails[0], r.fails
+        # the 2k step: finished in 86 s next to a plain-ssh 86 s is a pass; 140 s next to 50 s fails as the slow side; late but no slower than plain ssh is ENV
+        r = cases.Result("t", "terminal")
+        rm.judge_step(None, r, rec("hd_2k.txt", 86.4, got=142166, want=142166, ok=True, exact=True, wrapped_len=190_000, sent=142_200), ctl_env, False)
+        assert not r.fails and not r.notes, (r.fails, r.notes)
+        r = cases.Result("t", "terminal")
+        slow = {"H": ctl_env["H"], "W": dict(ctl_env["W"], s=50.0)}
+        rm.judge_step(None, r, rec("hd_2k.txt", 140.0, got=142166, want=142166, ok=True, exact=True, wrapped_len=190_000, sent=142_200), slow, False)
+        assert len(r.fails) == 1 and "Phosphor is the slow side" in r.fails[0], r.fails
+        r = cases.Result("t", "terminal")
+        rm.judge_step(None, r, rec("hd_2k.txt", 90.2, got=142166, want=142166, late=95.0, exact=True, wrapped_len=190_000, sent=142_200), ctl_env, False)
+        assert not r.fails and r.notes and r.notes[0].startswith("KNOWN:") and "arrived after 95.0 s" in r.notes[0], (r.fails, r.notes)
+        # with bracketed paste (Linux bash 5.x) the 2k here-doc is NOT wrapped: the wrapper control does not cover it
+        r = cases.Result("t", "terminal")
+        rm.judge_step(None, r, rec("hd_2k.txt", 90.2, want=142166, wrapped_len=190_000, sent=142_200), ctl_env, True)
+        assert len(r.fails) == 1 and "not (provably) sent through the app's wrapper" in r.fails[0], r.fails
+        # the zsh / 10 KB steps are never judged by the wrapper control
+        r = cases.Result("t", "terminal")
+        rm.judge_step(None, r, rec("hd_zsh.txt", 120.5, want=142166), ctl_env, False)
+        assert len(r.fails) == 1 and "not a bash wrapper-path step" in r.fails[0], r.fails
+        # Windows: the reference console's ssh failing the same here-doc -> NOREF with the sshd's byte count; delivering it -> APP FAIL; no control -> FAIL
+        io = ["client input ended: 68 bytes in 2 chunks, 68 written to the pseudo console"]
+        r = cases.Result("t", "terminal")
+        rm.judge_step(None, r, rec("hd_2k.txt", 90.1, want=142166, sent=142_200), {"H": dict(s=None, got=-1, exact=False, peak={}, why="no file within 120 s", label="h")}, None, io)
+        assert not r.fails and r.noref and "PLATFORM" in r.noref[0] and "test sshd: 68 client bytes received of the 142200-byte paste" in r.noref[0], (r.fails, r.noref)
+        assert r.metrics["hd_2k_txt_sshd_got"] == 68
+        r = cases.Result("t", "terminal")
+        rm.judge_step(None, r, rec("hd_2k.txt", 90.1, want=142166, sent=142_200), {"H": dict(s=7.5, got=142166, exact=True, peak={}, why=None, label="h")}, None)
+        assert len(r.fails) == 1 and "APP: the reference console's ssh delivered the same here-doc in 7.5 s" in r.fails[0], r.fails
+        r = cases.Result("t", "terminal")
+        rm.judge_step(None, r, rec("hd_2k.txt", 90.1, want=142166, sent=142_200), {"H": dict(s=None, got=-1, exact=False, peak={}, why="reference console not available: x", label="h")}, None)
+        assert len(r.fails) == 1 and "could not run" in r.fails[0], r.fails
+        r = cases.Result("t", "terminal")
+        rm.judge_step(None, r, rec("hd_line.txt", 60.1, want=10001, sent=10_040), {"H": dict(s=None, got=-1, exact=False, peak={}, why="no file within 120 s", label="h")}, None)
+        assert len(r.fails) == 1 and "does not cover it" in r.fails[0], r.fails
+    finally:
+        cases.app_version = orig_v
+    assert cases.accepted_for_release("remote_heredoc_remote_editor", "0.1.17")["issue"] == 1129
+    assert cases.accepted_for_release("remote_heredoc_remote_editor", "0.1.18") is None
+    v = cases.app_version()
+    assert v and cases.version_tuple(v) <= (0, 1, 17), "ACCEPTED_FOR_RELEASE remote_heredoc_remote_editor (#1129) was for v0.1.17; app/Cargo.toml is %s: re-decide it" % v
+    # the case: the 600 KB step runs LAST (its timeout must not take the zsh/fish steps with it), a step without a file ends the stuck remote shell,
+    # the remote shell's pid is recorded on connect, and the verdicts come after the control
+    src = inspect.getsource(rm.c_remote_heredoc)
+    assert src.index('"hd_big.txt"') > src.index('for key in ("zsh", "fish")'), "the 600 KB step must run after the zsh/fish steps"
+    assert "end_stuck_session(ctx, r, label)" in src and "record_rpid(ctx)" in src and src.index("heredoc_control(") < src.index("judge_step(")
+    assert "r.check(" not in inspect.getsource(rm._send_step), "_send_step records; judge_step decides"
+    if os.name != "nt":
+        p = subprocess.Popen(["sleep", "30"])
+        try:
+            assert p.pid in rm.descendants(os.getpid()), "descendants() misses a child"
+        finally:
+            p.kill()
+            p.wait()
+        # the control's pty pump: what is written comes back (cat echoes), nothing blocks on a full pty
+        import pty
+        pid, fd = pty.fork()
+        if pid == 0:
+            try:
+                os.execv("/bin/cat", ["cat"])
+            finally:
+                os._exit(127)
+        import fcntl
+        fcntl.fcntl(fd, fcntl.F_SETFL, fcntl.fcntl(fd, fcntl.F_GETFL) | os.O_NONBLOCK)
+        pump = rm._PtyPump(fd)
+        pump.start()
+        try:
+            pump.put(b"abc\r" * 5000)
+            t0 = time.time()
+            while (pump.left() or pump.read_n < 20000) and time.time() - t0 < 10:
+                time.sleep(0.05)
+            assert pump.left() == 0 and pump.read_n >= 20000, (pump.left(), pump.read_n)
+        finally:
+            os.kill(pid, 9)
+            pump.stop()
+            os.close(fd)
+            os.waitpid(pid, 0)
+
+
+@check
 def interleaved_block_schedule_and_runner():
     import lat
     sch = lat.block_schedule(60, block=5, warm=3, lead=1)

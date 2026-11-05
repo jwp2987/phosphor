@@ -1779,6 +1779,37 @@ Harness changes plus two small app changes. `run.py --self-test` covers the harn
   `cases_robust.start_app` do: the main window, a prompt (Git Bash) or the fixed settle (PowerShell), then the key proof (which also
   puts a PowerShell pane back in the case dir).
 
+## r18u22 `remote_heredoc_paste` (#1129): plain-ssh control, verdicts, the pane left local
+
+Harness only; `run.py --self-test` covers it (`r18u22_heredoc_wrapper_mirror_and_control_verdicts`).
+
+- **What r18u22 showed (macOS, both modes).** The 2,000-line here-doc (142 KB, sent by the app as its 190 KB base64 wrapper line, since
+  the remote `/bin/bash` 3.2 has no bracketed paste) took 86.4 s with bash at 100 % cpu and the app at 52-53 %; the 10 KB single line took
+  0.54 s (bash 8-12 %). 10 KB to 190 KB on one line is 19x the size for 160x the time (exponent ~1.7): the remote readline is
+  super-linear in the line length and single-threaded at 100 %, while the app had headroom. The 600 KB step (an ~800 KB wrapper line;
+  extrapolated 6-17 min) had no file after 180 s (bash 100 %, the app 290 % drawing the echo; bash was still the side at its limit). It then
+  cascaded: `zsh -f`, `exit` and run.py's where-probe queued behind the busy line, hence `pane_not_local_after_remote_heredoc_paste`.
+- **Control.** When a step fails, or the 2k step takes over 20 s, the case runs the same bytes through plain ssh with no Phosphor
+  (`plain_ssh_send`: `ssh -tt fake` in a pty that the harness drains faster than any terminal does, the same sshd and remote rc). Two
+  variants, cached per run because neither involves the app: **W**, the app's own wrapper line for the 2k here-doc
+  (`wrapper_line`, a byte-for-byte mirror of `posix_long_command.rs` that the self-test checks against the Rust source), and **H**, the
+  here-doc itself as a terminal paste sends it (2,000 short lines). On Windows the control is **H** in the reference console (Git Bash
+  + the same msys ssh + the same fake sshd, `conhost_ssh_send`), as big_paste's control is.
+- **Verdicts** (`classify_timeout`, `judge_step`). Wrong bytes always FAIL. A step with no file in its budget is **ENV** when plain ssh
+  with the wrapper line, scaled linearly to the step's line (a lower bound), plus the 1.5x + 10 s tolerance could not have finished in the
+  time the app had. ENV is reported as `KNOWN` with the numbers while `ACCEPTED_FOR_RELEASE["remote_heredoc_remote_editor"]` (#1129,
+  v0.1.17) is in force, and FAILS after that release. If plain ssh was clearly faster, the step FAILS as APP. A step the control does not cover
+  FAILS: no control, a step that was not provably wrapped (bash with bracketed paste and under 512 KB), zsh, fish, or the 10 KB line. A 2k
+  step that finished but took over 1.5x + 10 s of the plain-ssh time also FAILS. When H is much faster than W, the text says so: on that
+  remote bash the app's one-line wrapper, not the paste, is the slow path, and that design question stays open on #1129. On Windows, a
+  reference console that fails the same here-doc makes the step NOREF (PLATFORM) and one that delivers it makes the step FAIL as APP. The
+  fake sshd's received-byte count (`hd_*_sshd_got`) is part of the text either way.
+- **The pane is left local.** The remote shell's pid is recorded on connect (`echo $$ $(cat /proc/$$/winpid) > ~/.appci_rpid`). When a step
+  times out, the harness ends that shell and its descendants (POSIX: SIGKILL to the descendants, then SIGHUP and SIGKILL to the shell;
+  Windows: `taskkill /T /F` of the msys shell's Windows pid). It then proves the pane LOCAL and reconnects for the next step. The 600 KB step
+  now runs LAST, after zsh and fish. The 2k step keeps its 90 s verdict budget but waits up to 150 s more (`hd_2k_txt_s_after_budget`), so
+  a run that is just over the budget keeps a usable session.
+
 ## #1652: keys typed while the multi-line submit dialog is open
 
 The `Run N lines one at a time?` dialog takes focus; a key its bindings did not take was dropped unseen

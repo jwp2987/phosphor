@@ -4196,11 +4196,17 @@ def editor_open(ctx, palette, path):
 # Also (owner 2026-11-04, v0.1.17 only): the Enter-to-command-start OVERHEAD budget of latency_enter on macOS and Linux (#1606, both modes) and the Ctrl-C-under-flood
 # OVERHEAD budget of ctrl_c_d (#1653 / #1606, both modes; judged at CTRLC_FLOOD_RELEASE_MS) are KNOWN. Every other check in those cases still fails (lost keys, sample counts,
 # the plain-sleep ctrl_c control at 20 ms, the 80 ms sanity bound, regressions vs the previous/baseline build); only lat_checks' overhead-over-budget verdict changes.
+# Also (v0.1.17 only, #1129): remote_heredoc_paste's no-file-in-budget verdict when its plain-ssh CONTROL proves the remote shell's line editor is the bottleneck
+# (cases_caseremote.classify_timeout 'env': plain ssh with the app's own wrapper line, scaled to the step, could not have finished in the time the app had).
+# Wrong bytes, a step the control does not cover, and the app being slower than plain ssh still FAIL.
 ACCEPTED_FOR_RELEASE = {"editor_open_cost": {"issue": 1607, "release": "0.1.17", "why": "owner 2026-11-04: open cost accepted, release after close required"},
                         "latency_enter_overhead": {"issue": 1606, "release": "0.1.17", "platforms": ("macos", "linux"),
                                                    "why": "owner 2026-11-04: Enter-to-command-start overhead accepted for this release"},
                         "ctrl_c_flood": {"issue": 1653, "release": "0.1.17", "platforms": ("macos", "linux", "windows"),
-                                         "why": "owner 2026-11-04: Ctrl-C under flood over %s ms accepted for this release (#1653 / #1606)" % CTRLC_FLOOD_RELEASE_MS}}
+                                         "why": "owner 2026-11-04: Ctrl-C under flood over %s ms accepted for this release (#1653 / #1606)" % CTRLC_FLOOD_RELEASE_MS},
+                        "remote_heredoc_remote_editor": {"issue": 1129, "release": "0.1.17",
+                                                         "why": "owner rule for STUCK items, relayed 2026-11-04 (fixed, or proven ENV and KNOWN): the remote shell's line editor is the "
+                                                                "bottleneck, proven by the plain-ssh control; the wrapper's design for bash < 4.4 is open"}}
 _REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 
 
