@@ -1355,6 +1355,34 @@ def i1782_launchd_exit_record_names_the_signal_and_the_sender():
 
 
 @check
+def i1782_macos_paste_read_budget_is_raised_only_for_the_pasteboard_read():
+    """#1782 (owner 2026-11-05): the main-thread pasteboard read gets a larger macOS budget; every other platform and UI budget stays 4 ms"""
+    assert cases.paste_read_budget_ms("macos") == 250.0
+    assert cases.paste_read_budget_ms("linux") == cases.UI_ITEM_BUDGET_MS == 4.0
+    assert cases.paste_read_budget_ms("linux-wayland") == 4.0 and cases.paste_read_budget_ms("windows") == 4.0
+    line = "2026-11-05T14:23:05Z [DEBUG] input_order hop=pasteboard_read kind=TextAndPaths ms=31.50 bytes=1000000 ok=true t=1793888585926.1\n"
+    assert cases.pasteboard_reads("x\n" + line) == [("TextAndPaths", 31.5, 1000000)]
+
+    class R:
+        def __init__(s): s.fails, s.metrics = [], {}
+        def check(s, ok, msg):
+            if not ok:
+                s.fails.append(msg)
+        def metric(s, k, v): s.metrics[k] = v
+    r = R()
+    assert cases.judge_paste_read(r, line, "macos", "big_paste") == 31.5 and not r.fails, r.fails
+    assert r.metrics["big_paste_pasteboard_read"]["budget_ms"] == 250.0
+    r = R()
+    cases.judge_paste_read(r, line, "linux", "big_paste")
+    assert r.fails, "a 31 ms main-thread read is over the unchanged 4 ms budget elsewhere"
+    r = R()
+    cases.judge_paste_read(r, line.replace("ms=31.50", "ms=300.00"), "macos", "big_paste")
+    assert r.fails and "250 ms" in r.fails[0], r.fails
+    r = R()
+    assert cases.judge_paste_read(r, "input_order hop=ui_item kind=event ms=9 t=1\n", "macos", "big_paste") is None and not r.fails and not r.metrics
+
+
+@check
 def r18e9_injector_accounting_spans_relaunches():
     """r18e9: ui_startup_time relaunches 5 times and the app log is overwritten each time; accounting over [earlier copies..., live log] counts every launch, and the
     per-launch seq counters do not collide"""

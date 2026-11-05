@@ -26,6 +26,10 @@ pub trait Clipboard: 'static {
     /// no clipboard handle could be opened. The caller wraps it with the blocked-reader cap, the
     /// abandon epoch, the paste size cap and the request log, and answers a copy that is still
     /// being written from memory, so platforms do none of that.
+    ///
+    /// macOS is the exception (#1782, owner decision 2026-11-05): it reads the pasteboard while
+    /// building the reader, on the calling (main) thread, and the returned closure only hands the
+    /// copied content on, because NSPasteboard read on a worker crashed the app (SIGBUS).
     fn reader(&mut self, kind: ReadKind) -> ClipboardReader;
 
     /// True when [`Clipboard::reader`] is a cheap in-memory snapshot (the in-process test

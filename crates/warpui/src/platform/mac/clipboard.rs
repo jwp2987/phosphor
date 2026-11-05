@@ -38,6 +38,8 @@ fn pasteboard_type_for_image_mime_type(mime_type: &str) -> Option<&'static NSStr
 }
 
 impl crate::Clipboard for Clipboard {
+    /// On the calling (main) thread: macOS has no `background_writer`, so `write_in_background`
+    /// writes inline (#1782: every NSPasteboard access is on the main thread).
     fn write(&mut self, contents: ClipboardContent) {
         unsafe {
             let nsstr = NSString::from_str(&contents.plain_text);
@@ -74,7 +76,8 @@ impl crate::Clipboard for Clipboard {
     fn availability(&mut self, _target: ClipboardTarget) -> Availability {
         // `availableTypeFromArray:` consults the declared type list only; it never asks the owner
         // to materialise (or us to decode) any data, so a lazy promise from another app cannot
-        // block it (#1306). Covers the types `read` consumes.
+        // block it (#1306). Covers the types `read` consumes. Runs on the calling (main) thread,
+        // like every NSPasteboard access (#1782): no `availability_probe` on macOS.
         unsafe {
             let types = NSArray::from_slice(&[
                 NSPasteboardTypeString,
@@ -97,24 +100,104 @@ impl crate::Clipboard for Clipboard {
     }
 
     fn reader(&mut self, kind: ReadKind) -> ClipboardReader {
-        // NSPasteboard reads can block on a lazy promise from the owning app; they run on a
-        // worker (#1305). The general pasteboard is a process-wide singleton, so a fresh handle
-        // reads the same data. There is no first-answer deadline to apply (a promise has no
-        // event or timeout); the blocked-reader cap and the consumer's backstop bound the wait.
-        Box::new(move || {
-            objc2::rc::autoreleasepool(|_| match Clipboard::new() {
-                Ok(mut clipboard) => ReadOutcome::Content(match kind {
-                    ReadKind::TextAndPaths => clipboard.read_text_and_paths(),
-                    // No separate primary selection on macOS: it is the pasteboard.
-                    ReadKind::Full | ReadKind::Primary => clipboard.read(),
-                }),
-                Err(_) => ReadOutcome::Unavailable,
-            })
+        // #1782 (owner decision 2026-11-05): the pasteboard is read HERE, on the calling thread,
+        // which is the main thread (the app's clipboard lives on the main-thread-only
+        // AppContext), the way Terminal.app and iTerm read it. #1305 had moved this read onto a
+        // worker so a slow lazy provider could not hold the UI; r18u26 then died of SIGBUS 1 ms
+        // after such a worker read overlapped main-thread AppKit work. Accepted cost (DECLINED.md):
+        // a slow lazy provider can briefly freeze the window. The returned closure touches no
+        // AppKit object: it runs on the request's worker with the copied text and bytes, does
+        // the off-thread part (the image filenames parsed out of the HTML), and the paste gate,
+        // ordering, size cap and request log of `request_read` work as before.
+        let read = read_on_main_thread(kind);
+        Box::new(move || match read {
+            Ok(content) => ReadOutcome::Content(finish_read(content)),
+            Err(outcome) => outcome,
         })
     }
 }
 
-/// The blocking read primitives, run only inside the reader on a worker thread (#1405).
+/// How long a read requested off the main thread waits for the main thread to perform it. Never
+/// reached in the app (every request comes from the main thread); bounds a headless or test
+/// caller whose main thread does not run the main queue, so it can never deadlock.
+const OFF_MAIN_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Whether the calling thread is the process's main thread.
+fn on_main_thread() -> bool {
+    // SAFETY: `pthread_main_np` only reads the calling thread's identity.
+    unsafe { libc::pthread_main_np() == 1 }
+}
+
+/// The one NSPasteboard read (#1782): text and paths, plus HTML and image bytes for a full read.
+/// Main thread only.
+fn read_pasteboard(kind: ReadKind) -> Result<ClipboardContent, ReadOutcome> {
+    objc2::rc::autoreleasepool(|_| match Clipboard::new() {
+        Ok(mut clipboard) => Ok(match kind {
+            ReadKind::TextAndPaths => clipboard.read_text_and_paths(),
+            // No separate primary selection on macOS: it is the pasteboard.
+            ReadKind::Full | ReadKind::Primary => clipboard.read(),
+        }),
+        Err(_) => Err(ReadOutcome::Unavailable),
+    })
+}
+
+fn read_on_main_thread(kind: ReadKind) -> Result<ClipboardContent, ReadOutcome> {
+    let started = std::time::Instant::now();
+    let read = read_on_main_thread_with(kind, on_main_thread, read_pasteboard, OFF_MAIN_WAIT);
+    // The accepted cost of #1782, measured: how long the main thread spent in the read. appci
+    // big_paste judges it against its macOS paste-read budget.
+    warpui_core::input_order::log_hop("pasteboard_read", || {
+        format!(
+            "kind={kind:?} ms={:.2} bytes={} ok={}",
+            started.elapsed().as_secs_f64() * 1000.0,
+            read.as_ref().map_or(0, ClipboardContent::text_bytes),
+            read.is_ok()
+        )
+    });
+    read
+}
+
+/// Runs `read` on the main thread: at once when the caller is the main thread, otherwise queued
+/// on the main dispatch queue with a bounded wait (`TimedOut` after `wait`). The main thread
+/// never waits for a worker here, so this cannot deadlock.
+fn read_on_main_thread_with(
+    kind: ReadKind,
+    on_main: impl Fn() -> bool,
+    read: fn(ReadKind) -> Result<ClipboardContent, ReadOutcome>,
+    wait: std::time::Duration,
+) -> Result<ClipboardContent, ReadOutcome> {
+    if on_main() {
+        return read(kind);
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    dispatch::Queue::main().exec_async(move || {
+        let _ = tx.send(read(kind));
+    });
+    rx.recv_timeout(wait).unwrap_or_else(|_| {
+        log::warn!(
+            "clipboard read ({kind:?}) requested off the main thread: the main thread did not \
+             perform it within {wait:?}"
+        );
+        Err(ReadOutcome::TimedOut)
+    })
+}
+
+/// The off-main-thread part of a read: the images' filenames, parsed out of the copied HTML.
+fn finish_read(mut content: ClipboardContent) -> ClipboardContent {
+    let filename = content
+        .html
+        .as_deref()
+        .filter(|html| !html.is_empty())
+        .and_then(crate::clipboard_utils::extract_filename_from_html);
+    if let Some(images) = content.images.as_mut() {
+        for image in images.iter_mut().filter(|image| image.filename.is_none()) {
+            image.filename = filename.clone();
+        }
+    }
+    content
+}
+
+/// The read primitives: main thread only (#1782; see `Clipboard::reader`).
 impl Clipboard {
     pub(crate) fn read_text_and_paths(&mut self) -> ClipboardContent {
         // Skips the HTML and image reads (the latter decodes and copies every image flavor).
@@ -182,7 +265,7 @@ impl Clipboard {
 }
 
 impl Clipboard {
-    /// Reads image data from the macOS pasteboard.
+    /// Reads image data from the macOS pasteboard (main thread only, #1782).
     ///
     /// Checks for supported image formats and returns the first available image
     /// data found, prioritizing common web-compatible formats.
@@ -218,21 +301,9 @@ impl Clipboard {
                             _ => "image/unknown",
                         };
 
-                        // Try to extract filename from HTML content if available
-                        let filename = {
-                            let html = self.0.stringForType(NSPasteboardTypeHTML);
-                            if let Some(html) = html.as_deref() {
-                                let html_str =
-                                    CStr::from_ptr(html.UTF8String()).to_str().unwrap_or("");
-                                if !html_str.is_empty() {
-                                    crate::clipboard_utils::extract_filename_from_html(html_str)
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            }
-                        };
+                        // The filename is parsed out of the HTML off the main thread
+                        // (`finish_read`); only the bytes are copied here.
+                        let filename = None;
 
                         images.push(ImageData {
                             data: data.to_vec(),

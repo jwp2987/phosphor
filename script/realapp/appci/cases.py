@@ -1598,6 +1598,8 @@ def c_big(ctx, r):
     r.metric("bytes_expected", len(data) + 1)
     r.metric("bytes_got", len(got))
     ui_item_metrics(ctx, r, ui_off, "big_paste")    # #1191: which main-thread items broke the 4 ms budget while the paste streamed
+    if ctx.log_path and os.path.exists(ctx.log_path):
+        judge_paste_read(r, ctx.log_since(ui_off), plat(), "big_paste")    # #1782: macOS copies the pasteboard on the main thread
     want = (data + "\n").encode()
     if got != want and ctx.win:
         # r18u8 (U2): under ConPTY `cat` in msys receives ~1 line of a 1 MB paste (100 of 1000001 bytes) and Ctrl-D does not look like EOF there. Whether that is the app or
@@ -3906,6 +3908,37 @@ def keydown_audit(txt, dup_ms=2.0, sent_text=None):
 
 
 _UI_ITEM_RE = re.compile(r"input_order hop=ui_item kind=(\w+) ms=(\d+(?:\.\d+)?)")
+
+# Owner decision 2026-11-05 (#1782): macOS reads the pasteboard on the MAIN thread again (a worker's NSPasteboard read crashed the app with SIGBUS),
+# accepting that a large or lazily provided paste holds the main thread while it is copied (DECLINED.md). Only that one item, the app's
+# `hop=pasteboard_read ms=` (crates/warpui/src/platform/mac/clipboard.rs), gets a larger macOS budget; every other UI budget stays 4 ms.
+UI_ITEM_BUDGET_MS = 4.0
+PASTE_READ_UI_BUDGET_MS = {"macos": 250.0}
+_PB_READ_RE = re.compile(r"input_order hop=pasteboard_read kind=(\w+) ms=(\d+(?:\.\d+)?) bytes=(\d+)")
+
+
+def paste_read_budget_ms(platform):
+    """the main-thread pasteboard-read budget for `platform` (APPCI_PLATFORM): the owner-raised macOS one (#1782), else the 4 ms UI budget"""
+    return next((v for k, v in PASTE_READ_UI_BUDGET_MS.items() if platform.startswith(k)), UI_ITEM_BUDGET_MS)
+
+
+def pasteboard_reads(txt):
+    """[(kind, ms, bytes)] of the app's `input_order hop=pasteboard_read kind=<k> ms=<ms> bytes=<n>` lines (macOS main-thread reads, #1782)"""
+    return [(m.group(1), float(m.group(2)), int(m.group(3))) for m in _PB_READ_RE.finditer(txt)]
+
+
+def judge_paste_read(r, txt, platform, label):
+    """the main-thread pasteboard read(s) logged in `txt` against paste_read_budget_ms(platform): metric `<label>_pasteboard_read`, a failure over
+    the budget. None (nothing judged) where the app logs no such read (Linux, Windows, a build before #1782)."""
+    reads = pasteboard_reads(txt)
+    if not reads:
+        return None
+    budget = paste_read_budget_ms(platform)
+    kind, ms, nbytes = max(reads, key=lambda x: x[1])
+    r.metric("%s_pasteboard_read" % label, dict(n=len(reads), max_ms=ms, bytes=nbytes, kind=kind, budget_ms=budget))
+    r.check(ms <= budget, "%s: the main-thread pasteboard read took %.1f ms (%d bytes) > the %.0f ms %s paste-read budget (#1782, owner 2026-11-05)" % (
+        label, ms, nbytes, budget, platform))
+    return ms
 
 
 def ui_item_audit(txt):

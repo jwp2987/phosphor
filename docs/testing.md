@@ -1758,6 +1758,10 @@ Every item below is a harness change; none touches app code. Anything not listed
   split across the shell hand-back, ran as `T180_x >> tc/zzcompl_alpha_u`, and that stray file made every later Tab ambiguous (0/12). `big_paste` now waits for the
   shell's own prompt (`prompt.log`) after the Ctrl-C, presses Ctrl-C again (up to 3 more, agent-mode spacing) and FAILS by name if no prompt comes; panes without the
   rc hook do not run the case.
+- **`big_paste` macOS paste-read budget (#1782, owner decision 2026-11-05)**: macOS reads the pasteboard on the main thread again (a worker's
+  NSPasteboard read crashed the app with SIGBUS; DECLINED.md). The app logs `input_order hop=pasteboard_read kind= ms= bytes=`; `big_paste` judges
+  the slowest one against `cases.PASTE_READ_UI_BUDGET_MS` (macOS 250 ms) and fails over it. Every other platform and every other UI budget stays
+  at 4 ms (`paste_read_budget_ms`; Linux and Windows log no such read). Self-test `i1782_macos_paste_read_budget_is_raised_only_for_the_pasteboard_read`.
 - **Not changed, by design**: H7 (fake sshd ConPTY heredoc stall) and H8 (Git Bash pass opens PowerShell tabs/restored tabs) need run evidence the artifacts do not contain;
   `profile.gitbash_toml` already writes `startup_shell_override` and `new_session_shell_override` for that pass.
 
