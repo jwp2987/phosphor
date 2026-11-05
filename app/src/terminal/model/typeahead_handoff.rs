@@ -25,7 +25,7 @@
 //!
 //! | decision | timing path (kept) | prompt-sequence path |
 //! |---|---|---|
-//! | young Enter held for a prompt? | 600 ms window since the last activity, hold sized by 3x the p90 round trip (only where the platform can sample nothing, see below) | positive evidence only ([`YoungHoldEvidence`], #1614): the request is due (the counts say the prompt is back and nothing is queued, or the sample proves them stale), or a Precmd may be in flight (the line editor reads and the reader-side barrier says the stream is not applied yet); anything else is delivered to the pty as typed. Released by the report, the barrier's next publish, a Preexec, a program taking the tty, a command, a signal; give-up [`EVENT_HOLD_GIVE_UP`] hands back |
+//! | young Enter held for a prompt? | 600 ms window since the last activity, hold sized by 3x the p90 round trip (only where the platform can sample nothing, see below) | positive evidence only ([`YoungHoldEvidence`], #1614): the request is due (the counts say the prompt is back and nothing is queued, or the sample proves them stale), or a Precmd may be in flight (the line editor reads and the reader-side barrier says the stream is not applied yet); anything else is delivered to the pty as typed. Released by the report, the barrier's next publish, a Preexec, a program taking the tty, a command, a signal; give-up [`YOUNG_HOLD_GIVE_UP`] (10 s) discards the Enter and what followed it (#1661) |
 //! | line begun at an unnoticed prompt ("young line")? | began within the window | same facts |
 //! | hand-back after Ctrl-C at the prompt | 250 ms settle | prompt cycle shells: the cycle's Precmd; zsh: the report of a request written behind the interrupt; one 2 s logged give-up |
 //! | Enters consumed by a program | 250 ms quiet period | the finished command was interactive (latch, read on the model thread), the sampled state at decision time; one 5 s logged give-up |
@@ -260,10 +260,19 @@ pub fn prompt_seq_env_enabled() -> bool {
     std::env::var(PROMPT_SEQ_ENV).map_or(true, |value| value.trim() != "0")
 }
 
-/// The give-up for a young Enter held by an event ([`TypeaheadHandoff::young_hold_wait`]): the
+/// The wait of a young Enter held by an event ([`TypeaheadHandoff::young_hold_wait`]): the
 /// prompt's Precmd, or the report, normally releases it within milliseconds, so reaching this
-/// means the signal is not coming. Logged by the view when it fires.
-pub const EVENT_HOLD_GIVE_UP: Duration = Duration::from_secs(2);
+/// means the signal is not coming. Logged by the view when it fires. Owner decision 2026-11-05
+/// (#1661): 10 s (was 2 s), since the give-up now DISCARDS the Enter and the keys typed after it,
+/// and a busy machine must not drop typeahead whose release event is merely late.
+pub const EVENT_HOLD_GIVE_UP: Duration = Duration::from_secs(10);
+
+/// Owner decision 2026-11-05 (#1661): the give-up net of every queued young hold, whatever
+/// [`TypeaheadHandoff::young_hold_wait`] expects. The hold is released by events (the report, the
+/// barrier's publish, a Preexec, a program taking the tty, a command, a signal); its give-up
+/// discards the young Enter and the keys typed after it, so it is a long safety net, not the
+/// 20-600 ms timing estimate it used to be (a busy Windows box missed that and dropped keys).
+pub const YOUNG_HOLD_GIVE_UP: Duration = Duration::from_secs(10);
 
 /// Tags the ids of a deferred Enter's `HandoffReport` gate; a young hold's ids never carry it.
 const DEFERRED_GATE_ID_BIT: u64 = 1 << 62;
@@ -1543,6 +1552,8 @@ impl TypeaheadHandoff {
     /// [`YOUNG_ENTER_FLOOR`] and what is left of [`YOUNG_ENTER_WINDOW`] counted from the last
     /// activity. Before any round trip was measured it is that remainder, never less than
     /// [`YOUNG_ENTER_MIN_HOLD`]. A prompt or report arriving first releases the hold at once.
+    /// #1661: this is the expected wait (traced); the gate's give-up cap is
+    /// [`Self::young_hold_give_up`], the 10 s net.
     pub fn young_hold_wait(&self, now: Instant) -> Duration {
         if matches!(
             self.young_hold_evidence,
@@ -1564,6 +1575,12 @@ impl TypeaheadHandoff {
                 .clamp(YOUNG_ENTER_FLOOR, YOUNG_ENTER_WINDOW),
             None => left.clamp(YOUNG_ENTER_MIN_HOLD, YOUNG_ENTER_WINDOW),
         }
+    }
+
+    /// The give-up cap of the young hold just started: [`YOUNG_HOLD_GIVE_UP`], never shorter than
+    /// the wait [`Self::young_hold_wait`] expects (owner decision 2026-11-05, #1661).
+    pub fn young_hold_give_up(&self, now: Instant) -> Duration {
+        self.young_hold_wait(now).max(YOUNG_HOLD_GIVE_UP)
     }
 
     #[cfg(test)]

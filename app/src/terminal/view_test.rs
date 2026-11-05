@@ -15271,6 +15271,10 @@ enum AfterRunEnter {
     /// #1661: the pty never takes keys, but the command's own block completes: that event
     /// releases the keys at once, where keys typed now go (the editor).
     BlockCompleted,
+    /// #1661 review: as `BlockCompleted`, through the real paths: the view's `ExecuteCommand`
+    /// handling captures the block, and the model's own `BlockCompleted` event (a simulated
+    /// command run to completion) releases the keys.
+    RealBlockCompleted,
 }
 
 /// #1630: the Enter's own replay request arrives in the flush that carries its command to the pty
@@ -15303,14 +15307,20 @@ fn keys_behind_a_run_enter_in(mode: DestMode, after: AfterRunEnter) {
                 let mut queued = vec![AfterEnterInput::Text("ls".to_string())];
                 if !matches!(
                     after,
-                    AfterRunEnter::PtyNotReady | AfterRunEnter::BlockCompleted
+                    AfterRunEnter::PtyNotReady
+                        | AfterRunEnter::BlockCompleted
+                        | AfterRunEnter::RealBlockCompleted
                 ) {
                     queued.push(AfterEnterInput::Enter);
                 }
                 input.open_submitted_enter_gate_for_test(queued, true, ctx)
             });
             // The view starts the Enter's command: its block is recorded (#1661).
-            view.note_command_started_for_enter_gate_for_test(ctx);
+            if after == AfterRunEnter::RealBlockCompleted {
+                submit_command(view, "echo hi", ctx);
+            } else {
+                view.note_command_started_for_enter_gate_for_test(ctx);
+            }
             // The Enter has run: its replay request, in the flush its command is still in.
             view.replay_after_deferred_enter(ctx);
         });
@@ -15358,11 +15368,20 @@ fn keys_behind_a_run_enter_in(mode: DestMode, after: AfterRunEnter) {
                     view.complete_enter_command_block_for_test(ctx);
                 });
             }
+            AfterRunEnter::RealBlockCompleted => {
+                // The shell runs the command to completion; its events (block started, Preexec,
+                // BlockCompleted) reach the view the way the model sends them.
+                terminal.update(&mut app, |view, _| {
+                    view.model.lock().simulate_block("echo hi", "");
+                });
+            }
             AfterRunEnter::NoEvent | AfterRunEnter::PtyNotReady => {}
         }
         let ends_without_pty = matches!(
             after,
-            AfterRunEnter::PtyNotReady | AfterRunEnter::BlockCompleted
+            AfterRunEnter::PtyNotReady
+                | AfterRunEnter::BlockCompleted
+                | AfterRunEnter::RealBlockCompleted
         );
         for _ in 0..400 {
             let done = terminal.read(&app, |view, ctx| {
@@ -15378,7 +15397,9 @@ fn keys_behind_a_run_enter_in(mode: DestMode, after: AfterRunEnter) {
         let expected = match after {
             AfterRunEnter::CommandTaken | AfterRunEnter::SlowCommandTaken => "<command>ls\r",
             AfterRunEnter::NoEvent => "ls\r",
-            AfterRunEnter::PtyNotReady | AfterRunEnter::BlockCompleted => "",
+            AfterRunEnter::PtyNotReady
+            | AfterRunEnter::BlockCompleted
+            | AfterRunEnter::RealBlockCompleted => "",
         };
         assert_eq!(
             String::from_utf8_lossy(&written),
@@ -15397,10 +15418,10 @@ fn keys_behind_a_run_enter_in(mode: DestMode, after: AfterRunEnter) {
                     "",
                     "{mode:?}: the net discarded the keys; nothing went to the editor"
                 ),
-                AfterRunEnter::BlockCompleted => assert_eq!(
+                AfterRunEnter::BlockCompleted | AfterRunEnter::RealBlockCompleted => assert_eq!(
                     input.buffer_text(ctx),
                     "ls",
-                    "{mode:?}: the block's completion released the keys to the editor"
+                    "{mode:?} {after:?}: the block's completion released the keys to the editor"
                 ),
                 _ => {}
             }
@@ -15443,6 +15464,15 @@ fn keys_behind_a_run_enter_are_discarded_at_the_net_in_both_modes() {
 fn keys_behind_a_run_enter_follow_a_command_taken_after_two_seconds_in_both_modes() {
     for mode in [DestMode::Legacy, DestMode::Table] {
         keys_behind_a_run_enter_in(mode, AfterRunEnter::SlowCommandTaken);
+    }
+}
+
+/// #1661 review: the same through the real paths: `InputEvent::ExecuteCommand` captures the block
+/// and the model's own `BlockCompleted` event releases the keys. Both modes.
+#[test]
+fn keys_behind_a_run_enter_are_released_by_the_real_block_completed_event_in_both_modes() {
+    for mode in [DestMode::Legacy, DestMode::Table] {
+        keys_behind_a_run_enter_in(mode, AfterRunEnter::RealBlockCompleted);
     }
 }
 
@@ -26542,12 +26572,12 @@ fn hold_a_young_enter(
     );
 }
 
-/// No prompt came: the give-up (the gate's cap) HANDS the held Enter and the key behind it back
-/// to the editor as text, once, and writes nothing. (Owner rule 2026-11-01, #1577: a timer may
-/// close a segment and hand text back, never write to a pty. This test asserted the old
-/// typeahead write; the event-driven ends still write, see the tests below.)
+/// No prompt came: the give-up (the gate's cap) DISCARDS the held Enter and the key typed after
+/// it, once, and writes nothing. (Owner rule 2026-11-01, #1577: a timer never writes to a pty;
+/// owner decision 2026-11-05, #1661: what a give-up held after an Enter is discarded, no longer
+/// handed back as text. The event-driven ends still write, see the tests below.)
 #[test]
-fn a_young_enter_and_its_keys_are_handed_back_when_no_prompt_comes() {
+fn a_young_enter_and_its_keys_are_discarded_when_no_prompt_comes() {
     App::test((), move |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
@@ -26563,10 +26593,12 @@ fn a_young_enter_and_its_keys_are_handed_back_when_no_prompt_comes() {
             assert!(!young_gate_open(view));
             assert!(view.paste_queue.queue.borrow().is_idle());
             assert!(!view.model.lock().typeahead_handoff().has_young_hold());
+            // Owner decision 2026-11-05 (#1661): the young Enter and the key typed after it are
+            // discarded (they used to come back to the editor as `\nx`).
             assert_eq!(
                 view.input.as_ref(ctx).buffer_text(ctx),
-                "\nx",
-                "the Enter (a newline) and the key, in typed order, once"
+                "",
+                "nothing came back"
             );
         });
         assert!(

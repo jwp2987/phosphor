@@ -2912,6 +2912,13 @@ keys, Enters) into editor text was a guess, and each patch of it (#1577, #1630, 
   report and discards the same keys with the same toast.
 - Normal release is event-driven (the hand-off, Preexec, the command's block starting or
   completing); the timer is a 10 s net only, and it never routes or writes.
+- Also covered (owner decision A, 2026-11-05): the young-Enter hold's cap and the paced
+  CLI-agent submit's cap discard the keys typed after the Enter the same way; a line typed
+  before the young Enter stays in the editor. The young hold's cap is a 10 s net (was a
+  20-600 ms timing window / 2 s), released by its events. Not covered: the ConPTY
+  `LineEditorActive` prompt hold (keys at a prompt, no Enter before them).
+- The unready-shell net is 60 s (owner decision B, 2026-11-05; was 15 s), so a slow shell
+  startup (nvm, conda) does not drop typeahead.
 - Not reopened by: restoring `text_of_entries_typed_after` or any other held-entry-to-text
   conversion for an Enter gate's give-up. A visible "keys waiting" indicator is deferred.
-<!-- markers: sym:text_of_entries_typed_after keep:typed_after_enter_discarded_toast keep:report_enter_gate_discard -->
+<!-- markers: sym:text_of_entries_typed_after keep:typed_after_enter_discarded_toast keep:report_enter_gate_discard keep:discard_gate_keys_after_enter keep:YOUNG_HOLD_GIVE_UP -->

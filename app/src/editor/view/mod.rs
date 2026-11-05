@@ -3280,8 +3280,12 @@ impl EditorView {
         }
         // #1353 phase 3: an Enter waits for its verdict (or for the route it submitted to to
         // settle). What is typed behind it is held as plain Text / Enter entries, never put into
-        // the buffer, and the terminal input releases them in order once that Enter has run. Any
-        // other key acts at once: it edits the waiting line, which voids the Enter as before.
+        // the buffer, and the terminal input releases them in order once that Enter has run. With
+        // nothing typed behind it yet, any other key acts at once: it edits the waiting line,
+        // which voids the Enter as before. #1661 review: once keys ARE held behind it, an editing
+        // key (Backspace fixing `ls` in `git checkout fe⏎ls`) edits THEM, as on a tty: it queues
+        // behind the gate in its `Held` form, in order, like behind an unready Enter (#1571),
+        // instead of voiding the Enter and dropping what was typed.
         // (While a paste is read, the paste's gate is the one that matters and the keys behind
         // it are the editor keys below.)
         {
@@ -3295,7 +3299,11 @@ impl EditorView {
                         || ((held.has_gate_kind(GateKind::EnterVerdict)
                             || held.has_gate_kind(GateKind::TabCompletion))
                             && !held.has_editor_paste_reading());
-                    (behind, behind && held.has_unready_enter_gate(), dialog)
+                    // #1661 review: keys already typed behind the Enter make an editing key one
+                    // of theirs, exactly as behind an unready Enter.
+                    let editing_keys_held =
+                        held.has_unready_enter_gate() || held.enter_gate_holds_typed_keys();
+                    (behind, behind && editing_keys_held, dialog)
                 });
             if behind_dialog {
                 // #1652: behind the Enter that waits for the multi-line dialog EVERY key counts and

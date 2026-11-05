@@ -343,7 +343,8 @@ impl Input {
                 .map(|open| (open.kind, open.key))
         });
         if let Some((kind, key)) = orphan_enter_gate {
-            let Some(mut guard) = queue.try_lock() else {
+            // Ordered: earlier operations waiting in the mailbox go first (#1661 review).
+            let Some(mut guard) = queue.try_lock_ordered() else {
                 queue.defer(crate::terminal::input_queue::Deferred::GiveUpCap(token));
                 return;
             };
@@ -362,6 +363,7 @@ impl Input {
                 super::EnterDiscard::GiveUp {
                     reason: super::ENTER_GATE_GIVE_UP_TOAST,
                     always: false,
+                    glue_if_discarded: false,
                 },
                 ctx,
             );

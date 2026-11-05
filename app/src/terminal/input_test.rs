@@ -16265,8 +16265,9 @@ fn test_enter_queue_ctrl_c_voids_the_held_enter_and_the_keys_behind_it() {
 }
 
 /// #1353 phase 3 / #1661 / #1767 (owner decision 2026-11-05): an edit of the waiting line itself
-/// voids the Enter. The line stays as the user edited it; what was queued behind the Enter is
-/// DISCARDED (never glued onto the line), with one toast that gives the count. Both modes.
+/// (here one that did not come through the editor's keys) voids the Enter. The line stays as
+/// edited; what was queued behind the Enter is DISCARDED (never glued onto the line), with one
+/// toast that gives the count. Both modes.
 #[test]
 fn test_enter_queue_voided_enter_discards_the_keys_typed_behind_it() {
     use crate::terminal::input::enter_queue::{
@@ -16286,13 +16287,11 @@ fn test_enter_queue_voided_enter_discards_the_keys_typed_behind_it() {
             });
             type_into_editor(&mut app, &editor, HeldPasteKey::Text("l".to_string()));
             type_into_editor(&mut app, &editor, HeldPasteKey::Text("s".to_string()));
-            // Backspace is not held: it edits the waiting line, which voids the Enter.
-            type_into_editor(
-                &mut app,
-                &editor,
-                HeldPasteKey::Action(EditorAction::Backspace),
-            );
+            // The waiting line itself is edited (not through the editor's key handler).
             input.update(&mut app, |input, ctx| {
+                input.editor().update(ctx, |editor, ctx| {
+                    editor.set_buffer_text("git checkout f", ctx)
+                });
                 input.reconcile_verdict_wait(ctx);
             });
             input.read(&app, |input, ctx| {
@@ -16314,6 +16313,70 @@ fn test_enter_queue_voided_enter_discards_the_keys_typed_behind_it() {
                 *toasts.borrow(),
                 [typed_after_enter_discarded_toast(ENTER_VOIDED_TOAST, 2)],
                 "{mode:?}"
+            );
+        });
+    }
+}
+
+/// #1661 review (MEDIUM): `git checkout fe⏎ls`, then Backspace to fix `ls`. The Backspace edits
+/// the keys typed behind the waiting Enter, not the waiting line: it queues behind the gate in
+/// its `Held` form, in order, so the Enter is NOT voided, nothing is discarded, and the completed
+/// line still runs once. Both modes.
+#[test]
+fn test_backspace_behind_keys_typed_after_a_waiting_enter_does_not_void_it() {
+    use crate::terminal::input_queue::{DestinationMode, HELD_KEY};
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+            let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, true).await;
+            let editor = input.read(&app, |input, _| input.editor().clone());
+            let toasts = record_toast_texts(&mut app);
+            input.update(&mut app, |input, ctx| {
+                input.input_enter(ctx);
+                input.disarm_hold_give_ups_for_test();
+            });
+            type_into_editor(&mut app, &editor, HeldPasteKey::Text("l".to_string()));
+            type_into_editor(&mut app, &editor, HeldPasteKey::Text("s".to_string()));
+            type_into_editor(
+                &mut app,
+                &editor,
+                HeldPasteKey::Action(EditorAction::Backspace),
+            );
+            input.update(&mut app, |input, ctx| {
+                input.reconcile_verdict_wait(ctx);
+            });
+            input.read(&app, |input, ctx| {
+                assert!(
+                    input.verdict_wait.is_some(),
+                    "{mode:?}: the Backspace did not void the Enter"
+                );
+                assert_eq!(
+                    input.buffer_text(ctx),
+                    "git checkout fe",
+                    "{mode:?}: the waiting line is untouched"
+                );
+                assert_eq!(
+                    input.enter_gate_held_len_for_test(ctx),
+                    3,
+                    "{mode:?}: `l`, `s` and the Backspace wait behind the Enter, in order"
+                );
+                assert_eq!(
+                    input.queued_held_for_test(ctx),
+                    vec![(HELD_KEY, "\u{7f}".to_owned())],
+                    "{mode:?}: the Backspace in its tty form"
+                );
+            });
+            deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);
+            assert_eq!(executed.borrow().len(), 1, "{mode:?}");
+            assert_eq!(
+                executed.borrow()[0].trim_end(),
+                "git checkout feature",
+                "{mode:?}: the completed line runs once"
+            );
+            assert!(
+                toasts.borrow().is_empty(),
+                "{mode:?}: nothing was discarded"
             );
         });
     }

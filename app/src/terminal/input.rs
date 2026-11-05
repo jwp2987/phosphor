@@ -1252,6 +1252,9 @@ pub enum Event {
     /// The Enter has now run; its gate on the pane queue holds the keys typed behind it until the
     /// pty route is settled (`TerminalView::settle_enter_queue`).
     ReplayAfterDeferredEnter,
+    /// #1661 review: pty pastes (their ids) were discarded with the keys typed behind an Enter;
+    /// their content and routing records in the view's paste maps go with them.
+    DiscardedPtyPastes(Vec<u64>),
     /// #1638: `~` and one of ssh's escape characters were typed as the first two characters of an
     /// empty line in a managed ssh session. The editor has been cleared; the view writes these
     /// two bytes to the pty, where the local ssh client reads its escape, as plain ssh would.
@@ -1460,11 +1463,15 @@ const TAB_COMPLETION_ENTER_WARN: std::time::Duration = std::time::Duration::from
 /// machine audit 2026-11-05): long enough that only a lost or never-scheduled job reaches it, not
 /// a classifier that is merely slow to get a CPU (its cap is CPU time, #1651). Was 250 ms.
 const VERDICT_HOLD_BACKSTOP: std::time::Duration = std::time::Duration::from_secs(2);
-/// The longest any Enter hold's backstop may be: a second under the Enter gate's leak net
-/// ([`enter_queue::ENTER_GATE_LEAK_NET`]), so for any paste size the hold gives up (handing the
-/// text back in order) before the leak net force-opens the gate (#1651 review).
-pub(crate) const HOLD_BACKSTOP_LIMIT: std::time::Duration =
-    enter_queue::ENTER_GATE_LEAK_NET.saturating_sub(std::time::Duration::from_secs(1));
+/// The longest any Enter hold's backstop may be: 9 s, under the Enter gate's leak net
+/// ([`enter_queue::ENTER_GATE_LEAK_NET`], 20 s since the #1661 review; it was the net minus 1 s
+/// when the net was 10 s, and keeps that value), so for any paste size the hold gives up (the
+/// line stays in the input) before the leak net force-opens the gate (#1651 review).
+pub(crate) const HOLD_BACKSTOP_LIMIT: std::time::Duration = std::time::Duration::from_secs(9);
+const _: () = assert!(
+    HOLD_BACKSTOP_LIMIT.as_millis() < enter_queue::ENTER_GATE_LEAK_NET.as_millis(),
+    "an Enter hold's backstop must give up before the gate's leak net"
+);
 /// The shortest compute-cap timer re-armed while the awaited job's cap is not yet spent (#1651):
 /// on a CPU-time clock a starved job can sit just under its cap for as long as it gets no CPU.
 pub(crate) const COMPUTE_CAP_RECHECK_FLOOR: std::time::Duration =
@@ -15047,8 +15054,9 @@ impl Input {
     /// Moves what was typed behind the waiting Enter out of the buffer (#1016). The Enter
     /// submits exactly the text typed before it; text typed after it is queued, in order, and
     /// replayed once the Enter has run. Returns whether the waiting Enter is still valid; if the
-    /// user edited the text itself (Ctrl-C, Backspace) it is void, as before: the buffer stays as
-    /// edited and what was queued behind the Enter is discarded with a toast (#1661).
+    /// user edited the text itself (Ctrl-C, a Backspace before anything was typed behind it) it
+    /// is void, as before: the buffer stays as edited and what was queued behind the Enter is
+    /// discarded with a toast (#1661).
     fn reconcile_verdict_wait(&mut self, ctx: &mut ViewContext<Self>) -> bool {
         let Some(wait) = self.verdict_wait.as_ref() else {
             return false;
@@ -15073,8 +15081,10 @@ impl Input {
                 true
             }
             None => {
-                // The user edited the waiting text itself: the Enter is void. Keep what was
-                // typed behind it in the editor rather than losing it.
+                // The user edited the waiting text itself: the Enter is void. (An editing key
+                // typed after keys already queued behind the Enter is queued with them instead,
+                // #1661 review, so this is an edit of the line before anything was typed behind
+                // it, or one that did not come through the editor's keys.)
                 let wait = self.verdict_wait.take();
                 if let Some(wait) = wait.as_ref() {
                     wait.compute.stop_notifying();

@@ -56,10 +56,12 @@ use crate::workspace::ToastStack;
 
 /// The longest an Enter gate may stay closed whatever happens: a net for a bug that would leave
 /// it open, beyond every real hold (the hold backstops are 2 s plus the size allowance for a
-/// verdict, 500 ms for a Tab completion). Logged by the queue when it fires. #1661: the view's
-/// route-settle net is 10 s too, counted from the submit; whichever fires first gives up, and a
-/// give-up discards what was typed behind the Enter, so no hold lasts longer than this.
-pub(super) const ENTER_GATE_LEAK_NET: Duration = Duration::from_secs(10);
+/// verdict, clamped at `HOLD_BACKSTOP_LIMIT` 9 s; 500 ms for a Tab completion). Logged by the
+/// queue when it fires. It runs from the Enter (the gate's opening), so it is 20 s (#1661 review):
+/// the view's route-settle net (`AFTER_ENTER_REPLAY_PTY_WAIT`, 10 s from the submit) is the one
+/// that normally gives up on a command the pty never takes, and this net only ends a gate a bug
+/// left open. Either give-up discards what was typed behind the Enter, so no hold lasts longer.
+pub(super) const ENTER_GATE_LEAK_NET: Duration = Duration::from_secs(20);
 
 /// The Enter gate this input has open on the queue. The gate's key is the wait's id (#1206), so a
 /// late event of an earlier wait cannot close a later one.
@@ -89,9 +91,10 @@ pub(super) struct EnterGate {
 /// #1571: the give-up net of an Enter held because the shell was not ready. The readiness events
 /// (the session's registration, its first Precmd) end the hold long before this; when it fires
 /// nothing is run: the held line stays in the editor, what was typed after it is discarded
-/// (owner decision 2026-11-05, #1661), with a toast, and it is logged. Long enough for a slow
-/// remote bootstrap (the ssh connect's own ceilings are 15 s).
-pub(super) const UNREADY_ENTER_GIVE_UP: Duration = Duration::from_secs(15);
+/// (owner decision 2026-11-05, #1661), with a toast, and it is logged. Owner decision
+/// 2026-11-05: 60 s (was 15 s), so a slow shell startup (nvm, conda, a slow remote bootstrap) does
+/// not drop the typeahead; the readiness event, not this net, is how the hold normally ends.
+pub(super) const UNREADY_ENTER_GIVE_UP: Duration = Duration::from_secs(60);
 
 /// #1577: the reason of an Enter gate that gave up because the shell never took the command.
 pub(crate) const ENTER_GATE_GIVE_UP_TOAST: &str = "The shell didn't take the command in time";
@@ -179,8 +182,15 @@ pub(crate) enum EnterDiscard {
     Dialog(&'static str),
     /// A give-up or a void of a waiting Enter: the shared toast, `reason` first, with the count
     /// ([`typed_after_enter_discarded_toast`]). `always`: the reason is shown even when nothing
-    /// was discarded (the line did not run, and the user must know why).
-    GiveUp { reason: &'static str, always: bool },
+    /// was discarded (the line did not run, and the user must know why). `glue_if_discarded`:
+    /// the unrun line has no guard of its own, so when keys WERE discarded (the user was still
+    /// typing) the glue guard is armed over it, decided when the take completes so a free and a
+    /// busy queue arm the same guard (#1661 review).
+    GiveUp {
+        reason: &'static str,
+        always: bool,
+        glue_if_discarded: bool,
+    },
 }
 
 /// A programmatic edit of the editor's buffer that waits for the Enter in front of it (#1434).
@@ -689,6 +699,25 @@ impl Input {
         count_discarded_keys(taken)
     }
 
+    /// #1661 review: the pty pastes among the discarded entries: the view drops their content
+    /// and routing records (the editor's own pastes are dropped from this input's map above).
+    fn forget_discarded_pty_pastes(&mut self, taken: &[InputEntry], ctx: &mut ViewContext<Self>) {
+        let ids: Vec<u64> = taken
+            .iter()
+            .filter_map(|entry| match &entry.kind {
+                EntryKind::Paste { paste_id, .. }
+                    if !crate::terminal::input_queue::is_editor_paste_id(*paste_id) =>
+                {
+                    Some(*paste_id)
+                }
+                _ => None,
+            })
+            .collect();
+        if !ids.is_empty() {
+            ctx.emit(Event::DiscardedPtyPastes(ids));
+        }
+    }
+
     /// #1661 (owner decision 2026-11-05): closes Enter gate `gate` and DISCARDS everything that
     /// waited behind it: text typed into the editor, keys for the pty (`PtyBytes`), pastes and
     /// Enters alike. Nothing goes to the editor and nothing is routed. With the queue busy the
@@ -731,6 +760,7 @@ impl Input {
         ctx: &mut ViewContext<Self>,
     ) -> usize {
         let discarded = self.discard_dialog_typeahead(taken);
+        self.forget_discarded_pty_pastes(taken, ctx);
         match report {
             EnterDiscard::Interrupt => {
                 if discarded > 0 {
@@ -743,7 +773,16 @@ impl Input {
             EnterDiscard::Dialog(by) => {
                 self.report_discarded_dialog_typeahead(discarded, by, ctx);
             }
-            EnterDiscard::GiveUp { reason, always } => {
+            EnterDiscard::GiveUp {
+                reason,
+                always,
+                glue_if_discarded,
+            } => {
+                if glue_if_discarded && discarded > 0 {
+                    // A key typed after the give-up must not run glued onto the unrun line.
+                    let line = self.editor.as_ref(ctx).buffer_text(ctx);
+                    self.arm_enter_guard(line, EnterGuardKind::Glue, GLUE_GUARD_TOAST);
+                }
                 let toast = if discarded > 0 {
                     log::warn!(
                         "input: {discarded} key(s) typed after an Enter were discarded ({reason}); \
@@ -1031,25 +1070,20 @@ impl Input {
         let submitted = gate.submitted && !gate.held_unready;
         self.clear_held_unready_enter();
         self.enter_gate = None;
+        // The unrun line's own guard is armed now. A line with none gets the glue guard only if
+        // keys typed after the Enter are discarded (the user was still typing), decided by the
+        // take itself, so a busy queue's deferred take arms exactly what a free one does.
+        if !submitted && let Some((kind, toast)) = give_up.line_guard {
+            let line = self.editor.as_ref(ctx).buffer_text(ctx);
+            self.arm_enter_guard(line, kind, toast);
+        }
         let report = EnterDiscard::GiveUp {
             reason: give_up.toast,
             always: !submitted,
+            glue_if_discarded: !submitted && give_up.line_guard.is_none(),
         };
-        // `None`: the queue was busy, and the deferred take discards and reports once it is free.
-        let discarded = self.discard_enter_gate(gate, report, ctx);
-        if !submitted {
-            // Keys typed after the Enter were discarded (or may be, with the take deferred): the
-            // user was still typing, so a line with no guard of its own gets the glue guard and a
-            // key typed after the give-up cannot run glued onto it.
-            let keys_went = discarded.is_none_or(|keys| keys > 0);
-            let guard = give_up
-                .line_guard
-                .or_else(|| keys_went.then_some((EnterGuardKind::Glue, GLUE_GUARD_TOAST)));
-            if let Some((kind, toast)) = guard {
-                let line = self.editor.as_ref(ctx).buffer_text(ctx);
-                self.arm_enter_guard(line, kind, toast);
-            }
-        }
+        // The queue busy: the deferred take discards and reports once it is free.
+        let _ = self.discard_enter_gate(gate, report, ctx);
         // Edits that waited behind the line apply now.
         self.flush_deferred_programmatic_edits(ctx);
     }
@@ -1170,6 +1204,7 @@ impl Input {
         let report = EnterDiscard::GiveUp {
             reason: ENTER_VOIDED_TOAST,
             always: false,
+            glue_if_discarded: false,
         };
         if self.discard_enter_gate(gate, report, ctx).is_none() {
             // Deferred: the programmatic edits that waited behind the void Enter follow the take.

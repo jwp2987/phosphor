@@ -826,7 +826,8 @@ const AGENT_INTERRUPT_GRACE: Duration = Duration::from_secs(3);
 /// completing. It was 300 ms, inside the stalls of a busy machine. When it fires the keys typed
 /// after the Enter are DISCARDED with a toast that gives the count (owner decision 2026-11-05),
 /// never handed back as editor text and never written. Together with the gate's own leak net
-/// (`enter_queue::ENTER_GATE_LEAK_NET`) it means a hold always ends.
+/// (`enter_queue::ENTER_GATE_LEAK_NET`, 20 s from the Enter, so this net fires first) it means a
+/// hold always ends.
 const AFTER_ENTER_REPLAY_PTY_WAIT: Duration = Duration::from_secs(10);
 
 /// [`AFTER_ENTER_REPLAY_PTY_WAIT`], or the calling thread's test override.
@@ -13221,7 +13222,15 @@ impl TerminalView {
         {
             return;
         }
-        let block_id = self.model.lock().active_block_id().clone();
+        let block_id = {
+            let model = self.model.lock();
+            let block_list = model.block_list();
+            // #1661 review: an in-band command's block is not the Enter's command.
+            if block_list.active_block().is_in_band_command_block() {
+                return;
+            }
+            block_list.active_block_id().clone()
+        };
         self.enter_command_block = Some(EnterCommandBlock {
             gate_key,
             block_id,
@@ -13817,7 +13826,8 @@ impl TerminalView {
                 hold_start.young = handoff.take_young_hold_started().map(|id| {
                     (
                         id,
-                        handoff.young_hold_wait(Instant::now()),
+                        // #1661: the long net; the events release the hold.
+                        handoff.young_hold_give_up(Instant::now()),
                         handoff.queued_line_bytes_stamp(),
                     )
                 });
@@ -14490,6 +14500,8 @@ impl TerminalView {
                 reason: "Enter not run: the shell did not report its line. The text is in the \
                          input; press Enter to run it",
                 always: true,
+                // The line's guard is `guard_line_after_deferred_enter_give_up`'s.
+                glue_if_discarded: false,
             },
             ctx,
         );
@@ -14528,6 +14540,8 @@ impl TerminalView {
             EnterDiscard::GiveUp {
                 reason,
                 always: true,
+                // The line's guard is `guard_line_after_deferred_enter_give_up`'s.
+                glue_if_discarded: false,
             },
             ctx,
         );
@@ -31088,6 +31102,14 @@ impl TerminalView {
             }
             InputEvent::ReplayAfterDeferredEnter => {
                 self.replay_after_deferred_enter(ctx);
+            }
+            InputEvent::DiscardedPtyPastes(ids) => {
+                // #1661 review: pty pastes discarded behind an Enter leave no record behind.
+                for id in ids {
+                    self.paste_queue.routed_pastes.remove(id);
+                    self.paste_queue.ssh_pastes.remove(id);
+                    self.paste_queue.payloads.remove(id);
+                }
             }
             InputEvent::SshEscapeToPty { bytes } => {
                 // #1638: the ssh client's escape, typed at the start of an empty line. Through

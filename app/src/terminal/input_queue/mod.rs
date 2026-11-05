@@ -829,6 +829,16 @@ impl InputQueue {
             .any(|gate| gate.kind == GateKind::EnterVerdict && is_unready_enter_key(gate.key))
     }
 
+    /// #1661 review: whether an Enter gate (verdict or Tab completion) already holds keys typed
+    /// behind it. An editing key typed then belongs to those keys (the next line), not to the
+    /// waiting line, so the editor queues it behind the gate in its `Held` form.
+    pub fn enter_gate_holds_typed_keys(&self) -> bool {
+        self.gates.iter().any(|gate| {
+            matches!(gate.kind, GateKind::EnterVerdict | GateKind::TabCompletion)
+                && self.held_behind_gate(gate.kind, gate.key) > 0
+        })
+    }
+
     /// Whether an Enter waiting for the multi-line submit dialog holds the queue (#1652,
     /// [`is_multiline_dialog_key`]).
     pub fn has_multiline_dialog_gate(&self) -> bool {

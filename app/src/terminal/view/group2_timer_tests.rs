@@ -103,10 +103,11 @@ fn assert_handed_back(
     });
 }
 
-/// A3 (#1577): the 20 s leak net of a paced CLI-agent submit hands the keys typed behind it back
-/// to the editor; it no longer drains them to the pty.
+/// A3 (#1577) / owner decision 2026-11-05 (#1661): the 20 s leak net of a paced CLI-agent submit
+/// DISCARDS the keys typed behind it (they were typed after the submit's Enter): never drained to
+/// the pty (#1577), and no longer handed back to the editor either. Both modes.
 #[test]
-fn cli_submit_cap_hands_the_keys_behind_it_back() {
+fn cli_submit_cap_discards_the_keys_behind_it() {
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
             let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
@@ -119,7 +120,7 @@ fn cli_submit_cap_hands_the_keys_behind_it_back() {
                 let token = gate_token_of(view, input_queue::GateKind::CliSubmit);
                 view.on_paste_queue_give_up(token, ctx);
             });
-            assert_handed_back(&terminal, &app, &writes, "l");
+            assert_enter_gate_discarded(&terminal, &app, &writes);
         });
     }
 }
@@ -290,10 +291,11 @@ fn bootstrap_write_gate_cap_hands_the_held_keys_back_once_the_lines_are_out() {
     }
 }
 
-/// A4 (#1577): a young Enter hold whose prompt never comes hands the Enter and the keys behind it
-/// back to the editor (guard armed, nothing written), in both destination modes.
+/// A4 (#1577) / owner decision 2026-11-05 (#1661): a young Enter hold whose prompt never comes
+/// DISCARDS the Enter and the keys typed after it (it used to hand them back to the editor as
+/// `\nls` with the guard armed): nothing in the editor, no guard, nothing written. Both modes.
 #[test]
-fn young_hold_cap_hands_the_enter_and_keys_back_with_the_guard_armed() {
+fn young_hold_cap_discards_the_enter_and_the_keys_after_it() {
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
             let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
@@ -309,7 +311,44 @@ fn young_hold_cap_hands_the_enter_and_keys_back_with_the_guard_armed() {
                 let token = gate_token_of(view, input_queue::GateKind::PromptSeen);
                 view.on_paste_queue_give_up(token, ctx);
             });
-            assert_handed_back(&terminal, &app, &writes, "\nls");
+            assert_enter_gate_discarded(&terminal, &app, &writes);
+        });
+    }
+}
+
+/// #1661 (owner decision 2026-11-05): a line typed in the same write as the young Enter (`ls\r`,
+/// held with it) is the line typed BEFORE the Enter: the give-up leaves it in the editor, unrun,
+/// for the shell, its first Enter held by the guard; the Enter and `x` typed after it are
+/// discarded. Nothing written. Both modes.
+#[test]
+fn young_hold_cap_keeps_the_line_typed_before_the_enter() {
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let writes = record_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                young_enter_setup(view);
+                assert!(view.write_user_bytes_to_pty(b"ls\r".to_vec(), ctx));
+                assert!(view.write_user_bytes_to_pty(b"x".to_vec(), ctx));
+                assert!(young_gate_open(view), "the Enter is held");
+                let token = gate_token_of(view, input_queue::GateKind::PromptSeen);
+                view.on_paste_queue_give_up(token, ctx);
+            });
+            assert!(
+                writes.borrow().is_empty(),
+                "{mode:?}: a timer wrote to the pty: {:?}",
+                writes.borrow()
+            );
+            terminal.read(&app, |view, ctx| {
+                view.input.read(ctx, |input, ctx| {
+                    assert_eq!(input.buffer_text(ctx), "ls", "{mode:?}: the line, unrun");
+                    assert!(input.ssh_handover_enter_guard_armed(), "{mode:?}");
+                });
+                assert!(ssh_queue_is_idle(view), "{mode:?}");
+            });
         });
     }
 }
