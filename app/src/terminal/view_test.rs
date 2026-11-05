@@ -15456,8 +15456,12 @@ fn keys_behind_a_run_enter_in(mode: DestMode, after: AfterRunEnter) {
                 | AfterRunEnter::RealBlockCompleted
         );
         for _ in 0..400 {
+            // r18u27: released AND delivered. A release from the input's side stops the drain at
+            // the first entry only the view routes and the view continues it on a later turn, so
+            // "the gate is gone" alone was read before the text reached the editor.
             let done = terminal.read(&app, |view, ctx| {
                 !view.input.as_ref(ctx).enter_queue_holds_keys(ctx)
+                    && view.paste_queue.queue.borrow().is_idle()
             });
             let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
             if done && (ends_without_pty || written.ends_with(b"\r")) {

@@ -398,12 +398,15 @@ fn young_hold_cap_discards_the_enter_and_the_keys_after_it() {
     }
 }
 
-/// #1661 (owner decision 2026-11-05): a line typed in the same write as a sequence-path young
-/// Enter (`ls\r`, held with it) is the line typed BEFORE the Enter: the give-up leaves it in the
-/// editor, unrun, for the shell, its first Enter held by the guard; the Enter and `x` typed after
-/// it are discarded. Nothing written. Both modes.
+/// #1661 (owner decision 2026-11-05): the line typed BEFORE a sequence-path young Enter is not in
+/// the hold. The hand-off holds a young Enter only on a write that STARTS with the Enter
+/// (`should_hold_young_enter_sampled`); `ls` typed before it went to the pty as typed, into the
+/// shell's own line, where it stays. The give-up discards only the Enter and `x` typed after it:
+/// nothing in the editor, no guard, nothing more written. Both modes. (r18u27: this test assumed
+/// `ls\r` in one write is held with its line; it is not held at all, so the assumption was wrong,
+/// not the code.)
 #[test]
-fn young_hold_cap_keeps_the_line_typed_before_the_enter() {
+fn young_hold_cap_leaves_the_line_typed_before_the_enter_in_the_shell() {
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
             let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
@@ -413,22 +416,28 @@ fn young_hold_cap_keeps_the_line_typed_before_the_enter() {
             let writes = record_pty_writes(&mut app, &terminal);
             terminal.update(&mut app, |view, ctx| {
                 young_enter_setup(view);
-                assert!(view.write_user_bytes_to_pty(b"ls\r".to_vec(), ctx));
+                assert!(view.write_user_bytes_to_pty(b"ls".to_vec(), ctx));
+                assert!(!young_gate_open(view), "{mode:?}: the line is not held");
+            });
+            let before = writes.borrow().len();
+            terminal.update(&mut app, |view, ctx| {
+                assert!(view.write_user_bytes_to_pty(b"\r".to_vec(), ctx));
                 assert!(view.write_user_bytes_to_pty(b"x".to_vec(), ctx));
-                assert!(young_gate_open(view), "the Enter is held");
+                assert!(young_gate_open(view), "{mode:?}: the Enter is held");
                 make_young_hold_a_sequence_path_hold(view);
                 let token = gate_token_of(view, input_queue::GateKind::PromptSeen);
                 view.on_paste_queue_give_up(token, ctx);
             });
-            assert!(
-                writes.borrow().is_empty(),
-                "{mode:?}: a timer wrote to the pty: {:?}",
+            assert_eq!(
+                writes.borrow().len(),
+                before,
+                "{mode:?}: the give-up wrote nothing: {:?}",
                 writes.borrow()
             );
             terminal.read(&app, |view, ctx| {
                 view.input.read(ctx, |input, ctx| {
-                    assert_eq!(input.buffer_text(ctx), "ls", "{mode:?}: the line, unrun");
-                    assert!(input.ssh_handover_enter_guard_armed(), "{mode:?}");
+                    assert_eq!(input.buffer_text(ctx), "", "{mode:?}: nothing came back");
+                    assert!(!input.ssh_handover_enter_guard_armed(), "{mode:?}");
                 });
                 assert!(ssh_queue_is_idle(view), "{mode:?}");
             });

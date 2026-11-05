@@ -14931,10 +14931,22 @@ impl TerminalView {
             let held = held.concat();
             let text = text_for_editor(&held);
             self.input.update(ctx, |input, ctx| {
-                if forces_shell_submit(&text) {
-                    input.system_insert(&text, ctx);
-                    input.submit_next_enter_as_shell_command();
+                if !forces_shell_submit(&text) {
+                    return;
                 }
+                // #1661 (r18u27): these are keys typed AFTER the deferred Enter. When that Enter
+                // now waits behind its own gate (an unready shell refused the submit, #1571),
+                // they queue behind that gate as typed text, in order: released with it when the
+                // shell is ready, and DISCARDED with it by its give-up (owner decision
+                // 2026-11-05). Inserted, they became a programmatic edit deferred behind the
+                // gate and were applied by the give-up, i.e. handed back to the editor.
+                if input.enter_queue_holds_keys(ctx)
+                    && input.queue_behind_enter(AfterEnterInput::Text(text.clone()), ctx)
+                {
+                    return;
+                }
+                input.system_insert(&text, ctx);
+                input.submit_next_enter_as_shell_command();
             });
         }
         self.note_editor_took_over();
