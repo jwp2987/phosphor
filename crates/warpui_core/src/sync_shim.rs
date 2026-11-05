@@ -12,12 +12,16 @@
 //! never times out. A model test must therefore make sure the notification comes.
 //!
 //! Run the model tests of a crate (a model build compiles only the model tests of the modules
-//! that have them; filter by `model_tests::` to skip the rest of the crate's tests, which use real
-//! primitives outside a model):
+//! that have them; filter by `model_tests::model_` to skip the rest of the crate's tests, which
+//! use real primitives outside a model). The convention the filter relies on: a model test lives
+//! in a module named `model_tests` or `<name>_model_tests`, gated on
+//! `cfg(all(test, any(shuttle, phosphor_loom)))`, and its name starts with `model_`. The filter
+//! needs both halves: `model_tests::` alone also matches an ordinary module such as
+//! `file_search_model_tests`, whose tests crash under loom outside a model (r18u22).
 //!
 //! ```text
-//! RUSTFLAGS="--cfg shuttle" cargo test -p warpui_core --lib --release -- model_tests::
-//! RUSTFLAGS="--cfg phosphor_loom"    cargo test -p warpui_core --lib --release -- model_tests::
+//! RUSTFLAGS="--cfg shuttle" cargo test -p warpui_core --lib --release -- model_tests::model_
+//! RUSTFLAGS="--cfg phosphor_loom"    cargo test -p warpui_core --lib --release -- model_tests::model_
 //! ```
 //!
 //! [`check`] runs a test body under the active checker: shuttle explores randomly scheduled

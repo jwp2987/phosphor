@@ -149,9 +149,19 @@ impl KeyFactsCell {
     }
 
     /// Stores `facts` as the publication `facts_gen` (the model's publish).
+    ///
+    /// A `swap`, not a plain `store`: every write to the word is a read-modify-write, so each one
+    /// reads the newest word and the writes form one chain. A refresh ([`Self::store`]) racing a
+    /// publication then either lands first (and the publication overwrites it) or reads the
+    /// published word and keeps its gen; the gen never goes back to the one before the
+    /// publication. With a plain store here, loom (which gives two unsynchronised writes no order
+    /// between them) let a refresh's CAS of the old word win over the publication, and the cell
+    /// ended on gen 0 (`model_a_refresh_racing_a_publication_never_moves_the_gen`, r18u22). The
+    /// cost is one locked exchange instead of a plain store, once per publication (a parsed
+    /// chunk, not a key).
     pub fn store_with_gen(&self, facts: KeyFacts, facts_gen: u64) {
         let word = ((facts_gen & BITS_MASK) << GEN_SHIFT) | u64::from(facts.to_bits());
-        self.0.store(word, Ordering::Release);
+        self.0.swap(word, Ordering::AcqRel);
     }
 
     pub fn load(&self) -> KeyFacts {
@@ -861,8 +871,9 @@ mod tests;
 mod model_tests;
 
 // Interleaving models of the input pipeline (pane queue drain, ssh hand-over, hand-off holds, the
-// stamp-then-decide gen order; #1512, #1531). The module name ends in `model_tests` so the
-// `model_tests::` filter of the `test-shuttle-loom` job selects it.
+// stamp-then-decide gen order; #1512, #1531). The module name ends in `model_tests` and every
+// test is named `model_*`, so the `model_tests::model_` filter of the `test-shuttle-loom` job
+// selects it.
 #[cfg(all(test, any(shuttle, phosphor_loom)))]
 #[path = "pipeline_model_tests.rs"]
 mod pipeline_model_tests;
