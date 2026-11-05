@@ -15396,6 +15396,7 @@ dependencies = [
  "chrono",
  "dirs",
  "env_logger",
+ "libc",
  "log",
  "log-panics",
  "tempfile",

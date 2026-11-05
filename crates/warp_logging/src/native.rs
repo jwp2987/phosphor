@@ -1050,6 +1050,7 @@ fn init_internal(
     let mut log_file_failure = None;
     let mut log_file_warning = None;
     let mut log_file_target = None;
+    let mut fatal_signal_log: Option<PathBuf> = None;
     if use_logfile {
         let setup = setup_log_files_for_current_execution(
             &state.log_directory,
@@ -1084,6 +1085,7 @@ fn init_internal(
         });
         match setup {
             Ok((target, active, warning)) => {
+                fatal_signal_log = Some(active.path.clone());
                 log_file_target = Some(target);
                 log_file_warning = warning;
                 if let Ok(mut slot) = ACTIVE_LOG.lock() {
@@ -1128,6 +1130,15 @@ fn init_internal(
     if state.use_logfile {
         log_panics::init();
     }
+
+    // A fault or abort that kills the process leaves one line naming the signal, the address and
+    // the thread (#1782: a macOS SIGBUS left no app-log line and no crash report).
+    #[cfg(unix)]
+    if let Some(path) = fatal_signal_log.filter(|_| state.use_logfile) {
+        crate::fatal_signal::install(&path);
+    }
+    #[cfg(not(unix))]
+    let _ = fatal_signal_log;
 
     LOG_STATE.set(state).expect("Logging already initialized");
     // We can .expect here because .init would have already panicked if we initialized logging twice.

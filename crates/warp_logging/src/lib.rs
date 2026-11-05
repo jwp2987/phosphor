@@ -55,6 +55,9 @@ pub fn default_max_file_size_bytes(frontend: LogFrontend) -> Option<u64> {
 #[path = "native.rs"]
 mod imp;
 
+#[cfg(unix)]
+mod fatal_signal;
+
 mod rotation;
 
 pub use imp::init;

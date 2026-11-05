@@ -1,6 +1,4 @@
 use std::ffi::CStr;
-use std::os::raw::c_uchar;
-use std::slice;
 
 use anyhow::Result;
 use cocoa::base::id;
@@ -167,12 +165,13 @@ impl Clipboard {
                 content.paths = Some(
                     (0..available_paths)
                         .map(|i| {
+                            // #1782: `len()` counts UTF-16 units, not the UTF-8 bytes
+                            // `UTF8String` returns: a non-ASCII path was cut mid-character into
+                            // a `String` that is not UTF-8. Read up to the NUL instead.
                             let directory = file_paths.objectAtIndex(i);
-                            let slice = slice::from_raw_parts(
-                                directory.UTF8String() as *const c_uchar,
-                                directory.len(),
-                            );
-                            std::str::from_utf8_unchecked(slice).to_string()
+                            CStr::from_ptr(directory.UTF8String())
+                                .to_string_lossy()
+                                .into_owned()
                         })
                         .collect::<Vec<String>>(),
                 );
