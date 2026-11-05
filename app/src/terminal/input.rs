@@ -1457,6 +1457,42 @@ const TAB_COMPLETION_ENTER_BUDGET: std::time::Duration = std::time::Duration::fr
 /// A hold longer than this is logged at WARN, so slow completers can be traced.
 const TAB_COMPLETION_ENTER_WARN: std::time::Duration = std::time::Duration::from_millis(50);
 
+/// Which Enter a held-back Enter guard holds once ([`Input::input_enter`]), after text came back to
+/// the editor without running (#1348, #1577, #1666).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EnterGuardKind {
+    /// The handed-back text itself is unchecked (it may hold several lines, or a line meant for
+    /// another machine): the first Enter on a buffer that still starts with it is held.
+    HandedBackText,
+    /// The handed-back text is one line the user can run as shown; an Enter on it unchanged runs
+    /// at once. What it guards against is new text typed onto the end of it (`cd proj` handed
+    /// back, then `ls` Enter would run `cd projls`): an Enter on a buffer that starts with the
+    /// line and differs from it is held. A completion inserted into the line disarms it. Used by
+    /// the Tab-completion give-up (#1666); the verdict give-up could opt in later.
+    Glue,
+}
+
+/// An armed held-back Enter guard: the handed-back text, the kind, and the toast its held Enter
+/// shows (each hand-back says its own reason, #1666).
+#[derive(Clone, Debug)]
+struct EnterGuard {
+    baseline: String,
+    kind: EnterGuardKind,
+    toast: &'static str,
+}
+
+/// The toast of an Enter held by the guard an ssh hand-back armed.
+const SSH_HANDOVER_GUARD_TOAST: &str = "Enter was held back: the SSH session ended while this was \
+     being typed. Check the line, then press Enter to run it here";
+
+/// The toast of an Enter held by the guard of any other hand-back of text that did not run.
+pub(crate) const HANDED_BACK_GUARD_TOAST: &str = "Enter was held back: this text came back to the \
+     input without running. Check it, then press Enter to run it";
+
+/// The toast of an Enter held by the [`EnterGuardKind::Glue`] guard (#1666).
+pub(crate) const GLUE_GUARD_TOAST: &str =
+    "Text was typed onto a line that was not run; check it and press Enter again";
+
 impl EnterHold {
     /// The most compute the awaited job may spend before the Enter gives up on it (#1351). For a
     /// verdict the cap grows with the text (#1604, `enter_verdict_budget_for`): a buffer over the
@@ -2239,7 +2275,8 @@ pub struct Input {
     /// for the remote machine. The first Enter after that hand-back is not executed (it may have
     /// been typed in the same burst as the line); the user sees the line and presses Enter again.
     /// The text handed back to the editor when the ssh connect ended; `Some` while armed (#1395).
-    ssh_handover_enter_guard: Option<String>,
+    /// Other hand-backs arm it too, each with its own kind and toast (#1666).
+    ssh_handover_enter_guard: Option<EnterGuard>,
     /// Whether the last Enter submitted a shell command; read by `input_enter_as_shell_command`.
     last_enter_submitted_shell_command: bool,
     /// What the editor held when it last submitted a command. The editor is cleared when that
@@ -12567,10 +12604,7 @@ impl Input {
             if wait.holds_for_tab_completion()
                 && completions_trigger == CompletionsTrigger::Keybinding
             {
-                self.finish_completion_hold(
-                    Some((results, editor_snapshot_when_completer_was_ran)),
-                    ctx,
-                );
+                self.finish_completion_hold(results, editor_snapshot_when_completer_was_ran, ctx);
             }
             return;
         }
@@ -12898,6 +12932,7 @@ impl Input {
         completion_prefix: &str,
         replacement_start: usize,
     ) {
+        self.disarm_glue_enter_guard();
         self.editor.update(ctx, |input, ctx| {
             let cursor_end_offset = input.end_byte_index_of_last_selection(ctx);
             let cursor_end_offset = ByteOffset::from(end_past_auto_paired_closing_quote(
@@ -12922,6 +12957,7 @@ impl Input {
         executing: Executing,
         ctx: &mut ViewContext<Input>,
     ) {
+        self.disarm_glue_enter_guard();
         let is_completions_as_you_type_enabled = self.is_completions_while_typing_turned_on(ctx);
         self.editor.update(ctx, |input, ctx| {
             let cursor_end_offset = input.end_byte_index_of_last_selection(ctx);
@@ -13502,7 +13538,7 @@ impl Input {
                 });
                 self.pending_command_shown_read_only = true;
             }
-            self.arm_ssh_handover_enter_guard(text);
+            self.arm_handed_back_enter_guard(text);
         }
         true
     }
@@ -14489,10 +14525,10 @@ impl Input {
     /// cursor is in flight holds for it, as a real shell runs the completed line. The result is
     /// applied (a single match), or the visible text is submitted (several matches, none, an
     /// error). No answer within `TAB_COMPLETION_ENTER_BUDGET` (or the backstop) runs nothing: the
-    /// line is handed back with a toast (#1666/#1667). A remote completer cannot
-    /// answer quickly: it is cancelled and the Enter submits the visible text at once. Keys typed
-    /// during the hold queue behind the Enter through the verdict wait's bookkeeping (#1016).
-    /// Returns whether the Enter was taken.
+    /// line is handed back with a toast (#1666/#1667). A remote completer cannot answer quickly:
+    /// it is cancelled and the Enter submits the visible text at once. Keys typed during the hold
+    /// queue behind the Enter through the verdict wait's bookkeeping (#1016). Returns whether the
+    /// Enter was taken.
     fn hold_enter_for_tab_completion(&mut self, ctx: &mut ViewContext<Self>) -> bool {
         if self.running_deferred_enter || self.enter_queue_awaits_route(ctx) {
             return false;
@@ -14763,19 +14799,21 @@ impl Input {
             spent.as_millis(),
             TAB_COMPLETION_ENTER_BUDGET.as_millis()
         );
-        self.tab_completion_request = None;
-        self.cancel_pending_completions_for_deferred_enter();
+        // The wait is voided here, before the hand-back: whatever the gate's state, no later
+        // event can submit it (#1666 review). This also cancels the completion, so a late
+        // result is stale and dropped.
+        self.void_verdict_wait_for_give_up();
         self.hand_back_completion_held_enter(why, ctx);
     }
 
-    /// Ends the hold of an Enter on the Tab completion and runs the Enter. `result` is the
-    /// completion that landed (a timeout never comes here: it hands the line back, #1666). A
-    /// single match is applied first;
-    /// the verdict for the COMPLETED text then decides the route (the partial line's verdict is
-    /// dropped), within the usual verdict budget.
+    /// Ends the hold of an Enter on the Tab completion that landed (`results`, computed for
+    /// `snapshot`) and runs the Enter. A timeout never comes here: it hands the line back
+    /// (#1666). A single match is applied first; the verdict for the COMPLETED text then decides
+    /// the route (the partial line's verdict is dropped), within the usual verdict budget.
     fn finish_completion_hold(
         &mut self,
-        result: Option<(Option<SuggestionResults>, EditorSnapshot)>,
+        results: Option<SuggestionResults>,
+        snapshot: EditorSnapshot,
         ctx: &mut ViewContext<Self>,
     ) {
         self.tab_completion_request = None;
@@ -14797,32 +14835,29 @@ impl Input {
             .map(|wait| wait.compute.spent())
             .unwrap_or_default();
         let before = self.editor.as_ref(ctx).buffer_text(ctx);
-        let mut outcome = "timed out";
-        if let Some((results, snapshot)) = result {
-            outcome = "no match";
-            let current = self
-                .editor
-                .read(ctx, |editor, ctx| editor.snapshot_model(ctx));
-            if snapshot.text() == current.text()
-                && snapshot.selections() == current.selections()
-                && let Some(results) = results
-                && !results.suggestions.is_empty()
+        let mut outcome = "no match";
+        let current = self
+            .editor
+            .read(ctx, |editor, ctx| editor.snapshot_model(ctx));
+        if snapshot.text() == current.text()
+            && snapshot.selections() == current.selections()
+            && let Some(results) = results
+            && !results.suggestions.is_empty()
+        {
+            outcome = "ambiguous";
+            let query = results.replacement_span.slice(&before);
+            if let ExplicitTabCompletion::InsertSingle {
+                suggestion,
+                replacement_span,
+            } = results.explicit_tab_completion(query, self.path_separators(ctx).all)
             {
-                outcome = "ambiguous";
-                let query = results.replacement_span.slice(&before);
-                if let ExplicitTabCompletion::InsertSingle {
-                    suggestion,
-                    replacement_span,
-                } = results.explicit_tab_completion(query, self.path_separators(ctx).all)
-                {
-                    outcome = "applied";
-                    self.insert_completion_result_into_editor(
-                        &suggestion.suggestion.replacement,
-                        replacement_span.start(),
-                        Executing::No,
-                        ctx,
-                    );
-                }
+                outcome = "applied";
+                self.insert_completion_result_into_editor(
+                    &suggestion.suggestion.replacement,
+                    replacement_span.start(),
+                    Executing::No,
+                    ctx,
+                );
             }
         }
         if waited > TAB_COMPLETION_ENTER_WARN {
@@ -15202,9 +15237,51 @@ impl Input {
     }
 
     pub(crate) fn arm_ssh_handover_enter_guard(&mut self, baseline: String) {
+        self.arm_enter_guard(
+            baseline,
+            EnterGuardKind::HandedBackText,
+            SSH_HANDOVER_GUARD_TOAST,
+        );
+    }
+
+    /// Arms the held-back Enter guard over `baseline`, text a timer or a hand-over put back into
+    /// the editor without running it, with the generic "check it" toast.
+    pub(crate) fn arm_handed_back_enter_guard(&mut self, baseline: String) {
+        self.arm_enter_guard(
+            baseline,
+            EnterGuardKind::HandedBackText,
+            HANDED_BACK_GUARD_TOAST,
+        );
+    }
+
+    /// Arms the held-back Enter guard (#1666): `kind` says which Enter it holds, `toast` what the
+    /// held Enter tells the user.
+    pub(crate) fn arm_enter_guard(
+        &mut self,
+        baseline: String,
+        kind: EnterGuardKind,
+        toast: &'static str,
+    ) {
         // #1456: nothing handed back means nothing to protect; an empty baseline would match every
         // later line (`starts_with("")`) and swallow the first Enter of whatever is typed next.
-        self.ssh_handover_enter_guard = (!baseline.is_empty()).then_some(baseline);
+        self.ssh_handover_enter_guard = (!baseline.is_empty()).then_some(EnterGuard {
+            baseline,
+            kind,
+            toast,
+        });
+    }
+
+    /// A completion was inserted into the line: text that grew the handed-back line that way was
+    /// not typed onto it, so a [`EnterGuardKind::Glue`] guard is dropped (#1666: the give-up toast
+    /// says to press Tab to complete it).
+    fn disarm_glue_enter_guard(&mut self) {
+        if self
+            .ssh_handover_enter_guard
+            .as_ref()
+            .is_some_and(|guard| guard.kind == EnterGuardKind::Glue)
+        {
+            self.ssh_handover_enter_guard = None;
+        }
     }
 
     #[cfg(test)]
@@ -15212,40 +15289,45 @@ impl Input {
         self.ssh_handover_enter_guard.is_some()
     }
 
+    /// The armed guard's kind and the toast its held Enter shows, for tests.
+    #[cfg(test)]
+    pub(crate) fn enter_guard_for_test(&self) -> Option<(EnterGuardKind, &'static str)> {
+        self.ssh_handover_enter_guard
+            .as_ref()
+            .map(|guard| (guard.kind, guard.toast))
+    }
+
     /// The first Enter after typed text was handed back to the editor (ssh ended without a remote
     /// shell) is consumed, not executed: a line meant for the remote machine must never run
     /// locally because the connect ended mid-line. Decided by the hand-back event, not by timing.
     /// An empty buffer has nothing to run, so the guard is simply dropped.
     fn hold_back_enter_after_ssh_handover(&mut self, ctx: &mut ViewContext<Self>) -> bool {
-        let Some(baseline) = self.ssh_handover_enter_guard.take() else {
+        let Some(guard) = self.ssh_handover_enter_guard.take() else {
             return false;
         };
         if self.editor.as_ref(ctx).is_empty(ctx) {
             return false;
         }
+        let buffer = self.editor.as_ref(ctx).buffer_text(ctx);
         // #1395: the user replaced the handed-back line (cleared it, ran something else, typed a
         // new command). This Enter belongs to the new line: swallowing it merged the next typed
         // text into that line. Only a line that still starts with the handed-back text is held.
-        if !self
-            .editor
-            .as_ref(ctx)
-            .buffer_text(ctx)
-            .starts_with(&baseline)
-        {
+        if !buffer.starts_with(&guard.baseline) {
             return false;
         }
+        // #1666: the glue guard lets the Enter on the unchanged line run; it holds only text typed
+        // onto the end of it.
+        if guard.kind == EnterGuardKind::Glue && buffer == guard.baseline {
+            return false;
+        }
+        warpui::input_order::log_key_hop("enter_guard_held", || format!("kind={:?}", guard.kind));
         if !ctx.has_singleton_model::<ToastStack>() {
             return true;
         }
         let window_id = ctx.window_id();
         ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
             toast_stack.add_ephemeral_toast(
-                DismissibleToast::new(
-                    "Enter was held back: the SSH session ended while this was being typed. \
-                     Check the line, then press Enter to run it here"
-                        .to_string(),
-                    ToastFlavor::Default,
-                ),
+                DismissibleToast::new(guard.toast.to_string(), ToastFlavor::Default),
                 window_id,
                 ctx,
             );

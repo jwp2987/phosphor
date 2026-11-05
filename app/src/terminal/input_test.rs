@@ -13356,27 +13356,50 @@ fn test_tab_then_enter_multiple_matches_submits_visible_text() {
     });
 }
 
+/// Records the text of every ephemeral toast shown, in order (#1666: the tests assert exactly
+/// what the user was told).
+fn record_toast_texts(app: &mut App) -> Rc<RefCell<Vec<String>>> {
+    let texts = Rc::new(RefCell::new(Vec::new()));
+    let sink = texts.clone();
+    app.update(|ctx| {
+        let stack = ToastStack::handle(ctx);
+        ctx.subscribe_to_model(&stack, move |_, event, _| {
+            if let crate::workspace::ToastStackEvent::AddEphemeralToast { toast, .. } = event {
+                sink.borrow_mut()
+                    .push(toast.main_text_for_test().to_string());
+            }
+        });
+    });
+    texts
+}
+
+/// Tab, Enter, then the completer's compute cap fires on the held Enter (#1666).
+fn fire_tab_completion_cap(input: &ViewHandle<Input>, app: &mut App) {
+    input.update(app, |input, ctx| {
+        let wait = input.verdict_wait.as_mut().expect("the Enter holds");
+        wait.compute = ComputeClock::with_spent_for_test(TAB_COMPLETION_ENTER_BUDGET * 2);
+        let id = wait.id;
+        input.compute_cap_fired(id, ctx);
+    });
+}
+
 /// #1165/#1351/#1666 (H6): a completer that spent its compute cap without answering. The timer
 /// runs NOTHING (#1577): it used to submit the visible `git checkout fe` where the user meant the
-/// completed line, which is a command the user did not mean. The line stays in the editor, a
-/// toast says to press Enter, a late result is dropped (it neither completes nor runs the line),
-/// and the user's next Enter runs the line as shown. Both modes.
+/// completed line, which is a command the user did not mean. The line stays in the editor, ONE
+/// toast says exactly what happened, a late result is dropped (it neither completes nor runs the
+/// line), and the user's next Enter on the unchanged line runs it as shown. Both modes.
 #[test]
 fn test_tab_then_enter_timeout_hands_the_line_back_and_drops_late_result() {
+    use crate::terminal::input::enter_queue::COMPLETION_GIVE_UP_TOAST;
     use crate::terminal::input_queue::DestinationMode;
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
             let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
             let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
             let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, true).await;
-            let toasts = count_toasts(&mut app);
-            input.update(&mut app, |input, ctx| {
-                input.input_enter(ctx);
-                let wait = input.verdict_wait.as_mut().unwrap();
-                wait.compute = ComputeClock::with_spent_for_test(TAB_COMPLETION_ENTER_BUDGET * 2);
-                let id = wait.id;
-                input.compute_cap_fired(id, ctx);
-            });
+            let toasts = record_toast_texts(&mut app);
+            input.update(&mut app, |input, ctx| input.input_enter(ctx));
+            fire_tab_completion_cap(&input, &mut app);
             assert!(
                 executed.borrow().is_empty(),
                 "{mode:?}: the clock must not run the uncompleted line"
@@ -13389,10 +13412,16 @@ fn test_tab_then_enter_timeout_hands_the_line_back_and_drops_late_result() {
                 assert!(input.tab_completion_request.is_none(), "{mode:?}");
                 assert!(!input.enter_queue_holds_keys(ctx), "{mode:?}: gate closed");
                 assert_eq!(input.buffer_text(ctx), "git checkout fe", "{mode:?}");
+                assert_eq!(
+                    input.enter_guard_for_test(),
+                    Some((EnterGuardKind::Glue, GLUE_GUARD_TOAST)),
+                    "{mode:?}: the glue guard is armed over the line"
+                );
             });
-            assert!(
-                *toasts.borrow() >= 1,
-                "{mode:?}: a toast says to press Enter"
+            assert_eq!(
+                *toasts.borrow(),
+                [COMPLETION_GIVE_UP_TOAST.to_string()],
+                "{mode:?}: exactly one toast"
             );
 
             deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);
@@ -13405,29 +13434,32 @@ fn test_tab_then_enter_timeout_hands_the_line_back_and_drops_late_result() {
                 assert_eq!(input.buffer_text(ctx), "git checkout fe", "{mode:?}");
             });
 
-            // The user's own Enter, after the toast, runs the line as shown.
+            // The user's own Enter on the unchanged line runs it as shown: the glue guard holds
+            // only text typed onto it.
             input.update(&mut app, |input, ctx| input.input_enter(ctx));
             assert_eq!(
                 executed.borrow().as_slice(),
                 ["git checkout fe"],
                 "{mode:?}"
             );
+            assert_eq!(toasts.borrow().len(), 1, "{mode:?}: no second toast");
         });
     }
 }
 
 /// #1667 (H7): the Tab completion hold's backstop (a result that never arrives) gives up like the
-/// cap: nothing runs, the line stays in the editor, a toast shows, and a late result is dropped.
-/// Both modes.
+/// cap: nothing runs, the line stays in the editor, one toast, a late result is dropped. Both
+/// modes.
 #[test]
 fn test_tab_then_enter_backstop_hands_the_line_back_and_runs_nothing() {
+    use crate::terminal::input::enter_queue::COMPLETION_GIVE_UP_TOAST;
     use crate::terminal::input_queue::DestinationMode;
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
             let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
             let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
             let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, true).await;
-            let toasts = count_toasts(&mut app);
+            let toasts = record_toast_texts(&mut app);
             input.update(&mut app, |input, ctx| {
                 input.input_enter(ctx);
                 let id = input
@@ -13446,12 +13478,144 @@ fn test_tab_then_enter_backstop_hands_the_line_back_and_runs_nothing() {
                 assert!(!input.enter_queue_holds_keys(ctx), "{mode:?}");
                 assert_eq!(input.buffer_text(ctx), "git checkout fe", "{mode:?}");
             });
-            assert!(*toasts.borrow() >= 1, "{mode:?}: toast");
+            assert_eq!(
+                *toasts.borrow(),
+                [COMPLETION_GIVE_UP_TOAST.to_string()],
+                "{mode:?}"
+            );
             deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);
             assert!(executed.borrow().is_empty(), "{mode:?}");
             input.read(&app, |input, ctx| {
                 assert_eq!(input.buffer_text(ctx), "git checkout fe", "{mode:?}");
             });
+        });
+    }
+}
+
+/// #1666 review: the cap and then the backstop fire on the SAME wait. The first gives up; the
+/// second finds no wait of its id and does nothing: one hand-back, exactly one toast. Both modes.
+#[test]
+fn test_tab_then_enter_cap_then_backstop_on_one_wait_shows_one_toast() {
+    use crate::terminal::input::enter_queue::COMPLETION_GIVE_UP_TOAST;
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+            let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, true).await;
+            let toasts = record_toast_texts(&mut app);
+            input.update(&mut app, |input, ctx| {
+                input.input_enter(ctx);
+                let wait = input.verdict_wait.as_mut().expect("the Enter holds");
+                wait.compute = ComputeClock::with_spent_for_test(TAB_COMPLETION_ENTER_BUDGET * 2);
+                let id = wait.id;
+                input.compute_cap_fired(id, ctx);
+                input.hold_backstop_fired(id, ctx);
+            });
+            assert!(executed.borrow().is_empty(), "{mode:?}");
+            assert_eq!(
+                *toasts.borrow(),
+                [COMPLETION_GIVE_UP_TOAST.to_string()],
+                "{mode:?}: exactly one toast"
+            );
+            input.read(&app, |input, ctx| {
+                assert_eq!(input.buffer_text(ctx), "git checkout fe", "{mode:?}");
+            });
+        });
+    }
+}
+
+/// #1666 review (HIGH): after a give-up with nothing typed during the hold, text typed onto the
+/// end of the handed-back line must not run glued to it (`cd proj` handed back, `ls` Enter would
+/// run `cd projls`). The glue guard holds that Enter: nothing runs, the buffer is kept, and one
+/// toast says why. The NEXT Enter is the user's say-so on the line they now see, and runs it.
+/// Both modes.
+#[test]
+fn test_tab_completion_give_up_then_typing_onto_the_line_does_not_run_it_glued() {
+    use crate::terminal::input::enter_queue::COMPLETION_GIVE_UP_TOAST;
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+            let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, true).await;
+            let toasts = record_toast_texts(&mut app);
+            input.update(&mut app, |input, ctx| input.input_enter(ctx));
+            fire_tab_completion_cap(&input, &mut app);
+
+            input.update(&mut app, |input, ctx| {
+                input.user_insert("ls", ctx);
+                input.input_enter(ctx);
+            });
+            assert!(
+                executed.borrow().is_empty(),
+                "{mode:?}: the glued line must not run"
+            );
+            input.read(&app, |input, ctx| {
+                assert_eq!(
+                    input.buffer_text(ctx),
+                    "git checkout fels",
+                    "{mode:?}: the buffer is kept"
+                );
+                assert!(
+                    !input.ssh_handover_enter_guard_armed(),
+                    "{mode:?}: used once"
+                );
+            });
+            assert_eq!(
+                *toasts.borrow(),
+                [
+                    COMPLETION_GIVE_UP_TOAST.to_string(),
+                    GLUE_GUARD_TOAST.to_string()
+                ],
+                "{mode:?}"
+            );
+
+            // The guarded Enter, then the next: the user has seen the line and runs it.
+            input.update(&mut app, |input, ctx| input.input_enter(ctx));
+            assert_eq!(
+                executed.borrow().as_slice(),
+                ["git checkout fels"],
+                "{mode:?}"
+            );
+            assert_eq!(toasts.borrow().len(), 2, "{mode:?}: no further toast");
+        });
+    }
+}
+
+/// #1666 review: the toast says "Press Tab to complete it", so a completion inserted into the
+/// handed-back line is not text glued onto it: the glue guard is dropped and the Enter after the
+/// Tab runs the completed line. Both modes.
+#[test]
+fn test_tab_completion_give_up_then_tab_completes_and_enter_runs_it() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+            let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, true).await;
+            input.update(&mut app, |input, ctx| input.input_enter(ctx));
+            fire_tab_completion_cap(&input, &mut app);
+            // The user's Tab: its single match is inserted (no Enter is waiting, so it applies).
+            let (generation, snapshot) = input.update(&mut app, |input, ctx| {
+                (input.input_generation, editor_model_snapshot(input, ctx))
+            });
+            deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);
+            input.read(&app, |input, ctx| {
+                assert_eq!(
+                    input.buffer_text(ctx).trim_end(),
+                    "git checkout feature",
+                    "{mode:?}"
+                );
+                assert!(input.enter_guard_for_test().is_none(), "{mode:?}");
+            });
+            input.update(&mut app, |input, ctx| input.input_enter(ctx));
+            assert_eq!(executed.borrow().len(), 1, "{mode:?}");
+            assert_eq!(
+                executed.borrow()[0].trim_end(),
+                "git checkout feature",
+                "{mode:?}"
+            );
         });
     }
 }
@@ -13490,10 +13654,14 @@ fn test_tab_then_enter_completion_in_time_runs_the_completed_line_in_both_modes(
 
 /// #1666: keys typed behind an Enter held for a Tab completion that then gives up are not run
 /// and not lost: they come back to the editor after the uncompleted line in typed order (the
-/// Enter among them as a new line), nothing is released to the pty, and the next Enter is held
-/// by the hand-back guard (several lines submit as one command). Both modes.
+/// Enter among them as a new line), nothing is released to the pty. The give-up's toast does not
+/// promise that Enter runs the line, because the next Enter is held by the hand-back guard (with
+/// a toast that agrees), and that held Enter runs nothing. Both modes.
 #[test]
 fn test_tab_then_enter_give_up_keeps_the_keys_typed_after_it_in_order() {
+    use crate::terminal::input::enter_queue::{
+        COMPLETION_GIVE_UP_WITH_TYPED_TOAST, COMPLETION_GUARD_TOAST,
+    };
     use crate::terminal::input_queue::DestinationMode;
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
@@ -13502,6 +13670,7 @@ fn test_tab_then_enter_give_up_keeps_the_keys_typed_after_it_in_order() {
             let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, true).await;
             let editor = input.read(&app, |input, _| input.editor().clone());
             let released = record_released_enter_entries(&mut app, &input);
+            let toasts = record_toast_texts(&mut app);
             input.update(&mut app, |input, ctx| {
                 input.input_enter(ctx);
                 // Only the explicit give-up below may end the wait.
@@ -13526,12 +13695,7 @@ fn test_tab_then_enter_give_up_keeps_the_keys_typed_after_it_in_order() {
                 assert_eq!(input.enter_gate_held_len_for_test(ctx), 4, "{mode:?}");
             });
 
-            input.update(&mut app, |input, ctx| {
-                let wait = input.verdict_wait.as_mut().unwrap();
-                wait.compute = ComputeClock::with_spent_for_test(TAB_COMPLETION_ENTER_BUDGET * 2);
-                let id = wait.id;
-                input.compute_cap_fired(id, ctx);
-            });
+            fire_tab_completion_cap(&input, &mut app);
             assert!(executed.borrow().is_empty(), "{mode:?}: nothing ran");
             assert!(
                 released.borrow().is_empty(),
@@ -13546,8 +13710,17 @@ fn test_tab_then_enter_give_up_keeps_the_keys_typed_after_it_in_order() {
                     "git checkout fe\nls\npwd",
                     "{mode:?}: handed back in typed order"
                 );
-                assert!(input.ssh_handover_enter_guard_armed(), "{mode:?}");
+                assert_eq!(
+                    input.enter_guard_for_test(),
+                    Some((EnterGuardKind::HandedBackText, COMPLETION_GUARD_TOAST)),
+                    "{mode:?}"
+                );
             });
+            assert_eq!(
+                *toasts.borrow(),
+                [COMPLETION_GIVE_UP_WITH_TYPED_TOAST.to_string()],
+                "{mode:?}: exactly one toast, and it does not promise Enter runs the line"
+            );
             deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);
             assert!(executed.borrow().is_empty(), "{mode:?}");
             input.read(&app, |input, ctx| {
@@ -13557,6 +13730,28 @@ fn test_tab_then_enter_give_up_keeps_the_keys_typed_after_it_in_order() {
                     "{mode:?}"
                 );
             });
+
+            // The next Enter is held by the guard, with the toast that matches the give-up's.
+            input.update(&mut app, |input, ctx| input.input_enter(ctx));
+            assert!(
+                executed.borrow().is_empty(),
+                "{mode:?}: the held Enter runs nothing"
+            );
+            input.read(&app, |input, ctx| {
+                assert_eq!(
+                    input.buffer_text(ctx),
+                    "git checkout fe\nls\npwd",
+                    "{mode:?}"
+                );
+            });
+            assert_eq!(
+                *toasts.borrow(),
+                [
+                    COMPLETION_GIVE_UP_WITH_TYPED_TOAST.to_string(),
+                    COMPLETION_GUARD_TOAST.to_string()
+                ],
+                "{mode:?}"
+            );
         });
     }
 }

@@ -2062,7 +2062,7 @@ impl TerminalView {
                 // with the "check the line" toast, never run (#1577).
                 self.input.update(ctx, |input, ctx| {
                     let buffer = input.editor().as_ref(ctx).buffer_text(ctx);
-                    input.arm_ssh_handover_enter_guard(buffer);
+                    input.arm_handed_back_enter_guard(buffer);
                 });
             }
         }
@@ -2811,7 +2811,7 @@ impl TerminalView {
                             // Several lines in one buffer submit as one command: the first Enter
                             // on them is held with the "check the line" toast.
                             let buffer = input.buffer_text(ctx);
-                            input.arm_ssh_handover_enter_guard(buffer);
+                            input.arm_handed_back_enter_guard(buffer);
                         }
                     });
                 }

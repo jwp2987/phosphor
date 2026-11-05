@@ -423,6 +423,12 @@ pub enum ToastType {
 }
 
 impl<A: Action + Clone> DismissibleToast<A> {
+    /// The toast's text, for tests that assert what the user was told.
+    #[cfg(test)]
+    pub fn main_text_for_test(&self) -> &str {
+        &self.main_text
+    }
+
     pub fn new(main_text: String, flavor: ToastFlavor) -> Self {
         Self {
             flavor,

@@ -40,7 +40,9 @@ use warpui::SingletonEntity as _;
 use warpui::r#async::Timer;
 
 use super::paste_queue::InputQueueHost;
-use super::{AfterEnterInput, Event, Input};
+use super::{
+    AfterEnterInput, EnterGuardKind, Event, GLUE_GUARD_TOAST, HANDED_BACK_GUARD_TOAST, Input,
+};
 use crate::editor::HeldPasteKey;
 use crate::terminal::input_queue::{
     EditorKeyPayload, EntryKind, GateKind, GateSpec, HELD_KEY, HELD_PASTE, HELD_SEQ, HELD_TYPED,
@@ -95,12 +97,72 @@ const VERDICT_GIVE_UP_TOAST: &str =
     "Couldn't tell shell from chat in time; press Enter again to send";
 
 /// #1666/#1667: the toast of an Enter held for a Tab completion that did not land in time: the
-/// uncompleted line was not run.
-const COMPLETION_GIVE_UP_TOAST: &str =
-    "Completion took too long, so the line was not run; press Enter to run it as shown";
+/// uncompleted line was not run. Nothing was typed behind it, so the Enter on the line as shown
+/// runs it (the glue guard holds only text typed onto it).
+pub(crate) const COMPLETION_GIVE_UP_TOAST: &str = "Completion took too long, so the line was not \
+     run. Press Tab to complete it, or Enter to run it as shown.";
+
+/// #1666: the same give-up with keys typed behind the Enter: they come back after the line and the
+/// next Enter is held by the guard, so this toast must not promise that Enter runs the line.
+pub(crate) const COMPLETION_GIVE_UP_WITH_TYPED_TOAST: &str = "Completion took too long, so nothing \
+     was run. The line and what you typed after it are in the input; check them before you press \
+     Enter.";
+
+/// #1666: the toast of the Enter the guard holds after [`COMPLETION_GIVE_UP_WITH_TYPED_TOAST`].
+pub(crate) const COMPLETION_GUARD_TOAST: &str = "Enter was held back: the completion did not \
+     finish, so this text was not run. Check it, then press Enter again to run it.";
 
 const UNREADY_ENTER_GIVE_UP_TOAST: &str = "The shell was not ready, so the line was not run; it is \
      back in the input with what you typed after it";
+
+/// #1666: the toast of the Enter the guard holds after an unready shell's give-up.
+const UNREADY_GUARD_TOAST: &str = "Enter was held back: the shell was not ready, so this line did \
+     not run. Check it, then press Enter to run it";
+
+/// What a hand-back of a held Enter tells the user and which guard it arms (#1666): each give-up
+/// says its own reason, and the guard's toast agrees with the give-up's.
+#[derive(Clone, Copy, Debug)]
+struct HandBack {
+    /// The give-up's toast when only the line comes back.
+    toast: &'static str,
+    /// The give-up's toast when keys typed behind the Enter come back after the line (the next
+    /// Enter is then held by the guard).
+    toast_with_typed: &'static str,
+    /// The toast of the Enter the guard holds when keys came back with the line.
+    guard_toast: &'static str,
+    /// Whether the line alone arms the [`EnterGuardKind::Glue`] guard (#1666). The Tab-completion
+    /// give-up does; the verdict give-up does not (yet: the owner deferred it to the design pass).
+    glue_guard_on_line_alone: bool,
+}
+
+impl HandBack {
+    /// A give-up whose toast is the same with or without keys behind it, and no glue guard.
+    const fn plain(toast: &'static str, guard_toast: &'static str) -> Self {
+        Self {
+            toast,
+            toast_with_typed: toast,
+            guard_toast,
+            glue_guard_on_line_alone: false,
+        }
+    }
+
+    /// The hand-back of the gate give-up named `why`.
+    fn for_give_up(why: &str) -> Self {
+        match why {
+            "verdict_cap" => Self::plain(VERDICT_GIVE_UP_TOAST, HANDED_BACK_GUARD_TOAST),
+            "completion_cap" | "completion_backstop" => Self::COMPLETION,
+            _ => Self::plain(ENTER_GATE_GIVE_UP_TOAST, HANDED_BACK_GUARD_TOAST),
+        }
+    }
+
+    /// The Tab-completion give-up (#1666/#1667).
+    const COMPLETION: Self = Self {
+        toast: COMPLETION_GIVE_UP_TOAST,
+        toast_with_typed: COMPLETION_GIVE_UP_WITH_TYPED_TOAST,
+        guard_toast: COMPLETION_GUARD_TOAST,
+        glue_guard_on_line_alone: true,
+    };
+}
 
 /// A programmatic edit of the editor's buffer that waits for the Enter in front of it (#1434).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -728,7 +790,11 @@ impl Input {
              handed back to the input, not run (#1571)"
         );
         warpui::input_order::log_hop("enter_held_give_up", || format!("by={why}"));
-        self.hand_back_enter_gate(gate, UNREADY_ENTER_GIVE_UP_TOAST, ctx);
+        self.hand_back_enter_gate(
+            gate,
+            HandBack::plain(UNREADY_ENTER_GIVE_UP_TOAST, UNREADY_GUARD_TOAST),
+            ctx,
+        );
     }
 
     /// #1577 (A2): a timer gave up on the Enter gate (the route-settle net, the verdict cap, the
@@ -738,6 +804,16 @@ impl Input {
     pub(crate) fn give_up_enter_gate_to_editor(
         &mut self,
         why: &'static str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.give_up_enter_gate_with(why, HandBack::for_give_up(why), ctx);
+    }
+
+    /// [`Self::give_up_enter_gate_to_editor`] with the hand-back's texts and guard given.
+    fn give_up_enter_gate_with(
+        &mut self,
+        why: &'static str,
+        hand_back: HandBack,
         ctx: &mut ViewContext<Self>,
     ) {
         let Some(gate) = self.enter_gate else {
@@ -769,12 +845,7 @@ impl Input {
         warpui::input_order::log_key_hop("kh_enter_gate_give_up", || {
             format!("by={why} behind={held_behind} submitted={}", gate.submitted)
         });
-        let toast = match why {
-            "verdict_cap" => VERDICT_GIVE_UP_TOAST,
-            "completion_cap" | "completion_backstop" => COMPLETION_GIVE_UP_TOAST,
-            _ => ENTER_GATE_GIVE_UP_TOAST,
-        };
-        self.hand_back_enter_gate(gate, toast, ctx);
+        self.hand_back_enter_gate(gate, hand_back, ctx);
     }
 
     /// #1577: an Enter whose verdict / completion never came within the cap is not submitted by
@@ -794,7 +865,11 @@ impl Input {
         self.ai_input_model.update(ctx, |model, _| {
             model.abandon_pending_detection_after_give_up()
         });
-        self.hand_back_held_enter(why, VERDICT_GIVE_UP_TOAST, ctx);
+        self.hand_back_held_enter(
+            why,
+            HandBack::plain(VERDICT_GIVE_UP_TOAST, HANDED_BACK_GUARD_TOAST),
+            ctx,
+        );
     }
 
     /// #1666/#1667: an Enter held for a Tab completion that did not land within its cap or
@@ -807,28 +882,40 @@ impl Input {
         ctx: &mut ViewContext<Self>,
     ) {
         warpui::input_order::log_key_hop("enter_completion_give_up", || format!("editor {why}"));
-        self.hand_back_held_enter(why, COMPLETION_GIVE_UP_TOAST, ctx);
+        // A Tab-completion hold's gate is never the multi-line dialog's or an unready shell's,
+        // whose give-ups would keep or re-route it.
+        debug_assert!(
+            self.enter_gate
+                .is_none_or(|gate| !gate.held_for_dialog && !gate.held_unready),
+            "a Tab-completion give-up found a dialog / unready gate"
+        );
+        self.hand_back_held_enter(why, HandBack::COMPLETION, ctx);
     }
 
     /// The shared body of the held-Enter hand-backs: with its gate open, the text typed behind
-    /// the Enter comes back with the line ([`Self::give_up_enter_gate_to_editor`]); otherwise
-    /// the wait is dropped, the line stays in the editor, and `toast` is shown.
+    /// the Enter comes back with the line ([`Self::give_up_enter_gate_with`]); otherwise the wait
+    /// is dropped, the line stays in the editor (with the glue guard if `hand_back` asks for it),
+    /// and its toast is shown.
     fn hand_back_held_enter(
         &mut self,
         why: &'static str,
-        toast: &'static str,
+        hand_back: HandBack,
         ctx: &mut ViewContext<Self>,
     ) {
         if self.enter_gate.is_some() {
-            self.give_up_enter_gate_to_editor(why, ctx);
+            self.give_up_enter_gate_with(why, hand_back, ctx);
             return;
         }
         self.void_verdict_wait_for_give_up();
+        if hand_back.glue_guard_on_line_alone {
+            let line = self.editor.as_ref(ctx).buffer_text(ctx);
+            self.arm_enter_guard(line, EnterGuardKind::Glue, GLUE_GUARD_TOAST);
+        }
         if ctx.has_singleton_model::<ToastStack>() {
             let window_id = ctx.window_id();
             ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
                 toast_stack.add_ephemeral_toast(
-                    DismissibleToast::error(toast.to_string()),
+                    DismissibleToast::error(hand_back.toast.to_string()),
                     window_id,
                     ctx,
                 );
@@ -856,7 +943,8 @@ impl Input {
     }
 
     /// The shared body of the Enter-gate give-ups: the gate is closed taking what waited behind
-    /// it and that text goes back into the editor, with the Enter guard armed and a toast.
+    /// it and that text goes back into the editor, with the Enter guard armed and a toast. Both
+    /// texts, and whether the line alone arms the glue guard, come from `hand_back` (#1666).
     ///
     /// An Enter that was already SUBMITTED (the command is in flight; the buffer still holds the
     /// submitted line until its block completes) is not part of the hand-back: the text follows
@@ -865,7 +953,7 @@ impl Input {
     fn hand_back_enter_gate(
         &mut self,
         gate: EnterGate,
-        toast: &'static str,
+        hand_back: HandBack,
         ctx: &mut ViewContext<Self>,
     ) {
         let submitted = gate.submitted && !gate.held_unready;
@@ -897,9 +985,17 @@ impl Input {
                 None
             }
         };
+        // Whether keys typed behind the Enter come back after the line (now, or with the deferred
+        // take when the queue was busy).
+        let deferred_typed = taken.is_none() && held_behind > 0;
         let typed_after = taken.map_or_else(String::new, |taken| {
             text_of_entries_typed_after(&taken, |id| self.take_paste_payload_text(id))
         });
+        let toast = if !submitted && (deferred_typed || !typed_after.is_empty()) {
+            hand_back.toast_with_typed
+        } else {
+            hand_back.toast
+        };
         if !typed_after.is_empty() {
             let line = self.editor.as_ref(ctx).buffer_text(ctx);
             let (text, baseline) = if submitted {
@@ -913,13 +1009,24 @@ impl Input {
             self.editor
                 .update(ctx, |editor, ctx| editor.set_buffer_text(&text, ctx));
             // Several lines in one buffer submit as ONE command: the first Enter on the handed-back
-            // text is held with the "check the line" toast (the ssh hand-back's guard).
-            self.arm_ssh_handover_enter_guard(baseline);
+            // text is held with the give-up's own "check the line" toast.
+            self.arm_enter_guard(
+                baseline,
+                EnterGuardKind::HandedBackText,
+                hand_back.guard_toast,
+            );
         } else if !submitted && gate.held_unready {
             // The held line alone (an unready shell's Enter): its next Enter is held with the
             // toast. A line given up for a verdict is what the user typed: Enter sends it.
             let line = self.editor.as_ref(ctx).buffer_text(ctx);
-            self.arm_ssh_handover_enter_guard(line);
+            self.arm_enter_guard(line, EnterGuardKind::HandedBackText, hand_back.guard_toast);
+        } else if !submitted && hand_back.glue_guard_on_line_alone {
+            // #1666: the line alone, which the user may run as shown: only text typed onto its end
+            // holds the next Enter (`cd proj` handed back, then `ls` Enter must not run
+            // `cd projls`).
+            let line = self.editor.as_ref(ctx).buffer_text(ctx);
+            let line = line.strip_suffix('\n').unwrap_or(&line).to_string();
+            self.arm_enter_guard(line, EnterGuardKind::Glue, GLUE_GUARD_TOAST);
         }
         if ctx.has_singleton_model::<ToastStack>() {
             let window_id = ctx.window_id();
