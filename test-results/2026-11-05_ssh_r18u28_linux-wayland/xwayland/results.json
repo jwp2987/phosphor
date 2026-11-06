@@ -1,0 +1,1301 @@
+{
+ "meta": {
+  "platform": "linux-xwayland",
+  "backend": "wayland",
+  "app_display": "x11",
+  "seed": "1",
+  "commit": "local",
+  "owner_settings": "sha256 a0613b641a27",
+  "tier": "full",
+  "scale": "1"
+ },
+ "generated": "2026-11-05T18:34:34-0600",
+ "summary": {
+  "pass": 10,
+  "fail": 0,
+  "skip": 0,
+  "noref": 0
+ },
+ "cases": [
+  {
+   "name": "fast_typing",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 57.2,
+   "evidence": [
+    "enter_route: 60 Enter(s) reached the input editor: Shell=60 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,...]"
+   ],
+   "tainted": false,
+   "wall": [
+    1793923887.174,
+    1793923944.325
+   ],
+   "detail": [
+    "injector accounting: WARN loss case: injector sent 2003; app saw 2001; lost-before-app 2 (Enter: sent 60, app saw 60)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 60 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2003,
+     "enters_sent": 60,
+     "seen": 2001,
+     "lost": 2,
+     "extra": 0,
+     "enters_seen": 60,
+     "errs": 0,
+     "pastes": 0
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 60
+    }
+   },
+   "shots": [
+    "shots/terminal_fast_typing.png"
+   ]
+  },
+  {
+   "name": "paste_instant_enter",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 6.3,
+   "evidence": [
+    "enter_route: 7 Enter(s) reached the input editor: Shell=7 [Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1793923944.389,
+    1793923950.656
+   ],
+   "detail": [
+    "injector accounting: injector sent 8; app saw 6; lost-before-app 2 (Enter: sent 6, app saw 6); 6 paste chord(s) not counted as keys",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 6 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 8,
+     "enters_sent": 6,
+     "seen": 6,
+     "lost": 2,
+     "extra": 0,
+     "enters_seen": 6,
+     "errs": 0,
+     "pastes": 6
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 6
+    }
+   },
+   "shots": [
+    "shots/terminal_paste_instant_enter.png"
+   ]
+  },
+  {
+   "name": "tab_enter",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 18.7,
+   "evidence": [
+    "enter_route: 12 Enter(s) reached the input editor: Shell=12 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1793923950.72,
+    1793923969.388
+   ],
+   "detail": [
+    "injector accounting: injector sent 470; app saw 456; lost-before-app 14 (Enter: sent 12, app saw 12)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "completion_give_ups": 0,
+    "injector": {
+     "sent": 470,
+     "enters_sent": 12,
+     "seen": 456,
+     "lost": 14,
+     "extra": 0,
+     "enters_seen": 12,
+     "errs": 0,
+     "pastes": 0
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 12
+    }
+   },
+   "shots": [
+    "shots/terminal_tab_enter.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_d",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 436.6,
+   "evidence": [
+    "enter_route: 2 Enter(s) reached the input editor: Shell=2 [Shell,Shell]",
+    "host load after the case: loadavg1=1.86 cpus=12"
+   ],
+   "tainted": false,
+   "wall": [
+    1793923969.452,
+    1793924406.074
+   ],
+   "detail": [
+    "Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 48.35 ms includes the input-tool spawn (harness floor 2.1435990929603577 ms)",
+    "measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 12 blocks",
+    "Ctrl-C under flood, app side (#1606): key_to_write p50 7.35 max 8.36 (n=39)",
+    "Ctrl-C under flood budget 45 ms: ACCEPTED_FOR_RELEASE v0.1.17 (#1606); the owner budget is 20 ms",
+    "Ctrl-C under flood: Ctrl-C while `yes` floods the terminal; the plain-sleep ctrl_c measurement is the control; reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session)",
+    "injector accounting: injector sent 6378; app saw 6286; lost-before-app 92 (Enter: sent 80, app saw 80)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 2 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "ctrl_c_ms": {
+     "n": 30,
+     "p50": 48.35,
+     "p95": 71.5,
+     "max": 71.75
+    },
+    "ctrl_c_app_segments": {
+     "n": 30,
+     "keydown->ctrl_c_keydown": {
+      "n": 0,
+      "p50": null,
+      "p95": null,
+      "max": null
+     },
+     "ctrl_c_keydown->ctrl_c_to_event_loop": {
+      "n": 30,
+      "p50": 10.72,
+      "p95": 29.73,
+      "max": 29.98
+     },
+     "ctrl_c_to_event_loop->ctrl_c_received": {
+      "n": 30,
+      "p50": 0.05,
+      "p95": 0.12,
+      "max": 0.12
+     },
+     "ctrl_c_received->ctrl_c_pty_write": {
+      "n": 30,
+      "p50": 0.04,
+      "p95": 0.08,
+      "max": 0.08
+     },
+     "keydown_to_write": {
+      "n": 0,
+      "p50": null,
+      "p95": null,
+      "max": null
+     }
+    },
+    "harness_floor_ms": 2.144,
+    "reference_ctrl_c_ms": {
+     "n": 30,
+     "p50": 42.55,
+     "p95": 43.51,
+     "max": 43.51
+    },
+    "reference": "foot",
+    "lat": {
+     "ctrl_c": {
+      "measurement_mode": "sequential",
+      "phosphor": {
+       "n": 30,
+       "p50": 48.35,
+       "p95": 71.5,
+       "max": 71.75
+      },
+      "reference": {
+       "n": 30,
+       "p50": 42.55,
+       "p95": 43.51,
+       "max": 43.51
+      },
+      "reference_name": "foot",
+      "budget_ms": 20.0,
+      "budget_kind": "overhead",
+      "floor_ms": 2.1435990929603577,
+      "notes": [
+       "same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 48.35 ms includes the input-tool spawn (harness floor 2.1435990929603577 ms)"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 30,
+        "se_median_ms": 0.08
+       },
+       "reference": {
+        "n": 30,
+        "se_median_ms": 0.87
+       }
+      },
+      "overhead_ms": 5.8,
+      "overhead_se_ms": 0.73,
+      "pane_shell": null,
+      "reference_shell": null,
+      "drift_ms": {
+       "phosphor": -0.13,
+       "reference": -0.98
+      },
+      "budget_verdict": "pass",
+      "prev": null,
+      "baseline": {
+       "status": "missing"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "none",
+      "verdict": "pass"
+     },
+     "ctrl_c_flood": {
+      "measurement_mode": "interleaved",
+      "phosphor": {
+       "n": 30,
+       "p50": 41.56,
+       "p95": 47.73,
+       "max": 59.36
+      },
+      "reference": {
+       "n": 30,
+       "p50": 34.75,
+       "p95": 60.0,
+       "max": 64.17
+      },
+      "reference_name": "foot",
+      "budget_ms": 45.0,
+      "budget_kind": "overhead",
+      "floor_ms": 2.1435990929603577,
+      "notes": [
+       "Ctrl-C while `yes` floods the terminal; the plain-sleep ctrl_c measurement is the control; reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session)"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 30,
+        "se_median_ms": 0.75
+       },
+       "reference": {
+        "n": 30,
+        "se_median_ms": 0.52
+       }
+      },
+      "overhead_ms": 6.81,
+      "overhead_se_ms": 0.81,
+      "pane_shell": "/bin/bash",
+      "reference_shell": "bash",
+      "drift_ms": {
+       "phosphor": -0.6,
+       "reference": 0.04
+      },
+      "budget_verdict": "pass",
+      "prev": null,
+      "baseline": {
+       "status": "missing"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "none",
+      "verdict": "pass"
+     }
+    },
+    "measurement_mode": "interleaved",
+    "interleave_block": 5,
+    "block_medians_ms": [
+     [
+      "phosphor",
+      43.0
+     ],
+     [
+      "reference",
+      34.3
+     ],
+     [
+      "phosphor",
+      41.62
+     ],
+     [
+      "reference",
+      34.73
+     ],
+     [
+      "phosphor",
+      41.92
+     ],
+     [
+      "reference",
+      53.42
+     ],
+     [
+      "phosphor",
+      38.95
+     ],
+     [
+      "reference",
+      34.7
+     ],
+     [
+      "phosphor",
+      40.92
+     ],
+     [
+      "reference",
+      34.91
+     ],
+     [
+      "phosphor",
+      41.87
+     ],
+     [
+      "reference",
+      35.11
+     ]
+    ],
+    "ctrl_c_flood_ms": {
+     "n": 30,
+     "p50": 41.56,
+     "p95": 47.73,
+     "max": 59.36
+    },
+    "ctrl_c_flood_app_split": {
+     "key_to_write_ms": {
+      "n": 39,
+      "p50": 7.35,
+      "p95": 7.93,
+      "max": 8.36
+     }
+    },
+    "reference_ctrl_c_flood_ms": {
+     "n": 30,
+     "p50": 34.75,
+     "p95": 60.0,
+     "max": 64.17
+    },
+    "ctrl_c_line_integrity": {
+     "phosphor": {
+      "n": 33,
+      "got": 33,
+      "bad": 0,
+      "examples": []
+     },
+     "reference": {
+      "n": 33,
+      "got": 33,
+      "bad": 0,
+      "examples": []
+     }
+    },
+    "injector": {
+     "sent": 6378,
+     "enters_sent": 80,
+     "seen": 6286,
+     "lost": 92,
+     "extra": 0,
+     "enters_seen": 80,
+     "errs": 0,
+     "pastes": 0
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 2
+    },
+    "host_load": "loadavg1=1.86 cpus=12"
+   },
+   "shots": [
+    "shots/terminal_ctrl_c_d.png"
+   ]
+  },
+  {
+   "name": "latency_enter",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 163.7,
+   "evidence": [
+    "enter_route: 75 Enter(s) reached the input editor: Shell=75 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,...]",
+    "host load after the case: loadavg1=0.71 cpus=12"
+   ],
+   "tainted": false,
+   "wall": [
+    1793924406.137,
+    1793924569.82
+   ],
+   "detail": [
+    "measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 24 blocks",
+    "app share of Enter->start: enter_begin -> pty_write median 0.82 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side",
+    "shell side: pty_write -> first pty_read median 0.70 ms (n=75)",
+    "Enter split (Phosphor - reference, medians ms, #1606): t0_to_inj +0.01; Phosphor app: enter_to_write 0.82, submit_bookkeeping 0.03, effect_flush 0.19, pty_lock_wait 0.00",
+    "KNOWN: Enter to command start: Phosphor overhead 3.65 +/- 0.29 ms (SE) over foot exceeds the 2 ms budget [ACCEPTED_FOR_RELEASE #1606 v0.1.17: owner 2026-11-04: Enter-to-command-start overhead accepted for this release]",
+    "Enter to command start: reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines",
+    "injector accounting: injector sent 1532; app saw 1500; lost-before-app 32 (Enter: sent 75, app saw 75)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 75 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "pane_shell": "/bin/bash",
+    "stamp_line": "date +%%s.%%N > lat_%d",
+    "enter_sample_start": "t0",
+    "host_load": "loadavg1=0.71 cpus=12",
+    "measurement_mode": "interleaved",
+    "interleave_block": 5,
+    "block_medians_ms": [
+     [
+      "phosphor",
+      44.78
+     ],
+     [
+      "reference",
+      40.67
+     ],
+     [
+      "phosphor",
+      40.17
+     ],
+     [
+      "reference",
+      40.74
+     ],
+     [
+      "phosphor",
+      44.79
+     ],
+     [
+      "reference",
+      40.83
+     ],
+     [
+      "phosphor",
+      44.3
+     ],
+     [
+      "reference",
+      40.74
+     ],
+     [
+      "phosphor",
+      44.26
+     ],
+     [
+      "reference",
+      40.71
+     ],
+     [
+      "phosphor",
+      44.76
+     ],
+     [
+      "reference",
+      40.93
+     ],
+     [
+      "phosphor",
+      44.97
+     ],
+     [
+      "reference",
+      40.84
+     ],
+     [
+      "phosphor",
+      40.91
+     ],
+     [
+      "reference",
+      40.62
+     ],
+     [
+      "phosphor",
+      44.89
+     ],
+     [
+      "reference",
+      41.64
+     ],
+     [
+      "phosphor",
+      44.36
+     ],
+     [
+      "reference",
+      40.69
+     ],
+     [
+      "phosphor",
+      40.2
+     ],
+     [
+      "reference",
+      39.0
+     ],
+     [
+      "phosphor",
+      44.79
+     ],
+     [
+      "reference",
+      41.59
+     ]
+    ],
+    "enter_to_start_ms": {
+     "n": 60,
+     "p50": 44.41,
+     "p95": 46.24,
+     "max": 55.11
+    },
+    "app_enter_to_pty_write_ms": 0.82,
+    "app_segments_ms": {
+     "enter_to_write_ms": 0.82,
+     "enter_to_write_n": 75,
+     "submit_bookkeeping_ms": 0.03,
+     "submit_bookkeeping_n": 75,
+     "effect_flush_ms": 0.19,
+     "effect_flush_n": 75,
+     "write_to_first_read_ms": 0.7,
+     "write_to_first_read_n": 75,
+     "write_to_preexec_ms": 5.38,
+     "write_to_preexec_n": 75,
+     "pty_lock_wait_ms": 0.0,
+     "pty_lock_wait_n": 75,
+     "platform": "linux-xwayland"
+    },
+    "harness_floor_ms": 2.144,
+    "reference_enter_to_start_ms": {
+     "n": 60,
+     "p50": 40.76,
+     "p95": 41.96,
+     "max": 43.18
+    },
+    "reference": "foot",
+    "reference_shell": "bash",
+    "enter_split_ms": {
+     "phosphor": {
+      "n": 75,
+      "t0_to_inj_ms": 0.07
+     },
+     "reference": {
+      "n": 75,
+      "t0_to_inj_ms": 0.06
+     },
+     "delta": {
+      "t0_to_inj_ms": 0.01
+     },
+     "phosphor_app": {
+      "enter_to_write_ms": 0.82,
+      "submit_bookkeeping_ms": 0.03,
+      "effect_flush_ms": 0.19,
+      "pty_lock_wait_ms": 0.0
+     }
+    },
+    "lat": {
+     "enter_to_start": {
+      "measurement_mode": "interleaved",
+      "phosphor": {
+       "n": 60,
+       "p50": 44.41,
+       "p95": 46.24,
+       "max": 55.11
+      },
+      "reference": {
+       "n": 60,
+       "p50": 40.76,
+       "p95": 41.96,
+       "max": 43.18
+      },
+      "reference_name": "foot",
+      "budget_ms": 2.0,
+      "budget_kind": "overhead",
+      "floor_ms": 2.1435990929603577,
+      "notes": [
+       "reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 60,
+        "se_median_ms": 0.31
+       },
+       "reference": {
+        "n": 60,
+        "se_median_ms": 0.05
+       }
+      },
+      "overhead_ms": 3.65,
+      "overhead_se_ms": 0.29,
+      "pane_shell": "/bin/bash",
+      "reference_shell": "bash",
+      "drift_ms": {
+       "phosphor": 0.46,
+       "reference": 0.07
+      },
+      "budget_verdict": "fail",
+      "prev": null,
+      "baseline": {
+       "status": "missing"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "none",
+      "verdict": "fail"
+     }
+    },
+    "injector": {
+     "sent": 1532,
+     "enters_sent": 75,
+     "seen": 1500,
+     "lost": 32,
+     "extra": 0,
+     "enters_seen": 75,
+     "errs": 0,
+     "pastes": 0
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 75
+    }
+   },
+   "shots": [
+    "shots/terminal_latency_enter.png"
+   ]
+  },
+  {
+   "name": "fast_typing",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 57.2,
+   "evidence": [
+    "enter_route: 60 Enter(s) reached the input editor: Shell=60 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,...]"
+   ],
+   "tainted": false,
+   "wall": [
+    1793924584.251,
+    1793924641.451
+   ],
+   "detail": [
+    "injector accounting: WARN loss case: injector sent 2003; app saw 2001; lost-before-app 2 (Enter: sent 60, app saw 60)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 60 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2003,
+     "enters_sent": 60,
+     "seen": 2001,
+     "lost": 2,
+     "extra": 0,
+     "enters_seen": 60,
+     "errs": 0,
+     "pastes": 0
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 60
+    }
+   },
+   "shots": [
+    "shots/agent_fast_typing.png"
+   ]
+  },
+  {
+   "name": "paste_instant_enter",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 6.3,
+   "evidence": [
+    "enter_route: 7 Enter(s) reached the input editor: Shell=7 [Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1793924641.518,
+    1793924647.857
+   ],
+   "detail": [
+    "injector accounting: injector sent 8; app saw 6; lost-before-app 2 (Enter: sent 6, app saw 6); 6 paste chord(s) not counted as keys",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 6 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 8,
+     "enters_sent": 6,
+     "seen": 6,
+     "lost": 2,
+     "extra": 0,
+     "enters_seen": 6,
+     "errs": 0,
+     "pastes": 6
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 6
+    }
+   },
+   "shots": [
+    "shots/agent_paste_instant_enter.png"
+   ]
+  },
+  {
+   "name": "tab_enter",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 18.6,
+   "evidence": [
+    "enter_route: 12 Enter(s) reached the input editor: Shell=12 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1793924647.924,
+    1793924666.534
+   ],
+   "detail": [
+    "injector accounting: injector sent 470; app saw 456; lost-before-app 14 (Enter: sent 12, app saw 12)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "completion_give_ups": 0,
+    "injector": {
+     "sent": 470,
+     "enters_sent": 12,
+     "seen": 456,
+     "lost": 14,
+     "extra": 0,
+     "enters_seen": 12,
+     "errs": 0,
+     "pastes": 0
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 12
+    }
+   },
+   "shots": [
+    "shots/agent_tab_enter.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_d",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 435.2,
+   "evidence": [
+    "enter_route: 6 Enter(s) reached the input editor: Shell=6 [Shell,Shell,Shell,Shell,Shell,Shell]",
+    "host load after the case: loadavg1=1.65 cpus=12"
+   ],
+   "tainted": false,
+   "wall": [
+    1793924666.601,
+    1793925101.838
+   ],
+   "detail": [
+    "Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 48.33 ms includes the input-tool spawn (harness floor 1.9913893193006516 ms)",
+    "measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 12 blocks",
+    "Ctrl-C under flood, app side (#1606): key_to_write p50 7.16 max 34.96 (n=39)",
+    "Ctrl-C under flood budget 45 ms: ACCEPTED_FOR_RELEASE v0.1.17 (#1606); the owner budget is 20 ms",
+    "Ctrl-C under flood: Ctrl-C while `yes` floods the terminal; the plain-sleep ctrl_c measurement is the control; reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session)",
+    "injector accounting: injector sent 6371; app saw 6286; lost-before-app 85 (Enter: sent 80, app saw 80)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 6 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "ctrl_c_ms": {
+     "n": 30,
+     "p50": 48.33,
+     "p95": 71.7,
+     "max": 71.84
+    },
+    "ctrl_c_app_segments": {
+     "n": 30,
+     "keydown->ctrl_c_keydown": {
+      "n": 0,
+      "p50": null,
+      "p95": null,
+      "max": null
+     },
+     "ctrl_c_keydown->ctrl_c_to_event_loop": {
+      "n": 30,
+      "p50": 10.58,
+      "p95": 29.71,
+      "max": 29.94
+     },
+     "ctrl_c_to_event_loop->ctrl_c_received": {
+      "n": 30,
+      "p50": 0.07,
+      "p95": 0.11,
+      "max": 0.12
+     },
+     "ctrl_c_received->ctrl_c_pty_write": {
+      "n": 30,
+      "p50": 0.04,
+      "p95": 0.09,
+      "max": 0.12
+     },
+     "keydown_to_write": {
+      "n": 0,
+      "p50": null,
+      "p95": null,
+      "max": null
+     }
+    },
+    "harness_floor_ms": 1.991,
+    "reference_ctrl_c_ms": {
+     "n": 30,
+     "p50": 42.55,
+     "p95": 42.81,
+     "max": 43.47
+    },
+    "reference": "foot",
+    "lat": {
+     "ctrl_c": {
+      "measurement_mode": "sequential",
+      "phosphor": {
+       "n": 30,
+       "p50": 48.33,
+       "p95": 71.7,
+       "max": 71.84
+      },
+      "reference": {
+       "n": 30,
+       "p50": 42.55,
+       "p95": 42.81,
+       "max": 43.47
+      },
+      "reference_name": "foot",
+      "budget_ms": 20.0,
+      "budget_kind": "overhead",
+      "floor_ms": 1.9913893193006516,
+      "notes": [
+       "same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 48.33 ms includes the input-tool spawn (harness floor 1.9913893193006516 ms)"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 30,
+        "se_median_ms": 2.16
+       },
+       "reference": {
+        "n": 30,
+        "se_median_ms": 0.4
+       }
+      },
+      "overhead_ms": 5.78,
+      "overhead_se_ms": 2.04,
+      "pane_shell": null,
+      "reference_shell": null,
+      "drift_ms": {
+       "phosphor": 0.04,
+       "reference": -0.02
+      },
+      "budget_verdict": "pass",
+      "prev": null,
+      "baseline": {
+       "status": "missing"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "none",
+      "verdict": "pass"
+     },
+     "ctrl_c_flood": {
+      "measurement_mode": "interleaved",
+      "phosphor": {
+       "n": 30,
+       "p50": 41.85,
+       "p95": 87.43,
+       "max": 98.28
+      },
+      "reference": {
+       "n": 30,
+       "p50": 34.53,
+       "p95": 56.65,
+       "max": 57.64
+      },
+      "reference_name": "foot",
+      "budget_ms": 45.0,
+      "budget_kind": "overhead",
+      "floor_ms": 1.9913893193006516,
+      "notes": [
+       "Ctrl-C while `yes` floods the terminal; the plain-sleep ctrl_c measurement is the control; reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session)"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 30,
+        "se_median_ms": 0.98
+       },
+       "reference": {
+        "n": 30,
+        "se_median_ms": 0.16
+       }
+      },
+      "overhead_ms": 7.32,
+      "overhead_se_ms": 1.08,
+      "pane_shell": "/bin/bash",
+      "reference_shell": "bash",
+      "drift_ms": {
+       "phosphor": 4.3,
+       "reference": 0.25
+      },
+      "budget_verdict": "pass",
+      "prev": null,
+      "baseline": {
+       "status": "missing"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "none",
+      "verdict": "pass"
+     }
+    },
+    "measurement_mode": "interleaved",
+    "interleave_block": 5,
+    "block_medians_ms": [
+     [
+      "phosphor",
+      37.37
+     ],
+     [
+      "reference",
+      34.49
+     ],
+     [
+      "phosphor",
+      38.5
+     ],
+     [
+      "reference",
+      47.56
+     ],
+     [
+      "phosphor",
+      42.01
+     ],
+     [
+      "reference",
+      34.2
+     ],
+     [
+      "phosphor",
+      43.57
+     ],
+     [
+      "reference",
+      35.09
+     ],
+     [
+      "phosphor",
+      42.09
+     ],
+     [
+      "reference",
+      34.38
+     ],
+     [
+      "phosphor",
+      42.89
+     ],
+     [
+      "reference",
+      33.2
+     ]
+    ],
+    "ctrl_c_flood_ms": {
+     "n": 30,
+     "p50": 41.85,
+     "p95": 87.43,
+     "max": 98.28
+    },
+    "ctrl_c_flood_app_split": {
+     "key_to_write_ms": {
+      "n": 39,
+      "p50": 7.16,
+      "p95": 34.43,
+      "max": 34.96
+     }
+    },
+    "reference_ctrl_c_flood_ms": {
+     "n": 30,
+     "p50": 34.53,
+     "p95": 56.65,
+     "max": 57.64
+    },
+    "ctrl_c_line_integrity": {
+     "phosphor": {
+      "n": 33,
+      "got": 33,
+      "bad": 0,
+      "examples": []
+     },
+     "reference": {
+      "n": 33,
+      "got": 33,
+      "bad": 0,
+      "examples": []
+     }
+    },
+    "injector": {
+     "sent": 6371,
+     "enters_sent": 80,
+     "seen": 6286,
+     "lost": 85,
+     "extra": 0,
+     "enters_seen": 80,
+     "errs": 0,
+     "pastes": 0
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 6
+    },
+    "host_load": "loadavg1=1.65 cpus=12"
+   },
+   "shots": [
+    "shots/agent_ctrl_c_d.png"
+   ]
+  },
+  {
+   "name": "latency_enter",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 163.7,
+   "evidence": [
+    "enter_route: 75 Enter(s) reached the input editor: Shell=75 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,...]",
+    "host load after the case: loadavg1=0.15 cpus=12"
+   ],
+   "tainted": false,
+   "wall": [
+    1793925101.912,
+    1793925265.661
+   ],
+   "detail": [
+    "measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 24 blocks",
+    "app share of Enter->start: enter_begin -> pty_write median 1.62 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side",
+    "shell side: pty_write -> first pty_read median 0.70 ms (n=75)",
+    "Enter split (Phosphor - reference, medians ms, #1606): t0_to_inj +0.00; Phosphor app: enter_to_write 1.62, submit_bookkeeping 0.05, effect_flush 0.86, pty_lock_wait 0.00",
+    "KNOWN: Enter to command start: Phosphor overhead 4.08 +/- 0.19 ms (SE) over foot exceeds the 2 ms budget [ACCEPTED_FOR_RELEASE #1606 v0.1.17: owner 2026-11-04: Enter-to-command-start overhead accepted for this release]",
+    "Enter to command start: reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines",
+    "injector accounting: injector sent 1529; app saw 1500; lost-before-app 29 (Enter: sent 75, app saw 75)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 75 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "pane_shell": "/bin/bash",
+    "stamp_line": "date +%%s.%%N > lat_%d",
+    "enter_sample_start": "t0",
+    "host_load": "loadavg1=0.15 cpus=12",
+    "measurement_mode": "interleaved",
+    "interleave_block": 5,
+    "block_medians_ms": [
+     [
+      "phosphor",
+      45.01
+     ],
+     [
+      "reference",
+      40.72
+     ],
+     [
+      "phosphor",
+      41.9
+     ],
+     [
+      "reference",
+      40.78
+     ],
+     [
+      "phosphor",
+      44.71
+     ],
+     [
+      "reference",
+      40.72
+     ],
+     [
+      "phosphor",
+      44.81
+     ],
+     [
+      "reference",
+      40.76
+     ],
+     [
+      "phosphor",
+      45.37
+     ],
+     [
+      "reference",
+      40.88
+     ],
+     [
+      "phosphor",
+      44.06
+     ],
+     [
+      "reference",
+      42.04
+     ],
+     [
+      "phosphor",
+      45.04
+     ],
+     [
+      "reference",
+      40.88
+     ],
+     [
+      "phosphor",
+      44.85
+     ],
+     [
+      "reference",
+      36.58
+     ],
+     [
+      "phosphor",
+      45.24
+     ],
+     [
+      "reference",
+      41.64
+     ],
+     [
+      "phosphor",
+      45.45
+     ],
+     [
+      "reference",
+      40.99
+     ],
+     [
+      "phosphor",
+      44.6
+     ],
+     [
+      "reference",
+      41.01
+     ],
+     [
+      "phosphor",
+      45.45
+     ],
+     [
+      "reference",
+      41.14
+     ]
+    ],
+    "enter_to_start_ms": {
+     "n": 60,
+     "p50": 44.96,
+     "p95": 46.36,
+     "max": 56.82
+    },
+    "app_enter_to_pty_write_ms": 1.62,
+    "app_segments_ms": {
+     "enter_to_write_ms": 1.62,
+     "enter_to_write_n": 75,
+     "submit_bookkeeping_ms": 0.05,
+     "submit_bookkeeping_n": 75,
+     "effect_flush_ms": 0.86,
+     "effect_flush_n": 75,
+     "write_to_first_read_ms": 0.7,
+     "write_to_first_read_n": 75,
+     "write_to_preexec_ms": 5.32,
+     "write_to_preexec_n": 75,
+     "pty_lock_wait_ms": 0.0,
+     "pty_lock_wait_n": 75,
+     "platform": "linux-xwayland"
+    },
+    "harness_floor_ms": 1.991,
+    "reference_enter_to_start_ms": {
+     "n": 60,
+     "p50": 40.88,
+     "p95": 42.38,
+     "max": 43.05
+    },
+    "reference": "foot",
+    "reference_shell": "bash",
+    "enter_split_ms": {
+     "phosphor": {
+      "n": 75,
+      "t0_to_inj_ms": 0.07
+     },
+     "reference": {
+      "n": 75,
+      "t0_to_inj_ms": 0.07
+     },
+     "delta": {
+      "t0_to_inj_ms": 0.0
+     },
+     "phosphor_app": {
+      "enter_to_write_ms": 1.62,
+      "submit_bookkeeping_ms": 0.05,
+      "effect_flush_ms": 0.86,
+      "pty_lock_wait_ms": 0.0
+     }
+    },
+    "lat": {
+     "enter_to_start": {
+      "measurement_mode": "interleaved",
+      "phosphor": {
+       "n": 60,
+       "p50": 44.96,
+       "p95": 46.36,
+       "max": 56.82
+      },
+      "reference": {
+       "n": 60,
+       "p50": 40.88,
+       "p95": 42.38,
+       "max": 43.05
+      },
+      "reference_name": "foot",
+      "budget_ms": 2.0,
+      "budget_kind": "overhead",
+      "floor_ms": 1.9913893193006516,
+      "notes": [
+       "reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 60,
+        "se_median_ms": 0.16
+       },
+       "reference": {
+        "n": 60,
+        "se_median_ms": 0.12
+       }
+      },
+      "overhead_ms": 4.08,
+      "overhead_se_ms": 0.19,
+      "pane_shell": "/bin/bash",
+      "reference_shell": "bash",
+      "drift_ms": {
+       "phosphor": 0.28,
+       "reference": 0.22
+      },
+      "budget_verdict": "fail",
+      "prev": null,
+      "baseline": {
+       "status": "missing"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "none",
+      "verdict": "fail"
+     }
+    },
+    "injector": {
+     "sent": 1529,
+     "enters_sent": 75,
+     "seen": 1500,
+     "lost": 29,
+     "extra": 0,
+     "enters_seen": 75,
+     "errs": 0,
+     "pastes": 0
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 75
+    }
+   },
+   "shots": [
+    "shots/agent_latency_enter.png"
+   ]
+  }
+ ]
+}

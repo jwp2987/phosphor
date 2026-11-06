@@ -1,0 +1,10 @@
+{
+ "date": "2026-11-05",
+ "ref": "build/r18u28",
+ "commit": "3d6d6ed21f499907e3b372e32498199332d0a182",
+ "pipeline": 3033422039,
+ "run_by": "ssh on the CI machine with the CI scripts, not a GitLab job",
+ "tier": "full",
+ "platform": "linux-x11",
+ "summary": "PARTIAL: run killed by the coordinator (SIGTERM) before the agent pass finished; pass 54 fail 19 skip 16 noref 4; superseded by the X11 harness fixes; unit suite not run"
+}

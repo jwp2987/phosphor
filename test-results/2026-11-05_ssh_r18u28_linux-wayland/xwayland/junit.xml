@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-linux-xwayland" tests="10" failures="0" skipped="0">
+<testcase classname="terminal" name="fast_typing" time="57.20">
+</testcase>
+<testcase classname="terminal" name="paste_instant_enter" time="6.30">
+</testcase>
+<testcase classname="terminal" name="tab_enter" time="18.70">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_d" time="436.60">
+</testcase>
+<testcase classname="terminal" name="latency_enter" time="163.70">
+</testcase>
+<testcase classname="agent" name="fast_typing" time="57.20">
+</testcase>
+<testcase classname="agent" name="paste_instant_enter" time="6.30">
+</testcase>
+<testcase classname="agent" name="tab_enter" time="18.60">
+</testcase>
+<testcase classname="agent" name="ctrl_c_d" time="435.20">
+</testcase>
+<testcase classname="agent" name="latency_enter" time="163.70">
+</testcase>
+</testsuite>

@@ -1,0 +1,10 @@
+{
+ "date": "2026-11-05",
+ "ref": "build/r18u28",
+ "commit": "3d6d6ed21f499907e3b372e32498199332d0a182",
+ "pipeline": 3033422039,
+ "run_by": "ssh on the CI machine with the CI scripts, not a GitLab job",
+ "tier": "full",
+ "platform": "windows",
+ "summary": "pass 146 fail 11 skip 168 noref 19; unit suite test: 10859 passed, 0 failed, 41 skipped (after freeing disk)"
+}

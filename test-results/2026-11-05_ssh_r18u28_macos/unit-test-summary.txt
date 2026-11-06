@@ -1,0 +1,2 @@
+        FAIL [   0.306s] ( 6342/11088) warp terminal::input::decorations::tests::test_decorations_with_multibyte_chars
+     Summary [ 273.832s] 11088 tests run: 11087 passed (1 slow), 1 failed, 28 skipped

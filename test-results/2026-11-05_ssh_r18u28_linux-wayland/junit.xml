@@ -1,0 +1,440 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-linux-wayland" tests="171" failures="12" skipped="32">
+<testcase classname="terminal" name="mode_proof" time="1.50">
+</testcase>
+<testcase classname="terminal" name="cadence" time="5.70">
+</testcase>
+<testcase classname="terminal" name="key_loss_control" time="88.70">
+</testcase>
+<testcase classname="terminal" name="enter_loss_control" time="63.60">
+</testcase>
+<testcase classname="terminal" name="fast_typing" time="57.70">
+</testcase>
+<testcase classname="terminal" name="rollover" time="18.50">
+</testcase>
+<testcase classname="terminal" name="expert_fuzz" time="21.60">
+</testcase>
+<testcase classname="terminal" name="paste_instant_enter" time="6.50">
+</testcase>
+<testcase classname="terminal" name="arrows_behind_paste" time="9.40">
+</testcase>
+<testcase classname="terminal" name="keydown_count" time="24.30">
+</testcase>
+<testcase classname="terminal" name="big_paste" time="9.10">
+</testcase>
+<testcase classname="terminal" name="tab_enter" time="23.40">
+</testcase>
+<testcase classname="terminal" name="paste_multiline_prompt" time="7.90">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_d" time="434.90">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: Ctrl-C: overhead -2.3 +/- 11.53 ms (SE) vs budget 20 ms is within noise: INCONCLUSIVE/NO-COMPARE, the overhead budget was NOT judged (not a pass)"/>
+</testcase>
+<testcase classname="terminal" name="paste_bracketed_off" time="6.90">
+</testcase>
+<testcase classname="terminal" name="read_x" time="3.70">
+</testcase>
+<testcase classname="terminal" name="subshells" time="37.60">
+</testcase>
+<testcase classname="terminal" name="alt_screen" time="6.70">
+</testcase>
+<testcase classname="terminal" name="gitbash_subshell" time="0.60">
+<skipped message="Windows only: Git for Windows' bash.exe as a subshell of the pane's PowerShell (POSIX hosts: the subshells case)"/>
+</testcase>
+<testcase classname="terminal" name="alt_screen_programs" time="19.50">
+</testcase>
+<testcase classname="terminal" name="alt_screen_mouse_reporting" time="6.20">
+<failure message="no SGR mouse press ESC[&lt;0;x;yM reached the program that asked for mouse reporting: b'k'">no SGR mouse press ESC[&lt;0;x;yM reached the program that asked for mouse reporting: b'k'
+no SGR mouse release ESC[&lt;0;x;ym reached the program: b'k'
+injector accounting: injector sent 84; app saw 94; lost-before-app 0 (Enter: sent 2, app saw 3); app logged 10 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 2 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="ssh_connect_typing" time="30.20">
+</testcase>
+<testcase classname="terminal" name="ssh_enter_then_immediate_command" time="7.70">
+</testcase>
+<testcase classname="terminal" name="ssh_nested_typeahead" time="6.10">
+</testcase>
+<testcase classname="terminal" name="ssh_failing_not_local" time="15.40">
+</testcase>
+<testcase classname="terminal" name="idle_cpu" time="24.10">
+</testcase>
+<testcase classname="terminal" name="latency_enter" time="158.70">
+</testcase>
+<testcase classname="terminal" name="latency_key_log" time="14.60">
+<skipped message="NO-REFERENCE (not a pass): #1176 key -&gt; pty write median 3.74 ms (p95 3.90, n=60): OVER the 1 ms target"/>
+</testcase>
+<testcase classname="terminal" name="latency_paint" time="0.60">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only; no key-&gt;paint read-back exists on this platform, so there is nothing to compare"/>
+</testcase>
+<testcase classname="terminal" name="latency_first_key_after_idle" time="309.20">
+</testcase>
+<testcase classname="terminal" name="routing_table" time="55.80">
+</testcase>
+<testcase classname="terminal" name="agent_mode_switch" time="9.30">
+</testcase>
+<testcase classname="terminal" name="agent_code_recycle" time="26.10">
+<skipped message="the model's answer shows none of the RCYT300_VBLM_NN snippets (model nondeterminism): nothing to recycle"/>
+</testcase>
+<testcase classname="terminal" name="ui_tab_menu" time="6.40">
+</testcase>
+<testcase classname="terminal" name="flood_typed_line" time="38.60">
+</testcase>
+<testcase classname="terminal" name="remote_session_legacy" time="54.30">
+</testcase>
+<testcase classname="terminal" name="intl_wide_type" time="6.70">
+</testcase>
+<testcase classname="terminal" name="ui_ghost_accept" time="12.00">
+</testcase>
+<testcase classname="terminal" name="flood_typing_latency" time="23.30">
+</testcase>
+<testcase classname="terminal" name="remote_session_ext" time="82.30">
+</testcase>
+<testcase classname="terminal" name="intl_wide_paste" time="7.60">
+</testcase>
+<testcase classname="terminal" name="ui_ctrl_r" time="9.90">
+</testcase>
+<testcase classname="terminal" name="flood_scrollback_find" time="13.00">
+</testcase>
+<testcase classname="terminal" name="remote_heredoc_paste" time="37.30">
+</testcase>
+<testcase classname="terminal" name="ssh_hanging_host_not_local" time="28.80">
+</testcase>
+<testcase classname="terminal" name="intl_wide_edit" time="5.90">
+</testcase>
+<testcase classname="terminal" name="ui_palette" time="13.60">
+<failure message="nonsense filter shows neither 'No results', a 'Create ...' row nor the typed filter: the palette may have lost the keys">nonsense filter shows neither 'No results', a 'Create ...' row nor the typed filter: the palette may have lost the keys
+palette_first_open: no hop=ui_item line (nothing over 4 ms, or a build older than the ui_item hop)
+palette_reopen: no hop=ui_item line (nothing over 4 ms, or a build older than the ui_item hop)
+control: no command row was readable in the UNFILTERED palette, so 'no command rows after the filter' is weak evidence here (OCR)
+injector accounting: injector sent 214; app saw 206; lost-before-app 8 (Enter: sent 6, app saw 5)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="ssh_password_prompt" time="12.00">
+</testcase>
+<testcase classname="terminal" name="intl_wide_program" time="21.20">
+</testcase>
+<testcase classname="terminal" name="latency_enter_ssh" time="174.00">
+</testcase>
+<testcase classname="terminal" name="intl_compose_linux" time="24.20">
+</testcase>
+<testcase classname="terminal" name="intl_ime_japanese" time="0.60">
+<skipped message="macOS input methods: needs the mac backend (this is wayland)"/>
+</testcase>
+<testcase classname="terminal" name="sudo_su_real_shell" time="0.60">
+<skipped message="no privilege boundary could run here: passwordless sudo and root-for-su are both absent"/>
+</testcase>
+<testcase classname="terminal" name="intl_ime_pinyin" time="0.60">
+<skipped message="macOS input methods: needs the mac backend (this is wayland)"/>
+</testcase>
+<testcase classname="terminal" name="ssh_drop_reconnect" time="46.40">
+<failure message="[escape] no local prompt within 20 s after the connection was lost">[escape] no local prompt within 20 s after the connection was lost
+[escape] app log after `&lt;Enter&gt;~.`: ["2026-11-05T20:59:52Z [DEBUG] input_order hop=ssh_escape_to_pty char='.' t=1793912392327.553"]
+[escape] the rest of this arm is not run (it would nest inside the live session); `exit` back to the local shell: ok
+injector accounting: injector sent 877; app saw 873; lost-before-app 4 (Enter: sent 27, app saw 27)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 27 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="intl_deadkey_option" time="0.60">
+<skipped message="macOS input methods: needs the mac backend (this is wayland)"/>
+</testcase>
+<testcase classname="terminal" name="intl_altgr_ps" time="0.60">
+<skipped message="Windows only: a per-window German keyboard layout + AltGr (Linux has intl_compose_linux, macOS intl_deadkey_option)"/>
+</testcase>
+<testcase classname="terminal" name="intl_altgr_bash" time="0.60">
+<skipped message="Windows only: a per-window German keyboard layout + AltGr (Linux has intl_compose_linux, macOS intl_deadkey_option)"/>
+</testcase>
+<testcase classname="terminal" name="ui_mouse_select_copy" time="10.30">
+<failure message="double-click + copy: clipboard holds 'SENTINEL_NOT_COPIED', expected exactly 'msel2unpyydapk'">double-click + copy: clipboard holds 'SENTINEL_NOT_COPIED', expected exactly 'msel2unpyydapk'
+drag across the word + copy: clipboard holds 'SENTINEL_NOT_COPIED', expected the token 'msel2unpyydapk' (+- a char)
+the clipboard kept the sentinel: nothing was copied. Screen change from the double-click: n/a (no Pillow) (0 = no selection drawn: the pointer events did not reach the app, or it drew no selection; &gt; 0 = a selection was drawn and the copy key did not copy it)
+injector accounting: injector sent 201; app saw 197; lost-before-app 4 (Enter: sent 5, app saw 5)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="editor_edit_save" time="14.60">
+</testcase>
+<testcase classname="terminal" name="shell_zsh" time="26.00">
+</testcase>
+<testcase classname="terminal" name="shell_fish" time="29.80">
+</testcase>
+<testcase classname="terminal" name="shell_nu" time="39.50">
+</testcase>
+<testcase classname="terminal" name="shell_pwsh" time="0.60">
+<skipped message="package PowerShell 7 (Microsoft apt repo: packages-microsoft-prod.deb, then apt install powershell) not installed (looked on PATH and in ~/.local/bin, /home/<user>/.local/bin, /opt/homebrew/bin"/>
+</testcase>
+<testcase classname="terminal" name="ui_right_click_paste" time="2.70">
+<failure message="the probe 'rcpw2uyn32mthy' typed into the input was not found on screen by OCR (shots/*rc_prompt.png): cannot place the pointer">the probe 'rcpw2uyn32mthy' typed into the input was not found on screen by OCR (shots/*rc_prompt.png): cannot place the pointer
+injector accounting: injector sent 17; app saw 14; lost-before-app 3 (Enter: sent 0, app saw 0)</failure>
+</testcase>
+<testcase classname="terminal" name="editor_paste" time="6.60">
+</testcase>
+<testcase classname="terminal" name="ui_drag_drop_file" time="0.60">
+<skipped message="wayland: no way to synthesize a drag source (XDND needs a client that owns the drag; Wayland wl_data_device likewise)"/>
+</testcase>
+<testcase classname="terminal" name="startup_shell_pane" time="0.60">
+<skipped message="runs only in a startup_shell_override pass (APPCI_WIN_SHELLS=pwsh7,cmd)"/>
+</testcase>
+<testcase classname="terminal" name="ui_resize_typing" time="24.00">
+</testcase>
+<testcase classname="terminal" name="ui_split_panes" time="47.30">
+</testcase>
+<testcase classname="terminal" name="md_viewer" time="3.30">
+</testcase>
+<testcase classname="terminal" name="md_viewer_big" time="13.00">
+</testcase>
+<testcase classname="terminal" name="editor_memory_7mb" time="397.80">
+<failure message="trim A/B: the load's layout frame took 15.2 ms with the open trim (&gt; 4 ms budget; control default: 10.2 ms)">trim A/B: the load's layout frame took 15.2 ms with the open trim (&gt; 4 ms budget; control default: 10.2 ms)
+injector accounting: injector sent 623; app saw 583; lost-before-app 40 (Enter: sent 7, app saw 0)</failure>
+</testcase>
+<testcase classname="terminal" name="ui_startup_time" time="55.60">
+</testcase>
+<testcase classname="terminal" name="session_restore" time="95.80">
+</testcase>
+<testcase classname="terminal" name="ui_settings_live" time="43.80">
+</testcase>
+<testcase classname="terminal" name="quit_24_tabs" time="124.00">
+</testcase>
+<testcase classname="terminal" name="crash_kill9_restore" time="70.00">
+</testcase>
+<testcase classname="terminal" name="cb_settings_ui_open" time="0.60">
+<skipped message="Pillow not installed on this runner (owner: install?)"/>
+</testcase>
+<testcase classname="terminal" name="crash_corrupt_db" time="34.30">
+</testcase>
+<testcase classname="terminal" name="cb_settings_migration" time="59.20">
+</testcase>
+<testcase classname="terminal" name="soak" time="3655.80">
+</testcase>
+<testcase classname="terminal" name="cb_state_relaunch" time="47.50">
+</testcase>
+<testcase classname="terminal" name="tabs_two_windows" time="57.20">
+</testcase>
+<testcase classname="terminal" name="upgrade_over_previous" time="0.60">
+<skipped message="no previous-release data: set APPCI_PREV_FIXTURE (state tarball) or APPCI_PREV_BIN (previous release binary; macOS also APPCI_PREV_BUNDLE) -- where CI gets the previous release's artifact is the owner"/>
+</testcase>
+<testcase classname="terminal" name="tabs_streaming" time="44.50">
+</testcase>
+<testcase classname="terminal" name="cb_no_autoupdate" time="1.20">
+</testcase>
+<testcase classname="terminal" name="cb_ui_action_latency" time="0.70">
+<skipped message="Pillow not installed on this runner (owner: install?)"/>
+</testcase>
+<testcase classname="terminal" name="cb_editor_mac" time="0.60">
+<skipped message="Linux: editor_edit_save/editor_paste/editor_memory_7mb cover the editor; Windows: editor_edit_save and editor_paste hand the file over the named pipe (#1544)"/>
+</testcase>
+<testcase classname="agent" name="mode_proof" time="0.70">
+</testcase>
+<testcase classname="agent" name="cadence" time="5.80">
+</testcase>
+<testcase classname="agent" name="fast_typing" time="57.10">
+</testcase>
+<testcase classname="agent" name="rollover" time="16.00">
+</testcase>
+<testcase classname="agent" name="expert_fuzz" time="22.80">
+</testcase>
+<testcase classname="agent" name="paste_instant_enter" time="6.30">
+</testcase>
+<testcase classname="agent" name="arrows_behind_paste" time="8.70">
+</testcase>
+<testcase classname="agent" name="keydown_count" time="26.40">
+</testcase>
+<testcase classname="agent" name="big_paste" time="8.40">
+</testcase>
+<testcase classname="agent" name="tab_enter" time="19.20">
+</testcase>
+<testcase classname="agent" name="ctrl_c_d" time="435.50">
+</testcase>
+<testcase classname="agent" name="read_x" time="3.60">
+</testcase>
+<testcase classname="agent" name="paste_agent_input" time="5.60">
+</testcase>
+<testcase classname="agent" name="subshells" time="37.90">
+</testcase>
+<testcase classname="agent" name="alt_screen" time="6.70">
+</testcase>
+<testcase classname="agent" name="gitbash_subshell" time="0.60">
+<skipped message="Windows only: Git for Windows' bash.exe as a subshell of the pane's PowerShell (POSIX hosts: the subshells case)"/>
+</testcase>
+<testcase classname="agent" name="alt_screen_programs" time="19.90">
+</testcase>
+<testcase classname="agent" name="ssh_connect_typing" time="31.30">
+</testcase>
+<testcase classname="agent" name="ssh_enter_then_immediate_command" time="7.80">
+</testcase>
+<testcase classname="agent" name="ssh_nested_typeahead" time="6.10">
+</testcase>
+<testcase classname="agent" name="ssh_failing_not_local" time="15.40">
+</testcase>
+<testcase classname="agent" name="idle_cpu" time="24.10">
+</testcase>
+<testcase classname="agent" name="latency_enter" time="163.90">
+<skipped message="NO-REFERENCE (not a pass): measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 24 blocks"/>
+</testcase>
+<testcase classname="agent" name="latency_key_log" time="14.50">
+<skipped message="NO-REFERENCE (not a pass): #1176 key -&gt; pty write median 15.26 ms (p95 15.61, n=60): OVER the 1 ms target"/>
+</testcase>
+<testcase classname="agent" name="latency_paint" time="0.60">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only; no key-&gt;paint read-back exists on this platform, so there is nothing to compare"/>
+</testcase>
+<testcase classname="agent" name="latency_first_key_after_idle" time="310.90">
+<failure message="idle 1 s: only 17 of 30 first-key key-&gt;frame pairs in the app log (keys not reaching the `cat`, or no input_order logging)">idle 1 s: only 17 of 30 first-key key-&gt;frame pairs in the app log (keys not reaching the `cat`, or no input_order logging)
+idle 2 s: only 12 of 30 first-key key-&gt;frame pairs in the app log (keys not reaching the `cat`, or no input_order logging)
+idle 5 s: only 8 of 30 first-key key-&gt;frame pairs in the app log (keys not reaching the `cat`, or no input_order logging)
+NO-REFERENCE: First key after 1 s idle: insufficient evidence (n=17 &lt; 30 samples; only 17 of 30 samples (&lt; 90 %)): INCONCLUSIVE/NO-COMPARE, the overhead budget was NOT judged (not a pass)
+First key after 1 s idle: key -&gt; first frame from the app's input_order log (Phosphor-side); the control is the following non-idle key, so the figure is the idle penalty, not an overhead vs another terminal
+First key after 1 s idle: n=17 &lt; 30 samples (smoke/scaled run): numbers are indicative only
+First key after 1 s idle: INCONCLUSIVE, not a pass: n=17 &lt; 30 samples; only 17 of 30 samples (&lt; 90 %)
+NO-REFERENCE: First key after 2 s idle: insufficient evidence (n=12 &lt; 30 samples; only 12 of 30 samples (&lt; 90 %)): INCONCLUSIVE/NO-COMPARE, the overhead budget was NOT judged (not a pass)
+First key after 2 s idle: key -&gt; first frame from the app's input_order log (Phosphor-side); the control is the following non-idle key, so the figure is the idle penalty, not an overhead vs another terminal
+First key after 2 s idle: n=12 &lt; 30 samples (smoke/scaled run): numbers are indicative only
+First key after 2 s idle: INCONCLUSIVE, not a pass: n=12 &lt; 30 samples; only 12 of 30 samples (&lt; 90 %)
+NO-REFERENCE: First key after 5 s idle: insufficient evidence (n=8 &lt; 30 samples; only 8 of 30 samples (&lt; 90 %)): INCONCLUSIVE/NO-COMPARE, the overhead budget was NOT judged (not a pass)
+First key after 5 s idle: key -&gt; first frame from the app's input_order log (Phosphor-side); the control is the following non-idle key, so the figure is the idle penalty, not an overhead vs another terminal
+First key after 5 s idle: n=8 &lt; 30 samples (smoke/scaled run): numbers are indicative only
+First key after 5 s idle: INCONCLUSIVE, not a pass: n=8 &lt; 30 samples; only 8 of 30 samples (&lt; 90 %)
+injector accounting: injector sent 254; app saw 246; lost-before-app 8 (Enter: sent 3, app saw 3)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="approval_card_pause" time="17.70">
+</testcase>
+<testcase classname="agent" name="agent_stream_cancel" time="25.70">
+</testcase>
+<testcase classname="agent" name="agent_approval" time="112.80">
+<failure message="approved command was written to the shell 0 times by the app (hop=pty_write_bytes class=UserCommand carrying APPROVEMET157_LHDMDH; expected exactly once; a bash pane's rec.log cannot show it, #904)">approved command was written to the shell 0 times by the app (hop=pty_write_bytes class=UserCommand carrying APPROVEMET157_LHDMDH; expected exactly once; a bash pane's rec.log cannot show it, #904)
+a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context
+approved command: a bash pane's rec.log cannot show an agent command (#904 keeps the wrapper out of history; the rc hook reads `history 1`): counted from the app's pty writes of the command instead (0)
+follow-up reply visible on screen (OCR; model wording varies, not a verdict)
+injector accounting: injector sent 265; app saw 258; lost-before-app 7 (Enter: sent 7, app saw 6)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 6 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="agent_input_exact" time="6.80">
+</testcase>
+<testcase classname="agent" name="routing_table" time="60.70">
+</testcase>
+<testcase classname="agent" name="agent_mode_switch" time="9.60">
+</testcase>
+<testcase classname="agent" name="agent_code_recycle" time="19.30">
+<skipped message="the model's answer shows none of the RCYT166_LYCR_NN snippets (model nondeterminism): nothing to recycle"/>
+</testcase>
+<testcase classname="agent" name="cb_agent_pickers" time="0.70">
+<skipped message="Pillow not installed on this runner (owner: install?)"/>
+</testcase>
+<testcase classname="agent" name="cb_agent_file_mention" time="8.20">
+</testcase>
+<testcase classname="agent" name="ui_tab_menu" time="6.40">
+</testcase>
+<testcase classname="agent" name="flood_typed_line" time="36.90">
+</testcase>
+<testcase classname="agent" name="remote_session_legacy" time="56.50">
+</testcase>
+<testcase classname="agent" name="intl_wide_type" time="6.80">
+</testcase>
+<testcase classname="agent" name="ui_ghost_accept" time="12.80">
+</testcase>
+<testcase classname="agent" name="flood_typing_latency" time="23.20">
+</testcase>
+<testcase classname="agent" name="remote_session_ext" time="82.20">
+</testcase>
+<testcase classname="agent" name="agent_view_not_restored_after_remote_session_ext" time="0.00">
+</testcase>
+<testcase classname="agent" name="intl_wide_paste" time="7.60">
+</testcase>
+<testcase classname="agent" name="ui_ctrl_r" time="10.30">
+</testcase>
+<testcase classname="agent" name="flood_scrollback_find" time="23.90">
+<failure message="Find for the marker printed before a 300000-line flood did not bring it on screen: marker read=False, view scrolled away from the flood's tail=True (see shots/agent_find_after.png); still not 12 s after the Enter (shots/agent_find_late.png); app log: 31 find_scroll hop(s), moved=true in 1, last: result=scroll block=16 moved=true from=FollowsBottomOfMostRecentBlock to=FixedAtPosition { scroll_lines: ScrollTop(Lines(OrderedFloat(37.13999843597412))) } t=1793919151134.961">Find for the marker printed before a 300000-line flood did not bring it on screen: marker read=False, view scrolled away from the flood's tail=True (see shots/agent_find_after.png); still not 12 s after the Enter (shots/agent_find_late.png); app log: 31 find_scroll hop(s), moved=true in 1, last: result=scroll block=16 moved=true from=FollowsBottomOfMostRecentBlock to=FixedAtPosition { scroll_lines: ScrollTop(Lines(OrderedFloat(37.13999843597412))) } t=1793919151134.961
+flood_scrollback_find; app log: 31 find_scroll hop(s), moved=true in 1, last: result=scroll block=16 moved=true from=FollowsBottomOfMostRecentBlock to=FixedAtPosition { scroll_lines: ScrollTop(Lines(OrderedFloat(37.13999843597412))) } t=1793919151134.961
+injector accounting: injector sent 216; app saw 212; lost-before-app 4 (Enter: sent 3, app saw 2)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 2 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="remote_heredoc_paste" time="37.20">
+</testcase>
+<testcase classname="agent" name="ssh_hanging_host_not_local" time="29.00">
+</testcase>
+<testcase classname="agent" name="intl_wide_edit" time="6.00">
+</testcase>
+<testcase classname="agent" name="ui_palette" time="13.80">
+<failure message="nonsense filter shows neither 'No results', a 'Create ...' row nor the typed filter: the palette may have lost the keys">nonsense filter shows neither 'No results', a 'Create ...' row nor the typed filter: the palette may have lost the keys
+palette_first_open: no hop=ui_item line (nothing over 4 ms, or a build older than the ui_item hop)
+palette_reopen: no hop=ui_item line (nothing over 4 ms, or a build older than the ui_item hop)
+control: no command row was readable in the UNFILTERED palette, so 'no command rows after the filter' is weak evidence here (OCR)
+injector accounting: injector sent 214; app saw 206; lost-before-app 8 (Enter: sent 6, app saw 5)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="ssh_password_prompt" time="12.10">
+</testcase>
+<testcase classname="agent" name="intl_wide_program" time="21.10">
+</testcase>
+<testcase classname="agent" name="latency_enter_ssh" time="174.50">
+<skipped message="NO-REFERENCE (not a pass): measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 24 blocks"/>
+</testcase>
+<testcase classname="agent" name="intl_compose_linux" time="24.20">
+</testcase>
+<testcase classname="agent" name="intl_ime_japanese" time="0.60">
+<skipped message="macOS input methods: needs the mac backend (this is wayland)"/>
+</testcase>
+<testcase classname="agent" name="intl_ime_pinyin" time="0.50">
+<skipped message="macOS input methods: needs the mac backend (this is wayland)"/>
+</testcase>
+<testcase classname="agent" name="intl_deadkey_option" time="0.50">
+<skipped message="macOS input methods: needs the mac backend (this is wayland)"/>
+</testcase>
+<testcase classname="agent" name="intl_altgr_ps" time="0.60">
+<skipped message="Windows only: a per-window German keyboard layout + AltGr (Linux has intl_compose_linux, macOS intl_deadkey_option)"/>
+</testcase>
+<testcase classname="agent" name="intl_altgr_bash" time="0.50">
+<skipped message="Windows only: a per-window German keyboard layout + AltGr (Linux has intl_compose_linux, macOS intl_deadkey_option)"/>
+</testcase>
+<testcase classname="agent" name="ui_mouse_select_copy" time="10.20">
+<failure message="double-click + copy: clipboard holds 'SENTINEL_NOT_COPIED', expected exactly 'msel2ru23m7yu3'">double-click + copy: clipboard holds 'SENTINEL_NOT_COPIED', expected exactly 'msel2ru23m7yu3'
+drag across the word + copy: clipboard holds 'SENTINEL_NOT_COPIED', expected the token 'msel2ru23m7yu3' (+- a char)
+the clipboard kept the sentinel: nothing was copied. Screen change from the double-click: n/a (no Pillow) (0 = no selection drawn: the pointer events did not reach the app, or it drew no selection; &gt; 0 = a selection was drawn and the copy key did not copy it)
+injector accounting: injector sent 201; app saw 197; lost-before-app 4 (Enter: sent 5, app saw 5)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="editor_edit_save" time="14.20">
+</testcase>
+<testcase classname="agent" name="shell_zsh" time="25.10">
+</testcase>
+<testcase classname="agent" name="shell_fish" time="30.50">
+</testcase>
+<testcase classname="agent" name="shell_nu" time="38.20">
+</testcase>
+<testcase classname="agent" name="shell_pwsh" time="0.60">
+<skipped message="package PowerShell 7 (Microsoft apt repo: packages-microsoft-prod.deb, then apt install powershell) not installed (looked on PATH and in ~/.local/bin, /home/<user>/.local/bin, /opt/homebrew/bin"/>
+</testcase>
+<testcase classname="agent" name="editor_paste" time="6.70">
+</testcase>
+<testcase classname="agent" name="ui_resize_typing" time="25.80">
+</testcase>
+<testcase classname="agent" name="ui_split_panes" time="46.80">
+</testcase>
+<testcase classname="agent" name="md_viewer" time="3.30">
+</testcase>
+<testcase classname="agent" name="md_viewer_ai_answer" time="4.90">
+</testcase>
+<testcase classname="agent" name="ui_startup_time" time="56.20">
+</testcase>
+<testcase classname="agent" name="agent_view_not_restored_after_ui_startup_time" time="0.00">
+</testcase>
+<testcase classname="agent" name="session_restore" time="92.80">
+</testcase>
+<testcase classname="agent" name="ui_settings_live" time="42.20">
+</testcase>
+<testcase classname="agent" name="quit_24_tabs" time="124.10">
+</testcase>
+<testcase classname="agent" name="cb_settings_ui_open" time="0.60">
+<skipped message="Pillow not installed on this runner (owner: install?)"/>
+</testcase>
+<testcase classname="agent" name="cb_settings_migration" time="57.50">
+</testcase>
+<testcase classname="agent" name="agent_view_not_restored_after_cb_settings_migration" time="0.00">
+</testcase>
+<testcase classname="agent" name="soak" time="3655.80">
+</testcase>
+<testcase classname="agent" name="left_agent_mode_after_soak" time="0.00">
+<failure message="after soak the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no Escape.">after soak the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no Escape.</failure>
+</testcase>
+<testcase classname="agent" name="tabs_two_windows" time="53.60">
+</testcase>
+<testcase classname="agent" name="tabs_streaming" time="43.60">
+</testcase>
+</testsuite>
