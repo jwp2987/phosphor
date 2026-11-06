@@ -329,6 +329,19 @@ These are what stand between the agent and your shell. Read them carefully.
 | `agents.byop.last_used_reasoning` | table | `{}` | Per-`(api_type, model)` reasoning-effort memory, written when you switch in the picker. Rendered with nested values inline. |
 | `agents.warp_agent.prompt_template_dir` | string (directory path) | `""` | A directory to hot-load agent system-prompt templates from, instead of the built-in ones compiled into the binary. Missing files and syntax errors fall back to the built-in version individually rather than failing. The `ZAP_PROMPT_DIR` environment variable overrides this setting. |
 
+### models.dev catalog download
+
+Set this in `settings.toml` (there is no GUI toggle):
+
+```toml
+[agents.warp_agent]
+models_dev_fetch = false
+```
+
+| TOML path | Type | Default | What it does |
+|---|---|---|---|
+| `agents.warp_agent.models_dev_fetch` | boolean | `true` | Download the models.dev model catalog used by the provider "Quick add" row and attachment capabilities. With `false`, nothing is ever requested from models.dev (not at startup, not from the Refresh button); an existing on-disk cache is still read, otherwise the catalog stays empty. |
+
 ### BYOP conversation compaction
 
 Compaction is how a long conversation is kept inside the model's context window.
