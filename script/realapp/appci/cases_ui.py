@@ -123,13 +123,22 @@ def words(ctx, tag):
     if not p:
         return [], None
     out = subprocess.run(["tesseract", p, "-", "--psm", "11", "tsv"], capture_output=True, timeout=90).stdout.decode(errors="replace")
+    res = tsv_words(out)
+    up = C.ocr_upscaled(ctx.be.name, p)                   # X11: words of a 2x copy are added, boxes scaled back (cases.ocr_upscaled)
+    if up:
+        res += tsv_words(subprocess.run(["tesseract", up, "-", "--psm", "11", "tsv"], capture_output=True, timeout=90).stdout.decode(errors="replace"), 2)
+    return res, p
+
+
+def tsv_words(out, scale=1):
+    """[(text, cx, cy, left, right, top, bottom)] of tesseract tsv output, in pixels of the original shot (an OCR'd copy upscaled by `scale`)"""
     res = []
     for l in out.splitlines()[1:]:
         c = l.split("\t")
         if len(c) >= 12 and c[11].strip() and c[0] == "5":
-            x, y, w, h = int(c[6]), int(c[7]), int(c[8]), int(c[9])
+            x, y, w, h = (int(v) // scale for v in (c[6], c[7], c[8], c[9]))
             res.append((c[11].strip(), x + w // 2, y + h // 2, x, x + w, y, y + h))
-    return res, p
+    return res
 
 
 def find_word(ctx, tag, sub, last=True):

@@ -1015,6 +1015,155 @@ def keydown_audit_counts_plain_keys_and_flags_doubles():
     f = cases.keydown_audit(ln(q("a"), 1000.0) + ln(q("a"), 1000.4), sent_text="a b a")
     assert f["dups"] == [('"a"', 1000.4, 0.4)], f
     assert cases.keydown_audit(ln(q(">"), 1000.0) + ln(q(">"), 1000.97))["dups"] == [('">"', 1000.97, 0.97)]
+    # r18u28 (X11): the space bar logs `key=" "`; the audit must see it, so `echo o...` (o, space, o within 2 ms) is no doubled `o`
+    sp = cases.keydown_audit(ln(q("o"), 1000.0) + ln(q(" "), 1000.8) + ln(q("o"), 1001.6) + ln('"\\""', 1002.4, shift="true"), sent_text='echo o"')
+    assert sp["count"] == 4 and sp["dups"] == [] and sp["bursts"] == [], sp
+
+
+@check
+def x11_injector_rollover_is_physical_and_keys_are_named():
+    """r18u28: rollover on X11 never holds Shift (or any key) over the next key's press and never presses a key that is still down; the text's
+    keys go down in order; plain keys still overlap. Key names are X keysyms (case-sensitive)."""
+    import backend
+
+    shifted = {backend.ENVNAME.get(c, c) for c in backend.X11_SHIFTED}
+
+    def presses(argv):
+        down, order, overlapped = set(), [], 0
+        a, i = argv[1:], 0
+        while i < len(a):
+            v, k = a[i], (a[i + 1] if i + 1 < len(a) else None)
+            i += 2
+            if v == "keydown":
+                assert k not in down, ("pressed while still down", k, argv)
+                assert not (down and k in shifted), ("a Shift-typed key pressed over another key", k, down)
+                assert not (down & shifted), ("a key pressed while a Shift-typed key is held", k, down)
+                overlapped += bool(down)
+                down.add(k)
+                order.append(k)
+            elif v == "keyup":
+                down.discard(k)
+        assert not down, ("keys left down", down)
+        return order, overlapped
+    for text in ("echo t73_8m81ereqlg >> r_roll.txt", "echo pgmufmwhdhkk >> kd.txt", "ABab__cc"):
+        order, overlapped = presses(backend.x11_roll_argv(text, 10))
+        assert order == [backend.ENVNAME.get(c, c) for c in text], (text, order)
+        assert overlapped > 0, text
+    assert {"underscore", "greater", "R"} <= shifted and "space" not in shifted
+    assert [backend.x11_keyname(k) for k in ("escape", "Escape", "return", "backspace", "a", "F5", "Left")] == ["Escape", "Escape", "Return", "BackSpace", "a", "F5", "Left"]
+
+
+@check
+def x11_injector_premaps_wide_characters():
+    """r18u28: the non-ASCII characters of a typed text get keycodes of their own once (xmodmap), reused later, oldest unused recycled"""
+    import backend
+    pke = "keycode   8 =\nkeycode   9 = Escape NoSymbol Escape\nkeycode  93 =\nkeycode  97 = \nkeycode 120 =\nkeycode 132 =\nkeycode 250 =\nkeycode 251 =\n"
+    spare = backend.x11_spare_keycodes(pke, reserve=2)
+    assert spare == [251, 250, 132, 120, 97], spare                    # 8 and 93 left for xdotool's own scratch keycode
+    ex, bound, spare2 = backend.x11_premap_plan("echo 日本語 >> x", {}, spare)
+    assert ex == ["-e", "keycode 251 = U65E5", "-e", "keycode 250 = U672C", "-e", "keycode 132 = U8A9E"] and spare2 == [120, 97], (ex, spare2)
+    ex2, bound2, _ = backend.x11_premap_plan("日本", bound, spare2)
+    assert ex2 == [] and bound2 == {"語": 132, "日": 251, "本": 250}, (ex2, bound2)          # reused, most recently used last
+    ex3, bound3, _ = backend.x11_premap_plan("éüñ", bound2, [])
+    assert ex3 == ["-e", "keycode 132 = U00E9", "-e", "keycode 251 = U00FC", "-e", "keycode 250 = U00F1"], ex3
+    assert backend.x11_premap_plan("plain ascii ~", {}, [200]) == ([], {}, [200])
+    ex4, bound4, _ = backend.x11_premap_plan("日本", {}, [7])                # no keycode left for 本: xdotool binds it itself
+    assert ex4 == ["-e", "keycode 7 = U65E5"] and bound4 == {"日": 7}, (ex4, bound4)
+
+
+@check
+def x11_injector_focuses_phosphor_before_every_call():
+    """r18u28: after an in-case relaunch nothing focused the new window (no WM on Xvfb) and every key went nowhere. Each injection now checks
+    the X focus, focuses the newest Phosphor window when it is elsewhere, and refuses when there is none."""
+    import backend
+    be = backend.X11Backend()
+    st = dict(focus="1", wins=["5", "9"], calls=[])
+
+    def fake_sub(argv, **kw):
+        st["calls"].append(argv[1] if argv[0] == "xdotool" else argv[0])
+        out = st["focus"] if argv[1:2] == ["getwindowfocus"] else (" ".join(st["wins"]) if argv[1:2] == ["search"] else "")
+        return types.SimpleNamespace(returncode=0, stdout=out.encode(), stderr=b"")
+
+    def fake_run(argv, **kw):
+        st["calls"].append(argv[1])
+        if argv[1] == "windowfocus":
+            st["focus"] = argv[2]
+        return types.SimpleNamespace(returncode=0)
+    sub, run = backend.subprocess.run, backend._run
+    backend.subprocess.run, backend._run = fake_sub, fake_run
+    try:
+        be.key("escape")                       # focus on the root: the newest Phosphor window is focused first, then the key goes
+        assert st["focus"] == "9" and st["calls"][-1] == "key" and "windowfocus" in st["calls"], st
+        assert be.calls[-1]["special"][0].startswith("Escape@"), be.calls[-1]
+        st["calls"].clear()
+        be.type("ab")                          # same focus as last time: one getwindowfocus, no search, no refocus
+        assert st["calls"] == ["getwindowfocus", "type"], st["calls"]
+        st["focus"] = "5"
+        st["calls"].clear()
+        be.type("ab")                          # another Phosphor window has the focus: left alone
+        assert "windowfocus" not in st["calls"] and st["focus"] == "5", st
+        st["focus"], st["wins"] = "1", []
+        try:
+            be.type("x")
+            raise AssertionError("typed with no Phosphor window")
+        except RuntimeError as e:
+            assert "no visible Phosphor window" in str(e)
+        assert st["calls"][-1] != "type"
+    finally:
+        backend.subprocess.run, backend._run = sub, run
+
+
+@check
+def idle_first_key_waits_for_both_frames():
+    """r18u28 (X11 latency_first_key_after_idle 0/30): the sample is read only after the second key's frame is in the app log"""
+    log = []
+    clock = [1000.0]
+
+    class Be:
+        name = "x11"
+
+        def type(self, text, delay, enter=False):
+            if text == "m":
+                log.extend(pending)            # the previous key's frame is in the log long before this key
+                pending.clear()
+                clock[0] += 300
+                log.append("input_order keydown key=\"m\" ctrl=false alt=false shift=false cmd=false t=%.3f seq=1" % clock[0])
+                pending.append("input_order frame layout=false t=%.3f" % (clock[0] + 20))
+    pending = []
+
+    class Ctx:
+        be = Be()
+
+        def log_size(self):
+            return len(log)
+
+        def log_since(self, off):
+            out = "\n".join(log[off:])
+            log.extend(pending)                # the frame is logged a moment AFTER the key: only a later read sees it
+            pending.clear()
+            return out
+
+        def until(self, pred, timeout=10, step=0.05):
+            return cases.Ctx.until(self, pred, timeout, step=0)
+
+        def reset(self):
+            pass
+    sl = cases.time.sleep
+    cases.time.sleep = lambda s: None
+    try:
+        first, second = cases.idle_log_block(Ctx(), 0, 3)
+    finally:
+        cases.time.sleep = sl
+    assert first == [20.0, 20.0, 20.0] and second == [20.0, 20.0, 20.0], (first, second)
+
+
+@check
+def x11_ocr_upscaled_words_scale_back():
+    import cases_ui
+    tsv = "level\tpage\tblock\tpar\tline\tword\tleft\ttop\twidth\theight\tconf\ttext\n5\t1\t1\t1\t1\t1\t200\t80\t120\t40\t91\tZEBRAAPPLE\n"
+    assert cases_ui.tsv_words(tsv) == [("ZEBRAAPPLE", 260, 100, 200, 320, 80, 120)]
+    assert cases_ui.tsv_words(tsv, 2) == [("ZEBRAAPPLE", 130, 50, 100, 160, 40, 60)]
+    assert cases.ocr_upscaled("wayland", "/nonexistent.png") is None and cases.ocr_upscaled("mac", "/x.png") is None
 
 
 @check

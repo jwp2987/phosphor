@@ -1,0 +1,10 @@
+{
+ "date": "2026-11-05",
+ "ref": "build/r18u28",
+ "commit": "3d6d6ed21f499907e3b372e32498199332d0a182",
+ "pipeline": 3033422039,
+ "run_by": "ssh on the CI machine with the CI scripts, not a GitLab job",
+ "tier": "full",
+ "platform": "macos",
+ "summary": "pass 132 fail 1 skip 30 noref 7 (app test via ssh Background session, not the CI Aqua session: timing/Return-targeting rows are not trustworthy); unit suite test: 11088 run, 1 failed (terminal::input::decorations::tests::test_decorations_with_multibyte_chars, 3 of 3 full runs, passes 10 of 10 alone)"
+}

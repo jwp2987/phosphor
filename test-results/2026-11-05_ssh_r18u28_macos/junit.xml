@@ -1,0 +1,384 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-macos" tests="170" failures="1" skipped="37">
+<testcase classname="terminal" name="mode_proof" time="3.00">
+</testcase>
+<testcase classname="terminal" name="cadence" time="6.80">
+</testcase>
+<testcase classname="terminal" name="key_loss_control" time="49.00">
+</testcase>
+<testcase classname="terminal" name="enter_loss_control" time="74.90">
+</testcase>
+<testcase classname="terminal" name="fast_typing" time="66.50">
+</testcase>
+<testcase classname="terminal" name="rollover" time="16.40">
+</testcase>
+<testcase classname="terminal" name="expert_fuzz" time="34.10">
+</testcase>
+<testcase classname="terminal" name="paste_instant_enter" time="7.80">
+</testcase>
+<testcase classname="terminal" name="arrows_behind_paste" time="11.80">
+</testcase>
+<testcase classname="terminal" name="keydown_count" time="25.60">
+</testcase>
+<testcase classname="terminal" name="big_paste" time="10.20">
+</testcase>
+<testcase classname="terminal" name="tab_enter" time="26.30">
+</testcase>
+<testcase classname="terminal" name="paste_multiline_prompt" time="10.80">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_d" time="547.00">
+</testcase>
+<testcase classname="terminal" name="paste_bracketed_off" time="7.70">
+</testcase>
+<testcase classname="terminal" name="read_x" time="4.70">
+</testcase>
+<testcase classname="terminal" name="subshells" time="43.40">
+</testcase>
+<testcase classname="terminal" name="alt_screen" time="8.90">
+</testcase>
+<testcase classname="terminal" name="gitbash_subshell" time="1.40">
+<skipped message="Windows only: Git for Windows' bash.exe as a subshell of the pane's PowerShell (POSIX hosts: the subshells case)"/>
+</testcase>
+<testcase classname="terminal" name="alt_screen_programs" time="23.80">
+</testcase>
+<testcase classname="terminal" name="alt_screen_mouse_reporting" time="1.40">
+<skipped message="no pointer synthesis in the mac backend (Linux xdotool / sway seat only); the program itself needs python3 termios"/>
+</testcase>
+<testcase classname="terminal" name="ssh_connect_typing" time="37.30">
+</testcase>
+<testcase classname="terminal" name="ssh_enter_then_immediate_command" time="10.40">
+</testcase>
+<testcase classname="terminal" name="ssh_nested_typeahead" time="7.90">
+</testcase>
+<testcase classname="terminal" name="ssh_failing_not_local" time="16.40">
+</testcase>
+<testcase classname="terminal" name="idle_cpu" time="25.30">
+</testcase>
+<testcase classname="terminal" name="latency_enter" time="482.30">
+</testcase>
+<testcase classname="terminal" name="latency_key_log" time="29.10">
+<skipped message="NO-REFERENCE (not a pass): #1176 key -&gt; pty write median 0.38 ms (p95 0.92, n=60): within the 1 ms target"/>
+</testcase>
+<testcase classname="terminal" name="latency_paint" time="125.20">
+<skipped message="NO-REFERENCE (not a pass): measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 12 blocks"/>
+</testcase>
+<testcase classname="terminal" name="latency_first_key_after_idle" time="749.80">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: First key after 1 s idle: the reference measured implausibly slow (overhead -21.79 ms): INCONCLUSIVE/NO-COMPARE, the overhead budget was NOT judged (not a pass)"/>
+</testcase>
+<testcase classname="terminal" name="routing_table" time="75.30">
+</testcase>
+<testcase classname="terminal" name="agent_mode_switch" time="16.40">
+</testcase>
+<testcase classname="terminal" name="agent_code_recycle" time="24.30">
+<skipped message="the model's answer shows none of the RCYT251_ZWYO_NN snippets (model nondeterminism): nothing to recycle"/>
+</testcase>
+<testcase classname="terminal" name="ui_tab_menu" time="9.90">
+</testcase>
+<testcase classname="terminal" name="flood_typed_line" time="38.40">
+</testcase>
+<testcase classname="terminal" name="remote_session_legacy" time="62.90">
+</testcase>
+<testcase classname="terminal" name="intl_wide_type" time="8.30">
+</testcase>
+<testcase classname="terminal" name="ui_ghost_accept" time="17.60">
+</testcase>
+<testcase classname="terminal" name="flood_typing_latency" time="24.40">
+</testcase>
+<testcase classname="terminal" name="remote_session_ext" time="75.80">
+</testcase>
+<testcase classname="terminal" name="intl_wide_paste" time="10.80">
+</testcase>
+<testcase classname="terminal" name="ui_ctrl_r" time="14.70">
+</testcase>
+<testcase classname="terminal" name="flood_scrollback_find" time="19.40">
+</testcase>
+<testcase classname="terminal" name="remote_heredoc_paste" time="513.10">
+</testcase>
+<testcase classname="terminal" name="ssh_hanging_host_not_local" time="31.90">
+</testcase>
+<testcase classname="terminal" name="intl_wide_edit" time="10.60">
+</testcase>
+<testcase classname="terminal" name="ui_palette" time="19.80">
+</testcase>
+<testcase classname="terminal" name="ssh_password_prompt" time="21.90">
+</testcase>
+<testcase classname="terminal" name="intl_wide_program" time="24.70">
+</testcase>
+<testcase classname="terminal" name="latency_enter_ssh" time="352.10">
+</testcase>
+<testcase classname="terminal" name="intl_compose_linux" time="1.30">
+<skipped message="Linux compose/dead keys need the wayland (wtype) or x11 (xdotool) backend, this is mac"/>
+</testcase>
+<testcase classname="terminal" name="intl_ime_japanese" time="1.70">
+<skipped message="NEEDS_OWNER: the input method under test is not enabled for this user (enabled: com.apple.keylayout.US, com.apple.CharacterPaletteIM). In the GUI session of user gitrunner (Screen Sharing / console): "/>
+</testcase>
+<testcase classname="terminal" name="sudo_su_real_shell" time="1.40">
+<skipped message="no privilege boundary could run here: passwordless sudo and root-for-su are both absent"/>
+</testcase>
+<testcase classname="terminal" name="intl_ime_pinyin" time="1.40">
+<skipped message="NEEDS_OWNER: the input method under test is not enabled for this user (enabled: com.apple.keylayout.US, com.apple.CharacterPaletteIM). In the GUI session of user gitrunner (Screen Sharing / console): "/>
+</testcase>
+<testcase classname="terminal" name="ssh_drop_reconnect" time="40.30">
+</testcase>
+<testcase classname="terminal" name="intl_deadkey_option" time="53.10">
+</testcase>
+<testcase classname="terminal" name="intl_altgr_ps" time="1.30">
+<skipped message="Windows only: a per-window German keyboard layout + AltGr (Linux has intl_compose_linux, macOS intl_deadkey_option)"/>
+</testcase>
+<testcase classname="terminal" name="intl_altgr_bash" time="1.40">
+<skipped message="Windows only: a per-window German keyboard layout + AltGr (Linux has intl_compose_linux, macOS intl_deadkey_option)"/>
+</testcase>
+<testcase classname="terminal" name="ui_mouse_select_copy" time="1.30">
+<skipped message="macOS: the harness has no pointer tool (htype2/kl3 are keyboard-only; cliclick is not part of the CI toolset and Retina point/pixel mapping is not calibrated)"/>
+</testcase>
+<testcase classname="terminal" name="editor_edit_save" time="1.30">
+<skipped message="the file is opened by a second `phosphor &lt;path&gt;` process that the running instance receives over the D-Bus URL forward (Linux) or the Windows named pipe (#1544, runs there); macOS (open -a / an Apple "/>
+</testcase>
+<testcase classname="terminal" name="shell_zsh" time="29.50">
+</testcase>
+<testcase classname="terminal" name="shell_fish" time="34.70">
+</testcase>
+<testcase classname="terminal" name="shell_nu" time="43.20">
+</testcase>
+<testcase classname="terminal" name="shell_pwsh" time="34.80">
+</testcase>
+<testcase classname="terminal" name="ui_right_click_paste" time="1.40">
+<skipped message="macOS: the harness has no pointer tool (htype2/kl3 are keyboard-only; cliclick is not part of the CI toolset and Retina point/pixel mapping is not calibrated)"/>
+</testcase>
+<testcase classname="terminal" name="editor_paste" time="1.40">
+<skipped message="the file is opened by a second `phosphor &lt;path&gt;` process that the running instance receives over the D-Bus URL forward (Linux) or the Windows named pipe (#1544, runs there); macOS (open -a / an Apple "/>
+</testcase>
+<testcase classname="terminal" name="ui_drag_drop_file" time="1.30">
+<skipped message="mac: no way to synthesize a drag source (XDND needs a client that owns the drag; Wayland wl_data_device likewise)"/>
+</testcase>
+<testcase classname="terminal" name="startup_shell_pane" time="1.40">
+<skipped message="runs only in a startup_shell_override pass (APPCI_WIN_SHELLS=pwsh7,cmd)"/>
+</testcase>
+<testcase classname="terminal" name="ui_resize_typing" time="29.90">
+</testcase>
+<testcase classname="terminal" name="ui_split_panes" time="53.90">
+</testcase>
+<testcase classname="terminal" name="md_viewer" time="6.60">
+</testcase>
+<testcase classname="terminal" name="md_viewer_big" time="8.30">
+</testcase>
+<testcase classname="terminal" name="editor_memory_7mb" time="376.00">
+</testcase>
+<testcase classname="terminal" name="ui_startup_time" time="26.70">
+</testcase>
+<testcase classname="terminal" name="session_restore" time="69.70">
+</testcase>
+<testcase classname="terminal" name="ui_settings_live" time="54.70">
+</testcase>
+<testcase classname="terminal" name="quit_24_tabs" time="1.40">
+<skipped message="quit_24_tabs needs a quit + relaunch on the same profile: the Linux flow sends the quit key (ctrl+shift+q) and App.proc waits on the child; on macOS Cmd-Q is refused by the frontmost-app guard and Mac"/>
+</testcase>
+<testcase classname="terminal" name="crash_kill9_restore" time="42.90">
+</testcase>
+<testcase classname="terminal" name="cb_settings_ui_open" time="23.70">
+</testcase>
+<testcase classname="terminal" name="crash_corrupt_db" time="19.90">
+</testcase>
+<testcase classname="terminal" name="cb_settings_migration" time="37.70">
+</testcase>
+<testcase classname="terminal" name="soak" time="1.30">
+<skipped message="no keyboard close-pane/tab shortcut is usable on this platform (APPCI_KEY_CLOSE empty): Phosphor's close shortcut on macOS is cmd-shift-W, which the frontmost-app guard refuses by policy"/>
+</testcase>
+<testcase classname="terminal" name="cb_state_relaunch" time="27.30">
+</testcase>
+<testcase classname="terminal" name="tabs_two_windows" time="56.90">
+</testcase>
+<testcase classname="terminal" name="upgrade_over_previous" time="1.40">
+<skipped message="no previous-release data: set APPCI_PREV_FIXTURE (state tarball) or APPCI_PREV_BIN (previous release binary; macOS also APPCI_PREV_BUNDLE) -- where CI gets the previous release's artifact is the owner"/>
+</testcase>
+<testcase classname="terminal" name="tabs_streaming" time="46.80">
+</testcase>
+<testcase classname="terminal" name="cb_no_autoupdate" time="1.90">
+</testcase>
+<testcase classname="terminal" name="cb_ui_action_latency" time="13.50">
+</testcase>
+<testcase classname="terminal" name="cb_editor_mac" time="8.30">
+</testcase>
+<testcase classname="agent" name="mode_proof" time="2.80">
+</testcase>
+<testcase classname="agent" name="cadence" time="6.90">
+</testcase>
+<testcase classname="agent" name="fast_typing" time="65.40">
+</testcase>
+<testcase classname="agent" name="rollover" time="15.90">
+</testcase>
+<testcase classname="agent" name="expert_fuzz" time="37.20">
+</testcase>
+<testcase classname="agent" name="paste_instant_enter" time="7.80">
+</testcase>
+<testcase classname="agent" name="arrows_behind_paste" time="11.90">
+</testcase>
+<testcase classname="agent" name="keydown_count" time="25.30">
+</testcase>
+<testcase classname="agent" name="big_paste" time="10.20">
+</testcase>
+<testcase classname="agent" name="tab_enter" time="26.10">
+</testcase>
+<testcase classname="agent" name="ctrl_c_d" time="542.90">
+<skipped message="NO-REFERENCE (not a pass): Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 182.49 ms includes the input-tool spawn"/>
+</testcase>
+<testcase classname="agent" name="read_x" time="4.60">
+</testcase>
+<testcase classname="agent" name="paste_agent_input" time="8.70">
+</testcase>
+<testcase classname="agent" name="subshells" time="43.20">
+</testcase>
+<testcase classname="agent" name="alt_screen" time="8.90">
+</testcase>
+<testcase classname="agent" name="gitbash_subshell" time="1.40">
+<skipped message="Windows only: Git for Windows' bash.exe as a subshell of the pane's PowerShell (POSIX hosts: the subshells case)"/>
+</testcase>
+<testcase classname="agent" name="alt_screen_programs" time="24.10">
+</testcase>
+<testcase classname="agent" name="ssh_connect_typing" time="37.30">
+</testcase>
+<testcase classname="agent" name="ssh_enter_then_immediate_command" time="10.30">
+</testcase>
+<testcase classname="agent" name="ssh_nested_typeahead" time="7.80">
+</testcase>
+<testcase classname="agent" name="ssh_failing_not_local" time="16.50">
+</testcase>
+<testcase classname="agent" name="idle_cpu" time="25.10">
+</testcase>
+<testcase classname="agent" name="latency_enter" time="403.00">
+</testcase>
+<testcase classname="agent" name="latency_key_log" time="28.50">
+<skipped message="NO-REFERENCE (not a pass): #1176 key -&gt; pty write median 0.38 ms (p95 0.92, n=60): within the 1 ms target"/>
+</testcase>
+<testcase classname="agent" name="latency_paint" time="124.70">
+<skipped message="NO-REFERENCE (not a pass): measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 12 blocks"/>
+</testcase>
+<testcase classname="agent" name="latency_first_key_after_idle" time="749.70">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: First key after 1 s idle: the reference measured implausibly slow (overhead -14.92 ms): INCONCLUSIVE/NO-COMPARE, the overhead budget was NOT judged (not a pass)"/>
+</testcase>
+<testcase classname="agent" name="approval_card_pause" time="21.00">
+</testcase>
+<testcase classname="agent" name="agent_stream_cancel" time="34.30">
+</testcase>
+<testcase classname="agent" name="agent_approval" time="71.00">
+</testcase>
+<testcase classname="agent" name="agent_input_exact" time="9.20">
+</testcase>
+<testcase classname="agent" name="routing_table" time="72.20">
+</testcase>
+<testcase classname="agent" name="agent_mode_switch" time="14.70">
+</testcase>
+<testcase classname="agent" name="agent_code_recycle" time="25.00">
+<skipped message="the model's answer shows none of the RCYT166_LYCR_NN snippets (model nondeterminism): nothing to recycle"/>
+</testcase>
+<testcase classname="agent" name="cb_agent_pickers" time="14.40">
+</testcase>
+<testcase classname="agent" name="cb_agent_file_mention" time="12.70">
+</testcase>
+<testcase classname="agent" name="ui_tab_menu" time="9.80">
+</testcase>
+<testcase classname="agent" name="flood_typed_line" time="38.40">
+</testcase>
+<testcase classname="agent" name="remote_session_legacy" time="64.60">
+</testcase>
+<testcase classname="agent" name="intl_wide_type" time="8.80">
+</testcase>
+<testcase classname="agent" name="ui_ghost_accept" time="17.00">
+</testcase>
+<testcase classname="agent" name="flood_typing_latency" time="24.20">
+</testcase>
+<testcase classname="agent" name="remote_session_ext" time="76.50">
+</testcase>
+<testcase classname="agent" name="agent_view_not_restored_after_remote_session_ext" time="0.00">
+</testcase>
+<testcase classname="agent" name="intl_wide_paste" time="10.90">
+</testcase>
+<testcase classname="agent" name="ui_ctrl_r" time="14.30">
+</testcase>
+<testcase classname="agent" name="flood_scrollback_find" time="28.50">
+<failure message="Find for the marker printed before a 300000-line flood did not bring it on screen: marker read=False, view scrolled away from the flood's tail=True (see shots/agent_find_after.png); still not 12 s after the Enter (shots/agent_find_late.png); app log: 31 find_scroll hop(s), moved=true in 1, last: result=scroll block=16 moved=true from=FollowsBottomOfMostRecentBlock to=FixedAtPosition { scroll_lines: ScrollTop(Lines(OrderedFloat(30.449998438358307))) } t=1793916589064.109">Find for the marker printed before a 300000-line flood did not bring it on screen: marker read=False, view scrolled away from the flood's tail=True (see shots/agent_find_after.png); still not 12 s after the Enter (shots/agent_find_late.png); app log: 31 find_scroll hop(s), moved=true in 1, last: result=scroll block=16 moved=true from=FollowsBottomOfMostRecentBlock to=FixedAtPosition { scroll_lines: ScrollTop(Lines(OrderedFloat(30.449998438358307))) } t=1793916589064.109
+flood_scrollback_find; app log: 31 find_scroll hop(s), moved=true in 1, last: result=scroll block=16 moved=true from=FollowsBottomOfMostRecentBlock to=FixedAtPosition { scroll_lines: ScrollTop(Lines(OrderedFloat(30.449998438358307))) } t=1793916589064.109
+injector accounting: injector sent 209; app saw 204; lost-before-app 5 (Enter: sent 3, app saw 2)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 2 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="remote_heredoc_paste" time="307.90">
+</testcase>
+<testcase classname="agent" name="ssh_hanging_host_not_local" time="31.10">
+</testcase>
+<testcase classname="agent" name="intl_wide_edit" time="10.70">
+</testcase>
+<testcase classname="agent" name="ui_palette" time="19.40">
+</testcase>
+<testcase classname="agent" name="ssh_password_prompt" time="21.80">
+</testcase>
+<testcase classname="agent" name="intl_wide_program" time="24.70">
+</testcase>
+<testcase classname="agent" name="latency_enter_ssh" time="352.20">
+</testcase>
+<testcase classname="agent" name="intl_compose_linux" time="1.40">
+<skipped message="Linux compose/dead keys need the wayland (wtype) or x11 (xdotool) backend, this is mac"/>
+</testcase>
+<testcase classname="agent" name="intl_ime_japanese" time="1.40">
+<skipped message="NEEDS_OWNER: the input method under test is not enabled for this user (enabled: com.apple.keylayout.US, com.apple.CharacterPaletteIM). In the GUI session of user gitrunner (Screen Sharing / console): "/>
+</testcase>
+<testcase classname="agent" name="intl_ime_pinyin" time="1.40">
+<skipped message="NEEDS_OWNER: the input method under test is not enabled for this user (enabled: com.apple.keylayout.US, com.apple.CharacterPaletteIM). In the GUI session of user gitrunner (Screen Sharing / console): "/>
+</testcase>
+<testcase classname="agent" name="intl_deadkey_option" time="52.80">
+</testcase>
+<testcase classname="agent" name="intl_altgr_ps" time="1.40">
+<skipped message="Windows only: a per-window German keyboard layout + AltGr (Linux has intl_compose_linux, macOS intl_deadkey_option)"/>
+</testcase>
+<testcase classname="agent" name="intl_altgr_bash" time="1.30">
+<skipped message="Windows only: a per-window German keyboard layout + AltGr (Linux has intl_compose_linux, macOS intl_deadkey_option)"/>
+</testcase>
+<testcase classname="agent" name="ui_mouse_select_copy" time="1.30">
+<skipped message="macOS: the harness has no pointer tool (htype2/kl3 are keyboard-only; cliclick is not part of the CI toolset and Retina point/pixel mapping is not calibrated)"/>
+</testcase>
+<testcase classname="agent" name="editor_edit_save" time="1.20">
+<skipped message="the file is opened by a second `phosphor &lt;path&gt;` process that the running instance receives over the D-Bus URL forward (Linux) or the Windows named pipe (#1544, runs there); macOS (open -a / an Apple "/>
+</testcase>
+<testcase classname="agent" name="shell_zsh" time="28.10">
+</testcase>
+<testcase classname="agent" name="shell_fish" time="34.00">
+</testcase>
+<testcase classname="agent" name="shell_nu" time="41.90">
+</testcase>
+<testcase classname="agent" name="shell_pwsh" time="34.70">
+</testcase>
+<testcase classname="agent" name="editor_paste" time="1.40">
+<skipped message="the file is opened by a second `phosphor &lt;path&gt;` process that the running instance receives over the D-Bus URL forward (Linux) or the Windows named pipe (#1544, runs there); macOS (open -a / an Apple "/>
+</testcase>
+<testcase classname="agent" name="ui_resize_typing" time="29.50">
+</testcase>
+<testcase classname="agent" name="ui_split_panes" time="52.60">
+</testcase>
+<testcase classname="agent" name="md_viewer" time="6.50">
+</testcase>
+<testcase classname="agent" name="md_viewer_ai_answer" time="7.90">
+</testcase>
+<testcase classname="agent" name="ui_startup_time" time="28.00">
+</testcase>
+<testcase classname="agent" name="agent_view_not_restored_after_ui_startup_time" time="0.00">
+</testcase>
+<testcase classname="agent" name="session_restore" time="71.90">
+</testcase>
+<testcase classname="agent" name="ui_settings_live" time="56.50">
+</testcase>
+<testcase classname="agent" name="quit_24_tabs" time="1.40">
+<skipped message="quit_24_tabs needs a quit + relaunch on the same profile: the Linux flow sends the quit key (ctrl+shift+q) and App.proc waits on the child; on macOS Cmd-Q is refused by the frontmost-app guard and Mac"/>
+</testcase>
+<testcase classname="agent" name="cb_settings_ui_open" time="17.00">
+</testcase>
+<testcase classname="agent" name="cb_settings_migration" time="36.50">
+</testcase>
+<testcase classname="agent" name="agent_view_not_restored_after_cb_settings_migration" time="0.00">
+</testcase>
+<testcase classname="agent" name="soak" time="1.30">
+<skipped message="no keyboard close-pane/tab shortcut is usable on this platform (APPCI_KEY_CLOSE empty): Phosphor's close shortcut on macOS is cmd-shift-W, which the frontmost-app guard refuses by policy"/>
+</testcase>
+<testcase classname="agent" name="tabs_two_windows" time="56.20">
+</testcase>
+<testcase classname="agent" name="tabs_streaming" time="46.30">
+</testcase>
+</testsuite>
