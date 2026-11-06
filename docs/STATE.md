@@ -9,7 +9,7 @@ Pin: `4111d08f932e0eda34fe57e62ee32df7d0f398d9` (see `ORACLE.md` — never measu
 
 ## Is it verified?
 
-Last fully green `script/precheck`: `1eb8bdaf608882668c3b0d605936771e271a5347` (2026-10-27 07:13) — **193 commit(s) since**
+Last fully green `script/precheck`: **never** — no green `script/precheck` has been recorded
 
 | guard | |
 |---|---|
@@ -27,9 +27,9 @@ any individual test.
 | | count |
 |---|---:|
 | Pin tests | 11655 |
-| Fork tests | 13893 |
-| Shared | 8698 |
-| Absent from fork | 2957 |
+| Fork tests | 16726 |
+| Shared | 8562 |
+| Absent from fork | 3093 |
 
 Counted the same way on both sides: `#[test]` items, **plus** the
 `crates/integration` tests wired up by `register_test!` (332 at the pin,
@@ -40,28 +40,37 @@ collapsed the macro-generated tests to a single placeholder name — so every
 percentage published before that date was computed over a short count on both
 sides.
 
-Of the absent, **2042 are adjudicated** in the ledger and 915 are not.
+> **A `macro_rules!` that emits `#[test]` is NOT being expanded, so its
+> tests are missing from the counts above:**
+>
+> - `lib/winit/dpi/src/lib.rs` — `test_pixel_float_impl`
+> - `lib/winit/dpi/src/lib.rs` — `test_pixel_int_impl`
+>
+> Add an expander for it in `script/state`. Listing it as handled without
+> one just hides the undercount again.
 
-> **Do not quote that 915 as a work queue.** Of them, **806 are
+Of the absent, **2045 are adjudicated** in the ledger and 1048 are not.
+
+> **Do not quote that 1048 as a work queue.** Of them, **926 are
 > defined in files this fork deleted wholesale** — the dropped cloud layer, whose
 > verdict was decided once at subsystem level in `DECLINED.md`. They are missing a
 > per-test ledger row, not a decision. A further **1** carry an
 > explicit `test:` marker in `DECLINED.md` — also decided, also row-less — and are
 > excluded here. The remainder where "should we port this?" is still genuinely
-> open is **108**.
+> open is **121**.
 
 Cloud accounts for 1207 of those; the unadjudicated remainder is
-*projected* at the same ratio (~374 non-cloud), so the figures below
+*projected* at the same ratio (~429 non-cloud), so the figures below
 carry that estimate.
 
-The ledger has 2529 rows in total; the 487 beyond the
-2042 above adjudicate tests that are **not** absent — the fork already has
+The ledger has 2529 rows in total; the 484 beyond the
+2045 above adjudicate tests that are **not** absent — the fork already has
 them (a `PORTED` or `COVERED-ELSEWHERE` row is exactly that), or they are not at
 this pin. Those rows are counted here as what they are rather than subtracted
 from the absent set, which is what #603 fixed.
 
-- **~87.7% of the pin's non-cloud tests exist here** (8698 of ~9907)
-- **~96.3% are present or deliberately resolved** (adding 719 declined, 62 divergent, 65 covered-elsewhere)
+- **~87.1% of the pin's non-cloud tests exist here** (8562 of ~9829)
+- **~95.7% are present or deliberately resolved** (adding 719 declined, 62 divergent, 65 covered-elsewhere)
 
 ## Ledger
 
