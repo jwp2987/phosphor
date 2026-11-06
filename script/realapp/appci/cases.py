@@ -103,7 +103,9 @@ def plat():
 
 MACOS_ENTER_REASON = "macOS-bound; #1606 closed by owner 2026-11-05"
 MACOS_ENTER_APP_SHARE_MAX_MS = 2.0      # the app's OWN share (enter_begin -> pty_write): above this a regression is Phosphor's, not the OS's
-MACOS_ENTER_SANITY_MS = 80.0            # the existing CI sanity bound on the absolute Enter -> start median
+# A gross-regression guard RELATIVE to the reference measured in the same session: r18u30 showed the whole Mac running slower
+# (Terminal.app itself 76 ms vs 61 ms in r18u28) with Phosphor's overhead unchanged at +20 ms, so an absolute median bound judged the machine.
+MACOS_ENTER_GROSS_OVERHEAD_MS = 40.0    # twice the steady macOS overhead (+20 ms, r18u28 and r18u30)
 
 
 def lat_checks(r, rec, label, known_key=None, report_only_macos=False, app_share_ms=None, median_ms=None):
@@ -135,8 +137,9 @@ def lat_checks(r, rec, label, known_key=None, report_only_macos=False, app_share
         if app_share_ms is not None:
             r.check(app_share_ms <= MACOS_ENTER_APP_SHARE_MAX_MS, "%s: the app's own share (enter_begin -> pty_write) %.2f ms exceeds %.1f ms (report-only on macOS does not cover Phosphor's own time)" % (
                 label, app_share_ms, MACOS_ENTER_APP_SHARE_MAX_MS))
-        if median_ms is not None:
-            r.check(median_ms <= MACOS_ENTER_SANITY_MS, "%s: median %.1f ms > %.0f ms CI sanity bound" % (label, median_ms, MACOS_ENTER_SANITY_MS))
+        if rec.get("budget_kind") == "overhead" and rec.get("overhead_ms") is not None:
+            r.check(rec["overhead_ms"] <= MACOS_ENTER_GROSS_OVERHEAD_MS, "%s: Phosphor overhead %.2f ms over %s exceeds the %.0f ms gross-regression bound (report-only on macOS covers the steady ~+20 ms OS gap, not this)" % (
+                label, rec["overhead_ms"], rec.get("reference_name"), MACOS_ENTER_GROSS_OVERHEAD_MS))
     for tag in ("prev", "baseline"):
         x = rec.get(tag) or {}
         if x.get("verdict") in ("fail", "warn") and x.get("delta_ms") is not None:

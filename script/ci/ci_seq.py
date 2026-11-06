@@ -572,9 +572,13 @@ def main():
         # API call is UNKNOWN, never "no such job": keep asking until GitLab answers.
         while True:
             js = api("projects/%s/pipelines/%d/jobs?per_page=100" % (PROJECT, pid))
-            if isinstance(js, list):
+            # r18u30: an expired glab login answered every job list with [] (or a 401/403 body), and the run ended at 22:10 with
+            # every job "missing" while the pipeline sat idle for six hours. A pipeline always has jobs: an empty list is UNKNOWN too.
+            if isinstance(js, list) and js:
                 return {j["name"]: j for j in js}
-            print("%s: GitLab API unreachable; retrying" % time.strftime("%H:%M"), flush=True)
+            why = js.get("message") if isinstance(js, dict) else ("empty job list" if js == [] else "no answer")
+            print("%s: GitLab API unusable (%s): if this repeats, the glab login has expired -- run `glab auth login`; retrying"
+                  % (time.strftime("%H:%M"), why), flush=True)
             time.sleep(60)
 
     def wait(name):
