@@ -150,7 +150,13 @@ pub enum Event {
     /// close to the end of the its execution, such that these characters were not actually read by
     /// the running program. The shell stores these characters, inserts them into its internal line
     /// buffer, and re-echoes them after Precmd.
-    Typeahead,
+    ///
+    /// `shell_report` (#1793): the shell reported its line (`TypeaheadMode::ShellReported`), which
+    /// answers a request; `false` for typeahead matched from echo (`TypeaheadMode::InputMatching`),
+    /// which answers none.
+    Typeahead {
+        shell_report: bool,
+    },
     /// Emitted when the agent is tagged in or out of the active block.
     /// Users "Tag an agent in" when they ask the agent to take over a long running command
     /// that was started outside of a conversation (and they tag the agent out when they take control back).
@@ -671,7 +677,9 @@ impl Debug for Event {
             }
             Event::PromptUpdated => write!(f, "PromptUpdated"),
             Event::HonorPS1OutOfSync => write!(f, "HonorPS1OutOfSync"),
-            Event::Typeahead => write!(f, "Typeahead"),
+            Event::Typeahead { shell_report } => {
+                write!(f, "Typeahead(shell_report: {shell_report})")
+            }
             Event::AgentTaggedInChanged { is_tagged_in } => {
                 write!(f, "AgentTaggedInChanged(is_tagged_in: {is_tagged_in})")
             }

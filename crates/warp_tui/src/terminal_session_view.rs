@@ -2294,7 +2294,7 @@ impl TuiTerminalSessionView {
                 view.update_process_input_focus(ctx);
                 ctx.notify();
             }
-            ModelEvent::Typeahead => view.handle_typeahead_event(ctx),
+            ModelEvent::Typeahead { .. } => view.handle_typeahead_event(ctx),
             // Defensive retry: a session whose bootstrap warm-up was skipped
             // (or raced the subscription below) still gets its PATH executables
             // loaded after the first command finishes.

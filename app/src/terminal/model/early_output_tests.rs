@@ -318,7 +318,7 @@ fn typeahead_handoff_hears_about_an_empty_report() {
     };
     let typeahead_events = |events_rx: &async_channel::Receiver<TerminalEvent>| {
         std::iter::from_fn(|| events_rx.try_recv().ok())
-            .filter(|event| matches!(event, TerminalEvent::Typeahead))
+            .filter(|event| matches!(event, TerminalEvent::Typeahead { .. }))
             .count()
     };
     typeahead_events(&events_rx);
@@ -351,4 +351,42 @@ fn typeahead_handoff_precmd_still_clears_input_matched_typeahead() {
     assert_eq!(block_list.early_output().typeahead(), "yes");
     block_list.prompt_only_precmd(Default::default());
     assert_eq!(block_list.early_output().typeahead(), "");
+}
+
+/// #1793 (review finding 5): typeahead matched from echo is handed to the view as a `Typeahead`
+/// event too, but it answers no request: it says so (`shell_report: false`) and is not counted in
+/// `reports_delivered`, the count the hand-off settles requests against. A shell report is both.
+#[test]
+fn input_matched_typeahead_is_not_a_delivered_report() {
+    let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+    let (events_tx, events_rx) = async_channel::unbounded();
+    let mut block_list = new_block_list(
+        ChannelEventListener::builder_for_test()
+            .with_terminal_events_tx(events_tx)
+            .build(),
+        TypeaheadMode::InputMatching,
+    );
+    let typeahead_events = |events_rx: &async_channel::Receiver<TerminalEvent>| {
+        std::iter::from_fn(|| events_rx.try_recv().ok())
+            .filter_map(|event| match event {
+                TerminalEvent::Typeahead { shell_report } => Some(shell_report),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    typeahead_events(&events_rx);
+
+    block_list.early_output_mut().push_user_input("ab");
+    block_list.input('a');
+    block_list.input('b');
+    assert_eq!(block_list.early_output().typeahead(), "ab");
+    assert_eq!(typeahead_events(&events_rx), vec![false, false]);
+    assert_eq!(block_list.early_output().reports_delivered(), 0);
+
+    block_list
+        .early_output_mut()
+        .set_typeahead_mode_for_test(TypeaheadMode::ShellReported);
+    report(&mut block_list, "x");
+    assert_eq!(typeahead_events(&events_rx), vec![true]);
+    assert_eq!(block_list.early_output().reports_delivered(), 1);
 }

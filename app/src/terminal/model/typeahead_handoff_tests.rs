@@ -1650,17 +1650,91 @@ fn only_the_commands_own_preexec_settles_requests() {
     assert_eq!(handoff.requests_outstanding(), 1, "the file-chord path");
 }
 
-/// #1793: the managed-ssh bare Enter is a lone `\r` written while the editor owns input: it runs
-/// the shell's line, so untracked bytes are not left there and nothing waits for their report.
+/// #1793 (review finding 4): a command written while lines the user typed ahead are still queued
+/// in the tty in front of it settles nothing. Typeahead `make\r`, then a request, then the
+/// editor's `make`: the next Preexec is the typeahead line's and carries the same text, but the
+/// request was written after that line and is not proven read by it. Nor does the command's own
+/// Preexec settle it later: only a report (or a later command written with nothing queued ahead)
+/// does.
 #[test]
-fn a_lone_enter_written_to_the_shells_line_ends_its_untracked_bytes() {
+fn a_command_written_behind_lines_queued_ahead_settles_nothing() {
+    let mut handoff = TypeaheadHandoff::default();
+    write_named_command(&mut handoff, "sleep 1");
+    // Not a young command: the Enter typed into it is written, not held (#933).
+    handoff.last_activity_at = None;
+    assert_eq!(
+        type_and_flush(&mut handoff, b"make\r"),
+        UserBytesRoute::WriteCounted
+    );
+    apply_preexec(&mut handoff, "sleep 1", false);
+    handoff.on_precmd();
+    assert!(
+        matches!(
+            handoff.state(),
+            HandoffState::PtyOwned {
+                enters_written: 2,
+                precmds_seen: 1,
+                ..
+            }
+        ),
+        "`make` is still queued in the tty: {:?}",
+        handoff.state()
+    );
+    handoff.on_legacy_request_written();
+    write_named_command(&mut handoff, "make");
+    // The typeahead line's Preexec, with the very same text.
+    apply_preexec(&mut handoff, "make", false);
+    assert_eq!(
+        handoff.requests_outstanding(),
+        1,
+        "the typeahead line's Preexec settles nothing"
+    );
+    handoff.on_precmd();
+    // The editor's command's own Preexec.
+    apply_preexec(&mut handoff, "make", false);
+    assert_eq!(
+        handoff.requests_outstanding(),
+        1,
+        "a command written behind queued lines settles nothing"
+    );
+    let _ = handoff.on_report();
+    assert_eq!(
+        handoff.requests_outstanding(),
+        0,
+        "its report still answers it"
+    );
+}
+
+/// #1793 (review finding 5): typeahead matched from echo (`TypeaheadMode::InputMatching`) is handed
+/// to the view as the same event as a report, but it answers no request and the pty reader does not
+/// count it as delivered: it takes nothing off `requests_outstanding` and is not counted as handled,
+/// so the reports still on their way to the view are counted right at the next settle.
+#[test]
+fn input_matched_typeahead_neither_answers_nor_counts_as_a_handled_report() {
     let mut handoff = TypeaheadHandoff::default();
     handoff.on_legacy_request_written();
-    handoff.note_untracked_line_bytes();
-    handoff.note_line_ended_by_user_enter();
-    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Write);
-    assert!(!handoff.defer_enter());
-    assert!(!handoff.editor_text_precedes_report());
+    // A report delivered (counted by the pty reader), not yet handled by the view.
+    handoff.on_report_parsed();
+    assert_eq!(
+        handoff.on_input_matched_typeahead(),
+        ReportDisposition::InsertLegacy
+    );
+    assert_eq!(handoff.requests_outstanding(), 1, "it answered nothing");
+    assert_eq!(
+        handoff.reports_handled_total, 0,
+        "it was not a handled report"
+    );
+    write_named_command(&mut handoff, "ls");
+    apply_preexec(&mut handoff, "ls", false);
+    assert_eq!(
+        handoff.requests_outstanding(),
+        1,
+        "the delivered report is still on its way: nothing is settled"
+    );
+    assert_eq!(handoff.rtt_pending.len(), 1, "its RTT clock is kept");
+    let _ = handoff.on_report();
+    assert_eq!(handoff.requests_outstanding(), 0);
+    assert_eq!(handoff.reports_handled_total, handoff.reports_parsed_total);
 }
 
 #[test]

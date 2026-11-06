@@ -200,8 +200,12 @@ impl EarlyOutput {
                 );
             }
 
+            // #1793: matched from echo, not a report: it answers no request, so it is neither
+            // counted in `reports_delivered` nor taken off the hand-off's request count.
             self.event_proxy
-                .send_terminal_event(TerminalEvent::Typeahead);
+                .send_terminal_event(TerminalEvent::Typeahead {
+                    shell_report: false,
+                });
         }
         is_typeahead
     }
@@ -421,7 +425,8 @@ impl ansi::Handler for EarlyOutputHandler<'_> {
             {
                 let me = self.inner();
                 me.reports_delivered = me.reports_delivered.saturating_add(1);
-                me.event_proxy.send_terminal_event(TerminalEvent::Typeahead);
+                me.event_proxy
+                    .send_terminal_event(TerminalEvent::Typeahead { shell_report: true });
             }
             return;
         }
@@ -445,7 +450,8 @@ impl ansi::Handler for EarlyOutputHandler<'_> {
                 );
             }
             me.reports_delivered = me.reports_delivered.saturating_add(1);
-            me.event_proxy.send_terminal_event(TerminalEvent::Typeahead);
+            me.event_proxy
+                .send_terminal_event(TerminalEvent::Typeahead { shell_report: true });
             safe_debug!(
                 safe: ("Received shell input buffer for typeahead"),
                 full: ("Received shell input buffer for typeahead: {:?}", me.typeahead)

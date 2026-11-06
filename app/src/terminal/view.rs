@@ -13817,13 +13817,7 @@ impl TerminalView {
                         handoff.note_untracked_line_bytes();
                     }
                 } else if facts.shell_reports_line {
-                    if bytes.as_ref() == b"\r" {
-                        // #1793: a lone Enter (the managed-ssh bare Enter) ends the shell's line:
-                        // whatever untracked bytes it held run with it, none is left there.
-                        handoff.note_line_ended_by_user_enter();
-                    } else {
-                        handoff.note_untracked_line_bytes();
-                    }
+                    handoff.note_untracked_line_bytes();
                 }
                 handoff.on_user_bytes(&bytes)
             };
@@ -14340,9 +14334,19 @@ impl TerminalView {
         }
     }
 
-    /// Applies a shell typeahead report under the typeahead hand-off.
-    fn handle_typeahead_report_with_handoff(&mut self, ctx: &mut ViewContext<Self>) {
-        let disposition = self.handoff.write().on_report();
+    /// Applies a shell typeahead report under the typeahead hand-off. `shell_report` is false for
+    /// typeahead matched from echo (`TypeaheadMode::InputMatching`): it answers no request, so it
+    /// leaves the hand-off's request accounting alone (#1793).
+    fn handle_typeahead_report_with_handoff(
+        &mut self,
+        shell_report: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let disposition = if shell_report {
+            self.handoff.write().on_report()
+        } else {
+            self.handoff.write().on_input_matched_typeahead()
+        };
         // #1353 phase 5b: a young Enter held in the input queue is split here, before anything
         // else (the editor's own keys, #1016) is put in front of the keys held behind it.
         self.drain_young_hold_ends(ctx);
@@ -19478,9 +19482,9 @@ impl TerminalView {
                 });
             }
             ModelEvent::HonorPS1OutOfSync => {}
-            ModelEvent::Typeahead => {
+            ModelEvent::Typeahead { shell_report } => {
                 if FeatureFlag::TypeaheadHandoff.is_enabled() {
-                    self.handle_typeahead_report_with_handoff(ctx);
+                    self.handle_typeahead_report_with_handoff(*shell_report, ctx);
                 } else {
                     self.handle_typeahead_event(ctx);
                 }
@@ -31169,12 +31173,6 @@ impl TerminalView {
                     self.paste_queue.ssh_pastes.remove(id);
                     self.paste_queue.payloads.remove(id);
                 }
-            }
-            InputEvent::SshBareEnterToPty => {
-                // #1793: Enter on the empty line of a managed ssh session, as plain ssh in a plain
-                // terminal receives it. Through the pane queue like any typed key, so it stays
-                // behind keys the queue holds and the keys typed after it follow it.
-                self.write_user_bytes_to_pty(b"\r".to_vec(), ctx);
             }
             InputEvent::SshEscapeToPty { bytes } => {
                 // #1638: the ssh client's escape, typed at the start of an empty line. Through

@@ -2972,6 +2972,37 @@ mod typeahead_handoff {
             preexec(&h, "make");
             assert_eq!(outstanding(&h), 1, "a line ahead settles nothing");
 
+            // Review finding 4: typeahead `make\r` still queued in the tty, then a request, then
+            // the editor's `make`. The typeahead line's Preexec carries the same text but is not
+            // the command's own: it must not settle the request written after it, and the command
+            // written behind a queued line settles nothing at all.
+            let h = harness(&mut app);
+            submit(&mut app, &h, "sleep 1");
+            user_types(&mut app, &h, b"make\r");
+            shell_runs_a_command(&h.model, "sleep 1");
+            assert_eq!(outstanding(&h), 0);
+            // A request written behind the typeahead line (the controller writes none while a
+            // line is queued; any path that does is what this guards against).
+            h.model
+                .lock()
+                .typeahead_handoff_mut()
+                .on_legacy_request_written();
+            assert_eq!(outstanding(&h), 1);
+            submit(&mut app, &h, "make");
+            preexec(&h, "make");
+            assert_eq!(
+                outstanding(&h),
+                1,
+                "the typeahead line's Preexec settles nothing"
+            );
+            h.model.lock().finish_block();
+            preexec(&h, "make");
+            assert_eq!(
+                outstanding(&h),
+                1,
+                "the command written behind a queued line settles nothing"
+            );
+
             // PS2: a Preexec naming only the head of a continued command (bash's preexec also stops
             // at the first job-control operator) settles nothing. The whole multi-line text is the
             // command's own.

@@ -1819,18 +1819,6 @@ impl TypeaheadHandoff {
         }
     }
 
-    /// #1793: a lone Enter is about to be written to the shell's line while the editor owns input
-    /// (the managed-ssh bare Enter): it runs the line, so untracked bytes it held are not in it
-    /// any more and nothing waits for a report covering them.
-    pub fn note_line_ended_by_user_enter(&mut self) {
-        if matches!(
-            self.state,
-            HandoffState::EditorOwned | HandoffState::AwaitingReport
-        ) {
-            self.forget_untracked_line_bytes();
-        }
-    }
-
     /// #1574: the view delivered bytes to the shell's line as a FINAL delivery (the #1494 path:
     /// held ssh typeahead written to an unbootstrapped remote after `stty sane`). They belong to
     /// that shell, where the toast said they went: while the mark is set no report is asked for
@@ -1947,6 +1935,12 @@ impl TypeaheadHandoff {
     /// (the 3 s uncovered-report give-up then drops the Enter and the keys typed behind it). A
     /// report counted here that answers a request written after the snapshot only makes the
     /// number found eaten smaller, so this never drops a request that is still on its way.
+    ///
+    /// No Enter bypasses this accounting: an empty Enter in a managed ssh session waits for a
+    /// report on its way like any other (#1104). A plain-terminal pass-through for it was tried and
+    /// removed (owner, 2026-11-05); `<Enter>~.` typed right after ssh connects, while the first
+    /// prompt's request is still on its way, waits behind that report. A known gap, to be designed
+    /// after the release.
     fn reconcile_requests_at_own_preexec(&mut self, written_before_command: u64) {
         let resolved = self
             .reports_parsed_total
@@ -2223,12 +2217,31 @@ impl TypeaheadHandoff {
         self.command_interactive = false;
         // #1793: the requests written before this command are settled by its own Preexec. While
         // an earlier command's Preexec is still pending, that Preexec is the next one and its
-        // snapshot is the one it may settle; this command then settles nothing.
+        // snapshot is the one it may settle; this command then settles nothing. Nor does it when
+        // lines the user typed ahead are still queued in the tty in front of it: the next Preexec
+        // is the first of those lines', which may carry the very same text (`make` typed ahead,
+        // then `make` from the editor), and a request written after that line and before this
+        // command is not proven read by it.
+        let lines_queued_ahead = matches!(
+            self.state,
+            HandoffState::PtyOwned {
+                enters_written,
+                precmds_seen,
+                ..
+            } if enters_written > precmds_seen
+        );
         if !self.own_preexec_pending {
-            self.requests_written_before_command = Some(CommandRequestSnapshot {
-                requests_written: self.requests_written_total,
-                command: None,
-            });
+            if lines_queued_ahead {
+                warpui::input_order::log_hop("handoff_settle_skipped", || {
+                    "why=lines_queued_ahead".to_owned()
+                });
+                self.requests_written_before_command = None;
+            } else {
+                self.requests_written_before_command = Some(CommandRequestSnapshot {
+                    requests_written: self.requests_written_total,
+                    command: None,
+                });
+            }
         }
         self.own_preexec_pending = true;
         // #1615: the editor wrote the next command, so a delivered Enter's line is settled.
@@ -3613,9 +3626,24 @@ impl TypeaheadHandoff {
 
     /// The shell reported its line buffer.
     pub fn on_report(&mut self) -> ReportDisposition {
+        self.on_typeahead_event(true)
+    }
+
+    /// #1793: typeahead matched from the echo (`TypeaheadMode::InputMatching`), handed to the view
+    /// as the same event as a report. It answers no request, and the pty reader does not count it
+    /// as delivered ([`Self::on_report_parsed`]), so it takes nothing off `requests_outstanding`
+    /// and is not counted as handled: both counts stay in step. Otherwise it is routed as a
+    /// report is.
+    pub fn on_input_matched_typeahead(&mut self) -> ReportDisposition {
+        self.on_typeahead_event(false)
+    }
+
+    fn on_typeahead_event(&mut self, answers_request: bool) -> ReportDisposition {
         self.interrupt_barrier = false;
-        // #1089: a report for a request written before untracked bytes does not cover them.
-        self.on_report_received();
+        if answers_request {
+            // #1089: a report for a request written before untracked bytes does not cover them.
+            self.on_report_received();
+        }
         match self.owner() {
             Owner::Editor => ReportDisposition::InsertLegacy,
             Owner::AwaitingReport => {
