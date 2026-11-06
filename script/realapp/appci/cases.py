@@ -101,7 +101,12 @@ def plat():
     return os.environ.get("APPCI_PLATFORM", "linux")
 
 
-def lat_checks(r, rec, label, known_key=None):
+MACOS_ENTER_REASON = "macOS-bound; #1606 closed by owner 2026-11-05"
+MACOS_ENTER_APP_SHARE_MAX_MS = 2.0      # the app's OWN share (enter_begin -> pty_write): above this a regression is Phosphor's, not the OS's
+MACOS_ENTER_SANITY_MS = 80.0            # the existing CI sanity bound on the absolute Enter -> start median
+
+
+def lat_checks(r, rec, label, known_key=None, report_only_macos=False, app_share_ms=None, median_ms=None):
     """known_key: an ACCEPTED_FOR_RELEASE key; while it is accepted (and the platform is one it names) an over-budget OVERHEAD verdict is KNOWN (numbers printed), never a FAIL.
     turn a latency record's verdicts into case failures (FAIL); WARN stays a note; no-reference makes the case status 'noref' (not a pass, #1499)"""
     conhost_ref = str(rec.get("reference_name") or "").lower().startswith("conhost") and rec["budget_kind"] == "overhead"
@@ -112,6 +117,11 @@ def lat_checks(r, rec, label, known_key=None):
         r.no_reference("NO-CONPTY-REFERENCE: %s: Phosphor overhead %.2f +/- %s ms (SE) over %s (a console with no ConPTY) against the %.0f ms budget; the app's own share is in the notes. "
                        "Install Windows Terminal for a ConPTY reference (owner decision); the overhead budget was NOT judged" % (
                            label, rec["overhead_ms"], rec.get("overhead_se_ms"), rec["reference_name"], rec["budget_ms"]))
+    elif rec["budget_verdict"] == "fail" and report_only_macos and plat().startswith("macos") and rec["budget_kind"] == "overhead":
+        # owner 2026-11-05: #1606 is CLOSED as macOS-bound (Phosphor beats Warp on the Mac: Enter->first paint 36.6 vs 76.5 ms). Numbers are still reported; the overhead
+        # budget is not judged against Terminal.app. The guards below (app share, absolute median) still fail a gross regression.
+        r.note("REPORT-ONLY: %s: Phosphor overhead %.2f +/- %s ms (SE) over %s vs the %.0f ms budget, NOT judged (%s); the app's own share and the OS split are in the notes/metrics" % (
+            label, rec["overhead_ms"], rec.get("overhead_se_ms"), rec["reference_name"], rec["budget_ms"], MACOS_ENTER_REASON))
     elif rec["budget_verdict"] == "fail":
         acc = accepted_for_release(known_key) if known_key and rec["budget_kind"] == "overhead" else None
         if acc and any(plat().startswith(p_) for p_ in acc.get("platforms", ("",))):
@@ -121,6 +131,12 @@ def lat_checks(r, rec, label, known_key=None):
             r.check(False, "%s: Phosphor overhead %.2f +/- %s ms (SE) over %s exceeds the %.0f ms budget (overhead - 2 SE > budget)" % (label, rec["overhead_ms"], rec.get("overhead_se_ms"), rec["reference_name"], rec["budget_ms"]))
         else:
             r.check(False, "%s: %.2f ms over the harness floor exceeds the %.0f ms budget" % (label, rec["overhead_ms"], rec["budget_ms"]))
+    if report_only_macos and plat().startswith("macos"):
+        if app_share_ms is not None:
+            r.check(app_share_ms <= MACOS_ENTER_APP_SHARE_MAX_MS, "%s: the app's own share (enter_begin -> pty_write) %.2f ms exceeds %.1f ms (report-only on macOS does not cover Phosphor's own time)" % (
+                label, app_share_ms, MACOS_ENTER_APP_SHARE_MAX_MS))
+        if median_ms is not None:
+            r.check(median_ms <= MACOS_ENTER_SANITY_MS, "%s: median %.1f ms > %.0f ms CI sanity bound" % (label, median_ms, MACOS_ENTER_SANITY_MS))
     for tag in ("prev", "baseline"):
         x = rec.get(tag) or {}
         if x.get("verdict") in ("fail", "warn") and x.get("delta_ms") is not None:
@@ -3698,7 +3714,7 @@ def c_lat_enter(ctx, r):
                                    else "reference measured after Phosphor (sequential, same session)" + ("; " + fallback if fallback else "")) +
                                   "; Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"])
         r.metrics.setdefault("lat", {})["enter_to_start"] = rec
-        lat_checks(r, rec, "Enter to command start", known_key="latency_enter_overhead")
+        lat_checks(r, rec, "Enter to command start", known_key="latency_enter_overhead", report_only_macos=True, app_share_ms=share, median_ms=statistics.median(ds))
         if not rs and ds:
             r.check(statistics.median(ds) <= 80, "Enter to command start median %.1f ms > 80 ms CI sanity bound" % statistics.median(ds))
     ctx.reset()
@@ -4483,16 +4499,17 @@ def editor_open(ctx, palette, path):
 # what must hold is that the memory is given back after close (that check is unchanged). While the app version under test (app/Cargo.toml)
 # is at or below `release`, the open-cost budget is reported as KNOWN with its numbers instead of failing. Past it the budget FAILS again, and
 # the offline self-test fails as soon as app/Cargo.toml moves past `release`, so the acceptance cannot silently become permanent: re-decide it.
-# Also (owner 2026-11-04, v0.1.17 only): the Enter-to-command-start OVERHEAD budget of latency_enter on macOS and Linux (#1606, both modes) and the Ctrl-C-under-flood
+# macOS Enter overhead (latency_enter, latency_enter_ssh) is REPORT-ONLY, not accepted-for-release: see lat_checks(report_only_macos=True), owner 2026-11-05 (#1606 closed).
+# Also (owner 2026-11-04, v0.1.17 only): the Enter-to-command-start OVERHEAD budget of latency_enter on Linux (#1606, both modes) and the Ctrl-C-under-flood
 # OVERHEAD budget of ctrl_c_d (#1653 / #1606, both modes; judged at CTRLC_FLOOD_RELEASE_MS) are KNOWN. Every other check in those cases still fails (lost keys, sample counts,
 # the plain-sleep ctrl_c control at 20 ms, the 80 ms sanity bound, regressions vs the previous/baseline build); only lat_checks' overhead-over-budget verdict changes.
 # Also (v0.1.17 only, #1129): remote_heredoc_paste's no-file-in-budget verdict when its plain-ssh CONTROL proves the remote shell's line editor is the bottleneck
 # (cases_caseremote.classify_timeout 'env': plain ssh with the app's own wrapper line, scaled to the step, could not have finished in the time the app had).
 # Wrong bytes, a step the control does not cover, and the app being slower than plain ssh still FAIL.
 ACCEPTED_FOR_RELEASE = {"editor_open_cost": {"issue": 1607, "release": "0.1.17", "why": "owner 2026-11-04: open cost accepted, release after close required"},
-                        "latency_enter_overhead": {"issue": 1606, "release": "0.1.17", "platforms": ("macos", "linux"),
+                        "latency_enter_overhead": {"issue": 1606, "release": "0.1.17", "platforms": ("linux",),
                                                    "why": "owner 2026-11-04: Enter-to-command-start overhead accepted for this release"},
-                        "latency_enter_ssh_overhead": {"issue": 1606, "release": "0.1.17", "platforms": ("macos", "linux"),
+                        "latency_enter_ssh_overhead": {"issue": 1606, "release": "0.1.17", "platforms": ("linux",),
                                                        "why": "owner 2026-11-05: Enter-over-ssh overhead accepted for this release (the gap is OS event delivery before the app, #1606)"},
                         "ctrl_c_flood": {"issue": 1653, "release": "0.1.17", "platforms": ("macos", "linux", "windows"),
                                          "why": "owner 2026-11-04: Ctrl-C under flood over %s ms accepted for this release (#1653 / #1606)" % CTRLC_FLOOD_RELEASE_MS},

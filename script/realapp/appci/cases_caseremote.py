@@ -5,7 +5,7 @@
 # Stand-in for ksu/sudo/su (no non-interactive sudo on CI): a nested `bash`, a nested `sh`, and `env -i ... bash --noprofile --norc -i`
 # (a new interactive shell with a cleaned environment, the closest unprivileged equivalent of `ksu`/`su -`); the nesting is PROVEN by pid
 # (the inner shell's $PPID is the outer shell's $$, and after `exit` $$ is the outer pid again) before any verdict is made.
-import os, re, shutil, socket, subprocess, sys, threading, time
+import statistics, os, re, shutil, socket, subprocess, sys, threading, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cases  # noqa: E402
@@ -1078,6 +1078,7 @@ def c_lat_enter_ssh(ctx, r):
         r.check(False, "ssh fake: no remote prompt within 90 s (sshd.log). Test host: %s" % ctx.ssh_diag())
         ctx.reset()
         return
+    t_lat0 = time.time()
     tok = ctx.tok(6)
     ctx.be.type("echo %s >> ~/lat_ready" % tok, 12, enter=True)
     if not ctx.until(lambda: tok in ctx.lines("lat_ready", remote=True), 10):
@@ -1140,7 +1141,11 @@ def c_lat_enter_ssh(ctx, r):
                                   ("reference interleaved with Phosphor in blocks of %d (A/B/A/B, same session)" % lat.interleave_block() if mode == "interleaved"
                                    else "NOREF: the reference was not interleaved (%s), so no overhead is judged" % fallback)])
         r.metrics.setdefault("lat", {})["ssh_enter_to_start"] = rec
-        lat_checks(r, rec, "Enter to command start over ssh", known_key="latency_enter_ssh_overhead")
+        share = ctx.app_enter_segments(t_lat0).get("enter_to_write_ms")
+        if share is not None:
+            r.metric("app_enter_to_pty_write_ms", share)
+            r.note("app share of Enter->start over ssh: enter_begin -> pty_write median %.2f ms" % share)
+        lat_checks(r, rec, "Enter to command start over ssh", known_key="latency_enter_ssh_overhead", report_only_macos=True, app_share_ms=share, median_ms=statistics.median(ds))
     ctx.reset()
 
 
