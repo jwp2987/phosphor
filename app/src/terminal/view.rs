@@ -14401,13 +14401,18 @@ impl TerminalView {
     /// bytes (#1104), if one was just armed. When it fires the report is not coming (a program
     /// ate the request): the Enter is NOT run (#1577); its text stays in the editor.
     fn arm_uncovered_deferral_timer(&mut self, ctx: &mut ViewContext<Self>) {
-        let id = self.handoff.write().take_uncovered_deferral_started();
-        if let Some(id) = id {
+        let started = {
+            let mut handoff = self.handoff.write();
+            handoff
+                .take_uncovered_deferral_started()
+                .map(|id| (id, handoff.request_accounting()))
+        };
+        if let Some((id, accounting)) = started {
             // #1192: name the wait that holds the Enter, so a multi-second hold is attributable
-            // from the input_order log alone.
+            // from the input_order log alone. #1793: with the request count it waits on.
             warpui::input_order::log_hop("enter_deferred_uncovered_report", || {
                 format!(
-                    "id={id} patience_ms={}",
+                    "id={id} patience_ms={} {accounting}",
                     UNCOVERED_REPORT_PATIENCE.as_millis()
                 )
             });
@@ -14427,18 +14432,21 @@ impl TerminalView {
     /// and the Enter's text is what the user typed: it stays in the editor, the keys held behind
     /// it follow, and the next Enter runs it.
     fn uncovered_report_patience_fired(&mut self, id: u64, ctx: &mut ViewContext<Self>) {
-        let released = self
-            .model
-            .lock()
-            .typeahead_handoff_mut()
-            .give_up_uncovered_deferral(id);
+        let (released, accounting) = {
+            let mut model = self.model.lock();
+            let mut handoff = model.typeahead_handoff_mut();
+            // Read before the give-up, which forgets the untracked bytes.
+            let accounting = handoff.request_accounting();
+            (handoff.give_up_uncovered_deferral(id), accounting)
+        };
         if !released {
             return;
         }
-        // #1192: the report covering the pasted/typed line never arrived.
+        // #1192: the report covering the pasted/typed line never arrived. #1793: the request
+        // count it waited on is logged, so a count no request answers shows in an INFO log.
         log::warn!(
             "Enter held {} ms: the shell's typeahead report never covered the untracked line \
-             bytes (uncovered-report patience expired); the Enter is not run (#1577)",
+             bytes (uncovered-report patience expired); the Enter is not run (#1577); {accounting}",
             UNCOVERED_REPORT_PATIENCE.as_millis()
         );
         self.keep_deferred_enter_text_hand_back("uncovered_report", ctx);

@@ -4177,6 +4177,11 @@ impl ansi::Handler for TerminalModel {
                 warpui::input_order::describe_text(&data.buffer)
             )
         });
+        if FeatureFlag::TypeaheadHandoff.is_enabled() {
+            // #1793: counted in stream order, so the command's own Preexec can tell a request that
+            // was answered from one that never will be.
+            self.typeahead_handoff.write().on_report_parsed();
+        }
         delegate!(self.input_buffer(data));
     }
 

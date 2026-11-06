@@ -1508,6 +1508,105 @@ fn a_deferral_whose_report_never_comes_is_given_up() {
     assert!(!handoff.give_up_uncovered_deferral(id));
 }
 
+/// #1793 fixture: a command written behind `requests_before` legacy requests, of which
+/// `answered` were reported (parsed in stream order and handled by the view) before the command's
+/// own Preexec; then its prompt, which hands input back to the editor.
+fn command_run_behind_requests(requests_before: u32, answered: u32) -> TypeaheadHandoff {
+    let mut handoff = TypeaheadHandoff::default();
+    for _ in 0..requests_before {
+        handoff.on_legacy_request_written();
+    }
+    for _ in 0..answered {
+        handoff.on_report_parsed();
+        assert_eq!(handoff.on_report(), ReportDisposition::InsertLegacy);
+    }
+    handoff.on_command_written();
+    let _ = handoff.on_preexec(false);
+    handoff.on_precmd();
+    assert!(handoff.try_commit_at_prompt());
+    assert_eq!(handoff.state(), &HandoffState::EditorOwned);
+    handoff
+}
+
+/// #1793 (owner repro, a warpified ssh remote whose bash reports its line): a request counted but
+/// never answered (dropped unwritten, or read by something other than the line editor) left
+/// `requests_outstanding` above zero for good, so every later Enter that met untracked bytes
+/// waited for a report no request would send, and the 3 s give-up dropped it with the keys typed
+/// behind it (`<Enter>~.`). The command's own Preexec proves every request written before it
+/// was read: the unanswered one is dropped from the count, and a bare Enter is not deferred.
+#[test]
+fn a_request_never_answered_is_settled_by_the_next_commands_own_preexec() {
+    let mut handoff = command_run_behind_requests(1, 0);
+    assert_eq!(handoff.requests_outstanding(), 0);
+    handoff.note_untracked_line_bytes();
+    assert!(
+        !handoff.defer_enter(),
+        "no request is on its way: the Enter must not wait for a report"
+    );
+    assert_eq!(handoff.take_uncovered_deferral_started(), None);
+}
+
+/// #1793: requests the shell answered are not settled twice: with every report in, nothing is
+/// eaten, and a report parsed but not yet handled by the view still counts as answered (its own
+/// `on_report` takes it off the count).
+#[test]
+fn answered_requests_are_not_settled_again_at_the_preexec() {
+    let handoff = command_run_behind_requests(2, 2);
+    assert_eq!(handoff.requests_outstanding(), 0);
+
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.on_legacy_request_written();
+    // Parsed before the command's Preexec, handled by the view only after it.
+    handoff.on_report_parsed();
+    handoff.on_command_written();
+    let _ = handoff.on_preexec(false);
+    assert_eq!(
+        handoff.requests_outstanding(),
+        1,
+        "the report is on its way to the view"
+    );
+    assert_eq!(handoff.on_report(), ReportDisposition::Stash);
+    assert_eq!(handoff.requests_outstanding(), 0);
+}
+
+/// #1793 (c): a request written after the command (the prompt's own legacy request) is still on
+/// its way, and an Enter that meets untracked bytes behind it waits for it exactly as before
+/// (#1104): only requests written before a command whose own Preexec proved them read are
+/// settled.
+#[test]
+fn a_request_written_after_the_command_still_defers_the_enter() {
+    let mut handoff = command_run_behind_requests(1, 0);
+    handoff.on_legacy_request_written();
+    handoff.note_untracked_line_bytes();
+    assert!(handoff.defer_enter(), "the prompt's request is on its way");
+    assert!(handoff.take_uncovered_deferral_started().is_some());
+    handoff.on_report_parsed();
+    assert_eq!(handoff.on_report(), ReportDisposition::InsertKeepDeferred);
+}
+
+/// #1793: a line the shell started itself, or a command whose Preexec never came (an empty line,
+/// whose Precmd follows directly), settles nothing: only the written command's own Preexec proves
+/// the requests ahead of it read.
+#[test]
+fn only_the_commands_own_preexec_settles_requests() {
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.on_legacy_request_written();
+    handoff.on_command_written();
+    let _ = handoff.on_preexec(true);
+    assert_eq!(handoff.requests_outstanding(), 1, "a shell-started line");
+
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.on_legacy_request_written();
+    handoff.on_command_written();
+    handoff.on_precmd();
+    let _ = handoff.on_preexec(false);
+    assert_eq!(
+        handoff.requests_outstanding(),
+        1,
+        "no Preexec before the prompt"
+    );
+}
+
 #[test]
 fn an_enter_into_a_plain_foreground_program_is_not_held() {
     // The command was written just now, but `cat` owns the foreground: the shell is not at a

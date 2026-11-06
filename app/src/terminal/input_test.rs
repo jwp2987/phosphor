@@ -18262,3 +18262,79 @@ fn test_ssh_escape_bytes_rule() {
     assert_eq!(super::ssh_escape_bytes("~.", "~."), None);
     assert_eq!(super::ssh_escape_bytes("~", "~.a"), None);
 }
+
+/// #1793 (owner repro on a warpified ssh remote whose bash reports its line; appci
+/// `ssh_drop_reconnect` [escape] on Wayland): a request the remote never answered kept the
+/// hand-off's request count above zero, so a bare Enter on the empty remote line waited 3 s for a
+/// report no request would send, was not run, and the `~.` typed behind it was discarded. The next
+/// command's own Preexec settles that request: the bare Enter is not deferred, and `~.` typed at
+/// once reaches ssh right behind it, in order, nothing held or discarded. (c) While a request IS on
+/// its way, the Enter still waits for its report (#1104) and `~.` waits behind it. Legacy and Table.
+#[test]
+fn test_bare_enter_then_ssh_escape_after_an_unanswered_request_in_a_managed_ssh_session() {
+    use crate::terminal::input_queue::DestinationMode;
+    use crate::terminal::model::typeahead_handoff::HandoffState;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        for request_on_its_way in [false, true] {
+            App::test((), move |mut app| async move {
+                let _mode =
+                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+                let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+                initialize_app(&mut app);
+                let (input, editor, writes) =
+                    pane_for_ssh_escape_test(&mut app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
+                input.read(&app, |input, _| {
+                    let mut model = input.model.lock();
+                    let mut handoff = model.typeahead_handoff_mut();
+                    // A request the remote never answers, then a command, its own Preexec and its
+                    // prompt (the editor takes input back).
+                    handoff.on_legacy_request_written();
+                    handoff.on_command_written();
+                    let _ = handoff.on_preexec(false);
+                    handoff.on_precmd();
+                    assert!(handoff.try_commit_at_prompt(), "{mode:?}");
+                    if request_on_its_way {
+                        // The prompt's own request, not answered yet.
+                        handoff.on_legacy_request_written();
+                    }
+                    // Bytes in the remote line the hand-off did not adopt.
+                    handoff.note_untracked_line_bytes();
+                });
+
+                // The bare Enter on the empty line.
+                input.update(&mut app, |input, ctx| input.input_enter(ctx));
+                let deferred = input.read(&app, |input, _| {
+                    let model = input.model.lock();
+                    let handoff = model.typeahead_handoff();
+                    matches!(handoff.state(), HandoffState::HoldAfterEnter { .. })
+                        || handoff.holds_keys_behind_deferred_enter()
+                });
+                assert_eq!(
+                    deferred, request_on_its_way,
+                    "{mode:?}: the bare Enter waits only for a report that is on its way"
+                );
+
+                // `~.` typed at once.
+                type_keys_for_ssh_escape_test(&mut app, &editor, &["~", "."]);
+                if request_on_its_way {
+                    assert!(
+                        writes.borrow().is_empty(),
+                        "{mode:?}: `~.` waits behind the Enter that waits for the report"
+                    );
+                    return;
+                }
+                for _ in 0..200 {
+                    if !writes.borrow().is_empty() {
+                        break;
+                    }
+                    warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+                }
+                assert_eq!(
+                    *writes.borrow(),
+                    vec![b"~.".to_vec()],
+                    "{mode:?}: `~.` reached ssh once, in order, nothing held or discarded"
+                );
+            });
+        }
+    }
+}
