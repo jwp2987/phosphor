@@ -385,7 +385,7 @@ impl ModelEventDispatcher {
             Event::InitSsh(init_ssh_event) => ModelEvent::InitSsh(init_ssh_event),
             Event::PromptUpdated => ModelEvent::PromptUpdated,
             Event::HonorPS1OutOfSync => ModelEvent::HonorPS1OutOfSync,
-            Event::Typeahead => ModelEvent::Typeahead,
+            Event::Typeahead { shell_report } => ModelEvent::Typeahead { shell_report },
             Event::FinishUpdate(data) => ModelEvent::FinishUpdate(data),
             Event::TextSelectionChanged => ModelEvent::SelectedTextChanged,
             Event::ShellSpawned(shell_type) => ModelEvent::ShellSpawned(shell_type),
@@ -573,7 +573,11 @@ pub enum ModelEvent {
     /// close to the end of the its execution, such that these characters were not actually read by
     /// the running program. The shell stores these characters, inserts them into its internal line
     /// buffer, and re-echoes them after Precmd.
-    Typeahead,
+    ///
+    /// `shell_report` (#1793): see `terminal::event::Event::Typeahead`.
+    Typeahead {
+        shell_report: bool,
+    },
     /// Events that correspond to a specific ansi handler hook while parsing PTY output.
     ///
     /// These events make it possible for other models/views to subscribe to PTY output events that

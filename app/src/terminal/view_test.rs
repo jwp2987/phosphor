@@ -17480,7 +17480,7 @@ fn typeahead_handoff_releases_held_shell_lines_to_the_pty_when_the_submit_runs_n
             // The shell lines are typed behind the deferred Enter: entries behind its gate.
             view.write_user_bytes_to_pty(b"echo 1\recho 2\r".to_vec(), ctx);
             assert!(pty_writes.borrow().is_empty());
-            view.handle_typeahead_report_with_handoff(ctx);
+            view.handle_typeahead_report_with_handoff(true, ctx);
 
             assert!(!view.input.as_ref(ctx).buffer_text(ctx).contains("echo"));
             assert_eq!(
@@ -17508,7 +17508,7 @@ fn typeahead_handoff_holds_an_unfinished_line_behind_the_enter_and_its_give_up_d
             hold_after_deferred_enter(view);
             view.write_user_bytes_to_pty(b"ls -l".to_vec(), ctx);
             assert!(pty_writes.borrow().is_empty());
-            view.handle_typeahead_report_with_handoff(ctx);
+            view.handle_typeahead_report_with_handoff(true, ctx);
 
             // #1571: the test view is not ready for a command, so the Enter that ran nothing is
             // held as a gate (a refused Enter of an unready shell); the unfinished line is the
@@ -17693,7 +17693,7 @@ fn typeahead_handoff_keys_the_editor_took_after_a_deferred_enter_do_not_join_its
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "true");
             // The rest of the burst, and its Enter, are routed to the same gate.
             view.write_user_bytes_to_pty(b"ho 2\r".to_vec(), ctx);
-            view.handle_typeahead_report_with_handoff(ctx);
+            view.handle_typeahead_report_with_handoff(true, ctx);
 
             assert_eq!(
                 view.input.as_ref(ctx).buffer_text(ctx),
@@ -26314,7 +26314,7 @@ fn a_report_into_an_ai_mode_input_is_kept_as_shell_text_and_runs_once() {
                 // A report the hand-off asked for: kept, as shell text.
                 awaiting_typeahead_report(view);
                 store_shell_report(view, "ls -la");
-                view.handle_typeahead_report_with_handoff(ctx);
+                view.handle_typeahead_report_with_handoff(true, ctx);
                 assert_eq!(
                     view.input.as_ref(ctx).buffer_text(ctx),
                     "ls -la",
@@ -26342,7 +26342,7 @@ fn a_report_into_an_ai_mode_input_is_kept_as_shell_text_and_runs_once() {
                 lock_input_in_ai_mode(view, ctx);
                 hold_after_deferred_enter(view);
                 store_shell_report(view, "echo T93");
-                view.handle_typeahead_report_with_handoff(ctx);
+                view.handle_typeahead_report_with_handoff(true, ctx);
             });
             assert_eq!(
                 *executed.borrow(),

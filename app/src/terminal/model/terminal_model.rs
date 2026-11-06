@@ -2700,6 +2700,12 @@ impl TerminalModel {
         self.alt_screen_active = true;
     }
 
+    /// #1793: back to the block list without the swap's side effects, for tests.
+    #[cfg(test)]
+    pub fn set_altscreen_inactive_for_test(&mut self) {
+        self.alt_screen_active = false;
+    }
+
     /// Sets whether any content within a grid that is "secret-like" should be obfuscated.
     pub fn set_obfuscate_secrets(&mut self, obfuscate_secrets: ObfuscateSecrets) {
         // Secret obfuscation is forced off in shared sessions so changing
@@ -3342,7 +3348,10 @@ impl TerminalModel {
                 && !active_block.started()
                 && !active_block.is_in_band_command_block()
                 && !self.shared_session_status.is_viewer();
-            self.typeahead_handoff.write().on_preexec(shell_started);
+            let mut handoff = self.typeahead_handoff.write();
+            // #1793: the Preexec's text tells the written command's own from a line ahead of it.
+            handoff.note_preexec_command(&data.command);
+            handoff.on_preexec(shell_started);
         }
         self.reply_ledger.lock().on_command_start();
         self.block_list.apply_preexec_to_active(data);
@@ -4177,7 +4186,22 @@ impl ansi::Handler for TerminalModel {
                 warpui::input_order::describe_text(&data.buffer)
             )
         });
+        // #1793: a report is counted, in stream order, only if it was handed to the view as a
+        // `Typeahead` event (the only reports the hand-off's `on_report` sees): one dropped on the
+        // alt screen or outside `ShellReported` mode answers nothing there.
+        let delivered_before = self.block_list.early_output().reports_delivered();
         delegate!(self.input_buffer(data));
+        let delivered = self
+            .block_list
+            .early_output()
+            .reports_delivered()
+            .saturating_sub(delivered_before);
+        if delivered > 0 && FeatureFlag::TypeaheadHandoff.is_enabled() {
+            let mut handoff = self.typeahead_handoff.write();
+            for _ in 0..delivered {
+                handoff.on_report_parsed();
+            }
+        }
     }
 
     fn init_subshell(&mut self, data: InitSubshellValue) {

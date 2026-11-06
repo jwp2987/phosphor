@@ -14334,9 +14334,19 @@ impl TerminalView {
         }
     }
 
-    /// Applies a shell typeahead report under the typeahead hand-off.
-    fn handle_typeahead_report_with_handoff(&mut self, ctx: &mut ViewContext<Self>) {
-        let disposition = self.handoff.write().on_report();
+    /// Applies a shell typeahead report under the typeahead hand-off. `shell_report` is false for
+    /// typeahead matched from echo (`TypeaheadMode::InputMatching`): it answers no request, so it
+    /// leaves the hand-off's request accounting alone (#1793).
+    fn handle_typeahead_report_with_handoff(
+        &mut self,
+        shell_report: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let disposition = if shell_report {
+            self.handoff.write().on_report()
+        } else {
+            self.handoff.write().on_input_matched_typeahead()
+        };
         // #1353 phase 5b: a young Enter held in the input queue is split here, before anything
         // else (the editor's own keys, #1016) is put in front of the keys held behind it.
         self.drain_young_hold_ends(ctx);
@@ -14401,13 +14411,18 @@ impl TerminalView {
     /// bytes (#1104), if one was just armed. When it fires the report is not coming (a program
     /// ate the request): the Enter is NOT run (#1577); its text stays in the editor.
     fn arm_uncovered_deferral_timer(&mut self, ctx: &mut ViewContext<Self>) {
-        let id = self.handoff.write().take_uncovered_deferral_started();
-        if let Some(id) = id {
+        let started = {
+            let mut handoff = self.handoff.write();
+            handoff
+                .take_uncovered_deferral_started()
+                .map(|id| (id, handoff.request_accounting()))
+        };
+        if let Some((id, accounting)) = started {
             // #1192: name the wait that holds the Enter, so a multi-second hold is attributable
-            // from the input_order log alone.
+            // from the input_order log alone. #1793: with the request count it waits on.
             warpui::input_order::log_hop("enter_deferred_uncovered_report", || {
                 format!(
-                    "id={id} patience_ms={}",
+                    "id={id} patience_ms={} {accounting}",
                     UNCOVERED_REPORT_PATIENCE.as_millis()
                 )
             });
@@ -14427,18 +14442,21 @@ impl TerminalView {
     /// and the Enter's text is what the user typed: it stays in the editor, the keys held behind
     /// it follow, and the next Enter runs it.
     fn uncovered_report_patience_fired(&mut self, id: u64, ctx: &mut ViewContext<Self>) {
-        let released = self
-            .model
-            .lock()
-            .typeahead_handoff_mut()
-            .give_up_uncovered_deferral(id);
+        let (released, accounting) = {
+            let mut model = self.model.lock();
+            let mut handoff = model.typeahead_handoff_mut();
+            // Read before the give-up, which forgets the untracked bytes.
+            let accounting = handoff.request_accounting();
+            (handoff.give_up_uncovered_deferral(id), accounting)
+        };
         if !released {
             return;
         }
-        // #1192: the report covering the pasted/typed line never arrived.
+        // #1192: the report covering the pasted/typed line never arrived. #1793: the request
+        // count it waited on is logged, so a count no request answers shows in an INFO log.
         log::warn!(
             "Enter held {} ms: the shell's typeahead report never covered the untracked line \
-             bytes (uncovered-report patience expired); the Enter is not run (#1577)",
+             bytes (uncovered-report patience expired); the Enter is not run (#1577); {accounting}",
             UNCOVERED_REPORT_PATIENCE.as_millis()
         );
         self.keep_deferred_enter_text_hand_back("uncovered_report", ctx);
@@ -19464,9 +19482,9 @@ impl TerminalView {
                 });
             }
             ModelEvent::HonorPS1OutOfSync => {}
-            ModelEvent::Typeahead => {
+            ModelEvent::Typeahead { shell_report } => {
                 if FeatureFlag::TypeaheadHandoff.is_enabled() {
-                    self.handle_typeahead_report_with_handoff(ctx);
+                    self.handle_typeahead_report_with_handoff(*shell_report, ctx);
                 } else {
                     self.handle_typeahead_event(ctx);
                 }

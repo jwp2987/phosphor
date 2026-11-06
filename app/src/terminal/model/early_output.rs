@@ -70,6 +70,9 @@ pub struct EarlyOutput {
     /// terminal view.
     event_proxy: ChannelEventListener,
     pending_background_block: Option<Block>,
+    /// #1793: shell reports handed to the view as a `Typeahead` event (in stream order). Only
+    /// these reach the typeahead hand-off's `on_report`, so only these answer a request there.
+    reports_delivered: u64,
 }
 
 impl EarlyOutput {
@@ -85,7 +88,13 @@ impl EarlyOutput {
             just_matched_carriage_return: false,
             event_proxy,
             pending_background_block: None,
+            reports_delivered: 0,
         }
+    }
+
+    /// #1793: how many shell reports were handed to the view as a `Typeahead` event so far.
+    pub fn reports_delivered(&self) -> u64 {
+        self.reports_delivered
     }
 
     /// Configures the typeahead mode to use given the features that the current
@@ -191,8 +200,12 @@ impl EarlyOutput {
                 );
             }
 
+            // #1793: matched from echo, not a report: it answers no request, so it is neither
+            // counted in `reports_delivered` nor taken off the hand-off's request count.
             self.event_proxy
-                .send_terminal_event(TerminalEvent::Typeahead);
+                .send_terminal_event(TerminalEvent::Typeahead {
+                    shell_report: false,
+                });
         }
         is_typeahead
     }
@@ -410,9 +423,10 @@ impl ansi::Handler for EarlyOutputHandler<'_> {
             if FeatureFlag::TypeaheadHandoff.is_enabled()
                 && self.inner().mode == TypeaheadMode::ShellReported
             {
-                self.inner()
-                    .event_proxy
-                    .send_terminal_event(TerminalEvent::Typeahead);
+                let me = self.inner();
+                me.reports_delivered = me.reports_delivered.saturating_add(1);
+                me.event_proxy
+                    .send_terminal_event(TerminalEvent::Typeahead { shell_report: true });
             }
             return;
         }
@@ -435,7 +449,9 @@ impl ansi::Handler for EarlyOutputHandler<'_> {
                     me.typeahead
                 );
             }
-            me.event_proxy.send_terminal_event(TerminalEvent::Typeahead);
+            me.reports_delivered = me.reports_delivered.saturating_add(1);
+            me.event_proxy
+                .send_terminal_event(TerminalEvent::Typeahead { shell_report: true });
             safe_debug!(
                 safe: ("Received shell input buffer for typeahead"),
                 full: ("Received shell input buffer for typeahead: {:?}", me.typeahead)
