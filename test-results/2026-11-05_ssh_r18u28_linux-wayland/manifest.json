@@ -1,0 +1,10 @@
+{
+ "date": "2026-11-05",
+ "ref": "build/r18u28",
+ "commit": "3d6d6ed21f499907e3b372e32498199332d0a182",
+ "pipeline": 3033422039,
+ "run_by": "ssh on the CI machine with the CI scripts, not a GitLab job",
+ "tier": "full",
+ "platform": "linux-wayland",
+ "summary": "wayland pass 127 fail 12 skip 27 noref 5; xwayland pass 10 fail 0; unit suite not run"
+}

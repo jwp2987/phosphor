@@ -1,0 +1,296 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-linux-x11" tests="93" failures="19" skipped="20">
+<testcase classname="terminal" name="mode_proof" time="1.90">
+</testcase>
+<testcase classname="terminal" name="cadence" time="4.50">
+</testcase>
+<testcase classname="terminal" name="key_loss_control" time="10.40">
+</testcase>
+<testcase classname="terminal" name="enter_loss_control" time="0.70">
+</testcase>
+<testcase classname="terminal" name="fast_typing" time="33.20">
+</testcase>
+<testcase classname="terminal" name="rollover" time="65.60">
+<failure message="roll: file has 0/20 lines, exact match False first diff: exp='t73_8m81ereqlg' got=None [first bad line 0: injector keeps no record on this backend]">roll: file has 0/20 lines, exact match False first diff: exp='t73_8m81ereqlg' got=None [first bad line 0: injector keeps no record on this backend]
+roll: shell received 20 commands, not the typed ones (first mismatch: 'echo t73_*m81ereqlg &gt; r_Rol.txt') -- differs (33 typed, 31 received characters): typed 'echo t73_8m81ereqlg &gt;&gt; r_roll.txt', shell received 'echo t73_*m81ereqlg &gt; r_Rol.txt'; the app's log does NOT show the line's characters in order (never delivered to the app, or the log rotated it away); no pty byte trace in the app log (pty_write_bytes with WARP_INPUT_ORDER_LOG_TEXT=1), so where it changed is not known
+injector accounting: injector sent 682; app saw 634; lost-before-app 48 (Enter: sent 20, app saw 20)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 20 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="expert_fuzz" time="11.40">
+</testcase>
+<testcase classname="terminal" name="paste_instant_enter" time="5.60">
+</testcase>
+<testcase classname="terminal" name="arrows_behind_paste" time="6.80">
+</testcase>
+<testcase classname="terminal" name="keydown_count" time="57.00">
+<failure message="app key events 544 != keys sent 560 (-16; 464 keydown, 60 typed_characters-only, 20 Enter via enter_begin only): keys missing from the app log (lost before the app)">app key events 544 != keys sent 560 (-16; 464 keydown, 60 typed_characters-only, 20 Enter via enter_begin only): keys missing from the app log (lost before the app)
+same key pressed twice &lt; 2 ms apart 5 time(s): [('"o"', 1793925433857.753, 1.97), ('"&gt;"', 1793925433957.122, 0.73), ('"r"', 1793925436500.027, 1.55), ('"&gt;"', 1793925441726.573, 1.38), ('"&gt;"', 1793925444349.566, 1.09)]
+received text not exact: 1/20 lines; first mismatch ('kvdqfruupkyw', 'nushxgqmdwg')
+shell rec.log: 10/20 commands exact; first mismatch ('echo pgmufmwhdhkk &gt;&gt; kd.txt', 'echo pgmufmwhdhk &gt; kd.txt')
+a doubled key of the typed text (e.g. `&gt;&gt;`) was handled twice &lt; 2 ms apart 2 time(s), with exactly as many presses of it logged as sent (OS delivered a burst; not a duplicate): [('"i"', 1793925444200.719, 1.48), ('"b"', 1793925451407.901, 1.32)]
+injector accounting: injector sent 564; app saw 544; lost-before-app 20 (Enter: sent 20, app saw 20)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 20 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="big_paste" time="8.10">
+</testcase>
+<testcase classname="terminal" name="tab_enter" time="14.10">
+</testcase>
+<testcase classname="terminal" name="paste_multiline_prompt" time="6.40">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_d" time="151.00">
+<skipped message="NO-REFERENCE (not a pass): no reference: absolute only (Ctrl-C): no reference terminal available: no visible window of the reference terminal on :0"/>
+</testcase>
+<testcase classname="terminal" name="paste_bracketed_off" time="4.90">
+</testcase>
+<testcase classname="terminal" name="read_x" time="3.00">
+</testcase>
+<testcase classname="terminal" name="subshells" time="31.40">
+</testcase>
+<testcase classname="terminal" name="alt_screen" time="6.00">
+</testcase>
+<testcase classname="terminal" name="gitbash_subshell" time="0.70">
+<skipped message="Windows only: Git for Windows' bash.exe as a subshell of the pane's PowerShell (POSIX hosts: the subshells case)"/>
+</testcase>
+<testcase classname="terminal" name="alt_screen_programs" time="15.70">
+</testcase>
+<testcase classname="terminal" name="alt_screen_mouse_reporting" time="5.90">
+<failure message="no SGR mouse press ESC[&lt;0;x;yM reached the program that asked for mouse reporting: b'k'">no SGR mouse press ESC[&lt;0;x;yM reached the program that asked for mouse reporting: b'k'
+no SGR mouse release ESC[&lt;0;x;ym reached the program: b'k'
+injector accounting: injector sent 84; app saw 95; lost-before-app 0 (Enter: sent 2, app saw 3); app logged 11 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 2 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="ssh_connect_typing" time="21.90">
+</testcase>
+<testcase classname="terminal" name="ssh_enter_then_immediate_command" time="6.30">
+</testcase>
+<testcase classname="terminal" name="ssh_nested_typeahead" time="5.10">
+</testcase>
+<testcase classname="terminal" name="ssh_failing_not_local" time="14.50">
+</testcase>
+<testcase classname="terminal" name="idle_cpu" time="24.20">
+</testcase>
+<testcase classname="terminal" name="latency_enter" time="46.70">
+<skipped message="NO-REFERENCE (not a pass): app share of Enter-&gt;start: enter_begin -&gt; pty_write median 0.99 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side"/>
+</testcase>
+<testcase classname="terminal" name="latency_key_log" time="12.40">
+<skipped message="NO-REFERENCE (not a pass): #1176 key -&gt; pty write median 11.72 ms (p95 15.76, n=60): OVER the 1 ms target"/>
+</testcase>
+<testcase classname="terminal" name="latency_paint" time="0.80">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only; no key-&gt;paint read-back exists on this platform, so there is nothing to compare"/>
+</testcase>
+<testcase classname="terminal" name="latency_first_key_after_idle" time="303.70">
+<failure message="idle 1 s: only 0 of 30 first-key key-&gt;frame pairs in the app log (keys not reaching the `cat`, or no input_order logging)">idle 1 s: only 0 of 30 first-key key-&gt;frame pairs in the app log (keys not reaching the `cat`, or no input_order logging)
+idle 2 s: only 0 of 30 first-key key-&gt;frame pairs in the app log (keys not reaching the `cat`, or no input_order logging)
+idle 5 s: only 0 of 30 first-key key-&gt;frame pairs in the app log (keys not reaching the `cat`, or no input_order logging)
+injector accounting: injector sent 254; app saw 246; lost-before-app 8 (Enter: sent 3, app saw 3)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="routing_table" time="50.50">
+</testcase>
+<testcase classname="terminal" name="agent_mode_switch" time="8.30">
+</testcase>
+<testcase classname="terminal" name="agent_code_recycle" time="24.80">
+<skipped message="the model's answer shows none of the RCYT180_EC76_NN snippets (model nondeterminism): nothing to recycle"/>
+</testcase>
+<testcase classname="terminal" name="ui_tab_menu" time="5.90">
+</testcase>
+<testcase classname="terminal" name="flood_typed_line" time="32.00">
+</testcase>
+<testcase classname="terminal" name="remote_session_legacy" time="38.70">
+</testcase>
+<testcase classname="terminal" name="intl_wide_type" time="41.10">
+<failure message="typed cjk: file bytes e69cace69cace38386e383880a, expected e697a5e69cace8aa9ee381aee38386e382b9e383880a (text '日本語のテスト' [utf8 e697a5e69cace8aa9ee381aee38386e382b9e38388])">typed cjk: file bytes e69cace69cace38386e383880a, expected e697a5e69cace8aa9ee381aee38386e382b9e383880a (text '日本語のテスト' [utf8 e697a5e69cace8aa9ee381aee38386e382b9e38388])
+typed cjk: shell received 'echo 本本テト &gt;&gt; iw_cjk.txt' [utf8 6563686f20e69cace69cace38386e38388203e3e2069775f636a6b2e747874], expected 'echo 日本語のテスト &gt;&gt; iw_cjk.txt' [utf8 6563686f20e697a5e69cace8aa9ee381aee38386e382b9e38388203e3e2069775f636a6b2e747874]
+typed accents: file bytes c3a9c3bcc3a7c39f0a, expected c3a9c3bcc3b1c3a7c39fc3b80a (text 'éüñçßø' [utf8 c3a9c3bcc3b1c3a7c39fc3b8])
+typed accents: shell received 'echo éüçß &gt;&gt; iw_accents.txt' [utf8 6563686f20c3a9c3bcc3a7c39f203e3e2069775f616363656e74732e747874], expected 'echo éüñçßø &gt;&gt; iw_accents.txt' [utf8 6563686f20c3a9c3bcc3b1c3a7c39fc3b8203e3e2069775f616363656e74732e747874]
+typed zwj: file bytes f09f91a8e2808df09f91a70a, expected f09f91a8e2808df09f91a9e2808df09f91a70a (text '👨\u200d👩\u200d👧' [utf8 f09f91a8e2808df09f91a9e2808df09f91a7])
+typed zwj: shell received 'echo 👨\u200d👧 &gt;&gt; iw_zwj.txt' [utf8 6563686f20f09f91a8e2808df09f91a7203e3e2069775f7a776a2e747874], expected 'echo 👨\u200d👩\u200d👧 &gt;&gt; iw_zwj.txt' [utf8 6563686f20f09f91a8e2808df09f91a9e2808df09f91a7203e3e2069775f7a776a2e747874]
+injector accounting: injector sent 159; app saw 185; lost-before-app 0 (Enter: sent 6, app saw 7); app logged 26 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 6 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="ui_ghost_accept" time="10.20">
+</testcase>
+<testcase classname="terminal" name="flood_typing_latency" time="19.80">
+</testcase>
+<testcase classname="terminal" name="remote_session_ext" time="150.70">
+<failure message="[ext] no remote shell prompt after `ssh fake` (see sshd.log, phosphor.log). Test host: sshd.log: debug1: do_cleanup | debug1: temporarily_use_uid: 997/974 (e=997/974) | debug1: restore_uid: (unprivileged) | debug1: mm_reap: child exited with status 255 | debug1: do_cleanup | debug1: temporarily_use_uid: 997/974 (e=997/974) | debug1: restore_uid: (unprivileged) | debug1: audit_event: unhandled event 12; test sshd (openssh) listening on 127.0.0.1:49401; ssh client probe exit 0: Transferred: sent 3588, received 3492 bytes, in 0.0 seconds | Bytes per second: sent 727434.3, received 707971.1 | debug1: Exit status 0; app ssh hops: [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1793926414168.737 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=false t=1793926414168.755 | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1793926414239.682 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=false t=1793926414239.692">[ext] no remote shell prompt after `ssh fake` (see sshd.log, phosphor.log). Test host: sshd.log: debug1: do_cleanup | debug1: temporarily_use_uid: 997/974 (e=997/974) | debug1: restore_uid: (unprivileged) | debug1: mm_reap: child exited with status 255 | debug1: do_cleanup | debug1: temporarily_use_uid: 997/974 (e=997/974) | debug1: restore_uid: (unprivileged) | debug1: audit_event: unhandled event 12; test sshd (openssh) listening on 127.0.0.1:49401; ssh client probe exit 0: Transferred: sent 3588, received 3492 bytes, in 0.0 seconds | Bytes per second: sent 727434.3, received 707971.1 | debug1: Exit status 0; app ssh hops: [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1793926414168.737 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=false t=1793926414168.755 | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1793926414239.682 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=false t=1793926414239.692
+injector accounting: injector sent 15; app saw 0; lost-before-app 15 (Enter: sent 1, app saw 0)</failure>
+</testcase>
+<testcase classname="terminal" name="pane_not_local_after_remote_session_ext" time="0.00">
+<failure message="after remote_session_ext the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean">after remote_session_ext the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="terminal" name="intl_wide_paste" time="5.60">
+</testcase>
+<testcase classname="terminal" name="ui_ctrl_r" time="9.50">
+</testcase>
+<testcase classname="terminal" name="flood_scrollback_find" time="11.00">
+</testcase>
+<testcase classname="terminal" name="remote_heredoc_paste" time="36.70">
+</testcase>
+<testcase classname="terminal" name="ssh_hanging_host_not_local" time="25.70">
+</testcase>
+<testcase classname="terminal" name="intl_wide_edit" time="40.20">
+<failure message="edit 0 (Left): file bytes 6b30743232335f6f72753441e69cac5ae8aa9e0a, expected 6b30743232335f6f72753441e697a5e69cac5ae8aa9e0a (text 'k0t223_oru4A日本Z語' [utf8 6b30743232335f6f72753441e697a5e69cac5ae8aa9e])">edit 0 (Left): file bytes 6b30743232335f6f72753441e69cac5ae8aa9e0a, expected 6b30743232335f6f72753441e697a5e69cac5ae8aa9e0a (text 'k0t223_oru4A日本Z語' [utf8 6b30743232335f6f72753441e697a5e69cac5ae8aa9e])
+edit 0: shell received 'echo k0t223_oru4A本Z語 &gt;&gt; ie_0.txt' [utf8 6563686f206b30743232335f6f72753441e69cac5ae8aa9e203e3e2069655f302e747874], expected 'echo k0t223_oru4A日本Z語 &gt;&gt; ie_0.txt' [utf8 6563686f206b30743232335f6f72753441e697a5e69cac5ae8aa9e203e3e2069655f302e747874]
+edit 3 (Left+Left): file bytes 6b33743232365f736c755936430a, expected 6b33743232365f736c753643e697a559e69cace8aa9e0a (text 'k3t226_slu6C日Y本語' [utf8 6b33743232365f736c753643e697a559e69cace8aa9e])
+edit 3: shell received 'echo k3t226_sluY6C &gt;&gt; ie_3.txt' [utf8 6563686f206b33743232365f736c75593643203e3e2069655f332e747874], expected 'echo k3t226_slu6C日Y本語 &gt;&gt; ie_3.txt' [utf8 6563686f206b33743232365f736c753643e697a559e69cace8aa9e203e3e2069655f332e747874]
+edit 4 (Left): file bytes 6b34743232375f7a30397a78440a, expected 6b34743232375f7a30397a4478c3a90a (text 'k4t227_z09zDxé' [utf8 6b34743232375f7a30397a4478c3a9])
+edit 4: shell received 'echo k4t227_z09zxD &gt;&gt; ie_4.txt' [utf8 6563686f206b34743232375f7a30397a7844203e3e2069655f342e747874], expected 'echo k4t227_z09zDxé &gt;&gt; ie_4.txt' [utf8 6563686f206b34743232375f7a30397a4478c3a9203e3e2069655f342e747874]
+injector accounting: injector sent 178; app saw 198; lost-before-app 0 (Enter: sent 5, app saw 6); app logged 20 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="ui_palette" time="10.70">
+</testcase>
+<testcase classname="terminal" name="ssh_password_prompt" time="10.60">
+</testcase>
+<testcase classname="terminal" name="intl_wide_program" time="53.80">
+<failure message="program got typed cjk: file bytes e697a5e381aee382b90a, expected e697a5e69cace8aa9ee381aee38386e382b9e383880a (text '日本語のテスト' [utf8 e697a5e69cace8aa9ee381aee38386e382b9e38388])">program got typed cjk: file bytes e697a5e381aee382b90a, expected e697a5e69cace8aa9ee381aee38386e382b9e383880a (text '日本語のテスト' [utf8 e697a5e69cace8aa9ee381aee38386e382b9e38388])
+program got typed accents: file bytes c3a9c3bcc3b1c3a7c39f0a, expected c3a9c3bcc3b1c3a7c39fc3b80a (text 'éüñçßø' [utf8 c3a9c3bcc3b1c3a7c39fc3b8])
+program got typed zwj: file bytes f09f91a8e2808de2808df09f91a70a, expected f09f91a8e2808df09f91a9e2808df09f91a70a (text '👨\u200d👩\u200d👧' [utf8 f09f91a8e2808df09f91a9e2808df09f91a7])
+injector accounting: injector sent 278; app saw 308; lost-before-app 0 (Enter: sent 16, app saw 17); 4 paste chord(s) not counted as keys; app logged 30 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 8 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="latency_enter_ssh" time="52.70">
+<skipped message="NO-REFERENCE (not a pass): measurement mode: sequential (no reference terminal available: no visible window of the reference terminal on :0)"/>
+</testcase>
+<testcase classname="terminal" name="intl_compose_linux" time="19.40">
+</testcase>
+<testcase classname="terminal" name="intl_ime_japanese" time="0.70">
+<skipped message="macOS input methods: needs the mac backend (this is x11)"/>
+</testcase>
+<testcase classname="terminal" name="sudo_su_real_shell" time="0.70">
+<skipped message="no privilege boundary could run here: passwordless sudo and root-for-su are both absent"/>
+</testcase>
+<testcase classname="terminal" name="intl_ime_pinyin" time="0.70">
+<skipped message="macOS input methods: needs the mac backend (this is x11)"/>
+</testcase>
+<testcase classname="terminal" name="ssh_drop_reconnect" time="35.70">
+<failure message="[escape] no local prompt within 20 s after the connection was lost">[escape] no local prompt within 20 s after the connection was lost
+[escape] app log after `&lt;Enter&gt;~.`: ["2026-11-06T01:01:09Z [DEBUG] input_order hop=ssh_escape_to_pty char='.' t=1793926869898.661"]
+[escape] the rest of this arm is not run (it would nest inside the live session); `exit` back to the local shell: ok
+injector accounting: injector sent 877; app saw 873; lost-before-app 4 (Enter: sent 27, app saw 27)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 27 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="intl_deadkey_option" time="0.70">
+<skipped message="macOS input methods: needs the mac backend (this is x11)"/>
+</testcase>
+<testcase classname="terminal" name="intl_altgr_ps" time="0.70">
+<skipped message="Windows only: a per-window German keyboard layout + AltGr (Linux has intl_compose_linux, macOS intl_deadkey_option)"/>
+</testcase>
+<testcase classname="terminal" name="intl_altgr_bash" time="0.70">
+<skipped message="Windows only: a per-window German keyboard layout + AltGr (Linux has intl_compose_linux, macOS intl_deadkey_option)"/>
+</testcase>
+<testcase classname="terminal" name="ui_mouse_select_copy" time="7.70">
+</testcase>
+<testcase classname="terminal" name="editor_edit_save" time="17.10">
+</testcase>
+<testcase classname="terminal" name="shell_zsh" time="18.10">
+</testcase>
+<testcase classname="terminal" name="shell_fish" time="20.10">
+</testcase>
+<testcase classname="terminal" name="shell_nu" time="27.50">
+</testcase>
+<testcase classname="terminal" name="shell_pwsh" time="0.80">
+<skipped message="package PowerShell 7 (Microsoft apt repo: packages-microsoft-prod.deb, then apt install powershell) not installed (looked on PATH and in ~/.local/bin, /home/<user>/.local/bin, /opt/homebrew/bin"/>
+</testcase>
+<testcase classname="terminal" name="ui_right_click_paste" time="2.40">
+<failure message="the probe 'rcpw2tr3uywcnd' typed into the input was not found on screen by OCR (shots/*rc_prompt.png): cannot place the pointer">the probe 'rcpw2tr3uywcnd' typed into the input was not found on screen by OCR (shots/*rc_prompt.png): cannot place the pointer
+injector accounting: injector sent 17; app saw 14; lost-before-app 3 (Enter: sent 0, app saw 0)</failure>
+</testcase>
+<testcase classname="terminal" name="editor_paste" time="6.70">
+</testcase>
+<testcase classname="terminal" name="ui_drag_drop_file" time="0.80">
+<skipped message="no drag source tool on this box (package: dragon-drop / dragon)"/>
+</testcase>
+<testcase classname="terminal" name="startup_shell_pane" time="0.80">
+<skipped message="runs only in a startup_shell_override pass (APPCI_WIN_SHELLS=pwsh7,cmd)"/>
+</testcase>
+<testcase classname="terminal" name="ui_resize_typing" time="16.90">
+</testcase>
+<testcase classname="terminal" name="ui_split_panes" time="29.00">
+</testcase>
+<testcase classname="terminal" name="md_viewer" time="23.30">
+<failure message="markdown viewer: heading/table text ['phosphormdprobe', 'zebraapple', 'quinceberry'] not visible within 20 s (OCR saw 'file+qa60-8xooqsearchsessior24probe.renderedraw&gt;echot380_p77090kpao&gt;&gt;..probe.mddprovemaphosphormdprobeintroparagraphwithinlineandafruitcountalphanodestart¥betanodemiddle¥gammanodeend')">markdown viewer: heading/table text ['phosphormdprobe', 'zebraapple', 'quinceberry'] not visible within 20 s (OCR saw 'file+qa60-8xooqsearchsessior24probe.renderedraw&gt;echot380_p77090kpao&gt;&gt;..probe.mddprovemaphosphormdprobeintroparagraphwithinlineandafruitcountalphanodestart¥betanodemiddle¥gammanodeend')
+injector accounting: injector sent 2; app saw 0; lost-before-app 2 (Enter: sent 0, app saw 0)</failure>
+</testcase>
+<testcase classname="terminal" name="md_viewer_big" time="18.50">
+</testcase>
+<testcase classname="terminal" name="editor_memory_7mb" time="384.10">
+<failure message="trim A/B: PHOSPHOR_EDITOR_TRIM_AFTER_OPEN=1 logged no 'heap_trim why=open' (the opt-in trim did not run, or the build predates it)">trim A/B: PHOSPHOR_EDITOR_TRIM_AFTER_OPEN=1 logged no 'heap_trim why=open' (the opt-in trim did not run, or the build predates it)
+txt: memory grew only 4.5 MB but the app logged 'editor_memory open': the file opened into reused heap
+trim A/B default: no hop=ui_item line (nothing over 4 ms, a build older than the ui_item hop, or input_order logging off)
+trim A/B trim_after_open: no hop=ui_item line (nothing over 4 ms, a build older than the ui_item hop, or input_order logging off)
+trim A/B no_trim: no hop=ui_item line (nothing over 4 ms, a build older than the ui_item hop, or input_order logging off)
+injector accounting: injector sent 595; app saw 321; lost-before-app 274 (Enter: sent 7, app saw 0)</failure>
+</testcase>
+<testcase classname="terminal" name="ui_startup_time" time="96.70">
+<failure message="after_cold: file has 0/4 lines, exact match False first diff: exp='t381_j9fbj8roxv' got=None [first bad line 0: injector keeps no record on this backend]">after_cold: file has 0/4 lines, exact match False first diff: exp='t381_j9fbj8roxv' got=None [first bad line 0: injector keeps no record on this backend]
+after_warm: file has 0/4 lines, exact match False first diff: exp='t385_3396n3yfbe' got=None [first bad line 0: injector keeps no record on this backend]
+after_cold: rec.log empty (PROMPT_COMMAND hook not run), effect file checked only
+after_warm: rec.log empty (PROMPT_COMMAND hook not run), effect file checked only
+injector accounting: injector sent 332 keys (8 Enter); app key trace not available, so nothing to compare</failure>
+</testcase>
+<testcase classname="terminal" name="session_restore" time="77.50">
+</testcase>
+<testcase classname="terminal" name="ui_settings_live" time="34.50">
+</testcase>
+<testcase classname="terminal" name="quit_24_tabs" time="104.10">
+</testcase>
+<testcase classname="terminal" name="crash_kill9_restore" time="61.70">
+</testcase>
+<testcase classname="terminal" name="cb_settings_ui_open" time="0.70">
+<skipped message="Pillow not installed on this runner (owner: install?)"/>
+</testcase>
+<testcase classname="terminal" name="crash_corrupt_db" time="33.40">
+</testcase>
+<testcase classname="terminal" name="cb_settings_migration" time="124.90">
+<failure message="cb_settings_legacy: file has 0/4 lines, exact match False first diff: exp='t427_howdfpkm1i' got=None [first bad line 0: injector keeps no record on this backend]">cb_settings_legacy: file has 0/4 lines, exact match False first diff: exp='t427_howdfpkm1i' got=None [first bad line 0: injector keeps no record on this backend]
+cb_settings_truncated: file has 0/4 lines, exact match False first diff: exp='t431_mumhk00qif' got=None [first bad line 0: injector keeps no record on this backend]
+cb_settings_restored: file has 0/3 lines, exact match False first diff: exp='t435_6bi8dnugkt' got=None [first bad line 0: injector keeps no record on this backend]
+legacy settings file: the start-cwd probe line did not run (no cwd file); the burst's cwd is unknown
+cb_settings_legacy: rec.log empty (PROMPT_COMMAND hook not run), effect file checked only
+legacy settings file: the burst did not land in the shell; view before it 'terminal', after it 'terminal'; 0 of its Enters submitted to the agent []
+truncated settings file: the start-cwd probe line did not run (no cwd file); the burst's cwd is unknown
+cb_settings_truncated: rec.log empty (PROMPT_COMMAND hook not run), effect file checked only
+truncated settings file: the burst did not land in the shell; view before it 'terminal', after it 'terminal'; 0 of its Enters submitted to the agent []
+cb_settings_restored: rec.log empty (PROMPT_COMMAND hook not run), effect file checked only
+injector accounting: injector sent 883 keys (13 Enter); app key trace not available, so nothing to compare</failure>
+</testcase>
+<testcase classname="terminal" name="soak" time="3656.00">
+</testcase>
+<testcase classname="terminal" name="cb_state_relaunch" time="108.40">
+<failure message="cb_state_1: file has 0/4 lines, exact match False first diff: exp='t1098_enkunuoqwz' got=None [first bad line 0: injector keeps no record on this backend]">cb_state_1: file has 0/4 lines, exact match False first diff: exp='t1098_enkunuoqwz' got=None [first bad line 0: injector keeps no record on this backend]
+cb_state_2: file has 0/4 lines, exact match False first diff: exp='t1102_2nrk8tzam4' got=None [first bad line 0: injector keeps no record on this backend]
+cb_state_3: file has 0/4 lines, exact match False first diff: exp='t1106_wmgc4mdluc' got=None [first bad line 0: injector keeps no record on this backend]
+cb_state_1: rec.log empty (PROMPT_COMMAND hook not run), effect file checked only
+cb_state_2: rec.log empty (PROMPT_COMMAND hook not run), effect file checked only
+cb_state_3: rec.log empty (PROMPT_COMMAND hook not run), effect file checked only
+injector accounting: injector sent 509; app saw 0; lost-before-app 509 (Enter: sent 12, app saw 0)</failure>
+</testcase>
+<testcase classname="terminal" name="tabs_two_windows" time="62.90">
+<failure message="typing/paste in window 2 under 12 streaming tabs: 0/16 exact lines (0 got, 16 expected line(s) missing)">typing/paste in window 2 under 12 streaming tabs: 0/16 exact lines (0 got, 16 expected line(s) missing)
+injector accounting: injector sent 2024; app saw 2007; lost-before-app 17 (Enter: sent 28, app saw 28); 1 paste chord(s) not counted as keys
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="upgrade_over_previous" time="0.70">
+<skipped message="no previous-release data: set APPCI_PREV_FIXTURE (state tarball) or APPCI_PREV_BIN (previous release binary; macOS also APPCI_PREV_BUNDLE) -- where CI gets the previous release's artifact is the owner"/>
+</testcase>
+<testcase classname="terminal" name="tabs_streaming" time="26.00">
+</testcase>
+<testcase classname="terminal" name="cb_no_autoupdate" time="1.40">
+</testcase>
+<testcase classname="terminal" name="cb_ui_action_latency" time="0.70">
+<skipped message="Pillow not installed on this runner (owner: install?)"/>
+</testcase>
+<testcase classname="terminal" name="cb_editor_mac" time="0.70">
+<skipped message="Linux: editor_edit_save/editor_paste/editor_memory_7mb cover the editor; Windows: editor_edit_save and editor_paste hand the file over the named pipe (#1544)"/>
+</testcase>
+<testcase classname="agent" name="mode_proof" time="0.90">
+<failure message="model chip 'gpt-oss:20b' not visible before any key was typed (the CI Ollama model is not the active one)">model chip 'gpt-oss:20b' not visible before any key was typed (the CI Ollama model is not the active one)</failure>
+</testcase>
+<testcase classname="agent" name="cadence" time="4.40">
+</testcase>
+<testcase classname="agent" name="harness_crash" time="0.00">
+<failure message="the agent pass crashed outside a case: SystemExit(143)">the agent pass crashed outside a case: SystemExit(143)</failure>
+</testcase>
+</testsuite>
