@@ -2658,6 +2658,18 @@ define_settings_group!(AISettings, settings: [
         description: "Download the models.dev model catalog; false uses only the local cache.",
     }
 
+    // Settings-file-only: where the catalog is downloaded from (when `models_dev_fetch` is
+    // true). Defaults to the repo copy on main; set `https://models.dev/api.json` for upstream.
+    models_dev_url: ModelsDevUrl {
+        type: String,
+        default: crate::ai::agent_providers::models_dev::DEFAULT_MODELS_DEV_URL.to_string(),
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Never,
+        private: false,
+        toml_path: "agents.warp_agent.models_dev_url",
+        description: "URL the models.dev model catalog is downloaded from.",
+    }
+
     // models.dev catalog provider ids where the user has flipped the "Quick add" chip row's
     // default visibility (see `models_dev::is_common_provider` / `effectively_visible`):
     // membership here hides an otherwise-common provider, or pins an otherwise-uncommon one

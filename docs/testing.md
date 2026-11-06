@@ -2183,3 +2183,7 @@ Harness only; `run.py --self-test` covers both (`app_log_readers`, `mac_close_ke
   and the new file never appeared (`edit 2 (BackSpace): file bytes None`, PowerShell pane, both modes; Git Bash keeps its history in the
   run's HOME). The lead now ends in `EDIT_LEAD_NONCE` (6 hex digits from `os.urandom`, not the seeded rng, so no other case's tokens
   change). The case notes when the history already holds a line with the seed's lead, which confirms the cause on the next PowerShell run.
+
+## models.dev option (#1791)
+
+Unit tests in `app/src/ai/agent_providers/models_dev_bundle_tests.rs` cover `models_dev_fetch`/`models_dev_url` on both entry points (startup `ensure_loaded`, Refresh `refresh_catalog`), the cache -> bundled fallback, response validation, and that the bundled gzip matches `app/resources/models_dev/PROVENANCE.txt` and `assets/models_dev/api.json`. They share one catalog singleton and serialize on a mutex. No app test.
