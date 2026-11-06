@@ -1912,7 +1912,7 @@ def latency_known_v0117_enter_and_flood():
 
 @check
 def latency_enter_macos_report_only():
-    """owner 2026-11-05 (#1606 closed): on macOS the Enter overhead is REPORT-ONLY (+20 ms is a note, not a FAIL); the app's own share over 2 ms or a median over 80 ms still FAIL;
+    """owner 2026-11-05 (#1606 closed): on macOS the Enter overhead is REPORT-ONLY (+20 ms is a note, not a FAIL); the app's own share over 2 ms or an overhead over 40 ms (gross regression, relative to the reference) still FAIL; a slow machine (median 90 ms, overhead +20) is not a FAIL;
     Linux is judged as before (FAIL without an ACCEPTED entry)"""
     rec = {"budget_verdict": "fail", "budget_kind": "overhead", "verdict": "fail", "overhead_ms": 20.0, "overhead_se_ms": 0.4, "reference_name": "Terminal.app",
            "budget_ms": 2, "phosphor": {"p50": 30.0}}
@@ -1929,7 +1929,10 @@ def latency_enter_macos_report_only():
             assert len(r.fails) == 1 and "own share" in r.fails[0], r.fails
             r = cases.Result("t", "terminal")
             cases.lat_checks(r, rec, "L", known_key=key, report_only_macos=True, app_share_ms=0.5, median_ms=90.0)
-            assert len(r.fails) == 1 and "sanity bound" in r.fails[0], r.fails
+            assert not r.fails, r.fails      # r18u30: the whole Mac slow, overhead unchanged -> not Phosphor's regression
+            r = cases.Result("t", "terminal")
+            cases.lat_checks(r, dict(rec, overhead_ms=45.0), "L", known_key=key, report_only_macos=True, app_share_ms=0.5, median_ms=90.0)
+            assert len(r.fails) == 1 and "gross-regression bound" in r.fails[0], r.fails
             cases.plat = lambda: "linux-x11"
             r = cases.Result("t", "terminal")
             cases.lat_checks(r, rec, "L", known_key=key, report_only_macos=True, app_share_ms=0.5, median_ms=30.0)
