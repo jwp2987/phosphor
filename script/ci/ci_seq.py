@@ -653,10 +653,25 @@ def main():
                 reuse_started.append(n + "-reuse")
     for n in builds:
         play(n)
-    # Each platform's app tests start as soon as ITS build succeeds, not after the box test suites (those take ~1 h and
+    # Each platform's tests start as soon as ITS build succeeds, not after the box test suites (those take ~1 h and
     # would hold the Mac and Windows tests back for no reason; app tests on other machines do not compete with the box).
+    # Owner 2026-11-05: on each machine the UNIT suites run first, then the app tests, then (release tier) the heavy suites,
+    # one at a time, so a logic regression shows in minutes and compile load never overlaps the latency cases.
     p_of = {BUILD[p]: p for p in plats}
     started, lock = [], threading.Lock()
+
+    def run_suites(names):
+        """Play the suite jobs one after the other on their machine; a suite that cannot exist there is reported, not played."""
+        for n in names:
+            if n in SKIP or n not in jobs():
+                continue
+            if n in UNSUPPORTED:
+                print("%s: not played, unsupported on this platform: %s" % (n, UNSUPPORTED[n]), flush=True)
+                timeline[n] = (PLATFORM_UNSUPPORTED, None); continue
+            if play(n):
+                print("%s: started %s" % (time.strftime("%H:%M"), n), flush=True)
+            if jobs().get(n, {}).get("status") not in (None, "manual"):
+                print(n, wait(n), flush=True)
 
     def after_build(b):
         bs = wait(b)
@@ -664,6 +679,8 @@ def main():
             for n in [t for t in APP[p_of[b]] if t not in SKIP and t in jobs()]:
                 timeline[n] = ("not run (%s %s)" % (b, bs), None)   # a build that failed leaves its app tests unrun: that is a failure, not a pass
             return
+        if tier != "fix" and p_of[b] in PLAT_SUFFIX:
+            run_suites(plat_suites(p_of[b], False))     # unit suites first, on the same machine, before its app tests
         for n in [t for t in APP[p_of[b]] if t not in SKIP and t in jobs()]:
             if tier == "fix" and n == "app-test-linux-x11":
                 timeline[n] = (TIER_SKIP, None)
@@ -678,24 +695,19 @@ def main():
     watch_of = {b: t for b, t in zip(builds, watchers)}
 
     def plat_unit_suites(p):
-        """candidate/release: this platform's suite jobs, one after the other, once its app tests have finished (one machine per platform)."""
+        """candidate/release: after this platform's unit suites and app tests (played by after_build), its heavy suites
+        (release tier only), one after the other on the same machine. A build that failed leaves its unit suites unplayed."""
         if BUILD[p] in watch_of:
-            watch_of[BUILD[p]].join()                       # the app tests have been played (or the build failed) after this
+            watch_of[BUILD[p]].join()                       # units ran and the app tests were played (or the build failed) after this
         for n in APP[p]:
             with lock:
                 mine = n in started
             if mine:
                 print(n, wait(n), flush=True)               # do not overlap the app tests on the same machine
-        for n in plat_suites(p, tier == "release"):
-            if n in SKIP or n not in jobs():
-                continue
-            if n in UNSUPPORTED:
-                print("%s: not played, unsupported on this platform: %s" % (n, UNSUPPORTED[n]), flush=True)
-                timeline[n] = (PLATFORM_UNSUPPORTED, None); continue
-            if play(n):
-                print("%s: started %s" % (time.strftime("%H:%M"), n), flush=True)
-            if jobs().get(n, {}).get("status") not in (None, "manual"):
-                print(n, wait(n), flush=True)
+        units = plat_suites(p, False)
+        if BUILD[p] not in watch_of:
+            run_suites(units)                               # no build of ours to wait for (reused): units still run
+        run_suites([n for n in plat_suites(p, tier == "release") if n not in units])
     suite_threads = []
     if tier != "fix":
         suite_threads = [threading.Thread(target=plat_unit_suites, args=(p,), daemon=True) for p in plats if p in PLAT_SUFFIX]
