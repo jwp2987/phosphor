@@ -1883,7 +1883,7 @@ def latency_known_v0117_enter_and_flood():
     flood = dict(rec, budget_ms=45)
     orig_v, orig_p = cases.app_version, cases.plat
     try:
-        for plat_, key, rc, issue, ok in (("macos", "latency_enter_overhead", rec, 1606, True), ("linux-wayland", "latency_enter_overhead", rec, 1606, True),
+        for plat_, key, rc, issue, ok in (("linux-wayland", "latency_enter_overhead", rec, 1606, True),
                                           ("linux-x11", "latency_enter_overhead", rec, 1606, True), ("windows", "latency_enter_overhead", rec, 1606, False),
                                           ("macos", "ctrl_c_flood", flood, 1653, True), ("linux-x11", "ctrl_c_flood", flood, 1653, True)):
             cases.plat = lambda p=plat_: p
@@ -1906,6 +1906,34 @@ def latency_known_v0117_enter_and_flood():
         for k in ("latency_enter_overhead", "ctrl_c_flood"):
             assert cases.accepted_for_release(k, "0.1.17") and cases.accepted_for_release(k, "0.1.18") is None
         assert cases.CTRLC_FLOOD_RELEASE_MS == "45"
+    finally:
+        cases.app_version, cases.plat = orig_v, orig_p
+
+
+@check
+def latency_enter_macos_report_only():
+    """owner 2026-11-05 (#1606 closed): on macOS the Enter overhead is REPORT-ONLY (+20 ms is a note, not a FAIL); the app's own share over 2 ms or a median over 80 ms still FAIL;
+    Linux is judged as before (FAIL without an ACCEPTED entry)"""
+    rec = {"budget_verdict": "fail", "budget_kind": "overhead", "verdict": "fail", "overhead_ms": 20.0, "overhead_se_ms": 0.4, "reference_name": "Terminal.app",
+           "budget_ms": 2, "phosphor": {"p50": 30.0}}
+    orig_v, orig_p = cases.app_version, cases.plat
+    try:
+        cases.app_version = lambda repo=None: "0.1.18"
+        for key in ("latency_enter_overhead", "latency_enter_ssh_overhead"):
+            cases.plat = lambda: "macos"
+            r = cases.Result("t", "terminal")
+            cases.lat_checks(r, rec, "L", known_key=key, report_only_macos=True, app_share_ms=0.5, median_ms=30.0)
+            assert not r.fails and any(n.startswith("REPORT-ONLY: L:") and "#1606 closed by owner 2026-11-05" in n for n in r.notes), (key, r.fails, r.notes)
+            r = cases.Result("t", "terminal")
+            cases.lat_checks(r, rec, "L", known_key=key, report_only_macos=True, app_share_ms=3.0, median_ms=30.0)
+            assert len(r.fails) == 1 and "own share" in r.fails[0], r.fails
+            r = cases.Result("t", "terminal")
+            cases.lat_checks(r, rec, "L", known_key=key, report_only_macos=True, app_share_ms=0.5, median_ms=90.0)
+            assert len(r.fails) == 1 and "sanity bound" in r.fails[0], r.fails
+            cases.plat = lambda: "linux-x11"
+            r = cases.Result("t", "terminal")
+            cases.lat_checks(r, rec, "L", known_key=key, report_only_macos=True, app_share_ms=0.5, median_ms=30.0)
+            assert len(r.fails) == 1 and "exceeds the 2 ms budget" in r.fails[0], r.fails
     finally:
         cases.app_version, cases.plat = orig_v, orig_p
 
