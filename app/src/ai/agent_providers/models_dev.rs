@@ -306,6 +306,22 @@ pub fn is_stale() -> bool {
     }
 }
 
+/// Settings gate (`agents.warp_agent.models_dev_fetch`, #1791) in front of a fetch.
+/// When `enabled` is false the `fetch` closure is never called, so no request is made;
+/// one info line is logged and the caller sees an `Err`, which every caller already treats
+/// as "fetch failed" (it keeps the on-disk cache or the empty fallback).
+pub async fn fetch_if_enabled<F, Fut>(enabled: bool, fetch: F) -> Result<(), String>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
+    if !enabled {
+        log::info!("[models.dev] fetch disabled by the agents.warp_agent.models_dev_fetch setting");
+        return Err("models.dev fetch disabled by setting".to_owned());
+    }
+    fetch().await
+}
+
 /// Asynchronously fetches models.dev and writes it to both the disk cache and the
 /// in-memory cache.
 /// Failures are only logged, not propagated upward (the UI caller decides what to
@@ -561,6 +577,34 @@ pub fn quick_add_catalog(catalog: &Catalog) -> Catalog {
         );
     }
     merged
+}
+
+#[cfg(test)]
+mod fetch_gate_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn disabled_setting_never_calls_the_fetch() {
+        let called = Cell::new(false);
+        let r = futures::executor::block_on(fetch_if_enabled(false, || {
+            called.set(true);
+            async { Ok(()) }
+        }));
+        assert!(r.is_err());
+        assert!(!called.get(), "no request may be made when disabled");
+    }
+
+    #[test]
+    fn enabled_setting_runs_the_fetch() {
+        let called = Cell::new(false);
+        let r = futures::executor::block_on(fetch_if_enabled(true, || {
+            called.set(true);
+            async { Ok(()) }
+        }));
+        assert!(r.is_ok());
+        assert!(called.get());
+    }
 }
 
 #[cfg(test)]

@@ -4291,8 +4291,14 @@ impl TypedActionView for AISettingsPageView {
                                 return;
                             }
                             let client = http_client::Client::new();
+                            let enabled = *AISettings::as_ref(ctx).models_dev_fetch;
                             ctx.spawn(
-                                async move { models_dev::fetch_and_cache(client).await },
+                                async move {
+                                    models_dev::fetch_if_enabled(enabled, || {
+                                        models_dev::fetch_and_cache(client)
+                                    })
+                                    .await
+                                },
                                 |view: &mut Self, result, ctx| {
                                     models_dev::finish_load();
                                     match result {
@@ -4315,8 +4321,14 @@ impl TypedActionView for AISettingsPageView {
             AISettingsPageAction::RefreshModelsDev => {
                 use crate::ai::agent_providers::models_dev;
                 let client = http_client::Client::new();
+                let enabled = *AISettings::as_ref(ctx).models_dev_fetch;
                 ctx.spawn(
-                    async move { models_dev::fetch_and_cache(client).await },
+                    async move {
+                        models_dev::fetch_if_enabled(enabled, || {
+                            models_dev::fetch_and_cache(client)
+                        })
+                        .await
+                    },
                     |view, result, ctx| match result {
                         Ok(()) => {
                             models_dev::set_fetch_failed(false);
