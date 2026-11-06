@@ -21,7 +21,7 @@
 //! yet, please check your network".
 
 use std::collections::{BTreeMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -30,7 +30,15 @@ use std::time::{Duration, SystemTime};
 use http_client::Client;
 use serde::{Deserialize, Serialize};
 
-const MODELS_DEV_URL: &str = "https://models.dev/api.json";
+/// Default for `agents.warp_agent.models_dev_url`: the repo copy of the catalog on main
+/// (`assets/models_dev/api.json`, refreshed by `script/update_models_dev.py`). Set the
+/// setting to `https://models.dev/api.json` to read upstream directly.
+pub const DEFAULT_MODELS_DEV_URL: &str =
+    "https://gitlab.com/winters-phosphor/phosphor/-/raw/main/assets/models_dev/api.json";
+/// The gzip of the repo copy, embedded as the last-resort catalog.
+const BUNDLED_CATALOG_GZ: &[u8] = include_bytes!("../../../resources/models_dev/api.json.gz");
+/// `key=value` provenance lines written by `script/update_models_dev.py`.
+const BUNDLED_PROVENANCE: &str = include_str!("../../../resources/models_dev/PROVENANCE.txt");
 const CACHE_FILENAME: &str = "models-dev.json";
 const CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 const FETCH_TIMEOUT: Duration = Duration::from_secs(15);
@@ -134,7 +142,7 @@ fn state() -> &'static RwLock<State> {
     S.get_or_init(|| RwLock::new(State::default()))
 }
 
-fn cache_path() -> PathBuf {
+pub(crate) fn cache_path() -> PathBuf {
     let mut p = warp_core::paths::cache_dir();
     p.push(CACHE_FILENAME);
     p
@@ -231,7 +239,12 @@ fn install_loaded(catalog: Catalog, loaded_at: Option<SystemTime>) {
 /// Returns false if the disk cache doesn't exist or fails to parse; the caller
 /// should trigger a network fetch.
 pub fn load_from_disk() -> bool {
-    let path = cache_path();
+    load_from_disk_at(&cache_path())
+}
+
+/// [`load_from_disk`] with an explicit cache file (the unit-test seam).
+pub fn load_from_disk_at(path: &Path) -> bool {
+    let path = path.to_path_buf();
     let bytes = match std::fs::read(&path) {
         Ok(b) => b,
         Err(_) => return false,
@@ -322,13 +335,92 @@ where
     fetch().await
 }
 
-/// Asynchronously fetches models.dev and writes it to both the disk cache and the
-/// in-memory cache.
-/// Failures are only logged, not propagated upward (the UI caller decides what to
-/// show based on whether `cached()` is `Some`).
-pub async fn fetch_and_cache(client: Client) -> Result<(), String> {
+/// Value of `key` in the bundled catalog's provenance file.
+fn bundled_provenance(key: &str) -> Option<&'static str> {
+    BUNDLED_PROVENANCE
+        .lines()
+        .find_map(|l| l.strip_prefix(key)?.strip_prefix('='))
+        .map(str::trim)
+}
+
+/// Decompresses the bundled catalog (about 6 MB of JSON).
+fn bundled_json() -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let mut out = Vec::new();
+    flate2::read::GzDecoder::new(BUNDLED_CATALOG_GZ)
+        .read_to_end(&mut out)
+        .map_err(|e| format!("bundled catalog failed to decompress: {e}"))?;
+    Ok(out)
+}
+
+/// Installs the catalog embedded in the binary. Decompress + parse is a one-time cost of
+/// roughly 6 MB of JSON, so call it from a background task, never the UI thread. The
+/// catalog is installed without a load time, so it counts as stale and a later enabled
+/// fetch still replaces it.
+pub fn load_bundled() -> bool {
+    let parsed = bundled_json().and_then(|b| {
+        serde_json::from_slice::<Catalog>(&b)
+            .map_err(|e| format!("bundled catalog failed to parse: {e}"))
+    });
+    match parsed {
+        Ok(catalog) => {
+            log::info!(
+                "[models.dev] using the built-in catalog dated {} ({} providers)",
+                bundled_provenance("fetched_at").unwrap_or("unknown"),
+                catalog.len()
+            );
+            install_loaded(catalog, None);
+            true
+        }
+        Err(e) => {
+            log::error!("[models.dev] {e}");
+            false
+        }
+    }
+}
+
+fn has_catalog() -> bool {
+    state().read().map(|s| s.catalog.is_some()).unwrap_or(false)
+}
+
+/// The URL to download from: the setting, or the default when it is blank.
+pub fn resolve_url(configured: &str) -> String {
+    let t = configured.trim();
+    if t.is_empty() {
+        DEFAULT_MODELS_DEV_URL.to_owned()
+    } else {
+        t.to_owned()
+    }
+}
+
+/// Validates a downloaded body and only then caches and installs it. A body that is not
+/// JSON of the catalog shape, or is an empty catalog, is rejected before anything is
+/// written, so a captive-portal page or error document can never poison the cache.
+pub fn ingest_response(bytes: &[u8], cache_file: &Path) -> Result<(), String> {
+    let catalog: Catalog =
+        serde_json::from_slice(bytes).map_err(|e| format!("JSON parse failed: {e}"))?;
+    if catalog.is_empty() {
+        return Err("catalog is empty".to_owned());
+    }
+    if let Some(parent) = cache_file.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Err(e) = std::fs::write(cache_file, bytes) {
+        log::warn!("[models.dev] failed to write disk cache ({cache_file:?}): {e}");
+    }
+    install_loaded(catalog, Some(SystemTime::now()));
+    Ok(())
+}
+
+/// Asynchronously fetches the catalog from `url` and writes it to both the disk cache and
+/// the in-memory cache. Failures are returned (and only logged by callers).
+pub async fn fetch_and_cache(
+    client: Client,
+    url: String,
+    cache_file: PathBuf,
+) -> Result<(), String> {
     let resp = client
-        .get(MODELS_DEV_URL)
+        .get(url.as_str())
         .timeout(FETCH_TIMEOUT)
         .send()
         .await
@@ -342,21 +434,67 @@ pub async fn fetch_and_cache(client: Client) -> Result<(), String> {
         .bytes()
         .await
         .map_err(|e| format!("failed to read response body: {e}"))?;
+    ingest_response(&bytes, &cache_file)
+}
 
-    let catalog: Catalog =
-        serde_json::from_slice(&bytes).map_err(|e| format!("JSON parse failed: {e}"))?;
+/// What [`ensure_loaded`] ended up using.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoadedFrom {
+    Memory,
+    Cache,
+    Fetched,
+    Bundled,
+}
 
-    // Write to disk — failure isn't fatal, just logged.
-    let path = cache_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+/// The startup path (`EnsureModelsDevLoaded`). Order: a fresh disk cache; otherwise a fetch
+/// from `url` when `enabled`; otherwise (fetch disabled or failed) the stale cache already
+/// loaded, then the bundled catalog. With `enabled == false` `fetch` is never called.
+/// Blocking file and parse work runs inline, so call it from a background task.
+pub async fn ensure_loaded<F, Fut>(
+    enabled: bool,
+    url: String,
+    cache_file: PathBuf,
+    fetch: F,
+) -> Result<LoadedFrom, String>
+where
+    F: FnOnce(String) -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
+    if !enabled && has_catalog() {
+        return Ok(LoadedFrom::Memory);
     }
-    if let Err(e) = std::fs::write(&path, &bytes) {
-        log::warn!("[models.dev] failed to write disk cache ({path:?}): {e}");
+    let had_disk = load_from_disk_at(&cache_file);
+    if had_disk && !is_stale() {
+        return Ok(LoadedFrom::Cache);
     }
+    match fetch_if_enabled(enabled, || fetch(url)).await {
+        Ok(()) => Ok(LoadedFrom::Fetched),
+        Err(e) => {
+            let used = if has_catalog() {
+                LoadedFrom::Cache
+            } else if load_bundled() {
+                LoadedFrom::Bundled
+            } else {
+                return Err(e);
+            };
+            // Disabled by the user is not a failure; a failed enabled fetch is.
+            if enabled { Err(e) } else { Ok(used) }
+        }
+    }
+}
 
-    install_loaded(catalog, Some(SystemTime::now()));
-    Ok(())
+/// The Refresh button (`RefreshModelsDev`). Never calls `fetch` when `enabled` is false.
+/// On failure with nothing loaded, falls back to the bundled catalog.
+pub async fn refresh_catalog<F, Fut>(enabled: bool, url: String, fetch: F) -> Result<(), String>
+where
+    F: FnOnce(String) -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
+    let r = fetch_if_enabled(enabled, || fetch(url)).await;
+    if r.is_err() && !has_catalog() {
+        load_bundled();
+    }
+    r
 }
 
 // ── Chip row collapsed/expanded state (process-level, so it survives widget
@@ -610,6 +748,18 @@ mod fetch_gate_tests {
 #[cfg(test)]
 #[path = "models_dev_load_tests.rs"]
 mod load_tests;
+
+#[cfg(test)]
+#[path = "models_dev_bundle_tests.rs"]
+mod bundle_tests;
+
+/// Empties the singleton so each bundle test starts from "nothing loaded".
+#[cfg(test)]
+fn reset_state_for_test() {
+    if let Ok(mut s) = state().write() {
+        *s = State::default();
+    }
+}
 
 #[cfg(test)]
 mod quick_add_tests {

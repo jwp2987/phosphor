@@ -14919,6 +14919,7 @@ dependencies = [
  "event-listener",
  "expectrl",
  "field_mask",
+ "flate2",
  "float-cmp",
  "fluent",
  "freedesktop-desktop-entry",
