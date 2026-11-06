@@ -113,7 +113,7 @@ class Backend:
 
     def refocus(self, verify=False):
         """bring Phosphor back to the front (no keys sent); verify=True raises RuntimeError unless it demonstrably has the focus. No-op on
-        backends whose guard() already focuses Phosphor before every injection (X11)."""
+        backends that do nothing between injections (sim)."""
 
     def guard_ref(self):
         """Linux only (#1500): while a reference terminal is the injection target, refuse (RuntimeError) unless IT has the focus. Called by the
@@ -253,6 +253,17 @@ STDERR_LOG = None        # path of the injector stderr log (<run>/logs/injector-
 def _tail(txt, n=240):
     txt = (txt or "").strip().replace("\n", " | ")
     return txt[-n:]
+
+
+def _log_stderr(tool, rc, err):
+    """a helper tool's stderr into the injector stderr log (next to inject.log)"""
+    err = (err or b"").decode("utf-8", "replace") if isinstance(err, bytes) else (err or "")
+    if STDERR_LOG:
+        try:
+            with open(STDERR_LOG, "a") as f:
+                f.write("%.3f %s exit=%d: %s\n" % (time.time(), tool, rc, _tail(err, 600)))
+        except OSError:
+            pass
 
 
 def _run(argv, **kw):
@@ -528,11 +539,89 @@ class WaylandBackend(Backend):
         return out
 
 
+# r18u28 (X11 release-candidate pass): the X11 injector, not the app, produced rollover/keydown_count/intl_wide_*/startup failures that no
+# other backend showed. The pieces below are pure so the selftest can pin them without an X server.
+X11_SHIFTED = set('~!@#$%^&*()_+{}|:"<>?ABCDEFGHIJKLMNOPQRSTUVWXYZ')   # US layout (Xvfb's default): typed with Shift held
+X11_KEYNAMES = {"escape": "Escape", "esc": "Escape", "return": "Return", "enter": "Return", "tab": "Tab", "backspace": "BackSpace",
+                "delete": "Delete", "del": "Delete", "left": "Left", "right": "Right", "up": "Up", "down": "Down", "home": "Home",
+                "end": "End", "pageup": "Prior", "pagedown": "Next", "insert": "Insert"}
+
+
+def x11_keyname(k):
+    """an xdotool keysym name for a key written the way the cases write keys. X keysym names are case-sensitive: `xdotool key escape` prints
+    "No such key name 'escape'. Ignoring it." and exits 0, so the key was silently never sent (injector-stderr.log, r18u28 X11)."""
+    return X11_KEYNAMES.get(k.lower(), k) if len(k) > 1 else k
+
+
+def x11_roll_argv(text, overlap_ms):
+    """xdotool argv for rollover (the next key goes down before the previous one is released) that a physical US keyboard could produce.
+    r18u28 (X11 rollover/keydown_count): the old chain held `_` (Shift+minus) down while `8` went down, so the app correctly received `*` (and `R`
+    for `r`), and pressed `>` / `l` again while the same key was still down, which the X server does not deliver as a second press: typed
+    `echo t73_8m81ereqlg >> r_roll.txt`, the app's own keydown log read `echo t73_*m81ereqlg > r_Rol.txt`. As in the Windows backend, a
+    Shift-typed character, and a repeat of the key still held, is a plain tap after the held key is released; plain keys still overlap."""
+    s = str(overlap_ms / 1000)
+    cmd, held = ["xdotool"], None
+    for ch in text:
+        k = ENVNAME.get(ch, ch)
+        if ch in X11_SHIFTED or k == held:
+            if held:
+                cmd += ["keyup", held]
+                held = None
+            cmd += ["keydown", k, "sleep", s, "keyup", k, "sleep", s]
+            continue
+        cmd += ["keydown", k, "sleep", s]
+        if held:
+            cmd += ["keyup", held]
+        cmd += ["sleep", s]
+        held = k
+    if held:
+        cmd += ["keyup", held]
+    return cmd
+
+
+def x11_spare_keycodes(pke, reserve=4):
+    """keycodes with no keysym in `xmodmap -pke` output, highest first, minus the `reserve` lowest (left for xdotool's own scratch binding)"""
+    free = []
+    for line in pke.splitlines():
+        m = re.match(r"\s*keycode\s+(\d+)\s*=\s*$", line)
+        if m:
+            free.append(int(m.group(1)))
+    free.sort()
+    return sorted(free[reserve:], reverse=True)
+
+
+def x11_premap_plan(text, bound, spare):
+    """Which non-ASCII characters of `text` need a keycode of their own before xdotool types them. -> (xmodmap -e expressions, new bound map,
+    new spare list). `bound` {char: keycode} is what earlier calls bound (oldest first; a binding is reused, never rebound); when no spare
+    keycode is left the oldest binding that `text` does not use is recycled. Characters that cannot get a keycode are left to xdotool."""
+    bound, spare = dict(bound), list(spare)
+    need = [c for c in dict.fromkeys(text) if ord(c) > 0x7e]
+    exprs = []
+    for c in need:
+        if c in bound:
+            bound[c] = bound.pop(c)              # most recently used last
+            continue
+        if not spare:
+            victim = next((v for v in bound if v not in need), None)
+            if victim is None:
+                break
+            spare.append(bound.pop(victim))
+        kc = spare.pop(0)
+        bound[c] = kc
+        exprs += ["-e", "keycode %d = U%04X" % (kc, ord(c))]
+    return exprs, bound, spare
+
+
 class X11Backend(Backend):
     name = "x11"
+    PREMAP_SETTLE_S = 0.4     # the app re-reads the keymap on MappingNotify; no key is sent until it has
 
     def __init__(self):
         self.calls = []       # injector accounting (#1509)
+        self._focus_win = None
+        self._bound = {}      # {char: keycode} bound by _premap for the whole run (the keymap is the X server's, it outlives app relaunches)
+        self._spare = None
+        self.premap = os.environ.get("APPCI_X11_PREMAP", "1") != "0"
 
     def preflight(self):
         p = [("missing tool: " + t) for t in ("xdotool", "xsel") if not shutil.which(t)]
@@ -548,7 +637,68 @@ class X11Backend(Backend):
         if self.guard_override:
             self.guard()
 
+    def run_recorded(self, cmds):
+        """every injection goes to a focused Phosphor window (see _ensure_focus), then is recorded as on every backend"""
+        self._ensure_focus()
+        Backend.run_recorded(self, cmds)
+
+    def _focused(self):
+        r = subprocess.run(["xdotool", "getwindowfocus"], capture_output=True, timeout=10)
+        return r.stdout.decode().strip() if r.returncode == 0 else ""
+
+    def _phosphor_windows(self):
+        r = subprocess.run(["xdotool", "search", "--onlyvisible", "--class", "phosphor"], capture_output=True, timeout=10)
+        return r.stdout.decode().split()
+
+    def _ensure_focus(self):
+        """r18u28 (X11 ui_startup_time, cb_settings_migration, remote_session_ext, editor_memory_7mb): Xvfb has no window manager, so a
+        relaunched app's window never gets the keyboard focus by itself, and run.py focuses Phosphor only at a case's start. Every key typed
+        after an in-case relaunch went nowhere (the app's log of that launch has no keydown at all; 'injector sent 15; app saw 0'), and the
+        case read it as the burst not landing. Before each injection: one `getwindowfocus`; if that is not the window focused last time, the
+        newest visible Phosphor window is focused (a focused Phosphor window is left alone) and verified, else the injection is refused."""
+        if self.guard_override:
+            self.guard()
+            return
+        have = self._focused()
+        if have and have == self._focus_win:
+            return
+        ids = self._phosphor_windows()
+        if not ids:
+            raise RuntimeError("no visible Phosphor window on %s: refusing to type into nothing" % os.environ.get("DISPLAY", "?"))
+        if have in ids:
+            self._focus_win = have
+            return
+        for _ in range(20):
+            _run(["xdotool", "windowfocus", ids[-1]])
+            have = self._focused()
+            if have in ids:
+                self._focus_win = have
+                return
+            time.sleep(0.1)
+        raise RuntimeError("Phosphor does not get the X input focus (focus %r, its windows %s): refusing to type" % (have, ids))
+
+    def _premap(self, text):
+        """r18u28 (X11 intl_wide_type/edit/program): `xdotool type` gives a character that is not in the keymap a scratch keycode, presses it
+        and rebinds it for the next one. The app re-reads the keymap from the server when it handles the MappingNotify, i.e. after the
+        NEXT rebinding: `日本語のテスト` reached the app's keydown log as `本本テト` (the same applies to any X11 client). Each such character
+        gets a keycode of its own once per run (xmodmap), and nothing is typed until the app has settled on that keymap, so xdotool finds
+        every character in a keymap that no longer changes while it types. APPCI_X11_PREMAP=0 restores the old behaviour."""
+        if not self.premap or not any(ord(c) > 0x7e for c in text) or not shutil.which("xmodmap"):
+            return
+        if self._spare is None:
+            r = subprocess.run(["xmodmap", "-pke"], capture_output=True, timeout=10)
+            self._spare = x11_spare_keycodes(r.stdout.decode(errors="replace")) if r.returncode == 0 else []
+        exprs, bound, spare = x11_premap_plan(text, self._bound, self._spare)
+        if exprs:
+            r = subprocess.run(["xmodmap"] + exprs, capture_output=True, timeout=10)
+            if r.returncode != 0:
+                _log_stderr("xmodmap", r.returncode, r.stderr)
+                return
+            time.sleep(self.PREMAP_SETTLE_S)
+        self._bound, self._spare = bound, spare
+
     def type(self, text, delay_ms=15, enter=False):
+        self._premap(text)
         cmds = [["xdotool", "type", "--delay", str(int(delay_ms)), "--", text]]
         if enter:
             cmds.append(["xdotool", "key", "--delay", "0", "Return"])
@@ -556,23 +706,16 @@ class X11Backend(Backend):
 
     def key(self, spec, repeat=1, delay_ms=15):
         mods, k = split_key(spec)
-        x = "+".join(mods + [k])
+        x = "+".join(mods + [x11_keyname(k)])
         self.run_recorded([["xdotool", "key", "--delay", str(int(delay_ms))] + [x] * repeat])
 
     def keys(self, specs, delay_ms=15):
-        self.run_recorded([["xdotool", "key", "--delay", str(int(delay_ms))] + ["+".join(split_key(s)[0] + [split_key(s)[1]]) for s in specs]])
+        self.run_recorded([["xdotool", "key", "--delay", str(int(delay_ms))] + ["+".join(split_key(s)[0] + [x11_keyname(split_key(s)[1])]) for s in specs]])
 
     def roll(self, text, overlap_ms=10, enter=True):
-        cmd, prev = ["xdotool"], None
-        for ch in text:
-            k = ENVNAME.get(ch, ch)
-            cmd += ["keydown", k, "sleep", str(overlap_ms / 1000)]
-            if prev:
-                cmd += ["keyup", prev]
-            cmd += ["sleep", str(overlap_ms / 1000)]
-            prev = k
-        if prev:
-            cmd += ["keyup", prev]
+        if any(ord(c) > 0x7e for c in text):          # keydown takes keysym names, not characters: such text is typed (as the Mac backend does for ':')
+            return self.type(text, delay_ms=max(5, overlap_ms), enter=enter)
+        cmd = x11_roll_argv(text, overlap_ms)
         if enter:
             cmd += ["key", "Return"]
         self.run_recorded([cmd])
@@ -600,6 +743,11 @@ class X11Backend(Backend):
         if not ids:
             raise RuntimeError("no visible Phosphor window on " + os.environ.get("DISPLAY", "?"))
         _run(["xdotool", "windowfocus", ids[-1]])
+        self._focus_win = None            # the next injection re-reads the focus (_ensure_focus)
+
+    def refocus(self, verify=False):
+        """focus Phosphor (no keys sent), as every injection does"""
+        self._ensure_focus()
 
     def clip_set(self, data):
         if isinstance(data, str):

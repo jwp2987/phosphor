@@ -1231,9 +1231,30 @@ class Ctx:
             return None
         if shutil.which("tesseract"):
             r = subprocess.run(["tesseract", p, "-"], capture_output=True, timeout=60)
-        else:
-            r = subprocess.run([mac_ocr, p], capture_output=True, timeout=60)      # Apple Vision (mac/tools/ocr.swift)
+            txt = r.stdout.decode(errors="replace")
+            up = ocr_upscaled(self.be.name, p)
+            if up:                         # X11: the 2x read is added to the plain one, never replaces it (ocr_upscaled)
+                r2 = subprocess.run(["tesseract", up, "-"], capture_output=True, timeout=60)
+                txt += "\n" + r2.stdout.decode(errors="replace")
+            return txt
+        r = subprocess.run([mac_ocr, p], capture_output=True, timeout=60)          # Apple Vision (mac/tools/ocr.swift)
         return r.stdout.decode(errors="replace")
+
+
+def ocr_upscaled(backend_name, p):
+    """r18u28 (X11 md_viewer, ui_right_click_paste): on the Xvfb screen tesseract missed the markdown table's small grey cells (ZEBRAAPPLE,
+    QUINCEBERRY) and a typed probe under the spell-check underline, all clearly drawn in the screenshot (shots/terminal_md_small.png,
+    terminal_rc_prompt.png); the same cases read them on Wayland. On X11 a second, 2x-upscaled grey copy of the shot is OCR'd as well, and its
+    words are ADDED to the plain read (word boxes scaled back), so nothing the plain read found is lost. -> path of the copy, or None
+    (other backends, no ImageMagick `convert`, APPCI_OCR_UPSCALE=0, or the conversion failed)."""
+    if backend_name != "x11" or os.environ.get("APPCI_OCR_UPSCALE", "1") == "0" or not shutil.which("convert"):
+        return None
+    out = re.sub(r"\.png$", "", p) + ".ocr2x.png"
+    try:
+        r = subprocess.run(["convert", p, "-colorspace", "Gray", "-resize", "200%", out], capture_output=True, timeout=60)
+    except Exception:
+        return None
+    return out if r.returncode == 0 and os.path.exists(out) else None
 
 
 # ---------------------------------------------------------------- mode proof
@@ -3959,7 +3980,9 @@ def c_lat_paint(ctx, r):
 
 
 # ---------------------------------------------------------------- keydown count == keys sent (#1159)
-KEYDOWN_KEY_RE = re.compile(r"input_order keydown key=(\S+) ctrl=(true|false) alt=(true|false) shift=(true|false) cmd=(true|false) t=(\d+(?:\.\d+)?)")
+# r18u28 (X11 keydown_count): `key=(\S+)` never matched the space bar's `key=" "`, so the audit dropped every space and saw `echo o...` as two `o`
+# presses in a row ('"o"' 1.97 ms apart, a false #1159 doubled-key report). A quoted key (Rust Debug: `" "`, `"\""`) is one token.
+KEYDOWN_KEY_RE = re.compile(r'input_order keydown key=("(?:[^"\\]|\\.)*"|\S+) ctrl=(true|false) alt=(true|false) shift=(true|false) cmd=(true|false) t=(\d+(?:\.\d+)?)')
 MODIFIER_KEYS = {"shift", "control", "ctrl", "alt", "option", "meta", "super", "command", "cmd", "capslock", "fn"}
 
 
@@ -4200,7 +4223,7 @@ def idle_log_block(ctx, gap, count):
     off = ctx.log_size()
     try:
         for i in range(count + 1):
-            if i:       # the previous sample's two keys are in the log by now
+            if i:       # the previous sample's two keys and their frames are in the log by now (the wait below)
                 ds, _ = key_frame_pairs(ctx.log_since(off))
                 if len(ds) >= 2:
                     first.append(ds[0]); second.append(ds[1])
@@ -4211,6 +4234,11 @@ def idle_log_block(ctx, gap, count):
             ctx.be.type("m", 10)
             time.sleep(0.3)
             ctx.be.type("m", 10)
+            # r18u28 (X11: 0 of 30 pairs per gap): the read at the top of the loop ran the moment the second key was sent, before the app had
+            # logged that key's frame (~20 ms later on software GL), so every sample had one pair and was dropped. Wait (bounded) for both
+            # frames; the latencies are the app's own log timestamps, so the wait changes nothing measured, and the next idle gap starts after it.
+            o = off
+            ctx.until(lambda: len(key_frame_pairs(ctx.log_since(o))[0]) >= 2, 2.0)
     finally:
         time.sleep(0.5)
         ctx.reset()
