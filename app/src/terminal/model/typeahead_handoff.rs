@@ -631,6 +631,16 @@ impl PaneHandoff {
     }
 }
 
+/// #1793: the requests written before the editor's command, settled by that command's own
+/// Preexec, which is told from a line queued ahead of it by the command's text.
+#[derive(Debug, Default)]
+struct CommandRequestSnapshot {
+    requests_written: u64,
+    /// The written command's text; `None` until `PtyController` names it. A Preexec settles
+    /// nothing without it.
+    command: Option<String>,
+}
+
 /// The hand-off state of one terminal. See the module documentation.
 #[derive(Debug, Default)]
 pub struct TypeaheadHandoff {
@@ -806,9 +816,15 @@ pub struct TypeaheadHandoff {
     /// #1793: requests found never to be answered (see
     /// [`Self::reconcile_requests_at_own_preexec`]).
     requests_eaten_total: u64,
-    /// #1793: `requests_written_total` when the editor's command was written, until that
-    /// command's own Preexec is parsed.
-    requests_written_before_command: Option<u64>,
+    /// #1793: reports the view handled (`on_report`), to tell how many of the counted reports
+    /// are still on their way to it.
+    reports_handled_total: u64,
+    /// #1793: `requests_written_total` when the editor's command was written, and that command's
+    /// text, until its own Preexec is parsed.
+    requests_written_before_command: Option<CommandRequestSnapshot>,
+    /// #1793: the Preexec about to be applied carries the text of the command the snapshot was
+    /// taken for (set by [`Self::note_preexec_command`], taken by [`Self::on_preexec`]).
+    preexec_is_written_command: bool,
     /// Whether the Enter deferred behind the report ends such a line.
     deferred_young: bool,
     /// Identifies a deferred Enter that waits for a report covering untracked bytes (#1104). If
@@ -1803,6 +1819,18 @@ impl TypeaheadHandoff {
         }
     }
 
+    /// #1793: a lone Enter is about to be written to the shell's line while the editor owns input
+    /// (the managed-ssh bare Enter): it runs the line, so untracked bytes it held are not in it
+    /// any more and nothing waits for a report covering them.
+    pub fn note_line_ended_by_user_enter(&mut self) {
+        if matches!(
+            self.state,
+            HandoffState::EditorOwned | HandoffState::AwaitingReport
+        ) {
+            self.forget_untracked_line_bytes();
+        }
+    }
+
     /// #1574: the view delivered bytes to the shell's line as a FINAL delivery (the #1494 path:
     /// held ssh typeahead written to an unbootstrapped remote after `stty sane`). They belong to
     /// that shell, where the toast said they went: while the mark is set no report is asked for
@@ -1849,6 +1877,7 @@ impl TypeaheadHandoff {
             self.record_rtt(written_at.elapsed());
         }
         self.requests_outstanding = self.requests_outstanding.saturating_sub(1);
+        self.reports_handled_total = self.reports_handled_total.saturating_add(1);
         if let Some(remaining) = self.untracked_cover_after_reports.as_mut() {
             *remaining = remaining.saturating_sub(1);
             if *remaining == 0 {
@@ -1869,11 +1898,43 @@ impl TypeaheadHandoff {
         self.requests_outstanding
     }
 
-    /// #1793: the pty reader parsed a report of the shell's line (model thread, in stream order,
-    /// before the view handles it). Only counted: the view's handling of the report
-    /// ([`Self::on_report`]) is what decides on it.
+    /// #1793: the pty reader handed a report of the shell's line to the view as a `Typeahead` event
+    /// (model thread, in stream order, before the view handles it). Only reports that reach the
+    /// view are counted (not one dropped on the alt screen or outside `ShellReported` mode): only
+    /// those reach [`Self::on_report`], which is what decides on them.
     pub fn on_report_parsed(&mut self) {
         self.reports_parsed_total = self.reports_parsed_total.saturating_add(1);
+    }
+
+    /// #1793: `PtyController` wrote the editor's command `command` (right after
+    /// [`Self::on_command_written`]): its own Preexec is the one that carries this text.
+    pub fn note_written_command_text(&mut self, command: &str) {
+        if let Some(snapshot) = self.requests_written_before_command.as_mut()
+            && snapshot.command.is_none()
+        {
+            snapshot.command = Some(command.trim().to_owned());
+        }
+    }
+
+    /// #1793: the written command went to the shell some other way than typed into its line (the
+    /// PowerShell insert chord, #1581): its Preexec settles nothing. The text is blanked rather
+    /// than unset, so a later command's text cannot take its place.
+    pub fn forget_written_command_text(&mut self) {
+        if let Some(snapshot) = self.requests_written_before_command.as_mut() {
+            snapshot.command = Some(String::new());
+        }
+    }
+
+    /// #1793: the Preexec about to be applied (model thread, before [`Self::on_preexec`]) carries
+    /// `command`. Only if it is the written command's own text may that Preexec settle the
+    /// requests written before it: a line already queued ahead of the command in the tty (typed
+    /// ahead, a PS2 continuation) is read first and proves nothing about requests behind it.
+    pub fn note_preexec_command(&mut self, command: &str) {
+        self.preexec_is_written_command = self
+            .requests_written_before_command
+            .as_ref()
+            .and_then(|snapshot| snapshot.command.as_deref())
+            .is_some_and(|written| !written.is_empty() && written == command.trim());
     }
 
     /// #1793: the editor's command's own Preexec was parsed (model thread). The tty is FIFO and so
@@ -1896,6 +1957,17 @@ impl TypeaheadHandoff {
         }
         self.requests_eaten_total = self.requests_eaten_total.saturating_add(eaten);
         let eaten_now = u32::try_from(eaten).unwrap_or(u32::MAX);
+        // The RTT clock of each eaten request would otherwise time the next report. The reports
+        // counted but not yet handled by the view are ahead of them; the eaten ones follow.
+        let still_on_the_way = self
+            .reports_parsed_total
+            .saturating_sub(self.reports_handled_total);
+        let keep = usize::try_from(still_on_the_way).unwrap_or(usize::MAX);
+        let drop_end = keep.saturating_add(usize::try_from(eaten).unwrap_or(usize::MAX));
+        if keep < self.rtt_pending.len() {
+            let end = drop_end.min(self.rtt_pending.len());
+            self.rtt_pending.drain(keep..end);
+        }
         let before = self.requests_outstanding;
         self.requests_outstanding = self.requests_outstanding.saturating_sub(eaten_now);
         // A request covering untracked bytes is written after them, so after this command (the
@@ -2153,7 +2225,10 @@ impl TypeaheadHandoff {
         // an earlier command's Preexec is still pending, that Preexec is the next one and its
         // snapshot is the one it may settle; this command then settles nothing.
         if !self.own_preexec_pending {
-            self.requests_written_before_command = Some(self.requests_written_total);
+            self.requests_written_before_command = Some(CommandRequestSnapshot {
+                requests_written: self.requests_written_total,
+                command: None,
+            });
         }
         self.own_preexec_pending = true;
         // #1615: the editor wrote the next command, so a delivered Enter's line is settled.
@@ -2310,6 +2385,7 @@ impl TypeaheadHandoff {
         self.own_preexec_pending = false;
         // #1793: a command whose own Preexec never came (an empty line) settles nothing.
         self.requests_written_before_command = None;
+        self.preexec_is_written_command = false;
         let consumed_by_program = mem::take(&mut self.interactive_command_finished);
         let seq_mode = self.prompt_seq_mode();
         // #1552: shows which of the two blocked the correction below on a Git Bash session.
@@ -2386,14 +2462,17 @@ impl TypeaheadHandoff {
         // when this Preexec is the written command's own (a line typed and Entered right after the
         // submit, before its Preexec was parsed): that line is the next prompt's, held for it.
         let own_preexec = mem::take(&mut self.own_preexec_pending);
-        // #1793: a line the shell started itself may have been ahead of a request written before
-        // the command, so only the command's own Preexec settles them.
-        let written_before_command = self.requests_written_before_command.take();
-        if let Some(written_before_command) = written_before_command
-            && own_preexec
+        // #1793: only the command's own Preexec, told by its text, settles the requests written
+        // before it. A line the shell started itself, or one queued ahead of the command (its
+        // Preexec carries another text), proves nothing: it settles nothing, and the prompt that
+        // follows it drops the snapshot.
+        let is_written_command = mem::take(&mut self.preexec_is_written_command);
+        if own_preexec
             && !shell_started
+            && is_written_command
+            && let Some(snapshot) = self.requests_written_before_command.take()
         {
-            self.reconcile_requests_at_own_preexec(written_before_command);
+            self.reconcile_requests_at_own_preexec(snapshot.requests_written);
         }
         if !own_preexec && self.end_young_hold_as_typeahead() {
             warpui::input_order::log_hop("young_hold_end", || {

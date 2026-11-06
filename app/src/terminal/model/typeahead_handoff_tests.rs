@@ -1508,9 +1508,22 @@ fn a_deferral_whose_report_never_comes_is_given_up() {
     assert!(!handoff.give_up_uncovered_deferral(id));
 }
 
+/// #1793: the editor's command `command` written by `PtyController` (which names its text).
+fn write_named_command(handoff: &mut TypeaheadHandoff, command: &str) {
+    handoff.on_command_written();
+    handoff.note_written_command_text(command);
+}
+
+/// #1793: a Preexec carrying `command` applied by the model (the text first, as
+/// `TerminalModel::preexec` does).
+fn apply_preexec(handoff: &mut TypeaheadHandoff, command: &str, shell_started: bool) {
+    handoff.note_preexec_command(command);
+    let _ = handoff.on_preexec(shell_started);
+}
+
 /// #1793 fixture: a command written behind `requests_before` legacy requests, of which
-/// `answered` were reported (parsed in stream order and handled by the view) before the command's
-/// own Preexec; then its prompt, which hands input back to the editor.
+/// `answered` were reported (delivered in stream order and handled by the view) before the
+/// command's own Preexec; then its prompt, which hands input back to the editor.
 fn command_run_behind_requests(requests_before: u32, answered: u32) -> TypeaheadHandoff {
     let mut handoff = TypeaheadHandoff::default();
     for _ in 0..requests_before {
@@ -1520,8 +1533,8 @@ fn command_run_behind_requests(requests_before: u32, answered: u32) -> Typeahead
         handoff.on_report_parsed();
         assert_eq!(handoff.on_report(), ReportDisposition::InsertLegacy);
     }
-    handoff.on_command_written();
-    let _ = handoff.on_preexec(false);
+    write_named_command(&mut handoff, "ls -l");
+    apply_preexec(&mut handoff, "ls -l", false);
     handoff.on_precmd();
     assert!(handoff.try_commit_at_prompt());
     assert_eq!(handoff.state(), &HandoffState::EditorOwned);
@@ -1532,8 +1545,8 @@ fn command_run_behind_requests(requests_before: u32, answered: u32) -> Typeahead
 /// never answered (dropped unwritten, or read by something other than the line editor) left
 /// `requests_outstanding` above zero for good, so every later Enter that met untracked bytes
 /// waited for a report no request would send, and the 3 s give-up dropped it with the keys typed
-/// behind it (`<Enter>~.`). The command's own Preexec proves every request written before it
-/// was read: the unanswered one is dropped from the count, and a bare Enter is not deferred.
+/// behind it. The command's own Preexec proves every request written before it was read: the
+/// unanswered one is dropped from the count, and an Enter is not deferred.
 #[test]
 fn a_request_never_answered_is_settled_by_the_next_commands_own_preexec() {
     let mut handoff = command_run_behind_requests(1, 0);
@@ -1547,8 +1560,8 @@ fn a_request_never_answered_is_settled_by_the_next_commands_own_preexec() {
 }
 
 /// #1793: requests the shell answered are not settled twice: with every report in, nothing is
-/// eaten, and a report parsed but not yet handled by the view still counts as answered (its own
-/// `on_report` takes it off the count).
+/// eaten, and a report delivered but not yet handled by the view still counts as answered (its
+/// own `on_report` takes it off the count).
 #[test]
 fn answered_requests_are_not_settled_again_at_the_preexec() {
     let handoff = command_run_behind_requests(2, 2);
@@ -1556,10 +1569,10 @@ fn answered_requests_are_not_settled_again_at_the_preexec() {
 
     let mut handoff = TypeaheadHandoff::default();
     handoff.on_legacy_request_written();
-    // Parsed before the command's Preexec, handled by the view only after it.
+    // Delivered before the command's Preexec, handled by the view only after it.
     handoff.on_report_parsed();
-    handoff.on_command_written();
-    let _ = handoff.on_preexec(false);
+    write_named_command(&mut handoff, "ls");
+    apply_preexec(&mut handoff, "ls", false);
     assert_eq!(
         handoff.requests_outstanding(),
         1,
@@ -1584,27 +1597,70 @@ fn a_request_written_after_the_command_still_defers_the_enter() {
     assert_eq!(handoff.on_report(), ReportDisposition::InsertKeepDeferred);
 }
 
-/// #1793: a line the shell started itself, or a command whose Preexec never came (an empty line,
-/// whose Precmd follows directly), settles nothing: only the written command's own Preexec proves
-/// the requests ahead of it read.
+/// #1793: only the written command's own Preexec, told by its text, settles requests: not a line
+/// the shell started itself, not a line queued ahead of the command (another text, #1104/#933),
+/// not a command whose Preexec never came (an empty line, whose Precmd follows directly).
 #[test]
 fn only_the_commands_own_preexec_settles_requests() {
     let mut handoff = TypeaheadHandoff::default();
     handoff.on_legacy_request_written();
-    handoff.on_command_written();
-    let _ = handoff.on_preexec(true);
+    write_named_command(&mut handoff, "ls");
+    apply_preexec(&mut handoff, "ls", true);
     assert_eq!(handoff.requests_outstanding(), 1, "a shell-started line");
 
     let mut handoff = TypeaheadHandoff::default();
     handoff.on_legacy_request_written();
-    handoff.on_command_written();
+    write_named_command(&mut handoff, "ls");
+    apply_preexec(&mut handoff, "make", false);
+    assert_eq!(handoff.requests_outstanding(), 1, "a line queued ahead");
     handoff.on_precmd();
-    let _ = handoff.on_preexec(false);
+    apply_preexec(&mut handoff, "ls", false);
+    assert_eq!(
+        handoff.requests_outstanding(),
+        1,
+        "the queued line's prompt dropped the snapshot"
+    );
+
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.on_legacy_request_written();
+    write_named_command(&mut handoff, "ls");
+    handoff.on_precmd();
+    apply_preexec(&mut handoff, "ls", false);
     assert_eq!(
         handoff.requests_outstanding(),
         1,
         "no Preexec before the prompt"
     );
+
+    // No text named (a write path that does not name it): nothing is settled.
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.on_legacy_request_written();
+    handoff.on_command_written();
+    apply_preexec(&mut handoff, "ls", false);
+    assert_eq!(handoff.requests_outstanding(), 1, "no written text");
+
+    // The PowerShell insert chord (#1581): the text went on the pipe, not the tty. A later
+    // command's text does not take its place.
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.on_legacy_request_written();
+    write_named_command(&mut handoff, "ls");
+    handoff.forget_written_command_text();
+    write_named_command(&mut handoff, "ls");
+    apply_preexec(&mut handoff, "ls", false);
+    assert_eq!(handoff.requests_outstanding(), 1, "the file-chord path");
+}
+
+/// #1793: the managed-ssh bare Enter is a lone `\r` written while the editor owns input: it runs
+/// the shell's line, so untracked bytes are not left there and nothing waits for their report.
+#[test]
+fn a_lone_enter_written_to_the_shells_line_ends_its_untracked_bytes() {
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.on_legacy_request_written();
+    handoff.note_untracked_line_bytes();
+    handoff.note_line_ended_by_user_enter();
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Write);
+    assert!(!handoff.defer_enter());
+    assert!(!handoff.editor_text_precedes_report());
 }
 
 #[test]

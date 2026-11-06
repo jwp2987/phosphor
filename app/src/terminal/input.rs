@@ -1261,6 +1261,11 @@ pub enum Event {
     SshEscapeToPty {
         bytes: [u8; 2],
     },
+    /// #1793: Enter on an EMPTY line of a managed ssh session. The view writes a raw `\r` to the
+    /// pty at once, as a plain terminal running ssh would: no report wait, no verdict, no
+    /// deferral, and the keys typed after it follow it in typed order (`<Enter>~.` reaches ssh
+    /// as `\r~.`).
+    SshBareEnterToPty,
 }
 
 /// The escape characters ssh acts on after `~` (`ssh(1)`, ESCAPE CHARACTERS) that this editor
@@ -6769,6 +6774,42 @@ impl Input {
             return refuse("shared_viewer");
         }
         Some(bytes)
+    }
+
+    /// #1793: whether this Enter is one on the empty line of a managed (warpified) ssh session, which
+    /// goes to the pty as a raw `\r` (see [`Event::SshBareEnterToPty`]). The same sessions and
+    /// lines as the `~X` escape (#1638): not a line locked to the agent, not a shared-session
+    /// viewer. An empty Enter that has a job of its own in the editor keeps it: a pending agent
+    /// action card takes focus (#1180), the queued-prompts panel sends its top row, an open menu
+    /// accepts its item.
+    fn ssh_bare_enter_passes_through(&self, ctx: &AppContext) -> bool {
+        if !self.editor.as_ref(ctx).is_empty(ctx) {
+            return false;
+        }
+        let ai_input = self.ai_input_model.as_ref(ctx);
+        if ai_input.is_ai_input_enabled() && ai_input.is_input_type_locked() {
+            return false;
+        }
+        if !matches!(
+            self.active_session(ctx).map(|s| s.session_type()),
+            Some(SessionType::WarpifiedRemote { .. })
+        ) {
+            return false;
+        }
+        if !self.suggestions_mode_model.as_ref(ctx).is_closed() {
+            return false;
+        }
+        if empty_enter_focuses_pending_action(true, self.pending_action_status(ctx).as_ref()) {
+            return false;
+        }
+        if self
+            .queued_prompts_panel
+            .as_ref()
+            .is_some_and(|panel| panel.as_ref(ctx).enter_sends_queued_prompt(ctx))
+        {
+            return false;
+        }
+        !self.model.lock().shared_session_status().is_viewer()
     }
 
     /// Returns `true` if the active session is a bootstrapped warpified remote session that is
@@ -14009,6 +14050,14 @@ impl Input {
             }
 
             self.emit_submit_cli_agent_input(ctx);
+            return;
+        }
+        // #1793: an Enter on the empty line of a managed ssh session is plain-terminal
+        // pass-through (the owner's ssh rule): a raw `\r` to the pty at once, never held for a
+        // report or a verdict, so ssh sees the newline its `~` escapes need.
+        if !self.running_deferred_enter && self.ssh_bare_enter_passes_through(ctx) {
+            warpui::input_order::log_key_hop("ssh_bare_enter_to_pty", String::new);
+            ctx.emit(Event::SshBareEnterToPty);
             return;
         }
         // Before anything classifies the buffer: while the report is outstanding the editor

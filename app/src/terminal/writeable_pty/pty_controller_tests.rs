@@ -2926,6 +2926,124 @@ mod typeahead_handoff {
         });
     }
 
+    /// #1793: the request count fed through the real `TerminalModel` and controller in stream
+    /// order. A request whose report the view never got is settled by the written command's own
+    /// Preexec, told by its text; a report on its way to the view is not settled twice; a line
+    /// queued ahead of the command (another text), a Preexec naming only the head of a continued
+    /// (PS2) command, and a report dropped on the alt screen or outside `ShellReported` mode are
+    /// each handled without settling a request that may still answer.
+    #[test]
+    fn requests_are_settled_only_by_the_written_commands_own_preexec_in_stream_order() {
+        use crate::terminal::model::ansi::InputBufferValue;
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let outstanding =
+                |h: &Harness| h.model.lock().typeahead_handoff().requests_outstanding();
+            let preexec = |h: &Harness, command: &str| {
+                h.model.lock().preexec(PreexecValue {
+                    command: command.to_owned(),
+                    session_id: None,
+                });
+            };
+
+            // A request the shell never answers, then the command and its own Preexec.
+            let h = harness(&mut app);
+            line_editor_becomes_active(&mut app, &h);
+            assert_eq!(written(&h).last(), Some(&REQUEST.to_vec()));
+            assert_eq!(outstanding(&h), 1);
+            submit(&mut app, &h, "ls -l");
+            preexec(&h, "ls -l");
+            assert_eq!(outstanding(&h), 0, "never answered: settled");
+
+            // Answered, its report delivered but not yet handled by the view: not settled.
+            let h = harness(&mut app);
+            line_editor_becomes_active(&mut app, &h);
+            h.model.lock().input_buffer(InputBufferValue::default());
+            submit(&mut app, &h, "ls -l");
+            preexec(&h, "ls -l");
+            assert_eq!(outstanding(&h), 1, "its report is on its way to the view");
+            let _ = h.model.lock().typeahead_handoff_mut().on_report();
+            assert_eq!(outstanding(&h), 0);
+
+            // A line queued ahead of the command: its Preexec carries another text.
+            let h = harness(&mut app);
+            line_editor_becomes_active(&mut app, &h);
+            submit(&mut app, &h, "ls -l");
+            preexec(&h, "make");
+            assert_eq!(outstanding(&h), 1, "a line ahead settles nothing");
+
+            // PS2: a Preexec naming only the head of a continued command (bash's preexec also stops
+            // at the first job-control operator) settles nothing. The whole multi-line text is the
+            // command's own.
+            let h = harness(&mut app);
+            line_editor_becomes_active(&mut app, &h);
+            submit(&mut app, &h, "for i in 1; do\necho $i\ndone");
+            preexec(&h, "for i in 1; do");
+            assert_eq!(outstanding(&h), 1, "a PS2 head settles nothing");
+            let h = harness(&mut app);
+            line_editor_becomes_active(&mut app, &h);
+            submit(&mut app, &h, "for i in 1; do\necho $i\ndone");
+            preexec(&h, "for i in 1; do\necho $i\ndone");
+            assert_eq!(outstanding(&h), 0);
+
+            // A report the view never gets (outside `ShellReported` mode) is not counted as an
+            // answer: the request it answered is settled by the command's Preexec.
+            let h = harness(&mut app);
+            line_editor_becomes_active(&mut app, &h);
+            {
+                let mut model = h.model.lock();
+                let early_output = model.block_list_mut().early_output_mut();
+                early_output.set_typeahead_mode_for_test(TypeaheadMode::InputMatching);
+            }
+            h.model.lock().input_buffer(InputBufferValue {
+                buffer: "x".to_owned(),
+                ..Default::default()
+            });
+            h.model
+                .lock()
+                .block_list_mut()
+                .early_output_mut()
+                .set_typeahead_mode_for_test(TypeaheadMode::ShellReported);
+            submit(&mut app, &h, "ls -l");
+            preexec(&h, "ls -l");
+            assert_eq!(outstanding(&h), 0, "the dropped report answered nothing");
+
+            // On the alt screen a report is not delivered to the view, so it is not counted
+            // either: the request is settled by the command's Preexec.
+            let h = harness(&mut app);
+            line_editor_becomes_active(&mut app, &h);
+            let delivered = |h: &Harness| {
+                h.model
+                    .lock()
+                    .block_list()
+                    .early_output()
+                    .reports_delivered()
+            };
+            let before = delivered(&h);
+            h.model.lock().set_altscreen_active();
+            h.model.lock().input_buffer(InputBufferValue::default());
+            h.model.lock().set_altscreen_inactive_for_test();
+            assert_eq!(delivered(&h), before, "not delivered on the alt screen");
+            submit(&mut app, &h, "ls -l");
+            preexec(&h, "ls -l");
+            assert_eq!(outstanding(&h), 0, "the alt-screen report answered nothing");
+
+            // An unsolicited report (a user's Alt-i, a pasted ESC i) is delivered and counted:
+            // it can only make fewer requests look eaten, never settle one still on its way.
+            let h = harness(&mut app);
+            line_editor_becomes_active(&mut app, &h);
+            h.model.lock().input_buffer(InputBufferValue::default());
+            h.model.lock().input_buffer(InputBufferValue::default());
+            submit(&mut app, &h, "ls -l");
+            preexec(&h, "ls -l");
+            assert_eq!(
+                outstanding(&h),
+                1,
+                "nothing eaten; the view still handles its report"
+            );
+        });
+    }
+
     /// #1104: keys written behind a legacy request stay in the shell's line when its report
     /// comes back; one more request is written behind them, and only once.
     #[test]

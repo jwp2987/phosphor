@@ -13817,7 +13817,13 @@ impl TerminalView {
                         handoff.note_untracked_line_bytes();
                     }
                 } else if facts.shell_reports_line {
-                    handoff.note_untracked_line_bytes();
+                    if bytes.as_ref() == b"\r" {
+                        // #1793: a lone Enter (the managed-ssh bare Enter) ends the shell's line:
+                        // whatever untracked bytes it held run with it, none is left there.
+                        handoff.note_line_ended_by_user_enter();
+                    } else {
+                        handoff.note_untracked_line_bytes();
+                    }
                 }
                 handoff.on_user_bytes(&bytes)
             };
@@ -31163,6 +31169,12 @@ impl TerminalView {
                     self.paste_queue.ssh_pastes.remove(id);
                     self.paste_queue.payloads.remove(id);
                 }
+            }
+            InputEvent::SshBareEnterToPty => {
+                // #1793: Enter on the empty line of a managed ssh session, as plain ssh in a plain
+                // terminal receives it. Through the pane queue like any typed key, so it stays
+                // behind keys the queue holds and the keys typed after it follow it.
+                self.write_user_bytes_to_pty(b"\r".to_vec(), ctx);
             }
             InputEvent::SshEscapeToPty { bytes } => {
                 // #1638: the ssh client's escape, typed at the start of an empty line. Through

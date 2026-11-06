@@ -18263,76 +18263,139 @@ fn test_ssh_escape_bytes_rule() {
     assert_eq!(super::ssh_escape_bytes("~", "~.a"), None);
 }
 
-/// #1793 (owner repro on a warpified ssh remote whose bash reports its line; appci
-/// `ssh_drop_reconnect` [escape] on Wayland): a request the remote never answered kept the
-/// hand-off's request count above zero, so a bare Enter on the empty remote line waited 3 s for a
-/// report no request would send, was not run, and the `~.` typed behind it was discarded. The next
-/// command's own Preexec settles that request: the bare Enter is not deferred, and `~.` typed at
-/// once reaches ssh right behind it, in order, nothing held or discarded. (c) While a request IS on
-/// its way, the Enter still waits for its report (#1104) and `~.` waits behind it. Legacy and Table.
-#[test]
-fn test_bare_enter_then_ssh_escape_after_an_unanswered_request_in_a_managed_ssh_session() {
-    use crate::terminal::input_queue::DestinationMode;
+/// #1793 fixture: the hand-off of `input`'s pane after a command whose own Preexec and prompt
+/// came back behind a request the shell never answered, with bytes the hand-off did not adopt in
+/// the shell's line; `on_its_way` adds the prompt's own request, not answered yet.
+fn handoff_after_an_unanswered_request(app: &App, input: &ViewHandle<Input>, on_its_way: bool) {
+    input.read(app, |input, _| {
+        let mut model = input.model.lock();
+        let mut handoff = model.typeahead_handoff_mut();
+        handoff.on_legacy_request_written();
+        handoff.on_command_written();
+        handoff.note_written_command_text("make");
+        handoff.note_preexec_command("make");
+        let _ = handoff.on_preexec(false);
+        handoff.on_precmd();
+        assert!(handoff.try_commit_at_prompt());
+        if on_its_way {
+            handoff.on_legacy_request_written();
+        }
+        handoff.note_untracked_line_bytes();
+    });
+}
+
+/// Whether `input`'s Enter is deferred behind the typeahead report.
+fn enter_is_deferred_behind_the_report(app: &App, input: &ViewHandle<Input>) -> bool {
     use crate::terminal::model::typeahead_handoff::HandoffState;
+    input.read(app, |input, _| {
+        let model = input.model.lock();
+        let handoff = model.typeahead_handoff();
+        matches!(handoff.state(), HandoffState::HoldAfterEnter { .. })
+            || handoff.holds_keys_behind_deferred_enter()
+    })
+}
+
+/// Waits (bounded) for `writes` to hold `n` pty writes.
+async fn wait_for_pty_writes(writes: &Rc<RefCell<Vec<Vec<u8>>>>, n: usize) {
+    for _ in 0..200 {
+        if writes.borrow().len() >= n {
+            return;
+        }
+        warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+    }
+}
+
+/// #1793 (owner repro on a warpified ssh remote whose bash reports its line; appci
+/// `ssh_drop_reconnect` [escape] on Wayland): an Enter on the EMPTY line of a managed ssh session
+/// is plain-terminal pass-through: a raw `\r` to the pty at once, never held for a report, and
+/// `~.` typed right behind it follows it, so ssh receives `\r~.` and drops the connection. Even
+/// with a request on its way and untracked bytes in the line (where any other Enter waits,
+/// #1104). Shell input and the agent mode's autodetected input (not locked to the agent) alike.
+/// Outside an ssh session the bare Enter still waits for the report, as before. Legacy and Table.
+#[test]
+fn test_bare_enter_then_ssh_escape_reach_the_pty_in_order_in_a_managed_ssh_session() {
+    use crate::terminal::input_queue::DestinationMode;
+    let autodetected_ai = InputConfig {
+        input_type: InputType::AI,
+        is_locked: false,
+    };
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        for request_on_its_way in [false, true] {
+        for (remote, on_its_way, input_config) in [
+            (true, false, SHELL_INPUT_FOR_SSH_ESCAPE_TEST),
+            (true, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST),
+            (true, false, autodetected_ai),
+            (true, true, autodetected_ai),
+            (false, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST),
+        ] {
             App::test((), move |mut app| async move {
                 let _mode =
                     crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
                 let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
                 initialize_app(&mut app);
                 let (input, editor, writes) =
-                    pane_for_ssh_escape_test(&mut app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
-                input.read(&app, |input, _| {
-                    let mut model = input.model.lock();
-                    let mut handoff = model.typeahead_handoff_mut();
-                    // A request the remote never answers, then a command, its own Preexec and its
-                    // prompt (the editor takes input back).
-                    handoff.on_legacy_request_written();
-                    handoff.on_command_written();
-                    let _ = handoff.on_preexec(false);
-                    handoff.on_precmd();
-                    assert!(handoff.try_commit_at_prompt(), "{mode:?}");
-                    if request_on_its_way {
-                        // The prompt's own request, not answered yet.
-                        handoff.on_legacy_request_written();
-                    }
-                    // Bytes in the remote line the hand-off did not adopt.
-                    handoff.note_untracked_line_bytes();
-                });
+                    pane_for_ssh_escape_test(&mut app, remote, input_config).await;
+                handoff_after_an_unanswered_request(&app, &input, on_its_way);
+                let case = format!("{mode:?} on_its_way={on_its_way} {input_config:?}");
 
                 // The bare Enter on the empty line.
                 input.update(&mut app, |input, ctx| input.input_enter(ctx));
-                let deferred = input.read(&app, |input, _| {
-                    let model = input.model.lock();
-                    let handoff = model.typeahead_handoff();
-                    matches!(handoff.state(), HandoffState::HoldAfterEnter { .. })
-                        || handoff.holds_keys_behind_deferred_enter()
-                });
-                assert_eq!(
-                    deferred, request_on_its_way,
-                    "{mode:?}: the bare Enter waits only for a report that is on its way"
-                );
-
-                // `~.` typed at once.
-                type_keys_for_ssh_escape_test(&mut app, &editor, &["~", "."]);
-                if request_on_its_way {
+                let deferred = enter_is_deferred_behind_the_report(&app, &input);
+                if !remote {
+                    type_keys_for_ssh_escape_test(&mut app, &editor, &["~", "."]);
+                    assert!(deferred, "{case}: a local bare Enter still waits");
                     assert!(
                         writes.borrow().is_empty(),
-                        "{mode:?}: `~.` waits behind the Enter that waits for the report"
+                        "{case}: nothing reaches a local pty ahead of the report"
                     );
                     return;
                 }
-                for _ in 0..200 {
-                    if !writes.borrow().is_empty() {
-                        break;
-                    }
-                    warpui::r#async::Timer::after(Duration::from_millis(5)).await;
-                }
+                assert!(!deferred, "{case}: no hold");
+                // The Enter's own write, before any later key is typed.
+                wait_for_pty_writes(&writes, 1).await;
                 assert_eq!(
                     *writes.borrow(),
-                    vec![b"~.".to_vec()],
-                    "{mode:?}: `~.` reached ssh once, in order, nothing held or discarded"
+                    vec![b"\r".to_vec()],
+                    "{case}: the Enter reached the pty on its own, at once"
+                );
+
+                // `~.` typed at once lands behind it.
+                type_keys_for_ssh_escape_test(&mut app, &editor, &["~", "."]);
+                wait_for_pty_writes(&writes, 2).await;
+                assert_eq!(
+                    *writes.borrow(),
+                    vec![b"\r".to_vec(), b"~.".to_vec()],
+                    "{case}: ssh receives `\\r~.`, in order, once"
+                );
+                input.read(&app, |input, ctx| {
+                    assert_eq!(input.buffer_text(ctx), "", "{case}: the editor is empty");
+                });
+            });
+        }
+    }
+}
+
+/// #1793 backstop for a line that is NOT empty: a request the remote never answered no longer
+/// holds it once the next command's own Preexec (told by its text) has settled it, while a request
+/// that IS on its way still holds it until its report (#1104). Legacy and Table.
+#[test]
+fn test_a_settled_unanswered_request_does_not_hold_a_typed_line_in_a_managed_ssh_session() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        for on_its_way in [false, true] {
+            App::test((), move |mut app| async move {
+                let _mode =
+                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+                let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+                initialize_app(&mut app);
+                let (input, editor, _writes) =
+                    pane_for_ssh_escape_test(&mut app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
+                handoff_after_an_unanswered_request(&app, &input, on_its_way);
+                type_keys_for_ssh_escape_test(&mut app, &editor, &["l", "s"]);
+                input.update(&mut app, |input, ctx| input.input_enter(ctx));
+                assert_eq!(
+                    enter_is_deferred_behind_the_report(&app, &input),
+                    on_its_way,
+                    "{mode:?}: `ls` waits only for a report that is on its way"
                 );
             });
         }

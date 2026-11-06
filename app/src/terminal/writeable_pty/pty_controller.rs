@@ -1875,7 +1875,12 @@ impl<T: EventLoopSender> PtyController<T> {
                     // Enter's gate) follow it to the pty: the hand-off records the end and the
                     // view writes them through `write_handoff_user_bytes`, which records their
                     // echo (#1033) and keeps them behind a command that is still parked.
-                    model.typeahead_handoff_mut().on_command_written();
+                    {
+                        let mut handoff = model.typeahead_handoff_mut();
+                        handoff.on_command_written();
+                        // #1793: its own Preexec is told from a line queued ahead by its text.
+                        handoff.note_written_command_text(command);
+                    }
                     model
                         .block_list_mut()
                         .early_output_mut()
@@ -2290,14 +2295,13 @@ impl<T: EventLoopSender> PtyController<T> {
                     )
                 });
                 self.file_insert_pending = Some(command);
-                self.file_insert_block = Some(
-                    self.terminal_model
-                        .lock()
-                        .block_list()
-                        .active_block()
-                        .id()
-                        .clone(),
-                );
+                {
+                    let mut model = self.terminal_model.lock();
+                    self.file_insert_block = Some(model.block_list().active_block().id().clone());
+                    // #1793: the text reaches the shell on the pipe, not the tty, so its Preexec
+                    // settles none of the requests written before it.
+                    model.typeahead_handoff_mut().forget_written_command_text();
+                }
                 return TypedCommand::FileChord;
             }
         }
