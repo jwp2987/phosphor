@@ -217,8 +217,8 @@ struct AIContextMenuState {
 /// query stays) and a toast says so, instead of the Enter vanishing with only a log line.
 const SELECT_WAIT_GIVE_UP: Duration = crate::terminal::model::typeahead_handoff::YOUNG_HOLD_GIVE_UP;
 /// The toast shown when an @-menu Enter's wait for its results gives up (#1728).
-const SELECT_WAIT_GAVE_UP_TOAST: &str = "Enter not applied: the @ menu's results did not arrive. Your text is unchanged; press Enter \
-     to try again";
+const SELECT_WAIT_GAVE_UP_TOAST: &str =
+    "Enter not applied: the @ menu's results did not arrive. Your text is unchanged.";
 /// Maximum number of results to display
 const MAX_SEARCH_RESULTS: usize = 250;
 const MAX_CONSECUTIVE_EMPTY_RESULTS_EVENTS: usize = 7;
