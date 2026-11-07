@@ -1086,8 +1086,9 @@ The 1.5 s cap of the ConPTY prompt hold is a give-up, and a timer never writes t
 command), the editor takes input over, and the log says so with counts (`hop=prompt_hold_handed_back`). A segment with an Enter, or one
 that cannot go back in order (an enter window whose Enter the shell never acted on), stays held: the cap is armed again, a toast and one
 log line (`hop=prompt_hold_kept_overdue`) say input is waiting for the shell, and the events release it (the signal, a command becoming
-interactive, a continuation prompt, ^C or another signal key). A shell that has never signalled is not held for at later prompts (its
-keys go by the live path) until a signal shows it does. Such a shell's segment at a clean prompt is handed back even with an Enter (as a
+interactive, a continuation prompt, ^C or another signal key). A shell that has never signalled and has missed
+`CONPTY_PROMPT_HOLD_MISSES_BEFORE_OFF` (3) prompts in a row (#1697: one slow first prompt is not enough) is not held for at later
+prompts (its keys go by the live path) until a signal shows it does. Such a shell's segment at a clean prompt is handed back even with an Enter (as a
 newline, never run): its signal is not coming. An interrupt (^C, ^Z, ^\\) on held keys VOIDS them (the tty flushes typeahead on it;
 `hop=prompt_hold_voided` with counts) -- only the signal reaches the pty; a lone ^D still follows them. The hand-back keeps typed order
 across editor and pty entries, and a stale gate's keys are shell-routed too. A preexec that clears a hold's precmd wait turns it into
@@ -1206,6 +1207,23 @@ line (#1728).
 |---|---|---|
 | view, Legacy and Table | `group2_timer_tests.rs`: `a_report_several_seconds_late_still_releases_the_deferred_enter` (real 3.5 s wait) | both patiences >= 10 s; 3.5 s after the Enter, behind the hand-off's own report and behind an uncovered report, the Enter is still deferred (not given up), `ho 47` intact, the key typed after it still queued, nothing written; the late report then releases the Enter |
 | input, Legacy and Table | `input_test.rs`: `test_at_picker_enter_give_up_keeps_the_text_and_says_so` | the @-menu wait is 10 s; at the give-up nothing is inserted, `@cbmention_x` stays, nothing runs, one "Enter not applied" toast; a second firing changes nothing |
+
+**Busy-machine timer batch 1, ConPTY prompt hold (#1697, #1698).** The hold is switched off for the session only after
+`CONPTY_PROMPT_HOLD_MISSES_BEFORE_OFF` (3) unsignalled precmd-wait misses in a row, counted once per hold, reset by any signal or a
+new session (#1697; the 1.5 s cap stays: a miss only hands keys back, and a longer cap would slow every prompt of a shell that truly
+never signals). A hold whose release an event already decided (signal, interactive latch, continuation prompt), or whose hand-off
+writes are still in flight, is not given up at twice the cap while that release waits behind a busy queue; it is bounded by the 10 s
+net from the decision (#1698). Hop `prompt_hold_expired` now logs `unsignalled_misses=N`. Changed expectations (the old ones encoded
+#1697 / #1698): a single unsignalled miss no longer switches the hold off in `a_never_signalling_shell_hands_back_a_segment_with_an_enter`,
+`an_overdue_hold_kept_for_the_events_is_still_released_by_the_signal`, `the_queued_hold_give_up_is_id_guarded_and_switches_the_hold_off`
+and `a_hold_that_gave_up_is_off_for_the_session_until_a_new_shell` (they now reach the third miss);
+`a_cap_firing_while_an_event_release_is_in_flight_is_not_a_give_up` no longer gives up at twice the cap.
+
+| layer | test | asserts |
+|---|---|---|
+| model | `typeahead_handoff_tests.rs`: `the_first_unsignalled_conpty_miss_does_not_switch_the_hold_off`, `a_signal_resets_the_unsignalled_miss_count`, `one_overdue_hold_counts_as_one_unsignalled_miss` | misses 1 and 2 leave the hold on and the next prompt held; the 3rd switches it off; a signal resets the count; a hold kept overdue several times then expired counts once |
+| view, Legacy and Table | `view_test.rs`: `the_queued_prompt_hold_gives_up_in_order_and_switches_itself_off` (now three prompts) | each miss hands `ab` back, nothing written; off only after the 3rd; then `c` goes by the live path |
+| model | `typeahead_handoff_tests.rs`: `a_cap_firing_while_an_event_release_is_in_flight_is_not_a_give_up`, `a_hold_with_no_wait_and_no_release_keeps_its_bound_unless_writes_are_in_flight` | a decided release is `NotYet` at 2x cap and at 9 s, `GiveUp` at the decision + 10 s; with no release and no writes in flight the 2x-cap bound stands, writes in flight extend it to 10 s |
 
 **#1661 (owner decision 2026-11-05): a give-up DROPS the keys typed after an Enter.** Every give-up of an Enter gate
 (the route-settle net, the gate's leak net, an orphan gate's leak net, the verdict / completion give-ups, an unready shell's

@@ -324,7 +324,21 @@ pub const CONPTY_MIDLINE_QUIET: Duration = Duration::from_millis(120);
 /// the cap (the documented #1349 reason). A shell that has signalled before missed one prompt (a
 /// loaded machine, a slow prompt): that give-up is for the one prompt, and the next prompt is held
 /// again, so the #1162 raw-write corruption does not come back for the rest of the session.
+///
+/// #1697: "never signalled" is not concluded from ONE prompt. The session's first prompt is the
+/// slowest one (profile scripts, a cold machine, a busy Windows VM), so a shell that signals can
+/// miss the cap there before it has ever signalled; switching the hold off for that would bring
+/// the #1162 corruption back for the whole session. The hold goes off only after
+/// [`CONPTY_PROMPT_HOLD_MISSES_BEFORE_OFF`] precmd waits in a row gave up with no signal ever seen.
+/// (The cap itself stays short: a miss only hands keys with no Enter back to the editor as text,
+/// so its cost is a visible hand-back for that prompt, while a longer cap would make every prompt
+/// of a shell that truly never signals wait longer.)
 pub const CONPTY_PROMPT_HOLD_GIVE_UP: Duration = Duration::from_millis(1500);
+
+/// #1697: how many precmd waits in a row must give up, with no ready signal ever seen this
+/// session, before the prompt hold is switched off for the session (the #1349 reason). One slow
+/// first prompt is not evidence that the shell never signals; three are. Any signal resets it.
+pub const CONPTY_PROMPT_HOLD_MISSES_BEFORE_OFF: u32 = 3;
 
 /// #1573: when the prompt hold's cap fires after an event already ended both of its waits (the
 /// release is in flight, e.g. deferred behind a busy queue), it is checked again after this; it
@@ -746,13 +760,25 @@ pub struct TypeaheadHandoff {
     /// is not known to (PowerShell 5.1, cmd, an unknown WSL shell) is never held for: with no
     /// signal to release it, the hold could only be a timer.
     prompt_hold_shell_signals: bool,
-    /// A hold ran to the give-up cap with no signal and this session's shell never signalled: the
-    /// shell does not signal after all, so the hold stays off for the rest of the session (#1349,
-    /// narrowed by #1573: see [`CONPTY_PROMPT_HOLD_GIVE_UP`]).
+    /// Holds ran to the give-up cap with no signal [`CONPTY_PROMPT_HOLD_MISSES_BEFORE_OFF`] prompts
+    /// in a row and this session's shell never signalled: the shell does not signal after all, so
+    /// the hold stays off for the rest of the session (#1349, narrowed by #1573 and #1697: see
+    /// [`CONPTY_PROMPT_HOLD_GIVE_UP`]).
     prompt_hold_gave_up: bool,
     /// A ready signal answered a precmd's wait in this session (#1573): the shell does signal, so a
     /// give-up is one missed prompt, not a reason to stop holding.
     line_editor_signal_seen: bool,
+    /// #1697: precmd waits in a row that gave up with no ready signal ever seen this session (see
+    /// [`CONPTY_PROMPT_HOLD_MISSES_BEFORE_OFF`]). Reset by a signal and by a new session.
+    prompt_hold_unsignalled_misses: u32,
+    /// #1697: the hold whose miss was counted last, so one hold (its cap fires again while it is
+    /// kept overdue, then it expires) counts once.
+    prompt_hold_miss_counted_for: Option<u64>,
+    /// #1698: when an event (the ready signal, the interactive latch, a continuation prompt) ended
+    /// the live hold's waits and returned it for release: from then its release is in flight, and
+    /// the cap does not give it up while that release waits behind a busy queue (bounded by the
+    /// [`YOUNG_HOLD_GIVE_UP`] net from this instant). `None` when no release was decided.
+    prompt_hold_release_decided_at: Option<Instant>,
     /// When the live prompt hold's first key was held (#1573): its give-up cap was armed then.
     prompt_hold_started_at: Option<Instant>,
     /// When the shell last started a command (its preexec), to tell an enter window whose command
@@ -1200,6 +1226,7 @@ impl TypeaheadHandoff {
         // its cap may have switched the hold off for a shell thought not to signal; it does.
         self.line_editor_signal_seen = true;
         self.prompt_hold_gave_up = false;
+        self.prompt_hold_unsignalled_misses = 0;
         let waited_ms = self
             .last_precmd_at
             .map(|at| at.elapsed().as_secs_f64() * 1000.0);
@@ -1210,7 +1237,34 @@ impl TypeaheadHandoff {
                 self.prompt_hold_queued
             )
         });
-        self.prompt_hold_queued.then_some(self.prompt_hold_id)
+        self.note_prompt_hold_release_decided()
+    }
+
+    /// #1698: an event ended the live hold's waits and the view is to release it; returns its id
+    /// when keys are held, and stamps when the release was decided (see
+    /// [`Self::prompt_hold_cap_fired`]).
+    fn note_prompt_hold_release_decided(&mut self) -> Option<u64> {
+        if !self.prompt_hold_queued {
+            return None;
+        }
+        self.prompt_hold_release_decided_at = Some(Instant::now());
+        Some(self.prompt_hold_id)
+    }
+
+    /// #1697: the precmd's wait of hold `id` gave up (or was kept overdue) with no ready signal ever
+    /// seen this session. Counts it once per hold, and switches the hold off for the session only
+    /// once [`CONPTY_PROMPT_HOLD_MISSES_BEFORE_OFF`] such waits gave up in a row. Returns whether
+    /// the hold is now off.
+    fn note_unsignalled_prompt_miss(&mut self, id: u64) -> bool {
+        if self.prompt_hold_miss_counted_for != Some(id) {
+            self.prompt_hold_miss_counted_for = Some(id);
+            self.prompt_hold_unsignalled_misses =
+                self.prompt_hold_unsignalled_misses.saturating_add(1);
+        }
+        if self.prompt_hold_unsignalled_misses >= CONPTY_PROMPT_HOLD_MISSES_BEFORE_OFF {
+            self.prompt_hold_gave_up = true;
+        }
+        self.prompt_hold_gave_up
     }
 
     /// The command the Enter submitted became interactive (the model's latch event: a full-screen
@@ -1223,7 +1277,7 @@ impl TypeaheadHandoff {
         warpui::input_order::log_hop("enter_window_program", || {
             format!("queued={}", self.prompt_hold_queued)
         });
-        self.prompt_hold_queued.then_some(self.prompt_hold_id)
+        self.note_prompt_hold_release_decided()
     }
 
     /// The continuation prompt (PS2) of the line the enter window's Enter submitted was shown
@@ -1237,7 +1291,7 @@ impl TypeaheadHandoff {
         warpui::input_order::log_hop("enter_window_continuation", || {
             format!("queued={}", self.prompt_hold_queued)
         });
-        self.prompt_hold_queued.then_some(self.prompt_hold_id)
+        self.note_prompt_hold_release_decided()
     }
 
     /// The give-up cap of queued prompt hold `id` fired (#1573): whether it is a give-up at all.
@@ -1280,9 +1334,20 @@ impl TypeaheadHandoff {
             // (possibly deferred behind a busy queue). Not a give-up: check again shortly. Bounded:
             // a hold whose waits ended with no release (a preexec that cleared the wait) is not
             // left holding keys forever; past twice the cap from its first key it is released.
-            let stale = self.prompt_hold_started_at.is_some_and(|started| {
-                now.saturating_duration_since(started) >= CONPTY_PROMPT_HOLD_GIVE_UP * 2
-            });
+            // #1698: a release that IS in flight (an event decided it, or the hand-off's own writes
+            // are still on their way, i.e. the queue ahead of it is busy) is not given up at twice
+            // the cap: it is waited for up to the 10 s net, from the release's decision.
+            let in_flight =
+                self.prompt_hold_release_decided_at.is_some() || self.writes_in_flight > 0;
+            let stale = if in_flight {
+                self.prompt_hold_release_decided_at
+                    .or(self.prompt_hold_started_at)
+                    .is_some_and(|since| now.saturating_duration_since(since) >= YOUNG_HOLD_GIVE_UP)
+            } else {
+                self.prompt_hold_started_at.is_some_and(|started| {
+                    now.saturating_duration_since(started) >= CONPTY_PROMPT_HOLD_GIVE_UP * 2
+                })
+            };
             return if stale {
                 PromptHoldCap::GiveUp
             } else {
@@ -1302,17 +1367,19 @@ impl TypeaheadHandoff {
     /// pty). Returns whether that hold is live; `false` when it is gone already.
     ///
     /// #1573: the hold is switched off for the rest of the session only when the precmd's wait
-    /// gave up and this session's shell has never signalled (it does not signal at all). Any other
-    /// give-up is for this hold only: the next prompt is held again.
+    /// gave up and this session's shell has never signalled (it does not signal at all) -- and,
+    /// since #1697, only once that happened [`CONPTY_PROMPT_HOLD_MISSES_BEFORE_OFF`] prompts in a
+    /// row. Any other give-up is for this hold only: the next prompt is held again.
     pub fn expire_queued_prompt_hold(&mut self, id: u64) -> bool {
         if id != self.prompt_hold_id || !self.prompt_hold_queued {
             return false;
         }
         let precmd_wait = self.awaiting_line_editor_since.take().is_some();
         let enter_window = self.enter_window_since.take().is_some();
-        let session_off = precmd_wait && !self.line_editor_signal_seen;
+        let unsignalled = precmd_wait && !self.line_editor_signal_seen;
+        // #1697: one miss is not "this shell never signals"; only repeated ones are.
+        let session_off = unsignalled && self.note_unsignalled_prompt_miss(id);
         if session_off {
-            self.prompt_hold_gave_up = true;
             log::warn!(
                 "ConPTY prompt hold: no line-editor ready signal within {} ms after the prompt, \
                  and this shell has never sent one; the held keys go back to the editor and the \
@@ -1321,9 +1388,11 @@ impl TypeaheadHandoff {
             );
         } else if precmd_wait {
             log::warn!(
-                "ConPTY prompt hold: no line-editor ready signal within {} ms after this prompt; \
-                 the held keys go back to the editor (the hold stays on for the next prompt)",
-                CONPTY_PROMPT_HOLD_GIVE_UP.as_millis()
+                "ConPTY prompt hold: no line-editor ready signal within {} ms after this prompt \
+                 ({} unsignalled miss(es) in a row); the held keys go back to the editor (the \
+                 hold stays on for the next prompt)",
+                CONPTY_PROMPT_HOLD_GIVE_UP.as_millis(),
+                self.prompt_hold_unsignalled_misses
             );
         } else if enter_window {
             log::warn!(
@@ -1340,7 +1409,9 @@ impl TypeaheadHandoff {
         }
         warpui::input_order::log_hop("prompt_hold_expired", || {
             format!(
-                "precmd_wait={precmd_wait} enter_window={enter_window} session_off={session_off}"
+                "precmd_wait={precmd_wait} enter_window={enter_window} session_off={session_off} \
+                 unsignalled_misses={}",
+                self.prompt_hold_unsignalled_misses
             )
         });
         true
@@ -1379,7 +1450,8 @@ impl TypeaheadHandoff {
 
     /// #1584: the give-up cap of queued prompt hold `id` ran out but its keys stay held (they hold
     /// an Enter, or cannot be handed back in order): no timer writes them. The waits are kept, so
-    /// the events still release them. A shell that has never signalled is not waited for at the
+    /// the events still release them. A shell that has never signalled, and has now missed
+    /// [`CONPTY_PROMPT_HOLD_MISSES_BEFORE_OFF`] prompts in a row (#1697), is not waited for at the
     /// next prompts (#1349's session-wide off): keys typed after this hold is released go by the
     /// live path -- unless the signal that releases it shows the shell does signal after all.
     /// Returns whether the hold is live.
@@ -1390,8 +1462,9 @@ impl TypeaheadHandoff {
         if self.awaiting_line_editor_since.is_some()
             && !self.line_editor_signal_seen
             && !self.prompt_hold_gave_up
+            // #1697: off only after repeated unsignalled misses, not the first.
+            && self.note_unsignalled_prompt_miss(id)
         {
-            self.prompt_hold_gave_up = true;
             log::warn!(
                 "ConPTY prompt hold: this shell has never sent a line-editor ready signal; later \
                  prompts are not held (the keys held now wait for an event)"
@@ -1673,6 +1746,8 @@ impl TypeaheadHandoff {
         // again, #1573).
         self.prompt_hold_gave_up = false;
         self.line_editor_signal_seen = false;
+        self.prompt_hold_unsignalled_misses = 0;
+        self.prompt_hold_miss_counted_for = None;
         self.enter_window_since = None;
         // ... and may predate the sequence numbers (an older remote bootstrap): it earns the
         // prompt-sequence path again with its first number.
@@ -2765,6 +2840,7 @@ impl TypeaheadHandoff {
             self.prompt_hold_started = true;
             let now = Instant::now();
             self.prompt_hold_started_at = Some(now);
+            self.prompt_hold_release_decided_at = None;
             self.last_line_bytes_at = Some(now);
             self.log_route_decision("held_prompt_hold_started", bytes);
             return UserBytesRoute::Held;

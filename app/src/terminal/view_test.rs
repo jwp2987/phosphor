@@ -25370,39 +25370,65 @@ fn a_signal_takes_the_keys_held_for_the_prompt_in_front_of_it() {
 }
 
 /// The hold's give-up cap (no line-editor signal ever came): the keys go back to the editor, in
-/// order, as text (#1584: a timer never writes them to the pty), and the hold is off for the
-/// session -- the next prompt is not held for, its keys go by the live path.
+/// order, as text (#1584: a timer never writes them to the pty). #1697: the FIRST such miss (a slow
+/// first prompt on a loaded machine) does not switch the hold off -- the next prompt is held for
+/// again; only `CONPTY_PROMPT_HOLD_MISSES_BEFORE_OFF` unsignalled misses in a row switch it off for
+/// the session, after which the next prompt is not held for and its keys go by the live path.
+/// Legacy and Table.
 #[test]
 fn the_queued_prompt_hold_gives_up_in_order_and_switches_itself_off() {
-    App::test((), |mut app| async move {
-        initialize_app_for_terminal_view(&mut app);
-        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
-        let terminal = add_window_with_terminal(&mut app, None);
-        let pty_writes = collect_pty_writes(&mut app, &terminal);
-        terminal.update(&mut app, |view, ctx| {
-            conpty_prompt_hold_setup(view);
-            view.write_user_bytes_to_pty(b"a".to_vec(), ctx);
-            view.write_user_bytes_to_pty(b"b".to_vec(), ctx);
-            let token = view.paste_queue.queue.borrow().gates()[0].token;
-            view.on_paste_queue_give_up(token, ctx);
-            assert!(view.paste_queue.queue.borrow().is_idle());
-            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ab");
-            assert!(pty_writes.borrow().is_empty(), "the timer wrote nothing");
-            // A second timer for the same gate changes nothing.
-            view.on_paste_queue_give_up(token, ctx);
-            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ab");
-            view.model.lock().typeahead_handoff_mut().on_precmd();
-            assert!(
-                view.model
-                    .lock()
-                    .typeahead_handoff()
-                    .prompt_hold_off_for_session()
-            );
-            view.write_user_bytes_to_pty(b"c".to_vec(), ctx);
-            assert!(!prompt_gate_open(view), "the next prompt is not held for");
-        });
-        assert_eq!(*pty_writes.borrow(), vec![b"c".to_vec()]);
-    })
+    use crate::terminal::input_queue::DestinationMode;
+    use crate::terminal::model::typeahead_handoff::CONPTY_PROMPT_HOLD_MISSES_BEFORE_OFF;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                for miss in 1..=CONPTY_PROMPT_HOLD_MISSES_BEFORE_OFF {
+                    // The next prompt of the same shell (the first one's setup on miss 1).
+                    conpty_prompt_hold_setup(view);
+                    view.write_user_bytes_to_pty(b"a".to_vec(), ctx);
+                    view.write_user_bytes_to_pty(b"b".to_vec(), ctx);
+                    assert!(
+                        prompt_gate_open(view),
+                        "{mode:?}: miss {miss}: the prompt is held for"
+                    );
+                    let token = view.paste_queue.queue.borrow().gates()[0].token;
+                    view.on_paste_queue_give_up(token, ctx);
+                    assert!(view.paste_queue.queue.borrow().is_idle(), "{mode:?}");
+                    assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ab", "{mode:?}");
+                    assert!(
+                        pty_writes.borrow().is_empty(),
+                        "{mode:?}: the timer wrote nothing"
+                    );
+                    // A second timer for the same gate changes nothing.
+                    view.on_paste_queue_give_up(token, ctx);
+                    assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ab", "{mode:?}");
+                    assert_eq!(
+                        view.model
+                            .lock()
+                            .typeahead_handoff()
+                            .prompt_hold_off_for_session(),
+                        miss == CONPTY_PROMPT_HOLD_MISSES_BEFORE_OFF,
+                        "{mode:?}: miss {miss}"
+                    );
+                    view.input.update(ctx, |input, ctx| {
+                        input.clear_buffer_and_reset_undo_stack(ctx);
+                    });
+                }
+                view.model.lock().typeahead_handoff_mut().on_precmd();
+                view.write_user_bytes_to_pty(b"c".to_vec(), ctx);
+                assert!(
+                    !prompt_gate_open(view),
+                    "{mode:?}: the next prompt is not held for"
+                );
+            });
+            assert_eq!(*pty_writes.borrow(), vec![b"c".to_vec()], "{mode:?}");
+        })
+    }
 }
 
 /// #1584: a precmd's wait with no line-editor signal past the cap hands the keys back to the
@@ -25643,8 +25669,12 @@ fn a_never_signalling_shell_hands_back_a_segment_with_an_enter() {
                         .shell_command_submit_pending_for_test(),
                     "{mode:?}"
                 );
+                // #1697: one unsignalled miss does not switch the hold off for the session (a
+                // slow first prompt); repeated ones do
+                // (`the_queued_prompt_hold_gives_up_in_order_and_switches_itself_off`).
                 assert!(
-                    view.model
+                    !view
+                        .model
                         .lock()
                         .typeahead_handoff()
                         .prompt_hold_off_for_session(),
