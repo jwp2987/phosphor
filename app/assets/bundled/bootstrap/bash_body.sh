@@ -942,7 +942,7 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         local __warp_ej="$*"
         case $__warp_ej in
             *[![:alnum:]\ ._/@+:,=%~\(\)-]*) ;;
-            *) printf '%s' "$__warp_ej"; return ;;
+            *) builtin printf '%s' "$__warp_ej"; return ;;
         esac
         LC_ALL=C command -p sed -E 's/(["\\])/\\\1/g; s/'$'\b''/\\b/g; s/'$'\t''/\\t/g; s/'$'\f''/\\f/g; s/'$'\r''/\\r/g;'"${WARP_ESCAPE_JSON_CTRL_SED-} "'$!s/$/\\n/' <<<"$*" | LC_ALL=C command -p tr -d '\n'
     }
