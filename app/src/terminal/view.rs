@@ -511,8 +511,8 @@ use crate::terminal::model::terminal_model::{
     BlockSelectionCardinality, SelectedBlocks, WithinModel,
 };
 use crate::terminal::model::typeahead_handoff::{
-    InterruptOutcome, PaneHandoff, ReportDisposition, UserBytesRoute, YoungSubmit,
-    forces_shell_submit, is_signal_byte, text_for_editor, young_detection_cap_for,
+    InterruptOutcome, PaneHandoff, ReportDisposition, SshEscapeLineStart, UserBytesRoute,
+    YoungSubmit, forces_shell_submit, is_signal_byte, text_for_editor, young_detection_cap_for,
     young_submit_decision_for,
 };
 use crate::terminal::model::{
@@ -13537,6 +13537,49 @@ impl TerminalView {
         ctx: &mut ViewContext<Self>,
     ) -> bool {
         self.write_user_bytes_to_pty_inner(data, true, ctx)
+    }
+
+    /// #1793: whether the #1638 ssh escape about to be written gets a `\r` ahead of it (see
+    /// [`SshEscapeLineStart`]), logged either way. Beyond the hand-off's own proof that the remote
+    /// line is empty (`TypeaheadHandoff::ssh_escape_line_start`), the `\r` needs the pane queue to
+    /// hold no keys (they would be written first, into the line the `\r` submits) and the shell,
+    /// not a program or the agent, to own the line.
+    fn ssh_escape_line_start(&self) -> SshEscapeLineStart {
+        let decision = if !FeatureFlag::TypeaheadHandoff.is_enabled() {
+            SshEscapeLineStart::Skipped("handoff_off")
+        } else if !self
+            .paste_queue
+            .queue
+            .try_peek()
+            .is_some_and(|queue| !queue.holds_keys())
+        {
+            SshEscapeLineStart::Skipped("queue_holds_keys")
+        } else {
+            let facts = self.read_key_facts();
+            if facts.alt_screen {
+                SshEscapeLineStart::Skipped("alt_screen")
+            } else if facts.agent_in_control {
+                SshEscapeLineStart::Skipped("agent_in_control")
+            } else if facts.command_not_owned_by_handoff_possible {
+                SshEscapeLineStart::Skipped("command_running")
+            } else {
+                self.handoff.write().ssh_escape_line_start()
+            }
+        };
+        match decision {
+            SshEscapeLineStart::AddCr => {
+                warpui::input_order::log_hop("ssh_escape_cr", || "added".to_owned());
+            }
+            SshEscapeLineStart::AlreadyAtLineStart => {
+                warpui::input_order::log_hop("ssh_escape_cr", || {
+                    "skipped=after_own_escape".to_owned()
+                });
+            }
+            SshEscapeLineStart::Skipped(reason) => {
+                warpui::input_order::log_hop("ssh_escape_cr", || format!("skipped={reason}"));
+            }
+        }
+        decision
     }
 
     /// Like [`Self::write_user_bytes_to_pty`], but for pointer-driven and synthesized input
@@ -31191,7 +31234,20 @@ impl TerminalView {
             InputEvent::SshEscapeToPty { bytes } => {
                 // #1638: the ssh client's escape, typed at the start of an empty line. Through
                 // the pane queue like any typed key, so it stays behind keys the queue holds.
-                self.write_user_bytes_to_pty(bytes.to_vec(), ctx);
+                // #1793: ssh takes it only right after a newline in its input, and the last bytes
+                // it read are usually the hand-off's report request; a `\r` goes first, in the
+                // same write, where the remote line is proven empty.
+                let line_start = self.ssh_escape_line_start();
+                let mut escape = Vec::with_capacity(3);
+                if line_start == SshEscapeLineStart::AddCr {
+                    escape.push(b'\r');
+                }
+                escape.extend_from_slice(bytes);
+                self.write_user_bytes_to_pty(escape, ctx);
+                if line_start == SshEscapeLineStart::AddCr {
+                    // The pty owns input now, as after a bare Enter's command (focus, queue).
+                    self.handle_typeahead_handoff_changed(ctx);
+                }
             }
             #[cfg(not(target_family = "wasm"))]
             InputEvent::OpenPluginInstructionsPane(agent, kind) => {
