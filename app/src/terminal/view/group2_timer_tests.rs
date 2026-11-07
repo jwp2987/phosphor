@@ -509,9 +509,89 @@ fn a_key_typed_after_a_busy_young_hold_give_up_is_not_discarded() {
     }
 }
 
-/// A6 (#1577): the uncovered-report patience (3 s) no longer RUNS the deferred Enter. The text
-/// stays in the editor; the keys held behind the Enter are DISCARDED (#1661, owner decision
-/// 2026-11-05), never put into the editor; nothing is written or executed.
+/// #1701 / #1702: an Enter deferred behind a report, with a key typed after it, is still held 3.5 s
+/// on (past the old 3 s patience, whose give-up now DISCARDS the keys after the Enter, #1661):
+/// both patiences are the 10 s net, the text and the key behind the Enter are intact, and the late
+/// report is the event that releases the Enter. Two terminals: one waits on the hand-off's own
+/// outstanding report (#1215, `TYPEAHEAD_REPORT_PATIENCE`), the other on a report that must cover
+/// untracked bytes (#1104, `UNCOVERED_REPORT_PATIENCE`). Both modes.
+#[test]
+fn a_report_several_seconds_late_still_releases_the_deferred_enter() {
+    use crate::terminal::model::typeahead_handoff::YOUNG_HOLD_GIVE_UP;
+    assert!(TYPEAHEAD_REPORT_PATIENCE >= YOUNG_HOLD_GIVE_UP);
+    assert!(UNCOVERED_REPORT_PATIENCE >= YOUNG_HOLD_GIVE_UP);
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let held = HandoffState::HoldAfterEnter { released: false };
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let awaiting = add_window_with_terminal(&mut app, None);
+            let uncovered = add_window_with_terminal(&mut app, None);
+            let awaiting_writes = record_pty_writes(&mut app, &awaiting);
+            let uncovered_writes = record_pty_writes(&mut app, &uncovered);
+            // The hand-off's own report is outstanding; the Enter is deferred behind it and its
+            // patience timer is armed (#1215).
+            awaiting.update(&mut app, |view, ctx| {
+                awaiting_typeahead_report(view);
+                view.input
+                    .update(ctx, |input, ctx| input.replace_buffer_content("ho 47", ctx));
+                view.input.update(ctx, |input, ctx| input.input_enter(ctx));
+                view.keydown_on_terminal("x", ctx);
+            });
+            // A report that misses untracked line bytes keeps the Enter deferred and arms the
+            // uncovered-report patience (#1104).
+            uncovered.update(&mut app, |view, ctx| {
+                awaiting_typeahead_report(view);
+                view.model
+                    .lock()
+                    .typeahead_handoff_mut()
+                    .note_untracked_line_bytes();
+                view.input
+                    .update(ctx, |input, ctx| input.replace_buffer_content("ho 47", ctx));
+                view.input.update(ctx, |input, ctx| input.input_enter(ctx));
+                view.keydown_on_terminal("x", ctx);
+                view.handle_typeahead_report_with_handoff(true, ctx);
+            });
+            // Past the old 3 s patience, well short of the 10 s net.
+            warpui::r#async::Timer::after(std::time::Duration::from_millis(3500)).await;
+            for (name, terminal) in [("report", &awaiting), ("uncovered", &uncovered)] {
+                terminal.read(&app, |view, ctx| {
+                    assert_eq!(
+                        view.model.lock().typeahead_handoff().state(),
+                        &held,
+                        "{mode:?} {name}: the Enter is still deferred, not given up"
+                    );
+                    assert!(
+                        view.input.as_ref(ctx).buffer_text(ctx).ends_with("ho 47"),
+                        "{mode:?} {name}: the text is intact: {:?}",
+                        view.input.as_ref(ctx).buffer_text(ctx)
+                    );
+                    assert_eq!(
+                        view.paste_queue.queue.borrow().queued_len(),
+                        1,
+                        "{mode:?} {name}: the key typed after the Enter still waits behind it"
+                    );
+                });
+            }
+            assert!(awaiting_writes.borrow().is_empty(), "{mode:?}");
+            assert!(uncovered_writes.borrow().is_empty(), "{mode:?}");
+            // The late report arrives: the event releases the Enter.
+            awaiting.update(&mut app, |view, ctx| {
+                view.handle_typeahead_report_with_handoff(true, ctx);
+                assert_ne!(
+                    view.model.lock().typeahead_handoff().state(),
+                    &held,
+                    "{mode:?}: the late report released the Enter"
+                );
+            });
+        });
+    }
+}
+
+/// A6 (#1577): the uncovered-report patience (10 s since #1701) no longer RUNS the deferred
+/// Enter. The text stays in the editor; the keys held behind the Enter are DISCARDED (#1661, owner
+/// decision 2026-11-05), never put into the editor; nothing is written or executed.
 #[test]
 fn uncovered_report_patience_keeps_the_text_instead_of_running_the_enter() {
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {

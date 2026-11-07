@@ -15916,6 +15916,106 @@ fn test_enter_on_the_at_picker_in_agent_mode_never_submits() {
     });
 }
 
+/// #1728: an @-picker Enter waiting for its typed query's results waits the 10 s net (not 3 s), and
+/// when the net fires the Enter is NOT applied: nothing is inserted, the typed `@...` text stays,
+/// nothing runs, and a toast tells the user the Enter was not applied (it used to vanish with only
+/// a log line, a lost key). Legacy and Table.
+#[test]
+fn test_at_picker_enter_give_up_keeps_the_text_and_says_so() {
+    use crate::terminal::input_queue::DestinationMode;
+    let _ai_context_menu_enabled = FeatureFlag::AIContextMenuEnabled.override_enabled(true);
+    assert_eq!(
+        crate::search::ai_context_menu::view::AIContextMenu::select_wait_give_up_for_test(),
+        crate::terminal::model::typeahead_handoff::YOUNG_HOLD_GIVE_UP
+    );
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app(&mut app);
+            let toasts = record_toast_texts(&mut app);
+            let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+            let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+            let executed = Rc::new(RefCell::new(Vec::<String>::new()));
+            {
+                let executed = executed.clone();
+                app.update(|ctx| {
+                    ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| {
+                        if let super::Event::ExecuteCommand(event) = event {
+                            executed.borrow_mut().push(event.command.clone());
+                        }
+                    });
+                });
+            }
+            input.update(&mut app, |input, ctx| {
+                input.ai_input_model().update(ctx, |ai_input, ctx| {
+                    ai_input.set_input_config(
+                        InputConfig {
+                            input_type: InputType::AI,
+                            is_locked: true,
+                        },
+                        true, /* is_input_buffer_empty */
+                        ctx,
+                    );
+                });
+            });
+            let menu = input.update(&mut app, |input, ctx| {
+                input.replace_buffer_content("@cbmention_x", ctx);
+                input.suggestions_mode_model().update(ctx, |model, ctx| {
+                    model.set_mode(
+                        InputSuggestionsMode::AIContextMenu {
+                            filter_text: "cbmention_x".to_string(),
+                            at_symbol_position: 0,
+                        },
+                        ctx,
+                    );
+                });
+                let menu = input
+                    .editor()
+                    .as_ref(ctx)
+                    .ai_context_menu()
+                    .expect("agent mode has an @ picker")
+                    .clone();
+                menu.update(ctx, |menu, ctx| {
+                    menu.update_search_query("cbmention_x".to_string(), ctx);
+                });
+                input.input_enter(ctx);
+                menu
+            });
+            assert!(
+                menu.read(&app, |menu, _| menu.has_deferred_select()),
+                "{mode:?}: the Enter waits for the typed query's results"
+            );
+            menu.update(&mut app, |menu, ctx| {
+                menu.fire_select_wait_give_up_for_test(ctx);
+                // A second firing for the same wait changes nothing.
+                menu.fire_select_wait_give_up_for_test(ctx);
+            });
+            assert!(
+                !menu.read(&app, |menu, _| menu.has_deferred_select()),
+                "{mode:?}"
+            );
+            input.read(&app, |input, ctx| {
+                assert_eq!(
+                    input.buffer_text(ctx),
+                    "@cbmention_x",
+                    "{mode:?}: nothing inserted, the typed text is kept"
+                );
+            });
+            assert!(executed.borrow().is_empty(), "{mode:?}: nothing ran");
+            assert_eq!(
+                toasts
+                    .borrow()
+                    .iter()
+                    .filter(|text| text.contains("Enter not applied"))
+                    .count(),
+                1,
+                "{mode:?}: one toast says the Enter was not applied: {:?}",
+                toasts.borrow()
+            );
+        });
+    }
+}
+
 #[test]
 fn debounce_channel_is_bounded_and_hands_the_overflow_back() {
     let (tx, rx) = async_channel::bounded::<u32>(2);

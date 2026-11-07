@@ -9701,15 +9701,7 @@ impl TerminalView {
     /// overtakes the queue; without the discard, the parked command would run once the line
     /// editor became active, after the interrupt it was meant to receive (#850).
     fn interrupt_agent_command(&mut self, ctx: &mut ViewContext<Self>) {
-        // Keys held behind a deferred Enter (`FeatureFlag::TypeaheadHandoff`) would hold this
-        // ^C too; the interrupt cancels that Enter and its keys instead, so the ^C is written.
-        if FeatureFlag::TypeaheadHandoff.is_enabled() {
-            let cancelled = self.handoff.write().cancel_deferred_enter();
-            self.drain_young_hold_ends(ctx);
-            if cancelled {
-                self.redetermine_terminal_focus(ctx);
-            }
-        }
+        self.cancel_deferred_enter_before_interrupt(ctx);
         ctx.emit(Event::DiscardPendingCommandWrites);
         self.user_write_ctrl_c_to_pty(ctx);
 
@@ -9901,6 +9893,8 @@ impl TerminalView {
             if is_agent_requested {
                 self.interrupt_agent_command(ctx);
             } else {
+                // #1774: a deferred Enter's gate must not hold this ^C.
+                self.cancel_deferred_enter_before_interrupt(ctx);
                 self.user_write_ctrl_c_to_pty(ctx);
             }
         }
@@ -9997,6 +9991,22 @@ impl TerminalView {
     #[cfg(test)]
     pub(crate) fn is_suspended_for_close(&self) -> bool {
         self.suspended_for_close
+    }
+
+    /// Keys held behind a deferred Enter (`FeatureFlag::TypeaheadHandoff`) would hold an
+    /// interrupt's ^C too, and replay it after the deferred command it was meant to interrupt; the
+    /// interrupt cancels that Enter and its keys instead, so the ^C is written at once (#850). Every
+    /// path that writes an interrupt's ^C with [`Self::user_write_ctrl_c_to_pty`] calls this first
+    /// (#1774: Stop of a user command, a dismissed ssh warpify / tmux-install block, a rewind), as
+    /// `ctrl_c` does for the key.
+    fn cancel_deferred_enter_before_interrupt(&mut self, ctx: &mut ViewContext<Self>) {
+        if FeatureFlag::TypeaheadHandoff.is_enabled() {
+            let cancelled = self.handoff.write().cancel_deferred_enter();
+            self.drain_young_hold_ends(ctx);
+            if cancelled {
+                self.redetermine_terminal_focus(ctx);
+            }
+        }
     }
 
     fn user_write_ctrl_c_to_pty(&mut self, ctx: &mut ViewContext<Self>) {
@@ -16151,6 +16161,8 @@ impl TerminalView {
             SshWarpifyBlockEvent::Interrupt => {
                 dismiss_ssh_warpify_block(self, ctx);
                 self.warpify_state.abort_ssh_warpify_timeout();
+                // #1774: a deferred Enter's gate must not hold this ^C.
+                self.cancel_deferred_enter_before_interrupt(ctx);
                 self.user_write_ctrl_c_to_pty(ctx);
             }
         }
@@ -16173,6 +16185,8 @@ impl TerminalView {
             SshInstallTmuxBlockEvent::Interrupt => {
                 cancel_tmux_install(self, ctx);
                 self.warpify_state.abort_ssh_warpify_timeout();
+                // #1774: a deferred Enter's gate must not hold this ^C.
+                self.cancel_deferred_enter_before_interrupt(ctx);
                 self.user_write_ctrl_c_to_pty(ctx);
             }
             SshInstallTmuxBlockEvent::InstallTmuxAndWarpify(install_method) => {
@@ -34469,6 +34483,8 @@ impl TerminalView {
 
         // Note: CTRL-C isn't guaranteed to stop everything, such as a Python REPL.
         if should_stop_running_command {
+            // #1774: a deferred Enter's gate must not hold this ^C.
+            self.cancel_deferred_enter_before_interrupt(ctx);
             self.user_write_ctrl_c_to_pty(ctx);
         }
 
@@ -39112,13 +39128,28 @@ const SSH_CONNECT_POST_BLOCK_GRACE: Duration = Duration::from_secs(5);
 /// How long an Enter deferred behind a report that must cover untracked user bytes waits for it
 /// (#1104) before it is given up on. Reports normally take milliseconds; this only bounds a
 /// request a program ate. #1577: the expiry does not run the Enter; the text stays in the editor.
-const UNCOVERED_REPORT_PATIENCE: Duration = Duration::from_secs(3);
+/// The report releases the Enter whenever it comes before this (an event, never a timer).
+///
+/// #1701: since #1661 the give-up DISCARDS the keys typed after the Enter, so it is a give-up net
+/// of the 10 s class ([`YOUNG_HOLD_GIVE_UP`]), not 3 s: a report 3-9 s late (a loaded machine, a
+/// slow ssh link) still releases the Enter instead of losing what followed it.
+///
+/// [`YOUNG_HOLD_GIVE_UP`]: crate::terminal::model::typeahead_handoff::YOUNG_HOLD_GIVE_UP
+const UNCOVERED_REPORT_PATIENCE: Duration =
+    crate::terminal::model::typeahead_handoff::YOUNG_HOLD_GIVE_UP;
 
 /// How long an Enter deferred behind the hand-off's own outstanding report waits for it before
 /// it is given up without running (#1215). A report is one request round trip (ms locally, well
 /// under a second over ssh); seconds without one mean a program consumed the request or the shell
-/// is not answering.
-const TYPEAHEAD_REPORT_PATIENCE: Duration = Duration::from_secs(3);
+/// is not answering. The report releases the Enter whenever it comes before this.
+///
+/// #1702: since #1661 the give-up DISCARDS the keys typed after the Enter, so it is a give-up net
+/// of the 10 s class ([`YOUNG_HOLD_GIVE_UP`]), not 3 s: a report 3-9 s late still releases the
+/// Enter.
+///
+/// [`YOUNG_HOLD_GIVE_UP`]: crate::terminal::model::typeahead_handoff::YOUNG_HOLD_GIVE_UP
+const TYPEAHEAD_REPORT_PATIENCE: Duration =
+    crate::terminal::model::typeahead_handoff::YOUNG_HOLD_GIVE_UP;
 /// Longest the gate keeps holding after the announced remote session finished bootstrapping
 /// while it waits for that shell's first prompt (#1085). The prompt is one precmd away; this
 /// only bounds a remote whose prompt never comes, so it cannot own the keyboard.

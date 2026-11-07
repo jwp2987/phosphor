@@ -96,6 +96,12 @@ impl QueryGate {
         false
     }
 
+    /// The id of the current wait, as its give-up timer holds it.
+    #[cfg(test)]
+    pub(super) fn wait_id_for_test(&self) -> u64 {
+        self.wait_id
+    }
+
     /// Forget everything (menu closed or reset).
     pub(super) fn reset(&mut self) {
         self.requested = None;

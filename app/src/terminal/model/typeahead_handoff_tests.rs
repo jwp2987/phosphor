@@ -2118,11 +2118,13 @@ fn a_signal_with_no_wait_pending_releases_nothing() {
 #[test]
 fn a_hold_that_gave_up_is_off_for_the_session_until_a_new_shell() {
     let mut handoff = conpty_awaiting_line_editor();
-    assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::Held);
-    let id = handoff.take_prompt_hold_started().unwrap();
-    assert!(handoff.expire_queued_prompt_hold(id));
-    assert!(handoff.route_released_chunk(b"a"));
-    handoff.finish_queued_prompt_hold(id);
+    // #1697: it takes CONPTY_PROMPT_HOLD_MISSES_BEFORE_OFF unsignalled misses in a row.
+    for miss in 0..CONPTY_PROMPT_HOLD_MISSES_BEFORE_OFF {
+        if miss > 0 {
+            handoff.on_precmd();
+        }
+        miss_an_unsignalled_prompt(&mut handoff);
+    }
     // The next prompt is not delayed again.
     handoff.on_precmd();
     assert!(!handoff.awaiting_line_editor_signal());
@@ -2131,6 +2133,76 @@ fn a_hold_that_gave_up_is_off_for_the_session_until_a_new_shell() {
     handoff.on_new_session();
     handoff.on_precmd();
     assert_eq!(handoff.on_user_bytes(b"c"), UserBytesRoute::Held);
+}
+
+/// #1697: one held prompt of a shell that has not signalled yet gives up with no signal: its key
+/// is held, the hold expires and the keys are released, and the next prompt is awaited again (the
+/// caller's precmd). Returns the hold's id.
+fn miss_an_unsignalled_prompt(handoff: &mut TypeaheadHandoff) -> u64 {
+    assert!(handoff.awaiting_line_editor_signal(), "a precmd's wait");
+    assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::Held);
+    let id = handoff.take_prompt_hold_started().unwrap();
+    assert!(handoff.expire_queued_prompt_hold(id));
+    assert!(handoff.route_released_chunk(b"a"));
+    handoff.finish_queued_prompt_hold(id);
+    id
+}
+
+/// #1697: ONE slow prompt (the session's first, on a loaded machine) before the shell has ever
+/// signalled does not switch the hold off for the session; the next prompt is held for again.
+/// Only CONPTY_PROMPT_HOLD_MISSES_BEFORE_OFF unsignalled misses in a row do (#1349's reason).
+/// Old behaviour: the first miss switched it off, and the #1162 raw-write corruption came back for
+/// the rest of the session.
+#[test]
+fn the_first_unsignalled_conpty_miss_does_not_switch_the_hold_off() {
+    let mut handoff = conpty_awaiting_line_editor();
+    for miss in 1..CONPTY_PROMPT_HOLD_MISSES_BEFORE_OFF {
+        miss_an_unsignalled_prompt(&mut handoff);
+        assert!(
+            !handoff.prompt_hold_off_for_session(),
+            "miss {miss} switched the hold off"
+        );
+        handoff.on_precmd();
+        assert!(
+            handoff.awaiting_line_editor_signal(),
+            "after miss {miss} the next prompt is held for again"
+        );
+    }
+    miss_an_unsignalled_prompt(&mut handoff);
+    assert!(handoff.prompt_hold_off_for_session());
+}
+
+/// #1697: a ready signal shows the shell signals: the misses before it do not count towards
+/// switching the hold off, and later misses are one-prompt give-ups.
+#[test]
+fn a_signal_resets_the_unsignalled_miss_count() {
+    let mut handoff = conpty_awaiting_line_editor();
+    for _ in 1..CONPTY_PROMPT_HOLD_MISSES_BEFORE_OFF {
+        miss_an_unsignalled_prompt(&mut handoff);
+        handoff.on_precmd();
+    }
+    assert_eq!(handoff.release_queued_prompt_hold_on_signal(), None);
+    assert_eq!(handoff.prompt_hold_unsignalled_misses, 0);
+    for _ in 0..CONPTY_PROMPT_HOLD_MISSES_BEFORE_OFF {
+        handoff.on_precmd();
+        miss_an_unsignalled_prompt(&mut handoff);
+    }
+    assert!(!handoff.prompt_hold_off_for_session());
+}
+
+/// #1697: one hold counts as one miss, however often its cap fires while it is kept overdue and
+/// whether it then expires.
+#[test]
+fn one_overdue_hold_counts_as_one_unsignalled_miss() {
+    let mut handoff = conpty_awaiting_line_editor();
+    assert_eq!(handoff.on_user_bytes(b"ls"), UserBytesRoute::Held);
+    let id = handoff.take_prompt_hold_started().unwrap();
+    for _ in 0..CONPTY_PROMPT_HOLD_MISSES_BEFORE_OFF + 1 {
+        assert!(handoff.keep_overdue_prompt_hold(id));
+    }
+    assert!(handoff.expire_queued_prompt_hold(id));
+    assert_eq!(handoff.prompt_hold_unsignalled_misses, 1);
+    assert!(!handoff.prompt_hold_off_for_session());
 }
 
 #[test]
@@ -2462,8 +2534,9 @@ fn a_key_typed_after_the_cap_into_a_running_command_is_still_held() {
 }
 
 /// #1573: the cap firing after an event already ended both waits (its release in flight, e.g.
-/// deferred behind a busy queue) is not a give-up: it is checked again shortly. Bounded: a hold
-/// left queued with no wait and no release is released past twice the cap.
+/// deferred behind a busy queue) is not a give-up: it is checked again shortly. #1698: that holds
+/// past twice the cap too (a busy queue on a loaded machine); the release is waited for up to the
+/// 10 s net from its decision. Old behaviour: a give-up at twice the cap from the first key.
 #[test]
 fn a_cap_firing_while_an_event_release_is_in_flight_is_not_a_give_up() {
     let mut handoff = conpty_ready_with_enter_window();
@@ -2477,15 +2550,67 @@ fn a_cap_firing_while_an_event_release_is_in_flight_is_not_a_give_up() {
         PromptHoldCap::NotYet(PROMPT_HOLD_RELEASE_IN_FLIGHT_RECHECK)
     );
     let started = handoff.prompt_hold_started_at.expect("a hold started");
+    let decided = handoff
+        .prompt_hold_release_decided_at
+        .expect("the release was decided");
+    for at in [
+        started + CONPTY_PROMPT_HOLD_GIVE_UP * 2,
+        decided + Duration::from_secs(9),
+    ] {
+        assert_eq!(
+            handoff.prompt_hold_cap_fired(id, at),
+            PromptHoldCap::NotYet(PROMPT_HOLD_RELEASE_IN_FLIGHT_RECHECK),
+            "a release in flight is not given up {:?} in",
+            at.saturating_duration_since(started)
+        );
+    }
     assert_eq!(
-        handoff.prompt_hold_cap_fired(id, started + CONPTY_PROMPT_HOLD_GIVE_UP * 2),
-        PromptHoldCap::GiveUp
+        handoff.prompt_hold_cap_fired(id, decided + YOUNG_HOLD_GIVE_UP),
+        PromptHoldCap::GiveUp,
+        "bounded by the 10 s net"
     );
     assert!(handoff.route_released_chunk(b"a"));
     handoff.finish_queued_prompt_hold(id);
     assert_eq!(
         handoff.prompt_hold_cap_fired(id, Instant::now()),
         PromptHoldCap::Gone
+    );
+}
+
+/// #1698: a hold left queued with neither wait pending and NO release decided (a wait an event
+/// cleared without releasing it) keeps the old bound, twice the cap from its first key -- unless
+/// the hand-off's own writes are still in flight (the queue ahead of it is busy), which extends it
+/// to the 10 s net.
+#[test]
+fn a_hold_with_no_wait_and_no_release_keeps_its_bound_unless_writes_are_in_flight() {
+    let mut handoff = conpty_awaiting_line_editor();
+    assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::Held);
+    let id = handoff.take_prompt_hold_started().unwrap();
+    // The wait ended with no release (no event returned the hold).
+    handoff.awaiting_line_editor_since = None;
+    handoff.enter_window_since = None;
+    // Nothing of the hand-off's own is on its way to the pty.
+    handoff.writes_in_flight = 0;
+    assert_eq!(handoff.prompt_hold_release_decided_at, None);
+    let started = handoff.prompt_hold_started_at.expect("a hold started");
+    assert_eq!(
+        handoff.prompt_hold_cap_fired(id, started + CONPTY_PROMPT_HOLD_GIVE_UP),
+        PromptHoldCap::NotYet(PROMPT_HOLD_RELEASE_IN_FLIGHT_RECHECK)
+    );
+    assert_eq!(
+        handoff.prompt_hold_cap_fired(id, started + CONPTY_PROMPT_HOLD_GIVE_UP * 2),
+        PromptHoldCap::GiveUp
+    );
+    handoff.writes_in_flight = 1;
+    assert_eq!(
+        handoff.prompt_hold_cap_fired(id, started + CONPTY_PROMPT_HOLD_GIVE_UP * 2),
+        PromptHoldCap::NotYet(PROMPT_HOLD_RELEASE_IN_FLIGHT_RECHECK),
+        "writes in flight: the queue is busy"
+    );
+    assert_eq!(
+        handoff.prompt_hold_cap_fired(id, started + YOUNG_HOLD_GIVE_UP),
+        PromptHoldCap::GiveUp,
+        "bounded by the 10 s net"
     );
 }
 
@@ -2658,10 +2783,15 @@ fn no_request_is_decided_while_queued_keys_are_uncounted() {
     ));
 }
 
-/// The give-up cap: the hold's id guards it, it fires once, and the hold is off for the session.
+/// The give-up cap: the hold's id guards it, it fires once, and (after the session's earlier
+/// unsignalled misses, #1697) the hold is off for the session.
 #[test]
 fn the_queued_hold_give_up_is_id_guarded_and_switches_the_hold_off() {
     let mut handoff = conpty_awaiting_line_editor();
+    for _ in 1..CONPTY_PROMPT_HOLD_MISSES_BEFORE_OFF {
+        miss_an_unsignalled_prompt(&mut handoff);
+        handoff.on_precmd();
+    }
     assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::Held);
     let id = handoff.take_prompt_hold_started().unwrap();
     assert!(!handoff.expire_queued_prompt_hold(id + 1));
@@ -3893,6 +4023,9 @@ fn an_overdue_hold_kept_for_the_events_is_still_released_by_the_signal() {
     let mut handoff = conpty_awaiting_line_editor();
     assert_eq!(handoff.on_user_bytes(b"ls"), UserBytesRoute::Held);
     let id = handoff.take_prompt_hold_started().unwrap();
+    // #1697: the first unsignalled miss does not switch the hold off; the session's earlier
+    // misses do. Two such prompts went before this one.
+    handoff.prompt_hold_unsignalled_misses = CONPTY_PROMPT_HOLD_MISSES_BEFORE_OFF - 1;
     assert!(handoff.keep_overdue_prompt_hold(id));
     assert!(handoff.prompt_hold_off_for_session());
     assert!(handoff.awaiting_line_editor_signal());

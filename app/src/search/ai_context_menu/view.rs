@@ -210,9 +210,16 @@ struct AIContextMenuState {
     is_cli_agent_input: bool,
 }
 
+/// Safety net for an Enter waiting on results that never arrive. The results' own event releases
+/// the Enter whenever they come before this. #1728: a 10 s net (the class of
+/// `YOUNG_HOLD_GIVE_UP`), not 3 s, so a loaded machine whose sources take seconds still gets the
+/// Enter applied; when it does fire, the Enter is not applied (nothing is inserted, the typed
+/// query stays) and a toast says so, instead of the Enter vanishing with only a log line.
+const SELECT_WAIT_GIVE_UP: Duration = crate::terminal::model::typeahead_handoff::YOUNG_HOLD_GIVE_UP;
+/// The toast shown when an @-menu Enter's wait for its results gives up (#1728).
+const SELECT_WAIT_GAVE_UP_TOAST: &str =
+    "Enter not applied: the @ menu's results did not arrive. Your text is unchanged.";
 /// Maximum number of results to display
-/// Safety net for an Enter waiting on results that never arrive (logged when it fires).
-const SELECT_WAIT_GIVE_UP: Duration = Duration::from_secs(3);
 const MAX_SEARCH_RESULTS: usize = 250;
 const MAX_CONSECUTIVE_EMPTY_RESULTS_EVENTS: usize = 7;
 
@@ -706,6 +713,48 @@ impl AIContextMenu {
         self.query_gate.select_waiting()
     }
 
+    /// The give-up net of deferred Enter `wait_id` fired (#1728): its results never arrived. The
+    /// Enter is not applied (acting on stale results could insert the wrong item); nothing is
+    /// inserted and the typed query stays as it is, and a toast tells the user the Enter was not
+    /// applied, so it is not a silently lost key. A wait that already ended changes nothing.
+    fn select_wait_gave_up(&mut self, wait_id: u64, ctx: &mut ViewContext<Self>) {
+        if !self.query_gate.give_up(wait_id) {
+            return;
+        }
+        log::warn!(
+            "ai context menu: gave up waiting {} ms for results; Enter not applied (nothing \
+             inserted, the query is kept), toast shown",
+            SELECT_WAIT_GIVE_UP.as_millis()
+        );
+        // `handle` panics when the singleton was never registered (bare views); ask first.
+        if !ctx.has_singleton_model::<crate::workspace::ToastStack>() {
+            return;
+        }
+        let window_id = ctx.window_id();
+        crate::workspace::ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+            toast_stack.add_ephemeral_toast(
+                crate::view_components::DismissibleToast::error(
+                    SELECT_WAIT_GAVE_UP_TOAST.to_string(),
+                ),
+                window_id,
+                ctx,
+            );
+        });
+    }
+
+    /// Fires the give-up net of the Enter waiting now, as its timer would (#1728).
+    #[cfg(test)]
+    pub fn fire_select_wait_give_up_for_test(&mut self, ctx: &mut ViewContext<Self>) {
+        let wait_id = self.query_gate.wait_id_for_test();
+        self.select_wait_gave_up(wait_id, ctx);
+    }
+
+    /// The give-up net of a deferred @-menu Enter (#1728), for tests.
+    #[cfg(test)]
+    pub fn select_wait_give_up_for_test() -> Duration {
+        SELECT_WAIT_GIVE_UP
+    }
+
     /// Runs the Enter that `select_current_item` deferred, once the results are current.
     fn run_deferred_select_if_ready(&mut self, ctx: &mut ViewContext<Self>) {
         if !self.query_gate.select_waiting() {
@@ -727,13 +776,7 @@ impl AIContextMenu {
             log::debug!("ai context menu: Enter deferred until results for the typed query arrive");
             let _ = ctx.spawn(
                 async { warpui::r#async::Timer::after(SELECT_WAIT_GIVE_UP).await },
-                move |me, _, _ctx| {
-                    if me.query_gate.give_up(wait_id) {
-                        log::warn!(
-                            "ai context menu: gave up waiting for results; Enter dropped (acting on nothing)"
-                        );
-                    }
-                },
+                move |me, _, ctx| me.select_wait_gave_up(wait_id, ctx),
             );
             return;
         }
