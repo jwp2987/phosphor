@@ -1841,6 +1841,163 @@ def wayland_pointer_ocr_cases_noref_x11_judged():
         assert UI.wl_check(ctx, r, True, "ok", "OCR") and not r.fails and not r.noref
 
 
+class _FakeCompositor:
+    """a minimal Wayland server for wlptr.py: wl_display / wl_registry (wl_seat + zwlr_virtual_pointer_manager_v1) / wl_callback, and records every
+    request the virtual pointer receives as (opcode, args)"""
+
+    def __init__(self, path, with_manager=True):
+        import socket, struct, threading
+        self.struct, self.requests, self.with_manager = struct, [], with_manager
+        self.srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.srv.bind(path)
+        self.srv.listen(2)
+        self.thread = threading.Thread(target=self.run, daemon=True)
+        self.thread.start()
+
+    def run(self):
+        import wlptr
+        st = self.struct
+        c, _ = self.srv.accept()
+        buf, ids = b"", {}
+        gl = [(1, "wl_seat", 5)] + ([(2, "zwlr_virtual_pointer_manager_v1", 2)] if self.with_manager else [])
+        while True:
+            d = c.recv(65536)
+            if not d:
+                return
+            buf += d
+            while len(buf) >= 8:
+                obj, w = st.unpack_from("<II", buf)
+                size, op = w >> 16, w & 0xFFFF
+                if len(buf) < size:
+                    break
+                body, buf = buf[8:size], buf[size:]
+                kind = ids.get(obj, "display" if obj == 1 else None)
+                if kind == "display" and op == 1:
+                    ids[st.unpack("<I", body)[0]] = "registry"
+                    for name, iface, ver in gl:
+                        b = st.pack("<I", name) + wlptr._pstr(iface) + st.pack("<I", ver)
+                        c.sendall(st.pack("<II", st.unpack("<I", body)[0], ((8 + len(b)) << 16) | 0) + b)
+                elif kind == "display" and op == 0:
+                    cb = st.unpack("<I", body)[0]
+                    c.sendall(st.pack("<II", cb, (12 << 16) | 0) + st.pack("<I", 0))
+                elif kind == "registry" and op == 0:
+                    name = st.unpack_from("<I", body)[0]
+                    iface, off = wlptr._rstr(body, 4)
+                    ver, nid = st.unpack_from("<II", body, off)
+                    ids[nid] = {"wl_seat": "seat", "zwlr_virtual_pointer_manager_v1": "mgr"}[iface]
+                elif kind == "mgr" and op == 0:
+                    seat, nid = st.unpack("<II", body)
+                    ids[nid] = "ptr"
+                    self.requests.append(("create", (seat,)))
+                elif kind == "ptr":
+                    n = len(body) // 4
+                    self.requests.append((op, st.unpack("<%di" % n, body) if op == 3 else st.unpack("<%dI" % n, body)))
+
+
+@check
+def wlptr_virtual_pointer_wire_and_holder():
+    """#1789: wlptr.py binds zwlr_virtual_pointer_manager_v1 and sends motion_absolute / button / frame / axis with the right wire layout (checked
+    against a fake compositor), a holder answers one-line commands on its control socket, and a compositor without the protocol is an error"""
+    import wlptr, threading
+    tmp = tempfile.mkdtemp(prefix="wp")
+    try:
+        sp = os.path.join(tmp, "w0")
+        fc = _FakeCompositor(sp)
+        vp = wlptr.VirtualPointer(sp)
+        vp.motion_absolute(800, 500, 1600, 1000)
+        vp.button(wlptr.BTN[3], True)
+        vp.button(wlptr.BTN[3], False)
+        vp.axis(2)
+        reqs = fc.requests
+        assert reqs[0][0] == "create", reqs
+        ops = [o for o, _ in reqs[1:]]
+        assert ops == [1, 4, 2, 4, 2, 4, 5, 3, 4], ops
+        assert reqs[1][1][1:] == (800, 500, 1600, 1000), reqs[1]
+        assert reqs[3][1][1:] == (0x111, 1) and reqs[5][1][1:] == (0x111, 0), reqs
+        assert reqs[8][1][1:] == (0, 2 * 256), reqs[8]
+        assert wlptr.BTN[1] == 0x110
+        # the holder: a control socket in front of the same pointer
+        assert wlptr.handle(vp, "ping") == "ok" and wlptr.handle(vp, "abs 1 2 3 4") == "ok" and wlptr.handle(vp, "btn 272 1") == "ok"
+        assert wlptr.handle(vp, "nonsense").startswith("err") and wlptr.handle(vp, "abs x").startswith("err")
+        sp2 = os.path.join(tmp, "w1")
+        fc2 = _FakeCompositor(sp2, with_manager=False)
+        try:
+            wlptr.VirtualPointer(sp2)
+            raise AssertionError("a compositor without zwlr_virtual_pointer_manager_v1 must be an error")
+        except RuntimeError as e:
+            assert "zwlr_virtual_pointer_manager_v1" in str(e), e
+        ctl = os.path.join(tmp, "c")
+        sp3 = os.path.join(tmp, "w2")
+        fc3 = _FakeCompositor(sp3)
+        threading.Thread(target=wlptr.serve, args=(ctl, sp3), daemon=True).start()
+        for _ in range(50):
+            if os.path.exists(ctl):
+                break
+            time.sleep(0.05)
+        assert wlptr.send_cmd(ctl, "ping") == "ok" and wlptr.send_cmd(ctl, "abs 5 6 100 100") == "ok", "holder"
+        assert fc3.requests[-2][1][1:] == (5, 6, 100, 100), fc3.requests
+        assert wlptr.display_path({"WAYLAND_DISPLAY": "wayland-1", "XDG_RUNTIME_DIR": "/r"}) == "/r/wayland-1"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@check
+def wayland_pointer_gate_follows_the_holder_1789():
+    """#1789: with a live virtual-pointer holder a pointer-only claim FAILS on Wayland (the events provably reach clients); OCR claims stay NOREF; without a
+    holder everything stays NOREF as before. hook_find reads the app's OCR-free position line, the last one winning, and None without the hook."""
+    import cases_ui as UI, wlptr
+    tmp = tempfile.mkdtemp(prefix="wg")
+    try:
+        ctl = os.path.join(tmp, "c")
+        import socket
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        srv.bind(ctl)
+        srv.listen(4)
+        import threading
+
+        def answer():
+            while True:
+                try:
+                    c, _ = srv.accept()
+                except OSError:
+                    return
+                c.recv(100)
+                c.sendall(b"ok\n")
+                c.close()
+        threading.Thread(target=answer, daemon=True).start()
+        old = os.environ.get("APPCI_WL_PTR")
+        ctx = types.SimpleNamespace(be=types.SimpleNamespace(name="wayland"))
+        try:
+            os.environ["APPCI_WL_PTR"] = ctl
+            assert UI.wl_pointer_real(ctx)
+            r = cases.Result("t", "terminal")
+            assert UI.wl_check(ctx, r, False, "no click", "pointer") is False and len(r.fails) == 1 and not r.noref, (r.fails, r.noref)
+            r = cases.Result("t", "terminal")
+            UI.wl_check(ctx, r, False, "no ocr", "OCR")
+            UI.wl_check(ctx, r, False, "mixed", "pointer/OCR")
+            assert not r.fails and len(r.noref) == 2, (r.fails, r.noref)
+            os.environ["APPCI_WL_PTR"] = os.path.join(tmp, "gone")
+            assert not UI.wl_pointer_real(ctx)
+            r = cases.Result("t", "terminal")
+            UI.wl_check(ctx, r, False, "no click", "pointer")
+            assert not r.fails and len(r.noref) == 1
+            assert not UI.wl_pointer_real(types.SimpleNamespace(be=types.SimpleNamespace(name="x11")))
+        finally:
+            if old is None:
+                os.environ.pop("APPCI_WL_PTR", None)
+            else:
+                os.environ["APPCI_WL_PTR"] = old
+            srv.close()
+        log = os.path.join(tmp, "app.log")
+        c2 = types.SimpleNamespace(log_path=log)
+        assert UI.hook_find(c2, "tokx") is None
+        open(log, "w").write("noise\nINFO appci_find token=tokx x0=10 y0=20 x1=110 y1=40\nINFO appci_find token=tokx x0=10 y0=60 x1=110 y1=80\nappci_find token=other x0=1 y0=1 x1=2 y1=2\n")
+        assert UI.hook_find(c2, "tokx", origin=(100, 200)) == ("tokx", 160, 270, 110, 210, 260, 280), UI.hook_find(c2, "tokx", origin=(100, 200))
+        assert UI.hook_find(c2, "nope") is None
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 @check
 def tabs_streaming_reorder_known_1658():
     """#1658 (owner 2026-11-04): the Windows streaming-tabs reorder is KNOWN at 0.1.17; FAIL on Linux, after 0.1.17, and whenever the app log shows a discard"""

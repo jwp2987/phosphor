@@ -258,10 +258,18 @@ def c_alt_mouse(ctx, r):
     ctx.be.type("python3 ca_mouse.py ca_mouse.out", ctx.rng.randint(10, 25), enter=True)
     time.sleep(1.5)
     pos = None
-    if shutil.which("tesseract"):
+    sweep = None
+    if UI.wl_pointer_real(ctx):
+        # #1789: OCR-free placement. The window rectangle comes from sway (exact); the banner's row is not known without an app hook, so the click is
+        # swept down the left side of the window: only a click inside the program's block is reported to it, any other click does nothing to the test.
+        rect = UI.sway_window_rect(ctx.be.pid_fn()) if getattr(ctx.be, "pid_fn", None) and ctx.be.pid_fn() else None
+        if rect:
+            sweep = [(rect[0] + 140, rect[1] + int(rect[3] * f)) for f in (0.08, 0.14, 0.22, 0.32, 0.45, 0.6)]
+            r.note("OCR-free placement: clicks swept down x=%d over the window %r" % (sweep[0][0], rect))
+    if sweep is None and shutil.which("tesseract"):
         hit, _ = UI.find_word(ctx, "ca_mouse_find", "mouseready")
         pos = (hit[1], hit[2] + 60) if hit else None
-    if pos is None:
+    if sweep is None and pos is None:
         shot = ctx.shot("ca_mouse_size")
         try:
             from PIL import Image
@@ -271,14 +279,15 @@ def c_alt_mouse(ctx, r):
         except Exception:
             r.skip("cannot place the pointer: no tesseract hit and no Pillow to read the screenshot size (packages: tesseract-ocr, python3-pil)")
     ctx.shot("ca_mouse_before_click")
-    mouse.click(pos[0], pos[1])
+    for px, py in (sweep or [pos]):
+        mouse.click(px, py)
     time.sleep(0.4)
     ctx.be.type("k", 20)
     ctx.until(lambda: os.path.exists(os.path.join(ctx.W, "ca_mouse.out")), 10)
     time.sleep(0.4)
     ctx.shot("ca_mouse_after")
     got = open(os.path.join(ctx.W, "ca_mouse.out")).read() if os.path.exists(os.path.join(ctx.W, "ca_mouse.out")) else ""
-    if UI.on_wayland(ctx) and not re.search(r"\\x1b\[<0;\d+;\d+[Mm]", got):
+    if UI.on_wayland(ctx) and not UI.wl_pointer_real(ctx) and not re.search(r"\\x1b\[<0;\d+;\d+[Mm]", got):
         # no mouse event of any kind reached the program: the sway seat's synthetic click is unobservable here (NOREF); a press WITHOUT its release, or
         # mangled events, still fail below
         UI.wl_check(ctx, r, False, "no SGR mouse event reached the program that asked for mouse reporting: %s" % got[:200], "pointer")
