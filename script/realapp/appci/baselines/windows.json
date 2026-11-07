@@ -1,1 +1,115 @@
-{"status": "pending", "platform": "windows", "source": "pending: the coordinator fills this with `baseline.py promote <results.json> windows` from a run on the r18bj build the owner judged good", "metrics": {}}
+{
+ "metrics": {
+  "agent/ctrl_c_d/ctrl_c": {
+   "n": 30,
+   "overhead_ms": 1.2,
+   "p50": 4.19,
+   "p95": 4.99
+  },
+  "agent/latency_enter/enter_to_start": {
+   "n": 60,
+   "overhead_ms": 35.15,
+   "p50": 42.98,
+   "p95": 54.64
+  },
+  "agent@gitbash/ctrl_c_d/ctrl_c": {
+   "n": 30,
+   "overhead_ms": 9.56,
+   "p50": 81.31,
+   "p95": 107.8
+  },
+  "agent@gitbash/latency_enter/enter_to_start": {
+   "n": 60,
+   "overhead_ms": 29.82,
+   "p50": 92.77,
+   "p95": 199.58
+  },
+  "agent@gitbash/latency_enter_ssh/ssh_enter_to_start": {
+   "n": 60,
+   "overhead_ms": null,
+   "p50": 100.56,
+   "p95": 123.93
+  },
+  "agent@gitbash/latency_first_key_after_idle/gap1s": {
+   "n": 30,
+   "overhead_ms": -0.04,
+   "p50": 3.5,
+   "p95": 4.14
+  },
+  "agent@gitbash/latency_first_key_after_idle/gap2s": {
+   "n": 30,
+   "overhead_ms": -0.09,
+   "p50": 3.8,
+   "p95": 4.1
+  },
+  "agent@gitbash/latency_first_key_after_idle/gap5s": {
+   "n": 30,
+   "overhead_ms": 0.13,
+   "p50": 3.82,
+   "p95": 4.15
+  },
+  "agent@gitbash/latency_key_log/key_to_frame": {
+   "n": 60,
+   "overhead_ms": null,
+   "p50": 3.85,
+   "p95": 4.27
+  },
+  "terminal/ctrl_c_d/ctrl_c": {
+   "n": 30,
+   "overhead_ms": 2.24,
+   "p50": 4.61,
+   "p95": 6.54
+  },
+  "terminal/latency_enter/enter_to_start": {
+   "n": 60,
+   "overhead_ms": 41.77,
+   "p50": 49.64,
+   "p95": 61.99
+  },
+  "terminal@gitbash/ctrl_c_d/ctrl_c": {
+   "n": 30,
+   "overhead_ms": 13.02,
+   "p50": 80.24,
+   "p95": 102.24
+  },
+  "terminal@gitbash/latency_enter/enter_to_start": {
+   "n": 60,
+   "overhead_ms": 28.61,
+   "p50": 95.0,
+   "p95": 139.53
+  },
+  "terminal@gitbash/latency_enter_ssh/ssh_enter_to_start": {
+   "n": 60,
+   "overhead_ms": null,
+   "p50": 99.89,
+   "p95": 124.58
+  },
+  "terminal@gitbash/latency_first_key_after_idle/gap1s": {
+   "n": 30,
+   "overhead_ms": 0.06,
+   "p50": 3.82,
+   "p95": 6.91
+  },
+  "terminal@gitbash/latency_first_key_after_idle/gap2s": {
+   "n": 30,
+   "overhead_ms": -0.05,
+   "p50": 3.61,
+   "p95": 4.34
+  },
+  "terminal@gitbash/latency_first_key_after_idle/gap5s": {
+   "n": 30,
+   "overhead_ms": 0.09,
+   "p50": 3.88,
+   "p95": 4.47
+  },
+  "terminal@gitbash/latency_key_log/key_to_frame": {
+   "n": 60,
+   "overhead_ms": null,
+   "p50": 3.4,
+   "p95": 7.96
+  }
+ },
+ "platform": "windows",
+ "source": "promoted 2026-11-06 from results.json commit 08090ee8",
+ "status": "ok"
+}

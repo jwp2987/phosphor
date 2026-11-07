@@ -1,1 +1,115 @@
-{"status": "pending", "platform": "macos", "source": "pending: the coordinator fills this with `baseline.py promote <results.json> macos` from a run on the r18bj build the owner judged good", "metrics": {}}
+{
+ "metrics": {
+  "agent/ctrl_c_d/ctrl_c": {
+   "n": 30,
+   "overhead_ms": 4.01,
+   "p50": 212.26,
+   "p95": 224.95
+  },
+  "agent/ctrl_c_d/ctrl_c_flood": {
+   "n": 30,
+   "overhead_ms": 60.76,
+   "p50": 244.93,
+   "p95": 259.76
+  },
+  "agent/latency_enter/enter_to_start": {
+   "n": 60,
+   "overhead_ms": 16.16,
+   "p50": 93.32,
+   "p95": 109.68
+  },
+  "agent/latency_enter_ssh/ssh_enter_to_start": {
+   "n": 60,
+   "overhead_ms": 4.29,
+   "p50": 98.37,
+   "p95": 123.1
+  },
+  "agent/latency_first_key_after_idle/gap1s": {
+   "n": 30,
+   "overhead_ms": -15.02,
+   "p50": 44.57,
+   "p95": 110.93
+  },
+  "agent/latency_first_key_after_idle/gap2s": {
+   "n": 30,
+   "overhead_ms": -22.34,
+   "p50": 44.33,
+   "p95": 54.83
+  },
+  "agent/latency_first_key_after_idle/gap5s": {
+   "n": 30,
+   "overhead_ms": -23.44,
+   "p50": 50.29,
+   "p95": 57.58
+  },
+  "agent/latency_key_log/key_to_frame": {
+   "n": 60,
+   "overhead_ms": null,
+   "p50": 6.7,
+   "p95": 9.28
+  },
+  "agent/latency_paint/key_to_paint": {
+   "n": 30,
+   "overhead_ms": 1.29,
+   "p50": 46.47,
+   "p95": 53.97
+  },
+  "terminal/ctrl_c_d/ctrl_c": {
+   "n": 30,
+   "overhead_ms": 7.93,
+   "p50": 211.52,
+   "p95": 223.47
+  },
+  "terminal/ctrl_c_d/ctrl_c_flood": {
+   "n": 30,
+   "overhead_ms": 77.13,
+   "p50": 267.11,
+   "p95": 294.23
+  },
+  "terminal/latency_enter/enter_to_start": {
+   "n": 60,
+   "overhead_ms": 19.52,
+   "p50": 96.09,
+   "p95": 110.22
+  },
+  "terminal/latency_enter_ssh/ssh_enter_to_start": {
+   "n": 60,
+   "overhead_ms": 9.09,
+   "p50": 100.04,
+   "p95": 120.55
+  },
+  "terminal/latency_first_key_after_idle/gap1s": {
+   "n": 30,
+   "overhead_ms": -21.89,
+   "p50": 45.55,
+   "p95": 116.91
+  },
+  "terminal/latency_first_key_after_idle/gap2s": {
+   "n": 30,
+   "overhead_ms": -22.29,
+   "p50": 45.46,
+   "p95": 53.32
+  },
+  "terminal/latency_first_key_after_idle/gap5s": {
+   "n": 30,
+   "overhead_ms": -34.26,
+   "p50": 46.75,
+   "p95": 53.31
+  },
+  "terminal/latency_key_log/key_to_frame": {
+   "n": 60,
+   "overhead_ms": null,
+   "p50": 6.23,
+   "p95": 9.32
+  },
+  "terminal/latency_paint/key_to_paint": {
+   "n": 30,
+   "overhead_ms": -2.05,
+   "p50": 43.99,
+   "p95": 53.71
+  }
+ },
+ "platform": "macos",
+ "source": "promoted 2026-11-06 from results.json commit 08090ee8",
+ "status": "ok"
+}
