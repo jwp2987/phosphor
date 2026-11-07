@@ -9701,15 +9701,7 @@ impl TerminalView {
     /// overtakes the queue; without the discard, the parked command would run once the line
     /// editor became active, after the interrupt it was meant to receive (#850).
     fn interrupt_agent_command(&mut self, ctx: &mut ViewContext<Self>) {
-        // Keys held behind a deferred Enter (`FeatureFlag::TypeaheadHandoff`) would hold this
-        // ^C too; the interrupt cancels that Enter and its keys instead, so the ^C is written.
-        if FeatureFlag::TypeaheadHandoff.is_enabled() {
-            let cancelled = self.handoff.write().cancel_deferred_enter();
-            self.drain_young_hold_ends(ctx);
-            if cancelled {
-                self.redetermine_terminal_focus(ctx);
-            }
-        }
+        self.cancel_deferred_enter_before_interrupt(ctx);
         ctx.emit(Event::DiscardPendingCommandWrites);
         self.user_write_ctrl_c_to_pty(ctx);
 
@@ -9901,6 +9893,8 @@ impl TerminalView {
             if is_agent_requested {
                 self.interrupt_agent_command(ctx);
             } else {
+                // #1774: a deferred Enter's gate must not hold this ^C.
+                self.cancel_deferred_enter_before_interrupt(ctx);
                 self.user_write_ctrl_c_to_pty(ctx);
             }
         }
@@ -9997,6 +9991,22 @@ impl TerminalView {
     #[cfg(test)]
     pub(crate) fn is_suspended_for_close(&self) -> bool {
         self.suspended_for_close
+    }
+
+    /// Keys held behind a deferred Enter (`FeatureFlag::TypeaheadHandoff`) would hold an
+    /// interrupt's ^C too, and replay it after the deferred command it was meant to interrupt; the
+    /// interrupt cancels that Enter and its keys instead, so the ^C is written at once (#850). Every
+    /// path that writes an interrupt's ^C with [`Self::user_write_ctrl_c_to_pty`] calls this first
+    /// (#1774: Stop of a user command, a dismissed ssh warpify / tmux-install block, a rewind), as
+    /// `ctrl_c` does for the key.
+    fn cancel_deferred_enter_before_interrupt(&mut self, ctx: &mut ViewContext<Self>) {
+        if FeatureFlag::TypeaheadHandoff.is_enabled() {
+            let cancelled = self.handoff.write().cancel_deferred_enter();
+            self.drain_young_hold_ends(ctx);
+            if cancelled {
+                self.redetermine_terminal_focus(ctx);
+            }
+        }
     }
 
     fn user_write_ctrl_c_to_pty(&mut self, ctx: &mut ViewContext<Self>) {
@@ -16151,6 +16161,8 @@ impl TerminalView {
             SshWarpifyBlockEvent::Interrupt => {
                 dismiss_ssh_warpify_block(self, ctx);
                 self.warpify_state.abort_ssh_warpify_timeout();
+                // #1774: a deferred Enter's gate must not hold this ^C.
+                self.cancel_deferred_enter_before_interrupt(ctx);
                 self.user_write_ctrl_c_to_pty(ctx);
             }
         }
@@ -16173,6 +16185,8 @@ impl TerminalView {
             SshInstallTmuxBlockEvent::Interrupt => {
                 cancel_tmux_install(self, ctx);
                 self.warpify_state.abort_ssh_warpify_timeout();
+                // #1774: a deferred Enter's gate must not hold this ^C.
+                self.cancel_deferred_enter_before_interrupt(ctx);
                 self.user_write_ctrl_c_to_pty(ctx);
             }
             SshInstallTmuxBlockEvent::InstallTmuxAndWarpify(install_method) => {
@@ -34469,6 +34483,8 @@ impl TerminalView {
 
         // Note: CTRL-C isn't guaranteed to stop everything, such as a Python REPL.
         if should_stop_running_command {
+            // #1774: a deferred Enter's gate must not hold this ^C.
+            self.cancel_deferred_enter_before_interrupt(ctx);
             self.user_write_ctrl_c_to_pty(ctx);
         }
 

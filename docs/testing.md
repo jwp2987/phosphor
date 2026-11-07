@@ -1225,6 +1225,14 @@ and `a_hold_that_gave_up_is_off_for_the_session_until_a_new_shell` (they now rea
 | view, Legacy and Table | `view_test.rs`: `the_queued_prompt_hold_gives_up_in_order_and_switches_itself_off` (now three prompts) | each miss hands `ab` back, nothing written; off only after the 3rd; then `c` goes by the live path |
 | model | `typeahead_handoff_tests.rs`: `a_cap_firing_while_an_event_release_is_in_flight_is_not_a_give_up`, `a_hold_with_no_wait_and_no_release_keeps_its_bound_unless_writes_are_in_flight` | a decided release is `NotYet` at 2x cap and at 9 s, `GiveUp` at the decision + 10 s; with no release and no writes in flight the 2x-cap bound stands, writes in flight extend it to 10 s |
 
+**Busy-machine timer batch 1, interrupt ^C (#1774).** Every interrupt path that writes its own ^C (Stop of the user's command, the ssh
+warpify and tmux-install blocks' Interrupt, a rewind) cancels a deferred Enter first (`cancel_deferred_enter_before_interrupt`), as
+`ctrl_c` and `interrupt_agent_command` do, so the ^C is not held behind its gate.
+
+| layer | test | asserts |
+|---|---|---|
+| view, Legacy and Table | `view_test.rs`: `an_interrupt_ctrl_c_is_not_held_behind_a_deferred_enter` (Stop of a user command, ssh warpify Interrupt, tmux-install Interrupt, rewind) | with an Enter deferred and `x` typed behind it, each path writes exactly one ^C, `x` is never written, the deferred Enter is cancelled |
+
 **#1661 (owner decision 2026-11-05): a give-up DROPS the keys typed after an Enter.** Every give-up of an Enter gate
 (the route-settle net, the gate's leak net, an orphan gate's leak net, the verdict / completion give-ups, an unready shell's
 15 s net and its gate-gone path, a void of the waiting Enter, the hand-off's report give-ups) closes the gate and DISCARDS what

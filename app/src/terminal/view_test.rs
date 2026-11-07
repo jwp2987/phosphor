@@ -15819,6 +15819,111 @@ fn typeahead_handoff_ctrl_c_on_an_agent_command_is_not_held() {
     })
 }
 
+/// #1774: the interrupt paths that write their own ^C, other than the key and the agent-command
+/// interrupt.
+#[derive(Clone, Copy, Debug)]
+enum InterruptCtrlCPath {
+    /// Stop of a conversation whose running command is the user's own (not agent-requested).
+    StopUserCommand,
+    SshWarpifyInterrupt,
+    SshInstallTmuxInterrupt,
+    Rewind,
+}
+
+/// #1774: every interrupt path that writes a ^C cancels an Enter deferred behind the typeahead
+/// report (and the keys held behind it) first, as `ctrl_c` and `interrupt_agent_command` do: the
+/// ^C reaches the pty once, at once, instead of being held behind the deferred Enter's gate and
+/// replayed after the command it was meant to interrupt. The key typed behind the Enter is voided
+/// with it (a tty flushes typeahead on an interrupt), never written. Legacy and Table.
+#[test]
+fn an_interrupt_ctrl_c_is_not_held_behind_a_deferred_enter() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        for path in [
+            InterruptCtrlCPath::StopUserCommand,
+            InterruptCtrlCPath::SshWarpifyInterrupt,
+            InterruptCtrlCPath::SshInstallTmuxInterrupt,
+            InterruptCtrlCPath::Rewind,
+        ] {
+            App::test((), move |mut app| async move {
+                let _mode =
+                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+                let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+                initialize_app_for_terminal_view(&mut app);
+                register_global_resource_handles(&mut app);
+                let terminal = add_window_with_terminal(&mut app, None);
+                let conversation_id = terminal.update(&mut app, |view, ctx| {
+                    let conversation_id = start_running_conversation_for_close(view, ctx);
+                    let mut model = view.model.lock();
+                    model.simulate_long_running_block("sleep 100", "");
+                    if matches!(path, InterruptCtrlCPath::Rewind) {
+                        // A rewind stops a running command of its own conversation.
+                        model
+                            .block_list_mut()
+                            .active_block_mut()
+                            .set_agent_interaction_mode_for_requested_command(
+                                AIAgentActionId::from("requested-command".to_owned()),
+                                None,
+                                conversation_id,
+                            );
+                    }
+                    conversation_id
+                });
+                let pty_writes = collect_pty_writes(&mut app, &terminal);
+                terminal.update(&mut app, |view, ctx| {
+                    hold_after_deferred_enter(view);
+                    view.write_user_bytes_to_pty(b"x".to_vec(), ctx);
+                    assert_eq!(
+                        view.model.lock().typeahead_handoff().state(),
+                        &HandoffState::HoldAfterEnter { released: false },
+                        "{mode:?} {path:?}"
+                    );
+                });
+                assert!(pty_writes.borrow().is_empty(), "{mode:?} {path:?}");
+                terminal.update(&mut app, |view, ctx| match path {
+                    InterruptCtrlCPath::StopUserCommand => {
+                        view.stop_local_agent_conversation(conversation_id, ctx)
+                    }
+                    InterruptCtrlCPath::SshWarpifyInterrupt => {
+                        view.handle_ssh_warpify_block_event(&SshWarpifyBlockEvent::Interrupt, ctx)
+                    }
+                    InterruptCtrlCPath::SshInstallTmuxInterrupt => view
+                        .handle_ssh_install_tmux_block_event(
+                            &SshInstallTmuxBlockEvent::Interrupt,
+                            ctx,
+                        ),
+                    InterruptCtrlCPath::Rewind => view.rewind_ai_conversation(
+                        EntityId::new(),
+                        AIAgentExchangeId::new(),
+                        conversation_id,
+                        ctx,
+                    ),
+                });
+                let writes = pty_writes.borrow().clone();
+                assert_eq!(
+                    writes
+                        .iter()
+                        .filter(|bytes| bytes.contains(&C0::ETX))
+                        .count(),
+                    1,
+                    "{mode:?} {path:?}: one ^C reached the pty: {writes:?}"
+                );
+                assert!(
+                    !writes.iter().any(|bytes| bytes.contains(&b'x')),
+                    "{mode:?} {path:?}: the key behind the Enter was voided: {writes:?}"
+                );
+                terminal.read(&app, |view, _| {
+                    assert_ne!(
+                        view.model.lock().typeahead_handoff().state(),
+                        &HandoffState::HoldAfterEnter { released: false },
+                        "{mode:?} {path:?}: the deferred Enter was cancelled"
+                    );
+                });
+            });
+        }
+    }
+}
+
 /// #1331/#1577: a terminal-bound paste whose clipboard read never answers fails at the backstop;
 /// the keys typed meanwhile are HANDED BACK to the editor in typing order (none dropped, the Enter
 /// a new line after the fragment it followed, the next Enter held with a toast), not written to
