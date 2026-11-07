@@ -659,10 +659,14 @@ def main():
         play(n)
     # Each platform's tests start as soon as ITS build succeeds, not after the box test suites (those take ~1 h and
     # would hold the Mac and Windows tests back for no reason; app tests on other machines do not compete with the box).
-    # Owner 2026-11-05: on each machine the UNIT suites run first, then the app tests, then (release tier) the heavy suites,
+    # Owner 2026-11-05: on each machine (Mac, Windows and the Linux box) the UNIT suites run first, then the app tests, then (release tier) the heavy suites,
     # one at a time, so a logic regression shows in minutes and compile load never overlaps the latency cases.
     p_of = {BUILD[p]: p for p in plats}
     started, lock = [], threading.Lock()
+    # r18u31: on the Linux box the unit suites (and the release tier's mutants, a ~4 h all-core job) ran alongside the
+    # Wayland/X11 app tests; agent-mode tab_enter / tabs_streaming / compose failed under that load and passed on an idle
+    # box. Candidate/release: the Linux app tests wait for the box unit suites, and the heavy suites wait for the app tests.
+    box_units_done = threading.Event()
 
     def run_suites(names):
         """Play the suite jobs one after the other on their machine; a suite that cannot exist there is reported, not played."""
@@ -685,6 +689,8 @@ def main():
             return
         if tier != "fix" and p_of[b] in PLAT_SUFFIX:
             run_suites(plat_suites(p_of[b], False))     # unit suites first, on the same machine, before its app tests
+        elif tier != "fix":
+            box_units_done.wait()                       # the Linux box: its unit suites first, never alongside the app tests
         for n in [t for t in APP[p_of[b]] if t not in SKIP and t in jobs()]:
             if tier == "fix" and n == "app-test-linux-x11":
                 timeline[n] = (TIER_SKIP, None)
@@ -724,7 +730,18 @@ def main():
     for n, v in box:
         if n in SKIP: continue
         play(n, v); print(n, wait(n), flush=True)
+    box_units_done.set()
     if tier == "release":
+        for p in plats:                                 # the box's heavy suites after its app tests (they load every core)
+            if p in PLAT_SUFFIX:
+                continue
+            if BUILD[p] in watch_of:
+                watch_of[BUILD[p]].join()
+            for n in APP[p]:
+                with lock:
+                    mine = n in started
+                if mine:
+                    print(n, wait(n), flush=True)
         for n in ["test-shuttle-loom", "fuzz-smoke", "bench", "mutants", "mutants-warpui-core"]:
             if n not in SKIP: play(n)
     for t in watchers:
