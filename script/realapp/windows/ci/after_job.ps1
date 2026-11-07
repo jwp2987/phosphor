@@ -2,6 +2,8 @@
 # app_test.ps1's finally block (which runs restore.ps1) may never run because the job's process tree was killed.
 # 1. Stops only processes this job recorded in appci-out\windows\run\pids ("<kind> <pid>" lines), and only when that PID's executable
 #    path or command line lies under this job's appci-out dir (PID-reuse safe). Never by name. Never the GitLab runner.
+#    (#1642) The app runs inside a Job Object with KILL_ON_JOB_CLOSE (appci/app.py WindowsApp), so conhost trees die with the harness; the
+#    "jobmember <pid> <creation FILETIME>" lines it records are this script's fallback for anything that still holds app.stdout.
 # 3. (#1517) Removes %USERPROFILE%\WINPUSH.lock only when app_test.ps1 wrote it for THIS job (its text carries "pipeline=<id> job=<CI_JOB_ID> ");
 #    a lock held by another job or by a hand-run agent is left alone. A cancelled job would otherwise block the next run for 30 min.
 # 2. If this job made a backup (%USERPROFILE%\appci-bak\<CI_JOB_ID>\meta.json) and no restore has run for it yet (no restore.log),
@@ -21,7 +23,11 @@ if ($outFull) {
       $p = Get-CimInstance Win32_Process -Filter "ProcessId = $($w[1])" -ErrorAction SilentlyContinue
       if (-not $p) { Write-Output "after_job: recorded $($w[0]) pid $($w[1]) already gone"; continue }
       $where = "$($p.ExecutablePath) $($p.CommandLine)"
-      if ($where -like "*$outFull*") {
+      # #1642: "jobmember <pid> <creation FILETIME>" lines are written by WindowsApp.stop from the app's Job Object (conhost, shells: command lines
+      # that never name the out dir). The creation time, not the path, proves the PID is still the process the job held. Only PIDs recorded here.
+      $isMember = $false
+      if ($w[0] -eq "jobmember" -and $w.Count -ge 3 -and $w[2] -match '^\d+$' -and $p.CreationDate) { $isMember = ($p.CreationDate.ToFileTimeUtc() -eq [int64]$w[2]) }
+      if ($isMember -or $where -like "*$outFull*") {
         & taskkill.exe /PID $p.ProcessId /T /F 2>&1 | Out-Null
         Write-Output "after_job: stopped $($w[0]) pid $($p.ProcessId)"
       } else { Write-Output "after_job: recorded $($w[0]) pid $($w[1]) is alive but not ours (PID reuse): left alone" }

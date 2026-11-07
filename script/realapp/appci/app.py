@@ -270,6 +270,7 @@ class WindowsApp:
         self.run, self.home, self.bin, self.pane = run, home, binary, pane
         self.ctl = ctl or os.path.join(run, "ctl")
         self.proc = None
+        self.job = None            # #1642: Win32 job handle (KILL_ON_JOB_CLOSE) around the app
         self.exit_code = None
         self.config = os.path.join(os.environ["LOCALAPPDATA"], "phosphor", "Phosphor", "config")
         # #1401: pwsh.ps1's hook timing marks go here while `<file>.on` exists (cases.py pwsh_hook_timing turns it on for a measurement only)
@@ -312,12 +313,47 @@ class WindowsApp:
     def start(self):
         self._install_settings()
         os.makedirs(os.path.join(self.home, "w"), exist_ok=True)
-        out = open(os.path.join(self.run, "app.stdout"), "ab")
+        out = open(os.path.join(self.run, "app.stdout"), "ab")          # python opens it non-inheritable; Popen hands the child only its std handles
         self.exit_code = None
-        self.proc = subprocess.Popen([self.bin], cwd=os.path.join(self.home, "w"), env=self.env(), stdout=out, stderr=subprocess.STDOUT)
+        self.proc = self._spawn(out)
+        out.close()                                                      # the child has its own duplicate
         with open(os.path.join(self.run, "pids"), "a") as f:
             f.write("app %d\n" % self.proc.pid)
         return self.proc.pid
+
+    def _spawn(self, out):
+        """#1642: the app starts suspended, joins a KILL_ON_JOB_CLOSE job, then runs, so no child (conhost, shells) can exist outside the job. Without a
+        job (creation failed, or this process may not assign) it starts plain, as before, and teardown falls back to taskkill /T."""
+        import winapi
+        self.job = None
+        job = winapi.job_create() if os.name == "nt" else None
+        flags = getattr(subprocess, "CREATE_SUSPENDED", winapi.CREATE_SUSPENDED) if job else 0
+        proc = subprocess.Popen([self.bin], cwd=os.path.join(self.home, "w"), env=self.env(), stdout=out, stderr=subprocess.STDOUT, creationflags=flags)
+        if not job:
+            print("WindowsApp: no job object; teardown uses taskkill /T only")
+            return proc
+        try:
+            if winapi.job_assign(job, int(proc._handle)):
+                self.job = job
+            else:
+                print("WindowsApp: AssignProcessToJobObject failed; teardown uses taskkill /T only")
+                winapi.job_close(job)
+        finally:
+            if not winapi.resume_process(int(proc._handle)):
+                proc.kill()
+                raise RuntimeError("could not resume the suspended app (pid %d)" % proc.pid)
+        return proc
+
+    def _record_job_members(self):
+        """append '<kind> <pid> <creation FILETIME>' for every process the job still holds, so after_job.ps1 can finish what teardown could not"""
+        import winapi
+        pids = winapi.job_pids(self.job)
+        with open(os.path.join(self.run, "pids"), "a") as f:
+            for pid in pids:
+                ct = winapi.process_creation_filetime(pid)
+                if ct is not None:
+                    f.write("jobmember %d %d\n" % (pid, ct))
+        return pids
 
     def wait_window(self, timeout=60):
         import winapi
@@ -345,13 +381,27 @@ class WindowsApp:
     def stop(self):
         p, self.proc = self.proc, None
         if not p:
+            self.close_job()
             return
         if p.poll() is None:
+            if self.job:
+                try:
+                    self._record_job_members()
+                except Exception as e:
+                    print("WindowsApp: job member listing failed: %s" % e)
             subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"], capture_output=True, timeout=30)
             try:
                 p.wait(10)
             except Exception:
                 pass
+        self.close_job()
+
+    def close_job(self):
+        """closing the handle kills everything still in the job (the app's conhost and shells that taskkill /T missed)"""
+        job, self.job = getattr(self, "job", None), None
+        if job:
+            import winapi
+            winapi.job_close(job)
 
     def clk_tck(self):
         return 10_000_000          # FILETIME units (100 ns)

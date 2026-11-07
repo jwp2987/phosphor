@@ -2385,6 +2385,63 @@ def r18u23_paste_backlog_and_bash_agent_command_count():
     assert ca.bash_rec_hook(types.SimpleNamespace(win=False, be=types.SimpleNamespace(name="wayland")))
 
 
+@check
+def windows_app_runs_under_a_kill_on_close_job():
+    """#1642: WindowsApp starts the app suspended, assigns it to a KILL_ON_JOB_CLOSE job, resumes it, and closes the job at stop (mocked kernel32/Popen)"""
+    import app as _app, winapi as _w
+    calls = []
+    class K:
+        def __getattr__(self, n):
+            def f(*a):
+                calls.append(n)
+                if n == "SetInformationJobObject":
+                    info = a[2]._obj
+                    assert a[1] == _w.JobObjectExtendedLimitInformation and info.BasicLimitInformation.LimitFlags & _w.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+                return 1234 if n == "CreateJobObjectW" else 1
+            return _Fn(f)
+    class _Fn:
+        def __init__(self, f): self.f = f
+        def __call__(self, *a): return self.f(*a)
+        argtypes = restype = None
+    k = K()
+    job = _w.job_create(k)
+    assert job == 1234 and calls == ["CreateJobObjectW", "SetInformationJobObject"], calls
+    assert _w.job_assign(job, 7, k) and _w.job_close(job, k) and calls[-2:] == ["AssignProcessToJobObject", "CloseHandle"]
+    nt = types.SimpleNamespace(NtResumeProcess=_Fn(lambda h: 0))
+    assert _w.resume_process(7, nt)
+    # WindowsApp._spawn ordering: Popen(CREATE_SUSPENDED) -> assign -> resume; a failed assign still resumes (plain start); stop closes the job
+    order = []
+    class P:
+        pid, _handle = 99, 5
+        def poll(self): return None
+        def wait(self, t): pass
+    real = (_app.subprocess.Popen, _app.subprocess.run, _w.job_create, _w.job_assign, _w.resume_process, _w.job_close, _w.job_pids, _app.os.name)
+    try:
+        _app.subprocess.Popen = lambda *a, **kw: (order.append(("popen", kw.get("creationflags"))), P())[1]
+        _app.subprocess.run = lambda *a, **kw: order.append("taskkill")
+        _w.job_create = lambda k32=None: 42
+        _w.job_assign = lambda j, h, k32=None: (order.append("assign"), True)[1]
+        _w.resume_process = lambda h, ntdll=None: (order.append("resume"), True)[1]
+        _w.job_close = lambda j, k32=None: order.append("close")
+        _w.job_pids = lambda j, k32=None, cap=512: []
+        _app.os.name = "nt"
+        w = _app.WindowsApp.__new__(_app.WindowsApp)
+        w.bin, w.home, w.run, w.pane, w.ctl, w.job, w.proc = "x.exe", "h", tempfile.gettempdir(), "powershell", "c", None, None
+        w.env = lambda: {}
+        w.proc = w._spawn(None)
+        assert order == [("popen", _w.CREATE_SUSPENDED), "assign", "resume"] and w.job == 42, order
+        w.stop()
+        assert order[-2:] == ["taskkill", "close"] and w.job is None, order
+        order.clear(); _w.job_assign = lambda j, h, k32=None: (order.append("assign"), False)[1]
+        w.proc = w._spawn(None)
+        assert order == [("popen", _w.CREATE_SUSPENDED), "assign", "close", "resume"] and w.job is None, order
+    finally:
+        _app.os.name = real[7]
+        _app.subprocess.Popen, _app.subprocess.run, _w.job_create, _w.job_assign, _w.resume_process, _w.job_close, _w.job_pids = real[:7]
+    ps1 = open(os.path.join(HERE, "..", "windows", "ci", "after_job.ps1")).read()
+    assert "jobmember" in ps1 and "ToFileTimeUtc" in ps1 and "taskkill.exe /PID" in ps1 and "-Name" not in ps1.replace("-NoNewline", "")
+
+
 def main():
     failed = 0
     for f in CHECKS:
