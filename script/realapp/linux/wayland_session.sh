@@ -17,7 +17,7 @@
 # tesseract (mode proof / approval card), xterm (reference terminal), zsh fish nu (subshell cases), vim less,
 # /usr/sbin/sshd or python3-paramiko (ssh cases), vulkan drivers for the GPU (mesa-vulkan-drivers).
 # Environment: APPCI_OLLAMA_URL (optional provider endpoint; without it provider-dependent agent cases skip), APPCI_SCALE,
-# APPCI_TABS, APPCI_BIG_MB, APPCI_SSH_TRIALS, APPCI_SEED, APPCI_WL_KEY_MODE=batch|perkey, APPCI_WL_KBD_HOLD=0|1 (default 1: persistent virtual keyboard, #1414), APPCI_IDLE_CPU_MAX.
+# APPCI_TABS, APPCI_BIG_MB, APPCI_SSH_TRIALS, APPCI_SEED, APPCI_WL_KEY_MODE=batch|perkey, APPCI_WL_KBD_HOLD=0|1 (default 1: persistent virtual keyboard, #1414), APPCI_WL_PTR_HOLD=0|1 (default 1: persistent virtual pointer, #1789), APPCI_IDLE_CPU_MAX.
 # usage: wayland_session.sh --mode M --dist DIR_WITH_deb_or_AppImage [--bin PATH] [--out DIR] [--modes terminal,agent] [--cases a,b] [--skip a,b]
 # APPCI_TIER=smoke runs only the smoke case list (appci/cases.py SMOKE); the xwayland and x11 CI passes are skipped by the jobs.
 # Exit: 0 all pass/skip, 1 a case failed, 2 prerequisites/session could not start.
@@ -184,6 +184,24 @@ else
     log "APPCI_WL_KBD_HOLD=0: a virtual keyboard per wtype call (old behaviour)"
   fi
   export APPCI_WL_INJECTOR=$WL_KBD_HOLD
+  # #1789: ONE virtual pointer for the whole session, created BEFORE the app starts. Headless sway has no input device, so its seat has no pointer
+  # capability and no client ever creates a wl_pointer (`swaymsg seat - cursor` moves sway's own cursor only). appci/wlptr.py speaks
+  # zwlr_virtual_pointer_v1 in plain Python (no install); the harness drives it over $RT/wlptr.sock (short path, socket limit 108 bytes).
+  # APPCI_WL_PTR_HOLD=0 skips it (the pointer cases then report NOREF on Wayland as before). Recorded in $PIDS, killed by exact PID.
+  if [ "${APPCI_WL_PTR_HOLD:-1}" != 0 ]; then
+    setsid python3 "$APPCI/wlptr.py" serve --ctl "$RT/wlptr.sock" > "$OUT/ptr-holder.log" 2>&1 &
+    PTRPID=$!
+    echo "ptr-holder $PTRPID" >> "$PIDS"
+    for _ in $(seq 1 20); do [ -S "$RT/wlptr.sock" ] && break; kill -0 "$PTRPID" 2>/dev/null || break; sleep 0.25; done
+    if [ -S "$RT/wlptr.sock" ] && python3 "$APPCI/wlptr.py" cmd --ctl "$RT/wlptr.sock" ping >/dev/null 2>&1; then
+      export APPCI_WL_PTR="$RT/wlptr.sock"
+      log "persistent virtual pointer held by wlptr.py pid $PTRPID (sway sees $(swaymsg -t get_inputs 2>/dev/null | grep -c '"type": *"pointer"') pointer input(s))"
+    else
+      log "WARNING: the virtual-pointer holder did not start ($(head -c 300 "$OUT/ptr-holder.log")); pointer cases report NOREF on Wayland"
+    fi
+  else
+    log "APPCI_WL_PTR_HOLD=0: no virtual pointer (pointer cases report NOREF on Wayland)"
+  fi
   XD=$(cat "$OUT/xdisplay" 2>/dev/null | tr -d '[:space:]'); [ -n "$XD" ] && export DISPLAY="$XD"
   BACKEND=wayland APPDISP=wayland; [ "$MODE" = xwayland ] && APPDISP=x11
   [ "$MODE" = xwayland ] && [ -z "${DISPLAY:-}" ] && { log "XWayland DISPLAY was not published by sway"; exit 2; }

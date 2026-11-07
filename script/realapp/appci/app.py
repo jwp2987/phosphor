@@ -299,6 +299,9 @@ class WindowsApp:
         e["PA_CTL"] = fwd(self.ctl)
         e["APPCI_W"] = fwd(os.path.join(self.home, "w"))
         e["PHOSPHOR_PWSH_HOOK_TIMING"] = self.hook_timing_path
+        # #1789: tokens the harness wants located; an app with the (not yet written) env-gated hook logs `appci_find token=.. x0= y0= x1= y1=` for each. An app
+        # without the hook ignores both variables and the cases fall back to OCR (cases_ui.hook_find).
+        e["PHOSPHOR_APPCI_FIND_FILE"] = fwd(os.path.join(self.home, "appci_find.txt"))
         tail = os.pathsep.join(winapi.git_dirs())
         e["PATH"] = os.path.join(self.home, "bin") + os.pathsep + e.get("PATH", "") + (os.pathsep + tail if tail else "")
         if os.name != "nt":

@@ -7,11 +7,12 @@
 # Platform notes (docs/testing.md 2.8): keys follow app/src/util/bindings.rs (Linux ctrl-shift-X, macOS cmd-X); the mouse is
 # xdotool on X11 and `swaymsg seat - cursor ...` on the headless-sway Wayland job (no extra package); macOS has no mouse
 # tool in the harness, so mouse cases skip there. Positions come from tesseract word boxes of a screenshot (package: tesseract-ocr).
-import hashlib, os, re, shlex, shutil, subprocess, sys, time
+import hashlib, json, os, re, shlex, shutil, subprocess, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cases as C  # noqa: E402  (cases.py imports this module as its LAST line, so everything below is already defined)
 import toml_text as T  # noqa: E402
+import wlptr  # noqa: E402  (the Wayland virtual pointer, #1789)
 from cases import case  # noqa: E402
 
 
@@ -164,9 +165,21 @@ def ocr_safe(s):
 def find_token(ctx, tag, token, last=True):
     """(word, path) like find_word, for a whole token: an exact substring hit first, else the word that differs from the token by at most one glyph
     (a misread or a dropped/added glyph at either end). OCR noise around the word (a quote, a colon) is stripped before comparing."""
+    h = _hook_word(ctx, token)
+    if h:
+        return h, None
     ws, p = words(ctx, tag)
     hits = token_hits(ws, token)
     return ((hits[-1] if last else hits[0]) if hits else None), p
+
+
+def _hook_word(ctx, token):
+    """the OCR-free position (hook_find) of `token`, Wayland only (the window's screen origin comes from sway); None without the app hook"""
+    if not on_wayland(ctx):
+        return None
+    pid = ctx.be.pid_fn() if getattr(ctx.be, "pid_fn", None) else None
+    rect = sway_window_rect(pid) if pid else None
+    return hook_find(ctx, token, origin=(rect[0], rect[1])) if rect else None
 
 
 def token_hits(ws, token):
@@ -188,17 +201,51 @@ def token_hits(ws, token):
 
 
 class Mouse:
-    """pointer synthesis in the job's own display: xdotool (X11) or sway's seat cursor commands (headless Wayland)"""
+    """pointer synthesis in the job's own display: xdotool (X11), or on headless Wayland the session's persistent zwlr_virtual_pointer_v1 holder
+    (wlptr.py, #1789: sway has no input device, so without a virtual pointer the seat has no pointer capability and no client ever sees `swaymsg
+    seat - cursor` events). Without the holder (APPCI_WL_PTR unset or dead) Wayland falls back to the sway seat commands, which are NOT proof of delivery
+    (see wl_pointer_real)."""
 
     def __init__(self, be):
         self.be = be
+        self._out = None
+
+    def _wl_extent(self):
+        """(w, h) of the headless output in layout pixels (cached)"""
+        if self._out is None:
+            try:
+                o = json.loads(subprocess.run(["swaymsg", "-t", "get_outputs", "-r"], capture_output=True, timeout=10).stdout)
+                rect = next(x["rect"] for x in o if x.get("active", True))
+                self._out = (int(rect["width"]), int(rect["height"]))
+            except Exception:
+                self._out = (1600, 1000)
+        return self._out
+
+    def _wl(self, line):
+        """one command to the holder; False when there is none (the caller falls back to swaymsg)"""
+        ctl = wl_pointer_ctl()
+        if not ctl:
+            return False
+        r = wlptr.send_cmd(ctl, line)
+        if r != "ok":
+            raise RuntimeError("virtual pointer: %s (command %r)" % (r, line))
+        return True
+
+    def _move(self, x, y):
+        w, h = self._wl_extent()
+        return self._wl("abs %d %d %d %d" % (max(0, min(int(x), w - 1)), max(0, min(int(y), h - 1)), w, h))
 
     def move(self, x, y):
         if self.be.name == "x11":
             subprocess.run(["xdotool", "mousemove", str(int(x)), str(int(y))], timeout=10)
-        else:
+        elif not self._move(x, y):
             subprocess.run(["swaymsg", "seat - cursor set %d %d" % (x, y)], capture_output=True, timeout=10)
         time.sleep(0.15)
+
+    def _btn(self, button, down):
+        code = wlptr.BTN.get(button, wlptr.BTN[1])
+        if not self._wl("btn %d %d" % (code, 1 if down else 0)):
+            subprocess.run(["swaymsg", "seat - cursor %s button%d" % ("press" if down else "release", button)], capture_output=True, timeout=10)
 
     def click(self, x, y, button=1, count=1):
         self.move(x, y)
@@ -206,8 +253,9 @@ class Mouse:
             subprocess.run(["xdotool", "click", "--repeat", str(count), "--delay", "70", str(button)], timeout=15)
         else:
             for _ in range(count):
-                subprocess.run(["swaymsg", "seat - cursor press button%d" % button], capture_output=True, timeout=10)
-                subprocess.run(["swaymsg", "seat - cursor release button%d" % button], capture_output=True, timeout=10)
+                self._btn(button, True)
+                time.sleep(0.03)
+                self._btn(button, False)
                 time.sleep(0.07)
         time.sleep(0.25)
 
@@ -221,13 +269,86 @@ class Mouse:
                 time.sleep(0.03)
             subprocess.run(["xdotool", "mouseup", "1"], timeout=10)
         else:
-            subprocess.run(["swaymsg", "seat - cursor press button1"], capture_output=True, timeout=10)
+            self._btn(1, True)
             time.sleep(0.15)
             for i in range(1, 9):
-                subprocess.run(["swaymsg", "seat - cursor set %d %d" % (x0 + (x1 - x0) * i / 8, y0 + (y1 - y0) * i / 8)], capture_output=True, timeout=10)
+                if not self._move(x0 + (x1 - x0) * i / 8, y0 + (y1 - y0) * i / 8):
+                    subprocess.run(["swaymsg", "seat - cursor set %d %d" % (x0 + (x1 - x0) * i / 8, y0 + (y1 - y0) * i / 8)], capture_output=True, timeout=10)
                 time.sleep(0.03)
-            subprocess.run(["swaymsg", "seat - cursor release button1"], capture_output=True, timeout=10)
+            self._btn(1, False)
         time.sleep(0.3)
+
+
+def wl_pointer_ctl():
+    """the control socket of the session's virtual-pointer holder if it answers (wayland_session.sh exports APPCI_WL_PTR), else None"""
+    ctl = os.environ.get("APPCI_WL_PTR")
+    if not ctl or not os.path.exists(ctl):
+        return None
+    try:
+        return ctl if wlptr.send_cmd(ctl, "ping", timeout=3) == "ok" else None
+    except OSError:
+        return None
+
+
+def wl_pointer_real(ctx):
+    """True when pointer events provably reach Wayland clients: a live virtual-pointer holder (wlptr.py). Then a missing pointer effect is an APP failure, not NOREF."""
+    return on_wayland(ctx) and wl_pointer_ctl() is not None
+
+
+def sway_window_rect(pid):
+    """(x, y, w, h) of the sway window of `pid` in layout pixels, or None. Exact, no OCR: the content rectangle sway reports."""
+    try:
+        tree = json.loads(subprocess.run(["swaymsg", "-t", "get_tree"], capture_output=True, timeout=10).stdout)
+    except Exception:
+        return None
+    best = []
+
+    def walk(n):
+        if n.get("pid") == pid and not n.get("nodes") and n.get("rect"):
+            best.append(n)
+        for c in n.get("nodes", []) + n.get("floating_nodes", []):
+            walk(c)
+    walk(tree)
+    if not best:
+        return None
+    rc = best[0]["rect"]
+    return rc["x"], rc["y"], rc["width"], rc["height"]
+
+
+FIND_RE = re.compile(r"appci_find token=(\S+) x0=(-?[\d.]+) y0=(-?[\d.]+) x1=(-?[\d.]+) y1=(-?[\d.]+)")
+
+
+def hook_find(ctx, token, origin=(0, 0), scale=1.0):
+    """OCR-free position of `token` from the app's own log (#1789): the env-gated hook logs `appci_find token=T x0= y0= x1= y1=` (window-content
+    pixels of the drawn text) for every token listed in $PHOSPHOR_APPCI_FIND_FILE. Returns a words() row (text, cx, cy, left, right, top, bottom) in
+    screen pixels (origin = the window's top-left on screen, scale = device pixels per logical pixel) or None when the app logged nothing (an app
+    without the hook, which is today's app): the caller then falls back to OCR. The LAST line for the token wins (the lowest, newest occurrence)."""
+    try:
+        path = ctx.log_path
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - (2 << 20)))
+            text = f.read().decode(errors="replace")
+    except Exception:
+        return None
+    hit = None
+    for m in FIND_RE.finditer(text):
+        if m.group(1) == token:
+            hit = m
+    if not hit:
+        return None
+    x0, y0, x1, y1 = (float(hit.group(i)) * scale for i in (2, 3, 4, 5))
+    l, t, rgt, b = (int(origin[0] + x0), int(origin[1] + y0), int(origin[0] + x1), int(origin[1] + y1))
+    return (token, (l + rgt) // 2, (t + b) // 2, l, rgt, t, b)
+
+
+def register_find(ctx, *tokens):
+    """append tokens to the app's find file ($PHOSPHOR_APPCI_FIND_FILE, set by app.py), so a hook-carrying app logs where it draws them"""
+    try:
+        with open(os.path.join(ctx.prof.home, "appci_find.txt"), "a", encoding="utf-8") as f:
+            f.write("".join(t + "\n" for t in tokens))
+    except Exception:
+        pass
 
 
 def mouse_or_skip(ctx, r):
@@ -253,8 +374,10 @@ def on_wayland(ctx):
 
 def wl_check(ctx, r, ok, msg, what):
     """r.check, except that on the Wayland backend a failure of a pointer/OCR-dependent claim is NOREF (reason stated), never a pass and never a fail.
-    `what` names the harness limitation (e.g. 'OCR', 'pointer'). Checks that do not depend on pointer synthesis or OCR use r.check directly."""
-    if ok or not on_wayland(ctx):
+    `what` names the harness limitation (e.g. 'OCR', 'pointer'). Checks that do not depend on pointer synthesis or OCR use r.check directly.
+    #1789: a claim that is ONLY about the pointer (`what` == 'pointer') is a plain check whenever the session holds a live virtual pointer (wl_pointer_real):
+    the events provably reach clients, so a missing effect is the app's. 'OCR' and mixed ('pointer/OCR') claims stay NOREF until the app hook gives positions."""
+    if ok or not on_wayland(ctx) or (what == "pointer" and wl_pointer_real(ctx)):
         return r.check(ok, msg)
     r.no_reference("%s [%s: %s]" % (WAYLAND_NOREF, what, msg))
     return False
@@ -444,8 +567,13 @@ def c_palette(ctx, r):
         chips = [n for n in chip_names if n in flat]
         opened = bool(re.search(r"\w{0,3}earch for a comm|for a command", flat)) or len(shown) >= 3 or len(chips) >= 3 or rendered
         r.metric("palette_open_markers", dict(placeholder=bool(re.search(r"for a command", flat)), command_rows=shown, filter_chips=chips, log_rendered=rendered))
-        wl_check(ctx, r, opened, "palette did not open: neither 'Search for a command' (tail), >=3 command rows %s, >=3 filter chips %s on screen, nor a "
-                "CommandPaletteView frame in the app log (see shots/*palette_open.png)" % (list(cmd_names), list(chip_names)), "OCR")
+        # #1789: the app log is OCR-free evidence. A log that HAS frame lines but none rendering the palette is a real failure on Wayland too.
+        msg = ("palette did not open: neither 'Search for a command' (tail), >=3 command rows %s, >=3 filter chips %s on screen, nor a "
+               "CommandPaletteView frame in the app log (see shots/*palette_open.png)" % (list(cmd_names), list(chip_names)))
+        if rendered is False:
+            r.check(opened, msg)
+        else:
+            wl_check(ctx, r, opened, msg, "OCR")
     else:
         shown = []
         r.metric("palette_open_markers", dict(log_rendered=rendered))
@@ -500,6 +628,7 @@ def c_mouse_copy(ctx, r):
     m = mouse_or_skip(ctx, r)
     need_tesseract(r)
     tok = "msel" + ocr_safe(ctx.tok(6).lower().replace("_", ""))
+    register_find(ctx, tok)
     run_cmd(ctx, "printf 'msel%%s\\n' %s" % tok[4:])
     time.sleep(0.8)
     w, _ = find_token(ctx, "mouse_find", tok)
@@ -517,7 +646,7 @@ def c_mouse_copy(ctx, r):
     d = img_diff(before, ctx.shot("select_dblclick_after")) if before else None
     r.metric("dblclick_screen_diff", d if d is not None else -1)
     # Wayland: a copy that left the sentinel means the pointer events never reached the app (unobservable here): NOREF. Any OTHER wrong clipboard is a real failure.
-    ptr = lambda g: on_wayland(ctx) and g == "SENTINEL_NOT_COPIED"
+    ptr = lambda g: on_wayland(ctx) and not wl_pointer_real(ctx) and g == "SENTINEL_NOT_COPIED"
     msg1 = "double-click + copy: clipboard holds %r, expected exactly %r" % (got[:80], tok)
     ok1 = wl_check(ctx, r, False, msg1, "pointer") if ptr(got) else r.check(got.strip() == tok, msg1)
     got = copy_check(ctx, r, "drag", lambda: m.drag(w[3] - 2, w[2], w[4] + 2, w[2]), tok)
@@ -544,6 +673,7 @@ def c_right_click_paste(ctx, r):
     # show, so the case never reached the right-click. The input is located by what is typed INTO it instead: an OCR-safe probe word, found
     # on screen, then cleared with Ctrl-U; the right-click goes where the probe began (inside the now empty input).
     probe = "rcpw" + ocr_safe(ctx.tok(6).lower().replace("_", ""))
+    register_find(ctx, probe)
     ctx.be.type(probe, 12)
     time.sleep(0.6)
     p, _ = find_token(ctx, "rc_prompt", probe)
@@ -567,7 +697,7 @@ def c_right_click_paste(ctx, r):
     ctx.until(lambda: len(ctx.cmds_since(mark)) >= 1, 8)
     got = ctx.cmds_since(mark)
     # Wayland: nothing received at all = the click did not paste (pointer unobservable): NOREF; a WRONG command is still a failure.
-    if on_wayland(ctx) and not got:
+    if on_wayland(ctx) and not wl_pointer_real(ctx) and not got:
         wl_check(ctx, r, False, "right-click Paste + Enter: shell received nothing, expected [%r]" % cmd, "pointer")
     else:
         r.check(got == [cmd], "right-click Paste + Enter: shell received %r, expected [%r]" % (got, cmd))
