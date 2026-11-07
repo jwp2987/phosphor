@@ -1932,8 +1932,8 @@ impl TypeaheadHandoff {
     /// unwritten from the controller's queue, or something other than the line editor read it).
     /// Those are dropped from the count: left in it, `requests_outstanding` never returns to zero,
     /// and every later Enter that meets untracked bytes waits for a report no request will send
-    /// (the 3 s uncovered-report give-up then drops the Enter and the keys typed behind it). A
-    /// report counted here that answers a request written after the snapshot only makes the
+    /// (the 10 s uncovered-report give-up, #1701, then drops the Enter and the keys typed behind
+    /// it). A report counted here that answers a request written after the snapshot only makes the
     /// number found eaten smaller, so this never drops a request that is still on its way.
     ///
     /// No Enter bypasses this accounting: an empty Enter in a managed ssh session waits for a

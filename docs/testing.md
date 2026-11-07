@@ -1195,6 +1195,18 @@ UNCOMPLETED line" is now reserved for a stray file (self-test `tab_enter_complet
 | input, Legacy and Table | `input_test.rs`: `test_tab_then_enter_completion_in_time_runs_the_completed_line_in_both_modes` | a completer within its cap is waited for and `git checkout feature` runs once |
 | input, Legacy and Table | `input_test.rs`: `test_tab_then_enter_give_up_discards_the_keys_typed_after_it` (was `..._keeps_the_keys_typed_after_it_in_order`; expectation changed by the owner decision of 2026-11-05, #1661) | `l`,`s`,Enter,`pwd` typed behind the held Enter, then the cap: editor `git checkout fe`, glue guard, nothing executed or released, one toast with the count 4; text typed onto the line next holds the Enter with the glue toast |
 
+**Busy-machine timer batch 1, report and @-menu nets (#1701, #1702, #1728; audit `docs/audits/2026-11-05-busy-machine-timers.md`).**
+The report patiences behind a deferred Enter (`UNCOVERED_REPORT_PATIENCE`, `TYPEAHEAD_REPORT_PATIENCE`, `terminal/view.rs`) are the
+10 s net (`YOUNG_HOLD_GIVE_UP`, was 3 s): since #1661 their give-up discards the keys typed after the Enter, and a report that comes
+first releases the Enter as before. A deferred @-menu Enter waits 10 s (`SELECT_WAIT_GIVE_UP`, was 3 s) for its results; the give-up
+applies nothing, keeps the typed `@...` text and shows the toast "Enter not applied: ..." instead of dropping the Enter with a log
+line (#1728).
+
+| layer | test | asserts |
+|---|---|---|
+| view, Legacy and Table | `group2_timer_tests.rs`: `a_report_several_seconds_late_still_releases_the_deferred_enter` (real 3.5 s wait) | both patiences >= 10 s; 3.5 s after the Enter, behind the hand-off's own report and behind an uncovered report, the Enter is still deferred (not given up), `ho 47` intact, the key typed after it still queued, nothing written; the late report then releases the Enter |
+| input, Legacy and Table | `input_test.rs`: `test_at_picker_enter_give_up_keeps_the_text_and_says_so` | the @-menu wait is 10 s; at the give-up nothing is inserted, `@cbmention_x` stays, nothing runs, one "Enter not applied" toast; a second firing changes nothing |
+
 **#1661 (owner decision 2026-11-05): a give-up DROPS the keys typed after an Enter.** Every give-up of an Enter gate
 (the route-settle net, the gate's leak net, an orphan gate's leak net, the verdict / completion give-ups, an unready shell's
 15 s net and its gate-gone path, a void of the waiting Enter, the hand-off's report give-ups) closes the gate and DISCARDS what

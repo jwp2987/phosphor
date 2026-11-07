@@ -39112,13 +39112,28 @@ const SSH_CONNECT_POST_BLOCK_GRACE: Duration = Duration::from_secs(5);
 /// How long an Enter deferred behind a report that must cover untracked user bytes waits for it
 /// (#1104) before it is given up on. Reports normally take milliseconds; this only bounds a
 /// request a program ate. #1577: the expiry does not run the Enter; the text stays in the editor.
-const UNCOVERED_REPORT_PATIENCE: Duration = Duration::from_secs(3);
+/// The report releases the Enter whenever it comes before this (an event, never a timer).
+///
+/// #1701: since #1661 the give-up DISCARDS the keys typed after the Enter, so it is a give-up net
+/// of the 10 s class ([`YOUNG_HOLD_GIVE_UP`]), not 3 s: a report 3-9 s late (a loaded machine, a
+/// slow ssh link) still releases the Enter instead of losing what followed it.
+///
+/// [`YOUNG_HOLD_GIVE_UP`]: crate::terminal::model::typeahead_handoff::YOUNG_HOLD_GIVE_UP
+const UNCOVERED_REPORT_PATIENCE: Duration =
+    crate::terminal::model::typeahead_handoff::YOUNG_HOLD_GIVE_UP;
 
 /// How long an Enter deferred behind the hand-off's own outstanding report waits for it before
 /// it is given up without running (#1215). A report is one request round trip (ms locally, well
 /// under a second over ssh); seconds without one mean a program consumed the request or the shell
-/// is not answering.
-const TYPEAHEAD_REPORT_PATIENCE: Duration = Duration::from_secs(3);
+/// is not answering. The report releases the Enter whenever it comes before this.
+///
+/// #1702: since #1661 the give-up DISCARDS the keys typed after the Enter, so it is a give-up net
+/// of the 10 s class ([`YOUNG_HOLD_GIVE_UP`]), not 3 s: a report 3-9 s late still releases the
+/// Enter.
+///
+/// [`YOUNG_HOLD_GIVE_UP`]: crate::terminal::model::typeahead_handoff::YOUNG_HOLD_GIVE_UP
+const TYPEAHEAD_REPORT_PATIENCE: Duration =
+    crate::terminal::model::typeahead_handoff::YOUNG_HOLD_GIVE_UP;
 /// Longest the gate keeps holding after the announced remote session finished bootstrapping
 /// while it waits for that shell's first prompt (#1085). The prompt is one precmd away; this
 /// only bounds a remote whose prompt never comes, so it cannot own the keyboard.
