@@ -523,6 +523,13 @@ Run lifecycle (r18d8, Linux CI; `job 17686762542` was killed at the 90 min timeo
   adds `teardown: Terminal.app reference pid N quit ...` (refterm_mac) and `cleanup:` lines from `mac/ci/app_test.sh` (run.py/app/caffeinate/
   DMG, then the audit); `teardown.sh` (after_script) prints per-pid outcomes, survivors and other processes naming the out dir;
   Windows `after_job.ps1` prints recorded pids stopped/gone/not-ours, leftover processes and removed scratch dirs.
+- **Windows app runs in a Job Object** (#1642). `WindowsApp.start` creates the app suspended (`CREATE_SUSPENDED`), assigns it to a job with
+  `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` (`winapi.job_*`, ctypes only), then resumes it, so conhost and any shell it spawns are members from
+  birth. `stop()` records the members as `jobmember <pid> <creation FILETIME>` lines in `run\pids`, runs `taskkill /T`, then closes the job
+  handle (which kills every remaining member); if the harness dies the OS closes it. `app.stdout` is opened non-inheritable and `Popen` hands the
+  child only its std handles. `after_job.ps1` is the fallback: a recorded `jobmember` is killed only when its creation time still matches (never
+  by name, never an unrecorded PID). If the job cannot be made or assigned the app starts plain, as before. Selftest
+  `windows_app_runs_under_a_kill_on_close_job` drives the ordering with a mocked kernel32/Popen on Linux.
 - **Job log.** Each row's FIRST failing message (or a `noref` row's `NO-REFERENCE` reason) is printed in full; the rest of the detail
   stays capped at 200 characters; the Ollama endpoint is redacted as before.
 

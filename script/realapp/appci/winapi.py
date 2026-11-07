@@ -35,6 +35,95 @@ if os.name == "nt":
     WNDENUMPROC = ctypes.WINFUNCTYPE(wt.BOOL, ctypes.c_void_p, ctypes.c_void_p)
 
 
+# --- #1642: a Job Object with KILL_ON_JOB_CLOSE around the app under test. taskkill /T walks the parent chain, which conhost (parent: the
+# app, but re-parented once it exits) and anything the app's shells detach escape; a job holds the whole tree whatever its parentage, and
+# closing the handle (stop(), or the harness dying) kills every member, so none is left holding app.stdout. Every function takes the
+# kernel32 object so the selftest can drive them on Linux with a mock.
+JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+JobObjectBasicProcessIdList = 3
+JobObjectExtendedLimitInformation = 9
+CREATE_SUSPENDED = 0x00000004
+PROCESS_ALL_ACCESS_FOR_JOB = 0x1F0FFF
+
+
+class _BasicLimit(ctypes.Structure):
+    _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64), ("LimitFlags", ctypes.c_uint32),
+                ("MinimumWorkingSetSize", ctypes.c_size_t), ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", ctypes.c_uint32),
+                ("Affinity", ctypes.c_size_t), ("PriorityClass", ctypes.c_uint32), ("SchedulingClass", ctypes.c_uint32)]
+
+
+class _IoCounters(ctypes.Structure):
+    _fields_ = [(n, ctypes.c_uint64) for n in ("ReadOps", "WriteOps", "OtherOps", "ReadBytes", "WriteBytes", "OtherBytes")]
+
+
+class ExtendedLimit(ctypes.Structure):
+    _fields_ = [("BasicLimitInformation", _BasicLimit), ("IoInfo", _IoCounters), ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t), ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+
+def job_create(k32=None):
+    """a new anonymous job whose handle closing kills all its processes; returns the handle, or None when the job could not be made"""
+    k32 = k32 or kernel32
+    k32.CreateJobObjectW.restype = ctypes.c_void_p
+    job = k32.CreateJobObjectW(None, None)
+    if not job:
+        return None
+    info = ExtendedLimit()
+    info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    k32.SetInformationJobObject.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, wt.DWORD]
+    if not k32.SetInformationJobObject(job, JobObjectExtendedLimitInformation, ctypes.byref(info), ctypes.sizeof(info)):
+        k32.CloseHandle(job)
+        return None
+    return job
+
+
+def job_assign(job, process_handle, k32=None):
+    k32 = k32 or kernel32
+    k32.AssignProcessToJobObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    return bool(k32.AssignProcessToJobObject(job, process_handle))
+
+
+def resume_process(process_handle, ntdll=None):
+    """resume every thread of a CREATE_SUSPENDED process (Popen does not hand back the primary thread's handle)"""
+    ntdll = ntdll or ctypes.WinDLL("ntdll")
+    ntdll.NtResumeProcess.argtypes = [ctypes.c_void_p]
+    return ntdll.NtResumeProcess(process_handle) == 0
+
+
+def job_pids(job, k32=None, cap=512):
+    """PIDs currently in the job (empty on any failure)"""
+    k32 = k32 or kernel32
+    class _Ids(ctypes.Structure):
+        _fields_ = [("NumberOfAssignedProcesses", wt.DWORD), ("NumberOfProcessIdsInList", wt.DWORD), ("ProcessIdList", ctypes.c_size_t * cap)]
+    buf = _Ids()
+    k32.QueryInformationJobObject.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, wt.DWORD, ctypes.c_void_p]
+    if not k32.QueryInformationJobObject(job, JobObjectBasicProcessIdList, ctypes.byref(buf), ctypes.sizeof(buf), None):
+        return []
+    return [int(buf.ProcessIdList[i]) for i in range(min(buf.NumberOfProcessIdsInList, cap))]
+
+
+def job_close(job, k32=None):
+    """closing the last handle kills every process still in the job"""
+    k32 = k32 or kernel32
+    k32.CloseHandle.argtypes = [ctypes.c_void_p]
+    return bool(k32.CloseHandle(job))
+
+
+def process_creation_filetime(pid, k32=None):
+    """the creation time (FILETIME, 100 ns ticks) of a live pid, or None; after_job.ps1 uses it to tell a recorded process from a reused PID"""
+    k32 = k32 or kernel32
+    h = k32.OpenProcess(0x1000, False, pid)         # PROCESS_QUERY_LIMITED_INFORMATION
+    if not h:
+        return None
+    try:
+        c, e, kt, ut = wt.FILETIME(), wt.FILETIME(), wt.FILETIME(), wt.FILETIME()
+        if not k32.GetProcessTimes(h, ctypes.byref(c), ctypes.byref(e), ctypes.byref(kt), ctypes.byref(ut)):
+            return None
+        return (c.dwHighDateTime << 32) | c.dwLowDateTime
+    finally:
+        k32.CloseHandle(h)
+
+
 def foreground():
     """(hwnd, pid) of the foreground window; (None, 0) when there is none (locked desktop, UAC prompt)"""
     h = user32.GetForegroundWindow()
