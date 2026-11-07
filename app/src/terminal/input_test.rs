@@ -18406,3 +18406,194 @@ fn test_a_settled_unanswered_request_does_not_hold_a_typed_line_in_a_managed_ssh
         }
     }
 }
+
+/// #1793 fixture: the hand-off of `input`'s pane at a prompt whose legacy request the shell
+/// answered with an empty line, as `PtyController` and the model leave it: after `echo hi` ran
+/// (`after_command`), or at the first prompt right after ssh connected (`!after_command`). The
+/// controller's write count (`PtyWriteCount`) is bumped where the controller writes.
+fn handoff_after_an_answered_empty_report(
+    app: &App,
+    input: &ViewHandle<Input>,
+    after_command: bool,
+) {
+    input.read(app, |input, _| {
+        let mut model = input.model.lock();
+        let mut handoff = model.typeahead_handoff_mut();
+        let pty = handoff.pty_write_count();
+        if after_command {
+            handoff.on_command_written();
+            pty.note_write();
+            handoff.note_written_command_text("echo hi");
+            handoff.note_preexec_command("echo hi");
+            let _ = handoff.on_preexec(false);
+            handoff.on_precmd();
+            assert!(handoff.try_commit_at_prompt());
+        }
+        handoff.on_legacy_request_written();
+        pty.note_write();
+        handoff.on_report_parsed();
+        let _ = handoff.on_report();
+    });
+}
+
+/// The hand-off state of `input`'s pane.
+fn handoff_state(
+    app: &App,
+    input: &ViewHandle<Input>,
+) -> crate::terminal::model::typeahead_handoff::HandoffState {
+    input.read(app, |input, _| {
+        input.model.lock().typeahead_handoff().state().clone()
+    })
+}
+
+/// #1793 (r18u31, appci `ssh_drop_reconnect` [escape]): in a managed ssh session the last bytes ssh
+/// read before the user's `~.` were the hand-off's report request (`ESC i`), not a newline, so ssh
+/// passed `~.` to the remote shell. Where the remote line is proven empty (the prompt's request
+/// answered, nothing written since), the escape goes out as `\r~.`, one write: ssh sees its line
+/// start, and the remote shell runs an empty line, which the hand-off counts as a bare Enter's (the
+/// pty owns input until that line's prompt is answered). Both after a command and at the first
+/// prompt right after connect (`~.` with no Enter). Legacy and Table.
+#[test]
+fn test_ssh_escape_on_a_proven_empty_remote_line_goes_out_behind_a_carriage_return() {
+    use crate::terminal::input_queue::DestinationMode;
+    use crate::terminal::model::typeahead_handoff::HandoffState;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        for after_command in [true, false] {
+            App::test((), move |mut app| async move {
+                let _mode =
+                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+                let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+                initialize_app(&mut app);
+                let (input, editor, writes) =
+                    pane_for_ssh_escape_test(&mut app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
+                handoff_after_an_answered_empty_report(&app, &input, after_command);
+                let case = format!("{mode:?} after_command={after_command}");
+
+                type_keys_for_ssh_escape_test(&mut app, &editor, &["~", "."]);
+                assert_eq!(
+                    *writes.borrow(),
+                    vec![b"\r~.".to_vec()],
+                    "{case}: ssh receives `\\r~.`, once, in one write"
+                );
+                input.read(&app, |input, ctx| {
+                    assert_eq!(input.buffer_text(ctx), "", "{case}: the editor is empty");
+                });
+                assert_eq!(
+                    handoff_state(&app, &input),
+                    HandoffState::PtyOwned {
+                        wrote_user_bytes: true,
+                        enters_written: 1,
+                        precmds_seen: 0,
+                    },
+                    "{case}: the `\\r` is counted as a bare Enter's line"
+                );
+            });
+        }
+    }
+}
+
+/// #1793: the `\r` is never added where it could submit remote text: with user bytes the hand-off
+/// did not adopt in the shell's line, with a request still outstanding, or with anything written to
+/// the pty since the report. The escape then goes out as typed, as before. Legacy and Table.
+#[test]
+fn test_ssh_escape_gets_no_carriage_return_unless_the_remote_line_is_proven_empty() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        for blocker in ["untracked", "outstanding", "written"] {
+            App::test((), move |mut app| async move {
+                let _mode =
+                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+                let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+                initialize_app(&mut app);
+                let (input, editor, writes) =
+                    pane_for_ssh_escape_test(&mut app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
+                handoff_after_an_answered_empty_report(&app, &input, true);
+                input.read(&app, |input, _| {
+                    let mut model = input.model.lock();
+                    let mut handoff = model.typeahead_handoff_mut();
+                    match blocker {
+                        "untracked" => handoff.note_untracked_line_bytes(),
+                        "outstanding" => handoff.on_legacy_request_written(),
+                        _ => handoff.pty_write_count().note_write(),
+                    }
+                });
+                type_keys_for_ssh_escape_test(&mut app, &editor, &["~", "."]);
+                assert_eq!(
+                    *writes.borrow(),
+                    vec![b"~.".to_vec()],
+                    "{mode:?} {blocker}: the escape goes out as typed, no `\\r`"
+                );
+            });
+        }
+    }
+}
+
+/// #1793: `<Enter>~.` typed at the first prompt right after ssh connected, its request answered.
+/// The bare Enter's command is written at once and the pty owns input from it; `~.` follows it with
+/// no `\r` of its own (ssh already saw the Enter's): `\r`, then `~.`, in order, once. Legacy and
+/// Table.
+#[test]
+fn test_enter_then_ssh_escape_right_after_connect_adds_no_second_carriage_return() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            initialize_app(&mut app);
+            let (input, editor, writes) =
+                pane_for_ssh_escape_test(&mut app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
+            handoff_after_an_answered_empty_report(&app, &input, false);
+
+            input.update(&mut app, |input, ctx| input.input_enter(ctx));
+            assert!(
+                !enter_is_deferred_behind_the_report(&app, &input),
+                "{mode:?}: the answered report holds nothing"
+            );
+            wait_for_pty_writes(&writes, 1).await;
+            assert_eq!(*writes.borrow(), vec![b"\r".to_vec()], "{mode:?}");
+            // What `PtyController::write_command` does with the editor's command.
+            input.read(&app, |input, _| {
+                let mut model = input.model.lock();
+                let mut handoff = model.typeahead_handoff_mut();
+                handoff.on_command_written();
+                handoff.note_written_command_text("");
+                handoff.pty_write_count().note_write();
+            });
+
+            type_keys_for_ssh_escape_test(&mut app, &editor, &["~", "."]);
+            wait_for_pty_writes(&writes, 2).await;
+            assert_eq!(
+                *writes.borrow(),
+                vec![b"\r".to_vec(), b"~.".to_vec()],
+                "{mode:?}: ssh receives `\\r~.`, in order, once"
+            );
+        });
+    }
+}
+
+/// #1793: a local session has no ssh client: `~.` on a proven-empty line stays editor text and
+/// nothing (no `\r`) reaches the pty. Legacy and Table.
+#[test]
+fn test_ssh_escape_carriage_return_leaves_a_local_session_alone() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            initialize_app(&mut app);
+            let (input, editor, writes) =
+                pane_for_ssh_escape_test(&mut app, false, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
+            handoff_after_an_answered_empty_report(&app, &input, true);
+            type_keys_for_ssh_escape_test(&mut app, &editor, &["~", "."]);
+            input.read(&app, |input, ctx| {
+                assert_eq!(input.buffer_text(ctx), "~.", "{mode:?}");
+            });
+            assert!(writes.borrow().is_empty(), "{mode:?}: nothing to the pty");
+            assert_eq!(
+                handoff_state(&app, &input),
+                crate::terminal::model::typeahead_handoff::HandoffState::EditorOwned,
+                "{mode:?}"
+            );
+        });
+    }
+}

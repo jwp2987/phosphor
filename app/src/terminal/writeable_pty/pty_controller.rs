@@ -22,7 +22,7 @@ use crate::terminal::model::session::{
 };
 use crate::terminal::model::tmux::commands::TmuxCommand;
 use crate::terminal::model::typeahead_handoff::{
-    ActiveDecision, HeldAgentCommand, PaneHandoff, ShellPromptFact,
+    ActiveDecision, HeldAgentCommand, PaneHandoff, PtyWriteCount, ShellPromptFact,
 };
 use crate::terminal::model_events::AnsiHandlerEvent;
 use crate::terminal::view::LINEFEED_REGEX;
@@ -318,6 +318,9 @@ pub struct PtyController<T: EventLoopSender> {
     /// The pane's typeahead hand-off, reached without the model's lock (#1403): a user key's
     /// write must not wait for the pty reader, which holds that lock while it parses.
     handoff: PaneHandoff,
+    /// #1793: the hand-off's count of writes handed to the pty's event loop, counted here
+    /// without the hand-off's lock (`send_message_to_event_loop`).
+    pty_writes: PtyWriteCount,
     /// Where a key's write leaves its bookkeeping for the model (the typed-ahead record of its
     /// echo), applied before the model parses the next bytes.
     model_inbox: ModelInbox,
@@ -647,9 +650,10 @@ impl<T: EventLoopSender> PtyController<T> {
         );
 
         let write_queue = event_loop_tx.supports_write_queue() && write_queue_enabled();
-        let (handoff, model_inbox) = {
+        let (handoff, model_inbox, pty_writes) = {
             let model = terminal_model.lock();
-            (model.pane_handoff(), model.model_inbox())
+            let pty_writes = model.typeahead_handoff().pty_write_count();
+            (model.pane_handoff(), model.model_inbox(), pty_writes)
         };
         Self {
             event_loop_tx,
@@ -683,6 +687,7 @@ impl<T: EventLoopSender> PtyController<T> {
             handoff_command_pending: false,
             handoff_bytes_after_command: Vec::new(),
             handoff,
+            pty_writes,
             model_inbox,
             handoff_request_waiting: false,
             handoff_held_command_pending: false,
@@ -2660,6 +2665,18 @@ impl<T: EventLoopSender> PtyController<T> {
     /// Sends a message to the event loop. If the send fails with `SendError::Disconnected`, emits
     /// a `PtyDisconnected` event.
     fn send_message_to_event_loop(&self, message: Message, ctx: &mut ModelContext<Self>) {
+        // #1793: every write to the pty is counted, so the ssh escape path can tell that nothing
+        // reached the shell's line since its last report.
+        if matches!(
+            message,
+            Message::Input(_)
+                | Message::CommandInput(_)
+                | Message::PasteInput(_)
+                | Message::AgentInput(_)
+                | Message::SetupChunked { .. }
+        ) {
+            self.pty_writes.note_write();
+        }
         match self.event_loop_tx.send(message) {
             Err(EventLoopSendError::Disconnected) => {
                 ctx.emit(PtyControllerEvent::PtyDisconnected);

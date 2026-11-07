@@ -5542,3 +5542,155 @@ fn a_young_holds_normal_end_class_is_fixed_when_it_starts() {
         "the class the hold started with is kept: its cap hands back, it does not drop"
     );
 }
+
+/// #1793 fixture: the hand-off of a managed ssh pane after `echo hi` ran and the prompt's legacy
+/// request was answered with an empty line: the editor owns input, nothing outstanding, and the
+/// controller's write count is still the request's own write. `pty` stands in for
+/// `PtyController`, which counts every write it hands the pty.
+fn after_answered_empty_report() -> (TypeaheadHandoff, PtyWriteCount) {
+    let mut handoff = TypeaheadHandoff::default();
+    let pty = handoff.pty_write_count();
+    handoff.on_command_written();
+    pty.note_write();
+    handoff.note_written_command_text("echo hi");
+    handoff.note_preexec_command("echo hi");
+    let _ = handoff.on_preexec(false);
+    handoff.on_precmd();
+    assert!(handoff.try_commit_at_prompt());
+    // The prompt's line editor: the legacy request (`ESC i`) is decided, then written.
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::Legacy
+    );
+    handoff.on_legacy_request_written();
+    pty.note_write();
+    // Its report: parsed by the model, then handled by the view.
+    handoff.on_report_parsed();
+    assert_eq!(handoff.on_report(), ReportDisposition::InsertLegacy);
+    (handoff, pty)
+}
+
+/// #1793: ssh takes `~.` only right after a newline in its input, and in a managed ssh session the
+/// last bytes it read are the hand-off's request. Where the remote line is proven empty, the escape
+/// path puts a `\r` ahead of the escape, and the hand-off counts the line it submits as a bare
+/// Enter's: the pty owns input, the remote Precmd answers it, the request at that prompt hands input
+/// back to the editor.
+#[test]
+fn an_ssh_escape_on_a_proven_empty_line_gets_a_carriage_return_counted_as_a_bare_enter() {
+    let (mut handoff, pty) = after_answered_empty_report();
+    assert_eq!(handoff.ssh_escape_line_start(), SshEscapeLineStart::AddCr);
+    // The view routes `\r~?` (one write) through the hand-off, and the controller writes it.
+    assert_eq!(
+        type_and_flush(&mut handoff, b"\r~?"),
+        UserBytesRoute::WriteCounted
+    );
+    pty.note_write();
+    assert_eq!(
+        handoff.state(),
+        &HandoffState::PtyOwned {
+            wrote_user_bytes: true,
+            enters_written: 1,
+            precmds_seen: 0,
+        }
+    );
+    assert!(handoff.routes_keys_to_pty());
+    // ssh consumed `~?` and stays at its line start: a second escape needs no `\r` while nothing
+    // else was written.
+    assert_eq!(
+        handoff.ssh_escape_line_start(),
+        SshEscapeLineStart::AlreadyAtLineStart
+    );
+    pty.note_write();
+
+    // The remote shell's Precmd for the empty line, then its line editor: a request (the line may
+    // hold what was typed behind the `\r`), whose report hands input back to the editor.
+    handoff.on_precmd();
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest
+    );
+    pty.note_write();
+    handoff.on_report_parsed();
+    assert_eq!(handoff.on_report(), ReportDisposition::Insert);
+    assert_eq!(handoff.state(), &HandoffState::EditorOwned);
+    assert_eq!(handoff.requests_outstanding(), 0);
+    // That request wrote `ESC i` after the escape: ssh is not at its line start, and the report
+    // proved the line empty, so the next escape gets its own `\r`.
+    assert_eq!(handoff.ssh_escape_line_start(), SshEscapeLineStart::AddCr);
+}
+
+/// #1793: the `\r` is never added where it could submit remote text or reach a running command.
+#[test]
+fn an_ssh_escape_gets_no_carriage_return_unless_the_remote_line_is_proven_empty() {
+    // Untracked user bytes in the shell's line.
+    let (mut handoff, _pty) = after_answered_empty_report();
+    handoff.note_untracked_line_bytes();
+    assert_eq!(
+        handoff.ssh_escape_line_start(),
+        SshEscapeLineStart::Skipped("untracked_line_bytes")
+    );
+    assert_eq!(handoff.state(), &HandoffState::EditorOwned);
+
+    // A request outstanding (written, no report yet).
+    let (mut handoff, pty) = after_answered_empty_report();
+    handoff.on_legacy_request_written();
+    pty.note_write();
+    assert_eq!(
+        handoff.ssh_escape_line_start(),
+        SshEscapeLineStart::Skipped("request_outstanding")
+    );
+
+    // A report parsed that the view has not handled yet.
+    let (mut handoff, _pty) = after_answered_empty_report();
+    handoff.on_report_parsed();
+    assert_eq!(
+        handoff.ssh_escape_line_start(),
+        SshEscapeLineStart::Skipped("report_on_its_way")
+    );
+
+    // Anything written to the pty since the report (a key, an agent's write, a command).
+    let (mut handoff, pty) = after_answered_empty_report();
+    pty.note_write();
+    assert_eq!(
+        handoff.ssh_escape_line_start(),
+        SshEscapeLineStart::Skipped("pty_written_since_report")
+    );
+
+    // A command started since (its Preexec), or a new prompt not yet reported.
+    let (mut handoff, _pty) = after_answered_empty_report();
+    let _ = handoff.on_preexec(true);
+    assert_ne!(handoff.ssh_escape_line_start(), SshEscapeLineStart::AddCr);
+    let (mut handoff, _pty) = after_answered_empty_report();
+    handoff.on_precmd();
+    assert_eq!(
+        handoff.ssh_escape_line_start(),
+        SshEscapeLineStart::Skipped("no_report_since_prompt")
+    );
+
+    // The pty owns input (a command was written).
+    let (mut handoff, _pty) = after_answered_empty_report();
+    handoff.on_command_written();
+    assert_eq!(
+        handoff.ssh_escape_line_start(),
+        SshEscapeLineStart::Skipped("pty_owned")
+    );
+
+    // Nothing ever reported: nothing proves the line empty.
+    let mut fresh = TypeaheadHandoff::default();
+    assert_eq!(
+        fresh.ssh_escape_line_start(),
+        SshEscapeLineStart::Skipped("no_report_since_prompt")
+    );
+    assert_eq!(fresh.state(), &HandoffState::EditorOwned);
+}
+
+/// #1793: the write count is shared with the controller across a session's end (the controller
+/// keeps the cell it took at its start).
+#[test]
+fn the_pty_write_count_survives_a_reset_on_exit() {
+    let mut handoff = TypeaheadHandoff::default();
+    let pty = handoff.pty_write_count();
+    handoff.reset_on_exit();
+    pty.note_write();
+    assert_eq!(handoff.pty_write_count().get(), 1);
+}

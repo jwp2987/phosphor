@@ -10,7 +10,8 @@
 #   alt_screen_programs        vim / less / htop / tmux each receive their typed keys exactly and the shell is usable and exact afterwards
 #   alt_screen_mouse_reporting a program that enables SGR mouse reporting gets the click as ESC[<0;x;yM and the keys typed after it (pointer: Linux)
 #   sudo_su_real_shell         a real privilege-boundary shell (sudo -n, and su when the runner is root): typed lines exact inside, exit returns local
-#   ssh_drop_reconnect         ssh dropped by `~.` and by killing the remote shell: the local pane works, a reconnect works, exact lines each time
+#   ssh_drop_reconnect         ssh dropped by `~.` (after a command, and right after connect with and without an Enter: #1793) and by killing the
+#                              remote shell: the local pane works, a reconnect works, exact lines each time
 #   crash_kill9_restore        SIGKILL of the app with restore_session on: relaunch comes up, nothing re-runs, the pane is usable and exact
 #   crash_corrupt_db           a garbage warp.sqlite: the app starts, moves it aside (warp.sqlite.corrupt-*, #860) and the pane is usable and exact
 import glob, os, re, shutil, signal, subprocess, sys, time
@@ -368,23 +369,29 @@ def remote_lines_exact(ctx, r, label, n):
 def c_ssh_drop(ctx, r):
     """Two ways to lose a live ssh session, then a reconnect (#1535 'no disconnect/reconnect'): (a) the client escape `<Enter>~.`, (b) the remote shell
     killed from inside (`kill -9 $$`, the connection ends like a dropped link). After each: the pane's LOCAL shell works and is exact (a line typed right
-    behind the drop must not be lost or run remotely), a new `ssh fake` gives a remote prompt, and lines typed there are exact."""
+    behind the drop must not be lost or run remotely), a new `ssh fake` gives a remote prompt, and lines typed there are exact.
+    #1793: two more escape arms at the FIRST remote prompt, right after connect: `<Enter>~.` at once, and `~.` with no Enter (the app puts the `\\r`
+    ssh needs in front of the escape when the remote line is proven empty). Each must give a local prompt within 20 s and an exact local line; they
+    are their own reconnect, so no second `ssh fake` follows them."""
     CR.need_ssh(ctx, r)
     if ctx.win:
         r.skip("not yet ported to the Windows panes: the `~.` escape and kill -9 $$ need the msys ssh client (unverified there)")
-    for variant in ("escape", "kill"):
-        if variant == "escape" and os.environ.get("APPCI_SSH_ESCAPE_THROUGH", "1") == "0":
+    for variant in ("escape", "escape_connect_enter", "escape_connect_bare", "kill"):
+        escape = variant.startswith("escape")
+        at_connect = variant.startswith("escape_connect")
+        if escape and os.environ.get("APPCI_SSH_ESCAPE_THROUGH", "1") == "0":
             # #1638 (owner, 2026-11-04): a managed ssh session passes `~X` typed at the start of an empty line to ssh, as a plain terminal does, so the
             # escape arm runs by default. APPCI_SSH_ESCAPE_THROUGH=0 is the opt-out (a build from before #1638): the arm is then UNVERIFIABLE (noref).
-            r.unverifiable("ssh_drop_reconnect [escape]: skipped by APPCI_SSH_ESCAPE_THROUGH=0 (a build without #1638's ssh escape pass-through)")
+            r.unverifiable("ssh_drop_reconnect [%s]: skipped by APPCI_SSH_ESCAPE_THROUGH=0 (a build without #1638's ssh escape pass-through)" % variant)
             continue
         secs = CR.connect(ctx, "fake", 90)
         r.check(secs is not None, "[%s] no remote prompt after `ssh fake`. Test host: %s" % (variant, ctx.ssh_diag() if secs is None else ""))
         if secs is None:
             ctx.reset()
             return
-        time.sleep(1.0)
-        remote_lines_exact(ctx, r, variant + "_1", ctx.count(5))
+        if not at_connect:
+            time.sleep(1.0)
+            remote_lines_exact(ctx, r, variant + "_1", ctx.count(5))
         ctx.shot("ssh_drop_%s_connected" % variant)
         before = ctx.prompts()
         off = ctx.log_size()
@@ -392,30 +399,42 @@ def c_ssh_drop(ctx, r):
             ctx.be.key("Return")
             time.sleep(0.3)
             ctx.be.type("~.", 40)
+        elif variant == "escape_connect_enter":
+            # #1793: at the first remote prompt, at once: the bare Enter and the escape right behind it.
+            ctx.be.key("Return")
+            ctx.be.type("~.", 40)
+        elif variant == "escape_connect_bare":
+            # #1793: at the first remote prompt, `~.` with no Enter before it.
+            ctx.be.type("~.", 40)
         else:
             ctx.be.type("kill -9 $$", 15, enter=True)
         up = ctx.until(lambda: ctx.prompts() > before, 20, step=0.1)
         r.check(bool(up), "[%s] no local prompt within 20 s after the connection was lost" % variant)
         ctx.shot("ssh_drop_%s_dropped" % variant)
-        if variant == "escape" and not up:
+        if escape and not up:
             # r18u22 (Wayland): the escape left the session up and every later step of BOTH arms ran inside it (the reconnect nested a second
             # ssh, the kill arm's `kill -9 $$` returned to the first remote shell), so one failure read as nine. What the app did with `~.` is
             # quoted from its log (hop=ssh_escape_to_pty: written to ssh; hop=ssh_escape_refused why=...: kept in the editor and why), then the
             # line is cleared and the session left with `exit`, so the kill arm starts from the local shell and is judged on its own.
+            # #1793: hop=ssh_escape_cr says whether the `\r` went in front of the escape (added) or why not (skipped=<reason>).
             esc = [l.strip()[-160:] for l in ctx.log_since(off).splitlines() if "ssh_escape" in l]
-            r.note("[escape] app log after `<Enter>~.`: %s" % (esc[:4] or "no ssh_escape hop (a build without the r18u22 refusal log, the input_order log off, or the keys never reached the editor)"))
-            r.metric("escape_hops", esc[:4])
+            r.note("[%s] app log after the escape: %s" % (variant, esc[:6] or "no ssh_escape hop (a build without the r18u22 refusal log, the input_order log off, or the keys never reached the editor)"))
+            r.metric("%s_hops" % variant, esc[:6])
             ctx.reset()
             left = CR.leave(ctx)
-            r.note("[escape] the rest of this arm is not run (it would nest inside the live session); `exit` back to the local shell: %s" % (
-                "ok" if left else "FAILED (%s)" % ctx.left_unproven))
+            r.note("[%s] the rest of this arm is not run (it would nest inside the live session); `exit` back to the local shell: %s" % (
+                variant, "ok" if left else "FAILED (%s)" % ctx.left_unproven))
             if not left:
-                r.check(False, "[escape] the session the escape did not end could not be left with `exit` either (%s): the kill arm is not run" % ctx.left_unproven)
+                r.check(False, "[%s] the session the escape did not end could not be left with `exit` either (%s): the later arms are not run" % (
+                    variant, ctx.left_unproven))
                 return
             continue
         where = ctx.where_now()
         r.check(where == "local", "[%s] after the drop the pane is %r, expected local" % (variant, where))
         local_cmd_exact(ctx, r, "ssh_drop_%s" % variant)
+        if at_connect:
+            # The arm itself began with a fresh connect: that was its reconnect.
+            continue
         secs = CR.connect(ctx, "fake", 90)
         r.check(secs is not None, "[%s] reconnect: no remote prompt after `ssh fake`" % variant)
         if secs is None:
