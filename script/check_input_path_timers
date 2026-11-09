@@ -106,6 +106,7 @@ INPUT_PATH_LISTED_FILES = [
     "app/src/ai/blocklist/action_model/execute/shell_command.rs",
     "crates/warpui_core/src/runtime/terminal_probe.rs",
     "crates/warpui/src/windowing/winit/linux/clipboard.rs",
+    "crates/warp_tui/src/terminal_background.rs",
     "crates/warp_tui/src/terminal_session_view.rs",
     "crates/warp_tui/src/terminal_session_view/input_detection.rs",
     "crates/warp_tui/src/tui_ask_question_view.rs",

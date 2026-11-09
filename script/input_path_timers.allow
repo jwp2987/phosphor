@@ -101,6 +101,10 @@ app/src/terminal/cli_agent_sessions/mod.rs	observe_ctrl_c_write_with_window	arms
 crates/warpui/src/windowing/winit/linux/clipboard.rs	FULL_READ_BUDGET	caps the paste's wait for a clipboard owner that never answers; the read fails, nothing is written to the pty (#1331)
 crates/warpui/src/windowing/winit/linux/clipboard.rs	PROBE_BUDGET	caps the html/image probes after a text read; the probe is skipped, nothing is written
 crates/warpui/src/windowing/winit/linux/clipboard.rs	TEXT_READ_RETRY_PAUSE	pause between bounded retries of a clipboard READ (3 attempts); reads only, never writes or routes
+crates/warpui_core/src/runtime/terminal_probe.rs	PROBE_DEADLINE	100 ms startup colour-probe deadline on the reader thread: on expiry the colours stay unknown (COLORFGBG fallback); keys typed meanwhile are forwarded in order, never discarded (#1748)
+crates/warpui_core/src/runtime/terminal_probe.rs	LATE_REPLY_WINDOW	2 s after a missed probe during which a late colour reply is still swallowed; expiry only stops swallowing and hands withheld keys on, writes nothing (#1749)
+crates/warpui_core/src/runtime/terminal_probe.rs	REPLY_HOLD_NET	50 ms net on an Esc/Alt-] withheld because it might start a colour reply: on expiry it and the keys after it are handed on in order; drops and reorders nothing
+crates/warp_tui/src/terminal_background.rs	LIVE_PROBE_DEADLINE	50 ms focus-probe reply deadline on the reader thread: on expiry the background stays as it was; keys typed meanwhile are forwarded in order, never discarded
 crates/warp_tui/src/terminal_session_view/input_detection.rs	INPUT_AUTODETECTION_DEBOUNCE	debounces the input-type classifier run; the result is applied on its event, the debounce never submits or routes
 app/src/terminal/input.rs	DEBOUNCE_INPUT_DECORATION_PERIOD	debounces the editor's background decoration/classification job; an Enter waits on the verdict event and its own nets
 app/src/terminal/input.rs	DEBOUNCE_AI_QUERY_PREDICTION_PERIOD	debounces AI query prediction; UI suggestion only
@@ -114,8 +118,6 @@ app/src/ai/blocklist/agent_view/controller.rs	ENTER_OR_EXIT_CONFIRMATION_WINDOW	
 app/src/ai/blocklist/inline_action/ask_user_question_view.rs	ASK_USER_QUESTION_AUTO_ADVANCE_DELAY	FOUND: after a single-select answer a timer CONFIRMS it (AskUserQuestionAction::Confirm) unless the user navigates (commits on a clock)
 crates/warp_tui/src/tui_ask_question_view.rs	AUTO_ADVANCE_DELAY	FOUND: 300 ms timer auto-confirms a single-select answer in the TUI (commits on a clock)
 crates/warp_tui/src/terminal_session_view.rs	CTRL_C_EXIT_WINDOW	FOUND: double-^C window; the clock decides whether a second ^C exits / kills the child agent (UI confirmation; owner may exempt)
-crates/warpui_core/src/runtime/terminal_probe.rs	PROBE_DEADLINE	FOUND (#1748): 100 ms startup probe deadline; a late terminal reply then leaks into stdin as typed bytes, and user bytes typed in the window are swallowed
-crates/warpui_core/src/runtime/terminal_probe.rs	DA1_DRAIN_GRACE	FOUND (#1749): 20 ms drain after the OSC 11 reply; a DA1 reply arriving later leaks into stdin as typed bytes
 app/src/terminal/local_tty/terminal_attributes.rs	POLL_INTERVAL	FOUND: 1 Hz termios poll (a re-ask on a clock) feeding the password / interactive-prompt detector that hands the command to the user
 app/src/terminal/local_tty/terminal_manager.rs	judge	FOUND: quiet timer armed from PromptDetector::next_wake; firing runs the prompt detection that hands the command over (INTERACTIVE_PROMPT_QUIET_*)
 app/src/terminal/local_tty/terminal_manager.rs	observe	FOUND: quiet timer armed from the stall detector; firing can send q to a pager or hand the command over (STALL_*)

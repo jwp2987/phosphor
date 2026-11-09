@@ -57,9 +57,9 @@ use event_conversion::{ClickTracker, ShiftKeyTracker, ShiftRestoration};
 pub use renderer::TuiFrameRenderer;
 pub use terminal_probe::{
     BackgroundLuminance, ProbedRgb, ProbedTerminalColors, TuiProbe, background_luminance,
-    probe_terminal_background, probe_terminal_colors, read_terminal_background_reply,
     write_terminal_background_query,
 };
+use terminal_probe::{Emit, ProbeEnd, Reply, ReplyFilter, event_wire, run_probe_window};
 
 /// The host terminal the runtime draws to and reads input from. Abstracted so
 /// the draw + event loop is testable against an in-memory target.
@@ -969,12 +969,106 @@ pub fn spawn_tui_driver<T: TuiView>(
     })
 }
 
+/// Sends what the reply filter produced on, in order: events to the foreground, a
+/// late background reply to the probe's results. Returns `false` once a consumer is
+/// gone.
+fn forward_emits(
+    emits: Vec<Emit<CrosstermEvent>>,
+    sender: &async_channel::Sender<TuiDriverEvent>,
+    probe: Option<&TuiProbe>,
+) -> bool {
+    for emit in emits {
+        match emit {
+            // The reader runs on a dedicated thread, so blocking on the send is
+            // fine; an error means the receiver was dropped.
+            Emit::Pass(event) => {
+                if block_on(sender.send(TuiDriverEvent::Terminal(event))).is_err() {
+                    return false;
+                }
+            }
+            // A reply that landed after its probe's deadline: applied when it lands.
+            Emit::Reply(Reply::Background(rgb)) => {
+                if let Some(probe) = probe
+                    && block_on(probe.results.send(Some(rgb))).is_err()
+                {
+                    return false;
+                }
+            }
+            Emit::Reply(Reply::Foreground(_)) => {}
+        }
+    }
+    true
+}
+
+/// Runs one background probe on the reader thread (#1748, #1749): writes the query,
+/// then reads the same crossterm events the keyboard uses until the OSC 11 reply
+/// completes or `deadline` passes. Keys typed meanwhile are forwarded in order as they
+/// arrive; only the reply itself is swallowed. `report_miss` says whether a probe that
+/// got no reply reports `None` (a focus probe does; the startup probe stays quiet).
+/// Returns `false` when the reader must stop.
+#[allow(clippy::too_many_arguments)]
+fn run_reader_probe(
+    probe: &TuiProbe,
+    deadline: Duration,
+    report_miss: bool,
+    stdout: &mut io::Stdout,
+    stdout_write_lock: &Mutex<()>,
+    probe_lifecycle_lock: &Mutex<()>,
+    reader_shutdown: &AtomicBool,
+    sender: &async_channel::Sender<TuiDriverEvent>,
+    filter: &mut ReplyFilter<CrosstermEvent>,
+) -> bool {
+    // Teardown waits on this lock before restoring terminal modes, so a probe that
+    // is already in flight always finishes cleanly.
+    let _probe_lifecycle_guard = probe_lifecycle_lock
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if reader_shutdown.load(Ordering::Acquire) || sender.is_closed() || probe.results.is_closed() {
+        return false;
+    }
+    let query_result = {
+        let _query_write_guard = stdout_write_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        (probe.write_query)(stdout)
+    };
+    let background = if query_result.is_ok() {
+        let end = run_probe_window(
+            filter,
+            deadline,
+            event::poll,
+            event::read,
+            event_wire,
+            |emit| forward_emits(vec![emit], sender, Some(probe)),
+        );
+        match end {
+            Ok(ProbeEnd::Done(background)) => background,
+            Ok(ProbeEnd::Closed) => return false,
+            Err(error) => {
+                let _ = block_on(sender.send(TuiDriverEvent::InputFailed(error)));
+                return false;
+            }
+        }
+    } else {
+        None
+    };
+    if (background.is_some() || report_miss) && block_on(probe.results.send(background)).is_err() {
+        return false;
+    }
+    true
+}
+
 /// Reads terminal input events on a dedicated thread and forwards them to the
-/// foreground executor via `sender`. When `probe` is registered and enabled,
-/// a `FocusGained` event (with no further input already queued behind it)
-/// triggers an inline background-color re-query before the event is
-/// forwarded: this thread is the sole reader of stdin, so the query/reply
-/// round-trip cannot race the normal event stream.
+/// foreground executor via `sender`.
+///
+/// This thread is the sole reader of stdin, so it also runs the host-background
+/// probe (see `terminal_probe`): once at startup if `probe` asks, after the first
+/// frame is already on screen (the colors apply when they land), and on a
+/// `FocusGained` event (with no further input already queued behind it) while the
+/// probe is enabled. Every event goes through a [`ReplyFilter`] that swallows only
+/// an expected OSC color reply, by content and once; any other event is forwarded in
+/// order, so a key typed during a probe, or a late reply that is not expected, is
+/// never lost or reordered.
 fn run_tui_input_reader(
     sender: async_channel::Sender<TuiDriverEvent>,
     probe: Option<TuiProbe>,
@@ -983,6 +1077,24 @@ fn run_tui_input_reader(
     probe_lifecycle_lock: Arc<Mutex<()>>,
 ) {
     let mut stdout = stdout();
+    let mut filter = ReplyFilter::<CrosstermEvent>::new();
+
+    if let Some(probe) = probe.as_ref().filter(|probe| probe.startup)
+        && !run_reader_probe(
+            probe,
+            terminal_probe::PROBE_DEADLINE,
+            false,
+            &mut stdout,
+            &stdout_write_lock,
+            &probe_lifecycle_lock,
+            &reader_shutdown,
+            &sender,
+            &mut filter,
+        )
+    {
+        return;
+    }
+
     loop {
         // Stop before another blocking read once teardown has requested a
         // shutdown, or either downstream consumer has gone away.
@@ -995,7 +1107,25 @@ fn run_tui_input_reader(
             break;
         }
 
-        match event::read() {
+        // While an Esc / Alt-] is withheld (it might begin a reply) wait only the hold
+        // net for the next event, then hand the withheld keys on.
+        let next = if filter.is_holding() {
+            match event::poll(terminal_probe::REPLY_HOLD_NET) {
+                Ok(true) => Some(event::read()),
+                Ok(false) => None,
+                Err(error) => Some(Err(error)),
+            }
+        } else {
+            Some(event::read())
+        };
+        let Some(next) = next else {
+            if !forward_emits(filter.release_held(), &sender, probe.as_ref()) {
+                break;
+            }
+            continue;
+        };
+
+        match next {
             Ok(event) => {
                 let probe_enabled = probe.as_ref().is_some_and(|probe| (probe.is_enabled)());
                 // Only probe when no further input is already queued: a probe
@@ -1004,37 +1134,25 @@ fn run_tui_input_reader(
                 let should_probe = matches!(event, CrosstermEvent::FocusGained)
                     && probe_enabled
                     && !event::poll(Duration::ZERO).unwrap_or(true);
-                if should_probe {
-                    if let Some(probe) = probe.as_ref() {
-                        let background = {
-                            // Teardown waits on this lock before restoring
-                            // terminal modes, so a probe that is already
-                            // in flight always finishes cleanly.
-                            let _probe_lifecycle_guard = probe_lifecycle_lock
-                                .lock()
-                                .unwrap_or_else(|poisoned| poisoned.into_inner());
-                            if reader_shutdown.load(Ordering::Acquire)
-                                || sender.is_closed()
-                                || probe.results.is_closed()
-                            {
-                                break;
-                            }
-                            let query_result = {
-                                let _query_write_guard = stdout_write_lock
-                                    .lock()
-                                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                                (probe.write_query)(&mut stdout)
-                            };
-                            query_result.ok().and_then(|()| (probe.read_reply)())
-                        };
-                        if block_on(probe.results.send(background)).is_err() {
-                            break;
-                        }
-                    }
+                let wire = event_wire(&event);
+                let emits = filter.push(event, wire, Instant::now());
+                if !forward_emits(emits, &sender, probe.as_ref()) {
+                    break;
                 }
-                // The reader runs on a dedicated thread, so blocking on the
-                // send is fine; an error means the receiver was dropped.
-                if block_on(sender.send(TuiDriverEvent::Terminal(event))).is_err() {
+                if should_probe
+                    && let Some(probe) = probe.as_ref()
+                    && !run_reader_probe(
+                        probe,
+                        probe.live_deadline,
+                        true,
+                        &mut stdout,
+                        &stdout_write_lock,
+                        &probe_lifecycle_lock,
+                        &reader_shutdown,
+                        &sender,
+                        &mut filter,
+                    )
+                {
                     break;
                 }
             }
