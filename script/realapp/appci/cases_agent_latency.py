@@ -400,7 +400,9 @@ def c_agent_latency_enter(ctx, r):
     ctx.reset()
     try:
         AG.fresh_conversation(ctx, r)
-        idle, e2e_idle, _ = enter_batch(ctx, r, n + warm, lambda i: "ping %s" % ctx.tok(6), fm)
+        # prose, never a command head: `ping <tok>` started with an installed command, so autodetect ran it in the shell
+        # (owner rule: installed-head lines run in the shell) and the idle samples measured shell Enters, not agent ones (round 7)
+        idle, e2e_idle, _ = enter_batch(ctx, r, n + warm, lambda i: "please note the word %s" % ctx.tok(6), fm)
         idle = idle[warm:]
         stream, e2e_stream, _ = enter_batch(ctx, r, n + warm, lambda i: "and also %s" % ctx.tok(6), fm, streaming=True)
         stream = stream[warm:]
