@@ -89,9 +89,19 @@ def check_fullscreen_handover(ctx, r, label, off):
     r.check(bool(ok), "%s: no hop=fullscreen_handover in the app log after typing into the full-screen program: the hand-over is not proven" % label)
 
 
+# cli_controller.rs switch_control_to_user logs `hop=handover action=<id> reason=<variant>` for EVERY take-over of an agent command. The prompt-shape path logs
+# "handing the command to the user" first, but a password prompt (echo off, `read -s`) takes the command over via on_possible_password_prompt with no such line: the
+# hop is the one signal all of them share. Only the system hand-overs count (a user Stop / Manual take-over is not the app handing a prompt over).
+HANDOVER_RE = re.compile(r"hop=handover action=\S+ reason=(?:blocked_on_input|transfer_from_agent)\b")
+
+
+def handover_seen(text):
+    """pure: the app handed an agent command to the user (the real hand-over hop, or the prompt-shape line that precedes it)"""
+    return bool(HANDOVER_RE.search(text or "")) or AG.LRC_HANDED_TO_USER in (text or "")
+
+
 def handed(ctx, off):
-    t = ctx.log_since(off)
-    return AG.LRC_HANDED_TO_USER in t
+    return handover_seen(ctx.log_since(off))
 
 
 def after_checks(ctx, r, label, off, n0, secret, want_tool=None):

@@ -3749,6 +3749,13 @@ def agent_interactive_oracles():
     assert AI.hop_count("INFO input_order hop=alt_screen_enter  t=1\nhop=alt_screen_enter  t=2", AI.ALT_ENTER_RE) == 2
     assert AI.hop_count("hop=fullscreen_handover agent_in_control=0 t=1", AI.FS_HANDOVER_RE) == 1 and AI.hop_count("hop=fullscreen_handover agent_in_control=1 t=1", AI.FS_HANDOVER_RE) == 0
     names = {c["name"] for c in cases.CASES}
+    # the app's real hand-over line (cli_controller.rs switch_control_to_user), a prompt-shape line, and the non-hand-over lines seen in a real run
+    assert AI.handover_seen("2026-11-09T20:03:10Z [INFO] hop=handover action=call_abc123 reason=blocked_on_input\n")
+    assert AI.handover_seen("x [INFO] hop=handover action=call_abc123 reason=transfer_from_agent\n")
+    assert AI.handover_seen("x [INFO] interactive prompt Some(\"Continue? \") unchanged for 1s, foreground reading the tty; handing the command to the user\n")
+    assert not AI.handover_seen("2026-11-09T20:04:50Z [INFO] hop=handover action=call_wvgszzf7 reason=stop\n")
+    assert not AI.handover_seen("x [INFO] prompt-shaped line Some(\"Waiting:\") unchanged for 0ns, but the foreground is not reading the tty; leaving the command with the agent\n")
+    assert not AI.handover_seen("") and not AI.handover_seen(None)
     assert {"agent_interactive_password", "agent_interactive_vim", "agent_interactive_ssh", "agent_interactive_less", "agent_noninteractive_no_takeover"} <= names
 
 
