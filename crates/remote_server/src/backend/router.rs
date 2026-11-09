@@ -17,7 +17,7 @@ use super::Family;
 use super::executor::OutOfBandExecutor;
 use super::helper::client_id;
 use super::refresh::RemoteRefreshEvent;
-use super::shell::{ShellBackend, ShellBuffers, ShellPush, TreeCache};
+use super::shell::{AgentContextCache, ShellBackend, ShellBuffers, ShellPush, TreeCache};
 use crate::HostId;
 use crate::capability::ServerCapabilities;
 use crate::client::RemoteServerClient;
@@ -147,6 +147,8 @@ struct State {
     fallbacks: HashMap<HostId, Fallbacks>,
     /// Per-host shell-mode file trees, shared by every backend built for the host.
     tree_caches: HashMap<HostId, Arc<TreeCache>>,
+    /// Per-host shell-mode agent context (last snapshot and revision).
+    agent_caches: HashMap<HostId, Arc<AgentContextCache>>,
     /// Per-host shell-mode buffer states (family c), shared likewise.
     buffer_states: HashMap<HostId, Arc<ShellBuffers>>,
     refresh_listeners: Vec<RefreshListener>,
@@ -320,7 +322,21 @@ impl FeatureRouter {
             helper,
             shell: ShellBackend::new(self.executor_for(sessions))
                 .with_tree_cache(self.tree_cache_for(host))
+                .with_agent_cache(self.agent_cache_for(host))
                 .with_buffers(self.buffers_for(host)),
+        }
+    }
+
+    /// The shell-mode agent context of `host` (created on first use).
+    pub fn agent_cache_for(&self, host: &HostId) -> Arc<AgentContextCache> {
+        Arc::clone(self.lock().agent_caches.entry(host.clone()).or_default())
+    }
+
+    /// Forgets `host`'s shell-mode agent context (the host disconnected). The revision counter
+    /// survives so a later context for the same host id never goes backwards.
+    pub fn forget_agent_context(&self, host: &HostId) {
+        if let Some(cache) = self.lock().agent_caches.get(host) {
+            cache.clear();
         }
     }
 
@@ -395,6 +411,17 @@ impl RoutedBackend {
     pub fn kind(&self, family: Family) -> BackendKind {
         let probe = self.helper.as_ref().map(HelperProbe::of);
         self.router.choose(&self.host, family, probe.as_ref())
+    }
+
+    /// Reads the host's agent context (skills and global rules) when the shell serves
+    /// `AgentContext` (a helper that has the capability pushes it by itself, so this is then a
+    /// no-op) and returns the pushes produced, ready to emit: the snapshot when it changed.
+    /// Drive it at session start and on an explicit refresh; it never runs on a timer.
+    pub async fn refresh_agent_context(&self) -> Result<Vec<ShellPush>, super::BackendError> {
+        if self.kind(Family::AgentContext) == BackendKind::Shell {
+            self.shell.refresh_agent_context().await?;
+        }
+        Ok(self.shell.take_pushes())
     }
 
     /// Re-reads the file tree of the indexed root `repo_path` when the shell serves

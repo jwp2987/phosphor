@@ -154,6 +154,10 @@ pub struct SessionContext {
     /// The OS category the remote host's shell reported at bootstrap ("Linux", "MacOS",
     /// "Windows"), when known. Decides which path rules the file tools use (#1278).
     remote_os_category: Option<String>,
+    /// The shell-mode stand-in host (`shell_mode_host_id`) of a `WarpifiedRemote` session that
+    /// has no helper but does have an out-of-band channel: the id the host's skills and rules
+    /// are filed under. `None` for every other session.
+    shell_mode_host: Option<warp_core::HostId>,
 }
 
 /// Whether the agent file tools (`read_files`, `apply_file_diffs`, `read_skill`) work on a remote
@@ -229,7 +233,18 @@ impl SessionContext {
             } else {
                 None
             };
+        let shell_mode_host = match &session_type {
+            Some(SessionType::WarpifiedRemote { host_id: None }) => session
+                .session_id(app)
+                .filter(|session_id| {
+                    app.has_singleton_model::<RemoteServerManager>()
+                        && RemoteServerManager::as_ref(app).is_shell_mode_session(*session_id)
+                })
+                .map(remote_server::manager::shell_mode_host_id),
+            _ => None,
+        };
         SessionContext {
+            shell_mode_host,
             remote_os_category,
             remote_home,
             session_type,
@@ -350,7 +365,14 @@ impl SessionContext {
             }) => SkillPathOrigin::Remote {
                 host_id: crate::code::buffer_location::core_host_id_to_util(host_id),
             },
-            Some(SessionType::WarpifiedRemote { host_id: None }) => SkillPathOrigin::Unavailable,
+            // No helper: the skills of a host reached over the out-of-band channel are filed
+            // under its shell-mode stand-in host.
+            Some(SessionType::WarpifiedRemote { host_id: None }) => match &self.shell_mode_host {
+                Some(host_id) => SkillPathOrigin::Remote {
+                    host_id: crate::code::buffer_location::core_host_id_to_util(host_id),
+                },
+                None => SkillPathOrigin::Unavailable,
+            },
             Some(SessionType::Local) | None => SkillPathOrigin::Local,
         }
     }
@@ -384,6 +406,7 @@ impl SessionContext {
             has_remote_server_client: false,
             remote_home: None,
             remote_os_category: None,
+            shell_mode_host: None,
         }
     }
 
@@ -425,6 +448,7 @@ impl SessionContext {
             has_remote_server_client: false,
             remote_home: None,
             remote_os_category: None,
+            shell_mode_host: None,
         }
     }
 
@@ -453,6 +477,7 @@ impl SessionContext {
             has_remote_server_client,
             remote_home: None,
             remote_os_category: None,
+            shell_mode_host: None,
         }
     }
 

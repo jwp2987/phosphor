@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::sync::Arc;
 use warp_core::SessionId;
-use warpui::{AppContext, Entity, ModelContext, ModelHandle};
+use warpui::{AppContext, Entity, ModelContext, ModelHandle, SingletonEntity};
 
 use crate::{
     ai::execution_context::WarpAiExecutionContext,
@@ -140,6 +140,9 @@ impl ActiveSession {
     /// Returns the current working directory as a [`LocalOrRemotePath`]: `Remote` when the
     /// active session is a connected `WarpifiedRemote` (SSH) session, `Local` otherwise.
     ///
+    /// A `WarpifiedRemote` session with no helper but an out-of-band channel (shell mode) is
+    /// `Remote` under its `shell_mode_host_id` stand-in.
+    ///
     /// Returns `None` for a `WarpifiedRemote` session whose `host_id` hasn't resolved yet
     /// (the remote-server handshake hasn't completed — see [`SessionType::WarpifiedRemote`]'s
     /// doc comment) rather than falling back to treating the cwd as local: a remote cwd string
@@ -164,7 +167,26 @@ impl ActiveSession {
                     ),
                 ))
             }
-            Some(SessionType::WarpifiedRemote { host_id: None }) => None,
+            // No helper connection (the primary, no-helper design): when the session has an
+            // out-of-band channel its host is the shell-mode stand-in, the id its skills,
+            // rules and file tree are filed under. Otherwise the host has not resolved yet.
+            Some(SessionType::WarpifiedRemote { host_id: None }) => {
+                let session_id = self.session(ctx).as_deref().map(Session::id)?;
+                // A missing manager (unit tests) means nothing serves the session.
+                let manager = crate::remote_server::manager::RemoteServerManager::try_as_ref(ctx)?;
+                if !manager.is_shell_mode_session(session_id) {
+                    return None;
+                }
+                let path = warp_util::standardized_path::StandardizedPath::try_new(cwd).ok()?;
+                Some(warp_util::local_or_remote_path::LocalOrRemotePath::Remote(
+                    warp_util::remote_path::RemotePath::new(
+                        crate::code::buffer_location::core_host_id_to_util(
+                            &remote_server::manager::shell_mode_host_id(session_id),
+                        ),
+                        path,
+                    ),
+                ))
+            }
             Some(SessionType::Local) | None => Some(
                 warp_util::local_or_remote_path::LocalOrRemotePath::Local(cwd.into()),
             ),
@@ -289,6 +311,9 @@ mod tests {
         // the cwd string is a path on the not-yet-identified remote host, not this
         // machine.
         App::test((), |mut app| async move {
+            // The location lookup asks the manager whether the session has a shell-mode
+            // channel; this one has none (setup only: the assertion is unchanged).
+            app.add_singleton_model(remote_server::manager::RemoteServerManager::new);
             let active_session =
                 build_active_session(&mut app, BootstrapSessionType::WarpifiedRemote, None);
 
@@ -297,6 +322,53 @@ mod tests {
             });
 
             assert!(location.is_none());
+        });
+    }
+
+    /// A remote session with no helper but an out-of-band channel (shell mode) is `Remote` under
+    /// the shell-mode stand-in host, the id its skills, rules and file tree are filed under.
+    #[test]
+    fn shell_mode_session_returns_the_stand_in_host_location() {
+        #[derive(Debug)]
+        struct Channel;
+        impl remote_server::backend::OutOfBandExecutor for Channel {
+            fn channel_kind(&self) -> remote_server::backend::ChannelKind {
+                remote_server::backend::ChannelKind::LocalSh
+            }
+            fn shell_kind(&self) -> remote_server::shellcmd::ShellKind {
+                remote_server::shellcmd::ShellKind::Posix
+            }
+            fn execute(
+                &self,
+                _request: remote_server::backend::ExecRequest,
+            ) -> futures_util::future::BoxFuture<
+                '_,
+                Result<remote_server::backend::ExecOutput, remote_server::backend::ExecError>,
+            > {
+                Box::pin(async { Err(remote_server::backend::ExecError::Failed("unused".into())) })
+            }
+        }
+        App::test((), |mut app| async move {
+            let manager = app.add_singleton_model(remote_server::manager::RemoteServerManager::new);
+            manager.read(&app, |manager, _| {
+                manager
+                    .router()
+                    .register_out_of_band(SessionId::from(1), std::sync::Arc::new(Channel));
+            });
+            let active_session =
+                build_active_session(&mut app, BootstrapSessionType::WarpifiedRemote, None);
+
+            let location = active_session.read(&app, |active_session, ctx| {
+                active_session.current_working_directory_location(ctx)
+            });
+
+            let Some(LocalOrRemotePath::Remote(remote)) = location else {
+                panic!("expected a remote location");
+            };
+            assert_eq!(
+                remote.host_id.as_str(),
+                remote_server::manager::shell_mode_host_id(SessionId::from(1)).as_str()
+            );
         });
     }
 

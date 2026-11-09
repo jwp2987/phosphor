@@ -2857,7 +2857,7 @@ def lab_cases_registry_and_selection():
     assert run.unknown_case_names("mode_proof,typo_case", reg) == ["typo_case"]       # exact names are still checked exactly
     # winmap: a lab case is never 'unclassified'; PowerShell pane skips with a reason; p_onesess is skipped on Windows
     base = {n.split(".")[0] for n in names}
-    old = {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i", "lab_no_helper_chip", "lab_replay", "lab_password_prompt", "lab_helper_install", "lab_nu_agent_pager_env", "lab_read_files_remote", "lab_diff_apply_remote", "lab_file_tree_remote", "lab_remote_edit"}
+    old = {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i", "lab_no_helper_chip", "lab_replay", "lab_password_prompt", "lab_helper_install", "lab_nu_agent_pager_env", "lab_read_files_remote", "lab_diff_apply_remote", "lab_file_tree_remote", "lab_remote_edit", "lab_skills_remote"}
     assert old <= base and all(n.startswith(("lab_fam_", "lab_helper_", "lab_nohelper_", "lab_git_write_remote")) for n in base - old), base
     assert all(c["modes"] == ("terminal",) for c in labs if c["name"].startswith("lab_ssh_drop_reconnect")), "the drop case is terminal-only"
     pw = [c["arm"] for c in labs if c["name"].startswith("lab_password_prompt")]
@@ -2883,6 +2883,30 @@ def lab_file_tree_remote_pieces():
 
 
 @check
+def lab_skills_remote_pieces():
+    """Wave H parity P8: the lab case reads the app's hop=agent_context log lines. The hash must be the file-tree FNV-1a (manager.rs hashes a skill's directory name the
+    same way), the line parser must take what the app prints, the skill fixture command must survive every login shell's quoting, and the case registers the nohelper and
+    upload arms for bash, zsh, fish and nu."""
+    import cases_lab_skills as CLS, cases_lab_remote as CLR
+    line = "INFO hop=agent_context source=shell revision=2 skills=2 rules=1 names_hash=[e40c292c,bf9cf968]\nINFO hop=agent_context source=helper revision=1 skills=0 rules=0 names_hash=[]"
+    assert CLS.events(line) == [("shell", 2, 2, 1, ["e40c292c", "bf9cf968"]), ("helper", 1, 0, 0, [])]
+    assert CLS.saw_skill(line, "a") and CLS.saw_skill(line, "foobar") and not CLS.saw_skill(line, "b")
+    seen = []
+
+    class FakeLab:
+        def ssh(self, user, cmd):
+            seen.append(cmd)
+
+    CLS.make_skill(FakeLab(), "u", "labsk-x")
+    CLS.make_rules(FakeLab(), "u")
+    CLS.clean(FakeLab(), "u", ["labsk-x"])
+    assert all(c.startswith("sh -c '") and c.endswith("'") and c.count("'") == 2 for c in seen), seen        # one single-quoted word: identical in bash, zsh, fish and nu
+    assert "SKILL.md" in seen[0] and "name: labsk-x" in seen[0] and "AGENTS.md" in seen[1] and "rm -rf" in seen[2]
+    arms = [c["arm"] for c in cases.CASES if c.get("lab") and c["name"].startswith("lab_skills_remote.")]
+    assert {(a["shell"], a["helper"]) for a in arms} == {(s, h) for s in ("bash", "zsh", "fish", "nu") for h in ("nohelper", "upload")}, arms
+    import cases_lab_helper as H
+    assert H.EXTERNAL_COVERS["agent_context"] == dict(helper="lab_skills_remote", nohelper="lab_skills_remote"), H.EXTERNAL_COVERS
+
 def lab_remote_edit_pieces():
     """Wave H parity P4: the buffers lab case registers exactly the nohelper and upload arms for bash, zsh, fish and nu, declares the buffers family to the coverage
     guard on both arms, and reads the router's line the way the app writes it."""

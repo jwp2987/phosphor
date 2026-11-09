@@ -210,3 +210,32 @@ fn remove_host_context_clears_only_the_matching_host() {
         });
     });
 }
+
+/// Parity P8: the host-side scan (the helper's `daemon/agent_context.rs` and the shell backend's
+/// commands) reads the skill roots listed in `remote_server::shellcmd::agent_context`. They must
+/// be the roots this app's `SkillManager` scans, in the same precedence order, or a remote host
+/// would report different skills than the app would have found locally.
+#[test]
+fn the_remote_scan_lists_exactly_the_skill_providers_the_app_scans() {
+    let app_roots: Vec<String> = ai::skills::SKILL_PROVIDER_DEFINITIONS
+        .iter()
+        .map(|definition| {
+            definition
+                .skills_path
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join("/")
+        })
+        .collect();
+    let remote_roots: Vec<String> = remote_server::shellcmd::agent_context::HOME_SKILL_DIRS
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    assert_eq!(remote_roots, app_roots);
+    // The one global rule file the app indexes (`GlobalRuleSource::Agents`).
+    assert_eq!(
+        remote_server::shellcmd::agent_context::HOME_RULE_FILES,
+        &[".agents/AGENTS.md"]
+    );
+}
