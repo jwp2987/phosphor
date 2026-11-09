@@ -629,3 +629,63 @@ git status`";
         vec![". ./build.ps1".to_string()]
     );
 }
+
+/// #1801 reviews: the app writes `^Y` and frames only to a shell whose bootstrap advertised the
+/// framed protocol (M2), and for bash only from 4.0 (its `^Y` binding is a `bind -x` function the
+/// bootstrap installs, and advertises, only then). zsh and bash only; fish and the others never.
+#[test]
+fn native_shell_completions_need_the_advertised_protocol_and_bash_4() {
+    let advertised = || {
+        Some(HashSet::from([
+            NATIVE_COMPLETIONS_PROTOCOL_OPTION.to_owned()
+        ]))
+    };
+    let bash = |version: &str, options: Option<HashSet<String>>| {
+        Shell::new(
+            ShellType::Bash,
+            Some(version.to_owned()),
+            options,
+            Default::default(),
+            None,
+        )
+    };
+    assert!(!bash("3.2.57(1)-release", advertised()).supports_native_shell_completions());
+    assert!(bash("4.0.0(1)-release", advertised()).supports_native_shell_completions());
+    assert!(bash("5.2.15(1)-release", advertised()).supports_native_shell_completions());
+    assert!(
+        !bash("5.2.15(1)-release", None).supports_native_shell_completions(),
+        "a shell that did not advertise the protocol never gets ^Y"
+    );
+    assert!(
+        !bash(
+            "5.2.15(1)-release",
+            Some(HashSet::from(["histappend".to_owned()]))
+        )
+        .supports_native_shell_completions()
+    );
+    assert!(
+        !Shell::new(
+            ShellType::Bash,
+            None,
+            advertised(),
+            Default::default(),
+            None
+        )
+        .supports_native_shell_completions(),
+        "an unknown bash version is not assumed to have the binding"
+    );
+    assert!(
+        Shell::new(ShellType::Zsh, None, advertised(), Default::default(), None)
+            .supports_native_shell_completions()
+    );
+    assert!(
+        !Shell::new(ShellType::Zsh, None, None, Default::default(), None)
+            .supports_native_shell_completions()
+    );
+    for shell_type in [ShellType::Fish, ShellType::PowerShell, ShellType::Nu] {
+        assert!(
+            !Shell::new(shell_type, None, advertised(), Default::default(), None)
+                .supports_native_shell_completions()
+        );
+    }
+}

@@ -392,7 +392,7 @@ impl ModelEventDispatcher {
             Event::FinishUpdate(data) => ModelEvent::FinishUpdate(data),
             Event::TextSelectionChanged => ModelEvent::SelectedTextChanged,
             Event::ShellSpawned(shell_type) => ModelEvent::ShellSpawned(shell_type),
-            Event::SendCompletionsPrompt => ModelEvent::SendCompletionsPrompt,
+            Event::SendCompletionsPrompt { token } => ModelEvent::SendCompletionsPrompt { token },
             Event::ImageReceived {
                 image_id,
                 image_data,
@@ -596,7 +596,10 @@ pub enum ModelEvent {
     SelectedTextChanged,
     ShellSpawned(ShellType),
     CompletionsFinished(Vec<ShellCompletion>),
-    SendCompletionsPrompt,
+    /// See `Event::SendCompletionsPrompt`.
+    SendCompletionsPrompt {
+        token: Option<String>,
+    },
     ImageReceived {
         image_id: u32,
         image_data: std::sync::Arc<Vec<u8>>,

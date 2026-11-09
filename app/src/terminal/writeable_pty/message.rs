@@ -1,4 +1,4 @@
-use super::write_queue::{AbortScope, Pacing};
+use super::write_queue::{AbortScope, Pacing, SetupLive};
 use crate::terminal::SizeInfo;
 use std::borrow::Cow;
 
@@ -37,6 +37,8 @@ pub enum Message {
     SetupChunked {
         chunks: Vec<Vec<u8>>,
         pacing: Pacing,
+        /// Counts the job alive for the controller until the writer drops it (#1801 review M1).
+        live: SetupLive,
     },
 
     /// Removes the queued and in-flight jobs `AbortScope` covers (#1384). A job cut inside a

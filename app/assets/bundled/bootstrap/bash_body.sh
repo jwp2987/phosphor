@@ -742,6 +742,28 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         bind -r '"\ew"'
         bind -x '"\ew":"warp_change_prompt_modes_to_warp_prompt"'
 
+        # Phosphor (#1801): ^Y asks this shell for its own completions (see
+        # warp_native_complete). Readline's yank is never used here: the editor is Phosphor's.
+        # bash 4.0+ only, like ESC-i above: the app never sends ^Y to an older bash
+        # (`Shell::supports_native_shell_completions`).
+        if [[ ${WARP_INPUT_REPORTING_SUPPORTED:-} == "1" ]]; then
+          # ^Y runs the hook, RS (^^) the discard widget; each is a macro that runs its `bind -x`
+          # key and then \C-x\C-_9 (accept-line after a handed-back Enter, set-mark otherwise).
+          # US (^_) is left alone: it stays readline's undo.
+          # The `bind -x` keys are TWO keys long on purpose: before bash 4.3 readline found a
+          # `bind -x` command only one keymap level down, so a three-key sequence ran nothing
+          # (CentOS/RHEL 7 ship 4.2). \C-x\C-_9 may stay three keys: it is a plain readline
+          # function, not `bind -x`.
+          local __warp_nc_keymap
+          for __warp_nc_keymap in emacs vi-insert vi-command; do
+            bind -m "$__warp_nc_keymap" -x '"\C-x\C-y":"warp_native_complete"' 2>/dev/null
+            bind -m "$__warp_nc_keymap" -x '"\C-x\C-^":"warp_native_discard"' 2>/dev/null
+            bind -m "$__warp_nc_keymap" '"\C-x\C-_9": set-mark' 2>/dev/null
+            bind -m "$__warp_nc_keymap" '"\C-y": "\C-x\C-y\C-x\C-_9"' 2>/dev/null
+            bind -m "$__warp_nc_keymap" '"\C-^": "\C-x\C-^\C-x\C-_9"' 2>/dev/null
+          done
+        fi
+
         # Readline 7.0 and 8.0 (bash 4.4 and 5.0) have bracketed paste but leave it off unless the
         # user's inputrc turns it on (8.1 / bash 5.1 made it the default). Without it Phosphor
         # types a command key by key, which is slow for a large one (#1129). This runs after the
@@ -1191,6 +1213,462 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         READLINE_LINE=""
     }
     function warp_report_input { __warp_run_relaxed __warp_report_input_impl "$@"; }
+
+    # Phosphor (#1801): in-band native completions for bash 4.0+, answering the app's `^Y`
+    # (zsh has had this since upstream; bash joins it so a remote session without the helper gets
+    # the remote shell's own completions on Tab, over the session's own connection, instead of
+    # ControlMaster side commands). The bootstrap advertises it with the `!phosphor_nc_frames_v1`
+    # pseudo shell option; the app writes ^Y and frames only to a shell that did.
+    #
+    # The exchange is self-identifying (design in pty_controller.rs, "The in-band
+    # native-completions exchange"): this hook names it with a fresh token (OSC 9280;P;<token>),
+    # and the app always ends it with ONE frame, RS <token> : <%HH bytes> US (RS = 0x1e,
+    # US = 0x1f), or the cancel frame RS - : US, written in one piece. The hook consumes nothing
+    # that is not a frame: the first byte must be RS, then the frame's exact shape (a token of
+    # letters and digits, or `-`; `:`; `%HH` pairs; US) with at most 0.1 s between bytes. On any
+    # other byte, or a gap, everything read after the RS goes back to the line (text inserted, ^P
+    # clears the line, an Enter accepts it, a bracketed paste is read whole and inserted, a
+    # terminal reply such as a DA report is dropped whole) and the exchange ends. A frame for
+    # another token, or the cancel, ends it with nothing. A frame that arrives after this hook
+    # gave up lands at the prompt, where RS is bound to warp_native_discard, which reads the rest
+    # by the same rules and drops it. US is not bound (it stays readline's undo): the discard
+    # widget consumes a frame's own US. The first byte waits PHOSPHOR_NC_DEADLINE seconds
+    # (default 20); a frame must be whole within 5 more.
+    #
+    # Readline cannot run accept-line from a `bind -x` function, so ^Y and RS are bound to macros
+    # that run the function and then \C-x\C-_9, which the function rebinds to accept-line when it
+    # handed back an Enter and to set-mark (no visible effect) otherwise.
+    #
+    # Results: OSC 9280;A;incrementally_typed, one OSC 9280;C;<match> per candidate, OSC
+    # 9280;B. Each candidate is the WHOLE whitespace-delimited token before the cursor as bash
+    # would leave it (the part of the token before the readline word, e.g. `--file=`, is kept),
+    # because the app replaces that token. Candidates come from the same place bash's own Tab
+    # takes them: the command's `complete` spec (a -F function such as bash-completion's, run
+    # with COMP_WORDS/COMP_CWORD/COMP_LINE/COMP_POINT set as bash would; -C commands; compgen
+    # actions and -o options), the bash-completion dynamic loader (`complete -D`) for a command
+    # with no spec yet, command names in command position, and file names otherwise.
+    #
+    # Known limits: a quoted word that contains spaces (`cat "my fi`) is not one token to the
+    # app, which replaces only the text after the last space; a backslash-escaped word
+    # (`cd my\ di`) is handed to compgen and completion functions as typed, not dequoted, so it
+    # may match nothing; and an escape sequence that is a real key (an arrow) cannot be handed
+    # back from a `bind -x` function and is dropped. The app never writes anything between ^Y and
+    # its frame (any write first sends the cancel frame), so only a key typed straight into the
+    # shell's own line editor could meet that.
+
+    # Starts a total deadline of $1 whole seconds.
+    __warp_nc_deadline_set () {
+        if [[ -n ${EPOCHREALTIME:-} ]]; then
+            __warp_nc_dl=$(( ${EPOCHREALTIME/[.,]/} + $1 * 1000000 ))
+        else
+            __warp_nc_dl=$(( SECONDS + $1 ))
+        fi
+    }
+
+    # Sets __warp_nc_left to what is left of the deadline (a read -t value); status 1 when none.
+    __warp_nc_time_left () {
+        local __l
+        if [[ -n ${EPOCHREALTIME:-} ]]; then
+            __l=$(( __warp_nc_dl - ${EPOCHREALTIME/[.,]/} ))
+            (( __l > 0 )) || return 1
+            builtin printf -v __warp_nc_left '%d.%06d' $(( __l / 1000000 )) $(( __l % 1000000 ))
+        else
+            __l=$(( __warp_nc_dl - SECONDS ))
+            (( __l > 0 )) || return 1
+            __warp_nc_left=$__l
+        fi
+    }
+
+    # Reads one byte of the tty into __warp_nc_byte within $1 seconds, unbuffered (-N/-n), so
+    # nothing behind it is consumed.
+    __warp_nc_read_byte () {
+        __warp_nc_byte=
+        if (( BASH_VERSINFO[0] > 4 || BASH_VERSINFO[1] >= 1 )); then
+            IFS= builtin read -r -s -t "$1" -N 1 __warp_nc_byte < /dev/tty
+        else
+            IFS= builtin read -r -s -t "$1" -n 1 __warp_nc_byte < /dev/tty
+        fi
+    }
+
+    # Inserts $1 into the line at the cursor.
+    __warp_nc_insert () {
+        READLINE_LINE="${READLINE_LINE:0:READLINE_POINT}$1${READLINE_LINE:READLINE_POINT}"
+        READLINE_POINT=$((READLINE_POINT + ${#1}))
+    }
+
+    # ESC read where a frame byte was expected: read the rest of the escape sequence (at most
+    # 0.1 s between bytes). A bracketed paste (how the app writes a command after its ^P) is read
+    # to its end and its text inserted, as readline would; any other sequence (a terminal reply
+    # such as a DA report, or a key) is dropped whole, so none of it is left in the line.
+    __warp_nc_give_back_escape () {
+        local __seq=
+        __warp_nc_read_byte 0.1 || return 0
+        __seq=$__warp_nc_byte
+        case $__seq in
+            '[')
+                # CSI: parameters and intermediates, then a final byte in @-~.
+                while __warp_nc_read_byte 0.1; do
+                    __seq+=$__warp_nc_byte
+                    case $__warp_nc_byte in [@A-Z\[\\\]^_\`a-z{\|}~]) break ;; esac
+                    (( ${#__seq} <= 64 )) || return 0
+                done ;;
+            ']')
+                # OSC: up to BEL or ST.
+                while __warp_nc_read_byte 0.1; do
+                    __seq+=$__warp_nc_byte
+                    [[ $__warp_nc_byte == $'\a' || $__seq == *$'\e\\' ]] && break
+                    (( ${#__seq} <= 4096 )) || return 0
+                done
+                return 0 ;;
+            O) __warp_nc_read_byte 0.1 ;;
+        esac
+        [[ $__seq == "[200~" ]] || return 0
+        local __text=
+        while __warp_nc_read_byte 1; do
+            __text+=$__warp_nc_byte
+            if [[ $__text == *$'\e[201~' ]]; then
+                __text=${__text%$'\e[201~'}
+                break
+            fi
+            (( ${#__text} <= 1000000 )) || break
+        done
+        __warp_nc_insert "$__text"
+    }
+
+    # Hands back to the line what the hook or the discard widget read that is not a frame: the
+    # frame-alphabet text read so far ($1, never control bytes), then the byte that broke the
+    # shape ($2, empty after a gap).
+    __warp_nc_give_back () {
+        __warp_nc_insert "$1"
+        case $2 in
+            '') ;;
+            $'\e') __warp_nc_give_back_escape ;;
+            $'\x10') READLINE_LINE= READLINE_POINT=0 ;;
+            $'\r'|$'\n') __warp_nc_accept=1 ;;
+            [[:print:]]) __warp_nc_insert "$2" ;;
+        esac
+    }
+
+    # Reads the rest of a frame after its RS. Returns 0 with __warp_nc_body set to
+    # "<token>:<%HH...>" when the bytes have the frame's exact shape up to its US; otherwise
+    # hands everything read back to the line and returns 1.
+    __warp_nc_read_frame_body () {
+        __warp_nc_body=
+        local __phase=start
+        __warp_nc_deadline_set 5
+        while __warp_nc_time_left; do
+            if ! __warp_nc_read_byte 0.1; then
+                __warp_nc_give_back "$__warp_nc_body" ""
+                return 1
+            fi
+            local __c=$__warp_nc_byte __ok=
+            case $__phase:$__c in
+                start:-) __phase=dash __ok=1 ;;
+                start:[ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789]|tok:[ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789])
+                    __phase=tok __ok=1 ;;
+                tok:: | dash::) __phase=hex __ok=1 ;;
+                hex:%) __phase=h1 __ok=1 ;;
+                h1:[0123456789ABCDEFabcdef]) __phase=h2 __ok=1 ;;
+                h2:[0123456789ABCDEFabcdef]) __phase=hex __ok=1 ;;
+                hex:$'\x1f') return 0 ;;
+            esac
+            if [[ -z $__ok ]]; then
+                __warp_nc_give_back "$__warp_nc_body" "$__c"
+                return 1
+            fi
+            __warp_nc_body+=$__c
+            (( ${#__warp_nc_body} <= 3000000 )) || return 1
+        done
+        __warp_nc_give_back "$__warp_nc_body" ""
+        return 1
+    }
+
+    # Ends a ^Y or RS key: rebinds the macro's second key to accept-line when an Enter was handed
+    # back, and to set-mark (no visible effect) otherwise.
+    __warp_nc_finish () {
+        if [[ -n ${__warp_nc_accept:-} ]]; then
+            bind '"\C-x\C-_9": accept-line' 2>/dev/null
+        else
+            bind '"\C-x\C-_9": set-mark' 2>/dev/null
+        fi
+        __warp_nc_accept=
+    }
+
+    __warp_native_complete_impl () {
+        local __pc_hex __pc_line __pc_hexre='^(%[0-9A-Fa-f][0-9A-Fa-f])*$'
+        local __pc_deadline=${PHOSPHOR_NC_DEADLINE:-20}
+        [[ $__pc_deadline =~ ^[0-9]+$ ]] || __pc_deadline=20
+        __warp_nc_seq=$(( ${__warp_nc_seq:-0} + 1 ))
+        local __pc_tok="${RANDOM}x${__warp_nc_seq}x${RANDOM}"
+        builtin printf '\e]9280;P;%s\a' "$__pc_tok"
+        __warp_nc_deadline_set "$__pc_deadline"
+        __warp_nc_time_left || return 0
+        __warp_nc_read_byte "$__warp_nc_left" || return 0
+        if [[ $__warp_nc_byte != $'\x1e' ]]; then
+            # Not a frame: give it back to the line and end the exchange.
+            __warp_nc_give_back "" "$__warp_nc_byte"
+            return 0
+        fi
+        __warp_nc_read_frame_body || return 0
+        # Another exchange's frame, or the cancel frame: nothing to do.
+        [[ $__warp_nc_body == "$__pc_tok:"* ]] || return 0
+        __pc_hex=${__warp_nc_body#*:}
+        [[ $__pc_hex =~ $__pc_hexre ]] || return 0
+        builtin printf -v __pc_line '%b' "${__pc_hex//\%/\\x}"
+
+        __warp_native_candidates "$__pc_line" </dev/null >/dev/null 2>&1
+
+        builtin printf '\e]9280;A;incrementally_typed\a'
+        local __pc_m
+        for __pc_m in "${__warp_nc_out[@]}"; do
+            # A candidate the OSC cannot carry (a control character) is left out.
+            case $__pc_m in *[[:cntrl:]]*) continue ;; esac
+            builtin printf '\e]9280;C;%s\a' "$__pc_m"
+        done
+        builtin printf '\e]9280;B\a'
+        __warp_nc_out=()
+    }
+    function warp_native_complete {
+        __warp_run_relaxed __warp_native_complete_impl "$@"
+        __warp_nc_finish
+    }
+
+    # Phosphor (#1801): RS at the prompt opens a native-completions frame whose exchange already
+    # ended (the hook gave up, or was interrupted). Read the rest by the hook's rules and drop it;
+    # anything that is not a frame goes back to the line. A frame is never run.
+    __warp_native_discard_impl () {
+        __warp_nc_read_frame_body
+        return 0
+    }
+    function warp_native_discard {
+        __warp_run_relaxed __warp_native_discard_impl "$@"
+        __warp_nc_finish
+    }
+
+    # Sets __warp_nc_out to the candidates for the line $1 (cursor at its end). Builtins
+    # except where bash offers no other way to capture output (`complete -p`, compgen, -C).
+    __warp_native_candidates () {
+        __warp_nc_out=()
+        # The compopt shim below must never outlive a run, even one that was interrupted.
+        unset -f compopt 2>/dev/null
+        local line=$1
+        # Only the current simple command counts: cut at the last unquoted ; | & ( or `.
+        local wb=${COMP_WORDBREAKS-$' \t\n"\'><=;|&(:'}
+        wb=${wb//[[:space:]\"\']/}
+        local i n=${#line} c q= start=0 lastbreak=-1
+        for ((i = 0; i < n; i++)); do
+            c=${line:i:1}
+            if [[ -n $q ]]; then
+                [[ $c == "$q" ]] && q=
+                continue
+            fi
+            case $c in
+                \\) ((i++)); continue ;;
+                \'|\") q=$c; continue ;;
+                ';'|'|'|'&'|'('|'`') start=$((i + 1)); lastbreak=$i; continue ;;
+                ' '|$'\t') lastbreak=$i; continue ;;
+            esac
+            [[ $wb == *"$c"* ]] && lastbreak=$i
+        done
+        line=${line:start}
+        # Leading blanks of the cut line are not part of any word.
+        local lead=${line%%[! $'\t']*}
+        line=${line#"$lead"}
+        n=${#line}
+
+        # COMP_WORDS as bash splits them: whitespace separates words, and each run of
+        # COMP_WORDBREAKS characters is a word of its own (`--file=x` is `--file` `=` `x`).
+        local -a words=()
+        local w= kind= ck
+        q=
+        for ((i = 0; i < n; i++)); do
+            c=${line:i:1}
+            if [[ -n $q ]]; then
+                w+=$c
+                [[ $c == "$q" ]] && q=
+                continue
+            fi
+            case $c in
+                \\) w+=$c; ((i++)); w+=${line:i:1}; kind=w; continue ;;
+                \'|\") w+=$c; q=$c; kind=w; continue ;;
+                ' '|$'\t')
+                    [[ -n $w ]] && words+=("$w")
+                    w= kind=
+                    continue ;;
+            esac
+            if [[ $wb == *"$c"* ]]; then ck=b; else ck=w; fi
+            if [[ -n $w && $ck != "$kind" ]]; then
+                words+=("$w")
+                w=
+            fi
+            w+=$c
+            kind=$ck
+        done
+        if [[ -n $w ]]; then
+            words+=("$w")
+        elif ((n == 0)) || [[ ${line:n-1:1} == [[:space:]] ]]; then
+            words+=("")
+        fi
+        ((${#words[@]})) || words=("")
+        local cword=$((${#words[@]} - 1))
+
+        # The readline word (what bash completes, and what a -F function gets as $2): the
+        # text after the last unquoted word break. The token the app replaces: the text after
+        # the last whitespace. Candidates are written as that token's text before the
+        # readline word, then the candidate.
+        local rlword=${1:lastbreak+1}
+        local token=${1##*[[:space:]]}
+        local tokpre=
+        if [[ $token == *"$rlword" ]]; then
+            tokpre=${token%"$rlword"}
+        fi
+        # A readline word opened with a quote is completed without it, as readline does, and
+        # its candidates are not backslash-escaped (the quote already protects them).
+        local quoted=
+        case $rlword in \'*|\"*) tokpre+=${rlword:0:1}; rlword=${rlword:1}; quoted=1 ;; esac
+
+        local cmd=${words[0]} prev=
+        ((cword > 0)) && prev=${words[cword - 1]}
+        # What a completion function (or the dynamic loader) reads, as bash would set it.
+        local -a COMP_WORDS=("${words[@]}")
+        local COMP_CWORD=$cword COMP_LINE=$line COMP_POINT=${#line} COMP_TYPE=9 COMP_KEY=9
+        local -a reply=() pass=()
+        local fn= ccmd= opts= spec= have_spec= files=
+
+        if ((cword == 0)); then
+            if [[ $rlword == */* ]]; then
+                files=1
+                while IFS= builtin read -r c; do reply+=("$c"); done < <(compgen -f -- "$rlword")
+            else
+                while IFS= builtin read -r c; do reply+=("$c"); done < <(compgen -c -- "$rlword")
+                if shopt -q autocd 2>/dev/null; then
+                    files=1
+                    while IFS= builtin read -r c; do reply+=("$c"); done < <(compgen -d -- "$rlword")
+                fi
+            fi
+        else
+            spec=$(complete -p -- "$cmd" 2>/dev/null) || spec=$(complete -p -- "${cmd##*/}" 2>/dev/null)
+            if [[ -z $spec ]]; then
+                # bash-completion loads a command's completion on first use through the
+                # default (-D) spec; its loader returns 124 when it has installed one.
+                local dspec
+                dspec=$(complete -p -D 2>/dev/null)
+                if [[ $dspec == *" -F "* ]]; then
+                    local -a d=()
+                    eval "d=($dspec)" 2>/dev/null
+                    local j
+                    for ((j = 0; j < ${#d[@]}; j++)); do
+                        if [[ ${d[j]} == -F ]]; then
+                            "${d[j + 1]}" "$cmd" "$rlword" "$prev"
+                            break
+                        fi
+                    done
+                    spec=$(complete -p -- "$cmd" 2>/dev/null)
+                fi
+            fi
+            if [[ -n $spec ]]; then
+                have_spec=1
+                local -a s=()
+                eval "s=($spec)" 2>/dev/null
+                local j last=$((${#s[@]} - 1))
+                for ((j = 1; j < last; j++)); do
+                    case ${s[j]} in
+                        -F) fn=${s[j + 1]}; ((j++)) ;;
+                        -C) ccmd=${s[j + 1]}; ((j++)) ;;
+                        -o) opts+=" ${s[j + 1]} "; ((j++)) ;;
+                        -A|-G|-W|-X|-P|-S)
+                            pass+=("${s[j]}" "${s[j + 1]}")
+                            [[ ${s[j]} == -A && ( ${s[j + 1]} == file || ${s[j + 1]} == directory ) ]] && files=1
+                            ((j++)) ;;
+                        -d|-f) pass+=("${s[j]}"); files=1 ;;
+                        -[abcegjksuv]) pass+=("${s[j]}") ;;
+                    esac
+                done
+            fi
+
+            if [[ -n $fn ]] && declare -F -- "$fn" >/dev/null; then
+                # `compopt` only works inside real completion; record what the function
+                # asks of it (filenames, nospace) instead.
+                local __warp_nc_compopt=
+                compopt () { __warp_nc_compopt+=" $* "; return 0; }
+                COMPREPLY=()
+                "$fn" "$cmd" "$rlword" "$prev"
+                unset -f compopt
+                reply+=("${COMPREPLY[@]}")
+                COMPREPLY=()
+                case $__warp_nc_compopt in *filenames*|*dirnames*) files=1 ;; esac
+            fi
+            if [[ -n $ccmd ]]; then
+                # The -C command reads COMP_LINE and COMP_POINT from its environment.
+                while IFS= builtin read -r c; do reply+=("$c"); done < <(
+                    export COMP_LINE COMP_POINT COMP_TYPE COMP_KEY
+                    eval "$ccmd"' "$cmd" "$rlword" "$prev"'
+                )
+            fi
+            if ((${#pass[@]})); then
+                while IFS= builtin read -r c; do reply+=("$c"); done < <(compgen "${pass[@]}" -- "$rlword")
+            fi
+            # -o default / bashdefault make these file names only when they are the fallback
+            # below (git's spec has them, and its subcommands are not file names).
+            case $opts in *" filenames "*|*" dirnames "*|*" plusdirs "*) files=1 ;; esac
+            if ((${#reply[@]} == 0)); then
+                if [[ -z $have_spec ]] || [[ $opts == *" default "* || $opts == *" bashdefault "* ]]; then
+                    # No spec at all is readline's own default: file names.
+                    files=1
+                    if [[ $rlword == \$* ]]; then
+                        while IFS= builtin read -r c; do reply+=("\$$c"); done < <(compgen -v -- "${rlword#\$}")
+                    else
+                        while IFS= builtin read -r c; do reply+=("$c"); done < <(compgen -f -- "$rlword")
+                    fi
+                elif [[ $opts == *" dirnames "* ]]; then
+                    while IFS= builtin read -r c; do reply+=("$c"); done < <(compgen -d -- "$rlword")
+                fi
+            fi
+            if [[ $opts == *" plusdirs "* ]]; then
+                while IFS= builtin read -r c; do reply+=("$c"); done < <(compgen -d -- "$rlword")
+            fi
+        fi
+
+        # Directories get a trailing `/` and shell-special characters a backslash, as readline
+        # does for file-name completions; at most 2000 candidates.
+        # Duplicates (a function and a compgen action can offer the same word) are dropped
+        # where bash has associative arrays (4.0+).
+        local m t k e dedupe=
+        if ((BASH_VERSINFO[0] >= 4)); then
+            local -A seen=()
+            dedupe=1
+        fi
+        for m in "${reply[@]}"; do
+            ((${#__warp_nc_out[@]} >= 2000)) && break
+            # A trailing space is how a function says "and then a space"; the app decides that.
+            while [[ $m == *[[:space:]] ]]; do m=${m%?}; done
+            [[ -z $m ]] && continue
+            if [[ -n $dedupe ]]; then
+                [[ -n ${seen["$m"]+x} ]] && continue
+                seen["$m"]=1
+            fi
+            if [[ -n $files ]]; then
+                t=$m
+                [[ $t == "~/"* ]] && t=$HOME/${t#"~/"}
+                [[ $m != */ && -d $t ]] && m+=/
+            fi
+            if [[ -n $files && -z $quoted ]]; then
+                case $m in
+                    *[[:space:]\'\"\\\(\)\&\;\|\<\>\$\`\!\*\?\[\]\{\}\#]*)
+                        e=
+                        for ((k = 0; k < ${#m}; k++)); do
+                            c=${m:k:1}
+                            case $c in
+                                [[:space:]\'\"\\\(\)\&\;\|\<\>\$\`\!\*\?\[\]\{\}\#]) e+=\\ ;;
+                            esac
+                            e+=$c
+                        done
+                        m=$e ;;
+                esac
+            fi
+            __warp_nc_out+=("$tokpre$m")
+        done
+    }
 
     # Check whether the prompt-related variables have OSC prompt marker sequences,
     # and if not, wrap them with the appropriate markers so that we can direct the
@@ -2347,6 +2825,13 @@ fi' RETURN
         # real bash options.
         if [[ -n $USER_HISTCONTROL ]]; then
             shell_options="$shell_options \n !histcontrol_$USER_HISTCONTROL"
+        fi
+        # Phosphor (#1801): advertise the framed in-band native-completions protocol (the ^Y hook
+        # and the RS/US frame keys are bound from bash 4.0, with input reporting, whose flag the
+        # first precmd sets after this hook). The app sends ^Y and frames only to a shell that
+        # reported this pseudo option.
+        if (( BASH_VERSINFO[0] >= 4 )); then
+            shell_options="$shell_options"$'\n''!phosphor_nc_frames_v1'
         fi
 
         # Check if Starship is active for Bash. Note that another prompt could still be overriding Starship, however,

@@ -2078,3 +2078,33 @@ fn parse_dcs_ssh_wrapper_verdict_hooks() {
         }
     }
 }
+
+/// #1801: the shells write completion matches and descriptions raw inside the OSC, so a `;` in
+/// one splits it into more OSC parameters; the payload is everything from the third parameter
+/// on, rejoined, not the third parameter alone.
+#[test]
+fn completions_osc_payload_rejoins_a_payload_split_at_semicolons() {
+    let params: [&[u8]; 3] = [b"9280", b"C", b"plain"];
+    assert_eq!(completions_osc_payload(&params).as_deref(), Some("plain"));
+    let params: [&[u8]; 5] = [b"9280", b"C", b"a", b"b", b""];
+    assert_eq!(completions_osc_payload(&params).as_deref(), Some("a;b;"));
+    let params: [&[u8]; 3] = [b"9280", b"D?description", b""];
+    assert_eq!(completions_osc_payload(&params).as_deref(), Some(""));
+    let params: [&[u8]; 2] = [b"9280", b"C"];
+    assert_eq!(completions_osc_payload(&params), None);
+}
+
+/// #1801: the completions prompt names its exchange with a token of letters and digits; anything
+/// else is no token (the app then cancels instead of answering).
+#[test]
+fn completions_prompt_token_is_letters_and_digits_only() {
+    assert_eq!(
+        completions_prompt_token(b"1234567").as_deref(),
+        Some("1234567")
+    );
+    assert_eq!(completions_prompt_token(b"aZ9").as_deref(), Some("aZ9"));
+    assert_eq!(completions_prompt_token(b""), None);
+    assert_eq!(completions_prompt_token(b"-"), None);
+    assert_eq!(completions_prompt_token(b"12:3"), None);
+    assert_eq!(completions_prompt_token(&[b'1'; 33]), None);
+}

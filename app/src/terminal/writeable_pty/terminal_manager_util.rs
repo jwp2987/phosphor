@@ -205,9 +205,9 @@ pub fn wire_up_pty_controller_with_surface<T: EventLoopSender, S: TerminalSurfac
                     );
                 }
             }
-            PtyIntent::RunNativeShellCompletions { buffer_text, results_tx  } => {
+            PtyIntent::RunNativeShellCompletions { buffer_text, options, results_tx } => {
                 controller.update(ctx, |controller, ctx| {
-                    controller.run_native_shell_completions(buffer_text, results_tx, ctx);
+                    controller.run_native_shell_completions(buffer_text, options, results_tx, ctx);
                 });
             }
         }

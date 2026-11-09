@@ -41,6 +41,11 @@ const PATHEXT: [&str; 12] = [
     ".COM", ".EXE", ".BAT", ".CMD", ".VBS", ".VBE", ".JS", ".JSE", ".WSF", ".WSH", ".MSC", ".CPL",
 ];
 
+/// The pseudo shell option a bootstrap reports when its shell answers the framed in-band
+/// native-completions exchange (#1801; design in `pty_controller.rs`). Prefixed with `!` like the
+/// other pseudo options so it can never be a real option name.
+pub const NATIVE_COMPLETIONS_PROTOCOL_OPTION: &str = "!phosphor_nc_frames_v1";
+
 lazy_static! {
     static ref BASH_INPUT_REPORTING_MINIMUM_VERSION: Version<'static> =
         Version::from("4.0").expect("version parses successfully");
@@ -169,9 +174,26 @@ impl Shell {
         self.shell_type.force_in_band_command_executor()
     }
 
-    /// Returns whether the current shell supports native shell completions.
+    /// Returns whether the current shell supports native shell completions: its bootstrap
+    /// advertised the framed protocol ([`NATIVE_COMPLETIONS_PROTOCOL_OPTION`] in its shell
+    /// options, #1801 review M2), so a `^Y` and every frame the app writes reach the hook and its
+    /// bound keys, never a line editor that would type them. bash also needs 4.0 or later, like
+    /// input reporting (its bootstrap advertises the protocol only then).
     pub fn supports_native_shell_completions(&self) -> bool {
-        self.shell_type.supports_native_shell_completions()
+        if !self.shell_type.supports_native_shell_completions() {
+            return false;
+        }
+        if !self
+            .options
+            .as_ref()
+            .is_some_and(|options| options.contains(NATIVE_COMPLETIONS_PROTOCOL_OPTION))
+        {
+            return false;
+        }
+        match self.shell_type {
+            ShellType::Bash => self.input_reporting_sequence().is_some(),
+            _ => true,
+        }
     }
 
     /// Whether the shell supports "autocd" (`cd`ing into a directory without specifying
@@ -460,9 +482,18 @@ impl ShellType {
             .collect()
     }
 
-    /// Returns whether the current shell supports native shell completions.
+    /// Returns whether the current shell supports native shell completions: the bootstrap binds
+    /// `^Y` to a widget that answers the in-band completions handshake. zsh from upstream; bash
+    /// (programmable completion, COMP_* emulated) since #1801.
+    ///
+    /// Not fish (#1801 review): fish can read the answer only with external commands (its `read`
+    /// runs its line editor, which draws and queries the terminal), and around every external
+    /// command fish switches its terminal modes off and back on (bracketed paste, keypad,
+    /// modifyOtherKeys) after the exchange's last OSC, so a write released then could reach fish
+    /// with bracketed paste off, typed key by key, where abbreviations expand. fish's bootstrap
+    /// has no `^Y` handler.
     fn supports_native_shell_completions(&self) -> bool {
-        matches!(self, ShellType::Zsh)
+        matches!(self, ShellType::Zsh | ShellType::Bash)
     }
 
     /// Given the output of the `alias` command, returns a map of alias keys to values.

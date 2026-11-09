@@ -1,0 +1,488 @@
+#!/usr/bin/env python3
+"""Drive the self-identifying in-band native-completions exchange in the REAL bash and zsh
+bootstraps, in a pty (#1801).
+
+WHY THIS EXISTS
+---------------
+A Phosphorized remote session without the remote helper asks the remote shell itself for its
+completions on Tab (`app/src/terminal/input/native_completions.rs`). The exchange shares the tty
+with every other write, and the shell and the app each have their own clock, so it is
+self-identifying (design in `app/src/terminal/writeable_pty/pty_controller.rs`, "The in-band
+native-completions exchange"):
+
+  app ^Y -> shell OSC 9280;P;<token> -> app ONE frame, RS <token> : <%HH text> US
+  (RS = 0x1e, US = 0x1f), or the cancel frame RS - : US -> shell OSC 9280;A, one
+  OSC 9280;C;<candidate> each, OSC 9280;B.
+
+The hook consumes nothing outside a frame (the first byte must be RS, every later byte must be in
+the frame alphabet up to US; any other byte goes back to the line editor). A frame for another
+token, or the cancel, ends the exchange with nothing. At the prompt, RS is bound to a widget that
+drops the rest of a frame by the same rules, and US to a no-op. The app sends ^Y only to a shell
+whose Bootstrapped hook advertised `!phosphor_nc_frames_v1` in its shell options.
+
+This runs the REAL assembled bootstraps (the way `app/src/terminal/bootstrap.rs` builds them, as
+`test_bash_bootstrap_nounset` and `test_zsh_bootstrap_strict_options` do), so their own bind lines
+are what is exercised. Needs only python3 and the shells (no cargo); a missing shell is SKIPPED.
+fish is not exercised: the app never sends fish ^Y and its bootstrap has no handler.
+
+WHAT IT CHECKS, per shell (PHOSPHOR_NC_DEADLINE=2 keeps the hook's own deadline short)
+  * the Bootstrapped hook advertises the protocol;
+  * candidates: `cd pro` offers `projects/` and `proto/`; `cat dir/fi` the WHOLE token
+    `dir/file1`; `echo a;ec` keeps the `a;` lead (bash: its own `complete -F`/`-W` specs, with
+    COMP_WORDS/COMP_CWORD as bash sets them and the `--opt=` part of a token kept);
+  * a command behind the frame (same write, and 5 ms later) runs;
+  * the first byte after ^Y is not a frame: the app's real command bytes (^P + bracketed paste
+    + Enter), and a bracketed paste alone (ESC first): the command runs whole;
+  * the cancel frame and a frame for another token: no candidates, the next command runs;
+  * a frame landing after the hook gave up is dropped at the prompt and nothing of it runs;
+  * a frame's start alone at the prompt, then the app's command bytes: the command runs whole
+    (the discard widget stops at the first byte outside the frame alphabet);
+  * a frame cut short, with its tail (and US) arriving after a 5 s stall, followed by the app's
+    real command bytes: the command runs whole (the tail is never run);
+  * ^Y + cancel + command in one batch, before the hook starts: the command runs;
+  * a DA-reply-shaped sequence after ^Y is dropped whole: a raw command after it runs clean;
+  * a bare RS (Ctrl-6) then a word and Enter at the prompt: the word runs (the discard widget
+    hands everything back, the Enter included);
+  * a SIGWINCH during the hook: the command after it runs;
+  * US (^_) is still the line editor's undo;
+  * vi mode (bash `set -o vi`, zsh `bindkey -v`): the exchange still answers;
+  * zsh without zsh/datetime (no $EPOCHREALTIME): the cancel, the late frame and the cut-short
+    frame still behave.
+
+USAGE
+    script/test_native_completions
+Exit 0 when every check passes (or a shell is SKIPPED), 1 otherwise.
+"""
+
+import json
+import os
+import pty
+import re
+import select
+import shlex
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+ASSETS = os.path.join(ROOT, "app", "assets")
+BOOTSTRAP = os.path.join(ASSETS, "bundled", "bootstrap")
+HOOK_RE = re.compile(rb"\x1bP\$d([0-9a-f]*)\x9c")
+CANDIDATE_RE = re.compile(rb"\x1b\]9280;C;([^\x07]*)\x07")
+PROMPT_RE = re.compile(rb"\x1b\]9280;P;([0-9A-Za-z]+)\x07")
+RS, US = b"\x1e", b"\x1f"
+ADVERTISED = "!phosphor_nc_frames_v1"
+failures = []
+skipped = []
+counter = [40]
+
+
+def assemble(text):
+    """Mirror bootstrap.rs: inline #include, trim, drop blank and comment lines."""
+    out = []
+    for line in text.split("\n"):
+        if line.startswith("#include "):
+            with open(os.path.join(ASSETS, line[len("#include "):])) as f:
+                inc = f.read().replace("@@USING_CON_PTY_BOOLEAN@@", "false")
+            out.extend(assemble(inc).split("\n"))
+            continue
+        stripped = line.lstrip()
+        if len(stripped) < len(line):
+            line = " " + stripped
+        line = line.rstrip()
+        if not line.strip() or line.strip().startswith("#"):
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
+def frame(token, text):
+    return RS + token + b":" + "".join("%%%02X" % b for b in text.encode()).encode() + US
+
+
+CANCEL = RS + b"-:" + US
+
+
+def app_command(text):
+    """The bytes the app writes for a command: its line-clear key, a bracketed paste, Enter."""
+    return b"\x10\x1b[200~" + text.encode() + b"\x1b[201~\r"
+
+
+class Pty:
+    def __init__(self, argv, env, cwd):
+        self.buf = b""
+        self.pid, self.fd = pty.fork()
+        if self.pid == 0:
+            os.chdir(cwd)
+            os.execve(argv[0], argv, env)
+
+    def read_until(self, pattern, timeout=10):
+        got = b""
+        end = time.time() + timeout
+        while time.time() < end:
+            ready, _, _ = select.select([self.fd], [], [], 0.05)
+            if ready:
+                try:
+                    data = os.read(self.fd, 65536)
+                except OSError:
+                    break
+                got += data
+                self.buf += data
+                if re.search(pattern, got):
+                    return got
+        return got
+
+    def drain(self, seconds):
+        return self.read_until(rb"(?!x)x", seconds)
+
+    def write(self, data):
+        os.write(self.fd, data)
+
+    def hooks(self, name):
+        out = []
+        for m in HOOK_RE.finditer(self.buf):
+            try:
+                j = json.loads(bytes.fromhex(m.group(1).decode()))
+            except ValueError:
+                continue
+            if j.get("hook") == name:
+                out.append(j.get("value") or {})
+        return out
+
+    def close(self):
+        try:
+            os.kill(self.pid, signal.SIGKILL)
+            os.waitpid(self.pid, 0)
+        except OSError:
+            pass
+
+
+def check(shell, name, ok, detail=""):
+    if not ok:
+        failures.append(f"{shell}: {name} {detail}")
+        print(f"FAIL {shell}: {name} {detail}")
+    else:
+        print(f"ok   {shell}: {name}")
+
+
+def ask(sh, shell, what):
+    """^Y, then the hook's prompt; returns its token or None."""
+    sh.write(b"\x19")
+    got = sh.read_until(PROMPT_RE)
+    m = PROMPT_RE.search(got)
+    if not m:
+        check(shell, f"answers ^Y with a named prompt ({what})", False, f"(got {got[-200:]!r})")
+        return None
+    return m.group(1)
+
+
+def complete(sh, shell, line, after=b"", gap=None):
+    token = ask(sh, shell, repr(line))
+    if token is None:
+        return None
+    if after and gap is None:
+        sh.write(frame(token, line) + after)
+    else:
+        sh.write(frame(token, line))
+        if after:
+            time.sleep(gap)
+            sh.write(after)
+    got = sh.read_until(rb"\x1b\]9280;B\x07")
+    if b"\x1b]9280;B\x07" not in got or b"\x1b]9280;A;incrementally_typed\x07" not in got:
+        check(shell, f"ends the reply for {line!r}", False, f"(got {got[-200:]!r})")
+        return None
+    return [c.decode("utf-8", "replace") for c in CANDIDATE_RE.findall(got)]
+
+
+def command():
+    """A command whose OUTPUT (not its echo) proves it ran: (text, output to expect)."""
+    counter[0] += 1
+    n = counter[0]
+    return ("echo ran-$((%d+1))" % (n - 1), b"ran-%d" % n)
+
+
+def expect_runs(sh, shell, what, want, timeout=10):
+    out = sh.read_until(re.escape(want) + rb"|not found", timeout)
+    if want in out and b"not found" not in out:
+        out += sh.read_until(rb"not found", 0.3)
+    check(shell, what, want in out and b"not found" not in out, f"(got {out[-240:]!r})")
+
+
+def make_lab(base):
+    lab = os.path.join(base, "lab")
+    for d in ("projects", "proto", "dir", "other"):
+        os.makedirs(os.path.join(lab, d))
+    for f in ("dir/file1", "dir/fig"):
+        open(os.path.join(lab, f), "w").close()
+    return lab
+
+
+def protocol_checks(sh, shell, full=True):
+    if full:
+        got = complete(sh, shell, "cd pro")
+        if got is not None:
+            check(shell, "cd pro offers projects/ and proto/", {"projects/", "proto/"} <= set(got), f"(got {got})")
+            check(shell, "cd pro offers no file", "other/" not in got, f"(got {got})")
+        got = complete(sh, shell, "cat dir/fi")
+        if got is not None:
+            check(shell, "cat dir/fi offers the whole token dir/file1", "dir/file1" in got, f"(got {got})")
+        got = complete(sh, shell, "echo a;ec")
+        if got is not None:
+            check(shell, "echo a;ec keeps the token's a; lead",
+                  bool(got) and all(c.startswith("a;") for c in got) and "a;echo" in got, f"(got {got[:10]})")
+
+        for gap, label in ((None, "same write"), (0.005, "5 ms later")):
+            text, want = command()
+            got = complete(sh, shell, "cd pro", after=app_command(text), gap=gap)
+            check(shell, f"answers with a command behind the frame ({label})", got is not None and "projects/" in got, f"(got {got})")
+            expect_runs(sh, shell, f"a command behind the frame ({label}) runs", want)
+
+        text, want = command()
+        sh.write(b"\x19" + app_command(text))
+        expect_runs(sh, shell, "the app's command bytes (^P first) right after ^Y run whole", want)
+
+        text, want = command()
+        sh.write(b"\x19" + b"\x1b[200~" + text.encode() + b"\x1b[201~\r")
+        expect_runs(sh, shell, "a bracketed paste (ESC first) right after ^Y runs whole", want)
+
+    # ^Y, the cancel frame and a command in ONE batch, before the hook has even started.
+    text, want = command()
+    sh.write(b"\x19" + CANCEL + app_command(text))
+    out = sh.read_until(re.escape(want))
+    check(shell, "^Y + cancel + command in one batch: no candidates, the command runs", want in out and CANDIDATE_RE.search(out) is None, f"(got {out[-200:]!r})")
+
+    # A terminal reply (a DA report) where the frame was expected: dropped whole, the line stays
+    # clean (the next command is typed raw, without the app's ^P).
+    if ask(sh, shell, "DA reply") is not None:
+        text, want = command()
+        sh.write(b"\x1b[?62;22c")
+        time.sleep(0.3)
+        sh.write(text.encode() + b"\r")
+        expect_runs(sh, shell, "a DA reply after ^Y leaves the line clean; the raw command after it runs", want)
+
+    # A bare RS typed at the prompt (Ctrl-6), then a word and Enter: the discard widget hands it
+    # all back, the Enter included, so the command runs.
+    sh.write(app_command("ranls() { echo ran-$((40+2))ls; }"))
+    sh.drain(0.5)
+    sh.write(b"\x1e" + b"ranls\r")
+    expect_runs(sh, shell, "a bare RS then `ranls` + Enter runs ranls (nothing eaten, the Enter kept)", b"ran-42ls")
+
+    # A resize (SIGWINCH) while the hook waits: a lost answer is fine, a lost key is not.
+    if ask(sh, shell, "resize") is not None:
+        os.kill(sh.pid, signal.SIGWINCH)
+        time.sleep(0.2)
+        text, want = command()
+        sh.write(CANCEL + app_command(text))
+        expect_runs(sh, shell, "a SIGWINCH during the hook loses no key: the command after it runs", want)
+
+    if ask(sh, shell, "cancel") is not None:
+        text, want = command()
+        sh.write(CANCEL + app_command(text))
+        out = sh.read_until(re.escape(want))
+        check(shell, "the cancel frame ends the exchange with no candidates", CANDIDATE_RE.search(out) is None, f"(got {out[-200:]!r})")
+        check(shell, "the command after the cancel frame runs", want in out, f"(got {out[-200:]!r})")
+
+    if full:
+        token = ask(sh, shell, "stale token")
+        if token is not None:
+            text, want = command()
+            sh.write(frame(b"999" + token, "cd pro") + app_command(text))
+            out = sh.read_until(re.escape(want))
+            check(shell, "a frame with another token is ignored (no candidates)", CANDIDATE_RE.search(out) is None, f"(got {out[-200:]!r})")
+            check(shell, "the command after a stale frame runs", want in out, f"(got {out[-200:]!r})")
+
+    token = ask(sh, shell, "late frame")
+    if token is not None:
+        sh.drain(2.6)
+        text, want = command()
+        sh.write(frame(token, "cd pro") + app_command(text))
+        expect_runs(sh, shell, "a frame landing at the prompt is dropped; the command behind it runs", want)
+
+    # A frame's start alone at the prompt (its rest lost), then the app's real command bytes: the
+    # discard widget stops at the first byte outside the frame alphabet and hands it back.
+    token = ask(sh, shell, "frame start alone")
+    if token is not None:
+        sh.drain(2.6)
+        text, want = command()
+        sh.write(RS + token + b":%63" + app_command(text))
+        expect_runs(sh, shell, "a frame's start alone at the prompt stops at the next real key; the command runs whole", want)
+
+    token = ask(sh, shell, "cut-short frame")
+    if token is not None:
+        sh.write(RS + token + b":%63%64")
+        sh.drain(5.8)
+        text, want = command()
+        sh.write(b"%20%70" + US + app_command(text))
+        expect_runs(sh, shell, "a frame's tail after a 5 s stall is never run; the real command after it runs whole", want)
+
+    # US (^_) is not taken over: it is still the line editor's undo.
+    text, want = command()
+    undo = "bind -q undo" if shell.startswith("bash") else "bindkey '^_'"
+    sh.write(app_command(f"{undo}; {text}"))
+    out = sh.read_until(re.escape(want))
+    check(shell, "US (^_) is still the line editor's undo", (b'\\C-_' in out or b'"^_" undo' in out) and want in out, f"(got {out[-240:]!r})")
+
+    text, want = command()
+    sh.write(app_command(text))
+    expect_runs(sh, shell, "the shell runs a command at the end", want)
+
+
+def start_bash(base, lab):
+    bash = shutil.which("bash")
+    with open(os.path.join(BOOTSTRAP, "bash_init_shell.sh")) as f:
+        init = f.read().replace("@@WARP_SESSION_ID@@", "4242").replace("@@USING_CON_PTY_BOOLEAN@@", "false")
+    with open(os.path.join(BOOTSTRAP, "bash.sh")) as f:
+        body = assemble(f.read())
+    rc = os.path.join(base, ".phosphor-rc")
+    with open(rc, "w") as f:
+        f.write(init + "\n" + body + "\n")
+    env = {
+        "HOME": base, "USER": os.environ.get("USER", "user"), "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "TERM": "xterm-256color", "LANG": "C.UTF-8", "WARP_IS_LOCAL_SHELL_SESSION": "1",
+        "INPUTRC": "/dev/null", "PHOSPHOR_NC_DEADLINE": "2",
+    }
+    return Pty([bash, "--noprofile", "--rcfile", rc, "-i"], env, lab)
+
+
+def start_zsh(base, lab):
+    zsh = shutil.which("zsh")
+    zd = os.path.join(base, "zdot")
+    os.makedirs(zd, exist_ok=True)
+    # The user's own completion system, as a zsh user has it (the bootstrap does not run compinit).
+    zshrc = f"autoload -Uz compinit && compinit -u -d {shlex.quote(os.path.join(zd, '.zcompdump'))}"
+    with open(os.path.join(zd, ".zshrc"), "w") as f:
+        f.write(zshrc + "\n")
+    with open(os.path.join(zd, ".zshenv"), "w") as f:
+        f.write("\n")
+    with open(os.path.join(BOOTSTRAP, "zsh_body.sh")) as f:
+        body = assemble(f.read()).replace("@@USING_CON_PTY_BOOLEAN@@", "false") + "\n"
+    body_path = os.path.join(base, "body.sh")
+    with open(body_path, "w") as f:
+        f.write(body)
+    env = {
+        "HOME": base, "ZDOTDIR": zd, "USER": os.environ.get("USER", "user"), "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "TERM": "xterm-256color", "LANG": "C.UTF-8", "WARP_IS_LOCAL_SHELL_SESSION": "1", "PS1": "%# ",
+        "PHOSPHOR_NC_DEADLINE": "2",
+    }
+    sh = Pty([zsh, "-g", "--no-rcs", "-i"], env, lab)
+    sh.drain(1.5)
+    sh.write((f"unsetopt ZLE; WARP_SESSION_ID=4242; WARP_USING_WINDOWS_CON_PTY=false; source {shlex.quote(body_path)}; "
+              "builtin echo boot$((20+22))done\r").encode())
+    return sh
+
+
+def wait_bootstrapped(sh, shell):
+    end = time.time() + 30
+    while time.time() < end and not (sh.hooks("Bootstrapped") and sh.hooks("Precmd")):
+        sh.drain(0.2)
+    boot = sh.hooks("Bootstrapped")
+    if not boot:
+        check(shell, "bootstraps", False, f"(tail {sh.buf[-300:]!r})")
+        return False
+    sh.drain(1.0)
+    opts = boot[0].get("shell_options", "")
+    check(shell, "the Bootstrapped hook advertises the framed protocol", ADVERTISED in opts.split(), f"(shell_options tail {opts[-120:]!r})")
+    return True
+
+
+def run_bash(base, lab):
+    bash = shutil.which("bash")
+    if not bash:
+        skipped.append("bash")
+        return
+    ver = subprocess.run([bash, "-c", "echo ${BASH_VERSINFO[0]}"], capture_output=True, text=True).stdout.strip()
+    if ver and int(ver) < 4:
+        print("NOTE bash: bash %s is below 4.0; the bootstrap binds no ^Y there and the app sends none" % ver)
+        skipped.append("bash (below 4.0, by design)")
+        return
+    print("NOTE bash: bash %s; bash 3.2 (macOS /bin/bash) is not exercised: no ^Y and no advertisement below 4.0, by design" % ver)
+    sh = start_bash(base, lab)
+    try:
+        if not wait_bootstrapped(sh, "bash"):
+            return
+        protocol_checks(sh, "bash")
+        for line in (
+            "_phx() { COMPREPLY=($(compgen -W 'alpha beta' -- \"$2\")); }; complete -F _phx phx",
+            "_phz() { COMPREPLY=(\"w${COMP_CWORD}-${COMP_WORDS[1]}\"); }; complete -F _phz phz",
+            "_phq() { COMPREPLY=($(compgen -W 'red green' -- \"$2\")); }; complete -F _phq phq",
+            "complete -W '--force --file' phy",
+        ):
+            text, want = command()
+            sh.write(app_command(line + "; " + text))
+            sh.read_until(re.escape(want))
+        for line, want, name in (
+            ("phx al", ["alpha"], "a complete -F function answers"),
+            ("phz one tw", ["w2-one"], "COMP_WORDS and COMP_CWORD are set as bash sets them"),
+            ("phq --color=re", ["--color=red"], "the token's --opt= part is kept"),
+            ("phy --fo", ["--force"], "a complete -W spec answers"),
+        ):
+            got = complete(sh, "bash", line)
+            if got is not None:
+                check("bash", name, got == want, f"(got {got})")
+        # vi mode: the precmd re-binds the keys in vi-insert and vi-command.
+        text, want = command()
+        sh.write(app_command("set -o vi; " + text))
+        sh.read_until(re.escape(want))
+        sh.drain(0.5)
+        got = complete(sh, "bash", "cd pro")
+        check("bash", "vi mode: the exchange still answers", got is not None and "projects/" in got, f"(got {got})")
+    finally:
+        sh.close()
+
+
+def run_zsh(base, lab):
+    if not shutil.which("zsh"):
+        skipped.append("zsh")
+        return
+    sh = start_zsh(base, lab)
+    try:
+        if not wait_bootstrapped(sh, "zsh"):
+            return
+        protocol_checks(sh, "zsh")
+        text, want = command()
+        sh.write(app_command("bindkey -v; " + text))
+        sh.read_until(re.escape(want))
+        sh.drain(0.5)
+        got = complete(sh, "zsh", "cd pro")
+        check("zsh", "vi mode: the exchange still answers", got is not None and "projects/" in got, f"(got {got})")
+    finally:
+        sh.close()
+
+    # No zsh/datetime: the per-byte fallback.
+    sub = os.path.join(base, "nodatetime")
+    os.makedirs(sub)
+    sh = start_zsh(sub, lab)
+    try:
+        if not wait_bootstrapped(sh, "zsh (no zsh/datetime)"):
+            return
+        text, want = command()
+        sh.write(app_command("zmodload -u zsh/datetime; (( ${+EPOCHREALTIME} )) || " + text))
+        out = sh.read_until(re.escape(want))
+        check("zsh (no zsh/datetime)", "$EPOCHREALTIME is gone", want in out, f"(got {out[-200:]!r})")
+        protocol_checks(sh, "zsh (no zsh/datetime)", full=False)
+    finally:
+        sh.close()
+
+
+def main():
+    with tempfile.TemporaryDirectory(prefix="phx-native-") as base:
+        lab = make_lab(base)
+        for runner, name in ((run_bash, "bash"), (run_zsh, "zsh")):
+            sub = os.path.join(base, name)
+            os.makedirs(sub)
+            runner(sub, lab)
+    print("NOTE fish: not exercised; the app never sends fish ^Y (ShellType::supports_native_shell_completions)")
+    for shell in skipped:
+        print(f"SKIPPED {shell}: not installed")
+    if failures:
+        print(f"test_native_completions: {len(failures)} check(s) failed")
+        return 1
+    print("test_native_completions: all checks passed" + (" (some shells SKIPPED)" if skipped else ""))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

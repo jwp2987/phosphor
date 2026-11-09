@@ -398,8 +398,8 @@ pub trait Handler {
     fn tmux_control_mode_event(&mut self, _event: ControlModeEvent) {}
 
     /// Callback that tells the terminal that the shell is ready to receive
-    /// the string to run completions for.
-    fn send_completions_prompt(&mut self) {}
+    /// the string to run completions for. `token` names the exchange (#1801).
+    fn send_completions_prompt(&mut self, _token: Option<String>) {}
 
     /// Callback to handle the OSC for starting completions.
     ///

@@ -205,6 +205,7 @@ pin protocol behaviour. Skips are reported as SKIPPED, never silent. A Skip rais
 | `test_local_counted_bootstrap` | counted-read bootstrap behaves identically to the here-doc form (#1226) |
 | `test_ssh_keepalive`, `test_ssh_probe_cache`, `test_ssh_wrapper_forks`, `test_ssh_raw_bootstrap_hook` | ssh wrapper options, probe cache, fork budget, `raw_bootstrap` hook (#1171, #1136, #1172, #1243) |
 | `test_ssh_auth_once` | a failed ssh login (master step 255, no control socket) or a Ctrl-C at its prompt runs ssh ONCE and returns its status, so no second password prompt eats the next command (#1626); a ssh that authenticated but cannot multiplex (socket created, then 255) still falls back to the user's plain ssh once (#1551); r18u13: the same, plus a successful login, with a `$HOME` that is not the passwd home and the absolute passwd-home SSH_SOCKET_DIR the app now exports there (the fake ssh expands `~` from `$PWHOME`, as ssh does from the passwd entry; the old literal `~/.ssh` export made the wrapper miss its own master and log in twice): the wrapper logs in ONCE and multiplexes the session over its master; #1641: the hooks the wrapper prints are logged in order with the ssh calls: `ManagedSSHSessionStarting` exactly once after the master and right before the managed session, `PlainSSHFallback` right before each plain ssh (mux failure, a RemoteCommand, a non-POSIX remote, MSYS2 in bash), nothing on an auth failure or Ctrl-C; #1641 host-key retry: under the default `stricthostkeychecking ask` the master carries `StrictHostKeyChecking=yes`, an unknown host (real `ssh-keygen` known_hosts lookup) gets ONE plain ssh retry with the fallback hook before it, a known host's auth failure makes exactly one call, a user's `accept-new` gets no override (these cases need ssh-keygen and are SKIPPED without it); bash/zsh/fish |
+| `test_native_completions` | the in-band native-completions exchange (#1801) in the REAL assembled bash and zsh bootstraps (their own bind lines): the Bootstrapped hook advertises `!phosphor_nc_frames_v1`; candidates (`cd pro`, the WHOLE token `dir/file1`, the `a;` lead; bash `complete -F`/`-W` specs, COMP_WORDS/COMP_CWORD, the `--opt=` part); a command behind the frame (same write, 5 ms later) runs; the app's real command bytes (^P + bracketed paste) and a bracketed paste alone (ESC first) right after ^Y run whole; the cancel frame and a stale-token frame give no candidates and the next command runs; a frame landing at the prompt is dropped; a frame's start alone at the prompt stops at the next real key; a frame's tail after a 5 s stall is never run and the real command after it runs whole; ^Y + cancel + command in one batch; a DA reply after ^Y leaves the line clean; a bare RS then a word + Enter runs the word; a SIGWINCH during the hook loses no key; US (^_) is still the line editor's undo; vi mode (bash `set -o vi`, zsh `bindkey -v`); zsh without zsh/datetime. bash below 4.0 SKIPPED by design; fish not exercised (off the path). A missing shell is SKIPPED |
 | `test_pwsh_git_head.ps1` | pwsh in-process git head equals `git` (#1163) |
 | `test_warpctrl_early_dispatch` | the app binary honours `--warpctrl` before GUI startup (needs a built binary, else SKIPPED) |
 | `macos/test_create_warpctrl_wrapper` | macOS wrapper packaging |
@@ -296,6 +297,7 @@ claims (#1353, #1404); only a doc comment in `app/src/terminal/input_queue/mod.r
 | `PHOSPHOR_BOOTSTRAP_TIMED=1` | timer-PACED subshell setup instead of the marker-paced one (#1354, #1711). Exactly what it restores: the setup lines (bash/zsh/fish/nu stage 2, PowerShell's three lines, and the two lines of the `sh` probe) are written on fixed delays (30 ms per line, 300 ms for PowerShell) instead of on the shell's `OSC 7771` markers, so no marker token exists (a Ctrl-C that skips a PowerShell setup then waits `POWERSHELL_ABORT_SETTLE` and hands back, #1438); the rc-file subshell bootstrap goes in 100 ms after the snippet and the auto-warpify one after `AUTO_WARPIFY_DELAY` instead of at the first prompt; the pending command / ssh split `cd` run after `EXECUTE_PENDING_COMMAND_DELAY` instead of at the Precmd. What it does NOT restore (gone with #1711, owner decision 2026-11-08): the 20 s stall ceiling's key forwarding, the 90 s typed-input hold limit, the setup gates' own caps and the 5 s marker give-up's timed writes; the one progress-based setup net (`SUBSHELL_SETUP_QUIET_NET` 30 s, `SUBSHELL_SETUP_CEILING` 120 s, notice at 10 s) applies with the switch on too, and a timed setup's line writes count as its progress |
 | `PHOSPHOR_SSH_COUNTED_BOOTSTRAP=0`, `PHOSPHOR_LOCAL_COUNTED_BOOTSTRAP=0` | here-document bootstrap instead of the counted raw read (#1226) |
 | `PHOSPHOR_SSH_SPECULATIVE_CONNECT=0`, `PHOSPHOR_SSH_EARLY_BOOTSTRAP=0` | old probe-then-connect / bootstrap-after-connect order (#1266) |
+| `PHOSPHOR_REMOTE_NATIVE_COMPLETIONS=0` | Tab in a Phosphorized remote session without the helper goes back to the completer first (ControlMaster side commands) instead of asking the remote shell in-band (#1801) |
 | `PHOSPHOR_SSH_EARLY_FLUSH_KNOWN=0` | stash the bootstrap until `check_binary` returns even for a host already known to have the extension (#1172) |
 | `WARP_SSH_PROBE_TTL=<seconds>` | lifetime of the cached non-POSIX probe verdict (default 600; 0 disables the cache); the cache file is shared by bash, zsh and fish tabs (#1172) |
 | `APPCI_LAB=off\|local\|remote` | harness, fake ssh lab (2.15): `local` runs labctl on this machine (default when podman exists, i.e. the box), `remote` uses the box through the forced-command key, `off` makes the `lab_*` cases SKIP with the reason |
@@ -1739,7 +1741,8 @@ fallback for builds that predate the line.
    must-not-swallow cases: password prompts, host-key yes, failing ssh, command ssh, Ctrl-C); wrong password; failing
    ssh with continuous line + Enter must not run locally; with and without the remote extension; Install vs "Continue
    without installing"; remote subshells in every shell; tmux; dropped connection and reconnect; remote `less`/`vim`/`htop`;
-   history, Up/Ctrl-R; leftover processes after disconnect/quit (box and client).
+   history, Up/Ctrl-R; leftover processes after disconnect/quit (box and client); without the helper, Tab completes a
+   remote directory in-band (`remote_tab_no_helper`, #1801; repeat at netem 150 ms, see "#1801" below).
 5. **Agent**: prompt -> streamed answer -> approval card -> run -> result; `/agent`, Cmd/Ctrl-Enter; autodetect + Enter;
    queued prompts; Stop/Ctrl-C mid-stream; approval card with a pause >1 s (Enter must not approve, #1350/#1362);
    attachments + Ctrl-C; agent `cd`/`export` persist; `exit`/`exec` must not kill the shell; pagers, `read`, redirects/
@@ -2623,11 +2626,88 @@ Info-level, written only when a state CHANGES, ids / kinds / states only, never 
 
 Run: `script/agent_fuzz` (L0 + L1). Nothing in this section has been compiled yet.
 
-## #1801: prompt chips re-run when the block's session registers
+## #1801: remote Tab and path detection without the helper
 
-A remote session's blocks carry its id before its bootstrap completes (the ssh setup holds the bootstrap while it checks
-for the remote helper, longer over a slow link), so shell-command chips refreshed in that window found no session and
-failed with "could not prepare execution context". The refresh that follows the bootstrap often has the same block, cwd
-and environment, and the #1167 unchanged-context skip then left the chips failed until the next block. The dedupe key
-(`PromptContextKey`) now includes whether the session is registered, and the failure is logged at debug while it is
-not. Pinned by `test_chips_rerun_when_the_blocks_session_registers` (`app/src/context_chips/current_prompt_test.rs`).
+A Phosphorized ssh session where the remote helper is absent, declined, failed or lost is the owner's PRIMARY remote
+design. Its side commands run over the ControlMaster (`RemoteCommandExecutor`), which a VPN makes slow or breaks.
+
+What changed and what pins it:
+
+- **Tab asks the remote shell in-band.** An explicit Tab in such a session (`Session::is_remote_without_helper`)
+  sends the `^Y` native-completions handshake to the session's own shell first and uses the completer only when the
+  shell offers nothing (`app/src/terminal/input/native_completions.rs`, decision + span unit tests in
+  `native_completions_tests.rs`; terminal mode and a shell command in agent mode take the same path, agent text never
+  does; completions-while-typing never does). bash 4.0+ gained the handshake (programmable completion with COMP_*
+  emulated, bash-completion's `-D` loader, `-C` commands, compgen actions, `-o` options); bash 3.2 gets no `^Y` binding
+  and the app sends it none (`native_shell_completions_need_bash_4`). fish is off the path and its bootstrap has no
+  handler: its read would need external commands, around which fish switches bracketed paste and keypad modes.
+  **The exchange is self-identifying, and nothing is ever held behind it** (design comment in `pty_controller.rs`,
+  "The in-band native-completions exchange"; third #1801 review). Wire: the app writes `^Y` only to a shell whose
+  Bootstrapped hook advertised `!phosphor_nc_frames_v1` in its shell options (bash 4.0+, zsh); the hook names the
+  exchange with a fresh token (OSC `9280;P;<token>`; a reused or missing token is cancelled); the app always ends it
+  with ONE frame, `RS <token> : <%HH text> US` (RS = 0x1e, US = 0x1f), or the cancel frame `RS - : US`. The hook and
+  the RS widget at the prompt consume nothing outside a frame: the first byte must be RS, then the frame's exact shape
+  with at most 0.1 s between bytes; on any other byte or a gap everything read goes back to the line editor, an Enter
+  included (bash: ^Y and RS are macros that run the function and then a key it rebinds to accept-line), and a
+  terminal reply (a DA report) is dropped whole. US is not bound (it stays the line editor's undo). App: an exchange
+  starts only when the write queue is empty, no command is executing, the line editor is active and no other write
+  path is engaged (including a `SetupChunked` job the writer still holds: `SetupLive` counts it until the writer
+  drops it); while it waits
+  for its prompt, ANY write (a command, typed or pasted bytes, agent bytes, ^C) first writes the cancel frame, then
+  goes out, in order. Nothing is queued behind `^Y`, so there is nothing to hold, hand back or reorder; the shell
+  leaving first just ends the exchange. Unit tests (`pty_controller_tests.rs`, through the real write APIs):
+  `native_completions_frames_are_self_identifying_and_never_end_a_line`,
+  `an_exchange_starts_only_when_nothing_is_queued_or_running`,
+  `writes_during_an_exchange_go_out_in_order_after_the_cancel_frame` (an editor command and agent bytes; the queue
+  stays empty), `a_direct_byte_write_during_an_exchange_is_preceded_by_the_cancel_frame` (bytes, paste, ^C),
+  `the_prompt_is_answered_with_one_frame_and_later_writes_follow_it`, `a_reused_or_missing_prompt_token_is_cancelled`,
+  `prompt_timeout_cancels_without_a_toast_for_a_remote_first_request`,
+  `prompt_timeout_of_a_fallback_request_asks_for_the_toast`, `a_second_request_while_one_is_in_flight_is_refused`,
+  `the_shell_leaving_ends_the_exchange_without_a_frame`,
+  `an_exchange_does_not_start_while_the_writer_holds_a_setup_job`,
+  `a_setup_write_during_an_exchange_is_preceded_by_the_cancel_frame`; terminal-query replies and a resize do not pass
+  through the cancel-first rule (why each is safe: the design comment); `native_shell_completions_need_the_advertised_protocol_and_bash_4`
+  (`warp_terminal`); `completions_prompt_token_is_letters_and_digits_only` (`ansi/mod_test.rs`). Tab then a fast
+  Enter runs the COMPLETED line remotely too: the editor holds the Enter for the in-band answer up to
+  `REMOTE_NATIVE_TAB_ENTER_BUDGET` (1.5 s; give-up hands the line back, #1666); when the shell has no answer the
+  Enter runs the visible line at once and the completer answers the menu (`input_test.rs`, Legacy and Table):
+  `test_tab_then_enter_remote_in_band_answer_runs_the_completed_line_in_both_modes`,
+  `test_tab_then_enter_remote_in_band_give_up_runs_nothing_in_both_modes`,
+  `test_tab_then_enter_remote_in_band_keys_typed_during_hold_follow_the_completed_line`,
+  `test_tab_then_enter_remote_native_miss_submits_the_visible_line_at_once_in_both_modes`,
+  `test_remote_native_miss_without_enter_makes_the_next_enter_not_wait_in_both_modes`. Known limits: a quoted word
+  with spaces is not one token to the app; a backslash-escaped word is not dequoted before bash's compgen; a byte
+  outside a frame that is not text, ^P or a bracketed paste cannot be handed back by bash (only a writer outside the
+  app could put one there: the app sends the cancel frame before any write).
+  Every shell writes candidates as the whole whitespace-delimited token (zsh now adds its
+  IPREFIX and -P/-p prefixes, so `cd dir/fo` no longer offers `foo/`). The OSC parser rejoins a payload split at `;`
+  (`completions_osc_payload_rejoins_a_payload_split_at_semicolons`). Shell side: `script/test_native_completions`.
+  Kill switch: `PHOSPHOR_REMOTE_NATIVE_COMPLETIONS=0`.
+- **Chips re-run when the session registers.** A remote session's blocks carry its id before its bootstrap completes
+  (the ssh setup holds the bootstrap while it checks for the helper), so chips refreshed then failed with "could not
+  prepare execution context" and the refresh after the bootstrap, with an unchanged block and cwd, was skipped by the
+  #1167 dedupe. The dedupe key now includes whether the session is registered
+  (`test_chips_rerun_when_the_blocks_session_registers` in `current_prompt_test.rs`).
+
+App case `remote_tab_no_helper` (`appci/cases_caseremote.py`, full tier, both modes; Git Bash pane on Windows): the
+harness default `ssh_extension_install_mode = never_install` IS the helper-missing setup. Creates `~/phxtab_<tok>/` on
+the remote side only (and `phxtab_local_only/` locally), `ssh fake`, types `cd phxtab_<3 chars>`, Tab, waits 1.5 s
+(3 s with a delay applied), Enter. Pass: the REMOTE rec.log's command is `cd phxtab_<tok>/`, the next remote `pwd` ends in
+`/phxtab_<tok>`, nothing reached the local shell, and the app log has `candidates from the remote shell in N ms`
+(metric `remote_tab_in_band_ms`). `remote_tab_enter_no_helper` (same setup, ctx.count(3) trials): Tab, Enter 30 ms later;
+the remote rec.log must hold the COMPLETED `cd phxte_<tok>/`, never the typed prefix. Both skip on macOS, whose test
+host's remote shell is /bin/bash 3.2 (no in-band Tab there, by design). No fish remote case: fish is off the path.
+
+Lab spec, netem 150 ms (manual; needs root, the harness never applies it): on the Linux box,
+`sudo tc qdisc add dev lo root netem delay 75ms` (150 ms round trip on loopback, where the fake sshd listens), run
+`remote_tab_no_helper` with `PHOSPHOR_APPCI_NETEM_NOTE="lo netem 75ms"` (recorded as a note, longer settle), then
+`sudo tc qdisc del dev lo root`. Pass as above, with `remote_tab_in_band_ms` below ~2 round trips plus the shell's own
+completion time; typing during the Tab must not lag (the editor never waits on the handshake). The helper-missing
+"install refused" variant is the same case with `ssh_extension_install_mode = always_ask` and "Continue without
+installing" chosen.
+
+NOT yet covered (follow-up): path detection (highlighting) of a typed remote directory. On a remote session it reads
+directory listings from the cache only (#1295), so without a recent Tab nothing is highlighted. The planned fix is a
+bounded cwd listing in the remote precmd payload when the cwd changes, cached per session; its case would type
+`cd <remote dir>` without Tab and assert the decoration from the app's input trace.
+

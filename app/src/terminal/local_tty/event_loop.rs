@@ -19,7 +19,7 @@ use mio::{self, Events, Interest};
 use parking_lot::{FairMutex, FairMutexGuard};
 
 use crate::terminal::writeable_pty::write_queue::{
-    AbortScope, JobClass, JobId, Pacing, SetupJob, is_signal_byte,
+    AbortScope, JobClass, JobId, Pacing, SetupJob, SetupLive, is_signal_byte,
 };
 use crate::terminal::{
     TerminalModel,
@@ -652,10 +652,17 @@ impl State {
 
     /// Queues a bootstrap script as one paced job (#1384). A job still queued or in flight is
     /// replaced: the newer bootstrap supersedes the older, as `cancel_paced_writes` did.
+    #[cfg(test)]
     fn queue_setup(&mut self, chunks: Vec<Vec<u8>>, pacing: Pacing) {
+        self.queue_setup_live(chunks, pacing, SetupLive::detached());
+    }
+
+    /// [`Self::queue_setup`] with the sender's liveness count (#1801 review M1): the job holds it
+    /// until it is dropped, however it ends.
+    fn queue_setup_live(&mut self, chunks: Vec<Vec<u8>>, pacing: Pacing, live: SetupLive) {
         self.abort(AbortScope::Setup);
         let id = self.alloc_job_id();
-        let job = SetupJob::new(id, chunks, pacing);
+        let job = SetupJob::new(id, chunks, pacing).with_live(live);
         if job.is_exhausted() {
             return;
         }
@@ -1163,7 +1170,11 @@ where
                     state.note_user_input_received(Instant::now());
                     state.queue_paste_input(input)
                 }
-                Message::SetupChunked { chunks, pacing } => {
+                Message::SetupChunked {
+                    chunks,
+                    pacing,
+                    live,
+                } => {
                     // The ledger sees the bytes now, as it saw each chunk as its own `Input`.
                     // Not `note_user_input_received`: the gaps are not a user waiting.
                     {
@@ -1172,7 +1183,7 @@ where
                             ledger.note_input(chunk);
                         }
                     }
-                    state.queue_setup(chunks, pacing)
+                    state.queue_setup_live(chunks, pacing, live)
                 }
                 Message::Abort(scope) => state.abort(scope),
                 Message::Shutdown => {

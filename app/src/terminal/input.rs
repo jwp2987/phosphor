@@ -4,6 +4,7 @@ mod classic;
 mod cli_agent;
 mod common;
 mod enter_queue;
+mod native_completions;
 pub(crate) use enter_queue::{ENTER_GATE_GIVE_UP_TOAST, EnterDiscard};
 pub mod conversations;
 pub mod decorations;
@@ -1436,7 +1437,12 @@ enum EnterHold {
     /// submits the completed line (or the visible text on an ambiguous, empty or failed result),
     /// after the completed line's own verdict wait. A completion that does not land in time is
     /// given up by a timer, which never submits (#1666/#1667): the line is handed back.
-    TabCompletion { since: Instant },
+    TabCompletion {
+        since: Instant,
+        /// The completion is the remote shell's in-band answer (#1801), which takes a round
+        /// trip: it gets [`REMOTE_NATIVE_TAB_ENTER_BUDGET`] instead of the local budget.
+        remote_native: bool,
+    },
 }
 
 /// The Tab (`CompletionsTrigger::Keybinding`) completion request in flight, so an Enter that
@@ -1448,6 +1454,10 @@ struct TabCompletionRequest {
     /// Whether the completer runs on this machine. A remote completer cannot answer quickly and
     /// is never waited for.
     local: bool,
+    /// The remote shell is asked first, in-band (#1801): one round trip on the session's own
+    /// connection, so an Enter right after the Tab waits for it (within
+    /// [`REMOTE_NATIVE_TAB_ENTER_BUDGET`]) and runs the completed line, as a local Tab does.
+    remote_native: bool,
     /// The compute the completer job spends (#1351): the Enter's give-up cap is measured on it.
     compute: ComputeClock,
 }
@@ -1457,6 +1467,11 @@ struct TabCompletionRequest {
 /// purpose: completion does I/O. The give-up hands the uncompleted line back to the editor and
 /// runs nothing (#1666): the clock must not run a line the user meant to complete.
 const TAB_COMPLETION_ENTER_BUDGET: std::time::Duration = std::time::Duration::from_millis(150);
+/// The same cap for a remote shell's in-band Tab answer (#1801 review: "Tab then a fast Enter
+/// runs the completed line" over a slow link too). Wall time from the job's start: a round trip
+/// plus the shell's own completion work. Under the 2 s prompt watchdog, so a shell that does not
+/// answer hands the line back (#1666) rather than running the uncompleted text.
+const REMOTE_NATIVE_TAB_ENTER_BUDGET: std::time::Duration = std::time::Duration::from_millis(1500);
 /// A hold longer than this is logged at WARN, so slow completers can be traced.
 const TAB_COMPLETION_ENTER_WARN: std::time::Duration = std::time::Duration::from_millis(50);
 /// The wall-clock net of an Enter held for its verdict, before the size allowance (#1662, busy-
@@ -1524,6 +1539,10 @@ impl EnterHold {
             EnterHold::Verdict { .. } => {
                 crate::ai::blocklist::input_model::enter_verdict_budget_for(text_len)
             }
+            EnterHold::TabCompletion {
+                remote_native: true,
+                ..
+            } => REMOTE_NATIVE_TAB_ENTER_BUDGET,
             EnterHold::TabCompletion { .. } => TAB_COMPLETION_ENTER_BUDGET,
         }
     }
@@ -1547,6 +1566,11 @@ impl EnterHold {
             .min(HOLD_BACKSTOP_LIMIT),
             // #1667: kept at 500 ms. Its give-up hands the line back and runs nothing, so a busy
             // machine that outlasts it costs one more Enter, never a wrong command.
+            // #1801: the remote in-band answer's cap plus the same 350 ms margin as locally.
+            EnterHold::TabCompletion {
+                remote_native: true,
+                ..
+            } => REMOTE_NATIVE_TAB_ENTER_BUDGET + std::time::Duration::from_millis(350),
             EnterHold::TabCompletion { .. } => std::time::Duration::from_millis(500),
         }
     }
@@ -1588,7 +1612,7 @@ impl VerdictWait {
     fn tab_completion_since(&self) -> Option<Instant> {
         match self.hold {
             EnterHold::Verdict { .. } => None,
-            EnterHold::TabCompletion { since } => Some(since),
+            EnterHold::TabCompletion { since, .. } => Some(since),
         }
     }
 }
@@ -12405,6 +12429,7 @@ impl Input {
                     editor_model,
                     cursor_position,
                     completion_context,
+                    true,
                     ctx,
                 );
             }
@@ -12421,9 +12446,13 @@ impl Input {
         editor_snapshot: EditorSnapshot,
         cursor_position: ByteOffset,
         completion_context: SessionContext,
+        // `false` when the remote shell was asked first and had no answer (#1801): the completer
+        // answers this time.
+        allow_native_first: bool,
         ctx: &mut ViewContext<'_, Input>,
     ) {
         let buffer_text = self.buffer_text(ctx);
+        let cursor_offset = cursor_position;
 
         // The 'ForceNativeShellCompletions' user pref can be used to unconditionally
         // generate and show native shell completion results (i.e. regardless of whether or
@@ -12436,17 +12465,40 @@ impl Input {
             .and_then(|s| s.parse().ok())
             .unwrap_or(false);
 
-        let use_native_shell_completions = (FeatureFlag::NativeShellCompletions.is_enabled() || force_native_shell_completions)
-            && completion_context
-                .session
-                .shell()
-                .supports_native_shell_completions()
-            // For now, don't use native shell completions for multi-line commands.
-            && !buffer_text.contains('\n');
+        let input_type = self.ai_input_model.as_ref(ctx).input_type();
 
+        // #1801: an explicit Tab in a remote session without the helper asks the remote shell
+        // first (see `native_completions`); otherwise upstream's flag or preference may ask it
+        // as a fallback.
+        let native_use = native_completions::native_completions_use(
+            native_completions::NativeCompletionsInputs {
+                trigger: completions_trigger,
+                shell_supports_native: completion_context
+                    .session
+                    .shell()
+                    .supports_native_shell_completions(),
+                // For now, don't use native shell completions for multi-line commands.
+                multi_line: buffer_text.contains('\n'),
+                is_ai_input: input_type.is_ai(),
+                remote_without_helper: completion_context.session.is_remote_without_helper(),
+                flag_or_forced: FeatureFlag::NativeShellCompletions.is_enabled()
+                    || force_native_shell_completions,
+                remote_native_enabled: allow_native_first
+                    && native_completions::remote_native_completions_enabled(),
+            },
+        );
+        let use_native_shell_completions =
+            native_use != native_completions::NativeCompletionsUse::None;
+        let native_completions_options =
+            crate::terminal::writeable_pty::pty_controller::NativeCompletionsRequestOptions {
+                remote_first: native_use == native_completions::NativeCompletionsUse::Preferred,
+            };
+
+        // The completer's file-path fallback stays on whenever the completer is the last word
+        // (no shell asked, or the shell asked first and had nothing).
         let fallback_strategy = match completions_trigger {
             CompletionsTrigger::Keybinding | CompletionsTrigger::SlashCommandAutoOpen
-                if !use_native_shell_completions =>
+                if native_use != native_completions::NativeCompletionsUse::Fallback =>
             {
                 CompletionsFallbackStrategy::FilePaths
             }
@@ -12459,8 +12511,6 @@ impl Input {
             last_abort_handle.abort();
         }
         self.tab_completion_request = None;
-
-        let input_type = self.ai_input_model.as_ref(ctx).input_type();
 
         // Don't trigger completions if the last character typed is whitespace, in AI input mode.
         // The user is likely typing in a natural language word at this point, not a filepath.
@@ -12485,6 +12535,7 @@ impl Input {
             let (results_tx, results_rx) = async_channel::unbounded();
             ctx.dispatch_typed_action(&TerminalAction::RunNativeShellCompletions {
                 buffer_text: buffer_text[0..cursor_position].to_owned(),
+                options: native_completions_options,
                 results_tx,
             });
             async move { results_rx.recv().await.ok() }.boxed()
@@ -12515,6 +12566,7 @@ impl Input {
                 generation,
                 snapshot: editor_snapshot.clone(),
                 local: completion_session.is_local(),
+                remote_native: native_use == native_completions::NativeCompletionsUse::Preferred,
                 compute: completion_compute.clone(),
             });
         }
@@ -12523,6 +12575,60 @@ impl Input {
         let remote_tab_session = (completions_trigger == CompletionsTrigger::Keybinding
             && !completion_session.is_local())
         .then(|| completion_session.id());
+
+        // #1801: the remote shell first, in-band. Its answer alone decides this job; with none
+        // (no prompt in time, no candidates, a request already in flight) the main thread takes
+        // over in `native_completions_missed`: an Enter already waiting runs the visible line at
+        // once (never waiting on remote I/O, #1165), and otherwise the completer answers.
+        if native_use == native_completions::NativeCompletionsUse::Preferred {
+            let abort_handle = ctx
+                .spawn_abortable(
+                    async move {
+                        let started = Instant::now();
+                        let _compute = completion_compute.begin();
+                        native_results_fut
+                            .await
+                            .filter(|results| !results.is_empty())
+                            .map(|results| {
+                                // Never the candidates: they are the user's file names.
+                                log::info!(
+                                    "Tab on remote session {:?} without the helper: {} candidates from the remote shell in {} ms",
+                                    completion_session.id(),
+                                    results.len(),
+                                    started.elapsed().as_millis()
+                                );
+                                native_completions::native_suggestion_results(
+                                    results,
+                                    &buffer_text,
+                                    cursor_position,
+                                )
+                            })
+                    },
+                    move |input, suggestions, ctx| match suggestions {
+                        Some(suggestions) => input.deliver_completion_suggestions_results(
+                            generation,
+                            Some(suggestions),
+                            completions_trigger,
+                            editor_snapshot,
+                            ctx,
+                        ),
+                        None => input.native_completions_missed(
+                            generation,
+                            before_cursor_text,
+                            matcher,
+                            completions_trigger,
+                            editor_snapshot,
+                            cursor_offset,
+                            completion_context,
+                            ctx,
+                        ),
+                    },
+                    move |_, _| {},
+                )
+                .abort_handle();
+            self.completions_abort_handle = Some(abort_handle);
+            return;
+        }
 
         let abort_handle = ctx
             .spawn_abortable(
@@ -12534,44 +12640,34 @@ impl Input {
                     // The completer's own compute starts here, not when the Enter arrived or the
                     // job was queued (#1351).
                     let _compute = completion_compute.begin();
-                    let suggestions = completer::suggestions(
-                        before_cursor_text.as_str(),
-                        cursor_position,
-                        session_env_vars.as_ref(),
-                        CompleterOptions {
-                            match_strategy: matcher,
-                            fallback_strategy,
-                            suggest_file_path_completions_only: input_type.is_ai(),
-                            parse_quotes_as_literals: input_type.is_ai(),
-                        },
-                        &completion_context,
-                    )
-                    .await;
-                    let completer_count = suggestions.as_ref().map(|s| s.suggestions.len());
+                    let completer_run = async {
+                        completer::suggestions(
+                            before_cursor_text.as_str(),
+                            cursor_position,
+                            session_env_vars.as_ref(),
+                            CompleterOptions {
+                                match_strategy: matcher,
+                                fallback_strategy,
+                                suggest_file_path_completions_only: input_type.is_ai(),
+                                parse_quotes_as_literals: input_type.is_ai(),
+                            },
+                            &completion_context,
+                        )
+                        .await
+                    };
 
+                    let suggestions = completer_run.await;
+                    let completer_count = suggestions.as_ref().map(|s| s.suggestions.len());
                     let suggestions = match suggestions {
                         Some(s) if !s.suggestions.is_empty() && !force_native_shell_completions => {
                             Some(s)
                         }
                         _ => native_results_fut.await.map(|results| {
-                            let suggestions = results.into_iter().map(Into::into).collect_vec();
-
-                            let token_end = cursor_position;
-                            // Within the section of the buffer from the start
-                            // to the end of this token...
-                            let token_start = buffer_text[0..token_end]
-                                // Find the last whitespace char before the token end.
-                                .rfind(char::is_whitespace)
-                                // If we find one, the token start is the next char.
-                                .map(|pos| pos + 1)
-                                // Otherwise, the start is the beginning of the buffer.
-                                .unwrap_or_default();
-
-                            SuggestionResults {
-                                replacement_span: (token_start, token_end).into(),
-                                suggestions,
-                                match_strategy: MatchStrategy::Fuzzy,
-                            }
+                            native_completions::native_suggestion_results(
+                                results,
+                                &buffer_text,
+                                cursor_position,
+                            )
                         }),
                     };
 
@@ -12607,6 +12703,81 @@ impl Input {
             .abort_handle();
 
         self.completions_abort_handle = Some(abort_handle);
+    }
+
+    /// #1801: the remote shell, asked first, had no answer for the Tab of `generation` (no
+    /// prompt in time, no candidates, or a request already in flight). An Enter already holding
+    /// for this Tab must not wait on remote I/O (#1165): it gets an empty result, which runs the
+    /// visible line at once. Otherwise the completer answers, and the Tab request it records is
+    /// not remote-native, so an Enter from now on is not held either.
+    #[allow(clippy::too_many_arguments)]
+    fn native_completions_missed(
+        &mut self,
+        generation: u64,
+        before_cursor_text: String,
+        matcher: MatchStrategy,
+        completions_trigger: CompletionsTrigger,
+        editor_snapshot: EditorSnapshot,
+        cursor_position: ByteOffset,
+        completion_context: SessionContext,
+        ctx: &mut ViewContext<'_, Input>,
+    ) {
+        if self.is_stale_generation(generation) {
+            return;
+        }
+        if self.end_remote_native_tab_wait(
+            generation,
+            completions_trigger,
+            editor_snapshot.clone(),
+            ctx,
+        ) {
+            return;
+        }
+        log::info!("The remote shell had no Tab answer; the completer answers instead");
+        self.run_completions_async(
+            before_cursor_text,
+            matcher,
+            completions_trigger,
+            editor_snapshot,
+            cursor_position,
+            completion_context,
+            false,
+            ctx,
+        );
+    }
+
+    /// The first half of [`Self::native_completions_missed`]: the Tab request stops being
+    /// remote-native (an Enter from now on is not held for remote I/O, #1165), and an Enter
+    /// already held for it gets an empty result, which runs the visible line at once. Returns
+    /// whether such an Enter was released (the completer then has nothing left to answer).
+    fn end_remote_native_tab_wait(
+        &mut self,
+        generation: u64,
+        completions_trigger: CompletionsTrigger,
+        editor_snapshot: EditorSnapshot,
+        ctx: &mut ViewContext<'_, Input>,
+    ) -> bool {
+        if let Some(request) = self.tab_completion_request.as_mut() {
+            request.remote_native = false;
+        }
+        if !self
+            .verdict_wait
+            .as_ref()
+            .is_some_and(VerdictWait::holds_for_tab_completion)
+        {
+            return false;
+        }
+        log::info!(
+            "The remote shell had no Tab answer; the Enter waiting for it runs the visible line"
+        );
+        self.deliver_completion_suggestions_results(
+            generation,
+            None,
+            completions_trigger,
+            editor_snapshot,
+            ctx,
+        );
+        true
     }
 
     /// Asynchronously generates dynamic enum suggestions.
@@ -14657,18 +14828,20 @@ impl Input {
         {
             return false;
         }
-        if !request.local {
+        if !request.local && !request.remote_native {
             // Never wait on remote I/O: submit the visible text now.
             log::info!("Enter not held for a remote Tab completion; completion cancelled");
             self.tab_completion_request = None;
             self.cancel_pending_completions_for_deferred_enter();
             return false;
         }
+        let remote_native = request.remote_native;
         let text = self.editor.as_ref(ctx).buffer_text(ctx);
         let wait_id = self.start_verdict_wait(
             text,
             EnterHold::TabCompletion {
                 since: Instant::now(),
+                remote_native,
             },
             ctx,
         );
@@ -15209,7 +15382,7 @@ impl Input {
         let decision = enter_verdict_wait_decision_at(pending, spent, stage_wall, text.len());
         if decision != EnterVerdictWait::Wait {
             let waited = self.verdict_wait.as_ref().map(|wait| match wait.hold {
-                EnterHold::Verdict { since } | EnterHold::TabCompletion { since } => {
+                EnterHold::Verdict { since } | EnterHold::TabCompletion { since, .. } => {
                     since.elapsed()
                 }
             });

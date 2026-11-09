@@ -940,6 +940,112 @@ def judge_step(ctx, r, rec, ctl, bracketed, io_lines=None):
         r.check(False, "%s (control: %s)" % (base, why))
 
 
+def need_in_band_remote_shell(r):
+    """#1801: the in-band Tab needs a remote bash 4.0+ (or zsh). The harness's macOS remote shell is /bin/bash 3.2 (force.sh), where the bootstrap
+    binds no ^Y and the app sends none, by design: the case skips there with that reason instead of judging the ControlMaster path."""
+    if sys.platform == "darwin":
+        r.skip("the macOS test host's remote shell is /bin/bash 3.2: no in-band Tab below bash 4.0 (by design, #1801 review B3)")
+
+
+@case("remote_tab_no_helper", order=61)
+def c_remote_tab_no_helper(ctx, r):
+    """#1801: ssh WITHOUT the remote helper (the harness default, ssh_extension_install_mode = never_install, which is the owner's primary remote
+    design): Tab after `cd <prefix>` of a directory that exists only on the REMOTE completes it, because the app asks the remote shell itself in-band
+    (^Y handshake) instead of a ControlMaster side command. Evidence: the exact command the REMOTE shell received is `cd <dir>/` (rec.log), the next
+    `pwd` there is that directory, the app log names the in-band answer ("candidates from the remote shell"), and nothing ran locally.
+    Path highlighting of a typed remote directory is not observable from outside the app: a note, not judged (see testing.md, #1801 lab case).
+    The netem 150 ms variant is the same case with `PHOSPHOR_APPCI_NETEM_NOTE` set by whoever applied the delay (needs root; never applied by the harness)."""
+    need_ssh(ctx, r)
+    need_in_band_remote_shell(r)
+    tok = ctx.tok(6).lower()
+    rdir = "phxtab_" + tok
+    os.makedirs(os.path.join(ctx.prof.rhome, rdir), exist_ok=True)
+    os.makedirs(os.path.join(ctx.W, "phxtab_local_only"), exist_ok=True)       # a LOCAL directory with the same prefix must never be offered
+    rm_remote(ctx, "phxtab_pwd.txt")
+    netem = os.environ.get("PHOSPHOR_APPCI_NETEM_NOTE")
+    if netem:
+        r.note("network delay applied outside the harness: %s" % netem)
+    log_off = ctx.log_size()
+    secs = connect(ctx, "fake", 60)
+    r.check(secs is not None, "no remote shell prompt after `ssh fake`. Test host: %s" % (ctx.ssh_diag() if secs is None else ""))
+    if secs is None:
+        ctx.reset()
+        return
+    time.sleep(1.0)
+    rmark, lmark = len(ctx.prof.commands(remote=True)), ctx.cmd_mark()
+    prefix = "cd phxtab_" + tok[:3]
+    ctx.be.type(prefix, 15)
+    ctx.be.key("Tab")
+    time.sleep(3.0 if netem else 1.5)        # remote Tab has no Tab+Enter wait (local only, owner decision): let the in-band answer land first
+    ctx.shot("remote_tab_completed")
+    ctx.be.key("Return")
+    want = "cd %s/" % rdir
+    got_cmd = ctx.until(lambda: [c for _, c in ctx.prof.commands(remote=True)[rmark:]], 10)
+    r.check(bool(got_cmd) and got_cmd[0] in (want, "cd %s" % rdir),
+            "Tab after %r should have completed the REMOTE directory: the remote shell received %r, want %r" % (prefix, got_cmd, want))
+    ctx.be.type("pwd >> ~/phxtab_pwd.txt", 12, enter=True)
+    ctx.until(lambda: ctx.lines("phxtab_pwd.txt", remote=True), 8)
+    pwd = ctx.lines("phxtab_pwd.txt", remote=True)
+    r.check(bool(pwd) and pwd[-1].endswith("/" + rdir), "after the completed cd the remote cwd should be .../%s, got %r" % (rdir, pwd))
+    r.check(ctx.cmds_since(lmark) == [], "the LOCAL shell received commands while the remote shell was in front: %r" % ctx.cmds_since(lmark))
+    log = ctx.log_since(log_off)
+    hits = [l for l in log.splitlines() if "candidates from the remote shell" in l]
+    r.check(bool(hits), "the app log has no 'candidates from the remote shell' line: Tab did not take the in-band path (#1801)")
+    m = re.search(r"candidates from the remote shell in (\d+) ms", hits[-1]) if hits else None
+    if m:
+        r.metric("remote_tab_in_band_ms", int(m.group(1)))
+    r.note("path highlighting of a typed remote directory is not observable from the harness; not judged here (#1801 follow-up: prompt-hook cwd listing)")
+    if not leave(ctx):
+        r.check(False, "not provably remote (probe ran in: %s), `exit` NOT typed" % ctx.left_unproven)
+    ctx.reset()
+
+
+@case("remote_tab_enter_no_helper", order=61)
+def c_remote_tab_enter_no_helper(ctx, r):
+    """#1801 review: "Tab then a fast Enter runs the completed line" over ssh WITHOUT the helper. The remote shell answers the Tab in-band, and an
+    Enter ~30 ms after the Tab waits for that answer (cap REMOTE_NATIVE_TAB_ENTER_BUDGET, 1.5 s) instead of running the uncompleted text. Evidence:
+    the REMOTE rec.log's command is the COMPLETED `cd phxtab_<tok>/`, never `cd phxtab_<3 chars>`; a give-up (no answer within the cap) hands the
+    line back and runs nothing, which is a FAIL here (a fake sshd on loopback answers in milliseconds) unless PHOSPHOR_APPCI_NETEM_NOTE says a
+    delay over the cap was applied. Nothing may run locally. Repeated ctx.count(3) times with fresh directories."""
+    need_ssh(ctx, r)
+    need_in_band_remote_shell(r)
+    netem = os.environ.get("PHOSPHOR_APPCI_NETEM_NOTE")
+    if netem:
+        r.note("network delay applied outside the harness: %s" % netem)
+    trials = []
+    for _ in range(ctx.count(3)):
+        tok = ctx.tok(6).lower()
+        trials.append(tok)
+        os.makedirs(os.path.join(ctx.prof.rhome, "phxte_" + tok), exist_ok=True)
+    secs = connect(ctx, "fake", 60)
+    r.check(secs is not None, "no remote shell prompt after `ssh fake`. Test host: %s" % (ctx.ssh_diag() if secs is None else ""))
+    if secs is None:
+        ctx.reset()
+        return
+    time.sleep(1.0)
+    lmark = ctx.cmd_mark()
+    for tok in trials:
+        rmark = len(ctx.prof.commands(remote=True))
+        prefix = "cd phxte_" + tok[:3]
+        ctx.be.type(prefix, ctx.rng.randint(10, 25))
+        ctx.be.key("Tab")
+        time.sleep(0.03)
+        ctx.be.key("Return")
+        got = ctx.until(lambda: [c for _, c in ctx.prof.commands(remote=True)[rmark:]], 8)
+        want = "cd phxte_%s/" % tok
+        r.check(bool(got) and got[0] in (want, "cd phxte_%s" % tok),
+                "Tab + Enter 30 ms later: the remote shell received %r, want the COMPLETED %r (the uncompleted %r must never run)" % (got, want, prefix))
+        if not got:
+            ctx.be.key("ctrl+c")      # a give-up left the line in the editor: clear it for the next trial
+            time.sleep(0.3)
+        ctx.be.type("cd ~", 12, enter=True)
+        time.sleep(0.5)
+    r.check(ctx.cmds_since(lmark) == [], "the LOCAL shell received commands while the remote shell was in front: %r" % ctx.cmds_since(lmark))
+    if not leave(ctx):
+        r.check(False, "not provably remote (probe ran in: %s), `exit` NOT typed" % ctx.left_unproven)
+    ctx.reset()
+
+
 @case("remote_heredoc_paste", order=62)
 def c_remote_heredoc(ctx, r):
     """#1129: a large here-doc and a long single line sent to the REMOTE shell over ssh (the way an agent writes a file) arrive byte-exact. Pasted into the

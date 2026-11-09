@@ -472,6 +472,15 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
         bindkey -M "$warp_keymap" '\ei' warp_report_input 2>/dev/null || :
       done
 
+      # Phosphor (#1801): the native-completions keys on every standard keymap, for the same
+      # reason as ^P above: ^Y asks this shell for its completions, RS (^^) opens an answer frame
+      # (dropped whole at the prompt). US (^_) is left alone: it stays zle's undo; the discard
+      # widget consumes a frame's own US.
+      for warp_keymap in main emacs viins vicmd; do
+        bindkey -M "$warp_keymap" '^Y' warp_complete_via_compadd_override 2>/dev/null || :
+        bindkey -M "$warp_keymap" '^^' warp_native_discard 2>/dev/null || :
+      done
+
       # Introduce keybinding to switch prompt modes (PS1 vs built-in Warp prompt).
       # This is arbitrarily bound to ESC-p in all supported shells ("p" for PS1),
       # and we can change it to any other keybinding if needed.
@@ -2251,12 +2260,12 @@ esac
 
     # extract prefixes and suffixes from compadd call. we can''t do zsh''s cool
     # -r remove-func magic, but it''s better than nothing.
-    typeset -A apre hpre hsuf asuf
+    typeset -A apre hpre hsuf asuf ipre
     # Parse compadd options, based on the documentation.  Unused flags are left
     # in the array extra_args.  There are additional arguments we don't check
     # for here, but they all take arguments, so wouldn't interfere with parsing
     # of consolidated flags (e.g.: -Qf being parsed as -Q and -f).
-    zparseopts -E -a extra_args - f=dirsuf P:=apre p:=hpre S:=asuf s:=hsuf a k q Q e n U l 1 2 C
+    zparseopts -E -a extra_args - f=dirsuf P:=apre p:=hpre S:=asuf s:=hsuf i:=ipre a k q Q e n U l 1 2 C
 
     # Change dirsuf to store whether or not the -f flag was provided.
     integer dirsuf=${#dirsuf}
@@ -2268,17 +2277,36 @@ esac
     # descriptions in $__dscr!
 
     # display all matches
+    # Phosphor (#1801): the app replaces the whole whitespace-delimited token before the
+    # cursor with each match, so a match is written as the text zsh would insert for that
+    # token: the ignored prefix (IPREFIX, compadd -i: the `--opt=` of `--opt=val`) and the
+    # inserted prefixes (-P, and -p: the `dir/` of `dir/file`) before the match itself. Without
+    # them `cd dir/fo` offered `foo/` and replaced `dir/fo` with it. The app's token can also
+    # start before zsh's word (`a;b`: zsh completes `b`); that lead is kept too.
+    local __tok_word="${IPREFIX}${PREFIX}"
+    local __tok_app="${LBUFFER##*[[:space:]]}"
+    local __tok_lead=
+    [[ $__tok_app == *"$__tok_word" ]] && __tok_lead="${__tok_app%"$__tok_word"}"
+    # With -U the matches already carry the whole word (the caller did its own matching), so
+    # IPREFIX is not added again.
+    local __tok_ipre="${IPREFIX}${ipre[-i]}"
+    (( ${extra_args[(I)-U]} )) && __tok_ipre=
+    local __tok_pre="${__tok_lead}${__tok_ipre}${apre[-P]}${hpre[-p]}"
     local dsuf dscr
     for i in {1..$#__hits}; do
         # add a dir suffix?
-        (( dirsuf )) && [[ -d $__hits[$i] ]] && dsuf=/ || dsuf=
+        (( dirsuf )) && [[ -d ${hpre[-p]}$__hits[$i] ]] && dsuf=/ || dsuf=
         # description to be displayed afterwards
         (( $#__dscr >= $i )) && dscr="${${__dscr[$i]}##$__hits[$i] #}" || dscr=""
 
-        local match="$__hits[$i]$dsuf"
+        local match="$__tok_pre$__hits[$i]$dsuf"
+        # A match the OSC cannot carry (a control character would end or corrupt it) is left
+        # out rather than sent broken.
+        [[ $match == *[[:cntrl:]]* ]] && continue
 
-        print -n "\e]9280;C"$OSC_PARAM_SEPARATOR$match$OSC_END
-        print -n "\e]9280;D?description"$OSC_PARAM_SEPARATOR$dscr$OSC_END
+        # printf %s, not print: print would read a backslash in a file name as an escape.
+        builtin printf '\e]9280;C;%s\a' "$match"
+        builtin printf '\e]9280;D?description;%s\a' "${dscr//[[:cntrl:]]/ }"
     done
   }
 
@@ -2353,39 +2381,127 @@ esac
     unset COMPADD_OVERRIDE
   }
 
+  # Phosphor (#1801): ESC read where a native-completions frame byte was expected (__c is ESC,
+  # __warp_nc_body the frame-alphabet text read before it). Reads the rest of the escape sequence
+  # (at most 0.1 s between bytes). A terminal reply (a CSI report ending in c, R, n, t or y, or
+  # an OSC) is dropped whole, so none of it is left in the line; anything else (a bracketed
+  # paste, a key) goes back to zle intact with the text before it.
+  function __warp_nc_give_back_escape() {
+    setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal extendedglob
+    local __seq=$'\e' __b
+    if IFS= builtin read -s -r -k 1 -t 0.1 __b </dev/tty; then
+      __seq+=$__b
+      case $__b in
+        ('[')
+          while IFS= builtin read -s -r -k 1 -t 0.1 __b </dev/tty; do
+            __seq+=$__b
+            [[ $__b == [@-~] ]] && break
+            (( ${#__seq} <= 64 )) || break
+          done ;;
+        (']')
+          while IFS= builtin read -s -r -k 1 -t 0.1 __b </dev/tty; do
+            __seq+=$__b
+            [[ $__b == $'\a' || $__seq == *$'\e\\' ]] && break
+            (( ${#__seq} <= 4096 )) || break
+          done ;;
+        (O)
+          IFS= builtin read -s -r -k 1 -t 0.1 __b </dev/tty && __seq+=$__b ;;
+      esac
+    fi
+    if [[ $__seq == $'\e]'* || $__seq == $'\e['[0-9\;\?\>\<=]#[cRnty] ]]; then
+      zle -U "$__warp_nc_body"
+    else
+      zle -U "$__warp_nc_body$__seq"
+    fi
+  }
+
+  # Phosphor (#1801): reads the rest of a native-completions frame after its RS. Returns 0 with
+  # __warp_nc_body set to "<token>:<%HH...>" when the bytes have the frame's exact shape (a token
+  # of letters and digits, or `-`; `:`; `%HH` pairs; US = 0x1f) with at most 0.1 s between bytes
+  # and 5 s in all. Otherwise everything read goes back to zle (`zle -U`, control bytes and an
+  # Enter included, so they act as typed) and it returns 1.
+  function __warp_nc_read_frame_body() {
+    setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal
+    typeset -g __warp_nc_body=
+    local __c __phase=start __ok
+    local -F __deadline=0
+    (( ${+EPOCHREALTIME} )) && __deadline=$(( EPOCHREALTIME + 5 ))
+    while :; do
+      if ! IFS= builtin read -s -r -k 1 -t 0.1 __c </dev/tty; then
+        zle -U "$__warp_nc_body"
+        return 1
+      fi
+      __ok=
+      case $__phase:$__c in
+        (start:-) __phase=dash __ok=1 ;;
+        (start:[A-Za-z0-9]|tok:[A-Za-z0-9]) __phase=tok __ok=1 ;;
+        (tok::|dash::) __phase=hex __ok=1 ;;
+        (hex:%) __phase=h1 __ok=1 ;;
+        (h1:[0-9A-Fa-f]) __phase=h2 __ok=1 ;;
+        (h2:[0-9A-Fa-f]) __phase=hex __ok=1 ;;
+        (hex:$'\x1f') return 0 ;;
+      esac
+      if [[ -z $__ok ]]; then
+        if [[ $__c == $'\e' ]]; then
+          __warp_nc_give_back_escape
+        else
+          zle -U "$__warp_nc_body$__c"
+        fi
+        return 1
+      fi
+      __warp_nc_body+=$__c
+      # 0.1 s bounds each byte; 5 s (with zsh/datetime) or the length bounds the frame.
+      if (( ${#__warp_nc_body} > 3000000 )) || { (( ${+EPOCHREALTIME} )) && (( EPOCHREALTIME > __deadline )) }; then
+        zle -U "$__warp_nc_body"
+        return 1
+      fi
+    done
+  }
+
   function warp_read_completion_buffer() {
     # Phosphor (#1014): runs from a widget/completion with the user's options; none of errexit,
     # nounset, pipefail may turn an expected-failure probe into a dead shell or a lost widget.
-    setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal
-    # Read data from the terminal into a temporary variable and set it as the
-    # current zle buffer.  We want to prevent anything visible from being sent
-    # to the terminal (it would be treated as background output), so we use -s
-    # to suppress echoing and send an OSC as the synchronization signal (so the
-    # terminal knows when to send the input buffer that needs completions).
-    #
-    # `-t` bounds this read so an abandoned handshake can never wedge this
-    # shell in `read` forever (see TODO.md, "The shell lockup", and
-    # phosphor#770): if the app gives up on this request -- its own prompt
-    # watchdog fires, or its reply is lost for any other reason -- this read
-    # must still return on its own rather than depend on the app to answer.
-    # The bound is comfortably longer than the app's own completions-results
-    # budget (`NATIVE_COMPLETIONS_RESULTS_TIMEOUT`, 15s in pty_controller.rs
-    # as of this writing) so a legitimately slow-but-successful reply still
-    # gets through; it only protects against a reply that never arrives.
-    local TEMP
-    if ! IFS= builtin read -t 20 -d $'\4' -s "$(builtin echo -e "TEMP?\e]9280;P\a")" < /dev/tty; then
-      # Timed out (or /dev/tty went away) before the app answered. Whatever
-      # partial bytes landed in TEMP are not a completable buffer. The app
-      # cannot be trusted to answer late either way: once it has abandoned
-      # this request (which it will have, well before this bound elapses),
-      # `ModelEvent::SendCompletionsPrompt` writes nothing at all for it (see
-      # pty_controller.rs) precisely so it never types into a prompt whose
-      # state it can no longer see. Bail out of the widget without touching
-      # BUFFER, so whatever the user had typed before pressing the completion
-      # key is left exactly as it was.
+    setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal extendedglob
+    # Phosphor (#1801): the exchange is self-identifying (design in pty_controller.rs, "The
+    # in-band native-completions exchange"). Name it with a fresh token, then read the app's ONE
+    # frame for it: RS <token> : <%HH bytes of the text> US (RS = 0x1e, US = 0x1f), or the cancel
+    # frame RS - : US, written in one piece. Nothing outside a frame is consumed: the first byte
+    # must be RS (anything else goes back to zle with `zle -U` and the exchange ends), and then
+    # the frame's exact shape, with at most 0.1 s between bytes (__warp_nc_read_frame_body: on
+    # any other byte, or a gap, everything read goes back to zle). The first byte waits
+    # PHOSPHOR_NC_DEADLINE seconds (default 20; against $EPOCHREALTIME when zsh/datetime is
+    # loaded). A frame with another token, the cancel, or a deadline ends the exchange with
+    # nothing. A frame that arrives after that lands at the prompt, where RS is bound to
+    # warp_native_discard (same rules, dropped), so a frame is never run.
+    local __c __hex __left __tok __start=${PHOSPHOR_NC_DEADLINE:-20}
+    [[ $__start == <-> ]] || __start=20
+    __warp_nc_seq=$(( ${__warp_nc_seq:-0} + 1 ))
+    __tok="${RANDOM}x${__warp_nc_seq}x${RANDOM}"
+    builtin printf '\e]9280;P;%s\a' "$__tok"
+    __left=$__start
+    if (( ${+EPOCHREALTIME} )); then
+      local -F __deadline=$(( EPOCHREALTIME + __start ))
+      __left=$(( __deadline - EPOCHREALTIME ))
+      (( __left > 0 )) || return 1
+    fi
+    IFS= builtin read -s -r -k 1 -t $__left __c </dev/tty || return 1
+    if [[ $__c != $'\x1e' ]]; then
+      # Not a frame: it is the user's (or another write's) first byte. Give it back to zle (a
+      # terminal reply is dropped whole instead, see __warp_nc_give_back_escape).
+      typeset -g __warp_nc_body=
+      if [[ $__c == $'\e' ]]; then
+        __warp_nc_give_back_escape
+      else
+        zle -U "$__c"
+      fi
       return 1
     fi
-    BUFFER="$TEMP"
+    __warp_nc_read_frame_body || return 1
+    # Another exchange's frame, or the cancel frame: nothing to complete.
+    [[ $__warp_nc_body == ${__tok}:* ]] || return 1
+    __hex=${__warp_nc_body#*:}
+    [[ $__hex == (%[0-9A-Fa-f][0-9A-Fa-f])# ]] || return 1
+    BUFFER=${(g::)${__hex//\%/\\x}}
 
     # We push and pop the buffer stack to get zle to properly treat the buffer
     # as the data for the completer run.  Without this, the completer will
@@ -2400,6 +2516,14 @@ esac
     zle get-line
     builtin echo -n "$DCS_END"
   }
+  # Phosphor (#1801): RS at the prompt opens a native-completions frame whose exchange already
+  # ended (the hook gave up, or was interrupted): read the rest by the hook's rules and drop it.
+  # Anything that is not a frame goes back to zle. A frame is never run.
+  function warp_native_discard() {
+    __warp_nc_read_frame_body
+    return 0
+  }
+  zle -N warp_native_discard
   zle -N warp_read_completion_buffer
 
   # Registers the custom completion widgets and hooks them up to
@@ -2417,6 +2541,10 @@ esac
   zle -N warp_complete_via_compadd_override
   bindkey '^X' warp_complete_via_list_choices
   bindkey '^Y' warp_complete_via_compadd_override
+  # Phosphor (#1801): RS opens a native-completions answer frame; at the prompt it is dropped.
+  bindkey '^^' warp_native_discard
+  bindkey -M viins '^^' warp_native_discard 2>/dev/null
+  bindkey -M vicmd '^^' warp_native_discard 2>/dev/null
 
   # Set style for the list-choices approach
   zstyle ':completion:warp_complete_via_list_choices:*' verbose no
@@ -2450,8 +2578,10 @@ esac
 
     local escaped_shell_plugins="$(warp_escape_json "`builtin print -l -- ${shell_plugins[@]}`")"
 
-    # The list of options enabled for the current shell.
-    local shell_options="$(warp_escape_json "`setopt`")"
+    # The list of options enabled for the current shell, and (Phosphor #1801) the pseudo option
+    # that advertises the framed in-band native-completions protocol: the app sends ^Y and
+    # frames only to a shell that reported it.
+    local shell_options="$(warp_escape_json "$(setopt)"$'\n!phosphor_nc_frames_v1')"
 
     local escaped_editor="$(warp_escape_json "${EDITOR-}")"
     local escaped_shell_path="$(warp_escape_json "${commands[zsh]}")"

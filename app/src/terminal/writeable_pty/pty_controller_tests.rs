@@ -780,7 +780,7 @@ fn queued_container_bootstrap_is_one_setup_job_with_the_pacing_named() {
         });
         let messages = sender.messages.lock();
         assert_eq!(messages.len(), 1, "one job, no timers: {messages:?}");
-        let Message::SetupChunked { chunks, pacing } = &messages[0] else {
+        let Message::SetupChunked { chunks, pacing, .. } = &messages[0] else {
             panic!("expected a setup job: {:?}", messages[0]);
         };
         assert!(matches!(
@@ -1144,6 +1144,7 @@ fn native_completions_watchdog_recovers_an_unanswered_prompt_handshake() {
                 Some(NativeShellCompletionsState::AwaitingPrompt {
                     buffer_text: "echo hi".to_owned(),
                     results_tx,
+                    remote_first: false,
                 });
             controller.arm_native_completions_watchdog(Duration::from_millis(20), true, ctx);
         });
@@ -1212,6 +1213,7 @@ fn native_completions_watchdog_generation_guard_ignores_a_superseded_timer() {
                 Some(NativeShellCompletionsState::AwaitingPrompt {
                     buffer_text: "first".to_owned(),
                     results_tx: first_results_tx,
+                    remote_first: false,
                 });
             controller.arm_native_completions_watchdog(Duration::from_millis(20), true, ctx);
         });
@@ -1302,6 +1304,7 @@ fn late_completions_finished_does_not_destroy_a_newer_awaiting_prompt_request() 
                 Some(NativeShellCompletionsState::AwaitingPrompt {
                     buffer_text: "request b".to_owned(),
                     results_tx: b_results_tx,
+                    remote_first: false,
                 });
         });
 
@@ -1380,7 +1383,9 @@ fn late_send_completions_prompt_with_no_live_state_writes_nothing_to_the_pty() {
 
         // The shell's OSC reply finally arrives, late.
         model_events.update(&mut app, |_dispatcher, ctx| {
-            ctx.emit(ModelEvent::SendCompletionsPrompt);
+            ctx.emit(ModelEvent::SendCompletionsPrompt {
+                token: Some("4242".to_owned()),
+            });
         });
 
         assert!(
@@ -1567,7 +1572,14 @@ fn run_native_shell_completions_does_not_start_a_second_request_while_one_is_in_
         // live.
         let (b_results_tx, b_results_rx) = async_channel::unbounded();
         controller.update(&mut app, |controller, ctx| {
-            controller.run_native_shell_completions("request b".to_owned(), b_results_tx, ctx);
+            controller.run_native_shell_completions(
+                "request b".to_owned(),
+                NativeCompletionsRequestOptions {
+                    remote_first: false,
+                },
+                b_results_tx,
+                ctx,
+            );
         });
 
         controller.read(&app, |controller, _| {
@@ -3481,7 +3493,7 @@ fn line_clear_payload_is_one_setup_job_paced_by_tty_mode() {
         });
         let messages = sender.messages.lock();
         assert_eq!(messages.len(), 1, "one job, no timers: {messages:?}");
-        let Message::SetupChunked { chunks, pacing } = &messages[0] else {
+        let Message::SetupChunked { chunks, pacing, .. } = &messages[0] else {
             panic!("expected a setup job: {:?}", messages[0]);
         };
         assert!(matches!(
@@ -3588,4 +3600,481 @@ fn agent_and_paste_writes_are_split_on_the_wire_only_with_the_write_queue() {
             }
         });
     }
+}
+
+/// Builds a controller for the #1801 tests below, with its line editor active (the exchange can
+/// start), and its line-editor status so a test can switch it off.
+fn native_completions_controller(
+    app: &mut App,
+) -> (
+    ModelHandle<PtyController<TestEventLoopSender>>,
+    ModelHandle<ModelEventDispatcher>,
+    ModelHandle<LineEditorStatus>,
+    TestEventLoopSender,
+    impl Sized + use<>,
+) {
+    let model = terminal_model();
+    let (model_events_tx, model_events_rx) = async_channel::unbounded();
+    let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
+    let sessions = app.add_model(|_| Sessions::new_for_test());
+    let model_events =
+        app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
+    let line_editor_status =
+        app.add_model(|ctx| LineEditorStatus::new(model_events.clone(), sessions.clone(), ctx));
+    line_editor_status.update(app, |status, _| {
+        status.set_line_editor_active_for_test(true)
+    });
+    let sender = TestEventLoopSender::default();
+    let controller = app.add_model(|ctx| {
+        PtyController::new(
+            sender.clone(),
+            model_events.clone(),
+            line_editor_status.clone(),
+            sessions,
+            executor_command_rx,
+            model.clone(),
+            ctx,
+        )
+    });
+    (
+        controller,
+        model_events,
+        line_editor_status,
+        sender,
+        model_events_tx,
+    )
+}
+
+/// The bytes the controller wrote, one entry per write, whatever their class on the wire.
+fn written(sender: &TestEventLoopSender) -> Vec<Vec<u8>> {
+    sender
+        .messages
+        .lock()
+        .iter()
+        .filter_map(|message| match message {
+            Message::Input(bytes)
+            | Message::CommandInput(bytes)
+            | Message::PasteInput(bytes)
+            | Message::AgentInput(bytes) => Some(bytes.to_vec()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Starts a remote-first exchange through the real API.
+fn start_exchange(
+    controller: &mut PtyController<TestEventLoopSender>,
+    text: &str,
+    ctx: &mut ModelContext<PtyController<TestEventLoopSender>>,
+) -> async_channel::Receiver<Vec<ShellCompletion>> {
+    let (results_tx, results_rx) = async_channel::unbounded();
+    controller.run_native_shell_completions(
+        text.to_owned(),
+        NativeCompletionsRequestOptions { remote_first: true },
+        results_tx,
+        ctx,
+    );
+    results_rx
+}
+
+fn position_of(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+/// #1801 design: the answer frame is `RS token : %HH... US` and the cancel frame `RS - : US`. A
+/// frame never carries an EOT or a newline, so it can never end a line or a shell wherever it
+/// lands, and between its delimiters there is only the frame alphabet.
+#[test]
+fn native_completions_frames_are_self_identifying_and_never_end_a_line() {
+    assert_eq!(
+        native_completions_answer("123", "cd é"),
+        b"\x1e123:%63%64%20%C3%A9\x1f".to_vec()
+    );
+    assert_eq!(native_completions_cancel(), b"\x1e-:\x1f".to_vec());
+    for frame in [
+        native_completions_answer("9", "a\nb\u{4}c\r\x1e\x1f"),
+        native_completions_cancel(),
+    ] {
+        assert_eq!(frame.first(), Some(&NATIVE_COMPLETIONS_FRAME_START));
+        assert_eq!(frame.last(), Some(&NATIVE_COMPLETIONS_FRAME_END));
+        let inner = &frame[1..frame.len() - 1];
+        assert!(
+            inner
+                .iter()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'%' | b':' | b'-')),
+            "{frame:?}"
+        );
+    }
+}
+
+/// #1801 design point a: an exchange starts only when the write queue is empty, no command is
+/// executing and the line editor is active; otherwise nothing is written (no `^Y`) and the
+/// requester falls back to the completer at once.
+#[test]
+fn an_exchange_starts_only_when_nothing_is_queued_or_running() {
+    App::test((), |mut app| async move {
+        let (controller, _model_events, line_editor_status, sender, _tx) =
+            native_completions_controller(&mut app);
+
+        // The line editor is not active.
+        line_editor_status.update(&mut app, |status, _| {
+            status.set_line_editor_active_for_test(false)
+        });
+        let refused = controller.update(&mut app, |controller, ctx| {
+            start_exchange(controller, "cd pro", ctx)
+        });
+        assert!(refused.is_closed(), "the requester falls back at once");
+
+        // A command is queued (written through the real API while the line editor is busy).
+        controller.update(&mut app, |controller, ctx| {
+            let outcome = controller.write_command(
+                "echo q",
+                ShellType::Bash,
+                CommandExecutionSource::User,
+                ctx,
+            );
+            assert_eq!(outcome, StartCommandOutcome::Accepted);
+            assert!(!controller.pending_writes.is_empty());
+        });
+        line_editor_status.update(&mut app, |status, _| {
+            status.set_line_editor_active_for_test(true)
+        });
+        let refused = controller.update(&mut app, |controller, ctx| {
+            start_exchange(controller, "cd pro", ctx)
+        });
+        assert!(refused.is_closed(), "not behind a queued write");
+        assert!(
+            !written(&sender).iter().any(|bytes| bytes == &[0x19]),
+            "no ^Y was ever written"
+        );
+        controller.read(&app, |controller, _| {
+            assert!(controller.in_flight_native_completions_state.is_none());
+        });
+    });
+}
+
+/// #1801 design points b and c: nothing ever sits in the queue behind `^Y`. Written through the
+/// real APIs during an exchange, an editor command and agent bytes each go out at once, in order,
+/// after the cancel frame; the queue stays empty throughout.
+#[test]
+fn writes_during_an_exchange_go_out_in_order_after_the_cancel_frame() {
+    App::test((), |mut app| async move {
+        let (controller, _model_events, _status, sender, _tx) =
+            native_completions_controller(&mut app);
+        let results_rx = controller.update(&mut app, |controller, ctx| {
+            let results_rx = start_exchange(controller, "cd pro", ctx);
+            assert!(controller.pending_writes.is_empty());
+            let outcome = controller.write_command(
+                "echo one",
+                ShellType::Bash,
+                CommandExecutionSource::User,
+                ctx,
+            );
+            assert_eq!(outcome, StartCommandOutcome::Accepted);
+            assert!(
+                controller.pending_writes.is_empty(),
+                "nothing queued behind ^Y"
+            );
+            controller.write_agent_bytes(&b"agent two"[..], &AIAgentPtyWriteMode::Raw, ctx);
+            assert!(
+                controller.pending_writes.is_empty(),
+                "nothing queued behind ^Y"
+            );
+            results_rx
+        });
+        let out = written(&sender);
+        assert_eq!(out[0], vec![0x19], "{out:?}");
+        assert_eq!(
+            out[1],
+            native_completions_cancel(),
+            "the cancel frame comes first"
+        );
+        let rest: Vec<u8> = out[2..].concat();
+        let one = position_of(&rest, b"echo one").expect("the editor command was written");
+        let two = position_of(&rest, b"agent two").expect("the agent bytes were written");
+        assert!(one < two, "in order: {rest:?}");
+        assert_eq!(
+            out.iter()
+                .filter(|bytes| bytes.contains(&NATIVE_COMPLETIONS_FRAME_START))
+                .count(),
+            1,
+            "exactly one frame"
+        );
+        assert!(
+            results_rx.recv().await.is_err(),
+            "the Tab falls back to the completer"
+        );
+        controller.read(&app, |controller, _| {
+            assert!(controller.in_flight_native_completions_state.is_none());
+        });
+    });
+}
+
+/// #1801 design point b: a direct byte write (typed keys, a paste, a ^C) during an exchange: the
+/// cancel frame, then the bytes.
+#[test]
+fn a_direct_byte_write_during_an_exchange_is_preceded_by_the_cancel_frame() {
+    for kind in ["bytes", "paste", "etx"] {
+        App::test((), move |mut app| async move {
+            let (controller, _model_events, _status, sender, _tx) =
+                native_completions_controller(&mut app);
+            controller.update(&mut app, |controller, ctx| {
+                let _results = start_exchange(controller, "cd pro", ctx);
+                match kind {
+                    "bytes" => controller.write_bytes(&b"k"[..], ctx),
+                    "paste" => controller.write_paste_bytes(&b"pasted"[..], ctx),
+                    _ => controller.write_bytes(&[0x03][..], ctx),
+                }
+                assert!(controller.pending_writes.is_empty(), "{kind}");
+            });
+            let out = written(&sender);
+            assert_eq!(out[0], vec![0x19], "{kind}: {out:?}");
+            assert_eq!(out[1], native_completions_cancel(), "{kind}: {out:?}");
+            assert!(out.len() >= 3, "{kind}: the write followed: {out:?}");
+        });
+    }
+}
+
+/// #1801 design point c: the prompt arriving writes the answer frame; writes after it go out at
+/// once (the hook consumed exactly its frame); the results end the exchange.
+#[test]
+fn the_prompt_is_answered_with_one_frame_and_later_writes_follow_it() {
+    App::test((), |mut app| async move {
+        let (controller, model_events, _status, sender, _tx) =
+            native_completions_controller(&mut app);
+        let results_rx = controller.update(&mut app, |controller, ctx| {
+            start_exchange(controller, "cd pro", ctx)
+        });
+        model_events.update(&mut app, |_dispatcher, ctx| {
+            ctx.emit(ModelEvent::SendCompletionsPrompt {
+                token: Some("77".to_owned()),
+            });
+        });
+        controller.update(&mut app, |controller, ctx| {
+            controller.write_bytes(&b"k"[..], ctx);
+            assert!(controller.pending_writes.is_empty());
+        });
+        assert_eq!(
+            written(&sender),
+            vec![
+                vec![0x19],
+                native_completions_answer("77", "cd pro"),
+                b"k".to_vec()
+            ],
+            "the answer frame, then the later write; no cancel"
+        );
+        model_events.update(&mut app, |_dispatcher, ctx| {
+            ctx.emit(ModelEvent::CompletionsFinished(vec![]));
+        });
+        assert!(results_rx.try_recv().is_ok());
+        controller.read(&app, |controller, _| {
+            assert!(controller.in_flight_native_completions_state.is_none());
+        });
+    });
+}
+
+/// #1801 review M3: a prompt whose token was already used in this pane (a replay) is cancelled,
+/// as is one with no token.
+#[test]
+fn a_reused_or_missing_prompt_token_is_cancelled() {
+    for second_token in [Some("77"), None] {
+        App::test((), move |mut app| async move {
+            let (controller, model_events, _status, sender, _tx) =
+                native_completions_controller(&mut app);
+            controller.update(&mut app, |controller, ctx| {
+                let _first = start_exchange(controller, "a", ctx);
+            });
+            model_events.update(&mut app, |_dispatcher, ctx| {
+                ctx.emit(ModelEvent::SendCompletionsPrompt {
+                    token: Some("77".to_owned()),
+                });
+            });
+            model_events.update(&mut app, |_dispatcher, ctx| {
+                ctx.emit(ModelEvent::CompletionsFinished(vec![]));
+            });
+            let second = controller.update(&mut app, |controller, ctx| {
+                start_exchange(controller, "b", ctx)
+            });
+            model_events.update(&mut app, |_dispatcher, ctx| {
+                ctx.emit(ModelEvent::SendCompletionsPrompt {
+                    token: second_token.map(str::to_owned),
+                });
+            });
+            let out = written(&sender);
+            assert_eq!(
+                out.last(),
+                Some(&native_completions_cancel()),
+                "{second_token:?}: {out:?}"
+            );
+            assert!(second.recv().await.is_err(), "{second_token:?}");
+        });
+    }
+}
+
+/// #1801: a prompt that does not come in time ends the exchange with the cancel frame; for a
+/// remote-first request there is no "no shell integration" toast. With the real timeout.
+#[test]
+fn prompt_timeout_cancels_without_a_toast_for_a_remote_first_request() {
+    App::test((), |mut app| async move {
+        let (controller, _model_events, _status, sender, _tx) =
+            native_completions_controller(&mut app);
+        let results_rx = controller.update(&mut app, |controller, ctx| {
+            start_exchange(controller, "cd pro", ctx)
+        });
+        Timer::after(NATIVE_COMPLETIONS_PROMPT_TIMEOUT + Duration::from_millis(300)).await;
+        assert_eq!(
+            written(&sender),
+            vec![vec![0x19], native_completions_cancel()]
+        );
+        assert!(results_rx.recv().await.is_err(), "the requester falls back");
+        controller.read(&app, |controller, _| {
+            assert!(controller.in_flight_native_completions_state.is_none());
+            assert!(!controller.last_native_cancel_toasted);
+        });
+    });
+}
+
+/// The same timeout for a request that is not remote-first (upstream's flag path) asks for the
+/// toast: there a prompt that never comes means no shell integration.
+#[test]
+fn prompt_timeout_of_a_fallback_request_asks_for_the_toast() {
+    App::test((), |mut app| async move {
+        let (controller, _model_events, _status, _sender, _tx) =
+            native_completions_controller(&mut app);
+        controller.update(&mut app, |controller, ctx| {
+            let (results_tx, _results_rx) = async_channel::unbounded();
+            controller.run_native_shell_completions(
+                "x".to_owned(),
+                NativeCompletionsRequestOptions {
+                    remote_first: false,
+                },
+                results_tx,
+                ctx,
+            );
+        });
+        Timer::after(NATIVE_COMPLETIONS_PROMPT_TIMEOUT + Duration::from_millis(300)).await;
+        controller.read(&app, |controller, _| {
+            assert!(controller.last_native_cancel_toasted);
+        });
+    });
+}
+
+/// #1801: a second request while one is in flight (a second Tab) is refused at once, and the
+/// first exchange is untouched.
+#[test]
+fn a_second_request_while_one_is_in_flight_is_refused() {
+    App::test((), |mut app| async move {
+        let (controller, _model_events, _status, sender, _tx) =
+            native_completions_controller(&mut app);
+        let (first, second) = controller.update(&mut app, |controller, ctx| {
+            (
+                start_exchange(controller, "first", ctx),
+                start_exchange(controller, "second", ctx),
+            )
+        });
+        assert!(second.is_closed());
+        assert!(!first.is_closed());
+        assert_eq!(written(&sender), vec![vec![0x19]], "one ^Y only");
+    });
+}
+
+/// #1801 design point d: the shell that was asked leaves first (a ^C in its hook, an ssh that
+/// died, the shell exiting): the exchange just ends, with no frame; nothing was held, so a
+/// command written afterwards goes out at once.
+#[test]
+fn the_shell_leaving_ends_the_exchange_without_a_frame() {
+    for leaving in [
+        ModelEvent::Handler(AnsiHandlerEvent::Precmd),
+        ModelEvent::ExitShell {
+            session_id: SessionId::from(9),
+        },
+    ] {
+        App::test((), move |mut app| async move {
+            let (controller, model_events, _status, sender, _tx) =
+                native_completions_controller(&mut app);
+            let results_rx = controller.update(&mut app, |controller, ctx| {
+                start_exchange(controller, "cd pro", ctx)
+            });
+            model_events.update(&mut app, |_dispatcher, ctx| ctx.emit(leaving));
+            controller.read(&app, |controller, _| {
+                assert!(controller.in_flight_native_completions_state.is_none());
+            });
+            assert!(results_rx.recv().await.is_err(), "the requester falls back");
+            controller.update(&mut app, |controller, ctx| {
+                controller.write_bytes(&b"k"[..], ctx)
+            });
+            assert_eq!(
+                written(&sender),
+                vec![vec![0x19], b"k".to_vec()],
+                "no frame to a shell that was not asked"
+            );
+        });
+    }
+}
+
+/// #1801 review M1: on the write-queue path a setup script is ONE `SetupChunked` job the writer
+/// holds (`paced_write_queue` stays empty), so the start gate reads the job's liveness count: no
+/// exchange starts while the writer still holds the job, and one may once it has dropped it.
+#[test]
+fn an_exchange_does_not_start_while_the_writer_holds_a_setup_job() {
+    App::test((), |mut app| async move {
+        let (controller, _model_events, _status, sender, _tx) =
+            native_completions_controller(&mut app);
+        controller.update(&mut app, |controller, ctx| {
+            controller.force_write_queue(true);
+            controller.write_line_clear_setup(b"setup".to_vec(), ctx);
+            assert!(controller.paced_write_queue.is_empty());
+        });
+        let refused = controller.update(&mut app, |controller, ctx| {
+            start_exchange(controller, "cd pro", ctx)
+        });
+        assert!(refused.is_closed(), "not while the setup job is alive");
+        assert!(
+            !written(&sender).iter().any(|bytes| bytes == &[0x19]),
+            "no ^Y behind the setup job"
+        );
+
+        // The writer drops the job (here: the test sender's copy of the message).
+        sender.messages.lock().clear();
+        let started = controller.update(&mut app, |controller, ctx| {
+            start_exchange(controller, "cd pro", ctx)
+        });
+        assert!(
+            !started.is_closed(),
+            "the exchange starts once the job is gone"
+        );
+        assert_eq!(written(&sender), vec![vec![0x19]]);
+    });
+}
+
+/// #1801 review M1: a setup job is a write like any other: one started while an exchange waits
+/// for its prompt first sends the cancel frame.
+#[test]
+fn a_setup_write_during_an_exchange_is_preceded_by_the_cancel_frame() {
+    App::test((), |mut app| async move {
+        let (controller, _model_events, _status, sender, _tx) =
+            native_completions_controller(&mut app);
+        controller.update(&mut app, |controller, ctx| {
+            let _results = start_exchange(controller, "cd pro", ctx);
+            controller.force_write_queue(true);
+            controller.write_line_clear_setup(b"setup".to_vec(), ctx);
+        });
+        let messages = sender.messages.lock();
+        assert!(
+            matches!(&messages[0], Message::Input(b) if &b[..] == [0x19]),
+            "{messages:?}"
+        );
+        assert!(
+            matches!(&messages[1], Message::Input(b) if b.to_vec() == native_completions_cancel()),
+            "the cancel frame before the setup job: {messages:?}"
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|message| matches!(message, Message::SetupChunked { .. })),
+            "{messages:?}"
+        );
+    });
 }

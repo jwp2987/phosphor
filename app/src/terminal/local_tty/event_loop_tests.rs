@@ -1574,6 +1574,7 @@ fn ctrl_c_preempts_a_setup_job_through_the_event_loop() {
     tx.send(Message::SetupChunked {
         chunks: vec![open.clone(), b"part 2".to_vec(), b"part 3".to_vec()],
         pacing: gap(),
+        live: SetupLive::detached(),
     })
     .unwrap();
     event_loop.drain_recv_channel(&mut state);
@@ -1618,6 +1619,7 @@ fn abort_message_cuts_a_job_and_discard_leaves_it() {
     tx.send(Message::SetupChunked {
         chunks: setup_chunks(&[b"one", b"two"]),
         pacing: gap(),
+        live: SetupLive::detached(),
     })
     .unwrap();
     tx.send(Message::DiscardQueuedInput).unwrap();
@@ -1751,6 +1753,7 @@ fn ctrl_c_aborts_the_line_clear_job_at_a_chunk_boundary() {
     tx.send(Message::SetupChunked {
         chunks,
         pacing: mac_pacing(),
+        live: SetupLive::detached(),
     })
     .unwrap();
     event_loop.drain_recv_channel(&mut state);

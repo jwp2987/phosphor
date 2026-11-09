@@ -11856,6 +11856,7 @@ fn test_tab_then_enter_with_completion_delivered_after_a_stall_submits_the_compl
                 .expect("the Enter holds for the Tab");
             wait.hold = EnterHold::TabCompletion {
                 since: Instant::now() - TAB_COMPLETION_ENTER_BUDGET * 3,
+                remote_native: false,
             };
             let id = wait.id;
             input.compute_cap_fired(id, ctx);
@@ -13376,6 +13377,7 @@ async fn tab_enter_fixture_with_terminal(
             generation,
             snapshot: snapshot.clone(),
             local,
+            remote_native: false,
             compute: ComputeClock::default(),
         });
         (generation, snapshot)
@@ -14230,6 +14232,188 @@ fn test_tab_then_enter_ctrl_c_during_hold_submits_nothing() {
             assert!(input.buffer_text(ctx).is_empty())
         });
     });
+}
+
+/// #1801 review: a remote session without the helper answers Tab in-band (the remote shell, one
+/// round trip), so a fast Enter after the Tab waits for it and runs the COMPLETED line, as a local
+/// Tab does (owner rule: Tab then a fast Enter runs the completed line). Both destination modes.
+#[test]
+fn test_tab_then_enter_remote_in_band_answer_runs_the_completed_line_in_both_modes() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+            let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, false).await;
+            input.update(&mut app, |input, _| {
+                input.tab_completion_request.as_mut().unwrap().remote_native = true;
+            });
+            // A round trip's worth of compute, over the local 150 ms cap and within the remote one.
+            let (clock, _guard) =
+                ComputeClock::running_for_test(std::time::Duration::from_millis(400));
+            input.update(&mut app, |input, ctx| {
+                input.input_enter(ctx);
+                let wait = input
+                    .verdict_wait
+                    .as_mut()
+                    .expect("the Enter holds for the remote in-band answer");
+                assert!(wait.holds_for_tab_completion(), "{mode:?}");
+                wait.compute = clock.clone();
+                let id = wait.id;
+                input.compute_cap_fired(id, ctx);
+            });
+            assert!(
+                executed.borrow().is_empty(),
+                "{mode:?}: nothing runs before the answer"
+            );
+            deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);
+            assert_eq!(executed.borrow().len(), 1, "{mode:?}");
+            assert_eq!(
+                executed.borrow()[0].trim_end(),
+                "git checkout feature",
+                "{mode:?}"
+            );
+        });
+    }
+}
+
+/// #1801 review: a remote in-band answer that does not land within its cap hands the line back
+/// and runs nothing, the same give-up as a local Tab (#1666), in both destination modes.
+#[test]
+fn test_tab_then_enter_remote_in_band_give_up_runs_nothing_in_both_modes() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+            let (input, executed, _generation, _snapshot) =
+                tab_enter_fixture(&mut app, false).await;
+            input.update(&mut app, |input, _| {
+                input.tab_completion_request.as_mut().unwrap().remote_native = true;
+            });
+            let (clock, _guard) = ComputeClock::running_for_test(
+                REMOTE_NATIVE_TAB_ENTER_BUDGET + std::time::Duration::from_millis(100),
+            );
+            input.update(&mut app, |input, ctx| {
+                input.input_enter(ctx);
+                let wait = input.verdict_wait.as_mut().expect("the Enter holds");
+                wait.compute = clock.clone();
+                let id = wait.id;
+                input.compute_cap_fired(id, ctx);
+            });
+            assert!(
+                executed.borrow().is_empty(),
+                "{mode:?}: the uncompleted line must not run"
+            );
+            input.read(&app, |input, ctx| {
+                assert!(input.verdict_wait.is_none(), "{mode:?}");
+                assert_eq!(input.buffer_text(ctx), "git checkout fe", "{mode:?}");
+            });
+        });
+    }
+}
+
+/// #1801 review: keys typed behind an Enter held for the remote in-band answer are not lost or
+/// reordered: they wait in the Enter's gate and follow the COMPLETED line.
+#[test]
+fn test_tab_then_enter_remote_in_band_keys_typed_during_hold_follow_the_completed_line() {
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, false).await;
+        input.update(&mut app, |input, ctx| {
+            input.tab_completion_request.as_mut().unwrap().remote_native = true;
+            input.input_enter(ctx);
+            assert!(
+                input
+                    .verdict_wait
+                    .as_ref()
+                    .is_some_and(VerdictWait::holds_for_tab_completion),
+                "the Enter holds for the remote answer"
+            );
+            input.user_insert("l", ctx);
+            input.user_insert("s", ctx);
+        });
+        deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);
+        assert_eq!(executed.borrow().len(), 1);
+        assert_eq!(executed.borrow()[0].trim_end(), "git checkout feature");
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.enter_gate_held_for_test(ctx),
+                [AfterEnterInput::Text("ls".to_string())]
+            );
+        });
+    });
+}
+
+/// #1801 review (F4): the remote shell had no answer (empty, no prompt in time, a second Tab):
+/// an Enter held for it must not wait on the completer's remote I/O (#1165). It runs the visible
+/// line at once, and the Tab request is no longer remote-native. Both destination modes.
+#[test]
+fn test_tab_then_enter_remote_native_miss_submits_the_visible_line_at_once_in_both_modes() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+            let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, false).await;
+            input.update(&mut app, |input, ctx| {
+                input.tab_completion_request.as_mut().unwrap().remote_native = true;
+                input.input_enter(ctx);
+            });
+            assert!(
+                executed.borrow().is_empty(),
+                "{mode:?}: held for the remote answer"
+            );
+            let released = input.update(&mut app, |input, ctx| {
+                input.end_remote_native_tab_wait(
+                    generation,
+                    CompletionsTrigger::Keybinding,
+                    snapshot,
+                    ctx,
+                )
+            });
+            assert!(released, "{mode:?}: the held Enter was released");
+            assert_eq!(
+                executed.borrow().as_slice(),
+                ["git checkout fe"],
+                "{mode:?}"
+            );
+            input.read(&app, |input, _| {
+                assert!(input.verdict_wait.is_none(), "{mode:?}")
+            });
+        });
+    }
+}
+
+/// #1801 review (F4): with no Enter held, a miss only stops the request being remote-native, so
+/// an Enter pressed while the completer answers is not held on remote I/O. Both destination
+/// modes.
+#[test]
+fn test_remote_native_miss_without_enter_makes_the_next_enter_not_wait_in_both_modes() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+            let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, false).await;
+            let released = input.update(&mut app, |input, ctx| {
+                input.tab_completion_request.as_mut().unwrap().remote_native = true;
+                input.end_remote_native_tab_wait(
+                    generation,
+                    CompletionsTrigger::Keybinding,
+                    snapshot,
+                    ctx,
+                )
+            });
+            assert!(!released, "{mode:?}");
+            input.update(&mut app, |input, ctx| input.input_enter(ctx));
+            assert_eq!(
+                executed.borrow().as_slice(),
+                ["git checkout fe"],
+                "{mode:?}: the Enter is not held for the completer's remote I/O"
+            );
+        });
+    }
 }
 
 /// #1165: a remote completer is never waited for: the Enter submits the visible text at once.

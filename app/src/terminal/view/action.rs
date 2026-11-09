@@ -223,6 +223,7 @@ pub enum TerminalAction {
     ControlSequence(Vec<u8>),
     RunNativeShellCompletions {
         buffer_text: String,
+        options: crate::terminal::writeable_pty::pty_controller::NativeCompletionsRequestOptions,
         results_tx: async_channel::Sender<Vec<ShellCompletion>>,
     },
     KeyDown(String),

@@ -1926,6 +1926,21 @@ impl Session {
         self.session_type() == SessionType::Local
     }
 
+    /// Whether this session's side commands currently go through the remote helper (the
+    /// remote-server executor). `false` for local sessions, and for a remote session that
+    /// runs without the helper (absent, declined, failed or lost), whose side commands go
+    /// through the ControlMaster or in-band executor instead (#1801).
+    pub fn uses_remote_helper(&self) -> bool {
+        self.command_executor.read().is_remote_server_executor()
+    }
+
+    /// A Phosphorized remote session without the remote helper (#1801): the owner's primary
+    /// remote design. Tab completion asks the remote shell itself in-band for these sessions.
+    pub fn is_remote_without_helper(&self) -> bool {
+        matches!(self.session_type(), SessionType::WarpifiedRemote { .. })
+            && !self.uses_remote_helper()
+    }
+
     async fn read_history_for_local_session(&self, is_kaspersky_running: bool) -> Vec<String> {
         let histfile = &self.info.histfile;
         let shell_type = &self.info.shell.shell_type();
