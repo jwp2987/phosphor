@@ -32294,6 +32294,58 @@ fn an_idle_dash_prompt_drawn_around_the_users_enter_is_judged_moved() {
     }
 }
 
+/// #1847 (owner decision 2026-11-09): dash armed while already idle at its prompt, nothing typed:
+/// the probe is written on that look, with no moved prompt. With a byte typed since arming the old
+/// rule holds (no write while the prompt has not moved). Legacy and Table.
+#[test]
+fn an_idle_dash_prompt_with_nothing_typed_is_written_on_the_look() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        for typed in [false, true] {
+            App::test((), move |mut app| async move {
+                let _mode =
+                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+                initialize_app_for_terminal_view(&mut app);
+                app.add_singleton_model(|_| crate::ToastStack);
+                let terminal = add_window_with_terminal(&mut app, None);
+                let written = subshell_pty_writes(&mut app, &terminal);
+                terminal.update(&mut app, |view, ctx| {
+                    view.model.lock().simulate_long_running_block("dash", "");
+                    let initial = if typed {
+                        SubshellTtySample::unknown()
+                    } else {
+                        dash_cooked()
+                    };
+                    let tty = install_subshell_tty_for_test(view, initial);
+                    view.model.lock().process_bytes("$ ");
+                    view.arm_subshell_setup(
+                        SubshellPromptTrigger::Banner { shell_type: None },
+                        ctx,
+                    );
+                    if !typed {
+                        assert_eq!(readiness_state(view), "written", "{mode:?}: idle write");
+                        return;
+                    }
+                    assert_eq!(readiness_state(view), "armed", "{mode:?}: facts unknown");
+                    assert!(view.write_user_bytes_to_pty(b"x".to_vec(), ctx));
+                    *tty.lock() = dash_cooked();
+                    output_wakeup(view, ctx);
+                    assert_eq!(
+                        readiness_state(view),
+                        "armed",
+                        "{mode:?}: a typed byte and no moved prompt: today's rule"
+                    );
+                });
+                assert_eq!(
+                    !written.borrow().is_empty(),
+                    !typed,
+                    "{mode:?} typed={typed}"
+                );
+            })
+        }
+    }
+}
+
 /// #1679 step 3 (R2): a non-empty line typed while no answer was asked for is the user driving the
 /// shell: the attempt is cancelled, nothing is written, and a later proof does not revive it.
 #[test]
