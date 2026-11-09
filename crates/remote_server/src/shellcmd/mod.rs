@@ -24,6 +24,7 @@ pub mod buffer;
 pub mod chunk;
 pub mod frame;
 pub mod git;
+pub mod index;
 pub mod predicates;
 pub mod read;
 pub mod shell_kind;

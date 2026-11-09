@@ -95,7 +95,8 @@ fn initialize_advertises_the_helper_capabilities_and_version() {
             "git_write",
             "diff_state",
             "git_status",
-            "github"
+            "github",
+            "codebase_chunks"
         ]
     );
     // Parity family a: batch file reads are served by the helper.
@@ -1029,4 +1030,71 @@ fn opening_a_missing_or_binary_file_is_an_error() {
     h.send(open_buffer_msg("b", &bin, false));
     let e = error_of(h.next());
     assert!(e.message.contains("UTF-8"), "{}", e.message);
+}
+
+/// The legacy host-embedding index stays unsupported on the helper (it never holds the user's
+/// embedding key), named in the error so the client's log says what it fell back on.
+#[test]
+fn the_legacy_host_side_index_requests_are_unsupported_and_named() {
+    let mut h = harness();
+    for (name, message) in [
+        (
+            "IndexCodebase",
+            host_scoped_request::Message::IndexCodebase(Default::default()),
+        ),
+        (
+            "SearchRemoteCodebase",
+            host_scoped_request::Message::SearchRemoteCodebase(Default::default()),
+        ),
+    ] {
+        h.send(host("rl", message));
+        let e = error_of(h.next());
+        assert_eq!(e.code, ErrorCode::Unsupported as i32, "{name}");
+        assert!(e.message.contains(name), "{name}: {}", e.message);
+    }
+}
+
+/// P9b: the four index requests are served (an answer in their own response type, an error inside
+/// it for a bad path), never `UNSUPPORTED`. The per-case coverage is in `index_store_tests.rs`;
+/// the relative path keeps this test off the host's `~/.phosphor/index`.
+#[test]
+fn codebase_index_requests_are_served_not_unsupported() {
+    let mut h = harness();
+    h.send(host(
+        "s1",
+        host_scoped_request::Message::ScanCodebase(crate::proto::ScanCodebase {
+            repo_path: "relative".into(),
+        }),
+    ));
+    let Some(server_message::Message::ScanCodebaseResponse(resp)) = h.next().message else {
+        panic!("expected ScanCodebaseResponse");
+    };
+    assert!(matches!(
+        resp.result,
+        Some(crate::proto::scan_codebase_response::Result::Error(_))
+    ));
+    h.send(host(
+        "s2",
+        host_scoped_request::Message::GetChunks(Default::default()),
+    ));
+    assert!(matches!(
+        h.next().message,
+        Some(server_message::Message::GetChunksResponse(_))
+    ));
+    h.send(host(
+        "s3",
+        host_scoped_request::Message::StoreVectors(Default::default()),
+    ));
+    assert!(matches!(
+        h.next().message,
+        Some(server_message::Message::StoreVectorsResponse(_))
+    ));
+    h.send(host(
+        "s4",
+        host_scoped_request::Message::QueryVectors(Default::default()),
+    ));
+    assert!(matches!(
+        h.next().message,
+        Some(server_message::Message::QueryVectorsResponse(_))
+    ));
 }

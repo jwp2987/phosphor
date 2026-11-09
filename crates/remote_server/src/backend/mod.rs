@@ -18,6 +18,7 @@
 mod executor;
 mod features;
 mod helper;
+pub mod index_sync;
 pub mod refresh;
 mod router;
 mod shell;
@@ -32,7 +33,9 @@ pub use executor::{
 pub use features::{METHODS, RemoteFeatures};
 pub use helper::HelperBackend;
 pub use router::{AlwaysShell, BackendKind, FeatureRouter, HelperProbe, RoutedBackend, decide};
-pub use shell::{AgentContextCache, PrLookup, ShellBackend, ShellBuffers, ShellPush, TreeCache};
+pub use shell::{
+    AgentContextCache, PrLookup, ShellBackend, ShellBuffers, ShellIndex, ShellPush, TreeCache,
+};
 pub use shell_git_runner::ShellGitRunner;
 
 use crate::capability;

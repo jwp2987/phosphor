@@ -13,21 +13,22 @@ use warpui::r#async::executor;
 use crate::proto::{
     Abort, Authenticate, BufferEdit, ClientMessage, CloseBuffer, CreateDirectory,
     CreateDirectoryResponse, DeleteFile, DiffStateFileDelta, DiffStateMetadataUpdate,
-    DiffStateSnapshot, DiscardFilesRequest, ErrorCode, GetBranches, GetBranchesResponse,
-    GetCommittedBranchFilesRequest, GetCommittedBranchFilesResponse, GetDiffState,
-    GetDiffStateResponse, GitCommitChainRequest, GitCommitChainResponse, GitCreatePrRequest,
-    GitCreatePrResponse, GitHubPrInfoPush, GitHubRepositoryInfoPush, GitPullRequest,
-    GitPullResponse, GitPushRequest, GitPushResponse, GitStageRequest, GitStatusPush, Initialize,
-    InitializeResponse, ListDirectory, ListDirectoryResponse, LoadRepoMetadataDirectoryResponse,
-    NavigatedToDirectoryResponse, OpenBuffer, OpenBufferResponse, ReadFileChunk,
-    ReadFileChunkResponse, ReadFileContextRequest, ReadFileContextResponse,
-    RemoteAgentContextSnapshot, ResolveConflict, ResolveConflictResponse, ResolvePath,
-    ResolvePathResponse, RipgrepSearchRequest, RipgrepSearchResponse, RunCommandRequest,
-    RunCommandResponse, SaveBuffer, SaveBufferResponse, ServerMessage, SessionBootstrapped,
-    TextEdit, UnsubscribeDiffState, UpdateGitHubPrInfo, UpdateGitHubRepoInfo, UpdateGitStatus,
-    UpdatePreferences, WriteFile, WriteFileChunk, WriteFileChunkResponse, discard_files_response,
-    git_stage_response, host_scoped_request, notification, read_file_chunk_response,
-    server_message, session_scoped_request,
+    DiffStateSnapshot, DiscardFilesRequest, ErrorCode, GetBranches, GetBranchesResponse, GetChunks,
+    GetChunksResponse, GetCommittedBranchFilesRequest, GetCommittedBranchFilesResponse,
+    GetDiffState, GetDiffStateResponse, GitCommitChainRequest, GitCommitChainResponse,
+    GitCreatePrRequest, GitCreatePrResponse, GitHubPrInfoPush, GitHubRepositoryInfoPush,
+    GitPullRequest, GitPullResponse, GitPushRequest, GitPushResponse, GitStageRequest,
+    GitStatusPush, Initialize, InitializeResponse, ListDirectory, ListDirectoryResponse,
+    LoadRepoMetadataDirectoryResponse, NavigatedToDirectoryResponse, OpenBuffer,
+    OpenBufferResponse, QueryVectors, QueryVectorsResponse, ReadFileChunk, ReadFileChunkResponse,
+    ReadFileContextRequest, ReadFileContextResponse, RemoteAgentContextSnapshot, ResolveConflict,
+    ResolveConflictResponse, ResolvePath, ResolvePathResponse, RipgrepSearchRequest,
+    RipgrepSearchResponse, RunCommandRequest, RunCommandResponse, SaveBuffer, SaveBufferResponse,
+    ScanCodebase, ScanCodebaseResponse, ServerMessage, SessionBootstrapped, StoreVectors,
+    StoreVectorsResponse, TextEdit, UnsubscribeDiffState, UpdateGitHubPrInfo, UpdateGitHubRepoInfo,
+    UpdateGitStatus, UpdatePreferences, WriteFile, WriteFileChunk, WriteFileChunkResponse,
+    discard_files_response, git_stage_response, host_scoped_request, notification,
+    read_file_chunk_response, server_message, session_scoped_request,
 };
 
 use crate::capability::ServerCapabilities;
@@ -95,28 +96,10 @@ pub enum ClientError {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ClientPreferences {
     pub codebase_index_limits: Option<crate::proto::CodebaseIndexLimits>,
-    /// The user's own embedding endpoint. This is the BYOP replacement for the
-    /// pin's Warp bearer token — see the `EmbeddingProviderConfig` message in
-    /// `proto/remote_server.proto`.
-    ///
-    /// **This field carries a credential off this machine.** `api_key` is the
-    /// user's provider API key, read from the keychain, and everything set here
-    /// is transmitted to the remote host on `Initialize` and again on every
-    /// `UpdatePreferences`. Populate it only when remote codebase indexing is
-    /// actually in use — the sole reason the daemon needs a key. The client-side
-    /// producer (`app/src/ai/codebase_embeddings.rs::remote_client_preferences`)
-    /// gates it on `should_use_codebase_indexing`, the runtime predicate that
-    /// carries the user's consent: it requires `code.indexing.
-    /// agent_mode_codebase_context` (default `false`, user-written only) on top
-    /// of the feature flags. Do not populate this field from any path that does
-    /// not make that check.
-    ///
-    /// It previously said the gate was `FeatureFlag::RemoteCodebaseIndexing`.
-    /// That was never a gate: `remote_codebase_indexing` is in `app/Cargo.toml`'s
-    /// DEFAULT feature set, so `is_enabled()` is a constant `true` in every build
-    /// this repo ships, and the key went to every SSH host regardless. A
-    /// compile-time feature that is on by default cannot express user consent.
-    pub embedding_provider: Option<crate::proto::EmbeddingProviderConfig>,
+    // No embedding endpoint or key (P9b owner ruling): the user's provider key stays on their
+    // machine, the app embeds through the network gate and the host only stores vectors. The
+    // proto fields (`Initialize.embedding_provider`, `UpdatePreferences.embedding_provider`)
+    // stay occupied and are always sent empty.
 }
 
 /// Events received from the remote server, delivered through the event
@@ -377,7 +360,8 @@ impl RemoteServerClient {
             session_scoped_request::Message::Initialize(Initialize {
                 auth_token: auth_token.unwrap_or_default().to_owned(),
                 codebase_index_limits: preferences.codebase_index_limits,
-                embedding_provider: preferences.embedding_provider,
+                // Never sent (P9b owner ruling): the user's embedding key stays on their machine.
+                embedding_provider: None,
                 chunked_responses: chunked_responses_announced(),
             }),
         );
@@ -414,7 +398,8 @@ impl RemoteServerClient {
         let msg = ClientMessage::notification(notification::Message::UpdatePreferences(
             UpdatePreferences {
                 codebase_index_limits: preferences.codebase_index_limits,
-                embedding_provider: preferences.embedding_provider,
+                // Never sent (P9b owner ruling), see `initialize`.
+                embedding_provider: None,
             },
         ));
         self.send_notification(msg);
@@ -542,6 +527,84 @@ impl RemoteServerClient {
             Some(server_message::Message::ReadFileContextResponse(resp)) => Ok(resp),
             other => {
                 log::error!("Unexpected response variant for ReadFileContext: {other:?}");
+                Err(ClientError::UnexpectedResponse)
+            }
+        }
+    }
+
+    /// Scans `repo_path` on the host: manifest, fragment spans and root hash, which the host
+    /// also keeps as the repository's current scan (capability `codebase_chunks`).
+    pub async fn scan_codebase(
+        &self,
+        repo_path: String,
+    ) -> Result<ScanCodebaseResponse, ClientError> {
+        let request_id = RequestId::new();
+        let msg = ClientMessage::host_scoped(
+            request_id.to_string(),
+            host_scoped_request::Message::ScanCodebase(ScanCodebase { repo_path }),
+        );
+        let response = self.send_request(request_id, msg).await?;
+        match response.message {
+            Some(server_message::Message::ScanCodebaseResponse(resp)) => Ok(resp),
+            other => {
+                log::error!("Unexpected response variant for ScanCodebase: {other:?}");
+                Err(ClientError::UnexpectedResponse)
+            }
+        }
+    }
+
+    /// The text of the fragments in `request` that have no vector yet.
+    pub async fn get_chunks(&self, request: GetChunks) -> Result<GetChunksResponse, ClientError> {
+        let request_id = RequestId::new();
+        let msg = ClientMessage::host_scoped(
+            request_id.to_string(),
+            host_scoped_request::Message::GetChunks(request),
+        );
+        let response = self.send_request(request_id, msg).await?;
+        match response.message {
+            Some(server_message::Message::GetChunksResponse(resp)) => Ok(resp),
+            other => {
+                log::error!("Unexpected response variant for GetChunks: {other:?}");
+                Err(ClientError::UnexpectedResponse)
+            }
+        }
+    }
+
+    /// Stores embedding vectors on the host, keyed by content hash and storage key.
+    pub async fn store_vectors(
+        &self,
+        request: StoreVectors,
+    ) -> Result<StoreVectorsResponse, ClientError> {
+        let request_id = RequestId::new();
+        let msg = ClientMessage::host_scoped(
+            request_id.to_string(),
+            host_scoped_request::Message::StoreVectors(request),
+        );
+        let response = self.send_request(request_id, msg).await?;
+        match response.message {
+            Some(server_message::Message::StoreVectorsResponse(resp)) => Ok(resp),
+            other => {
+                log::error!("Unexpected response variant for StoreVectors: {other:?}");
+                Err(ClientError::UnexpectedResponse)
+            }
+        }
+    }
+
+    /// Ranks the host's stored vectors against `request.query_vector`.
+    pub async fn query_vectors(
+        &self,
+        request: QueryVectors,
+    ) -> Result<QueryVectorsResponse, ClientError> {
+        let request_id = RequestId::new();
+        let msg = ClientMessage::host_scoped(
+            request_id.to_string(),
+            host_scoped_request::Message::QueryVectors(request),
+        );
+        let response = self.send_request(request_id, msg).await?;
+        match response.message {
+            Some(server_message::Message::QueryVectorsResponse(resp)) => Ok(resp),
+            other => {
+                log::error!("Unexpected response variant for QueryVectors: {other:?}");
                 Err(ClientError::UnexpectedResponse)
             }
         }

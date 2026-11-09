@@ -724,7 +724,7 @@ pub fn refresh_codebase_indexing_configuration(
     {
         use remote_server::manager::RemoteServerManager;
 
-        let preferences = remote_client_preferences(ctx, &store_client.store);
+        let preferences = remote_client_preferences(ctx);
         RemoteServerManager::handle(ctx).update(ctx, |manager, _| {
             manager.update_client_preferences(preferences);
         });
@@ -797,109 +797,14 @@ pub fn subscribe_to_codebase_indexing_configuration(
     );
 }
 
-/// The header *names* (never values -- see the caller) to mention in the
-/// one-time warning below, or `None` when there is nothing to warn about.
-/// Split out from [`warn_once_if_remote_indexing_drops_extra_headers`] so the
-/// interesting part -- names only, values never even reachable from the
-/// return type -- is testable without going through `log` or the process-wide
-/// `Once`.
-fn extra_header_names_to_warn_about(extra_headers: &[(String, String)]) -> Option<Vec<&str>> {
-    if extra_headers.is_empty() {
-        return None;
-    }
-    Some(
-        extra_headers
-            .iter()
-            .map(|(name, _)| name.as_str())
-            .collect(),
-    )
-}
-
-/// Logs once, ever, per process — never on every settings recompute, since
-/// [`remote_client_preferences`] below re-runs on every `AISettings`/`CodeSettings`
-/// change — that the configured embedding provider's `extra_headers` cannot be
-/// forwarded to a remote-indexing daemon, because `EmbeddingProviderConfig` (the
-/// wire message) has no field for them. Logs header **names** and a count only;
-/// never values, which may contain secrets.
-fn warn_once_if_remote_indexing_drops_extra_headers(extra_headers: &[(String, String)]) {
-    static WARNED: std::sync::Once = std::sync::Once::new();
-    let Some(names) = extra_header_names_to_warn_about(extra_headers) else {
-        return;
-    };
-    WARNED.call_once(|| {
-        let count = names.len();
-        log::warn!(
-            "[Remote codebase indexing] The configured embedding provider sets {count} custom \
-             header(s) ({names:?}) that remote codebase indexing cannot forward yet -- the \
-             daemon's /embeddings and /rerank requests will go out without them. If this \
-             provider requires them, use local (non-remote) codebase indexing instead."
-        );
-    });
-}
-
-#[cfg(all(test, not(target_family = "wasm")))]
-mod remote_indexing_extra_headers_warning_tests {
-    use super::*;
-
-    #[test]
-    fn no_extra_headers_means_nothing_to_warn_about() {
-        assert_eq!(extra_header_names_to_warn_about(&[]), None);
-    }
-
-    #[test]
-    fn extra_headers_surface_as_names_only_never_values() {
-        // The property this closes: server_model.rs can only ever pass an empty
-        // Vec (the wire message has no extra-headers field), so the warning must
-        // come from here, where the real endpoint -- names AND secret values --
-        // is still in hand. The return type only ever carries names, so a value
-        // (here a token that would fail the test if it leaked into the output)
-        // structurally cannot reach the log line through this function.
-        let extra_headers = vec![
-            ("X-Gateway-Auth".to_owned(), "super-secret-token".to_owned()),
-            ("X-Org-Id".to_owned(), "org-42".to_owned()),
-        ];
-        let names = extra_header_names_to_warn_about(&extra_headers)
-            .expect("non-empty extra_headers must produce something to warn about");
-        assert_eq!(names, vec!["X-Gateway-Auth", "X-Org-Id"]);
-        assert!(
-            !names
-                .iter()
-                .any(|name| name.contains("secret") || name.contains("org-42")),
-            "no header value must appear anywhere in the warned-about names: {names:?}"
-        );
-    }
-}
-
-/// What a remote-server daemon needs to index a repository on its own host:
-/// the same limits the local index obeys, plus the user's embedding endpoint.
+/// What a remote-server daemon needs from the client: the limits the local index obeys.
 ///
-/// This is where the fork's BYOP substitution shows up on the wire. The pin
-/// sent the daemon a Warp bearer token and let it reach the shared store; there
-/// is no shared store here, so the daemon is given the endpoint directly. It is
-/// resolved on this side because only the client has the settings and the
-/// keychain.
-///
-/// Returns `embedding_provider: None` when nothing is configured — deliberately
-/// not a default, because a daemon that embedded a whole repository against a
-/// model the user never chose would produce vectors under a storage key nothing
-/// queries — and also whenever the user has not turned remote codebase
-/// indexing on, so the user's provider API key never leaves this machine for a
-/// daemon that will never be asked to index anything.
-///
-/// `store` decides which model is preferred the same way the local index does
-/// ([`EmbeddingEndpoints::preferred_model_favoring_existing`]) — so the daemon
-/// isn't handed a different model than the one the local vector store already
-/// has rows for, which would otherwise send the daemon on its own,
-/// independent full re-embed under a storage key the local side never uses.
-pub fn remote_client_preferences(
-    app: &AppContext,
-    store: &SqliteVectorStore,
-) -> remote_server::client::ClientPreferences {
+/// Deliberately NOT the embedding endpoint or key (owner ruling, remote codebase indexing P9b):
+/// the host scans, chunks, hashes and stores; this app embeds, through `crates/network_gate`, with
+/// the user's own provider (`remote_index_driver`). The user's provider API key never leaves this
+/// machine, so there is nothing credential-shaped to gate here any more.
+pub fn remote_client_preferences(app: &AppContext) -> remote_server::client::ClientPreferences {
     use crate::ai::AIRequestUsageModel;
-    use crate::ai::agent_providers::embeddings::resolve_embedding_endpoint;
-    use crate::ai::codebase_auto_indexing::{
-        CodebaseAutoIndexingSurface, should_use_codebase_indexing,
-    };
 
     let limits = AIRequestUsageModel::as_ref(app).codebase_context_limits();
     let codebase_index_limits = Some(remote_server::proto::CodebaseIndexLimits {
@@ -908,94 +813,9 @@ pub fn remote_client_preferences(
         embedding_generation_batch_size: limits.embedding_generation_batch_size as u64,
     });
 
-    // The endpoint carries the user's own provider API key, read out of the
-    // keychain, and `Initialize` ships it to whichever host the user chose to
-    // install a daemon on. Only send it when remote indexing is actually in
-    // use.
-    //
-    // The gate is `should_use_codebase_indexing(Remote, _)` and NOT
-    // `FeatureFlag::RemoteCodebaseIndexing` on its own. That flag is listed in
-    // `app/Cargo.toml`'s `default` feature set, so `is_enabled()` is a constant
-    // `true` in every build this repo ships: gating on it alone is the same as
-    // no gate at all, and an earlier version of this function did exactly that.
-    // A compile-time feature cannot express consent that the user has not given
-    // yet.
-    //
-    // `should_use_codebase_indexing` is the fork's runtime predicate and it
-    // subsumes the flag: `FullSourceCodeEmbedding` (off unless the user asks
-    // for it via `ZAP_UNSTABLE_FEATURES`) AND `RemoteCodebaseIndexing` AND
-    // `UserWorkspaces::is_codebase_context_enabled` — the global AI toggle AND
-    // `CodeSettings::codebase_context_enabled`, whose default is `false`
-    // (`app/src/settings/code.rs`). It is also the exact predicate every caller
-    // that can ask a daemon to index guards on
-    // (`remote_server/codebase_index_model.rs`, `ai/codebase_retrieval.rs`),
-    // which is what makes the two agree: the credential travels when, and only
-    // when, a request that needs it can be made.
-    //
-    // Because the predicate reads two settings groups, the call sites in
-    // `lib.rs` must re-run it on changes to BOTH `AISettings` and
-    // `CodeSettings`; `update_client_preferences` pushes the new value to
-    // already-connected sessions, so withdrawing consent also retracts the key
-    // rather than only stopping the next handshake.
-    //
-    // Sending `None` is not a silent failure: the daemon clears its endpoint
-    // and reports the index as `Unavailable`, and
-    // `codebase_indexing_ready` returns the "no embedding provider has been
-    // configured for this host" error, so the user sees why.
-    let embedding_provider = remote_embedding_provider(
-        should_use_codebase_indexing(CodebaseAutoIndexingSurface::Remote, app),
-        || {
-            // Favors the model `store` already has rows for, same as the local
-            // index (`RefreshingStoreClient::reconfigure`) -- not the plain
-            // `resolve_configured_embedding_model`, which would let the daemon
-            // land on a different model than the local side purely because of
-            // provider-list order, sending it on its own independent full
-            // re-embed under a storage key nothing local ever queries.
-            resolve_embedding_endpoints(app)
-                .preferred_model_favoring_existing(|config| {
-                    store.has_embeddings_for(config.storage_key())
-                })
-                .and_then(|config| {
-                    resolve_embedding_endpoint(app, config).map(|endpoint| {
-                        // `EmbeddingProviderConfig` (the wire message below) has no
-                        // extra_headers field -- adding one is a proto change, out of
-                        // scope here (see `remote_server::server_model::apply_embedding_provider`,
-                        // which receives this same message on the daemon side and can
-                        // only ever pass an empty Vec for the same reason). This is the
-                        // one place the drop is visible with the real endpoint in hand,
-                        // so it is where the hint belongs.
-                        warn_once_if_remote_indexing_drops_extra_headers(&endpoint.extra_headers);
-                        remote_server::proto::EmbeddingProviderConfig {
-                            base_url: endpoint.base_url,
-                            api_key: endpoint.api_key,
-                            embedding_storage_key: config.storage_key().to_string(),
-                        }
-                    })
-                })
-        },
-    );
-
     remote_server::client::ClientPreferences {
         codebase_index_limits,
-        embedding_provider,
     }
-}
-
-/// The credential gate, split out so it can be tested without an `AppContext`.
-///
-/// `resolve` is a closure rather than a value on purpose: when
-/// `remote_indexing_in_use` is false the user's API key must not merely be
-/// dropped after being read, it must never be read at all. A "compute the
-/// verdict and then discard it" shape would still pull the key out of the
-/// keychain on every settings change.
-fn remote_embedding_provider(
-    remote_indexing_in_use: bool,
-    resolve: impl FnOnce() -> Option<remote_server::proto::EmbeddingProviderConfig>,
-) -> Option<remote_server::proto::EmbeddingProviderConfig> {
-    if !remote_indexing_in_use {
-        return None;
-    }
-    resolve()
 }
 
 /// The endpoint and model must follow configuration changes, not freeze at
@@ -1286,57 +1106,6 @@ mod endpoint_refresh_tests {
             ),
             "the error must name the model that is no longer configured"
         );
-    }
-}
-
-#[cfg(all(test, not(target_family = "wasm")))]
-mod byop_key_gate_tests {
-    use super::remote_embedding_provider;
-
-    fn a_credential() -> remote_server::proto::EmbeddingProviderConfig {
-        remote_server::proto::EmbeddingProviderConfig {
-            base_url: "https://api.example.invalid/v1".to_string(),
-            api_key: "sk-secret".to_string(),
-            embedding_storage_key: "storage-key".to_string(),
-        }
-    }
-
-    #[test]
-    fn the_api_key_is_absent_and_unread_when_remote_indexing_is_not_in_use() {
-        let mut resolved = false;
-
-        let provider = remote_embedding_provider(false, || {
-            resolved = true;
-            Some(a_credential())
-        });
-
-        assert!(
-            provider.is_none(),
-            "no `EmbeddingProviderConfig` may be built when the runtime predicate is false; \
-             `Initialize`/`UpdatePreferences` would carry the user's provider API key to the \
-             remote host"
-        );
-        assert!(
-            !resolved,
-            "the keychain must not even be consulted when the predicate is false"
-        );
-    }
-
-    #[test]
-    fn the_api_key_is_sent_when_remote_indexing_is_in_use() {
-        // The negative case above is only meaningful if the positive case is
-        // reachable: a gate that always answers `None` would pass it too.
-        let provider = remote_embedding_provider(true, || Some(a_credential()));
-
-        assert_eq!(
-            provider.map(|config| config.api_key),
-            Some("sk-secret".to_string())
-        );
-    }
-
-    #[test]
-    fn an_unconfigured_provider_still_yields_none_when_indexing_is_in_use() {
-        assert!(remote_embedding_provider(true, || None).is_none());
     }
 }
 

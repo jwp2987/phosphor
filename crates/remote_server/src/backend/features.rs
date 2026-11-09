@@ -16,14 +16,15 @@ use super::router::{HelperProbe, RoutedBackend};
 use super::shell::ShellBackend;
 use super::{BackendError, Family};
 use crate::proto::{
-    CreateDirectoryResponse, DiscardFilesRequest, GetBranches, GetBranchesResponse,
-    GetCommittedBranchFilesRequest, GetCommittedBranchFilesResponse, GetDiffState,
-    GetDiffStateResponse, GitCommitChainRequest, GitCommitChainResponse, GitCreatePrRequest,
-    GitCreatePrResponse, GitPullRequest, GitPullResponse, GitPushRequest, GitPushResponse,
-    GitStageRequest, ListDirectoryResponse, LoadRepoMetadataDirectoryResponse,
-    NavigatedToDirectoryResponse, OpenBufferResponse, ReadFileContextRequest,
-    ReadFileContextResponse, ResolveConflictResponse, ResolvePathResponse, RipgrepSearchRequest,
-    RipgrepSearchResponse, SaveBufferResponse,
+    CreateDirectoryResponse, DiscardFilesRequest, GetBranches, GetBranchesResponse, GetChunks,
+    GetChunksResponse, GetCommittedBranchFilesRequest, GetCommittedBranchFilesResponse,
+    GetDiffState, GetDiffStateResponse, GitCommitChainRequest, GitCommitChainResponse,
+    GitCreatePrRequest, GitCreatePrResponse, GitPullRequest, GitPullResponse, GitPushRequest,
+    GitPushResponse, GitStageRequest, ListDirectoryResponse, LoadRepoMetadataDirectoryResponse,
+    NavigatedToDirectoryResponse, OpenBufferResponse, QueryVectors, QueryVectorsResponse,
+    ReadFileContextRequest, ReadFileContextResponse, ResolveConflictResponse, ResolvePathResponse,
+    RipgrepSearchRequest, RipgrepSearchResponse, SaveBufferResponse, ScanCodebaseResponse,
+    StoreVectors, StoreVectorsResponse,
 };
 
 /// The shell arm of one method: `unimplemented` answers `Unsupported` (or `Unavailable` without a
@@ -150,4 +151,8 @@ remote_features! {
     FsBasic, false: fn list_directory(path: String) -> ListDirectoryResponse => list_directory_shell;
     FsBasic, false: fn resolve_path(path: String) -> ResolvePathResponse => unimplemented;
     FsBasic, true: fn create_directory(path: String) -> CreateDirectoryResponse => unimplemented;
+    CodebaseChunks, false: fn scan_codebase(repo_path: String) -> ScanCodebaseResponse => scan_codebase_shell;
+    CodebaseChunks, false: fn get_chunks(request: GetChunks) -> GetChunksResponse => get_chunks_shell;
+    CodebaseChunks, false: fn store_vectors(request: StoreVectors) -> StoreVectorsResponse => store_vectors_shell;
+    CodebaseChunks, false: fn query_vectors(request: QueryVectors) -> QueryVectorsResponse => query_vectors_shell;
 }

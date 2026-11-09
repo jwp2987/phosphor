@@ -26,6 +26,10 @@ pub mod get_committed_branch_files;
 /// `app/build.rs:245-249` sets `local_fs` for exactly `target_family != "wasm"`.
 #[cfg(feature = "local_fs")]
 pub mod git_status_proto;
+/// The app side of host-scan / app-embed remote codebase indexing (P9b): when to sync, and the
+/// embedder that goes through the network gate with the user's own key.
+#[cfg(not(target_family = "wasm"))]
+pub mod remote_index_driver;
 pub mod ripgrep_search;
 pub mod server_buffer_tracker;
 pub mod server_model;

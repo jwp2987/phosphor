@@ -466,6 +466,20 @@ class Profile:
             return None
         return '{ executable = "%s" }' % _fwd(b) if new_session else '"%s"' % _fwd(b)
 
+    @staticmethod
+    def apply_fake_embeddings(t, T, ollama_url, ollama_model):
+        """P9b: with APPCI_FAKE_EMBEDDINGS the user's BYOP embeddings provider is the loopback fake_embeddings.py (model text-embedding-3-small, a sentinel header as the
+        'key' so the lab can prove it reached only that endpoint), and codebase context + auto indexing are on. Without it nothing changes."""
+        url = os.environ.get("APPCI_FAKE_EMBEDDINGS_URL")
+        if not url:
+            return t
+        chat = ('{ id = "appci-ollama", name = "CI Ollama", api_type = "ollama", base_url = "%s", models = [ { name = "%s", id = "%s" } ] }, ' % (ollama_url, ollama_model, ollama_model)) if ollama_url else ""
+        emb = '{ id = "appci-embed", name = "CI embeddings", api_type = "open_ai", base_url = "%s", models = [ { name = "text-embedding-3-small", id = "text-embedding-3-small" } ], extra_headers = [ [ "X-Appci-Key", "%s" ] ] }' % (url, os.environ.get("APPCI_EMBED_SENTINEL", "appci-embed-sentinel-0001"))
+        t = T.set_key(t, "agents.warp_agent", "providers", "[ %s%s ]" % (chat, emb))
+        t = T.set_key(t, "code.indexing", "agent_mode_codebase_context", "true")
+        t = T.set_key(t, "code.indexing", "agent_mode_codebase_context_auto_indexing", "true")
+        return t
+
     def write_settings(self, mode, ollama_url=None, ollama_model="gpt-oss:20b"):
         """Start from the owner's real settings.toml (machine-local seed, never modified, never printed or uploaded) and apply ONLY
         the per-pass overrides textually (toml_text.py). No seed: the minimal bare profile below, and owner_note says so."""
@@ -496,6 +510,7 @@ class Profile:
             if ollama_url:      # the owner's list also names a laptop-only proxy: the CI provider list is the Ollama endpoint alone, and it is the ACTIVE model
                 t = T.set_key(t, "agents.warp_agent", "providers", '[ { id = "appci-ollama", name = "CI Ollama", api_type = "ollama", base_url = "%s", models = [ { name = "%s", id = "%s" } ] } ]' % (ollama_url, ollama_model, ollama_model))
                 t = T.set_key(t, "agents.byop", "last_used_model_id", '"byop:appci-ollama:%s"' % ollama_model)
+            t = self.apply_fake_embeddings(t, T, ollama_url, ollama_model)
             _wr(cfg + "/settings.toml", t)
             os.chmod(cfg + "/settings.toml", 0o600)
             return

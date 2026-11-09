@@ -29,7 +29,7 @@ use super::jobs::{Inflight, Reply};
 use super::watch::{FsKind, WatchSet};
 use super::{
     agent_context, buffers, diff_state, file_context, fs_ops, git, git_status, git_write, github,
-    repo_meta, repo_watch, ripgrep,
+    index_store, repo_meta, repo_watch, ripgrep,
 };
 
 /// How long the daemon waits with no connections before exiting.
@@ -147,6 +147,8 @@ pub(super) struct Server {
     watches: WatchSet,
     /// Indexed repository roots and their live trees (`repo_meta.rs`).
     repos: repo_meta::RepoTrees,
+    /// Where `ScanCodebase` and friends keep their flat-file stores.
+    index_root: PathBuf,
     /// The watches behind the git-derived views (`repo_watch.rs`).
     repo_watches: repo_watch::RepoWatches,
     /// Diff-state subscriptions (`diff_state.rs`).
@@ -186,7 +188,15 @@ impl Server {
             github: github::Githubs::default(),
             agent: agent_context::AgentContext::new(dirs::home_dir()),
             buffers: buffers::Buffers::default(),
+            index_root: index_store::default_root(),
         }
+    }
+
+    /// Keeps the codebase indexes under `root` instead of `~/.phosphor/index` (tests).
+    #[cfg(test)]
+    pub(super) fn with_index_root(mut self, root: PathBuf) -> Self {
+        self.index_root = root;
+        self
     }
 
     #[cfg(test)]
@@ -442,7 +452,42 @@ impl Server {
                 .inflight
                 .spawn(reply, move |_| git_write::discard_files(msg)),
             M::GitStage(msg) => self.inflight.spawn(reply, move |_| git_write::stage(msg)),
-            // Legacy host-side indexing: never implemented by the helper (see CODEBASE_CHUNKS).
+            // Codebase indexing (`codebase_chunks`): the host scans and stores, the app embeds.
+            M::ScanCodebase(msg) => {
+                log::info!("Handling ScanCodebase");
+                let root = self.index_root.clone();
+                self.inflight.spawn(reply, move |_| {
+                    server_message::Message::ScanCodebaseResponse(index_store::scan_codebase(
+                        &root, msg,
+                    ))
+                });
+            }
+            M::GetChunks(msg) => {
+                log::info!("Handling GetChunks ({} hashes)", msg.content_hashes.len());
+                let root = self.index_root.clone();
+                self.inflight.spawn(reply, move |_| {
+                    server_message::Message::GetChunksResponse(index_store::get_chunks(&root, msg))
+                });
+            }
+            M::StoreVectors(msg) => {
+                log::info!("Handling StoreVectors ({} vectors)", msg.vectors.len());
+                let root = self.index_root.clone();
+                self.inflight.spawn(reply, move |_| {
+                    server_message::Message::StoreVectorsResponse(index_store::store_vectors(
+                        &root, msg,
+                    ))
+                });
+            }
+            M::QueryVectors(msg) => {
+                log::info!("Handling QueryVectors (top_k={})", msg.top_k);
+                let root = self.index_root.clone();
+                self.inflight.spawn(reply, move |_| {
+                    server_message::Message::QueryVectorsResponse(index_store::query_vectors(
+                        &root, msg,
+                    ))
+                });
+            }
+            // Legacy host-side indexing (host embeds): never implemented by the helper.
             other => unsupported(&reply, host_scoped_name(&other)),
         }
     }
@@ -667,6 +712,10 @@ fn host_scoped_name(message: &host_scoped_request::Message) -> &'static str {
         M::SearchRemoteCodebase(_) => "SearchRemoteCodebase",
         M::GitPull(_) => "GitPull",
         M::GitStage(_) => "GitStage",
+        M::ScanCodebase(_) => "ScanCodebase",
+        M::GetChunks(_) => "GetChunks",
+        M::StoreVectors(_) => "StoreVectors",
+        M::QueryVectors(_) => "QueryVectors",
     }
 }
 

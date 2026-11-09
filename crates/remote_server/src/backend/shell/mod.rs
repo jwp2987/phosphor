@@ -9,6 +9,7 @@ mod agent_context;
 mod buffer;
 mod diff;
 mod git_write;
+mod index;
 mod read;
 mod status;
 mod tree;
@@ -18,6 +19,7 @@ use std::sync::{Arc, Mutex};
 
 pub use agent_context::AgentContextCache;
 pub use buffer::ShellBuffers;
+pub use index::ShellIndex;
 pub use status::PrLookup;
 pub use tree::{ShellPush, TreeCache};
 
@@ -45,6 +47,9 @@ pub struct ShellBackend {
     pushes: Arc<Mutex<Vec<ShellPush>>>,
     /// The host's base64 decoder (for writes), probed once like the encoder.
     decode_tool: Arc<Mutex<Option<Option<DecodeTool>>>>,
+    /// The host's app-side codebase index state; `None` when no storage is configured (tests,
+    /// callers that never index).
+    index: Option<Arc<ShellIndex>>,
     /// The agent context this host's shell backend last published, with its revision. Shared by
     /// every backend the router builds for the host.
     agent_cache: Arc<AgentContextCache>,
@@ -71,6 +76,7 @@ impl ShellBackend {
             tree_cache: Arc::default(),
             pushes: Arc::default(),
             decode_tool: Arc::default(),
+            index: None,
             agent_cache: Arc::default(),
             buffers: Arc::default(),
         }
@@ -91,6 +97,12 @@ impl ShellBackend {
     /// Shares `cache` (the host's file-tree state) with this backend.
     pub fn with_tree_cache(mut self, cache: Arc<TreeCache>) -> Self {
         self.tree_cache = cache;
+        self
+    }
+
+    /// Gives this backend the host's codebase-index state (its store root and text cache).
+    pub fn with_index(mut self, index: Arc<ShellIndex>) -> Self {
+        self.index = Some(index);
         self
     }
 

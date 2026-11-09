@@ -113,6 +113,15 @@ message HostScopedRequest {
     // git_push/git_pull/git_commit_chain for the same reason: a one-shot,
     // host-local git subprocess. Next free slot in this oneof.
     GitStageRequest git_stage = 24;
+    // Helper-side codebase indexing, P9b (capability `codebase_chunks`). The
+    // host scans, chunks, hashes and stores; the APP embeds (through the
+    // network gate) and the user's embedding key never reaches the host.
+    // Additive: an old daemon answers UNSUPPORTED and the client runs the
+    // same algorithm over the shell. See `ScanCodebase` below.
+    ScanCodebase scan_codebase = 25;
+    GetChunks get_chunks = 26;
+    StoreVectors store_vectors = 27;
+    QueryVectors query_vectors = 28;
   }
 }
 
@@ -233,6 +242,11 @@ message ServerMessage {
     // client that set `Initialize.chunked_responses`, so an old client never
     // receives one; an old daemon never sends one.
     FrameChunk frame_chunk = 43;
+    // P9b codebase indexing results, see `ScanCodebase`. Additive tags.
+    ScanCodebaseResponse scan_codebase_response = 44;
+    GetChunksResponse get_chunks_response = 45;
+    StoreVectorsResponse store_vectors_response = 46;
+    QueryVectorsResponse query_vectors_response = 47;
   }
 }
 
@@ -263,8 +277,10 @@ message Initialize {
   // Client-resolved codebase index limits, for parity with local indexing.
   // Field 5 matches the pin.
   optional CodebaseIndexLimits codebase_index_limits = 5;
-  // Fork-original: the user's own embedding endpoint. See
-  // `EmbeddingProviderConfig`.
+  // DEPRECATED (P9b, owner ruling): never sent. The user's embedding key stays
+  // on their machine; the app embeds through the network gate and hands the
+  // host only vectors. The tag stays occupied so an old peer's field is
+  // ignored, not reused. See `EmbeddingProviderConfig`.
   optional EmbeddingProviderConfig embedding_provider = 6;
   // #1244: the client reassembles `FrameChunk`s, so the daemon may split a
   // large response into them. An old daemon ignores the field and keeps
@@ -1538,6 +1554,7 @@ message CodebaseIndexLimits {
 // limit changes). Fire-and-forget.
 message UpdatePreferences {
   optional CodebaseIndexLimits codebase_index_limits = 1;
+  // DEPRECATED (P9b): never sent, tag kept occupied. See `Initialize`.
   optional EmbeddingProviderConfig embedding_provider = 2;
 }
 
@@ -1685,4 +1702,127 @@ message CodebaseIndexStatusesSnapshot {
 
 message CodebaseIndexStatusUpdated {
   CodebaseIndexStatus status = 1;
+}
+
+// ── Codebase indexing, host-scan / app-embed (P9b)
+//
+// Flow (the app drives; capability `codebase_chunks`; every message is also
+// served by the app's no-helper shell path with the same shapes):
+//   ScanCodebase{repo}            -> manifest + fragment spans + root hash. The host
+//                                    keeps the result as the repo's current scan.
+//   GetChunks{repo, key, hashes}  -> text of the fragments that have NO vector yet
+//                                    under the embedding storage key.
+//   (the app embeds the text through the network gate)
+//   StoreVectors{repo, key, ...}  -> vectors keyed by content hash, kept on the host.
+//   QueryVectors{repo, key, q, k} -> brute-force cosine ranking over the host's vectors.
+// The response to a big repository's scan is large; it is split into FrameChunks like
+// any large frame, there is no separate streaming message.
+
+message ScanCodebase {
+  string repo_path = 1;
+}
+
+message CodebaseManifestEntry {
+  string path = 1;
+  string file_hash = 2;
+}
+
+message ScanCodebaseSuccess {
+  // Sorted by path. `file_hash` is SHA-256 hex of the file's bytes.
+  repeated CodebaseManifestEntry manifest = 1;
+  // Every fragment, sorted by path then position. `FragmentMetadata.path` is
+  // relative to the repository root; lines are 0-based and inclusive; the byte
+  // range is half-open.
+  repeated FragmentMetadata chunks = 2;
+  string root_hash = 3;
+}
+
+message CodebaseIndexError {
+  string message = 1;
+}
+
+message ScanCodebaseResponse {
+  oneof result {
+    ScanCodebaseSuccess success = 1;
+    CodebaseIndexError error = 2;
+  }
+}
+
+message GetChunks {
+  string repo_path = 1;
+  // The embedding storage key the app will embed with: fragments that already
+  // have a vector under it are not sent again.
+  string storage_key = 2;
+  repeated string content_hashes = 3;
+}
+
+message CodebaseChunkText {
+  string content_hash = 1;
+  string text = 2;
+}
+
+message GetChunksSuccess {
+  repeated CodebaseChunkText chunks = 1;
+  // How many of the requested hashes already had a vector.
+  uint64 already_embedded = 2;
+  // Requested hashes the host could not produce (not in its current scan, or
+  // the file changed since). The app rescans.
+  repeated string missing_hashes = 3;
+}
+
+message GetChunksResponse {
+  oneof result {
+    GetChunksSuccess success = 1;
+    CodebaseIndexError error = 2;
+  }
+}
+
+message CodebaseVector {
+  string content_hash = 1;
+  repeated float values = 2 [packed = true];
+}
+
+message StoreVectors {
+  string repo_path = 1;
+  string storage_key = 2;
+  repeated CodebaseVector vectors = 3;
+}
+
+message StoreVectorsSuccess {
+  uint64 stored = 1;
+}
+
+message StoreVectorsResponse {
+  oneof result {
+    StoreVectorsSuccess success = 1;
+    CodebaseIndexError error = 2;
+  }
+}
+
+message QueryVectors {
+  string repo_path = 1;
+  string storage_key = 2;
+  repeated float query_vector = 3 [packed = true];
+  uint32 top_k = 4;
+}
+
+message RankedCodebaseFragment {
+  string content_hash = 1;
+  // Relative to the repository root.
+  string path = 2;
+  uint32 start_line = 3;
+  uint32 end_line = 4;
+  float score = 5;
+}
+
+message QueryVectorsSuccess {
+  // Best first.
+  repeated RankedCodebaseFragment fragments = 1;
+}
+
+message QueryVectorsResponse {
+  oneof result {
+    QueryVectorsSuccess success = 1;
+    CodebaseIndexError error = 2;
+  }
 }

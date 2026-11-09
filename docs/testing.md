@@ -3532,6 +3532,51 @@ changed, `.gitignore` honoured without a git repo, binary / oversize / empty ski
 OpenAI-style `POST /v1/embeddings` (`input` string or list, optional `dimensions`) with a deterministic unit vector per text
 (SHA-256 derived), `GET /health` with `ok`; the chosen port is its first stdout line. It exists for the P9b end-to-end case.
 
+## Remote codebase indexing, host scans / app embeds (P9b)
+
+Capability `codebase_chunks`; the legacy host-embedding `codebase_index` stays legacy-only. Owner rulings: NO HTTP/TLS in the helper; the APP embeds through
+`crates/network_gate` with the user's own BYOP `/embeddings` provider, so the key never leaves the user's machine (`EmbeddingProviderConfig` is no longer sent;
+`Initialize.embedding_provider` / `UpdatePreferences.embedding_provider` stay occupied in the proto and are always empty, `ClientPreferences` has no such field);
+the host keeps a flat-file store; search is brute-force cosine. Off by default: nothing scans, embeds or reads a key unless `should_use_codebase_indexing` (the
+`FullSourceCodeEmbedding` flag AND the codebase-context setting) is true.
+
+Wire (additive): `ScanCodebase` -> manifest + fragment spans + root hash (a big reply is split into FrameChunks like any large frame), `GetChunks` -> text only
+for fragments without a vector under the storage key, `StoreVectors`, `QueryVectors` (host-scoped tags 25-28, responses 44-47).
+
+Store (`crates/remote_server/src/index/store.rs`; helper: `~/.phosphor/index/<hash of repo path>/`, override `PHOSPHOR_REMOTE_INDEX_DIR` for tests; no-helper arm:
+`<state dir>/remote-index/<hash of user@host + repo>/`, so it survives reconnects): `meta.json` (format 1: manifest, spans, root hash; atomic rename) and one
+`vectors-<hash of storage key>.bin` per embedding space (header `PHVEC001`, key, dims; records = 32 raw hash bytes + dims f32 LE; appended, torn tail ignored and
+cut by the next append; last record of a hash wins). A storage-key change leaves the old space unused and `StoreVectors` removes it, so the repository re-embeds.
+Fragments whose vectors are dead (edited/deleted files) are compacted away on a scan once the file holds 1.5x the live set + 64 records.
+
+No-helper arm (`shellcmd/index.rs`, `backend/shell/index.rs`): `git ls-files -z --cached --others --exclude-standard` (find fallback pruning .git, node_modules,
+target, __pycache__, .venv) piped through `find -maxdepth 0 -type f -size -3000000c` into `sha256sum` / `shasum -a 256` / `sha256 -r` (hashes equal the helper's;
+`git ls-files -s` was NOT used because it hashes the index and misses unstaged edits). Only files whose hash is new are read (base64, 32 per command, halved when
+the output cap is hit) and chunked with the shared chunker; binary/empty files are remembered by hash and not read again. Known differences from the helper:
+the shell arm does not read `.warpindexingignore`/`.cursorignore`/`.codeiumignore`, prunes the five directory names in a non-git tree, and is not offered on
+PowerShell hosts (Unsupported). Both arms use the naive chunker, not the app's tree-sitter split (fragment hashes differ from the app's local index).
+
+App (`app/src/remote_server/remote_index_driver.rs`, `remote_server::backend::index_sync`): the algorithm is written once over `RemoteFeatures` (scan -> get_chunks
+windows of 256 -> embed in the provider's batch size -> store_vectors; rescans up to twice when a file changed between scan and fetch). `RemoteIndexDriver` starts
+a sync on events only: `NavigatedToDirectory` into a git repo (auto indexing setting), the router's `AfterOwnWrite`, the prompt after a HEAD-changing command
+(`command_may_change_head`), `user_resync`, and the setting being turned on. One sync per repo at a time, one more queued if events arrive meanwhile. No timer.
+`CodebaseRetrievalHandle::RemoteIndex` embeds the query in the app and asks the host to rank. Logs: `hop=remote_index_sync start|done|failed|skipped`,
+`hop=remote_index_embed texts=N via=network_gate purpose=ai_endpoint` (counts only).
+
+Tests (compile on the box, not run on the laptop): `cargo nextest run -p remote_server --features daemon --lib index` -- `index::store_tests` (round trip, torn tail,
+dimension change, storage-key change, ranking and tie order, compaction), `daemon::index_store_tests` (scan -> chunks -> store -> query, incremental, a file edited
+after the scan is reported missing), `shellcmd::index_tests` (command builder, parser), `backend::contract_tests::assert_codebase_index` (the SAME literal assertions
+against the in-process helper and the shell arm over a local sh) plus shell-only tests (cold text cache re-reads and verifies hashes; only new hashes are read;
+no storage configured = Unavailable), `backend::index_sync_tests` (first/second/edit/key-change/batching/failure-resume/search on the shell arm with a fake
+embedder, and the helper arm in-process); app: `remote_index_driver_tests` (model choice keeps the repository's last storage key). Removed on purpose (owner ruling):
+`byop_key_gate_tests` and `remote_indexing_extra_headers_warning_tests` in `ai/codebase_embeddings.rs`, which pinned the key being SENT to the host.
+
+Lab: `lab_codebase_index_remote` (`cases_lab_index.py`; bash zsh fish nu, lan and 150 ms, nohelper + upload, terminal mode). Needs `APPCI_FAKE_EMBEDDINGS=1`
+(run.py starts `script/fake_embeddings.py --log` on loopback; profile.py configures it as the BYOP embeddings provider `text-embedding-3-small`, with a sentinel
+`X-Appci-Key` header as its key, turns on codebase context + auto indexing, and sets `ZAP_UNSTABLE_FEATURES=full_source_code_embedding`); skips with a reason
+otherwise. It asserts: first sync embeds every fragment, routing line says helper/shell, the gate line is logged, the fake provider saw the sentinel hash, the
+sentinel is nowhere on the host (remote shell commands, `~/.phosphor`, the repo), and after an outside edit + `git checkout -b` exactly the edited fragment is embedded.
+
 ## Editor Enter and host-colour probe: the clock never commits, the probe never eats a key (owner ruling 2026-11-09)
 Editor Enter (`Input::wait_for_verdict_then_enter`): a decided input type (locked, or autodetection off) gives up the pending detection and submits at the Enter, and from the model notification (`release_verdict_wait_if_settled`), with no cap armed; `EnterVerdictWait` is `Submit | Wait`. `VERDICT_HANDBACK_CPU_CAP` (1 s of classifier CPU + the size allowance) and the 2 s backstop only hand the line back (`hand_back_slow_verdict`: toast, keys behind the Enter dropped with a count #1661, counted WARN `Enter verdict too slow ... (total N this run)`); an event that decided the Enter meanwhile wins. Tests: see the verdict-cap row above (`test_slow_verdict_cap_hands_the_line_back_and_drops_keys_behind_the_enter`, `test_decided_input_type_submits_at_once_with_no_cap_armed`, `test_lock_change_while_the_enter_waits_submits_it_in_order`, `test_verdict_cpu_cap_ignores_a_job_waiting_off_the_cpu`).
 

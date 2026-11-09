@@ -7,8 +7,9 @@
 //!
 //! The request handlers cover the families in [`crate::capability::HELPER_CAPABILITIES`] (repo
 //! metadata and its live file tree arrived with the watch infrastructure in `watch.rs`; diff
-//! state, git status and GitHub info follow the repository through `repo_watch.rs`);
-//! everything else (codebase index, buffers, git write operations) is answered with
+//! state, git status and GitHub info follow the repository through `repo_watch.rs`; codebase
+//! indexing is host-scan / app-embed, `index_store.rs`);
+//! everything else (the legacy host-embedding codebase index, buffers, git write operations) is answered with
 //! `ErrorCode::UNSUPPORTED` and the client runs it on its no-helper path. Wave H, #1804.
 
 mod agent_context;
@@ -132,7 +133,10 @@ fn spawn_in_process(home: Option<std::path::PathBuf>) -> std::os::unix::net::Uni
     std::thread::Builder::new()
         .name("in-process-daemon".into())
         .spawn(move || {
-            let mut server = server::Server::new(server::GRACE_PERIOD);
+            // The index stores go to a scratch directory, never the real home.
+            let index_root = tempfile::tempdir().expect("scratch index directory");
+            let mut server = server::Server::new(server::GRACE_PERIOD)
+                .with_index_root(index_root.path().to_path_buf());
             if let Some(home) = home {
                 server = server.with_home(home);
             }

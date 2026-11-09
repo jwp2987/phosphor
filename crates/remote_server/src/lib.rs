@@ -15,6 +15,8 @@ pub mod capability;
 pub mod codebase_index_proto;
 pub mod frames;
 pub mod host_response;
+#[cfg(any(feature = "client", feature = "daemon"))]
+pub mod index;
 pub mod naming;
 pub mod policy;
 pub mod protocol;

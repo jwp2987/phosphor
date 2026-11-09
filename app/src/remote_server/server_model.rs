@@ -1314,6 +1314,19 @@ impl ServerModel {
                     Some(host_scoped_request::Message::SearchRemoteCodebase(msg)) => {
                         self.handle_search_remote_codebase(msg, &request_id, conn_id, ctx)
                     }
+                    // P9b host-scan / app-embed indexing is served by the helper (and the app's
+                    // shell path); this legacy daemon implements the older host-embedding
+                    // protocol only. UNSUPPORTED makes the client's router use the shell arm.
+                    Some(
+                        host_scoped_request::Message::ScanCodebase(_)
+                        | host_scoped_request::Message::GetChunks(_)
+                        | host_scoped_request::Message::StoreVectors(_)
+                        | host_scoped_request::Message::QueryVectors(_),
+                    ) => HandlerOutcome::Sync(server_message::Message::Error(ErrorResponse {
+                        code: ErrorCode::Unsupported.into(),
+                        message: "this daemon does not support the host-scan codebase index"
+                            .to_string(),
+                    })),
                     #[cfg(not(feature = "local_fs"))]
                     Some(
                         host_scoped_request::Message::SaveBuffer(_)

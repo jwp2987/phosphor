@@ -154,6 +154,10 @@ pub struct SessionContext {
     /// The OS category the remote host's shell reported at bootstrap ("Linux", "MacOS",
     /// "Windows"), when known. Decides which path rules the file tools use (#1278).
     remote_os_category: Option<String>,
+    /// The terminal session this context was built for, for a `WarpifiedRemote` session only:
+    /// what `RemoteServerManager::backend_for_session` needs to reach a host that has no
+    /// helper (the no-helper path is keyed by session, not by host id). `None` otherwise.
+    remote_session_id: Option<warp_core::SessionId>,
     /// The shell-mode stand-in host (`shell_mode_host_id`) of a `WarpifiedRemote` session that
     /// has no helper but does have an out-of-band channel: the id the host's skills and rules
     /// are filed under. `None` for every other session.
@@ -233,6 +237,12 @@ impl SessionContext {
             } else {
                 None
             };
+        let remote_session_id = if matches!(session_type, Some(SessionType::WarpifiedRemote { .. }))
+        {
+            session.session_id(app)
+        } else {
+            None
+        };
         let shell_mode_host = match &session_type {
             Some(SessionType::WarpifiedRemote { host_id: None }) => session
                 .session_id(app)
@@ -253,7 +263,13 @@ impl SessionContext {
             ssh_connection_info,
             is_legacy_ssh,
             has_remote_server_client,
+            remote_session_id,
         }
+    }
+
+    /// The terminal session of a remote context (see the field).
+    pub fn remote_session_id(&self) -> Option<warp_core::SessionId> {
+        self.remote_session_id
     }
 
     pub fn session_type(&self) -> &Option<SessionType> {
@@ -406,6 +422,7 @@ impl SessionContext {
             has_remote_server_client: false,
             remote_home: None,
             remote_os_category: None,
+            remote_session_id: None,
             shell_mode_host: None,
         }
     }
@@ -448,6 +465,7 @@ impl SessionContext {
             has_remote_server_client: false,
             remote_home: None,
             remote_os_category: None,
+            remote_session_id: None,
             shell_mode_host: None,
         }
     }
@@ -477,6 +495,7 @@ impl SessionContext {
             has_remote_server_client,
             remote_home: None,
             remote_os_category: None,
+            remote_session_id: None,
             shell_mode_host: None,
         }
     }

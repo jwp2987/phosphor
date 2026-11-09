@@ -475,6 +475,11 @@ pub fn register_shell_mode_channel(
     let session_id = session_info.session_id;
     let router = RemoteServerManager::handle(ctx).read(ctx, |mgr, _| mgr.router().clone());
     router.register_out_of_band(session_id, Arc::new(channel));
+    // The machine's stable name keys the shell-mode codebase index across reconnects.
+    router.set_session_identity(
+        session_id,
+        format!("{}@{}", session_info.user, session_info.hostname),
+    );
     log::info!(
         "shell mode: ControlMaster registered as the out-of-band channel for {session_id:?}"
     );

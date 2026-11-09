@@ -370,6 +370,17 @@ pub enum CodebaseRetrievalHandle {
         host_request_handle: remote_server::manager::HostRequestHandle,
         repo_path: Arc<PathBuf>,
     },
+    /// Host-scan / app-embed index (P9b): the query is embedded HERE through the network gate
+    /// with the user's own provider, and the host (helper, or the app's shell path) only ranks
+    /// stored vectors. Works with a helper, without one, and with the legacy daemon.
+    #[cfg(not(target_family = "wasm"))]
+    RemoteIndex {
+        backend: remote_server::backend::RoutedBackend,
+        embedder: Arc<crate::remote_server::remote_index_driver::GateEmbedder>,
+        repo_path: Arc<PathBuf>,
+        /// A sync of this repository was running when the handle was made.
+        syncing: bool,
+    },
 }
 
 impl std::fmt::Debug for CodebaseRetrievalHandle {
@@ -384,6 +395,11 @@ impl std::fmt::Debug for CodebaseRetrievalHandle {
                 .debug_struct("CodebaseRetrievalHandle::Remote")
                 .field("repo_path", repo_path)
                 .finish_non_exhaustive(),
+            #[cfg(not(target_family = "wasm"))]
+            Self::RemoteIndex { repo_path, .. } => f
+                .debug_struct("CodebaseRetrievalHandle::RemoteIndex")
+                .field("repo_path", repo_path)
+                .finish_non_exhaustive(),
         }
     }
 }
@@ -395,6 +411,8 @@ impl CodebaseRetrievalHandle {
         match self {
             Self::Local { repo_root, .. } => repo_root.as_path(),
             Self::Remote { repo_path, .. } => repo_path.as_path(),
+            #[cfg(not(target_family = "wasm"))]
+            Self::RemoteIndex { repo_path, .. } => repo_path.as_path(),
         }
     }
 
@@ -423,6 +441,30 @@ impl CodebaseRetrievalHandle {
                     // A dropped sender means the controller went away mid-flight.
                     Ok(Ok(receiver)) => {
                         receiver.await.unwrap_or(Err(RetrievalFailure::Unavailable))
+                    }
+                }
+            }
+            #[cfg(not(target_family = "wasm"))]
+            Self::RemoteIndex {
+                backend,
+                embedder,
+                repo_path,
+                syncing,
+            } => {
+                use remote_server::backend::index_sync::{SyncError, ranked_paths, search_repo};
+                let repo = repo_path.to_string_lossy().into_owned();
+                match search_repo(backend, embedder.as_ref(), &repo, query, 20).await {
+                    Ok(hits) => Ok(Arc::new(
+                        ranked_paths(&hits).into_iter().map(PathBuf::from).collect(),
+                    )),
+                    Err(SyncError::NotIndexed(_)) if *syncing => Err(RetrievalFailure::Syncing),
+                    Err(SyncError::NotIndexed(_)) => Err(RetrievalFailure::NoIndex),
+                    Err(SyncError::NoProvider) => Err(RetrievalFailure::IndexUnavailable(
+                        "no embedding provider is configured".to_string(),
+                    )),
+                    Err(SyncError::Embed(m)) => Err(RetrievalFailure::Failed(m)),
+                    Err(SyncError::Host(_) | SyncError::Backend(_)) => {
+                        Err(RetrievalFailure::HostUnreachable)
                     }
                 }
             }
@@ -539,29 +581,37 @@ fn handle_for_remote_session(
     app: &AppContext,
     session_context: &crate::ai::blocklist::SessionContext,
 ) -> Option<CodebaseRetrievalHandle> {
+    use remote_server::backend::Family;
+
     use crate::ai::codebase_auto_indexing::{
         CodebaseAutoIndexingSurface, should_use_codebase_indexing,
     };
-    use crate::remote_server::codebase_index_model::RemoteCodebaseIndexModel;
     use crate::remote_server::manager::RemoteServerManager;
+    use crate::remote_server::remote_index_driver::{
+        GateEmbedder, RemoteIndexDriver, RemoteIndexStatus,
+    };
 
     if !should_use_codebase_indexing(CodebaseAutoIndexingSurface::Remote, app) {
         return None;
     }
-
-    let host_id = session_context.host_id()?;
-    // A server without a codebase index (the limited helper) is a host with no remote index.
-    if !RemoteServerManager::as_ref(app)
-        .host_supports(host_id, remote_server::capability::CODEBASE_INDEX)
-    {
+    let session_id = session_context.remote_session_id()?;
+    let driver = RemoteIndexDriver::as_ref(app);
+    let repo_path = driver.active_repo(session_id)?.to_string();
+    let backend = RemoteServerManager::as_ref(app).backend_for_session(session_id);
+    if !backend.is_available(Family::CodebaseChunks) {
         return None;
     }
-    let repo_path =
-        RemoteCodebaseIndexModel::as_ref(app).active_repo_path(session_context, None)?;
-
-    Some(CodebaseRetrievalHandle::Remote {
-        host_request_handle: RemoteServerManager::as_ref(app).host_request_handle(host_id),
+    let prefer = driver.last_storage_key(session_id, &repo_path, app);
+    let embedder = GateEmbedder::from_app(app, prefer.as_deref())?;
+    let syncing = matches!(
+        driver.status(session_id, &repo_path, app),
+        Some(RemoteIndexStatus::Scanning | RemoteIndexStatus::Embedding { .. })
+    );
+    Some(CodebaseRetrievalHandle::RemoteIndex {
+        backend,
+        embedder: Arc::new(embedder),
         repo_path: Arc::new(PathBuf::from(repo_path)),
+        syncing,
     })
 }
 
