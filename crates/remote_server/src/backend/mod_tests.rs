@@ -14,6 +14,11 @@ fn every_family_has_a_distinct_capability_that_round_trips() {
 #[test]
 fn every_known_capability_belongs_to_a_family() {
     for cap in HELPER_CAPABILITIES.iter().chain(LEGACY_ONLY_CAPABILITIES) {
+        // A refinement of `file_write` (the request field `expect`), not a family of its own: the
+        // router asks for it on top of the FileWrite decision.
+        if *cap == crate::capability::FILE_WRITE_EXPECT {
+            continue;
+        }
         assert!(
             Family::from_capability(cap).is_some(),
             "{cap} has no Family"

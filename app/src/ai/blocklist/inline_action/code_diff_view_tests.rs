@@ -73,6 +73,25 @@ fn toast_message_wraps_io_errors_with_file_and_cause() {
     );
 }
 
+/// #1837: the host's refusal of a stale remote write (the file changed between the read the
+/// accept checked and the write) arrives as `FileSaveError::RemoteError`. The toast must carry
+/// its reason: the user has to learn the write did not happen and why.
+#[test]
+fn toast_message_carries_the_remote_host_conflict() {
+    crate::i18n::init(Some("en"));
+    let reason = "Failed to write /work/src/main.rs: the file changed on the host after it was \
+                  read, so it was not overwritten.";
+    let error = FileSaveError::RemoteError(reason.to_owned());
+
+    let message = save_failure_toast_message("/work/src/main.rs", &error);
+
+    assert!(message.contains("/work/src/main.rs"), "{message}");
+    assert!(
+        message.contains("changed on the host") && message.contains("was not overwritten"),
+        "conflict reason dropped from toast: {message}"
+    );
+}
+
 // ── Revert settlement (#684) ─────────────────────────────────────────────
 //
 // `begin_revert` queues each file in a `RevertingDiffs`,

@@ -130,12 +130,65 @@ fn chunked_write_then_chunked_read_round_trips_and_reports_eof() {
 }
 
 #[test]
+fn write_file_with_an_expectation_writes_only_when_it_holds() {
+    use crate::proto::{WriteExpect, write_expect::State};
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("g.txt");
+    let attempt = |expect: Option<State>, content: &str| {
+        let server_message::Message::WriteFileResponse(resp) = write_file(WriteFile {
+            path: p(&file),
+            content: content.to_string(),
+            expect: expect.map(|state| WriteExpect { state: Some(state) }),
+        }) else {
+            panic!("wrong response type");
+        };
+        resp.result
+    };
+    // Absent: writes when there is no file, refuses once there is one.
+    assert!(matches!(
+        attempt(Some(State::Absent(true)), "one"),
+        Some(write_file_response::Result::Success(_))
+    ));
+    let Some(write_file_response::Result::Error(e)) = attempt(Some(State::Absent(true)), "two")
+    else {
+        panic!("an existing file must refuse an absent expectation");
+    };
+    assert!(e.message.contains("changed on the host"), "{}", e.message);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "one");
+    // Sha256: matching writes, a mismatch (the user changed it) leaves the user's bytes.
+    let one = crate::index::sha256_hex(b"one");
+    assert!(matches!(
+        attempt(Some(State::Sha256(one.clone())), "three"),
+        Some(write_file_response::Result::Success(_))
+    ));
+    std::fs::write(&file, "user edit").unwrap();
+    assert!(matches!(
+        attempt(Some(State::Sha256(one)), "four"),
+        Some(write_file_response::Result::Error(_))
+    ));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "user edit");
+    // An empty expectation matches nothing: refused.
+    assert!(matches!(
+        write_file(WriteFile {
+            path: p(&file),
+            content: "x".into(),
+            expect: Some(WriteExpect { state: None }),
+        }),
+        server_message::Message::WriteFileResponse(WriteFileResponse {
+            result: Some(write_file_response::Result::Error(_))
+        })
+    ));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "user edit");
+}
+
+#[test]
 fn write_file_creates_parents_and_delete_file_removes() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("x/y/z.txt");
     let server_message::Message::WriteFileResponse(resp) = write_file(WriteFile {
         path: p(&file),
         content: "content".to_string(),
+        expect: None,
     }) else {
         panic!("wrong response type");
     };

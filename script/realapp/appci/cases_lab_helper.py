@@ -433,6 +433,17 @@ def _register_families():
 _register_families()
 
 
+def _register_write_expect():
+    """file_write_expect (#1837) is a refinement of file_write (WriteFile.expect), not a Family of its own, so no fam_ case is generated for it. The real check is
+    lab_fam_agent_edit_conflict (cases_agent_file_edits.py), whose upload arm is the helper refusing a stale accept; this registration keeps the coverage guard honest and
+    the skip names the case that proves it."""
+    reg("fam_file_write_expect", lambda ctx, r, arm: None, caps=["file_write_expect"], shells=("bash",), lat=("lan",), helper=("nohelper", "helper"),
+        pre=lambda arm: "covered by lab_fam_agent_edit_conflict (the stale accept refused on both arms)")
+
+
+_register_write_expect()
+
+
 # ------------------------------------------------------------------ 3. routing
 def c_route_unsupported(ctx, r, arm):
     """The helper answers UNSUPPORTED for a family mid-session: the same feature falls back to the shell arm and keeps working (no banner, branch chip still shows).

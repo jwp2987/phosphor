@@ -204,6 +204,28 @@ fn the_route_log_line_has_the_shape_the_lab_asserts() {
     );
 }
 
+/// #1837: a guarded write with neither a helper that checks nor a shell channel is refused, not
+/// sent unguarded; the file keeps its bytes.
+#[tokio::test]
+async fn a_guarded_write_with_no_way_to_check_is_refused_and_leaves_the_file() {
+    use crate::shellcmd::write::{Expect, HexDigest};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("f.txt");
+    std::fs::write(&path, "user").unwrap();
+    let backend = FeatureRouter::new().backend(&host(), None, []);
+    let digest = HexDigest::parse(&"0".repeat(64)).unwrap();
+    let err = backend
+        .write_file_expecting(
+            path.to_string_lossy().into_owned(),
+            "agent".to_string(),
+            Some(Expect::Sha256(digest)),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, BackendError::Unavailable(_)), "{err:?}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "user");
+}
+
 #[test]
 fn own_writes_reach_refresh_listeners_with_the_host() {
     use std::sync::Mutex;

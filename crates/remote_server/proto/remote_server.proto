@@ -539,6 +539,21 @@ message FileOperationError {
 message WriteFile {
   string path = 1;
   string content = 2;
+  // Optional precondition (#1837). Absent: write unconditionally, as before. Present: write only if
+  // the file is still in that state, else write NOTHING and answer with a FileOperationError whose
+  // message says the file changed. A server that does not advertise the `file_write_expect`
+  // capability ignores this field, so the client never sends it to one.
+  WriteExpect expect = 3;
+}
+
+// What the file at WriteFile.path must be for the write to go ahead.
+message WriteExpect {
+  oneof state {
+    // There must be no file.
+    bool absent = 1;
+    // The file's bytes must have this SHA-256 (64 lowercase hex characters).
+    string sha256 = 2;
+  }
 }
 
 // Server → client: result of a WriteFile request.

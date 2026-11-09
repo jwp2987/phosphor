@@ -1101,6 +1101,109 @@ async fn the_shell_backend_writes_on_a_host_with_no_base64_decoder() {
     assert_file_write(&subject).await;
 }
 
+/// #1837: a write that carries the state it was computed against writes when the file still has
+/// it, and writes NOTHING when the file changed (or appeared, or is gone). `write` is the
+/// backend's guarded write; both arms run the same assertions.
+async fn assert_guarded_write<F, Fut>(name: &str, write: F)
+where
+    F: Fn(String, String, crate::shellcmd::write::Expect) -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
+    use crate::shellcmd::write::{Expect, HexDigest};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir
+        .path()
+        .join("guarded.txt")
+        .to_string_lossy()
+        .into_owned();
+    let sha =
+        |bytes: &[u8]| Expect::Sha256(HexDigest::parse(&crate::index::sha256_hex(bytes)).unwrap());
+
+    // Absent: creates; once the file exists it refuses and keeps the bytes.
+    write(path.clone(), "first".into(), Expect::Absent)
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "first", "{name}");
+    let err = write(path.clone(), "second".into(), Expect::Absent)
+        .await
+        .unwrap_err();
+    assert!(err.contains("changed on the host"), "{name}: {err}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "first", "{name}");
+
+    // A matching hash writes.
+    write(path.clone(), "agent v1".into(), sha(b"first"))
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "agent v1",
+        "{name}"
+    );
+
+    // The user edits the file after the diff was computed: the stale expectation is refused and
+    // the user's bytes (a CRLF, non-UTF-8-safe mix) are untouched.
+    let user = b"user edit\r\nbytes \xff\n";
+    std::fs::write(&path, user).unwrap();
+    let err = write(path.clone(), "agent v2".into(), sha(b"agent v1"))
+        .await
+        .unwrap_err();
+    assert!(err.contains("changed on the host"), "{name}: {err}");
+    assert_eq!(std::fs::read(&path).unwrap(), user, "{name}");
+    let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().contains("phosphor-tmp"))
+        .collect();
+    assert!(leftovers.is_empty(), "{name}: temp file left behind");
+
+    // The file was deleted since: a hash expectation no longer matches.
+    std::fs::remove_file(&path).unwrap();
+    assert!(
+        write(path.clone(), "agent v3".into(), sha(user))
+            .await
+            .is_err(),
+        "{name}"
+    );
+    assert!(!std::path::Path::new(&path).exists(), "{name}");
+}
+
+#[tokio::test]
+async fn the_shell_backend_refuses_a_stale_guarded_write() {
+    let shell = Arc::new(shell_with_index().0);
+    assert_guarded_write("shell(local sh)", |p, c, e| {
+        let shell = Arc::clone(&shell);
+        async move {
+            shell
+                .write_file_expecting(p, c, Some(e))
+                .await
+                .map_err(|e| e.to_string())
+        }
+    })
+    .await;
+}
+
+#[cfg(all(feature = "daemon", unix))]
+#[tokio::test]
+async fn the_helper_refuses_a_stale_guarded_write() {
+    let stream = crate::daemon::spawn_in_process_for_tests();
+    let stream = async_io::Async::new(stream).unwrap();
+    let (reader, writer) = futures::io::AsyncReadExt::split(stream);
+    let executor = executor::Background::default();
+    let (client, _events, _host_responses) = RemoteServerClient::new(reader, writer, &executor);
+    let client = Arc::new(client);
+    assert_guarded_write("helper(in-process daemon)", |p, c, e| {
+        let client = Arc::clone(&client);
+        async move {
+            let wire = e.to_wire().expect("hash and absent have a wire form");
+            client
+                .write_file_expecting(p, c, Some(wire))
+                .await
+                .map_err(|e| e.to_string())
+        }
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn the_shell_backend_meets_the_contract() {
     assert_contract(&shell_subject()).await;

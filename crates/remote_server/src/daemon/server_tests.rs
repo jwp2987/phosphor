@@ -84,6 +84,7 @@ fn initialize_advertises_the_helper_capabilities_and_version() {
         resp.capabilities,
         [
             "file_write",
+            "file_write_expect",
             "fs_basic",
             "run_command",
             "git_read",

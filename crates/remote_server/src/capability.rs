@@ -9,6 +9,11 @@ use crate::proto::InitializeResponse;
 
 /// Whole-file `WriteFile` and `DeleteFile`.
 pub const FILE_WRITE: &str = "file_write";
+/// `WriteFile.expect`: the write is refused (nothing written) when the file is no longer in the
+/// state the request names. Advertised explicitly; a legacy daemon's empty list does NOT imply it
+/// (see [`ServerCapabilities::supports_listed`]), because an older daemon ignores the field and
+/// would write unguarded.
+pub const FILE_WRITE_EXPECT: &str = "file_write_expect";
 /// `ListDirectory`, `ResolvePath`, `CreateDirectory`, `ReadFileChunk`, `WriteFileChunk`.
 pub const FS_BASIC: &str = "fs_basic";
 /// `SessionBootstrapped` and `RunCommand`.
@@ -54,6 +59,7 @@ pub const LEGACY_ONLY_CAPABILITIES: &[&str] = &[CODEBASE_INDEX];
 /// Every capability the helper in this build implements.
 pub const HELPER_CAPABILITIES: &[&str] = &[
     FILE_WRITE,
+    FILE_WRITE_EXPECT,
     FS_BASIC,
     RUN_COMMAND,
     GIT_READ,
@@ -94,6 +100,14 @@ impl ServerCapabilities {
             None => true,
             Some(names) => names.iter().any(|n| n == capability),
         }
+    }
+
+    /// Whether `capability` is explicitly listed. Unlike [`Self::supports`], a legacy daemon (no
+    /// list) answers false: use it for a feature whose absence is unsafe to assume away.
+    pub fn supports_listed(&self, capability: &str) -> bool {
+        self.names
+            .as_ref()
+            .is_some_and(|names| names.iter().any(|n| n == capability))
     }
 
     /// True for the helper (a non-empty list), false for a legacy full daemon.
@@ -148,6 +162,19 @@ mod tests {
         assert!(!LEGACY_ONLY_CAPABILITIES.contains(&CODEBASE_CHUNKS));
         assert!(LEGACY_ONLY_CAPABILITIES.contains(&CODEBASE_INDEX));
         assert!(!HELPER_CAPABILITIES.contains(&CODEBASE_INDEX));
+    }
+
+    #[test]
+    fn write_expect_is_never_assumed_for_a_legacy_daemon() {
+        let legacy = ServerCapabilities::from_initialize_response(&InitializeResponse::default());
+        assert!(legacy.supports(FILE_WRITE_EXPECT));
+        assert!(!legacy.supports_listed(FILE_WRITE_EXPECT));
+        assert!(HELPER_CAPABILITIES.contains(&FILE_WRITE_EXPECT));
+        let old_helper = ServerCapabilities::from_initialize_response(&InitializeResponse {
+            capabilities: vec![FILE_WRITE.to_string()],
+            ..Default::default()
+        });
+        assert!(!old_helper.supports_listed(FILE_WRITE_EXPECT));
     }
 
     #[test]
