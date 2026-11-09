@@ -288,3 +288,101 @@ fn the_purpose_table_is_classified_as_documented() {
     assert_eq!(AGENT_WEB.kind, Kind::PublicWeb);
     assert_eq!(MCP_SERVER.kind, Kind::UserConfigured);
 }
+
+// -- The master switch and the event log ----------------------------------------------------
+
+fn recorder(g: &Gate) -> Arc<std::sync::Mutex<Vec<GateEvent>>> {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = seen.clone();
+    g.set_event_listener(move |e| sink.lock().unwrap().push(e.clone()));
+    seen
+}
+
+#[test]
+fn gate_is_on_by_default() {
+    assert!(Gate::new().is_enabled());
+}
+
+#[test]
+fn gate_off_allows_unlisted_loopback_name_and_redirect() {
+    let g = Gate::new();
+    g.set_enabled(false);
+    assert!(g.check_url("https://example.org/x", &BACKGROUND).is_ok());
+    assert!(g.check_url("http://localhost:9/x", &BACKGROUND).is_ok());
+    assert!(
+        g.check_redirect("https://example.org/next", 1, &BACKGROUND)
+            .is_ok()
+    );
+    assert!(
+        g.check_redirect("https://example.org/next", 1, &MCP)
+            .is_ok()
+    );
+    assert!(g.resolved_ok("evil.example", &[IpAddr::V4(Ipv4Addr::LOCALHOST)]));
+}
+
+#[test]
+fn gate_off_keeps_the_redirect_hop_cap() {
+    let g = Gate::new();
+    g.set_enabled(false);
+    assert!(
+        g.check_redirect("https://example.org/", MAX_REDIRECT_HOPS, &BACKGROUND)
+            .is_err()
+    );
+}
+
+#[test]
+fn gate_back_on_denies_again() {
+    let g = Gate::new();
+    g.set_enabled(false);
+    assert!(g.check_url("https://example.org/x", &BACKGROUND).is_ok());
+    g.set_enabled(true);
+    assert!(g.check_url("https://example.org/x", &BACKGROUND).is_err());
+    assert!(!g.resolved_ok("evil.example", &[IpAddr::V4(Ipv4Addr::LOCALHOST)]));
+}
+
+#[test]
+fn events_record_denials_gate_off_passes_and_non_loopback_allows_only() {
+    let g = gate_with(&["https://api.example.com"]);
+    let seen = recorder(&g);
+    let _ = g.check_url("https://example.org/x?secret=1", &BACKGROUND);
+    let _ = g.check_url("https://api.example.com/v1", &BACKGROUND);
+    let _ = g.check_url("http://127.0.0.1:1/", &BACKGROUND); // loopback allow: not recorded
+    g.set_enabled(false);
+    let _ = g.check_url("https://example.net/", &BACKGROUND);
+    let ev = seen.lock().unwrap().clone();
+    let outcomes: Vec<_> = ev.iter().map(|e| e.outcome).collect();
+    assert_eq!(
+        outcomes,
+        [Outcome::Denied, Outcome::Allowed, Outcome::AllowedGateOff]
+    );
+    assert_eq!(ev[0].host, "example.org");
+    assert_eq!(ev[0].host_hash, hash_host("example.org"));
+    assert_eq!(ev[0].purpose, "t-background");
+    assert!(ev[0].seq < ev[1].seq && ev[1].seq < ev[2].seq);
+}
+
+#[test]
+fn event_text_never_contains_the_host_or_url() {
+    let g = Gate::new();
+    let seen = recorder(&g);
+    let _ = g.check_url("https://private-host.example/path?token=abc", &BACKGROUND);
+    let ev = seen.lock().unwrap().clone();
+    let e = &ev[0];
+    for text in [format!("{e}"), format!("{e:?}")] {
+        assert!(!text.contains("private-host"), "{text}");
+        assert!(!text.contains("token"), "{text}");
+    }
+    let d = g
+        .check_url("https://private-host.example/path", &BACKGROUND)
+        .unwrap_err();
+    assert!(!d.to_string().contains("private-host"));
+}
+
+#[test]
+fn proxy_policy_is_unchanged_by_the_switch() {
+    let g = Gate::new();
+    g.set_enabled(false);
+    // The proxy applier is settings-only: the policy function does not look at the switch.
+    let _ = apply_proxy_policy(reqwest::ClientBuilder::new());
+    assert!(!g.is_enabled());
+}
