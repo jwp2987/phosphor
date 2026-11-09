@@ -21,9 +21,9 @@ use warpui::{
 use crate::{
     code::editor::{add_color, remove_color},
     code_review::git_dialog::{
-        GitDialog, GitDialogAction, GitDialogEvent, GitDialogMode, interactive_path_future,
-        render_branch_section, render_chevron_icon, render_file_list, show_toast,
-        user_facing_git_error,
+        GitDialog, GitDialogAction, GitDialogEvent, GitDialogMode, git_command_line,
+        interactive_path_future, render_branch_section, render_chevron_icon, render_file_list,
+        show_git_failure, show_toast, user_facing_git_error,
     },
     ui_components::icons::Icon,
     util::git::{Commit, FileChangeEntry},
@@ -156,6 +156,10 @@ pub(super) fn start_confirm(me: &mut GitDialog, ctx: &mut ViewContext<GitDialog>
     }
 
     let path_future = interactive_path_future(ctx);
+    let local_push_command = git_command_line(
+        &repo_path.to_string_lossy(),
+        &["push", "--set-upstream", "origin", &branch],
+    );
 
     ctx.spawn(
         async move {
@@ -174,7 +178,7 @@ pub(super) fn start_confirm(me: &mut GitDialog, ctx: &mut ViewContext<GitDialog>
                 }
                 Err(e) => {
                     log::error!("Push failed: {e}");
-                    show_toast(user_facing_git_error(&e.to_string()), ctx);
+                    show_git_failure(&e.to_string(), Some(local_push_command), ctx);
                 }
             }
             let _ = me;
@@ -191,20 +195,18 @@ fn start_confirm_remote(
     publish: bool,
     ctx: &mut ViewContext<GitDialog>,
 ) {
-    use crate::code_review::git_dialog::remote_client_for;
+    use crate::code_review::git_dialog::{git_command_line, remote_backend_for};
     use crate::remote_server::proto;
+    use remote_server::backend::RemoteFeatures as _;
 
-    let Some(client) = remote_client_for(&remote, ctx) else {
-        show_toast(user_facing_git_error("could not resolve host"), ctx);
-        ctx.emit(GitDialogEvent::Completed);
-        return;
-    };
-    let request = proto::GitPushRequest {
-        repo_path: remote.path.to_string(),
-        branch,
-    };
+    // Helper when it serves git writes, otherwise the shell backend; no helper is required.
+    let backend = remote_backend_for(&remote, ctx);
+    let repo_path = remote.path.to_string();
+    let terminal_command =
+        git_command_line(&repo_path, &["push", "--set-upstream", "origin", &branch]);
+    let request = proto::GitPushRequest { repo_path, branch };
     ctx.spawn(
-        async move { client.git_push(request).await },
+        async move { backend.git_push(request).await },
         move |me, result, ctx| {
             match result {
                 Ok(response) => match response.result {
@@ -222,7 +224,7 @@ fn start_confirm_remote(
                     }
                     Some(proto::git_push_response::Result::Error(e)) => {
                         log::error!("Remote push failed: {}", e.message);
-                        show_toast(user_facing_git_error(&e.message), ctx);
+                        show_git_failure(&e.message, Some(terminal_command), ctx);
                     }
                     None => show_toast(user_facing_git_error(""), ctx),
                 },
