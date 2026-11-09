@@ -2857,7 +2857,7 @@ def lab_cases_registry_and_selection():
     assert run.unknown_case_names("mode_proof,typo_case", reg) == ["typo_case"]       # exact names are still checked exactly
     # winmap: a lab case is never 'unclassified'; PowerShell pane skips with a reason; p_onesess is skipped on Windows
     base = {n.split(".")[0] for n in names}
-    old = {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i", "lab_no_helper_chip", "lab_replay", "lab_password_prompt", "lab_helper_install", "lab_nu_agent_pager_env", "lab_read_files_remote", "lab_diff_apply_remote", "lab_file_tree_remote", "lab_remote_edit", "lab_skills_remote", "lab_diff_panel_remote", "lab_gh_chip_remote", "lab_codebase_index_remote"}
+    old = {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i", "lab_no_helper_chip", "lab_replay", "lab_password_prompt", "lab_helper_install", "lab_nu_agent_pager_env", "lab_read_files_remote", "lab_diff_apply_remote", "lab_file_tree_remote", "lab_remote_edit", "lab_skills_remote", "lab_diff_panel_remote", "lab_gh_chip_remote", "lab_codebase_index_remote", "lab_agent_remote_flow", "lab_agent_remote_errors", "lab_agent_remote_drop"}
     assert old <= base and all(n.startswith(("lab_fam_", "lab_helper_", "lab_nohelper_", "lab_git_write_remote")) for n in base - old), base
     assert all(c["modes"] == ("terminal",) for c in labs if c["name"].startswith("lab_ssh_drop_reconnect")), "the drop case is terminal-only"
     pw = [c["arm"] for c in labs if c["name"].startswith("lab_password_prompt")]
@@ -3478,6 +3478,38 @@ def agent_interactive_oracles():
     assert FM.read_request_log("/nonexistent/none.jsonl") == []
     names = {c["name"] for c in cases.CASES}
     assert {"agent_interactive_password", "agent_interactive_vim", "agent_interactive_ssh", "agent_interactive_less", "agent_noninteractive_no_takeover"} <= names
+def fake_model_plan_and_agent_remote_pure_parts():
+    """#1827: the multi-step plan turn (one tool call per answered step, then Done.), the recorded tool results, and the agent_remote result helpers"""
+    import fake_model as FM
+    import cases_agent_remote as AR
+    t = AR.plan_text(["read /w/a.txt", "grep tk /w", "glob *.txt /w", "edit /w/a.txt :: old text :: new text", "run cat /w/a.txt && echo; x", "codebase needle"])
+    plan = FM.parse_plan(t)
+    assert [p[0] for p in plan] == ["read", "grep", "glob", "edit", "run", "codebase"], plan
+    assert plan[3] == ("edit", "/w/a.txt", "old text", "new text") and plan[4] == ("run", "cat /w/a.txt && echo; x"), plan
+    assert FM.parse_plan("Reply with the word Q") is None and FM.parse_plan(PLAN_BAD := "Please carry out these steps in order: grep onlyone")[0][0] == "bad"
+    msgs = [{"role": "user", "content": "old turn"}, {"role": "user", "content": t}]
+    names = []
+    for i in range(len(plan)):
+        rep = FM.reply_for(msgs)
+        names.append(rep["tool"]["name"])
+        msgs += [{"role": "assistant", "content": ""}, {"role": "tool", "content": '{"status":"ok","n":%d}' % i}]
+    assert names == ["read_files", "grep", "file_glob", "apply_file_diffs", "run_shell_command", "search_codebase"], names
+    assert FM.reply_for(msgs) == {"text": "Done.", "tool": None}
+    text, results = FM.turn_state(msgs)
+    assert text == t and len(results) == 6, (text, results)
+    assert FM.reply_for([{"role": "user", "content": PLAN_BAD}])["tool"] is None
+    assert FM.plan_call(plan[1]) == {"name": "grep", "arguments": {"queries": ["tk"], "path": "/w"}}
+    assert FM.plan_call(plan[2])["arguments"] == {"patterns": ["*.txt"], "search_dir": "/w"}
+    f = FM.FakeModel()
+    f.turns.append((0.0, t, ["r1"]))
+    f.turns.append((1.0, t, ["r1", "r2"]))
+    f.turns.append((2.0, "other", ["x"]))
+    assert f.tool_results_for("old text") == ["r1", "r2"] and f.tool_results_for("zzz") == []
+    assert AR.parse_result('{"status":"ok"}') == {"status": "ok"} and AR.parse_result("nope") == {"_raw": "nope"} and AR.parse_result("[1]") == {"_raw": "[1]"}
+    assert AR.result_paths({"files": [{"path": "/a"}, "/b"]}) == ["/a", "/b"] and AR.result_paths({}) == []
+    names = sorted(c["name"] for c in cases.CASES if c["name"].startswith("lab_agent_remote_"))
+    assert len(names) == 5 * 2 + 5 * 2 + 3 * 2, names
+    assert all(c["modes"] == ("agent",) and c["lab"] for c in cases.CASES if c["name"].startswith("lab_agent_remote_"))
 
 
 @check
