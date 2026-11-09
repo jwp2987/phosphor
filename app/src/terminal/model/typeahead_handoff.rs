@@ -858,6 +858,12 @@ pub struct TypeaheadHandoff {
     /// the written command (the input direction is not the barrier's), so the counts are not
     /// proven stale by it.
     own_preexec_pending: bool,
+    /// This session has emitted a Preexec before (learned per session, reset by a new session;
+    /// like the line editor's ready signal, #1823). Only then is "the written command's own
+    /// Preexec is not parsed yet" evidence of anything: a session that never emits one (a shell
+    /// or program without our hooks) would hold the Enter for an event that cannot come, and the
+    /// cap would hand the Enter back instead of delivering it to the running program.
+    session_emits_preexec: bool,
     /// User bytes were written to the pty while the editor owned input and nothing adopted them
     /// (an agent-requested command, a block from before the bootstrap precmd), so the shell's line
     /// may hold text the next legacy report puts in front of the editor's (#1089).
@@ -1877,6 +1883,7 @@ impl TypeaheadHandoff {
     /// session's, so the measured round trips are dropped and the next command measures afresh.
     /// A subshell (`sudo -i`, `ksu`) runs on the same machine and keeps them.
     pub fn on_new_session(&mut self) {
+        self.session_emits_preexec = false;
         self.rtt_samples.clear();
         // #1793: the new shell's line is proven empty only by its own report.
         self.line_empty_at_writes = None;
@@ -2757,6 +2764,7 @@ impl TypeaheadHandoff {
     /// whether the pty took over input.
     pub fn on_preexec(&mut self, shell_started: bool) -> bool {
         warpui::input_order::note_shell_signal(warpui::input_order::ShellSignal::Preexec);
+        self.session_emits_preexec = true;
         self.end_keys_follow_editor("preexec");
         self.shell_activity = ShellActivity::Running;
         // #1793: a command runs; a `\r` now would be its input.
@@ -3486,9 +3494,11 @@ impl TypeaheadHandoff {
                 // The written command's Preexec has not been parsed: the editor sampled reading
                 // may be the one that has not read the command yet (the input direction is not
                 // the barrier's), so nothing is proven stale; the window, released by the Precmd.
-                Some(true) if self.own_preexec_pending => {
-                    Some(YoungHoldEvidence::PrecmdMaybeInFlight)
-                }
+                // Only a session that has emitted a Preexec before can be waited on for one; an
+                // unproven session's Enter is delivered (plain terminal).
+                Some(true) if self.own_preexec_pending => self
+                    .session_emits_preexec
+                    .then_some(YoungHoldEvidence::PrecmdMaybeInFlight),
                 Some(true) => Some(YoungHoldEvidence::RequestDue),
                 // No barrier for this shell (fish): held for the prompt as before #1614, the
                 // Precmd's request and report releasing it (owner decision 2026-11-03).
@@ -3505,9 +3515,9 @@ impl TypeaheadHandoff {
             // The written command's own Preexec has not been parsed: the cooked shell in front may
             // be the one about to read it (as for the line editor above); the window, released by
             // the command's Precmd.
-            ShellPromptFact::ShellCooked if self.own_preexec_pending && !counts_say_prompt => {
-                Some(YoungHoldEvidence::PrecmdMaybeInFlight)
-            }
+            ShellPromptFact::ShellCooked if self.own_preexec_pending && !counts_say_prompt => self
+                .session_emits_preexec
+                .then_some(YoungHoldEvidence::PrecmdMaybeInFlight),
             // A line unanswered and the stream not applied up to now: its Precmd may be in it;
             // the barrier's next publish decides. Applied (or no barrier), nothing says a prompt
             // is coming: delivered, as to a cooked `read x`.

@@ -4409,6 +4409,7 @@ fn a_cooked_shell_in_front_holds_only_while_the_stream_is_unapplied() {
     let probe = RawReadProbe::new(ShellPromptFact::ShellCooked, Some(false));
     let mut pending = seq_after_submit(ShellPromptFact::ShellCooked);
     probe.install(&mut pending);
+    pending.session_emits_preexec = true;
     type_and_flush(&mut pending, b"explain");
     assert_eq!(pending.on_user_bytes(b"\r"), UserBytesRoute::Held);
     assert_eq!(
@@ -5332,6 +5333,8 @@ fn every_hold_names_a_release_that_is_satisfiable_when_it_engages() {
                             Probe::Fact(fact, barrier) => Some(RawReadProbe::new(fact, barrier)),
                         };
                         let mut handoff = TypeaheadHandoff::default();
+                        // The "own Preexec pending" holds need a session that emits Preexec.
+                        handoff.session_emits_preexec = true;
                         handoff.set_prompt_seq_enabled(seq_mode);
                         handoff.note_shell_hook_parsed(ParsedShellHook::Precmd);
                         handoff.on_precmd_seq(Some(7), Some(1));
@@ -6131,4 +6134,53 @@ fn a_state_change_ends_keys_follow_editor_and_a_new_pty_owned_state_does_not_inh
         handoff.routes_keys_to_pty(),
         "a new command's pty-owned state starts clean"
     );
+}
+
+/// A session that has never emitted a Preexec (a shell or program without our hooks) must not hold
+/// an Enter for "the written command's own Preexec": that event cannot come, the 2 s cap would hand
+/// the Enter back and the running program would never get it (Mac terminal-mode run, 2026-11-09).
+/// The Enter is delivered as plain typeahead at once; nothing is handed back. A session that has
+/// emitted one keeps the hold. The hand-off is shared by Legacy and Table.
+#[test]
+fn an_unproven_session_gets_its_enter_at_once_not_a_hold_for_a_preexec_that_cannot_come() {
+    for fact in [
+        ShellPromptFact::LineEditorReading,
+        ShellPromptFact::ShellCooked,
+    ] {
+        let probe = RawReadProbe::new(fact, Some(true));
+        let mut unproven = seq_after_submit(fact);
+        probe.install(&mut unproven);
+        // Command written (its Preexec pending), keys typed behind it, then the Enter.
+        assert!(!unproven.session_emits_preexec);
+        type_and_flush(&mut unproven, b"explain");
+        assert_eq!(
+            unproven.on_user_bytes(b"\r"),
+            UserBytesRoute::WriteCounted,
+            "{fact:?}: delivered at once"
+        );
+        assert!(
+            !unproven.has_young_hold(),
+            "{fact:?}: nothing held, nothing to hand back"
+        );
+
+        // The same session after it emitted a Preexec once keeps today's hold.
+        let probe = RawReadProbe::new(fact, Some(true));
+        let mut proven = seq_after_submit(fact);
+        probe.install(&mut proven);
+        proven.session_emits_preexec = true;
+        type_and_flush(&mut proven, b"explain");
+        assert_eq!(
+            proven.on_user_bytes(b"\r"),
+            UserBytesRoute::Held,
+            "{fact:?}"
+        );
+        assert_eq!(
+            proven.young_hold_evidence(),
+            Some(YoungHoldEvidence::PrecmdMaybeInFlight),
+            "{fact:?}"
+        );
+        // A new session forgets it.
+        proven.on_new_session();
+        assert!(!proven.session_emits_preexec);
+    }
 }
