@@ -60,6 +60,7 @@ fn screen(behaviour: &CmdBehaviour) -> (bool, bool, Option<String>) {
         | CmdBehaviour::AltScreen
         | CmdBehaviour::Pager
         | CmdBehaviour::SetE
+        | CmdBehaviour::Slow { .. }
         | CmdBehaviour::Quick { .. } => (true, false, None),
     }
 }

@@ -303,6 +303,8 @@ These are what stand between the agent and your shell. Read them carefully.
 | `agents.profiles.agent_mode_coding_permissions` | `"always_ask_before_reading"` \| `"always_allow_reading"` \| `"allow_reading_specific_files"` | `"always_ask_before_reading"` | How much file-reading the agent may do without asking. Note that granting read-only *command* execution above also implicitly grants file reads for coding tasks. |
 | `agents.profiles.agent_mode_coding_file_read_allowlist` | array of absolute paths | `[]` | The specific files the agent may read when `agent_mode_coding_permissions` is `allow_reading_specific_files`. Store absolute paths. |
 | `agents.warp_agent.other.auto_approve_bypasses_command_denylist` | boolean | `true` | Whether auto-approve (fast-forward) is allowed to run commands that match the denylist. Set to `false` to make the denylist absolute. |
+| `agents.warp_agent.permissions.safe_command_allowlist_enabled` | boolean | `false` | Run the commands in `safe_command_allowlist` without asking. Off by default. Matches one program with plain arguments only: no pipes, redirects, `;`, `&&`, subshells, globs or variables, and no flag that writes or never ends. The denylist still wins. |
+| `agents.warp_agent.permissions.safe_command_allowlist` | array of strings | `ls`, `cat`, `grep`, `git status`, `df`, ... | Entries are a program (`ls`) or a program and subcommand (`git status`). Editable under Settings > AI > Permissions. |
 
 ### Conversation behaviour
 

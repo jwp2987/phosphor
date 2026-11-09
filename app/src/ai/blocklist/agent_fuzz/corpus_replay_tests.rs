@@ -13,7 +13,7 @@ use fake_llm::scenario::Scenario;
 use serde::Deserialize;
 
 use super::coverage::{self, WAVE0_FLOOR};
-use super::runner::{run_case, stall_cases_supported};
+use super::runner::{run_case, run_case_with, stall_cases_supported};
 
 #[derive(Debug, Deserialize)]
 struct KnownFile {
@@ -134,6 +134,32 @@ fn corpus_replays_as_listed_and_reaches_the_wave0_cells() {
     }
     if std::env::var("AGENT_FUZZ_COVERAGE").is_ok() {
         eprintln!("{}", coverage::table());
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n\n"));
+}
+
+/// The whole corpus again with the safe read-only allowlist ON. It only removes approvals, so
+/// every scenario that passes OFF must pass ON (a listed-OFF known failure is skipped: it is
+/// tracked by its issue, not by this run).
+#[test]
+fn corpus_replays_with_the_allowlist_on() {
+    let known = known_failures();
+    let mut problems: Vec<String> = Vec::new();
+    for (name, scenario) in corpus() {
+        if known.contains_key(&name) {
+            continue;
+        }
+        if !stall_cases_supported()
+            && scenario
+                .turns
+                .iter()
+                .any(|t| t.chaos.as_ref().is_some_and(|c| c.stall_after.is_some()))
+        {
+            continue;
+        }
+        if let Err(failure) = run_case_with(&scenario, true) {
+            problems.push(format!("{name} (allowlist on): {failure}"));
+        }
     }
     assert!(problems.is_empty(), "{}", problems.join("\n\n"));
 }

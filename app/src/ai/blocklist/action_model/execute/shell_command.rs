@@ -340,6 +340,7 @@ impl ShellCommandExecutor {
                     .as_ref(ctx)
                     .shell_type(ctx)
                     .map(|s| ShellFamily::from(s).escape_char())
+                    .or_else(|| escape_char_without_a_session(ctx))
                 else {
                     return false;
                 };
@@ -2150,3 +2151,21 @@ enum ActionResult {
 #[cfg(test)]
 #[path = "shell_command_tests.rs"]
 mod tests;
+
+/// The agent fuzzer's rig has no pty and so no session, hence no shell type, and a command could
+/// never be auto-executed there: the safe-allowlist runs (agent_fuzz) would silently test nothing.
+/// With the allowlist on, tests assume a POSIX shell. A release build, and every test with the
+/// allowlist off, keeps "no session -> ask".
+#[cfg(any(test, feature = "test-util"))]
+fn escape_char_without_a_session(ctx: &AppContext) -> Option<warp_util::path::EscapeChar> {
+    if *AISettings::as_ref(ctx).safe_command_allowlist_enabled {
+        Some(warp_util::path::EscapeChar::Backslash)
+    } else {
+        None
+    }
+}
+
+#[cfg(not(any(test, feature = "test-util")))]
+fn escape_char_without_a_session(_ctx: &AppContext) -> Option<warp_util::path::EscapeChar> {
+    None
+}

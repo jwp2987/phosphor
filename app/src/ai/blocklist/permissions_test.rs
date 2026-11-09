@@ -3007,3 +3007,154 @@ mod remote_home_1288 {
         })
     }
 }
+
+mod safe_command_allowlist {
+    use super::*;
+
+    fn allow(app: &mut App, on: bool) {
+        app.update(|ctx| {
+            AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                settings
+                    .safe_command_allowlist_enabled
+                    .set_value(on, ctx)
+                    .expect("setting should update");
+            });
+        });
+    }
+
+    fn verdict(
+        permissions: &BlocklistAIPermissions,
+        convo_id: &crate::ai::agent::conversation::AIConversationId,
+        command: &str,
+        terminal_view_id: EntityId,
+        ctx: &warpui::AppContext,
+    ) -> CommandExecutionPermission {
+        permissions.can_autoexecute_command(
+            convo_id,
+            command,
+            EscapeChar::Backslash,
+            false,
+            None,
+            Some(terminal_view_id),
+            ctx,
+        )
+    }
+
+    #[test]
+    fn it_is_off_by_default_and_ls_asks() {
+        App::test((), |mut app| async move {
+            let PermissionsTestState {
+                convo_id,
+                permissions,
+                profile_model,
+                terminal_view_id,
+                ..
+            } = initialize_permissions_test(&mut app);
+            profile_model.update(&mut app, |model, ctx| {
+                model.set_execute_commands(
+                    *model.active_profile(Some(terminal_view_id), ctx).id(),
+                    &ActionPermission::AlwaysAsk,
+                    ctx,
+                );
+            });
+            app.update(|ctx| {
+                assert!(!*AISettings::as_ref(ctx).safe_command_allowlist_enabled);
+            });
+            permissions.read(&app, |model, ctx| {
+                let v = verdict(model, &convo_id, "ls -la", terminal_view_id, ctx);
+                assert!(
+                    matches!(v, CommandExecutionPermission::Denied(_)),
+                    "allowlist off: {v:?}"
+                );
+            });
+        })
+    }
+
+    #[test]
+    fn on_it_runs_only_the_exact_read_only_lines() {
+        App::test((), |mut app| async move {
+            let PermissionsTestState {
+                convo_id,
+                permissions,
+                profile_model,
+                terminal_view_id,
+                ..
+            } = initialize_permissions_test(&mut app);
+            profile_model.update(&mut app, |model, ctx| {
+                model.set_execute_commands(
+                    *model.active_profile(Some(terminal_view_id), ctx).id(),
+                    &ActionPermission::AlwaysAsk,
+                    ctx,
+                );
+            });
+            allow(&mut app, true);
+            permissions.read(&app, |model, ctx| {
+                for command in ["ls -la", "git status", "cat Cargo.toml", "df -h"] {
+                    let v = verdict(model, &convo_id, command, terminal_view_id, ctx);
+                    assert!(
+                        matches!(
+                            v,
+                            CommandExecutionPermission::Allowed(
+                                CommandExecutionPermissionAllowedReason::SafeReadOnlyAllowlisted
+                            )
+                        ),
+                        "{command}: {v:?}"
+                    );
+                }
+                for command in [
+                    "ls | cat",
+                    "ls > f",
+                    "ls; rm x",
+                    "ls && rm x",
+                    "ls $(rm x)",
+                    "ls *",
+                    "rm x",
+                    "git push",
+                    "find . -delete",
+                    "tail -f log",
+                ] {
+                    let v = verdict(model, &convo_id, command, terminal_view_id, ctx);
+                    assert!(
+                        matches!(v, CommandExecutionPermission::Denied(_)),
+                        "{command}: {v:?}"
+                    );
+                }
+            });
+        })
+    }
+
+    #[test]
+    fn the_denylist_still_wins() {
+        App::test((), |mut app| async move {
+            let PermissionsTestState {
+                convo_id,
+                permissions,
+                profile_model,
+                terminal_view_id,
+                ..
+            } = initialize_permissions_test(&mut app);
+            profile_model.update(&mut app, |model, ctx| {
+                let id = *model.active_profile(Some(terminal_view_id), ctx).id();
+                model.set_execute_commands(id, &ActionPermission::AlwaysAsk, ctx);
+                model.add_to_command_denylist(
+                    id,
+                    &AgentModeCommandExecutionPredicate::new_regex("cat .*").unwrap(),
+                    ctx,
+                );
+            });
+            allow(&mut app, true);
+            permissions.read(&app, |model, ctx| {
+                let v = verdict(model, &convo_id, "cat secrets.txt", terminal_view_id, ctx);
+                assert!(
+                    matches!(
+                        v,
+                        CommandExecutionPermission::Denied(
+                            CommandExecutionPermissionDeniedReason::ExplicitlyDenylisted
+                        )
+                    ),
+                    "{v:?}"
+                );
+            });
+        })
+    }
+}

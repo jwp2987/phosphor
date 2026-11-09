@@ -1564,3 +1564,16 @@ fn agent_mode_entry_counter_stops_at_the_cap() {
     assert!(!should_count_agent_mode_entry(ENTERED_AGENT_MODE_COUNT_CAP));
     assert!(!should_count_agent_mode_entry(usize::MAX));
 }
+
+#[test]
+fn safe_command_allowlist_ships_off_with_a_nonempty_default_list() {
+    let enabled = SafeCommandAllowlistEnabled::new(None);
+    assert!(!*enabled.value(), "the allowlist must ship OFF");
+    let list = SafeCommandAllowlist::new(None);
+    assert!(list.value().iter().any(|e| e == "ls"));
+    assert!(list.value().iter().any(|e| e == "git status"));
+    assert_eq!(
+        SafeCommandAllowlistEnabled::toml_path(),
+        Some("agents.warp_agent.permissions.safe_command_allowlist_enabled")
+    );
+}

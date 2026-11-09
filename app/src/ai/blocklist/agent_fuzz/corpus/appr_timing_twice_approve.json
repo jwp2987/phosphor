@@ -1,0 +1,60 @@
+{
+  "v": 1,
+  "name": "appr_timing_twice_approve",
+  "seed": 108,
+  "turns": [
+    {
+      "when": {
+        "kind": "nth",
+        "n": 0
+      },
+      "reply": {
+        "kind": "tool_calls",
+        "calls": [
+          {
+            "id": {
+              "kind": "fresh"
+            },
+            "name": "run_shell_command",
+            "args": {
+              "kind": "command",
+              "cmd": "c0"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "when": {
+        "kind": "nth",
+        "n": 1
+      },
+      "reply": {
+        "kind": "text",
+        "text": "done"
+      }
+    }
+  ],
+  "env": {
+    "commands": {
+      "c0": {
+        "kind": "quick",
+        "out": "ok"
+      }
+    }
+  },
+  "actor": [
+    {
+      "op": {
+        "kind": "approve"
+      },
+      "timing": "on_card"
+    },
+    {
+      "op": {
+        "kind": "approve"
+      },
+      "timing": "fast"
+    }
+  ]
+}

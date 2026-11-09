@@ -28,7 +28,7 @@ use crate::settings::{
     EnableAiCommandSearchHashTrigger, FileBasedMcpEnabled, GitOperationsAutogenEnabled,
     IncludeAgentCommandsInHistory, IntelligentAutosuggestionsEnabled, MemoryEnabled,
     NLDInTerminalEnabled, NaturalLanguageAutosuggestionsEnabled, PromptTemplateDir,
-    RuleSuggestionsEnabled, ShouldRenderCLIAgentToolbar,
+    RuleSuggestionsEnabled, SafeCommandAllowlistEnabled, ShouldRenderCLIAgentToolbar,
     ShouldRenderUseAgentToolbarForUserCommands, ShowAgentTips, ShowAgentZeroStateHints,
     ShowConversationHistory, ShowHintText, ThinkingDisplayMode, TokenPrice, VoiceInputEnabled,
 };
@@ -513,6 +513,11 @@ pub struct AISettingsPageView {
     code_read_allowlist_editor: ViewHandle<SubmittableTextInput>,
     code_read_allowlist_mouse_state_handles: Vec<MouseStateHandle>,
 
+    // The safe read-only command allowlist (`ai/blocklist/safe_commands.rs`): an on/off switch and
+    // an editable list of `program` / `program subcommand` entries.
+    safe_command_toggle: SwitchStateHandle,
+    safe_command_editor: ViewHandle<SubmittableTextInput>,
+    safe_command_mouse_state_handles: Vec<MouseStateHandle>,
     command_execution_allowlist_editor: ViewHandle<SubmittableTextInput>,
     command_execution_allowlist_mouse_state_handles: Vec<MouseStateHandle>,
     command_execution_denylist_editor: ViewHandle<SubmittableTextInput>,
@@ -856,6 +861,40 @@ impl AISettingsPageView {
                 })
             }
         });
+
+        let safe_command_editor = ctx.add_typed_action_view(|ctx| {
+            let mut input = SubmittableTextInput::new(ctx)
+                .validate_on_edit(|s| crate::ai::blocklist::safe_commands::is_valid_entry(s));
+            input.set_placeholder_text(crate::t!("settings-ai-safe-commands-placeholder"), ctx);
+            input
+        });
+        Self::update_editor_interaction_state(
+            safe_command_editor.as_ref(ctx).editor().clone(),
+            is_any_ai_enabled,
+            ctx,
+        );
+        ctx.subscribe_to_view(&safe_command_editor, |me, _, event, ctx| {
+            if let SubmittableTextInputEvent::Submit(s) = event {
+                let entry = s.split_whitespace().collect::<Vec<_>>().join(" ");
+                if !crate::ai::blocklist::safe_commands::is_valid_entry(&entry) {
+                    return;
+                }
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    let mut entries = (*settings.safe_command_allowlist).clone();
+                    if !entries.contains(&entry) {
+                        entries.push(entry);
+                        report_if_error!(settings.safe_command_allowlist.set_value(entries, ctx));
+                    }
+                });
+                me.sync_safe_command_handles(ctx);
+                ctx.notify();
+            }
+        });
+        let safe_command_mouse_state_handles = AISettings::as_ref(ctx)
+            .safe_command_allowlist
+            .iter()
+            .map(|_| Default::default())
+            .collect();
 
         let command_execution_denylist_editor = ctx.add_typed_action_view(|ctx| {
             let mut input =
@@ -1606,6 +1645,9 @@ impl AISettingsPageView {
             autodetection_denylist_editor,
             prompt_template_dir_editor,
             local_only_icon_tooltip_states: Default::default(),
+            safe_command_toggle: Default::default(),
+            safe_command_editor,
+            safe_command_mouse_state_handles,
             command_execution_allowlist_editor,
             command_execution_denylist_editor,
             command_execution_allowlist_mouse_state_handles,
@@ -2177,6 +2219,14 @@ impl AISettingsPageView {
             .update(ctx, |button, ctx| {
                 button.set_disabled(!is_any_ai_enabled, ctx);
             });
+    }
+
+    fn sync_safe_command_handles(&mut self, ctx: &mut ViewContext<Self>) {
+        self.safe_command_mouse_state_handles = AISettings::as_ref(ctx)
+            .safe_command_allowlist
+            .iter()
+            .map(|_| Default::default())
+            .collect();
     }
 
     fn reset_execution_profile_mouse_state_handles(&mut self, ctx: &mut ViewContext<Self>) {
@@ -2852,6 +2902,8 @@ pub enum AISettingsPageAction {
     RemoveFromProfileDirectoryAllowlist(PathBuf),
     RemoveFromProfileCommandDenylist(AgentModeCommandExecutionPredicate),
     RemoveFromProfileCommandAllowlist(AgentModeCommandExecutionPredicate),
+    ToggleSafeCommandAllowlist,
+    RemoveSafeCommand(String),
     ToggleShowBaseModelPickerInPrompt,
     AddToMCPAllowlist(uuid::Uuid),
     RemoveFromMCPAllowlist(uuid::Uuid),
@@ -3683,6 +3735,25 @@ impl TypedActionView for AISettingsPageView {
 
                     model.remove_from_command_allowlist(*profile_id, command, ctx);
                 });
+                ctx.notify();
+            }
+            AISettingsPageAction::ToggleSafeCommandAllowlist => {
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    report_if_error!(
+                        settings
+                            .safe_command_allowlist_enabled
+                            .toggle_and_save_value(ctx)
+                    );
+                });
+                ctx.notify();
+            }
+            AISettingsPageAction::RemoveSafeCommand(entry) => {
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    let mut entries = (*settings.safe_command_allowlist).clone();
+                    entries.retain(|e| e != entry);
+                    report_if_error!(settings.safe_command_allowlist.set_value(entries, ctx));
+                });
+                self.sync_safe_command_handles(ctx);
                 ctx.notify();
             }
             AISettingsPageAction::ToggleShowBaseModelPickerInPrompt => {
@@ -5855,6 +5926,21 @@ impl AgentsWidget {
             );
         }
 
+        if execute_commands_setting == ActionPermission::AlwaysAsk
+            || execute_commands_setting == ActionPermission::AgentDecides
+        {
+            execute_commands_flex.add_child(
+                Container::new(Self::render_safe_command_allowlist(
+                    view,
+                    ai_settings,
+                    appearance,
+                    app,
+                ))
+                .with_margin_bottom(8.)
+                .finish(),
+            );
+        }
+
         if execute_commands_setting != ActionPermission::AlwaysAsk {
             let command_denylist = Container::new(Self::render_command_denylist(
                 BlocklistAIPermissions::as_ref(app).get_execute_commands_denylist(app, None),
@@ -6003,6 +6089,54 @@ impl AgentsWidget {
             ai_settings,
             app,
         )
+    }
+
+    /// The safe read-only command allowlist: a switch (OFF by default) and, once on, the editable
+    /// list of programs that run without asking.
+    fn render_safe_command_allowlist(
+        view: &AISettingsPageView,
+        ai_settings: &AISettings,
+        appearance: &Appearance,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let is_any_ai_enabled = ai_settings.is_any_ai_enabled(app);
+        let enabled = *ai_settings.safe_command_allowlist_enabled;
+        let mut column = Flex::column()
+            .with_child(render_ai_setting_toggle::<SafeCommandAllowlistEnabled>(
+                crate::t!("settings-ai-safe-commands"),
+                AISettingsPageAction::ToggleSafeCommandAllowlist,
+                enabled,
+                is_any_ai_enabled,
+                view.safe_command_toggle.clone(),
+                &view.local_only_icon_tooltip_states,
+                app,
+            ))
+            .with_child(render_ai_setting_description(
+                crate::t!("settings-ai-safe-commands-description"),
+                is_any_ai_enabled,
+                app,
+            ));
+        if enabled {
+            let list = render_input_list(
+                None,
+                ai_settings
+                    .safe_command_allowlist
+                    .iter()
+                    .cloned()
+                    .zip(view.safe_command_mouse_state_handles.clone())
+                    .rev()
+                    .map(|(entry, mouse_state_handle)| InputListItem {
+                        item: entry.clone(),
+                        mouse_state_handle,
+                        on_remove_action: AISettingsPageAction::RemoveSafeCommand(entry),
+                    }),
+                Some(&view.safe_command_editor),
+                !is_any_ai_enabled,
+                appearance,
+            );
+            column.add_child(list);
+        }
+        column.finish()
     }
 
     fn render_command_allowlist(
