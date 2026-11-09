@@ -86,11 +86,43 @@ app/src/terminal/writeable_pty/pty_controller.rs	NATIVE_COMPLETIONS_RESULTS_TIME
 app/src/terminal/writeable_pty/pty_controller.rs	arm_native_completions_watchdog	call site of the prompt and results give-up nets; neither writes or releases a key
 app/src/terminal/model/typeahead_handoff.rs	EVENT_HOLD_GIVE_UP	2 s net of a queued young hold: the no-barrier hold hands its keys back to the editor at its cap; events release it first
 app/src/terminal/view.rs	arm_young_timer	young-detection timers (compute cap, wall ceiling, backstop): on expiry the line goes back to the editor and the next Enter submits it; never submits or writes
+app/src/search/ai_context_menu/view.rs	SELECT_WAIT_GIVE_UP	10 s net of an @-menu Enter waiting for results: the Enter is not applied, the typed query stays, a toast says so (#1728)
+app/src/search/ai_context_menu/view.rs	SEARCH_DEBOUNCE_PERIOD	debounces the @-menu query into the mixer; an Enter typed meanwhile waits on the results event, never on this clock
+app/src/ai/blocklist/action_model/execute/shell_command.rs	MAX_AGENT_DELAY_DURATION	agent command wait cap: returns a snapshot / timeout result to the model; writes nothing to the pty
+app/src/ai/blocklist/action_model/execute/shell_command.rs	MAX_UNTIL_COMPLETION_DURATION	hard fallback for an agent wait: marks the result preempted and reports to the model; writes nothing
+app/src/ai/blocklist/action_model/execute/shell_command.rs	MAX_WAIT_DURATION	agent command wait cap: reports to the model; writes nothing to the pty
+app/src/ai/blocklist/action_model/execute/shell_command.rs	action_result_future	agent wait timers (deadline, quiet re-judge): report a snapshot to the model; the model, not the timer, decides what to send
+app/src/ai/blocklist/controller.rs	schedule_send	30 s give-up for a hung attachment read: that submit is failed with a notification (nothing written to any pty)
+app/src/ai/blocklist/input_model.rs	schedule_misroute_expiry	re-renders so a stale misroute-recovery label disappears; UI only
+app/src/terminal/cli_agent_sessions/mod.rs	CTRL_C_CANCEL_WINDOW	if no plugin event follows a ^C the session is marked Cancelled (status only); writes and routes nothing
+app/src/terminal/cli_agent_sessions/mod.rs	observe_ctrl_c_write_with_window	arms the CTRL_C_CANCEL_WINDOW status give-up; status only
+crates/warpui/src/windowing/winit/linux/clipboard.rs	FULL_READ_BUDGET	caps the paste's wait for a clipboard owner that never answers; the read fails, nothing is written to the pty (#1331)
+crates/warpui/src/windowing/winit/linux/clipboard.rs	PROBE_BUDGET	caps the html/image probes after a text read; the probe is skipped, nothing is written
+crates/warpui/src/windowing/winit/linux/clipboard.rs	TEXT_READ_RETRY_PAUSE	pause between bounded retries of a clipboard READ (3 attempts); reads only, never writes or routes
+crates/warp_tui/src/terminal_session_view/input_detection.rs	INPUT_AUTODETECTION_DEBOUNCE	debounces the input-type classifier run; the result is applied on its event, the debounce never submits or routes
+app/src/terminal/input.rs	DEBOUNCE_INPUT_DECORATION_PERIOD	debounces the editor's background decoration/classification job; an Enter waits on the verdict event and its own nets
+app/src/terminal/input.rs	DEBOUNCE_AI_QUERY_PREDICTION_PERIOD	debounces AI query prediction; UI suggestion only
+app/src/terminal/view.rs	DEBOUNCE_PERIOD	debounces link detection (find-link) after output; no input effect
+app/src/terminal/view.rs	SLOW_BOOTSTRAP_BANNER_AUTO_DISMISS_DURATION	auto-dismisses the slow-bootstrap banner; notice only
 
 # PENDING-CONVERSION (must be gone before v0.1.18)
 # Timers that break the rule (write, release, route, commit or re-ask on a clock). The default run
 # warns for each; `--strict` (release tier) fails on any. Delete a line when its timer is gone.
-
+app/src/ai/blocklist/input_model.rs	ENTER_VERDICT_BUDGET	FOUND: 50 ms classifier compute cap; when reached the waiting Enter is SUBMITTED on the Enter-time rules (commits on a clock, SubmitWithoutVerdict)
+app/src/ai/blocklist/input_model.rs	ENTER_VERDICT_WALL_CEILING	FOUND: 1 s wall ceiling of the same wait; reaching it submits the Enter on the Enter-time rules (commits on a clock)
+app/src/ai/blocklist/agent_view/controller.rs	ENTER_OR_EXIT_CONFIRMATION_WINDOW	FOUND: 1 s double-press window; once it lapses the pending enter/exit-agent-view confirmation is cleared, so the clock decides what the second key does (UI confirmation; owner may exempt)
+app/src/ai/blocklist/inline_action/ask_user_question_view.rs	ASK_USER_QUESTION_AUTO_ADVANCE_DELAY	FOUND: after a single-select answer a timer CONFIRMS it (AskUserQuestionAction::Confirm) unless the user navigates (commits on a clock)
+crates/warp_tui/src/tui_ask_question_view.rs	AUTO_ADVANCE_DELAY	FOUND: 300 ms timer auto-confirms a single-select answer in the TUI (commits on a clock)
+crates/warp_tui/src/terminal_session_view.rs	CTRL_C_EXIT_WINDOW	FOUND: double-^C window; the clock decides whether a second ^C exits / kills the child agent (UI confirmation; owner may exempt)
+crates/warpui_core/src/runtime/terminal_probe.rs	PROBE_DEADLINE	FOUND (#1748): 100 ms startup probe deadline; a late terminal reply then leaks into stdin as typed bytes, and user bytes typed in the window are swallowed
+crates/warpui_core/src/runtime/terminal_probe.rs	DA1_DRAIN_GRACE	FOUND (#1749): 20 ms drain after the OSC 11 reply; a DA1 reply arriving later leaks into stdin as typed bytes
+app/src/terminal/local_tty/terminal_attributes.rs	POLL_INTERVAL	FOUND: 1 Hz termios poll (a re-ask on a clock) feeding the password / interactive-prompt detector that hands the command to the user
+app/src/terminal/local_tty/terminal_manager.rs	judge	FOUND: quiet timer armed from PromptDetector::next_wake; firing runs the prompt detection that hands the command over (INTERACTIVE_PROMPT_QUIET_*)
+app/src/terminal/local_tty/terminal_manager.rs	observe	FOUND: quiet timer armed from the stall detector; firing can send q to a pager or hand the command over (STALL_*)
+app/src/terminal/model/block.rs	wakeup_after_delay	UNVERIFIED: delay after preexec, then the interactive latch settles and the probe is consulted about who owns the terminal (input state decided after a clock; the probe decides, the timer schedules)
+app/src/terminal/local_tty/event_loop.rs	REPLY_GATE_POLL	FOUND: 10 ms poll that re-checks the pty mode and then WRITES withheld terminal-query replies (app protocol bytes, not user keys)
+app/src/terminal/local_tty/event_loop.rs	REPLY_GATE_POLL_SLOW	FOUND: 100 ms back-off of the same reply-gate poll
+app/src/terminal/local_tty/event_loop.rs	REPLY_GATE_SLOW_AFTER	FOUND: 1 s after which the reply-gate poll slows down
 
 # PACING (owner-exempt 2026-11-09: our own bootstrap bytes into a relay/container/cooked tty whose consumption is unobservable, #960 #1384; never user keys)
 # Each needs a `pacing: <why>` comment next to it; the guard fails if its code path mentions a user-key API. Not counted by --strict.

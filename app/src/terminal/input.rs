@@ -406,7 +406,9 @@ impl DropTargetData for InputDropTargetData {
     }
 }
 
+// give-up-net: debounces the editor's background decoration/classification job; an Enter waits on the verdict event and its own nets
 pub const DEBOUNCE_INPUT_DECORATION_PERIOD: Duration = Duration::from_millis(10);
+// give-up-net: debounces AI query prediction; UI suggestion only
 pub const DEBOUNCE_AI_QUERY_PREDICTION_PERIOD: Duration = Duration::from_millis(250);
 pub(super) const CLI_AGENT_RICH_INPUT_EDITOR_MAX_HEIGHT: f32 = 236.;
 pub(super) const CLI_AGENT_RICH_INPUT_EDITOR_TOP_PADDING: f32 = 10.;

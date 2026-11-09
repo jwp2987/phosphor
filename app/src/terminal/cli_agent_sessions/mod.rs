@@ -20,6 +20,7 @@ use event::{CLIAgentEvent, CLIAgentEventSource, CLIAgentEventType};
 /// CLI agent session's PTY, for further plugin activity before concluding the
 /// interrupt silently cancelled the session. See `observe_ctrl_c_write`.
 #[allow(dead_code)] // used by sibling unused code or shared name
+// give-up-net: if no plugin event follows a ^C the session is marked Cancelled (status only); writes and routes nothing
 pub const CTRL_C_CANCEL_WINDOW: Duration = Duration::from_secs(2);
 
 /// Status of a tracked CLI agent session.
@@ -643,6 +644,7 @@ impl CLIAgentSessionsModel {
         let token = self.next_ctrl_c_token;
         self.next_ctrl_c_token += 1;
         let handle = ctx.spawn_abortable(
+            // give-up-net: arms the CTRL_C_CANCEL_WINDOW status give-up; status only
             async move { warpui::r#async::Timer::after(window).await },
             move |model, _, ctx| model.resolve_pending_cancel(terminal_view_id, token, ctx),
             |_, _| {},
