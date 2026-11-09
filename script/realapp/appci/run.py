@@ -1098,6 +1098,8 @@ def report_cmd(run, a, note):
     here = os.path.dirname(os.path.abspath(__file__))
     return [sys.executable, os.path.join(here, "report.py"), run, "platform=" + a.platform, "backend=" + a.backend,
             "app_display=" + a.app_display, "seed=%d" % a.seed, "commit=" + os.environ.get("CI_COMMIT_SHORT_SHA", "local"),
+            # the release gate (#1495, script/ci/check_release_gate.py) reads the FULL commit this job ran on from results.json
+            "sha=" + os.environ.get("CI_COMMIT_SHA", "local"),
             "owner_settings=" + note, "tier=" + (os.environ.get("APPCI_TIER") or "full"),
             "scale=" + os.environ.get("APPCI_SCALE", "1")]
 

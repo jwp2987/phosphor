@@ -112,6 +112,8 @@ guards:
     - ./script/check_test_results
     # #1522: the real-app harness's offline self-test (parsers, registries, report exit codes); pure Python, no app or display.
     - python3 script/realapp/appci/selftest.py
+    # #1495: the release gate's offline fixtures (pass, failed job, wrong sha / tier, KNOWN, NOREF, missing platform).
+    - python3 script/ci/test_check_release_gate.py
     # Large deletions. There are no pull requests here, so the base is the
     # previous tip of this branch (push), or the merge-base with main for a new
     # branch. The commit message stands in for the PR body: it is where a
@@ -576,8 +578,10 @@ build-windows-profiling:
     # push that rebuilds the whole test graph would monopolise the build box. Flip the first
     # condition back to `$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH || $CI_COMMIT_TAG` to gate
     # every push to main again once the suites are known-good.
+    # allow_failure is explicitly false on a tag: these suites are part of the release gate (.release_quality_needs).
     - if: $CI_COMMIT_TAG
       when: on_success
+      allow_failure: false
     - when: manual
       allow_failure: true
 
@@ -1503,6 +1507,40 @@ app-test-windows-reuse:
 # `releases/permalink/latest`, which the app falls back to when it has no version tag.
 # ===========================================================================
 
+# The jobs that define release quality (#1495). A tag pipeline publishes nothing unless EVERY one of these succeeded: release-meta
+# (the root of the release DAG, so nothing is built or uploaded to the package registry before) and release-publish (the only job that
+# creates the GitLab release) both `needs:` this list. They run automatically in a tag pipeline (the box jobs, .heavy_rules) and none is
+# allow_failure there. The YAML anchor keeps the two lists from drifting apart.
+.release_quality_needs: &release_quality_needs
+  - release-gate
+  - guards
+  - check-linux
+  - licenses
+  - advisories
+  - test-linux
+  - test-warpui-core
+  - test-workspace-rest
+
+# Recorded release-tier evidence (#1495). The remaining release-tier suites (integration, usage, input-timers-strict, shuttle/loom, fuzz,
+# the Mac and Windows unit/heavy suites) and the real-app tests need the build pipeline, the Mac / Windows machines and resource groups and are
+# manual by design (driven by script/ci/ci_seq.py --tier release), so they are NOT run inside the tag pipeline. This job refuses the tag
+# unless the SAME COMMIT has them all green in GitLab, the app tests with a results.json that says tier=release and this sha. The job list is
+# ci_seq.py's own release tier (script/ci/check_release_gate.py). KNOWN GAP: the app tests ran on `build-*` binaries, not the `release-*`
+# ones built below (those have the CLI digests compiled in). docs/testing.md "Release gate".
+release-gate:
+  extends: .shim_github_env
+  stage: test
+  tags: [little-thing]
+  needs: [guards, check-linux, licenses, advisories]
+  timeout: 10m
+  rules:
+    - if: $CI_COMMIT_TAG
+      when: on_success
+      allow_failure: false
+  script:
+    - command -v python3 >/dev/null || { echo "ERROR python3 missing on this runner; the release gate cannot run" >&2; exit 1; }
+    - python3 script/ci/check_release_gate.py
+
 .release_rules:
   rules:
     - if: $CI_COMMIT_TAG
@@ -1524,10 +1562,20 @@ app-test-windows-reuse:
     GIT_DEPTH: "0"
 
 release-meta:
-  extends: [.shim_github_env, .release_rules]
+  extends: [.shim_github_env]
   stage: cli
   tags: [little-thing]
   needs: []
+  # RELEASE GATE (#1495): the root of the release DAG; in a tag pipeline nothing starts until the whole quality set is green.
+  # `rules:needs` replaces the job-level `needs: []` for the tag only; the manual dry run on main keeps its old shape.
+  rules:
+    - if: $CI_COMMIT_TAG
+      when: on_success
+      allow_failure: false
+      needs: *release_quality_needs
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+      allow_failure: true
   timeout: 20m
   variables:
     GIT_DEPTH: "0"
@@ -1951,7 +1999,22 @@ release-publish:
   extends: [.shim_github_env]
   stage: publish
   tags: [little-thing]
-  needs: [release-meta, cli-linux, cli-macos, release-macos-arm64, release-linux-x86_64, release-windows-x86_64]
+  # The build jobs AND the whole quality set (&release_quality_needs, #1495): a green build must never publish over a red suite.
+  needs:
+    - release-meta
+    - cli-linux
+    - cli-macos
+    - release-macos-arm64
+    - release-linux-x86_64
+    - release-windows-x86_64
+    - release-gate
+    - guards
+    - check-linux
+    - licenses
+    - advisories
+    - test-linux
+    - test-warpui-core
+    - test-workspace-rest
   timeout: 20m
   rules:
     - if: $CI_COMMIT_TAG

@@ -271,7 +271,8 @@ has < 80 GB free or the dir exceeds its cap (`ci-test` 120 GB, `ci-check-linux` 
 | `build-{linux,macos,windows}-profiling` | build | manual | unstripped `profiling` profile binary (`docs/profiling.md`) |
 | `app-test-linux-wayland`, `app-test-linux-x11`, `app-test-macos`, `app-test-windows` | apptest | manual, allow_failure, played by `ci_seq.py` after each build | real-app matrix on the built artifact, section 2.8 |
 | `app-test-{linux-wayland,linux-x11,macos,windows}-reuse` | apptest | manual, allow_failure, played by `ci_seq.py` (fix tier) only | the same job on an EARLIER pipeline's build of an app-identical commit (no `needs`; uses the build cached on the same machine, GitLab download only as a fallback), section 2.9 |
-| `release-*`, `cli-*`, `release-publish` | build/publish | `v*` tag (manual dry run on main) | release pipeline, never run end to end on all platforms |
+| `release-gate` | test | `v*` tag only | refuses the tag unless the commit has a green release-tier run (section 2.9 "Release gate") |
+| `release-*`, `cli-*`, `release-publish` | build/publish | `v*` tag (manual dry run on main) | release pipeline, never run end to end on all platforms; `release-meta` and `release-publish` `needs:` every guard, check, suite and `release-gate` |
 
 Kick off a build: `git push origin <branch>:build/<name>`, then `glab ci status -b build/<name>` or
 `glab api "projects/88085499/pipelines?ref=build/<name>&per_page=1"`; play a manual job with
@@ -429,7 +430,7 @@ an unclassified case is reported as such. After `mode_proof` (whose pre-key scre
 then Unicode packets; `key_delivery` row); if neither lands the pass stops with `keys not delivered: <reason>` and the session / foreground diagnostics.
 Each also has a `-reuse` twin that tests an earlier app-identical build (2.9). Heavy and GUI-driving: all four jobs are **manual, allow_failure**, need the platform's build job (`needs:` + artifacts) and
 `script/ci/ci_seq.py` plays them after each successful build, so every numbered build runs them. The play-time variable
-`APPCI_TIER` selects the size: `smoke` (fix tier) or `full`/empty (candidate, release; everything below). Smoke = the cases
+`APPCI_TIER` selects the size: `smoke` (fix tier) or `full`/empty/`release` (candidate = `full`, release = `release`, which the release gate requires; everything below). Smoke = the cases
 `mode_proof`, `cadence`, `fast_typing`, `paste_instant_enter`, `tab_enter`, `ctrl_c_d`, `ssh_connect_typing`, `ssh_enter_then_immediate_command`, `ssh_nested_typeahead`, `latency_enter`, `latency_key_log`, `md_viewer` in both
 modes (`SMOKE` in `script/realapp/appci/cases.py`, applied by `run.py`); on Linux only the `wayland` run (the `xwayland` pass and
 `app-test-linux-x11` exit at once); the SAME list on Windows, where a case that cannot run in a pane shell is a SKIP with its reason
@@ -1003,6 +1004,44 @@ Measured durations (box and Macs, warm caches): `check-linux` 7-9 min, `test-lin
 `build-macos-arm64` ~21, `build-windows-x86_64` ~38. Linux build, app tests (smoke and full), shuttle/loom, fuzz, bench and mutants are not
 timed yet; the tier targets above are estimates built from the numbers that are. Builds and the box suites overlap (the macOS and
 Windows runners are separate machines), so a fix push is bounded by `check-linux` + the filtered `test-linux`/builds + smoke.
+
+**Release gate (#1495).** A `v*` tag pipeline cannot publish unless the tagged commit passed the release tier first. Two mechanisms, both in
+`.gitlab-ci.yml`:
+
+1. *In the tag pipeline.* `release-meta` (the root of the release DAG, so no CLI tarball or installer is built or uploaded to the package
+   registry before this is green) and `release-publish` (the only job that creates the GitLab release) both `needs:` one list, written once as
+   `&release_quality_needs`: `release-gate`, `guards`, `check-linux`, `licenses`, `advisories`, `test-linux`, `test-warpui-core`,
+   `test-workspace-rest`. The suites run automatically on a tag (`.heavy_rules`) and are `allow_failure: false` there.
+2. *Recorded evidence for the rest of the release tier.* `release-gate` runs `script/ci/check_release_gate.py`, which reads the pipelines of the
+   tagged sha through the API and requires on that exact sha: a `success` for `guards`, `check-linux`, `licenses`, `advisories` and for every
+   job the release tier gates on, **taken from `ci_seq.release_gate_jobs()` (the tier's own lists, not a hand list)**: the box unit suites,
+   `integration-linux` (3 shards) and `-pwsh`, `usage-test-linux`, `input-timers-strict` (the `--strict` timer guard), `test-shuttle-loom`,
+   `fuzz-smoke`, and the Mac / Windows unit and heavy suites (bench and mutants are informational in the tier verdict and not required; a suite
+   the pipeline does not define, e.g. `fuzz-smoke-windows`, cannot be required); and a `success` for each plain `app-test-*` job (never `-reuse`)
+   whose `results.json` (Wayland: both the wayland and xwayland passes) says `tier=release` (`ci_seq.py --tier release` plays the app tests with
+   `APPCI_TIER=release`; candidate stays `full`, fix `smoke`), `sha=<the tagged commit>` (`run.py` records the full `CI_COMMIT_SHA`), no failed
+   case and at least one pass. The verdict is the appci one: a NOREF case (no reference terminal) and a KNOWN note (an `ACCEPTED_FOR_RELEASE`
+   shortfall, recorded on a pass row) do not fail a run, so they do not fail the gate. Missing API access, expired artifacts (7 days), a smoke/full-tier
+   run, or a run of another commit all FAIL the gate.
+
+Procedure to release: bump the version and regenerate `docs/STATE.md` FIRST, merge, run `python3 script/ci/ci_seq.py build/<name> --tier release` on
+that exact commit, then tag that commit within 7 days. (v0.1.17 was tagged two commits after the last tested commit, a version bump and a STATE.md
+regeneration, so under this gate it would have been refused: the evidence must be on the tagged sha.)
+
+**Known gap (documented, not redesigned).** The app tests run on the `build-*` binaries of the `build/*` pipeline, not on the tag pipeline's
+`release-*` binaries (those have the CLI digests compiled in and are built after the gate). Same commit, different bytes.
+
+**Dry run (read-only, nothing is started):** `python3 script/ci/check_release_gate.py --sha <commit> [--pipeline <id> ...]` reads through `glab api`
+and prints ok / FAIL lines; exit 1 = it would refuse. Offline fixtures (pass, failed job, wrong sha, wrong tier, KNOWN, NOREF, missing platform,
+expired artifact, reuse variant): `python3 script/ci/test_check_release_gate.py`, run by the `guards` job and `script/precheck`.
+
+**OWNER STEPS (GitLab project settings; YAML cannot do these, so the owner does them, not CI or an agent):**
+
+- [ ] Settings > Repository > Protected tags: protect `v*`, allowed to create = **Maintainers** (not Developers). Keep it protected (the Mac and Windows runners are `ref_protected`).
+- [ ] Settings > Repository > Protected branches: `main` push restricted to the owner, force push off (optional, recommended).
+- [ ] Settings > CI/CD > Variables: a masked, protected `APPCI_API_TOKEN` with `read_api`, in case `CI_JOB_TOKEN` is refused for other pipelines' job artifacts (the first tag will show it: the gate prints "cannot read ... set a masked APPCI_API_TOKEN").
+- [ ] After the first gated tag, confirm `release-gate` read the evidence rather than failing on access.
+
 
 **Build reuse in the fix tier.** Before playing `build-X`, `ci_seq.py` looks at the newest `build/*` pipelines (at most 6 with a succeeded
 `build-X`) and reuses one when its `build-X` job succeeded (its pipeline may still be running; the build is taken from the test machine's local cache, 2.8) and `git diff --name-only <its commit> HEAD` is empty over the app-affecting
