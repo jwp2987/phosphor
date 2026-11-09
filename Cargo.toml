@@ -203,6 +203,7 @@ mermaid_to_svg = { git = "https://gitlab.com/winters-phosphor/mermaid-to-svg.git
 mime_guess = "2.0"
 minimp4 = "0.1.2"
 nix = { version = "0.29.0", default-features = false, features = ["signal"] }
+notify = { path = "lib/notify/notify" }
 notify-debouncer-full = { path = "lib/notify/notify-debouncer-full" }
 nom = "7.1.1"
 num-traits = "0.2"

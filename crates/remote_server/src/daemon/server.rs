@@ -7,6 +7,7 @@
 //! is answered with `ErrorCode::UNSUPPORTED` so the client takes its no-helper path.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
@@ -21,6 +22,7 @@ use crate::protocol::RequestId;
 
 use super::exec::{self, SessionShell, ShellKind};
 use super::jobs::{Inflight, Reply};
+use super::watch::{FsKind, WatchSet};
 use super::{
     buffers, diff_state, file_context, fs_ops, git, git_status, git_write, github, repo_meta,
     ripgrep,
@@ -51,6 +53,12 @@ pub(super) enum Event {
     },
     Disconnected {
         conn: ConnId,
+    },
+    /// The filesystem watcher saw a change (`daemon/watch.rs`). No debounce: one event per OS
+    /// event; consumers coalesce with their own dirty flag.
+    FsChange {
+        paths: Vec<PathBuf>,
+        kind: FsKind,
     },
 }
 
@@ -85,6 +93,11 @@ pub(super) struct Server {
     auth_token: Option<String>,
     idle_since: Option<Instant>,
     grace: Duration,
+    /// The core's own sender, for workers and the watcher to report back. `None` in unit tests
+    /// that drive the core by hand; watching is then off.
+    events_tx: Option<std::sync::mpsc::Sender<Event>>,
+    /// The one refcounted watch set every consumer shares (see `watch.rs` for the API).
+    watches: WatchSet,
 }
 
 impl Server {
@@ -103,7 +116,17 @@ impl Server {
             auth_token: None,
             idle_since: Some(Instant::now()),
             grace,
+            events_tx: None,
+            watches: WatchSet::disabled(),
         }
+    }
+
+    /// Gives the core a sender to its own event channel, which turns filesystem watching on and
+    /// lets worker threads report back.
+    pub(super) fn with_events(mut self, events: std::sync::mpsc::Sender<Event>) -> Self {
+        self.watches = WatchSet::new(events.clone());
+        self.events_tx = Some(events);
+        self
     }
 
     /// Runs until the event channel closes or the daemon has been idle for the grace period.
@@ -143,6 +166,7 @@ impl Server {
                 );
             }
             Event::Message { conn, msg } => self.handle_message(conn, msg),
+            Event::FsChange { paths, kind } => self.on_fs_change(&paths, kind),
             Event::Disconnected { conn } => {
                 self.conns.remove(&conn);
                 log::info!(
@@ -154,6 +178,12 @@ impl Server {
                 }
             }
         }
+    }
+
+    /// Fans a filesystem change out to every module that watches paths. Add one line per
+    /// consumer here (the repo tree, later buffers, diff state and skills).
+    fn on_fs_change(&mut self, paths: &[PathBuf], kind: FsKind) {
+        log::trace!("Daemon: fs change {kind:?} {} path(s)", paths.len());
     }
 
     fn reply_for(&self, conn: ConnId, request_id: &RequestId) -> Option<Reply> {

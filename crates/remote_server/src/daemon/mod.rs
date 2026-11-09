@@ -79,11 +79,14 @@ pub fn run_daemon(identity_key: &str) -> anyhow::Result<()> {
                 }
             }
         })?;
-    // The core owns the receiver; the accept thread and the connections hold senders. Drop ours
-    // so the core also ends if every other sender is gone.
-    drop(events_tx);
+    // The core owns the receiver; the accept thread and the connections hold senders. The core
+    // keeps one more (for the filesystem watcher and its workers); it never blocks the core
+    // from ending, because the idle grace period ends it.
+    let events_tx_for_core = events_tx;
 
-    server::Server::new(server::GRACE_PERIOD).run(events_rx);
+    server::Server::new(server::GRACE_PERIOD)
+        .with_events(events_tx_for_core)
+        .run(events_rx);
 
     let _ = std::fs::remove_file(&socket_path);
     let _ = std::fs::remove_file(&pid_path);
@@ -102,9 +105,9 @@ pub(crate) fn spawn_in_process_for_tests() -> std::os::unix::net::UnixStream {
     std::thread::Builder::new()
         .name("in-process-daemon".into())
         .spawn(move || {
-            // Keep a sender alive so the core does not end before the connection registers.
-            let _keep = events_tx;
-            server::Server::new(server::GRACE_PERIOD).run(events_rx);
+            server::Server::new(server::GRACE_PERIOD)
+                .with_events(events_tx)
+                .run(events_rx);
         })
         .expect("spawn the in-process daemon");
     client_end
