@@ -706,6 +706,16 @@ impl AssistantBuffer {
             messages.push(msg);
         }
         if has_tool_calls {
+            // A call renamed `id#n` because the reply repeated `id` is recorded after the calls
+            // whose placeholders the stream had already shown (the rename only happens when the
+            // stream ends), so it is moved back next to the call it repeats.
+            let order = repeats_beside_their_originals(&self.tool_calls);
+            if order.iter().enumerate().any(|(slot, from)| slot != *from) {
+                let calls = std::mem::take(&mut self.tool_calls);
+                let keys = std::mem::take(&mut self.tool_call_keys);
+                self.tool_calls = order.iter().map(|i| calls[*i].clone()).collect();
+                self.tool_call_keys = order.iter().map(|i| keys[*i].clone()).collect();
+            }
             // genai's `From<Vec<ToolCall>> for ChatMessage` automatically produces the
             // assistant role + MessageContent::from_tool_calls.
             let mut msg = ChatMessage::from(std::mem::take(&mut self.tool_calls));
@@ -723,6 +733,48 @@ impl AssistantBuffer {
             None
         }
     }
+}
+
+/// The order that puts every `base#n` call (see [`unique_call_ids`]) right after the call it
+/// repeats and leaves every other call where it is: indices into `calls`.
+fn repeats_beside_their_originals(calls: &[ToolCall]) -> Vec<usize> {
+    // Only a `#n` id whose base is another call of this reply is a repeat; an id that merely
+    // contains '#' stays where it is.
+    let is_repeat = |id: &str| {
+        id.rsplit_once('#').is_some_and(|(base, n)| {
+            n.parse::<usize>().is_ok() && calls.iter().any(|call| call.call_id == base)
+        })
+    };
+    let mut order: Vec<usize> = Vec::with_capacity(calls.len());
+    for (index, call) in calls.iter().enumerate() {
+        if is_repeat(&call.call_id) {
+            continue;
+        }
+        order.push(index);
+        let prefix = format!("{}#", call.call_id);
+        let mut repeats: Vec<usize> = calls
+            .iter()
+            .enumerate()
+            .filter(|(_, other)| other.call_id.starts_with(&prefix) && is_repeat(&other.call_id))
+            .map(|(i, _)| i)
+            .collect();
+        repeats.sort_by_key(|i| {
+            calls[*i]
+                .call_id
+                .rsplit_once('#')
+                .and_then(|(_, n)| n.parse::<usize>().ok())
+                .unwrap_or(usize::MAX)
+        });
+        order.extend(repeats);
+    }
+    // A repeat whose original is not in this reply (a provider id that really contains '#')
+    // keeps its place after the rest.
+    for index in 0..calls.len() {
+        if !order.contains(&index) {
+            order.push(index);
+        }
+    }
+    order
 }
 
 #[derive(Debug, Clone)]
@@ -2956,6 +3008,8 @@ fn build_chat_request_unredacted(
         )?;
     }
 
+    order_tool_responses_like_their_calls(&mut messages);
+
     // Computer-use screenshots go in here, after every tool response has been emitted and after
     // the repair pass has finished rewriting the message vector. Appending (never inserting)
     // keeps the `outbound_tool_groups` message indices the repair pass used valid, and putting
@@ -4117,6 +4171,67 @@ fn apply_caching_anthropic(messages: &mut Vec<ChatMessage>) {
             }
         })
         .collect();
+}
+
+/// The tool responses that follow an assistant message with tool calls are put in the order of
+/// those calls. Results arrive in the order the actions FINISHED (a read returns while a hung
+/// command is still running, a cancelled call settles last), but a provider pairs them with the
+/// calls by position or by id and the model sees the calls in emission order, so the answers read
+/// in the same order. The responses keep their message shapes (one per message or bundled); a
+/// response whose id matches no call keeps its place after the matched ones.
+fn order_tool_responses_like_their_calls(messages: &mut [ChatMessage]) {
+    let mut i = 0;
+    while i < messages.len() {
+        let call_ids: Vec<String> = if messages[i].role == genai::chat::ChatRole::Assistant {
+            messages[i]
+                .content
+                .tool_calls()
+                .iter()
+                .map(|call| call.call_id.clone())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        i += 1;
+        if call_ids.is_empty() {
+            continue;
+        }
+        let start = i;
+        while i < messages.len() && messages[i].role == genai::chat::ChatRole::Tool {
+            i += 1;
+        }
+        if i - start == 0 {
+            continue;
+        }
+        let shape: Vec<usize> = messages[start..i]
+            .iter()
+            .map(|message| message.content.tool_responses().len())
+            .collect();
+        let mut responses: Vec<ToolResponse> = messages[start..i]
+            .iter()
+            .flat_map(|message| message.content.tool_responses().into_iter().cloned())
+            .collect();
+        let rank = |response: &ToolResponse| {
+            call_ids
+                .iter()
+                .position(|id| *id == response.call_id)
+                .unwrap_or(usize::MAX)
+        };
+        if responses
+            .windows(2)
+            .all(|pair| rank(&pair[0]) <= rank(&pair[1]))
+        {
+            continue;
+        }
+        responses.sort_by_key(|response| rank(response));
+        let mut responses = responses.into_iter();
+        for (message, count) in messages[start..i].iter_mut().zip(shape) {
+            let options = message.options.clone();
+            let mut rebuilt = ChatMessage::from(responses.by_ref().take(count).collect::<Vec<_>>());
+            rebuilt.options = options;
+            *message = rebuilt;
+        }
+    }
 }
 
 /// Only runs after the serializer has already determined `AcceptedHistoryRepair`: converts
@@ -7537,9 +7652,11 @@ pub async fn generate_byop_output(
                     if let Some(diag_body_json) =
                         diag_body_json.as_deref().filter(|_| byop_diag_content_enabled())
                     {
-                        log::error!("[byop-diag] full_request_json_on_error={diag_body_json}");
+                        log::warn!("[byop-diag] full_request_json_on_error={diag_body_json}");
                     } else {
-                        log::error!(
+                        // A note about a diagnostic, not an error: the stream error itself is
+                        // logged at ERROR where it is handled.
+                        log::warn!(
                             "[byop-diag] full_request_json_on_error suppressed: bytes~={} \
                              (set {BYOP_DIAG_CONTENT_ENV}=1 to log the whole request body)",
                             diag_body_approx_len
@@ -7787,7 +7904,15 @@ pub async fn generate_byop_output(
                             &listed_skills,
                             &skill_path_origin,
                         )
-                        { Ok(parsed) => {
+                        { Ok(parsed) if tool_order
+                            .iter()
+                            .filter(|earlier| **earlier != call.call_id)
+                            .all(|earlier| tool_msg_ids.contains_key(earlier)) => {
+                            // A call whose predecessor has no placeholder yet (it failed its
+                            // first parse, or is a tool the request did not offer) waits for the
+                            // end of the stream: a placeholder shown now would sit BEFORE the
+                            // predecessor's message in the conversation and the next request
+                            // would list the calls out of the order the model emitted them.
                             // First successful parse → immediately emit a placeholder card.
                             // Every chunk gets reparsed until the placeholder is emitted
                             // (i.e. "retry on every chunk"), so even if the first frame's

@@ -1,0 +1,65 @@
+{
+  "v": 1,
+  "name": "two_questions_in_one_reply",
+  "seed": 2101,
+  "turns": [
+    {
+      "when": {
+        "kind": "nth",
+        "n": 0
+      },
+      "reply": {
+        "kind": "tool_calls",
+        "calls": [
+          {
+            "id": {
+              "kind": "fresh"
+            },
+            "name": "ask_user_question",
+            "args": {
+              "kind": "valid"
+            }
+          },
+          {
+            "id": {
+              "kind": "fresh"
+            },
+            "name": "ask_user_question",
+            "args": {
+              "kind": "valid"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "when": {
+        "kind": "nth",
+        "n": 1
+      },
+      "reply": {
+        "kind": "text",
+        "text": "thanks"
+      }
+    }
+  ],
+  "env": {
+    "commands": {}
+  },
+  "actor": [
+    {
+      "op": {
+        "kind": "answer_question",
+        "choice": 0
+      },
+      "timing": "on_card"
+    },
+    {
+      "op": {
+        "kind": "answer_question",
+        "choice": 0
+      },
+      "timing": "on_card"
+    }
+  ]
+}

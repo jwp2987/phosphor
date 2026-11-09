@@ -195,7 +195,8 @@ pub(crate) struct Props<'a> {
     /// Controls how agent thinking/reasoning traces are displayed.
     pub(super) thinking_display_mode: crate::settings::ThinkingDisplayMode,
     pub(super) conversation_has_imported_comments: bool,
-    pub(super) ask_user_question_view: Option<&'a ViewHandle<AskUserQuestionView>>,
+    pub(super) ask_user_question_views:
+        &'a std::collections::HashMap<AIAgentActionId, ViewHandle<AskUserQuestionView>>,
 }
 
 /// T1-2: whether a successfully-completed tool action card should be hidden.
@@ -2064,7 +2065,7 @@ fn render_ask_user_question(
     props: Props,
     app: &AppContext,
 ) -> Option<Box<dyn Element>> {
-    let view = props.ask_user_question_view?;
+    let view = props.ask_user_question_views.get(action_id)?;
     let should_render_inline = {
         let ask_user_question_view = view.as_ref(app);
         ask_user_question_view.action_id() == action_id

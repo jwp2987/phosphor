@@ -1107,7 +1107,9 @@ pub struct AIBlock {
     resolved_blocklist_image_sources: view_impl::common::ResolvedBlocklistImageSources,
     terminal_view_handle: WeakViewHandle<TerminalView>,
 
-    ask_user_question_view: Option<ViewHandle<AskUserQuestionView>>,
+    /// One card per `ask_user_question` action of the reply: a reply can carry several, and each
+    /// is blocked until answered.
+    ask_user_question_views: HashMap<AIAgentActionId, ViewHandle<AskUserQuestionView>>,
 }
 
 pub(crate) struct EmbeddedCodeEditorView {
@@ -1688,7 +1690,7 @@ impl AIBlock {
             #[cfg(feature = "local_fs")]
             resolved_blocklist_image_sources: Default::default(),
             terminal_view_handle,
-            ask_user_question_view: None,
+            ask_user_question_views: HashMap::new(),
         };
         me.run_secret_redaction_on_user_query(me.client_ids.conversation_id, ctx);
         me.spawn_link_detection(ctx);
@@ -3881,16 +3883,13 @@ impl AIBlock {
         questions: &[AskUserQuestionItem],
         ctx: &mut ViewContext<Self>,
     ) {
-        let needs_init = match self.ask_user_question_view.as_ref() {
+        let needs_init = match self.ask_user_question_views.get(action_id) {
             Some(view) => !view.as_ref(ctx).matches_action(action_id, questions),
             None => true,
         };
         // The view is rebuilt as the arguments stream in; the card is the same card, so the
         // `hop=action_card` line is written only when it is a different action's.
-        let new_card = self
-            .ask_user_question_view
-            .as_ref()
-            .is_none_or(|view| view.as_ref(ctx).action_id() != action_id);
+        let new_card = !self.ask_user_question_views.contains_key(action_id);
         if !needs_init {
             return;
         }
@@ -3913,7 +3912,8 @@ impl AIBlock {
             me.handle_ask_user_question_view_event(&action_id_clone, event, ctx);
         });
 
-        self.ask_user_question_view = Some(view.clone());
+        self.ask_user_question_views
+            .insert(action_id.clone(), view.clone());
         if new_card {
             log_card_shown(action_id, "ask_user_question");
         }
@@ -3949,34 +3949,36 @@ impl AIBlock {
     /// Attaches the footer to the view if the speedbump variant matches. Called from
     /// both the variant-seeding and view-creation paths.
     fn sync_ask_user_question_speedbump_footer(&mut self, ctx: &mut ViewContext<Self>) -> bool {
-        let Some(view) = self.ask_user_question_view.clone() else {
+        let AutonomySettingSpeedbump::ShouldShowForAskUserQuestion {
+            action_id: speedbump_action_id,
+            ..
+        } = &self.autonomy_setting_speedbump
+        else {
             return false;
         };
-        let speedbump_matches = matches!(
-            &self.autonomy_setting_speedbump,
-            AutonomySettingSpeedbump::ShouldShowForAskUserQuestion { action_id, .. }
-                if action_id == view.as_ref(ctx).action_id()
-        );
-        if speedbump_matches {
-            let settings_link_handle = self
-                .state_handles
-                .ask_user_question_speedbump_settings_link_handle
-                .clone();
-            if let AutonomySettingSpeedbump::ShouldShowForAskUserQuestion { shown, .. } =
-                &self.autonomy_setting_speedbump
-            {
-                *shown.lock() = true;
-            }
-            let terminal_view_id = self.terminal_view_id;
-            view.update(ctx, |view, ctx| {
-                view.set_speedbump_settings_link(Some(settings_link_handle), ctx);
-                view.init_speedbump_dropdown(ctx);
-                view.refresh_speedbump_dropdown_selection(terminal_view_id, ctx);
-            });
-            true
-        } else {
-            false
+        let Some(view) = self
+            .ask_user_question_views
+            .get(speedbump_action_id)
+            .cloned()
+        else {
+            return false;
+        };
+        let settings_link_handle = self
+            .state_handles
+            .ask_user_question_speedbump_settings_link_handle
+            .clone();
+        if let AutonomySettingSpeedbump::ShouldShowForAskUserQuestion { shown, .. } =
+            &self.autonomy_setting_speedbump
+        {
+            *shown.lock() = true;
         }
+        let terminal_view_id = self.terminal_view_id;
+        view.update(ctx, |view, ctx| {
+            view.set_speedbump_settings_link(Some(settings_link_handle), ctx);
+            view.init_speedbump_dropdown(ctx);
+            view.refresh_speedbump_dropdown_selection(terminal_view_id, ctx);
+        });
+        true
     }
 
     fn handle_ask_user_question_view_event(
@@ -3985,11 +3987,7 @@ impl AIBlock {
         event: &AskUserQuestionViewEvent,
         ctx: &mut ViewContext<Self>,
     ) {
-        if !self
-            .ask_user_question_view
-            .as_ref()
-            .is_some_and(|view| view.as_ref(ctx).action_id() == action_id)
-        {
+        if !self.ask_user_question_views.contains_key(action_id) {
             return;
         }
 
@@ -4579,7 +4577,7 @@ impl AIBlock {
             .filter(|id| blocked(id))
             .cloned()
             .collect();
-        if let Some(view) = &self.ask_user_question_view {
+        for view in self.ask_user_question_views.values() {
             let view = view.as_ref(app);
             if view.is_awaiting_answers_for_test(app) {
                 ids.push(view.action_id().clone());
@@ -5065,13 +5063,9 @@ impl AIBlock {
             // If there's a blocking MCP tool call, focus that.
             ctx.focus(&mcp_tool.view);
             did_focus_subview = true;
-        } else if let Some(ask_user_question_view) =
-            self.ask_user_question_view.as_ref().filter(|view| {
-                pending_action_id.is_some_and(|id| {
-                    let view = view.as_ref(ctx);
-                    view.action_id() == id && view.is_editing()
-                })
-            })
+        } else if let Some(ask_user_question_view) = pending_action_id
+            .and_then(|id| self.ask_user_question_views.get(id))
+            .filter(|view| view.as_ref(ctx).is_editing())
         {
             ctx.focus(ask_user_question_view);
             did_focus_subview = true;
@@ -6610,7 +6604,7 @@ impl TypedActionView for AIBlock {
                     .get_pending_action_by_id(action_id)
                     .is_some_and(|action| !action.action.can_be_accepted_without_its_own_ui());
                 if is_question_without_answer {
-                    if let Some(view) = self.ask_user_question_view.clone() {
+                    if let Some(view) = self.ask_user_question_views.get(action_id).cloned() {
                         ctx.focus(&view);
                     }
                     ctx.notify();
