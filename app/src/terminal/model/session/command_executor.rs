@@ -36,7 +36,7 @@ pub use in_band_command_executor::{
 pub use local_command_executor::LocalCommandExecutor;
 pub use noop_command_executor::NoOpCommandExecutor;
 #[cfg(feature = "local_tty")]
-pub use remote_command_executor::RemoteCommandExecutor;
+pub use remote_command_executor::{ControlMasterChannel, RemoteCommandExecutor};
 pub use shared::{
     ExecutorCommandEvent, nu_raw_string, sh_script_quote_arg, shell_escape_single_quotes,
     shell_quote_arg,
@@ -378,6 +378,107 @@ fn new_command_executor_for_local_tty_session(
             }
         }
     }
+}
+
+/// The family of login shell a ControlMaster side exec reaches, as the shell backend's command
+/// builders need it. ssh runs the remote command through the user's LOGIN shell, which for an
+/// interactive ssh session is the shell the session bootstrapped in.
+#[cfg(feature = "local_tty")]
+pub(crate) fn shell_kind_for_remote(
+    shell_type: crate::terminal::shell::ShellType,
+) -> remote_server::shellcmd::ShellKind {
+    use crate::terminal::shell::ShellType;
+    use remote_server::shellcmd::ShellKind;
+    match shell_type {
+        ShellType::Bash | ShellType::Zsh => ShellKind::Posix,
+        ShellType::Fish => ShellKind::Fish,
+        ShellType::Nu => ShellKind::Nu,
+        ShellType::PowerShell => ShellKind::Pwsh,
+    }
+}
+
+/// A shell-mode channel registration: removes the session's out-of-band executor from the router
+/// when dropped (the owning [`Sessions`] model goes away with its terminal).
+#[cfg(feature = "local_tty")]
+pub struct OutOfBandRegistration {
+    router: remote_server::backend::FeatureRouter,
+    session_id: warp_core::SessionId,
+}
+
+#[cfg(feature = "local_tty")]
+impl std::fmt::Debug for OutOfBandRegistration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OutOfBandRegistration")
+            .field("session_id", &self.session_id)
+            .finish()
+    }
+}
+
+#[cfg(feature = "local_tty")]
+impl Drop for OutOfBandRegistration {
+    fn drop(&mut self) {
+        self.router.unregister_out_of_band(self.session_id);
+    }
+}
+
+/// Registers the session's ssh ControlMaster as the shell backend's out-of-band channel, for a
+/// legacy ssh session that has a ControlMaster socket (parity design R1). The shell backend never
+/// types into the user's pty, so sessions that have no such channel (tmux, in-band, no-op, local,
+/// Windows ssh.exe) are not registered and the shell backend is `Unavailable` there.
+///
+/// Registered whether or not the helper is connected: the helper may not support a family, or
+/// may be lost, and the router then needs the shell arm. Returns the guard that undoes it.
+#[cfg(feature = "local_tty")]
+pub fn register_shell_mode_channel(
+    session_info: &SessionInfo,
+    parent_session_info: Option<&SessionInfo>,
+    ctx: &mut ModelContext<Sessions>,
+) -> Option<OutOfBandRegistration> {
+    use warpui::SingletonEntity as _;
+
+    use crate::{
+        features::FeatureFlag,
+        remote_server::manager::RemoteServerManager,
+        terminal::model::session::{BootstrapSessionType, IsLegacySSHSession},
+    };
+
+    use settings::Setting as _;
+
+    if !matches!(
+        session_info.session_type,
+        BootstrapSessionType::WarpifiedRemote
+    ) {
+        return None;
+    }
+    let IsLegacySSHSession::Yes { socket_path, .. } = &session_info.is_legacy_ssh_session else {
+        return None;
+    };
+    if session_info.tmux_control_mode && FeatureFlag::SSHTmuxWrapper.is_enabled() {
+        return None;
+    }
+    // In-band generators are an explicit choice to keep everything on the session's own pty.
+    if FeatureFlag::InBandGeneratorsForSSH.is_enabled()
+        || *crate::settings::DebugSettings::as_ref(ctx)
+            .are_in_band_generators_for_all_sessions_enabled
+            .value()
+    {
+        return None;
+    }
+    let wsl_distro = parent_session_info
+        .and_then(|session| session.wsl_name())
+        .map(ToOwned::to_owned);
+    let channel = remote_command_executor::ControlMasterChannel::new(
+        socket_path.clone(),
+        wsl_distro,
+        shell_kind_for_remote(session_info.shell.shell_type()),
+    );
+    let session_id = session_info.session_id;
+    let router = RemoteServerManager::handle(ctx).read(ctx, |mgr, _| mgr.router().clone());
+    router.register_out_of_band(session_id, Arc::new(channel));
+    log::info!(
+        "shell mode: ControlMaster registered as the out-of-band channel for {session_id:?}"
+    );
+    Some(OutOfBandRegistration { router, session_id })
 }
 
 /// Whether [`new_command_executor_for_local_tty_session`] should emit

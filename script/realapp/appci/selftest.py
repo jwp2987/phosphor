@@ -2823,7 +2823,7 @@ def lab_path_detect_hook_lines_match_the_apps_log_format():
 
 @check
 def lab_git_write_remote_mirrors_the_rust_scripts():
-    """P7: the lab case runs the shell backend's git script shape and reads the app's `hop=remote_op` log line; pin both to the Rust text so a change on either side
+    """P7: the lab case runs the shell backend's git script shape and reads the app log line `hop=backend_route family=git_write`; pin both to the Rust text so a change on either side
     fails here instead of silently testing something else."""
     import cases_lab_git as G
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -2835,10 +2835,10 @@ def lab_git_write_remote_mirrors_the_rust_scripts():
     parse = rs("shellcmd/git/parse.rs")
     assert "MERGE_HEAD" in parse and "for f in {names}; do [ -e {dir}/" in parse, "operation_probe_script changed"
     features = rs("backend/features.rs")
-    assert "hop=remote_op name={} backend=helper ok={}" in features and "hop=remote_op name={} backend=shell ok={}" in features
-    m = G.HOOK_REMOTE_OP.search("INFO hop=remote_op name=git_push backend=shell ok=true")
-    assert m and m.groups() == ("git_push", "shell", "true"), m
-    assert not G.HOOK_REMOTE_OP.search("hop=remote_op name=read_file_context backend=shell ok=true")
+    assert "hop=backend_route family={}" in rs("backend/router.rs") and "git_commit_chain_shell;" in features
+    m = G.HOOK_REMOTE_OP.search("INFO hop=backend_route family=git_write backend=shell reason=no_helper")
+    assert m and m.groups() == ("shell",), m
+    assert not G.HOOK_REMOTE_OP.search("hop=backend_route family=file_context backend=shell reason=x")
     assert G.sh_c("echo a") == "sh -c 'echo a'"
     labs = [c["arm"] for c in cases.CASES if c.get("lab") and c["name"].startswith("lab_git_write_remote")]
     assert {a["shell"] for a in labs} == {"bash", "zsh", "fish", "nu"} and {a["helper"] for a in labs} == {"nohelper", "upload"}, labs
@@ -2857,7 +2857,7 @@ def lab_cases_registry_and_selection():
     assert run.unknown_case_names("mode_proof,typo_case", reg) == ["typo_case"]       # exact names are still checked exactly
     # winmap: a lab case is never 'unclassified'; PowerShell pane skips with a reason; p_onesess is skipped on Windows
     base = {n.split(".")[0] for n in names}
-    old = {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i", "lab_no_helper_chip", "lab_replay", "lab_password_prompt", "lab_helper_install", "lab_nu_agent_pager_env"}
+    old = {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i", "lab_no_helper_chip", "lab_replay", "lab_password_prompt", "lab_helper_install", "lab_nu_agent_pager_env", "lab_read_files_remote", "lab_diff_apply_remote", "lab_file_tree_remote"}
     assert old <= base and all(n.startswith(("lab_fam_", "lab_helper_", "lab_nohelper_", "lab_git_write_remote")) for n in base - old), base
     assert all(c["modes"] == ("terminal",) for c in labs if c["name"].startswith("lab_ssh_drop_reconnect")), "the drop case is terminal-only"
     pw = [c["arm"] for c in labs if c["name"].startswith("lab_password_prompt")]
@@ -2867,6 +2867,19 @@ def lab_cases_registry_and_selection():
     assert winmap.unclassified(sorted(reg)) == []
     assert winmap.skip_reason("lab_x.u_bash.lan.nohelper", "powershell") and winmap.skip_reason("lab_x.u_bash.lan.nohelper", "gitbash") is None
     assert "ControlMaster" in winmap.skip_reason("lab_x.p_onesess.lan.nohelper", "gitbash")
+
+
+@check
+def lab_file_tree_remote_pieces():
+    """Wave H parity P3: the lab case reads the app's hop=file_tree log lines. The leaf-name hash must be the one manager.rs logs (32-bit FNV-1a), the line parser
+    must take what the app prints, and the case registers exactly the nohelper and upload arms for bash, zsh, fish and nu."""
+    import cases_lab_remote as CLR
+    assert CLR.fnv1a32("") == "811c9dc5" and CLR.fnv1a32("a") == "e40c292c" and CLR.fnv1a32("foobar") == "bf9cf968"        # the published FNV-1a test vectors
+    line = "INFO hop=file_tree event=update source=shell removed=1 added=2 added_hash=[e40c292c,bf9cf968]\nINFO hop=file_tree event=snapshot source=helper removed=0 added=0 added_hash=[]"
+    assert CLR.tree_events(line) == [("update", "shell", 1, 2, ["e40c292c", "bf9cf968"]), ("snapshot", "helper", 0, 0, [])]
+    assert CLR.saw_added(line, "a") and not CLR.saw_added(line, "b") and not CLR.saw_added(line, "a", event="snapshot")
+    arms = [c["arm"] for c in cases.CASES if c.get("lab") and c["name"].startswith("lab_file_tree_remote.")]
+    assert {(a["shell"], a["helper"]) for a in arms} == {(s, h) for s in ("bash", "zsh", "fish", "nu") for h in ("nohelper", "upload")}, arms
 
 
 @check
@@ -2884,13 +2897,15 @@ def lab_helper_coverage_guard():
     assert H.shell_arm_implemented("RunCommand", info) and not H.shell_arm_implemented("FsBasic", dict(info, stubbed={"FsBasic"}))
     assert H.shell_arm_implemented("GitStatus", dict(info, stubbed=set(), shell_text="Family::GitStatus"))
     # a capability nobody covers must be reported
-    saved = dict(H.COVERS)
+    saved, saved_ext = dict(H.COVERS), dict(H.EXTERNAL_COVERS)
     try:
         H.COVERS.clear()
+        H.EXTERNAL_COVERS.clear()
         mh, mn = H.coverage(info)
         assert set(mh) == set(info["helper"]) and mn, (mh, mn)
     finally:
         H.COVERS.update(saved)
+        H.EXTERNAL_COVERS.update(saved_ext)
     skips = [c for c in cases.CASES if c.get("lab") and c["arm"]["case"].startswith("fam_") and c["arm"]["helper"] == "helper"]
     assert skips and {c["arm"]["case"] for c in skips} >= {"fam_" + k for k in info["helper"]}
     import lab as L
@@ -3362,6 +3377,12 @@ def fake_model_replies():
     r = FM.reply_for([{"role": "user", "content": "Please run exactly this shell command and nothing else: echo T >> /x/f.txt"}])
     assert r["tool"]["name"] == "run_shell_command" and r["tool"]["arguments"]["command"] == "echo T >> /x/f.txt", r
     assert FM.reply_for([{"role": "user", "content": "x"}, {"role": "tool", "content": "ok"}]) == {"text": "Done.", "tool": None}
+    rd = FM.reply_for([{"role": "user", "content": "Please read exactly this file and nothing else: /w/a.txt"}])
+    assert rd["tool"] == {"name": "read_files", "arguments": {"files": [{"path": "/w/a.txt"}]}}, rd
+    cr = FM.reply_for([{"role": "user", "content": "Please create exactly this file: /w/b.txt with this content: hello there"}])
+    assert cr["tool"]["name"] == "apply_file_diffs" and cr["tool"]["arguments"]["operations"] == [{"op": "create", "file_path": "/w/b.txt", "content": "hello there"}], cr
+    dl = FM.reply_for([{"role": "user", "content": "Please delete exactly this file and nothing else: /w/b.txt"}])
+    assert dl["tool"]["arguments"]["operations"] == [{"op": "delete", "file_path": "/w/b.txt"}], dl
     assert FM.reply_for([{"role": "user", "content": "Reply with the word Q1"}])["text"] == "OK Q1"
     assert FM.reply_for([{"role": "user", "content": "Answer slowly SLOW R1"}]).get("slow")
     lines = [json.loads(x) for x in FM.stream_lines("m", r)]

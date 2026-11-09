@@ -8,7 +8,7 @@
 #     --cached --recount -` staging ONE hunk of two, a discard, the in-progress guard, and a remote that needs credentials fails fast with git's own words while a
 #     GIT_ASKPASS that would leave a marker is never run.
 #  2. APP layer [hook]: the same operations driven in the app (code review > commit / push / pull / stage / discard) must log
-#     `hop=remote_op name=<method> backend=<shell|helper> ok=true` (crates/remote_server/src/backend/features.rs) with backend=shell on `nohelper` and
+#     `hop=backend_route family=git_write backend=<shell|helper>` (crates/remote_server/src/backend/router.rs, route_log_line) with backend=shell on `nohelper` and
 #     backend=helper on `upload`. The code-review git dialog has no keyboard path the harness can use yet, so that layer is UNVERIFIABLE, never a pass; the log
 #     lines it will read are pinned by the self-test.
 import base64, os, re, sys, time
@@ -20,7 +20,7 @@ from cases_lab import lab_case, connect_or_fail, finish_remote, unique, work, rt
 import cases_lab_helper as CLH  # noqa: E402
 CLH.declare_external("git_write", helper_case="lab_git_write_remote", nohelper_case="lab_git_write_remote")      # the coverage guard: both arms of the family
 
-HOOK_REMOTE_OP = re.compile(r"hop=remote_op name=(git_commit_chain|git_push|git_pull|git_create_pr|discard_files|git_stage) backend=(helper|shell) ok=(true|false)")
+HOOK_REMOTE_OP = re.compile(r"hop=backend_route family=git_write backend=(helper|shell)")      # backend::router::route_log_line, logged by RoutedBackend for every call
 
 # mirrors shellcmd::git::runner (GIT_UNSET_ENV, GIT_ENV, GIT_NOPROMPT_ENV, GIT_SSH_COMMAND_SH_ASSIGNMENT) and backend::shell_git_runner::git_script
 ENV_PREFIX = 'env -u GIT_ASKPASS -u SSH_ASKPASS GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0 SSH_ASKPASS_REQUIRE=never GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh} -o BatchMode=yes"'
@@ -118,7 +118,7 @@ def c_git_write_remote(ctx, r, arm):
     time.sleep(1.0 + 2 * rt)
     ctx.be.type("cd %s" % repo, CL.type_pace(ctx), enter=True)
     time.sleep(0.5 + rt)
-    seen = [m.groups() for m in HOOK_REMOTE_OP.finditer(ctx.log_since(0))]
+    seen = [("", m.group(1), "") for m in HOOK_REMOTE_OP.finditer(ctx.log_since(0))]
     want = "helper" if arm["helper"] == "upload" else "shell"
     if not seen:
         r.unverifiable("no keyboard path to the code-review git dialog: the app-driven commit/push/pull/stage/discard were not run (the host layer above did)")

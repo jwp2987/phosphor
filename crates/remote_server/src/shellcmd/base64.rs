@@ -70,6 +70,49 @@ impl Base64Tool {
     }
 }
 
+/// Which command decodes base64 on the host (for writes). The flag differs: GNU, busybox and
+/// current BSD/macOS take `-d`, older macOS takes `-D`, and `openssl base64 -d` is the fallback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DecodeTool {
+    /// `base64 -d`.
+    Lower,
+    /// `base64 -D` (older macOS).
+    Upper,
+    /// `openssl base64 -d`.
+    Openssl,
+}
+
+/// A POSIX command that prints exactly one of `d`, `D`, `openssl`, `none`. It decodes a known
+/// string and compares, so a `base64` that accepts the flag but misbehaves is not chosen.
+pub fn decode_probe_command() -> String {
+    "if [ \"$(printf 'aGk=' | base64 -d 2>/dev/null)\" = hi ]; then echo d; \
+     elif [ \"$(printf 'aGk=' | base64 -D 2>/dev/null)\" = hi ]; then echo D; \
+     elif [ \"$(printf 'aGk=' | openssl base64 -d 2>/dev/null)\" = hi ]; then echo openssl; \
+     else echo none; fi"
+        .to_string()
+}
+
+impl DecodeTool {
+    /// Reads the probe's output. `None` for `none` or anything unrecognised.
+    pub fn from_probe_output(output: &str) -> Option<Self> {
+        match output.trim() {
+            "d" => Some(Self::Lower),
+            "D" => Some(Self::Upper),
+            "openssl" => Some(Self::Openssl),
+            _ => None,
+        }
+    }
+
+    /// The pipeline stage that decodes stdin.
+    pub fn filter(self) -> &'static str {
+        match self {
+            Self::Lower => "base64 -d",
+            Self::Upper => "base64 -D",
+            Self::Openssl => "openssl base64 -d",
+        }
+    }
+}
+
 /// A malformed encoded payload.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum DecodeError {

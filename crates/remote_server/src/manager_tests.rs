@@ -898,3 +898,15 @@ fn a_failed_speculative_connect_reports_only_while_it_is_current() {
         assert_eq!(*failures.borrow(), 1);
     });
 }
+
+#[test]
+fn a_shell_mode_host_id_round_trips_to_its_session() {
+    use crate::manager::{session_for_shell_mode_host, shell_mode_host_id};
+    let session = warp_core::SessionId::from(42u64);
+    let host = shell_mode_host_id(session);
+    assert_eq!(session_for_shell_mode_host(&host), Some(session));
+    assert_eq!(
+        session_for_shell_mode_host(&crate::HostId::new("a-real-host".to_string())),
+        None
+    );
+}

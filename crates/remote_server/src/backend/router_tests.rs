@@ -180,3 +180,44 @@ fn out_of_band_channels_are_per_session() {
     let backend = router.backend(&host(), None, [a, b]);
     assert!(!backend.is_available(Family::GitStatus));
 }
+
+#[test]
+fn the_route_log_line_has_the_shape_the_lab_asserts() {
+    assert_eq!(
+        route_log_line(Family::FileContext, "shell", "unsupported_fallback"),
+        "hop=backend_route family=file_context backend=shell reason=unsupported_fallback"
+    );
+    let router = FeatureRouter::new();
+    let host = HostId::new("h".to_string());
+    assert_eq!(
+        router.route_reason(&host, Family::FileContext, None, false),
+        ("unavailable", "no_channel")
+    );
+    assert_eq!(
+        router.route_reason(&host, Family::FileContext, None, true),
+        ("shell", "caps")
+    );
+    router.set_always_shell(AlwaysShell::all());
+    assert_eq!(
+        router.route_reason(&host, Family::FileContext, None, true),
+        ("shell", "override")
+    );
+}
+
+#[test]
+fn own_writes_reach_refresh_listeners_with_the_host() {
+    use std::sync::Mutex;
+    let router = FeatureRouter::new();
+    let seen: Arc<Mutex<Vec<(String, RemoteRefreshEvent)>>> = Arc::default();
+    let sink = Arc::clone(&seen);
+    router.subscribe_refresh(Arc::new(move |host, event| {
+        sink.lock()
+            .unwrap()
+            .push((host.as_str().to_string(), event.clone()));
+    }));
+    router.emit_refresh(&host(), &RemoteRefreshEvent::AfterOwnWrite);
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![("h1".to_string(), RemoteRefreshEvent::AfterOwnWrite)]
+    );
+}

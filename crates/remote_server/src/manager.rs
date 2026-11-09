@@ -252,6 +252,14 @@ impl RemoteServerErrorKind {
             | ClientError::FileOperationFailed(_) => Self::Other,
         }
     }
+
+    /// Classify a [`crate::backend::BackendError`] (a helper error keeps its client kind).
+    pub fn from_backend_error(error: &crate::backend::BackendError) -> Self {
+        match error {
+            crate::backend::BackendError::Client(e) => Self::from_client_error(e),
+            _ => Self::Other,
+        }
+    }
 }
 
 /// Returns `true` if the client and server are on compatible versions for
@@ -830,6 +838,12 @@ pub struct RemoteServerManager {
     /// `navigate_to_directory` calls when `update_active_session` fires
     /// repeatedly for the same CWD.
     last_navigated_path: HashMap<SessionId, String>,
+    /// The root `navigate_to_directory` last indexed for each session: the tree a shell-mode
+    /// refresh re-reads.
+    indexed_root: HashMap<SessionId, String>,
+    /// Shell-mode file-tree refresh state per session: at most one refresh in flight, a dirty
+    /// flag for events that arrive meanwhile, no timer.
+    tree_refresh: HashMap<SessionId, crate::backend::refresh::RefreshCoordinator>,
     /// Per-session shell info recorded at bootstrap time and re-sent to the
     /// remote server daemon on every (re)connect. Persists until
     /// `deregister_session`.
@@ -891,6 +905,8 @@ impl RemoteServerManager {
             host_to_sessions: HashMap::new(),
             spawner: ctx.spawner(),
             last_navigated_path: HashMap::new(),
+            indexed_root: HashMap::new(),
+            tree_refresh: HashMap::new(),
             session_bootstrap_info: HashMap::new(),
             auth_context: None,
             session_platforms: HashMap::new(),
@@ -1003,6 +1019,9 @@ impl RemoteServerManager {
     /// (see [`crate::backend`]). Cheap; take one per operation. Call sites never fall back or
     /// retry themselves.
     pub fn backend_for_host(&self, host_id: &HostId) -> crate::backend::RoutedBackend {
+        if let Some(session_id) = session_for_shell_mode_host(host_id) {
+            return self.backend_for_session_with_host(session_id, None);
+        }
         let sessions: Vec<SessionId> = self
             .host_to_sessions
             .get(host_id)
@@ -1010,6 +1029,131 @@ impl RemoteServerManager {
             .unwrap_or_default();
         self.router
             .backend(host_id, self.client_for_host(host_id).cloned(), sessions)
+    }
+
+    /// [`Self::backend_for_host`] for the host `session_id` belongs to, or, when the session has
+    /// no helper connection (so no host id: the no-helper case, the primary design), a backend
+    /// keyed on the session itself whose shell arm uses that session's out-of-band channel. The
+    /// agent tools and file views call this: they know their session, not necessarily a host.
+    pub fn backend_for_session(&self, session_id: SessionId) -> crate::backend::RoutedBackend {
+        self.backend_for_session_with_host(session_id, self.host_id_for_session(session_id))
+    }
+
+    /// [`Self::backend_for_session`] when the caller already knows the host (a subshell inherits
+    /// its ssh session's host id): the helper of `host_id` if connected, and the shell arm over
+    /// the out-of-band channel of `session_id` or of any session on that host.
+    pub fn backend_for_session_with_host(
+        &self,
+        session_id: SessionId,
+        host_id: Option<&HostId>,
+    ) -> crate::backend::RoutedBackend {
+        match host_id {
+            Some(host_id) => {
+                let sessions: Vec<SessionId> = std::iter::once(session_id)
+                    .chain(
+                        self.host_to_sessions
+                            .get(host_id)
+                            .into_iter()
+                            .flat_map(|s| s.iter().copied()),
+                    )
+                    .collect();
+                self.router
+                    .backend(host_id, self.client_for_host(host_id).cloned(), sessions)
+            }
+            None => {
+                // Not a real host id: it only keys the router's per-connection fallback memory,
+                // and a helper-less session never has a helper connection to fall back from.
+                let host = shell_mode_host_id(session_id);
+                self.router.backend(&host, None, [session_id])
+            }
+        }
+    }
+
+    /// The host id the app files `session_id`'s results under: its helper's real host id, or the
+    /// shell-mode stand-in ([`shell_mode_host_id`]) for a session with no helper.
+    pub fn host_for_session_or_shell_mode(&self, session_id: SessionId) -> HostId {
+        self.host_id_for_session(session_id)
+            .cloned()
+            .unwrap_or_else(|| shell_mode_host_id(session_id))
+    }
+
+    /// Whether `session_id` has an out-of-band channel but no helper: its remote features run in
+    /// shell mode.
+    pub fn is_shell_mode_session(&self, session_id: SessionId) -> bool {
+        self.host_id_for_session(session_id).is_none()
+            && self.router.executor_for([session_id]).is_some()
+    }
+
+    /// Whether `session_id` can have its file tree served at all: a helper that does repo
+    /// metadata, or an out-of-band channel for the shell backend.
+    pub fn can_serve_repo_metadata(&self, session_id: SessionId) -> bool {
+        self.backend_for_session(session_id)
+            .is_available(crate::backend::Family::RepoMetadata)
+    }
+
+    /// One log line per file-tree push, for the lab and for diagnosing a stale tree. Counts and a
+    /// 32-bit FNV-1a hash of each added leaf name only (never the names or paths themselves).
+    fn log_file_tree_event(kind: &str, source: &str, update: &RepoMetadataUpdate) {
+        use repo_metadata::file_tree_update::RepoNodeMetadata;
+        let mut nodes = 0usize;
+        let mut hashes: Vec<String> = Vec::new();
+        for entry in &update.update_entries {
+            for node in &entry.subtree_metadata {
+                nodes += 1;
+                let path = match node {
+                    RepoNodeMetadata::Directory(d) => d.path.to_string(),
+                    RepoNodeMetadata::File(f) => f.path.to_string(),
+                };
+                let leaf = path.rsplit(['/', '\\']).next().unwrap_or("");
+                let hash = leaf.bytes().fold(2_166_136_261u32, |h, b| {
+                    (h ^ u32::from(b)).wrapping_mul(16_777_619)
+                });
+                if hashes.len() < 32 {
+                    hashes.push(format!("{hash:08x}"));
+                }
+            }
+        }
+        log::info!(
+            "hop=file_tree event={kind} source={source} removed={} added={nodes} added_hash=[{}]",
+            update.remove_entries.len(),
+            hashes.join(",")
+        );
+    }
+
+    /// Emits the pushes a shell-mode call produced as the same manager events the helper's
+    /// unsolicited pushes become.
+    fn emit_shell_pushes(
+        host_id: &HostId,
+        pushes: Vec<crate::backend::ShellPush>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        use crate::backend::ShellPush;
+        for push in pushes {
+            match push {
+                ShellPush::RepoMetadataSnapshot(snapshot) => {
+                    if let Some(update) =
+                        crate::repo_metadata_proto::proto_snapshot_to_update(&snapshot)
+                    {
+                        Self::log_file_tree_event("snapshot", "shell", &update);
+                        ctx.emit(RemoteServerManagerEvent::RepoMetadataSnapshot {
+                            host_id: host_id.clone(),
+                            update,
+                        });
+                    }
+                }
+                ShellPush::RepoMetadataUpdate(update) => {
+                    if let Some(update) =
+                        crate::repo_metadata_proto::proto_to_repo_metadata_update(&update)
+                    {
+                        Self::log_file_tree_event("update", "shell", &update);
+                        ctx.emit(RemoteServerManagerEvent::RepoMetadataUpdated {
+                            host_id: host_id.clone(),
+                            update,
+                        });
+                    }
+                }
+            }
+        }
     }
 
     /// Checks if the remote server binary is installed and executable.
@@ -1706,6 +1850,8 @@ impl RemoteServerManager {
         ctx: &mut ModelContext<Self>,
     ) {
         self.last_navigated_path.remove(&session_id);
+        self.indexed_root.remove(&session_id);
+        self.tree_refresh.remove(&session_id);
         self.router.unregister_out_of_band(session_id);
         self.session_bootstrap_info.remove(&session_id);
         self.session_platforms.remove(&session_id);
@@ -1893,49 +2039,44 @@ impl RemoteServerManager {
             return;
         }
 
-        let Some(client) = self.client_for_session(session_id).cloned() else {
-            log::warn!("navigate_to_directory: no connected client for session {session_id:?}");
-            return;
-        };
-        // Fires on every `cd`; the helper has no repo-metadata service, and asking it would
-        // only collect a refusal each time.
-        if !client
-            .capabilities()
-            .supports(crate::capability::REPO_METADATA)
-        {
-            log::debug!(
-                "navigate_to_directory: server for session {session_id:?} has no repo metadata"
-            );
+        // The helper (or legacy daemon) when it serves repo metadata, otherwise the shell backend
+        // over the session's out-of-band channel; `Unavailable` when it has neither.
+        let host_id = self.host_for_session_or_shell_mode(session_id);
+        let backend = self.backend_for_session(session_id);
+        if !backend.is_available(crate::backend::Family::RepoMetadata) {
+            log::debug!("navigate_to_directory: repo metadata is unavailable for {session_id:?}");
             return;
         }
-        let Some(host_id) = self.host_id_for_session(session_id).cloned() else {
-            log::warn!("navigate_to_directory: no host_id for session {session_id:?}");
-            return;
-        };
 
-        // Record only after confirming the client is connected, so that a
-        // retry after SessionConnected is not incorrectly deduplicated.
+        // Record only after confirming something can serve it, so that a retry after
+        // SessionConnected is not incorrectly deduplicated.
         self.last_navigated_path.insert(session_id, path.clone());
 
         let spawner = self.spawner.clone();
         ctx.background_executor()
             .spawn(async move {
-                match client.navigate_to_directory(path).await {
+                match backend.navigate_to_directory(path).await {
                     Ok(resp) => {
+                        // Shell mode: the snapshot the call queued, emitted right after the
+                        // reply (the helper's snapshot arrives as a push on its own).
+                        let pushes = backend.take_shell_pushes();
                         let _ = spawner
-                            .spawn(move |_me, ctx| {
+                            .spawn(move |me, ctx| {
+                                me.indexed_root
+                                    .insert(session_id, resp.indexed_path.clone());
                                 ctx.emit(RemoteServerManagerEvent::NavigatedToDirectory {
                                     session_id,
-                                    host_id,
+                                    host_id: host_id.clone(),
                                     indexed_path: resp.indexed_path,
                                     is_git: resp.is_git,
                                 });
+                                Self::emit_shell_pushes(&host_id, pushes, ctx);
                             })
                             .await;
                     }
                     Err(e) => {
                         log::error!("navigate_to_directory failed for session {session_id:?}: {e}");
-                        let error_kind = RemoteServerErrorKind::from_client_error(&e);
+                        let error_kind = RemoteServerErrorKind::from_backend_error(&e);
                         let _ = spawner
                             .spawn(move |_me, ctx| {
                                 ctx.emit(RemoteServerManagerEvent::ClientRequestFailed {
@@ -1947,6 +2088,70 @@ impl RemoteServerManager {
                             .await;
                     }
                 }
+            })
+            .detach();
+    }
+
+    /// Something that can have changed the host happened (the prompt came back, the user asked,
+    /// the app wrote). For a session whose file tree the SHELL backend serves, re-reads the
+    /// tree: at most one read in flight, one more queued if events arrived meanwhile, never a
+    /// timer. A no-op when the helper serves it (it pushes by itself) or nothing is indexed.
+    pub fn on_remote_refresh_event(
+        &mut self,
+        session_id: SessionId,
+        event: crate::backend::refresh::RemoteRefreshEvent,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        use crate::backend::refresh::{PrecmdPolicy, RefreshCoordinator, RefreshDecision};
+        if !self.indexed_root.contains_key(&session_id) {
+            return;
+        }
+        let backend = self.backend_for_session(session_id);
+        if backend.kind(crate::backend::Family::RepoMetadata) != crate::backend::BackendKind::Shell
+        {
+            return;
+        }
+        let decision = self
+            .tree_refresh
+            .entry(session_id)
+            .or_insert_with(|| RefreshCoordinator::new(PrecmdPolicy::EveryPrompt))
+            .on_event(&event);
+        if decision == RefreshDecision::Start {
+            self.start_tree_refresh(session_id, ctx);
+        }
+    }
+
+    fn start_tree_refresh(&mut self, session_id: SessionId, ctx: &mut ModelContext<Self>) {
+        let host_id = self.host_for_session_or_shell_mode(session_id);
+        let backend = self.backend_for_session(session_id);
+        let Some(root) = self.indexed_root.get(&session_id).cloned() else {
+            if let Some(c) = self.tree_refresh.get_mut(&session_id) {
+                c.finished();
+            }
+            return;
+        };
+        let spawner = self.spawner.clone();
+        ctx.background_executor()
+            .spawn(async move {
+                let pushes = match backend.refresh_repo_tree(&root).await {
+                    Ok(pushes) => pushes,
+                    Err(e) => {
+                        log::warn!("file tree refresh failed for session {session_id:?}: {e}");
+                        Vec::new()
+                    }
+                };
+                let _ = spawner
+                    .spawn(move |me, ctx| {
+                        Self::emit_shell_pushes(&host_id, pushes, ctx);
+                        let again = me
+                            .tree_refresh
+                            .get_mut(&session_id)
+                            .is_some_and(|c| c.finished());
+                        if again {
+                            me.start_tree_refresh(session_id, ctx);
+                        }
+                    })
+                    .await;
             })
             .detach();
     }
@@ -1989,32 +2194,19 @@ impl RemoteServerManager {
         dir_path: String,
         ctx: &mut ModelContext<Self>,
     ) {
-        let Some(client) = self.client_for_session(session_id).cloned() else {
-            log::warn!(
-                "load_remote_repo_metadata_directory: no connected client for session {session_id:?}"
-            );
-            return;
-        };
-        if !client
-            .capabilities()
-            .supports(crate::capability::REPO_METADATA)
-        {
+        let host_id = self.host_for_session_or_shell_mode(session_id);
+        let backend = self.backend_for_session(session_id);
+        if !backend.is_available(crate::backend::Family::RepoMetadata) {
             log::debug!(
-                "load_remote_repo_metadata_directory: server for session {session_id:?} has no repo metadata"
+                "load_remote_repo_metadata_directory: repo metadata is unavailable for {session_id:?}"
             );
             return;
         }
-        let Some(host_id) = self.host_id_for_session(session_id).cloned() else {
-            log::warn!(
-                "load_remote_repo_metadata_directory: no host_id for session {session_id:?}"
-            );
-            return;
-        };
 
         let spawner = self.spawner.clone();
         ctx.background_executor()
             .spawn(async move {
-                match client
+                match backend
                     .load_repo_metadata_directory(repo_path, dir_path)
                     .await
                 {
@@ -2038,7 +2230,7 @@ impl RemoteServerManager {
                         log::error!(
                             "load_repo_metadata_directory failed for session {session_id:?}: {e}"
                         );
-                        let error_kind = RemoteServerErrorKind::from_client_error(&e);
+                        let error_kind = RemoteServerErrorKind::from_backend_error(&e);
                         let _ = spawner
                             .spawn(move |_me, ctx| {
                                 ctx.emit(RemoteServerManagerEvent::ClientRequestFailed {
@@ -2071,9 +2263,11 @@ impl RemoteServerManager {
 
         match event {
             ClientEvent::RepoMetadataSnapshotReceived { update } => {
+                Self::log_file_tree_event("snapshot", "helper", &update);
                 ctx.emit(RemoteServerManagerEvent::RepoMetadataSnapshot { host_id, update });
             }
             ClientEvent::RepoMetadataUpdated { update } => {
+                Self::log_file_tree_event("update", "helper", &update);
                 ctx.emit(RemoteServerManagerEvent::RepoMetadataUpdated { host_id, update });
             }
             ClientEvent::BufferUpdated {
@@ -2471,6 +2665,7 @@ impl RemoteServerManager {
         // We need to do this on disconnect because the cached
         // navigated path is only deduping for the current _remote server session.
         self.last_navigated_path.remove(&session_id);
+        self.indexed_root.remove(&session_id);
 
         // A daemon that keeps dying right after the handshake is not reconnected to forever
         // (#1250): each reconnect would reset `attempt`, so this counts connections instead.
@@ -3144,6 +3339,8 @@ impl RemoteServerManager {
     /// and forget to fail pending host requests for the departed host.
     fn handle_host_disconnected(&mut self, host_id: HostId, ctx: &mut ModelContext<Self>) {
         self.remote_agent_context_snapshots.remove(&host_id);
+        // Shell-mode file trees of a host that went away are stale.
+        self.router.forget_trees(&host_id);
         self.fail_pending_host_requests_for_disconnected_host(&host_id);
         ctx.emit(RemoteServerManagerEvent::HostDisconnected { host_id });
     }
@@ -3360,3 +3557,22 @@ where
 #[cfg(all(test, not(target_family = "wasm")))]
 #[path = "manager_tests.rs"]
 mod tests;
+
+const SHELL_MODE_HOST_PREFIX: &str = "shell-session:";
+
+/// The stand-in [`HostId`] for a session that has no helper (so no real host id): what file views
+/// register their remote files under, and what [`RemoteServerManager::backend_for_host`] maps
+/// back to the session's out-of-band channel.
+pub fn shell_mode_host_id(session_id: SessionId) -> HostId {
+    HostId::new(format!("{SHELL_MODE_HOST_PREFIX}{}", session_id.as_u64()))
+}
+
+/// The session a [`shell_mode_host_id`] stands for.
+pub fn session_for_shell_mode_host(host_id: &HostId) -> Option<SessionId> {
+    host_id
+        .as_str()
+        .strip_prefix(SHELL_MODE_HOST_PREFIX)?
+        .parse::<u64>()
+        .ok()
+        .map(SessionId::from)
+}

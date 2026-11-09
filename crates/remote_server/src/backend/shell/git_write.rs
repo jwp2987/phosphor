@@ -11,9 +11,9 @@ use std::sync::{Arc, Mutex};
 
 use futures::future::BoxFuture;
 
-use super::BackendError;
-use super::shell::ShellBackend;
-use super::shell_git_runner::ShellGitRunner;
+use super::ShellBackend;
+use crate::backend::BackendError;
+use crate::backend::shell_git_runner::ShellGitRunner;
 use crate::client::ClientError;
 use crate::proto::{
     self, DiscardFilesRequest, GitCommitChainRequest, GitCommitChainResponse, GitCreatePrRequest,
@@ -26,7 +26,7 @@ type Probe = Box<dyn Fn(PathBuf) -> BoxFuture<'static, anyhow::Result<bool>> + S
 
 impl ShellBackend {
     fn git_write_parts(&self) -> Result<(ShellGitRunner, Probe), BackendError> {
-        let executor = self.executor().ok_or_else(|| {
+        let executor = self.executor.as_ref().ok_or_else(|| {
             BackendError::Unavailable(
                 "git writes need an out-of-band channel for remote commands, and this session has none"
                     .into(),
@@ -38,7 +38,7 @@ impl ShellBackend {
         Ok((runner, probe))
     }
 
-    pub(super) async fn serve_git_commit_chain(
+    pub(in crate::backend) async fn git_commit_chain_shell(
         &self,
         request: GitCommitChainRequest,
     ) -> Result<GitCommitChainResponse, BackendError> {
@@ -47,7 +47,7 @@ impl ShellBackend {
         Ok(write::commit_chain(&runner, &*probe, &repo, request).await)
     }
 
-    pub(super) async fn serve_git_push(
+    pub(in crate::backend) async fn git_push_shell(
         &self,
         request: GitPushRequest,
     ) -> Result<GitPushResponse, BackendError> {
@@ -56,7 +56,7 @@ impl ShellBackend {
         Ok(write::push(&runner, &*probe, &repo, request).await)
     }
 
-    pub(super) async fn serve_git_pull(
+    pub(in crate::backend) async fn git_pull_shell(
         &self,
         request: GitPullRequest,
     ) -> Result<GitPullResponse, BackendError> {
@@ -65,7 +65,7 @@ impl ShellBackend {
         Ok(write::pull(&runner, &*probe, &repo, request).await)
     }
 
-    pub(super) async fn serve_git_create_pr(
+    pub(in crate::backend) async fn git_create_pr_shell(
         &self,
         request: GitCreatePrRequest,
     ) -> Result<GitCreatePrResponse, BackendError> {
@@ -74,7 +74,7 @@ impl ShellBackend {
         Ok(write::create_pull_request(&runner, &*probe, &repo, request).await)
     }
 
-    pub(super) async fn serve_discard_files(
+    pub(in crate::backend) async fn discard_files_shell(
         &self,
         request: DiscardFilesRequest,
     ) -> Result<(), BackendError> {
@@ -102,7 +102,7 @@ impl ShellBackend {
         }
     }
 
-    pub(super) async fn serve_git_stage(
+    pub(in crate::backend) async fn git_stage_shell(
         &self,
         request: GitStageRequest,
     ) -> Result<(), BackendError> {

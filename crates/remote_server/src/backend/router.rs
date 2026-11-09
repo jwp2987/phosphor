@@ -15,7 +15,8 @@ use warp_core::SessionId;
 use super::Family;
 use super::executor::OutOfBandExecutor;
 use super::helper::client_id;
-use super::shell::ShellBackend;
+use super::refresh::RemoteRefreshEvent;
+use super::shell::{ShellBackend, ShellPush, TreeCache};
 use crate::HostId;
 use crate::capability::ServerCapabilities;
 use crate::client::RemoteServerClient;
@@ -68,6 +69,15 @@ pub fn decide(
         }
         _ => BackendKind::Shell,
     }
+}
+
+/// The `input_order`-style line the lab asserts routing from:
+/// `hop=backend_route family=<capability> backend=<helper|shell|unavailable> reason=<...>`.
+pub fn route_log_line(family: Family, backend: &str, reason: &str) -> String {
+    format!(
+        "hop=backend_route family={} backend={backend} reason={reason}",
+        family.capability()
+    )
 }
 
 /// Per-family "always shell" override, for tests and the lab (the helper is never asked).
@@ -134,7 +144,14 @@ struct State {
     always_shell: AlwaysShell,
     executors: HashMap<SessionId, Arc<dyn OutOfBandExecutor>>,
     fallbacks: HashMap<HostId, Fallbacks>,
+    /// Per-host shell-mode file trees, shared by every backend built for the host.
+    tree_caches: HashMap<HostId, Arc<TreeCache>>,
+    refresh_listeners: Vec<RefreshListener>,
 }
+
+/// Called with the host and the event whenever the app changes a host itself (see
+/// [`FeatureRouter::subscribe_refresh`]).
+pub type RefreshListener = Arc<dyn Fn(&HostId, &RemoteRefreshEvent) + Send + Sync>;
 
 /// Shared handle; clones see the same state.
 #[derive(Clone, Default)]
@@ -177,6 +194,22 @@ impl FeatureRouter {
 
     pub fn unregister_out_of_band(&self, session: SessionId) {
         self.lock().executors.remove(&session);
+    }
+
+    /// Registers a listener for [`RemoteRefreshEvent`]s the backend itself raises: today
+    /// `AfterOwnWrite` after every successful mutating call (a save, a delete, a git write), on
+    /// either arm. A shell-backed view re-reads on it; nothing here is a timer.
+    pub fn subscribe_refresh(&self, listener: RefreshListener) {
+        self.lock().refresh_listeners.push(listener);
+    }
+
+    /// Tells every listener that `event` happened on `host`.
+    pub fn emit_refresh(&self, host: &HostId, event: &RemoteRefreshEvent) {
+        // Outside the lock: a listener may call back into the router.
+        let listeners = self.lock().refresh_listeners.clone();
+        for listener in listeners {
+            listener(host, event);
+        }
     }
 
     /// The first registered channel among `sessions`.
@@ -222,6 +255,43 @@ impl FeatureRouter {
         )
     }
 
+    /// Why `choose` picked what it did, for the `backend_route` log line.
+    fn route_reason(
+        &self,
+        host: &HostId,
+        family: Family,
+        helper: Option<&HelperProbe>,
+        shell_available: bool,
+    ) -> (&'static str, &'static str) {
+        let kind = self.choose(host, family, helper);
+        if kind == BackendKind::Helper {
+            return ("helper", "caps");
+        }
+        if !shell_available {
+            return ("unavailable", "no_channel");
+        }
+        let state = self.lock();
+        let reason = if state.always_shell.contains(family) {
+            "override"
+        } else if helper.is_some_and(|p| {
+            state
+                .fallbacks
+                .get(host)
+                .is_some_and(|f| f.client_id == p.client_id && f.families.contains(&family))
+        }) {
+            if helper.is_some_and(|p| p.connected) {
+                "unsupported_fallback"
+            } else {
+                "connection_lost"
+            }
+        } else if helper.is_some_and(|p| !p.connected) {
+            "connection_lost"
+        } else {
+            "caps"
+        };
+        ("shell", reason)
+    }
+
     /// Records that `family` must be served by the shell on this connection from now on.
     pub fn note_fallback(&self, host: &HostId, client_id: usize, family: Family) {
         let mut state = self.lock();
@@ -245,7 +315,20 @@ impl FeatureRouter {
             router: self.clone(),
             host: host.clone(),
             helper,
-            shell: ShellBackend::new(self.executor_for(sessions)),
+            shell: ShellBackend::new(self.executor_for(sessions))
+                .with_tree_cache(self.tree_cache_for(host)),
+        }
+    }
+
+    /// The shell-mode file-tree state of `host` (created on first use).
+    pub fn tree_cache_for(&self, host: &HostId) -> Arc<TreeCache> {
+        Arc::clone(self.lock().tree_caches.entry(host.clone()).or_default())
+    }
+
+    /// Forgets `host`'s shell-mode file trees (the host disconnected).
+    pub fn forget_trees(&self, host: &HostId) {
+        if let Some(cache) = self.lock().tree_caches.remove(host) {
+            cache.clear();
         }
     }
 }
@@ -287,10 +370,65 @@ impl RoutedBackend {
         &self.shell
     }
 
+    /// Logs the routing decision of one call: family, backend and why, no paths or content.
+    pub(super) fn log_route(&self, family: Family) {
+        let probe = self.helper.as_ref().map(HelperProbe::of);
+        let (backend, reason) = self.router.route_reason(
+            &self.host,
+            family,
+            probe.as_ref(),
+            self.shell.is_available(),
+        );
+        log::info!("{}", route_log_line(family, backend, reason));
+    }
+
     /// Which backend a call for `family` would use now. For UI (the "shell mode" chip) and tests.
     pub fn kind(&self, family: Family) -> BackendKind {
         let probe = self.helper.as_ref().map(HelperProbe::of);
         self.router.choose(&self.host, family, probe.as_ref())
+    }
+
+    /// Re-reads the file tree of the indexed root `repo_path` when the shell serves
+    /// `RepoMetadata` (the helper pushes its own updates, so this is then a no-op) and returns
+    /// the pushes this backend produced, ready to emit. Drive it from `RefreshCoordinator`
+    /// events; it never runs on a timer.
+    pub async fn refresh_repo_tree(
+        &self,
+        repo_path: &str,
+    ) -> Result<Vec<ShellPush>, super::BackendError> {
+        if self.kind(Family::RepoMetadata) == BackendKind::Shell {
+            self.shell.refresh_repo_tree(repo_path).await?;
+        }
+        Ok(self.shell.take_pushes())
+    }
+
+    /// The pushes shell-mode calls on this backend produced so far (file-tree snapshots after a
+    /// `navigate_to_directory`). Empty when the helper served the call: it pushes by itself.
+    pub fn take_shell_pushes(&self) -> Vec<ShellPush> {
+        self.shell.take_pushes()
+    }
+
+    /// [`RemoteFeatures::write_file`](super::RemoteFeatures::write_file) that, when `expect` is
+    /// given, writes only if the file is still in that state. The check needs the shell arm: a
+    /// helper write has no precondition (the helper's conflict detection is its buffer
+    /// protocol), so with a helper serving the family the write goes through unguarded and the
+    /// caller relies on that protocol. Emits `AfterOwnWrite` like any write.
+    pub async fn write_file_expecting(
+        &self,
+        path: String,
+        content: String,
+        expect: Option<crate::shellcmd::write::Expect>,
+    ) -> Result<(), super::BackendError> {
+        use super::RemoteFeatures as _;
+        if expect.is_none() || self.kind(Family::FileWrite) == BackendKind::Helper {
+            return self.write_file(path, content).await;
+        }
+        let result = self.shell.write_file_expecting(path, content, expect).await;
+        if result.is_ok() {
+            self.router
+                .emit_refresh(&self.host, &RemoteRefreshEvent::AfterOwnWrite);
+        }
+        result
     }
 
     /// Whether a call for `family` could work at all right now: the helper serves it, or the
