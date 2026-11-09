@@ -473,6 +473,16 @@ impl RequestFileEditsExecutor {
             Some(SessionType::WarpifiedRemote {
                 host_id: Some(host_id),
             }) => DiffSessionType::Remote(host_id.clone()),
+            // No helper host id: shell mode, registered under the session's stand-in host id,
+            // which the backend lookup maps back to the session's out-of-band channel.
+            Some(SessionType::WarpifiedRemote { host_id: None }) => self
+                .active_session
+                .as_ref(ctx)
+                .session_id(ctx)
+                .map(|session_id| {
+                    DiffSessionType::Remote(remote_server::manager::shell_mode_host_id(session_id))
+                })
+                .unwrap_or(DiffSessionType::Local),
             _ => DiffSessionType::Local,
         };
 

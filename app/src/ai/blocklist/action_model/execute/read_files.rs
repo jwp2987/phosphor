@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use futures::{FutureExt, future::BoxFuture};
+use remote_server::backend::RemoteFeatures as _;
 use warpui::{Entity, EntityId, ModelContext, ModelHandle, SingletonEntity};
 
 use crate::{
@@ -150,14 +151,22 @@ impl ReadFilesExecutor {
         // Cap the batch; files past the cap are reported, not dropped (#1278).
         let (locations, overflow_note) = cap_read_batch(locations, AGENT_READ_FILES_MAX_FILES);
 
-        // Check if this is a remote session with a connected host.
+        // A remote session reads through the router: the helper when it serves ReadFileContext,
+        // otherwise shell mode over the session's out-of-band channel. This call site never
+        // decides between them.
         let session_type = self.active_session.as_ref(ctx).session_type(ctx);
-        let remote_client = match &session_type {
-            Some(SessionType::WarpifiedRemote {
-                host_id: Some(host_id),
-            }) => remote_server::manager::RemoteServerManager::as_ref(ctx)
-                .client_for_host_with(host_id, remote_server::capability::FILE_CONTEXT)
-                .cloned(),
+        let remote_backend = match &session_type {
+            Some(SessionType::WarpifiedRemote { host_id }) => self
+                .active_session
+                .as_ref(ctx)
+                .session_id(ctx)
+                .map(|session_id| {
+                    remote_server::manager::RemoteServerManager::as_ref(ctx)
+                        .backend_for_session_with_host(session_id, host_id.as_ref())
+                })
+                .filter(|backend| {
+                    backend.is_available(remote_server::backend::Family::FileContext)
+                }),
             _ => None,
         };
 
@@ -165,7 +174,7 @@ impl ReadFilesExecutor {
         // requires either local access or a connected remote server, neither
         // of which is available.
         if matches!(session_type, Some(SessionType::WarpifiedRemote { .. }))
-            && remote_client.is_none()
+            && remote_backend.is_none()
         {
             return ActionExecution::Sync(AIAgentActionResultType::ReadFiles(
                 ReadFilesResult::Error(
@@ -185,7 +194,7 @@ impl ReadFilesExecutor {
             ));
         }
 
-        if let Some(client) = remote_client {
+        if let Some(backend) = remote_backend {
             return ActionExecution::Async {
                 execute_future: Box::pin(async move {
                     let request = remote_server::proto::ReadFileContextRequest {
@@ -217,7 +226,7 @@ impl ReadFilesExecutor {
                         max_batch_bytes: Some(AGENT_READ_FILES_BATCH_BYTES as u32),
                     };
 
-                    let response = client
+                    let response = backend
                         .read_file_context(request)
                         .await
                         .map_err(|e| anyhow::anyhow!("Remote read failed: {e}"))?;

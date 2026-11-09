@@ -192,20 +192,29 @@ impl SessionContext {
         // client" are the same answer for every consumer of this field, so answering
         // `false` there is correct as well as safe.
         let has_remote_server_client = match &session_type {
-            Some(SessionType::WarpifiedRemote {
-                host_id: Some(host_id),
-            }) => {
-                app.has_singleton_model::<RemoteServerManager>()
-                    && file_tools_available(
-                        RemoteServerManager::as_ref(app)
-                            .client_for_host(host_id)
-                            .map(|client| client.capabilities())
-                            .as_ref(),
-                    )
+            Some(SessionType::WarpifiedRemote { host_id }) => {
+                app.has_singleton_model::<RemoteServerManager>() && {
+                    let manager = RemoteServerManager::as_ref(app);
+                    let helper_serves = host_id.as_ref().is_some_and(|host_id| {
+                        file_tools_available(
+                            manager
+                                .client_for_host(host_id)
+                                .map(|client| client.capabilities())
+                                .as_ref(),
+                        )
+                    });
+                    // No helper, or one without FILE_CONTEXT: shell mode serves the file tools
+                    // when the session has an out-of-band channel (parity family a). With
+                    // neither, the tools stay withdrawn.
+                    helper_serves
+                        || session.session_id(app).is_some_and(|session_id| {
+                            manager
+                                .backend_for_session_with_host(session_id, host_id.as_ref())
+                                .is_available(remote_server::backend::Family::FileContext)
+                        })
+                }
             }
-            Some(SessionType::WarpifiedRemote { host_id: None })
-            | Some(SessionType::Local)
-            | None => false,
+            Some(SessionType::Local) | None => false,
         };
         let remote_home = if matches!(session_type, Some(SessionType::WarpifiedRemote { .. })) {
             session_arc

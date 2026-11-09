@@ -349,7 +349,9 @@ impl OutOfBandExecutor for ControlMasterChannel {
             )
             .await
             .map_err(|e| ExecError::Failed(format!("{e:#}")))?;
-            SLOW_REMOTE_COMMAND.finish(started, || "executor=control_master, shell-mode".into());
+            SLOW_REMOTE_COMMAND.finish(started, || {
+                "executor=control_master, shell-mode".to_string()
+            });
             let (stdout, truncated) = cap_stdout(output.stdout, request.max_output_bytes);
             Ok(ExecOutput {
                 stdout,
