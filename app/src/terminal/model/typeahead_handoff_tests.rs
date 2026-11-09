@@ -5258,6 +5258,29 @@ fn a_command_the_latch_calls_interactive_gets_its_enter_and_releases_a_live_hold
     assert!(handoff.take_young_hold_ends().is_empty());
 }
 
+/// #1889: where nothing samples the shell (ConPTY), the 50 ms latch no longer ends a live young
+/// hold while the stream barrier says output is still in flight; once the barrier is drained
+/// (or absent) it ends the hold as before.
+#[test]
+fn the_unsampled_latch_leaves_a_young_hold_to_the_barrier_while_output_is_in_flight() {
+    let (mut handoff, id) = queued_young_hold();
+    let barrier = RawReadProbe::new(ShellPromptFact::Unknown, Some(false));
+    barrier.install_unsampled(&mut handoff);
+    handoff.note_command_interactive();
+    assert!(
+        handoff.young_hold_queued(),
+        "output in flight: the hold stays"
+    );
+    assert!(handoff.take_young_hold_ends().is_empty());
+    barrier.set_drained(true);
+    handoff.note_command_interactive();
+    assert!(!handoff.young_hold_queued());
+    assert_eq!(
+        handoff.take_young_hold_ends(),
+        vec![(id, YoungHoldEnd::Typeahead)]
+    );
+}
+
 /// #1614 (review R1): the latch fires 50 ms into nearly any command and stays set until its
 /// Precmd is parsed. After `make` exits, its Precmd in the stream unparsed and zle raw, the latch
 /// is stale and the sample is current: #933 exactly. Where the platform samples, the latch decides

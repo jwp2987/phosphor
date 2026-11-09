@@ -11828,7 +11828,8 @@ impl TerminalView {
     /// #1641: makes the open connect window wait for the wrapper's verdict. `any_block`: the
     /// announcement is being handled now, so the open window is this ssh's whatever block it
     /// recorded; otherwise (a window that armed later) only a window for the announced block takes
-    /// it. A window born owned (ConPTY's `TTY_OWNED_AT_ARM`) is left alone. A window ssh already
+    /// it. A window born owned (ConPTY's `TTY_OWNED_AT_ARM`) has no ownership event, so it is taken
+    /// back like one ssh owns by event (#1884; it takes the `reclaimed` path). A window ssh already
     /// owns by its event (the ownership event overtook the announcement) is taken back: keys typed
     /// from now on are held until the verdict.
     fn ssh_apply_wrapper_announcement(&mut self, any_block: bool) {
@@ -11838,7 +11839,11 @@ impl TerminalView {
         let applies = self.ssh_connect_gate.as_ref().is_some_and(|gate| {
             gate.wrapper == SshWrapperHold::Off
                 && (any_block || gate.block_id.as_ref() == Some(&announcement.block_id))
-                && (!gate.tty_owned || gate.tty_owned_by_event)
+                // A window born owned (`TTY_OWNED_AT_ARM`, ConPTY: no ownership event exists) is
+                // owned by assumption, not by event, so the announcement still takes it (#1884).
+                && (!gate.tty_owned
+                    || gate.tty_owned_by_event
+                    || input_queue::TTY_OWNED_AT_ARM)
         });
         if !applies {
             return;
@@ -22941,6 +22946,7 @@ impl TerminalView {
         use subshell_ready::Decision;
         let look = self.take_subshell_pane_look();
         let line_dirty = self.setup_write_must_wait_for_the_line();
+        let no_tty_probe = !self.model.lock().has_subshell_tty_probe();
         let SubshellSetupState::Armed(armed) = &mut self.subshell_setup_state else {
             return;
         };
@@ -22961,6 +22967,7 @@ impl TerminalView {
             prompt_moved_since_baseline: moved(armed.baseline),
             prompt_moved_since_line_end: moved(armed.line_end_baseline),
             elapsed: armed.armed_at.elapsed(),
+            no_tty_probe,
         };
         let relay = look.tty.kind == SubshellTtyKind::Relay;
         armed.last_tty = Some(look.tty.clone());

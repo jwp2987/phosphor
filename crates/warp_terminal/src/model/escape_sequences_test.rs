@@ -1299,3 +1299,21 @@ fn test_fn_keystroke_with_cmd_modifier() {
     ];
     validate_keystroke_test_cases(cases, &mock);
 }
+
+/// #1888: Ctrl+Break is a win32-input-mode press and release of VK_CANCEL; other Pause chords
+/// produce nothing.
+#[test]
+fn test_ctrl_break_win32_input_sequence() {
+    assert_eq!(
+        ctrl_break_win32_input_sequence(&Keystroke::parse("ctrl-pause").unwrap()),
+        Some(b"\x1b[3;70;0;1;8;1_\x1b[3;70;0;0;8;1_".to_vec())
+    );
+    assert_eq!(
+        ctrl_break_win32_input_sequence(&Keystroke::parse("pause").unwrap()),
+        None
+    );
+    assert_eq!(
+        ctrl_break_win32_input_sequence(&Keystroke::parse("ctrl-alt-pause").unwrap()),
+        None
+    );
+}

@@ -1925,7 +1925,14 @@ impl TypeaheadHandoff {
     pub fn note_command_interactive(&mut self) {
         self.command_interactive = true;
         self.end_keys_follow_editor("command_interactive");
-        if !self.foreground_probe.samples_shell() && self.end_young_hold_as_typeahead() {
+        // #1889: where nothing samples the shell (ConPTY) the latch is a 50 ms timer, and the one
+        // fact there is, the stream barrier, may say the command's Precmd is still in flight: the
+        // hold then waits for `on_stream_applied` instead of writing the Enter early. Tightening
+        // only; with no barrier, or a drained one, the latch ends the hold as before.
+        if !self.foreground_probe.samples_shell()
+            && self.foreground_probe.stream_drained() != Some(false)
+            && self.end_young_hold_as_typeahead()
+        {
             warpui::input_order::log_hop("young_hold_end", || {
                 format!("why=command_interactive hold_id={}", self.young_hold_id)
             });

@@ -33,6 +33,7 @@ fn sample(tty: SubshellTtySample) -> ReadinessSample {
         prompt_moved_since_baseline: true,
         prompt_moved_since_line_end: true,
         elapsed: Duration::from_secs(1),
+        no_tty_probe: false,
     }
 }
 
@@ -527,6 +528,7 @@ fn every_sample() -> Vec<ReadinessSample> {
                                                 prompt_moved_since_baseline: moved,
                                                 prompt_moved_since_line_end: moved_since_end,
                                                 elapsed,
+                                                no_tty_probe: false,
                                             });
                                         }
                                     }
@@ -886,4 +888,53 @@ fn r9_a_cancel_flushes_only_provably_unread_setup_bytes() {
     assert!(!cancel_flushes_unread_setup(Some(false), true));
     assert!(!cancel_flushes_unread_setup(Some(true), false));
     assert!(!cancel_flushes_unread_setup(None, false));
+}
+
+/// #1886: with no tty probe (ConPTY) the screen facts decide: a shell prompt drawn since the
+/// baseline writes; no prompt, an input prompt or an unproven user byte waits; the ceiling still
+/// ends the attempt. A probe that exists but found nothing keeps waiting.
+#[test]
+fn no_probe_judges_from_screen_facts() {
+    let mut s = unknown(LeaderKind::Unreadable, "");
+    s.no_tty_probe = true;
+    assert_eq!(
+        subshell_ready(&s, &no_bytes(), Some(ShellType::Bash)),
+        Decision::Write(None),
+        "the leader names no shell, so the sh probe writes"
+    );
+    let mut moved_not = s.clone();
+    moved_not.prompt_moved_since_baseline = false;
+    assert_eq!(
+        subshell_ready(&moved_not, &no_bytes(), None),
+        Decision::Wait(WaitWhy::Unknown)
+    );
+    let mut input = s.clone();
+    input.tail = Tail::InputPrompt;
+    assert_eq!(
+        subshell_ready(&input, &no_bytes(), None),
+        Decision::Wait(WaitWhy::InputPrompt)
+    );
+    let mut unproven = s.clone();
+    unproven.prompt_moved_since_line_end = false;
+    assert_eq!(
+        subshell_ready(&unproven, &typed(), None),
+        Decision::Wait(WaitWhy::Unknown)
+    );
+    assert_eq!(
+        subshell_ready(&s, &typed(), None),
+        Decision::Write(None),
+        "a prompt drawn since the user's last line end proves the bytes were read"
+    );
+    let mut probed = s.clone();
+    probed.no_tty_probe = false;
+    assert_eq!(
+        subshell_ready(&probed, &no_bytes(), None),
+        Decision::Wait(WaitWhy::Unknown)
+    );
+    let mut late = s;
+    late.elapsed = PRE_READY_CEILING;
+    assert!(matches!(
+        subshell_ready(&late, &no_bytes(), None),
+        Decision::Cancel(_)
+    ));
 }

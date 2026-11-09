@@ -432,6 +432,12 @@ class Profile:
     # `tcsh -f` (the known-unsupported leader) and the docker `-t` without `-i` command (a relay with a cooked local tty).
     PROBE_SUBSHELL_COMMANDS = ("^dash$", "^busybox ash$", "^bash --rcfile .*", "^tcsh -f$", "^docker run --rm -t alpine .*")
 
+    @staticmethod
+    def ssh_wrapper_pinned():
+        """#1884: APPCI_SSH_WRAPPER=1 writes both ssh-wrapper switches explicitly (they default to true), so the *_wrapper ssh cases run with the managed-ssh
+        wrapper on by the profile and not by an app default"""
+        return os.environ.get("APPCI_SSH_WRAPPER", "") == "1"
+
     def probe_subshell_commands_toml(self, existing):
         """TOML array literal of warpify.subshells.added_subshell_commands: the owner's own entries (`existing` is the seed's `key = value`
         line, or None) with PROBE_SUBSHELL_COMMANDS merged in once each; the owner's regexes are kept as written"""
@@ -498,6 +504,9 @@ class Profile:
             t = T.set_key(t, "warpify.ssh", "ssh_extension_install_mode", '"never_install"')
             t = T.set_key(t, "warpify.subshells", "added_subshell_commands", self.probe_subshell_commands_toml(
                 T.get_key(t, "warpify.subshells", "added_subshell_commands")))
+            if self.ssh_wrapper_pinned():
+                for k in ("enable_ssh_warpification", "enable_legacy_ssh_wrapper"):
+                    t = T.set_key(t, "warpify.ssh", k, "true")
             for k in ("startup_shell_override", "new_session_shell_override"):     # the scratch rc logging needs the login shell
                 t = T.del_key(t, "session", k)
             gb = self.gitbash_toml()
@@ -515,7 +524,8 @@ class Profile:
             os.chmod(cfg + "/settings.toml", 0o600)
             return
         Profile.owner_note = "not found (bare profile)"
-        lines = ['[warpify.ssh]', 'ssh_extension_install_mode = "never_install"', '',
+        lines = ['[warpify.ssh]', 'ssh_extension_install_mode = "never_install"'] + (
+                ['enable_ssh_warpification = true', 'enable_legacy_ssh_wrapper = true'] if self.ssh_wrapper_pinned() else []) + ['',
                  '[warpify.subshells]', 'added_subshell_commands = ' + self.probe_subshell_commands_toml(None), '',
                  '[general]', 'default_session_mode = "%s"' % m, 'restore_session = false', '']
         gb = self.gitbash_toml()

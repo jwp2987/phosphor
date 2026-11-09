@@ -50,8 +50,8 @@ use super::window::DEFAULT_TITLEBAR_HEIGHT;
 use super::windows::{WindowsNetworkConnectionPoint, add_network_connection_listener};
 
 use self::key_events::{
-    KeyConversion, convert_keyboard_input_event, text_fallback_event_for_unconverted_key,
-    typed_characters_follow_keydown,
+    KeyConversion, convert_keyboard_input_event, mark_composing,
+    text_fallback_event_for_unconverted_key, typed_characters_follow_keydown,
 };
 
 /// At most one WARN summary of transiently skipped frames per this interval.
@@ -1725,8 +1725,18 @@ impl EventLoop {
                 let event_text = event.text.as_ref().map(|text| text.to_string());
                 let event_state = event.state;
                 let modifiers = window_state.modifiers;
+                // #1892: winit's key event carries no composition state, so on Windows a key
+                // that arrives while an IME preedit is showing is marked composing from the
+                // preedit this loop tracks (the same meaning as on macOS: the terminal ignores
+                // it unless it is a meta shortcut). Other platforms keep `false`.
+                let composing = cfg!(windows)
+                    && self
+                        .last_preedit
+                        .as_ref()
+                        .is_some_and(|(text, _)| !text.is_empty());
                 match convert_keyboard_input_event(event, window_state, is_synthetic) {
-                    KeyConversion::Event(warp_ui_event) => {
+                    KeyConversion::Event(mut warp_ui_event) => {
+                        mark_composing(&mut warp_ui_event, composing);
                         Some(ConvertedEvent::KeyDownWithTypedCharacters {
                             chars: event_text,
                             event: warp_ui_event,

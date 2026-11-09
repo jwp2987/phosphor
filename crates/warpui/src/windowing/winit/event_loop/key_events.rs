@@ -176,6 +176,14 @@ pub fn convert_keyboard_input_event(
     })
 }
 
+/// #1892: sets the composition flag on a converted key press while an IME preedit is showing.
+/// winit's key event does not carry it, so the event loop derives it from the preedit it tracks.
+pub fn mark_composing(event: &mut crate::Event, composing: bool) {
+    if composing && let crate::Event::KeyDown { is_composing, .. } = event {
+        *is_composing = true;
+    }
+}
+
 pub fn text_fallback_event_for_unconverted_key(
     chars: Option<String>,
     state: ElementState,
@@ -274,6 +282,8 @@ fn convert_key(key: Key) -> Option<Cow<'static, str>> {
         Named(NamedKey::Backspace) => "backspace",
         Named(NamedKey::Delete) => "delete",
         Named(NamedKey::Insert) => "insert",
+        // Ctrl+Pause is VK_CANCEL (Ctrl+Break), which winit reports as `Cancel` (#1888).
+        Named(NamedKey::Pause) | Named(NamedKey::Cancel) => "pause",
         Named(NamedKey::Escape) => "escape",
         Named(NamedKey::F1) => "f1",
         Named(NamedKey::F2) => "f2",
