@@ -3772,7 +3772,7 @@ Run: `APPCI_FAKE_MODEL=1 python3 script/realapp/appci/run.py --cases 'lab_agent_
 
 | case | proves | oracle |
 |---|---|---|
-| `agent_edit_accept` | a three-hunk diff (lines 2, 5 and the last line) accepted writes exactly the expected bytes, once | file bytes, re-read after 2 s (no duplicate write) |
+| `agent_edit_accept` | a three-hunk diff (lines 2, 5 and the last line; each search is a WHOLE line, because the app's matcher works on whole lines and a prefix-only search failed to match in round 7: `Failure(s) applying diff: 1 unmatched`, action `failed`, no card to accept) accepted writes exactly the expected bytes, once | file bytes, re-read after 2 s (no duplicate write) |
 | `agent_edit_reject` | rejected: byte-identical, no later change; a fresh proposal afterwards still accepts | file bytes |
 | `agent_edit_conflict` | the file changes on disk after the proposal and before the accept: the save is refused, the user's bytes are intact, the conflict is reported | file bytes == the user's bytes; app log `Failed to save file for accepted AgentMode diffs` (or `changed on disk`) |
 | `agent_edit_endings` | CRLF, LF without a final newline, CRLF without one: line endings and the final newline survive an accepted edit that touches the last line | byte-for-byte against the expected bytes |

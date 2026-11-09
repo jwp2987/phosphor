@@ -44,10 +44,11 @@ def make_file(tok, eol=b"\n", final_newline=True):
     return body + eol if final_newline else body
 
 
-def three_edits():
-    """the multi-hunk diff: lines 2, 5 and 10 (the LAST line, which is the one a missing final newline sits on); single-line searches, so the file's line ending
-    is never part of a search string"""
-    return [("L02 beta", "L02 BETA-EDITED"), ("L05 epsilon", "L05 EPSILON-EDITED"), ("L10 kappa", "L10 KAPPA-EDITED")]
+def three_edits(tok):
+    """the multi-hunk diff: lines 2, 5 and 10 (the LAST line, which is the one a missing final newline sits on). Each search is a WHOLE line (without its line ending):
+    the app's matcher works on whole lines (diff_validation fuzzy_match_file_diffs), and a search that is only a prefix of a line can fail to match (round 7: 1 unmatched,
+    the action failed at once and no diff card was ever accepted), so the file's line ending is never part of a search string and no search is a partial line"""
+    return [("L02 beta %s" % tok, "L02 BETA-EDITED %s" % tok), ("L05 epsilon %s" % tok, "L05 EPSILON-EDITED %s" % tok), ("L10 kappa %s" % tok, "L10 KAPPA-EDITED %s" % tok)]
 
 
 def prompt_for(path, edits):
@@ -217,7 +218,7 @@ def partial_note(r):
 def run_accept(ctx, r, host, label, eol=b"\n", final_newline=True):
     tok = CL.unique(ctx, 6)
     name = "ae_%s_%s.txt" % (label, tok)
-    content, edits = make_file(tok, eol, final_newline), three_edits()
+    content, edits = make_file(tok, eol, final_newline), three_edits(tok)
     expected = apply_edits(content, edits)
     got = propose(ctx, r, host, name, content, edits)
     if got is None:
@@ -236,7 +237,7 @@ def run_accept(ctx, r, host, label, eol=b"\n", final_newline=True):
 def run_conflict(ctx, r, host, label):
     tok = CL.unique(ctx, 6)
     name = "ac_%s_%s.txt" % (label, tok)
-    content, edits = make_file(tok), three_edits()
+    content, edits = make_file(tok), three_edits(tok)
     agent_expected = apply_edits(content, edits)
     got = propose(ctx, r, host, name, content, edits)
     if got is None:
@@ -291,7 +292,7 @@ def run_touch_only(ctx, r, host, label):
     may report a false conflict here; that expectation belongs to branch fix/1837-remote-edit-conflict (until it lands this case FAILS on that arm, which is the defect)."""
     tok = CL.unique(ctx, 6)
     name = "at_%s_%s.txt" % (label, tok)
-    content, edits = make_file(tok), three_edits()
+    content, edits = make_file(tok), three_edits(tok)
     expected = apply_edits(content, edits)
     got = propose(ctx, r, host, name, content, edits)
     if got is None:
@@ -345,7 +346,7 @@ def c_agent_edit_reject(ctx, r):
     try:
         tok = CL.unique(ctx, 6)
         name = "ar_%s.txt" % tok
-        content, edits = make_file(tok), three_edits()
+        content, edits = make_file(tok), three_edits(tok)
         got = propose(ctx, r, host, name, content, edits)
         if got is None:
             return
