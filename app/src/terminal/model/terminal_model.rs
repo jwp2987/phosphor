@@ -2131,9 +2131,22 @@ impl TerminalModel {
         self.last_setup_line_marker = None;
     }
 
-    /// Stops hiding the setup echo.
+    /// Stops hiding the setup echo. A new setup starts its echo counts afresh.
     pub fn clear_setup_echo(&mut self) {
         self.disarm_setup_echo();
+        self.setup_echo_filter.reset_counts();
+    }
+
+    /// #1679 step 3 (review R7): how many setup lines the tty has echoed through their line feed
+    /// since the current setup was written: the shell took them.
+    pub fn setup_echo_lines_ended(&self) -> usize {
+        self.setup_echo_filter.lines_ended()
+    }
+
+    /// #1679 step 3 (review R9): whether any of the current setup's echo has been seen; `false`
+    /// means its bytes may still sit unread in the tty.
+    pub fn setup_echo_started(&self) -> bool {
+        self.setup_echo_filter.started()
     }
 
     /// The ledger of query replies and pty writes, shared with the pty event loop.
@@ -3133,6 +3146,13 @@ impl TerminalModel {
     /// success.
     pub fn unregister_session_id(&mut self, session_id: SessionId) {
         self.registered_session_ids.remove(&session_id);
+    }
+
+    /// Whether a minted ID is still registered (the view tests of #1679 step 3 assert a cancelled
+    /// attempt's ID is gone).
+    #[cfg(test)]
+    pub fn session_id_is_registered_for_test(&self, session_id: SessionId) -> bool {
+        self.registered_session_ids.contains(&session_id)
     }
 
     pub fn needs_bracketed_paste(&mut self) -> bool {

@@ -1294,6 +1294,58 @@ prompt drawn since the user's last line end -- "line ended + new prompt" never c
 | model (pure) | `key_facts_tests.rs`: `choice_groups_and_the_zsh_newuser_footer_are_input_prompts` | `[1-3]`, `[1/2/3]`, `(y/n/a)`, `(a/b/c/d/e)`, the newuser footer are prompts; `(venv) ... $`, `[me@host ~]$`, `[main]`, `done)`, `(abcdef/ghij)`, six letters, `(a)`, `[]`, `[/]` are not |
 | view (pure) | `view/subshell_ready_tests.rs`: `row_1_secret_waits` .. `row_15_alt_screen_waits`, `r3_*`, `r4_*`, `r5_*`, `the_preconditions_apply_in_order`, `exhaustive_a_write_needs_every_precondition_and_a_proof` (every kind x leader x canonical x queue x block x alt x dirty x tail x moved x moved-since-end x age x three ledgers x two triggers), `r2_only_an_empty_or_answering_line_re_arms`, `the_line_tracker_counts_only_the_terminator_as_empty`, `the_line_tracker_understands_bracketed_paste_across_chunks`, `judge_written_rows`, `r7_unsupported_is_stream_ordered_and_confirmed_by_the_queue_or_a_second_prompt`, `r8_held_keys_go_to_the_editor_except_a_proven_unsupported_prompt`, `r9_a_cancel_flushes_only_provably_unread_setup_bytes` | every row of the redesign's table with the review's corrections; the invariant that a Write needs every precondition and a proof and that a young attempt is never cancelled on a fact alone; the ceiling names NotAShell for an unknown leader and TooLong otherwise |
 
+**#1679 / #1711 step 3, C3b (the switch to the readiness judge; owner-approved 2026-11-08). Rollback:
+`PHOSPHOR_SUBSHELL_READY=0` restores today's path (the first-prompt-shape wait `AwaitingSubshellPrompt` + 5 s give-up,
+the #1032 deferral `DeferredSubshellSetup`), whose code stays until C3c deletes it (review R10). Independent of
+`PHOSPHOR_BOOTSTRAP_TIMED`, which restores the blind writes of before #1354, not today's behaviour.**
+`SubshellSetupState { Idle, Armed(ArmedSubshellSetup), Written(WrittenSubshellSetup) }` in `view.rs`. Arming (auto-warpify at
+preexec, the rc-file snippet, a Phosphorize click: `arm_subshell_setup`, `arm_subshell_setup_from_banner`) holds NOTHING: keys
+pass through, counted in the ledger (R1), and every line end is judged by R2 (`note_user_bytes_for_subshell_readiness` on the
+sink: an empty or answering line re-arms the shape baseline, taken at once with `try_lock` or at the next look; any other
+non-empty line is UserDrove and cancels on the key path). Judging runs on EVENTS only: every output wakeup
+(`judge_subshell_setup_on_event("output")`), the hand-off's change (`"handoff"`) and the click, ONE model lock per look
+(`take_subshell_pane_look`: block id, cursor position, the tail classified None / ShellPrompt / InputPrompt, alt screen, the tty
+sample through the model's probe, echo state, marker count; R10). A Write runs the trigger's write NOW
+(`write_armed_subshell_setup` -> `trigger_subshell_bootstrap_now`, which on this path skips the old deferral checks: the judge
+made them) and the attempt becomes Written with the minted ID / token (`note_subshell_setup_written`; a stage-2 write after
+`InitSubshell` refreshes the same attempt with a fresh token and fresh counts). Written: `judge_written_subshell_setup` at every
+look: E-GONE, E-SECRET, E-QUESTION, and the stream-ordered E-UNSUPPORTED (our echo ended per the echo filter's new
+`lines_ended`, then a fresh prompt-shaped line counted in `fresh_prompts_after_echo`, no token-matched marker between;
+local attempts confirm by the queue proof with NO timer, a relay by a second prompt or the 2 s `UNSUPPORTED_CONFIRMATION`
+net, which only hands back). R8 on the key path: `secret_read_on_key_path_cancels_written_setup` samples the termios probe at
+each key while written and hands back before the key is offered to the gates, so it goes to the password. The ONE cancel,
+`cancel_subshell_setup(why, proof)`: Armed -> Idle (auto-warpify aborted; TooLong/NotAShell toast "click Phosphorize",
+Unsupported names the shell); Written -> the pending lines cut (`CancelPacedSetupWrites`), this attempt's ID unregistered (a late
+hook of it is refused; the net's give-up keeps its ID for a late `Bootstrapped`, this does not), echo filter and marker cleared,
+R9 flush of provably unread setup bytes (`cancel_flushes_unread_setup`: queue holds bytes AND no echo started), the held keys to
+R8's destination (`held_keys_destination`: the editor as plain text with the Enter guard and a count-only toast
+`subshell_setup_handed_back_toast`, never auto-submitted, never history; or the pty in order for a proven unsupported prompt),
+the block unhidden; E-SECRET re-arms the same trigger. The base's review F1 removed abort stashing (an abort ends an in-flight
+setup at once), so nothing is stashed for a cancel to send and the step-2 "Ctrl-C was not sent" toast has nothing to say.
+Owner Q11: `start_tmux_control_mode_setup` keeps the direct write for tmux control mode but waits (`tmux_setup_pending`) for
+the look that finds the alt screen off and the line clean. In an appci log the hops are `subshell_setup_armed trigger=`,
+`subshell_ready_judged source= decision= kind= leader= tail= queue_empty=`, `subshell_ready_line_end verdict=`,
+`subshell_setup_ready_write`, `subshell_written_judged verdict=`, `subshell_setup_cancelled why= dest=`; a
+`subshell_setup_ready_write` with `decision=Write` on a `kind=Unknown` sample would be the bug.
+
+| layer | test | asserts |
+|---|---|---|
+| view, Legacy and Table | `view_test.rs`: `subshell_setup_is_written_on_the_shells_proof_not_on_the_prompt_shape` | a `bash-5.1$ ` with an Unknown sample writes nothing; a LineReader sample with the queue empty writes once; the old `awaiting_subshell_prompt` stays idle |
+| view, Legacy and Table | `view_test.rs`: `rc_questions_re_arm_the_setup_and_the_answers_never_write_it` | two `read -p` questions through a cooked bash keeping up: each answer passes through exactly (`me\r`, `ops\r`), nothing held, the attempt stays armed with the ledger counting; written at the prompt once the line editor reads |
+| view | `view_test.rs`: `a_users_own_command_cancels_the_armed_setup_and_nothing_is_written` | `ls\r` with an Unknown leader cancels (UserDrove); a later proof does not revive it; the pty got only `ls\r` |
+| view | `view_test.rs`: `vim_typeahead_waits_through_the_alt_screen_and_the_setup_follows_it` | `vim f\r` into a cooked reading bash re-arms; vim (Unknown, alt screen) waits; after the alt screen closes and readline reads: written |
+| view, Legacy and Table (parity (a)) | `view_test.rs`: `e_secret_hands_the_held_keys_back_in_the_same_wakeup_and_re_arms` | relay `sudo -s` at `# ` writes the probe; `sec`+`ret` held; a Secret sample at the next wakeup: ZERO further pty writes, editor `secret` with the guard, announcement / in-flight / net cleared, re-armed; `pw` typed next passes straight through |
+| view, Legacy and Table (parity (b)) | `view_test.rs`: `e_question_cancels_and_later_keys_reach_the_pty_in_order_in_both_modes` | `Continue? [y/N] ` drawn after the write with no marker: Idle, `held` back in the editor, nothing written; `y`,`\r`,`ls` then reach the pty in order; the byte lists of both modes are equal |
+| view | `view_test.rs`: `e_unsupported_is_stream_ordered_and_delivers_the_held_keys_at_the_fresh_prompt` | a prompt shape BEFORE the echo ended is no verdict; the echo through its LF then an error and a fresh `bash-5.1$ ` with the queue empty: Idle, the held `ls` delivered to the pty in order, editor empty, the attempt's ID unregistered |
+| view | `view_test.rs`: `a_marker_between_the_echo_and_the_prompt_keeps_the_written_attempt` | our token's marker before the prompt is progress; another token's marker is not ours |
+| view | `view_test.rs`: `the_banner_click_arms_and_the_pre_ready_ceiling_cancels_without_writing` | a click arms and judges; a second click resets `armed_at`; at 60 s with vim in front: Idle (NotAShell), nothing written before or after |
+| view | `view_test.rs`: `a_relay_writes_on_its_first_prompt_only_with_a_raw_local_tty` | `/ # ` behind a relay with a COOKED local tty waits (R4); with a raw one the sh probe's prelude goes out |
+| view | `view_test.rs`: `an_rc_file_trigger_writes_for_its_shell_once_ready` | a cooked bash (the rc running) waits; zle reading writes the rc trigger's zsh setup, Written with `shell_type` zsh |
+| view | `view_test.rs`: `tmux_control_mode_setup_waits_for_the_alt_screen_to_close` | alt screen on: `tmux_setup_pending`, nothing written; the look after it closes writes directly, no judged attempt |
+| view | `view_test.rs`: `the_rollback_switch_restores_the_deferral_and_the_first_prompt_path` | forced off: a trigger on `Password: ` defers (#1032) and `arm_awaiting_subshell_prompt` arms; forced on: no deferral, the trigger writes |
+| view (pure) | `view_test.rs`: `readiness_toasts_carry_counts_never_text` | the hand-back toast names a count and "not run", never the text |
+| model (pure) | `setup_echo_filter_tests.rs`: `the_echo_counts_say_when_our_line_was_taken` | `lines_ended` counts lines echoed through `\n`, `started` flips at the first matched character or the whole prefix, a stand-down keeps the counts, `reset_counts` forgets them |
+
 **#1666 / #1667 (Tab completion give-up, busy-machine audit H6/H7).** Tab then a fast Enter holds the Enter for the local
 completion (`TAB_COMPLETION_ENTER_BUDGET`, 150 ms of completer wall time, unchanged; backstop 500 ms, unchanged) and runs the
 COMPLETED line when it lands. When either net fires first, the timer runs NOTHING (#1577 rule; it used to submit the visible

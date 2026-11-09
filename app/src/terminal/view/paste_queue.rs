@@ -88,6 +88,18 @@ pub(super) fn subshell_setup_given_up_toast(why: &str, held_chunks: usize) -> St
     format!("{what}. {held}")
 }
 
+/// #1679 step 3 (owner Q9): the count-only toast of an E-SECRET / E-QUESTION hand-back: the keys
+/// (possibly a blind-typed password) are in the input as plain text, never run and never in the
+/// history; the toast never carries them.
+pub(super) fn subshell_setup_handed_back_toast(held_chunks: usize) -> String {
+    let held = match held_chunks {
+        0 => "Nothing was typed meanwhile.".to_owned(),
+        1 => "1 key typed meanwhile is in the input, not run.".to_owned(),
+        n => format!("{n} keys typed meanwhile are in the input, not run."),
+    };
+    format!("Phosphor setup paused: the shell is asking for input; answer it first. {held}")
+}
+
 /// #1661: the reason of a young Enter's hold that gave up (its toast gives the discarded count).
 pub(super) const YOUNG_HOLD_GIVE_UP_TOAST: &str =
     "The shell didn't show its prompt in time, so the Enter was not run";
@@ -1348,6 +1360,8 @@ impl TerminalView {
         self.powershell_setup_hold = super::PowerShellSetupHold::Off;
         self.subshell_bootstrap_announced = None;
         self.subshell_setup_net = None;
+        // #1679 step 3: a readiness-judged attempt whose keys come back is over too.
+        self.subshell_setup_state = super::SubshellSetupState::Idle;
         self.dismiss_subshell_setup_waiting_toast(ctx);
         // Review N2: in the queue's own (barrier) order, oldest gate first, so the runs of text
         // behind each gate come back in the order they were typed; a fixed kind order put a
