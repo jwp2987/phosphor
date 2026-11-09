@@ -20,6 +20,7 @@ exclude = [
   "lib/winit",
   "lib/workflows",
   "lib/yaml-rust",
+  "lib/diesel",
   "fuzz",
 ]
 
@@ -653,6 +654,9 @@ core-text = { path = "lib/core-foundation-rs/core-text" }
 # Vendored (lib/yaml-rust/CHANGES-PHOSPHOR.md): accepts a tab after a block-scalar indent, which
 # serde_yaml 0.8 would otherwise reject in user files (keybindings, markdown front matter).
 yaml-rust = { path = "lib/yaml-rust" }
+# Vendored (lib/diesel/CHANGES-PHOSPHOR.md): diesel 2.3.14 with the libsqlite3-sys cap lifted to <0.40 so
+# the bundled SQLite can be >= 3.54 (RUSTSEC-2026-0459, #1822).
+diesel = { path = "lib/diesel" }
 
 # Zap local fork — unlocks top-level injection of DeepSeek thinking_mode
 # `reasoning_effort`.

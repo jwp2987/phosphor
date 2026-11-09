@@ -321,7 +321,7 @@ git2 = { version = "0.21.0", default-features = false, features = [
 ] }
 http_server.workspace = true
 hyper.workspace = true
-libsqlite3-sys = { version = "0.33.0", features = ["bundled"] }
+libsqlite3-sys = { version = "0.39.1", features = ["bundled"] }
 mio = { version = "1.1.1", features = ["os-poll", "os-ext"] }
 tokio.workspace = true
 tokio-util.workspace = true
