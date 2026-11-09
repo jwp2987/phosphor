@@ -2218,6 +2218,7 @@ pub enum Event {
     TerminateFileUploadSession(FileUploadId),
     RunNativeShellCompletions {
         buffer_text: String,
+        encoding: crate::terminal::writeable_pty::pty_controller::NativeCompletionsBufferEncoding,
         results_tx: async_channel::Sender<Vec<ShellCompletion>>,
     },
     /// Emitted when the user clicks "install" in the SSH remote-server choice block.
@@ -35994,9 +35995,11 @@ impl PtyIntentEvent for Event {
             Event::ExecuteCommand(event) => Some(PtyIntent::ExecuteCommand(event.clone())),
             Event::RunNativeShellCompletions {
                 buffer_text,
+                encoding,
                 results_tx,
             } => Some(PtyIntent::RunNativeShellCompletions {
                 buffer_text: buffer_text.clone(),
+                encoding: *encoding,
                 results_tx: results_tx.clone(),
             }),
             _ => None,
@@ -37274,10 +37277,12 @@ impl TypedActionView for TerminalView {
             }
             RunNativeShellCompletions {
                 buffer_text,
+                encoding,
                 results_tx,
             } => {
                 ctx.emit(Event::RunNativeShellCompletions {
                     buffer_text: buffer_text.clone(),
+                    encoding: *encoding,
                     results_tx: results_tx.clone(),
                 });
             }

@@ -211,9 +211,56 @@ enum PtyWrite {
     RunNativeShellCompletions(NativeShellCompletionsState),
 }
 
+/// How the text to complete is written once the shell has answered the `^Y` trigger.
+///
+/// zsh reads it inside its completion widget, where the tty is raw, so the text goes as typed
+/// and an EOT ends it (`warp_read_completion_buffer`). bash and fish (#1801) read a LINE: bash
+/// with `read` from a `bind -x` function, fish with its `read` builtin, which runs fish's own
+/// line editor on a tty. Neither may see the text itself: a line editor acts on control
+/// characters, and an EOT left in the tty after a line read would be ^D at an empty prompt.
+/// So every byte is sent as `%HH` and a newline ends it; both shells decode it with builtins
+/// (`printf %b` in bash, `string unescape --style=url` in fish).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeCompletionsBufferEncoding {
+    RawEot,
+    PercentLine,
+}
+
+impl NativeCompletionsBufferEncoding {
+    pub fn for_shell(shell_type: ShellType) -> Self {
+        match shell_type {
+            ShellType::Zsh => Self::RawEot,
+            _ => Self::PercentLine,
+        }
+    }
+
+    /// The exact bytes written to the PTY for `buffer_text`, terminator included.
+    pub fn payload(self, buffer_text: &str) -> Vec<u8> {
+        match self {
+            Self::RawEot => {
+                let mut bytes = buffer_text.as_bytes().to_vec();
+                bytes.push(escape_sequences::C0::EOT);
+                bytes
+            }
+            Self::PercentLine => {
+                const HEX: &[u8; 16] = b"0123456789ABCDEF";
+                let mut bytes = Vec::with_capacity(buffer_text.len() * 3 + 1);
+                for byte in buffer_text.bytes() {
+                    bytes.push(b'%');
+                    bytes.push(HEX[usize::from(byte >> 4)]);
+                    bytes.push(HEX[usize::from(byte & 0x0f)]);
+                }
+                bytes.push(b'\n');
+                bytes
+            }
+        }
+    }
+}
+
 enum NativeShellCompletionsState {
     AwaitingPrompt {
         buffer_text: String,
+        encoding: NativeCompletionsBufferEncoding,
         results_tx: async_channel::Sender<Vec<ShellCompletion>>,
     },
     AwaitingResults {
@@ -575,6 +622,7 @@ impl<T: EventLoopSender> PtyController<T> {
                 }
                 let Some(NativeShellCompletionsState::AwaitingPrompt {
                     buffer_text,
+                    encoding,
                     results_tx,
                 }) = me.in_flight_native_completions_state.take()
                 else {
@@ -584,9 +632,9 @@ impl<T: EventLoopSender> PtyController<T> {
                     Some(NativeShellCompletionsState::AwaitingResults { results_tx });
                 me.arm_native_completions_watchdog(NATIVE_COMPLETIONS_RESULTS_TIMEOUT, false, ctx);
 
-                let mut bytes = buffer_text.into_bytes();
-                // We use the EOT character to signal the end of the prompt.
-                bytes.push(escape_sequences::C0::EOT);
+                // The text and its terminator (EOT for zsh, a newline for bash and fish; see
+                // `NativeCompletionsBufferEncoding`).
+                let bytes = encoding.payload(&buffer_text);
 
                 // We send the write directly to the event loop without
                 // queueing, as we currently have exclusive control over pty
@@ -2691,6 +2739,7 @@ impl<T: EventLoopSender> PtyController<T> {
     pub fn run_native_shell_completions(
         &mut self,
         buffer_text: String,
+        encoding: NativeCompletionsBufferEncoding,
         results_tx: async_channel::Sender<Vec<ShellCompletion>>,
         ctx: &mut ModelContext<Self>,
     ) {
@@ -2724,6 +2773,7 @@ impl<T: EventLoopSender> PtyController<T> {
             .push_back(PtyWrite::RunNativeShellCompletions(
                 NativeShellCompletionsState::AwaitingPrompt {
                     buffer_text,
+                    encoding,
                     results_tx,
                 },
             ));

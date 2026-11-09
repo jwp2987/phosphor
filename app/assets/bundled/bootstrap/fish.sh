@@ -467,6 +467,9 @@ function warp_precmd --on-event fish_prompt --on-event fish_posterror
 
     bind \ei warp_report_input
 
+    # Phosphor (#1801): ^Y asks this shell for its own completions (warp_native_complete).
+    bind \cy warp_native_complete
+
     # Define local variables in appropriate outer block for fish variable scoping.
     # See https://stackoverflow.com/a/53685510.
     set -l escaped_prompt
@@ -761,6 +764,41 @@ function warp_report_input
     warp_send_json_message "{ \"hook\": \"InputBuffer\", \"value\": { \"buffer\": \"$escaped_input\", \"session_id\": $WARP_SESSION_ID } }"
     # This prevents fish from rendering typeahead as background output once we've collected it.
     commandline ''
+end
+
+# Phosphor (#1801): in-band native completions for fish, answering the app's ^Y handshake
+# (see the bash and zsh bootstraps): reply OSC 9280;P, read the text to complete as one line of
+# %HH bytes (NativeCompletionsBufferEncoding::PercentLine), then write each of fish's own
+# completions (`complete -C`, with its description) between OSC 9280;A and OSC 9280;B. fish's
+# `read` runs fish's line editor on a tty, which is why the text is percent-encoded: nothing in
+# it is a key the editor acts on. Each candidate is written as the whole whitespace-delimited
+# token before the cursor (the app replaces that token): the part of it before fish's own
+# token (after a `;`, `|`, `&`, `(`, `<` or `>`) is kept, and the candidate is escaped as fish
+# would insert it, except a leading `~` or `$`.
+function warp_native_complete
+    printf '\e]9280;P\a'
+    read -l -s -P '' __pc_enc
+    or return 0
+    string match -qr '^(%[0-9A-Fa-f]{2})*$' -- $__pc_enc
+    or return 0
+    set -l __pc_line (string unescape --style=url -- $__pc_enc)
+    set -l __pc_token (string match -r -- '\S*$' "$__pc_line")
+    set -l __pc_fishtok (string match -r -- '[^\s;|&()<>]*$' "$__pc_line")
+    set -l __pc_pre (string replace -r -- '[^\s;|&()<>]*$' '' "$__pc_token")
+    printf '\e]9280;A;incrementally_typed\a'
+    for __pc_c in (complete --do-complete="$__pc_line" 2>/dev/null)[1..2000]
+        set -l __pc_parts (string split -m 1 \t -- $__pc_c)
+        set -l __pc_m $__pc_parts[1]
+        test -n "$__pc_m"; or continue
+        string match -qr '[\x00-\x1f\x7f]' -- $__pc_m; and continue
+        set -l __pc_lead (string match -r -- '^[~$]' $__pc_m)
+        set -l __pc_rest (string sub -s (math (string length -- "$__pc_lead") + 1) -- $__pc_m)
+        printf '\e]9280;C;%s\a' "$__pc_pre$__pc_lead"(string escape --no-quoted -- "$__pc_rest")
+        if set -q __pc_parts[2]
+            printf '\e]9280;D?description;%s\a' (string replace -ra -- '[\x00-\x1f\x7f]' ' ' $__pc_parts[2])
+        end
+    end
+    printf '\e]9280;B\a'
 end
 
 function clear

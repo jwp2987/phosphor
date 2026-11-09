@@ -1143,6 +1143,7 @@ fn native_completions_watchdog_recovers_an_unanswered_prompt_handshake() {
             controller.in_flight_native_completions_state =
                 Some(NativeShellCompletionsState::AwaitingPrompt {
                     buffer_text: "echo hi".to_owned(),
+                    encoding: NativeCompletionsBufferEncoding::RawEot,
                     results_tx,
                 });
             controller.arm_native_completions_watchdog(Duration::from_millis(20), true, ctx);
@@ -1211,6 +1212,7 @@ fn native_completions_watchdog_generation_guard_ignores_a_superseded_timer() {
             controller.in_flight_native_completions_state =
                 Some(NativeShellCompletionsState::AwaitingPrompt {
                     buffer_text: "first".to_owned(),
+                    encoding: NativeCompletionsBufferEncoding::RawEot,
                     results_tx: first_results_tx,
                 });
             controller.arm_native_completions_watchdog(Duration::from_millis(20), true, ctx);
@@ -1301,6 +1303,7 @@ fn late_completions_finished_does_not_destroy_a_newer_awaiting_prompt_request() 
             controller.in_flight_native_completions_state =
                 Some(NativeShellCompletionsState::AwaitingPrompt {
                     buffer_text: "request b".to_owned(),
+                    encoding: NativeCompletionsBufferEncoding::RawEot,
                     results_tx: b_results_tx,
                 });
         });
@@ -1567,7 +1570,12 @@ fn run_native_shell_completions_does_not_start_a_second_request_while_one_is_in_
         // live.
         let (b_results_tx, b_results_rx) = async_channel::unbounded();
         controller.update(&mut app, |controller, ctx| {
-            controller.run_native_shell_completions("request b".to_owned(), b_results_tx, ctx);
+            controller.run_native_shell_completions(
+                "request b".to_owned(),
+                NativeCompletionsBufferEncoding::RawEot,
+                b_results_tx,
+                ctx,
+            );
         });
 
         controller.read(&app, |controller, _| {
@@ -3587,5 +3595,39 @@ fn agent_and_paste_writes_are_split_on_the_wire_only_with_the_write_queue() {
                 assert!(matches!(&messages[2], Message::Input(b) if &b[..] == b"k"));
             }
         });
+    }
+}
+
+/// #1801: zsh reads the text to complete raw inside its completion widget and stops at EOT;
+/// that payload is unchanged.
+#[test]
+fn native_completions_payload_for_zsh_is_raw_text_then_eot() {
+    let encoding = NativeCompletionsBufferEncoding::for_shell(ShellType::Zsh);
+    assert_eq!(encoding, NativeCompletionsBufferEncoding::RawEot);
+    assert_eq!(encoding.payload("cd fo"), b"cd fo\x04".to_vec());
+}
+
+/// #1801: bash and fish read a line through a line editor, so the text must reach them with no
+/// byte a line editor acts on and no EOT (which, left over after a line read, is ^D at an
+/// empty prompt). Every byte goes as `%HH` (UTF-8 bytes, not characters) and a newline ends it.
+#[test]
+fn native_completions_payload_for_bash_and_fish_is_percent_encoded_line() {
+    for shell in [ShellType::Bash, ShellType::Fish] {
+        let encoding = NativeCompletionsBufferEncoding::for_shell(shell);
+        assert_eq!(encoding, NativeCompletionsBufferEncoding::PercentLine);
+        assert_eq!(encoding.payload("cd a;b"), b"%63%64%20%61%3B%62\n".to_vec());
+        // A non-ASCII character is its UTF-8 bytes.
+        assert_eq!(encoding.payload("é"), b"%C3%A9\n".to_vec());
+        // A trailing space is significant (it means "complete the next argument").
+        assert_eq!(encoding.payload("ls "), b"%6C%73%20\n".to_vec());
+        let payload = encoding.payload("x\u{4}\t%\n");
+        assert!(
+            payload[..payload.len() - 1]
+                .iter()
+                .all(|b| *b == b'%' || b.is_ascii_hexdigit()),
+            "only `%` and hex digits before the terminator: {payload:?}"
+        );
+        assert_eq!(payload.last(), Some(&b'\n'));
+        assert_eq!(payload.iter().filter(|b| **b == b'\n').count(), 1);
     }
 }

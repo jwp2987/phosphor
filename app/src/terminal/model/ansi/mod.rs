@@ -83,6 +83,15 @@ lazy_static! {
 }
 
 const WARP_COMPLETIONS_OSC_MARKER: &[u8] = b"9280";
+
+/// The payload of a completions match or metadata OSC: every parameter from the third on,
+/// joined with the `;` the OSC parser split them at. The shells write the payload raw, so a
+/// match or description that contains `;` (a file name, a description sentence) arrives as
+/// several parameters; reading only the third truncated it at the first `;` (#1801).
+fn completions_osc_payload(params: &[&[u8]]) -> Option<String> {
+    let rest = params.get(2..).filter(|rest| !rest.is_empty())?;
+    Some(String::from_utf8_lossy(&rest.join(&b';')).into_owned())
+}
 const WARP_COMPLETIONS_START_BYTE: &[u8] = b"A";
 const WARP_COMPLETIONS_END_BYTE: &[u8] = b"B";
 const WARP_COMPLETIONS_MATCH_RESULT_BYTE: &[u8] = b"C";
@@ -1413,11 +1422,9 @@ where
                     self.handler.end_completions_output();
                 }
                 Some(&WARP_COMPLETIONS_MATCH_RESULT_BYTE) => {
-                    // The payload for the OSC is contained in the third parameter.
-                    let Some(data_str) = params
-                        .get(2)
-                        .map(|osc_data| String::from_utf8_lossy(osc_data))
-                    else {
+                    // The payload for the OSC is the third parameter onwards (a `;` in a match
+                    // splits it into more parameters, #1801).
+                    let Some(data_str) = completions_osc_payload(params) else {
                         log::warn!(
                             "Phosphor completions match result OSC marker did not contain payload"
                         );
@@ -1437,11 +1444,8 @@ where
                         return;
                     };
 
-                    // Read out the payload for the OSC (stored in the 3rd parameter).
-                    let Some(data_str) = params
-                        .get(2)
-                        .map(|osc_data| String::from_utf8_lossy(osc_data))
-                    else {
+                    // Read out the payload for the OSC (the 3rd parameter onwards).
+                    let Some(data_str) = completions_osc_payload(params) else {
                         log::warn!(
                             "Phosphor completions match metadata OSC marker did not contain payload"
                         );

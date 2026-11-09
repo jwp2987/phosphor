@@ -1,0 +1,285 @@
+#!/usr/bin/env python3
+"""Drive the in-band native-completions handshake of bash, zsh and fish in a pty (#1801).
+
+WHY THIS EXISTS
+---------------
+A Phosphorized remote session without the remote helper asks the remote shell itself for
+its completions on Tab (`app/src/terminal/input/native_completions.rs`): the app writes ^Y,
+the shell answers OSC 9280;P, the app writes the text to complete (raw + EOT for zsh, one
+line of %HH bytes for bash and fish: `NativeCompletionsBufferEncoding`), and the shell writes
+OSC 9280;A, one OSC 9280;C;<candidate> per candidate, OSC 9280;B. Each candidate must be the
+whole whitespace-delimited token before the cursor, because that is what the app replaces.
+This pins that protocol against the REAL bundled bootstrap text in real shells. Needs only
+python3 and the shells (no cargo); a missing shell is SKIPPED.
+
+WHAT IT DOES
+------------
+Cuts the handshake functions out of `app/assets/bundled/bootstrap/{bash_body,zsh_body,fish}.sh`,
+starts each shell interactively in a pty in a scratch directory and checks, per shell:
+
+  * the shell answers ^Y with OSC 9280;P and ends with OSC 9280;B;
+  * `cd pro` offers the directories `projects/` and `proto/` (a remote directory by Tab);
+  * `cat dir/fi` offers `dir/file1` (the whole token, not `file1`);
+  * `echo a;ec` offers candidates that keep `a;` (the token starts before the shell's word);
+  * the shell's own completion definitions answer (bash `complete -F/-W`, with COMP_WORDS and
+    COMP_CWORD as bash sets them and the `--opt=` part of a token kept; fish `complete -c`);
+  * the shell is alive and runs a command afterwards.
+
+USAGE
+    script/test_native_completions
+Exit 0 when every check passes (or a shell is SKIPPED), 1 otherwise.
+"""
+
+import os
+import pty
+import re
+import select
+import shutil
+import signal
+import sys
+import tempfile
+import time
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+BOOTSTRAP = os.path.join(ROOT, "app", "assets", "bundled", "bootstrap")
+CANDIDATE_RE = re.compile(rb"\x1b\]9280;C;([^\x07]*)\x07")
+failures = []
+skipped = []
+
+
+def read_file(name):
+    with open(os.path.join(BOOTSTRAP, name)) as f:
+        return f.read()
+
+
+def cut(text, start_re, end_re, what):
+    """The lines from the first matching `start_re` through the next matching `end_re`."""
+    lines = text.split("\n")
+    for i, line in enumerate(lines):
+        if re.match(start_re, line):
+            for j in range(i, len(lines)):
+                if re.match(end_re, lines[j]):
+                    return "\n".join(lines[i : j + 1]) + "\n"
+    raise SystemExit(f"test_native_completions: could not cut {what} out of the bootstrap")
+
+
+def percent_line(text):
+    return ("".join("%%%02X" % b for b in text.encode()) + "\n").encode()
+
+
+class Pty:
+    def __init__(self, argv, env):
+        self.pid, self.fd = pty.fork()
+        if self.pid == 0:
+            os.execvpe(argv[0], argv, env)
+
+    def read_until(self, pattern, timeout=10):
+        buf = b""
+        end = time.time() + timeout
+        while time.time() < end:
+            ready, _, _ = select.select([self.fd], [], [], 0.1)
+            if ready:
+                try:
+                    data = os.read(self.fd, 65536)
+                except OSError:
+                    break
+                buf += data
+                if re.search(pattern, buf):
+                    return buf
+        return buf
+
+    def write(self, data):
+        os.write(self.fd, data)
+
+    def close(self):
+        try:
+            os.kill(self.pid, signal.SIGKILL)
+            os.waitpid(self.pid, 0)
+        except OSError:
+            pass
+
+
+def check(shell, name, ok, detail=""):
+    if not ok:
+        failures.append(f"{shell}: {name} {detail}")
+        print(f"FAIL {shell}: {name} {detail}")
+    else:
+        print(f"ok   {shell}: {name}")
+
+
+def complete(sh, shell, line, raw_eot):
+    sh.write(b"\x19")
+    got = sh.read_until(rb"\x1b\]9280;P\x07")
+    if b"\x1b]9280;P\x07" not in got:
+        check(shell, f"answers ^Y for {line!r}", False, f"(got {got[-200:]!r})")
+        return None
+    sh.write(line.encode() + b"\x04" if raw_eot else percent_line(line))
+    got = sh.read_until(rb"\x1b\]9280;B\x07")
+    if b"\x1b]9280;B\x07" not in got or b"\x1b]9280;A;incrementally_typed\x07" not in got:
+        check(shell, f"ends the reply for {line!r}", False, f"(got {got[-200:]!r})")
+        return None
+    return [c.decode("utf-8", "replace") for c in CANDIDATE_RE.findall(got)]
+
+
+def make_lab(base):
+    lab = os.path.join(base, "lab")
+    for d in ("projects", "proto", "dir", "other"):
+        os.makedirs(os.path.join(lab, d))
+    for f in ("dir/file1", "dir/fig"):
+        open(os.path.join(lab, f), "w").close()
+    return lab
+
+
+def common_checks(sh, shell, raw_eot):
+    got = complete(sh, shell, "cd pro", raw_eot)
+    if got is not None:
+        check(shell, "cd pro offers projects/ and proto/", {"projects/", "proto/"} <= set(got), f"(got {got})")
+        check(shell, "cd pro offers no file", "other/" not in got, f"(got {got})")
+    got = complete(sh, shell, "cat dir/fi", raw_eot)
+    if got is not None:
+        check(shell, "cat dir/fi offers the whole token dir/file1", "dir/file1" in got, f"(got {got})")
+    got = complete(sh, shell, "echo a;ec", raw_eot)
+    if got is not None:
+        check(
+            shell,
+            "echo a;ec keeps the token's a; lead",
+            bool(got) and all(c.startswith("a;") for c in got) and "a;echo" in got,
+            f"(got {got[:10]})",
+        )
+
+
+def alive(sh, shell, command):
+    sh.write(command)
+    got = sh.read_until(rb"alive-42")
+    check(shell, "the shell runs a command afterwards", b"alive-42" in got)
+
+
+def run_bash(base, lab):
+    bash = shutil.which("bash")
+    if not bash:
+        skipped.append("bash")
+        return
+    body = read_file("bash_body.sh")
+    text = (
+        cut(body, r"^    __warp_relax_opts \(\) \{", r"^    \}$", "__warp_relax_opts")
+        + cut(body, r"^    __warp_set_status \(\)", r"^    __warp_set_status", "__warp_set_status")
+        + cut(body, r"^    __warp_run_relaxed \(\) \{", r"^    \}$", "__warp_run_relaxed")
+        + cut(body, r"^    __warp_native_complete_impl \(\) \{", r"^    function warp_native_complete ", "warp_native_complete")
+        + cut(body, r"^    __warp_native_candidates \(\) \{", r"^    \}$", "__warp_native_candidates")
+    )
+    rc = os.path.join(base, "bashrc")
+    with open(rc, "w") as f:
+        f.write(text)
+        f.write(
+            "bind -x '\"\\C-y\":\"warp_native_complete\"'\n"
+            "_phx() { COMPREPLY=($(compgen -W 'alpha beta' -- \"$2\")); }\n"
+            "complete -F _phx phx\n"
+            "_phz() { COMPREPLY=(\"w${COMP_CWORD}-${COMP_WORDS[1]}\"); }\n"
+            "complete -F _phz phz\n"
+            "_phq() { COMPREPLY=($(compgen -W 'red green' -- \"$2\")); }\n"
+            "complete -F _phq phq\n"
+            "complete -W '--force --file' phy\n"
+            f"cd '{lab}'\nPS1='PROMPT> '\nset -u\n"
+        )
+    env = dict(os.environ, HOME=base, TERM="xterm", INPUTRC="/dev/null")
+    sh = Pty([bash, "--noprofile", "--rcfile", rc, "-i"], env)
+    try:
+        if b"PROMPT> " not in sh.read_until(rb"PROMPT> "):
+            check("bash", "starts", False)
+            return
+        common_checks(sh, "bash", raw_eot=False)
+        got = complete(sh, "bash", "phx al", False)
+        if got is not None:
+            check("bash", "a complete -F function answers", got == ["alpha"], f"(got {got})")
+        got = complete(sh, "bash", "phz one tw", False)
+        if got is not None:
+            check("bash", "COMP_WORDS and COMP_CWORD are set as bash sets them", got == ["w2-one"], f"(got {got})")
+        got = complete(sh, "bash", "phq --color=re", False)
+        if got is not None:
+            check("bash", "the token's --opt= part is kept", got == ["--color=red"], f"(got {got})")
+        got = complete(sh, "bash", "phy --fo", False)
+        if got is not None:
+            check("bash", "a complete -W spec answers", got == ["--force"], f"(got {got})")
+        alive(sh, "bash", b"echo alive-$((40+2))\n")
+    finally:
+        sh.close()
+
+
+def run_zsh(base, lab):
+    zsh = shutil.which("zsh")
+    if not zsh:
+        skipped.append("zsh")
+        return
+    body = read_file("zsh_body.sh")
+    text = cut(body, r"^  function compadd \(\) \{", r".*list-separator ''", "the zsh completion widgets")
+    zdot = os.path.join(base, "zdot")
+    os.makedirs(zdot)
+    with open(os.path.join(zdot, ".zshrc"), "w") as f:
+        f.write(
+            "DCS_START=\"$(builtin printf '\\eP$')\"\nDCS_END=\"$(builtin printf '\\x9c')\"\n"
+            "OSC_PARAM_SEPARATOR=';'\nOSC_END=\"$(builtin printf '\\a')\"\n"
+            f"autoload -Uz compinit && compinit -u -d '{zdot}/.zcompdump'\n"
+        )
+        f.write(text)
+        f.write(f"cd '{lab}'\nPS1='PROMPT> '\n")
+    env = dict(os.environ, ZDOTDIR=zdot, HOME=base, TERM="xterm")
+    sh = Pty([zsh, "-i"], env)
+    try:
+        if b"PROMPT> " not in sh.read_until(rb"PROMPT> "):
+            check("zsh", "starts", False)
+            return
+        common_checks(sh, "zsh", raw_eot=True)
+        alive(sh, "zsh", b"echo alive-$((40+2))\n")
+    finally:
+        sh.close()
+
+
+def run_fish(base, lab):
+    fish = shutil.which("fish")
+    if not fish:
+        skipped.append("fish")
+        return
+    body = read_file("fish.sh")
+    text = cut(body, r"^function warp_native_complete$", r"^end$", "warp_native_complete")
+    rc = os.path.join(base, "nc.fish")
+    with open(rc, "w") as f:
+        f.write(text)
+        f.write(
+            "bind \\cy warp_native_complete\n"
+            "complete -c phx -f -a 'alpha beta'\n"
+            "complete -c phx -f -a 'gamma' -d 'third; letter'\n"
+            f"cd '{lab}'\nfunction fish_prompt; echo -n 'PROMPT> '; end\n"
+        )
+    env = dict(os.environ, HOME=base, TERM="xterm", XDG_CONFIG_HOME=os.path.join(base, "cfg"))
+    sh = Pty([fish, "--no-config", "-i", "-C", f"source '{rc}'"], env)
+    try:
+        if b"PROMPT> " not in sh.read_until(rb"PROMPT> "):
+            check("fish", "starts", False)
+            return
+        common_checks(sh, "fish", raw_eot=False)
+        got = complete(sh, "fish", "phx al", False)
+        if got is not None:
+            check("fish", "a complete -c definition answers", got == ["alpha"], f"(got {got})")
+        alive(sh, "fish", b"echo alive-(math 40+2)\r")
+    finally:
+        sh.close()
+
+
+def main():
+    with tempfile.TemporaryDirectory(prefix="phx-native-") as base:
+        lab = make_lab(base)
+        for runner, name in ((run_bash, "bash"), (run_zsh, "zsh"), (run_fish, "fish")):
+            sub = os.path.join(base, name)
+            os.makedirs(sub)
+            runner(sub, lab)
+    for shell in skipped:
+        print(f"SKIPPED {shell}: not installed")
+    if failures:
+        print(f"test_native_completions: {len(failures)} check(s) failed")
+        return 1
+    print("test_native_completions: all checks passed" + (" (some shells SKIPPED)" if skipped else ""))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

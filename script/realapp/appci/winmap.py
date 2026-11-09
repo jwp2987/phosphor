@@ -31,6 +31,7 @@ GITBASH_ONLY = {
     "remote_session_legacy": "uses rec.log and prompt.log of the local shell and `ssh.cmd` Ctrl-C paths: runs in the Git Bash pane",
     "remote_session_ext": "uses rec.log and prompt.log of the local shell: runs in the Git Bash pane",
     "remote_heredoc_paste": "POSIX here-doc / printf commands in the remote bash (#1129): runs in the Git Bash pane",
+    "remote_tab_no_helper": "rec.log of the remote bash and `cd`/`pwd` there, the local shell's rec.log for the not-local check (#1801): runs in the Git Bash pane",
     "ssh_hanging_host_not_local": "Ctrl-C while ssh.cmd (a batch file) runs would ask 'Terminate batch job (Y/N)?': runs in the Git Bash pane",
     "latency_enter_ssh": "the plain-ssh control is the conhost reference running the pane's shell; a PowerShell reference's `ssh fake` path (ssh.cmd) differs from the pane's: runs in the Git Bash pane (#1532)",
     "ssh_password_prompt": "`ssh fakepass` against fakesshd_win.py's password user (#1535) plus rec.log/prompt.log of the local shell: runs in the Git Bash pane (the passphrase half needs the system sshd and is noted as not run)",

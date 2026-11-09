@@ -742,6 +742,12 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         bind -r '"\ew"'
         bind -x '"\ew":"warp_change_prompt_modes_to_warp_prompt"'
 
+        # Phosphor (#1801): ^Y asks this shell for its own completions (see
+        # warp_native_complete). Readline's yank is never used here: the editor is Phosphor's.
+        bind -x '"\C-y":"warp_native_complete"' 2>/dev/null
+        bind -m vi-insert -x '"\C-y":"warp_native_complete"' 2>/dev/null
+        bind -m vi-command -x '"\C-y":"warp_native_complete"' 2>/dev/null
+
         # Readline 7.0 and 8.0 (bash 4.4 and 5.0) have bracketed paste but leave it off unless the
         # user's inputrc turns it on (8.1 / bash 5.1 made it the default). Without it Phosphor
         # types a command key by key, which is slow for a large one (#1129). This runs after the
@@ -1191,6 +1197,269 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         READLINE_LINE=""
     }
     function warp_report_input { __warp_run_relaxed __warp_report_input_impl "$@"; }
+
+    # Phosphor (#1801): in-band native completions for bash, answering the app's `^Y`
+    # handshake (zsh has had this since upstream; bash and fish join it so a remote session
+    # without the helper gets the remote shell's own completions on Tab, over the session's
+    # own connection, instead of ControlMaster side commands).
+    #
+    # The handshake: the app writes ^Y; this replies OSC 9280;P and reads the text to complete
+    # as one line of %HH bytes (NativeCompletionsBufferEncoding::PercentLine in
+    # pty_controller.rs); then it writes OSC 9280;A;incrementally_typed, one OSC 9280;C;<match>
+    # per candidate, and OSC 9280;B. Each candidate is the WHOLE whitespace-delimited token
+    # before the cursor as bash would leave it (the part of the token before the readline
+    # word, e.g. `--file=`, is kept), because the app replaces that token.
+    #
+    # Candidates come from the same place bash's own Tab takes them: the command's `complete`
+    # spec (a -F function such as bash-completion's, run with COMP_WORDS/COMP_CWORD/COMP_LINE/
+    # COMP_POINT set as bash would; -C commands; compgen actions and -o options), the
+    # bash-completion dynamic loader (`complete -D`) for a command with no spec yet, command
+    # names in command position, and file names otherwise.
+    __warp_native_complete_impl () {
+        local __pc_hex __pc_line __pc_hexre='^(%[0-9A-Fa-f][0-9A-Fa-f])*$'
+        builtin printf '\e]9280;P\a'
+        # Bounded, like zsh's `read -t` in warp_read_completion_buffer: an abandoned handshake
+        # must never hold this shell in `read`.
+        IFS= builtin read -r -s -t 20 __pc_hex < /dev/tty || return 0
+        [[ $__pc_hex =~ $__pc_hexre ]] || return 0
+        builtin printf -v __pc_line '%b' "${__pc_hex//\%/\\x}"
+
+        __warp_native_candidates "$__pc_line" </dev/null >/dev/null 2>&1
+
+        builtin printf '\e]9280;A;incrementally_typed\a'
+        local __pc_m
+        for __pc_m in "${__warp_nc_out[@]}"; do
+            # A candidate the OSC cannot carry (a control character) is left out.
+            case $__pc_m in *[[:cntrl:]]*) continue ;; esac
+            builtin printf '\e]9280;C;%s\a' "$__pc_m"
+        done
+        builtin printf '\e]9280;B\a'
+        __warp_nc_out=()
+    }
+    function warp_native_complete { __warp_run_relaxed __warp_native_complete_impl "$@"; }
+
+    # Sets __warp_nc_out to the candidates for the line $1 (cursor at its end). Builtins
+    # except where bash offers no other way to capture output (`complete -p`, compgen, -C).
+    __warp_native_candidates () {
+        __warp_nc_out=()
+        local line=$1
+        # Only the current simple command counts: cut at the last unquoted ; | & ( or `.
+        local wb=${COMP_WORDBREAKS-$' \t\n"\'><=;|&(:'}
+        wb=${wb//[[:space:]\"\']/}
+        local i n=${#line} c q= start=0 lastbreak=-1
+        for ((i = 0; i < n; i++)); do
+            c=${line:i:1}
+            if [[ -n $q ]]; then
+                [[ $c == "$q" ]] && q=
+                continue
+            fi
+            case $c in
+                \\) ((i++)); continue ;;
+                \'|\") q=$c; continue ;;
+                ';'|'|'|'&'|'('|'`') start=$((i + 1)); lastbreak=$i; continue ;;
+                ' '|$'\t') lastbreak=$i; continue ;;
+            esac
+            [[ $wb == *"$c"* ]] && lastbreak=$i
+        done
+        line=${line:start}
+        # Leading blanks of the cut line are not part of any word.
+        local lead=${line%%[! $'\t']*}
+        line=${line#"$lead"}
+        n=${#line}
+
+        # COMP_WORDS as bash splits them: whitespace separates words, and each run of
+        # COMP_WORDBREAKS characters is a word of its own (`--file=x` is `--file` `=` `x`).
+        local -a words=()
+        local w= kind= ck
+        q=
+        for ((i = 0; i < n; i++)); do
+            c=${line:i:1}
+            if [[ -n $q ]]; then
+                w+=$c
+                [[ $c == "$q" ]] && q=
+                continue
+            fi
+            case $c in
+                \\) w+=$c; ((i++)); w+=${line:i:1}; kind=w; continue ;;
+                \'|\") w+=$c; q=$c; kind=w; continue ;;
+                ' '|$'\t')
+                    [[ -n $w ]] && words+=("$w")
+                    w= kind=
+                    continue ;;
+            esac
+            if [[ $wb == *"$c"* ]]; then ck=b; else ck=w; fi
+            if [[ -n $w && $ck != "$kind" ]]; then
+                words+=("$w")
+                w=
+            fi
+            w+=$c
+            kind=$ck
+        done
+        if [[ -n $w ]]; then
+            words+=("$w")
+        elif ((n == 0)) || [[ ${line:n-1:1} == [[:space:]] ]]; then
+            words+=("")
+        fi
+        ((${#words[@]})) || words=("")
+        local cword=$((${#words[@]} - 1))
+
+        # The readline word (what bash completes, and what a -F function gets as $2): the
+        # text after the last unquoted word break. The token the app replaces: the text after
+        # the last whitespace. Candidates are written as that token's text before the
+        # readline word, then the candidate.
+        local rlword=${1:lastbreak+1}
+        local token=${1##*[[:space:]]}
+        local tokpre=
+        if [[ $token == *"$rlword" ]]; then
+            tokpre=${token%"$rlword"}
+        fi
+        # A readline word opened with a quote is completed without it, as readline does, and
+        # its candidates are not backslash-escaped (the quote already protects them).
+        local quoted=
+        case $rlword in \'*|\"*) tokpre+=${rlword:0:1}; rlword=${rlword:1}; quoted=1 ;; esac
+
+        local cmd=${words[0]} prev=
+        ((cword > 0)) && prev=${words[cword - 1]}
+        # What a completion function (or the dynamic loader) reads, as bash would set it.
+        local -a COMP_WORDS=("${words[@]}")
+        local COMP_CWORD=$cword COMP_LINE=$line COMP_POINT=${#line} COMP_TYPE=9 COMP_KEY=9
+        local -a reply=() pass=()
+        local fn= ccmd= opts= spec= have_spec= files=
+
+        if ((cword == 0)); then
+            if [[ $rlword == */* ]]; then
+                files=1
+                while IFS= builtin read -r c; do reply+=("$c"); done < <(compgen -f -- "$rlword")
+            else
+                while IFS= builtin read -r c; do reply+=("$c"); done < <(compgen -c -- "$rlword")
+                if shopt -q autocd 2>/dev/null; then
+                    files=1
+                    while IFS= builtin read -r c; do reply+=("$c"); done < <(compgen -d -- "$rlword")
+                fi
+            fi
+        else
+            spec=$(complete -p -- "$cmd" 2>/dev/null) || spec=$(complete -p -- "${cmd##*/}" 2>/dev/null)
+            if [[ -z $spec ]]; then
+                # bash-completion loads a command's completion on first use through the
+                # default (-D) spec; its loader returns 124 when it has installed one.
+                local dspec
+                dspec=$(complete -p -D 2>/dev/null)
+                if [[ $dspec == *" -F "* ]]; then
+                    local -a d=()
+                    eval "d=($dspec)" 2>/dev/null
+                    local j
+                    for ((j = 0; j < ${#d[@]}; j++)); do
+                        if [[ ${d[j]} == -F ]]; then
+                            "${d[j + 1]}" "$cmd" "$rlword" "$prev"
+                            break
+                        fi
+                    done
+                    spec=$(complete -p -- "$cmd" 2>/dev/null)
+                fi
+            fi
+            if [[ -n $spec ]]; then
+                have_spec=1
+                local -a s=()
+                eval "s=($spec)" 2>/dev/null
+                local j last=$((${#s[@]} - 1))
+                for ((j = 1; j < last; j++)); do
+                    case ${s[j]} in
+                        -F) fn=${s[j + 1]}; ((j++)) ;;
+                        -C) ccmd=${s[j + 1]}; ((j++)) ;;
+                        -o) opts+=" ${s[j + 1]} "; ((j++)) ;;
+                        -A|-G|-W|-X|-P|-S)
+                            pass+=("${s[j]}" "${s[j + 1]}")
+                            [[ ${s[j]} == -A && ( ${s[j + 1]} == file || ${s[j + 1]} == directory ) ]] && files=1
+                            ((j++)) ;;
+                        -d|-f) pass+=("${s[j]}"); files=1 ;;
+                        -[abcegjksuv]) pass+=("${s[j]}") ;;
+                    esac
+                done
+            fi
+
+            if [[ -n $fn ]] && declare -F -- "$fn" >/dev/null; then
+                # `compopt` only works inside real completion; record what the function
+                # asks of it (filenames, nospace) instead.
+                local __warp_nc_compopt=
+                compopt () { __warp_nc_compopt+=" $* "; return 0; }
+                COMPREPLY=()
+                "$fn" "$cmd" "$rlword" "$prev"
+                unset -f compopt
+                reply+=("${COMPREPLY[@]}")
+                COMPREPLY=()
+                case $__warp_nc_compopt in *filenames*|*dirnames*) files=1 ;; esac
+            fi
+            if [[ -n $ccmd ]]; then
+                # The -C command reads COMP_LINE and COMP_POINT from its environment.
+                while IFS= builtin read -r c; do reply+=("$c"); done < <(
+                    export COMP_LINE COMP_POINT COMP_TYPE COMP_KEY
+                    eval "$ccmd"' "$cmd" "$rlword" "$prev"'
+                )
+            fi
+            if ((${#pass[@]})); then
+                while IFS= builtin read -r c; do reply+=("$c"); done < <(compgen "${pass[@]}" -- "$rlword")
+            fi
+            # -o default / bashdefault make these file names only when they are the fallback
+            # below (git's spec has them, and its subcommands are not file names).
+            case $opts in *" filenames "*|*" dirnames "*|*" plusdirs "*) files=1 ;; esac
+            if ((${#reply[@]} == 0)); then
+                if [[ -z $have_spec ]] || [[ $opts == *" default "* || $opts == *" bashdefault "* ]]; then
+                    # No spec at all is readline's own default: file names.
+                    files=1
+                    if [[ $rlword == \$* ]]; then
+                        while IFS= builtin read -r c; do reply+=("\$$c"); done < <(compgen -v -- "${rlword#\$}")
+                    else
+                        while IFS= builtin read -r c; do reply+=("$c"); done < <(compgen -f -- "$rlword")
+                    fi
+                elif [[ $opts == *" dirnames "* ]]; then
+                    while IFS= builtin read -r c; do reply+=("$c"); done < <(compgen -d -- "$rlword")
+                fi
+            fi
+            if [[ $opts == *" plusdirs "* ]]; then
+                while IFS= builtin read -r c; do reply+=("$c"); done < <(compgen -d -- "$rlword")
+            fi
+        fi
+
+        # Directories get a trailing `/` and shell-special characters a backslash, as readline
+        # does for file-name completions; at most 2000 candidates.
+        # Duplicates (a function and a compgen action can offer the same word) are dropped
+        # where bash has associative arrays (4.0+).
+        local m t k e dedupe=
+        if ((BASH_VERSINFO[0] >= 4)); then
+            local -A seen=()
+            dedupe=1
+        fi
+        for m in "${reply[@]}"; do
+            ((${#__warp_nc_out[@]} >= 2000)) && break
+            # A trailing space is how a function says "and then a space"; the app decides that.
+            while [[ $m == *[[:space:]] ]]; do m=${m%?}; done
+            [[ -z $m ]] && continue
+            if [[ -n $dedupe ]]; then
+                [[ -n ${seen["$m"]+x} ]] && continue
+                seen["$m"]=1
+            fi
+            if [[ -n $files ]]; then
+                t=$m
+                [[ $t == "~/"* ]] && t=$HOME/${t#"~/"}
+                [[ $m != */ && -d $t ]] && m+=/
+            fi
+            if [[ -n $files && -z $quoted ]]; then
+                case $m in
+                    *[[:space:]\'\"\\\(\)\&\;\|\<\>\$\`\!\*\?\[\]\{\}\#]*)
+                        e=
+                        for ((k = 0; k < ${#m}; k++)); do
+                            c=${m:k:1}
+                            case $c in
+                                [[:space:]\'\"\\\(\)\&\;\|\<\>\$\`\!\*\?\[\]\{\}\#]) e+=\\ ;;
+                            esac
+                            e+=$c
+                        done
+                        m=$e ;;
+                esac
+            fi
+            __warp_nc_out+=("$tokpre$m")
+        done
+    }
 
     # Check whether the prompt-related variables have OSC prompt marker sequences,
     # and if not, wrap them with the appropriate markers so that we can direct the

@@ -4,6 +4,7 @@ mod classic;
 mod cli_agent;
 mod common;
 mod enter_queue;
+mod native_completions;
 pub(crate) use enter_queue::{ENTER_GATE_GIVE_UP_TOAST, EnterDiscard};
 pub mod conversations;
 pub mod decorations;
@@ -12436,17 +12437,39 @@ impl Input {
             .and_then(|s| s.parse().ok())
             .unwrap_or(false);
 
-        let use_native_shell_completions = (FeatureFlag::NativeShellCompletions.is_enabled() || force_native_shell_completions)
-            && completion_context
-                .session
-                .shell()
-                .supports_native_shell_completions()
-            // For now, don't use native shell completions for multi-line commands.
-            && !buffer_text.contains('\n');
+        let input_type = self.ai_input_model.as_ref(ctx).input_type();
 
+        // #1801: an explicit Tab in a remote session without the helper asks the remote shell
+        // first (see `native_completions`); otherwise upstream's flag or preference may ask it
+        // as a fallback.
+        let native_use = native_completions::native_completions_use(
+            native_completions::NativeCompletionsInputs {
+                trigger: completions_trigger,
+                shell_supports_native: completion_context
+                    .session
+                    .shell()
+                    .supports_native_shell_completions(),
+                // For now, don't use native shell completions for multi-line commands.
+                multi_line: buffer_text.contains('\n'),
+                is_ai_input: input_type.is_ai(),
+                remote_without_helper: completion_context.session.is_remote_without_helper(),
+                flag_or_forced: FeatureFlag::NativeShellCompletions.is_enabled()
+                    || force_native_shell_completions,
+                remote_native_enabled: native_completions::remote_native_completions_enabled(),
+            },
+        );
+        let use_native_shell_completions =
+            native_use != native_completions::NativeCompletionsUse::None;
+        let native_completions_encoding =
+            crate::terminal::writeable_pty::pty_controller::NativeCompletionsBufferEncoding::for_shell(
+            completion_context.session.shell().shell_type(),
+        );
+
+        // The completer's file-path fallback stays on whenever the completer is the last word
+        // (no shell asked, or the shell asked first and had nothing).
         let fallback_strategy = match completions_trigger {
             CompletionsTrigger::Keybinding | CompletionsTrigger::SlashCommandAutoOpen
-                if !use_native_shell_completions =>
+                if native_use != native_completions::NativeCompletionsUse::Fallback =>
             {
                 CompletionsFallbackStrategy::FilePaths
             }
@@ -12459,8 +12482,6 @@ impl Input {
             last_abort_handle.abort();
         }
         self.tab_completion_request = None;
-
-        let input_type = self.ai_input_model.as_ref(ctx).input_type();
 
         // Don't trigger completions if the last character typed is whitespace, in AI input mode.
         // The user is likely typing in a natural language word at this point, not a filepath.
@@ -12485,6 +12506,7 @@ impl Input {
             let (results_tx, results_rx) = async_channel::unbounded();
             ctx.dispatch_typed_action(&TerminalAction::RunNativeShellCompletions {
                 buffer_text: buffer_text[0..cursor_position].to_owned(),
+                encoding: native_completions_encoding,
                 results_tx,
             });
             async move { results_rx.recv().await.ok() }.boxed()
@@ -12534,45 +12556,74 @@ impl Input {
                     // The completer's own compute starts here, not when the Enter arrived or the
                     // job was queued (#1351).
                     let _compute = completion_compute.begin();
-                    let suggestions = completer::suggestions(
-                        before_cursor_text.as_str(),
-                        cursor_position,
-                        session_env_vars.as_ref(),
-                        CompleterOptions {
-                            match_strategy: matcher,
-                            fallback_strategy,
-                            suggest_file_path_completions_only: input_type.is_ai(),
-                            parse_quotes_as_literals: input_type.is_ai(),
-                        },
-                        &completion_context,
-                    )
-                    .await;
-                    let completer_count = suggestions.as_ref().map(|s| s.suggestions.len());
+                    // Lazy: an async block runs nothing until awaited, so with the shell asked
+                    // first the completer (and its remote commands) runs only if needed.
+                    let completer_run = async {
+                        completer::suggestions(
+                            before_cursor_text.as_str(),
+                            cursor_position,
+                            session_env_vars.as_ref(),
+                            CompleterOptions {
+                                match_strategy: matcher,
+                                fallback_strategy,
+                                suggest_file_path_completions_only: input_type.is_ai(),
+                                parse_quotes_as_literals: input_type.is_ai(),
+                            },
+                            &completion_context,
+                        )
+                        .await
+                    };
 
-                    let suggestions = match suggestions {
-                        Some(s) if !s.suggestions.is_empty() && !force_native_shell_completions => {
-                            Some(s)
-                        }
-                        _ => native_results_fut.await.map(|results| {
-                            let suggestions = results.into_iter().map(Into::into).collect_vec();
-
-                            let token_end = cursor_position;
-                            // Within the section of the buffer from the start
-                            // to the end of this token...
-                            let token_start = buffer_text[0..token_end]
-                                // Find the last whitespace char before the token end.
-                                .rfind(char::is_whitespace)
-                                // If we find one, the token start is the next char.
-                                .map(|pos| pos + 1)
-                                // Otherwise, the start is the beginning of the buffer.
-                                .unwrap_or_default();
-
-                            SuggestionResults {
-                                replacement_span: (token_start, token_end).into(),
-                                suggestions,
-                                match_strategy: MatchStrategy::Fuzzy,
+                    let (suggestions, completer_count) = match native_use {
+                        // #1801: the remote shell first; the completer only if it has nothing
+                        // (no answer within the handshake's bounds, or no candidates).
+                        native_completions::NativeCompletionsUse::Preferred => {
+                            match native_results_fut.await.filter(|results| !results.is_empty()) {
+                                Some(results) => {
+                                    // Never the candidates: they are the user's file names.
+                                    log::info!(
+                                        "Tab on remote session {:?} without the helper: {} candidates from the remote shell in {} ms",
+                                        completion_session.id(),
+                                        results.len(),
+                                        remote_tab_started.elapsed().as_millis()
+                                    );
+                                    (
+                                        Some(native_completions::native_suggestion_results(
+                                            results,
+                                            &buffer_text,
+                                            cursor_position,
+                                        )),
+                                        None,
+                                    )
+                                }
+                                None => {
+                                    let suggestions = completer_run.await;
+                                    let count = suggestions.as_ref().map(|s| s.suggestions.len());
+                                    (suggestions, count)
+                                }
                             }
-                        }),
+                        }
+                        native_completions::NativeCompletionsUse::Fallback
+                        | native_completions::NativeCompletionsUse::None => {
+                            let suggestions = completer_run.await;
+                            let count = suggestions.as_ref().map(|s| s.suggestions.len());
+                            let suggestions = match suggestions {
+                                Some(s)
+                                    if !s.suggestions.is_empty()
+                                        && !force_native_shell_completions =>
+                                {
+                                    Some(s)
+                                }
+                                _ => native_results_fut.await.map(|results| {
+                                    native_completions::native_suggestion_results(
+                                        results,
+                                        &buffer_text,
+                                        cursor_position,
+                                    )
+                                }),
+                            };
+                            (suggestions, count)
+                        }
                     };
 
                     if let Some(session_id) = remote_tab_session {

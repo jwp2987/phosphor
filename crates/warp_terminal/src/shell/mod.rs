@@ -460,9 +460,11 @@ impl ShellType {
             .collect()
     }
 
-    /// Returns whether the current shell supports native shell completions.
+    /// Returns whether the current shell supports native shell completions: the bootstrap binds
+    /// `^Y` to a widget that answers the in-band completions handshake. zsh from upstream;
+    /// bash (programmable completion, COMP_* emulated) and fish (`complete -C`) since #1801.
     fn supports_native_shell_completions(&self) -> bool {
-        matches!(self, ShellType::Zsh)
+        matches!(self, ShellType::Zsh | ShellType::Bash | ShellType::Fish)
     }
 
     /// Given the output of the `alias` command, returns a map of alias keys to values.

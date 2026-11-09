@@ -2251,12 +2251,12 @@ esac
 
     # extract prefixes and suffixes from compadd call. we can''t do zsh''s cool
     # -r remove-func magic, but it''s better than nothing.
-    typeset -A apre hpre hsuf asuf
+    typeset -A apre hpre hsuf asuf ipre
     # Parse compadd options, based on the documentation.  Unused flags are left
     # in the array extra_args.  There are additional arguments we don't check
     # for here, but they all take arguments, so wouldn't interfere with parsing
     # of consolidated flags (e.g.: -Qf being parsed as -Q and -f).
-    zparseopts -E -a extra_args - f=dirsuf P:=apre p:=hpre S:=asuf s:=hsuf a k q Q e n U l 1 2 C
+    zparseopts -E -a extra_args - f=dirsuf P:=apre p:=hpre S:=asuf s:=hsuf i:=ipre a k q Q e n U l 1 2 C
 
     # Change dirsuf to store whether or not the -f flag was provided.
     integer dirsuf=${#dirsuf}
@@ -2268,17 +2268,32 @@ esac
     # descriptions in $__dscr!
 
     # display all matches
+    # Phosphor (#1801): the app replaces the whole whitespace-delimited token before the
+    # cursor with each match, so a match is written as the text zsh would insert for that
+    # token: the ignored prefix (IPREFIX, compadd -i: the `--opt=` of `--opt=val`) and the
+    # inserted prefixes (-P, and -p: the `dir/` of `dir/file`) before the match itself. Without
+    # them `cd dir/fo` offered `foo/` and replaced `dir/fo` with it. The app's token can also
+    # start before zsh's word (`a;b`: zsh completes `b`); that lead is kept too.
+    local __tok_word="${IPREFIX}${PREFIX}"
+    local __tok_app="${LBUFFER##*[[:space:]]}"
+    local __tok_lead=
+    [[ $__tok_app == *"$__tok_word" ]] && __tok_lead="${__tok_app%"$__tok_word"}"
+    local __tok_pre="${__tok_lead}${IPREFIX}${ipre[-i]}${apre[-P]}${hpre[-p]}"
     local dsuf dscr
     for i in {1..$#__hits}; do
         # add a dir suffix?
-        (( dirsuf )) && [[ -d $__hits[$i] ]] && dsuf=/ || dsuf=
+        (( dirsuf )) && [[ -d ${hpre[-p]}$__hits[$i] ]] && dsuf=/ || dsuf=
         # description to be displayed afterwards
         (( $#__dscr >= $i )) && dscr="${${__dscr[$i]}##$__hits[$i] #}" || dscr=""
 
-        local match="$__hits[$i]$dsuf"
+        local match="$__tok_pre$__hits[$i]$dsuf"
+        # A match the OSC cannot carry (a control character would end or corrupt it) is left
+        # out rather than sent broken.
+        [[ $match == *[[:cntrl:]]* ]] && continue
 
-        print -n "\e]9280;C"$OSC_PARAM_SEPARATOR$match$OSC_END
-        print -n "\e]9280;D?description"$OSC_PARAM_SEPARATOR$dscr$OSC_END
+        # printf %s, not print: print would read a backslash in a file name as an escape.
+        builtin printf '\e]9280;C;%s\a' "$match"
+        builtin printf '\e]9280;D?description;%s\a' "${dscr//[[:cntrl:]]/ }"
     done
   }
 

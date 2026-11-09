@@ -2078,3 +2078,18 @@ fn parse_dcs_ssh_wrapper_verdict_hooks() {
         }
     }
 }
+
+/// #1801: the shells write completion matches and descriptions raw inside the OSC, so a `;` in
+/// one splits it into more OSC parameters; the payload is everything from the third parameter
+/// on, rejoined, not the third parameter alone.
+#[test]
+fn completions_osc_payload_rejoins_a_payload_split_at_semicolons() {
+    let params: [&[u8]; 3] = [b"9280", b"C", b"plain"];
+    assert_eq!(completions_osc_payload(&params).as_deref(), Some("plain"));
+    let params: [&[u8]; 5] = [b"9280", b"C", b"a", b"b", b""];
+    assert_eq!(completions_osc_payload(&params).as_deref(), Some("a;b;"));
+    let params: [&[u8]; 3] = [b"9280", b"D?description", b""];
+    assert_eq!(completions_osc_payload(&params).as_deref(), Some(""));
+    let params: [&[u8]; 2] = [b"9280", b"C"];
+    assert_eq!(completions_osc_payload(&params), None);
+}
