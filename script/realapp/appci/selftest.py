@@ -3942,6 +3942,7 @@ def agent_resilience_pure_parts():
            "hop=agent_action id=a1 kind=run_shell_command status=queued\nhop=agent_action id=a1 kind=run_shell_command status=blocked\n"
            "hop=agent_action id=a2 kind=read_files status=running\nhop=agent_action id=a2 kind=read_files status=done\n")
     assert ar.last_turn_state(log) == "error" and ar.last_turn_state("") is None
+    assert ar.implicit_in_progress(None) and ar.implicit_in_progress("in_progress") and not ar.implicit_in_progress("success") and ar.implicit_in_progress("error", ("error",))   # r7: a fresh conversation logs no hop=turn
     assert ar.open_actions(log) == ["a1"] and ar.running_actions(log) == ["a2"]
     errs = "2026 [ERROR] [byop] open stream failed: 429\n2026 INFO fine\n2026 [ERROR] something else broke\n"
     exp, unexp = ar.byop_errors(errs)
