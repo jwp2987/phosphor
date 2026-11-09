@@ -834,7 +834,7 @@ settings-warpify-split-inherits-ssh-description = 拆分 SSH 会话所在的窗�
 # 全局 HTTP 代理设置页(见 Issue #72)。
 settings-network-page-title = 网络
 settings-network-header = HTTP 代理
-settings-network-description = 为所有出站 HTTP / WebSocket 请求配置全局代理。改完字段后按回车保存。\n新发起的请求(BYOP 拉模型列表 / 测试连接 / 对话加载 等)立即生效;autoupdate / changelog 等启动时构造的长周期 Client 需重启应用后生效。
+settings-network-description = 为所有出站 HTTP / WebSocket 请求配置全局代理。改完字段后按回车保存。 新发起的请求(BYOP 拉模型列表 / 测试连接 / 对话加载 等)立即生效;autoupdate / changelog 等启动时构造的长周期 Client 需重启应用后生效。
 settings-network-mode-label = 代理模式
 settings-network-mode-description = 只使用此处设置的代理:Custom 使用下方 URL。System 和 Off 都表示不使用代理(Phosphor 忽略系统和环境变量中的代理设置)。
 settings-network-mode-system = 系统代理
