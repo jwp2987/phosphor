@@ -8,31 +8,33 @@ use serde_json::Value;
 
 use super::{
     CliAgentPluginManager, ConfigFileCheckCache, PluginCommandRunner, PluginInstallError,
-    PluginInstructionStep, PluginInstructions, ShellCommandRunner, compare_versions,
-    is_warp_plugin_source, plugin_source_reachable, source_unreachable_error,
+    PluginInstructionStep, PluginInstructions, ShellCommandRunner, bundle_missing_error,
+    bundled_plugin_dir, compare_versions, looks_like_bundle_path, same_folder,
 };
 use crate::features::FeatureFlag;
 use crate::terminal::shell::ShellType;
 
 const PLUGIN_NAME: &str = "warp";
 const PLUGIN_KEY: &str = "warp@codex-warp";
-/// Phosphor's GitLab copy of the marketplace (full-history mirror of
-/// `warpdotdev/codex-warp`). `codex plugin marketplace add` takes any
-/// `https://` git URL; `owner/repo` shorthand is expanded to github.com only.
-/// Codex records it verbatim as `source` under `[marketplaces.codex-warp]`
-/// with `source_type = "git"`. Keep the instruction commands below in step with
-/// this (a test pins them).
-const MARKETPLACE_URL: &str = "https://gitlab.com/winters-phosphor/codex-warp.git";
-/// The marketplace's `name` in its `marketplace.json`, unchanged by the move.
+/// The marketplace's `name` in its `.agents/plugins/marketplace.json`. Kept from the original
+/// plugin so an existing install's `warp@codex-warp` key stays valid.
 const MARKETPLACE_NAME: &str = "codex-warp";
+/// Overrides where the bundled marketplace folder is looked up (unit tests, app tests and dev
+/// builds that run outside an installed bundle). Unset in a normal install.
+pub(crate) const BUNDLE_DIR_ENV: &str = "PHOSPHOR_CODEX_PLUGIN_DIR";
+/// Where the plugin lives inside the app's resources (`resources/bundled/codex_plugin` in the
+/// repo): a folder that is a complete Codex marketplace. `codex plugin marketplace add` takes
+/// a local directory and records it as `source_type = "local"`; nothing is fetched.
+const BUNDLE_RELATIVE: &str = "bundled/codex_plugin";
+const BUNDLE_MARKER: &str = ".agents/plugins/marketplace.json";
 
 static SOURCE_MIGRATION_CHECK: ConfigFileCheckCache = ConfigFileCheckCache::new();
 
-/// Set once this process has *completed* a move attempt (the pre-flight
-/// passed and the remove/add ran, whatever its outcome). After it,
-/// `needs_source_migration` stays `false`, so the move chip is not offered
-/// again in this process (a Codex too old to have `marketplace remove` fails
-/// once, not on every click). A failed pre-flight does not set it.
+/// Set once this process has *completed* a move attempt (the bundle was found and the
+/// remove/add ran, whatever its outcome). After it, `needs_source_migration` stays `false`,
+/// so the move chip is not offered again in this process (a Codex too old to have
+/// `marketplace remove` fails once, not on every click). A move with no bundle to move to
+/// does not set it -- nothing was attempted.
 static SOURCE_MOVE_ATTEMPTED: AtomicBool = AtomicBool::new(false);
 
 /// Serialises this process's install, update and move; each re-checks its
@@ -43,8 +45,17 @@ static OPERATION_LOCK: LazyLock<futures::lock::Mutex<()>> =
 const CODEX_CONFIG_DIR: &str = ".codex";
 const CODEX_HOME_ENV: &str = "CODEX_HOME";
 
-// Keep in sync with the plugin version in winters-phosphor/codex-warp.
-const MINIMUM_PLUGIN_VERSION: &str = "0.4.0";
+/// The plugin version shipped in `resources/bundled/codex_plugin` (a unit test pins this to
+/// that folder's `plugin.json` and `marketplace.json`). Plugin updates arrive with Phosphor
+/// releases.
+const MINIMUM_PLUGIN_VERSION: &str = "0.4.3";
+
+/// The folder holding the plugin that ships with this build, if it can be found
+/// (`$PHOSPHOR_CODEX_PLUGIN_DIR`, else the app's bundled resources). Phosphor never fetches
+/// the plugin from anywhere.
+pub(crate) fn bundled_marketplace_dir() -> Option<PathBuf> {
+    bundled_plugin_dir(BUNDLE_DIR_ENV, BUNDLE_RELATIVE, BUNDLE_MARKER)
+}
 
 pub(super) struct CodexPluginManager {
     runner: Arc<dyn PluginCommandRunner>,
@@ -71,69 +82,87 @@ impl CodexPluginManager {
         self.runner.run("codex", args, &[], log).await
     }
 
-    /// Ensures the codex-warp marketplace is registered and current, while
-    /// preserving a non-Git/local marketplace override. Never moves a source:
+    /// Ensures the codex-warp marketplace is registered from the bundled folder, while
+    /// preserving a developer's own local marketplace:
     ///
-    /// - no marketplace configured: add it from Phosphor's repository (also
-    ///   the recovery when an earlier move removed it and the add failed);
-    /// - a Git marketplace (Phosphor's, or still Warp's -- the move chip moves
-    ///   that one): `marketplace upgrade`;
-    /// - a non-Git source: leave it alone.
+    /// - no marketplace configured: add the bundled folder;
+    /// - registered from the current bundled folder: nothing to do;
+    /// - registered from a remote repository (Warp's GitHub, an older GitLab copy) or from a
+    ///   bundle folder at an old install location: replaced by the bundled folder
+    ///   ([`Self::move_marketplace`]), since `marketplace upgrade` would fetch from the
+    ///   recorded remote;
+    /// - a developer's own local folder: left alone.
     async fn ensure_marketplace(&self, log: &mut String) -> Result<(), PluginInstallError> {
-        match codex_home_dir()
+        let config = codex_home_dir()
             .ok()
-            .and_then(|dir| codex_warp_marketplace_config(&dir))
-        {
+            .and_then(|dir| codex_warp_marketplace_config(&dir));
+        let bundle = bundled_marketplace_dir();
+        match config {
+            Some(config) if config.is_developer_local() => Ok(()),
+            Some(config)
+                if bundle
+                    .as_deref()
+                    .is_some_and(|b| config.is_current_bundle(b)) =>
+            {
+                Ok(())
+            }
+            Some(config) => {
+                let bundle = bundle.ok_or_else(|| bundle_missing_error("Codex", log.clone()))?;
+                self.move_marketplace(&bundle, &config, log).await
+            }
             None => {
-                self.run_logged(&["plugin", "marketplace", "add", MARKETPLACE_URL], log)
+                let bundle = bundle.ok_or_else(|| bundle_missing_error("Codex", log.clone()))?;
+                let bundle_arg = bundle.to_string_lossy().into_owned();
+                self.run_logged(&["plugin", "marketplace", "add", bundle_arg.as_str()], log)
                     .await
             }
-            Some(config) if config.is_git() => {
-                self.run_logged(&["plugin", "marketplace", "upgrade", MARKETPLACE_NAME], log)
-                    .await
-            }
-            Some(_) => Ok(()),
         }
     }
 
-    /// Re-registers a marketplace recorded from Warp's GitHub from Phosphor's
-    /// copy. `marketplace upgrade` re-fetches from the recorded `source`;
-    /// Codex has no command that re-points a marketplace, and `marketplace
-    /// add` refuses a name that is "already added from a different source;
-    /// remove it before adding this source", so the move is `remove` then
-    /// `add`. `remove` drops only the marketplace entry and its checkout; the
-    /// `[plugins."warp@codex-warp"]` entry and the plugin cache stay, and the
-    /// caller's `plugin add` refreshes the plugin.
+    /// Re-registers the marketplace from the bundled folder. Codex has no command that
+    /// re-points a marketplace, and `marketplace add` refuses a name that is "already added
+    /// from a different source; remove it before adding this source", so this is `remove`
+    /// then `add`. `remove` drops only the marketplace entry and its checkout; the
+    /// `[plugins."warp@codex-warp"]` entry and the plugin cache stay, and the caller's
+    /// `plugin add` refreshes the plugin.
     ///
-    /// The caller has passed the pre-flight. If the add fails the marketplace
-    /// is re-added from `original`'s recorded source (with its ref and sparse
-    /// paths).
+    /// If the add fails, a previous *local* source is registered again; a remote one is not
+    /// re-fetched (Phosphor never does that), the log says to run the update again.
     async fn move_marketplace(
         &self,
+        bundle: &Path,
         original: &CodexWarpMarketplaceConfig,
         log: &mut String,
     ) -> Result<(), PluginInstallError> {
+        let bundle_arg = bundle.to_string_lossy().into_owned();
         self.run_logged(&["plugin", "marketplace", "remove", MARKETPLACE_NAME], log)
             .await?;
         let Err(err) = self
-            .run_logged(&["plugin", "marketplace", "add", MARKETPLACE_URL], log)
+            .run_logged(&["plugin", "marketplace", "add", bundle_arg.as_str()], log)
             .await
         else {
             return Ok(());
         };
-        match original.add_arguments() {
-            Some(args) => {
-                log.push_str("Restore: re-registering the marketplace from its previous source\n");
-                let args: Vec<&str> = args.iter().map(String::as_str).collect();
-                let restored = self.run_logged(&args, log).await.is_ok();
+        match original.local_path() {
+            Some(path) => {
+                log.push_str(&format!(
+                    "Restore: re-registering the marketplace from its previous folder {path}\n"
+                ));
+                let restored = self
+                    .run_logged(&["plugin", "marketplace", "add", path.as_str()], log)
+                    .await
+                    .is_ok();
                 log.push_str(if restored {
                     "Restore: the previous marketplace is back\n"
                 } else {
                     "Restore failed: no codex-warp marketplace is registered; run the update \
-                     again to add Phosphor's\n"
+                     again\n"
                 });
             }
-            None => log.push_str("Restore: no recorded marketplace source to restore\n"),
+            None => log.push_str(
+                "Restore: the previous marketplace source is not a local folder and is not \
+                 re-fetched; run the update again\n",
+            ),
         }
         Err(PluginInstallError {
             message: err.message,
@@ -173,7 +202,9 @@ impl CliAgentPluginManager for CodexPluginManager {
         let Ok(codex_dir) = codex_home_dir() else {
             return false;
         };
-        if codex_warp_marketplace_config(&codex_dir).is_some_and(|config| !config.is_git()) {
+        if codex_warp_marketplace_config(&codex_dir)
+            .is_some_and(|config| config.is_developer_local())
+        {
             return false;
         }
         // Version only: the move has its own chip.
@@ -188,14 +219,17 @@ impl CliAgentPluginManager for CodexPluginManager {
             return false;
         };
         let files = [codex_dir.join("config.toml")];
-        SOURCE_MIGRATION_CHECK.get_or_compute(&files, || plugin_needs_source_migration(&codex_dir))
+        let bundle = bundled_marketplace_dir();
+        SOURCE_MIGRATION_CHECK.get_or_compute(&files, || {
+            plugin_needs_source_migration(&codex_dir, bundle.as_deref())
+        })
     }
 
     fn has_local_marketplace_override(&self) -> bool {
         let Ok(codex_dir) = codex_home_dir() else {
             return false;
         };
-        codex_warp_marketplace_config(&codex_dir).is_some_and(|config| !config.is_git())
+        codex_warp_marketplace_config(&codex_dir).is_some_and(|config| config.is_developer_local())
     }
 
     async fn install(&self) -> Result<(), PluginInstallError> {
@@ -249,27 +283,28 @@ impl CliAgentPluginManager for CodexPluginManager {
         Ok(())
     }
 
-    /// Moves a Git marketplace registered from Warp's GitHub to Phosphor's
-    /// copy ([`Self::move_marketplace`]) and refreshes the plugin from it.
-    /// Run only from the move chip.
+    /// Moves a marketplace registered from a remote repository (or from a bundle folder at an
+    /// old install location) to the bundled folder ([`Self::move_marketplace`]) and refreshes
+    /// the plugin from it. Run only from the move chip. Every step is local.
     async fn move_to_phosphor_source(&self) -> Result<(), PluginInstallError> {
         if !FeatureFlag::CodexPlugin.is_enabled() {
             return Ok(());
         }
         let _operation = OPERATION_LOCK.lock().await;
         let mut log = String::new();
-        let Some(config) = codex_home_dir()
-            .ok()
-            .and_then(|dir| codex_warp_marketplace_config(&dir))
-            .filter(CodexWarpMarketplaceConfig::is_registered_from_warp)
-        else {
+        let bundle = bundled_marketplace_dir();
+        let Some(config) = codex_home_dir().ok().and_then(|dir| {
+            plugin_needs_source_migration(&dir, bundle.as_deref())
+                .then(|| codex_warp_marketplace_config(&dir))
+                .flatten()
+        }) else {
             // Moved meanwhile (another move held the lock), or nothing to move.
             return Ok(());
         };
-        if !plugin_source_reachable(&*self.runner, MARKETPLACE_URL, &mut log).await {
-            return Err(source_unreachable_error(log));
-        }
-        let moved = self.move_marketplace(&config, &mut log).await;
+        let Some(bundle) = bundle else {
+            return Err(bundle_missing_error("Codex", log));
+        };
+        let moved = self.move_marketplace(&bundle, &config, &mut log).await;
         SOURCE_MOVE_ATTEMPTED.store(true, Ordering::Relaxed);
         moved?;
         self.run_logged(&["plugin", "add", PLUGIN_KEY], &mut log)
@@ -281,7 +316,7 @@ impl CliAgentPluginManager for CodexPluginManager {
     }
 
     fn move_success_message(&self) -> &'static str {
-        "Notification plugin moved to Phosphor's source. Please restart Codex to activate."
+        "Notification plugin moved to the copy bundled with Phosphor. Please restart Codex to activate."
     }
 
     fn update_success_message(&self) -> &'static str {
@@ -304,30 +339,31 @@ impl CliAgentPluginManager for CodexPluginManager {
         }
     }
 
-    /// Remove-and-re-add steps, shown only by the move chip (which appears
-    /// only for a marketplace registered from Warp's GitHub, never for a local
-    /// override, which `marketplace remove` would drop).
-    fn move_instructions(&self) -> &'static PluginInstructions {
-        if FeatureFlag::CodexPlugin.is_enabled() {
-            &PLUGIN_MOVE_INSTRUCTIONS
-        } else {
-            &EMPTY_INSTRUCTIONS
-        }
-    }
-
     fn supports_update(&self) -> bool {
         FeatureFlag::CodexPlugin.is_enabled()
     }
 }
 
-static PLUGIN_INSTALL_INSTRUCTIONS: LazyLock<PluginInstructions> = LazyLock::new(|| {
-    PluginInstructions {
+/// `codex plugin marketplace add <bundled folder>`, as a command a user can paste. The folder
+/// is resolved once; a build run outside an install shows a placeholder path.
+fn add_bundle_command() -> &'static str {
+    static COMMAND: LazyLock<&'static str> = LazyLock::new(|| {
+        let folder = bundled_marketplace_dir()
+            .map(|dir| dir.display().to_string())
+            .unwrap_or_else(|| format!("<Phosphor install folder>/resources/{BUNDLE_RELATIVE}"));
+        Box::leak(format!("codex plugin marketplace add \"{folder}\"").into_boxed_str())
+    });
+    *COMMAND
+}
+
+static PLUGIN_INSTALL_INSTRUCTIONS: LazyLock<PluginInstructions> =
+    LazyLock::new(|| PluginInstructions {
         title: crate::t_static!("cli-agent-plugin-codex-plugin-install-title"),
         subtitle: crate::t_static!("cli-agent-plugin-codex-plugin-run-commands-subtitle"),
         steps: vec![
             PluginInstructionStep {
                 description: crate::t_static!("cli-agent-plugin-codex-add-marketplace-step"),
-                command: "codex plugin marketplace add https://gitlab.com/winters-phosphor/codex-warp.git",
+                command: add_bundle_command(),
                 executable: true,
                 link: None,
             },
@@ -341,8 +377,7 @@ static PLUGIN_INSTALL_INSTRUCTIONS: LazyLock<PluginInstructions> = LazyLock::new
         post_install_notes: vec![crate::t_static!(
             "cli-agent-plugin-codex-plugin-restart-note"
         )],
-    }
-});
+    });
 
 static NATIVE_INSTALL_INSTRUCTIONS: LazyLock<PluginInstructions> =
     LazyLock::new(|| PluginInstructions {
@@ -372,37 +407,12 @@ static EMPTY_INSTRUCTIONS: LazyLock<PluginInstructions> = LazyLock::new(|| Plugi
     post_install_notes: vec![],
 });
 
+/// Also the move chip's manual steps (the trait default): remove and re-add rather than
+/// `marketplace upgrade`, which would re-fetch from a recorded remote source.
 static PLUGIN_UPDATE_INSTRUCTIONS: LazyLock<PluginInstructions> =
     LazyLock::new(|| PluginInstructions {
         title: crate::t_static!("cli-agent-plugin-codex-plugin-update-title"),
         subtitle: crate::t_static!("cli-agent-plugin-codex-plugin-run-commands-subtitle"),
-        steps: vec![
-            PluginInstructionStep {
-                description: crate::t_static!("cli-agent-plugin-codex-upgrade-marketplace-step"),
-                command: "codex plugin marketplace upgrade codex-warp",
-                executable: true,
-                link: None,
-            },
-            PluginInstructionStep {
-                description: crate::t_static!("cli-agent-plugin-codex-reinstall-plugin-step"),
-                command: "codex plugin add warp@codex-warp",
-                executable: true,
-                link: None,
-            },
-        ],
-        post_install_notes: vec![
-            crate::t_static!("cli-agent-plugin-codex-plugin-restart-update-note"),
-            crate::t_static!("cli-agent-plugin-codex-marketplace-not-git-note"),
-        ],
-    });
-
-static PLUGIN_MOVE_INSTRUCTIONS: LazyLock<PluginInstructions> = LazyLock::new(|| {
-    PluginInstructions {
-        title: crate::t_static!("cli-agent-plugin-codex-plugin-update-title"),
-        subtitle: crate::t_static!("cli-agent-plugin-codex-plugin-run-commands-subtitle"),
-        // Remove and re-add rather than `marketplace upgrade`: an upgrade
-        // re-fetches from the recorded source, Warp's GitHub here. Shown only
-        // when the recorded source is Warp's (see `update_instructions`).
         steps: vec![
             PluginInstructionStep {
                 description: crate::t_static!("cli-agent-plugin-remove-existing-marketplace-step"),
@@ -412,7 +422,7 @@ static PLUGIN_MOVE_INSTRUCTIONS: LazyLock<PluginInstructions> = LazyLock::new(||
             },
             PluginInstructionStep {
                 description: crate::t_static!("cli-agent-plugin-readd-marketplace-step"),
-                command: "codex plugin marketplace add https://gitlab.com/winters-phosphor/codex-warp.git",
+                command: add_bundle_command(),
                 executable: true,
                 link: None,
             },
@@ -426,8 +436,7 @@ static PLUGIN_MOVE_INSTRUCTIONS: LazyLock<PluginInstructions> = LazyLock::new(||
         post_install_notes: vec![crate::t_static!(
             "cli-agent-plugin-codex-plugin-restart-update-note"
         )],
-    }
-});
+    });
 
 fn check_installed(codex_dir: &Path) -> bool {
     check_plugin_enabled(codex_dir, PLUGIN_KEY)
@@ -506,19 +515,22 @@ fn plugin_needs_update(
     }
 }
 
-/// Whether `update()` must move the marketplace: the plugin is enabled and its
-/// Git marketplace is still registered from Warp's GitHub.
-fn plugin_needs_source_migration(codex_dir: &Path) -> bool {
+/// Whether the plugin's marketplace is registered from somewhere other than the bundled
+/// folder: a remote repository (Warp's GitHub, an older GitLab copy) or a bundle folder at an
+/// old install location. A developer's own local folder is never moved, and with no bundled
+/// folder to move to there is nothing to offer.
+fn plugin_needs_source_migration(codex_dir: &Path, bundle: Option<&Path>) -> bool {
+    let Some(bundle) = bundle else {
+        return false;
+    };
     check_plugin_enabled(codex_dir, PLUGIN_KEY)
         && codex_warp_marketplace_config(codex_dir)
-            .is_some_and(|config| config.is_registered_from_warp())
+            .is_some_and(|config| !config.is_developer_local() && !config.is_current_bundle(bundle))
 }
 
 struct CodexWarpMarketplaceConfig {
     source_type: Option<String>,
     source: Option<String>,
-    ref_name: Option<String>,
-    sparse_paths: Vec<String>,
 }
 
 impl CodexWarpMarketplaceConfig {
@@ -526,32 +538,30 @@ impl CodexWarpMarketplaceConfig {
         self.source_type.as_deref() == Some("git")
     }
 
-    /// The `codex plugin marketplace add` arguments that register this
-    /// recorded source again, as Codex wrote it (`source`, `ref`,
-    /// `sparse_paths`).
-    fn add_arguments(&self) -> Option<Vec<String>> {
-        let source = self.source.as_deref().filter(|source| !source.is_empty())?;
-        let mut args: Vec<String> = ["plugin", "marketplace", "add", source]
-            .iter()
-            .map(|arg| (*arg).to_owned())
-            .collect();
-        if let Some(ref_name) = &self.ref_name {
-            args.extend(["--ref".to_owned(), ref_name.clone()]);
+    /// The folder of a non-Git (`local`) source.
+    fn local_path(&self) -> Option<String> {
+        if self.is_git() {
+            return None;
         }
-        for path in &self.sparse_paths {
-            args.extend(["--sparse".to_owned(), path.clone()]);
-        }
-        Some(args)
+        self.source.clone().filter(|source| !source.is_empty())
     }
 
-    /// A Git marketplace whose recorded `source` is Warp's GitHub repository.
-    /// A local (non-Git) override is never reported, whatever its path.
-    fn is_registered_from_warp(&self) -> bool {
-        self.is_git()
-            && self
-                .source
-                .as_deref()
-                .is_some_and(|source| is_warp_plugin_source(source, MARKETPLACE_NAME))
+    /// Registered from one of Phosphor's own bundle folders (at any install location).
+    fn is_bundle_folder(&self) -> bool {
+        self.local_path()
+            .is_some_and(|path| looks_like_bundle_path(&path, BUNDLE_RELATIVE))
+    }
+
+    /// Registered from the bundled folder of this install.
+    fn is_current_bundle(&self, bundle: &Path) -> bool {
+        self.local_path()
+            .is_some_and(|path| same_folder(&path, bundle))
+    }
+
+    /// A local folder that is NOT a Phosphor bundle folder: a developer's own checkout,
+    /// which Phosphor leaves alone.
+    fn is_developer_local(&self) -> bool {
+        !self.is_git() && !self.is_bundle_folder()
     }
 }
 
@@ -569,20 +579,6 @@ fn codex_warp_marketplace_config(codex_dir: &Path) -> Option<CodexWarpMarketplac
             .get("source")
             .and_then(|source| source.as_str())
             .map(str::to_owned),
-        ref_name: marketplace
-            .get("ref")
-            .and_then(|ref_name| ref_name.as_str())
-            .map(str::to_owned),
-        sparse_paths: marketplace
-            .get("sparse_paths")
-            .and_then(|paths| paths.as_array())
-            .map(|paths| {
-                paths
-                    .iter()
-                    .filter_map(|path| path.as_str().map(str::to_owned))
-                    .collect()
-            })
-            .unwrap_or_default(),
     })
 }
 

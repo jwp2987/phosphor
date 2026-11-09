@@ -3228,6 +3228,40 @@ def wn_zero_network_trace_and_offline_plugin():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+@check
+def wn_agent_plugins_offline():
+    """the bundled Codex / Gemini CLI / OpenCode plugins: the fake CLIs refuse a remote source and install the shipped folders; the shipped hooks (run under a pty, as they write to
+    /dev/tty) and OpenCode's modules produce one notification sequence per event with no network step, and a multi-byte prompt is cut by characters"""
+    import cases_netless as nl
+    if not (shutil.which("jq") and shutil.which("bash")):
+        return
+    tmp = tempfile.mkdtemp()
+    try:
+        env = dict(os.environ, CODEX_HOME=os.path.join(tmp, "ch"), GEMINI_CLI_HOME=os.path.join(tmp, "gh"))
+        for fake, args in (("fakecodex.py", ["plugin", "marketplace", "add", "https://example.invalid/x.git"]),
+                           ("fakegemini.py", ["extensions", "install", "https://example.invalid/x.git", "--consent"])):
+            bad = subprocess.run([sys.executable, "-I", os.path.join(HERE, fake)] + args, env=env, capture_output=True, text=True)
+            assert bad.returncode != 0 and "local" in bad.stderr, (fake, bad.stderr)
+        for agent in ("codex", "gemini", "opencode"):
+            if agent == "opencode" and not shutil.which("node"):
+                continue
+            bundle = os.path.join(nl.REPO, "resources", "bundled", agent + "_plugin")
+            assert os.path.isfile(os.path.join(bundle, *nl.PLUGIN_MARKERS[agent])), bundle
+            work = os.path.join(tmp, agent)
+            os.makedirs(work)
+            problems, events, expected = nl.run_agent_plugin_offline(agent, work, bundle, [])
+            assert problems == [], (agent, problems)
+            data = open(events, "rb").read().decode("utf-8")
+            assert data.count("\x1b]777;notify;warp://cli-agent;") == len(expected) == 5, (agent, data.count("\x1b]777;"), expected)
+            for ev in ("session_start", "prompt_submit", "tool_complete", "permission_request", '"event":"stop"'):
+                assert ev in data, (agent, ev, data[:300])
+            assert "x" * 250 not in data
+        # the Codex / Gemini prompt (300+ characters, multi-byte) was cut by characters, not bytes
+        assert "..." in open(os.path.join(tmp, "codex", "codex_events.bin"), "rb").read().decode("utf-8")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main():
     failed = 0
     for f in CHECKS:

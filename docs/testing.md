@@ -1725,7 +1725,7 @@ the same steps), `APPCI_REPLAY_ALLOW` (extra comma-separated regexes for the ERR
 * **Unverified until a box run:** the case has never been driven against a build; the first run may show harness faults (subshell readiness, the approval-card
   keys, the exact Tab-completed line) before it shows app bugs.
 
-### 2.17 No network at startup, bundled Claude plugin (`appci/cases_netless.py`, `appci/fakeclaude.py`; Wave N)
+### 2.17 No network at startup, bundled agent plugins (`appci/cases_netless.py`, `appci/fakeclaude.py`, `fakecodex.py`, `fakegemini.py`; Wave N)
 
 Owner rule: a default Phosphor makes no outbound connection by itself. What the app does for each source:
 
@@ -1733,6 +1733,7 @@ Owner rule: a default Phosphor makes no outbound connection by itself. What the 
 |---|---|
 | models.dev catalog | built-in catalog (gzip in the binary); `agents.warp_agent.models_dev_fetch` defaults to `false`; only the Providers page's "Refresh model list" button downloads, from `models_dev_url` (default the repo copy `https://gitlab.com/winters-phosphor/phosphor/-/raw/main/assets/models_dev/api.json`). The load starts in `on_page_selected`, not when the widget is built. |
 | Claude Code plugin | shipped in `resources/bundled/claude_plugin` and registered as a local-folder marketplace; no GitHub or GitLab fetch |
+| Codex, Gemini CLI, OpenCode plugins | shipped in `resources/bundled/{codex,gemini,opencode}_plugin` (owner decision 2026-11-09). Codex: `codex plugin marketplace add <folder>` + `codex plugin add warp@codex-warp`; Gemini: `gemini extensions install <folder> --consent` (an update is `uninstall` + `install`); OpenCode: a `file://<folder>` entry in the global `opencode.json(c)` `plugin` array (written by the move chip, shown in the install/update dialogs). No `git ls-remote` pre-flight, no `marketplace upgrade`, no `extensions update`, no npm/git spec |
 | remote helper download | only after the user opens an ssh session (`RemoteServerController::on_session_connected`), and by default only after the modal prompt (`ssh_extension_install_mode = AlwaysAsk`); nothing at launch |
 | MCP servers | only servers in a config file the user (or their tools) wrote; see `docs/manual/06-mcp-skills-and-rules.md` |
 
@@ -1740,9 +1741,15 @@ Unit tests: `models_dev_bundle_tests.rs` (Refresh fetches from the one URL whate
 `disabled_refresh_path_never_fetches_even_with_a_custom_url`, an expectation the owner changed in Wave N), `plugin_manager/claude_tests.rs` (every command Phosphor
 runs is local, the shipped plugin has no oz part / Warp metadata / network call and its version equals `MINIMUM_PLUGIN_VERSION`, `truncate_chars` cuts by characters
 under `LC_ALL=C`), `model/ansi/mod_test.rs` (`osc_777_*`: a `;` in the body, a non-UTF-8 byte is replaced and the param kept), `cli_agent_sessions/mod_tests.rs`
-(the WARN for a malformed event carries sizes only).
+(the WARN for a malformed event carries sizes only). The same style of test covers the other three agents (`plugin_manager/codex_tests.rs`, `gemini_tests.rs`, `opencode_tests.rs`):
+every command is local (`assert_all_local`: no http/github/gitlab/git@/ls-remote/upgrade/` update `), install/update/move without the bundled folder fails with "bundled ... not found"
+and changes nothing, a remote registration (Warp's GitHub, Phosphor's old GitLab copy, an `@warp-dot-dev/opencode-warp` or `git+https` entry) and a bundle folder at an old install
+location are replaced by the bundled folder, a developer's own local checkout/link is never touched, a failed add restores a previous *local* source and never re-fetches a remote one,
+the shipped version equals `MINIMUM_PLUGIN_VERSION` (Codex also the version in `on-session-start.sh`), and the shipped folders contain no orchestration/oz part, Warp URL/metadata,
+`http(s)://`, curl/wget or similar. These replace the tests of the GitLab URL, the `git ls-remote` pre-flight, `marketplace upgrade`, `extensions update` and the `git+https` spec
+(an expectation the owner changed on 2026-11-09). The bundled Codex/Gemini hook scripts also cut long text by characters through `truncate_chars` (jq), not by bash byte substrings.
 
-App cases (Linux only, `--cases 'zero_network_startup,claude_plugin_offline'`, terminal mode):
+App cases (Linux only, `--cases 'zero_network_startup,claude_plugin_offline,agent_plugins_offline'`, terminal mode):
 
 - **`zero_network_startup`**: relaunches the app under `strace -f -e trace=network` (`App.wrap`), idles `APPCI_ZNS_IDLE_S` seconds (default 120), and fails on any
   `connect`/`sendto`/`sendmsg` to a non-loopback inet address (`outbound_attempts`). The harness profile has no cloud account or provider key. SKIPS (not passes)
@@ -1753,6 +1760,15 @@ App cases (Linux only, `--cases 'zero_network_startup,claude_plugin_offline'`, t
   synthetic Claude Code inputs (a prompt with `;`, multi-byte characters and 300+ characters; tool; permission request; stop). A fake `claude` in a pane prints the
   sequences; the app log must show one `CLI agent event received: agent=Claude event=<Type> body_bytes=<n>` line per event, no `Dropped a CLI agent event` line, and
   none of the prompt text. Needs `bash` and `jq`. The binary's `resources/bundled/claude_plugin` is used (else the checkout's; `APPCI_PLUGIN_DIR` overrides).
+
+- **`agent_plugins_offline`** (`--cases agent_plugins_offline`): the same for Codex, Gemini CLI and OpenCode. Inside `unshare -rn`, `fakecodex.py` (`plugin marketplace add <folder>`,
+  `plugin add warp@codex-warp`; it records `source_type = "local"` and refuses a remote source) and `fakegemini.py` (`extensions install <folder>`; copies the folder, records
+  `type: local`, refuses a remote source) install the bundled folders, then each plugin's real hook scripts run under a pty (they write to `/dev/tty`) on synthetic inputs
+  (session start, a prompt with `;`, multi-byte characters and 300+ characters, tool, permission request, stop) and must write exactly one `warp://cli-agent` sequence each.
+  OpenCode has no install command, so its bundled `dist/notify.js` + `dist/payload.js` are run with `node` (skipped as `noref` when node is missing). A fake `codex` and a fake `opencode`
+  in a pane then print the recorded sequences; the app log must show one `CLI agent event received: agent=<Codex|OpenCode> event=<Type>` line per event, no `Dropped a CLI agent event`
+  and none of the prompt text. Gemini's events are not fed to the app: `GeminiNotifications` is an opt-in flag. Needs `bash`, `jq`. `APPCI_<AGENT>_PLUGIN_DIR` overrides a folder.
+
 
 #### Network gate (`crates/network_gate`)
 
@@ -1770,6 +1786,8 @@ and subdomains, public web refuses private/loopback literals, a denial leaks nei
 (`APPCI_ZNS_PAGES` Down presses, default 12, the AI page among them; best effort, screenshots `zns_settings_*`), then an ssh connect to the fake host and `exit`. The
 trace must still contain no inet destination beyond loopback + the fake ssh host address (+ `APPCI_ZNS_ALLOW`, comma separated). The fake ssh host is on loopback
 unless the lab supplies another address.
+
+`run.py --self-test` also runs `wn_agent_plugins_offline` (the fake CLIs refuse a remote source; all three bundles install and emit five events each without a namespace).
 
 `run.py --self-test` runs `wn_zero_network_trace_and_offline_plugin`: the strace parser on sample lines (and its allowlist argument), `fakeclaude.py` refusing a remote source, and the same
 install + hook run (without a network namespace) against the checkout's plugin folder.
