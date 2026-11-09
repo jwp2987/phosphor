@@ -18914,7 +18914,7 @@ fn test_ssh_escape_carriage_return_leaves_a_local_session_alone() {
 fn test_remote_as_you_type_listing_is_single_flight_latest_wins() {
     let mut flight = RemoteListingFlight::<&str>::new();
     assert!(!flight.is_running());
-    let job = flight.start();
+    let job = flight.start(1);
     for (generation, text) in [
         (2, "c"),
         (3, "cd"),
@@ -18931,13 +18931,13 @@ fn test_remote_as_you_type_listing_is_single_flight_latest_wins() {
     assert_eq!(flight.finished(job, 6), None, "no second replay");
 
     // A held request that went stale (the buffer changed with no new request) is dropped.
-    let job = flight.start();
+    let job = flight.start(1);
     flight.hold(7, "x");
     assert_eq!(flight.finished(job, 8), None);
 
     // An older job's late end cannot free a newer job's flight.
-    let old = flight.start();
-    let new = flight.start();
+    let old = flight.start(1);
+    let new = flight.start(1);
     assert_eq!(flight.finished(old, 9), None);
     assert!(flight.is_running());
     // An explicit Tab supersedes: the flight frees, nothing replays.
@@ -18952,14 +18952,21 @@ fn test_remote_as_you_type_listing_is_single_flight_latest_wins() {
 #[test]
 fn test_remote_listing_event_frees_a_hung_flight() {
     let mut flight = RemoteListingFlight::<&str>::new();
-    let hung = flight.start();
+    let hung = flight.start(1);
     flight.hold(3, "cd pro");
     assert!(flight.abandon(), "a job was running");
     assert!(!flight.is_running());
     // The hung job's late end neither frees a newer flight nor replays the dropped request.
-    let fresh = flight.start();
+    let fresh = flight.start(1);
     assert_eq!(flight.finished(hung, 3), None);
     assert!(flight.is_running(), "the fresh listing is untouched");
     assert_eq!(flight.finished(fresh, 3), None, "nothing was held");
     assert!(!flight.abandon(), "nothing running, nothing to abort");
+}
+
+/// The `hop=listing_inflight` line carries the event and the generation only, never buffer text.
+#[test]
+fn test_listing_inflight_hop_detail_format() {
+    assert_eq!(listing_inflight_detail("start", 4), "event=start gen=4");
+    assert_eq!(listing_inflight_detail("replay", 12), "event=replay gen=12");
 }
