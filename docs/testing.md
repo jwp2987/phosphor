@@ -2871,3 +2871,14 @@ must collect the "before" with the switch at `0` and the "after" with it unset, 
 - Collect (Windows VM, PS 5.1, warp diag stamps `<tmp>.on` next to the diag file): new stamps `c` (Precmd start) and
   `r` (Precmd end) beside the existing `p` / `q` (Preexec); Precmd cost = (r - c) / QPC frequency, median and p95 over
   30 Enters, with `PHOSPHOR_PWSH_HANDJSON=0` and unset. Compare Enter -> prompt as in the #1280 harness.
+
+### P5 code editor memory (#1340): measurement only this wave
+- Earlier rounds already added parked line chunks (P5), the 5 MB syntax cap, no per-edit copy without a diff base and
+  the close / opt-in open trims; the last recorded txt open still cost ~217 MB of RSS over a ~75 MB retained tree
+  (buffer ~54 MB, parked lines ~10 MB), so ~140 MB is load transients the allocator keeps. No blind behaviour change was
+  made. `Buffer::replace_all` now logs, for texts of 1 MB or more, `editor_memory load_stage stage=<start|formatted_text|
+  edit_applied|undo_reset> rss_kb=N` (log target `editor_memory`, debug; Linux reads `/proc/self/statm` assuming 4 KiB
+  pages, other platforms print -1).
+- Collect: open the 7 MB txt and rs files from `editor_memory_7mb` with `RUST_LOG=editor_memory=debug` and report the
+  rss_kb step between stages (the stage with the largest jump is the next thing to cut), together with the existing
+  `editor_memory open ...` breakdown line and the after-open figure with `PHOSPHOR_EDITOR_TRIM_AFTER_OPEN=1`.
