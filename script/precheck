@@ -244,6 +244,10 @@ if [[ -x ./script/check_input_path_timers ]]; then
     ./script/check_input_path_timers --self-test >/dev/null 2>&1 && ok "input-path timers self-test" \
         || fail "input-path timers self-test -- run ./script/check_input_path_timers --self-test"
 fi
+if [[ -f ./script/ci/test_check_release_gate.py ]]; then
+    python3 ./script/ci/test_check_release_gate.py >/dev/null 2>&1 && ok "release gate self-test" \
+        || fail "release gate self-test -- run python3 script/ci/test_check_release_gate.py for detail"
+fi
 if [[ -x ./script/check_outbound_redaction ]]; then
     ./script/check_outbound_redaction >/dev/null 2>&1 && ok "outbound redaction" \
         || fail "outbound redaction -- run ./script/check_outbound_redaction for detail"

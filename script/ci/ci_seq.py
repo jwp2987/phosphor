@@ -49,6 +49,25 @@ MAC_EXTRA = ["usage-test-macos"]
 UNSUPPORTED = {"fuzz-smoke-windows": "cargo-fuzz works only on Unix-like systems (no Windows/MSVC)"}
 
 
+def app_tier_name(tier):
+    """The APPCI_TIER value ci_seq plays the app tests with (recorded in results.json meta.tier). fix = smoke; candidate = full; release = release
+    (#1495: script/ci/check_release_gate.py refuses a tag unless the app runs say `release`). Everything but smoke runs the full case set."""
+    return {"fix": "smoke", "candidate": "full", "release": "release"}[tier]
+
+
+def release_gate_jobs():
+    """#1495: the jobs the RELEASE tier gates on, as {platform: [job names]}, derived from the tier's own lists (the single source of truth for
+    check_release_gate.py): the box unit + integration + usage suites, input-timers-strict, test-shuttle-loom and fuzz-smoke, and the Mac / Windows
+    unit and heavy suites. bench and mutants are INFORMATIONAL in verdict() (not gating) and are left out; a suite that cannot exist on a platform
+    (UNSUPPORTED) is left out. App tests are APP."""
+    skip = lambda n: n.startswith(("bench", "mutants")) or n in UNSUPPORTED
+    box = ["test-linux", "test-warpui-core", "test-workspace-rest"] + BOX_EXTRA + ["input-timers-strict", "test-shuttle-loom", "fuzz-smoke"]
+    out = {LINUX: [n for n in box if not skip(n)]}
+    for p in PLAT_SUFFIX:
+        out[p] = [n for n in plat_suites(p, True) if not skip(n)]
+    return out
+
+
 def plat_suites(p, heavy):
     """The unit (and, in the release tier, heavy) suite job names of the Mac/Windows platform p: test-macos, test-warpui-core-macos, ..."""
     sfx = PLAT_SUFFIX[p]
@@ -308,6 +327,9 @@ def self_test():
         (plat_suites(MAC, False)[-1], "usage-test-macos", "mac unit set ends with the usage suite"),
         (["usage-test-macos" in plat_suites(WIN, True), "usage-test-macos" in plat_suites(MAC, True)], [False, True], "usage suite is Mac-only"),
         (["fuzz-smoke-macos" in plat_suites(MAC, False), "fuzz-smoke-macos" in plat_suites(MAC, True)], [False, True], "heavy suites only in release"),
+        ([app_tier_name(t) for t in ("fix", "candidate", "release")], ["smoke", "full", "release"], "release-tier app runs are recorded as tier=release (#1495)"),
+        (["fuzz-smoke-windows" in sum(release_gate_jobs().values(), []), "test-shuttle-loom" in release_gate_jobs()[LINUX], "usage-test-macos" in release_gate_jobs()[MAC],
+          any(n.startswith(("bench", "mutants")) for n in sum(release_gate_jobs().values(), []))], [False, True, True, False], "the release gate's job list follows the tier"),
         (BOX_EXTRA[:3], ["integration-linux: [%d]" % i for i in (1, 2, 3)], "integration shards are named as GitLab names a matrix job"),
         # owner 2026-11-09: these GATE candidate and release from the first run; a red one fails the tier, no "known red" exemption
         ([verdict(n, "failed") for n in BOX_EXTRA + MAC_EXTRA], ["FAIL"] * (len(BOX_EXTRA) + len(MAC_EXTRA)), "a red integration/usage suite is a FAIL verdict"),
@@ -583,7 +605,7 @@ def main():
     if a.dry_run:
         return 0
     fvars = {"TEST_FILTER": filt} if (tier == "fix" and filt) else None
-    appvars = {"APPCI_TIER": "smoke" if tier == "fix" else "full"}
+    appvars = {"APPCI_TIER": app_tier_name(tier)}
 
     pid = None
     while not pid:
