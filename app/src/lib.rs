@@ -63,6 +63,7 @@ mod profiling;
 mod projects;
 mod prompt;
 mod quit_warning;
+mod rayon_pool;
 #[allow(dead_code)]
 mod remote_server;
 mod resource_limits;
@@ -696,6 +697,8 @@ fn apply_scroll_multiplier(event: &mut Event, app: &AppContext) {
 pub fn run() -> Result<()> {
     // Starts the Tracy client when built with `--features profiling`; a no-op otherwise (#1169).
     warpui::profiling::init();
+    // Before anything can touch rayon's lazy global pool (see `rayon_pool`).
+    rayon_pool::configure_global_pool();
     // 1 ms timers instead of the 15.6 ms tick: every debounce, throttle and async wait in the app
     // would otherwise fire up to a tick late (#1260). `PHOSPHOR_TIMER_RESOLUTION=0` keeps the
     // default, to compare.
