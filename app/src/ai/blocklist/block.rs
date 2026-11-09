@@ -4546,6 +4546,49 @@ impl AIBlock {
         Some(rich_content_link)
     }
 
+    /// Test-only (agent fuzzer, invariants I1 and I7): the ids of the actions this block shows a
+    /// card for that the user can act on right now. A command / MCP / button card counts only
+    /// while the action model has the action blocked (a finished action's card is history, not a
+    /// control); the question card counts while it is taking answers.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn actionable_card_ids_for_test(&self, app: &AppContext) -> Vec<AIAgentActionId> {
+        let blocked = |id: &AIAgentActionId| {
+            self.action_model
+                .as_ref(app)
+                .get_action_status(id)
+                .is_some_and(|status| status.is_blocked())
+        };
+        let mut ids: Vec<AIAgentActionId> = self
+            .requested_commands
+            .keys()
+            .chain(self.requested_mcp_tools.keys())
+            .chain(self.action_buttons.keys())
+            .filter(|id| blocked(id))
+            .cloned()
+            .collect();
+        if let Some(view) = &self.ask_user_question_view {
+            let view = view.as_ref(app);
+            if view.is_awaiting_answers_for_test(app) {
+                ids.push(view.action_id().clone());
+            }
+        }
+        ids.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
+        ids.dedup();
+        ids
+    }
+
+    /// Test-only (agent fuzzer, I7): the ids of every action this block holds a card for, whether
+    /// or not it is still actionable.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn card_ids_for_test(&self) -> Vec<AIAgentActionId> {
+        self.requested_commands
+            .keys()
+            .chain(self.requested_mcp_tools.keys())
+            .chain(self.action_buttons.keys())
+            .cloned()
+            .collect()
+    }
+
     /// Returns `true` if the block contains any actions that are blocked on user confirmation.
     pub fn is_blocked_on_user_confirmation(&self, app: &AppContext) -> bool {
         self.requested_action_ids

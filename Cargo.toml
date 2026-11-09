@@ -51,6 +51,7 @@ asset_macro = { path = "crates/asset_macro" }
 channel_versions = { path = "crates/channel_versions", default-features = false }
 command = { path = "crates/command" }
 computer_use = { path = "crates/computer_use" }
+fake_llm = { path = "crates/fake_llm" }
 field_mask = { path = "crates/field_mask" }
 fuzzy_match = { path = "crates/fuzzy_match" }
 handlebars = { path = "crates/handlebars" }

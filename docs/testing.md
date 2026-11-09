@@ -2354,4 +2354,17 @@ A fake AI model plus a fuzzer that drives whole agent conversations. Three layer
 | `genai_decode_llmposter_truncation_never_looks_complete` | llmposter's frame truncation never yields an End |
 | `genai_decode_llmposter_http_statuses_reach_the_caller`, `genai_decode_wire_html_error_page_is_an_error_with_its_status`, `genai_decode_llmposter_context_overflow_keeps_the_providers_wording`, `genai_decode_in_stream_error_event_is_an_error` | 429 / 529 / 503 / 500, an HTML 502, a context-overflow 400 and an in-stream error event reach the caller with the status or the provider's wording the app's classifiers match on |
 
+### The seam and the test-only probes (L1 plumbing)
+
+All `cfg(any(test, feature = "test-util"))`; none of it is in a release build.
+
+| piece | where | what it is |
+|---|---|---|
+| stream seam | `app/src/ai/agent_providers/fake_stream_seam.rs`, hook `open_sdk_stream` in `chat_stream.rs` | `install(model_id, script)` registers scripted turns per model id; `generate_byop_output` asks the seam just before `exec_chat_stream` and, if a script exists, reads its `ChatStreamEvent`s instead of the network. Records every request (`RecordedRequest`: tool-message ids, tool-call ids, last user text, offered tools) for I3/I4. Open errors, mid-stream `Http` / `Transport` errors, `Stall`, `Wait` and a stream that stops with no `End` are all scriptable |
+| `pending_snapshot_for_test` | `BlocklistAIActionModel` | every pending / preprocessing / running action with its stage (`PendingStage`) and kind; **panics on an action kind `fuzz_action_kind` does not classify**, so a new kind fails the fuzz run until it is given a verdict |
+| `actionable_card_ids_for_test`, `card_ids_for_test` | `AIBlock`; `TerminalView::actionable_card_ids_for_test` aggregates | the actions a block shows an actionable card for (command / MCP / button cards while the action is blocked; the question card while it takes answers) |
+| `complete_command_for_test`, `is_waiting_on_command_for_test` | `ShellCommandExecutor` | `MockTerminalManager` has no pty, so no block ever exists for a requested command; this finishes the waiting action as if the command exited, printing a chosen output |
+
+Seam unit tests: `fake_stream_seam_tests.rs` (unregistered ids fall through to the network, requests are recorded with their tool messages, dropping the handle unregisters, tool-call chunks and the End content match genai's, an open error carries its status, a duplicate id panics).
+
 Run: `script/agent_fuzz` (L0 + L1). Nothing in this section has been compiled yet.

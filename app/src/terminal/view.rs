@@ -32464,6 +32464,22 @@ impl TerminalView {
         ai_block
     }
 
+    /// Test-only (agent fuzzer, I1/I7): the actions any AI block in this view shows an actionable
+    /// card for ([`AIBlock::actionable_card_ids_for_test`]).
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn actionable_card_ids_for_test(&self, ctx: &AppContext) -> Vec<AIAgentActionId> {
+        self.rich_content_views
+            .iter()
+            .filter_map(|rich_content| rich_content.ai_block_metadata())
+            .flat_map(|metadata| {
+                metadata
+                    .ai_block_handle
+                    .as_ref(ctx)
+                    .actionable_card_ids_for_test(ctx)
+            })
+            .collect()
+    }
+
     pub fn last_ai_block(&self) -> Option<ViewHandle<AIBlock>> {
         self.rich_content_views
             .iter()

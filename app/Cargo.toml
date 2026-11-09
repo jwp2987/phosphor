@@ -462,6 +462,9 @@ jsonschema = { workspace = true, default-features = false }
 async-executor = "1.5.1"
 command = { workspace = true, features = ["test-util"] }
 ctor = "0.1.18"
+# Fake model + agent fuzzer (docs/testing.md "Agent fuzzer and fake model"): the scenario schema,
+# llmposter bridging and proptest strategies. Test-only; llmposter is AGPL-3.0-or-later.
+fake_llm.workspace = true
 http_client = { workspace = true, features = ["test-util"] }
 mockall = "0.13.1"
 # Shrinking model-based tests of the pane input queue (input_queue/tests/prop_model.rs).

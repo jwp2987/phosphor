@@ -6738,6 +6738,38 @@ fn wire_skills_env(params: &RequestParams) -> (Vec<String>, Vec<(String, String)
     (skills, env)
 }
 
+/// The stream type the send loop reads. Release builds read genai's `ChatStream`; under the test
+/// seam it is a boxed stream, because a `ChatStream` cannot be built from events outside genai.
+#[cfg(not(any(test, feature = "test-util")))]
+type SdkStream = genai::chat::ChatStream;
+#[cfg(any(test, feature = "test-util"))]
+type SdkStream = super::fake_stream_seam::SeamStream;
+
+/// `client.exec_chat_stream(...)`, except that a test that installed a script for `model_id`
+/// (`fake_stream_seam::install`) gets the scripted stream and no network request is made.
+async fn open_sdk_stream(
+    client: &Client,
+    model_id: &str,
+    chat_req: ChatRequest,
+    chat_opts: &ChatOptions,
+) -> genai::Result<SdkStream> {
+    #[cfg(any(test, feature = "test-util"))]
+    if let Some(scripted) = super::fake_stream_seam::intercept(model_id, &chat_req) {
+        return scripted;
+    }
+    let response = client
+        .exec_chat_stream(model_id, chat_req, Some(chat_opts))
+        .await?;
+    #[cfg(any(test, feature = "test-util"))]
+    {
+        Ok(Box::pin(response.stream))
+    }
+    #[cfg(not(any(test, feature = "test-util")))]
+    {
+        Ok(response.stream)
+    }
+}
+
 /// `task_id`: the conversation's root task id (taken from the history model on the
 /// controller side).
 /// `target_task_id`: the task id this turn's model output should be written into; equal to
@@ -7275,13 +7307,11 @@ pub async fn generate_byop_output(
         }
 
         log::info!("[byop] opening stream: model={model_id}");
-        let mut sdk_stream = match client
-            .exec_chat_stream(&model_id, chat_req, Some(&chat_opts))
-            .await
+        let mut sdk_stream = match open_sdk_stream(&client, &model_id, chat_req, &chat_opts).await
         {
-            Ok(resp) => {
+            Ok(stream) => {
                 log::info!("[byop] stream opened OK (HTTP request accepted)");
-                resp.stream
+                stream
             }
             Err(e) => {
                 let mapped = map_genai_error(e);

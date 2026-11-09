@@ -166,6 +166,11 @@ pub struct ShellCommandExecutor {
     /// Waited actions whose stalled pager Phosphor closed with `q` (#855). Their result gets
     /// a note saying so, because the output is then only the pager's first screen.
     pager_closed_action_ids: HashSet<AIAgentActionId>,
+    /// Test-only (agent fuzzer): the outcome a scripted command ends with, keyed by action. The
+    /// mock terminal has no pty, so no block ever exists for a requested command;
+    /// [`Self::complete_command_for_test`] stands in for the block finishing.
+    #[cfg(any(test, feature = "test-util"))]
+    test_outcomes: Arc<std::sync::Mutex<HashMap<AIAgentActionId, (String, i32)>>>,
 }
 
 impl ShellCommandExecutor {
@@ -207,7 +212,36 @@ impl ShellCommandExecutor {
             control_handback_sender: None,
             awaiting_completion_action_ids: HashSet::new(),
             pager_closed_action_ids: HashSet::new(),
+            #[cfg(any(test, feature = "test-util"))]
+            test_outcomes: Default::default(),
         }
+    }
+
+    /// Test-only (agent fuzzer): finishes the waiting `RequestCommandOutput` action `action_id`
+    /// as if its command exited with `exit_code` and printed `output`. Does nothing if the
+    /// action is not waiting on a command (it was cancelled, or has not started).
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn complete_command_for_test(
+        &mut self,
+        action_id: &AIAgentActionId,
+        output: &str,
+        exit_code: i32,
+    ) {
+        let selector = BlockSelector::RequestedCommandId(action_id.clone());
+        if let Some(finished_tx) = self.block_finished_senders.remove(&selector) {
+            self.test_outcomes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(action_id.clone(), (output.to_owned(), exit_code));
+            let _ = finished_tx.send(());
+        }
+    }
+
+    /// Test-only (agent fuzzer, I5): whether `action_id` is a command the executor is waiting on.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn is_waiting_on_command_for_test(&self, action_id: &AIAgentActionId) -> bool {
+        self.block_finished_senders
+            .contains_key(&BlockSelector::RequestedCommandId(action_id.clone()))
     }
 
     /// Whether the agent's `RequestCommandOutput` action `action_id` is blocked waiting for
@@ -901,6 +935,8 @@ impl ShellCommandExecutor {
 
         // Create a future that resolves when we should send a result to the agent.
         let terminal_model = self.terminal_model.clone();
+        #[cfg(any(test, feature = "test-util"))]
+        let test_outcomes = self.test_outcomes.clone();
 
         async move {
             // `.fuse()` matters: a `oneshot::Receiver` whose sender was dropped reports
@@ -1078,7 +1114,31 @@ impl ShellCommandExecutor {
                         }
                     }
                 }
-                None => ActionResult::BlockNotFound,
+                None => {
+                    // Agent fuzzer: a scripted command has no block (see `test_outcomes`).
+                    #[cfg(any(test, feature = "test-util"))]
+                    let scripted = match &block_selector {
+                        BlockSelector::RequestedCommandId(action_id) => test_outcomes
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .get(action_id)
+                            .cloned(),
+                        BlockSelector::Id(_) => None,
+                    };
+                    #[cfg(not(any(test, feature = "test-util")))]
+                    let scripted: Option<(String, i32)> = None;
+                    match scripted {
+                        Some((output, exit_code)) => ActionResult::CommandFinished {
+                            block_id: BlockId::new(),
+                            output,
+                            exit_code: ExitCode::from(exit_code),
+                            start_ts: None,
+                            completed_ts: None,
+                            interrupted: false,
+                        },
+                        None => ActionResult::BlockNotFound,
+                    }
+                }
             };
 
             result

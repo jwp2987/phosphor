@@ -327,6 +327,53 @@ fn can_start_action_with_current_phase(
     }
 }
 
+/// Where an action is, for the agent fuzzer ([`BlocklistAIActionModel::pending_snapshot_for_test`]).
+#[cfg(any(test, feature = "test-util"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingStage {
+    Preprocessing,
+    /// Pending behind another action.
+    Queued,
+    /// The front of its conversation's queue with nothing running: waiting for the user (or the
+    /// drain), so a card must be on screen if it needs the user.
+    Blocked,
+    Running,
+}
+
+#[cfg(any(test, feature = "test-util"))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingActionSnapshot {
+    pub conversation_id: AIConversationId,
+    pub action_id: AIAgentActionId,
+    /// `None` for actions already past the pending queue (their type is no longer held).
+    pub kind: Option<&'static str>,
+    pub stage: PendingStage,
+}
+
+/// The fuzzer's name for an action kind. Deliberately lists only the kinds the fuzzer's tools can
+/// produce and PANICS on any other, so a new action kind fails the fuzz run loudly until it is
+/// classified, rather than being silently treated as "needs no card".
+#[cfg(any(test, feature = "test-util"))]
+pub fn fuzz_action_kind(action: &AIAgentActionType) -> &'static str {
+    match action {
+        AIAgentActionType::RequestCommandOutput { .. } => "run_shell_command",
+        AIAgentActionType::WriteToLongRunningShellCommand { .. } => {
+            "write_to_long_running_shell_command"
+        }
+        AIAgentActionType::ReadShellCommandOutput { .. } => "read_shell_command_output",
+        AIAgentActionType::ReadFiles(..) => "read_files",
+        AIAgentActionType::Grep { .. } => "grep",
+        AIAgentActionType::FileGlob { .. } | AIAgentActionType::FileGlobV2 { .. } => "file_glob",
+        AIAgentActionType::AskUserQuestion { .. } => "ask_user_question",
+        AIAgentActionType::TransferShellCommandControlToUser { .. } => {
+            "transfer_shell_command_control_to_user"
+        }
+        other => panic!(
+            "agent fuzzer: action kind {other:?} is not classified; add it to fuzz_action_kind"
+        ),
+    }
+}
+
 pub struct BlocklistAIActionModel {
     executor: ModelHandle<BlocklistAIActionExecutor>,
 
@@ -1180,6 +1227,55 @@ impl BlocklistAIActionModel {
             .entry(conversation_id)
             .or_default()
             .push(Arc::new(result));
+    }
+
+    /// Test-only (agent fuzzer, invariant I1): every action this model is holding, with the stage
+    /// it is in. Nothing that is pending, preprocessing or running is left out, so the oracle can
+    /// check that each one is runnable, running, or blocked behind a card.
+    ///
+    /// Panics on an action kind [`fuzz_action_kind`] does not classify: a new kind must be given a
+    /// card verdict before the fuzzer can say anything about it.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn pending_snapshot_for_test(&self) -> Vec<PendingActionSnapshot> {
+        let mut out = Vec::new();
+        for (conversation_id, queue) in &self.pending_actions {
+            for (index, action) in queue.iter().enumerate() {
+                let front_and_idle = index == 0
+                    && !self.is_view_only
+                    && !self.running_actions.contains_key(conversation_id);
+                out.push(PendingActionSnapshot {
+                    conversation_id: *conversation_id,
+                    action_id: action.id.clone(),
+                    kind: Some(fuzz_action_kind(&action.action)),
+                    stage: if front_and_idle {
+                        PendingStage::Blocked
+                    } else {
+                        PendingStage::Queued
+                    },
+                });
+            }
+        }
+        for (conversation_id, running) in &self.running_actions {
+            for action_id in &running.action_ids {
+                out.push(PendingActionSnapshot {
+                    conversation_id: *conversation_id,
+                    action_id: action_id.clone(),
+                    kind: None,
+                    stage: PendingStage::Running,
+                });
+            }
+        }
+        for (conversation_id, preprocessing) in &self.pending_preprocessed_actions {
+            for action_id in preprocessing.action_ids_for_test() {
+                out.push(PendingActionSnapshot {
+                    conversation_id: *conversation_id,
+                    action_id,
+                    kind: None,
+                    stage: PendingStage::Preprocessing,
+                });
+            }
+        }
+        out
     }
 
     /// Test-only: queues a single action through the normal dispatch pipeline so

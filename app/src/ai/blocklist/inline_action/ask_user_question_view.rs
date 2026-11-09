@@ -932,6 +932,12 @@ impl AskUserQuestionView {
             .is_some_and(|status| status.is_blocked())
     }
 
+    /// Test-only (agent fuzzer, I1): the card is up and taking answers.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn is_awaiting_answers_for_test(&self, app: &AppContext) -> bool {
+        self.is_waiting_on_user_answers(app)
+    }
+
     pub fn should_render_inline(&self, app: &AppContext) -> bool {
         matches!(self.session.phase(), AskUserQuestionPhase::Completed { .. })
             || self.is_waiting_on_user_answers(app)
