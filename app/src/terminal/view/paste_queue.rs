@@ -538,6 +538,10 @@ impl<'a, 'b> PtyQueueHost<'a, 'b> {
                     self.written = true;
                 }
                 Some(bytes) => {
+                    // #1854: a pasted password goes to the program reading it, never with the
+                    // subshell setup still written behind it.
+                    self.view
+                        .secret_read_on_key_path_cancels_written_setup(self.ctx);
                     requeues_itself = true;
                     self.view.paste_queue.requeueable_delivery = true;
                     self.written = self.view.write_user_bytes_to_pty_after_paste_stage(
@@ -553,6 +557,8 @@ impl<'a, 'b> PtyQueueHost<'a, 'b> {
                 bytes,
                 takes_over_agent_control,
             } => {
+                self.view
+                    .secret_read_on_key_path_cancels_written_setup(self.ctx);
                 requeues_itself = true;
                 self.view.paste_queue.requeueable_delivery = true;
                 self.written = self.view.write_user_bytes_to_pty_after_paste_stage(
