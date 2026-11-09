@@ -7,7 +7,7 @@
 //! tool, the command could not run) is the whole-request error shape the app daemon uses: one
 //! failure with an empty path.
 
-use super::super::{BackendError, ShellBackend};
+use super::super::{BackendError, Family, ShellBackend};
 use crate::proto::{ReadFileContextRequest, ReadFileContextResponse};
 use crate::shellcmd::read::{self, FileProbe, GatherPlan};
 use crate::shellcmd::{Script, StderrMode};
@@ -21,6 +21,7 @@ impl ShellBackend {
         &self,
         request: ReadFileContextRequest,
     ) -> Result<ReadFileContextResponse, BackendError> {
+        log::debug!("shell arm serving {:?}", Family::FileContext);
         let Some(executor) = self.executor.clone() else {
             return Err(BackendError::Unavailable(
                 "read_file_context: this session has no out-of-band channel for remote commands"

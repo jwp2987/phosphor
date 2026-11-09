@@ -38,36 +38,87 @@ impl OutOfBandExecutor for LocalShExecutor {
     }
 
     fn execute(&self, request: ExecRequest) -> BoxFuture<'_, Result<ExecOutput, ExecError>> {
-        Box::pin(async move {
-            use std::io::Write as _;
-            use std::process::{Command, Stdio};
-            let mut child = Command::new("sh")
-                .arg("-c")
-                .arg(&request.command)
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .map_err(|e| ExecError::Failed(e.to_string()))?;
-            if let Some(mut stdin) = child.stdin.take() {
-                let _ = stdin.write_all(&request.stdin);
+        Box::pin(async move { run_local_sh(request, None) })
+    }
+}
+
+fn run_local_sh(
+    request: ExecRequest,
+    path: Option<&std::ffi::OsStr>,
+) -> Result<ExecOutput, ExecError> {
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+    let mut command = Command::new("sh");
+    command
+        .arg("-c")
+        .arg(&request.command)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(path) = path {
+        command.env("PATH", path);
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|e| ExecError::Failed(e.to_string()))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(&request.stdin);
+    }
+    let out = child
+        .wait_with_output()
+        .map_err(|e| ExecError::Failed(e.to_string()))?;
+    let limit = request.max_output_bytes;
+    let truncated = limit > 0 && out.stdout.len() > limit;
+    let mut stdout = out.stdout;
+    if truncated {
+        stdout.truncate(limit);
+    }
+    Ok(ExecOutput {
+        stdout,
+        stderr: out.stderr,
+        exit_code: out.status.code(),
+        truncated,
+    })
+}
+
+/// A local `sh` whose PATH holds only the tools shell mode uses, with `base64` and `openssl`
+/// left out: a host that cannot decode base64.
+#[derive(Debug)]
+pub(super) struct NoDecoderShExecutor {
+    bin: tempfile::TempDir,
+}
+
+impl NoDecoderShExecutor {
+    pub(super) fn new() -> Self {
+        let bin = tempfile::tempdir().unwrap();
+        for tool in [
+            "mkdir", "dirname", "rm", "mv", "stat", "chmod", "wc", "tr", "head", "sed", "grep",
+            "cat", "readlink", "od", "printf", "sh", "env",
+        ] {
+            let found = std::env::var_os("PATH")
+                .into_iter()
+                .flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+                .map(|d| d.join(tool))
+                .find(|p| p.exists());
+            if let Some(found) = found {
+                std::os::unix::fs::symlink(found, bin.path().join(tool)).unwrap();
             }
-            let out = child
-                .wait_with_output()
-                .map_err(|e| ExecError::Failed(e.to_string()))?;
-            let limit = request.max_output_bytes;
-            let truncated = limit > 0 && out.stdout.len() > limit;
-            let mut stdout = out.stdout;
-            if truncated {
-                stdout.truncate(limit);
-            }
-            Ok(ExecOutput {
-                stdout,
-                stderr: out.stderr,
-                exit_code: out.status.code(),
-                truncated,
-            })
-        })
+        }
+        Self { bin }
+    }
+}
+
+impl OutOfBandExecutor for NoDecoderShExecutor {
+    fn channel_kind(&self) -> ChannelKind {
+        ChannelKind::LocalSh
+    }
+
+    fn shell_kind(&self) -> ShellKind {
+        ShellKind::Posix
+    }
+
+    fn execute(&self, request: ExecRequest) -> BoxFuture<'_, Result<ExecOutput, ExecError>> {
+        Box::pin(async move { run_local_sh(request, Some(self.bin.path().as_os_str())) })
     }
 }
 
@@ -387,6 +438,23 @@ fn shell_subject() -> Subject {
         name: "shell(local sh)",
         backend: Arc::new(ShellBackend::new(Some(Arc::new(LocalShExecutor)))),
     }
+}
+
+/// The printf-octal fallback (parity P2): a host with no base64 or openssl still writes, byte
+/// for byte, under the same assertions as every other backend. Reads use `od` there.
+#[tokio::test]
+async fn the_shell_backend_writes_on_a_host_with_no_base64_decoder() {
+    let shell = ShellBackend::new(Some(Arc::new(NoDecoderShExecutor::new())));
+    assert_eq!(
+        shell.decode_tool().await.unwrap(),
+        None,
+        "the fake host must have no decoder"
+    );
+    let subject = Subject {
+        name: "shell(no base64 decoder)",
+        backend: Arc::new(shell),
+    };
+    assert_file_write(&subject).await;
 }
 
 #[tokio::test]

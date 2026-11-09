@@ -39,6 +39,22 @@ functions of the file, strips comments and strings, and fails when the body ment
 PtyIntent). The pacing path may only move bytes the app itself built. This is a name-based check: a new
 user-key entry point with a different name must be added to USER_KEY_RE.
 
+SCOPE RULE (widened 2026-11-09). INPUT_PATH_FILES are scanned in full. INPUT_PATH_LISTED_FILES are
+mostly-non-input files (UI, AI, network, rendering) that hold a few timers touching where a key, paste,
+Enter or pty write goes, or deciding input state: only the identifiers listed in the allowlist for that
+file are enforced (comment, allowlist, stale check); their other timers are ignored as noise. A timer
+that never touches input (animation, telemetry, network retry, shutdown, rendering) belongs in neither
+list. A new input-relevant timer in a listed file is NOT detected until its identifier is added, so
+add the file to INPUT_PATH_FILES when it grows several.
+
+OTHER OWNER-EXEMPT CLASSES (2026-11-09), each its own allowlist section, its own required comment tag
+(instead of give-up-net:), and not counted by --strict:
+  # UI-CONFIRM   `ui-confirm:`   double-press confirmation windows and question auto-advance; no keys at risk.
+  # SAMPLING     `sampling:`     timers that only schedule a probe sample; the probe result or an event
+                               decides, never elapsed time alone (a timer that decides alone is PENDING).
+  # REPLY-PACING `reply-pacing:` our own terminal-query replies, never user keys; like PACING, the guard fails
+                               if its code path mentions a user-key API.
+
 ADDING A TIMER. Prefer an event. If a give-up net is truly needed: add the constant (or call), put
 `// give-up-net: <what it hands back / keeps held>` next to it, and add one line to
 script/input_path_timers.allow. If you cannot honestly write that comment, the timer is not allowed.
@@ -77,9 +93,42 @@ INPUT_PATH_FILES = [
     "app/assets/bundled/bootstrap",
     "app/assets/bundled/ssh",
 ]
+# Files that are MOSTLY NOT input (UI, network, AI, rendering) but hold one or more timers that touch
+# where a key, paste, Enter or pty write goes, or decide input state. They are scanned like the files
+# above, but only the identifiers LISTED in script/input_path_timers.allow for that file are enforced
+# (comment + allowlist, and stale detection); other timers in these files are ignored as noise.
+# Scope rule: a whole file goes in INPUT_PATH_FILES when most of its timers are input-relevant; a file
+# goes here when only a few are. Anything that never touches input stays out of both lists.
+INPUT_PATH_LISTED_FILES = [
+    "app/src/search/ai_context_menu/view.rs",
+    "app/src/terminal/model/block.rs",
+    "app/src/terminal/model/session.rs",
+    "app/src/terminal/local_tty/terminal_manager.rs",
+    "app/src/terminal/local_tty/terminal_attributes.rs",
+    "app/src/terminal/local_tty/event_loop.rs",
+    "app/src/terminal/cli_agent_sessions/mod.rs",
+    "app/src/ai/blocklist/controller.rs",
+    "app/src/ai/blocklist/input_model.rs",
+    "app/src/ai/blocklist/agent_view/controller.rs",
+    "app/src/ai/blocklist/inline_action/ask_user_question_view.rs",
+    "app/src/ai/blocklist/action_model/execute/shell_command.rs",
+    "crates/warpui_core/src/runtime/terminal_probe.rs",
+    "crates/warpui/src/windowing/winit/linux/clipboard.rs",
+    "crates/warp_tui/src/terminal_background.rs",
+    "crates/warp_tui/src/terminal_session_view.rs",
+    "crates/warp_tui/src/terminal_session_view/input_detection.rs",
+    "crates/warp_tui/src/tui_ask_question_view.rs",
+]
 ALLOW_FILE = "script/input_path_timers.allow"
 PENDING_MARK = "# PENDING-CONVERSION"
 PACING_MARK = "# PACING"
+# Owner-exempt labelled classes: section marker -> the comment tag its entries need instead of give-up-net.
+EXEMPT_SECTIONS = {
+    "# PACING": "pacing",
+    "# UI-CONFIRM": "ui-confirm",
+    "# SAMPLING": "sampling",
+    "# REPLY-PACING": "reply-pacing",
+}
 USER_KEY_RE = re.compile(
     r"\b(?:write_user_bytes\w*|user_bytes\w*|UserInput\w*|user_input\w*|held_keys\w*|"
     r"release_held_keys|typeahead\w*|PtyIntent)\b"
@@ -90,7 +139,7 @@ WINDOW = 5
 # A whole underscore-delimited token anywhere in the name (so THRESHOLD never matches HOLD).
 NAME_RE = re.compile(
     r"(?:^|_)(?:GIVE_UP|DELAY|WINDOW|QUIET|SETTLE|BUDGET|RESET|NET|CEILING|TIMEOUT|GRACE|PATIENCE|HOLD|"
-    r"CAP|BACKSTOP|WAIT|PACING|POLL|RECHECK|NOTICE|AFTER)(?:_|$)"
+    r"CAP|BACKSTOP|WAIT|PACING|POLL|RECHECK|NOTICE|AFTER|DEBOUNCE|DEADLINE|DRAIN|DISMISS)(?:_|$)"
 )
 CONST_RE = re.compile(r"\b(?:const|static\s+ref|static)\s+([A-Z][A-Z0-9_]+)\s*:")
 DUR_RE = re.compile(r"Duration")
@@ -149,11 +198,8 @@ def expand(root, entries):
     return res
 
 
-PACING_NOTE_RE = re.compile(r"pacing:\s*\S")
-
-
 def comment_near(lines, idx, prefix, tag="give-up-net"):
-    note = NOTE_RE if tag == "give-up-net" else PACING_NOTE_RE
+    note = NOTE_RE if tag == "give-up-net" else re.compile(r"(?<![\w-])" + re.escape(tag) + r":\s*\S")
     lo, hi = max(0, idx - WINDOW), min(len(lines), idx + WINDOW + 1)
     for j in range(lo, hi):
         s = lines[j].lstrip()
@@ -223,13 +269,16 @@ def scan_shell(rel, lines):
 
 def parse_allow(text):
     ok, pending, pacing = {}, {}, {}
+    exempt_tags = {}  # key -> tag, for every owner-exempt class entry
     cur = ok
+    cur_tag = None
     for n, raw in enumerate(text.splitlines(), 1):
         if raw.startswith(PENDING_MARK):
-            cur = pending
+            cur, cur_tag = pending, None
             continue
-        if raw.startswith(PACING_MARK):
-            cur = pacing
+        hit = next((m for m in EXEMPT_SECTIONS if raw.startswith(m)), None)
+        if hit:
+            cur, cur_tag = pacing, EXEMPT_SECTIONS[hit]
             continue
         if not raw.strip() or raw.lstrip().startswith("#"):
             continue
@@ -237,7 +286,9 @@ def parse_allow(text):
         if len(parts) < 3 or not all(p.strip() for p in parts[:3]):
             raise SystemExit(f"{ALLOW_FILE}:{n}: want path<TAB>identifier<TAB>what it does")
         cur[(parts[0].strip(), parts[1].strip())] = (n, parts[2].strip())
-    return ok, pending, pacing
+        if cur_tag:
+            exempt_tags[(parts[0].strip(), parts[1].strip())] = cur_tag
+    return ok, pending, pacing, exempt_tags
 
 
 def strip_code(text):
@@ -294,8 +345,8 @@ def pacing_user_key_errors(root, allow_pacing):
     return errs
 
 
-def run(root, files, allow_text, strict):
-    allow_ok, allow_pending, allow_pacing = parse_allow(allow_text)
+def run(root, files, allow_text, strict, listed=()):
+    allow_ok, allow_pending, allow_pacing, exempt_tags = parse_allow(allow_text)
     allowed = {**allow_ok, **allow_pending, **allow_pacing}
     errors, warnings = [], []
     missing_note = []  # (key, message): waived for PENDING entries, which are not nets
@@ -318,7 +369,7 @@ def run(root, files, allow_text, strict):
             for ln, fn in sites:
                 key = (rel, fn)
                 found.add(key)
-                tag = "pacing" if key in allow_pacing else "give-up-net"
+                tag = exempt_tags.get(key, "give-up-net")
                 if not comment_near(lines, ln, "#", tag):
                     missing_note.append((key, f"{rel}:{ln + 1}: shell timer in `{fn}` has no `# {tag}: <why>` comment within {WINDOW} lines"))
             continue
@@ -328,17 +379,20 @@ def run(root, files, allow_text, strict):
                 continue  # covered by the constant's definition
             key = (rel, ident or fn)
             found.add(key)
-            tag = "pacing" if key in allow_pacing else "give-up-net"
+            tag = exempt_tags.get(key, "give-up-net")
             if not comment_near(lines, ln, "//", tag):
                 missing_note.append((key, f"{rel}:{ln + 1}: timer call in `{fn}` has no `// {tag}: <why>` comment within {WINDOW} lines"))
     for name, (rel, ln) in sorted(all_consts.items()):
         if not (NAME_RE.search(name) or name in used):
             continue
         found.add((rel, name))
-        tag = "pacing" if (rel, name) in allow_pacing else "give-up-net"
+        tag = exempt_tags.get((rel, name), "give-up-net")
         if not comment_near(per_file[rel][0], ln, "//", tag):
             missing_note.append(((rel, name), f"{rel}:{ln + 1}: timer constant {name} has no `// {tag}: <why>` comment within {WINDOW} lines"))
-    errors.extend(pacing_user_key_errors(root, allow_pacing))
+    errors.extend(pacing_user_key_errors(root, {k: v for k, v in allow_pacing.items() if exempt_tags.get(k) in ("pacing", "reply-pacing")}))
+    # Listed (mostly-non-input) files: only identifiers named in the allowlist are enforced.
+    found = {k for k in found if k[0] not in listed or k in allowed}
+    missing_note = [(k, m) for k, m in missing_note if k[0] not in listed or k in allowed]
     errors.extend(m for k, m in missing_note if k not in allow_pending)
     for key in sorted(found):
         if key not in allowed:
@@ -399,6 +453,27 @@ def self_test():
         pend = "s.sh\tf\ty\nf.rs\tA_GIVE_UP\tz\n" + PENDING_MARK + "\ng.rs\tgo2\tz\n"
         expect("pending warns", pend, "", want_fail=False)
         expect("pending fails under --strict", pend, "PENDING-CONVERSION", strict=True)
+        # Listed (mostly-non-input) file: an unlisted timer is ignored, a listed stale one fails.
+        (root / "l.rs").write_text("fn noisy() {\n    ctx.spawn(Timer::after(d), |m| {});\n}\n")
+        rest, _ = run(root, ["l.rs"], "", False, {"l.rs"})
+        if rest:
+            print(f"self-test FAIL: listed file reported an unlisted timer: {rest}")
+            ok = False
+        else:
+            print("self-test ok: listed file ignores unlisted timers")
+        stale, _ = run(root, ["l.rs"], "l.rs\tgone\tz\n", False, {"l.rs"})
+        if not any("STALE" in e for e in stale):
+            print(f"self-test FAIL: listed stale entry not caught: {stale}")
+            ok = False
+        else:
+            print("self-test ok: listed file stale entry caught")
+        # The other exempt classes: each needs its OWN tag, none is pending under --strict.
+        for sec, tag in (("# UI-CONFIRM", "ui-confirm"), ("# SAMPLING", "sampling"), ("# REPLY-PACING", "reply-pacing")):
+            body = "const X_PACING: Duration = Duration::from_millis(5);\nfn go() {\n    ctx.spawn(Timer::after(X_PACING), |m| {});\n}\n"
+            (root / "c.rs").write_text("// pacing: wrong tag\n" + body)
+            expect(f"{tag} needs its own tag", sec + "\nc.rs\tX_PACING\tz\n", f"{tag}: <why>", fs=["c.rs"])
+            (root / "c.rs").write_text(f"// {tag}: fine\n" + body)
+            expect(f"{tag} with its tag is clean and not strict-pending", sec + "\nc.rs\tX_PACING\tz\n", "", fs=["c.rs"], strict=True, want_fail=False)
         # PACING rule: needs a `pacing:` comment (give-up-net does not do), is not pending under
         # --strict, and fails when its code path mentions a user-key API.
         PAC = PACING_MARK + "\n"
@@ -429,12 +504,13 @@ def main():
         return self_test()
     strict = "--strict" in args
     root = Path(__file__).resolve().parent.parent
-    files = expand(root, INPUT_PATH_FILES)
+    files = expand(root, INPUT_PATH_FILES + INPUT_PATH_LISTED_FILES)
+    listed = set(expand(root, INPUT_PATH_LISTED_FILES)) - set(expand(root, INPUT_PATH_FILES))
     if not files:
         print("check_input_path_timers: no input-path files found (INPUT_PATH_FILES stale?)", file=sys.stderr)
         return 1
     allow_text = (root / ALLOW_FILE).read_text()
-    errors, warnings = run(root, files, allow_text, strict)
+    errors, warnings = run(root, files, allow_text, strict, listed)
     for w in warnings:
         print("WARNING " + w, file=sys.stderr)
     if errors:

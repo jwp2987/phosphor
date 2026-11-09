@@ -80,3 +80,39 @@ fn setting_a_policy_moves_the_host_between_lists_without_duplicates() {
     assert_eq!(allowed, list(&["other"]));
     assert!(denied.is_empty());
 }
+
+/// #1546 (upgrade from v0.1.17): in v0.1.17 "don't ask me again" + Install wrote the app-wide mode `always_install`, and there
+/// were no host lists. After the upgrade a host in neither list still follows that choice, and the first per-host decision overrides it.
+#[test]
+fn a_v0_1_17_profile_keeps_its_app_wide_choice_until_a_host_decides() {
+    let none: Vec<String> = Vec::new();
+    for host in ["a@one", "b@two"] {
+        let policy = policy_from_lists(host, &none, &none);
+        assert_eq!(policy, HelperPolicy::Ask);
+        assert_eq!(
+            decide(policy, GlobalInstallMode::AlwaysInstall),
+            HelperDecision::Install
+        );
+        assert_eq!(
+            decide(policy, GlobalInstallMode::NeverInstall),
+            HelperDecision::Skip
+        );
+        assert_eq!(
+            decide(policy, GlobalInstallMode::AlwaysAsk),
+            HelperDecision::Ask
+        );
+    }
+    // one host says never: it stops installing and updating, the other host still follows the old choice
+    let denied = list(&["b@two"]);
+    let b = policy_from_lists("b@two", &none, &denied);
+    assert_eq!(
+        decide(b, GlobalInstallMode::AlwaysInstall),
+        HelperDecision::Skip
+    );
+    assert!(!may_update_existing(b));
+    let a = policy_from_lists("a@one", &none, &denied);
+    assert_eq!(
+        decide(a, GlobalInstallMode::AlwaysInstall),
+        HelperDecision::Install
+    );
+}

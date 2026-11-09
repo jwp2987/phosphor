@@ -2860,6 +2860,7 @@ impl Block {
 
         self.background_executor
             .spawn(async move {
+                // sampling: schedules the interactive-latch probe sample; on ConPTY (no probe) it latches on time (owner-exempt 2026-11-09).
                 warpui::r#async::Timer::after(std::time::Duration::from_millis(delay_ms)).await;
                 if let Some(latch) = latch {
                     latch.on_settled();

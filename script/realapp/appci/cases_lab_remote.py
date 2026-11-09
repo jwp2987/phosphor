@@ -86,3 +86,15 @@ def c_diff_apply_remote(ctx, r, arm):
     r.check(not typed, "the feature typed into the remote shell: %r" % typed[:2])
     ctx.remote.rm(path)
     CL.finish_remote(ctx, r)
+
+
+def declare_coverage():
+    """tell the coverage guard (cases_lab_helper.py) which cases cover which families; both arms of each body above are registered here. Idempotent. Called from
+    here when cases_lab_helper is already loaded and from cases_lab_helper's end otherwise (the two import each other through cases.py)."""
+    import cases_lab_helper as CLH
+    CLH.declare_external("file_context", helper_case="lab_read_files_remote", nohelper_case="lab_read_files_remote")
+    CLH.declare_external("file_write", helper_case="lab_diff_apply_remote", nohelper_case="lab_diff_apply_remote")
+
+
+if hasattr(sys.modules.get("cases_lab_helper"), "declare_external"):
+    declare_coverage()

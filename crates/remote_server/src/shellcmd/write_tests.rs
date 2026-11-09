@@ -7,9 +7,9 @@ const FIRST_AND_LAST: ChunkPosition = ChunkPosition {
 
 #[test]
 fn chunks_are_at_most_64k_and_an_empty_file_is_one_empty_chunk() {
-    assert_eq!(split_chunks(b"").len(), 1);
+    assert_eq!(split_chunks(b"", false).len(), 1);
     let data = vec![7u8; WRITE_CHUNK_BYTES * 2 + 1];
-    let chunks = split_chunks(&data);
+    let chunks = split_chunks(&data, false);
     assert_eq!(chunks.len(), 3);
     assert!(chunks.iter().all(|c| c.len() <= WRITE_CHUNK_BYTES));
     assert_eq!(chunks.concat(), data);
@@ -115,7 +115,14 @@ fn hostile_paths_are_quoted_and_tilde_expands_on_the_host() {
         None,
     );
     assert!(c.starts_with("f='/t/it'\\''s $x'\n"), "{c}");
-    let h = posix_write_command("~/n.txt", "n", b"", FIRST_AND_LAST, DecodeTool::Lower, None);
+    let h = posix_write_command(
+        "~/n.txt",
+        "n",
+        b"",
+        FIRST_AND_LAST,
+        Some(DecodeTool::Lower),
+        None,
+    );
     assert!(h.starts_with("f=\"$HOME\"'/n.txt'\n"), "{h}");
     assert_eq!(posix_delete_command("/a b"), "f='/a b'\nrm -- \"$f\"\n");
 }
@@ -144,4 +151,31 @@ fn failure_messages_name_the_cause_and_a_conflict_says_nothing_was_overwritten()
     );
     assert!(write_failure_message("/x", EXIT_MKDIR, "mkdir: denied").contains("mkdir: denied"));
     assert!(write_failure_message("/x", 99, "").ends_with("failed"));
+}
+
+#[test]
+fn without_a_decoder_bytes_travel_as_printf_octal_escapes_in_small_chunks() {
+    assert_eq!(printf_escape(b"ab 1~"), "ab 1~");
+    assert_eq!(printf_escape(b"100%'\\"), "100\\045\\047\\134");
+    assert_eq!(printf_escape(b"\n\0\xc3\xa9"), "\\012\\000\\303\\251");
+    let data = vec![0xffu8; PRINTF_CHUNK_BYTES * 2 + 1];
+    let chunks = split_chunks(&data, true);
+    assert_eq!(chunks.len(), 3);
+    // Worst case, four characters per byte: still one command under 64 KiB.
+    assert!(printf_escape(chunks[0]).len() <= 64 * 1024);
+    let c = posix_write_command("/x", "n", b"a%\n", FIRST_AND_LAST, None, None);
+    assert!(c.contains("printf 'a\\045\\012' > \"$tmp\""), "{c}");
+    assert!(!c.contains("base64"));
+    let mid = posix_write_command(
+        "/x",
+        "n",
+        b"b",
+        ChunkPosition {
+            first: false,
+            last: false,
+        },
+        None,
+        None,
+    );
+    assert!(mid.contains("printf 'b' >> \"$tmp\""));
 }

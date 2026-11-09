@@ -208,7 +208,9 @@ fn is_plain_key_text(bytes: &[u8]) -> bool {
 /// How often a withheld reply re-checks whether the pty has left canonical mode: promptly for the
 /// first second (a program that queries and then switches to raw mode does so within
 /// milliseconds), then less often for a reply nobody is waiting for.
+// reply-pacing: 10 ms re-check of the pty mode before writing a withheld terminal-query reply (our own reply, never user keys)
 const REPLY_GATE_POLL: Duration = Duration::from_millis(10);
+// reply-pacing: 100 ms back-off of the reply-gate re-check; our own replies only
 const REPLY_GATE_POLL_SLOW: Duration = Duration::from_millis(100);
 /// How many consecutive non-EINTR `poll` failures the reader retries before ending the session.
 const MAX_CONSECUTIVE_POLL_ERRORS: u32 = 3;
@@ -246,6 +248,7 @@ fn poll_error_action(err: &io::Error, consecutive_failures: u32) -> PollErrorAct
 const HUNG_UP_POLL: Duration = Duration::from_millis(100);
 const HUNG_UP_POLL_SLOW: Duration = Duration::from_secs(1);
 const HUNG_UP_WARN_AFTER: Duration = Duration::from_secs(5);
+// reply-pacing: after 1 s the reply-gate re-check slows down; our own replies only
 const REPLY_GATE_SLOW_AFTER: Duration = Duration::from_secs(1);
 /// Most gated replies kept. A program that queries in a loop without reading gets its oldest
 /// replies dropped; nobody can read them from a cooked tty anyway.

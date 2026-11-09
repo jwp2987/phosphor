@@ -4,7 +4,7 @@
 //! Failures are reported the way the helper reports them (a file-operation failure with the
 //! host's reason), so a call site cannot tell the arms apart.
 
-use super::super::{BackendError, ShellBackend};
+use super::super::{BackendError, Family, ShellBackend};
 use crate::client::ClientError;
 use crate::shellcmd::read::{self, FileProbe, GatherPlan};
 use crate::shellcmd::write::{
@@ -37,35 +37,30 @@ impl ShellBackend {
         content: String,
         expect: Option<Expect>,
     ) -> Result<(), BackendError> {
+        log::debug!("shell arm serving {:?}", Family::FileWrite);
         let executor = self.executor_for("write_file")?;
         let pwsh = executor.shell_kind().is_powershell();
+        // POSIX hosts decode base64 when they can; with no decoder the bytes travel as printf
+        // octal escapes (smaller chunks).
         let decoder = if pwsh {
             None
         } else {
-            match self.decode_tool().await? {
-                Some(tool) => Some(tool),
-                None => {
-                    return Err(op_failed(format!(
-                        "Failed to write {path}: the host has no base64 decoder (base64 or \
-                         openssl), which shell mode needs to write files"
-                    )));
-                }
-            }
+            self.decode_tool().await?
         };
+        let printf = !pwsh && decoder.is_none();
         let nonce = Self::new_nonce();
         let bytes = content.into_bytes();
-        let chunks = split_chunks(&bytes);
+        let chunks = split_chunks(&bytes, printf);
         let count = chunks.len();
         for (i, chunk) in chunks.into_iter().enumerate() {
             let position = ChunkPosition {
                 first: i == 0,
                 last: i + 1 == count,
             };
-            let command = match decoder {
-                Some(decoder) => {
-                    posix_write_command(&path, &nonce, chunk, position, decoder, expect)
-                }
-                None => pwsh_write_command(&path, &nonce, chunk, position, expect),
+            let command = if pwsh {
+                pwsh_write_command(&path, &nonce, chunk, position, expect)
+            } else {
+                posix_write_command(&path, &nonce, chunk, position, decoder, expect)
             };
             let script =
                 Script::new(Self::new_nonce())?.section("w", command, StderrMode::Merge)?;

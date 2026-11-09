@@ -19,6 +19,10 @@ use super::sh_quote;
 /// be on Linux.
 pub const WRITE_CHUNK_BYTES: usize = 64 * 1024;
 
+/// Raw bytes per command when the host has no base64 decoder and the chunk travels as `printf`
+/// octal escapes (up to four characters per byte): the command stays under 64 KiB.
+pub const PRINTF_CHUNK_BYTES: usize = 16 * 1024;
+
 /// The exit code of the final command when the target no longer matches [`Expect`].
 pub const EXIT_CONFLICT: i32 = 5;
 /// The exit code when the directory could not be created.
@@ -62,11 +66,33 @@ pub struct ChunkPosition {
 }
 
 /// Splits `content` into chunks; always at least one (an empty file is one empty chunk).
-pub fn split_chunks(content: &[u8]) -> Vec<&[u8]> {
+/// `printf` is true for hosts that write through [`printf_escape`] instead of base64.
+pub fn split_chunks(content: &[u8], printf: bool) -> Vec<&[u8]> {
     if content.is_empty() {
         return vec![content];
     }
-    content.chunks(WRITE_CHUNK_BYTES).collect()
+    content
+        .chunks(if printf {
+            PRINTF_CHUNK_BYTES
+        } else {
+            WRITE_CHUNK_BYTES
+        })
+        .collect()
+}
+
+/// `bytes` as the body of a single-quoted POSIX `printf` format: letters, digits and most
+/// punctuation as they are, everything else (including `\`, `%`, `'`, controls, NUL and every
+/// non-ASCII byte) as a three-digit octal escape, which every POSIX `printf` understands.
+pub fn printf_escape(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len());
+    for &b in bytes {
+        match b {
+            b'\\' | b'%' | b'\'' => out.push_str(&format!("\\{b:03o}")),
+            b' '..=b'~' => out.push(b as char),
+            _ => out.push_str(&format!("\\{b:03o}")),
+        }
+    }
+    out
 }
 
 /// `f=...` for `path`, resolving a symlink target so the write goes through it. `~` expands on
@@ -91,7 +117,7 @@ pub fn posix_write_command(
     nonce: &str,
     chunk: &[u8],
     position: ChunkPosition,
-    decoder: DecodeTool,
+    decoder: Option<DecodeTool>,
     expect: Option<Expect>,
 ) -> String {
     let mut out = posix_target(path);
@@ -102,10 +128,17 @@ pub fn posix_write_command(
         ));
     }
     let redirect = if position.first { ">" } else { ">>" };
+    // With no decoder on the host the bytes travel as printf octal escapes.
+    let write = match decoder {
+        Some(decoder) => format!(
+            "printf '%s' '{}' | {}",
+            base64::encode(chunk),
+            decoder.filter()
+        ),
+        None => format!("printf '{}'", printf_escape(chunk)),
+    };
     out.push_str(&format!(
-        "printf '%s' '{}' | {} {redirect} \"$tmp\" || {{ rm -f -- \"$tmp\"; exit {EXIT_APPEND}; }}\n",
-        base64::encode(chunk),
-        decoder.filter()
+        "{write} {redirect} \"$tmp\" || {{ rm -f -- \"$tmp\"; exit {EXIT_APPEND}; }}\n"
     ));
     if position.last {
         if let Some(expect) = expect {

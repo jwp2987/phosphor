@@ -10,6 +10,7 @@ use warpui::{Entity, ModelContext};
 use crate::terminal::model::block::ForegroundTtyRead;
 
 /// The default amount of time we wait before polling the terminal attributes again.
+// sampling: 1 Hz termios sample; the sample feeds the prompt detector, which hands over only on a password termios state or a Reading probe
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// A model that polls the terminal attributes of a given tty via the termios interface

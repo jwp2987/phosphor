@@ -112,6 +112,8 @@ guards:
     - ./script/check_test_results
     # #1522: the real-app harness's offline self-test (parsers, registries, report exit codes); pure Python, no app or display.
     - python3 script/realapp/appci/selftest.py
+    # #1495: the release gate's offline fixtures (pass, failed job, wrong sha / tier, KNOWN, NOREF, missing platform).
+    - python3 script/ci/test_check_release_gate.py
     # Large deletions. There are no pull requests here, so the base is the
     # previous tip of this branch (push), or the merge-base with main for a new
     # branch. The commit message stands in for the PR body: it is where a
@@ -576,8 +578,10 @@ build-windows-profiling:
     # push that rebuilds the whole test graph would monopolise the build box. Flip the first
     # condition back to `$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH || $CI_COMMIT_TAG` to gate
     # every push to main again once the suites are known-good.
+    # allow_failure is explicitly false on a tag: these suites are part of the release gate (.release_quality_needs).
     - if: $CI_COMMIT_TAG
       when: on_success
+      allow_failure: false
     - when: manual
       allow_failure: true
 
@@ -1311,8 +1315,9 @@ app-test-windows:
 # ---------------------------------------------------------------------------
 # Fake ssh lab (docs/testing.md 2.15, Wave 0.5b). A podman container on the box that is a fake REMOTE (two sshds, a user per shell, scenario users, a tc/netem
 # fault shaper, an HTTP control port). EVERYTHING here is manual: the image is built by `sshlab-image` (play it after a change under script/realapp/sshlab/**),
-# the cases run in their own jobs, never in the ordinary app-test jobs. The Mac and Windows runners reach the box through a forced-command ssh key
-# (APPCI_LAB_KEY, machine-local) and the project variable SSHLAB_BOX; neither is in the repo. APPCI_LAB_MATRIX (quick | full | spec) is a play-time variable.
+# the cases run in their own jobs, never in the ordinary app-test jobs. The Mac and Windows runners reach PERSISTENT lab containers on the box (one per
+# platform, fixed ports, `labctl.py serve`, a systemd --user service installed by sshlab-image) over HTTP with the protected+masked project variables
+# SSHLAB_BOX and SSHLAB_TOKEN (never in the repo, never echoed). APPCI_LAB_MATRIX (quick | full | spec) is a play-time variable.
 # ---------------------------------------------------------------------------
 sshlab-image:
   tags: [little-thing]
@@ -1331,6 +1336,13 @@ sshlab-image:
     - python3 script/realapp/sshlab/labctl.py selftest
     - mkdir -p "$HOME/.phosphor-sshlab"
     - install -m 755 script/realapp/sshlab/labctl.py "$HOME/.phosphor-sshlab/labctl.py"
+    # the fixed-port slots (docs/testing.md 2.15): refresh the user service, then reconcile once so the slots run the image just built. The token file
+    # ~/.phosphor-sshlab/token (mode 600) is machine-local and is only checked for existence here, never read into the log.
+    - mkdir -p "$HOME/.config/systemd/user"
+    - install -m 644 script/realapp/sshlab/sshlab-serve.service "$HOME/.config/systemd/user/sshlab-serve.service"
+    - test -f "$HOME/.phosphor-sshlab/token" || { echo "no ~/.phosphor-sshlab/token on this machine (see script/realapp/sshlab/README.md); the slots are not started"; exit 1; }
+    - python3 "$HOME/.phosphor-sshlab/labctl.py" serve --once
+    - systemctl --user daemon-reload && systemctl --user enable --now sshlab-serve && systemctl --user restart sshlab-serve
   after_script:
     - python3 script/realapp/sshlab/labctl.py gc || true
 
@@ -1352,21 +1364,24 @@ app-test-lab-linux:
     - python3 script/ci/results_scrub.py --tree appci-out
     - for d in appci-out/*/run; do [ -d "$d" ] && python3 script/ci/slim_appci_run.py "$d"; done
 
+# SSHLAB_BOX and SSHLAB_TOKEN are protected project variables: GitLab injects them into jobs on protected refs (main, build/*, v*) automatically, so they are
+# NOT re-mapped here (re-mapping would put the token into the job's variable list/expansion). lab.py reads them from the environment through ci_env.get,
+# prints only whether they are set, and a job on an unprotected ref SKIPs the lab cases with that reason. No `set -x` anywhere near them.
 app-test-lab-macos:
   extends: app-test-macos
   resource_group: mac-gui
   variables:
-    APPCI_LAB: remote
+    APPCI_LAB: fixed
+    APPCI_LAB_SLOT: mac
     APPCI_CASES: "lab_*"
-    APPCI_LAB_BOX: "$SSHLAB_BOX"      # the project variable; the key path APPCI_LAB_KEY is set in the runner user's environment (machine-local)
 
 app-test-lab-windows:
   extends: app-test-windows
   resource_group: windows-gui
   variables:
-    APPCI_LAB: remote
+    APPCI_LAB: fixed
+    APPCI_LAB_SLOT: windows
     APPCI_CASES: "lab_*"
-    APPCI_LAB_BOX: "$SSHLAB_BOX"
 
 # Real-use replay (Wave 1.5 #3, docs/testing.md "Real-use replay"): a seeded "day of use" in one long case per session mode, against the fake ssh lab at
 # 150 ms and the scripted fake model. MANUAL ONLY and never part of a ci_seq.py tier (no schedule, owner): play it by hand, or from the nightly routine the
@@ -1503,6 +1518,40 @@ app-test-windows-reuse:
 # `releases/permalink/latest`, which the app falls back to when it has no version tag.
 # ===========================================================================
 
+# The jobs that define release quality (#1495). A tag pipeline publishes nothing unless EVERY one of these succeeded: release-meta
+# (the root of the release DAG, so nothing is built or uploaded to the package registry before) and release-publish (the only job that
+# creates the GitLab release) both `needs:` this list. They run automatically in a tag pipeline (the box jobs, .heavy_rules) and none is
+# allow_failure there. The YAML anchor keeps the two lists from drifting apart.
+.release_quality_needs: &release_quality_needs
+  - release-gate
+  - guards
+  - check-linux
+  - licenses
+  - advisories
+  - test-linux
+  - test-warpui-core
+  - test-workspace-rest
+
+# Recorded release-tier evidence (#1495). The remaining release-tier suites (integration, usage, input-timers-strict, shuttle/loom, fuzz,
+# the Mac and Windows unit/heavy suites) and the real-app tests need the build pipeline, the Mac / Windows machines and resource groups and are
+# manual by design (driven by script/ci/ci_seq.py --tier release), so they are NOT run inside the tag pipeline. This job refuses the tag
+# unless the SAME COMMIT has them all green in GitLab, the app tests with a results.json that says tier=release and this sha. The job list is
+# ci_seq.py's own release tier (script/ci/check_release_gate.py). KNOWN GAP: the app tests ran on `build-*` binaries, not the `release-*`
+# ones built below (those have the CLI digests compiled in). docs/testing.md "Release gate".
+release-gate:
+  extends: .shim_github_env
+  stage: test
+  tags: [little-thing]
+  needs: [guards, check-linux, licenses, advisories]
+  timeout: 10m
+  rules:
+    - if: $CI_COMMIT_TAG
+      when: on_success
+      allow_failure: false
+  script:
+    - command -v python3 >/dev/null || { echo "ERROR python3 missing on this runner; the release gate cannot run" >&2; exit 1; }
+    - python3 script/ci/check_release_gate.py
+
 .release_rules:
   rules:
     - if: $CI_COMMIT_TAG
@@ -1524,10 +1573,20 @@ app-test-windows-reuse:
     GIT_DEPTH: "0"
 
 release-meta:
-  extends: [.shim_github_env, .release_rules]
+  extends: [.shim_github_env]
   stage: cli
   tags: [little-thing]
   needs: []
+  # RELEASE GATE (#1495): the root of the release DAG; in a tag pipeline nothing starts until the whole quality set is green.
+  # `rules:needs` replaces the job-level `needs: []` for the tag only; the manual dry run on main keeps its old shape.
+  rules:
+    - if: $CI_COMMIT_TAG
+      when: on_success
+      allow_failure: false
+      needs: *release_quality_needs
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+      allow_failure: true
   timeout: 20m
   variables:
     GIT_DEPTH: "0"
@@ -1951,7 +2010,22 @@ release-publish:
   extends: [.shim_github_env]
   stage: publish
   tags: [little-thing]
-  needs: [release-meta, cli-linux, cli-macos, release-macos-arm64, release-linux-x86_64, release-windows-x86_64]
+  # The build jobs AND the whole quality set (&release_quality_needs, #1495): a green build must never publish over a red suite.
+  needs:
+    - release-meta
+    - cli-linux
+    - cli-macos
+    - release-macos-arm64
+    - release-linux-x86_64
+    - release-windows-x86_64
+    - release-gate
+    - guards
+    - check-linux
+    - licenses
+    - advisories
+    - test-linux
+    - test-warpui-core
+    - test-workspace-rest
   timeout: 20m
   rules:
     - if: $CI_COMMIT_TAG

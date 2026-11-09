@@ -19,6 +19,7 @@ mod exec;
 mod file_context;
 mod fs_ops;
 mod git;
+pub mod git_runner;
 mod git_status;
 mod git_write;
 mod github;
@@ -37,6 +38,15 @@ use std::os::unix::fs::PermissionsExt;
 /// Entry point for `phosphor-remote proxy <key>`.
 pub fn run_proxy(identity_key: &str) -> anyhow::Result<()> {
     proxy::run(identity_key)
+}
+
+/// Entry point for `phosphor-remote index-scan <repo> [--known <file>]`: the deterministic JSON
+/// (manifest, fragment hashes, root hash; or only what changed since `known`).
+pub fn run_index_scan(
+    repo: &std::path::Path,
+    known: Option<&std::path::Path>,
+) -> anyhow::Result<String> {
+    chunk::run_index_scan(repo, known)
 }
 
 /// Entry point for `phosphor-remote daemon <key>`: binds the socket, writes the pid file,

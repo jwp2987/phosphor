@@ -24,7 +24,7 @@ HOOK_PATH_DETECT = re.compile(r"hop=path_detect source=pushed session=(\d+) entr
 SESSION_ABANDONED = "Session abandoned before bootstrap"
 
 
-def lab_case(name, shells=("bash", "zsh", "fish"), lat=("lan", "150"), helper=("nohelper",), faults=(), scenarios=(), flavor="full", modes=("terminal", "agent")):
+def lab_case(name, shells=("bash", "zsh", "fish", "nu"), lat=("lan", "150"), helper=("nohelper",), faults=(), scenarios=(), flavor="full", modes=("terminal", "agent")):
     """register the body `fn(ctx, r, arm)` once per arm of the declared matrix. `shells`/`lat`/`helper` are the FULL matrix the case supports; APPCI_LAB_MATRIX
     narrows it at run time (run.py). `faults`: network faults that get their own arm (bash/zsh, LAN and 150 only). `scenarios`: scenario users (bash)."""
     def deco(fn):
@@ -211,7 +211,7 @@ def unique(ctx, n=6):
 
 
 # ------------------------------------------------------------------ 1. Tab completion of a remote directory
-@lab_case("tab_remote_dir", shells=("bash", "zsh", "fish"), lat=("lan", "150", "300"), helper=("nohelper", "helper"),
+@lab_case("tab_remote_dir", shells=("bash", "zsh", "fish", "nu"), lat=("lan", "150", "300"), helper=("nohelper", "helper"),
           scenarios=("p_banner", "p_colon", "p_question", "p_slowrc", "p_rcerr"))
 def c_tab_remote_dir(ctx, r, arm):
     """A unique prefix + Tab completes a REMOTE directory (proof: the completed `cd` really ran there: `&& pwd >> file` writes the exact directory); an ambiguous
@@ -280,7 +280,7 @@ def c_tab_remote_dir(ctx, r, arm):
 
 
 # ------------------------------------------------------------------ 2. path detection while typing
-@lab_case("path_detect", shells=("bash", "zsh", "fish"), lat=("lan", "150", "300"), helper=("nohelper", "helper"), scenarios=("p_exec", "p_tinypath"))
+@lab_case("path_detect", shells=("bash", "zsh", "fish", "nu"), lat=("lan", "150", "300"), helper=("nohelper", "helper"), scenarios=("p_exec", "p_tinypath"))
 def c_path_detect(ctx, r, arm):
     """`cd` into a remote fixture directory, then type a subdirectory's name (no Tab, no Enter): the remote shell pushed its bounded cwd listing with the prompt
     (hop=cwd_listing, #1801: ids and counts only, never a name) and the app detects the typed word from it (hop=path_detect source=pushed), instantly, from the
@@ -318,7 +318,7 @@ def c_path_detect(ctx, r, arm):
 
 
 # ------------------------------------------------------------------ 3. git chips
-@lab_case("chips", shells=("bash", "zsh"), lat=("lan", "150"), helper=("nohelper", "helper"))
+@lab_case("chips", shells=("bash", "zsh", "fish", "nu"), lat=("lan", "150"), helper=("nohelper", "helper"))
 def c_chips(ctx, r, arm):
     """In a git directory on the remote the branch chip is on screen (OCR) and the app made at most ONE batched side call per prompt (exec channels in the sshd
     log; with the helper it may make none)."""
@@ -429,7 +429,7 @@ def c_enter_start(ctx, r, arm):
 
 
 # ------------------------------------------------------------------ 5. dropped / reset / stalled connections
-@lab_case("ssh_drop_reconnect", modes=("terminal",), shells=("bash", "zsh"), lat=("lan", "150"), helper=("nohelper", "helper"), faults=("rst", "stall10"))
+@lab_case("ssh_drop_reconnect", modes=("terminal",), shells=("bash", "zsh", "nu"), lat=("lan", "150"), helper=("nohelper", "helper"), faults=("rst", "stall10"))
 def c_lab_drop(ctx, r, arm):
     """The ssh_drop_reconnect body (the escape, escape-at-connect with and without Enter, kill -9 of the remote shell) against the lab, plus two network faults
     the same-machine sshd cannot make: the server RESETS the connection (rst: the pane must return to a local prompt, a reconnect must work) and the server STALLS
@@ -461,7 +461,7 @@ def c_lab_drop(ctx, r, arm):
 
 
 # ------------------------------------------------------------------ 6. Ctrl-C bursts (#1798 / #1672)
-@lab_case("ctrl_c_no_esc_i", shells=("bash", "zsh", "fish"), lat=("lan", "150"), helper=("nohelper", "helper"))
+@lab_case("ctrl_c_no_esc_i", shells=("bash", "zsh", "fish", "nu"), lat=("lan", "150"), helper=("nohelper", "helper"))
 def c_ctrl_c_no_esc_i(ctx, r, arm):
     """#1798/#1672: `sleep 30`, then Ctrl-C x1/x2/x3 at gaps 0/50/200 ms, then a typed echo. Per round: the effect file is exact, the shell received exactly two
     commands (the sleep and the echo), the prompt log grew by one per command (bash exact; zsh at least), no ESC-i reached the shell (rec.log has no \\x1bi),
@@ -553,7 +553,7 @@ def c_helper_install(ctx, r, arm):
     finish_remote(ctx, r)
 
 # ------------------------------------------------------------------ 9. The "shell mode" chip (Wave 1.5, wording changed by Wave H parity P0)
-@lab_case("no_helper_chip", shells=("bash", "zsh"), lat=("lan",), helper=("nohelper",), modes=("terminal",))
+@lab_case("no_helper_chip", shells=("bash", "zsh", "fish", "nu", "pwsh", "dash", "ash", "rbash"), lat=("lan",), helper=("nohelper",), modes=("terminal",))
 def c_no_helper_chip(ctx, r, arm):
     """A Phosphorized ssh session WITHOUT the remote helper shows the small, informational chip "shell mode" (OCR). It never blocks: a command
     typed right after connecting still runs once, and the chip is not an error banner (no 'ERROR' text next to it)."""

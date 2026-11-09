@@ -9,13 +9,16 @@
 //! * [`frame`]: the framed output envelope (sentinel-delimited sections plus an exit code).
 //! * [`shell_kind`]: [`ShellKind`] and the `sh -c` wrapping a non-POSIX login shell needs.
 //! * [`base64`]: the base64 codec and the host base64 tool probe (binary-safe transfer).
+//! * [`git`]: git argv builders, parsers and algorithms over a `GitRunner` (P5).
 //! * [`predicates`]: "may this command change HEAD / the cwd", the refresh-coordinator inputs.
 //! * [`read`]: batch file reads (`ReadFileContext`), shared by the helper and the shell backend.
 //!
 //! Wave H, P0.
 
 pub mod base64;
+pub mod chunk;
 pub mod frame;
+pub mod git;
 pub mod predicates;
 pub mod read;
 pub mod shell_kind;

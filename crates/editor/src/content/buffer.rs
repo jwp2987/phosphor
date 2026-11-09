@@ -4563,15 +4563,10 @@ impl Buffer {
     pub fn replace_all(&mut self, text: impl AsRef<str>, ctx: &mut ModelContext<Self>) {
         // Wave P (#1340) measurement hook: where a big load's resident memory goes, stage by
         // stage. Numbers only, debug level, and only for a text of 1 MB or more.
-        let stage_log = text.as_ref().len() >= 1_000_000
-            && log::log_enabled!(target: "editor_memory", log::Level::Debug);
+        let stage_log = text.as_ref().len() >= 1_000_000 && load_stage_logging_enabled();
         let rss_stage = |stage: &str| {
             if stage_log {
-                log::debug!(
-                    target: "editor_memory",
-                    "editor_memory load_stage stage={stage} rss_kb={}",
-                    load_stage_rss_kb()
-                );
+                log_load_stage(stage);
             }
         };
         rss_stage("start");
@@ -6138,11 +6133,75 @@ pub(super) enum BoundaryEdge {
 }
 
 #[cfg(test)]
+mod load_stage_format_tests {
+    use super::format_load_stage;
+
+    #[test]
+    fn load_stage_line_carries_stage_fields_and_time() {
+        let line = format_load_stage("layout_tasks", "rss_kb=100 ws_kb=100 private_kb=90", 1234);
+        assert_eq!(
+            line,
+            "editor_memory load_stage stage=layout_tasks rss_kb=100 ws_kb=100 private_kb=90 t=1234"
+        );
+    }
+}
+
+#[cfg(test)]
 #[path = "buffer_test.rs"]
 pub mod tests;
 
-/// Resident set size in KiB for the `editor_memory load_stage` log lines (Linux: `/proc/self/statm`;
-/// other platforms: -1). Log use only.
+/// Per-platform memory reader for the `editor_memory load_stage` lines: returns the `key=value`
+/// fields to print (the app registers one that knows Windows working set / private bytes and the
+/// macOS footprint, see `set_load_stage_probe`). Log use only.
+pub type LoadStageProbe = fn() -> String;
+
+static LOAD_STAGE_PROBE: std::sync::OnceLock<LoadStageProbe> = std::sync::OnceLock::new();
+
+/// Registers the platform memory reader used by [`log_load_stage`]. First call wins.
+pub fn set_load_stage_probe(probe: LoadStageProbe) {
+    let _ = LOAD_STAGE_PROBE.set(probe);
+}
+
+/// Whether `editor_memory` debug logging is on (the only condition under which load stages cost
+/// anything).
+pub fn load_stage_logging_enabled() -> bool {
+    log::log_enabled!(target: "editor_memory", log::Level::Debug)
+}
+
+/// The memory fields of one `load_stage` line: the registered probe's, else (Linux) the resident
+/// set from `/proc/self/statm`, else `rss_kb=-1`.
+fn load_stage_fields() -> String {
+    if let Some(probe) = LOAD_STAGE_PROBE.get() {
+        return probe();
+    }
+    format!("rss_kb={}", load_stage_rss_kb())
+}
+
+/// `editor_memory load_stage stage=<stage> <fields> t=<epoch ms>`; `t` lets a run order the stages
+/// against the `input_order` lines.
+pub(crate) fn format_load_stage(stage: &str, fields: &str, epoch_ms: u128) -> String {
+    format!("editor_memory load_stage stage={stage} {fields} t={epoch_ms}")
+}
+
+/// Logs one `editor_memory load_stage` line (debug, target `editor_memory`). Callers gate the
+/// call on [`load_stage_logging_enabled`] (and a size threshold) so it costs nothing when off.
+pub fn log_load_stage(stage: &str) {
+    if !load_stage_logging_enabled() {
+        return;
+    }
+    let epoch_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    log::debug!(
+        target: "editor_memory",
+        "{}",
+        format_load_stage(stage, &load_stage_fields(), epoch_ms)
+    );
+}
+
+/// Resident set size in KiB (Linux: `/proc/self/statm`; other platforms: -1 unless a probe is
+/// registered). Log use only.
 fn load_stage_rss_kb() -> i64 {
     #[cfg(target_os = "linux")]
     {

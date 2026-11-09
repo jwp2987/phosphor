@@ -569,6 +569,16 @@ impl EditDelta {
         app: &AppContext,
     ) -> LaidOutRenderDelta {
         let hidden_ranges = hidden_ranges.unwrap_or_default();
+        // #1340 measurement: memory stages of a file-sized layout (debug `editor_memory` target
+        // only; one bool when off).
+        let stage_log = self.new_lines.len() >= LAZY_LAYOUT_MIN_BLOCKS
+            && super::buffer::load_stage_logging_enabled();
+        let stage = |name: &str| {
+            if stage_log {
+                super::buffer::log_load_stage(name);
+            }
+        };
+        stage("layout_start");
 
         // old_offset is in the same 1-indexed coordinate system as hidden ranges.
         let mut current_offset = (self.old_offset.start).max(CharOffset::from(1));
@@ -600,6 +610,7 @@ impl EditDelta {
                 }
             })
             .collect();
+        stage("layout_tasks_created");
 
         let last_task = layout_tasks.len().saturating_sub(1);
 
@@ -665,11 +676,16 @@ impl EditDelta {
                 has_trailing_newline = Some(trailing_newline);
             }
             chunk_start += chunk_len;
+            if stage_log {
+                stage(&format!("layout_chunk_done start={chunk_start}"));
+            }
         }
 
         layout.set_dehydrate_paragraphs(false);
+        stage("layout_chunks_done");
         if let Some(parker) = parker {
             block_items = parker.finish();
+            stage("parker_finished");
         }
 
         // Iterate through block_items, and collapse adjacent Hidden items.
@@ -696,7 +712,9 @@ impl EditDelta {
 
         let mut block_items = block_items;
         if dehydrate {
+            stage("measure_widest_start");
             measure_widest_dehydrated(&mut block_items, layout);
+            stage("measure_widest_done");
         }
 
         LaidOutRenderDelta {

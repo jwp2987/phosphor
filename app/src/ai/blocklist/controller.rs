@@ -2030,6 +2030,7 @@ impl BlocklistAIController {
         // every later submit. The signal is the read landing; this only covers it never coming.
         ctx.spawn(
             async move {
+                // give-up-net: 30 s give-up for a hung attachment read: that submit is failed with a notification (nothing written to any pty)
                 warpui::r#async::Timer::after(attachment_read_give_up()).await;
             },
             move |me, _, ctx| me.give_up_attachment_read(seq, file_names, ctx),
