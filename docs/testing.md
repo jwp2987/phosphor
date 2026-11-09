@@ -2081,7 +2081,7 @@ the last user text) take a fault: `status` (code, optional `Retry-After`), `disc
 Oracles: `fake.requests`, `fake.fresh` (each prompt the app really sent), `fake.fired`, `fake.aborted`.
 
 **#1831 model failures** (all platforms; the fake runs on the host): `agent_fault_429` (Retry-After 1 on every try), `agent_fault_500`, `agent_fault_disconnect`
-(no retry once output was seen), `agent_fault_down` (connection refused), `agent_fault_slow_cancel` (30 s first-token delay, Ctrl-C within 5 s, the connection is
+(no verbatim retry once output was seen; the app may RESUME once, so `success` after `recovery=resume` and 2 requests also pass; `hop=turn` logs changes only and a new conversation starts InProgress, so `agent_fault_slow_cancel` reads no line as in progress; 429/5xx `ErrorStatus` and the exhausted-retry wrapper log the final note at WARN, a 4xx stays ERROR), `agent_fault_down` (connection refused), `agent_fault_slow_cancel` (30 s first-token delay, Ctrl-C within 5 s, the connection is
 hung up), `agent_fault_queued_rows` (two `/queue` rows behind a failing reply). Oracles: `hop=turn` ends in `error` / `cancelled` / `success`, never `in_progress`; no
 `hop=agent_action` left open; the app log has the failure line (`[byop] open stream failed | stream chunk error`) and ERROR lines stay inside the fuzzer's allowance
 (`oracle.rs error_allowance`: 2 per failing chain, only the `[byop]` failure kinds); no request on its own after the turn (no endless retry); the re-sent prompt

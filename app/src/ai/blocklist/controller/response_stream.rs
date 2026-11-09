@@ -1333,8 +1333,8 @@ impl ResponseStream {
                     "MultiAgent request failed after {} recovery attempts",
                     self.recovery.attempts_used()
                 ));
-                if e.is_expected_provider_failure() {
-                    // an unreachable model is the user's environment, already shown in the conversation: not an ERROR (agent_fault_down, round 6)
+                if matches!(action, RecoveryAction::Resume) || e.is_expected_provider_failure() {
+                    // a failure that is being recovered (resume scheduled) is not final, and an unreachable or throttling model is the user's environment, already shown in the conversation: neither is an ERROR (agent_fault_down, agent_fault_disconnect)
                     log::warn!("{failure:#}");
                 } else {
                     report_error!(failure);

@@ -186,7 +186,20 @@ impl AIApiError {
     /// (`PreOutputRecoveryExhausted`). That is a condition of the user's environment which the UI already reports in the
     /// conversation, not a defect in Phosphor: the final failure note is logged at WARN, so an ERROR line keeps meaning "a bug".
     pub fn is_expected_provider_failure(&self) -> bool {
-        matches!(self, AIApiError::Other(error) if error.downcast_ref::<PreOutputRecoveryExhausted>().is_some())
+        match self {
+            AIApiError::Other(error) => {
+                error.downcast_ref::<PreOutputRecoveryExhausted>().is_some()
+            }
+            // The provider itself answered "not now": throttling, timeout, or a server fault. A 4xx other than
+            // 408/429 (400/401/403/404...) is our request or the user's configuration, and stays an ERROR.
+            AIApiError::ErrorStatus(status, _, _) => {
+                *status == http::StatusCode::REQUEST_TIMEOUT
+                    || *status == http::StatusCode::TOO_MANY_REQUESTS
+                    || status.is_server_error()
+            }
+            AIApiError::ServerOverloaded => true,
+            _ => false,
+        }
     }
 
     pub fn is_retryable(&self) -> bool {
@@ -242,6 +255,24 @@ mod tests {
         assert!(down.is_expected_provider_failure());
         assert!(!AIApiError::NoContextFound.is_expected_provider_failure());
         assert!(!AIApiError::Other(anyhow::anyhow!("a real bug")).is_expected_provider_failure());
+    }
+
+    #[test]
+    fn provider_throttling_and_server_faults_are_expected_but_client_errors_are_not() {
+        let status = |code: u16| {
+            AIApiError::ErrorStatus(
+                http::StatusCode::from_u16(code).unwrap(),
+                String::new(),
+                None,
+            )
+        };
+        for code in [408, 429, 500, 502, 503, 504] {
+            assert!(status(code).is_expected_provider_failure(), "{code}");
+        }
+        for code in [400, 401, 403, 404, 422] {
+            assert!(!status(code).is_expected_provider_failure(), "{code}");
+        }
+        assert!(AIApiError::ServerOverloaded.is_expected_provider_failure());
     }
 
     #[test]
