@@ -7330,8 +7330,12 @@ pub async fn generate_byop_output(
             },
         )
         .await;
+        // Time the read-ahead already spent waiting for the first real event: it counts toward
+        // the same first-event window, so the window is not spent twice.
+        let mut first_wait_used = std::time::Duration::ZERO;
         let mut sdk_stream = match recovery {
             Ok(opened) => {
+                first_wait_used = opened.waited;
                 log::info!(
                     "[byop] stream opened OK (HTTP request accepted; retries={} \
                      dropped_messages={})",
@@ -7342,6 +7346,7 @@ pub async fn generate_byop_output(
             }
             Err(failure) => {
                 let note = failure.user_note();
+                let exhausted = failure.recovery_exhausted();
                 let mapped = map_genai_error(failure.error);
                 log::error!(
                     "[byop] open stream failed: {}",
@@ -7354,7 +7359,17 @@ pub async fn generate_byop_output(
                     message.push_str("\n\n");
                     message.push_str(&note);
                 }
-                yield Err(Arc::new(byop_error_to_api_error(&mapped, message)));
+                let api_error = byop_error_to_api_error(&mapped, message);
+                // The in-stream layer already retried (or trimmed); the outer recovery layer
+                // must not repeat it (a dead provider would get 4 x 4 requests).
+                let api_error = if exhausted {
+                    AIApiError::Other(anyhow::Error::new(
+                        crate::ai::api_error::PreOutputRecoveryExhausted(api_error.to_string()),
+                    ))
+                } else {
+                    api_error
+                };
+                yield Err(Arc::new(api_error));
                 return;
             }
         };
@@ -7465,7 +7480,14 @@ pub async fn generate_byop_output(
                         BYOP_STREAM_FIRST_EVENT_TIMEOUT_ENV,
                     )
                 };
-                let idle = warpui::r#async::Timer::after(active_timeout);
+                let wait = if received_real_event {
+                    active_timeout
+                } else {
+                    active_timeout
+                        .saturating_sub(std::mem::take(&mut first_wait_used))
+                        .max(std::time::Duration::from_millis(1))
+                };
+                let idle = warpui::r#async::Timer::after(wait);
                 futures::pin_mut!(next, idle);
                 match futures::future::select(next, idle).await {
                     futures::future::Either::Left((item, _)) => item,

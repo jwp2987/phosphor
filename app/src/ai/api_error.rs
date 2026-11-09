@@ -58,6 +58,15 @@ pub(crate) fn parse_retry_after(
     Some(delay.min(MAX_RETRY_AFTER))
 }
 
+/// A BYOP request that failed before any output after the in-stream recovery
+/// (`agent_providers::stream_recovery`) had already retried it on its 2/4/8 s schedule, or had
+/// found the prompt too long even after trimming. The outer recovery layer must not retry such an
+/// error again (a dead provider would get 4 x 4 requests); it carries the original message.
+/// Resuming after output is a different path and is not affected.
+#[derive(thiserror::Error, Debug)]
+#[error("{0}")]
+pub struct PreOutputRecoveryExhausted(pub String);
+
 #[derive(thiserror::Error, Debug)]
 pub enum AIApiError {
     #[error("Request failed due to lack of AI quota.")]
@@ -195,6 +204,7 @@ impl AIApiError {
             | AIApiError::Stream { .. } => true,
             AIApiError::Other(error) => {
                 error.downcast_ref::<BlockedByopReadinessError>().is_none()
+                    && error.downcast_ref::<PreOutputRecoveryExhausted>().is_none()
                     && error
                         .downcast_ref::<crate::ai::agent_providers::KeyringReadFailed>()
                         .is_none()

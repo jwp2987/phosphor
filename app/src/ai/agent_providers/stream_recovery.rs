@@ -266,6 +266,9 @@ pub(crate) fn tool_pairs_are_intact(req: &ChatRequest) -> bool {
 /// A stream that survived the first read.
 pub(crate) struct Opened {
     pub stream: SdkStream,
+    /// How long the final attempt's read-ahead already waited for its first real event; the send
+    /// loop subtracts it from the first-event window so the window is not spent twice.
+    pub waited: Duration,
     pub retries: usize,
     pub compaction: Option<Compaction>,
 }
@@ -281,6 +284,12 @@ pub(crate) struct OpenFailure {
 }
 
 impl OpenFailure {
+    /// The retry schedule ran out, or the prompt stayed too long after trimming: the outer
+    /// recovery layer must not repeat any of it.
+    pub fn recovery_exhausted(&self) -> bool {
+        self.overflow_unresolved || self.waits.len() >= RETRY_SCHEDULE.len()
+    }
+
     /// A sentence for the user about what was tried, or `None` when nothing was.
     pub fn user_note(&self) -> Option<String> {
         if self.overflow_unresolved {
@@ -320,11 +329,12 @@ impl OpenFailure {
 async fn peek_first_event<T, TFut>(
     mut stream: SdkStream,
     timeout: &mut T,
-) -> genai::Result<SdkStream>
+) -> genai::Result<(SdkStream, Duration)>
 where
     T: FnMut() -> TFut,
     TFut: Future<Output = ()>,
 {
+    let started = instant::Instant::now();
     let mut read: Vec<ChatStreamEvent> = Vec::new();
     loop {
         let next = stream.next();
@@ -342,8 +352,9 @@ where
             futures::future::Either::Left((None, _)) | futures::future::Either::Right(_) => break,
         }
     }
-    Ok(Box::pin(
-        futures::stream::iter(read.into_iter().map(Ok)).chain(stream),
+    Ok((
+        Box::pin(futures::stream::iter(read.into_iter().map(Ok)).chain(stream)),
+        started.elapsed(),
     ))
 }
 
@@ -380,9 +391,10 @@ where
             Err(e) => Err(e),
         };
         let error = match attempt {
-            Ok(stream) => {
+            Ok((stream, waited)) => {
                 return Ok(Opened {
                     stream,
+                    waited,
                     retries: waits.len(),
                     compaction,
                 });

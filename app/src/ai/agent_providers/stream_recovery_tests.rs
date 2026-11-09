@@ -408,3 +408,46 @@ fn the_recorded_roles_are_what_the_seam_reports() {
     let first = &handle.requests()[0];
     assert!(first.messages.iter().any(|m| m.role == RecordedRole::Tool));
 }
+
+#[test]
+fn a_dead_provider_makes_four_requests_and_the_error_is_not_retried_again() {
+    let handle = install(
+        "recovery-dead",
+        fail_then_ok(
+            SeamError::Http {
+                status: 503,
+                body: "down".to_owned(),
+            },
+            usize::MAX,
+        ),
+    );
+    let out = run("recovery-dead", long_conversation(), None);
+    let failure = out.result.err().expect("gives up");
+    // One send plus the three scheduled retries, and nothing more.
+    assert_eq!(handle.request_count(), 4);
+    assert!(failure.recovery_exhausted());
+    // The error the outer layer sees is not retryable, so it adds no requests of its own.
+    let wrapped = crate::ai::api_error::AIApiError::Other(anyhow::Error::new(
+        crate::ai::api_error::PreOutputRecoveryExhausted("down".to_owned()),
+    ));
+    assert!(!wrapped.is_retryable());
+}
+
+#[test]
+fn a_failure_that_did_not_use_the_schedule_is_not_marked_exhausted() {
+    let _handle = install(
+        "recovery-401-flag",
+        fail_then_ok(
+            SeamError::Http {
+                status: 401,
+                body: "bad key".to_owned(),
+            },
+            usize::MAX,
+        ),
+    );
+    let failure = run("recovery-401-flag", long_conversation(), None)
+        .result
+        .err()
+        .unwrap();
+    assert!(!failure.recovery_exhausted());
+}
