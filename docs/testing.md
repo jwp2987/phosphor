@@ -2129,7 +2129,7 @@ Candidate fixes (#1858 loading-text precedence, #1859 preprocess abandonment, #1
 unit tests `preparing_question_tests` (common.rs), `abandon_pending_unparks_later_batches` / `abandoned_batch_late_result_is_dropped` / `abandon_all_returns_parked_actions`
 (preprocess_tests.rs). Fuzzer oracle I1 gained `PendingStage::Parked` (a finished preprocess batch with no Pending batch ahead that never became pending/blocked) and corpus
 `hang1851c1_multi_tool_slow_command_trailing_ask`, `hang1851c2_hung_command_then_ask_stop` (the hung-diff stand-in: the fake DSL has no apply_file_diffs, a never-ending command
-plays the hung earlier action), `hang1851c4_steer_during_ask_placeholder`.
+plays the hung earlier action; the actor presses the Stop button, not Ctrl-C: a first Ctrl-C only interrupts the command and the conversation resumes with its result, which would leave the same-turn ask blocked by design, as `ctrl_c_during_never_ending_command` shows), `hang1851c4_steer_during_ask_placeholder`.
 Empty call id (#1851): the End event's captured copy of an empty-id call is re-keyed to the id the stream invented for its chunk (`assign_empty_call_ids`, unit `empty_ids_take_the_ids_invented_for_the_chunks_in_order`); corpus `hang1851_ask_empty_id` now sees one call and one result.
 Owner decision 2026-11-09 (#1859): earlier-turn actions that finished preprocessing but were parked behind an abandoned batch are CANCELLED at the next turn's `queue_actions`
 (a `cancelled` result each, no execution, no FinishedAction event); unit `stale_parked_command_is_released_for_cancel_not_queued_with_new_turn`. The Parked oracle and the
