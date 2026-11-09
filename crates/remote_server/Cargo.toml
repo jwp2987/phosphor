@@ -6,6 +6,18 @@ authors = ["Warp Team <dev@warp.dev>"]
 publish.workspace = true
 license.workspace = true
 
+[lib]
+name = "remote_server"
+path = "src/lib.rs"
+
+# The helper the app uploads to ssh hosts (Wave H, #1804). Build:
+#   cargo build -p remote_server --profile release-remote-helper \
+#     --no-default-features --features daemon --bin phosphor-remote
+[[bin]]
+name = "phosphor-remote"
+path = "src/bin/phosphor-remote.rs"
+required-features = ["daemon"]
+
 [features]
 # The app's side: manager model, transport, client, install/setup and the repo_metadata
 # conversions. Everything that names warpui, warp_core, warp_util or repo_metadata.
