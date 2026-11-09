@@ -347,8 +347,8 @@ dead — until issue #632.
 | `warpify.ssh.obscure_keystroke_timing` | Keep OpenSSH's 20 ms keystroke tick (`ObscureKeystrokeTiming`); `false` turns it off when your ssh config does not set it. New tabs only | `true` | settings file only |
 | `warpify.ssh.split_inherits_ssh` | Opt-in: splitting an SSH pane opens the new pane on the same host and remote directory | `false` | same page → *Splits from SSH sessions open on the same host* |
 | `warpify.ssh.ssh_extension_install_mode` | `always_ask` / `always_install` / `never_install` | `always_ask` | same page → *Install SSH extension* |
-| `warpify.ssh.remote_helper_allowed_hosts` | list of `user@host` | `[]` | filled by ticking *Don't ask me this again* on Install: that host gets the `phosphor-remote` helper without a prompt |
-| `warpify.ssh.remote_helper_denied_hosts` | list of `user@host` | `[]` | filled by ticking it on *Continue without*: that host never gets (or updates) the helper. A host in both lists is denied |
+| `warpify.ssh.remote_helper_allowed_hosts` | list of `user@host` | `[]` | filled by ticking *Don't ask me again for this host* on Install: that host gets the `phosphor-remote` helper without a prompt |
+| `warpify.ssh.remote_helper_denied_hosts` | list of `user@host` | `[]` | filled by ticking the same box on *Continue without*: that host never gets (or updates) the helper. A host in both lists is denied |
 | `warpify.ssh.enable_legacy_ssh_wrapper` | **Deprecated.** Setting it `false` runs a one-time migration that disables `enable_ssh_warpification` | `true` | do not use |
 | `terminal.input.honor_ps1` | Use your shell's PS1 instead of the Phosphor input box | `false` | Settings → Appearance → Input → *Input type* |
 | `appearance.blocks.should_show_bootstrap_block` | Show the bootstrap script's block | `false` | TOML; App menu when debug features are on |
