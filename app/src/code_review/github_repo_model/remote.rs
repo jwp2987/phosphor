@@ -184,6 +184,17 @@ impl RemoteGitHubRepoModel {
         }
     }
 
+    /// The backend serving GitHub info now, as the word the log lines and the lab use.
+    fn source(&self, ctx: &warpui::AppContext) -> &'static str {
+        match RemoteServerManager::as_ref(ctx)
+            .backend_for_host(&self.remote_path.host_id)
+            .kind(Family::Github)
+        {
+            BackendKind::Helper => "helper",
+            BackendKind::Shell => "shell",
+        }
+    }
+
     /// Replace the stored PR info from a push, emitting `PrInfoChanged` only
     /// when the value moved.
     fn apply_pr_info_push(
@@ -192,6 +203,13 @@ impl RemoteGitHubRepoModel {
         ctx: &mut ModelContext<Self>,
     ) {
         let pr_info = pr_info.map(proto_to_pr_info);
+        log::info!(
+            "hop=gh_chip event=pr source={} pr={}",
+            self.source(ctx),
+            pr_info
+                .as_ref()
+                .map_or_else(|| "none".to_string(), |pr| pr.number.to_string())
+        );
         if self.pr_info != pr_info {
             self.pr_info = pr_info;
             ctx.emit(GitHubRepoEvent::PrInfoChanged);
@@ -206,6 +224,15 @@ impl RemoteGitHubRepoModel {
         ctx: &mut ModelContext<Self>,
     ) {
         let repository_info = repository_info.map(proto_to_repository_info);
+        log::info!(
+            "hop=gh_chip event=repo source={} repo={}",
+            self.source(ctx),
+            if repository_info.is_some() {
+                "some"
+            } else {
+                "none"
+            }
+        );
         if self.repository_info != repository_info {
             self.repository_info = repository_info;
             ctx.emit(GitHubRepoEvent::RepositoryInfoChanged);

@@ -252,6 +252,38 @@ impl RemoteDiffStateModel {
         ctx.emit(DiffStateModelEvent::ConnectionLost);
     }
 
+    /// The backend serving this model's family now, as the word the log lines and the lab use.
+    fn source(&self, ctx: &AppContext) -> &'static str {
+        match RemoteServerManager::as_ref(ctx)
+            .backend_for_host(&self.remote_path.host_id)
+            .kind(Family::DiffState)
+        {
+            BackendKind::Helper => "helper",
+            BackendKind::Shell => "shell",
+        }
+    }
+
+    /// One log line per applied snapshot / delta, for the lab and for diagnosing a stale panel:
+    /// counts and a 32-bit FNV-1a hash per file path only (never the names).
+    fn log_applied(&self, event: &str, paths: &[&str], ctx: &AppContext) {
+        let hashes: Vec<String> = paths
+            .iter()
+            .take(32)
+            .map(|p| {
+                let h = p.bytes().fold(2_166_136_261u32, |h, b| {
+                    (h ^ u32::from(b)).wrapping_mul(16_777_619)
+                });
+                format!("{h:08x}")
+            })
+            .collect();
+        log::info!(
+            "hop=diff_state event={event} source={} files={} path_hash=[{}]",
+            self.source(ctx),
+            paths.len(),
+            hashes.join(",")
+        );
+    }
+
     fn apply_snapshot(
         &mut self,
         snapshot: &proto::DiffStateSnapshot,
@@ -267,6 +299,12 @@ impl RemoteDiffStateModel {
             }
         };
         let previous_branch = self.get_current_branch_name();
+        let listed: Vec<&str> = snapshot
+            .diffs
+            .iter()
+            .flat_map(|d| d.files.iter().map(|f| f.file_path.as_str()))
+            .collect();
+        self.log_applied("snapshot", &listed, ctx);
 
         self.state = match decoded.state {
             DiffState::Loaded(data) => InternalRemoteDiffState::Loaded(data),
@@ -346,6 +384,7 @@ impl RemoteDiffStateModel {
         if let Some(metadata) = decoded.metadata {
             self.metadata = Some(metadata);
         }
+        self.log_applied("delta", &[delta.file_path.as_str()], ctx);
         // Fold the per-file diff into the cached `GitDiffData` (upsert by path,
         // or remove when the file no longer has changes) so `Self::get()`
         // actually returns the updated diff instead of the pre-delta snapshot.

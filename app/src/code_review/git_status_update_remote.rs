@@ -171,6 +171,23 @@ impl RemoteGitRepoStatusModel {
         };
         match proto_to_git_status_metadata(metadata) {
             Ok(status) => {
+                let source = match RemoteServerManager::as_ref(ctx)
+                    .backend_for_host(&self.remote_path.host_id)
+                    .kind(Family::GitStatus)
+                {
+                    BackendKind::Helper => "helper",
+                    BackendKind::Shell => "shell",
+                };
+                // Counts only, never branch names or paths.
+                log::info!(
+                    "hop=git_chip source={source} files={} added={} removed={} ahead={} behind={} upstream={}",
+                    status.stats_against_head.files_changed,
+                    status.stats_against_head.total_additions,
+                    status.stats_against_head.total_deletions,
+                    status.branch_tracking_status.ahead,
+                    status.branch_tracking_status.behind,
+                    u8::from(status.branch_tracking_status.upstream.is_some()),
+                );
                 let new_metadata = Some(status);
                 let should_emit = super::git_status_update::should_emit_metadata_changed(
                     &self.metadata,
