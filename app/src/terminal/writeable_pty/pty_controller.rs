@@ -1044,7 +1044,11 @@ impl<T: EventLoopSender> PtyController<T> {
     /// hand-off can vouch that no typeahead line is queued ahead of a write. Returns whether the
     /// line editor was activated (its `Active` event ran the decision).
     fn activate_remembered_ready_signal(&mut self, ctx: &mut ModelContext<Self>) -> bool {
-        if !self.line_editor_status.as_ref(ctx).signal_activation_pending() {
+        if !self
+            .line_editor_status
+            .as_ref(ctx)
+            .signal_activation_pending()
+        {
             return false;
         }
         if FeatureFlag::TypeaheadHandoff.is_enabled()
