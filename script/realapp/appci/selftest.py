@@ -3748,6 +3748,10 @@ def agent_interactive_oracles():
     assert 'log_hop("alt_screen_enter"' in src("app/src/terminal/model/terminal_model.rs") and 'log_hop("fullscreen_handover"' in src("app/src/terminal/view.rs")
     assert AI.hop_count("INFO input_order hop=alt_screen_enter  t=1\nhop=alt_screen_enter  t=2", AI.ALT_ENTER_RE) == 2
     assert AI.hop_count("hop=fullscreen_handover agent_in_control=0 t=1", AI.FS_HANDOVER_RE) == 1 and AI.hop_count("hop=fullscreen_handover agent_in_control=1 t=1", AI.FS_HANDOVER_RE) == 0
+    # a real Round 7 run: the agent's wait-for-completion vim has no control state, so only the pty-owned hand_route proves the keys
+    hr = "hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=true enters_written=1 bytes=\"e\""
+    assert AI.fullscreen_keys_proven("x hop=alt_screen_enter  t=1\n" + hr) and not AI.fullscreen_keys_proven(hr) and not AI.fullscreen_keys_proven("hop=alt_screen_enter\nhop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=false")
+    assert AI.fullscreen_keys_proven("hop=fullscreen_handover agent_in_control=0 t=1") and not AI.fullscreen_keys_proven("")
     names = {c["name"] for c in cases.CASES}
     # the app's real hand-over line (cli_controller.rs switch_control_to_user), a prompt-shape line, and the non-hand-over lines seen in a real run
     assert AI.handover_seen("2026-11-09T20:03:10Z [INFO] hop=handover action=call_abc123 reason=blocked_on_input\n")
