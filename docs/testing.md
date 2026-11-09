@@ -3478,7 +3478,7 @@ Table: held bytes exact, nothing written, nothing in the editor); `input_queue/s
 ### #1809: the ssh connect window arms and ends on events
 `SSH_CONNECT_SILENCE_CEILING` is replaced. The window no longer arms on `block age < 15 s` (a first
 key typed late still finds the window open); it arms on the preexec/submit event, and not at all
-for a block whose interactive latch already fired (ssh owned the tty before any window existed: an
+for a block whose ownership event (`CommandBecameInteractive`) arrived before any window existed (an
 established session is a plain terminal). Where the tty-read probe works there is no clock; on
 probe-less platforms `SSH_CONNECT_NO_PROBE_GIVE_UP` (15 s) remains as a hand-back-only net (compliant
 section of `script/input_path_timers.allow`). Tests (`terminal/view_test.rs`):
