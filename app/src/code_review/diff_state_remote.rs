@@ -12,11 +12,20 @@
 //! `RemoteServerManagerEvent::DiffState*Received` and are folded into the stored
 //! state. Changing the active [`DiffMode`] unsubscribes the old `(repo, mode)`
 //! pair and subscribes the new one.
+//!
+//! The request goes through the host's [`RoutedBackend`](remote_server::backend::RoutedBackend):
+//! the helper when it serves diff state, otherwise the shell backend over the session's
+//! out-of-band channel. A shell-backed model has no subscription, so nothing pushes: it asks again
+//! for a fresh snapshot on `RemoteServerManagerEvent::ShellRefresh` (the prompt came back, the cwd
+//! moved, the app wrote), one request in flight at a time with a dirty flag, never on a timer. With
+//! a helper only an explicit user refresh asks again; the helper pushes the rest.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use remote_server::HostId;
+use remote_server::backend::refresh::{PrecmdPolicy, RefreshCoordinator, RefreshDecision};
+use remote_server::backend::{BackendKind, Family, RemoteFeatures as _};
 use remote_server::manager::{RemoteServerManager, RemoteServerManagerEvent};
 use warpui::{AppContext, ModelContext, SingletonEntity};
 
@@ -50,6 +59,8 @@ pub struct RemoteDiffStateModel {
     mode: DiffMode,
     state: InternalRemoteDiffState,
     metadata: Option<DiffMetadata>,
+    /// One refresh in flight, one more queued (shell-backed models only; no timer).
+    refresh: RefreshCoordinator,
 }
 
 impl warpui::Entity for RemoteDiffStateModel {
@@ -70,6 +81,7 @@ impl RemoteDiffStateModel {
             mode,
             state: InternalRemoteDiffState::Loading,
             metadata: None,
+            refresh: RefreshCoordinator::new(PrecmdPolicy::EveryPrompt),
         };
         model.spawn_get_diff_state(ctx);
         model
@@ -88,50 +100,65 @@ impl RemoteDiffStateModel {
         &self.remote_path
     }
 
-    /// Issues a `GetDiffState` subscription RPC for the current `(repo, mode)`
-    /// over the host's connected session. The initial snapshot arrives as the
-    /// RPC response; later changes arrive as manager push events.
+    /// Issues a `GetDiffState` for the current `(repo, mode)` through the host's backend: with a
+    /// helper it also subscribes (later changes arrive as manager push events); on the shell it is
+    /// a one-shot read and the model asks again on refresh events.
     fn spawn_get_diff_state(&self, ctx: &mut ModelContext<Self>) {
-        let Some(client) = RemoteServerManager::as_ref(ctx)
-            .client_for_host_with(
-                &self.remote_path.host_id,
-                remote_server::capability::DIFF_STATE,
-            )
-            .cloned()
-        else {
-            // No connected session for the host; leave the model in its current
-            // state. A reconnect (HostConnected) re-subscribes once 4b lands.
+        let backend = RemoteServerManager::as_ref(ctx).backend_for_host(&self.remote_path.host_id);
+        if !backend.is_available(Family::DiffState) {
+            // Nothing can serve it for the host; leave the model in its current state. A
+            // reconnect (HostConnected) re-subscribes.
             return;
-        };
+        }
         let request = proto::GetDiffState {
             repo_path: self.repo_path_string(),
             mode: Some(encode_diff_mode(&self.mode)),
         };
         ctx.spawn(
-            async move { client.get_diff_state(request).await },
-            |me, result, ctx| match result {
-                Ok(response) => me.handle_get_diff_state_response(response, ctx),
-                Err(e) => me.set_error(format!("{e}"), ctx),
+            async move { backend.get_diff_state(request).await },
+            |me, result, ctx| {
+                match result {
+                    Ok(response) => me.handle_get_diff_state_response(response, ctx),
+                    Err(e) => me.set_error(format!("{e}"), ctx),
+                }
+                // A refresh that was queued while this one ran starts now.
+                if me.refresh.finished() {
+                    me.spawn_get_diff_state(ctx);
+                }
             },
         );
     }
 
-    /// Fire-and-forget `UnsubscribeDiffState` for a `(repo, mode)` pair.
+    /// Fire-and-forget `UnsubscribeDiffState` for a `(repo, mode)` pair (the shell arm holds no
+    /// subscription, so only a helper hears it).
     fn spawn_unsubscribe(&self, mode: &DiffMode, ctx: &mut ModelContext<Self>) {
-        let Some(client) = RemoteServerManager::as_ref(ctx)
-            .client_for_host_with(
-                &self.remote_path.host_id,
-                remote_server::capability::DIFF_STATE,
-            )
-            .cloned()
-        else {
-            return;
-        };
         let request = proto::UnsubscribeDiffState {
             repo_path: self.repo_path_string(),
             mode: Some(encode_diff_mode(mode)),
         };
-        client.unsubscribe_diff_state(request);
+        RemoteServerManager::as_ref(ctx)
+            .backend_for_host(&self.remote_path.host_id)
+            .unsubscribe_diff_state(request);
+    }
+
+    /// A refresh event for the host: re-read when the shell serves this model (nothing pushes),
+    /// or when the user asked explicitly.
+    fn handle_shell_refresh(
+        &mut self,
+        event: &remote_server::backend::refresh::RemoteRefreshEvent,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        use remote_server::backend::refresh::RemoteRefreshEvent;
+        let shell_backed = RemoteServerManager::as_ref(ctx)
+            .backend_for_host(&self.remote_path.host_id)
+            .kind(Family::DiffState)
+            == BackendKind::Shell;
+        if !shell_backed && !matches!(event, RemoteRefreshEvent::UserAction) {
+            return;
+        }
+        if self.refresh.on_event(event) == RefreshDecision::Start {
+            self.spawn_get_diff_state(ctx);
+        }
     }
 
     fn handle_get_diff_state_response(
@@ -184,6 +211,11 @@ impl RemoteDiffStateModel {
             RemoteServerManagerEvent::DiffStateFileDeltaReceived { host_id, delta } => {
                 if self.matches(host_id, &delta.repo_path, delta.mode.as_ref()) {
                     self.apply_file_delta(delta, ctx);
+                }
+            }
+            RemoteServerManagerEvent::ShellRefresh { host_id, event } => {
+                if host_id == &self.remote_path.host_id {
+                    self.handle_shell_refresh(event, ctx);
                 }
             }
             RemoteServerManagerEvent::HostDisconnected { host_id } => {

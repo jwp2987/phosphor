@@ -462,6 +462,15 @@ pub enum RemoteServerManagerEvent {
     SessionDeregistered { session_id: SessionId },
 
     // --- Host-scoped events ---
+    /// Something that can have changed the host happened: the prompt came back, the cwd moved,
+    /// the user asked for a refresh, or the app itself just wrote. Models that show the host's
+    /// git state (diff panel, git chip, PR chip) re-read when their family is served by the
+    /// SHELL backend, which nothing pushes for; with a helper they ignore it (except an explicit
+    /// user refresh). `host_id` is the real host or the session's shell-mode stand-in.
+    ShellRefresh {
+        host_id: HostId,
+        event: crate::backend::refresh::RemoteRefreshEvent,
+    },
     /// The first session for this host reached `Connected`. Downstream
     /// features should create per-host models (e.g. `RepoMetadataModel`).
     HostConnected { host_id: HostId },
@@ -900,6 +909,30 @@ impl SingletonEntity for RemoteServerManager {}
 
 impl RemoteServerManager {
     pub fn new(ctx: &mut ModelContext<Self>) -> Self {
+        let router = crate::backend::FeatureRouter::from_env();
+        // The app's own writes (a save, a commit, a stage) go through the backend, which tells the
+        // router; hand that to the models as a refresh event on the model thread.
+        {
+            // A Mutex makes the pair `Sync` whatever the spawner is, as the listener must be.
+            let handles = std::sync::Mutex::new((ctx.spawner(), ctx.background_executor().clone()));
+            router.subscribe_refresh(std::sync::Arc::new(move |host, event| {
+                let host_id = host.clone();
+                let event = event.clone();
+                let (spawner, executor) = {
+                    let guard = handles.lock().unwrap_or_else(|e| e.into_inner());
+                    (guard.0.clone(), guard.1.clone())
+                };
+                executor
+                    .spawn(async move {
+                        let _ = spawner
+                            .spawn(move |_me, ctx| {
+                                ctx.emit(RemoteServerManagerEvent::ShellRefresh { host_id, event });
+                            })
+                            .await;
+                    })
+                    .detach();
+            }));
+        }
         Self {
             sessions: HashMap::new(),
             host_to_sessions: HashMap::new(),
@@ -919,7 +952,7 @@ impl RemoteServerManager {
             next_speculative_attempt: 0,
             remote_agent_context_snapshots: HashMap::new(),
             client_preferences: crate::client::ClientPreferences::default(),
-            router: crate::backend::FeatureRouter::from_env(),
+            router,
         }
     }
 
@@ -2103,6 +2136,11 @@ impl RemoteServerManager {
         ctx: &mut ModelContext<Self>,
     ) {
         use crate::backend::refresh::{PrecmdPolicy, RefreshCoordinator, RefreshDecision};
+        // The git-state models (diff, chips) decide for themselves whether they are shell-backed.
+        ctx.emit(RemoteServerManagerEvent::ShellRefresh {
+            host_id: self.host_for_session_or_shell_mode(session_id),
+            event: event.clone(),
+        });
         if !self.indexed_root.contains_key(&session_id) {
             return;
         }
