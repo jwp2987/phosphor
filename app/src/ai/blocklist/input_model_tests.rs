@@ -1643,40 +1643,19 @@ fn enter_waits_for_the_verdict_only_for_unclassified_prose() {
     );
 }
 
-/// #1158/#1351: a waiting Enter keeps waiting while the classifier's own compute is within the cap;
-/// past it, a slow verdict is dropped and the Enter submits on the Enter-time rules. It is never
-/// kept in the editor, however long it waited.
+/// #1158/#1351, owner ruling 2026-11-09 (a timer never commits): a waiting Enter has exactly two
+/// outcomes, Submit (the verdict is not pending) and Wait (it is); no amount of compute turns a
+/// pending verdict into a submit. The compute cap is a hand-back net with its own helpers.
 #[test]
-fn enter_verdict_wait_is_bounded_and_never_swallows_the_enter() {
-    use std::time::Duration;
-    let decide = enter_verdict_wait_decision;
-    assert_eq!(decide(false, Duration::ZERO), EnterVerdictWait::Submit);
+fn enter_verdict_wait_is_submit_or_wait_never_a_clock_submit() {
+    assert_eq!(enter_verdict_wait_decision(false), EnterVerdictWait::Submit);
+    assert_eq!(enter_verdict_wait_decision(true), EnterVerdictWait::Wait);
+    // The net is the classifier's CPU, 1 s (coordinator's choice 2026-11-09), only a hand-back.
     assert_eq!(
-        decide(false, Duration::from_secs(60)),
-        EnterVerdictWait::Submit
+        VERDICT_HANDBACK_CPU_CAP,
+        std::time::Duration::from_secs(1),
+        "the net is the classifier's CPU time"
     );
-    assert_eq!(decide(true, Duration::ZERO), EnterVerdictWait::Wait);
-    assert_eq!(
-        decide(true, ENTER_VERDICT_BUDGET - Duration::from_millis(1)),
-        EnterVerdictWait::Wait
-    );
-    assert_eq!(
-        decide(true, ENTER_VERDICT_BUDGET),
-        EnterVerdictWait::SubmitWithoutVerdict
-    );
-    assert_eq!(
-        decide(true, Duration::from_secs(5)),
-        EnterVerdictWait::SubmitWithoutVerdict
-    );
-    // Owner 2026-11-05 ("the app shouldn't need a perfect machine to run on"): 50 ms, raised
-    // from 20 ms, and counted on the classifier's own CPU clock (#1651). Time the classifier
-    // waits off the CPU (a slow filesystem, the model loading) is bounded by the wall ceiling.
-    assert_eq!(
-        ENTER_VERDICT_BUDGET,
-        Duration::from_millis(50),
-        "the budget is the classifier's CPU time"
-    );
-    assert_eq!(ENTER_VERDICT_WALL_CEILING, Duration::from_secs(1));
 }
 
 #[test]
@@ -1797,111 +1776,50 @@ fn a_short_line_without_a_parse_is_classified_from_its_text() {
     );
 }
 
-/// #1651 review: the Enter gives up on the CPU budget OR the wall ceiling, whichever comes first. A
-/// classifier that waits off the CPU (cold filesystem, model loading) is given up on at the 1 s
-/// ceiling though it spent no CPU; one starved of CPU on a loaded machine is waited for up to its
-/// 50 ms of CPU while under the ceiling.
+/// The hand-back cap is the classifier's CPU only: a classifier that waits off the CPU spends
+/// none (the wall-clock backstop owns it) and one starved of CPU is waited for up to its cap. It
+/// grows with the text like the old budget did (#1604), so a 10 MB paste's linear classification
+/// is not handed back while it runs.
 #[test]
-fn enter_verdict_cap_is_the_cpu_budget_or_the_wall_ceiling() {
+fn verdict_handback_cap_is_the_cpu_cap_and_grows_with_the_text() {
     use std::time::Duration;
     let ms = Duration::from_millis;
-    // Off the CPU: no CPU spent, the stages ran 1 s.
-    assert!(!enter_verdict_cap_reached(Duration::ZERO, ms(999), 10));
-    assert!(enter_verdict_cap_reached(Duration::ZERO, ms(1000), 10));
+    assert!(!verdict_handback_cap_reached(ms(999), 10));
+    assert!(verdict_handback_cap_reached(ms(1000), 10));
+    assert!(!verdict_handback_cap_reached(Duration::ZERO, 10));
+    // The timer is armed for the rest of the cap.
     assert_eq!(
-        enter_verdict_wait_decision_at(true, Duration::ZERO, ms(1000), 10),
-        EnterVerdictWait::SubmitWithoutVerdict
+        verdict_handback_cap_remaining(Duration::ZERO, 10),
+        VERDICT_HANDBACK_CPU_CAP
     );
-    // Starved of CPU under the ceiling: waited for until its CPU budget.
-    assert!(!enter_verdict_cap_reached(ms(49), ms(900), 10));
+    assert_eq!(verdict_handback_cap_remaining(ms(980), 10), ms(20));
+    assert_eq!(verdict_handback_cap_remaining(ms(1000), 10), Duration::ZERO);
+    // Growth with the text (#1604).
+    assert_eq!(verdict_handback_cap_for(0), VERDICT_HANDBACK_CPU_CAP);
     assert_eq!(
-        enter_verdict_wait_decision_at(true, ms(49), ms(900), 10),
-        EnterVerdictWait::Wait
-    );
-    assert!(enter_verdict_cap_reached(ms(50), ms(60), 10));
-    // A landed verdict always decides.
-    assert_eq!(
-        enter_verdict_wait_decision_at(false, Duration::ZERO, Duration::from_secs(60), 10),
-        EnterVerdictWait::Submit
-    );
-    // The timer is armed for whichever runs out first.
-    assert_eq!(
-        enter_verdict_cap_remaining(Duration::ZERO, Duration::ZERO, 10),
-        ms(50)
-    );
-    assert_eq!(enter_verdict_cap_remaining(ms(10), ms(980), 10), ms(20));
-    assert_eq!(enter_verdict_cap_remaining(ms(45), ms(100), 10), ms(5));
-    assert_eq!(
-        enter_verdict_cap_remaining(ms(50), ms(100), 10),
-        Duration::ZERO
-    );
-    // The ceiling grows with the text like the CPU budget (#1604): a 10 MB paste's linear
-    // classification is not cut off by it.
-    let ten_mb = 10 * 1024 * 1024;
-    assert_eq!(
-        enter_verdict_wall_ceiling_for(ten_mb),
-        ENTER_VERDICT_WALL_CEILING + large_text_compute_allowance(ten_mb)
-    );
-    assert!(enter_verdict_wall_ceiling_for(ten_mb) > enter_verdict_budget_for(ten_mb));
-    assert!(!enter_verdict_cap_reached(
-        ms(100),
-        Duration::from_secs(3),
-        ten_mb
-    ));
-}
-
-/// #1604: the Enter's compute budget grows with the text it waits for, so a large paste's linear
-/// classification is waited for instead of handed back; a typed line's budget is unchanged.
-#[test]
-fn enter_verdict_budget_grows_with_the_text() {
-    use std::time::Duration;
-    assert_eq!(enter_verdict_budget_for(0), ENTER_VERDICT_BUDGET);
-    assert_eq!(
-        enter_verdict_budget_for(MAX_SYNC_ROUTING_BYTES),
-        ENTER_VERDICT_BUDGET
+        verdict_handback_cap_for(MAX_SYNC_ROUTING_BYTES),
+        VERDICT_HANDBACK_CPU_CAP
     );
     assert_eq!(
         large_text_compute_allowance(MAX_SYNC_ROUTING_BYTES + 4096),
         Duration::from_millis(1)
     );
-    // A paste over the sync cap gets at least the large-paste floor (owner 2026-11-04), from its
-    // first byte over the cap up to the size where the linear allowance passes it.
-    assert_eq!(
-        enter_verdict_budget_for(MAX_SYNC_ROUTING_BYTES + 1),
-        LARGE_PASTE_VERDICT_FLOOR
-    );
-    assert_eq!(enter_verdict_budget_for(21_600), LARGE_PASTE_VERDICT_FLOOR);
     let one_mb = 1024 * 1024;
     assert_eq!(
-        enter_verdict_budget_for(one_mb),
-        ENTER_VERDICT_BUDGET + Duration::from_millis(255)
+        verdict_handback_cap_for(one_mb),
+        VERDICT_HANDBACK_CPU_CAP + Duration::from_millis(255)
     );
     let ten_mb = 10 * one_mb;
     assert!(
-        enter_verdict_budget_for(ten_mb) >= Duration::from_millis(2500)
-            && enter_verdict_budget_for(ten_mb) <= Duration::from_secs(3),
+        verdict_handback_cap_for(ten_mb) >= Duration::from_millis(3400)
+            && verdict_handback_cap_for(ten_mb) <= Duration::from_secs(4),
         "{:?}",
-        enter_verdict_budget_for(ten_mb)
+        verdict_handback_cap_for(ten_mb)
     );
-    // The size-aware decision: a 10 MB paste keeps waiting past the typed-line budget and gives
-    // up only past its own.
-    assert_eq!(
-        enter_verdict_wait_decision_for(true, ENTER_VERDICT_BUDGET, ten_mb),
-        EnterVerdictWait::Wait
-    );
-    assert_eq!(
-        enter_verdict_wait_decision_for(true, enter_verdict_budget_for(ten_mb), ten_mb),
-        EnterVerdictWait::SubmitWithoutVerdict
-    );
-    assert_eq!(
-        enter_verdict_wait_decision_for(false, Duration::from_secs(60), ten_mb),
-        EnterVerdictWait::Submit
-    );
-    // A typed line: identical to the size-less decision.
-    assert_eq!(
-        enter_verdict_wait_decision_for(true, ENTER_VERDICT_BUDGET, 40),
-        enter_verdict_wait_decision(true, ENTER_VERDICT_BUDGET)
-    );
+    assert!(!verdict_handback_cap_reached(
+        VERDICT_HANDBACK_CPU_CAP,
+        ten_mb
+    ));
 }
 
 /// #1604: the history matcher indexes the whole buffer when it is built, so it is built only once

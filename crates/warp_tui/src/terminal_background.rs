@@ -31,11 +31,11 @@ use warp::tui_export::Appearance;
 use warp_core::ui::theme::WarpTheme;
 use warpui::{AppContext, Entity, ModelContext, SingletonEntity};
 use warpui_core::runtime::{
-    ProbedRgb, TuiProbe, background_luminance, probe_terminal_background,
-    read_terminal_background_reply, write_terminal_background_query,
+    ProbedRgb, TuiProbe, background_luminance, write_terminal_background_query,
 };
 
 /// Maximum time to wait for each focus-triggered OSC 11 reply.
+// give-up-net: focus-probe reply deadline on the reader thread: on expiry the background stays as it was; typed keys are forwarded in order, never discarded
 const LIVE_PROBE_DEADLINE: Duration = Duration::from_millis(50);
 /// Consecutive missing replies allowed before probing stops for this session.
 const CONSECUTIVE_MISS_CUTOFF: u8 = 3;
@@ -141,16 +141,19 @@ impl Entity for TuiHostTerminalBackground {
 impl SingletonEntity for TuiHostTerminalBackground {}
 
 impl TuiHostTerminalBackground {
-    /// Probes the initial background, registers the singleton, and returns the
-    /// theme resolved for `selected_theme` plus the runtime's focus-triggered
-    /// probe registration (pass this to `spawn_tui_driver`).
+    /// Registers the singleton and returns the theme resolved for
+    /// `selected_theme` (from `COLORFGBG`, else dark: the terminal is NOT queried
+    /// here) plus the runtime's probe registration (pass this to `spawn_tui_driver`).
+    /// The registration probes the host background once on the driver's reader thread,
+    /// after the first frame, and again on focus; a reply is applied when it lands
+    /// (`handle_background_probe_result`), so the first frame may use the fallback
+    /// theme and then switch (#1748).
     pub(crate) fn register(
         selected_theme: TuiTheme,
         ctx: &mut AppContext,
     ) -> (WarpTheme, TuiProbe) {
-        let background = probe_terminal_background();
-        let theme = selected_theme.resolve_for_background(background_luminance(background));
-        let state = TerminalBackgroundState::new(background);
+        let theme = selected_theme.resolve_for_background(background_luminance(None));
+        let state = TerminalBackgroundState::new(None);
         let probe_enabled = Arc::new(AtomicBool::new(state.probe_enabled(selected_theme)));
         let reader_probe_enabled = probe_enabled.clone();
         let live_probe_supported =
@@ -170,12 +173,15 @@ impl TuiHostTerminalBackground {
             );
         });
 
+        // conhost does not answer OSC 11, so non-unix hosts never probe.
+        let probe_supported = cfg!(unix) && live_probe_supported;
         let probe = TuiProbe::new(
-            move || live_probe_supported && reader_probe_enabled.load(Ordering::Relaxed),
+            move || probe_supported && reader_probe_enabled.load(Ordering::Relaxed),
             probe_sender,
             |writer| write_terminal_background_query(writer),
-            move || read_terminal_background_reply(LIVE_PROBE_DEADLINE),
-        );
+            LIVE_PROBE_DEADLINE,
+        )
+        .with_startup_probe(probe_supported);
         (theme, probe)
     }
 
@@ -196,6 +202,11 @@ impl TuiHostTerminalBackground {
     ) {
         let selected_theme = TuiThemeSettings::as_ref(ctx).selected_theme();
         if selected_theme != TuiTheme::Auto {
+            // The theme is the user's explicit choice and stays; the reply is still
+            // the terminal's real background (for a later switch back to Auto).
+            if background.is_some() {
+                self.state.background = background;
+            }
             self.update_probe_enabled(selected_theme);
             return;
         }

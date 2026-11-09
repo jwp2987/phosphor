@@ -23,10 +23,10 @@
 //! outside the classifier (a local directory listing on a slow or cold filesystem, `$PATH`
 //! metadata probes, the classifier model still loading, the model's helper threads). None of that
 //! is charged on the CPU clock, so every clock also keeps its stages' wall time
-//! ([`ComputeClock::stage_wall`]): the waiting Enter gives up on whichever comes first, the CPU
-//! budget or a wall ceiling (`ENTER_VERDICT_WALL_CEILING`, 1 s), and a job that never runs at all
-//! is caught by the Enter's lost-job backstop. Every give-up only hands the text back to the
-//! editor (#1577).
+//! ([`ComputeClock::stage_wall`], reported in logs and tests): the waiting Enter's CPU cap
+//! (`VERDICT_HANDBACK_CPU_CAP`) never sees a job that waits off the CPU or never runs at all; the
+//! Enter's lost-job backstop (wall time) catches those. Every give-up only hands the text back to
+//! the editor (#1577).
 //!
 //! The clock also tells the waiting Enter when a stage starts running ([`ComputeClock::notify_on_stage_start`]),
 //! so the give-up deadline is armed from that event instead of being polled.
