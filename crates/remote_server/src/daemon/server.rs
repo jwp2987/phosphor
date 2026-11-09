@@ -306,12 +306,18 @@ impl Server {
             }),
             M::SaveBuffer(_) => buffers::handle(&reply, "SaveBuffer"),
             M::ResolveConflict(_) => buffers::handle(&reply, "ResolveConflict"),
-            M::GitCommitChain(_) => git_write::handle(&reply, "GitCommitChain"),
-            M::GitPush(_) => git_write::handle(&reply, "GitPush"),
-            M::GitPull(_) => git_write::handle(&reply, "GitPull"),
-            M::GitCreatePr(_) => git_write::handle(&reply, "GitCreatePr"),
-            M::DiscardFiles(_) => git_write::handle(&reply, "DiscardFiles"),
-            M::GitStage(_) => git_write::handle(&reply, "GitStage"),
+            M::GitCommitChain(msg) => self
+                .inflight
+                .spawn(reply, move |_| git_write::commit_chain(msg)),
+            M::GitPush(msg) => self.inflight.spawn(reply, move |_| git_write::push(msg)),
+            M::GitPull(msg) => self.inflight.spawn(reply, move |_| git_write::pull(msg)),
+            M::GitCreatePr(msg) => self
+                .inflight
+                .spawn(reply, move |_| git_write::create_pr(msg)),
+            M::DiscardFiles(msg) => self
+                .inflight
+                .spawn(reply, move |_| git_write::discard_files(msg)),
+            M::GitStage(msg) => self.inflight.spawn(reply, move |_| git_write::stage(msg)),
             // Legacy host-side indexing: never implemented by the helper (see CODEBASE_CHUNKS).
             other => unsupported(&reply, host_scoped_name(&other)),
         }

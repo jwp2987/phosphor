@@ -12,7 +12,9 @@ use std::process::{Command, Stdio};
 use anyhow::{Result, anyhow};
 use futures::future::BoxFuture;
 
-use crate::shellcmd::git::{GIT_BASE_ARGS, GIT_ENV, GitOutput, GitRunner};
+use crate::shellcmd::git::{
+    GIT_BASE_ARGS, GIT_ENV, GIT_NOPROMPT_ENV, GIT_UNSET_ENV, GitOutput, GitRunner, git_ssh_command,
+};
 
 /// Runs git/gh as child processes of the helper.
 #[derive(Clone, Debug, Default)]
@@ -44,9 +46,18 @@ impl HelperGitRunner {
     fn run_blocking(&self, args: &[&str], stdin: Option<&[u8]>, cwd: &Path) -> Result<GitOutput> {
         let mut cmd = Command::new("git");
         cmd.args(GIT_BASE_ARGS).args(args).current_dir(cwd);
-        for (key, value) in GIT_ENV {
+        for (key, value) in GIT_ENV.into_iter().chain(GIT_NOPROMPT_ENV) {
             cmd.env(key, value);
         }
+        // Never prompt (owner ruling): no askpass helper, ssh in batch mode. The user runs the
+        // command in their own terminal when credentials are needed.
+        for key in GIT_UNSET_ENV {
+            cmd.env_remove(key);
+        }
+        cmd.env(
+            "GIT_SSH_COMMAND",
+            git_ssh_command(std::env::var("GIT_SSH_COMMAND").ok().as_deref()),
+        );
         if let Some(path) = &self.path_env {
             cmd.env("PATH", path);
         }
@@ -68,6 +79,7 @@ impl HelperGitRunner {
         cmd.args(args)
             .current_dir(cwd)
             .env("HOMEBREW_NO_AUTO_UPDATE", "1")
+            .env("GH_PROMPT_DISABLED", "1")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());

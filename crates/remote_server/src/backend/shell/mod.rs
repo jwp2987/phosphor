@@ -5,6 +5,7 @@
 //! probe. Every family's request methods answer `Unsupported` until its package fills them in
 //! (P1..P9), or `Unavailable` when the session has no out-of-band channel.
 
+mod git_write;
 mod read;
 mod tree;
 mod write;

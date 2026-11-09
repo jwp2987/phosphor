@@ -89,7 +89,8 @@ fn initialize_advertises_the_helper_capabilities_and_version() {
             "git_read",
             "ripgrep_search",
             "repo_metadata",
-            "file_context"
+            "file_context",
+            "git_write"
         ]
     );
     // Parity family a: batch file reads are served by the helper.
@@ -137,11 +138,11 @@ fn requests_outside_the_capability_list_are_unsupported() {
     let mut h = harness();
     h.send(host(
         "r2",
-        host_scoped_request::Message::GitPush(Default::default()),
+        host_scoped_request::Message::ReadFileContext(Default::default()),
     ));
     let e = error_of(h.next());
     assert_eq!(e.code, ErrorCode::Unsupported as i32);
-    assert!(e.message.contains("GitPush"), "{}", e.message);
+    assert!(e.message.contains("ReadFileContext"), "{}", e.message);
 
     h.send(session(
         "r3",
@@ -324,26 +325,6 @@ fn every_reserved_family_request_is_unsupported_and_named() {
             "ResolveConflict",
             host_scoped_request::Message::ResolveConflict(Default::default()),
         ),
-        (
-            "GitCommitChain",
-            host_scoped_request::Message::GitCommitChain(Default::default()),
-        ),
-        (
-            "GitPull",
-            host_scoped_request::Message::GitPull(Default::default()),
-        ),
-        (
-            "GitCreatePr",
-            host_scoped_request::Message::GitCreatePr(Default::default()),
-        ),
-        (
-            "DiscardFiles",
-            host_scoped_request::Message::DiscardFiles(Default::default()),
-        ),
-        (
-            "GitStage",
-            host_scoped_request::Message::GitStage(Default::default()),
-        ),
     ];
     for (name, message) in host_requests {
         h.send(host("rh", message));
@@ -367,6 +348,107 @@ fn every_reserved_family_request_is_unsupported_and_named() {
         assert_eq!(e.code, ErrorCode::Unsupported as i32, "{name}");
         assert!(e.message.contains(name), "{name}: {}", e.message);
     }
+}
+
+/// The git write requests are answered, not UNSUPPORTED, and keep the old server's contract of
+/// reporting a bad request in the response's own error (P7). Real-git behaviour is covered in
+/// `shellcmd::git::write` and the backend contract tests.
+#[test]
+fn git_write_requests_answer_with_their_own_error_responses() {
+    use crate::proto::{
+        discard_files_response, git_commit_chain_response, git_create_pr_response,
+        git_pull_response, git_push_response, git_stage_response,
+    };
+    let mut h = harness();
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().to_string_lossy().into_owned();
+
+    h.send(host(
+        "w1",
+        host_scoped_request::Message::GitPush(crate::proto::GitPushRequest {
+            repo_path: "/definitely/not/here".into(),
+            branch: "main".into(),
+        }),
+    ));
+    let Some(server_message::Message::GitPushResponse(r)) = h.next().message else {
+        panic!("GitPushResponse expected");
+    };
+    let Some(git_push_response::Result::Error(e)) = r.result else {
+        panic!("error expected");
+    };
+    assert!(
+        e.message.starts_with("Invalid repo_path: "),
+        "{}",
+        e.message
+    );
+
+    h.send(host(
+        "w2",
+        host_scoped_request::Message::GitStage(crate::proto::GitStageRequest {
+            repo_path: repo.clone(),
+            ..Default::default()
+        }),
+    ));
+    let Some(server_message::Message::GitStageResponse(r)) = h.next().message else {
+        panic!("GitStageResponse expected");
+    };
+    let Some(git_stage_response::Result::Error(e)) = r.result else {
+        panic!("error expected");
+    };
+    assert_eq!(e.message, "GitStageRequest set neither paths nor patch");
+
+    h.send(host(
+        "w3",
+        host_scoped_request::Message::DiscardFiles(crate::proto::DiscardFilesRequest {
+            repo_path: repo.clone(),
+            ..Default::default()
+        }),
+    ));
+    let Some(server_message::Message::DiscardFilesResponse(r)) = h.next().message else {
+        panic!("DiscardFilesResponse expected");
+    };
+    let Some(discard_files_response::Result::Error(e)) = r.result else {
+        panic!("error expected");
+    };
+    assert_eq!(e.message, "No files specified in DiscardFilesRequest");
+
+    // The three network operations and the commit chain answer too (here: not a repository).
+    h.send(host(
+        "w4",
+        host_scoped_request::Message::GitCommitChain(crate::proto::GitCommitChainRequest {
+            repo_path: repo.clone(),
+            ..Default::default()
+        }),
+    ));
+    assert!(matches!(
+        h.next().message,
+        Some(server_message::Message::GitCommitChainResponse(r))
+            if matches!(r.result, Some(git_commit_chain_response::Result::Error(_)))
+    ));
+    h.send(host(
+        "w5",
+        host_scoped_request::Message::GitPull(crate::proto::GitPullRequest {
+            repo_path: repo.clone(),
+            branch: "main".into(),
+        }),
+    ));
+    assert!(matches!(
+        h.next().message,
+        Some(server_message::Message::GitPullResponse(r))
+            if matches!(r.result, Some(git_pull_response::Result::Error(_)))
+    ));
+    h.send(host(
+        "w6",
+        host_scoped_request::Message::GitCreatePr(crate::proto::GitCreatePrRequest {
+            repo_path: repo,
+            ..Default::default()
+        }),
+    ));
+    assert!(matches!(
+        h.next().message,
+        Some(server_message::Message::GitCreatePrResponse(r))
+            if matches!(r.result, Some(git_create_pr_response::Result::Error(_)))
+    ));
 }
 
 // ---- repo metadata (P3) -------------------------------------------------------------------
