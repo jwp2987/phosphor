@@ -6,7 +6,7 @@ import re,sys,statistics as st,collections
 log=sys.argv[1]; csv=sys.argv[2]
 fr=[]
 for l in open(log,errors='replace'):
-    m=re.search(r'hop=frame_drawn total_ms=([\d.]+) acquire_ms=([\d.]+) t=([\d.]+)',l)
+    m=re.search(r'hop=frame_drawn total_ms=([\d.]+) acquire_ms=([\d.]+)(?: present_ms=[\d.]+)? t=([\d.]+)',l)
     if m: fr.append((float(m.group(3)),float(m.group(1)),float(m.group(2))))
 keys=collections.defaultdict(list)
 for l in open(csv):

@@ -143,7 +143,11 @@ impl Renderer {
                 // wgpu will print out an error that we attempted to present a
                 // texture without submitting any work to the GPU.
                 match with_error_scope(device, || {
-                    warpui_core::profiling::present_frame(|| surface_texture.present());
+                    warpui_core::profiling::present_frame(|| {
+                        let present_start = std::time::Instant::now();
+                        surface_texture.present();
+                        resources.set_last_present_time(present_start.elapsed());
+                    });
                 }) {
                     (_, None) => Ok(()),
                     (_, Some(error)) => Err(error),

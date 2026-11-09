@@ -16,6 +16,7 @@ import cases
 from cases import case, plat, stats, ui_items
 import cases_caseagent as AG
 import lat
+import render_hops
 
 KEY_FRAME_RE = re.compile(r"input_order hop=key_frame layout=\S+ t=(\d+(?:\.\d+)?)")
 KEYDOWN_ANY_RE = re.compile(r'input_order keydown key=("(?:[^"\\]|\\.)*"|\S+) ctrl=(true|false) alt=(true|false) shift=(true|false) cmd=(true|false) t=(\d+(?:\.\d+)?)')
@@ -66,7 +67,7 @@ def key_frame_deltas(txt, t_min=None, t_max=None):
     return out
 
 
-FRAME_DRAWN_RE = re.compile(r"input_order hop=frame_drawn total_ms=(\d+(?:\.\d+)?) acquire_ms=\S+ t=(\d+(?:\.\d+)?)")
+FRAME_DRAWN_RE = re.compile(r"input_order hop=frame_drawn total_ms=(\d+(?:\.\d+)?) acquire_ms=\S+(?: present_ms=\S+)? t=(\d+(?:\.\d+)?)")
 
 
 def paced_key_frame_deltas(txt, t_min, t_max):
@@ -355,6 +356,91 @@ def c_agent_latency_key(ctx, r):
         r.unverifiable("agent-idle or terminal-editor key->frame samples are missing: the overhead budget was NOT judged")
     judge_ui_items(r, [txt_idle], n + warm, "agent_idle")
     judge_ui_items(r, txts_stream, max(got, 1), "agent_streaming")
+    # render-latency step A: the present / acquire split (Linux, Windows) and the macOS hops of the judged default run; metrics only
+    render_hops.record(r, "\n".join(txts_stream), prefix="agent_streaming_")
+    render_hops.record(r, txt_idle, prefix="agent_idle_")
+    present_mode_ab(ctx, r, fm, n)
+
+
+class ArmR:
+    """the Result as the A/B arms see it: a failed check or skip is a WARN note, never a verdict (the default run above is the judged one)"""
+    class Failed(Exception):
+        pass
+
+    def __init__(self, r):
+        self.r = r
+
+    def check(self, ok, msg=None, *a, **k):
+        if not ok:
+            self.r.note("WARN present-mode A/B: %s" % msg)
+        return ok
+
+    def skip(self, msg):
+        raise ArmR.Failed(msg)
+
+    def __getattr__(self, name):
+        return getattr(self.r, name)
+
+
+def stream_keys(ctx, r, fm, need, per=30):
+    """keys typed while a fake reply streams until `need` samples -> (raw ms, slot-adjusted ms, log text); restarts the stream per `per` keys"""
+    raw, paced, txts, t_all = [], [], [], time.time()
+    PACED.clear()
+    while len(raw) < need and time.time() - t_all < 240:
+        if not start_stream(ctx, r, fm, ctx.tok(5)):
+            break
+        d, tx = key_batch(ctx, per, fm, gap=(0.05, 0.12))
+        raw += d
+        txts.append(tx)
+        ctx.reset()
+        time.sleep(0.5)
+    return raw, list(PACED), "\n".join(txts)
+
+
+def present_mode_ab(ctx, r, fm, n):
+    """design option F (docs/design/render-latency.md), zero code: the streaming key -> frame of this case again with PHOSPHOR_PRESENT_MODE=mailbox and
+    PHOSPHOR_FRAME_LATENCY=1, relaunching per block (render_hops.arm_schedule, like cases_ctrlc_ab) next to a relaunched default arm. Linux only (the launcher
+    that takes App.extra_env; macOS and Windows have no such present-mode switch). METRICS and a note only: the judged run is the default one above."""
+    if ctx.win or ctx.be.name == "mac" or not hasattr(ctx.app, "extra_env"):
+        return
+    if os.environ.get("APPCI_RENDER_AB", "1") == "0":
+        r.note("present-mode A/B skipped (APPCI_RENDER_AB=0)")
+        return
+    from cases_robust import start_app
+    arm_n, lead = ctx.count_lat(30), lat.interleave_lead()
+    got = {a: dict(raw=[], paced=[], txt=[]) for a in render_hops.ARMS}
+    quiet = ArmR(r)
+    try:
+        for arm, cnt, disc in render_hops.arm_schedule(render_hops.ARMS, arm_n, 2, lead):
+            try:
+                ctx.app.extra_env = render_hops.arm_env(arm)
+                _p, up = start_app(ctx, quiet, "present-mode A/B arm %s" % arm)
+                if not up:
+                    continue
+                time.sleep(cases.LAT_SETTLE_S)
+                ctx.reset()
+                AG.fresh_conversation(ctx, quiet)
+                raw, paced, txt = stream_keys(ctx, quiet, fm, cnt)
+                got[arm]["raw"] += raw[disc:]
+                got[arm]["paced"] += paced[disc:]
+                got[arm]["txt"].append(txt)
+            except ArmR.Failed as e:
+                r.note("WARN present-mode A/B: arm %s block skipped: %s" % (arm, str(e)[:160]))
+    finally:
+        ctx.app.extra_env = {}
+        _p, back = start_app(ctx, r, "present-mode A/B: relaunch with the default environment")
+        ctx.reset()
+        if back:
+            to_agent(ctx, r)
+    arms = {a: render_hops.arm_summary(v["raw"], v["paced"], "\n".join(v["txt"])) for a, v in got.items()}
+    for a, v in arms.items():
+        r.metric("present_mode_ab_%s" % a, v)
+    deltas = render_hops.arm_deltas(arms)
+    r.metric("present_mode_ab_deltas", deltas)
+    for a, d in deltas.items():
+        r.note("present-mode A/B %s vs default (streaming key->frame p50, negative = faster): raw %s ms, slot-adjusted %s ms; present_ms p50 %s vs default %s (n %s / %s)" % (
+            a, d["raw_p50_delta"], d["adjusted_p50_delta"], (arms[a]["present_ms"] or {}).get("p50"), (arms["default"]["present_ms"] or {}).get("p50"),
+            (arms[a]["streaming"] or {}).get("n"), (arms["default"]["streaming"] or {}).get("n")))
 
 
 # ---------------------------------------------------------------- Enter in the agent input

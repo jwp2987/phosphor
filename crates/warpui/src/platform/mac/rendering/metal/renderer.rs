@@ -46,6 +46,9 @@ unsafe extern "C" {
     /// Implemented in `objc/host_view.m` (#1838): arms the wake-up that asks the view to draw
     /// again when the in-flight drawable is presented. False when it was presented meanwhile.
     fn warp_frame_gate_arm(layer: *mut c_void) -> bool;
+    /// Implemented in `objc/host_view.m` (render-latency step A): the frame `displayLayer:` is
+    /// drawing now was invalidated by a key press. Measurement only.
+    fn warp_current_frame_from_key() -> bool;
 }
 
 const METAL_LIB_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shaders.metallib"));
@@ -1098,11 +1101,16 @@ impl super::super::Renderer for Renderer {
             && unsafe { warp_frame_gate_arm(layer_ptr) }
         {
             window.frame_skip_run.note_skip(now_ms);
+            // SAFETY: only reads an atomic.
+            if unsafe { warp_current_frame_from_key() } {
+                window.frame_skip_run.note_key_skip();
+            }
             return;
         }
+        let key_frame_skipped = window.frame_skip_run.take_key_skipped();
         if let Some((skipped, held_ms)) = window.frame_skip_run.finish(now_ms) {
             warpui_core::input_order::log_hop("frame_skip_run", || {
-                format!("skipped={skipped} held_ms={held_ms}")
+                format!("skipped={skipped} held_ms={held_ms} key_frame_skipped={key_frame_skipped}")
             });
         }
         let drawable_wait_start = Instant::now();

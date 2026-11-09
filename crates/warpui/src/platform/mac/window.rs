@@ -43,6 +43,9 @@ use super::{RectFExt as _, app};
 unsafe extern "C" {
     fn screenFrame() -> NSRect;
     fn activeScreenId() -> NSUInteger;
+    /// Implemented in `objc/host_view.m` (render-latency step A): a key press has invalidated the
+    /// next frame and `displayLayer:` has not consumed that yet. Measurement only.
+    fn warp_key_frame_tag_pending() -> bool;
 }
 
 pub const WINDOW_STATE_IVAR: &str = "windowState";
@@ -1068,6 +1071,15 @@ impl platform::WindowContext for Window {
 }
 
 impl WindowState {
+    /// Stamps the request time when a key press has invalidated the next frame (the tag lives in
+    /// `objc/host_view.m`). Measurement only; read by `frame_latency::log_key_frame_sched`.
+    fn note_key_frame_request(&self) {
+        // SAFETY: only reads an atomic.
+        if unsafe { warp_key_frame_tag_pending() } {
+            frame_latency::note_key_frame_requested();
+        }
+    }
+
     pub fn id(&self) -> WindowId {
         self.window_id
     }
@@ -1208,6 +1220,7 @@ impl platform::WindowContext for WindowState {
 
     fn render_scene(&self, scene: Rc<Scene>) {
         *self.next_scene.borrow_mut() = Some(scene);
+        self.note_key_frame_request();
         // `setNeedsDisplayAsync` is a custom WarpWindow selector.
         // SAFETY: messaging a valid window.
         let _: () = unsafe { msg_send![self.window(), setNeedsDisplayAsync] };
@@ -1215,6 +1228,7 @@ impl platform::WindowContext for WindowState {
 
     fn request_redraw(&self) {
         let _ = self.next_scene.borrow_mut().take();
+        self.note_key_frame_request();
         // `setNeedsDisplayAsync` is a custom WarpWindow selector.
         // SAFETY: messaging a valid window.
         let _: () = unsafe { msg_send![self.window(), setNeedsDisplayAsync] };
@@ -1439,6 +1453,9 @@ extern "C-unwind" fn warp_update_layer(this: &Object) {
     }
     // SAFETY: as above.
     unsafe { get_window_state(this) }.draw_owed.note_draw_ran();
+    // The draw runs: when it was requested by a key press, report how long it waited to get here
+    // (`request_redraw` -> `displayLayer:`). Measurement only.
+    frame_latency::log_key_frame_sched();
 
     unsafe {
         let window = get_window_state(this);

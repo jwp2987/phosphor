@@ -8,6 +8,7 @@
 
 use std::cell::Cell;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use parking_lot::Mutex;
@@ -190,6 +191,8 @@ pub(super) fn gate_decision(inputs: GateInputs) -> GateDecision {
 pub(super) struct SkipRun {
     started_ms: Cell<Option<u64>>,
     skipped: Cell<u32>,
+    /// Skipped frames that a key press had invalidated (render-latency step A, measurement only).
+    key_skipped: Cell<u32>,
 }
 
 impl SkipRun {
@@ -205,6 +208,17 @@ impl SkipRun {
         self.skipped.set(self.skipped.get().saturating_add(1));
     }
 
+    /// Notes that the frame skipped by the last [`Self::note_skip`] was key-driven.
+    pub(super) fn note_key_skip(&self) {
+        self.key_skipped
+            .set(self.key_skipped.get().saturating_add(1));
+    }
+
+    /// Key-driven frames skipped in the run that [`Self::finish`] is about to end. Call before it.
+    pub(super) fn take_key_skipped(&self) -> u32 {
+        self.key_skipped.take()
+    }
+
     /// Ends the run when a frame is drawn: `(skipped frames, ms since the first skip)`.
     pub(super) fn finish(&self, now_ms: u64) -> Option<(u32, u64)> {
         let started = self.started_ms.take()?;
@@ -214,6 +228,56 @@ impl SkipRun {
 
 pub(super) fn gate_now_ms() -> u64 {
     now_ms()
+}
+
+/// Monotonic nanoseconds (non-zero) on this module's clock, for the key-frame schedule stamp.
+fn mono_ns() -> u64 {
+    static START: OnceLock<Instant> = OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_nanos() as u64 + 1
+}
+
+/// When `request_redraw` first asked for a key-driven frame that has not started yet (0 = none).
+static KEY_FRAME_REQUESTED_NS: AtomicU64 = AtomicU64::new(0);
+
+/// A key-driven frame was requested (`window.rs` `request_redraw` / `render_scene`). Keeps the
+/// earliest request: several invalidations before one frame all wait for that one frame.
+pub(super) fn note_key_frame_requested() {
+    let _ =
+        KEY_FRAME_REQUESTED_NS.compare_exchange(0, mono_ns(), Ordering::Relaxed, Ordering::Relaxed);
+}
+
+/// The frame is starting (`warp_update_layer`, past the re-entrancy check): logs
+/// `hop=key_frame_sched` for a key-driven request that was waiting. Measurement only.
+pub(super) fn log_key_frame_sched() {
+    let requested = KEY_FRAME_REQUESTED_NS.swap(0, Ordering::Relaxed);
+    if requested == 0 {
+        return;
+    }
+    let elapsed_ns = mono_ns().saturating_sub(requested);
+    warpui_core::input_order::log_hop("key_frame_sched", || key_frame_sched_detail(elapsed_ns));
+}
+
+/// Detail of `hop=key_frame_sched`: request_redraw -> displayLayer entry.
+pub(super) fn key_frame_sched_detail(elapsed_ns: u64) -> String {
+    format!("ms={:.2}", elapsed_ns as f64 / 1_000_000.0)
+}
+
+/// Detail of `hop=key_presented`: the stage after submit that the key frame spent in the
+/// compositor, the whole key -> presented time, the layer's `displaySyncEnabled` at submit and the
+/// `nextDrawable` wait.
+pub(super) fn key_presented_detail(
+    submit_to_presented_ns: u64,
+    key_to_presented_ns: u64,
+    sync: bool,
+    drawable_wait_ns: u64,
+) -> String {
+    format!(
+        "submit_to_presented_ms={:.2} key_to_presented_ms={:.2} sync={} wait_ms={:.2}",
+        submit_to_presented_ns as f64 / 1_000_000.0,
+        key_to_presented_ns as f64 / 1_000_000.0,
+        u8::from(sync),
+        drawable_wait_ns as f64 / 1_000_000.0
+    )
 }
 
 static LIMITER: Mutex<SlowFrameLimiter> = Mutex::new(SlowFrameLimiter::new());
@@ -231,6 +295,8 @@ extern "C-unwind" fn warp_frame_presented(
     key_to_presented_ns: u64,
     drawable_wait_ns: u64,
     presented: bool,
+    submit_to_presented_ns: u64,
+    sync: bool,
 ) {
     let key_ms = (presented && key_to_presented_ns > 0).then_some(key_to_presented_ns / 1_000_000);
     let wait_ms = drawable_wait_ns / 1_000_000;
@@ -243,6 +309,17 @@ extern "C-unwind" fn warp_frame_presented(
                 "wait_ms={:.2} key_frame={}",
                 drawable_wait_ns as f64 / 1_000_000.0,
                 key_to_presented_ns > 0
+            )
+        });
+    }
+    // Render-latency step A: where a key frame's time goes after submit (compositor stage).
+    if presented && key_to_presented_ns > 0 {
+        warpui_core::input_order::log_hop("key_presented", || {
+            key_presented_detail(
+                submit_to_presented_ns,
+                key_to_presented_ns,
+                sync,
+                drawable_wait_ns,
             )
         });
     }

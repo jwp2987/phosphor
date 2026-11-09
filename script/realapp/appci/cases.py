@@ -11,6 +11,7 @@ CTRLC_FLOOD_RELEASE_MS = "45"
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lat  # noqa: E402
 import backend  # noqa: E402
+import render_hops  # noqa: E402
 
 CASES = []
 # APPCI_TIER=smoke (CI tiers 'fix', docs/testing.md 'Test tiers'): the input-path cases a fix push needs, both modes, ~10 min per platform.
@@ -4181,6 +4182,7 @@ def c_lat_paint(ctx, r):
                     if float(m.group(2)) / 1000.0 >= t_paint0])
     if dw:
         r.metric("drawable_wait_ms", dw)
+    render_hops.record(r, kl, t_paint0)      # render-latency step A: submit -> presented (hop=key_presented), request -> frame start (hop=key_frame_sched); metrics only
     r.check(len(ds) >= 20, "only %d key->paint samples from kl3 (capture region or Screen Recording permission wrong)" % len(ds))
     if ref is None and not tried:
         ref = ref_terminal(ctx)

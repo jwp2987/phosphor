@@ -110,6 +110,7 @@ class App:
         self.proc = None
         self.wrap = ""                 # words put before the binary in the launcher's final exec (zero_network_startup: strace), "" otherwise; ends in a space
         self.keyring = "unlocked"      # #1805: a case sets another KEYRING_VARIANTS entry before start() and puts it back after
+        self.extra_env = {}            # {K: V} added to the NEXT launch's environment (a case sets it before a relaunch: the render-latency present-mode A/B)
 
     def start(self):
         inner = os.path.join(self.run, "inner.sh")
@@ -119,6 +120,7 @@ class App:
         # Linux nu stayed off the app's PATH and the agent pass sent `nu` to the agent: "nu never executed a probe line".
         env = dict(os.environ, APPCI_APP_DISPLAY=self.display, PATH=with_user_bin_dirs(os.environ.get("PATH", "")))
         env.pop("APPCI_NO_KEYRING", None)
+        env.update(self.extra_env)
         for path, text in keyring_dbus_files(self.keyring, self.run).items():
             os.makedirs(os.path.dirname(path), exist_ok=True)
             open(path, "w").write(text)
