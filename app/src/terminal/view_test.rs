@@ -16990,12 +16990,13 @@ fn keys_typed_after_a_subshell_setup_ends_follow_the_held_ones_exactly_once() {
     })
 }
 
-/// #1222, now by construction: the setup is over (`Bootstrapped`, the announcement no longer
-/// applies) while keys are still held for the first prompt. A key typed in that gap goes out
-/// BEHIND them, never ahead.
-#[test]
-fn key_typed_between_bootstrapped_and_the_first_prompt_follows_the_held_keys() {
+/// #1222, and the vim_typeahead split: the setup is over (`Bootstrapped`, the announcement no
+/// longer applies) while keys are still held for the first prompt. A key typed in that gap joins
+/// them behind the gate (nothing reaches the pty before the shell's prompt), and the first prompt
+/// delivers all of it in typed order. Both input modes.
+fn key_typed_between_bootstrapped_and_the_first_prompt_in(mode: DestMode) {
     App::test((), move |mut app| async move {
+        let _mode = force_dest_mode(mode);
         initialize_app_for_terminal_view(&mut app);
         let terminal = add_window_with_terminal(&mut app, None);
         let written = subshell_pty_writes(&mut app, &terminal);
@@ -17007,9 +17008,26 @@ fn key_typed_between_bootstrapped_and_the_first_prompt_follows_the_held_keys() {
             // `Bootstrapped`: the announcement stops governing input.
             view.subshell_bootstrap_announced = None;
             assert!(view.write_user_bytes_to_pty(b"c".to_vec(), ctx));
+            // The gap: the shell has not drawn its prompt yet.
+            assert!(
+                view.subshell_setup_gate_open(),
+                "{mode:?}: the gate stays open"
+            );
+            // The first prompt (the Precmd path) releases everything, in order.
+            view.release_subshell_setup_held_bytes(ctx);
         });
-        assert_eq!(*written.borrow(), b"ec".to_vec());
+        assert_eq!(*written.borrow(), b"ec".to_vec(), "{mode:?}");
     })
+}
+
+#[test]
+fn key_typed_between_bootstrapped_and_the_first_prompt_follows_the_held_keys_legacy() {
+    key_typed_between_bootstrapped_and_the_first_prompt_in(DestMode::Legacy);
+}
+
+#[test]
+fn key_typed_between_bootstrapped_and_the_first_prompt_follows_the_held_keys_table() {
+    key_typed_between_bootstrapped_and_the_first_prompt_in(DestMode::Table);
 }
 
 /// #1353 phase 2 / #1577: the gates' give-up caps are safety nets that log and then HAND BACK. The

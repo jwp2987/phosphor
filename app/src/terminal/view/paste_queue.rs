@@ -2777,13 +2777,13 @@ impl TerminalView {
             }
         }
         let powershell_off = self.powershell_setup_hold == super::PowerShellSetupHold::Off;
-        // The setup is over (`Bootstrapped`, abandoned, ...) while keys are still held, released
-        // only at the first prompt: they go out first, then this key behind them (#1222, now by
-        // construction rather than by a patch).
-        if setup_gate && !abort && powershell_off && age.is_none() {
-            self.release_subshell_setup_held_bytes(ctx);
-            return self.prepare_subshell_gates(bytes, ctx);
-        }
+        // The setup is over (`Bootstrapped`, ...) while keys are still held, released only at the
+        // first prompt (`Precmd`) or by the abandon / give-up paths, which call
+        // `release_subshell_setup_held_bytes` themselves. A key typed in the gap joins the held
+        // keys behind the gate, in order. It used to RELEASE them here, which wrote the whole held
+        // line into the pty after `Bootstrapped` but before the shell drew its prompt: the shell
+        // lost the head and the rest ran alone after the hand-off (a split line). Order is
+        // unchanged (#1222); the write is just not early.
         // #1679 step 4 (owner decision 2026-11-08): no bypass for a shell that asks for something.
         // A question or a secret read while a setup is written is the readiness judge's
         // E-QUESTION / E-SECRET: the setup is cancelled and the held keys come back, so the answer
