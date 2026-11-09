@@ -115,8 +115,8 @@ pub fn perf_agent_key_enabled() -> bool {
     *ON.get_or_init(|| !switch_off(std::env::var("PHOSPHOR_PERF_AGENT_KEY").ok()))
 }
 
-/// `PHOSPHOR_PERF_BLOCKLIST_WINDOW=0`: the block list lays out every block again (no visible
-/// window plus margin for blocks far outside the viewport).
+/// `PHOSPHOR_PERF_BLOCKLIST_WINDOW=0`: the block list's visible pass lays out each rich content
+/// (AI) block a second time, as it did before.
 pub fn perf_blocklist_window_enabled() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| !switch_off(std::env::var("PHOSPHOR_PERF_BLOCKLIST_WINDOW").ok()))
@@ -147,6 +147,11 @@ impl HoldTimer {
             start: Instant::now(),
             done: false,
         }
+    }
+
+    /// Microseconds since the timer started (the hold so far).
+    pub fn elapsed_us(&self) -> u128 {
+        self.start.elapsed().as_micros()
     }
 
     /// Call right after the guard is released; also runs on drop.

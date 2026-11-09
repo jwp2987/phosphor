@@ -2851,3 +2851,13 @@ must collect the "before" with the switch at `0` and the "after" with it unset, 
   the switch on and `0`), and key / Ctrl-C to pty-write p50/p95 in agent mode under `yes` / a flood, against terminal
   mode, with a conversation of 50+ AI blocks. The remaining agent-mode gap, if any, is main-thread time spent in
   flood-driven re-layout (P3); read `model lock held` lines for `BlockListElement::layout` at the same time.
+
+### P3 long agent conversations: block list layout (`PHOSPHOR_PERF_BLOCKLIST_WINDOW`, `0` = old behaviour)
+- `BlockListElement::layout` already lays out only the viewport plus a 20-line margin. What it did twice was the
+  visible items: the viewport pass laid every visible AI block out, and the visible-items pass laid out again each one
+  whose height had not moved by a pixel, with the model lock held. A view laid out in the first pass is not laid out
+  again in the second.
+- Collect: `hop=perf_blocklist_layout hold_us=U layouts=N reused=M switch=S` on a conversation of 100+ AI blocks, with
+  and without the switch (`hold_us` is the lock hold of the visible pass; `reused` is the layouts saved), plus the
+  existing `model lock held ... BlockListElement::layout` warn lines. Pass: hold_us falls with `reused>0`; scrolling
+  through the conversation and typing in it show no stale or mis-sized block (screenshots at the top, middle, bottom).
