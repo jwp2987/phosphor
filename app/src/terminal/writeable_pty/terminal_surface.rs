@@ -200,16 +200,6 @@ where
     /// events instead of a polling tick (#1365).
     fn set_output_signal(&mut self, _tx: async_channel::Sender<()>) {}
 
-    /// The waited agent command is stalled on a pager Phosphor identified by process name:
-    /// send it `q` and remember to tell the model.
-    #[cfg(unix)]
-    fn on_stalled_pager(&mut self, _ctx: &mut ViewContext<Self>) {}
-
-    /// The waited agent command is stalled on a full-screen program that is not a known
-    /// pager (or could not be identified): hand it to the user, send no keys.
-    #[cfg(unix)]
-    fn on_stalled_fullscreen_app(&mut self, _ctx: &mut ViewContext<Self>) {}
-
     /// Whether the poller should keep running after a prompt is detected, so a later prompt in
     /// the same command is detected too. `false` keeps the original one-detection-per-command
     /// behavior (one "needs attention" notification per command).

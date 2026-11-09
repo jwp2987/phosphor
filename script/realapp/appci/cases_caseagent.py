@@ -869,6 +869,7 @@ def c_agent_code_recycle(ctx, r):
 # ---------------------------------------------------------------- #1796: a slow, silent agent command is not "needs your input"
 LRC_HANDED_TO_USER = "handing the command to the user"          # interaction_mode.rs PromptDetector: an interactive prompt was detected
 LRC_KEPT_WITH_AGENT = "leaving the command with the agent"     # #1796: a trailing `?`/`:` sat quiet, the OS says nothing reads the tty (or cannot tell)
+LRC_NOTICE = "showing a take-over notice"                       # #1811: silence with an unknown probe shows the notice, never a hand-over
 LRC_HANDOFF_ERROR = "Failed to enter inline agent view for LRC handoff"
 LRC_AWAITED_RE = re.compile(r"agent_command_wait awaited=(true|false)\b")   # shell_command.rs: is this tool call one the hand-over watches
 
@@ -906,8 +907,8 @@ def c_agent_lrc_no_false_takeover(ctx, r):
     Part 1: `printf 'Waiting:'; sleep 20; echo <tok> >> lrc_wait.txt` must run to its end with the agent: no 'handing the command to the user' line
     in the app log; the effect file gets the token. On Linux the app logs that it saw the quiet `Waiting:` line and kept the command because the
     foreground was not reading the tty (a note: it only logs when the model's tool call waited for completion).
-    Part 2: `printf 'Continue? [y/N] '; read ans; echo <tok> >> lrc_yn.txt` is still handed over on the explicit marker: the
-    'handing the command to the user' line comes; the case answers `y` + Enter and the effect file gets the token. A model that does not wait for the
+    Part 2: `printf 'Continue? [y/N] '; read ans; echo <tok> >> lrc_yn.txt` is handed over when the OS proves the command reads the tty (Linux; #1811, no
+    quiet floor); where it cannot tell, only the take-over notice is logged. The 'handing the command to the user' line comes; the case answers `y` + Enter and the effect file gets the token. A model that does not wait for the
     command (its tool call returns a snapshot) never arms the detector: the app logs `agent_command_wait awaited=false` for it, and then a missing
     hand-over is a NOTE even when the command is still at its prompt after 60 s. A missing hand-over with `awaited=true` (or no such line) and the command
     still stuck after 60 s FAILS (the 30-minute hang). After a confirmed hand-over the typed `y` + Enter must reach the command (its effect file).
@@ -954,13 +955,17 @@ def c_agent_lrc_no_false_takeover(ctx, r):
             ctx.shot("lrc_yn_answered")
             r.check(ctx.lines("lrc_yn.txt") == [tok_y], "part 2: the [y/N] prompt was handed to the user, but the typed `y` + Enter did not reach the command "
                     "(lrc_yn.txt is %r after 20 s)" % (ctx.lines("lrc_yn.txt") if answered else []))
+        elif LRC_NOTICE in ctx.log_since(off2):
+            # #1811 (owner decision 2026-11-09): where the OS cannot say the command reads the tty (no probe, e.g. macOS) an explicit
+            # marker only gets the take-over notice after 3 s; it is never handed over on silence.
+            r.note("part 2: the OS cannot tell whether the command reads the tty; the take-over notice was logged and the command stayed with the agent (no hand-over on a timer)")
         elif ctx.lines("lrc_yn.txt"):
             r.note("part 2: no hand-over, but the command finished: the model answered the prompt itself (its tool call did not wait), so the hand-over was not exercised")
         elif lrc_awaited(ctx.log_since(off2)) is False:
             r.note("part 2: no hand-over and the command is still at its prompt after 60 s, but the app logged `agent_command_wait awaited=false`: the model's "
                    "tool call did not wait for completion, so the hand-over detector was never armed; the explicit hand-over is NOT verified")
         else:
-            r.check(False, "part 2: `printf 'Continue? [y/N] '; read` sat at its prompt for 60 s and was not handed to the user (an explicit marker must still be, #1796; "
+            r.check(False, "part 2: `printf 'Continue? [y/N] '; read` sat at its prompt for 60 s and was neither handed to the user (a proven tty read must be, #1811) nor given the take-over notice ("
                            "agent_command_wait awaited=%s)" % lrc_awaited(ctx.log_since(off2)))
         _, _, errs2 = lrc_takeover_verdict(ctx.log_since(off2))
         r.check(errs2 == 0, "part 2: the LRC hand-back logged '%s' %d time(s)" % (LRC_HANDOFF_ERROR, errs2))

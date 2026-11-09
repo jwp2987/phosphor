@@ -110,7 +110,6 @@ common-toast-link-blocked-scheme = Blocked link: { $scheme }: links of this kind
 # Files: app/src/ai/agent_management/**
 # =============================================================================
 
-agent-command-pager-closed-note = A pager opened and Phosphor closed it; output above may be only the first screen — rerun with --no-pager or `| cat` for the rest.
 agent-management-filter-all-tooltip = View your agent tasks plus all shared team tasks
 agent-management-filter-personal = Personal
 agent-management-filter-personal-tooltip = View agent tasks you created

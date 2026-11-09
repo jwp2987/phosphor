@@ -2425,16 +2425,16 @@ upstream's behavior is actually a defect rather than a preference.
   endpoint: large hosted models (Claude Opus/Sonnet, GPT-4/5 class, o-series, Gemini Pro,
   non-mini Grok) get upstream's behaviour with a snapshot after the screen sits unchanged
   for 3s or at 120s; local/Ollama and flash/mini/nano/haiku class keep the wait. (3) For a
-  snapshot-off model, local session only, a stalled alt-screen/raw-mode program whose
-  foreground process is exactly `less`, `more`, `most` or `pager` gets `q` and the result
-  says the output may be only the first screen; any other stalled full-screen program is
-  handed to the user through the #673 `BlockedOnInput` hand-over; keys are never sent to a
-  process that is not a known pager or cannot be identified. **Evidence:** the wedge is
+  snapshot-off model, a stalled alt-screen/raw-mode program (a pager that opened anyway,
+  an editor, a TUI) only gets the "may be waiting for input -- Take over" notice after 5 s;
+  Phosphor never sends `q` and never hands the command over on a timer (owner decision
+  2026-11-09, #1811/#1812/#1813, superseding the earlier `q`-to-a-known-pager and
+  timed-hand-over design); pagers are kept from opening by the wrapper's variables. **Evidence:** the wedge is
   reproducible with any small model and `git log`; the discarded state is reproducible in
   bash/zsh/fish by running `(cd /; true)` and checking `$PWD`. **Not fixable here:** a
   variable that was set but not exported is exported again by the restore; the pwsh form is
   unverified in a real shell.
-  <!-- markers: keep:wrap_command keep:needs_subshell keep:model_id_handles_command_snapshots keep:is_known_pager_name keep:FullscreenStallDetector -->
+  <!-- markers: keep:wrap_command keep:needs_subshell keep:model_id_handles_command_snapshots keep:FullscreenStallDetector -->
 
 - **Agent commands `exec` into an interactive shell are refused, an ignored Stop is escalated, and the
   wrapped command stays out of shell history** (`#899`, `#900`, `#904`, 2026-10-19,

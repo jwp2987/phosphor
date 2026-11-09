@@ -163,9 +163,6 @@ pub struct ShellCommandExecutor {
     /// an interactive prompt -- every other path hands the agent a snapshot within seconds --
     /// so the terminal view consults this before handing a stalled prompt to the user.
     awaiting_completion_action_ids: HashSet<AIAgentActionId>,
-    /// Waited actions whose stalled pager Phosphor closed with `q` (#855). Their result gets
-    /// a note saying so, because the output is then only the pager's first screen.
-    pager_closed_action_ids: HashSet<AIAgentActionId>,
     /// Test-only (agent fuzzer): the outcome a scripted command ends with, keyed by action. The
     /// mock terminal has no pty, so no block ever exists for a requested command;
     /// [`Self::complete_command_for_test`] stands in for the block finishing.
@@ -211,7 +208,6 @@ impl ShellCommandExecutor {
             terminal_view_id,
             control_handback_sender: None,
             awaiting_completion_action_ids: HashSet::new(),
-            pager_closed_action_ids: HashSet::new(),
             #[cfg(any(test, feature = "test-util"))]
             test_outcomes: Default::default(),
         }
@@ -248,12 +244,6 @@ impl ShellCommandExecutor {
     /// its command to complete (`wait_until_completion`), rather than polling it with snapshots.
     pub fn is_awaiting_completion(&self, action_id: &AIAgentActionId) -> bool {
         self.awaiting_completion_action_ids.contains(action_id)
-    }
-
-    /// Records that Phosphor closed a pager the waited command `action_id` had opened, so the
-    /// result handed to the model says the output may be incomplete.
-    pub fn note_pager_closed(&mut self, action_id: &AIAgentActionId) {
-        self.pager_closed_action_ids.insert(action_id.clone());
     }
 
     /// Whether the active model gets upstream's running-command snapshots (see
@@ -610,7 +600,6 @@ impl ShellCommandExecutor {
                         ),
                     ),
                     move |result, ctx| {
-                        let mut pager_closed = false;
                         // Remove the senders from the maps.
                         if let Some(handle) = handle.upgrade(ctx) {
                             handle.update(ctx, |me, ctx| {
@@ -622,7 +611,6 @@ impl ShellCommandExecutor {
                                 me.output_watchers.remove(&block_selector);
                                 let was_awaited =
                                     me.awaiting_completion_action_ids.remove(&action_id);
-                                pager_closed = me.pager_closed_action_ids.remove(&action_id);
                                 // #1796 (owner): the 30-minute backstop only gives the agent its
                                 // result so the turn is not stuck. It never switches terminal
                                 // control; the view shows a "may be waiting for input -- Take
@@ -644,11 +632,6 @@ impl ShellCommandExecutor {
                             });
                         }
 
-                        let result = if pager_closed {
-                            with_pager_closed_note(result)
-                        } else {
-                            result
-                        };
                         action_result_for_requested_command(command, result)
                     },
                 )
@@ -1441,39 +1424,6 @@ fn with_input_not_delivered_note(mut output: String) -> String {
     }
     output.push_str(INPUT_NOT_DELIVERED_NOTE);
     output
-}
-
-/// What the model is told when Phosphor closed a pager the command had opened.
-fn pager_closed_note() -> String {
-    crate::t!("agent-command-pager-closed-note")
-}
-
-/// Appends [`pager_closed_note`] to a finished command's output.
-fn with_pager_closed_note(result: ActionResult) -> ActionResult {
-    match result {
-        ActionResult::CommandFinished {
-            block_id,
-            mut output,
-            exit_code,
-            start_ts,
-            completed_ts,
-            interrupted,
-        } => {
-            if !output.ends_with('\n') && !output.is_empty() {
-                output.push('\n');
-            }
-            output.push_str(&pager_closed_note());
-            ActionResult::CommandFinished {
-                block_id,
-                output,
-                exit_code,
-                start_ts,
-                completed_ts,
-                interrupted,
-            }
-        }
-        other => other,
-    }
 }
 
 /// A fingerprint of the screen while it is in a state a stalled command can be snapshotted

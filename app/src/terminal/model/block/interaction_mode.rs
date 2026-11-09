@@ -763,17 +763,17 @@ pub enum InteractivePromptShape {
     TrailingPunctuation,
 }
 
-/// How long an explicit confirmation marker (`[y/N]`, "Press any key") must sit unchanged
-/// before it counts as stalled.
-pub const INTERACTIVE_PROMPT_QUIET_EXPLICIT: std::time::Duration =
+/// How long an explicit confirmation marker (`[y/N]`, "Press any key") must sit unchanged,
+/// when the OS cannot say whether the foreground reads the tty ([`ForegroundTtyRead::Unknown`]),
+/// before a NOTICE is shown on the command ("This command may be waiting for input -- Take
+/// over", [`PromptDetection::MayBeWaiting`]).
+///
+/// Owner rule (#1796, #1811): a timer never hands a command over. A marker hands the command
+/// over only on a proven tty read ([`ForegroundTtyRead::Reading`]), at the next observation with
+/// no quiet floor; `NotReading` shows nothing; silence with `Unknown` only shows this notice.
+// give-up-net: shows a 'may be waiting for input -- Take over' notice only; never hands the command over (#1811)
+pub const INTERACTIVE_PROMPT_NOTICE_EXPLICIT: std::time::Duration =
     std::time::Duration::from_secs(3);
-/// How long a bare trailing `?` / `:` must sit unchanged: far weaker evidence, so it outlasts
-/// a progress label and a short `read -t` timeout. Silence alone never hands it over (#1796):
-/// once this has passed the foreground must also be blocked reading the tty
-/// ([`PromptDetector::observe`]). A real `read -p` then waits ~15s for the hand-over; where
-/// that cannot be told it waits for [`INTERACTIVE_PROMPT_QUIET_TRAILING_UNKNOWN_READ`].
-pub const INTERACTIVE_PROMPT_QUIET_TRAILING: std::time::Duration =
-    std::time::Duration::from_secs(15);
 /// How long a bare trailing `?` / `:` must sit unchanged, when the OS cannot say whether the
 /// foreground reads the tty ([`ForegroundTtyRead::Unknown`]: no probe on this platform, e.g.
 /// macOS; ptrace restrictions; a member owned by another user, e.g. root under `sudo`), before
@@ -783,21 +783,20 @@ pub const INTERACTIVE_PROMPT_QUIET_TRAILING: std::time::Duration =
 /// Owner rule (#1796, two weeks of timer bugs): a timer never decides routing. Silence is weak
 /// evidence (a slow, silent step of a long command), so on `Unknown` the command is NEVER handed
 /// over on a timer: the notice is UI only, and one click takes over. The command stays with the
-/// agent until the user acts, the probe says [`ForegroundTtyRead::Reading`], an explicit marker
-/// appears, or it completes. A probe that says [`ForegroundTtyRead::NotReading`] shows nothing.
+/// agent until the user acts, the probe says [`ForegroundTtyRead::Reading`] (which hands over at
+/// the next observation, no quiet floor, #1811), an explicit marker is read by the tty, or it
+/// completes. A probe that says [`ForegroundTtyRead::NotReading`] shows nothing.
 // give-up-net: shows a 'may be waiting for input -- Take over' notice only; never hands the command over (#1796)
 pub const INTERACTIVE_PROMPT_QUIET_TRAILING_UNKNOWN_READ: std::time::Duration =
     std::time::Duration::from_secs(90);
 
 impl InteractivePromptShape {
-    /// How long the prompt (same text, same cursor) must have been on screen, with no output
-    /// changing it, before it counts as stalled. A duration, not a number of polls: the
-    /// check is driven by terminal output and one quiet timer, so how often anything polls
-    /// cannot move it.
-    pub fn required_quiet(self) -> std::time::Duration {
+    /// How long the prompt (same text, same cursor) must have been on screen with an
+    /// `Unknown` probe before the take-over NOTICE is shown. Never a hand-over.
+    pub fn notice_after(self) -> std::time::Duration {
         match self {
-            Self::Explicit => INTERACTIVE_PROMPT_QUIET_EXPLICIT,
-            Self::TrailingPunctuation => INTERACTIVE_PROMPT_QUIET_TRAILING,
+            Self::Explicit => INTERACTIVE_PROMPT_NOTICE_EXPLICIT,
+            Self::TrailingPunctuation => INTERACTIVE_PROMPT_QUIET_TRAILING_UNKNOWN_READ,
         }
     }
 }
@@ -887,8 +886,8 @@ pub enum ForegroundTtyRead {
 pub enum PromptDetection {
     /// Echo off with canonical input on: the password-prompt shape.
     Password,
-    /// A prompt-shaped line that has sat unchanged for its shape's quiet duration (and, for a
-    /// bare trailing `?`/`:`, with the foreground blocked reading the tty).
+    /// A prompt-shaped line (explicit marker or bare trailing `?`/`:`) with the foreground
+    /// blocked reading the tty (#1811: no quiet floor, no timer).
     Interactive,
     /// A bare trailing `?`/`:` stayed quiet past
     /// [`INTERACTIVE_PROMPT_QUIET_TRAILING_UNKNOWN_READ`] and the OS cannot say whether the
@@ -936,12 +935,12 @@ impl PromptDetector {
     /// echo on, the one shape an interactive prompt can have; raw-mode programs (editors,
     /// REPLs, a logged-in ssh session) are never probed.
     ///
-    /// `foreground_tty_read` is only called for a bare trailing `?`/`:` candidate once its
-    /// quiet window has passed (#1796): a line ending in `:` that stays put is what a slow,
-    /// silent command leaves too (`printf 'Waiting:'; sleep 20`, a long `du` after a label),
-    /// so silence is not evidence of an input wait. It fires only when the OS says the
-    /// foreground is blocked reading the tty. An explicit marker (`[y/N]`, "Press Enter") and
-    /// the password shape (echo off) need no probe.
+    /// `foreground_tty_read` is asked at every observation of a prompt-shaped candidate (#1811):
+    /// a line that stays put is what a slow, silent command leaves too (`printf 'Waiting:';
+    /// sleep 20`, a long `du` after a label), so silence is not evidence of an input wait. A
+    /// hand-over needs the OS to say the foreground is blocked reading the tty, and then happens
+    /// at that observation. Silence with `Unknown` only yields [`PromptDetection::MayBeWaiting`].
+    /// The password shape (echo off) needs no probe.
     pub fn observe(
         &mut self,
         now: instant::Instant,
@@ -977,80 +976,73 @@ impl PromptDetector {
             self.last_candidate = Some(candidate);
         }
         let since = *self.candidate_since.get_or_insert(now);
-        let required = self
-            .last_candidate
-            .as_ref()
-            .map_or(INTERACTIVE_PROMPT_QUIET_TRAILING, |candidate| {
-                candidate.shape.required_quiet()
-            });
-        let quiet_for = now.saturating_duration_since(since);
-        if self.interactive_latched || quiet_for < required {
+        if self.interactive_latched {
             return None;
         }
-        let needs_tty_read = self.last_candidate.as_ref().is_some_and(|candidate| {
-            candidate.shape == InteractivePromptShape::TrailingPunctuation
-        });
-        let mut evidence = "";
-        if needs_tty_read {
-            match foreground_tty_read() {
-                ForegroundTtyRead::Reading => evidence = ", foreground reading the tty",
-                ForegroundTtyRead::Unknown
-                    if quiet_for >= INTERACTIVE_PROMPT_QUIET_TRAILING_UNKNOWN_READ =>
-                {
-                    // #1796 owner rule: silence is not routing evidence. A notice, once; the
-                    // command stays with the agent, and a later `Reading` still hands over.
-                    self.awaiting_tty_read = Some(ForegroundTtyRead::Unknown);
-                    if self.may_be_waiting_noticed {
-                        return None;
-                    }
-                    self.may_be_waiting_noticed = true;
-                    log::info!(
-                        "prompt-shaped line {:?} unchanged for {quiet_for:?}, tty read unknown; \
-                         showing a take-over notice (the command stays with the agent)",
-                        self.last_candidate.as_ref().map(|c| c.text.as_str())
-                    );
-                    return Some(PromptDetection::MayBeWaiting);
-                }
-                verdict => {
-                    if self.awaiting_tty_read != Some(verdict) {
-                        let what = if verdict == ForegroundTtyRead::NotReading {
-                            "the foreground is not reading the tty"
-                        } else {
-                            "whether the foreground reads the tty is unknown"
-                        };
-                        log::info!(
-                            "prompt-shaped line {:?} unchanged for {quiet_for:?}, but {what}; leaving the command with the agent",
-                            self.last_candidate.as_ref().map(|c| c.text.as_str())
-                        );
-                    }
-                    self.awaiting_tty_read = Some(verdict);
+        let quiet_for = now.saturating_duration_since(since);
+        let notice_after = self.last_candidate.as_ref().map_or(
+            INTERACTIVE_PROMPT_QUIET_TRAILING_UNKNOWN_READ,
+            |candidate| candidate.shape.notice_after(),
+        );
+        // #1811: no timer hands a command over. The OS is asked at every observation of a
+        // prompt-shaped line (an output burst, the 1 Hz poll, the notice wake): a foreground
+        // blocked reading the tty hands over at once, no quiet floor; silence alone never does.
+        match foreground_tty_read() {
+            ForegroundTtyRead::Reading => {
+                self.interactive_latched = true;
+                log::info!(
+                    "interactive prompt {:?} unchanged for {quiet_for:?}, foreground reading the tty; handing the command to the user",
+                    self.last_candidate.as_ref().map(|c| c.text.as_str())
+                );
+                Some(PromptDetection::Interactive)
+            }
+            ForegroundTtyRead::Unknown if quiet_for >= notice_after => {
+                // A notice, once; the command stays with the agent, and a later `Reading`
+                // still hands over.
+                self.awaiting_tty_read = Some(ForegroundTtyRead::Unknown);
+                if self.may_be_waiting_noticed {
                     return None;
                 }
+                self.may_be_waiting_noticed = true;
+                log::info!(
+                    "prompt-shaped line {:?} unchanged for {quiet_for:?}, tty read unknown; \
+                     showing a take-over notice (the command stays with the agent)",
+                    self.last_candidate.as_ref().map(|c| c.text.as_str())
+                );
+                Some(PromptDetection::MayBeWaiting)
+            }
+            verdict => {
+                if self.awaiting_tty_read != Some(verdict) {
+                    let what = if verdict == ForegroundTtyRead::NotReading {
+                        "the foreground is not reading the tty"
+                    } else {
+                        "whether the foreground reads the tty is unknown"
+                    };
+                    log::info!(
+                        "prompt-shaped line {:?} unchanged for {quiet_for:?}, but {what}; leaving the command with the agent",
+                        self.last_candidate.as_ref().map(|c| c.text.as_str())
+                    );
+                }
+                self.awaiting_tty_read = Some(verdict);
+                None
             }
         }
-        self.interactive_latched = true;
-        log::info!(
-            "interactive prompt {:?} unchanged for {quiet_for:?} (required {required:?}{evidence}); handing the command to the user",
-            self.last_candidate.as_ref().map(|c| c.text.as_str())
-        );
-        Some(PromptDetection::Interactive)
     }
 
     /// When the pending candidate will have been quiet long enough, i.e. when to observe
     /// again if no output arrives first. `None` when there is nothing to wait for.
     pub fn next_wake(&self) -> Option<instant::Instant> {
-        if self.interactive_latched {
+        if self.interactive_latched || self.may_be_waiting_noticed {
             return None;
         }
         let candidate = self.last_candidate.as_ref()?;
         let since = self.candidate_since?;
+        // Only the notice is on a clock. `NotReading` is re-asked by the 1 Hz poll and by
+        // output, so a command that prints `Name:` and only starts its `read` later is still
+        // handed over (#1796).
         match self.awaiting_tty_read {
-            None => Some(since + candidate.shape.required_quiet()),
-            Some(ForegroundTtyRead::Unknown) if self.may_be_waiting_noticed => None,
-            Some(ForegroundTtyRead::Unknown) => {
-                Some(since + INTERACTIVE_PROMPT_QUIET_TRAILING_UNKNOWN_READ)
-            }
-            Some(_) => None,
+            Some(ForegroundTtyRead::Unknown) => Some(since + candidate.shape.notice_after()),
+            _ => None,
         }
     }
 
@@ -1071,60 +1063,12 @@ impl PromptDetector {
 /// (the model, not Phosphor, then decides what to do).
 // give-up-net: hands the stalled screen to a snapshot-capable model; writes nothing to the pty
 pub const STALL_SNAPSHOT_AFTER: std::time::Duration = std::time::Duration::from_secs(3);
-/// How long a waited agent command's screen must sit unchanged, with a known pager in the
-/// foreground, before Phosphor sends it `q`.
-pub const STALL_CLOSE_PAGER_AFTER: std::time::Duration = std::time::Duration::from_secs(3);
-/// How long it must sit unchanged, with anything else full-screen in the foreground (or
-/// nothing identifiable), before the command is handed to the user.
-pub const STALL_HAND_TO_USER_AFTER: std::time::Duration = std::time::Duration::from_secs(5);
-/// How long after sending `q` to a pager that did not react the command is handed to the
-/// user anyway.
-pub const STALL_PAGER_UNRESPONSIVE_AFTER: std::time::Duration = std::time::Duration::from_secs(8);
-
-/// Process names (`/proc/<pid>/comm`, or the basename of `proc_pidpath`) that are pagers
-/// where `q` quits. Exact match only: `lessfilter`, `vim` and `man` are deliberately not
-/// here (`man` hands its output to a pager that IS one of these).
-pub fn is_known_pager_name(name: &str) -> bool {
-    matches!(name.trim(), "less" | "more" | "most" | "pager")
-}
-
-/// Process names that routinely sit in a pager's process group and hand it their output:
-/// the command that spawned the pager (`git log`, `man`, `psql`, ...), a pager, or a shell
-/// wrapper around either.
-pub fn is_pager_spawner_name(name: &str) -> bool {
-    is_known_pager_name(name)
-        || matches!(
-            name.trim(),
-            "git"
-                | "man"
-                | "systemctl"
-                | "journalctl"
-                | "psql"
-                | "aws"
-                | "gh"
-                | "bat"
-                | "sh"
-                | "bash"
-                | "zsh"
-                | "fish"
-        )
-}
-
-/// Whether the foreground process group is a known pager that Phosphor may send `q` to:
-/// EXACTLY one member is a known pager and every other member is a known pager spawner. A
-/// pager is rarely the group leader (`git log` is, `less` is a member), so the whole group
-/// is judged. Anything else -- an editor, `ssh`, an unknown program next to a `less` -- is
-/// not ours to close.
-pub fn is_closable_pager_group<S: AsRef<str>>(names: &[S]) -> bool {
-    let pagers = names
-        .iter()
-        .filter(|name| is_known_pager_name(name.as_ref()))
-        .count();
-    pagers == 1
-        && names
-            .iter()
-            .all(|name| is_pager_spawner_name(name.as_ref()))
-}
+/// How long a waited agent command's full-screen program (a pager that opened anyway, an
+/// editor, a TUI) must sit unchanged before the "may be waiting for input -- Take over" NOTICE
+/// is shown. Owner decision 2026-11-09 (#1811): no timer hands the command over and Phosphor
+/// never writes `q` (or anything else) to the pty on a timer; the user's click takes over.
+// give-up-net: shows a 'may be waiting for input -- Take over' notice only; never hands the command over or writes to the pty (#1811)
+pub const STALL_NOTICE_AFTER: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// A stable fingerprint of whatever is on screen, for [`StallTracker`].
 pub fn screen_fingerprint(parts: impl std::hash::Hash) -> u64 {
@@ -1180,21 +1124,17 @@ impl StallTracker {
 /// program.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FullscreenStall {
-    /// The foreground process is a known pager: send it `q`.
-    ClosePager,
-    /// Anything else (or an unidentifiable process): do not touch the program, give the
-    /// command to the user.
-    HandToUser,
+    /// Show the take-over notice. Whatever the program is -- a pager, an editor, a TUI -- the
+    /// command stays with the agent and no key is sent (#1811).
+    MayBeWaiting,
 }
 
 /// Turns once-a-second observations of a waited agent command into [`FullscreenStall`]s.
-/// Each kind fires once per unchanged-screen episode; a new screen re-arms it (the pager
-/// redraws or exits after `q`).
+/// Fires once per unchanged-screen episode; a new screen re-arms it.
 #[derive(Debug, Default)]
 pub struct FullscreenStallDetector {
     tracker: StallTracker,
-    pager_closed: bool,
-    handed: bool,
+    noticed: bool,
 }
 
 impl FullscreenStallDetector {
@@ -1204,60 +1144,34 @@ impl FullscreenStallDetector {
 
     /// When the detector next has something to decide if the screen stays unchanged: the
     /// instant to arm ONE quiet timer for, or `None` when no stall-eligible screen is tracked
-    /// or nothing is left to decide (everything already fired). Derived from the tracked
-    /// screen's first-seen timestamp, so repeated calls for an unchanged screen return the
-    /// same instant (#1365).
+    /// or the notice already fired. Derived from the tracked screen's first-seen timestamp, so
+    /// repeated calls for an unchanged screen return the same instant (#1365).
     pub fn next_wake(&self, now: instant::Instant) -> Option<instant::Instant> {
         let (_, since) = self.tracker.current?;
-        if self.handed {
+        if self.noticed {
             return None;
         }
-        let at = if self.pager_closed {
-            since + STALL_PAGER_UNRESPONSIVE_AFTER
-        } else if now < since + STALL_CLOSE_PAGER_AFTER {
-            since + STALL_CLOSE_PAGER_AFTER
-        } else {
-            since + STALL_HAND_TO_USER_AFTER
-        };
+        let at = since + STALL_NOTICE_AFTER;
         (at > now).then_some(at)
     }
 
     /// `fingerprint` is `Some` only while a stall-eligible screen exists (raw mode or alt
-    /// screen, on a command an agent tool call is blocked on). `is_pager` is asked only once
-    /// the screen has been quiet long enough to act, and answers `None` when the foreground
-    /// process cannot be determined -- which is never treated as a pager.
+    /// screen, on a command an agent tool call is blocked on).
     pub fn observe(
         &mut self,
         fingerprint: Option<u64>,
         now: instant::Instant,
-        is_pager: impl FnOnce() -> Option<bool>,
     ) -> Option<FullscreenStall> {
         let stalled_for = self.tracker.observe(fingerprint, now);
         if stalled_for.is_zero() {
             // New screen, or nothing eligible: start over.
-            self.pager_closed = false;
-            self.handed = false;
+            self.noticed = false;
             return None;
         }
-        if self.handed || stalled_for < STALL_CLOSE_PAGER_AFTER {
+        if self.noticed || stalled_for < STALL_NOTICE_AFTER {
             return None;
         }
-        if self.pager_closed {
-            // `q` was sent and the screen did not change: the pager is not listening.
-            if stalled_for >= STALL_PAGER_UNRESPONSIVE_AFTER {
-                self.handed = true;
-                return Some(FullscreenStall::HandToUser);
-            }
-            return None;
-        }
-        if is_pager() == Some(true) {
-            self.pager_closed = true;
-            return Some(FullscreenStall::ClosePager);
-        }
-        if stalled_for >= STALL_HAND_TO_USER_AFTER {
-            self.handed = true;
-            return Some(FullscreenStall::HandToUser);
-        }
-        None
+        self.noticed = true;
+        Some(FullscreenStall::MayBeWaiting)
     }
 }

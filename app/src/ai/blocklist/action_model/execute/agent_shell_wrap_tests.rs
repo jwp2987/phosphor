@@ -79,6 +79,44 @@ fn every_pager_variable_is_saved_and_restored() {
     }
 }
 
+/// The precmd backstops in the bootstrap scripts restore from their own copy of the list
+/// (#1813); a variable the wrapper sets but a backstop does not restore would leak after ^C.
+#[test]
+fn bootstrap_backstops_restore_every_pager_variable() {
+    for script in [
+        include_str!("../../../../../assets/bundled/bootstrap/bash_body.sh"),
+        include_str!("../../../../../assets/bundled/bootstrap/zsh_body.sh"),
+    ] {
+        let line = script
+            .lines()
+            .find(|l| l.contains("for __phosphor_ap_v in PAGER GIT_PAGER"))
+            .expect("backstop loop");
+        for var in PAGER_VARS {
+            assert!(
+                line.split_whitespace().any(|w| w == *var),
+                "backstop misses {var}"
+            );
+        }
+    }
+}
+
+/// The belt-and-braces variables (#1813) are set by every shell family that gets a wrapper.
+#[test]
+fn extra_pager_variables_are_set_for_every_wrapped_shell() {
+    for shell in [
+        ShellType::Bash,
+        ShellType::Zsh,
+        ShellType::Fish,
+        ShellType::PowerShell,
+    ] {
+        let wrapped = wrap_command(Some(shell), "echo hi");
+        for var in ["PERLDOC_PAGER", "MYSQL_PAGER", "LESS", "SYSTEMD_LESS"] {
+            assert!(wrapped.contains(var), "{shell:?} lacks {var}: {wrapped}");
+        }
+        assert!(wrapped.contains("-FRX"), "{shell:?}: {wrapped}");
+    }
+}
+
 #[test]
 fn multiline_heredoc_closer_is_alone_on_its_line() {
     let command = "python3 - <<'PY'\nprint('ok')\nPY";

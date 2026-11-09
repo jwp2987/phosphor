@@ -592,7 +592,7 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     # Keep the loop and the guard restore identical to `posix_restore` / `POSIX_GUARD_RESTORE`
     # in agent_shell_wrap.rs (the guard shadows `exit`/`logout` while the command runs).
     __phosphor_ap_restore_pagers () {
-      for __phosphor_ap_v in PAGER GIT_PAGER MANPAGER SYSTEMD_PAGER PSQL_PAGER AWS_PAGER GH_PAGER BAT_PAGER GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
+      for __phosphor_ap_v in PAGER GIT_PAGER MANPAGER SYSTEMD_PAGER PSQL_PAGER AWS_PAGER GH_PAGER BAT_PAGER PERLDOC_PAGER MYSQL_PAGER LESS SYSTEMD_LESS GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
         eval "if [ -n \"\${__phosphor_ap_s_$__phosphor_ap_v-}\" ]; then export $__phosphor_ap_v=\"\$__phosphor_ap_o_$__phosphor_ap_v\"; else unset $__phosphor_ap_v; fi; unset __phosphor_ap_s_$__phosphor_ap_v __phosphor_ap_o_$__phosphor_ap_v"
       done
       unset -f exit logout; if [ -n "$__phosphor_ap_gx" ]; then eval "$__phosphor_ap_gx"; fi; if [ -n "$__phosphor_ap_gl" ]; then eval "$__phosphor_ap_gl"; fi; unset __phosphor_ap_gx __phosphor_ap_gl

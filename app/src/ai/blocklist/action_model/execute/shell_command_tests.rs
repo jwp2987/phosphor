@@ -866,32 +866,6 @@ fn manual_cancel_of_a_user_held_agent_command_does_not_interrupt_again() {
     });
 }
 
-/// #855: when Phosphor closed a pager, the model is told the output may be incomplete, and
-/// only a finished command's output carries the note.
-#[test]
-fn pager_closed_note_is_appended_to_finished_output_only() {
-    crate::i18n::init(Some("en"));
-    let finished = ActionResult::CommandFinished {
-        block_id: BlockId::new(),
-        output: "first screen".to_owned(),
-        exit_code: 0.into(),
-        start_ts: None,
-        completed_ts: None,
-        interrupted: false,
-    };
-    let ActionResult::CommandFinished { output, .. } = with_pager_closed_note(finished) else {
-        panic!("a finished command stays finished");
-    };
-    assert!(output.starts_with("first screen\n"), "{output}");
-    assert!(output.contains("Phosphor closed it"), "{output}");
-    assert!(output.contains("--no-pager"), "{output}");
-
-    assert!(matches!(
-        with_pager_closed_note(ActionResult::Cancelled),
-        ActionResult::Cancelled
-    ));
-}
-
 /// nushell's in-band call passes the command as a raw string, which `shell_words` would read
 /// as one mangled word (`r#ssh host#`), so it is unwrapped on its own.
 #[test]
