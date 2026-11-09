@@ -162,24 +162,52 @@ def ocr_safe(s):
     return "".join(OCR_SAFE[ord(c) % len(OCR_SAFE)] for c in s)
 
 
-def find_token(ctx, tag, token, last=True):
+def find_token(ctx, tag, token, last=True, since=None, r=None):
     """(word, path) like find_word, for a whole token: an exact substring hit first, else the word that differs from the token by at most one glyph
-    (a misread or a dropped/added glyph at either end). OCR noise around the word (a quote, a colon) is stripped before comparing."""
-    h = _hook_word(ctx, token)
+    (a misread or a dropped/added glyph at either end). OCR noise around the word (a quote, a colon) is stripped before comparing.
+    The app's find hook (#1789) is asked first for a token the case registered (register_find); with `r` given, a missing hook line is noted on it."""
+    h = _hook_word(ctx, token, since)
     if h:
         return h, None
+    if r is not None and getattr(ctx.be, "name", None) in ("wayland", "x11"):
+        hook_missing_note(r, token)
     ws, p = words(ctx, tag)
     hits = token_hits(ws, token)
     return ((hits[-1] if last else hits[0]) if hits else None), p
 
 
-def _hook_word(ctx, token):
-    """the OCR-free position (hook_find) of `token`, Wayland only (the window's screen origin comes from sway); None without the app hook"""
-    if not on_wayland(ctx):
+def x11_window_origin(pid):
+    """(x, y) of the app's X11 window on screen, from xdotool (no window manager under the job's Xvfb, so the window origin is the content origin), or None"""
+    try:
+        ids = subprocess.run(["xdotool", "search", "--onlyvisible", "--pid", str(pid)], capture_output=True, timeout=10).stdout.decode().split()
+        if not ids:
+            return None
+        g = subprocess.run(["xdotool", "getwindowgeometry", "--shell", ids[-1]], capture_output=True, timeout=10).stdout.decode()
+        kv = dict(l.split("=") for l in g.split() if "=" in l)
+        return int(kv["X"]), int(kv["Y"])
+    except Exception:
+        return None
+
+
+def _hook_word(ctx, token, since=None):
+    """the OCR-free position (hook_find) of `token` on Wayland (window origin from sway) and X11 (from xdotool); None without the app hook line
+    (an app without the hook, or a token the hook never saw drawn): the caller falls back to OCR and says so (hook_missing_note)"""
+    if getattr(ctx.be, "name", None) not in ("wayland", "x11"):
         return None
     pid = ctx.be.pid_fn() if getattr(ctx.be, "pid_fn", None) else None
-    rect = sway_window_rect(pid) if pid else None
-    return hook_find(ctx, token, origin=(rect[0], rect[1])) if rect else None
+    if not pid:
+        return None
+    if on_wayland(ctx):
+        rect = sway_window_rect(pid)
+        origin = (rect[0], rect[1]) if rect else None
+    else:
+        origin = x11_window_origin(pid)
+    return hook_find(ctx, token, origin=origin, since=since) if origin else None
+
+
+def hook_missing_note(r, token):
+    """the hook path found no `appci_find` line for `token`: the case continues with OCR (the old method) and the report says so"""
+    r.note("app find hook gave no position for %r (no `appci_find` line in the app log: an app without the hook, or RUST_LOG without warpui::appci_find=info); located by OCR instead" % token)
 
 
 def token_hits(ws, token):
@@ -318,17 +346,21 @@ def sway_window_rect(pid):
 FIND_RE = re.compile(r"appci_find token=(\S+) x0=(-?[\d.]+) y0=(-?[\d.]+) x1=(-?[\d.]+) y1=(-?[\d.]+)")
 
 
-def hook_find(ctx, token, origin=(0, 0), scale=1.0):
+def hook_find(ctx, token, origin=(0, 0), scale=1.0, since=None):
     """OCR-free position of `token` from the app's own log (#1789): the env-gated hook logs `appci_find token=T x0= y0= x1= y1=` (window-content
     pixels of the drawn text) for every token listed in $PHOSPHOR_APPCI_FIND_FILE. Returns a words() row (text, cx, cy, left, right, top, bottom) in
     screen pixels (origin = the window's top-left on screen, scale = device pixels per logical pixel) or None when the app logged nothing (an app
-    without the hook, which is today's app): the caller then falls back to OCR. The LAST line for the token wins (the lowest, newest occurrence)."""
+    without the hook, which is today's app): the caller then falls back to OCR. The LAST line for the token wins (the lowest, newest occurrence).
+    `since` (a ctx.log_size() offset) limits the search to lines logged after it, so a stale line of an earlier case cannot be taken."""
     try:
-        path = ctx.log_path
-        with open(path, "rb") as f:
-            f.seek(0, 2)
-            f.seek(max(0, f.tell() - (2 << 20)))
-            text = f.read().decode(errors="replace")
+        if since is not None:
+            text = ctx.log_since(since)
+        else:
+            path = ctx.log_path
+            with open(path, "rb") as f:
+                f.seek(0, 2)
+                f.seek(max(0, f.tell() - (2 << 20)))
+                text = f.read().decode(errors="replace")
     except Exception:
         return None
     hit = None
@@ -348,7 +380,9 @@ def register_find(ctx, *tokens):
         with open(os.path.join(ctx.prof.home, "appci_find.txt"), "a", encoding="utf-8") as f:
             f.write("".join(t + "\n" for t in tokens))
     except Exception:
-        pass
+        return
+    # the app re-reads the file at most every 200 ms; text laid out before that would carry no hit
+    time.sleep(0.35)
 
 
 def mouse_or_skip(ctx, r):
@@ -629,9 +663,10 @@ def c_mouse_copy(ctx, r):
     need_tesseract(r)
     tok = "msel" + ocr_safe(ctx.tok(6).lower().replace("_", ""))
     register_find(ctx, tok)
+    seen = ctx.log_size()
     run_cmd(ctx, "printf 'msel%%s\\n' %s" % tok[4:])
     time.sleep(0.8)
-    w, _ = find_token(ctx, "mouse_find", tok)
+    w, _ = find_token(ctx, "mouse_find", tok, since=seen, r=r)
     if not w:
         wl_check(ctx, r, False, "token %r not found on screen by OCR (shots/*mouse_find.png): cannot place the pointer" % tok, "OCR")
         if on_wayland(ctx):
@@ -674,18 +709,23 @@ def c_right_click_paste(ctx, r):
     # on screen, then cleared with Ctrl-U; the right-click goes where the probe began (inside the now empty input).
     probe = "rcpw" + ocr_safe(ctx.tok(6).lower().replace("_", ""))
     register_find(ctx, probe)
+    seen = ctx.log_size()
     ctx.be.type(probe, 12)
     time.sleep(0.6)
-    p, _ = find_token(ctx, "rc_prompt", probe)
+    p, _ = find_token(ctx, "rc_prompt", probe, since=seen, r=r)
     ctx.be.key("ctrl+u")
     time.sleep(0.3)
     if not p:
         wl_check(ctx, r, False, "the probe %r typed into the input was not found on screen by OCR (shots/*rc_prompt.png): cannot place the pointer" % probe, "OCR")
         return
     mark = ctx.cmd_mark()
+    register_find(ctx, "Paste")
+    seen = ctx.log_size()
     m.click(p[3] + 4, p[2], 3)
     time.sleep(0.6)
-    item, _ = find_word(ctx, "rc_menu", "paste")
+    item = _hook_word(ctx, "Paste", seen)
+    if not item:
+        item, _ = find_word(ctx, "rc_menu", "paste")
     if not item:
         wl_check(ctx, r, False, "no 'Paste' entry in the context menu (shots/*rc_menu.png)", "pointer/OCR")
         ctx.be.key("Escape")

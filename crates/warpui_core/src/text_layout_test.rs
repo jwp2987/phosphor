@@ -343,6 +343,7 @@ fn synthetic_line(glyph_count: usize, glyph_width: f32, clip_config: ClipConfig)
         descent: 2.,
         caret_positions: Vec::new(),
         chars_with_missing_glyphs: Vec::new(),
+        find_hits: Vec::new(),
     }
 }
 
@@ -442,6 +443,7 @@ fn test_run_background_painted_before_underline() {
                 descent: 2.,
                 caret_positions: Vec::new(),
                 chars_with_missing_glyphs: Vec::new(),
+                find_hits: Vec::new(),
             };
 
             let mut scene = Scene::new(1., rendering::Config::default());
@@ -522,6 +524,7 @@ fn test_run_background_clamped_to_visible_glyph_span() {
                 descent: 2.,
                 caret_positions: Vec::new(),
                 chars_with_missing_glyphs: Vec::new(),
+                find_hits: Vec::new(),
             };
 
             // Only the first three glyphs (0..36px) are "visible".
@@ -604,6 +607,7 @@ fn test_fully_truncated_run_paints_no_background() {
                 descent: 2.,
                 caret_positions: Vec::new(),
                 chars_with_missing_glyphs: Vec::new(),
+                find_hits: Vec::new(),
             };
 
             let mut scene = Scene::new(1., rendering::Config::default());

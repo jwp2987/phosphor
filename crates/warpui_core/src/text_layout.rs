@@ -574,6 +574,10 @@ pub struct Line {
     /// codepoint, meaning ligatures will have multiple caret positions.
     pub caret_positions: Vec<CaretPosition>,
     pub chars_with_missing_glyphs: Vec<char>,
+
+    /// Test-harness find hook (#1789): occurrences of the tokens listed in `PHOSPHOR_APPCI_FIND_FILE`
+    /// in this line. Always empty unless that variable is set.
+    pub find_hits: Vec<crate::appci_find::FindHit>,
 }
 
 /// Default baseline offset calculation for Lines.
@@ -768,6 +772,10 @@ pub struct TextFrame {
 }
 
 impl TextFrame {
+    pub(crate) fn lines_mut(&mut self) -> impl Iterator<Item = &mut Line> {
+        self.lines.iter_mut()
+    }
+
     pub fn new(lines: Vec1<Line>, max_width: f32, alignment: TextAlignment) -> Self {
         TextFrame {
             lines,
@@ -956,6 +964,7 @@ impl TextFrame {
             clip_config: None,
             caret_positions,
             chars_with_missing_glyphs: vec![],
+            find_hits: Vec::new(),
         };
         TextFrame {
             lines: vec1![line],
@@ -1096,6 +1105,7 @@ impl Line {
                 last_offset: narrow_offset(glyph_index),
             }],
             chars_with_missing_glyphs: vec![],
+            find_hits: Vec::new(),
         }
     }
 
@@ -1113,6 +1123,7 @@ impl Line {
             clip_config: None,
             caret_positions: Default::default(),
             chars_with_missing_glyphs: Default::default(),
+            find_hits: Vec::new(),
         }
     }
 
@@ -1775,6 +1786,27 @@ impl Line {
             if should_stop_after_run {
                 break;
             }
+        }
+
+        // Test-harness find hook (#1789): empty unless PHOSPHOR_APPCI_FIND_FILE is set.
+        if !self.find_hits.is_empty() && !is_start_clipping {
+            self.report_find_hits(line_origin, scene.scale_factor());
+        }
+    }
+
+    /// Log where the listed tokens of this line were drawn (`line_origin` is the baseline origin).
+    fn report_find_hits(&self, line_origin: Vector2F, scale: f32) {
+        for hit in &self.find_hits {
+            crate::appci_find::report(
+                &hit.token,
+                [
+                    line_origin.x() + hit.x0,
+                    line_origin.y() - self.ascent,
+                    line_origin.x() + hit.x1,
+                    line_origin.y() + self.descent,
+                ],
+                scale,
+            );
         }
     }
 }
