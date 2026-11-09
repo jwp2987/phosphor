@@ -175,6 +175,12 @@ where
         None
     }
 
+    /// The quiet trailing `:`/`?` line stayed quiet past the long window while the OS could not
+    /// say whether the foreground reads the tty (#1796). Shows a notice only: the command stays
+    /// with the agent (owner rule: a timer never decides routing).
+    #[cfg(unix)]
+    fn on_command_may_be_waiting_for_input(&mut self, _ctx: &mut ViewContext<Self>) {}
+
     /// Called once the same [`Self::pending_interactive_prompt`] has been observed for its
     /// shape's debounce.
     #[cfg(unix)]

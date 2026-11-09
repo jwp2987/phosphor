@@ -27086,6 +27086,39 @@ fn the_line_editor_signal_give_up_hands_the_held_keys_to_the_editor_and_writes_n
     }
 }
 
+/// #1796 (owner rule: timers never decide routing): the "may be waiting for input" notice is UI
+/// only. It writes nothing to the pty, does not touch the typeahead hand-off, and shows nothing
+/// at all unless the agent drives the active block; typing keeps routing as before. Legacy and
+/// Table.
+#[cfg(unix)]
+#[test]
+fn the_may_be_waiting_notice_writes_nothing_and_changes_no_routing() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                view.model.lock().start_command_execution();
+                let state_before = format!("{:?}", view.model.lock().typeahead_handoff().state());
+                view.on_command_may_be_waiting_for_input(ctx);
+                assert_eq!(
+                    format!("{:?}", view.model.lock().typeahead_handoff().state()),
+                    state_before,
+                    "{mode:?}: the notice decides no routing"
+                );
+            });
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{mode:?}: the notice wrote nothing"
+            );
+        })
+    }
+}
+
 /// #1584: a held segment with an Enter past the cap is never run or written by the timer: it stays
 /// held (the cap is armed again), and the line editor's signal releases it once, in typed order.
 /// The signal shows the shell does signal, so the next prompt is held for again. Legacy and Table.

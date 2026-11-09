@@ -1019,6 +1019,11 @@ const SSH_CONNECT_SILENCE_CEILING: Duration = Duration::from_secs(15);
 /// still accepted as success (review H6, option (a)): the session ID stays registered. It
 /// replaces the 20 s stall ceiling's routing, the 90 s typed-input hold limit (the generic and
 /// the PowerShell hold), the gates' own caps and the 5 s marker give-up's timed writes.
+/// The notice shown on an agent command that may be waiting for input (#1796); clicking it takes
+/// the command over.
+pub(crate) const MAY_BE_WAITING_FOR_INPUT_NOTICE: &str =
+    "This command may be waiting for input \u{2014} Take over";
+
 const SUBSHELL_SETUP_QUIET_NET: Duration = Duration::from_secs(30);
 /// The absolute ceiling of a subshell setup (#1711): however steady the progress, a setup older
 /// than this is given up the same way. Stage 1 (the probe) and stage 2 share one clock.
@@ -9234,6 +9239,10 @@ impl TerminalView {
             ShellCommandExecutorEvent::CancelExecution { action_id } => {
                 self.interrupt_cancelled_agent_command(action_id, ctx);
             }
+            ShellCommandExecutorEvent::BackstopReached { .. } => {
+                // #1796: UI only; the command stays with the agent until the user acts.
+                self.show_may_be_waiting_for_input_notice(ctx);
+            }
             ShellCommandExecutorEvent::TransferControlToUser { reason, .. } => {
                 // Transfer control of the long-running command to the user.
                 self.cli_subagent_controller.update(ctx, |controller, ctx| {
@@ -12473,6 +12482,35 @@ impl TerminalView {
             "Text typed while the SSH session connected is in the input, not run; press Enter to run it",
             ctx,
         );
+    }
+
+    /// A small non-modal notice on the running agent command: "This command may be waiting for
+    /// input -- Take over". Clicking it does the existing take-over (the same action as the
+    /// long-running command control); nothing else changes, and the command stays with the agent
+    /// until the user acts, the probe says it reads, a marker appears or it completes (#1796).
+    /// Shown only while the agent drives the active block.
+    fn show_may_be_waiting_for_input_notice(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.is_agent_driving_active_block() {
+            return;
+        }
+        warpui::input_order::log_hop("may_be_waiting_notice", || "shown=1".to_owned());
+        let window_id = ctx.window_id();
+        let view_id = ctx.view_id();
+        ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+            let toast = DismissibleToast::new(
+                MAY_BE_WAITING_FOR_INPUT_NOTICE.to_string(),
+                ToastFlavor::Default,
+            )
+            .with_timeout(Duration::from_secs(30))
+            .with_on_body_click(move |ctx| {
+                ctx.dispatch_typed_action_for_view(
+                    window_id,
+                    view_id,
+                    &TerminalAction::ToggleLongRunningCommandControl,
+                );
+            });
+            toast_stack.add_ephemeral_toast(toast, window_id, ctx);
+        });
     }
 
     fn show_ssh_typing_toast(&self, message: &str, ctx: &mut ViewContext<Self>) {
@@ -37785,6 +37823,14 @@ impl TerminalSurface for TerminalView {
             .block_list()
             .active_block()
             .is_agent_requested_command()
+    }
+
+    /// The quiet trailing `:`/`?` line of an agent command whose foreground the OS cannot tell
+    /// reads the tty (macOS, restricted Linux) stayed quiet past the long window (#1796): a
+    /// notice, never a hand-over. Owner rule: no timer decides routing.
+    #[cfg(unix)]
+    fn on_command_may_be_waiting_for_input(&mut self, ctx: &mut ViewContext<Self>) {
+        self.show_may_be_waiting_for_input_notice(ctx);
     }
 
     #[cfg(unix)]

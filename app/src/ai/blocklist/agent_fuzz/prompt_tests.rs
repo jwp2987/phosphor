@@ -160,16 +160,51 @@ fn a_secret_prompt_is_handed_over_at_once() {
     assert_eq!(after, Some(Duration::ZERO));
 }
 
+/// #1796, owner rule (a timer never decides routing): with no probe (Unknown) a bare `?`/`:`
+/// line is NEVER handed over on silence, however long. After the long window only a notice is
+/// offered ("may be waiting for input -- Take over"), once; the command stays with the agent.
 #[test]
-fn with_no_probe_a_bare_question_waits_ninety_seconds() {
+fn with_no_probe_a_bare_question_gets_a_notice_after_ninety_seconds_and_no_hand_over() {
     let behaviour = CmdBehaviour::TrailingQuestion {
         s: "Continue?".into(),
     };
-    let after = handed_over_after(&behaviour, ForegroundTtyRead::Unknown, THIRTY_MINUTES)
-        .expect("unknown must not mean never");
+    assert_eq!(
+        handed_over_after(&behaviour, ForegroundTtyRead::Unknown, THIRTY_MINUTES),
+        None,
+        "unknown must not hand the command over on a timer"
+    );
+    let (echo_on, canonical, line) = screen(&behaviour);
+    let started = Instant::now();
+    let mut detector = PromptDetector::default();
+    let mut elapsed = Duration::ZERO;
+    let mut notices = Vec::new();
+    while elapsed <= THIRTY_MINUTES {
+        let line = line.clone();
+        let detection = detector.observe(
+            started + elapsed,
+            echo_on,
+            canonical,
+            move || {
+                let text = line?;
+                let shape = interactive_prompt_shape(&text)?;
+                Some(InteractivePromptCandidate {
+                    cursor: Point::new(0, text.chars().count()),
+                    text,
+                    shape,
+                })
+            },
+            || ForegroundTtyRead::Unknown,
+        );
+        if detection == Some(PromptDetection::MayBeWaiting) {
+            notices.push(elapsed);
+        }
+        elapsed += POLL;
+    }
+    assert_eq!(notices.len(), 1, "one notice per episode: {notices:?}");
     assert!(
-        after >= INTERACTIVE_PROMPT_QUIET_TRAILING_UNKNOWN_READ,
-        "{after:?}"
+        notices[0] >= INTERACTIVE_PROMPT_QUIET_TRAILING_UNKNOWN_READ,
+        "{:?}",
+        notices[0]
     );
 }
 
