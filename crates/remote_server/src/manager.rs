@@ -1060,6 +1060,35 @@ impl RemoteServerManager {
             .is_some_and(|(_, backend)| backend.is_available(crate::backend::Family::RepoMetadata))
     }
 
+    /// One log line per file-tree push, for the lab and for diagnosing a stale tree. Counts and a
+    /// 32-bit FNV-1a hash of each added leaf name only (never the names or paths themselves).
+    fn log_file_tree_event(kind: &str, source: &str, update: &RepoMetadataUpdate) {
+        use repo_metadata::file_tree_update::RepoNodeMetadata;
+        let mut nodes = 0usize;
+        let mut hashes: Vec<String> = Vec::new();
+        for entry in &update.update_entries {
+            for node in &entry.subtree_metadata {
+                nodes += 1;
+                let path = match node {
+                    RepoNodeMetadata::Directory(d) => d.path.to_string(),
+                    RepoNodeMetadata::File(f) => f.path.to_string(),
+                };
+                let leaf = path.rsplit(['/', '\\']).next().unwrap_or("");
+                let hash = leaf.bytes().fold(2_166_136_261u32, |h, b| {
+                    (h ^ u32::from(b)).wrapping_mul(16_777_619)
+                });
+                if hashes.len() < 32 {
+                    hashes.push(format!("{hash:08x}"));
+                }
+            }
+        }
+        log::info!(
+            "hop=file_tree event={kind} source={source} removed={} added={nodes} added_hash=[{}]",
+            update.remove_entries.len(),
+            hashes.join(",")
+        );
+    }
+
     /// Emits the pushes a shell-mode call produced as the same manager events the helper's
     /// unsolicited pushes become.
     fn emit_shell_pushes(
@@ -1074,6 +1103,7 @@ impl RemoteServerManager {
                     if let Some(update) =
                         crate::repo_metadata_proto::proto_snapshot_to_update(&snapshot)
                     {
+                        Self::log_file_tree_event("snapshot", "shell", &update);
                         ctx.emit(RemoteServerManagerEvent::RepoMetadataSnapshot {
                             host_id: host_id.clone(),
                             update,
@@ -1084,6 +1114,7 @@ impl RemoteServerManager {
                     if let Some(update) =
                         crate::repo_metadata_proto::proto_to_repo_metadata_update(&update)
                     {
+                        Self::log_file_tree_event("update", "shell", &update);
                         ctx.emit(RemoteServerManagerEvent::RepoMetadataUpdated {
                             host_id: host_id.clone(),
                             update,
@@ -2212,9 +2243,11 @@ impl RemoteServerManager {
 
         match event {
             ClientEvent::RepoMetadataSnapshotReceived { update } => {
+                Self::log_file_tree_event("snapshot", "helper", &update);
                 ctx.emit(RemoteServerManagerEvent::RepoMetadataSnapshot { host_id, update });
             }
             ClientEvent::RepoMetadataUpdated { update } => {
+                Self::log_file_tree_event("update", "helper", &update);
                 ctx.emit(RemoteServerManagerEvent::RepoMetadataUpdated { host_id, update });
             }
             ClientEvent::BufferUpdated {

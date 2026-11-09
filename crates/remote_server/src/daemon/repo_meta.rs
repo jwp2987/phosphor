@@ -185,6 +185,9 @@ impl Repo {
             Ok(()) => {
                 self.held.insert(dir.to_owned());
             }
+            // The directory vanished between listing and watching: its parent's next relist
+            // reports that. Not a reason to give up on the whole repo.
+            Err(e) if !e.is_capacity() => log::debug!("not watching {dir}: {e}"),
             Err(e) => {
                 log::warn!("repo {root} is unwatched: {e}");
                 self.mark_unwatched(watches);

@@ -2802,7 +2802,7 @@ def lab_cases_registry_and_selection():
     assert run.unknown_case_names("mode_proof,typo_case", reg) == ["typo_case"]       # exact names are still checked exactly
     # winmap: a lab case is never 'unclassified'; PowerShell pane skips with a reason; p_onesess is skipped on Windows
     base = {n.split(".")[0] for n in names}
-    assert base == {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i", "lab_no_helper_chip", "lab_replay", "lab_password_prompt", "lab_helper_install", "lab_nu_agent_pager_env"}, base
+    assert base == {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i", "lab_no_helper_chip", "lab_replay", "lab_password_prompt", "lab_helper_install", "lab_nu_agent_pager_env", "lab_file_tree_remote"}, base
     assert all(c["modes"] == ("terminal",) for c in labs if c["name"].startswith("lab_ssh_drop_reconnect")), "the drop case is terminal-only"
     pw = [c["arm"] for c in labs if c["name"].startswith("lab_password_prompt")]
     assert {a["user"] for a in pw} == {"p_password", "p_kbdint"} and all(a["helper"] == "nohelper" and a["fault"] is None for a in pw), pw     # #1535
@@ -2811,6 +2811,19 @@ def lab_cases_registry_and_selection():
     assert winmap.unclassified(sorted(reg)) == []
     assert winmap.skip_reason("lab_x.u_bash.lan.nohelper", "powershell") and winmap.skip_reason("lab_x.u_bash.lan.nohelper", "gitbash") is None
     assert "ControlMaster" in winmap.skip_reason("lab_x.p_onesess.lan.nohelper", "gitbash")
+
+
+@check
+def lab_file_tree_remote_pieces():
+    """Wave H parity P3: the lab case reads the app's hop=file_tree log lines. The leaf-name hash must be the one manager.rs logs (32-bit FNV-1a), the line parser
+    must take what the app prints, and the case registers exactly the nohelper and upload arms for bash and zsh."""
+    import cases_lab_remote as CLR
+    assert CLR.fnv1a32("") == "811c9dc5" and CLR.fnv1a32("a") == "e40c292c" and CLR.fnv1a32("foobar") == "bf9cf968"        # the published FNV-1a test vectors
+    line = "INFO hop=file_tree event=update source=shell removed=1 added=2 added_hash=[e40c292c,bf9cf968]\nINFO hop=file_tree event=snapshot source=helper removed=0 added=0 added_hash=[]"
+    assert CLR.tree_events(line) == [("update", "shell", 1, 2, ["e40c292c", "bf9cf968"]), ("snapshot", "helper", 0, 0, [])]
+    assert CLR.saw_added(line, "a") and not CLR.saw_added(line, "b") and not CLR.saw_added(line, "a", event="snapshot")
+    arms = [c["arm"] for c in cases.CASES if c.get("lab") and c["name"].startswith("lab_file_tree_remote.")]
+    assert {(a["shell"], a["helper"]) for a in arms} == {(s, h) for s in ("bash", "zsh") for h in ("nohelper", "upload")}, arms
 
 
 @check
