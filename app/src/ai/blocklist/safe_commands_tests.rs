@@ -9,6 +9,15 @@ fn ok(command: &str) -> bool {
 }
 
 #[test]
+fn the_defaults_hold_no_git_subcommand() {
+    assert!(DEFAULT_SAFE_COMMANDS.iter().all(|e| !e.starts_with("git")));
+    assert!(!ok("git status"));
+    // A user may add one deliberately; the subcommand rules then apply.
+    let entries = vec!["git status".to_owned()];
+    assert!(matches_allowlist("git status -sb", &entries));
+}
+
+#[test]
 fn plain_read_only_commands_match() {
     for command in [
         "ls",
@@ -17,10 +26,6 @@ fn plain_read_only_commands_match() {
         "cat Cargo.toml",
         "grep -rn foo src",
         "rg foo",
-        "git status",
-        "git status -sb",
-        "git log -n 5",
-        "git diff --stat",
         "df -h",
         "du -sh target",
         "pwd",

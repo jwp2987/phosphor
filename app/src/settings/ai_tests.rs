@@ -1571,7 +1571,7 @@ fn safe_command_allowlist_ships_off_with_a_nonempty_default_list() {
     assert!(!*enabled.value(), "the allowlist must ship OFF");
     let list = SafeCommandAllowlist::new(None);
     assert!(list.value().iter().any(|e| e == "ls"));
-    assert!(list.value().iter().any(|e| e == "git status"));
+    assert!(list.value().iter().all(|e| !e.starts_with("git")));
     assert_eq!(
         SafeCommandAllowlistEnabled::toml_path(),
         Some("agents.warp_agent.permissions.safe_command_allowlist_enabled")

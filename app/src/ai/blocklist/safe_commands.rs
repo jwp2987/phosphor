@@ -22,40 +22,14 @@
 //!   `git diff --output`, ...). A program the rules do not know gets only the generic screen.
 //!
 //! What this cannot promise: a program that runs configured helpers (git's `core.fsmonitor`,
-//! `diff.external`, textconv) can run what a repository's config names. The default list keeps to
-//! the commands where that is the only way in, and the setting documents it.
+//! `diff.external`, textconv) can run what a repository's config names. The default list therefore holds no git subcommand at all (a user may add one
+//! deliberately; the per-subcommand rules below then apply); the setting documents the risk.
 
 /// The entries the list starts with when the setting is first turned on. Each is `program` or
 /// `program subcommand`.
 pub const DEFAULT_SAFE_COMMANDS: &[&str] = &[
-    "ls",
-    "cat",
-    "head",
-    "tail",
-    "wc",
-    "grep",
-    "rg",
-    "pwd",
-    "whoami",
-    "id",
-    "uname",
-    "df",
-    "du",
-    "stat",
-    "file",
-    "which",
-    "basename",
-    "dirname",
-    "realpath",
-    "tree",
-    "uptime",
-    "free",
-    "git status",
-    "git log",
-    "git diff",
-    "git show",
-    "git rev-parse",
-    "git ls-files",
+    "ls", "cat", "head", "tail", "wc", "grep", "rg", "pwd", "whoami", "id", "uname", "df", "du",
+    "stat", "file", "which", "basename", "dirname", "realpath", "tree", "uptime", "free",
 ];
 
 /// The default list as owned strings, for the setting's default value.

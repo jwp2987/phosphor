@@ -3089,7 +3089,7 @@ mod safe_command_allowlist {
             });
             allow(&mut app, true);
             permissions.read(&app, |model, ctx| {
-                for command in ["ls -la", "git status", "cat Cargo.toml", "df -h"] {
+                for command in ["ls -la", "cat Cargo.toml", "df -h"] {
                     let v = verdict(model, &convo_id, command, terminal_view_id, ctx);
                     assert!(
                         matches!(
