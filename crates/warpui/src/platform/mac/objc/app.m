@@ -507,6 +507,7 @@ NSUInteger activeScreenId() {
         double ageMs = ([[NSProcessInfo processInfo] systemUptime] - [event timestamp]) * 1000.0;
         BOOL ctrl = ([event modifierFlags] & NSEventModifierFlagControl) != 0;
         warp_note_key_event(ageMs, warpIsEnterKeyDown(event) ? 1 : 0, ctrl ? 1 : 0);
+        warpCtrlSendMark(event);
         if (warpIsEnterKeyDown(event)) {
             NSWindow *keyWindow = [self keyWindow];
             WARP_LOG_ENTER(

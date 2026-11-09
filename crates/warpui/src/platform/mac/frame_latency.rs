@@ -132,6 +132,90 @@ impl DrawOwed {
     }
 }
 
+/// How long frames may be skipped in a row before one is drawn anyway (and may block in
+/// `nextDrawable`): the net for a presented handler that never fires (#1838).
+pub(super) const GATE_WATCHDOG_MS: u64 = 100;
+
+/// Kill switch for the blocked-frame gate (#1838): `PHOSPHOR_MAC_SKIP_BLOCKED_FRAMES=0` restores
+/// the old behaviour (the main thread blocks in `nextDrawable`). On by default.
+pub(super) fn gate_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("PHOSPHOR_MAC_SKIP_BLOCKED_FRAMES").map_or(true, |value| value != "0")
+    })
+}
+
+/// What to do with a frame the main thread is about to draw (#1838).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum GateDecision {
+    /// Ask for the drawable now.
+    Draw,
+    /// `nextDrawable` would block: leave the main thread free for input and let the presented
+    /// handler of the in-flight frame request this draw again.
+    Skip,
+}
+
+/// The inputs of [`gate_decision`].
+#[derive(Debug, Clone, Copy)]
+pub(super) struct GateInputs {
+    pub enabled: bool,
+    /// A frame capture or a presents-with-transaction resize is in progress: always draw.
+    pub must_draw: bool,
+    /// At least one frame has reached the screen, so a drawable is held by the compositor.
+    pub presented_once: bool,
+    /// Drawables handed out whose presented handler has not run yet.
+    pub unpresented: i32,
+    /// How long the current run of skips has lasted, if one is running.
+    pub skipping_for_ms: Option<u64>,
+}
+
+/// With `maximumDrawableCount = 2` one drawable is on screen and at most one more can be queued,
+/// so with a drawable already queued (`unpresented >= 1`) the next `nextDrawable` blocks until
+/// that one is presented, which is exactly when its presented handler runs. Skipping until then
+/// costs no frame and frees the main thread to dequeue input in the meantime.
+pub(super) fn gate_decision(inputs: GateInputs) -> GateDecision {
+    let blocked = inputs.presented_once && inputs.unpresented >= 1;
+    let watchdog_hit = inputs
+        .skipping_for_ms
+        .is_some_and(|ms| ms >= GATE_WATCHDOG_MS);
+    if inputs.enabled && !inputs.must_draw && blocked && !watchdog_hit {
+        GateDecision::Skip
+    } else {
+        GateDecision::Draw
+    }
+}
+
+/// One run of consecutive skipped frames on a window (#1838).
+#[derive(Debug, Default)]
+pub(super) struct SkipRun {
+    started_ms: Cell<Option<u64>>,
+    skipped: Cell<u32>,
+}
+
+impl SkipRun {
+    /// Milliseconds the current run has lasted.
+    pub(super) fn running_for_ms(&self, now_ms: u64) -> Option<u64> {
+        self.started_ms.get().map(|s| now_ms.saturating_sub(s))
+    }
+
+    pub(super) fn note_skip(&self, now_ms: u64) {
+        if self.started_ms.get().is_none() {
+            self.started_ms.set(Some(now_ms));
+        }
+        self.skipped.set(self.skipped.get().saturating_add(1));
+    }
+
+    /// Ends the run when a frame is drawn: `(skipped frames, ms since the first skip)`.
+    pub(super) fn finish(&self, now_ms: u64) -> Option<(u32, u64)> {
+        let started = self.started_ms.take()?;
+        Some((self.skipped.take(), now_ms.saturating_sub(started)))
+    }
+}
+
+pub(super) fn gate_now_ms() -> u64 {
+    now_ms()
+}
+
 static LIMITER: Mutex<SlowFrameLimiter> = Mutex::new(SlowFrameLimiter::new());
 
 fn now_ms() -> u64 {
@@ -162,6 +246,8 @@ extern "C-unwind" fn warp_frame_presented(
             )
         });
     }
+    // #1838: follow the frames after a ^C so the wait for the prompt's frame is measured.
+    warpui_core::input_order::log_ctrl_c_frame_presented(presented);
     log::debug!(
         "frame presented={presented} key_to_presented_ms={key_ms:?} drawable_wait_ms={wait_ms}"
     );
