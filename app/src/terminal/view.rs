@@ -2552,6 +2552,49 @@ pub(crate) enum AICodeRecycleAction {
     Keep,
 }
 
+/// #1787: one debug line that says why a recycle did or did not happen. `rich_len` entries in display order,
+/// the positions of the visible ones, and the plan as `<position><R|B|K>` (Recycle / reBuild / Keep) for each AI
+/// block, capped at [`AI_CODE_PLAN_SUMMARY_MAX`] entries. A recycle that never comes is either "the visible set
+/// never changed" (no line at all: this runs only for a CHANGED visible set) or "the answer is within
+/// [`AI_CODE_RECYCLE_DISTANCE`] of a visible entry" (a plan with no `R`).
+pub(crate) fn ai_code_recycle_plan_summary(
+    rich: &[(EntityId, bool)],
+    visible: &[EntityId],
+    plan: &[(usize, AICodeRecycleAction)],
+) -> String {
+    let visible_positions: Vec<usize> = rich
+        .iter()
+        .enumerate()
+        .filter(|(_, (id, _))| visible.contains(id))
+        .map(|(position, _)| position)
+        .collect();
+    let actions: Vec<String> = plan
+        .iter()
+        .take(AI_CODE_PLAN_SUMMARY_MAX)
+        .map(|(position, action)| {
+            let letter = match action {
+                AICodeRecycleAction::Recycle => 'R',
+                AICodeRecycleAction::Rebuild => 'B',
+                AICodeRecycleAction::Keep => 'K',
+            };
+            format!("{position}{letter}")
+        })
+        .collect();
+    format!(
+        "rich={} visible={:?} plan=[{}]{}",
+        rich.len(),
+        visible_positions,
+        actions.join(","),
+        if plan.len() > AI_CODE_PLAN_SUMMARY_MAX {
+            format!(" (+{} more)", plan.len() - AI_CODE_PLAN_SUMMARY_MAX)
+        } else {
+            String::new()
+        }
+    )
+}
+
+const AI_CODE_PLAN_SUMMARY_MAX: usize = 60;
+
 /// The decision for an AI block `distance` rich-content entries from the nearest visible one; the
 /// gap between the two distances is hysteresis, so a block at the edge does not flip each layout.
 pub(crate) fn ai_code_recycle_action(distance: usize) -> AICodeRecycleAction {
@@ -31620,7 +31663,15 @@ impl TerminalView {
                 )
             })
             .collect();
-        for (position, action) in ai_code_recycle_plan(&rich, &visible) {
+        let plan = ai_code_recycle_plan(&rich, &visible);
+        if log::log_enabled!(target: "editor_memory", log::Level::Debug) {
+            log::debug!(
+                target: "editor_memory",
+                "editor_memory agent_code_plan {}",
+                ai_code_recycle_plan_summary(&rich, &visible, &plan)
+            );
+        }
+        for (position, action) in plan {
             let Some(block) = self.rich_content_views[position]
                 .ai_block_metadata()
                 .map(|metadata| metadata.ai_block_handle.clone())

@@ -452,3 +452,19 @@ def c_no_helper_chip(ctx, r, arm):
     time.sleep(1.0 + 2 * rtt_s(arm))
     r.check(sum(1 for _, cmd in ctx.remote.commands() if "echo chip%s" % tok in cmd) == 1, "a command typed after connecting did not run exactly once with the chip up")
     finish_remote(ctx, r)
+
+# ------------------------------------------------------------------ 7. a real password / keyboard-interactive prompt (#1535)
+@lab_case("password_prompt", shells=(), lat=("lan", "150"), helper=("nohelper",), scenarios=("p_password", "p_kbdint"))
+def c_password_prompt(ctx, r, arm):
+    """The owner's secret-prompt rule against a REAL sshd that asks for the unix password (the same-machine harness sshd cannot: no account password, no PAM):
+    p_password (password auth) and p_kbdint (keyboard-interactive via PAM). The ssh_password_prompt body (CR.secret_prompt): nothing is typed until ssh's prompt
+    is on screen; the secret typed after it logs in; the secret is in no shell's rec.log and not on screen; a wrong secret ends the ssh (NumberOfPasswordPrompts 1)
+    and the next command runs in the LOCAL shell. The password is the throw-away one labd leased for this run. Not covered: p_mfa (a TOTP that must be computed at
+    typing time, not at prompt time) and the passphrase prompt (ssh_password_prompt covers it on the same-machine sshd)."""
+    secret = (getattr(ctx.lab, "leased", None) or {}).get("password")
+    if not secret:
+        r.unverifiable("the lab lease carries no password for %s" % arm["user"])
+        return
+    CR.rm_remote(ctx, "pw_labpw.txt")
+    CR.secret_prompt(ctx, r, host_of(arm), secret, "password", "labpw")
+    ctx.reset()

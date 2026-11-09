@@ -2196,6 +2196,10 @@ def agent_code_recycle_log_parse():
     assert ca.recycle_events(log) == [("recycled", "EntityId(42)", 12), ("rebuilt", "EntityId(42)", 12)], ca.recycle_events(log)
     assert ca.snippet_lines("AB12", 3) == ["echo RCYAB12_01", "echo RCYAB12_02", "echo RCYAB12_03"]
     assert "agent_code_recycle" in winmap.BOTH
+    plan_log = ("x DEBUG editor_memory editor_memory agent_code_plan rich=10 visible=[9] plan=[0R,2R,3K,7B]\n"
+                "y DEBUG editor_memory editor_memory agent_code_plan rich=70 visible=[] plan=[] \n"
+                "z DEBUG editor_memory editor_memory agent_code_plan rich=100 visible=[0] plan=[0B,1B] (+98 more)\n")
+    assert ca.recycle_plans(plan_log) == ["rich=10 visible=[9] plan=[0R,2R,3K,7B]", "rich=70 visible=[] plan=[]", "rich=100 visible=[0] plan=[0B,1B] (+98 more)"], ca.recycle_plans(plan_log)
 
 
 @check
@@ -2770,8 +2774,10 @@ def lab_cases_registry_and_selection():
     assert run.unknown_case_names("mode_proof,typo_case", reg) == ["typo_case"]       # exact names are still checked exactly
     # winmap: a lab case is never 'unclassified'; PowerShell pane skips with a reason; p_onesess is skipped on Windows
     base = {n.split(".")[0] for n in names}
-    assert base == {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i", "lab_no_helper_chip", "lab_replay"}, base
+    assert base == {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i", "lab_no_helper_chip", "lab_replay", "lab_password_prompt"}, base
     assert all(c["modes"] == ("terminal",) for c in labs if c["name"].startswith("lab_ssh_drop_reconnect")), "the drop case is terminal-only"
+    pw = [c["arm"] for c in labs if c["name"].startswith("lab_password_prompt")]
+    assert {a["user"] for a in pw} == {"p_password", "p_kbdint"} and all(a["helper"] == "nohelper" and a["fault"] is None for a in pw), pw     # #1535
     ordered = sorted(labs, key=lambda c: c["order"])
     assert [c["arm"]["helper"] for c in ordered] == sorted((c["arm"]["helper"] for c in labs), key=lambda h: L.HELPERS.index(h)), "nohelper arms sort before helper arms"
     assert winmap.unclassified(sorted(reg)) == []
@@ -3156,6 +3162,20 @@ def replay_cases_registered_but_not_swept_by_lab_glob():
     assert c["modes"] == ("terminal", "agent") and c["lab"]
 
 
+@check
+def soak_diff_names_a_single_lost_command():
+    """#1780: one lost command used to read as 295/660 (a positional count); soak_diff reports it as ONE missing item and keeps order/unexpected apart."""
+    import cases_robust as cr
+    exp = ["s%d" % i for i in range(660)]
+    got = exp[:295] + exp[296:]
+    d = cr.soak_diff(exp, got)
+    assert d["missing"] == ["s295"] and d["arrived"] == 659 and d["unexpected"] == [] and d["order_ok"], d
+    assert sum(a == b for a, b in zip(got, exp)) == 295            # the old figure, for the record
+    d = cr.soak_diff(["a", "b", "c"], ["b", "a", "c", "x"])
+    assert d["missing"] == [] and d["unexpected"] == ["x"] and not d["order_ok"] and d["arrived"] == 3, d
+    d = cr.soak_diff(["a", "a"], ["a"])
+    assert d["missing"] == ["a"] and d["arrived"] == 1, d         # duplicates count as a multiset
+    assert cr.SOAK_ALERT.search("thread 'main' panicked at") and cr.SOAK_ALERT.search("terminal-server exited") and not cr.SOAK_ALERT.search("echo ok")
 
 def main():
     failed = 0

@@ -594,6 +594,7 @@ mod code_editor_recycling {
     };
     use crate::terminal::view::{
         AICodeRecycleAction, ai_code_recycle_action, ai_code_recycle_plan,
+        ai_code_recycle_plan_summary,
     };
 
     fn init(app: &mut App) -> WindowId {
@@ -675,6 +676,30 @@ mod code_editor_recycling {
         assert_eq!(action(&plan, 0), Some(AICodeRecycleAction::Keep));
         let plan = ai_code_recycle_plan(&rich, &[ids[14]]);
         assert_eq!(action(&plan, 0), Some(AICodeRecycleAction::Recycle));
+    }
+
+    #[test]
+    fn the_plan_summary_names_the_visible_positions_and_each_blocks_action() {
+        let ids: Vec<EntityId> = (0..10).map(EntityId::from_usize).collect();
+        let rich: Vec<(EntityId, bool)> = ids.iter().map(|id| (*id, *id != ids[1])).collect();
+        let visible = [ids[9]];
+        let plan = ai_code_recycle_plan(&rich, &visible);
+        let line = ai_code_recycle_plan_summary(&rich, &visible, &plan);
+        // 0 is 9 away (R), 2 is 7 away (R), 3 is 6 away (K), 7 is 2 away (B), 9 is visible (B); 1 is not an AI block.
+        assert!(
+            line.starts_with("rich=10 visible=[9] plan=[0R,2R,3K,"),
+            "{line}"
+        );
+        assert!(line.contains("7B,8B,9B]"), "{line}");
+        // Nothing visible: an empty plan, said so.
+        let none = ai_code_recycle_plan_summary(&rich, &[], &[]);
+        assert_eq!(none, "rich=10 visible=[] plan=[]");
+        // A long plan is capped and says how many entries were left out.
+        let many: Vec<(EntityId, bool)> =
+            (0..100).map(|i| (EntityId::from_usize(i), true)).collect();
+        let plan = ai_code_recycle_plan(&many, &[EntityId::from_usize(0)]);
+        let line = ai_code_recycle_plan_summary(&many, &[EntityId::from_usize(0)], &plan);
+        assert!(line.ends_with("(+40 more)"), "{line}");
     }
 
     #[test]

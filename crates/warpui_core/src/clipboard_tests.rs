@@ -1254,3 +1254,56 @@ fn deferred_in_memory_read_answers_only_after_release() {
         other => panic!("expected content, got {other:?}"),
     }
 }
+
+// -- small pieces the first #1778 pass left to indirect coverage --
+
+#[test]
+fn a_read_kind_targets_the_clipboard_it_reads() {
+    assert_eq!(ReadKind::Primary.target(), ClipboardTarget::Primary);
+    assert_eq!(ReadKind::Full.target(), ClipboardTarget::Clipboard);
+    assert_eq!(ReadKind::TextAndPaths.target(), ClipboardTarget::Clipboard);
+}
+
+#[test]
+fn a_new_tracker_has_nothing_in_flight_and_default_is_new() {
+    let tracker = ReaderTracker::default();
+    assert_eq!(tracker.in_flight(), 0);
+    assert_eq!(
+        tracker
+            .abandon_epoch
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+    assert_eq!(ReaderTracker::new().in_flight(), 0);
+}
+
+#[test]
+fn abandoning_bumps_the_epoch_once_per_call() {
+    let tracker = ReaderTracker::new();
+    let epoch = || {
+        tracker
+            .abandon_epoch
+            .load(std::sync::atomic::Ordering::SeqCst)
+    };
+    assert_eq!(epoch(), 0);
+    tracker.abandon_pending();
+    assert_eq!(epoch(), 1);
+    tracker.abandon_pending();
+    assert_eq!(epoch(), 2);
+}
+
+#[test]
+fn the_default_in_memory_clipboard_holds_nothing_and_a_write_replaces_it() {
+    let mut clipboard = InMemoryClipboard::default();
+    assert!(
+        read_content_blocking(&mut clipboard, ReadKind::Full).is_empty(),
+        "a fresh clipboard reads as empty"
+    );
+    clipboard.write(ClipboardContent::plain_text("one".into()));
+    clipboard.write(ClipboardContent::plain_text("two".into()));
+    assert_eq!(
+        read_content_blocking(&mut clipboard, ReadKind::Full).plain_text,
+        "two",
+        "the newest write replaces the older one"
+    );
+}
