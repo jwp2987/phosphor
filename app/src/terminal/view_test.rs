@@ -31224,6 +31224,10 @@ mod group_1411_tests;
 #[path = "view/group2_timer_tests.rs"]
 mod group2_timer_tests;
 
+// #1658 (keys follow the editor's kept line). Declared here for the same reason as group 1.
+#[path = "view/keys_follow_editor_tests.rs"]
+mod keys_follow_editor_tests;
+
 // Review follow-ups F6 / F10. Declared here for the same reason as group 1.
 #[path = "view/followup_tests.rs"]
 mod followup_tests;

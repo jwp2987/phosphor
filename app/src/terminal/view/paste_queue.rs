@@ -1256,7 +1256,7 @@ impl TerminalView {
 
     /// The tail of [`Self::discard_gate_keys_after_enter`], with the entries taken out of the
     /// gate (at once, or by the deferred `DiscardGateKeysAfterEnter`).
-    fn finish_discard_gate_keys_after_enter(
+    pub(super) fn finish_discard_gate_keys_after_enter(
         &mut self,
         entries: Vec<InputEntry>,
         kind: GateKind,
@@ -1288,10 +1288,10 @@ impl TerminalView {
         if kept_line {
             // The line typed before the Enter, unrun: for the shell, and its first Enter is held
             // with the "check the line" toast (it never ran, and the user was still typing).
-            // Known gap, tracked under #1658: while the hand-off still owns input for the pty, a
-            // key typed at the terminal before the request decision below commits the editor can
-            // reach the pty ahead of this line. The old hand-back (and `hand_back_gate_keys`) had
-            // the same window; the `RetryTypeaheadHandoffRequest` emitted below closes it.
+            // #1658: while the hand-off still owns input for the pty, a key typed at the terminal
+            // before the request decision below commits the editor would reach the pty ahead of
+            // this line. `note_keys_follow_editor` (below) makes every later key follow the line
+            // into the editor; events end it (`TypeaheadHandoff::keys_follow_editor`).
             self.input.update(ctx, |input, ctx| {
                 input.system_insert(&line, ctx);
                 input.submit_next_enter_as_shell_command();
@@ -1306,6 +1306,9 @@ impl TerminalView {
         warpui::input_order::log_hop("gate_typed_after_enter_discarded", || {
             format!("gate={key} kind={kind:?} why={why} keys={discarded} line_kept={kept_line}")
         });
+        if kept_line {
+            self.note_keys_follow_editor();
+        }
         self.note_editor_took_over();
         self.redetermine_terminal_focus(ctx);
         ctx.emit(Event::RetryTypeaheadHandoffRequest);
@@ -2341,6 +2344,9 @@ impl TerminalView {
             if let Some(toast) = gate_give_up_toast(why) {
                 self.show_error_toast(toast.to_string(), ctx);
             }
+        }
+        if inserted {
+            self.note_keys_follow_editor();
         }
         self.note_editor_took_over();
         self.redetermine_terminal_focus(ctx);

@@ -337,6 +337,7 @@ fn random_facts(rng: &mut Rng) -> RouteFacts {
     f.has_pending_ssh_command = rng.flag();
     f.handoff_routes = rng.flag();
     f.handoff_known = rng.flag();
+    f.keys_follow_editor = rng.flag();
     f.subshell = subshell_of(rng.below(4));
     f.forwards_subshell_key = rng.flag();
     f.forwards_subshell_abort = rng.flag();
@@ -657,7 +658,7 @@ fn stamp_of(index: usize) -> Stamp {
     }
 }
 
-/// Every dimension the table can branch on: all 40 boolean facts, the four enum facts, the 12 gate
+/// Every dimension the table can branch on: all 41 boolean facts, the four enum facts, the 12 gate
 /// bits, the five intent flags and the stamp.
 fn all_dims() -> Vec<Dim> {
     let mut dims: Vec<Dim> = Vec::new();
@@ -677,6 +678,7 @@ fn all_dims() -> Vec<Dim> {
         has_pending_ssh_command,
         handoff_routes,
         handoff_known,
+        keys_follow_editor,
         forwards_subshell_key,
         forwards_subshell_abort,
         ssh_dialog_up,

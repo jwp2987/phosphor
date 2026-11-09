@@ -159,18 +159,23 @@ impl TerminalView {
         let snapshot = &model.snapshot;
 
         // ---- the typeahead hand-off (try_read: busy means the last value read) ----
-        let (handoff_routes, handoff_known, editor_takeover_open) =
+        let (handoff_routes, handoff_known, editor_takeover_open, keys_follow_editor) =
             if FeatureFlag::TypeaheadHandoff.is_enabled() {
                 match self.handoff.try_read() {
                     Some(handoff) => {
                         let routes = handoff.routes_keys_to_pty();
                         route_state.set_handoff_routes(routes);
-                        (routes, true, handoff.editor_takeover_would_be_open())
+                        (
+                            routes,
+                            true,
+                            handoff.editor_takeover_would_be_open(),
+                            handoff.keys_follow_editor_active(),
+                        )
                     }
-                    None => (route_state.handoff_routes(), false, false),
+                    None => (route_state.handoff_routes(), false, false, false),
                 }
             } else {
-                (false, true, false)
+                (false, true, false, false)
             };
 
         // ---- subshell / PowerShell ----
@@ -309,6 +314,7 @@ impl TerminalView {
             input_box_visible: self.is_input_box_visible_with(&snapshot.input_box, ctx),
             editor_focused: self.input.as_ref(ctx).editor().is_focused(ctx),
             editor_takeover_open,
+            keys_follow_editor,
             blocks_selected: !self.selected_blocks.is_empty(),
             buffer_empty: self.input.as_ref(ctx).buffer_text(ctx).is_empty(),
             cli_agent_session: self.has_active_cli_agent_input_session(ctx),

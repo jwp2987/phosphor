@@ -1739,6 +1739,7 @@ fn arb_facts() -> impl Strategy<Value = RouteFacts> {
             has_pending_ssh_command: a[12],
             handoff_routes: a[13],
             handoff_known: a[14],
+            keys_follow_editor: false,
             subshell: [
                 SubshellPhase::Idle,
                 SubshellPhase::Announced,

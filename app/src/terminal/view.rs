@@ -10299,6 +10299,7 @@ impl TerminalView {
     /// Windows users expect ctrl-c to copy if there is selected text. Otherwise,
     /// we perform the normal ctrl-c action.
     fn ctrl_c(&mut self, ctx: &mut ViewContext<Self>) {
+        self.end_keys_follow_editor("signal", ctx);
         // A key being handled: its model reads come from the key snapshot (#1411).
         let _key_path = KeyPathScope::enter(&self.key_path_depth);
         // #1401: the first hop of the ^C -> next prompt chain (no typed text, state names only).
@@ -11150,6 +11151,9 @@ impl TerminalView {
     }
 
     fn control_sequence_on_terminal(&mut self, bytes: &[u8], ctx: &mut ViewContext<Self>) {
+        if matches!(bytes, [0x03] | [0x04] | [0x1a] | [0x1c]) {
+            self.end_keys_follow_editor("signal", ctx);
+        }
         // #1424: in `table` mode the table decides a live sequence (step 5).
         if self.arrives_via_table()
             && let Ok(sequence) = std::str::from_utf8(bytes)
@@ -11413,6 +11417,10 @@ impl TerminalView {
     /// Receiving the warpui::Event::KeyDown event from a child element.
     /// Generally, this should be control characters rather than printable characters.
     fn keydown_on_terminal(&mut self, characters: &str, ctx: &mut ViewContext<Self>) {
+        // #1658: a signal key goes where the shell's own would (the pty): the fact ends first.
+        if matches!(characters, "\u{3}" | "\u{4}" | "\u{1a}" | "\u{1c}") {
+            self.end_keys_follow_editor("signal", ctx);
+        }
         // #1424: in `table` mode the table decides a live key (step 5).
         if self.arrives_via_table() {
             self.arrive_via_table(dest_table::Arrival::Key(characters), ctx);
@@ -12946,6 +12954,12 @@ impl TerminalView {
         // the block starts on enter but only becomes long running on receiving Preexec.
         // We want to make sure we capture any input between enter and receiving Preexec.
         if !facts.active_block_started && !self.typeahead_handoff_routes_keys_to_pty() {
+            return false;
+        }
+        // #1658: the editor holds the user's unsent text; typed keys follow it, not the pty.
+        if FeatureFlag::TypeaheadHandoff.is_enabled()
+            && self.handoff.read().keys_follow_editor_active()
+        {
             return false;
         }
 
@@ -14966,6 +14980,7 @@ impl TerminalView {
             ctx,
         );
         self.guard_line_after_deferred_enter_give_up(discarded, ctx);
+        self.note_keys_follow_editor_if_text(ctx);
         self.note_editor_took_over();
         self.redetermine_terminal_focus(ctx);
     }
@@ -15006,6 +15021,7 @@ impl TerminalView {
             ctx,
         );
         self.guard_line_after_deferred_enter_give_up(discarded, ctx);
+        self.note_keys_follow_editor_if_text(ctx);
         self.note_editor_took_over();
         self.redetermine_terminal_focus(ctx);
     }
@@ -15433,6 +15449,7 @@ impl TerminalView {
                 input.system_insert(&text, ctx);
                 input.submit_next_enter_as_shell_command();
             });
+            self.note_keys_follow_editor_if_text(ctx);
         }
         self.note_editor_took_over();
         self.redetermine_terminal_focus(ctx);
@@ -15444,8 +15461,35 @@ impl TerminalView {
         self.handoff.read().precmds_pending_view()
     }
 
+    /// As [`Self::note_keys_follow_editor`], when the editor now holds text.
+    fn note_keys_follow_editor_if_text(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.input.as_ref(ctx).buffer_text(ctx).is_empty() {
+            self.note_keys_follow_editor();
+        }
+    }
+
     fn note_editor_took_over(&mut self) {
         self.handoff.write().note_editor_took_over(Instant::now());
+    }
+
+    /// #1658: the editor was left holding unsent text; later keys follow it into the editor even
+    /// while the hand-off is still pty-owned (a no-op in any other state, or with
+    /// `PHOSPHOR_KEYS_FOLLOW_EDITOR=0`). Call before `redetermine_terminal_focus`.
+    pub(super) fn note_keys_follow_editor(&mut self) {
+        if FeatureFlag::TypeaheadHandoff.is_enabled() {
+            self.handoff.write().note_keys_follow_editor();
+        }
+    }
+
+    /// #1658: an event (`why`) ended the keys-follow-editor fact: later keys take their usual
+    /// route again, so focus is re-decided.
+    fn end_keys_follow_editor(&mut self, why: &'static str, ctx: &mut ViewContext<Self>) {
+        if !FeatureFlag::TypeaheadHandoff.is_enabled() {
+            return;
+        }
+        if self.handoff.write().end_keys_follow_editor(why) {
+            self.redetermine_terminal_focus(ctx);
+        }
     }
 
     /// A non-printable key (Backspace, Delete, an arrow, Home/End) that reached the terminal just
@@ -19631,6 +19675,8 @@ impl TerminalView {
                 // tty": the keys held since the submit go to ssh (or the termios guard discards
                 // them) and every later key passes straight through. Before the young hold below:
                 // the connect hold is older than anything the hand-off holds.
+                // #1658: a program owns the tty: its keys are not the editor's text's.
+                self.end_keys_follow_editor("command_became_interactive", ctx);
                 self.ssh_on_tty_owned(block_id, ctx);
                 // #1614: the keys typed into that command are its, not a line at a prompt: the
                 // hand-off delivers an Enter typed now, and a young hold live at this moment is
@@ -19674,6 +19720,8 @@ impl TerminalView {
                 ctx.notify();
             }
             ModelEvent::TerminalModeSwapped(mode) => {
+                // #1658: the alt screen (or its exit) is a program's: keys go where they always do.
+                self.end_keys_follow_editor("alt_screen", ctx);
                 // Leaving (or re-entering) the alt screen cancels a pending winsize re-send
                 // (#1384 P5).
                 self.alt_screen_resend_generation =
@@ -32282,6 +32330,14 @@ impl TerminalView {
                 block_id,
                 operations,
             } => {
+                // #1658: the editor emptied (cleared, submitted, or reinitialized for a new
+                // block): there is no text left for later keys to follow.
+                if FeatureFlag::TypeaheadHandoff.is_enabled()
+                    && self.handoff.read().keys_follow_editor_active()
+                    && self.input.as_ref(ctx).buffer_text(ctx).is_empty()
+                {
+                    self.end_keys_follow_editor("editor_empty", ctx);
+                }
                 ctx.emit(Event::InputEditorUpdated {
                     block_id: block_id.clone(),
                     operations: operations.clone(),
@@ -37358,6 +37414,7 @@ impl TerminalSurface for TerminalView {
 
     #[cfg(unix)]
     fn on_stalled_interactive_prompt(&mut self, ctx: &mut ViewContext<Self>) {
+        self.end_keys_follow_editor("stalled_interactive_prompt", ctx);
         // Same hand-over as a password prompt (see `on_possible_password_prompt`), minus the
         // password notification and SSH-upload plumbing, which are about passwords
         // specifically. The agent's tool call keeps waiting and gets the command's real result
@@ -37427,6 +37484,8 @@ impl TerminalSurface for TerminalView {
         block_index: Option<BlockIndex>,
         ctx: &mut ViewContext<Self>,
     ) {
+        // #1658: a password prompt owns the keys.
+        self.end_keys_follow_editor("password_prompt", ctx);
         // An agent-executed command sitting on a password prompt can never answer itself: the
         // agent holds the PTY, so the user's keystrokes are dropped and the block hangs at
         // "Executing command..." until `ShellCommandExecutor::MAX_UNTIL_COMPLETION_DURATION`

@@ -466,6 +466,10 @@ impl Plan {
 /// stalled subshell bootstrap opened this door by age until #1711; the setup net hands back
 /// instead, and #1679 step 4 removed the dead condition.)
 pub fn pty_typed(f: &RouteFacts) -> bool {
+    // #1658: the editor holds the user's unsent text; typed keys follow it.
+    if f.keys_follow_editor {
+        return false;
+    }
     if !f.active_block_started && !f.handoff_routes {
         return false;
     }
