@@ -10,6 +10,7 @@ import cases as C  # noqa: E402  (cases.py imports this module as its LAST lines
 import cases_caseagent as CA  # noqa: E402
 import cases_ui as U  # noqa: E402
 import cases_robust as R  # noqa: E402
+import cases_coverage_a as CA_  # noqa: E402
 from cases import case  # noqa: E402
 
 
@@ -618,6 +619,34 @@ def ui_work_metric(ctx, r, off, label):
         r.note("WARN UI work: %s had a main-thread item of %.1f ms (>= 16 ms drops a frame)" % (label, worst))
 
 
+def completion_stage(ctx, r, limit):
+    """#1548: the LOCAL Tab completion, seen from screenshots like the other UI actions: a unique prefix of a fresh directory + Tab. Metric `tab_completion_s`
+    (first changed frame after Tab, an UPPER bound, bound `limit`), and an EFFECT proof that the line really was completed (`test -d <prefix>` + Tab + an
+    `&& echo tok >> f` runs only if the completion produced an existing directory name). The remote Tab -> insert budget is lab_tab_remote_dir."""
+    d = "cbtab%s" % ctx.tok(5).lower().replace("_", "")
+    f = "cb_tabcomp.txt"
+    ctx.rm(f)
+    ctx.be.type("mkdir %s_dir" % d, 12, enter=True)
+    time.sleep(1.0)
+    ctx.be.type("test -d %s" % d, 12, enter=False)
+    time.sleep(0.4)
+    before = ctx.shot("cb_ui_tab_before")
+    ctx.be.key("Tab")
+    s = _until_changed(ctx, before, "cb_ui_tab", 0.0005, 6)
+    r.metric("tab_completion_s", s if s is not None else -2)
+    if s is not None and s != -1.0:
+        r.check(s <= limit, "Tab completion: first changed frame after %.2f s (bound %.1f s)" % (s, limit))
+    elif s is None:
+        r.check(False, "Tab completion: no changed frame within 6 s of Tab on a unique directory prefix")
+    tok = ctx.tok(8).lower()
+    ctx.be.type(" && " + ctx.append_cmd(ctx.pane_shell(), tok, f), 12, enter=True)
+    ctx.until(lambda: ctx.lines(f), 8)
+    CA_.exact_lines(r, "Tab completion: the completed line ran (test -d on the completed name)", [tok], ctx.lines(f))
+    ctx.be.type("rmdir %s_dir; rm -f %s" % (d, f), 12, enter=True)
+    time.sleep(0.8)
+    ctx.reset()
+
+
 @case("cb_ui_action_latency", modes=("terminal",), order=93, gui=True)
 def c_ui_action_latency(ctx, r):
     """#1548: new tab, tab switch and the Tab completion menu are observed from screenshots (each costs 50-300 ms of its own, so the numbers are an
@@ -629,6 +658,10 @@ def c_ui_action_latency(ctx, r):
     nexttab = "cmd+shift+]" if ctx.be.name == "mac" else "ctrl+Next"      # ActivateNextTab (app/src/util/bindings.rs)
     ctx.reset()
     time.sleep(0.5)
+    if not (ctx.win and ctx.pane_shell() != "bash"):
+        completion_stage(ctx, r, limit)
+    else:
+        r.note("Tab completion timing: POSIX-shell panes only (the PowerShell/cmd completers differ); skipped here")
     before = ctx.shot("cb_ui_new_before")
     off_new = ctx.log_size()
     ctx.be.key(newtab)

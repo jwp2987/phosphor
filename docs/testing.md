@@ -1158,7 +1158,7 @@ Full tier only (none is in `SMOKE`). Same rules as 3.1: exact bytes from `rec.lo
 | `cb_settings_migration` (both) | #1545 migration | a settings.toml with unknown comment/key/table, then a truncated unparsable one: the app starts, types exactly, logs no panic and no migration/settings ERROR (on the truncated file the app's own `Settings file could not be parsed` notice is required, not counted as a failure), and leaves the truncated file byte for byte (a check since r18u22); `legacy_entries_kept` is a metric. Before each arm's burst one line records where the relaunched shell started (`pwd` into `cb_settings_<arm>_cwd.txt`, metric `<arm>_start_cwd`, a note when it is not the case dir) and `cd`s to the case dir: on the truncated file the app runs on defaults, `restore_session = true` restores the previous tab in its saved cwd, and the rc only moves a `$HOME` or `/` start (r18u23 Mac agent pass: rec.log had the 4 lines exactly, the effect file in the case dir 0/4). The original file is restored |
 | `cb_state_relaunch` (terminal) | #1546 DB migration path | three relaunches on the same state dirs: prompt, exact typing, no migration/database ERROR in the app log, database files neither vanish nor halve |
 | `cb_no_autoupdate` (terminal) | #1547 | the whole run's app log has no updater line (the GUI updater is declined: DECLINED.md `FeatureFlag::Autoupdate`, `script/check_no_autoupdate`) |
-| `cb_ui_action_latency` (terminal) | #1548 | new tab and tab switch seen from screenshots: bound `APPCI_UI_ACTION_MAX_S` (1.5 s, first guess), numbers as metrics. An UPPER bound on the app's time (each screenshot costs 50-300 ms), not a 4 ms proof |
+| `cb_ui_action_latency` (terminal) | #1548 | local Tab completion (`tab_completion_s`: a unique directory prefix + Tab; the completed line must also RUN, `test -d <completed> && echo tok >> f`; POSIX-shell panes), new tab and tab switch seen from screenshots: bound `APPCI_UI_ACTION_MAX_S` (1.5 s, first guess), numbers as metrics. An UPPER bound on the app's time (each screenshot costs 50-300 ms), not a 4 ms proof |
 | `cb_editor_mac` (mac) | #1544 | edit, Cmd-S, undo, Cmd-S on a file handed over by `open -a`; disk byte-exact; nothing at the shell. Runs last (no keyboard pane-close on macOS; run.py relaunches if the pane is not the shell) |
 
 Pure helpers (`legacy_settings`, `corrupt_settings`, `startup_log_problems`, `autoupdate_lines`, `picker_verdict`) are covered by `selftest.py` (`coverage_b_pure_helpers`).
@@ -1508,6 +1508,14 @@ and judges the app against it (and `latency_enter_ssh` is the same-machine contr
 keyboard-interactive); (4) no Windows OpenSSH-server path; and "integration `ssh.rs` never runs", which the candidate tier now plays (2.9, #1502). STILL OPEN: the
 Windows OpenSSH-SERVER path (the lab and `fakesshd_win.py` give the Windows CLIENT a server, not Windows `sshd` itself: it needs the OpenSSH Server capability on the VM,
 an environment decision), `ssh_drop_reconnect` on Windows, a TOTP (`p_mfa`) lab case (the code must be computed at typing time), and the passphrase prompt in the lab.
+
+**Latency coverage gap map (#1548).** The gap list was: key -> paint on Linux/Windows (none); UI work <= 4 ms (invisible under the 8 ms log floor); completion,
+tab-switch and new-tab budgets (none). Now: UI work is judged from the app's own `hop=ui_item` lines by `latency_key_log` (FAIL above max(2, 5 %) of keys at >= 4 ms; 16 ms
+warns) and recorded for new tab / tab switch as `new_tab_ui_work` / `tab_switch_ui_work`; new tab, tab switch and the LOCAL Tab completion have screenshot-observed
+bounds in `cb_ui_action_latency` (upper bounds, `APPCI_UI_ACTION_MAX_S`); the REMOTE Tab -> insert budget (<= 1 RTT + 100 ms) is `lab_tab_remote_dir`; Enter -> command
+start over ssh against a paired plain `ssh -tt` is `lab_enter_start` (and `latency_enter_ssh` on the same-machine sshd); Ctrl-C and Enter are `ctrl_c_d` / `latency_enter`. STILL OPEN:
+pixel-level key -> paint on Linux and Windows (needs a 240 Hz grab / Desktop Duplication capture tool; the owner declined it for now, 2026-11-05), and a hard
+budget for completion/tab/new-tab (the screenshot bounds are loose first guesses until a few runs give a baseline).
 
 **Jobs** (all manual, never part of the ordinary app-test jobs): `sshlab-image` (box runner, `resource_group: little-thing-sshlab`; play it after a change under
 `script/realapp/sshlab/**`) runs `labctl.py build && labctl.py selftest` and then installs `labctl.py` into
