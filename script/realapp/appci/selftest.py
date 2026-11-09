@@ -3478,6 +3478,9 @@ def agent_interactive_oracles():
     assert FM.read_request_log("/nonexistent/none.jsonl") == []
     names = {c["name"] for c in cases.CASES}
     assert {"agent_interactive_password", "agent_interactive_vim", "agent_interactive_ssh", "agent_interactive_less", "agent_noninteractive_no_takeover"} <= names
+
+
+@check
 def fake_model_plan_and_agent_remote_pure_parts():
     """#1827: the multi-step plan turn (one tool call per answered step, then Done.), the recorded tool results, and the agent_remote result helpers"""
     import fake_model as FM
@@ -3510,6 +3513,9 @@ def fake_model_plan_and_agent_remote_pure_parts():
     names = sorted(c["name"] for c in cases.CASES if c["name"].startswith("lab_agent_remote_"))
     assert len(names) == 5 * 2 + 5 * 2 + 3 * 2, names
     assert all(c["modes"] == ("agent",) and c["lab"] for c in cases.CASES if c["name"].startswith("lab_agent_remote_"))
+
+
+@check
 def agent_file_edit_pieces():
     """#1835: the fake model's multi-hunk edit reply, the expected-bytes builder and the judges of cases_agent_file_edits.py"""
     import fake_model as FM
