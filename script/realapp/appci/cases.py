@@ -848,6 +848,14 @@ class Ctx:
                 return "root"
             if i == max_exits:
                 break
+            # round 8: a single probe that differs from the root pid once led to `exit` at the ROOT shell, which closed the only pane and quit the app.
+            # Prove it again with a fresh token before the exit; a second probe that names the root (or nothing) cancels it.
+            again = self.shell_pid()
+            if again != pid:
+                print("[appci] leave_nested: probe said pid %s, a second probe said %s (root %s); not typing `exit`" % (pid, again, root_pid), flush=True)
+                if again == root_pid:
+                    return "root"
+                continue
             before = self.prof.prompts()
             self.be.type("exit", 12, enter=True)
             self.until(lambda: self.prof.prompts() > before, 10)
