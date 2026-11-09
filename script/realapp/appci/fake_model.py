@@ -41,7 +41,7 @@
 # what the model was SENT, i.e. the command output the app handed back (`tool`) and every user message (`users`), so a case can prove the model's next request
 # carried the output of an interactive command and that no key typed into a program leaked into the conversation.
 # Endpoints: POST /api/chat (NDJSON stream), POST /api/show, GET /api/tags. The server counts requests (fake.requests) for the oracle.
-import json, os, re, select, socket, threading, time
+import json, os, re, select, socket, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 READ_RE = re.compile(r"read exactly this file and nothing else:\s*(\S+)\s*$")
@@ -74,6 +74,7 @@ def stream_chunks(tag, n):
 def history_check(messages, tag):
     """pure: what the app sent back for a follow-up in tab `tag`. -> {tag, chunks_expected, chunks_seen, end, foreign, assistant_chars, dup, user_text}
     chunks_seen counts DISTINCT numbered markers of the own tag in assistant messages; foreign lists markers of other tags anywhere in the conversation."""
+    messages = clean_messages(messages)
     asst = "\n".join((m.get("content") or "") for m in messages if m.get("role") == "assistant")
     allt = "\n".join((m.get("content") or "") for m in messages if m.get("role") in ("assistant", "user", "system", "tool"))
     exp = 0
@@ -118,9 +119,110 @@ def stream_text():
     return "".join("t%04d " % i for i in range(STREAM_CHUNKS))
 
 
+ENV_RE = re.compile(r"<environment_context>.*?</environment_context>\s*", re.S)      # user_context.rs render_environment_context: its own user message after the prompt
+
+
+def clean_messages(messages):
+    """pure: the request's messages as the PROMPT sees them: the app's <environment_context> block is removed (a user message that holds nothing else is dropped;
+    a block inside a longer message is cut out). Every trigger / token match goes through this, never through the raw list."""
+    out = []
+    for m in messages or []:
+        if m.get("role") == "user" and isinstance(m.get("content"), str) and "<environment_context>" in m["content"]:
+            rest = ENV_RE.sub("", m["content"]).strip()
+            if not rest:
+                continue
+            m = dict(m, content=rest)
+        out.append(m)
+    return out
+
+
+def user_prompt(messages):
+    """pure: the text of the last user message that is not the environment-context message ('' when none)"""
+    for m in reversed(clean_messages(messages)):
+        if m.get("role") == "user":
+            return m.get("content") or ""
+    return ""
+
+
+# Every request the app can make through the Ollama-protocol provider this fake stands in for (round 6; app/src/ai/agent_providers/):
+#   purpose            endpoint     recognised by                                              answer (deterministic)
+#   chat               /api/chat    the request offers tools (the agent turn), or has no       the scripted reply (triggers, faults, plans)
+#                                   system message (a harness-direct request)
+#   title              /api/chat    system prompts/tasks/title_system.md "thread title generator"          "Fake conversation title"
+#   commit_message     /api/chat    tasks/commit_message_system.md "git commit message generator"          subject + body
+#   explain_command    /api/chat    tasks/explain_command_system.md "You explain shell commands"           RISK: SAFE / RISKS / EXPLANATION
+#   compaction         /api/chat    tasks/compaction_system.j2 "anchored context summarization"           the ## Goal ... sections
+#   next_command       /api/chat    active_ai/next_command_system.j2 "predict the most likely next shell command"   "echo fake-next"
+#   nld_predict        /api/chat    active_ai/nld_predict_system.j2 "complete a partial natural-language query"    "fake completion"
+#   prompt_suggestions /api/chat    active_ai/prompt_suggestions_system.j2 "Predict the single most useful follow-up"   {"kind":"none"}
+#   relevant_files     /api/chat    active_ai/relevant_files_system.j2 "return ONLY the subset of paths"      {"paths":[]}
+#   workflow_metadata  /api/chat    active_ai/workflow_metadata_system.j2 "reusable, parameterized workflow"  the JSON object (no arguments)
+#   show / tags        /api/show, /api/tags (model metadata / model list)                                       fixed JSON
+#   UNKNOWN_PURPOSE    anything else: /api/generate, /api/embed, /api/embeddings, or a /api/chat with a system message and no tools that matches none of the
+#                      above. NOT answered as chat: a 501 with {"error": "UNKNOWN_PURPOSE ..."}, counted in fake.by_purpose and listed in fake.unknown
+# The app uses no embeddings and no /api/generate on this path (grepped: none). Only `chat` takes case triggers and faults by default; inject(..., purpose=P)
+# aims a fault at another purpose. `requests` counts chat requests only; every purpose is counted in fake.by_purpose.
+PURPOSE_MARKERS = (
+    ("title", "thread title generator"),
+    ("commit_message", "git commit message generator"),
+    ("explain_command", "You explain shell commands"),
+    ("compaction", "anchored context summarization"),
+    ("next_command", "predict the most likely next shell command"),
+    ("nld_predict", "complete a partial natural-language query"),
+    ("prompt_suggestions", "Predict the single most useful follow-up"),
+    ("relevant_files", "return ONLY the subset of paths most relevant"),
+    ("workflow_metadata", "reusable, parameterized workflow"),
+)
+PURPOSE_TEXT = {
+    "title": "Fake conversation title",
+    "commit_message": "Fix the fake thing\n\nDeterministic fake commit message.",
+    "explain_command": "RISK: SAFE\nRISKS:\n- None\nEXPLANATION:\n- `fake` does nothing.",
+    "compaction": "## Goal\n- fake goal\n\n## Instructions\n- none\n\n## Discoveries\n- none\n\n## Accomplished\n- 🔲 nothing\n\n## Relevant Files\n- none\n\n## Open Questions / Pending\n- none",
+    "next_command": "echo fake-next",
+    "nld_predict": "fake completion",
+    "prompt_suggestions": '{"kind":"none"}',
+    "relevant_files": '{"paths":[]}',
+    "workflow_metadata": json.dumps({"title": "Fake workflow", "description": "A deterministic fake workflow.", "command": "echo fake", "arguments": []}),
+}
+
+
+def classify_purpose(path, req):
+    """pure: the purpose of one request (see the table above). `path` is the URL path, `req` the decoded JSON body."""
+    p = (path or "").split("?")[0]
+    if p.endswith("/api/show"):
+        return "show"
+    if p.endswith("/api/tags"):
+        return "tags"
+    if not p.endswith("/api/chat"):
+        return "UNKNOWN_PURPOSE"
+    msgs = (req or {}).get("messages") or []
+    sysm = "\n".join((m.get("content") or "") for m in msgs if m.get("role") == "system" and isinstance(m.get("content"), str))
+    for name, marker in PURPOSE_MARKERS:
+        if marker in sysm:
+            return name
+    if (req or {}).get("tools") or not sysm:
+        return "chat"
+    return "UNKNOWN_PURPOSE"
+
+
+def purpose_reply(purpose):
+    """pure: the scripted answer of a non-chat purpose, shaped like reply_for's"""
+    return {"text": PURPOSE_TEXT[purpose], "tool": None}
+
+
+def is_title_request(messages):
+    """pure: the app's conversation-title request"""
+    return classify_purpose("/api/chat", {"messages": messages}) == "title"
+
+
+def one_shot_body(model, reply):
+    """pure: the single JSON object of a NON-streaming /api/chat answer (request "stream": false: titles, suggestions, commit messages)"""
+    return json.dumps({"model": model, "message": {"role": "assistant", "content": reply["text"]}, "done": True, "done_reason": "stop"})
+
+
 def user_texts(messages):
-    """pure: the content of every user message of a /api/chat request, in order"""
-    return [m.get("content") or "" for m in messages or [] if m.get("role") == "user"]
+    """pure: the content of every user message of a /api/chat request, in order (environment context removed)"""
+    return [m.get("content") or "" for m in clean_messages(messages) if m.get("role") == "user"]
 
 
 def drip_text(words):
@@ -175,7 +277,7 @@ def plan_call(step):
 def turn_state(messages):
     """pure: (text of the last user turn, [content of the tool messages after it])"""
     text, results = "", []
-    for m in reversed(messages or []):
+    for m in reversed(clean_messages(messages)):
         if m.get("role") == "user":
             text = m.get("content") or ""
             break
@@ -187,6 +289,7 @@ def turn_state(messages):
 
 def reply_for(messages, tools=None):
     """pure: the scripted reply to an Ollama /api/chat `messages` list -> {"text": str, "tool": None | {"name", "arguments"}}"""
+    messages = clean_messages(messages)
     last = messages[-1] if messages else {}
     utext, results = turn_state(messages)
     plan = parse_plan(utext)
@@ -199,11 +302,7 @@ def reply_for(messages, tools=None):
         return {"text": "", "tool": call}
     if last.get("role") == "tool":
         return {"text": "Done.", "tool": None}
-    text = ""
-    for m in reversed(messages):
-        if m.get("role") == "user":
-            text = m.get("content") or ""
-            break
+    text = user_prompt(messages)
     m = STREAM_RE.search(text)
     if m:
         return {"text": "", "tool": None, "chunks": stream_chunks(m.group(1), int(m.group(2))), "gap_ms": int(m.group(3)), "tag": m.group(1)}
@@ -254,7 +353,7 @@ def reply_for(messages, tools=None):
 def request_record(messages):
     """pure: what one /api/chat request carried, for the request log: the role of the last message, the content of the last tool message (None when the
     request has none) and every user message's content, in order"""
-    msgs = messages or []
+    msgs = clean_messages(messages)
     tool = None
     for m in reversed(msgs):
         if m.get("role") == "tool":
@@ -293,6 +392,8 @@ class FakeModel:
         self.requests, self.delay_s, self.log, self.turns = 0, delay_s, [], []
         self.reqs = []          # #1828: one {"t": epoch s, "messages": [...]} per /api/chat request, in arrival order (the steer cases' oracle)
         self.fresh, self.fired, self.aborted, self.faults = [], [], 0, []        # #1831
+        self.by_purpose, self.unknown = {}, []     # per-purpose request counts; UNKNOWN_PURPOSE records ({"path", "model", "system_head"})
+        self.title_requests = 0     # = by_purpose["title"]
         self._lock = threading.Lock()
         self.streams, self.followups, self.tool_results, self.tools_seen, self.mcp_missing, self.user_turns = {}, {}, [], set(), [], []   # #1833/#1834
         self.lock = threading.Lock()
@@ -335,33 +436,48 @@ class FakeModel:
                     req = json.loads(self.rfile.read(n) or b"{}")
                 except ValueError:
                     return self._send(400, b'{"error":"bad json"}')
-                if self.path.endswith("/api/show"):
+                purpose = classify_purpose(self.path, req)
+                with owner.lock:
+                    owner.by_purpose[purpose] = owner.by_purpose.get(purpose, 0) + 1
+                if purpose == "show":
                     return self._send(200, json.dumps({"model_info": {"general.context_length": 32768}, "capabilities": ["completion", "tools"]}).encode())
-                if not self.path.endswith("/api/chat"):
-                    return self._send(404, b'{"error":"not found"}')
-                owner.requests += 1
-                if owner.log_path:
+                if purpose == "UNKNOWN_PURPOSE":
+                    sysm = next((m.get("content") or "" for m in req.get("messages") or [] if m.get("role") == "system"), "")
+                    owner.unknown.append({"path": self.path, "model": req.get("model"), "system_head": str(sysm)[:80]})
+                    sys.stderr.write("fake_model: UNKNOWN_PURPOSE %s model=%s system=%r\n" % (self.path, req.get("model"), str(sysm)[:80]))
+                    return self._send(501, json.dumps({"error": "UNKNOWN_PURPOSE: the fake model does not answer %s" % self.path}).encode())
+                title = purpose == "title"
+                if purpose == "chat":
+                    owner.requests += 1
+                else:
+                    owner.title_requests = owner.by_purpose.get("title", 0)
+                if owner.log_path and purpose == "chat":
                     try:
                         rec = dict(request_record(req.get("messages") or []), t=time.time(), n=owner.requests)
                         with open(owner.log_path, "a") as f:
                             f.write(json.dumps(rec) + "\n")
                     except OSError:
                         pass
-                msgs = req.get("messages") or []
-                owner.turns.append((time.time(),) + turn_state(msgs))
-                owner.reqs.append({"t": time.time(), "messages": msgs})
-                if msgs and msgs[-1].get("role") == "user":
-                    owner.fresh.append(msgs[-1].get("content") or "")
+                msgs = clean_messages(req.get("messages") or [])
+                if purpose == "chat":
+                    owner.turns.append((time.time(),) + turn_state(msgs))
+                    owner.reqs.append({"t": time.time(), "messages": msgs})
+                    if msgs and msgs[-1].get("role") == "user":
+                        owner.fresh.append(msgs[-1].get("content") or "")
                 with owner.lock:
                     owner.tools_seen |= {(t.get("function") or {}).get("name") for t in req.get("tools") or []}
-                    if msgs and msgs[-1].get("role") == "tool":
+                    if purpose != "chat":
+                        pass
+                    elif msgs and msgs[-1].get("role") == "tool":
                         owner.tool_results.append((time.time(), msgs[-1].get("content") or ""))
                     elif msgs:
                         owner.user_turns.append((time.time(), msgs[-1].get("content") or ""))
-                # the app appends an <environment_context> user message AFTER the prompt (seen on Windows, round 6): match the last
-                # two user messages so a `match` token in the prompt still hits the chat request (not only the title request)
-                user_text = "\n".join(user_texts(msgs)[-2:])
-                fault = owner._take(user_text)
+                fault = owner._take(user_prompt(msgs), purpose)
+                if purpose != "chat" and not fault:
+                    reply = purpose_reply(purpose)
+                    if req.get("stream") is False:
+                        return self._send(200, one_shot_body(req.get("model") or "fake-model", reply).encode())
+                    return self._send(200, ("\n".join(stream_lines(req.get("model") or "fake-model", reply)) + "\n").encode(), "application/x-ndjson")
                 if fault:
                     owner.fired.append(fault["kind"])
                     kw = fault["kw"]
@@ -407,6 +523,11 @@ class FakeModel:
                         except OSError:
                             owner.aborted += 1
                         return
+                if purpose != "chat":                                    # a non-chat purpose whose fault was a `delay`: then the normal purpose answer
+                    reply = purpose_reply(purpose)
+                    if req.get("stream") is False:
+                        return self._send(200, one_shot_body(req.get("model") or "fake-model", reply).encode())
+                    return self._send(200, ("\n".join(stream_lines(req.get("model") or "fake-model", reply)) + "\n").encode(), "application/x-ndjson")
                 reply = reply_for(msgs, req.get("tools"))
                 if reply.get("mcp_missing"):
                     owner.mcp_missing.append(reply["mcp_missing"])
@@ -454,18 +575,20 @@ class FakeModel:
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self.up = True
 
-    def inject(self, kind, times=1, match=None, **kw):
+    def inject(self, kind, times=1, match=None, purpose="chat", **kw):
         assert kind in ("status", "disconnect", "delay", "drip"), kind
         with self._lock:
-            self.faults.append({"kind": kind, "left": times, "match": match, "kw": kw})
+            self.faults.append({"kind": kind, "left": times, "match": match, "purpose": purpose, "kw": kw})
 
     def clear_faults(self):
         with self._lock:
             self.faults = []
 
-    def _take(self, user_text):
+    def _take(self, user_text, purpose="chat"):
         with self._lock:
             for f in self.faults:
+                if f.get("purpose", "chat") != purpose:
+                    continue
                 if f["match"] is not None and f["match"] not in user_text:
                     continue
                 if f["left"] is not None:
