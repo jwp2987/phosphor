@@ -2109,7 +2109,9 @@ An agent turn hung on "Preparing question..." (the ask_user_question card, never
 scripted fake model (`APPCI_FAKE_MODEL=1`), never run yet: `agent_question_answer` (whole call: card blocked, Enter answers, the model gets the answer, the turn
 succeeds), `agent_question_cut` / `_nodone` / `_trunc` / `_empty` / `_slow` (the call cut right after it, held open with no `done` then closed, arguments cut
 mid-JSON, `{}` arguments, 6 s of silence before the call), `agent_question_ctrl_c` (Ctrl-C while the call sits unfinished: `cancelled` within 5 s and the client hangs
-up) and `agent_question_steer` (#851: a new prompt typed meanwhile reaches the model once). Run: `python3 script/realapp/appci/run.py --cases 'agent_question_*'`.
+up), `agent_question_steer` (#851: a new prompt typed meanwhile reaches the model once), `agent_question_after_command` (#1858: one reply `[sleep 8, ask]`; OCR must not
+see "Preparing question..." while the command runs, then the card answers) and `agent_question_steer_at_end` (#1861: a steer typed as the reply ends discards the ask; the steer
+prompt is answered, nothing stays open). Fake model trigger "Please run a slow command then ask me a question <TAG>". Run: `python3 script/realapp/appci/run.py --cases 'agent_question_*'`.
 Pass rule for every fault variant: an answerable card (`hop=agent_action kind=ask_user_question status=blocked`, then answered) or a terminal turn (`error` /
 `cancelled` / `success`) with no ask action left open, within 150 s; then a plain prompt reaches the model exactly once and succeeds, and the ERROR lines stay inside
 the `[byop]` failure allowance. A turn still `in_progress`, or terminal with an ask action open, fails as the hang. Fake model additions: the user turn
@@ -2118,6 +2120,12 @@ the `[byop]` failure allowance. A turn still `in_progress`, or terminal with an 
 or cut after the call, a cut then a resume that asks again, a stall after the call (needs the short idle timeouts), a missing / empty / repeated call id, a question
 next to a truncated one, a steer on the blocked card, byte-split arguments. Unit: `only_content_bearing_events_restart_the_idle_window` (chat_stream.rs): empty
 keep-alive chunks no longer restart the stream idle window, so a provider that holds the response open after its last call is ended by the idle give-up.
+
+Candidate fixes (#1858 loading-text precedence, #1859 preprocess abandonment, #1860 AfterStreamFinished fall-through, #1861 follow-up discard results), none built or run yet:
+unit tests `preparing_question_tests` (common.rs), `abandon_pending_unparks_later_batches` / `abandoned_batch_late_result_is_dropped` / `abandon_all_returns_parked_actions`
+(preprocess_tests.rs). Fuzzer oracle I1 gained `PendingStage::Parked` (a finished preprocess batch with no Pending batch ahead that never became pending/blocked) and corpus
+`hang1851c1_multi_tool_slow_command_trailing_ask`, `hang1851c2_hung_command_then_ask_stop` (the hung-diff stand-in: the fake DSL has no apply_file_diffs, a never-ending command
+plays the hung earlier action), `hang1851c4_steer_during_ask_placeholder`.
 
 ## 3. Real-app testing
 

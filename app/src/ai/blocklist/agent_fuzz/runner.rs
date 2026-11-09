@@ -227,6 +227,7 @@ async fn drive(
 fn stage_name(stage: PendingStage) -> &'static str {
     match stage {
         PendingStage::Preprocessing => "preprocessing",
+        PendingStage::Parked => "parked",
         PendingStage::Queued => "queued",
         PendingStage::Blocked => "blocked",
         PendingStage::Running => "running",

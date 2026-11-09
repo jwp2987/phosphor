@@ -1,0 +1,102 @@
+{
+  "v": 1,
+  "name": "hang1851c2_hung_command_then_ask_stop",
+  "seed": 18582,
+  "turns": [
+    {
+      "when": {
+        "kind": "nth",
+        "n": 0
+      },
+      "reply": {
+        "kind": "tool_calls",
+        "calls": [
+          {
+            "id": {
+              "kind": "fresh"
+            },
+            "name": "run_shell_command",
+            "args": {
+              "kind": "command",
+              "cmd": "c0"
+            }
+          },
+          {
+            "id": {
+              "kind": "fresh"
+            },
+            "name": "ask_user_question",
+            "args": {
+              "kind": "valid"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "when": {
+        "kind": "nth",
+        "n": 1
+      },
+      "reply": {
+        "kind": "tool_calls",
+        "calls": [
+          {
+            "id": {
+              "kind": "fresh"
+            },
+            "name": "ask_user_question",
+            "args": {
+              "kind": "valid"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "when": {
+        "kind": "nth",
+        "n": 2
+      },
+      "reply": {
+        "kind": "text",
+        "text": "done"
+      }
+    }
+  ],
+  "env": {
+    "commands": {
+      "c0": {
+        "kind": "never_ends"
+      }
+    }
+  },
+  "actor": [
+    {
+      "op": {
+        "kind": "approve"
+      },
+      "timing": "on_card"
+    },
+    {
+      "op": {
+        "kind": "ctrl_c"
+      },
+      "timing": "fast"
+    },
+    {
+      "op": {
+        "kind": "follow_up",
+        "text": "again"
+      },
+      "timing": "fast"
+    },
+    {
+      "op": {
+        "kind": "answer_question",
+        "choice": 0
+      },
+      "timing": "on_card"
+    }
+  ]
+}

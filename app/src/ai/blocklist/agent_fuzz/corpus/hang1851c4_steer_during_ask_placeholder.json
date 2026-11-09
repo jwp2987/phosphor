@@ -1,0 +1,56 @@
+{
+  "v": 1,
+  "name": "hang1851c4_steer_during_ask_placeholder",
+  "seed": 18584,
+  "turns": [
+    {
+      "when": {
+        "kind": "nth",
+        "n": 0
+      },
+      "reply": {
+        "kind": "tool_calls",
+        "calls": [
+          {
+            "id": {
+              "kind": "fresh"
+            },
+            "name": "ask_user_question",
+            "args": {
+              "kind": "valid"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "when": {
+        "kind": "nth",
+        "n": 1
+      },
+      "reply": {
+        "kind": "text",
+        "text": "done"
+      }
+    }
+  ],
+  "env": {
+    "commands": {}
+  },
+  "actor": [
+    {
+      "op": {
+        "kind": "follow_up",
+        "text": "steer now"
+      },
+      "timing": "during_stream"
+    },
+    {
+      "op": {
+        "kind": "answer_question",
+        "choice": 0
+      },
+      "timing": "on_card"
+    }
+  ]
+}

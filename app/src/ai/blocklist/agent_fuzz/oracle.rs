@@ -107,7 +107,10 @@ impl Oracle {
         let any_front = obs.snapshot.iter().any(|s| {
             matches!(
                 s.stage,
-                PendingStage::Blocked | PendingStage::Running | PendingStage::Preprocessing
+                PendingStage::Blocked
+                    | PendingStage::Running
+                    | PendingStage::Preprocessing
+                    | PendingStage::Parked
             )
         });
         for s in &obs.snapshot {
@@ -131,6 +134,19 @@ impl Oracle {
                 PendingStage::Preprocessing => {
                     if self.holds_for(format!("pre:{id}"), true, knobs.delta, now) {
                         return Err(violation("I1", format!("action {id} stuck preprocessing")));
+                    }
+                }
+                PendingStage::Parked => {
+                    // A Preprocessing action with no Pending batch ahead must become
+                    // pending/blocked in the same event cascade; holding past delta is a
+                    // lost hand-off (#1859).
+                    if self.holds_for(format!("parked:{id}"), true, knobs.delta, now) {
+                        return Err(violation(
+                            "I1",
+                            format!(
+                                "action {id} finished preprocessing with no batch ahead but never became pending or blocked"
+                            ),
+                        ));
                     }
                 }
                 PendingStage::Queued => {

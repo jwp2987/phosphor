@@ -1040,6 +1040,11 @@ impl BlocklistAIActionExecutor {
         for action_id in action_ids {
             self.cancel_running_async_action(&action_id, reason, ctx);
         }
+        // Diff applications still in preprocessing are not "running" yet; end them too so a
+        // hung one cannot park the next turn's preprocess batches (#1859).
+        self.request_file_edits_executor.update(ctx, |executor, _| {
+            executor.cancel_preprocessing(conversation_id)
+        });
     }
 
     fn should_autoexecute(&self, input: ExecuteActionInput, ctx: &mut ModelContext<Self>) -> bool {

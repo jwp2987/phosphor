@@ -3993,6 +3993,10 @@ def agent_question_pure_parts_and_fake_asks():
     r = FM.reply_for([{"role": "user", "content": "Please ask me a question Z9"}])
     assert r["tool"]["name"] == "ask_user_question" and "Z9" in r["tool"]["arguments"]["questions"][0]["question"]
     assert FM.reply_for([{"role": "user", "content": "Please ask me a question Z9"}, {"role": "tool", "content": "{}"}])["text"] == "Done."
+    r2 = FM.reply_for([{"role": "user", "content": "Please run a slow command then ask me a question Z8"}])
+    assert r2["tool"]["name"] == "run_shell_command" and [t["name"] for t in r2["tools_after"]] == ["ask_user_question"], r2
+    calls = json.loads(FM.stream_lines("m", r2)[0])["message"]["tool_calls"]
+    assert [c["function"]["name"] for c in calls] == ["run_shell_command", "ask_user_question"], calls
     for kind in ("ask_cut", "ask_nodone", "ask_trunc", "ask_empty", "ask_slow"):
         text_l, call_l, done_l = FM.ask_fault_lines("m", kind)
         call = json.loads(call_l)["message"]["tool_calls"][0]["function"]
@@ -4004,7 +4008,7 @@ def agent_question_pure_parts_and_fake_asks():
         f.inject(kind)
     names = {c["name"] for c in cases.CASES}
     want = {"agent_question_answer", "agent_question_cut", "agent_question_nodone", "agent_question_trunc", "agent_question_empty", "agent_question_slow",
-            "agent_question_ctrl_c", "agent_question_steer"}
+            "agent_question_ctrl_c", "agent_question_steer", "agent_question_after_command", "agent_question_steer_at_end"}
     assert want <= names and want <= set(cases.PROVING) and want <= set(cases.PROVING_FAKE), want - names
     assert all(c["modes"] == ("agent",) for c in cases.CASES if c["name"] in want)
 
