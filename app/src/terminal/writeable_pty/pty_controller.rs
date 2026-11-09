@@ -177,6 +177,7 @@ const PTY_WRITE_GATE_STALL_LOG_THRESHOLD: Duration = Duration::from_secs(3);
 /// working through the queue". It changes no count and no state and asks for no decision; the pty
 /// keeps input (a plain terminal) until the next event. The 250 ms reset of the non-seq path was
 /// deleted: that path now waits for the same events.
+// give-up-net: logs a stale-count wait only; no reset, no retry, no write, no routing
 const TYPEAHEAD_HANDOFF_STALE_COUNT_GIVE_UP: Duration = Duration::from_secs(5);
 
 /// Represents a single call to write bytes to the PTY asynchronously.
@@ -1166,6 +1167,7 @@ impl<T: EventLoopSender> PtyController<T> {
             }
         }
         let _ = seq_mode;
+        // give-up-net: logs a stale-count wait only; no reset, no retry, no write, no routing
         ctx.spawn(
             async move {
                 Timer::after(TYPEAHEAD_HANDOFF_STALE_COUNT_GIVE_UP).await;
