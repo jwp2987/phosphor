@@ -32213,6 +32213,87 @@ fn rc_questions_re_arm_the_setup_and_the_answers_never_write_it() {
     }
 }
 
+/// dash (cooked, editor-less, the shell reading with nothing unread).
+fn dash_cooked() -> SubshellTtySample {
+    tty_sample(
+        SubshellTtyKind::Cooked,
+        LeaderKind::Shell,
+        "dash",
+        true,
+        Some(true),
+    )
+}
+
+/// #1847: the user's Enter re-takes the baselines from the LAST look, never at a later one. How
+/// the bytes reach the model relative to the key path, and in how many bursts, decides nothing:
+/// the output wakeup that carries the fresh `$ ` is the judge's event, and it writes (the probe,
+/// `source=output`). `echo_first` feeds the Enter's echo and the prompt BEFORE the key path runs
+/// (the pty reader won the race: the old code re-took the baseline AT the prompt and never judged
+/// it moved). A control with no prompt drawn stays armed. Legacy and Table.
+#[test]
+fn an_idle_dash_prompt_drawn_around_the_users_enter_is_judged_moved() {
+    use crate::terminal::input_queue::DestinationMode;
+    // (burst after the Enter's key path, burst before it, wakeups between the pieces)
+    let cases: [(&str, &[&str], &[&str], bool); 4] = [
+        ("one burst after", &[], &["\r\n$ "], true),
+        ("two bursts after", &[], &["\r\n", "$ "], true),
+        ("prompt before the key path", &["\r\n$ "], &[], true),
+        ("no prompt drawn (control)", &[], &["\r\n"], false),
+    ];
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        for (name, before, after, writes) in cases {
+            App::test((), move |mut app| async move {
+                let _mode =
+                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+                initialize_app_for_terminal_view(&mut app);
+                app.add_singleton_model(|_| crate::ToastStack);
+                let terminal = add_window_with_terminal(&mut app, None);
+                let written = subshell_pty_writes(&mut app, &terminal);
+                terminal.update(&mut app, |view, ctx| {
+                    view.model.lock().simulate_long_running_block("dash", "");
+                    install_subshell_tty_for_test(view, dash_cooked());
+                    view.model.lock().process_bytes("some banner\r\n");
+                    view.arm_subshell_setup(
+                        SubshellPromptTrigger::Banner { shell_type: None },
+                        ctx,
+                    );
+                    assert_eq!(readiness_state(view), "armed", "{mode:?} {name}");
+                });
+                terminal.update(&mut app, |view, ctx| {
+                    for piece in before {
+                        view.model.lock().process_bytes(piece);
+                    }
+                    assert!(view.write_user_bytes_to_pty(b"\r".to_vec(), ctx));
+                    assert_eq!(readiness_state(view), "armed", "{mode:?} {name}: ReArm");
+                });
+                let before_len = written.borrow().len();
+                terminal.update(&mut app, |view, ctx| {
+                    if before.is_empty() {
+                        // no wakeup was seen between the Enter and the first burst
+                    } else {
+                        output_wakeup(view, ctx);
+                    }
+                    for piece in after {
+                        view.model.lock().process_bytes(piece);
+                        output_wakeup(view, ctx);
+                    }
+                    let state = readiness_state(view);
+                    if writes {
+                        assert_eq!(state, "written", "{mode:?} {name}: judged at the prompt");
+                    } else {
+                        assert_eq!(state, "armed", "{mode:?} {name}: no prompt, no write");
+                    }
+                });
+                let wrote = written.borrow().len() > before_len;
+                assert_eq!(
+                    wrote, writes,
+                    "{mode:?} {name}: the probe is written or not"
+                );
+            })
+        }
+    }
+}
+
 /// #1679 step 3 (R2): a non-empty line typed while no answer was asked for is the user driving the
 /// shell: the attempt is cancelled, nothing is written, and a later proof does not revive it.
 #[test]
