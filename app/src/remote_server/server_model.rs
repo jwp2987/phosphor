@@ -1679,6 +1679,7 @@ impl ServerModel {
                 server_version,
                 host_id: self.host_id.clone(),
                 chunked_responses: chunked_responses_for(msg.chunked_responses),
+                capabilities: Vec::new(),
             },
         ))
     }

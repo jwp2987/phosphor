@@ -106,6 +106,7 @@ async fn initialize_round_trip() {
             server_version: "test-0.1.0".to_string(),
             host_id: "test-host-id".to_string(),
             chunked_responses: false,
+            capabilities: Vec::new(),
         })
     });
 
@@ -132,6 +133,7 @@ async fn initialize_sends_empty_auth_token_when_none() {
             server_version: "test-0.1.0".to_string(),
             host_id: "test-host-id".to_string(),
             chunked_responses: false,
+            capabilities: Vec::new(),
         })
     });
 
@@ -156,6 +158,7 @@ async fn initialize_sends_auth_token_when_provided() {
             server_version: "test-0.1.0".to_string(),
             host_id: "test-host-id".to_string(),
             chunked_responses: false,
+            capabilities: Vec::new(),
         })
     });
 
@@ -222,6 +225,7 @@ async fn is_disconnected_starts_false() {
             server_version: "test-0.1.0".to_string(),
             host_id: "test-host-id".to_string(),
             chunked_responses: false,
+            capabilities: Vec::new(),
         })
     });
 
@@ -498,6 +502,7 @@ async fn concurrent_in_flight_requests() {
             server_version: "test-0.1.0".to_string(),
             host_id: "test-host-id".to_string(),
             chunked_responses: false,
+            capabilities: Vec::new(),
         })
     });
     let client = std::sync::Arc::new(client);
@@ -536,6 +541,7 @@ async fn mock_server_with_error_handling(
                             server_version: "test-0.1.0".to_string(),
                             host_id: "test-host-id".to_string(),
                             chunked_responses: false,
+                            capabilities: Vec::new(),
                         },
                     )),
                 };
@@ -1091,6 +1097,7 @@ async fn initialize_announces_chunked_responses_and_reads_the_confirmation() {
             server_version: "test-0.1.0".to_string(),
             host_id: "test-host-id".to_string(),
             chunked_responses: true,
+            capabilities: Vec::new(),
         })
     });
     let resp = client
@@ -1110,6 +1117,7 @@ async fn an_old_daemon_leaves_chunked_responses_off() {
             server_version: "old".to_string(),
             host_id: "test-host-id".to_string(),
             chunked_responses: false,
+            capabilities: Vec::new(),
         })
     });
     let resp = client

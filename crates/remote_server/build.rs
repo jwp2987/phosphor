@@ -17,6 +17,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("cargo:rerun-if-env-changed=PHOSPHOR_CLI_SHA256_{platform}");
     }
 
+    // `naming::helper_version` reads this with `option_env!`; see the note above.
+    println!("cargo:rerun-if-env-changed=GIT_RELEASE_TAG");
+    println!("cargo:rerun-if-env-changed=PHOSPHOR_REMOTE_BUILD_ID");
+
     prost_build::compile_protos(&["proto/remote_server.proto"], &["proto/"])?;
     Ok(())
 }

@@ -11,15 +11,19 @@
 //! ssh command helpers, and the `rt` stand-ins.
 
 pub mod auth;
+pub mod capability;
 pub mod codebase_index_proto;
 pub mod frames;
 pub mod host_response;
+pub mod naming;
 pub mod protocol;
 pub mod rt;
 pub mod ssh;
 
 #[cfg(feature = "client")]
 pub mod client;
+#[cfg(all(feature = "daemon", unix))]
+pub mod daemon;
 #[cfg(feature = "client")]
 pub mod host_id;
 #[cfg(feature = "client")]
