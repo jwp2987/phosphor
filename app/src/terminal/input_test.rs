@@ -8239,6 +8239,22 @@ fn test_second_enter_after_a_give_up_on_an_over_cap_shell_line_runs_it_in_the_sh
 /// `large_input/*` criterion benches (`app/benches/routing_bench.rs`), gated in CI.
 #[test]
 fn test_paste_of_a_large_buffer_and_the_keystroke_after_it_are_linear_in_its_size() {
+    assert_paste_and_keystroke_are_linear(
+        "please explain why the build failed; see <log> $HOME | grep error ",
+    );
+}
+
+/// #1191: the same, for a 1 MB paste of ~13,000 short lines (the multi-line case the owner
+/// measured at 7 s of no repaint): the per-line work of the edit handler must not grow with the
+/// line count either.
+#[test]
+fn test_paste_of_a_large_multi_line_buffer_and_the_keystroke_after_it_are_linear_in_its_size() {
+    assert_paste_and_keystroke_are_linear(
+        "echo line of about eighty characters; ls -la | grep foo # <x> $HOME\n",
+    );
+}
+
+fn assert_paste_and_keystroke_are_linear(unit: &'static str) {
     use std::time::Instant;
 
     const LINEAR_RATIO_CAP: f64 = 40.0;
@@ -8258,9 +8274,8 @@ fn test_paste_of_a_large_buffer_and_the_keystroke_after_it_are_linear_in_its_siz
         simulate_directory_for_completion(session_id, &terminal, &mut app, "~");
         let input = terminal.read(&app, |terminal, _| terminal.input().clone());
 
-        // Single-line prose with shell metacharacters sprinkled in, so every scan on the path
-        // (attachment patterns, operators, words) has work to do.
-        let unit = "please explain why the build failed; see <log> $HOME | grep error ";
+        // `unit` has shell metacharacters sprinkled in, so every scan on the path (attachment
+        // patterns, operators, words) has work to do.
         let mut measure_once = |bytes: usize| -> (Duration, Duration) {
             let text = unit.repeat(bytes / unit.len() + 1);
             input.update(&mut app, |input, ctx| {

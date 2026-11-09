@@ -1,4 +1,4 @@
-//! Delivers a very large command to bash as one short line (#1129, #1255).
+//! Delivers a very large command to bash as a base64 payload it decodes and sources (#1129, #1255).
 //!
 //! Bash older than 4.4, and 4.4 and 5.0 where the user's readline config leaves
 //! `enable-bracketed-paste` off, get a command key by key. Typed that way a multi-hundred-KB
@@ -55,11 +55,44 @@ pub(super) fn needs_wrapper(command: &str) -> bool {
     needs_wrapper_for(command, false)
 }
 
-/// The one-line wrapper that runs `command`. Only base64 characters and fixed text end up
-/// inside the single quotes, so no quoting of the command is needed.
+/// The widest line of folded base64 (a multiple of 4), well under macOS's 1024-byte canonical
+/// line limit (`MAX_CANON`) and Linux's 4095, so a shell or tty that reads it in cooked mode
+/// never truncates it either.
+pub(super) const FOLD_WIDTH: usize = 960;
+
+/// The wrapper that runs `command`, as ONE line. Only base64 characters and fixed text end up
+/// inside the single quotes, so no quoting of the command is needed. Used where the shell takes
+/// the command as a bracketed paste (the line editor does not redisplay per character).
 pub(super) fn wrapper_line(command: &str) -> String {
+    wrapper(command, false)
+}
+
+/// The wrapper for a shell WITHOUT bracketed paste, which receives the bytes as typed keys
+/// (#1129). One 190 KB line made a remote macOS bash 3.2 take 86 s, about 2 KB/s: readline
+/// redisplays the whole line per typed character, so the cost grows with the square of the
+/// line's length. The base64 is therefore folded onto lines of at most [`FOLD_WIDTH`]
+/// characters inside the same single-quoted string; the shell sees a quoted string that is
+/// still open at each newline (a continuation line, no command runs until the closing quote),
+/// and `base64` ignores the newlines when it decodes. Total redisplay work becomes
+/// proportional to size x [`FOLD_WIDTH`].
+pub(super) fn wrapper_lines_for_typed_input(command: &str) -> String {
+    wrapper(command, true)
+}
+
+fn wrapper(command: &str, fold: bool) -> String {
     let script = format!("rm -f \"$__pc\"; unset __pc\n{command}\n");
-    let encoded = STANDARD.encode(script);
+    let mut encoded = STANDARD.encode(script);
+    if fold {
+        // Base64 is ASCII, so byte chunks are character chunks.
+        let mut folded = String::with_capacity(encoded.len() + encoded.len() / FOLD_WIDTH + 1);
+        for (i, chunk) in encoded.as_bytes().chunks(FOLD_WIDTH).enumerate() {
+            if i > 0 {
+                folded.push('\n');
+            }
+            folded.push_str(std::str::from_utf8(chunk).expect("base64 is ASCII"));
+        }
+        encoded = folded;
+    }
     // `base64 -D` is what macOS before 13 calls decode.
     format!(
         "__pc=$(mktemp \"${{TMPDIR:-/tmp}}/.phosphor-cmd-XXXXXX\") && {{ \

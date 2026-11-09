@@ -2588,7 +2588,13 @@ impl<T: EventLoopSender> PtyController<T> {
         if shell_type == ShellType::Bash
             && posix_long_command::needs_wrapper_for(&command, self.is_bracketed_paste_enabled)
         {
-            let line = posix_long_command::wrapper_line(&command);
+            // Bracketed paste: one line. Typed keys: folded lines (#1129), the shell's line
+            // editor redisplays the whole line per key.
+            let line = if self.is_bracketed_paste_enabled {
+                posix_long_command::wrapper_line(&command)
+            } else {
+                posix_long_command::wrapper_lines_for_typed_input(&command)
+            };
             self.terminal_model
                 .lock()
                 .set_command_display_override(line.clone(), command);
@@ -3091,7 +3097,8 @@ pub(crate) fn command_is_sent_as_bracketed_paste(
 
 /// Whether `command` reaches `shell_type` as ONE line however many lines it has: bash gets a
 /// command over the wrapper size as a single base64 line that it decodes and sources
-/// (`PtyController::command_to_type`, #1129, #1255), so its lines are not run one by one even
+/// (`PtyController::command_to_type`, #1129, #1255; folded onto continuation lines inside one
+/// open quote when the shell has no bracketed paste), so its lines are not run one by one even
 /// without bracketed paste.
 pub(crate) fn command_is_sent_as_one_wrapped_line(
     shell_type: ShellType,
