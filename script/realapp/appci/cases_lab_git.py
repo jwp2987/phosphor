@@ -17,6 +17,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cases_lab as CL  # noqa: E402
 from cases_lab import lab_case, connect_or_fail, finish_remote, unique, work, rtt_s  # noqa: E402
 
+import cases_lab_helper as CLH  # noqa: E402
+CLH.declare_external("git_write", helper_case="lab_git_write_remote", nohelper_case="lab_git_write_remote")      # the coverage guard: both arms of the family
+
 HOOK_REMOTE_OP = re.compile(r"hop=remote_op name=(git_commit_chain|git_push|git_pull|git_create_pr|discard_files|git_stage) backend=(helper|shell) ok=(true|false)")
 
 # mirrors shellcmd::git::runner (GIT_UNSET_ENV, GIT_ENV, GIT_NOPROMPT_ENV, GIT_SSH_COMMAND_SH_ASSIGNMENT) and backend::shell_git_runner::git_script

@@ -1,0 +1,18 @@
+# systemd --user unit for the persistent fixed-port sshlab slots (docs/testing.md 2.15, script/realapp/sshlab/README.md).
+# Installed by the sshlab-image job to ~/.config/systemd/user/ for the gitlab-runner account (loginctl enable-linger makes it start at boot).
+# `labctl.py serve` reconciles one container per slot on podman events, with a 5-minute safety re-check; it needs ~/.phosphor-sshlab/token (mode 600).
+[Unit]
+Description=Phosphor sshlab fixed-port slot supervisor
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.phosphor-sshlab
+ExecStart=/usr/bin/python3 %h/.phosphor-sshlab/labctl.py serve --token-file %h/.phosphor-sshlab/token
+Restart=on-failure
+RestartSec=10
+# the slot containers outlive the supervisor on purpose (they are --rm containers, not children): a service restart must not kill a running test
+KillMode=process
+
+[Install]
+WantedBy=default.target

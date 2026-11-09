@@ -76,7 +76,7 @@ use instant::Instant;
 
 use crate::ai::agent::AIAgentActionId;
 use crate::ai::agent::conversation::AIConversationId;
-use crate::ai::blocklist::input_model::{ENTER_VERDICT_BUDGET, large_text_compute_allowance};
+use crate::ai::blocklist::input_model::large_text_compute_allowance;
 
 // #933: an Enter typed right after a command finished may be a line at a prompt whose Precmd the
 // app has not parsed yet. Owner rule (2026-11-08, a timer never routes): that is decided from
@@ -422,16 +422,16 @@ pub enum SshEscapeLineStart {
     Skipped(&'static str),
 }
 
-/// The longest a young line's deferred Enter waits for the verdict of its input-type detection
-/// (#933). A verdict that has not come by then means the classifier is not going to answer; the
-/// Enter then submits on the Enter-time rules without it (#1174), never kept in the editor.
+/// The most classifier CPU a young line's deferred Enter waits for the verdict of its input-type
+/// detection (#933). A verdict that has not come by then means the classifier is not going to
+/// answer; the line is handed back to the editor, never submitted by the clock (#1577).
 ///
-/// The same local, generator-free classifier the editor Enter waits [`ENTER_VERDICT_BUDGET`] for
-/// (#1158); the young line's parse only starts when the report lands (no debounce head start) and
-/// the line is rare, so it gets a few budgets, not the seconds it had before #1158. Five budgets:
-/// 250 ms of classifier CPU since the owner raised the budget to 50 ms (2026-11-05, #1651; it was
-/// 100 ms of wall time), far under the young line's 2 s wall-clock backstop in the view (#1664).
-pub const YOUNG_DETECTION_CAP: Duration = ENTER_VERDICT_BUDGET.saturating_mul(5);
+/// A give-up net only. The same local, generator-free classifier an editor Enter holds for
+/// (`VERDICT_HANDBACK_CPU_CAP`), but the young line's parse only starts when the report lands (no
+/// debounce head start), so its net is tighter: 250 ms of classifier CPU, far under the young
+/// line's 2 s wall-clock backstop in the view (#1664).
+// give-up-net: CPU cap of a young line's verdict wait: hands the line back to the editor, never submits it (#1577)
+pub const YOUNG_DETECTION_CAP: Duration = Duration::from_millis(250);
 
 /// [`YOUNG_DETECTION_CAP`] for a buffer of `text_len` bytes (#1604): a buffer over the sync
 /// routing cap is classified by a linear background job, which gets the same size-proportional

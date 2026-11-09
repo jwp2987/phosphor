@@ -30,6 +30,7 @@ app/src/terminal/model/block/interaction_mode.rs	STALL_SNAPSHOT_AFTER	hands the 
 app/src/terminal/model/typeahead_handoff.rs	CONPTY_PROMPT_HOLD_GIVE_UP	prompt-hold give-up: keys with no Enter go back to the editor as text, a segment with an Enter stays held with a toast (#1584)
 app/src/terminal/model/typeahead_handoff.rs	PROMPT_HOLD_RELEASE_IN_FLIGHT_RECHECK	re-checks the prompt hold's give-up cap while a release is in flight; writes nothing
 app/src/terminal/model/typeahead_handoff.rs	YOUNG_HOLD_GIVE_UP	10 s net of a queued young hold: discards the young Enter and what followed with a count toast (#1661)
+app/src/terminal/model/typeahead_handoff.rs	YOUNG_DETECTION_CAP	250 ms classifier-CPU cap of a young line's verdict wait: hands the line back to the editor, never submits it (#1577)
 app/src/terminal/view.rs	AFTER_ENTER_REPLAY_PTY_WAIT	10 s net for keys typed after a deferred Enter: discards them with a count toast; never routes or writes (#1661)
 app/src/terminal/view.rs	AGENT_INTERRUPT_GRACE	after an ignored ^C, hands the agent's command to the user and leaves the agent view; writes no bytes (#899)
 app/src/terminal/view.rs	ALT_SCREEN_RESEND_GIVE_UP	logged net for an alt-screen winsize re-send; resizes the pty window, no key bytes
@@ -94,11 +95,16 @@ app/src/ai/blocklist/action_model/execute/shell_command.rs	MAX_WAIT_DURATION	age
 app/src/ai/blocklist/action_model/execute/shell_command.rs	action_result_future	agent wait timers (deadline, quiet re-judge): report a snapshot to the model; the model, not the timer, decides what to send
 app/src/ai/blocklist/controller.rs	schedule_send	30 s give-up for a hung attachment read: that submit is failed with a notification (nothing written to any pty)
 app/src/ai/blocklist/input_model.rs	schedule_misroute_expiry	re-renders so a stale misroute-recovery label disappears; UI only
+app/src/ai/blocklist/input_model.rs	VERDICT_HANDBACK_CPU_CAP	1 s classifier-CPU cap of an Enter held for its verdict: hands the line back to the editor with a toast and a counted log, never submits it (#1577)
 app/src/terminal/cli_agent_sessions/mod.rs	CTRL_C_CANCEL_WINDOW	if no plugin event follows a ^C the session is marked Cancelled (status only); writes and routes nothing
 app/src/terminal/cli_agent_sessions/mod.rs	observe_ctrl_c_write_with_window	arms the CTRL_C_CANCEL_WINDOW status give-up; status only
 crates/warpui/src/windowing/winit/linux/clipboard.rs	FULL_READ_BUDGET	caps the paste's wait for a clipboard owner that never answers; the read fails, nothing is written to the pty (#1331)
 crates/warpui/src/windowing/winit/linux/clipboard.rs	PROBE_BUDGET	caps the html/image probes after a text read; the probe is skipped, nothing is written
 crates/warpui/src/windowing/winit/linux/clipboard.rs	TEXT_READ_RETRY_PAUSE	pause between bounded retries of a clipboard READ (3 attempts); reads only, never writes or routes
+crates/warpui_core/src/runtime/terminal_probe.rs	PROBE_DEADLINE	100 ms startup colour-probe deadline on the reader thread: on expiry the colours stay unknown (COLORFGBG fallback); keys typed meanwhile are forwarded in order, never discarded (#1748)
+crates/warpui_core/src/runtime/terminal_probe.rs	LATE_REPLY_WINDOW	2 s after a missed probe during which a late colour reply is still swallowed; expiry only stops swallowing and hands withheld keys on, writes nothing (#1749)
+crates/warpui_core/src/runtime/terminal_probe.rs	REPLY_HOLD_NET	50 ms net on an Esc/Alt-] withheld because it might start a colour reply: on expiry it and the keys after it are handed on in order; drops and reorders nothing
+crates/warp_tui/src/terminal_background.rs	LIVE_PROBE_DEADLINE	50 ms focus-probe reply deadline on the reader thread: on expiry the background stays as it was; keys typed meanwhile are forwarded in order, never discarded
 crates/warp_tui/src/terminal_session_view/input_detection.rs	INPUT_AUTODETECTION_DEBOUNCE	debounces the input-type classifier run; the result is applied on its event, the debounce never submits or routes
 app/src/terminal/input.rs	DEBOUNCE_INPUT_DECORATION_PERIOD	debounces the editor's background decoration/classification job; an Enter waits on the verdict event and its own nets
 app/src/terminal/input.rs	DEBOUNCE_AI_QUERY_PREDICTION_PERIOD	debounces AI query prediction; UI suggestion only
@@ -108,11 +114,6 @@ app/src/terminal/view.rs	SLOW_BOOTSTRAP_BANNER_AUTO_DISMISS_DURATION	auto-dismis
 # PENDING-CONVERSION (must be gone before v0.1.18)
 # Timers that break the rule (write, release, route, commit or re-ask on a clock). The default run
 # warns for each; `--strict` (release tier) fails on any. Delete a line when its timer is gone.
-app/src/ai/blocklist/input_model.rs	ENTER_VERDICT_BUDGET	FOUND: 50 ms classifier compute cap; when reached the waiting Enter is SUBMITTED on the Enter-time rules (commits on a clock, SubmitWithoutVerdict)
-app/src/ai/blocklist/input_model.rs	ENTER_VERDICT_WALL_CEILING	FOUND: 1 s wall ceiling of the same wait; reaching it submits the Enter on the Enter-time rules (commits on a clock)
-crates/warpui_core/src/runtime/terminal_probe.rs	PROBE_DEADLINE	FOUND (#1748): 100 ms startup probe deadline; a late terminal reply then leaks into stdin as typed bytes, and user bytes typed in the window are swallowed
-crates/warpui_core/src/runtime/terminal_probe.rs	DA1_DRAIN_GRACE	FOUND (#1749): 20 ms drain after the OSC 11 reply; a DA1 reply arriving later leaks into stdin as typed bytes
-app/src/terminal/model/block.rs	wakeup_after_delay	FOUND: after the debounce the interactive latch asks the probe, but with NO probe (ConPTY) it latches on elapsed time alone (LatchReason::NoProbeFallback): input state decided by a clock; convert or exempt for ConPTY
 
 # PACING (owner-exempt 2026-11-09: our own bootstrap bytes into a relay/container/cooked tty whose consumption is unobservable, #960 #1384; never user keys)
 # Each needs a `pacing: <why>` comment next to it; the guard fails if its code path mentions a user-key API. Not counted by --strict.
@@ -130,6 +131,7 @@ crates/warp_tui/src/tui_ask_question_view.rs	AUTO_ADVANCE_DELAY	auto-advances a 
 
 # SAMPLING (owner-exempt 2026-11-09: timers that only schedule a probe sample; the probe result or an event decides, never elapsed time alone)
 # Each needs a `sampling: <why>` comment next to it. Not counted by --strict.
+app/src/terminal/model/block.rs	wakeup_after_delay	owner-exempt 2026-11-09: on unix the latch asks the tty-read probe; on ConPTY (no probe) it latches on elapsed time (LatchReason::NoProbeFallback) — accepted for now, Windows stress tests to show any misroute
 app/src/terminal/local_tty/terminal_attributes.rs	POLL_INTERVAL	1 Hz termios sample; the sample feeds the prompt detector, which hands over only on a password termios state or a Reading probe
 app/src/terminal/local_tty/terminal_manager.rs	judge	arms the one quiet timer of the prompt detector; on a clock it yields a take-over NOTICE only (#1811), hand-over needs the Reading probe
 app/src/terminal/local_tty/terminal_manager.rs	observe	arms the one quiet timer of the stall detector; on a clock it shows a take-over NOTICE only, nothing is sent (#1811)

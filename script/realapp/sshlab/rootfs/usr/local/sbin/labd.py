@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # labd.py: the sshlab container's daemon (docs/testing.md 2.15). Runs under an init (podman --init), supervises two sshds (:22 host key A, :2222 host
-# key B), an echo probe on :7 and a stdlib HTTP control server on :7000 (bearer token from $SSHLAB_TOKEN). Exits after its TTL ($SSHLAB_TTL_S, default 8 h).
+# key B), an echo probe on :7 and a stdlib HTTP control server on :7000 (bearer token from $SSHLAB_TOKEN, or from the file named by $SSHLAB_TOKEN_FILE: the
+# persistent fixed-port slots mount the box's token file read-only so the token is on no command line and not in `podman inspect`). Exits after its TTL
+# ($SSHLAB_TTL_S, default 8 h). $SSHLAB_EXCLUSIVE=1 (the fixed slots): one lease owner at a time, a second /lease gets 409 until POST /release or the lease expires.
 # Import-safe: selftest loads this file by path for its pure helpers (session_pids, safe_path, count_matches...); nothing runs unless __main__.
 import base64, hashlib, http.server, json, os, pwd, re, secrets, shutil, signal, socket, socketserver, subprocess, sys, threading, time, urllib.parse
 
@@ -18,7 +20,32 @@ SSHD_LOG = {22: RUN + "/sshd_22.log", 2222: RUN + "/sshd_2222.log"}
 VERSION = 1
 LOCK = threading.RLock()
 STATE = dict(started=time.time(), ttl=float(os.environ.get("SSHLAB_TTL_S", str(8 * 3600))), run=None, fault=None, tc_ok=None, users=[], secrets={},
-             hostkeys={}, procs={}, uids=[], leased=False)
+             hostkeys={}, procs={}, uids=[], leased=False, token="", exclusive=os.environ.get("SSHLAB_EXCLUSIVE") == "1", lease_owner=None, lease_until=0.0)
+MAX_LEASE_S = 8 * 3600
+DEFAULT_LEASE_S = 3 * 3600
+
+
+class Busy(Exception):
+    """a second lease on an exclusive (fixed-slot) container: HTTP 409"""
+
+
+def load_token(environ=None):
+    """the bearer token: $SSHLAB_TOKEN, else the (stripped) content of the file $SSHLAB_TOKEN_FILE. '' when neither gives one (a token under 16 characters is refused)."""
+    env = os.environ if environ is None else environ
+    tok = (env.get("SSHLAB_TOKEN") or "").strip()
+    if not tok and env.get("SSHLAB_TOKEN_FILE"):
+        try:
+            tok = open(env["SSHLAB_TOKEN_FILE"]).read().strip()
+        except OSError:
+            tok = ""
+    return tok if len(tok) >= 16 else ""
+
+
+def lease_gate(exclusive, leased, owner, until, req_owner, now):
+    """-> None when a /lease may proceed, else the refusal text. Exclusive containers allow one live owner; the same owner may re-lease; an expired lease may be taken over."""
+    if not exclusive or not leased or until <= now or (owner and owner == req_owner):
+        return None
+    return "this lab slot is leased to another client for another %d s (POST /release by its owner, or wait for the lease to expire)" % int(until - now)
 
 
 # ------------------------------------------------------------------ pure helpers
@@ -267,6 +294,10 @@ def write_home(row, hooks, home_mode_override=None):
 def lease(req):
     """POST /lease {run, pubkeys: [..], hooks: {shell: template}}: reset every user's home, install the keys, set secrets"""
     with LOCK:
+        owner = str(req.get("owner") or "")
+        refusal = lease_gate(STATE["exclusive"], STATE["leased"], STATE["lease_owner"], STATE["lease_until"], owner, time.time())
+        if refusal:
+            raise Busy(refusal)
         pubkeys = [k for k in (req.get("pubkeys") or []) if isinstance(k, str) and k.startswith(("ssh-", "ecdsa-", "sk-"))]
         if not pubkeys:
             raise ValueError("lease needs at least one public key")
@@ -288,8 +319,41 @@ def lease(req):
             open(f, "w").write(totp_file_text(mfa)); os.chmod(f, 0o600)
         STATE["secrets"] = dict(password=pw, mfa_secret=mfa)
         STATE["leased"] = True
+        STATE["lease_owner"] = owner or None
+        STATE["lease_until"] = time.time() + min(MAX_LEASE_S, max(60.0, float(req.get("lease_ttl_s") or DEFAULT_LEASE_S)))
+        for lp in SSHD_LOG.values():
+            try:
+                open(lp, "w").close()          # a persistent slot: each lease starts with empty sshd logs (sshd appends, so the truncation is safe)
+            except OSError:
+                pass
         return dict(run=STATE["run"], users=[dict(user=r.user, shell=r.shell, profile=r.profile, home=usersdb.PROFILES[r.profile]["home"]) for r in STATE["rows"]],
                     hostkeys=STATE["hostkeys"], password=pw, mfa_secret=mfa, password_users=list(usersdb.PASSWORD_USERS), mfa_users=list(usersdb.MFA_USERS))
+
+
+def release(req):
+    """POST /release {owner}: the leasing client is done. Clears the fault, kills every lab user's sessions and processes, empties the authorized keys, marks the slot free.
+    A different owner than the lease's gets 409 (and nothing is touched); releasing a free slot is a no-op."""
+    with LOCK:
+        owner = str(req.get("owner") or "")
+        if STATE["leased"] and STATE["lease_owner"] and owner != STATE["lease_owner"] and STATE["lease_until"] > time.time():
+            raise Busy("release refused: the lease belongs to another client")
+        try:
+            apply_fault({})
+        except Exception as e:  # noqa: BLE001
+            print("labd: release: clearing the fault failed: %r" % (e,), flush=True)
+        ps = sh(["ps", "-eo", "pid=,args="]).stdout
+        for row in STATE["rows"]:
+            for pid in session_pids(ps, row.user):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+            sh(["pkill", "-KILL", "-u", row.user])
+            ak = RUN + "/authkeys/" + row.user
+            if os.path.exists(ak):
+                open(ak, "w").write("")
+        STATE.update(leased=False, lease_owner=None, lease_until=0.0, run=None)
+        return dict(released=True)
 
 
 DROPS = {"n": 0}
@@ -456,7 +520,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
     def _auth(self):
-        tok = os.environ.get("SSHLAB_TOKEN", "")
+        tok = STATE["token"]
         got = self.headers.get("Authorization", "")
         return bool(tok) and secrets.compare_digest(got, "Bearer " + tok)
 
@@ -478,8 +542,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         u = urllib.parse.urlparse(self.path)
         q = {k: v[0] for k, v in urllib.parse.parse_qs(u.query).items()}
         try:
-            with LOCK if u.path in ("/lease", "/fault", "/drop") else threading.Lock():
+            with LOCK if u.path in ("/lease", "/release", "/fault", "/drop") else threading.Lock():
                 self._dispatch(method, u.path, q)
+        except Busy as e:
+            self._send(409, {"error": str(e)})
         except (ValueError, KeyError) as e:
             self._send(400, {"error": str(e)})
         except Exception as e:  # noqa: BLE001
@@ -487,11 +553,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def _dispatch(self, method, path, q):
         if method == "GET" and path == "/health":
-            return self._send(200, dict(ok=True, now=time.time(), version=VERSION, run=STATE["run"], leased=STATE["leased"], ttl_left=int(STATE["started"] + STATE["ttl"] - time.time()),
+            return self._send(200, dict(ok=True, now=time.time(), version=VERSION, run=STATE["run"], leased=STATE["leased"], exclusive=STATE["exclusive"], lease_left=max(0, int(STATE["lease_until"] - time.time())) if STATE["leased"] else 0, ttl_left=int(STATE["started"] + STATE["ttl"] - time.time()),
                                         tc=STATE["tc_ok"], fault=STATE["fault"], hostkeys=STATE["hostkeys"], uids=STATE["uids"],
                                         sshd={str(p): (pr.poll() is None) for p, pr in STATE["procs"].items()}))
         if method == "POST" and path == "/lease":
             return self._send(200, lease(self._body()))
+        if method == "POST" and path == "/release":
+            return self._send(200, release(self._body()))
         if method == "POST" and path == "/fault":
             return self._send(200, dict(fault=apply_fault(self._body())))
         if method == "DELETE" and path == "/fault":
@@ -547,8 +615,9 @@ class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
 
 
 def main():
-    if not os.environ.get("SSHLAB_TOKEN"):
-        sys.exit("labd: SSHLAB_TOKEN is not set")
+    STATE["token"] = load_token()
+    if not STATE["token"]:
+        sys.exit("labd: no usable token (SSHLAB_TOKEN, or SSHLAB_TOKEN_FILE naming a file with >= 16 characters)")
     os.makedirs(RUN, exist_ok=True)
     STATE["rows"] = usersdb.load()
     gen_hostkeys()

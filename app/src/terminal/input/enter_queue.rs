@@ -103,7 +103,7 @@ pub(crate) const ENTER_GATE_GIVE_UP_TOAST: &str = "The shell didn't take the com
 
 /// #1577: the toast of an Enter that was not submitted because its verdict never came.
 pub(crate) const VERDICT_GIVE_UP_TOAST: &str =
-    "Couldn't tell shell from chat in time; press Enter again to send";
+    "The shell/AI check was slow; your line is back in the editor. Press Enter again to send";
 
 /// #1666/#1667: the toast of an Enter held for a Tab completion that did not land in time: the
 /// uncompleted line was not run. Nothing typed behind it is ever put back (#1661), so the Enter on
@@ -349,16 +349,6 @@ impl Input {
     pub(crate) fn detection_compute(&self, ctx: &AppContext) -> (bool, Duration) {
         let clock = self.ai_input_model.as_ref(ctx).detection_clock();
         (clock.is_running(), clock.spent())
-    }
-
-    /// The wall time the current input-type detection's stages have run (#1651 review): a young
-    /// line's Enter gives up at the detection's wall ceiling too, for a classifier that waits off
-    /// the CPU.
-    pub(crate) fn detection_stage_wall(&self, ctx: &AppContext) -> Duration {
-        self.ai_input_model
-            .as_ref(ctx)
-            .detection_clock()
-            .stage_wall()
     }
 
     /// Sends a unit on `tx` each time a stage of the current detection begins running.
