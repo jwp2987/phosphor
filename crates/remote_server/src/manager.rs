@@ -1138,11 +1138,26 @@ impl RemoteServerManager {
                     let _ = spawner
                         .spawn(move |_me, ctx| {
                             if let Err(error) = &result {
+                                // No helper to upload is not a failed install: the session
+                                // stays on the no-helper path and nothing is shown (#1804).
+                                let state = if crate::setup::is_helper_unavailable(error) {
+                                    log::info!(
+                                        "no remote helper to install for session {session_id:?}: \
+                                         {error}"
+                                    );
+                                    RemoteServerSetupState::Unsupported {
+                                        reason: UnsupportedReason::HelperUnavailable {
+                                            detail: error.clone(),
+                                        },
+                                    }
+                                } else {
+                                    RemoteServerSetupState::Failed {
+                                        error: error.clone(),
+                                    }
+                                };
                                 ctx.emit(RemoteServerManagerEvent::SetupStateChanged {
                                     session_id,
-                                    state: RemoteServerSetupState::Failed {
-                                        error: error.clone(),
-                                    },
+                                    state,
                                 });
                             }
                             ctx.emit(RemoteServerManagerEvent::BinaryInstallComplete {

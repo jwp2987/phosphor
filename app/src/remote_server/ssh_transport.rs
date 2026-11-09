@@ -577,7 +577,8 @@ fn gzip_bytes(raw: &[u8]) -> std::io::Result<Vec<u8>> {
 /// the setup-failed banner, so it says what to do about it.
 fn helper_unavailable(platform: &RemotePlatform, why: &str) -> String {
     format!(
-        "the phosphor-remote helper is not available for {}-{} ({why}); continuing without it",
+        "{}{}-{} ({why}); continuing without it",
+        remote_server::setup::HELPER_UNAVAILABLE_PREFIX,
         platform.os.as_str(),
         platform.arch.as_str()
     )
@@ -1119,6 +1120,14 @@ mod tests {
         let message = helper_unavailable(&platform, "this app bundle has none");
         assert!(message.contains("linux-aarch64"), "{message}");
         assert!(message.contains("continuing without it"), "{message}");
+        // The manager keys the quiet fall-back on this; a real failure must never match it.
+        assert!(
+            remote_server::setup::is_helper_unavailable(&message),
+            "{message}"
+        );
+        assert!(!remote_server::setup::is_helper_unavailable(
+            "remote-server install refused: integrity check failed"
+        ));
     }
 
     // Regression test for GitHub issue #37: teardown unconditionally tore

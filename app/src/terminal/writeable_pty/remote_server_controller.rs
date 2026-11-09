@@ -843,7 +843,13 @@ impl<T: EventLoopSender> RemoteServerController<T> {
                 );
             }
             Err(err) => {
-                log::error!("Binary install failed for {session_id:?}: {err}");
+                if remote_server::setup::is_helper_unavailable(&err) {
+                    log::info!(
+                        "No remote helper for {session_id:?}, using the no-helper path: {err}"
+                    );
+                } else {
+                    log::error!("Binary install failed for {session_id:?}: {err}");
+                }
                 self.flush_stashed_bootstrap(session_info, ctx);
             }
         }

@@ -243,3 +243,24 @@ fn other_install_failures_keep_the_generic_install_header() {
         );
     }
 }
+
+/// A missing helper is the no-helper path working as designed: no banner (#1804). Every other
+/// unsupported reason keeps its banner.
+#[test]
+fn a_missing_helper_gets_no_banner_but_incompatible_hosts_still_do() {
+    init_i18n();
+
+    let missing = UnsupportedReason::HelperUnavailable {
+        detail: "the phosphor-remote helper is not available for linux-x86_64 (none); continuing without it"
+            .to_string(),
+    };
+    assert!(!unsupported_shows_banner(&missing));
+    assert!(describe_unsupported_reason(&missing).contains("continuing without it"));
+    assert!(unsupported_shows_banner(&UnsupportedReason::NonGlibc {
+        name: "musl".to_string(),
+    }));
+    assert!(unsupported_shows_banner(&UnsupportedReason::GlibcTooOld {
+        detected: GlibcVersion::new(2, 17),
+        required: GlibcVersion::new(2, 31),
+    }));
+}

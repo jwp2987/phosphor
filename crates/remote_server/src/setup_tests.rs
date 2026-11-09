@@ -1396,3 +1396,20 @@ fn one_version_cleanup_with_no_hash_sweeps_no_daemon_files() {
     assert_eq!(sh_status(&cmd), 0);
     assert!(ident.join("server.pid").exists() && ident.join("server.sock").exists());
 }
+
+/// The quiet fall-back is keyed on the message prefix, so it must match the messages the
+/// transport builds and nothing the install script can say.
+#[test]
+fn only_helper_unavailable_messages_take_the_quiet_fallback() {
+    assert!(is_helper_unavailable(&format!(
+        "{HELPER_UNAVAILABLE_PREFIX}linux-aarch64 (this app bundle has none); continuing without it"
+    )));
+    for real_failure in [
+        INSTALL_REFUSED_NO_PINNED_DIGEST,
+        INSTALL_REFUSED_DIGEST_MISMATCH_LOCAL,
+        "install script failed (exit 9): boom",
+        "ssh connection dropped",
+    ] {
+        assert!(!is_helper_unavailable(real_failure), "{real_failure}");
+    }
+}

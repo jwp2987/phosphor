@@ -160,7 +160,7 @@ use crate::terminal::view::ssh_remote_server_choice_view::{
 };
 use crate::terminal::view::ssh_remote_server_failed_banner::{
     SshRemoteServerFailedBanner, SshRemoteServerFailedBannerEvent, SshRemoteServerFailureKind,
-    describe_unsupported_reason, legacy_fallback_shows_banner,
+    describe_unsupported_reason, legacy_fallback_shows_banner, unsupported_shows_banner,
 };
 use crate::terminal::view::telemetry::PromptSuggestionFallbackReason;
 use crate::workspaces::user_workspaces::UserWorkspacesEvent;
@@ -5576,7 +5576,9 @@ impl TerminalView {
                         // is a no-op when a banner is already shown for this
                         // session, so this cannot double up.
                         match state {
-                            RemoteServerSetupState::Unsupported { reason } => {
+                            RemoteServerSetupState::Unsupported { reason }
+                                if unsupported_shows_banner(reason) =>
+                            {
                                 me.show_ssh_remote_server_failed_banner(
                                     *session_id,
                                     SshRemoteServerFailureKind::Unsupported,

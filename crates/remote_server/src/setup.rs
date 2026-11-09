@@ -93,6 +93,11 @@ pub enum UnsupportedReason {
     NonGlibc {
         name: String,
     },
+    /// This app has no helper to upload for the host (no bundled asset for its platform, or an
+    /// unreadable one). Not an error: the session stays on the no-helper path, quietly (#1804).
+    HelperUnavailable {
+        detail: String,
+    },
 }
 
 impl PreinstallCheckResult {
@@ -698,6 +703,16 @@ pub fn helper_asset_name(platform: &RemotePlatform) -> String {
         platform.os.as_str(),
         platform.arch.as_str()
     )
+}
+
+/// Start of every "no helper to upload" message (`ssh_transport::helper_unavailable`). The install
+/// result reaches the manager only as a `String`, so this prefix is the contract that lets it tell
+/// "nothing to install here" (a quiet fall-back to the no-helper path) from a real failure.
+pub const HELPER_UNAVAILABLE_PREFIX: &str = "the phosphor-remote helper is not available for ";
+
+/// Whether an install error means there was no helper to upload, rather than an install failing.
+pub fn is_helper_unavailable(error: &str) -> bool {
+    error.starts_with(HELPER_UNAVAILABLE_PREFIX)
 }
 
 /// Directory under the app's bundled resources that holds the compressed helpers.
