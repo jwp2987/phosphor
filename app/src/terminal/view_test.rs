@@ -19249,15 +19249,13 @@ fn ssh_pane_with_held_typeahead_for_test(
 /// shell is alive at a non-bootstrapped prompt. A timer no longer writes anything there: no
 /// ` stty sane`, no keys. The held text is handed back (kept for the input while the ssh block
 /// runs, like any ssh hand-back), nothing reaches the pty, nothing runs, and the delivery is not
-/// marked committed. Old behaviour: the kill-switch test below. Legacy and Table.
+/// marked committed. Legacy and Table.
 #[test]
 fn ssh_bootstrap_failure_hands_held_typeahead_back_without_stty_sane() {
     use crate::terminal::input_queue::DestinationMode;
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
             let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
-            let _delivers =
-                crate::terminal::bootstrap::set_ssh_bootstrap_giveup_delivers_for_test(false);
             initialize_app_for_terminal_view(&mut app);
             app.add_singleton_model(|_| crate::workspace::ToastStack);
             let terminal = add_window_with_terminal(&mut app, None);
@@ -19314,61 +19312,6 @@ fn ssh_bootstrap_failure_hands_held_typeahead_back_without_stty_sane() {
             );
         })
     }
-}
-
-/// #1494 (kill switch PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS=1): the ssh bootstrap timed out with
-/// typing held. The remote shell is alive at a
-/// non-bootstrapped prompt (its tty still raw), so the held text is delivered to it -- after a
-/// `stty sane` line, once, in order -- instead of being discarded, and nothing is written to the
-/// local shell. (Against the old behaviour nothing was delivered at all.)
-#[test]
-fn ssh_bootstrap_failure_under_the_kill_switch_delivers_held_typeahead_after_stty_sane() {
-    App::test((), |mut app| async move {
-        // #1577: the old delivery, kept behind PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS=1.
-        let _delivers =
-            crate::terminal::bootstrap::set_ssh_bootstrap_giveup_delivers_for_test(true);
-        initialize_app_for_terminal_view(&mut app);
-        app.add_singleton_model(|_| crate::workspace::ToastStack);
-        let terminal = add_window_with_terminal(&mut app, None);
-        let pty_writes = record_all_pty_writes(&mut app, &terminal);
-        terminal.update(&mut app, |view, ctx| {
-            ssh_pane_with_held_typeahead_for_test(view, ctx);
-            // The remote shell's InitShell replaced the finished `ssh` block with the hidden
-            // bootstrap block, and by the time the bootstrap timer fires that block holds the
-            // setup script's echo and is the foreground work of the pane. A fresh test block is
-            // empty and unlatched, which `is_long_running` reads as "no remote shell in front".
-            view.model
-                .lock()
-                .process_bytes("stty -echo; eval \"$(cat)\"\r\n");
-            view.model
-                .lock()
-                .block_list()
-                .active_block()
-                .interactive_latch()
-                .force(true);
-            assert!(view.is_long_running(), "the bootstrap block is running");
-            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
-            view.on_bootstrap_failed_timer_complete((), ctx);
-            assert!(!view.ssh_typeahead_holding);
-            assert!(view.ssh_held_is_empty());
-            assert_eq!(
-                view.input.as_ref(ctx).buffer_text(ctx),
-                "",
-                "the text went to the remote shell, not into the local editor"
-            );
-        });
-        let written = pty_writes.borrow().concat();
-        let text = String::from_utf8_lossy(&written).into_owned();
-        let stty_at = text.find(" stty sane\r").expect("stty sane is sent first");
-        let echo_at = text.find("echo hi").expect("the held text is delivered");
-        assert!(stty_at < echo_at, "{text:?}");
-        assert_eq!(text.matches("stty sane").count(), 1, "{text:?}");
-        assert_eq!(text.matches("echo hi").count(), 1, "exactly once: {text:?}");
-        assert!(
-            text.ends_with("echo hi\r"),
-            "in order, Enter last: {text:?}"
-        );
-    })
 }
 
 /// #1566 (r18cz Linux, 1 in 9 connects): the 7 s bootstrap give-up timer expired 20 ms after the
@@ -19507,12 +19450,10 @@ fn stale_bootstrap_timer_from_an_earlier_connect_does_not_fail_a_later_one() {
 
 /// #1566 / #1577: the deferral is one grace, not an escape hatch: if `Bootstrapped` never comes,
 /// the second expiry fails the session, and (owner decision) hands the held text back instead of
-/// writing it after `stty sane`: nothing reaches the pty. The kill-switch copy is below.
+/// writing it after `stty sane`: nothing reaches the pty.
 #[test]
 fn ssh_bootstrap_timer_second_expiry_after_the_grace_still_fails_the_session() {
     App::test((), |mut app| async move {
-        let _delivers =
-            crate::terminal::bootstrap::set_ssh_bootstrap_giveup_delivers_for_test(false);
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
         let terminal = add_window_with_terminal(&mut app, None);
@@ -19548,50 +19489,6 @@ fn ssh_bootstrap_timer_second_expiry_after_the_grace_still_fails_the_session() {
             "no `stty sane`, no keys: {:?}",
             pty_writes.borrow()
         );
-    })
-}
-
-/// #1566 (kill switch PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS=1): the deferral is one grace, not an
-/// escape hatch: if `Bootstrapped` never comes, the second expiry runs the #1494 path (held text
-/// delivered after `stty sane`, once).
-#[test]
-fn ssh_bootstrap_timer_second_expiry_under_the_kill_switch_still_delivers_after_stty_sane() {
-    App::test((), |mut app| async move {
-        // #1577: the old delivery, kept behind PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS=1.
-        let _delivers =
-            crate::terminal::bootstrap::set_ssh_bootstrap_giveup_delivers_for_test(true);
-        initialize_app_for_terminal_view(&mut app);
-        app.add_singleton_model(|_| crate::workspace::ToastStack);
-        let terminal = add_window_with_terminal(&mut app, None);
-        // The hand-over writes through the counted route too (`WriteHandoffUserBytesToPty`).
-        let pty_writes = record_all_pty_writes(&mut app, &terminal);
-        terminal.update(&mut app, |view, ctx| {
-            ssh_pane_with_held_typeahead_for_test(view, ctx);
-            // The bootstrap block is the foreground work of the pane (as in
-            // `ssh_bootstrap_failure_delivers_held_typeahead_after_stty_sane`): since #1494/#1566
-            // the held text is delivered after `stty sane` only when a remote shell is provably in
-            // front, else handed back.
-            view.model
-                .lock()
-                .process_bytes("stty -echo; eval \"$(cat)\"\r\n");
-            view.model
-                .lock()
-                .block_list()
-                .active_block()
-                .interactive_latch()
-                .force(true);
-            assert!(view.is_long_running(), "the bootstrap block is running");
-            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
-            view.on_bootstrap_failed_timer_complete((), ctx);
-            assert!(view.ssh_typeahead_holding);
-            view.on_bootstrap_failed_timer_complete((), ctx);
-            assert!(!view.ssh_typeahead_holding);
-            assert!(view.ssh_held_is_empty());
-            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
-        });
-        let text = String::from_utf8_lossy(&pty_writes.borrow().concat()).into_owned();
-        assert_eq!(text.matches("stty sane").count(), 1, "{text:?}");
-        assert_eq!(text.matches("echo hi").count(), 1, "{text:?}");
     })
 }
 
@@ -25423,7 +25320,7 @@ fn the_bootstrap_give_up_fires_at_most_once_per_setup() {
 }
 
 /// #1372: a PowerShell setup is paced by markers too (printed when PSReadLine is about to read, so
-/// after its redraw): line N+1 is written on line N's marker only. The kill switch keeps timers.
+/// after its redraw): line N+1 is written on line N's marker only (the timed pacing is deleted, #1814).
 #[test]
 fn powershell_setup_lines_follow_the_read_markers_not_the_clock() {
     App::test((), |mut app| async move {
@@ -27961,49 +27858,6 @@ fn a_report_into_an_ai_mode_input_is_kept_as_shell_text_and_runs_once() {
             );
         })
     }
-}
-
-/// #1574 wiring: the #1494 path (kill switch PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS=1; held ssh
-/// typeahead delivered to an unbootstrapped remote after
-/// `stty sane`) marks the delivery as final, so the remote's report of that line is not inserted.
-#[test]
-fn the_ssh_bootstrap_failure_delivery_is_marked_final() {
-    App::test((), |mut app| async move {
-        // The delivery exists only behind PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS=1 (#1577).
-        let _delivers =
-            crate::terminal::bootstrap::set_ssh_bootstrap_giveup_delivers_for_test(true);
-        initialize_app_for_terminal_view(&mut app);
-        app.add_singleton_model(|_| crate::workspace::ToastStack);
-        let terminal = add_window_with_terminal(&mut app, None);
-        terminal.update(&mut app, |view, ctx| {
-            ssh_pane_with_held_typeahead_for_test(view, ctx);
-            view.model
-                .lock()
-                .process_bytes("stty -echo; eval \"$(cat)\"\r\n");
-            view.model
-                .lock()
-                .block_list()
-                .active_block()
-                .interactive_latch()
-                .force(true);
-            assert!(
-                !view
-                    .model
-                    .lock()
-                    .typeahead_handoff()
-                    .committed_delivery_pending()
-            );
-            view.on_bootstrap_failed_timer_complete((), ctx);
-            assert!(view.ssh_held_is_empty());
-            assert!(
-                view.model
-                    .lock()
-                    .typeahead_handoff()
-                    .committed_delivery_pending(),
-                "the delivered line is the remote's"
-            );
-        });
-    })
 }
 
 // ---- busy queue = deferred operation (#1416-#1419, #1426-#1428) -----------------------------
