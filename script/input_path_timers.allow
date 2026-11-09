@@ -71,17 +71,19 @@ app/src/terminal/view/ssh_typeahead.rs	SSH_TYPEAHEAD_PRECMD_WAIT_CAP	first-Precm
 app/src/terminal/view/subshell_ready.rs	PRE_READY_CEILING	60 s ceiling for a setup waiting for the reader-ready proof: gives the setup up, keys return to the editor, a 'try again' toast follows
 app/src/terminal/writeable_pty/pty_controller.rs	track_pty_write_gate_stall	one-shot timer that only logs a stuck write gate
 app/src/terminal/writeable_pty/pty_controller.rs	TYPEAHEAD_HANDOFF_STALE_COUNT_GIVE_UP	5 s give-up of a stale-count wait: logs handoff_stale_counts_kept only; no reset, no retry, no write
+app/assets/bundled/bootstrap/bash_body.sh	__warp_nc_deadline_set	starts the overall deadline of a native-completions read, the only clock; expiry hands the read bytes back to the line or drops a reply, writes nothing
+app/assets/bundled/bootstrap/bash_body.sh	__warp_nc_read_byte	read -t bounded by the overall deadline only (no inter-byte gap): expiry hands the bytes read back to the line, writes nothing
+app/assets/bundled/bootstrap/bash_body.sh	__warp_nc_time_left	time left on the overall deadline; the only give-up clock of the exchange
+app/assets/bundled/bootstrap/zsh_body.sh	__warp_nc_deadline_set	starts the overall deadline of a native-completions read, the only clock; expiry hands the read bytes back (zle -U), writes nothing
+app/assets/bundled/bootstrap/zsh_body.sh	__warp_nc_time_left	time left on the overall deadline; the only give-up clock of the exchange
+app/assets/bundled/bootstrap/zsh_body.sh	__warp_nc_read_frame_body	read -t bounded by the overall deadline only; expiry or a non-frame byte hands everything read back to zle
+app/assets/bundled/bootstrap/zsh_body.sh	__warp_nc_give_back_escape	read -t bounded by the overall deadline only; replies dropped whole, keys handed back to zle
+app/assets/bundled/bootstrap/zsh_body.sh	warp_read_completion_buffer	first-byte read -t within PHOSPHOR_NC_DEADLINE; a non-frame byte or expiry hands back to zle, nothing is written
+app/src/terminal/writeable_pty/pty_controller.rs	NATIVE_COMPLETIONS_PROMPT_TIMEOUT	2 s prompt timeout only gives up: closes the requester's channel, marks the cancel frame owed and writes nothing (43f2c9a91)
 
 # PENDING-CONVERSION (must be gone before v0.1.18)
 # Timers that break the rule (write, release, route, commit or re-ask on a clock). The default run
 # warns for each; `--strict` (release tier) fails on any. Delete a line when its timer is gone.
-app/assets/bundled/bootstrap/bash_body.sh	__warp_nc_deadline_set	owner-named remote-Tab shell gap: 5 s frame deadline and PHOSPHOR_NC_DEADLINE (default 20 s)
-app/assets/bundled/bootstrap/bash_body.sh	__warp_nc_read_byte	owner-named remote-Tab shell gap: read -t 0.1 per byte / 1 s paste gap while reading the exchange frame
-app/assets/bundled/bootstrap/bash_body.sh	__warp_nc_time_left	owner-named remote-Tab shell gap: time left against the EPOCHREALTIME/SECONDS deadline
-app/assets/bundled/bootstrap/zsh_body.sh	__warp_nc_give_back_escape	owner-named remote-Tab shell gap: read -t 0.1 gaps while draining an escape sequence
-app/assets/bundled/bootstrap/zsh_body.sh	__warp_nc_read_frame_body	owner-named remote-Tab shell gap: read -t 0.1 per byte and a 5 s frame deadline; on expiry zle -U gives the bytes back
-app/assets/bundled/bootstrap/zsh_body.sh	warp_read_completion_buffer	owner-named remote-Tab shell gap: first-byte read -t / PHOSPHOR_NC_DEADLINE (default 20 s); a non-frame byte is zle -U'd back
-app/src/terminal/input.rs	REMOTE_NATIVE_TAB_ENTER_BUDGET	owner-named: 1.5 s Enter hold for a remote in-band Tab answer
 app/src/terminal/input.rs	run_completions_async	FOUND: REMOTE_AS_YOU_TYPE_DEBOUNCE (150 ms) delays the in-band completion request, i.e. a timer decides when ^Y is written
 app/src/terminal/model/block/interaction_mode.rs	INTERACTIVE_PROMPT_QUIET_EXPLICIT	FOUND: 3 s of silence on a [y/N]-style marker hands the agent's command to the user (hand-over on a clock, with evidence)
 app/src/terminal/model/block/interaction_mode.rs	INTERACTIVE_PROMPT_QUIET_TRAILING	FOUND: 15 s of silence on a trailing ?/: (plus the tty-read probe) hands the command to the user
@@ -102,10 +104,13 @@ app/src/terminal/view.rs	SUBSHELL_SETUP_DEFER_QUIET	FOUND: 600 ms unchanged-outp
 app/src/terminal/view.rs	TRIGGER_RC_FILE_SUBSHELL_BOOTSTRAP_DELAY	FOUND: 100 ms then writes the rc-file subshell bootstrap (only with PHOSPHOR_BOOTSTRAP_TIMED=1)
 app/src/terminal/view.rs	arm_young_timer	FOUND: young-detection timer; on a reached compute cap it finishes the wait and submits the deferred Enter by the Enter-time rules (commits on a timer)
 app/src/terminal/view.rs	write_init_subshell_bytes_to_pty	FOUND: the unmarked subshell bootstrap lines are written on a per-line delay timer (the marked path is event-driven)
-app/src/terminal/writeable_pty/pty_controller.rs	CONTAINER_BOOTSTRAP_PACING	FOUND: 50 ms timer paces bootstrap chunk WRITES into a container subshell (#960); owner to rule whether pacing is exempt
-app/src/terminal/writeable_pty/pty_controller.rs	MAC_TTY_INPUT_QUEUE_PACING	FOUND: 10 ms timer paces the ssh-warpify payload WRITES on a cooked tty (#1384); owner to rule whether pacing is exempt
-app/src/terminal/writeable_pty/pty_controller.rs	NATIVE_COMPLETIONS_PROMPT_TIMEOUT	FOUND: 2 s watchdog WRITES the cancel frame to the pty and drains queued writes (end_native_exchange_with_cancel)
-app/src/terminal/writeable_pty/pty_controller.rs	NATIVE_COMPLETIONS_RESULTS_TIMEOUT	FOUND: 15 s watchdog drops the exchange and calls execute_next_queued_write (releases queued writes on a timer)
-app/src/terminal/writeable_pty/pty_controller.rs	RELAY_BOOTSTRAP_PACING	FOUND: 25 ms timer paces bootstrap chunk WRITES into a pty relay (#960: consumption unobservable); owner to rule whether pacing is exempt
-app/src/terminal/writeable_pty/pty_controller.rs	arm_native_completions_watchdog	FOUND: the call site of the two native-completions watchdog timers
-app/src/terminal/writeable_pty/pty_controller.rs	write_next_paced_chunk	FOUND: the timer chain that writes the next paced chunk to the pty
+
+app/src/terminal/writeable_pty/pty_controller.rs	NATIVE_COMPLETIONS_RESULTS_TIMEOUT	FOUND: 15 s watchdog drops the exchange and still calls execute_next_queued_write (not verified to be a no-op for held writes)
+app/src/terminal/writeable_pty/pty_controller.rs	arm_native_completions_watchdog	FOUND: call site of both watchdog timers; the results arm still calls execute_next_queued_write
+
+# PACING (owner-exempt 2026-11-09: our own bootstrap bytes into a relay/container/cooked tty whose consumption is unobservable, #960 #1384; never user keys)
+# Each needs a `pacing: <why>` comment next to it; the guard fails if its code path mentions a user-key API. Not counted by --strict.
+app/src/terminal/writeable_pty/pty_controller.rs	RELAY_BOOTSTRAP_PACING	25 ms gap between chunks of our own bootstrap into a user-space pty relay (#960)
+app/src/terminal/writeable_pty/pty_controller.rs	CONTAINER_BOOTSTRAP_PACING	50 ms gap between chunks of our own bootstrap into a container exec proxy (#960)
+app/src/terminal/writeable_pty/pty_controller.rs	MAC_TTY_INPUT_QUEUE_PACING	10 ms gap between chunks of our own ssh-warpify payload on a cooked tty (#1384)
+app/src/terminal/writeable_pty/pty_controller.rs	write_next_paced_chunk	timer chain writing the next chunk of an app-built paced payload (bootstrap / warpify), never user keys
