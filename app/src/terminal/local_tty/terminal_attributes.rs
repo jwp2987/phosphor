@@ -562,6 +562,216 @@ fn process_group_names(_pgid: libc::pid_t) -> Option<Vec<String>> {
     None
 }
 
+// ---- subshell readiness (#1679 / #1711 step 3) ------------------------------------------------
+
+use crate::terminal::model::subshell_tty::{
+    LeaderKind, SubshellTtyKind, SubshellTtySample, classify_leader,
+};
+
+/// What the pty says about who reads it, for the subshell setup's readiness judge
+/// (`view/subshell_ready.rs`). `parent_pid` is the shell that ran the block (the session's
+/// reported pid; the spawn pid for the top-level shell): its own group in front means no
+/// subshell is, so the sample is `Unknown` with `LeaderKind::Parent`.
+///
+/// Order, and cost (review R10: ioctls first, `/proc` only for a candidate, and this is called at
+/// most once per output wakeup): `tcgetattr` (Secret ends it here, nothing else is read),
+/// `tcgetpgrp` (no group or the parent's ends it), ONE read of the leader's comm
+/// (`/proc/<pgid>/stat` on Linux, `proc_pidpath` on macOS; never a `/proc` scan), then, for a
+/// shell or relay leader only, the slave input-queue probe ([`slave_input_queue_empty`], R1).
+/// Precedence: Secret > Relay / Unknown > LineReader > Cooked.
+pub fn subshell_tty_fact(fd: RawFd, parent_pid: i32) -> SubshellTtySample {
+    let termios = fetch_termial_attributes(fd).ok();
+    let canonical = termios
+        .as_ref()
+        .map(|t| t.local_flags.contains(termios::LocalFlags::ICANON));
+    if termios
+        .as_ref()
+        .is_some_and(|t| is_canonical_without_echo(t.local_flags))
+    {
+        return SubshellTtySample {
+            kind: SubshellTtyKind::Secret,
+            leader: LeaderKind::Unreadable,
+            leader_comm: None,
+            canonical,
+            queue_empty: None,
+        };
+    }
+    // SAFETY: `tcgetpgrp` only reads the terminal's foreground group id.
+    let pgid = unsafe { libc::tcgetpgrp(fd) };
+    if pgid <= 0 {
+        return SubshellTtySample {
+            canonical,
+            ..SubshellTtySample::unknown()
+        };
+    }
+    if pgid == parent_pid {
+        return SubshellTtySample {
+            kind: SubshellTtyKind::Unknown,
+            leader: LeaderKind::Parent,
+            leader_comm: None,
+            canonical,
+            queue_empty: None,
+        };
+    }
+    let Some(comm) = leader_comm(pgid) else {
+        return SubshellTtySample {
+            canonical,
+            ..SubshellTtySample::unknown()
+        };
+    };
+    let leader = classify_leader(&comm);
+    let kind = match (leader, canonical) {
+        (LeaderKind::Relay, _) => SubshellTtyKind::Relay,
+        (LeaderKind::Shell, Some(false)) => SubshellTtyKind::LineReader,
+        (LeaderKind::Shell, Some(true)) => SubshellTtyKind::Cooked,
+        _ => SubshellTtyKind::Unknown,
+    };
+    let queue_empty = matches!(leader, LeaderKind::Shell | LeaderKind::Relay)
+        .then(|| slave_input_queue_empty(fd))
+        .flatten();
+    SubshellTtySample {
+        kind,
+        leader,
+        leader_comm: Some(comm),
+        canonical,
+        queue_empty,
+    }
+}
+
+/// The comm of the process `pid` (the foreground group's leader), or `None` when it cannot be
+/// read: one `/proc/<pid>/stat` read on Linux, `proc_pidpath` on macOS, nothing elsewhere.
+fn leader_comm(pid: libc::pid_t) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        crate::terminal::model::subshell_tty::comm_from_proc_stat(&stat)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        process_name(pid)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// `TIOCGPTPEER` (Linux 4.13+): an fd for the master's own slave, with no path lookup and no
+/// `devpts` namespace question. `_IO('T', 0x41)` on every architecture this app builds for
+/// (x86-64, aarch64); spelled here rather than taken from `libc` so an older crate does not
+/// decide whether this compiles.
+#[cfg(target_os = "linux")]
+const TIOCGPTPEER: libc::c_ulong = 0x5441;
+
+/// Opens the slave side of the pty whose master is `fd`, read-only, `O_NOCTTY | O_NONBLOCK |
+/// O_CLOEXEC` (never our controlling tty, never a blocking open); `TIOCGPTPEER` first, `ptsname_r`
+/// + `open` as the fallback for an older kernel. The caller closes it. Opening another slave fd
+/// changes nothing for the shell that holds the slave: hang-up happens when the LAST slave fd
+/// closes, and ours is never the last while the shell lives.
+#[cfg(target_os = "linux")]
+fn open_slave_peer(fd: RawFd) -> Option<RawFd> {
+    let flags = libc::O_RDONLY | libc::O_NOCTTY | libc::O_NONBLOCK | libc::O_CLOEXEC;
+    // SAFETY: `TIOCGPTPEER` takes the open flags as its argument and returns a new fd or -1.
+    let peer = unsafe { libc::ioctl(fd, TIOCGPTPEER as _, flags) };
+    if peer >= 0 {
+        return Some(peer);
+    }
+    let mut name = [0 as libc::c_char; 64];
+    // SAFETY: `ptsname_r` writes at most `name.len()` bytes into `name`.
+    if unsafe { libc::ptsname_r(fd, name.as_mut_ptr(), name.len()) } != 0 {
+        return None;
+    }
+    // SAFETY: `name` is NUL-terminated by `ptsname_r`.
+    let peer = unsafe { libc::open(name.as_ptr(), flags) };
+    (peer >= 0).then_some(peer)
+}
+
+/// The consumption proof of the subshell readiness judge (review R1): whether the SLAVE's input
+/// queue is empty, i.e. everything written to the master (the user's pass-through bytes) has been
+/// read by whoever reads the tty. `Some(false)` when bytes wait, `None` when the platform cannot
+/// tell (then nothing is proven, and the judge waits).
+///
+/// - Linux: a slave peer is opened (`O_NOCTTY | O_NONBLOCK`), a zero-timeout `poll` first (it
+///   flushes the line discipline's pending work, as `pty_master_has_unread` relies on), then
+///   `FIONREAD` on the slave (`n_tty`: the bytes a `read` would get, which is the same queue the
+///   shell reads), then it is closed.
+/// - macOS: `FIONREAD` on the MASTER. Master and slave share one tty there and the master's
+///   `FIONREAD` counts the input queue, the direction the slave reads (`pty_master_has_unread`
+///   uses `TIOCOUTQ` for the other one). To be verified on the Mac box with the lab cases.
+/// - Elsewhere: `None`.
+pub fn slave_input_queue_empty(fd: RawFd) -> Option<bool> {
+    #[cfg(target_os = "linux")]
+    {
+        let peer = open_slave_peer(fd)?;
+        let answer = (|| {
+            let mut pollfd = libc::pollfd {
+                fd: peer,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: one valid `pollfd`, a zero timeout; `poll` only writes `revents`.
+            let polled = unsafe { libc::poll(&mut pollfd, 1, 0) };
+            if polled < 0 || pollfd.revents & (libc::POLLERR | libc::POLLNVAL) != 0 {
+                return None;
+            }
+            if pollfd.revents & libc::POLLIN != 0 {
+                return Some(false);
+            }
+            let mut pending: libc::c_int = 0;
+            // SAFETY: `FIONREAD` writes one `int` through the pointer, which points at `pending`.
+            let result =
+                unsafe { libc::ioctl(peer, libc::FIONREAD, &mut pending as *mut libc::c_int) };
+            (result == 0).then(|| pending == 0)
+        })();
+        // SAFETY: `peer` is an fd this function opened and nothing else holds.
+        unsafe { libc::close(peer) };
+        answer
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut pending: libc::c_int = 0;
+        // SAFETY: `FIONREAD` writes one `int` through the pointer, which points at `pending`.
+        let result = unsafe { libc::ioctl(fd, libc::FIONREAD, &mut pending as *mut libc::c_int) };
+        (result == 0).then(|| pending == 0)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = fd;
+        None
+    }
+}
+
+/// Discards the slave's unread input (review R9): a setup cancelled while its bytes provably sit
+/// unread in the tty (`slave_input_queue_empty` said `Some(false)` and the shell echoed nothing of
+/// them) must not have them read later by whatever reads next -- a `Password:` prompt, the user's
+/// own shell. `TCIFLUSH` on the slave peer on Linux (the master's `TCIFLUSH` flushes the other
+/// direction there); on macOS on the master, where the queues are one tty's (to be verified on the
+/// Mac box). Returns whether a flush was issued.
+pub fn flush_slave_input(fd: RawFd) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let Some(peer) = open_slave_peer(fd) else {
+            return false;
+        };
+        // SAFETY: `tcflush` on an fd this function opened.
+        let flushed = unsafe { libc::tcflush(peer, libc::TCIFLUSH) } == 0;
+        // SAFETY: `peer` is an fd this function opened and nothing else holds.
+        unsafe { libc::close(peer) };
+        flushed
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: `tcflush` only discards queued data of the tty behind `fd`.
+        unsafe { libc::tcflush(fd, libc::TCIFLUSH) == 0 }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = fd;
+        false
+    }
+}
+
 #[cfg(test)]
 #[path = "terminal_attributes_tests.rs"]
 mod tests;

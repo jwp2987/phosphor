@@ -124,3 +124,66 @@ fn the_tty_read_decision_needs_the_line_discipline_or_a_sleeping_tty_read() {
     ));
     assert!(!reads_tty_decision(None, None, None));
 }
+
+/// #1679 step 3: the subshell readiness sample on a real pty. The probe is exercised against a pty
+/// pair this test owns: no shell behind it, so the leader is unreadable and the kind `Unknown`, but
+/// the consumption proof (R1) reads the real slave input queue -- empty, then holding a byte the
+/// master wrote, then empty again once the slave read it; the flush (R9) empties it without a
+/// read.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_slave_input_queue_proof_and_the_flush_read_a_real_pty() {
+    use super::{flush_slave_input, slave_input_queue_empty, subshell_tty_fact};
+    use crate::terminal::model::subshell_tty::{LeaderKind, SubshellTtyKind};
+    // SAFETY: a fresh pty pair, both fds closed at the end.
+    let (master, slave) = unsafe {
+        let master = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY);
+        assert!(master >= 0, "posix_openpt");
+        assert_eq!(libc::grantpt(master), 0);
+        assert_eq!(libc::unlockpt(master), 0);
+        let mut name = [0 as libc::c_char; 64];
+        assert_eq!(libc::ptsname_r(master, name.as_mut_ptr(), name.len()), 0);
+        let slave = libc::open(name.as_ptr(), libc::O_RDWR | libc::O_NOCTTY);
+        assert!(slave >= 0, "open slave");
+        (master, slave)
+    };
+    assert_eq!(slave_input_queue_empty(master), Some(true), "fresh pty");
+    // The pty's foreground group is nobody's: no leader, the parent's pid is irrelevant.
+    let sample = subshell_tty_fact(master, std::process::id() as i32);
+    assert_eq!(sample.kind, SubshellTtyKind::Unknown, "{sample:?}");
+    assert_ne!(sample.leader, LeaderKind::Shell, "{sample:?}");
+    // SAFETY: a write of one byte from a valid buffer to an fd this test owns.
+    assert_eq!(unsafe { libc::write(master, b"x".as_ptr().cast(), 1) }, 1);
+    // The byte sits in the slave's input queue until something reads it: the proof says so.
+    let mut waited = 0;
+    while slave_input_queue_empty(master) != Some(false) && waited < 200 {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        waited += 1;
+    }
+    assert_eq!(slave_input_queue_empty(master), Some(false), "a byte waits");
+    assert!(flush_slave_input(master), "the flush is issued");
+    assert_eq!(
+        slave_input_queue_empty(master),
+        Some(true),
+        "flushed, unread"
+    );
+    // Written again and read by the slave: consumed.
+    // SAFETY: as above; the read goes into a one-byte buffer this test owns.
+    unsafe {
+        assert_eq!(libc::write(master, b"y".as_ptr().cast(), 1), 1);
+        let mut byte = 0u8;
+        let mut waited = 0;
+        while slave_input_queue_empty(master) != Some(false) && waited < 200 {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            waited += 1;
+        }
+        assert_eq!(libc::read(slave, (&mut byte as *mut u8).cast(), 1), 1);
+        assert_eq!(byte, b'y');
+    }
+    assert_eq!(slave_input_queue_empty(master), Some(true), "consumed");
+    // SAFETY: fds this test opened.
+    unsafe {
+        libc::close(slave);
+        libc::close(master);
+    }
+}

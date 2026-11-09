@@ -25,6 +25,7 @@ fn new_block_list(event_proxy: ChannelEventListener, mode: TypeaheadMode) -> Blo
         TypeaheadMode::InputMatching => ("bash", "3.2"),
     };
     let init_shell_value = ansi::InitShellValue {
+        pid: None,
         shell: shell.into(),
         ..Default::default()
     };

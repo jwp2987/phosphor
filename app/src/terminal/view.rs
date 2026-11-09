@@ -40205,6 +40205,8 @@ mod route_facts;
 mod ssh_edges;
 mod ssh_queue;
 mod ssh_typeahead;
+/// #1679 step 3: the pure readiness judge of the subshell setup (C3a: additive; C3b switches to it).
+mod subshell_ready;
 
 #[cfg(test)]
 #[path = "view_test.rs"]

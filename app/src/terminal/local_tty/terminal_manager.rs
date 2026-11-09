@@ -1103,6 +1103,21 @@ fn on_shell_determined<S: TerminalSurface>(
                 super::terminal_attributes::foreground_reads_tty(fd)
             }));
         }
+        // #1679 step 3: the subshell readiness sample (who reads the pty: a secret read, a relay,
+        // a shell's line editor or a cooked shell, and whether the slave's input queue is empty)
+        // and the R9 flush of unread setup bytes. Sampled at output wakeups and the hand-off's
+        // change, never on a timer. The parent of a sample is the active session's reported pid,
+        // falling back to this spawn's.
+        {
+            let mut model = model.lock();
+            model.set_local_shell_pid(pid as i32);
+            model.set_subshell_tty_probe(
+                Arc::new(move |parent| super::terminal_attributes::subshell_tty_fact(fd, parent)),
+                Some(Arc::new(move || {
+                    super::terminal_attributes::flush_slave_input(fd)
+                })),
+            );
+        }
         manager.pty_controller.update(ctx, |controller, _| {
             controller.set_foreground_sigint(Arc::new(move || {
                 super::terminal_attributes::sigint_foreground_group(fd)

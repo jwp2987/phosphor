@@ -1255,6 +1255,45 @@ without Phosphor; `exit` ends it. Expectation change (F1, review decision): `ctr
 | view | `view_test.rs`: `setup_gates_have_no_cap_of_their_own_the_net_is_the_one_net` | `default_cap` is `None` for the three setup gates; notice < quiet < ceiling |
 | view (existing, kept green) | `subshell_setup_lines_follow_the_shells_markers_not_the_clock`, `powershell_setup_lines_follow_the_read_markers_not_the_clock`, `ctrl_c_during_the_subshell_bootstrap_waits_for_its_last_line`, `subshell_gate_give_ups_hand_back_without_losing_or_reordering`, `text_typed_during_a_stalled_subshell_setup_is_held_then_delivered_in_order`, the PowerShell Ctrl-C route tests and `group2_timer_tests.rs` | ordering, stall hold and Ctrl-C behaviour unchanged |
 
+**#1679 / #1711 step 3, C3a (the readiness facts and the pure judge; owner-approved 2026-11-08, the Opus review R1-R10
+wins where it and the redesign differ). ADDITIVE: nothing decides on it until C3b switches the setup to it.**
+`model/subshell_tty.rs` holds the platform-free part: `SubshellTtySample { kind: Secret | Relay | LineReader | Cooked |
+Unknown, leader: Shell | Relay | Unsupported | Other | Parent | Unreadable, leader_comm, canonical, queue_empty }`, the leader
+lists (`SHELL_LEADERS`, `RELAY_LEADERS`, `UNSUPPORTED_LEADERS` (csh/tcsh/xonsh/elvish...), `EDITOR_LESS_SHELL_LEADERS`
+(dash/sh/ash/busybox/ksh/mksh, R3)), `classify_leader` (login `-`, case and `.exe` normalized), `leader_has_line_editor`,
+`shell_type_of_leader` (R5: `exec zsh` in a `.bashrc`) and `comm_from_proc_stat` (between the FIRST `(` and the LAST `)`).
+`local_tty/terminal_attributes.rs` holds the OS probes: `subshell_tty_fact(fd, parent_pid)` (one `tcgetattr`, one
+`tcgetpgrp`, at most ONE `/proc/<pgid>/stat` read or `proc_pidpath`; Secret > Relay/Unknown > LineReader > Cooked; the parent's
+own group is `Unknown`/`Parent`; R10: the ioctls first, `/proc` only for a candidate, one sample per wakeup),
+`slave_input_queue_empty(fd)` (R1, the consumption proof: Linux opens the slave peer with `TIOCGPTPEER` (fallback
+`ptsname_r`+`open`) `O_NOCTTY|O_NONBLOCK`, `poll(0)`, `FIONREAD`, close; macOS `FIONREAD` on the master -- TO BE VERIFIED on
+the Mac box) and `flush_slave_input(fd)` (R9, `TCIFLUSH` on the peer / the master). The session-reported parent pid: every
+`InitShell` payload now carries `"pid"` (`$$`, `$fish_pid`, `$nu.pid`, `$PID`; `InitShellValue.pid: Option<u32>`, serde
+default, the MSYS2 key-value form sends none), the model keeps `session_shell_pids` by session ID plus the spawn pid
+(`set_local_shell_pid`), and `subshell_parent_pid()` is the active session's reported pid else the spawn pid (R5: never a
+`tcgetpgrp` sample at a Precmd). The terminal manager installs `set_subshell_tty_probe(probe, flush)`; a test installs a
+closure. `key_facts::output_tail_is_input_prompt` gains the owner's Q10 narrow choice group (`line_ends_in_choice_group`: a
+trailing `[..]`/`(..)` of digits with `/` `-`, or 2-5 single letters with `/`; never a bare `)`/`]` or a bracketed word) and
+the zsh-newuser-install footer (R6). `view/subshell_ready.rs` is the pure judge: `subshell_ready(sample, ledger, trigger)`
+-> `Write(Option<ShellType>) | Wait(why) | Cancel(UserDrove | TooLong | Gone | NotAShell | Unsupported)` with
+`PRE_READY_CEILING` 60 s (owner Q7); `on_user_line_ended` (R2: ReArm only for an empty line, a Secret, a cooked shell keeping
+up with its reads or an InputPrompt tail; anything else is UserDrove); `LineTracker` (R2: "empty" = only the terminator;
+ESC sequences, Tab, ^R, ^P, ^Y, history recall and a Backspace are content; bracketed paste understood across chunks, a
+newline inside it ends no line; ^U and ^C end the line empty); `judge_written` (R7 stream-ordered E-UNSUPPORTED: echo ended,
+then a fresh prompt-shaped line, no token-matched marker between; local confirms by the queue proof, a relay by a second
+prompt; E-SECRET and E-GONE first, progress clears every suspicion, E-QUESTION needs an InputPrompt drawn since the write);
+`held_keys_destination` (R8: Secret/Question/net/Gone -> editor; Unsupported -> pty only with a fresh prompt proven AND the
+line consumed); `cancel_flushes_unread_setup` (R9). Consumption (R1 + owner Q8): a line editor's proof is the empty queue
+(plus `!line_dirty`, which the preconditions already require); a cooked shell's or a relay's proof is the empty queue AND a
+prompt drawn since the user's last line end -- "line ended + new prompt" never counts alone. An Enter never writes.
+
+| layer | test | asserts |
+|---|---|---|
+| model (pure) | `model/subshell_tty_tests.rs`: `every_listed_leader_classifies_as_its_list_and_the_lists_do_not_overlap`, `login_shells_case_and_exe_suffixes_are_normalized`, `programs_that_are_neither_are_other`, `only_editor_less_shells_may_be_written_at_a_cooked_prompt`, `the_leaders_shell_type_names_the_scripted_shells_only`, `the_comm_is_between_the_first_open_and_the_last_close_parenthesis` | the lists, the normalization, the comm parse with nested parentheses |
+| local_tty (real pty, Linux) | `terminal_attributes_tests.rs`: `the_slave_input_queue_proof_and_the_flush_read_a_real_pty` | on a pty pair the test owns: empty, a byte written by the master waits (`Some(false)`), the flush empties it unread, a byte the slave read is consumed; the sample of a pty with no foreground group is `Unknown` |
+| model (pure) | `key_facts_tests.rs`: `choice_groups_and_the_zsh_newuser_footer_are_input_prompts` | `[1-3]`, `[1/2/3]`, `(y/n/a)`, `(a/b/c/d/e)`, the newuser footer are prompts; `(venv) ... $`, `[me@host ~]$`, `[main]`, `done)`, `(abcdef/ghij)`, six letters, `(a)`, `[]`, `[/]` are not |
+| view (pure) | `view/subshell_ready_tests.rs`: `row_1_secret_waits` .. `row_15_alt_screen_waits`, `r3_*`, `r4_*`, `r5_*`, `the_preconditions_apply_in_order`, `exhaustive_a_write_needs_every_precondition_and_a_proof` (every kind x leader x canonical x queue x block x alt x dirty x tail x moved x moved-since-end x age x three ledgers x two triggers), `r2_only_an_empty_or_answering_line_re_arms`, `the_line_tracker_counts_only_the_terminator_as_empty`, `the_line_tracker_understands_bracketed_paste_across_chunks`, `judge_written_rows`, `r7_unsupported_is_stream_ordered_and_confirmed_by_the_queue_or_a_second_prompt`, `r8_held_keys_go_to_the_editor_except_a_proven_unsupported_prompt`, `r9_a_cancel_flushes_only_provably_unread_setup_bytes` | every row of the redesign's table with the review's corrections; the invariant that a Write needs every precondition and a proof and that a young attempt is never cancelled on a fact alone; the ceiling names NotAShell for an unknown leader and TooLong otherwise |
+
 **#1666 / #1667 (Tab completion give-up, busy-machine audit H6/H7).** Tab then a fast Enter holds the Enter for the local
 completion (`TAB_COMPLETION_ENTER_BUDGET`, 150 ms of completer wall time, unchanged; backstop 500 ms, unchanged) and runs the
 COMPLETED line when it lands. When either net fires first, the timer runs NOTHING (#1577 rule; it used to submit the visible

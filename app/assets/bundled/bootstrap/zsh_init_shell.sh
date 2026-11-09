@@ -8,7 +8,7 @@
  _user=$(command -pv whoami >/dev/null 2>&1 && command -p whoami 2>/dev/null || builtin echo $USER)
  # JSON-escaped copies for the hook payload (#879): escape \ and ", drop control chars. Keep this file short: it is typed as ONE line and macOS caps a canonical line at 1024 bytes.
  _ju=${${_user//\\/\\\\}//\"/\\\"}; _ju=${_ju//[[:cntrl:]]/}; _jh=${${_hostname//\\/\\\\}//\"/\\\"}; _jh=${_jh//[[:cntrl:]]/}
- _msg=$(builtin printf "{\"hook\": \"InitShell\", \"value\": {\"session_id\": $WARP_SESSION_ID, \"shell\": \"zsh\", \"user\": \"%s\", \"hostname\": \"%s\"}}" "$_ju" "$_jh" | command -p od -An -v -tx1 | command -p tr -d " \n")
+ _msg=$(builtin printf "{\"hook\": \"InitShell\", \"value\": {\"session_id\": $WARP_SESSION_ID, \"shell\": \"zsh\", \"user\": \"%s\", \"hostname\": \"%s\", \"pid\": $$}}" "$_ju" "$_jh" | command -p od -An -v -tx1 | command -p tr -d " \n")
  WARP_USING_WINDOWS_CON_PTY=@@USING_CON_PTY_BOOLEAN@@
  # We send the InitShell hook via OSCs when on Windows and via DCSs otherwise.
  # `case`, not `if [ .. ]`: a false condition is a failed statement, and `setopt PRINT_EXIT_VALUE` reports it as `zsh: exit 1` (#974).

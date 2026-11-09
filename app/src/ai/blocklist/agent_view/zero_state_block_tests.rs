@@ -127,6 +127,7 @@ fn cwd_for_recent_conversations_does_not_use_startup_path_for_pending_ssh_bootst
 fn cwd_for_recent_conversations_does_not_use_startup_path_for_pending_remote_session() {
     let mut terminal = prebootstrap_terminal_with_startup_path("/startup/path");
     terminal.init_shell(InitShellValue {
+        pid: None,
         session_id: 123.into(),
         shell: "zsh".to_owned(),
         hostname: "remote.example.com".to_owned(),

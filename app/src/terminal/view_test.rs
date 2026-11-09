@@ -1509,6 +1509,7 @@ fn test_create_new_block_with_local_status() {
 
             // Initialize a local session
             model.init_shell(InitShellValue {
+                pid: None,
                 session_id: 0.into(),
                 shell: "bash".to_owned(),
                 ..Default::default()
@@ -1544,6 +1545,7 @@ fn test_create_new_block_with_local_status() {
 
             // Create a new block with a remote session ID and remote_shell
             model.init_shell(InitShellValue {
+                pid: None,
                 session_id: 1.into(),
                 shell: "bash".to_owned(),
                 user: "user".to_owned(),
@@ -4743,6 +4745,7 @@ fn test_banner_for_incompatible_plugins() {
         terminal.update(&mut app, |view, _ctx| {
             let mut model = view.model.lock();
             model.init_shell(InitShellValue {
+                pid: None,
                 session_id: 0.into(),
                 shell: "zsh".to_owned(),
                 ..Default::default()
@@ -4858,6 +4861,7 @@ fn test_bash_vim_banner_already_shown() {
         terminal.update(&mut app, |view, _ctx| {
             let mut model = view.model.lock();
             model.init_shell(InitShellValue {
+                pid: None,
                 session_id: 0.into(),
                 shell: "bash".to_owned(),
                 ..Default::default()
@@ -4915,6 +4919,7 @@ fn test_bash_vim_banner_on() {
         terminal.update(&mut app, |view, _ctx| {
             let mut model = view.model.lock();
             model.init_shell(InitShellValue {
+                pid: None,
                 session_id: 0.into(),
                 shell: "bash".to_owned(),
                 ..Default::default()
@@ -4971,6 +4976,7 @@ fn test_bash_vim_banner_off() {
         terminal.update(&mut app, |view, _ctx| {
             let mut model = view.model.lock();
             model.init_shell(InitShellValue {
+                pid: None,
                 session_id: 0.into(),
                 shell: "bash".to_owned(),
                 ..Default::default()
@@ -5028,6 +5034,7 @@ fn test_zsh_vim_banner_on() {
         terminal.update(&mut app, |view, _ctx| {
             let mut model = view.model.lock();
             model.init_shell(InitShellValue {
+                pid: None,
                 session_id: 0.into(),
                 shell: "zsh".to_owned(),
                 ..Default::default()
@@ -5084,6 +5091,7 @@ fn test_zsh_vim_banner_off() {
         terminal.update(&mut app, |view, _ctx| {
             let mut model = view.model.lock();
             model.init_shell(InitShellValue {
+                pid: None,
                 session_id: 0.into(),
                 shell: "zsh".to_owned(),
                 ..Default::default()
@@ -5134,6 +5142,7 @@ fn test_fish_vim_banner_on() {
         terminal.update(&mut app, |view, _ctx| {
             let mut model = view.model.lock();
             model.init_shell(InitShellValue {
+                pid: None,
                 session_id: 0.into(),
                 shell: "fish".to_owned(),
                 ..Default::default()
@@ -5183,6 +5192,7 @@ fn test_fish_vim_banner_off() {
         terminal.update(&mut app, |view, _ctx| {
             let mut model = view.model.lock();
             model.init_shell(InitShellValue {
+                pid: None,
                 session_id: 0.into(),
                 shell: "fish".to_owned(),
                 ..Default::default()
@@ -5592,6 +5602,7 @@ fn inline_agent_view_exits_when_tagged_in_long_running_command_is_tagged_out() {
             {
                 let mut model = view.model.lock();
                 model.init_shell(InitShellValue {
+                    pid: None,
                     session_id: 0.into(),
                     shell: "zsh".to_owned(),
                     ..Default::default()
@@ -5654,6 +5665,7 @@ fn inline_agent_view_persists_across_transfer_takeover_for_monitored_long_runnin
             {
                 let mut model = view.model.lock();
                 model.init_shell(InitShellValue {
+                    pid: None,
                     session_id: 0.into(),
                     shell: "zsh".to_owned(),
                     ..Default::default()
@@ -6007,6 +6019,7 @@ fn exiting_lrc_user_takeover_does_not_insert_agent_view_entry_card() {
             {
                 let mut model = view.model.lock();
                 model.init_shell(InitShellValue {
+pid: None,
                     session_id: 0.into(),
                     shell: "zsh".to_owned(),
                     ..Default::default()
@@ -6078,6 +6091,7 @@ fn use_agent_footer_renders_for_transfer_handoff_even_when_user_command_footer_s
             {
                 let mut model = view.model.lock();
                 model.init_shell(InitShellValue {
+                    pid: None,
                     session_id: 0.into(),
                     shell: "zsh".to_owned(),
                     ..Default::default()
@@ -11271,6 +11285,7 @@ fn command_block_count_for_conversation(
 fn bootstrap_with_long_running_block(view: &mut TerminalView) {
     let mut model = view.model.lock();
     model.init_shell(InitShellValue {
+        pid: None,
         session_id: 0.into(),
         shell: "zsh".to_owned(),
         ..Default::default()
@@ -19256,6 +19271,7 @@ fn ssh_pane_with_held_typeahead_for_test(
     // mode; the test drives the gate directly, so it feeds what those events would.
     view.ssh_observe(ctx);
     view.model.lock().init_shell(InitShellValue {
+        pid: None,
         session_id: SessionId::from(167303092612202),
         shell: "bash".to_owned(),
         user: "user".to_owned(),
@@ -19677,6 +19693,7 @@ fn ssh_keys_between_bootstrapped_and_first_remote_prompt_are_dropped_whole() {
             view.ssh_observe(ctx);
             // The remote shell announces itself (pending session); the gate sees it.
             view.model.lock().init_shell(InitShellValue {
+                pid: None,
                 session_id: remote_session,
                 shell: "bash".to_owned(),
                 user: "user".to_owned(),
@@ -20560,6 +20577,7 @@ fn managed_ssh_keys_are_held_through_the_master_login_and_delivered_after_the_bo
                 view.refresh_ssh_connect_gate();
                 view.ssh_observe(ctx);
                 view.model.lock().init_shell(InitShellValue {
+                    pid: None,
                     session_id: remote_session,
                     shell: "bash".to_owned(),
                     user: "user".to_owned(),
@@ -20876,6 +20894,7 @@ fn managed_ssh_bootstrap_to_first_prompt_for_test(
     view.refresh_ssh_connect_gate();
     view.ssh_observe(ctx);
     view.model.lock().init_shell(InitShellValue {
+        pid: None,
         session_id: remote_session,
         shell: "bash".to_owned(),
         user: "user".to_owned(),
@@ -24797,6 +24816,7 @@ fn a_late_bootstrapped_after_the_net_is_accepted() {
                 .expect("marker-paced");
             // The shell ran the script's head: the subshell session is pending.
             view.model.lock().init_shell(InitShellValue {
+                pid: None,
                 shell: "bash".into(),
                 user: "u".to_owned(),
                 hostname: "h".to_owned(),

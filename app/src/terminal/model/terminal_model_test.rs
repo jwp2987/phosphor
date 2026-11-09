@@ -140,6 +140,7 @@ fn ssh_bootstraps_if_blocklist_empty_and_reconciles_parent_return() {
         ..Default::default()
     });
     terminal.init_shell(InitShellValue {
+        pid: None,
         shell: "bash".into(),
         user: "zach".to_owned(),
         hostname: "sf".to_owned(),
@@ -250,6 +251,7 @@ fn wrapper_ssh_session(terminal: &mut TerminalModel, typed: &str, with_ssh_hook:
         });
     }
     terminal.init_shell(InitShellValue {
+        pid: None,
         shell: "bash".into(),
         user: "me".to_owned(),
         hostname: "box".to_owned(),
@@ -315,6 +317,7 @@ fn fish_subshell_hook_order_yields_visible_finished_blocks() {
     });
 
     terminal.init_shell(InitShellValue {
+        pid: None,
         shell: "fish".into(),
         user: "u".to_owned(),
         hostname: "h".to_owned(),
@@ -366,6 +369,7 @@ fn fish_native_prompt_marker_after_precmd_does_not_hide_blocks() {
         session_id: None,
     });
     terminal.init_shell(InitShellValue {
+        pid: None,
         shell: "fish".into(),
         user: "u".to_owned(),
         hostname: "h".to_owned(),
@@ -1148,6 +1152,7 @@ fn lifecycle_terminal_exit_absorbs_later_inputs() {
         session_id: None,
     });
     terminal.init_shell(InitShellValue {
+        pid: None,
         shell: "bash".to_owned(),
         session_id: 42.into(),
         ..Default::default()
@@ -1850,6 +1855,7 @@ fn terminal_exit_absorbs_later_lifecycle_inputs() {
     });
     terminal.prompt_only_precmd(PromptMetadata::default());
     terminal.init_shell(InitShellValue {
+        pid: None,
         shell: "bash".to_owned(),
         user: "ignored".to_owned(),
         hostname: "ignored".to_owned(),
@@ -2877,6 +2883,7 @@ fn ssh_login_remote_bootstrap_dcs_completes_login_immediately() {
         SshLoginNotificationState::SentInitialNotification
     );
     model.init_shell(InitShellValue {
+        pid: None,
         shell: "bash".into(),
         user: "u".to_owned(),
         hostname: "myhost".to_owned(),
@@ -3159,6 +3166,7 @@ fn stalled_subshell_bootstrap_can_be_abandoned_once() {
         session_id: None,
     });
     terminal.init_shell(InitShellValue {
+        pid: None,
         shell: "zsh".into(),
         user: "u".to_owned(),
         hostname: "h".to_owned(),
@@ -3202,6 +3210,7 @@ fn abandoned_subshell_bootstrap_continues_in_a_visible_running_block() {
         session_id: None,
     });
     terminal.init_shell(InitShellValue {
+        pid: None,
         shell: "zsh".into(),
         user: "u".to_owned(),
         hostname: "h".to_owned(),
@@ -3243,6 +3252,7 @@ fn late_bootstrapped_after_abandon_still_completes_the_session() {
         session_id: None,
     });
     terminal.init_shell(InitShellValue {
+        pid: None,
         shell: "zsh".into(),
         user: "u".to_owned(),
         hostname: "h".to_owned(),
@@ -3279,6 +3289,7 @@ fn late_init_shell_after_abandon_starts_a_fresh_pending_session() {
         session_id: None,
     });
     let init = || InitShellValue {
+        pid: None,
         shell: "zsh".into(),
         user: "u".to_owned(),
         hostname: "h".to_owned(),

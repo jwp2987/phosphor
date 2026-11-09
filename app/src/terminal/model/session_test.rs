@@ -758,6 +758,7 @@ fn nu_bootstrapped_value_populates_the_session_the_classifier_and_completer_read
     use crate::terminal::model::ansi;
 
     let init_shell_value = ansi::InitShellValue {
+        pid: None,
         shell: "nu".into(),
         ..Default::default()
     };
