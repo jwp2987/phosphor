@@ -5608,7 +5608,9 @@ impl BlocklistAIController {
                     );
                     return;
                 };
-                let new_exchange_ids = conversation.new_exchange_ids_for_response(&stream_id);
+                let new_exchange_ids: Vec<_> = conversation
+                    .new_exchange_ids_for_response(&stream_id)
+                    .collect();
                 let pending_resume = response_stream.as_ref(ctx).pending_resume();
                 let has_pending_resume = pending_resume.is_some();
                 let mut was_passive_request = false;
@@ -5623,16 +5625,24 @@ impl BlocklistAIController {
                 let mut newly_added_message_ids: std::collections::HashSet<MessageId> =
                     std::collections::HashSet::new();
 
+                // #1860: check for a missing exchange BEFORE the loop, so the conversation borrow (from
+                // ctx) has ended when finish_stream_without_exchanges needs ctx mutably.
+                if new_exchange_ids
+                    .iter()
+                    .any(|id| conversation.exchange_with_id(*id).is_none())
+                {
+                    log::warn!("Exchange not found.");
+                    self.finish_stream_without_exchanges(
+                        &stream_id,
+                        response_stream,
+                        Some(conversation_id),
+                        ctx,
+                    );
+                    return;
+                }
                 for new_exchange_id in new_exchange_ids {
                     let Some(exchange) = conversation.exchange_with_id(new_exchange_id) else {
-                        log::warn!("Exchange not found.");
-                        self.finish_stream_without_exchanges(
-                            &stream_id,
-                            response_stream,
-                            Some(conversation_id),
-                            ctx,
-                        );
-                        return;
+                        continue;
                     };
                     was_passive_request |= exchange.has_passive_request();
                     is_any_exchange_unfinished |= !exchange.output_status.is_finished();

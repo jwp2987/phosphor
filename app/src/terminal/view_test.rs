@@ -32261,7 +32261,7 @@ fn an_idle_dash_prompt_drawn_around_the_users_enter_is_judged_moved() {
                 });
                 terminal.update(&mut app, |view, ctx| {
                     for piece in before {
-                        view.model.lock().process_bytes(piece);
+                        view.model.lock().process_bytes(*piece);
                     }
                     assert!(view.write_user_bytes_to_pty(b"\r".to_vec(), ctx));
                     assert_eq!(readiness_state(view), "armed", "{mode:?} {name}: ReArm");
@@ -32274,7 +32274,7 @@ fn an_idle_dash_prompt_drawn_around_the_users_enter_is_judged_moved() {
                         output_wakeup(view, ctx);
                     }
                     for piece in after {
-                        view.model.lock().process_bytes(piece);
+                        view.model.lock().process_bytes(*piece);
                         output_wakeup(view, ctx);
                     }
                     let state = readiness_state(view);
