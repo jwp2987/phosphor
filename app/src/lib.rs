@@ -49,6 +49,7 @@ mod login_item;
 mod menu;
 mod modal;
 mod network;
+mod network_gate_log;
 mod notebooks;
 mod notification;
 mod notifications;
@@ -1996,6 +1997,8 @@ fn initialize_app(
     ctx.add_singleton_model(|_| ToastStack);
     // #1805: one non-modal notice if the OS keyring turns out to be unusable this run.
     ctx.add_singleton_model(keyring_notice::KeyringNotice::new);
+    // The network gate decision log (Settings > Network) and the denial notice read it.
+    ctx.add_singleton_model(network_gate_log::NetworkGateLog::new);
     ctx.add_singleton_model(|_| GlobalCodeReviewModel);
     ctx.add_singleton_model(workspace::OneTimeModalModel::new);
     ctx.add_singleton_model(
