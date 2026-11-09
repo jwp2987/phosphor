@@ -2735,3 +2735,8 @@ bounded cwd listing in the remote precmd payload when the cwd changes, cached pe
   (r18u22) is the real-app check: Tab on the fragment while the report is in flight must complete the whole line and
   Enter must run the completed line. No view-level unit test: the report/Tab interleave needs the pty-backed
   `TerminalView` fixtures that only run on the box.
+- #1703: `terminal/view_test.rs` `typeahead_handoff_ctrl_c_give_up_does_not_commit` (both the zsh barrier and the
+  prompt-cycle wait). The 2 s `INTERRUPT_GIVE_UP` now only stops waiting for that one signal and asks the controller to
+  decide again; the editor takes the line on the shell's own line-editor-active evidence (or the late Precmd/report), never
+  on the timer. The older settle path for bootstraps without prompt sequence numbers (`INTERRUPT_SETTLE`, 250 ms) is not
+  part of M10 and is unchanged.

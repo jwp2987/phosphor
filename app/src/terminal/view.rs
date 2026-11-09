@@ -15338,6 +15338,32 @@ impl TerminalView {
         true
     }
 
+    /// The give-up net of the hand-back after a Ctrl-C (#1703, busy-machine M10): the prompt cycle
+    /// or the report it waited for did not come within `after`. A slow machine is not a reason to
+    /// hand the line to the editor, so this does NOT commit the hand-off: it stops waiting for that
+    /// one signal and asks the controller to decide again, which hands input back only on the
+    /// shell's own line-editor-active evidence (`retry_typeahead_handoff_request`), and writes a
+    /// request only to a line editor proven reading (#1798). Until that evidence arrives the pty
+    /// keeps input, which is what a plain terminal does. A late Precmd or report still commits
+    /// through its own event.
+    fn interrupt_give_up_fired(&mut self, after: Duration, ctx: &mut ViewContext<Self>) {
+        let gave_up = {
+            let mut handoff = self.handoff.write();
+            let cycle = handoff.take_interrupt_awaiting_cycle();
+            let barrier = handoff.take_interrupt_barrier();
+            cycle || barrier
+        };
+        if !gave_up {
+            return;
+        }
+        log::warn!(
+            "typeahead hand-off: no prompt cycle or report after Ctrl-C within {} s; waiting for              the shell's line editor instead",
+            after.as_secs()
+        );
+        warpui::input_order::log_hop("ctrl_c_handoff_give_up", String::new);
+        ctx.emit(Event::RetryTypeaheadHandoffRequest);
+    }
+
     /// A Ctrl-C was written while the typeahead hand-off gave the pty input.
     fn handle_typeahead_handoff_interrupt(&mut self, ctx: &mut ViewContext<Self>) {
         // Only zsh is known to run no prompt cycle after an interrupted line.
@@ -15387,20 +15413,7 @@ impl TerminalView {
             // (`commit_typeahead_handoff_at_prompt`). Either way this is only the logged give-up
             // for a signal that never comes.
             ctx.spawn(Timer::after(INTERRUPT_GIVE_UP), |me, _, ctx| {
-                let gave_up = {
-                    let mut handoff = me.handoff.write();
-                    let cycle = handoff.take_interrupt_awaiting_cycle();
-                    let barrier = handoff.take_interrupt_barrier();
-                    cycle || barrier
-                };
-                if gave_up {
-                    log::warn!(
-                        "typeahead hand-off: no prompt cycle or report after Ctrl-C within {} s; \
-                         handing input back",
-                        INTERRUPT_GIVE_UP.as_secs()
-                    );
-                    me.commit_typeahead_handoff_at_prompt(ctx);
-                }
+                me.interrupt_give_up_fired(INTERRUPT_GIVE_UP, ctx);
             });
             return;
         }
