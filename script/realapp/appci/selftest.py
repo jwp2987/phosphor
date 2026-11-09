@@ -3510,6 +3510,38 @@ def fake_model_plan_and_agent_remote_pure_parts():
     names = sorted(c["name"] for c in cases.CASES if c["name"].startswith("lab_agent_remote_"))
     assert len(names) == 5 * 2 + 5 * 2 + 3 * 2, names
     assert all(c["modes"] == ("agent",) and c["lab"] for c in cases.CASES if c["name"].startswith("lab_agent_remote_"))
+def agent_file_edit_pieces():
+    """#1835: the fake model's multi-hunk edit reply, the expected-bytes builder and the judges of cases_agent_file_edits.py"""
+    import fake_model as FM
+    import cases_agent_file_edits as AF
+    ed = [("one", "ONE"), ("two three", "2\\n3")]
+    rp = FM.reply_for([{"role": "user", "content": AF.prompt_for("/w/a.txt", ed)}])
+    assert rp["tool"]["name"] == "apply_file_diffs" and rp["tool"]["arguments"]["operations"] == [
+        {"op": "edit", "file_path": "/w/a.txt", "search": "one", "replace": "ONE"}, {"op": "edit", "file_path": "/w/a.txt", "search": "two three", "replace": "2\n3"}], rp
+    for eol in (b"\n", b"\r\n"):
+        for fin in (True, False):
+            c = AF.make_file("t1", eol, fin)
+            out = AF.apply_edits(c, AF.three_edits())
+            assert out != c and out.endswith(eol) == fin and AF.ending_profile(out)[:3] == AF.ending_profile(c)[:3] and b"L10 KAPPA-EDITED" in out
+    assert AF.ending_profile(AF.make_file("x", b"\r\n", False)) == (9, 0, 0, False)
+    try:
+        AF.apply_edits(b"aa", [("a", "b")])
+        raise AssertionError("a non-unique search must raise")
+    except ValueError:
+        pass
+    c = AF.make_file("t2")
+    mine = AF.apply_edits(c, AF.three_edits())
+    user = c + b"USER\n"
+    assert AF.judge_bytes(mine, mine, "x") == [] and len(AF.judge_bytes(mine.replace(b"\n", b"\r\n"), mine, "x")) == 1
+    assert AF.judge_conflict(user, c, user, mine) == []
+    assert "overwrote" in AF.judge_conflict(mine, c, user, mine)[0] and "put back" in AF.judge_conflict(c, c, user, mine)[0]
+    assert len(AF.judge_conflict(b"garbage", c, user, mine)) == 1
+    assert AF.SAVE_FAILED.search("ERROR Failed to save file for accepted AgentMode diffs for x: y") and AF.SAVE_FAILED.search("x changed on disk after this change was proposed")
+    assert not AF.SAVE_FAILED.search("saved ok")
+    names = {c["name"] for c in cases.CASES}
+    assert {"agent_edit_accept", "agent_edit_reject", "agent_edit_conflict", "agent_edit_endings"} <= names
+    arms = [c["arm"] for c in cases.CASES if c["name"].startswith("lab_fam_agent_edit_conflict.")]
+    assert {a["helper"] for a in arms} == {"nohelper", "upload"} and {a["shell"] for a in arms} == {"bash", "dash", "nu", "pwsh"}, arms
 
 
 @check

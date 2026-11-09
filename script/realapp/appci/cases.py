@@ -5531,3 +5531,4 @@ import cases_netless  # noqa: E402,F401  (Wave N: zero_network_startup, claude_p
 import cases_upgrade  # noqa: E402,F401  (#1546: upgrade_from_v0_1_17, the v0.1.17 -> current profile upgrade; table in upgrade_table.py)
 import cases_agent_netgate  # noqa: E402,F401  (#1830: agent network gate: denial, Allow, live origin edits, gate off, provider key never leaves)
 import cases_agent_remote  # noqa: E402,F401  (#1827: lab_agent_remote_flow/errors/drop, the agent driving a remote host with and without the helper)
+import cases_agent_file_edits  # noqa: E402,F401  (#1835: agent_edit_accept/reject/conflict/endings, lab_fam_agent_edit_conflict/endings)

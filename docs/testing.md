@@ -3696,3 +3696,20 @@ What: three lab cases where the AGENT works on an ssh pane end to end, each with
 Oracles (no screenshot alone): the file on the host (exact lines after the edit; unchanged after a refused edit); `hop=backend_route family=<capability> backend=...` per family (`file_context`, `file_write` required; `ripgrep_search`, `fs_basic`, `codebase_chunks` UNVERIFIABLE when the build logs no route line for them) with nohelper -> shell and upload -> helper; the lab shell's `rec.log` (the tokens only the read/grep/edit tools carry are never typed into the remote shell; the one approved `cat` is typed exactly once); and the tool results the MODEL received, read from the fake model (`FakeModel.tool_results_for(marker)`, `fake_model.ACTIVE`, the harness and cases share one process): parsed JSON, status ok, the right paths, lines and the NEW file content.
 
 Run: `APPCI_FAKE_MODEL=1 python3 script/realapp/appci/run.py --cases 'lab_agent_remote_*'` (narrow with `APPCI_LAB_MATRIX`). Platforms: Linux lab host and Linux/Mac client; the drop case skips Windows panes (not ported); the others have no Windows-specific gate but have not been run there. Not run yet: nothing here has been run against a build.
+
+## Agent file edits (#1835): accept, reject, conflict at save, line endings
+
+`script/realapp/appci/cases_agent_file_edits.py`. The scripted fake model (`fake_model.py`, `APPCI_FAKE_MODEL=1`) gained one reply: `Please edit exactly this file: <path> with these edits: <search>=><replace> ;; <search>=><replace>` becomes one `apply_file_diffs` call with one `edit` op per pair (a multi-hunk diff; a literal backslash-n is a newline). The cases answer the diff card with the owner's keys (Enter focuses the card, Enter accepts, Ctrl-C rejects) and read the FILE BYTES back; the app log is the second oracle. The fake model's request log no longer raises on a tool call without a `command` argument.
+
+| case | proves | oracle |
+|---|---|---|
+| `agent_edit_accept` | a three-hunk diff (lines 2, 5 and the last line) accepted writes exactly the expected bytes, once | file bytes, re-read after 2 s (no duplicate write) |
+| `agent_edit_reject` | rejected: byte-identical, no later change; a fresh proposal afterwards still accepts | file bytes |
+| `agent_edit_conflict` | the file changes on disk after the proposal and before the accept: the save is refused, the user's bytes are intact, the conflict is reported | file bytes == the user's bytes; app log `Failed to save file for accepted AgentMode diffs` (or `changed on disk`) |
+| `agent_edit_endings` | CRLF, LF without a final newline, CRLF without one: line endings and the final newline survive an accepted edit that touches the last line | byte-for-byte against the expected bytes |
+| `lab_fam_agent_edit_conflict.*` | accept + conflict on a remote host; arms `nohelper` (shell backend, the size+mtime `Expect` in `shellcmd/write.rs`; the primary design) and `upload` (the helper); shells bash, dash, nu, pwsh | the host's file via the lab |
+| `lab_fam_agent_edit_endings.*` | the endings cases on the remote host; shells bash, pwsh | the host's file via the lab |
+
+Partial accept: the diff card has no per-hunk accept (Up/Down only navigate hunks), so accept is all or none; each case records that as a note. A case that cannot reach its precondition (no action card, or the first Enter already applied the edit when a reject was wanted) is UNVERIFIABLE, never a pass. A clobber of the user's change is a FAIL on every arm, including the helper arm.
+
+Run: `APPCI_FAKE_MODEL=1 python3 script/realapp/appci/run.py --cases 'agent_edit_*'` (agent mode); the lab pair with `--cases 'lab_fam_agent_edit_*'` (needs the lab; `upload` arms need `APPCI_LAB_HELPER_BIN`). Platforms: Linux and Mac; not Windows (`winmap.NOT_WINDOWS`). Self-test: `agent_file_edit_pieces` (fake-model reply, expected-bytes builder, judges).
