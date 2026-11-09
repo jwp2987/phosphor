@@ -1487,15 +1487,9 @@ impl TemplatableMCPServerManager {
         &mut self,
         sync_id: SyncId,
         template_uuid: Uuid,
+        legacy_credentials: &HashMap<SyncId, oauth::PersistedCredentials>,
         ctx: &mut ModelContext<Self>,
     ) {
-        // Read legacy credentials directly from secure storage rather than
-        // going through the (now-removed) MCPServerManager singleton.
-        let legacy_credentials: HashMap<SyncId, oauth::PersistedCredentials> =
-            oauth::load_credentials_from_secure_storage(
-                ctx,
-                crate::ai::mcp::manager::oauth::LEGACY_MCP_CREDENTIALS_KEY,
-            );
         if let Some(legacy_cred) = legacy_credentials.get(&sync_id) {
             log::info!(
                 "Copying OAuth credentials from legacy server {sync_id} to template {template_uuid}"
@@ -1514,6 +1508,7 @@ impl TemplatableMCPServerManager {
         automatically_start_server: bool,
         initiated_by: InitiatedBy,
         env_vars_prefilled: bool,
+        legacy_credentials: &HashMap<SyncId, oauth::PersistedCredentials>,
         ctx: &mut ModelContext<Self>,
     ) -> Result<ParsedTemplatableMCPServerResult, LegacyToTemplatableMCPConversionError> {
         let template_uuid = legacy_mcp_server.uuid;
@@ -1541,7 +1536,7 @@ impl TemplatableMCPServerManager {
         } = parsed_result.clone();
         let template_uuid = templatable_mcp_server.uuid;
         self.create_templatable_mcp_server(templatable_mcp_server, space, initiated_by, ctx);
-        self.copy_oauth_from_legacy_to_templatable(sync_id, template_uuid, ctx);
+        self.copy_oauth_from_legacy_to_templatable(sync_id, template_uuid, legacy_credentials, ctx);
         if let Some(templatable_mcp_server_installation) = templatable_mcp_server_installation {
             let installation = self.install_from_template(
                 templatable_mcp_server_installation
@@ -1592,14 +1587,52 @@ impl TemplatableMCPServerManager {
         let connection = self.database_connection.clone();
         let filled = read_legacy_env_vars_in_background(connection, pending);
         ctx.spawn(filled, move |me, pending, ctx| {
-            me.finish_legacy_conversion(pending, servers_to_restart, ctx);
+            me.read_legacy_credentials_then_convert(pending, servers_to_restart, ctx);
         });
+    }
+
+    /// Reads the legacy OAuth credentials on the secure-storage worker (#1805: this was the last
+    /// synchronous secure-storage read on the UI thread at startup), then converts.
+    fn read_legacy_credentials_then_convert(
+        &mut self,
+        pending: Vec<(SyncId, MCPServer)>,
+        servers_to_restart: HashSet<Uuid>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        match warpui_extras::secure_storage::background::run_or_inline(
+            |storage| {
+                storage.read_value(crate::ai::mcp::manager::oauth::LEGACY_MCP_CREDENTIALS_KEY)
+            },
+            ctx.secure_storage(),
+        ) {
+            Ok(result) => {
+                ctx.spawn(result.wait(), move |me, raw, ctx| {
+                    // A lost worker reads as nothing stored: the servers are still converted,
+                    // without their legacy OAuth tokens (the legacy key itself is left in place).
+                    let raw = raw.unwrap_or_else(|| {
+                        log::warn!(
+                            "The secure-storage worker gave up on the legacy MCP credentials"
+                        );
+                        Err(warpui_extras::secure_storage::Error::NotFound)
+                    });
+                    let legacy: HashMap<SyncId, oauth::PersistedCredentials> =
+                        oauth::parse_credentials(raw);
+                    me.finish_legacy_conversion(pending, servers_to_restart, legacy, ctx);
+                });
+            }
+            Err(raw) => {
+                let legacy: HashMap<SyncId, oauth::PersistedCredentials> =
+                    oauth::parse_credentials(raw);
+                self.finish_legacy_conversion(pending, servers_to_restart, legacy, ctx);
+            }
+        }
     }
 
     fn finish_legacy_conversion(
         &mut self,
         pending: Vec<(SyncId, MCPServer)>,
         servers_to_restart: HashSet<Uuid>,
+        legacy_credentials: HashMap<SyncId, oauth::PersistedCredentials>,
         ctx: &mut ModelContext<Self>,
     ) {
         for (sync_id, legacy_mcp_server) in pending {
@@ -1611,6 +1644,7 @@ impl TemplatableMCPServerManager {
                 servers_to_restart.contains(&uuid),
                 InitiatedBy::System,
                 true,
+                &legacy_credentials,
                 ctx,
             );
             match result {

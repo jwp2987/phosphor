@@ -7,7 +7,11 @@ use std::{
     io::{Read as _, Write as _},
     os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _},
     path::PathBuf,
-    sync::{Arc, Mutex, mpsc},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     time::Duration,
 };
 
@@ -29,21 +33,24 @@ use super::{Error, availability};
 /// keyring is marked available again and the next lookup uses it.
 const CONNECT_GIVE_UP: Duration = Duration::from_secs(10);
 
-/// Implementation of the SecureStorage service using the Secret Service API.
+/// The Secret Service operations [`SecureStorage`] needs, behind a seam so tests can stand in for
+/// the keyring (#1805). `read` and `delete` return [`Error::NotFound`] when the keyring answered
+/// and holds no such item; any other error means the keyring could not be used.
+trait Keyring {
+    fn read(&self, key: &str) -> Result<String, Error>;
+    fn write(&self, key: &str, value: &str) -> Result<(), Error>;
+    fn delete(&self, key: &str) -> Result<(), Error>;
+}
+
+/// Implementation of the SecureStorage service using the Secret Service API, with an encrypted
+/// owner-only file fallback for when the keyring cannot be used.
 pub struct SecureStorage {
     /// The value to set for the "service" attribute, used to define a
     /// namespace for keys for the application.
     service_name: String,
 
-    /// A lazily-initialized reference to the default secret collection as
-    /// provided by the installed Secret Service API provider. Only a
-    /// successful open is kept; a failed one is recorded process-wide in
-    /// [`availability`] instead, so every handle (the app's and each
-    /// worker's) learns of it from one failing attempt (#1805).
-    collection: OnceCell<Collection>,
-
-    /// Opens the default collection. [`open_default_collection_bounded`] outside tests.
-    open_collection: fn() -> Result<Collection, Error>,
+    /// The Secret Service ([`SecretServiceKeyring`] outside tests).
+    keyring: Box<dyn Keyring>,
 
     /// The fallback path to a directory in case a secret collection is
     /// not available.
@@ -53,19 +60,30 @@ pub struct SecureStorage {
     encryption_key: OnceCell<Option<aead::LessSafeKey>>,
 }
 
+/// What the fallback directory holds for one key.
+enum FallbackEntry {
+    /// A value written while the keyring could not be used: newer than any keyring copy.
+    Value(String),
+    /// A removal made while the keyring could not be used: any keyring copy is stale.
+    Removed,
+    /// Nothing: the keyring is authoritative.
+    Absent,
+}
+
 impl SecureStorage {
     /// Creates a new [`SecureStorage`] instance.
     ///
     /// This does not eagerly open a connection to dbus or the underlying
     /// Secret Service provider.
     pub fn new(service_name: &str) -> Self {
-        Self {
-            service_name: service_name.to_owned(),
-            collection: OnceCell::new(),
-            open_collection: open_default_collection_bounded,
-            fallback_dir: None,
-            encryption_key: OnceCell::new(),
-        }
+        Self::with_keyring(
+            service_name,
+            None,
+            Box::new(SecretServiceKeyring::new(
+                service_name,
+                open_default_collection_bounded,
+            )),
+        )
     }
 
     /// Creates a new [`SecureStorage`] instance with disk fallback
@@ -73,80 +91,41 @@ impl SecureStorage {
     /// Does the same work as [`SecureStorage::new`], as well as storing
     /// a path to a fallback directory.
     pub fn new_with_fallback(service_name: &str, fallback_dir: PathBuf) -> Self {
+        Self::with_keyring(
+            service_name,
+            Some(fallback_dir),
+            Box::new(SecretServiceKeyring::new(
+                service_name,
+                open_default_collection_bounded,
+            )),
+        )
+    }
+
+    fn with_keyring(
+        service_name: &str,
+        fallback_dir: Option<PathBuf>,
+        keyring: Box<dyn Keyring>,
+    ) -> Self {
         Self {
             service_name: service_name.to_owned(),
-            collection: OnceCell::new(),
-            open_collection: open_default_collection_bounded,
-            fallback_dir: Some(fallback_dir),
+            keyring,
+            fallback_dir,
             encryption_key: OnceCell::new(),
         }
     }
 
-    /// Test hook: a handle whose collection opener is `open_collection`.
+    /// Test hook: a handle whose Secret Service collection opener is `open_collection`.
     #[cfg(test)]
     fn with_opener(
         service_name: &str,
         fallback_dir: Option<PathBuf>,
         open_collection: fn() -> Result<Collection, Error>,
     ) -> Self {
-        Self {
-            service_name: service_name.to_owned(),
-            collection: OnceCell::new(),
-            open_collection,
+        Self::with_keyring(
+            service_name,
             fallback_dir,
-            encryption_key: OnceCell::new(),
-        }
-    }
-
-    /// Returns a reference to the default secret collection, lazily
-    /// instantiating the underlying service and collection reference,
-    /// returning an error if the connection cannot be established or the
-    /// collection cannot be opened or unlocked.
-    ///
-    /// A failure is cached process-wide, not per handle (#1805): once the
-    /// keyring is known to be unavailable this returns an error at once,
-    /// without touching D-Bus, and every caller uses the fallback file. The
-    /// failure is logged once per run. Only an explicit retry
-    /// ([`availability::retry`]) or a late answer from the service makes the
-    /// next call try again.
-    fn collection(&self) -> Result<&secret_service::blocking::Collection<'_>, Error> {
-        if !availability::should_contact_keyring() {
-            return Err(keyring_unavailable());
-        }
-        let collection = match self.collection.get() {
-            Some(collection) => collection,
-            None => match (self.open_collection)() {
-                Ok(collection) => self.collection.get_or_init(|| collection),
-                Err(err) => {
-                    if availability::mark_unavailable() {
-                        log::error!(
-                            "Failed to acquire default Secret Service collection: {err:#}. \
-                             Stored credentials come from the local fallback for the rest of \
-                             this run; the keyring is not tried again unless asked to."
-                        );
-                    } else {
-                        log::debug!("Secret Service collection still unavailable: {err:#}");
-                    }
-                    return Err(keyring_unavailable());
-                }
-            },
-        };
-        let collection = collection.borrow_collection();
-        // Ensure that the collection is unlocked, otherwise we will be unable
-        // add or modify items.
-        if let Err(err) = collection.unlock() {
-            // A locked collection whose unlock was refused (or cannot be prompted
-            // for) is as unusable as a missing one: do not prompt again per lookup.
-            if availability::mark_unavailable() {
-                log::error!(
-                    "Failed to unlock the default Secret Service collection: {err:#}. \
-                     Stored credentials come from the local fallback for the rest of this run."
-                );
-            }
-            return Err(err.into());
-        }
-        availability::mark_available();
-        Ok(collection)
+            Box::new(SecretServiceKeyring::new(service_name, open_collection)),
+        )
     }
 
     /// Returns an encryption key that can be used to encrypt
@@ -180,49 +159,6 @@ impl SecureStorage {
             })
             .as_ref()
             .ok_or_else(|| Error::Unknown(anyhow!("Invalid encryption key")))
-    }
-
-    /// Returns the set of attributes which should be used when interacting
-    /// with a secret item that is identified by the given key.
-    fn attributes_for_key<'a>(&'a self, key: &'a str) -> HashMap<&'static str, &'a str> {
-        HashMap::from([
-            // Ensure our keys don't conflict with ones stored by another
-            // application.
-            ("service", self.service_name.as_str()),
-            // Specify the key for the secret.
-            ("key", key),
-        ])
-    }
-
-    /// Provides the given function access to a secret item with the given key
-    /// in order to read or manipulate the item.
-    fn with_item<T>(
-        &self,
-        key: &str,
-        func: impl FnOnce(&Item) -> Result<T, Error>,
-    ) -> Result<T, Error> {
-        let collection = self.collection()?;
-        let items = collection.search_items(self.attributes_for_key(key))?;
-        let Some(item) = items.first() else {
-            return Err(Error::NotFound);
-        };
-        func(item)
-    }
-
-    fn write_secret_value(&self, key: &str, value: &str) -> Result<(), Error> {
-        let collection = self.collection()?;
-        // Construct a slightly more human-readable label for the secret than
-        // using the key alone.
-        let label = format!("{}: {key}", self.service_name);
-        collection.create_item(
-            &label,
-            self.attributes_for_key(key),
-            value.as_bytes(),
-            // replace the existing key, if any
-            true,
-            "text/plain",
-        )?;
-        Ok(())
     }
 
     fn fallback_encrypt(&self, value: &str) -> Result<Vec<u8>, Error> {
@@ -450,67 +386,279 @@ impl SecureStorage {
             self.service_name,
         );
     }
+
+    /// The marker recording that `key` was removed while the keyring could not be used.
+    fn tombstone_file(&self, key: &str) -> Result<PathBuf, Error> {
+        let mut path = self.fallback_file(key)?;
+        path.as_mut_os_string().push(".removed");
+        Ok(path)
+    }
+
+    /// Records a removal the keyring could not take, so a keyring copy does not come back when
+    /// the keyring does (#1805). Empty and owner-only, like the fallback blobs.
+    fn write_tombstone(&self, key: &str) -> Result<(), Error> {
+        let path = self.tombstone_file(key)?;
+        OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .mode(0o600)
+            .open(&path)
+            .map(drop)
+            .map_err(|err| {
+                Error::Unknown(anyhow!(
+                    "cannot write secure-storage removal marker {}: {err}",
+                    path.display()
+                ))
+            })
+    }
+
+    fn clear_tombstone(&self, key: &str) {
+        if let Ok(path) = self.tombstone_file(key) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    /// What the fallback holds for `key`. An unreadable blob is reported and treated as absent,
+    /// so the keyring copy (if any) is used, as before.
+    fn fallback_entry(&self, key: &str) -> FallbackEntry {
+        if self.tombstone_file(key).is_ok_and(|path| path.exists()) {
+            return FallbackEntry::Removed;
+        }
+        match self.read_fallback_value(key) {
+            Ok(value) => FallbackEntry::Value(value),
+            Err(Error::NotFound) => FallbackEntry::Absent,
+            Err(err) => {
+                log::warn!(
+                    "Unreadable secure-storage fallback for {}/{key} ({err:#}); using the keyring",
+                    self.service_name
+                );
+                FallbackEntry::Absent
+            }
+        }
+    }
+
+    /// Writes to the keyring, else to the fallback (`create_dir`: see
+    /// [`Self::write_fallback_file`]). Either way a pending removal marker is void.
+    fn write_with_fallback(&self, key: &str, value: &str, create_dir: bool) -> Result<(), Error> {
+        let result = match self.keyring.write(key, value) {
+            Ok(()) => {
+                // The keyring holds the value: a fallback copy would shadow it on read.
+                let _ = self.delete_fallback_value(key);
+                Ok(())
+            }
+            Err(err) => {
+                self.warn_fallback_backend(key, &err);
+                self.write_fallback_file(key, value, create_dir)
+            }
+        };
+        if result.is_ok() {
+            self.clear_tombstone(key);
+        }
+        result
+    }
 }
 
 impl super::SecureStorage for SecureStorage {
     fn write_value(&self, key: &str, value: &str) -> Result<(), Error> {
-        let secret_result = self.write_secret_value(key, value);
-
-        match secret_result {
-            Ok(_) => {
-                // If we are able to write the secret value, we attempt to delete any fallback values
-                let _ = self.delete_fallback_value(key);
-                Ok(())
-            }
-            Err(err) => {
-                self.warn_fallback_backend(key, &err);
-                self.write_fallback_value(key, value)
-            }
-        }
+        self.write_with_fallback(key, value, false)
     }
 
     fn write_value_with_owner_only_fallback(&self, key: &str, value: &str) -> Result<(), Error> {
-        let secret_result = self.write_secret_value(key, value);
-
-        match secret_result {
-            Ok(_) => {
-                let _ = self.delete_fallback_value(key);
-                Ok(())
-            }
-            Err(err) => {
-                self.warn_fallback_backend(key, &err);
-                self.write_owner_only_fallback_value(key, value)
-            }
-        }
+        self.write_with_fallback(key, value, true)
     }
 
+    /// The fallback is consulted first (#1805): it only holds a value (or a removal) when the
+    /// keyring could not take it, which makes it newer than whatever the keyring holds. When the
+    /// keyring is reachable again the fallback's state is moved into it, and the fallback is
+    /// deleted only once that succeeded, so a value saved during an outage is never lost to the
+    /// keyring's older copy.
     fn read_value(&self, key: &str) -> Result<String, Error> {
-        let secret_result = self.with_item(key, |item| {
-            let bytes = item.get_secret()?;
-            String::from_utf8(bytes).map_err(|err| Error::DecodeError(err.utf8_error()))
-        });
-
-        match secret_result {
-            Ok(value) => {
-                // If we are able to read the secret value, we attempt to delete any fallback values
-                let _ = self.delete_fallback_value(key);
+        match self.fallback_entry(key) {
+            FallbackEntry::Value(value) => {
+                if availability::should_contact_keyring() {
+                    match self.keyring.write(key, &value) {
+                        Ok(()) => {
+                            let _ = self.delete_fallback_value(key);
+                            log::info!(
+                                "Moved {}/{key} from the local fallback into the OS keyring",
+                                self.service_name
+                            );
+                        }
+                        Err(err) => log::debug!("{key} stays in the local fallback: {err:#}"),
+                    }
+                }
                 Ok(value)
             }
-            // TODO(daprahamian): We might want to filter on specific error values, rather than all errors
-            Err(_) => self.read_fallback_value(key),
+            FallbackEntry::Removed => {
+                if availability::should_contact_keyring() {
+                    match self.keyring.delete(key) {
+                        Ok(()) | Err(Error::NotFound) => self.clear_tombstone(key),
+                        Err(err) => log::debug!("{key} removal stays pending: {err:#}"),
+                    }
+                }
+                Err(Error::NotFound)
+            }
+            // As before: a keyring that cannot be read, with nothing in the fallback, reads as
+            // "not found" (callers that must tell the two apart consult `availability`).
+            FallbackEntry::Absent => self.keyring.read(key).map_err(|_| Error::NotFound),
         }
     }
 
     fn remove_value(&self, key: &str) -> Result<(), Error> {
-        let secret_result = self.with_item(key, |item| item.delete().map_err(Into::into));
+        let secret_result = self.keyring.delete(key);
         let fs_result = self.delete_fallback_value(key);
 
-        // We delete both the value in the secret store and the fallback values.
-        // As long as one succeeds, we consider the delete a success.
-        match (secret_result, fs_result) {
-            (Err(secret_err), Err(_)) => Err(secret_err),
-            _ => Ok(()),
+        match secret_result {
+            Ok(()) => {
+                self.clear_tombstone(key);
+                Ok(())
+            }
+            // The keyring answered and had nothing: the fallback decides, as before.
+            Err(Error::NotFound) => {
+                self.clear_tombstone(key);
+                fs_result.map_err(|_| Error::NotFound)
+            }
+            // The keyring could not be reached: a copy it still holds must stay removed when it
+            // comes back (#1805), so the removal is recorded in the fallback.
+            Err(secret_err) => match self.write_tombstone(key) {
+                Ok(()) => Ok(()),
+                Err(_) => fs_result.map_err(|_| secret_err),
+            },
         }
+    }
+}
+
+/// The Secret Service side of [`SecureStorage`].
+struct SecretServiceKeyring {
+    /// The value of the "service" attribute (the app's secrets namespace).
+    service_name: String,
+
+    /// A lazily-initialized reference to the default secret collection as
+    /// provided by the installed Secret Service API provider. Only a
+    /// successful open is kept; a failed one is recorded process-wide in
+    /// [`availability`] instead, so every handle (the app's and each
+    /// worker's) learns of it from one failing attempt (#1805).
+    collection: OnceCell<Collection>,
+
+    /// Opens the default collection. [`open_default_collection_bounded`] outside tests.
+    open_collection: fn() -> Result<Collection, Error>,
+}
+
+impl SecretServiceKeyring {
+    fn new(service_name: &str, open_collection: fn() -> Result<Collection, Error>) -> Self {
+        Self {
+            service_name: service_name.to_owned(),
+            collection: OnceCell::new(),
+            open_collection,
+        }
+    }
+
+    /// Returns a reference to the default secret collection, lazily
+    /// instantiating the underlying service and collection reference,
+    /// returning an error if the connection cannot be established or the
+    /// collection cannot be opened or unlocked.
+    ///
+    /// A failure is cached process-wide, not per handle (#1805): once the
+    /// keyring is known to be unavailable this returns an error at once,
+    /// without touching D-Bus, and every caller uses the fallback file. The
+    /// failure is logged once per run. Only an explicit retry
+    /// ([`availability::retry`]) or a late answer from the service makes the
+    /// next call try again.
+    fn collection(&self) -> Result<&secret_service::blocking::Collection<'_>, Error> {
+        if !availability::should_contact_keyring() {
+            return Err(keyring_unavailable());
+        }
+        let collection = match self.collection.get() {
+            Some(collection) => collection,
+            None => match (self.open_collection)() {
+                Ok(collection) => self.collection.get_or_init(|| collection),
+                Err(err) => {
+                    if availability::mark_unavailable() {
+                        log::error!(
+                            "Failed to acquire default Secret Service collection: {err:#}. \
+                             Stored credentials come from the local fallback for the rest of \
+                             this run; the keyring is not tried again unless asked to."
+                        );
+                    } else {
+                        log::debug!("Secret Service collection still unavailable: {err:#}");
+                    }
+                    return Err(keyring_unavailable());
+                }
+            },
+        };
+        let collection = collection.borrow_collection();
+        // Ensure that the collection is unlocked, otherwise we will be unable
+        // add or modify items.
+        if let Err(err) = collection.unlock() {
+            // A locked collection whose unlock was refused (or cannot be prompted
+            // for) is as unusable as a missing one: do not prompt again per lookup.
+            if availability::mark_unavailable() {
+                log::error!(
+                    "Failed to unlock the default Secret Service collection: {err:#}. \
+                     Stored credentials come from the local fallback for the rest of this run."
+                );
+            }
+            return Err(err.into());
+        }
+        availability::mark_available();
+        Ok(collection)
+    }
+
+    /// Returns the set of attributes which should be used when interacting
+    /// with a secret item that is identified by the given key.
+    fn attributes_for_key<'a>(&'a self, key: &'a str) -> HashMap<&'static str, &'a str> {
+        HashMap::from([
+            // Ensure our keys don't conflict with ones stored by another
+            // application.
+            ("service", self.service_name.as_str()),
+            // Specify the key for the secret.
+            ("key", key),
+        ])
+    }
+
+    /// Provides the given function access to a secret item with the given key
+    /// in order to read or manipulate the item.
+    fn with_item<T>(
+        &self,
+        key: &str,
+        func: impl FnOnce(&Item) -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        let collection = self.collection()?;
+        let items = collection.search_items(self.attributes_for_key(key))?;
+        let Some(item) = items.first() else {
+            return Err(Error::NotFound);
+        };
+        func(item)
+    }
+}
+
+impl Keyring for SecretServiceKeyring {
+    fn read(&self, key: &str) -> Result<String, Error> {
+        self.with_item(key, |item| {
+            let bytes = item.get_secret()?;
+            String::from_utf8(bytes).map_err(|err| Error::DecodeError(err.utf8_error()))
+        })
+    }
+
+    fn write(&self, key: &str, value: &str) -> Result<(), Error> {
+        let collection = self.collection()?;
+        // Construct a slightly more human-readable label for the secret than
+        // using the key alone.
+        let label = format!("{}: {key}", self.service_name);
+        collection.create_item(
+            &label,
+            self.attributes_for_key(key),
+            value.as_bytes(),
+            // replace the existing key, if any
+            true,
+            "text/plain",
+        )?;
+        Ok(())
+    }
+
+    fn delete(&self, key: &str) -> Result<(), Error> {
+        self.with_item(key, |item| item.delete().map_err(Into::into))
     }
 }
 
@@ -532,49 +680,58 @@ fn keyring_unavailable() -> Error {
     Error::Unknown(anyhow!("the Secret Service keyring is unavailable"))
 }
 
-/// The production collection opener: [`Collection::open_default_collection`], but first a probe
-/// on a helper thread bounded by [`CONNECT_GIVE_UP`], so a bus that never answers costs that
-/// long once instead of the bus's activation timeout.
+/// The production collection opener: [`Collection::open_default_collection`] on a helper
+/// thread, bounded by [`CONNECT_GIVE_UP`], so a bus that never answers costs that long once
+/// instead of the bus's activation timeout. The opened collection is handed back to the caller,
+/// so no second, unbounded open follows a successful probe.
 fn open_default_collection_bounded() -> Result<Collection, Error> {
-    let probe = || {
-        Collection::open_default_collection()
-            .map(drop)
-            .map_err(|err| format!("{err:#}"))
-    };
-    match probe_with_give_up(probe, CONNECT_GIVE_UP) {
-        // The service answered and has a default collection: open the one this handle keeps.
-        // `Collection` is not moved across threads, so the probe's copy is dropped there.
-        Probe::Answered(Ok(())) => Collection::open_default_collection(),
+    let open = || Collection::open_default_collection().map_err(|err| format!("{err:#}"));
+    match probe_with_give_up(open, CONNECT_GIVE_UP) {
+        Probe::Answered(Ok(collection)) => Ok(collection),
         Probe::Answered(Err(err)) => Err(Error::Unknown(anyhow!(err))),
         Probe::TimedOut => Err(Error::Unknown(anyhow!(
             "the Secret Service did not answer within {CONNECT_GIVE_UP:?}"
+        ))),
+        Probe::StillPending => Err(Error::Unknown(anyhow!(
+            "the Secret Service has not answered an earlier request yet"
         ))),
     }
 }
 
 /// What [`probe_with_give_up`] learned.
 #[derive(Debug, PartialEq, Eq)]
-enum Probe {
+enum Probe<T> {
     /// The probe returned in time.
-    Answered(Result<(), String>),
+    Answered(Result<T, String>),
     /// It did not; the keyring has been marked unavailable. The probe keeps running on its own
     /// thread, and if it later succeeds the keyring is marked available again.
     TimedOut,
+    /// An earlier probe that timed out is still running (the service is still hung): no second
+    /// probe thread was started. Its own late answer is what can mark the keyring available.
+    StillPending,
 }
+
+/// Set while a probe that the caller gave up on is still running (#1805 review): a retry must
+/// not pile up one more stuck thread per attempt against a service that is still hung.
+static HUNG_PROBE: AtomicBool = AtomicBool::new(false);
 
 /// Runs `probe` on a helper thread and waits at most `give_up` for it. A blocking D-Bus call
 /// cannot be cancelled, so a probe that overruns is left to finish on its own; its late answer is
-/// not lost: success marks the keyring available (the service appeared), failure changes
-/// nothing.
-fn probe_with_give_up(
-    probe: impl FnOnce() -> Result<(), String> + Send + 'static,
+/// not lost: success marks the keyring available (the service appeared; the late result itself
+/// is dropped), failure changes nothing. While such a probe is still running, later calls return
+/// [`Probe::StillPending`] without starting another.
+fn probe_with_give_up<T: Send + 'static>(
+    probe: impl FnOnce() -> Result<T, String> + Send + 'static,
     give_up: Duration,
-) -> Probe {
+) -> Probe<T> {
+    if HUNG_PROBE.load(Ordering::SeqCst) {
+        return Probe::StillPending;
+    }
     // `true` once the caller stopped waiting. The helper reads it and sends under this lock, and
     // the caller sets it (and marks the keyring unavailable) under the same lock, so a late
     // success can never be overtaken by the caller's "unavailable".
     let gave_up = Arc::new(Mutex::new(false));
-    let (tx, rx) = mpsc::sync_channel::<Result<(), String>>(1);
+    let (tx, rx) = mpsc::sync_channel::<Result<T, String>>(1);
     let helper_gave_up = gave_up.clone();
     let spawned = std::thread::Builder::new()
         .name("secret-service-probe".into())
@@ -582,6 +739,7 @@ fn probe_with_give_up(
             let result = probe();
             let gave_up = helper_gave_up.lock().unwrap_or_else(|e| e.into_inner());
             if *gave_up {
+                HUNG_PROBE.store(false, Ordering::SeqCst);
                 if result.is_ok() && availability::mark_available() {
                     log::info!("The Secret Service answered late; using the OS keyring again.");
                 }
@@ -606,6 +764,7 @@ fn probe_with_give_up(
                 return Probe::Answered(result);
             }
             *gave_up = true;
+            HUNG_PROBE.store(true, Ordering::SeqCst);
             if availability::mark_unavailable() {
                 log::error!(
                     "Failed to acquire default Secret Service collection: the service did not \

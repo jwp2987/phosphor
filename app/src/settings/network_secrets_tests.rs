@@ -102,13 +102,18 @@ mod off_thread {
     enum ReadBehaviour {
         /// Blocks until released, then returns the stored value.
         HangUntilReleased,
-        /// Fails at once, like a session with no Secret Service.
+        /// Fails at once with an error.
         Fail,
+        /// What the Linux backend does with no Secret Service: the keyring is marked
+        /// unavailable and the read finds nothing (only the empty fallback was consulted).
+        UnavailableLikeLinux,
+        /// Returns the stored value at once.
+        Succeed,
     }
 
     #[derive(Clone)]
     struct Keyring {
-        behaviour: ReadBehaviour,
+        behaviour: Arc<Mutex<ReadBehaviour>>,
         release: Arc<(Mutex<bool>, Condvar)>,
         data: Arc<Mutex<HashMap<String, String>>>,
         reads: Arc<Mutex<usize>>,
@@ -118,12 +123,16 @@ mod off_thread {
     impl Keyring {
         fn new(behaviour: ReadBehaviour) -> Self {
             Self {
-                behaviour,
+                behaviour: Arc::new(Mutex::new(behaviour)),
                 release: Arc::new((Mutex::new(false), Condvar::new())),
                 data: Arc::default(),
                 reads: Arc::default(),
                 writes: Arc::default(),
             }
+        }
+
+        fn set_behaviour(&self, behaviour: ReadBehaviour) {
+            *self.behaviour.lock().unwrap() = behaviour;
         }
 
         fn release(&self) {
@@ -151,7 +160,14 @@ mod off_thread {
         }
 
         fn read_value(&self, key: &str) -> Result<String, Error> {
-            match self.behaviour {
+            let behaviour = *self.behaviour.lock().unwrap();
+            match behaviour {
+                ReadBehaviour::Succeed => {}
+                ReadBehaviour::UnavailableLikeLinux => {
+                    *self.reads.lock().unwrap() += 1;
+                    secure_storage::availability::mark_unavailable();
+                    return Err(Error::NotFound);
+                }
                 ReadBehaviour::HangUntilReleased => {
                     let (lock, cv) = &*self.release;
                     let mut released = lock.lock().unwrap();
@@ -279,7 +295,8 @@ mod off_thread {
             });
             wait_until(|| keyring.writes() == 1).await;
 
-            // An explicit retry reads again, once.
+            // Once the user has set a password it is authoritative: a keyring retry does not
+            // re-read (and so cannot replace) it.
             creds.update(&mut app, |creds, ctx| creds.retry_if_unavailable(ctx));
             warpui::r#async::Timer::after(Duration::from_millis(50)).await;
             assert_eq!(
@@ -328,6 +345,43 @@ mod off_thread {
                 Some("new".to_owned())
             );
             secure_storage::background::set_factory_for_test(None);
+        });
+    }
+
+    /// #1805 review: on Linux a keyring outage reads as "not found" from the backend; it must
+    /// still surface as Unavailable, and the explicit retry must then load the stored password.
+    #[test]
+    fn an_outage_is_unavailable_and_a_retry_loads_the_stored_password() {
+        App::test((), |mut app| async move {
+            secure_storage::availability::reset_for_test();
+            let keyring = Keyring::new(ReadBehaviour::UnavailableLikeLinux);
+            keyring
+                .data
+                .lock()
+                .unwrap()
+                .insert(SECURE_STORAGE_KEY.to_owned(), "hunter2".to_owned());
+            install(&mut app, &keyring);
+            let creds = app.add_model(ProxyCredentials::new);
+
+            creds.update(&mut app, |creds, ctx| creds.ensure_loaded(ctx));
+            wait_until(|| {
+                creds.read(&app, |c, _| {
+                    c.load_state() == ProxyPasswordLoad::Unavailable
+                })
+            })
+            .await;
+            creds.read(&app, |creds, _| assert_eq!(creds.password(), ""));
+
+            // The keyring is back; the user's retry (KeyringNotice) resets the state and re-reads.
+            keyring.set_behaviour(ReadBehaviour::Succeed);
+            assert!(secure_storage::availability::retry());
+            creds.update(&mut app, |creds, ctx| creds.retry_if_unavailable(ctx));
+            wait_until(|| creds.read(&app, |c, _| c.load_state() == ProxyPasswordLoad::Loaded))
+                .await;
+            creds.read(&app, |creds, _| assert_eq!(creds.password(), "hunter2"));
+            assert_eq!(keyring.reads(), 2, "one failed read, one retry");
+            secure_storage::background::set_factory_for_test(None);
+            secure_storage::availability::reset_for_test();
         });
     }
 }

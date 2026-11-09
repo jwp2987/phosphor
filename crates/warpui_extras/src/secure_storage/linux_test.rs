@@ -343,6 +343,20 @@ fn a_probe_that_does_not_answer_is_given_up_on_and_a_late_success_is_kept() {
         super::availability::Availability::Unavailable
     );
 
+    // While that probe is still stuck, a retry does not start another thread against the
+    // same hung service.
+    let ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let ran_in_probe = ran.clone();
+    let second = super::probe_with_give_up(
+        move || {
+            ran_in_probe.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        },
+        Duration::from_millis(100),
+    );
+    assert_eq!(second, super::Probe::StillPending);
+    assert!(!ran.load(std::sync::atomic::Ordering::SeqCst));
+
     release_tx.send(()).expect("release the probe");
     let deadline = Instant::now() + Duration::from_secs(10);
     while super::availability::current() != super::availability::Availability::Available {
@@ -371,4 +385,164 @@ fn a_probe_that_answers_in_time_reports_its_result() {
         super::availability::current(),
         super::availability::Availability::Unknown
     );
+}
+
+/// A keyring stand-in that consults the process-wide availability like the real one, and can
+/// be taken down and brought back.
+struct FakeKeyring {
+    data: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<String, String>>>,
+    up: std::rc::Rc<std::cell::Cell<bool>>,
+}
+
+impl FakeKeyring {
+    fn check(&self) -> Result<(), Error> {
+        if !super::availability::should_contact_keyring() {
+            return Err(Error::Unknown(anyhow::anyhow!("unavailable")));
+        }
+        if !self.up.get() {
+            super::availability::mark_unavailable();
+            return Err(Error::Unknown(anyhow::anyhow!("no Secret Service")));
+        }
+        super::availability::mark_available();
+        Ok(())
+    }
+}
+
+impl super::Keyring for FakeKeyring {
+    fn read(&self, key: &str) -> Result<String, Error> {
+        self.check()?;
+        self.data.borrow().get(key).cloned().ok_or(Error::NotFound)
+    }
+    fn write(&self, key: &str, value: &str) -> Result<(), Error> {
+        self.check()?;
+        self.data
+            .borrow_mut()
+            .insert(key.to_owned(), value.to_owned());
+        Ok(())
+    }
+    fn delete(&self, key: &str) -> Result<(), Error> {
+        self.check()?;
+        self.data
+            .borrow_mut()
+            .remove(key)
+            .map(drop)
+            .ok_or(Error::NotFound)
+    }
+}
+
+type FakeHandles = (
+    SecureStorage,
+    std::rc::Rc<std::cell::RefCell<std::collections::HashMap<String, String>>>,
+    std::rc::Rc<std::cell::Cell<bool>>,
+    tempfile::TempDir,
+);
+
+/// A storage over a [`FakeKeyring`] that already holds `key = K0`, with a fallback directory.
+fn storage_with_fake_keyring() -> FakeHandles {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let fallback_dir = temp_dir.path().join("state");
+    std::fs::create_dir_all(&fallback_dir).expect("create fallback dir");
+    let data = std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashMap::from([
+        ("key".to_owned(), "K0".to_owned()),
+    ])));
+    let up = std::rc::Rc::new(std::cell::Cell::new(true));
+    let storage = SecureStorage::with_keyring(
+        "darmok",
+        Some(fallback_dir),
+        Box::new(FakeKeyring {
+            data: data.clone(),
+            up: up.clone(),
+        }),
+    );
+    (storage, data, up, temp_dir)
+}
+
+/// #1805 review: a value saved during an outage survives the keyring's return. The read returns
+/// it (not the keyring's older K0), moves it into the keyring, and only then deletes the fallback.
+#[test]
+fn a_value_saved_during_an_outage_wins_over_the_keyring_copy_on_recovery() {
+    use super::super::SecureStorage as _;
+
+    let _guard = super::availability::test_guard();
+    super::availability::reset_for_test();
+    let (storage, data, up, _dir) = storage_with_fake_keyring();
+
+    up.set(false);
+    storage.write_value("key", "K1").expect("outage write");
+    assert_eq!(storage.read_value("key").expect("outage read"), "K1");
+    let fallback = storage.fallback_file("key").expect("path");
+    assert!(fallback.exists(), "the outage write went to the fallback");
+    assert_eq!(data.borrow()["key"], "K0");
+
+    // The keyring comes back (an explicit retry here; a late answer works the same way).
+    up.set(true);
+    super::availability::retry();
+    assert_eq!(storage.read_value("key").expect("recovery read"), "K1");
+    assert_eq!(
+        data.borrow()["key"],
+        "K1",
+        "the keyring now holds the newer value"
+    );
+    assert!(
+        !fallback.exists(),
+        "the fallback is gone once the keyring took it"
+    );
+    assert_eq!(storage.read_value("key").expect("later read"), "K1");
+    super::availability::reset_for_test();
+}
+
+/// If the keyring is back but refuses the migration write, the fallback is kept (and still read).
+#[test]
+fn the_fallback_is_kept_until_the_keyring_has_taken_it() {
+    use super::super::SecureStorage as _;
+
+    let _guard = super::availability::test_guard();
+    super::availability::reset_for_test();
+    let (storage, data, up, _dir) = storage_with_fake_keyring();
+
+    up.set(false);
+    storage.write_value("key", "K1").expect("outage write");
+    super::availability::retry();
+    // Still down: the migration write fails.
+    assert_eq!(storage.read_value("key").expect("read"), "K1");
+    assert!(storage.fallback_file("key").expect("path").exists());
+    assert_eq!(data.borrow()["key"], "K0");
+    super::availability::reset_for_test();
+}
+
+/// #1805 review: a removal made during an outage is not undone by the keyring's copy on recovery.
+#[test]
+fn a_removal_made_during_an_outage_stays_removed_on_recovery() {
+    use super::super::SecureStorage as _;
+
+    let _guard = super::availability::test_guard();
+    super::availability::reset_for_test();
+    let (storage, data, up, _dir) = storage_with_fake_keyring();
+
+    up.set(false);
+    storage
+        .remove_value("key")
+        .expect("outage removal is recorded");
+    assert!(matches!(storage.read_value("key"), Err(Error::NotFound)));
+
+    up.set(true);
+    super::availability::retry();
+    assert!(
+        matches!(storage.read_value("key"), Err(Error::NotFound)),
+        "the keyring's K0 must not come back"
+    );
+    assert!(
+        data.borrow().get("key").is_none(),
+        "the removal reached the keyring"
+    );
+    assert!(
+        !storage.tombstone_file("key").expect("path").exists(),
+        "the marker is gone once the keyring took the removal"
+    );
+
+    // A later write is an ordinary keyring write again.
+    storage.write_value("key", "K2").expect("write");
+    assert_eq!(storage.read_value("key").expect("read"), "K2");
+    assert_eq!(data.borrow()["key"], "K2");
+    super::availability::reset_for_test();
 }

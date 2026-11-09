@@ -652,15 +652,6 @@ pub(crate) fn parse_credentials<T: DeserializeOwned + Default>(
     .unwrap_or_default()
 }
 
-/// Loads credentials from secure storage at the provided key. Synchronous: used only on rare
-/// paths (legacy conversion); startup reads go through the secure-storage worker (#1309).
-pub(crate) fn load_credentials_from_secure_storage<T: DeserializeOwned + Default>(
-    app: &mut warpui::AppContext,
-    key: &str,
-) -> T {
-    parse_credentials(app.secure_storage().read_value(key))
-}
-
 /// Writes credentials to secure storage at the provided key. The write is queued on the
 /// secure-storage worker, in order with every other write, instead of blocking the caller.
 pub(crate) fn write_to_secure_storage<T: Serialize>(

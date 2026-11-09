@@ -149,10 +149,19 @@ impl ProxyCredentials {
         true
     }
 
-    /// Runs on the secure-storage worker. "Nothing stored" is an empty password, not a failure.
+    /// Runs on the secure-storage worker. "Nothing stored" is an empty password, not a failure --
+    /// unless the keyring is unavailable: the Linux backend then reads only its fallback and
+    /// reports a password kept in the keyring as "not found", which must surface as unavailable
+    /// (so the page says so and an explicit retry reads it again), not as "no password".
     fn read_from(storage: &dyn secure_storage::SecureStorage) -> Result<String, String> {
         match storage.read_value(SECURE_STORAGE_KEY) {
             Ok(value) => Ok(value),
+            Err(secure_storage::Error::NotFound)
+                if secure_storage::availability::current()
+                    == secure_storage::availability::Availability::Unavailable =>
+            {
+                Err("the OS keyring is unavailable".to_owned())
+            }
             Err(secure_storage::Error::NotFound) => Ok(String::new()),
             Err(e) => Err(format!("{e:#}")),
         }
