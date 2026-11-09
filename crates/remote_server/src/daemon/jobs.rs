@@ -19,6 +19,11 @@ pub(super) struct Reply {
 }
 
 impl Reply {
+    /// The id of the request this replies to (for `Abort` of a request that joined another's work).
+    pub(super) fn request_id(&self) -> &str {
+        &self.request_id
+    }
+
     pub(super) fn new(tx: async_channel::Sender<ServerMessage>, request_id: String) -> Self {
         Self { tx, request_id }
     }
@@ -36,6 +41,18 @@ impl Reply {
             code: code.into(),
             message: message.into(),
         }));
+    }
+}
+
+/// Runs `work` on its own named thread (the git-derived views use one per recompute). A failure to
+/// start the thread is logged and the work is dropped.
+pub(super) fn spawn_worker(name: &'static str, work: impl FnOnce() + Send + 'static) -> bool {
+    match std::thread::Builder::new().name(name.into()).spawn(work) {
+        Ok(_) => true,
+        Err(e) => {
+            log::error!("could not start a worker thread: {e}");
+            false
+        }
     }
 }
 

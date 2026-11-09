@@ -2857,7 +2857,7 @@ def lab_cases_registry_and_selection():
     assert run.unknown_case_names("mode_proof,typo_case", reg) == ["typo_case"]       # exact names are still checked exactly
     # winmap: a lab case is never 'unclassified'; PowerShell pane skips with a reason; p_onesess is skipped on Windows
     base = {n.split(".")[0] for n in names}
-    old = {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i", "lab_no_helper_chip", "lab_replay", "lab_password_prompt", "lab_helper_install", "lab_nu_agent_pager_env", "lab_read_files_remote", "lab_diff_apply_remote", "lab_file_tree_remote", "lab_remote_edit", "lab_skills_remote", "lab_codebase_index_remote"}
+    old = {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i", "lab_no_helper_chip", "lab_replay", "lab_password_prompt", "lab_helper_install", "lab_nu_agent_pager_env", "lab_read_files_remote", "lab_diff_apply_remote", "lab_file_tree_remote", "lab_remote_edit", "lab_skills_remote", "lab_diff_panel_remote", "lab_gh_chip_remote", "lab_codebase_index_remote"}
     assert old <= base and all(n.startswith(("lab_fam_", "lab_helper_", "lab_nohelper_", "lab_git_write_remote")) for n in base - old), base
     assert all(c["modes"] == ("terminal",) for c in labs if c["name"].startswith("lab_ssh_drop_reconnect")), "the drop case is terminal-only"
     pw = [c["arm"] for c in labs if c["name"].startswith("lab_password_prompt")]
@@ -2880,6 +2880,28 @@ def lab_file_tree_remote_pieces():
     assert CLR.saw_added(line, "a") and not CLR.saw_added(line, "b") and not CLR.saw_added(line, "a", event="snapshot")
     arms = [c["arm"] for c in cases.CASES if c.get("lab") and c["name"].startswith("lab_file_tree_remote.")]
     assert {(a["shell"], a["helper"]) for a in arms} == {(s, h) for s in ("bash", "zsh", "fish", "nu") for h in ("nohelper", "upload")}, arms
+
+
+@check
+def lab_diff_panel_and_gh_chip_pieces():
+    """Wave H parity P6: the lab cases read the app's hop=diff_state / hop=git_chip / hop=gh_chip log lines exactly as the app prints them, the fake gh scripts are the ones
+    the contract tests use, and both cases register the nohelper and upload arms for bash, zsh, fish and nu and declare their families to the coverage guard."""
+    import cases_lab_diff as D, cases_lab_helper as H
+    text = ("INFO hop=diff_state event=snapshot source=shell files=2 path_hash=[e40c292c,bf9cf968]\n"
+            "INFO hop=diff_state event=delta source=helper files=1 path_hash=[e40c292c]\n"
+            "INFO hop=git_chip source=shell files=2 added=1 removed=0 ahead=1 behind=0 upstream=1\n"
+            "INFO hop=gh_chip event=pr source=helper pr=42\nINFO hop=gh_chip event=pr source=shell pr=none\nINFO hop=gh_chip event=repo source=shell repo=some")
+    assert D.diff_events(text) == [("snapshot", "shell", 2, ["e40c292c", "bf9cf968"]), ("delta", "helper", 1, ["e40c292c"])]
+    assert D.chip_events(text) == [("shell", 2, 1, 0, 1, 0, True)]
+    assert D.gh_events(text) == [("pr", "helper", "42"), ("pr", "shell", "none"), ("repo", "shell", "some")]
+    assert D.want_source(dict(helper="upload")) == "helper" and D.want_source(dict(helper="nohelper")) == "shell"
+    assert '"number":42' in D.FAKE_GH and "gh auth login" in D.SIGNED_OUT_GH
+    for name in ("lab_diff_panel_remote.", "lab_gh_chip_remote."):
+        arms = [c["arm"] for c in cases.CASES if c.get("lab") and c["name"].startswith(name)]
+        assert {(a["shell"], a["helper"]) for a in arms} == {(s, h) for s in ("bash", "zsh", "fish", "nu") for h in ("nohelper", "upload")}, (name, arms)
+    assert H.EXTERNAL_COVERS["diff_state"] == dict(helper="lab_diff_panel_remote", nohelper="lab_diff_panel_remote"), H.EXTERNAL_COVERS.get("diff_state")
+    for cap in ("git_status", "github"):
+        assert H.EXTERNAL_COVERS[cap] == dict(helper="lab_gh_chip_remote", nohelper="lab_gh_chip_remote"), cap
 
 
 @check

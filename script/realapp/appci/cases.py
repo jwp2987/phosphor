@@ -5488,6 +5488,7 @@ import cases_lab  # noqa: E402,F401  (Wave 0.5b: the fake ssh lab cases, lab_*; 
 import cases_lab_git  # noqa: E402,F401  (wave H parity P7: lab_git_write_remote, git writes over ssh with a bare repo as the remote)
 import cases_lab_remote  # noqa: E402,F401  (Wave H parity: per-family helper vs no-helper lab cases, lab_file_tree_remote.*)
 import cases_lab_index  # noqa: E402,F401  (Wave H parity P9b: lab_codebase_index_remote, host scans / app embeds)
+import cases_lab_diff  # noqa: E402,F401  (Wave H parity P6: lab_diff_panel_remote, lab_gh_chip_remote, the git-derived views over ssh)
 import cases_lab_buffers  # noqa: E402,F401  (Wave H parity P4: lab_remote_edit.*, remote buffer editing)
 import cases_subshell_ready  # noqa: E402,F401  (#1679 step 3/4: the subshell readiness lab: rc questions, vim typeahead, tcsh, secret after the prompt, relays, exec fish, docker -t, zsh-newuser-install, clear)
 import cases_replay  # noqa: E402,F401  (Wave 1.5 #3: the real-use replay, lab_replay.*; run only by --cases lab_replay*)

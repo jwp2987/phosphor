@@ -93,6 +93,9 @@ fn initialize_advertises_the_helper_capabilities_and_version() {
             "agent_context",
             "buffers",
             "git_write",
+            "diff_state",
+            "git_status",
+            "github",
             "codebase_chunks"
         ]
     );
@@ -102,7 +105,10 @@ fn initialize_advertises_the_helper_capabilities_and_version() {
     assert!(caps.supports(crate::capability::AGENT_CONTEXT));
     // Parity family c: server-side buffers are served by the helper.
     assert!(caps.supports(crate::capability::BUFFERS));
-    assert!(!caps.supports(crate::capability::DIFF_STATE));
+    // Parity families d and e: diff state, git status and GitHub info.
+    assert!(caps.supports(crate::capability::DIFF_STATE));
+    assert!(caps.supports(crate::capability::GIT_STATUS));
+    assert!(caps.supports(crate::capability::GITHUB));
 }
 
 /// Family a through the server core: a real `ReadFileContext` request is answered with the
@@ -151,9 +157,9 @@ fn requests_outside_the_capability_list_are_unsupported() {
     assert_eq!(e.code, ErrorCode::Unsupported as i32);
     assert!(e.message.contains("ReadFileContext"), "{}", e.message);
 
-    h.send(session(
+    h.send(host(
         "r3",
-        session_scoped_request::Message::GetDiffState(Default::default()),
+        host_scoped_request::Message::IndexCodebase(Default::default()),
     ));
     assert_eq!(error_of(h.next()).code, ErrorCode::Unsupported as i32);
 }
@@ -281,6 +287,11 @@ fn abort_of_an_unknown_request_is_harmless() {
 fn unsupported_notifications_are_dropped_silently() {
     let mut h = harness();
     h.send(ClientMessage::notification(
+        notification::Message::BufferEdit(Default::default()),
+    ));
+    assert!(h.rx.try_recv().is_err());
+    // A git-status request for a path that is not a repository is dropped too (nothing to say).
+    h.send(ClientMessage::notification(
         notification::Message::UpdateGitStatus(Default::default()),
     ));
     assert!(h.rx.try_recv().is_err());
@@ -323,12 +334,13 @@ fn a_connection_keeps_the_daemon_alive_past_the_grace_period() {
 #[test]
 fn every_reserved_family_request_is_unsupported_and_named() {
     let mut h = harness();
-    let session_requests: Vec<(&str, session_scoped_request::Message)> = vec![(
-        "GetDiffState",
-        session_scoped_request::Message::GetDiffState(Default::default()),
+    // What no helper implements: the legacy host-side indexing.
+    let session_requests: Vec<(&str, host_scoped_request::Message)> = vec![(
+        "IndexCodebase",
+        host_scoped_request::Message::IndexCodebase(Default::default()),
     )];
     for (name, message) in session_requests {
-        h.send(session("rs", message));
+        h.send(host("rs", message));
         let e = error_of(h.next());
         assert_eq!(e.code, ErrorCode::Unsupported as i32, "{name}");
         assert!(e.message.contains(name), "{name}: {}", e.message);

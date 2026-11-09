@@ -340,7 +340,8 @@ impl WorkingDirectoriesModel {
 
     /// Get or create a DiffStateModel for a specific repository, local or
     /// remote. Local repos get a local-backed model; remote (SSH) repos get a
-    /// remote-backed model, but only when a session for the host is connected —
+    /// remote-backed model, but only when the host's helper or its shell channel can serve
+    /// diff state (a session without a helper still can) —
     /// otherwise `None` is returned so the caller treats the panel as
     /// unavailable rather than holding a model that cannot subscribe.
     pub fn get_or_create_diff_state_model(
@@ -358,10 +359,15 @@ impl WorkingDirectoriesModel {
             }
             LocalOrRemotePath::Remote(remote) => {
                 let remote = util_remote_path_to_buffer(remote);
-                // Require a connected session for the host; without one the
+                // Require something that can serve diff state: the host's helper, or
+                // (no helper) the session's out-of-band shell channel. Without either the
                 // remote model could not issue GetDiffState.
-                RemoteServerManager::as_ref(ctx)
-                    .client_for_host_with(&remote.host_id, remote_server::capability::DIFF_STATE)?;
+                if !RemoteServerManager::as_ref(ctx)
+                    .backend_for_host(&remote.host_id)
+                    .is_available(remote_server::backend::Family::DiffState)
+                {
+                    return None;
+                }
                 ctx.add_model(|ctx| DiffStateModel::new_remote(remote, DiffMode::default(), ctx))
             }
         };

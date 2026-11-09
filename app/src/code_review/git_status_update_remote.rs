@@ -8,11 +8,14 @@
 //! dispatch to either backend transparently.
 //!
 //! Holds the latest [`GitStatusMetadata`] for its `(host_id, repo_path)`. On
-//! construction (and again on reconnect) it sends an `UpdateGitStatus`
-//! notification asking the daemon to push the current snapshot; live watcher
-//! updates then arrive as `GitStatusPush` messages filtered by
-//! `(host_id, repo_path)`. A disconnect preserves stale data rather than
-//! clearing the chip.
+//! construction (and again on reconnect) it asks the host's backend for the
+//! current status. With a helper that is an `UpdateGitStatus` notification and
+//! live watcher updates then arrive as `GitStatusPush` messages filtered by
+//! `(host_id, repo_path)`; without one (shell mode) the backend computes the
+//! status now and the model asks again on `ShellRefresh` events that can have
+//! moved git state (a git command finished, the cwd moved, the app wrote),
+//! one request in flight at a time, never on a timer. A disconnect preserves
+//! stale data rather than clearing the chip.
 //!
 //! Ported from `42effe840:app/src/code_review/git_repo_model/remote.rs`. The
 //! fork keeps `<subsystem>_remote.rs` as a sibling file (the shape
@@ -23,6 +26,10 @@
 //! this from `git` subprocesses on the SSH host, exactly as the local backend
 //! does on the local filesystem.
 
+use remote_server::backend::refresh::{
+    PrecmdPolicy, RefreshCoordinator, RefreshDecision, RemoteRefreshEvent,
+};
+use remote_server::backend::{BackendKind, Family, Requested};
 use remote_server::manager::{RemoteServerManager, RemoteServerManagerEvent};
 use warpui::{Entity, ModelContext, SingletonEntity};
 
@@ -39,6 +46,8 @@ pub struct RemoteGitRepoStatusModel {
     metadata: Option<GitStatusMetadata>,
     /// See `LocalGitRepoStatusModel::has_emitted_metadata`.
     has_emitted_metadata: bool,
+    /// One shell-mode refresh in flight, one more queued (no timer).
+    refresh: RefreshCoordinator,
 }
 
 impl Entity for RemoteGitRepoStatusModel {
@@ -56,6 +65,7 @@ impl RemoteGitRepoStatusModel {
             remote_path: util_remote_path_to_buffer(&remote_path),
             metadata: None,
             has_emitted_metadata: false,
+            refresh: RefreshCoordinator::new(PrecmdPolicy::GitRelevant),
         };
         model.request_snapshot(ctx);
         model
@@ -73,6 +83,11 @@ impl RemoteGitRepoStatusModel {
             {
                 self.apply_push(push.metadata.as_ref(), ctx);
             }
+            RemoteServerManagerEvent::ShellRefresh { host_id, event }
+                if host_id == &self.remote_path.host_id =>
+            {
+                self.handle_shell_refresh(event, ctx);
+            }
             RemoteServerManagerEvent::HostConnected { host_id }
                 if host_id == &self.remote_path.host_id =>
             {
@@ -89,20 +104,55 @@ impl RemoteGitRepoStatusModel {
         self.remote_path.path.to_string()
     }
 
-    /// Fire-and-forget `UpdateGitStatus`: asks the daemon to create the per-repo
-    /// status model if needed and broadcast the current snapshot. No-op when no
-    /// session for the host is connected; `HostConnected` retries.
+    /// Asks for the current status. With a helper this is the fire-and-forget `UpdateGitStatus`
+    /// (the daemon creates the per-repo status and pushes it); in shell mode the backend computes
+    /// it now and the answer is applied here. No-op when nothing can serve it for the host;
+    /// `HostConnected` retries.
     pub(super) fn request_snapshot(&self, ctx: &mut ModelContext<Self>) {
-        let Some(client) = RemoteServerManager::as_ref(ctx)
-            .client_for_host_with(
-                &self.remote_path.host_id,
-                remote_server::capability::GIT_STATUS,
-            )
-            .cloned()
-        else {
+        self.request(ctx, false);
+    }
+
+    fn request(&self, ctx: &mut ModelContext<Self>, use_cached_main: bool) {
+        let backend = RemoteServerManager::as_ref(ctx).backend_for_host(&self.remote_path.host_id);
+        if !backend.is_available(Family::GitStatus) {
             return;
-        };
-        client.update_git_status(&self.remote_path.path);
+        }
+        let path = self.remote_path.path.clone();
+        let cached_main = use_cached_main
+            .then(|| self.metadata.as_ref().map(|m| m.main_branch_name.clone()))
+            .flatten();
+        ctx.spawn(
+            async move { backend.request_git_status(&path, cached_main).await },
+            |me, result, ctx| {
+                match result {
+                    Ok(Requested::Computed(Some(push))) => {
+                        me.apply_push(push.metadata.as_ref(), ctx)
+                    }
+                    Ok(_) => {}
+                    Err(e) => log::debug!("RemoteGitRepoStatusModel: status request failed: {e}"),
+                }
+                // A refresh queued while this one ran starts now.
+                if me.refresh.finished() {
+                    me.request(ctx, true);
+                }
+            },
+        );
+    }
+
+    /// A refresh event for the host: in shell mode, re-read when the event can have moved git
+    /// state; with a helper only an explicit user refresh asks again (the daemon pushes the rest).
+    fn handle_shell_refresh(&mut self, event: &RemoteRefreshEvent, ctx: &mut ModelContext<Self>) {
+        let shell_backed = RemoteServerManager::as_ref(ctx)
+            .backend_for_host(&self.remote_path.host_id)
+            .kind(Family::GitStatus)
+            == BackendKind::Shell;
+        let explicit = matches!(event, RemoteRefreshEvent::UserAction);
+        if !shell_backed && !explicit {
+            return;
+        }
+        if self.refresh.on_event(event) == RefreshDecision::Start {
+            self.request(ctx, !explicit);
+        }
     }
 
     /// Decode a pushed `GitStatusMetadata` (branch + stats) and replace the
@@ -121,6 +171,23 @@ impl RemoteGitRepoStatusModel {
         };
         match proto_to_git_status_metadata(metadata) {
             Ok(status) => {
+                let source = match RemoteServerManager::as_ref(ctx)
+                    .backend_for_host(&self.remote_path.host_id)
+                    .kind(Family::GitStatus)
+                {
+                    BackendKind::Helper => "helper",
+                    BackendKind::Shell => "shell",
+                };
+                // Counts only, never branch names or paths.
+                log::info!(
+                    "hop=git_chip source={source} files={} added={} removed={} ahead={} behind={} upstream={}",
+                    status.stats_against_head.files_changed,
+                    status.stats_against_head.total_additions,
+                    status.stats_against_head.total_deletions,
+                    status.branch_tracking_status.ahead,
+                    status.branch_tracking_status.behind,
+                    u8::from(status.branch_tracking_status.upstream.is_some()),
+                );
                 let new_metadata = Some(status);
                 let should_emit = super::git_status_update::should_emit_metadata_changed(
                     &self.metadata,

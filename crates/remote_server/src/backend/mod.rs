@@ -33,13 +33,25 @@ pub use executor::{
 pub use features::{METHODS, RemoteFeatures};
 pub use helper::HelperBackend;
 pub use router::{AlwaysShell, BackendKind, FeatureRouter, HelperProbe, RoutedBackend, decide};
-pub use shell::{AgentContextCache, ShellBackend, ShellBuffers, ShellIndex, ShellPush, TreeCache};
+pub use shell::{
+    AgentContextCache, PrLookup, ShellBackend, ShellBuffers, ShellIndex, ShellPush, TreeCache,
+};
 pub use shell_git_runner::ShellGitRunner;
 
 use crate::capability;
 use crate::client::ClientError;
 use crate::proto::ErrorCode;
 use crate::shellcmd::frame::FrameError;
+
+/// What a status or GitHub request produced (families `GitStatus` and `Github`, which are
+/// notifications to the helper rather than request/response pairs).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Requested<T> {
+    /// The helper was told; its answer arrives as a push on its connection.
+    PushedByHelper,
+    /// The shell backend computed the answer now.
+    Computed(T),
+}
 
 /// A feature family: the unit the router decides for, tied to one capability name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]

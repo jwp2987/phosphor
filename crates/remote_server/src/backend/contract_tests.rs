@@ -444,6 +444,7 @@ pub(super) async fn assert_contract(subject: &Subject) {
     assert_file_write(subject).await;
     assert_repo_metadata(subject).await;
     assert_git_write_contract(subject).await;
+    assert_diff_state(subject).await;
     assert_codebase_index(subject).await;
 }
 
@@ -1745,6 +1746,416 @@ async fn without_a_channel_the_agent_context_is_unavailable() {
     let shell = ShellBackend::new(None);
     let err = shell.refresh_agent_context().await.unwrap_err();
     assert!(matches!(err, BackendError::Unavailable(_)), "{err:?}");
+}
+
+// ── Families d and e: diff state, git status, GitHub info (P6) ──────────────────────────────────
+
+fn file_by<'a>(
+    data: &'a crate::proto::GitDiffData,
+    path: &str,
+    name: &str,
+) -> &'a crate::proto::FileDiff {
+    data.files
+        .iter()
+        .find(|f| f.file_path == path)
+        .unwrap_or_else(|| panic!("{name}: no {path} in the diff"))
+}
+
+fn status_kind(f: &crate::proto::FileDiff) -> &'static str {
+    use crate::proto::git_file_status::Status as S;
+    match f.status.as_ref().and_then(|s| s.status.as_ref()).unwrap() {
+        S::NewFile(_) => "new",
+        S::Modified(_) => "modified",
+        S::Deleted(_) => "deleted",
+        S::Renamed(_) => "renamed",
+        S::Copied(_) => "copied",
+        S::Untracked(_) => "untracked",
+        S::Conflicted(_) => "conflicted",
+    }
+}
+
+fn staging(f: &crate::proto::FileDiff) -> &'static str {
+    use crate::proto::FileStagedState as S;
+    match S::try_from(f.staged).unwrap() {
+        S::Unspecified => "n/a",
+        S::Staged => "staged",
+        S::Unstaged => "unstaged",
+        S::PartiallyStaged => "partial",
+    }
+}
+
+fn snapshot_in(
+    response: crate::proto::GetDiffStateResponse,
+) -> Result<crate::proto::DiffStateSnapshot, String> {
+    match response.result.expect("a result") {
+        crate::proto::get_diff_state_response::Result::Snapshot(s) => Ok(s),
+        crate::proto::get_diff_state_response::Result::Error(e) => Err(e.message),
+    }
+}
+
+/// Family d: the same literal answers from the helper and from the shell arm.
+pub(super) async fn assert_diff_state(subject: &Subject) {
+    use crate::shellcmd::git::test_runner::{git, repo_with};
+    if !git_available() {
+        return;
+    }
+    let name = subject.name;
+    let dir = repo_with(&[
+        ("modified.txt", "a\nb\nc\n"),
+        ("staged.txt", "a\nb\nc\n"),
+        ("gone.txt", "bye\n"),
+        ("old name.txt", "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\n"),
+    ]);
+    let root = dir.path();
+    std::fs::write(root.join("modified.txt"), "a\nB\nc\nd\n").unwrap();
+    std::fs::write(root.join("staged.txt"), "a\nb\nC\n").unwrap();
+    git(root, &["add", "staged.txt"]);
+    std::fs::remove_file(root.join("gone.txt")).unwrap();
+    git(root, &["mv", "old name.txt", "new name.txt"]);
+    std::fs::write(root.join("added.txt"), "fresh\n").unwrap();
+    git(root, &["add", "added.txt"]);
+    std::fs::write(root.join("untracked.txt"), "u1\nu2\n").unwrap();
+
+    let wire = format!("{}/.", root.display());
+    let snap = snapshot_in(
+        subject
+            .backend
+            .get_diff_state(crate::proto::GetDiffState {
+                repo_path: wire.clone(),
+                mode: Some(crate::shellcmd::git::diff::Mode::Head.to_proto()),
+            })
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        snap.repo_path, wire,
+        "{name}: the wire path is echoed verbatim"
+    );
+    let data = snap.diffs.as_ref().expect("a loaded snapshot");
+    let mut got: Vec<_> = data
+        .files
+        .iter()
+        .map(|f| (f.file_path.as_str(), status_kind(f), staging(f)))
+        .collect();
+    got.sort();
+    assert_eq!(
+        got,
+        vec![
+            ("added.txt", "new", "staged"),
+            ("gone.txt", "deleted", "unstaged"),
+            ("modified.txt", "modified", "unstaged"),
+            ("new name.txt", "renamed", "staged"),
+            ("staged.txt", "modified", "staged"),
+            ("untracked.txt", "untracked", "unstaged"),
+        ],
+        "{name}"
+    );
+    let modified = file_by(data, "modified.txt", name);
+    assert_eq!(
+        modified.content_at_base.as_deref(),
+        Some("a\nb\nc\n"),
+        "{name}"
+    );
+    assert_eq!(crate::shellcmd::git::diff::additions(modified), 2, "{name}");
+    assert_eq!(crate::shellcmd::git::diff::deletions(modified), 1, "{name}");
+    assert_eq!(
+        file_by(data, "untracked.txt", name)
+            .content_at_base
+            .as_deref(),
+        Some(""),
+        "{name}"
+    );
+    assert_eq!(
+        file_by(data, "gone.txt", name).content_at_base.as_deref(),
+        Some("bye\n"),
+        "{name}"
+    );
+    let meta = snap.metadata.as_ref().unwrap();
+    assert_eq!(meta.current_branch_name, "main", "{name}");
+    assert!(meta.has_head_commit, "{name}");
+    let stats = meta
+        .against_head
+        .as_ref()
+        .unwrap()
+        .aggregate_stats
+        .as_ref()
+        .unwrap();
+    assert_eq!(
+        (
+            stats.files_changed,
+            stats.total_additions,
+            stats.total_deletions
+        ),
+        (6, 6, 3),
+        "{name}"
+    );
+
+    // A directory that is no repository is NotInRepository; a path that is no directory is a
+    // DiffStateError.
+    let plain = tempfile::tempdir().unwrap();
+    let snap = snapshot_in(
+        subject
+            .backend
+            .get_diff_state(crate::proto::GetDiffState {
+                repo_path: plain.path().display().to_string(),
+                mode: None,
+            })
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        matches!(
+            snap.state.unwrap().state.unwrap(),
+            crate::proto::diff_state::State::NotInRepository(_)
+        ),
+        "{name}"
+    );
+    let err = snapshot_in(
+        subject
+            .backend
+            .get_diff_state(crate::proto::GetDiffState {
+                repo_path: root.join("nope").display().to_string(),
+                mode: None,
+            })
+            .await
+            .unwrap(),
+    )
+    .unwrap_err();
+    assert!(err.starts_with("Invalid repo_path"), "{name}: {err}");
+}
+
+/// What the chip and PR/repo lookups must say for the repo [`chip_repo`] builds.
+fn assert_chip_values(
+    name: &str,
+    status: &crate::proto::GitStatusPush,
+    wire: &str,
+    pr: &crate::proto::GitHubPrInfoPush,
+    repo: &crate::proto::GitHubRepositoryInfoPush,
+) {
+    assert_eq!(status.repo_path, wire, "{name}");
+    let m = status.metadata.as_ref().unwrap();
+    assert_eq!(m.current_branch_name, "main", "{name}");
+    assert_eq!(
+        m.tracking_upstream.as_deref(),
+        Some("origin/main"),
+        "{name}"
+    );
+    assert_eq!((m.tracking_ahead, m.tracking_behind), (1, 0), "{name}");
+    assert!(m.tracking_counts_available && !m.tracking_rebased, "{name}");
+    let stats = m.stats_against_head.as_ref().unwrap();
+    assert_eq!(
+        (
+            stats.files_changed,
+            stats.total_additions,
+            stats.total_deletions
+        ),
+        (2, 1, 0),
+        "{name}: one tracked edit with one added line, one untracked file"
+    );
+    assert_eq!(pr.repo_path, wire, "{name}");
+    let p = pr.pr_info.as_ref().expect("a PR");
+    assert_eq!(
+        (p.number, p.state.as_str(), p.draft),
+        (42, "OPEN", false),
+        "{name}"
+    );
+    assert_eq!(p.base_branch, "main", "{name}");
+    assert_eq!(repo.repo_path, wire, "{name}");
+    let r = repo.repository_info.as_ref().expect("repository info");
+    assert_eq!(
+        (r.name.as_str(), r.owner.as_deref(), r.host.as_deref()),
+        ("widgets", Some("acme"), Some("github.com")),
+        "{name}"
+    );
+}
+
+/// A repo one commit ahead of its upstream with one edit and one untracked file.
+fn chip_repo() -> (tempfile::TempDir, tempfile::TempDir) {
+    use crate::shellcmd::git::test_runner::{git, repo_with};
+    let remote = tempfile::tempdir().unwrap();
+    git(remote.path(), &["init", "-q", "--bare"]);
+    let dir = repo_with(&[("a.txt", "1\n"), ("b.txt", "b\n")]);
+    let root = dir.path();
+    git(
+        root,
+        &["remote", "add", "origin", remote.path().to_str().unwrap()],
+    );
+    git(root, &["push", "-q", "-u", "origin", "main"]);
+    std::fs::write(root.join("b.txt"), "b\nb2\n").unwrap();
+    git(root, &["commit", "-q", "-am", "ahead"]);
+    std::fs::write(root.join("a.txt"), "1\n2\n").unwrap();
+    std::fs::write(root.join("new.txt"), "n\n").unwrap();
+    (dir, remote)
+}
+
+const FAKE_GH: &str = r#"#!/bin/sh
+case "$1 $2" in
+  "--version "*) echo "gh version 2.0.0";;
+  "pr view") printf '{"number":42,"url":"https://github.com/acme/widgets/pull/42","state":"OPEN","isDraft":false,"baseRefName":"main"}\n';;
+  "repo view") printf '{"name":"widgets","owner":{"login":"acme"},"url":"https://github.com/acme/widgets"}\n';;
+  *) echo "unexpected: $*" >&2; exit 1;;
+esac
+"#;
+
+/// A local `sh` with `bin` first on PATH, for a fake `gh`.
+#[derive(Debug)]
+struct GhShExecutor {
+    path: std::ffi::OsString,
+}
+
+impl OutOfBandExecutor for GhShExecutor {
+    fn channel_kind(&self) -> ChannelKind {
+        ChannelKind::LocalSh
+    }
+    fn shell_kind(&self) -> ShellKind {
+        ShellKind::Posix
+    }
+    fn execute(&self, request: ExecRequest) -> BoxFuture<'_, Result<ExecOutput, ExecError>> {
+        Box::pin(async move { run_local_sh(request, Some(&self.path)) })
+    }
+}
+
+fn fake_gh_dir(script: &str) -> (tempfile::TempDir, std::ffi::OsString) {
+    use std::os::unix::fs::PermissionsExt as _;
+    let bin = tempfile::tempdir().unwrap();
+    let gh = bin.path().join("gh");
+    std::fs::write(&gh, script).unwrap();
+    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut paths = vec![bin.path().to_path_buf()];
+    paths.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    let joined = std::env::join_paths(paths).unwrap();
+    (bin, joined)
+}
+
+#[tokio::test]
+async fn the_shell_arm_serves_the_chip_pr_and_repository_values() {
+    if !git_available() {
+        return;
+    }
+    let (repo, _remote) = chip_repo();
+    let (_bin, path) = fake_gh_dir(FAKE_GH);
+    let shell = ShellBackend::new(Some(Arc::new(GhShExecutor { path })));
+    let wire = repo.path().display().to_string();
+    let status = shell.git_status_shell(&wire, None).await.unwrap().unwrap();
+    let pr = match shell.pr_info_shell(&wire, None, false).await.unwrap() {
+        PrLookup::Fetched { branch, push } => {
+            assert_eq!(branch.as_deref(), Some("main"));
+            push
+        }
+        other => panic!("expected a lookup, got {other:?}"),
+    };
+    let info = shell.repository_info_shell(&wire).await.unwrap();
+    assert_chip_values("shell", &status, &wire, &pr, &info);
+
+    // The PR is not looked up again while the branch stays the same, unless asked.
+    assert_eq!(
+        shell
+            .pr_info_shell(&wire, Some(Some("main".into())), false)
+            .await
+            .unwrap(),
+        PrLookup::Unchanged
+    );
+    assert!(matches!(
+        shell
+            .pr_info_shell(&wire, Some(Some("main".into())), true)
+            .await
+            .unwrap(),
+        PrLookup::Fetched { .. }
+    ));
+    // A directory that is not a repository has nothing to say.
+    let plain = tempfile::tempdir().unwrap();
+    assert_eq!(
+        shell
+            .git_status_shell(&plain.path().display().to_string(), None)
+            .await
+            .unwrap(),
+        None
+    );
+}
+
+#[tokio::test]
+async fn the_shell_arm_reads_a_missing_or_signed_out_gh_as_absent() {
+    if !git_available() {
+        return;
+    }
+    let (repo, _remote) = chip_repo();
+    let wire = repo.path().display().to_string();
+    for script in [
+        "#!/bin/sh\necho 'gh: broken' >&2\nexit 127\n",
+        "#!/bin/sh\necho 'To get started with GitHub CLI, please run:  gh auth login' >&2\nexit 4\n",
+    ] {
+        let (_bin, path) = fake_gh_dir(script);
+        let shell = ShellBackend::new(Some(Arc::new(GhShExecutor { path })));
+        let PrLookup::Fetched { push, .. } = shell.pr_info_shell(&wire, None, true).await.unwrap()
+        else {
+            panic!("expected a lookup");
+        };
+        assert!(push.pr_info.is_none());
+        assert!(
+            shell
+                .repository_info_shell(&wire)
+                .await
+                .unwrap()
+                .repository_info
+                .is_none()
+        );
+    }
+}
+
+#[cfg(all(feature = "daemon", unix))]
+#[tokio::test]
+async fn the_helper_serves_the_same_chip_pr_and_repository_values() {
+    use crate::client::ClientEvent;
+    use warp_util::standardized_path::StandardizedPath;
+    static PATH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    if !git_available() {
+        return;
+    }
+    let _guard = PATH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (repo, _remote) = chip_repo();
+    let (_bin, path) = fake_gh_dir(FAKE_GH);
+    let old = std::env::var_os("PATH");
+    // SAFETY: serialised by PATH_LOCK; only prepends a directory, so concurrent tests still find
+    // every tool they need.
+    unsafe { std::env::set_var("PATH", &path) };
+
+    let stream = crate::daemon::spawn_in_process_for_tests();
+    let stream = async_io::Async::new(stream).unwrap();
+    let (reader, writer) = futures::io::AsyncReadExt::split(stream);
+    let executor = executor::Background::default();
+    let (client, events, _host_responses) = RemoteServerClient::new(reader, writer, &executor);
+    let wire = repo.path().display().to_string();
+    let sp = StandardizedPath::try_new(&wire).unwrap();
+    client.update_git_status(&sp);
+    client.update_github_pr_info(&sp);
+    client.update_github_repo_info(&sp);
+    let (mut status, mut pr, mut info) = (None, None, None);
+    while status.is_none() || pr.is_none() || info.is_none() {
+        match events.recv().await.expect("the connection ended") {
+            ClientEvent::GitStatusPushReceived { push } => status = Some(push),
+            ClientEvent::GitHubPrInfoPushReceived { push } => pr = Some(push),
+            ClientEvent::GitHubRepositoryInfoPushReceived { push } => info = Some(push),
+            _ => {}
+        }
+    }
+    // SAFETY: still under PATH_LOCK.
+    unsafe {
+        match old {
+            Some(p) => std::env::set_var("PATH", p),
+            None => std::env::remove_var("PATH"),
+        }
+    }
+    assert_chip_values(
+        "helper",
+        &status.unwrap(),
+        &wire,
+        &pr.unwrap(),
+        &info.unwrap(),
+    );
 }
 
 // ---- codebase indexing (P9b) -------------------------------------------------------------------

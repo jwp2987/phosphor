@@ -135,7 +135,7 @@ remote_features! {
     Buffers, false: fn open_buffer(path: String, force_reload: bool) -> OpenBufferResponse => open_buffer_shell;
     Buffers, true: fn save_buffer(path: String) -> SaveBufferResponse => save_buffer_shell;
     Buffers, true: fn resolve_conflict(path: String, acknowledged_server_version: u64, client_content: String, current_client_version: u64) -> ResolveConflictResponse => resolve_conflict_shell;
-    DiffState, false: fn get_diff_state(request: GetDiffState) -> GetDiffStateResponse => unimplemented;
+    DiffState, false: fn get_diff_state(request: GetDiffState) -> GetDiffStateResponse => get_diff_state_shell;
     GitRead, false: fn get_branches(request: GetBranches) -> GetBranchesResponse => unimplemented;
     GitRead, false: fn get_committed_branch_files(request: GetCommittedBranchFilesRequest) -> GetCommittedBranchFilesResponse => unimplemented;
     RipgrepSearch, false: fn ripgrep_search(request: RipgrepSearchRequest) -> RipgrepSearchResponse => unimplemented;
