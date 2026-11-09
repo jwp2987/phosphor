@@ -2988,6 +2988,11 @@ What changed and what pins it:
   (`REMOTE_NATIVE_TAB_ENTER_BUDGET` is gone; owner decision: no timer decides what Enter runs). The answer is an
   event: candidates run the completed line however late; an answer of nothing (the shell found none, or the app
   cancelled the exchange: the cancel sends an empty result) runs the typed line and the completer answers the menu;
+  The remote as-you-type completer listing has no debounce timer any more (`REMOTE_AS_YOU_TYPE_DEBOUNCE` is gone; it
+  only ever delayed the ssh side-command listing, never the `^Y`): it is single flight, latest wins (`RemoteListingFlight`:
+  a keystroke while a listing runs holds only the newest request, replayed when the listing ends if still current; an
+  explicit Tab supersedes without a replay; `test_remote_as_you_type_listing_is_single_flight_latest_wins`, pure and
+  mode-independent). A listing that never finishes has no limit of its own beyond the completer's (none added).
   The shell's Precmd/ExitShell/Exit ends an exchange awaiting its RESULTS too (an event beats the 15 s net, which only
   drops state and writes/releases nothing; `the_shell_leaving_during_the_results_wait_ends_the_exchange_by_event`,
   `the_results_net_drops_the_exchange_and_writes_nothing`);

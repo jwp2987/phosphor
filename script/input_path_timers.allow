@@ -85,7 +85,6 @@ app/src/terminal/writeable_pty/pty_controller.rs	arm_native_completions_watchdog
 # PENDING-CONVERSION (must be gone before v0.1.18)
 # Timers that break the rule (write, release, route, commit or re-ask on a clock). The default run
 # warns for each; `--strict` (release tier) fails on any. Delete a line when its timer is gone.
-app/src/terminal/input.rs	run_completions_async	FOUND: REMOTE_AS_YOU_TYPE_DEBOUNCE (150 ms) delays the in-band completion request, i.e. a timer decides when ^Y is written
 app/src/terminal/model/block/interaction_mode.rs	INTERACTIVE_PROMPT_QUIET_EXPLICIT	FOUND: 3 s of silence on a [y/N]-style marker hands the agent's command to the user (hand-over on a clock, with evidence)
 app/src/terminal/model/block/interaction_mode.rs	INTERACTIVE_PROMPT_QUIET_TRAILING	FOUND: 15 s of silence on a trailing ?/: (plus the tty-read probe) hands the command to the user
 app/src/terminal/model/block/interaction_mode.rs	STALL_CLOSE_PAGER_AFTER	FOUND: 3 s unchanged screen makes Phosphor SEND q to a pager (a timer writes to the pty)
