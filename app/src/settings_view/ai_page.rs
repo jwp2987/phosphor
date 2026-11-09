@@ -4146,7 +4146,7 @@ impl TypedActionView for AISettingsPageView {
                 let api_key = crate::ai::agent_providers::AgentProviderSecrets::as_ref(ctx)
                     .get(&provider_id)
                     .map(str::to_owned);
-                let client = http_client::Client::new();
+                let client = http_client::Client::for_purpose(&http_client::gate::AI_ENDPOINT);
                 let provider_id_for_handler = provider_id.clone();
                 // Only Ollama gets the extra `/api/show` enrichment pass below -- every other
                 // api_type falls through with an empty context_map, which the merge step
@@ -4181,7 +4181,8 @@ impl TypedActionView for AISettingsPageView {
                         };
 
                         let context_map = if should_fetch_ollama_context {
-                            let show_client = http_client::Client::new();
+                            let show_client =
+                                http_client::Client::for_purpose(&http_client::gate::AI_ENDPOINT);
                             let model_ids: Vec<String> =
                                 fetched.iter().map(|m| m.id.clone()).collect();
                             crate::ai::agent_providers::openai_compatible::fetch_ollama_context_map(
@@ -4353,7 +4354,7 @@ impl TypedActionView for AISettingsPageView {
                 if models_dev::is_loaded_and_fresh() {
                     ctx.notify();
                 } else if models_dev::try_begin_load() {
-                    let client = http_client::Client::new();
+                    let client = http_client::Client::for_purpose(&http_client::gate::MODELS_DEV);
                     let enabled = *AISettings::as_ref(ctx).models_dev_fetch;
                     let url =
                         models_dev::resolve_url(&(*AISettings::as_ref(ctx).models_dev_url).clone());
@@ -4401,7 +4402,7 @@ impl TypedActionView for AISettingsPageView {
             AISettingsPageAction::RefreshModelsDev => {
                 use crate::ai::agent_providers::models_dev;
                 // An explicit click: always fetches, whatever `models_dev_fetch` says.
-                let client = http_client::Client::new();
+                let client = http_client::Client::for_purpose(&http_client::gate::MODELS_DEV);
                 let url =
                     models_dev::resolve_url(&(*AISettings::as_ref(ctx).models_dev_url).clone());
                 ctx.spawn(

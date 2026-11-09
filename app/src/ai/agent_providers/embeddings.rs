@@ -772,7 +772,11 @@ impl HttpRerankProvider {
     /// providers offer no reranking model.
     pub fn from_app(app: &AppContext) -> Option<Self> {
         let (endpoint, model_id) = resolve_rerank_endpoint(app)?;
-        Some(Self::new(Client::new(), endpoint, model_id))
+        Some(Self::new(
+            Client::for_purpose(&http_client::gate::AI_ENDPOINT),
+            endpoint,
+            model_id,
+        ))
     }
 
     /// Which model this will call. Reported at startup so a user who wonders

@@ -301,26 +301,33 @@ flag.
 
 ## Networking and proxies
 
-### The default follows your environment
+### Environment proxies are ignored
 
-`network.proxy_mode` defaults to **`system`**: `HTTPS_PROXY`, `HTTP_PROXY`,
-`ALL_PROXY` and `NO_PROXY` are honoured out of the box, as they are in Warp,
-which reads them unconditionally and offers no setting to turn them off.
+Since the network gate (Wave N), Phosphor does **not** read `HTTPS_PROXY`,
+`HTTP_PROXY`, `ALL_PROXY` or the platform proxy configuration. Only a proxy you
+set yourself (`network.proxy_mode = "custom"` and `network.proxy_url`) is used;
+`system` and `off` both mean no proxy. This is deliberate: a stale export
+elsewhere on the machine can no longer route Phosphor's traffic, and no request
+reaches a proxy you did not choose. If you were relying on the environment
+proxy, put its URL in `network.proxy_url` and switch the mode to `custom`.
 
-If your environment carries a proxy you do *not* want Phosphor to use — a stale
-export, or one that is unreachable from where you are now — set the mode to
-`off`. That is stronger than unsetting the variables: `off` is
-`reqwest::ClientBuilder::no_proxy()`, so the platform proxy configuration is
-ignored too.
+### A request was blocked by the network gate
 
-> Builds between the introduction of this setting and its correction defaulted
-> to `off` while every description string still said `system`. If you are on one
-> of those and proxying appears dead, that is why; setting `proxy_mode =
-> "system"` explicitly works on both.
+Phosphor sends background requests only to loopback, to the endpoints of the AI
+providers you configured, and to origins you listed in `network.allowed_origins`.
+A request to anything else is refused before it is sent, and a redirect to a
+host that is not on that list stops where it is. The log says `network gate:
+denied "<purpose>" (host hash ...)`; the URL is never logged. To allow an
+origin, add it to `network.allowed_origins` (for example
+`https://api.example.com`). A name that resolves to a loopback address (a
+rebinding trick) is refused unless you configured that host; `localhost` works
+for a provider whose URL says `localhost`. Remote images in markdown, avatars and
+changelog images load only from allowed origins.
 
 | `network.proxy_mode` | Behaviour |
 |---|---|
-| `system` (default) | Follow the platform's proxy configuration. On Linux that is the standard environment variables; on macOS, SystemConfiguration; on Windows, WinINET. |
+| `system` (default) | No proxy. Environment and platform proxy configuration are ignored (network gate, Wave N). |
+| `off` | No proxy. Same as `system`. |
 | `custom` | Use `network.proxy_url`, with optional Basic auth and a no-proxy list. |
 | `off` | All proxying disabled, environment variables ignored. |
 

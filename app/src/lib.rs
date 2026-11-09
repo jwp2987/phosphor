@@ -1382,7 +1382,7 @@ fn initialize_app(
     let auth_state = Arc::new(AuthState::initialize(ctx, api_key));
     timer.mark_interval_end("AUTH_MANAGER_SET_USER");
 
-    let update_http_client = Arc::new(http_client::Client::new());
+    let update_http_client = Arc::new(http_client::Client::for_purpose(&http_client::gate::UPDATE));
 
     // Zap: the AuthStateProvider singleton is kept only so legacy call sites can read the local placeholder user state.
     ctx.add_singleton_model(|_ctx| AuthStateProvider::new(auth_state.clone()));

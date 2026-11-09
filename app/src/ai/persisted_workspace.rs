@@ -982,7 +982,9 @@ impl PersistedWorkspace {
         let repo_root_clone = repo_root.clone();
         let file_path_clone = file_path.clone();
         let executor = lsp::CommandBuilder::new(path_env_var);
-        let http_client = Arc::new(http_client::Client::new());
+        let http_client = Arc::new(http_client::Client::for_purpose(
+            &http_client::gate::LSP_INSTALL,
+        ));
         ctx.spawn(
             async move {
                 let candidate = server_type.candidate(http_client);
@@ -1107,7 +1109,9 @@ impl PersistedWorkspace {
             );
             let log_relative_path =
                 crate::code::lsp_logs::relative_log_path(server, &workspace_root);
-            let http_client = Arc::new(http_client::Client::new());
+            let http_client = Arc::new(http_client::Client::for_purpose(
+                &http_client::gate::LSP_INSTALL,
+            ));
             let config = LspServerConfig::new(
                 server,
                 workspace_root.clone(),
@@ -1263,7 +1267,9 @@ impl PersistedWorkspace {
                     shell_state.get_interactive_path_env_var(ctx)
                 });
 
-                let http_client = Arc::new(http_client::Client::new());
+                let http_client = Arc::new(http_client::Client::for_purpose(
+                    &http_client::gate::LSP_INSTALL,
+                ));
                 ctx.spawn(
                     async move {
                         // Wait for interactive PATH, then check installation

@@ -233,6 +233,17 @@ pub fn build_ssrf_safe_client() -> Result<reqwest::Client> {
         if url.scheme() != "https" {
             return attempt.stop();
         }
+        // The network gate checks every hop as well (loopback names, private literals).
+        if http_client::gate::global()
+            .check_redirect(
+                url.as_str(),
+                attempt.previous().len(),
+                &http_client::gate::AGENT_WEB,
+            )
+            .is_err()
+        {
+            return attempt.stop();
+        }
         // An extra layer of validation on top of the DNS resolver, to immediately reject
         // internal addresses given as IP literals.
         if validate_url_not_internal(url.as_str()).is_err() {
@@ -241,7 +252,9 @@ pub fn build_ssrf_safe_client() -> Result<reqwest::Client> {
             attempt.follow()
         }
     });
-    let builder = reqwest::Client::builder()
+    // The gate's builder: proxy policy (no environment proxies) and the loopback-by-name
+    // resolver; the policy and resolver below replace its defaults with stricter versions.
+    let builder = http_client::gate::builder(&http_client::gate::AGENT_WEB)
         .redirect(policy)
         .pool_idle_timeout(Duration::from_secs(30));
     // Only non-WASM targets get the SSRF-safe DNS resolver; WebAssembly doesn't expose
@@ -257,6 +270,8 @@ pub async fn run_webfetch(client: &reqwest::Client, args: FetchArgs) -> Result<F
         bail!("URL must use HTTPS");
     }
     validate_url_not_internal(&args.url)?;
+    http_client::gate::check_url(&args.url, &http_client::gate::AGENT_WEB)
+        .map_err(|d| anyhow::anyhow!(d.to_string()))?;
     let format = args.format.clone().unwrap_or_default();
     let timeout_secs = args
         .timeout
@@ -672,6 +687,9 @@ pub async fn run_websearch(
     let url = endpoint_override
         .map(|s| s.to_owned())
         .unwrap_or_else(|| exa::endpoint_url(api_key));
+    // The network gate (the endpoint override is a test fixture on loopback).
+    http_client::gate::check_url(&url, &http_client::gate::AGENT_WEB)
+        .map_err(|d| anyhow::anyhow!(d.to_string()))?;
 
     let resp = client
         .post(&url)

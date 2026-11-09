@@ -1139,6 +1139,7 @@ dependencies = [
  "cfg-if",
  "futures",
  "log",
+ "network_gate",
  "reqwest",
  "url",
  "warpui_core",
@@ -6249,6 +6250,7 @@ dependencies = [
  "gloo",
  "http",
  "log",
+ "network_gate",
  "oauth2",
  "prevent_sleep",
  "prost",
@@ -7628,6 +7630,7 @@ dependencies = [
  "chrono",
  "command",
  "libc",
+ "network_gate",
  "rand 0.8.8",
  "reqwest",
  "serde",
@@ -8437,6 +8440,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee6cda3051665f1fb8d9e08fc35c96d5a244fb1be711a03b71118828afc9a873"
 dependencies = [
  "jni-sys 0.3.1",
+]
+
+[[package]]
+name = "network_gate"
+version = "0.0.0"
+dependencies = [
+ "log",
+ "reqwest",
+ "tokio",
 ]
 
 [[package]]

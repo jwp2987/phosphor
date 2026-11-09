@@ -1598,7 +1598,8 @@ impl TerminalView {
         // Download the protobuf data
         ctx.spawn(
             async move {
-                let client = http_client::Client::new();
+                // Unclassified: only reaches the user's configured origins.
+                let client = http_client::Client::for_purpose(&http_client::gate::UNCLASSIFIED);
                 let response = client
                     .get(&proto_url)
                     .header("Accept", "application/protobuf")

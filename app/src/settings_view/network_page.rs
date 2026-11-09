@@ -505,7 +505,9 @@ fn spawn_tcp_probe(
 
 /// The HTTP probe logic (goes through reqwest's global proxy settings). Only used for Off, or as a System fallback.
 fn spawn_http_probe(timeout: Duration, ctx: &mut ViewContext<NetworkPageView>) {
-    let client = Arc::new(http_client::Client::new());
+    let client = Arc::new(http_client::Client::for_purpose(
+        &http_client::gate::NETWORK_PROBE,
+    ));
     let target = PUBLIC_PROBE_URL.to_string();
     ctx.spawn(
         async move {
