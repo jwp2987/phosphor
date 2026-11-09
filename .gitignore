@@ -16,6 +16,7 @@ app/frameworks/**/*.xcframework
 !/lib/uneval/
 !/lib/workflows/
 !/lib/yaml-rust/
+!/lib/diesel/
 !/lib/core-foundation-rs/
 !/lib/notify/
 !/lib/vte/

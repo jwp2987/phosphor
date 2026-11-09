@@ -2336,8 +2336,9 @@ fn make_client_handler(installation_uuid: Uuid) -> McpClientHandler {
     McpClientHandler::new(make_client_info(), installation_uuid)
 }
 
-fn make_client_info() -> rmcp::model::ClientInfo {
-    // `ClientInfo` (= `InitializeRequestParams`) and `Implementation` are both
+fn make_client_info() -> rmcp::model::ClientConfig {
+    // `ClientConfig` (= `InitializeRequestParams`; the old `ClientInfo` name is a
+    // deprecated alias in rmcp 3.x) and `Implementation` are both
     // `#[non_exhaustive]` in rmcp 1.x, so they can no longer be built with a
     // struct literal. Both constructors set every field this code previously
     // set explicitly: `Implementation::new` leaves title/description/icons/
@@ -2346,10 +2347,12 @@ fn make_client_info() -> rmcp::model::ClientInfo {
     //
     // NOTE: that default is not the same *value* it used to be.
     // `ProtocolVersion::LATEST` moved 2025-03-26 -> 2025-11-25 between rmcp
-    // 0.10 and 1.6, so this client now negotiates two protocol revisions
-    // higher than before. Nothing here changes and nothing fails to compile;
-    // it is only observable against a live MCP server.
-    rmcp::model::ClientInfo::new(
+    // 0.10 and 1.6, so this client negotiated two protocol revisions
+    // higher than before. In rmcp 3.x `LATEST` is 2026-07-28, a revision with
+    // no `initialize` handshake (per-request `_meta` instead); `ServiceExt::serve`
+    // and the preflight below both still send `initialize`, so pin the newest
+    // revision that has one. This keeps the wire behaviour of rmcp 2.x (2025-11-25).
+    rmcp::model::ClientConfig::new(
         Default::default(),
         rmcp::model::Implementation::new(
             warp_core::channel::ChannelState::app_id().to_string(),
@@ -2358,6 +2361,7 @@ fn make_client_info() -> rmcp::model::ClientInfo {
                 .unwrap_or_default(),
         ),
     )
+    .with_protocol_version(rmcp::model::ProtocolVersion::LATEST_WITH_INITIALIZE)
 }
 
 /// A wrapper around a [`rmcp::transport::Transport`] that logs all requests and responses.

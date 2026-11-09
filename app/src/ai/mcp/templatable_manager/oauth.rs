@@ -5,8 +5,8 @@ use oauth2::{RefreshToken, TokenResponse as _};
 use rmcp::transport::{
     AuthError, AuthorizationSession,
     auth::{
-        AuthClient, AuthorizationManager, CredentialStore, InMemoryCredentialStore,
-        OAuthClientConfig, OAuthState, StoredCredentials,
+        AuthClient, AuthorizationManager, AuthorizationRequest, CredentialStore,
+        InMemoryCredentialStore, OAuthClientConfig, OAuthState, StoredCredentials,
     },
 };
 use serde::de::DeserializeOwned;
@@ -349,8 +349,13 @@ pub async fn make_authenticated_client(
 
     // Start the authorization process with our redirect URI (custom scheme normally, or the
     // loopback server's URL in headless mode).
+    //
+    // rmcp 3.x takes an `AuthorizationRequest` instead of positional arguments. Empty
+    // scopes (the default) keep rmcp's own scope selection, as the old `&[]` did.
     oauth_state
-        .start_authorization(&[], &redirect_uri, Some("Phosphor"))
+        .start_authorization(
+            AuthorizationRequest::new(redirect_uri.clone()).with_client_name("Phosphor"),
+        )
         .await?;
 
     let OAuthState::Session(AuthorizationSession {
@@ -383,7 +388,9 @@ pub async fn make_authenticated_client(
             // TODO(vorporeal): adjust APIs in rmcp so that we don't need to make this redundant
             // discover_metadata() call (as it gets made within start_authorization() but we can't
             // look at the results).
-            let metadata = auth_manager.discover_metadata().await?;
+            // rmcp 3.x renamed `discover_metadata()` to `resolve_metadata()`, which
+            // also reports how the metadata was obtained; only the metadata is used.
+            let metadata = auth_manager.resolve_metadata().await?.metadata;
             let provider = metadata
                 .issuer
                 .as_deref()
