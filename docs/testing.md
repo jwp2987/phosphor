@@ -2861,3 +2861,13 @@ must collect the "before" with the switch at `0` and the "after" with it unset, 
   and without the switch (`hold_us` is the lock hold of the visible pass; `reused` is the layouts saved), plus the
   existing `model lock held ... BlockListElement::layout` warn lines. Pass: hold_us falls with `reused>0`; scrolling
   through the conversation and typing in it show no stale or mis-sized block (screenshots at the top, middle, bottom).
+
+### P4 PowerShell hooks (#1280; `PHOSPHOR_PWSH_HANDJSON`, `0` = ConvertTo-Json as before)
+- `Warp-Precmd` built its CommandFinished and Precmd messages with `ConvertTo-Json` (the most expensive statement
+  there on PS 5.1, per #1582); they are now built by hand like Preexec's (`Warp-Json-Str`, `Warp-Send-RawJson` in
+  pwsh.ps1). The decoded messages are unchanged: `script/test_pwsh_hook_equivalence` passes every scenario (its
+  `InitShell` row already differs on a `pid` field before this change, unrelated). Unicode and quote/backslash/control
+  characters in the cwd and git fields are covered by the `unicode` / `cd-*` scenarios.
+- Collect (Windows VM, PS 5.1, warp diag stamps `<tmp>.on` next to the diag file): new stamps `c` (Precmd start) and
+  `r` (Precmd end) beside the existing `p` / `q` (Preexec); Precmd cost = (r - c) / QPC frequency, median and p95 over
+  30 Enters, with `PHOSPHOR_PWSH_HANDJSON=0` and unset. Compare Enter -> prompt as in the #1280 harness.
