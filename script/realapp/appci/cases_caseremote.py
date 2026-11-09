@@ -30,6 +30,14 @@ def rm_remote(ctx, *names):
             pass
 
 
+def remote_cmds_after(ctx, mark):
+    """the remote shell's rec.log lines after index `mark`, minus the harness's own `~/.appci_where` probes. The rec.log hook can log a probe LATE:
+    where_now() returns when the probe's effect file shows the token, which is before the shell's hook appends the line, so a mark taken right
+    after the probe counts the probe as a command of the case (round 7 Linux and Windows: 'the remote shell received [echo wT.. >> ~/.appci_where]'
+    while the completed `cd` ran 2 s later and the app log showed the in-band answer)."""
+    return [c for _, c in ctx.prof.commands(remote=True)[mark:] if ".appci_where" not in c]
+
+
 def rprompts(ctx):
     return ctx.prof.prompts(remote=True)
 
@@ -990,7 +998,7 @@ def c_remote_tab_no_helper(ctx, r):
     ctx.shot("remote_tab_completed")
     ctx.be.key("Return")
     want = "cd %s/" % rdir
-    got_cmd = ctx.until(lambda: [c for _, c in ctx.prof.commands(remote=True)[rmark:]], 10)
+    got_cmd = ctx.until(lambda: remote_cmds_after(ctx, rmark), 10)
     r.check(bool(got_cmd) and got_cmd[0] in (want, "cd %s" % rdir),
             "Tab after %r should have completed the REMOTE directory: the remote shell received %r, want %r" % (prefix, got_cmd, want))
     ctx.be.type("pwd >> ~/phxtab_pwd.txt", 12, enter=True)
@@ -1045,7 +1053,7 @@ def c_remote_tab_enter_no_helper(ctx, r):
         ctx.be.key("Tab")
         time.sleep(0.03)
         ctx.be.key("Return")
-        got = ctx.until(lambda: [c for _, c in ctx.prof.commands(remote=True)[rmark:]], 8)
+        got = ctx.until(lambda: remote_cmds_after(ctx, rmark), 8)
         want = "cd phxte_%s/" % tok
         r.check(bool(got) and got[0] in (want, "cd phxte_%s" % tok),
                 "Tab + Enter 30 ms later: the remote shell received %r, want the COMPLETED %r (the uncompleted %r must never run)" % (got, want, prefix))
