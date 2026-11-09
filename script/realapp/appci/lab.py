@@ -634,7 +634,9 @@ def onesess_refuses(lab, key, tmp):
                 break
             time.sleep(0.2)
         p = subprocess.run(base + ["-o", "ControlMaster=no", "p_onesess@" + lab.host, "echo SECOND"], capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL)
-        return "SECOND" not in p.stdout
+        # ssh answers a refused multiplexed session with "Session open refused by peer" and then RETRIES on a fresh connection (which MaxSessions does not limit), so the
+        # fallback may still print SECOND: the refusal itself, on stderr, is the evidence
+        return "refused by peer" in p.stderr or "SECOND" not in p.stdout
     finally:
         m.kill()
 

@@ -31,7 +31,7 @@ RUN ln -sfn /run/sshlab /etc/sshlab
 
 FROM common AS full
 RUN apt-get update && apt-get install -y --no-install-recommends zsh fish bash-completion git curl \
-      libssl3 libstdc++6 zlib1g \
+      libssl3 libstdc++6 zlib1g libicu76 \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=tools /opt/nu /opt/nu
 COPY --from=tools /opt/pwsh /opt/pwsh

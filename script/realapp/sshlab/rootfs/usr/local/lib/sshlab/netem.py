@@ -48,7 +48,10 @@ def is_noop(spec):
     return not any(s.values())
 
 
-def apply_commands(spec, ports=FAULT_PORTS, iface=IFACE, ifb=IFB):
+LO = "lo"
+
+
+def apply_commands(spec, ports=FAULT_PORTS, iface=IFACE, ifb=IFB, lo=LO):
     """argv lists that (re)install the fault; idempotent: starts by clearing. A no-op spec yields just the clear commands."""
     cmds = clear_commands(iface, ifb)
     if is_noop(spec):
@@ -66,12 +69,19 @@ def apply_commands(spec, ports=FAULT_PORTS, iface=IFACE, ifb=IFB):
         cmds.append(["tc", "filter", "add", "dev", iface, "parent", "1:", "protocol", "ip", "prio", "1", "u32", "match", "ip", "sport", str(p), "0xffff", "flowid", "1:1"])
         cmds.append(["tc", "filter", "add", "dev", iface, "parent", "ffff:", "protocol", "ip", "prio", "1", "u32", "match", "ip", "dport", str(p), "0xffff",
                      "action", "mirred", "egress", "redirect", "dev", ifb])
+    # Published ports are forwarded by podman's rootlessport, which connects to the lab ports over the container's LOOPBACK, never through eth0: shape lo too (each
+    # direction crosses lo's egress once, so the same half-RTT delay on both the sport and the dport match adds up to the full RTT). A connection uses lo or eth0, not both.
+    cmds += [["tc", "qdisc", "add", "dev", lo, "root", "handle", "3:", "prio", "bands", "3", "priomap"] + ["2"] * 16,
+             ["tc", "qdisc", "add", "dev", lo, "parent", "3:1", "handle", "30:"] + ne]
+    for p in ports:
+        for side in ("sport", "dport"):
+            cmds.append(["tc", "filter", "add", "dev", lo, "parent", "3:", "protocol", "ip", "prio", "1", "u32", "match", "ip", side, str(p), "0xffff", "flowid", "3:1"])
     return cmds
 
 
-def clear_commands(iface=IFACE, ifb=IFB):
+def clear_commands(iface=IFACE, ifb=IFB, lo=LO):
     """removing what apply_commands installed; each command may fail when nothing was installed (labd ignores the status of these)"""
-    return [["tc", "qdisc", "del", "dev", iface, "root"], ["tc", "qdisc", "del", "dev", iface, "ingress"], ["ip", "link", "del", ifb]]
+    return [["tc", "qdisc", "del", "dev", iface, "root"], ["tc", "qdisc", "del", "dev", iface, "ingress"], ["ip", "link", "del", ifb], ["tc", "qdisc", "del", "dev", lo, "root"]]
 
 
 def nft_block_outbound(uids, iface=IFACE):
