@@ -19,6 +19,7 @@ mod exec;
 mod file_context;
 mod fs_ops;
 mod git;
+pub mod git_runner;
 mod git_status;
 mod git_write;
 mod github;
