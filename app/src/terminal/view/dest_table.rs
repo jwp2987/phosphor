@@ -767,6 +767,11 @@ impl TerminalView {
             // A young Enter's hold the hand-off's state has outgrown ends before this key is
             // judged, and the subshell gates the first key opens are open when the facts are read.
             self.settle_stale_young_hold_before_key(ctx);
+            // #1679 step 3 (R8): a secret read opened while the setup is written hands the held
+            // keys back BEFORE this key is judged, so it goes to the password. Legacy does this in
+            // `write_user_bytes_to_pty_inner`; a key the table holds never gets there (Mac round 7:
+            // the typed password was held, then ran as part of a command line).
+            self.secret_read_on_key_path_cancels_written_setup(ctx);
             let _ = self.prepare_subshell_gates(text.as_bytes(), ctx);
         }
         let queue_facts = self.paste_queue.queue.try_queue_facts().unwrap_or_default();

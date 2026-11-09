@@ -238,14 +238,19 @@ pub enum LineEndVerdict {
 /// R2: a line end re-arms ONLY when it was empty (only the terminator, ^U or ^C), or when the
 /// line answered something: the tty was reading a secret, a cooked shell was keeping up with its
 /// reads (a `read` builtin: `cooked_reading`, the queue was empty at the last look), or the output
-/// ended in a prompt for input. Any other non-empty line is the user driving the shell.
+/// ended in a prompt for input. Any other non-empty line is the user driving the shell, except
+/// one typed while a PROGRAM owns the tty (`program_owns_tty`: the leader at the last look was
+/// neither a shell, a relay nor unsupported, e.g. vim's `:wq` + Enter): that line is the program's,
+/// not the shell's, so the setup keeps waiting for the prompt that follows the program (Mac round
+/// 7: the `:wq` Enter cancelled the attempt and the session was never Phosphorized).
 pub fn on_user_line_ended(
     non_empty: bool,
     fact_at_enter: SubshellTtyKind,
     cooked_reading: bool,
     tail_at_enter: Tail,
+    program_owns_tty: bool,
 ) -> LineEndVerdict {
-    if !non_empty {
+    if !non_empty || program_owns_tty {
         return LineEndVerdict::ReArm;
     }
     match fact_at_enter {

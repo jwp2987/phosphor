@@ -598,6 +598,12 @@ pub struct TerminalModel {
     /// a shell that was only slow (an rc file sleeping before it reads the script) still gets
     /// its session when the late `Bootstrapped` finally arrives (#1014).
     abandoned_subshell_session: Option<SessionInfo>,
+    /// The typeahead mode each bootstrapped session configured. `EarlyOutput` holds ONE mode, set by
+    /// the latest `Bootstrapped`; a subshell that cannot report its line (macOS bash 3.2:
+    /// `InputMatching`) left it there after it exited into a parent that can (`ShellReported`), so
+    /// the hand-off engaged for requests but a user command was written as unengaged and the
+    /// keys held behind the Enter were never released. The prompt of a session puts its own mode back.
+    typeahead_mode_by_session: HashMap<SessionId, TypeaheadMode>,
 
     /// If true, the terminal was bootstrapping but received a ^D from the user. We cannot stop the
     /// shell from sending us bootstrapping messages, but we can ignore them. This value is always
@@ -1313,6 +1319,7 @@ impl TerminalModel {
             active_shell_launch_data: None,
             pending_session_info: None,
             abandoned_subshell_session: None,
+            typeahead_mode_by_session: HashMap::new(),
             ignore_bootstrapping_messages: false,
             session_startup_path,
             is_receiving_in_band_command_output: IsReceivingInBandCommandOutput::No,
@@ -3338,6 +3345,16 @@ impl TerminalModel {
             env_vars.insert("KUBECONFIG".to_string(), kube_config);
         }
         let handled_after_inband = data.was_sent_after_in_band_command();
+        // A prompt of a session other than the one that set the typeahead mode (a subshell exited
+        // into its parent): the session's own mode applies again.
+        if let Some(mode) = session_id.and_then(|id| {
+            self.typeahead_mode_by_session
+                .get(&SessionId::from(id))
+                .copied()
+        }) && self.block_list.early_output().typeahead_mode() != mode
+        {
+            self.block_list.early_output_mut().set_typeahead_mode(mode);
+        }
         // #1801: a remote shell's listing of its cwd fills the per-session cache that path
         // detection reads, so a typed directory is recognised with no round trip.
         if let (Some(id), Some(listing)) = (session_id, data.cwd_listing.as_deref()) {
@@ -4060,6 +4077,10 @@ impl ansi::Handler for TerminalModel {
         self.block_list
             .early_output_mut()
             .init_session(&fully_populated_session_info);
+        self.typeahead_mode_by_session.insert(
+            fully_populated_session_info.session_id,
+            self.block_list.early_output().typeahead_mode(),
+        );
 
         let spawning_command = fully_populated_session_info
             .subshell_info

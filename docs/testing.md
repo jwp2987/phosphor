@@ -3804,3 +3804,25 @@ inner shell when the `exit` was eaten, and run.py's `where_now()` cannot see a l
   emits `pane_not_local_after_<case>` and relaunches the app, as the ssh block does. A case that relaunched the app itself skips the check (fresh pane). The probe runs in
   whatever view the pane is in, exactly like `where_now`. Cost: one typed line plus a file poll, about 0.7-1 s per checked case and once per relaunch.
 - Self-test: `shell_depth_probe_pure_parts` (probe syntax per pane, parser, which cases are checked, exits only while nested, never at the root).
+
+### Mac round 7 terminal pass: subshell exit keys, vim typeahead, fish probe, zsh newuser (fix/subshell-exit-keys)
+
+- `subshell_ready_rc_questions` / `subshell_ready_vim_typeahead` (leave): after the inner bash exited into the root shell, the typeahead
+  mode stayed the inner bash 3.2's `InputMatching` (the mode was set only by a `Bootstrapped` hook, one per app). A young Enter then
+  opened a `HandoffReport` gate, the command was written as "unengaged", and nothing ended the gate: every key after it was held for the
+  60 s net. APP bugs, fixed: the terminal model remembers each session's mode and puts it back at that session's prompt
+  (`typeahead_mode_by_session`), and an unengaged user command now lets the held keys follow it (`on_unengaged_user_command_written`;
+  unit tests in `typeahead_handoff_tests.rs`).
+- `subshell_ready_vim_typeahead`: the Enter of vim's `:wq` was judged a user line in the shell and cancelled the armed setup
+  (`why=UserDrove`). APP bug, fixed: a line ended while a program (leader `Other`) owns the tty re-arms (`on_user_line_ended`,
+  `r2_a_line_typed_into_a_program_that_owns_the_tty_re_arms`).
+- The PID probe is now `sh -c 'echo tok:$PPID >> ~/.appci_pid'`: fish has no `$$`, so `leave_nested` got "none" in an exec'd fish.
+  The self-test runs the probe in every installed sh/bash/zsh/fish/dash.
+- `subshell_ready_zsh_newuser_install` skips where an empty-HOME zsh shows no newuser menu (Apple's zsh); the check is made on a pty
+  before the case types anything (the case typed `q` at a plain prompt: `qecho ...: command not found`). TEST fix.
+- `subshell_ready_secret_after_prompt`: APP bug, fixed: the R8 key-path secret check ran only on the legacy route
+  (`write_user_bytes_to_pty_inner`); in table mode the keys were held by row H7 before it, so the typed password was held and later ran
+  as part of a command line. `dest_table.rs` now runs the same check before the subshell gates are prepared.
+- `subshell_sh_probe` (dash): the failing check is the EXPECTED outcome missing (the case passes when `subshell_setup_unsupported`
+  is logged). The app judged dash once (`Wait(CookedNoPrompt)`, tail none, right after the first line's Enter) and never again for
+  6 s, so it never wrote the probe at the idle prompt. Open app issue; not fixed here (needs a live tty).

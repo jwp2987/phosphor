@@ -2270,7 +2270,12 @@ impl<T: EventLoopSender> PtyController<T> {
                         .clear_typeahead_for_new_command();
                 } else {
                     // Not the hand-off's command, but its prompt will still be counted.
-                    model.typeahead_handoff_mut().on_uncounted_command_written();
+                    let mut handoff = model.typeahead_handoff_mut();
+                    if is_editor_command {
+                        // The user's own command: the keys held behind its Enter follow it.
+                        handoff.on_unengaged_user_command_written();
+                    }
+                    handoff.on_uncounted_command_written();
                 }
             }
         }

@@ -324,6 +324,43 @@ def c_ready_docker_t_without_i(ctx, r):
     r.check(ctx.lines(f) == [tok], "the line ran exactly once: %r" % ctx.lines(f))
 
 
+def zsh_runs_newuser_install(home, wait=4.0):
+    """True when an interactive zsh with the (empty) HOME `home` shows the zsh-newuser-install menu on a real pty. Judged by the menu text;
+    the zsh is killed and the pty closed, nothing is typed into it (a key would pick an option)."""
+    import pty, select, signal
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.environ["HOME"] = home
+        try:
+            os.execvp("zsh", ["zsh", "-i"])
+        finally:
+            os._exit(127)
+    seen, end = b"", time.time() + wait
+    try:
+        while time.time() < end and b"newuser" not in seen:
+            if select.select([fd], [], [], 0.2)[0]:
+                try:
+                    chunk = os.read(fd, 4096)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                seen += chunk
+    finally:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+        try:
+            os.waitpid(pid, 0)
+        except OSError:
+            pass
+        os.close(fd)
+        shutil.rmtree(home, ignore_errors=True)
+        os.makedirs(home, exist_ok=True)
+    return b"newuser" in seen
+
+
 @case("subshell_ready_zsh_newuser_install", order=22)
 @guarded
 def c_ready_zsh_newuser_install(ctx, r):
@@ -336,6 +373,10 @@ def c_ready_zsh_newuser_install(ctx, r):
     home = os.path.join(ctx.W, "lab_zsh_home")
     shutil.rmtree(home, ignore_errors=True)
     os.makedirs(home)
+    if not zsh_runs_newuser_install(home):
+        # Mac round 7: Apple's zsh starts at a plain prompt with an empty HOME (no menu), so the setup is rightly written at once and the
+        # `q` this case types for the menu ran as a command ("qecho ...: command not found"). No menu = nothing to test here.
+        r.skip("this zsh runs no zsh-newuser-install with an empty HOME (proved on a pty before the case types anything)")
     f = "lab_zshnew.txt"
     ctx.rm(f)
     off = ctx.log_size()

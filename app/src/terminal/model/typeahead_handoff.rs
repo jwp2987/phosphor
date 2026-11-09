@@ -2639,6 +2639,32 @@ impl TypeaheadHandoff {
         self.writes_in_flight = self.writes_in_flight.saturating_add(1);
     }
 
+    /// The user's own editor command was written to a shell the hand-off does not engage for (the
+    /// shell cannot report its line): the keys held behind its Enter (a young hold, a deferred
+    /// Enter's `HandoffReport` gate) follow it to the pty as typeahead, exactly as they do behind
+    /// an engaged command, and the deferred state ends. Without this the deferred gate stayed
+    /// open until its 60 s net (Mac round 7: every key typed after the Enter was held, none
+    /// delivered, none dropped) and a young hold's keys were dropped by
+    /// [`Self::on_uncounted_command_written`].
+    pub fn on_unengaged_user_command_written(&mut self) {
+        let queued_hold = mem::take(&mut self.young_hold_queued);
+        if queued_hold {
+            let id = self.young_hold_id;
+            self.young_hold_follow_pending = Some(id);
+            self.young_hold_ends.push((id, YoungHoldEnd::FollowCommand));
+        }
+        if matches!(self.state, HandoffState::HoldAfterEnter { .. }) {
+            if let Some(id) = self.deferred_gate.take() {
+                self.young_hold_follow_pending = Some(id);
+                self.young_hold_ends.push((id, YoungHoldEnd::FollowCommand));
+            }
+            self.state = HandoffState::EditorOwned;
+        }
+        self.keys_follow_editor = false;
+        self.young_line = false;
+        self.deferred_young = false;
+    }
+
     /// A command the hand-off does not own (a queued-prompt-panel command, an agent command, an
     /// in-band command) was written while the pty owns input. Its Enter is counted, so its
     /// precmd does not make lines the user queued ahead of it look answered. Its kill prefix and
