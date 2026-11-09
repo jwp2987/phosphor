@@ -2712,3 +2712,9 @@ directory listings from the cache only (#1295), so without a recent Tab nothing 
 bounded cwd listing in the remote precmd payload when the cwd changes, cached per session; its case would type
 `cd <remote dir>` without Tab and assert the decoration from the app's input trace.
 
+
+## Round g2: input and editor fixes (#1635, #1643, #1645, #1659, #1703)
+
+- #1635: `editor/view/mod_test.rs` `test_queue_editor_host_gates_every_map_reading_key_not_only_layout_ones` (the editor's
+  own queue host opens the display-map gate for a cursor key and a typed closer, as the input's host does; it used to
+  gate only layout-reading keys and applied the rest against the pre-paste map).

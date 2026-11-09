@@ -376,10 +376,12 @@ impl Host for EditorQueueHost<'_, '_> {
             EntryKind::EditorKey(payload) => {
                 // Reached when a signal flushes the queue (the display map is not waited for) or
                 // on a queue the display gate is off for.
-                // A layout-reading key typed live behind a stale layout (#1389) waits for the
-                // display-map gate exactly as it does on the input's host; the replay step that
-                // closes it runs on the terminal input.
-                if payload.reads_soft_wrap_layout()
+                // Every key that reads the display map (cursor motion, deletion, a closing quote
+                // or bracket that may overtype an auto-inserted closer) waits for the display-map
+                // gate exactly as it does on the input's host (#1635); before, only the
+                // layout-reading ones did and the rest applied against the pre-paste map. The
+                // replay step that closes the gate runs on the terminal input.
+                if payload.needs_fresh_display_map()
                     && let DisplayMapStep::Wait(spec) = self
                         .editor
                         .paste_hold
