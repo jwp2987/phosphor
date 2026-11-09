@@ -2875,13 +2875,15 @@ def lab_helper_coverage_guard():
     assert H.shell_arm_implemented("RunCommand", info) and not H.shell_arm_implemented("FsBasic", dict(info, stubbed={"FsBasic"}))
     assert H.shell_arm_implemented("GitStatus", dict(info, stubbed=set(), shell_text="Family::GitStatus"))
     # a capability nobody covers must be reported
-    saved = dict(H.COVERS)
+    saved, saved_ext = dict(H.COVERS), dict(H.EXTERNAL_COVERS)
     try:
         H.COVERS.clear()
+        H.EXTERNAL_COVERS.clear()          # cases_lab_remote.py declares its families here; with none, everything is uncovered
         mh, mn = H.coverage(info)
         assert set(mh) == set(info["helper"]) and mn, (mh, mn)
     finally:
         H.COVERS.update(saved)
+        H.EXTERNAL_COVERS.update(saved_ext)
     skips = [c for c in cases.CASES if c.get("lab") and c["arm"]["case"].startswith("fam_") and c["arm"]["helper"] == "helper"]
     assert skips and {c["arm"]["case"] for c in skips} >= {"fam_" + k for k in info["helper"]}
     import lab as L
