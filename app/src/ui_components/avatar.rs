@@ -21,6 +21,16 @@ pub enum AvatarContent {
 
     ExternalProductIcon(ExternalProductIcon),
 
+    /// An emoji (or short text) drawn as-is, not reduced to an initial.
+    Emoji(String),
+
+    /// An image file on the local disk; never fetched from the network.
+    LocalFile {
+        path: String,
+        /// The first initial is rendered prior to loading the image.
+        display_name: String,
+    },
+
     /// Renders the image on a colored background.
     Image {
         url: String,
@@ -57,6 +67,28 @@ impl UiComponent for Avatar {
                     .before_load(
                         Align::new(Self::first_initial(&display_name, self.styles)).finish(),
                     );
+                if let Some(radius) = styles.border_radius {
+                    image = image.with_corner_radius(radius);
+                }
+                image.finish()
+            }
+            AvatarContent::Emoji(text) => Text::new_inline(
+                text,
+                styles.font_family_id.expect("text must have font family"),
+                styles.font_size.unwrap_or_default(),
+            )
+            .with_color(styles.font_color.unwrap_or_default())
+            .with_style(styles.font_properties())
+            .finish(),
+            AvatarContent::LocalFile { path, display_name } => {
+                let mut image = Image::new(
+                    warpui::assets::asset_cache::AssetSource::LocalFile {
+                        path,
+                        content_version: None,
+                    },
+                    CacheOption::BySize,
+                )
+                .before_load(Align::new(Self::first_initial(&display_name, self.styles)).finish());
                 if let Some(radius) = styles.border_radius {
                     image = image.with_corner_radius(radius);
                 }
@@ -253,5 +285,22 @@ impl Avatar {
             ),
         );
         stack.finish()
+    }
+}
+
+/// The avatar content for the local user (#1806): their configured or default emoji, or their
+/// local image file. Used where no profile photo was supplied; a name that is not the local
+/// user's (someone else's message) keeps the plain initial.
+pub fn local_user_avatar_content(app: &warpui::AppContext, display_name: &str) -> AvatarContent {
+    use crate::auth::local_identity::{LocalAvatar, current_avatar, current_display_name};
+    if display_name != current_display_name(app) {
+        return AvatarContent::DisplayName(display_name.to_owned());
+    }
+    match current_avatar(app) {
+        LocalAvatar::Emoji(text) => AvatarContent::Emoji(text),
+        LocalAvatar::Image(path) => AvatarContent::LocalFile {
+            path: path.to_string_lossy().into_owned(),
+            display_name: display_name.to_owned(),
+        },
     }
 }

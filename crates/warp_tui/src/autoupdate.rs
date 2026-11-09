@@ -503,7 +503,7 @@ async fn check_for_update(layout: InstallLayout) -> Result<CheckDecision> {
     let current_version =
         ChannelState::app_version().context("no release version tag baked into this build")?;
 
-    let client = http_client::Client::new();
+    let client = http_client::Client::for_purpose(&http_client::gate::UPDATE);
     let latest_version = fetch_latest_version(&client).await?;
 
     // Version strings become directory names below; reject anything that
@@ -555,7 +555,7 @@ async fn install_update(layout: InstallLayout, latest_version: String) -> Result
     let staged = match version_dir_state(&layout, &version_dir)? {
         VersionDirState::Complete => None,
         VersionDirState::Missing => {
-            let client = http_client::Client::new();
+            let client = http_client::Client::for_purpose(&http_client::gate::UPDATE);
             Some(download_update(&layout, &client, &latest_version).await?)
         }
         VersionDirState::Invalid => {

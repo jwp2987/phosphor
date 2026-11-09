@@ -851,6 +851,7 @@ fn parse_dcs_precmd_classifies_payload_with_completion_metadata() {
                     ignore_prompt_markers: None,
                     is_after_in_band_command: false,
                     seq: None,
+                    cwd_listing: None,
                 },
             })
         ),
@@ -1318,6 +1319,7 @@ fn parse_dcs_init_shell_7bit_st() {
         DProtoHook::InitShell { value } => assert_eq!(
             *value,
             InitShellValue {
+                pid: None,
                 session_id: SessionId::from(167303092612201),
                 user: "andy".to_owned(),
                 hostname: "ubuntu-test".to_owned(),
@@ -1349,6 +1351,7 @@ fn parse_dcs_init_shell() {
         DProtoHook::InitShell { value } => assert_eq!(
             *value,
             InitShellValue {
+                pid: None,
                 session_id: SessionId::from(167303092612201),
                 user: "andy".to_owned(),
                 hostname: "ubuntu-test".to_owned(),
@@ -2107,4 +2110,29 @@ fn completions_prompt_token_is_letters_and_digits_only() {
     assert_eq!(completions_prompt_token(b"-"), None);
     assert_eq!(completions_prompt_token(b"12:3"), None);
     assert_eq!(completions_prompt_token(&[b'1'; 33]), None);
+}
+
+#[test]
+fn osc_777_body_keeps_semicolons_and_never_drops_a_non_utf8_part() {
+    // A ';' inside the prompt splits the body into params; they are rejoined with ';'.
+    let bytes: &[u8] = b"\x1b]777;notify;warp://cli-agent;{\"q\":\"a;b\"}\x07";
+    let (_, handler) = parse_bytes(bytes);
+    assert_eq!(handler.pluggable_notifications.len(), 1);
+    let (title, body) = &handler.pluggable_notifications[0];
+    assert_eq!(title.as_deref(), Some("warp://cli-agent"));
+    assert_eq!(body, "{\"q\":\"a;b\"}");
+
+    // A multi-byte character cut in half (0xC3 alone) in one param: the param is kept,
+    // the bad byte becomes U+FFFD, and the JSON around it survives.
+    let bytes: &[u8] = b"\x1b]777;notify;warp://cli-agent;{\"q\":\"x\xc3\";\"r\":\"y\"}\x07";
+    let (_, handler) = parse_bytes(bytes);
+    assert_eq!(handler.pluggable_notifications.len(), 1);
+    let (_, body) = &handler.pluggable_notifications[0];
+    assert_eq!(body, "{\"q\":\"x\u{fffd}\";\"r\":\"y\"}");
+}
+
+#[test]
+fn osc_777_body_helper_joins_and_trims() {
+    let parts: [&[u8]; 3] = [b" a", b"b\xff", b"c "];
+    assert_eq!(osc_777_body(&parts), "a;b\u{fffd};c");
 }

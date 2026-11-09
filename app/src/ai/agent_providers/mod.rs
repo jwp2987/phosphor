@@ -33,6 +33,7 @@ pub(crate) mod outbound_redaction_tests;
 pub mod prompt_renderer;
 pub mod reasoning;
 pub mod secrets;
+pub(crate) mod stream_recovery;
 pub mod tools;
 pub mod user_context;
 pub mod vertex_auth;

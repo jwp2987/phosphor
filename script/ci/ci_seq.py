@@ -14,6 +14,9 @@
 #   candidate (~6 h)   check-linux; all three box test suites unfiltered; all three builds; the FULL app matrix everywhere; and on the
 #                      Mac and Windows runners the same three unit suites (test-<plat>, test-warpui-core-<plat>,
 #                      test-workspace-rest-<plat>), played AFTER that platform's app tests (each runner is one machine).
+#                      #1502: also the box's integration-linux (3 shards), integration-linux-pwsh and usage-test-linux (after the box
+#                      unit suites, before the app tests), and usage-test-macos on the Mac (with its unit suites). insta-snapshots
+#                      (it writes files) and check-macos/-windows (the builds cover them) are in no tier.
 #   release   (~16 h)  candidate + on the box test-shuttle-loom, fuzz-smoke, bench, mutants, mutants-warpui-core, and on EACH of
 #                      macOS and Windows the same heavy set (-macos / -windows suffix), after that platform's unit suites. Every
 #                      suite runs on Linux, macOS and Windows ("the tests need to be the same on all boxes"); the one exception
@@ -32,8 +35,16 @@ LINUX, MAC, WIN = "linux", "macos", "windows"
 BUILD = {LINUX: "build-linux-x86_64", MAC: "build-macos-arm64", WIN: "build-windows-x86_64"}
 APP = {LINUX: ["app-test-linux-wayland", "app-test-linux-x11"], MAC: ["app-test-macos"], WIN: ["app-test-windows"]}
 UNIT_SUFFIX = ["test", "test-warpui-core", "test-workspace-rest"]
-HEAVY_SUFFIX = ["test-shuttle-loom", "fuzz-smoke", "bench", "mutants", "mutants-warpui-core"]
+HEAVY_SUFFIX = ["input-timers-strict", "test-shuttle-loom", "fuzz-smoke", "bench", "mutants", "mutants-warpui-core"]
 PLAT_SUFFIX = {MAC: "macos", WIN: "windows"}
+# #1502: the deterministic, cheap-enough suites that used to be manual in every pipeline and never played by any tier. Candidate and
+# release play them (the heavy ones stay in HEAVY_SUFFIX / release). GitLab names a parallel:matrix job "<name>: [<SHARD>]".
+# insta-snapshots is deliberately in no tier (it WRITES snapshots for a human to review); check-macos / check-windows are covered by
+# the build jobs, which compile the same code with a stricter profile.
+# Owner 2026-11-09: these are GATES from the first run (no baseline-first period, no "known red" list). They stay manual + allow_failure in
+# GitLab (heavy suites are manual / tier-driven, no schedules), but verdict() counts them like any other job: a red one fails the tier.
+BOX_EXTRA = ["integration-linux: [1]", "integration-linux: [2]", "integration-linux: [3]", "integration-linux-pwsh", "usage-test-linux"]
+MAC_EXTRA = ["usage-test-macos"]
 # suites that cannot exist on a platform, with the reason: reported, never played (a job that is built to fail is not a test)
 UNSUPPORTED = {"fuzz-smoke-windows": "cargo-fuzz works only on Unix-like systems (no Windows/MSVC)"}
 
@@ -43,6 +54,8 @@ def plat_suites(p, heavy):
     sfx = PLAT_SUFFIX[p]
     # the plain unit suite is test-macos / test-windows; the others are <suite>-<platform>
     names = ["test-" + sfx] + ["%s-%s" % (n, sfx) for n in UNIT_SUFFIX[1:]]
+    if sfx == "macos":
+        names += MAC_EXTRA                      # the TUI usage suite: the Mac has no WindowServer for the GUI surface
     if heavy:
         names += ["%s-%s" % (n, sfx) for n in HEAVY_SUFFIX if n != "test-shuttle-loom"] + ["test-shuttle-loom-" + sfx]
     return names
@@ -273,7 +286,7 @@ def self_test():
         bad += 0 if ok else 1
         print("%s play_error(%r) -> %r" % ("ok  " if ok else "FAIL", resp, play_error(resp)))
     yml = "build-x:\n  stage: b\n  timeout: 90m\nother:\n  timeout: 3h\n"
-    for nm, want in [("build-x", 5400), ("other", 10800), ("absent", 18000)]:
+    for nm, want in [("other: [2]", 10800), ("build-x", 5400), ("other", 10800), ("absent", 18000)]:
         got = job_timeout_s(nm, yml)
         bad += 0 if got == want else 1
         print("%s job_timeout_s(%s) = %d" % ("ok  " if got == want else "FAIL", nm, got))
@@ -290,6 +303,19 @@ def self_test():
         if got != want:
             bad += 1
         print("%s platforms_from(%s, build job changed %s) -> %s" % ("ok  " if got == want else "FAIL", files, sorted(changed), got))
+    # #1502: candidate/release play the integration + usage suites; Windows has no extra and the heavy set stays release-only
+    for got, want, what in (
+        (plat_suites(MAC, False)[-1], "usage-test-macos", "mac unit set ends with the usage suite"),
+        (["usage-test-macos" in plat_suites(WIN, True), "usage-test-macos" in plat_suites(MAC, True)], [False, True], "usage suite is Mac-only"),
+        (["fuzz-smoke-macos" in plat_suites(MAC, False), "fuzz-smoke-macos" in plat_suites(MAC, True)], [False, True], "heavy suites only in release"),
+        (BOX_EXTRA[:3], ["integration-linux: [%d]" % i for i in (1, 2, 3)], "integration shards are named as GitLab names a matrix job"),
+        # owner 2026-11-09: these GATE candidate and release from the first run; a red one fails the tier, no "known red" exemption
+        ([verdict(n, "failed") for n in BOX_EXTRA + MAC_EXTRA], ["FAIL"] * (len(BOX_EXTRA) + len(MAC_EXTRA)), "a red integration/usage suite is a FAIL verdict"),
+        ([verdict(n, RUNNING_DEADLINE) for n in BOX_EXTRA + MAC_EXTRA], ["TIMEOUT"] * (len(BOX_EXTRA) + len(MAC_EXTRA)), "a timed-out integration/usage suite is never a pass"),
+    ):
+        ok = got == want
+        bad += 0 if ok else 1
+        print("%s %s" % ("ok  " if ok else "FAIL", what))
     print("self-test: %s" % ("FAILED (%d)" % bad if bad else "all passed"))
     return 1 if bad else 0
 
@@ -456,6 +482,7 @@ def play_error(resp):
 
 def job_timeout_s(name, yml=None):
     """The job's `timeout:` from .gitlab-ci.yml in seconds (the first one in the job's block); 5 h if not found."""
+    name = re.sub(r": \[[^\]]*\]$", "", name)          # a parallel:matrix job ("integration-linux: [2]") has its template's block
     try:
         txt = yml if yml is not None else open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".gitlab-ci.yml")).read()
         m = re.search(r"^%s:\s*\n(?:(?!\S).*\n)*?\s+timeout:\s*(\d+)\s*([mhs])" % re.escape(name), txt, re.M)
@@ -730,6 +757,8 @@ def main():
     for n, v in box:
         if n in SKIP: continue
         play(n, v); print(n, wait(n), flush=True)
+    if tier != "fix":
+        run_suites(BOX_EXTRA)                           # #1502: integration (3 shards), its pwsh scenarios and the usage suite, before the app tests
     box_units_done.set()
     if tier == "release":
         for p in plats:                                 # the box's heavy suites after its app tests (they load every core)
@@ -742,7 +771,7 @@ def main():
                     mine = n in started
                 if mine:
                     print(n, wait(n), flush=True)
-        for n in ["test-shuttle-loom", "fuzz-smoke", "bench", "mutants", "mutants-warpui-core"]:
+        for n in ["input-timers-strict", "test-shuttle-loom", "fuzz-smoke", "bench", "mutants", "mutants-warpui-core"]:
             if n not in SKIP: play(n)
     for t in watchers:
         t.join()
@@ -752,7 +781,7 @@ def main():
         print(n, timeline.get(n, ("?",))[0], flush=True)
     for n in started + reuse_started: print(n, wait(n), flush=True)
     if tier == "release":
-        for n in ["test-shuttle-loom", "fuzz-smoke", "bench", "mutants", "mutants-warpui-core"]:
+        for n in ["input-timers-strict", "test-shuttle-loom", "fuzz-smoke", "bench", "mutants", "mutants-warpui-core"]:
             if n not in SKIP and jobs().get(n, {}).get("status") not in (None, "manual"): print(n, wait(n), flush=True)
     network_jobs(jobs, wait, timeline)
     check_app_results(jobs, timeline)

@@ -3525,9 +3525,11 @@ fn read_only_connection_fails_the_writable_probe() {
     drop(setup_database(&path).expect("database should initialize"));
     use diesel::Connection as _;
     let mut rw = diesel::sqlite::SqliteConnection::establish(path.to_str().unwrap()).expect("open");
-    super::probe_writable(&mut rw, &path).expect("read-write connection is writable");
+    super::probe_writable(&mut rw, &path, super::LockDeadline::new())
+        .expect("read-write connection is writable");
     let mut ro = super::establish_connection(path.to_str().unwrap(), true).expect("open ro");
-    let err = super::probe_writable(&mut ro, &path).expect_err("read-only must fail");
+    let err = super::probe_writable(&mut ro, &path, super::LockDeadline::new())
+        .expect_err("read-only must fail");
     assert!(super::open_error_is_transient(
         &path,
         &err.root_cause().to_string().to_lowercase()
@@ -3549,7 +3551,46 @@ fn writable_probe_tolerates_a_held_write_lock() {
         diesel::sqlite::SqliteConnection::establish(path.to_str().unwrap()).expect("open");
     conn.batch_execute("PRAGMA busy_timeout = 50;")
         .expect("timeout");
-    super::probe_writable(&mut conn, &path).expect("a held lock is not read-only");
+    super::probe_writable(&mut conn, &path, super::LockDeadline::new())
+        .expect("a held lock is not read-only");
+}
+
+/// #1772: with another connection holding the write lock, the probe returns within one setup
+/// slice instead of waiting out the writer's normal 1 s busy timeout, and leaves that normal
+/// timeout in force afterwards.
+#[test]
+fn writable_probe_is_bounded_by_the_setup_deadline_and_restores_the_timeout() {
+    use diesel::Connection as _;
+    use diesel::RunQueryDsl as _;
+    use diesel::connection::SimpleConnection as _;
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let path = tempdir.path().join("warp.sqlite");
+    drop(setup_database(&path).expect("database should initialize"));
+    let mut holder =
+        diesel::sqlite::SqliteConnection::establish(path.to_str().unwrap()).expect("open");
+    holder.batch_execute("BEGIN IMMEDIATE;").expect("hold lock");
+    let mut conn =
+        diesel::sqlite::SqliteConnection::establish(path.to_str().unwrap()).expect("open");
+    conn.batch_execute("PRAGMA busy_timeout = 1000;")
+        .expect("timeout");
+    let started = std::time::Instant::now();
+    super::probe_writable(&mut conn, &path, super::LockDeadline::new())
+        .expect("a held lock is not read-only");
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(500),
+        "the probe waited {:?} on a held lock",
+        started.elapsed()
+    );
+    #[derive(diesel::QueryableByName)]
+    struct Timeout {
+        #[diesel(sql_type = diesel::sql_types::Integer)]
+        timeout: i32,
+    }
+    let timeout = diesel::sql_query("PRAGMA busy_timeout")
+        .get_result::<Timeout>(&mut conn)
+        .expect("read timeout")
+        .timeout;
+    assert_eq!(timeout, 1000, "the normal busy timeout is restored");
 }
 
 /// A file that is read-only on purpose keeps the old behaviour: no failure,
@@ -3563,7 +3604,8 @@ fn deliberately_read_only_file_is_not_failed_or_retried() {
     perms.set_readonly(true);
     std::fs::set_permissions(&path, perms).unwrap();
     let mut ro = super::establish_connection(path.to_str().unwrap(), true).expect("open ro");
-    super::probe_writable(&mut ro, &path).expect("read-only file keeps old behaviour");
+    super::probe_writable(&mut ro, &path, super::LockDeadline::new())
+        .expect("read-only file keeps old behaviour");
     assert!(!super::open_error_is_transient(
         &path,
         "attempt to write a readonly database"

@@ -136,6 +136,17 @@ define_settings_group!(NetworkSettings, settings: [
         toml_path: "network.proxy_no_proxy",
         description: "Comma-separated list of host exceptions, e.g. localhost,127.0.0.1,.internal.",
     },
+    // The network gate's user allowlist (crates/network_gate). Background requests may only
+    // reach loopback, the user's configured AI endpoints and these origins.
+    allowed_origins: AllowedOriginsSetting {
+        type: String,
+        default: String::new(),
+        supported_platforms: SupportedPlatforms::DESKTOP,
+        sync_to_cloud: SyncToCloud::Never,
+        private: false,
+        toml_path: "network.allowed_origins",
+        description: "Extra origins Phosphor may contact on its own, separated by commas or spaces, e.g. https://api.example.com. Loopback and your configured AI endpoints are always allowed.",
+    },
 ]);
 
 #[cfg(test)]

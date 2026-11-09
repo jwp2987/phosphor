@@ -160,3 +160,39 @@ fn nu_kill_buffer_chord_is_a_single_byte_and_never_split_off() {
         &[escape_sequences::C0::DLE]
     );
 }
+
+/// #1191: the Enter side of a big paste is linear and never changes the bytes. A single line of
+/// any size is written exactly as typed (inside one bracketed paste), is never base64-wrapped, and
+/// the byte count is the text plus a constant, so no step (copy, escape strip, wrap) can lose or
+/// reorder bytes or cost more than a pass over the text. The 100 KB vs 1 MB timing ratio would be
+/// ~100 for a quadratic step.
+#[test]
+fn a_huge_single_line_command_is_written_whole_and_in_linear_time() {
+    let overhead = {
+        let empty_ish = bytes_to_execute_command("x", ShellType::Bash, true);
+        empty_ish.len() - 1
+    };
+    let mut timings = Vec::new();
+    for len in [100 * 1024, 1024 * 1024, 3 * 1024 * 1024] {
+        let command: String = (0..len).map(|i| (b'a' + (i % 26) as u8) as char).collect();
+        assert!(
+            !command_is_sent_as_one_wrapped_line(ShellType::Bash, true, &command),
+            "a single line is pasted as it is, not wrapped"
+        );
+        let started = std::time::Instant::now();
+        let bytes = bytes_to_execute_command(&command, ShellType::Bash, true);
+        timings.push(started.elapsed());
+        assert_eq!(bytes.len(), len + overhead);
+        let start = ShellType::Bash.kill_buffer_bytes().len()
+            + escape_sequences::BRACKETED_PASTE_START.len();
+        assert_eq!(&bytes[start..start + len], command.as_bytes());
+    }
+    let floor = std::time::Duration::from_millis(2);
+    let ratio = timings[1].as_secs_f64() / timings[0].max(floor).as_secs_f64();
+    assert!(
+        ratio <= 40.0,
+        "1 MB cost {:?} vs {:?} for 100 KB: a step of the command write is super-linear",
+        timings[1],
+        timings[0]
+    );
+}

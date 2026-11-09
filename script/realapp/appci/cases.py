@@ -543,6 +543,7 @@ def log_text_since(src, off):
 class Ctx:
     def __init__(self, be, prof, app, run, mode, seed=1, ssh=None, ollama=False, log_path=None, ssh_why=None, pane=None, variant=None):
         self.be, self.prof, self.app, self.run, self.mode = be, prof, app, run, mode
+        self.seed = seed                      # the run seed (--seed): the real-use replay (cases_replay.py) generates its scenario from it
         self.pane = pane                      # Windows only: the shell of the app's pane, 'powershell' | 'gitbash' | 'cmd' (None = the POSIX bash/zsh harness)
         self.variant = variant                # #1534: 'pwsh7' | 'cmd' in a startup_shell_override pass (pane is then its family: pwsh 7 is 'powershell', cmd.exe 'cmd'), else None
         self.win = pane is not None
@@ -5396,3 +5397,6 @@ import cases_coverage_a  # noqa: E402,F401  (#1535-#1541: paste, alt-screen prog
 import cases_coverage_b  # noqa: E402,F401  (g10: CI-review coverage gaps #1542-#1548: agent pickers, settings UI/migration, state relaunch, no-autoupdate, UI-action budgets, mac editor)
 import cases_shells  # noqa: E402,F401  (#1534: startup_shell_override passes: cmd.exe and pwsh 7 as the pane shell)
 import cases_lab  # noqa: E402,F401  (Wave 0.5b: the fake ssh lab cases, lab_*; run only by --cases lab_*)
+import cases_subshell_ready  # noqa: E402,F401  (#1679 step 3/4: the subshell readiness lab: rc questions, vim typeahead, tcsh, secret after the prompt, relays, exec fish, docker -t, zsh-newuser-install, clear)
+import cases_replay  # noqa: E402,F401  (Wave 1.5 #3: the real-use replay, lab_replay.*; run only by --cases lab_replay*)
+import cases_netless  # noqa: E402,F401  (Wave N: zero_network_startup, claude_plugin_offline)

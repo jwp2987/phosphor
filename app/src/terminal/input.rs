@@ -1249,6 +1249,9 @@ pub enum Event {
     /// Enter was deferred until the shell's typeahead report arrives; keys typed meanwhile must
     /// reach the terminal so they are held behind the command (`FeatureFlag::TypeaheadHandoff`).
     TypeaheadHandoffEnterDeferred,
+    /// The Tab that waited for the shell's line report and then ran on the merged line has been
+    /// answered (#1659); an Enter deferred behind the report may run now.
+    ReportTabSettled,
     /// Input the user typed after an Enter that waited for its classification verdict (#1016).
     /// The Enter has now run; its gate on the pane queue holds the keys typed behind it until the
     /// pty route is settled (`TerminalView::settle_enter_queue`).
@@ -1318,6 +1321,7 @@ pub(crate) fn log_late_timer_wake(timer: &'static str, deadline: Instant) {
 }
 
 /// An Enter held longer than this is logged at WARN with the reason it was held (#1192).
+// give-up-net: log threshold for a slow Enter hold; log only
 const SLOW_ENTER_HOLD_THRESHOLD: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Whether an Enter held for `held` is slow enough to log.
@@ -1334,6 +1338,7 @@ pub(crate) fn log_slow_enter_hold(reason: &str, held: std::time::Duration) {
 }
 
 /// Longest the activity assertion of a deferred Enter is held, in case no release path runs.
+// give-up-net: releases the macOS activity assertion held for a deferred Enter; no effect on keys
 const DEFERRED_ENTER_ACTIVITY_CAP: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// A macOS activity assertion (`NSProcessInfo beginActivityWithOptions`, UserInitiated) held
@@ -1439,8 +1444,10 @@ enum EnterHold {
     /// given up by a timer, which never submits (#1666/#1667): the line is handed back.
     TabCompletion {
         since: Instant,
-        /// The completion is the remote shell's in-band answer (#1801), which takes a round
-        /// trip: it gets [`REMOTE_NATIVE_TAB_ENTER_BUDGET`] instead of the local budget.
+        /// The completion is the remote shell's in-band answer (#1801). No clock decides what
+        /// this Enter runs: it waits for the answer (a frame's candidates, or nothing, which
+        /// runs the typed line), and a pty-level give-up (no answer ever) hands the line back
+        /// and runs nothing. Only the backstop net remains ([`EnterHold::backstop`]).
         remote_native: bool,
     },
 }
@@ -1455,8 +1462,8 @@ struct TabCompletionRequest {
     /// is never waited for.
     local: bool,
     /// The remote shell is asked first, in-band (#1801): one round trip on the session's own
-    /// connection, so an Enter right after the Tab waits for it (within
-    /// [`REMOTE_NATIVE_TAB_ENTER_BUDGET`]) and runs the completed line, as a local Tab does.
+    /// connection, so an Enter right after the Tab waits for the answer, however long it takes,
+    /// and runs the completed line, as a local Tab does.
     remote_native: bool,
     /// The compute the completer job spends (#1351): the Enter's give-up cap is measured on it.
     compute: ComputeClock,
@@ -1466,22 +1473,20 @@ struct TabCompletionRequest {
 /// Measured from when the completer job started running, never from the Enter. Wall time on
 /// purpose: completion does I/O. The give-up hands the uncompleted line back to the editor and
 /// runs nothing (#1666): the clock must not run a line the user meant to complete.
+// give-up-net: Enter held for a local Tab completion: on expiry the uncompleted line goes back to the editor and nothing runs (#1666)
 const TAB_COMPLETION_ENTER_BUDGET: std::time::Duration = std::time::Duration::from_millis(150);
-/// The same cap for a remote shell's in-band Tab answer (#1801 review: "Tab then a fast Enter
-/// runs the completed line" over a slow link too). Wall time from the job's start: a round trip
-/// plus the shell's own completion work. Under the 2 s prompt watchdog, so a shell that does not
-/// answer hands the line back (#1666) rather than running the uncompleted text.
-const REMOTE_NATIVE_TAB_ENTER_BUDGET: std::time::Duration = std::time::Duration::from_millis(1500);
 /// A hold longer than this is logged at WARN, so slow completers can be traced.
 const TAB_COMPLETION_ENTER_WARN: std::time::Duration = std::time::Duration::from_millis(50);
 /// The wall-clock net of an Enter held for its verdict, before the size allowance (#1662, busy-
 /// machine audit 2026-11-05): long enough that only a lost or never-scheduled job reaches it, not
 /// a classifier that is merely slow to get a CPU (its cap is CPU time, #1651). Was 250 ms.
+// give-up-net: lost-job net of an Enter held for its verdict: hands the line back to the editor, never submits it (#1577)
 const VERDICT_HOLD_BACKSTOP: std::time::Duration = std::time::Duration::from_secs(2);
 /// The longest any Enter hold's backstop may be: 9 s, under the Enter gate's leak net
 /// ([`enter_queue::ENTER_GATE_LEAK_NET`], 20 s since the #1661 review; it was the net minus 1 s
 /// when the net was 10 s, and keeps that value), so for any paste size the hold gives up (the
 /// line stays in the input) before the leak net force-opens the gate (#1651 review).
+// give-up-net: upper bound of an Enter hold's wall-clock backstop; the backstop hands the line back to the editor
 pub(crate) const HOLD_BACKSTOP_LIMIT: std::time::Duration = std::time::Duration::from_secs(9);
 const _: () = assert!(
     HOLD_BACKSTOP_LIMIT.as_millis() < enter_queue::ENTER_GATE_LEAK_NET.as_millis(),
@@ -1489,6 +1494,7 @@ const _: () = assert!(
 );
 /// The shortest compute-cap timer re-armed while the awaited job's cap is not yet spent (#1651):
 /// on a CPU-time clock a starved job can sit just under its cap for as long as it gets no CPU.
+// give-up-net: floor on re-arming the verdict hold's compute-cap check (the give-up that hands the line back); decides nothing itself
 pub(crate) const COMPUTE_CAP_RECHECK_FLOOR: std::time::Duration =
     std::time::Duration::from_millis(5);
 
@@ -1539,10 +1545,12 @@ impl EnterHold {
             EnterHold::Verdict { .. } => {
                 crate::ai::blocklist::input_model::enter_verdict_budget_for(text_len)
             }
+            // No cap: a remote in-band answer is waited for, never timed (it is event-driven;
+            // "no answer ever" is an event too, `native_completions_missed`).
             EnterHold::TabCompletion {
                 remote_native: true,
                 ..
-            } => REMOTE_NATIVE_TAB_ENTER_BUDGET,
+            } => std::time::Duration::MAX,
             EnterHold::TabCompletion { .. } => TAB_COMPLETION_ENTER_BUDGET,
         }
     }
@@ -1566,11 +1574,13 @@ impl EnterHold {
             .min(HOLD_BACKSTOP_LIMIT),
             // #1667: kept at 500 ms. Its give-up hands the line back and runs nothing, so a busy
             // machine that outlasts it costs one more Enter, never a wrong command.
-            // #1801: the remote in-band answer's cap plus the same 350 ms margin as locally.
+            // #1801: the remote in-band answer has no clock deciding what the Enter runs. This is
+            // only a lost-signal net, above the pty's 2 s prompt give-up (which is an event) and
+            // under the Enter gate's leak net; its expiry hands the line back and runs nothing.
             EnterHold::TabCompletion {
                 remote_native: true,
                 ..
-            } => REMOTE_NATIVE_TAB_ENTER_BUDGET + std::time::Duration::from_millis(350),
+            } => HOLD_BACKSTOP_LIMIT,
             EnterHold::TabCompletion { .. } => std::time::Duration::from_millis(500),
         }
     }
@@ -2353,6 +2363,13 @@ pub struct Input {
     /// The waiting Enter is being run right now (#1016): its own `input_enter` is the submit, not
     /// an Enter typed behind a pending replay, so it must not queue itself.
     running_deferred_enter: bool,
+    /// A Tab (`CompletionsTrigger::Keybinding`) pressed while the shell's line report is pending
+    /// waits for it (#1659): the editor holds only the fragment typed since, and the report lands
+    /// in front of it. It runs on the merged line when the report is in.
+    tab_waits_for_report: bool,
+    /// The Tab resumed after the report carries a deferred Enter behind it (#1659): when its
+    /// completion settles the view runs that Enter (`Event::ReportTabSettled`).
+    announce_report_tab_settled: bool,
     /// #1348 / owner rule: text typed while an ssh connect was in progress was handed back to this
     /// editor (the connect ended without a remote shell), so the line may be one the user meant
     /// for the remote machine. The first Enter after that hand-back is not executed (it may have
@@ -4134,6 +4151,8 @@ impl Input {
             deferred_enter_activity: DeferredEnterActivity::default(),
             handoff_enter_started: None,
             running_deferred_enter: false,
+            tab_waits_for_report: false,
+            announce_report_tab_settled: false,
             ssh_handover_enter_guard: None,
             last_enter_submitted_shell_command: false,
             editor_submission: None,
@@ -4245,6 +4264,48 @@ impl Input {
             .update(ctx, |button_bar, ctx| {
                 button_bar.set_slash_button_disabled(should_disable, ctx);
             });
+    }
+
+    /// The filter text of the open @ picker as the editor's buffer holds it now: the text between
+    /// the `@` and the cursor. The editor's event for the edit that produced it may not have
+    /// reached the menu yet (#1645).
+    fn ai_context_filter_text_now(&self, ctx: &AppContext) -> Option<String> {
+        let InputSuggestionsMode::AIContextMenu {
+            at_symbol_position, ..
+        } = self.suggestions_mode_model.as_ref(ctx).mode()
+        else {
+            return None;
+        };
+        let first_char_pos = at_symbol_position + 1;
+        let cursor_position = self
+            .editor
+            .as_ref(ctx)
+            .start_byte_index_of_last_selection(ctx)
+            .as_usize();
+        let num_chars = cursor_position.saturating_sub(first_char_pos);
+        Some(
+            self.editor
+                .as_ref(ctx)
+                .buffer_text(ctx)
+                .chars()
+                .skip(first_char_pos)
+                .take(num_chars)
+                .collect(),
+        )
+    }
+
+    /// An Enter (or Tab, Right) accepts the @ picker's row. It carries the filter the buffer holds
+    /// now, so an Enter that follows an edit whose event is still queued waits for that edit's
+    /// query instead of being cancelled by it (#1645).
+    fn accept_ai_context_menu_item(&mut self, ctx: &mut ViewContext<Self>) {
+        let typed = self.ai_context_filter_text_now(ctx);
+        self.editor.update(ctx, |editor, ctx| {
+            if let Some(ai_context_menu) = editor.ai_context_menu() {
+                ai_context_menu.update(ctx, |ai_context_menu, ctx| {
+                    ai_context_menu.select_current_item_after_typing(typed, ctx);
+                });
+            }
+        });
     }
 
     fn handle_ai_context_menu_search(&mut self, is_navigation: bool, ctx: &mut ViewContext<Self>) {
@@ -11075,13 +11136,7 @@ impl Input {
                 // If the AI context menu is open and we're at the end of the buffer,
                 // make right arrow act like enter and select the current item
                 if self.suggestions_mode_model.as_ref(ctx).is_ai_context_menu() {
-                    self.editor.update(ctx, |editor, ctx| {
-                        if let Some(ai_context_menu) = editor.ai_context_menu() {
-                            ai_context_menu.update(ctx, |menu, ctx| {
-                                menu.select_current_item(ctx);
-                            });
-                        }
-                    });
+                    self.accept_ai_context_menu_item(ctx);
                 }
             }
             EditorEvent::Enter => self.input_enter(ctx),
@@ -11093,6 +11148,7 @@ impl Input {
                 self.disarm_glue_enter_guard();
                 // #1571: ^C voids an Enter held for an unready shell (never run later).
                 self.cancel_unready_enter("editor_interrupt", ctx);
+                self.cancel_report_tab();
                 // #1652: and one waiting for the multi-line dialog (the dialog closes).
                 self.cancel_multiline_dialog("editor_interrupt", ctx);
                 self.close_input_suggestions(/*should_focus_input=*/ true, ctx);
@@ -12289,9 +12345,17 @@ impl Input {
     }
 
     fn is_completions_while_typing_turned_on(&self, app: &AppContext) -> bool {
-        *InputSettings::as_ref(app)
-            .completions_open_while_typing
-            .value()
+        let setting = &InputSettings::as_ref(app).completions_open_while_typing;
+        // An unknown session counts as local (nothing remote to protect).
+        let session_is_local = self
+            .active_block_session_id()
+            .and_then(|id| self.sessions.as_ref(app).get(id))
+            .is_none_or(|session| session.is_local());
+        crate::settings::completions_while_typing_effective(
+            *setting.value(),
+            setting.is_value_explicitly_set(),
+            session_is_local,
+        )
     }
 
     /// Returns true if an AI context menu should be enabled at the current cursor position based
@@ -12384,6 +12448,9 @@ impl Input {
         completions_trigger: CompletionsTrigger,
         ctx: &mut ViewContext<Self>,
     ) {
+        if self.defer_tab_for_report(completions_trigger, ctx) {
+            return;
+        }
         if self.suggestions_mode_model.as_ref(ctx).is_slash_commands() {
             self.close_slash_commands_menu(ctx);
         }
@@ -12586,8 +12653,12 @@ impl Input {
                     async move {
                         let started = Instant::now();
                         let _compute = completion_compute.begin();
-                        native_results_fut
-                            .await
+                        // `None`: no answer at all (the requester's channel closed: the pty gave
+                        // up, refused, or the shell left). `Some(empty)`: the shell (or a cancel)
+                        // answered with nothing. They differ for a held Enter.
+                        let results = native_results_fut.await;
+                        let answered = results.is_some();
+                        let suggestions = results
                             .filter(|results| !results.is_empty())
                             .map(|results| {
                                 // Never the candidates: they are the user's file names.
@@ -12602,9 +12673,10 @@ impl Input {
                                     &buffer_text,
                                     cursor_position,
                                 )
-                            })
+                            });
+                        (answered, suggestions)
                     },
-                    move |input, suggestions, ctx| match suggestions {
+                    move |input, (answered, suggestions), ctx| match suggestions {
                         Some(suggestions) => input.deliver_completion_suggestions_results(
                             generation,
                             Some(suggestions),
@@ -12614,6 +12686,7 @@ impl Input {
                         ),
                         None => input.native_completions_missed(
                             generation,
+                            !answered,
                             before_cursor_text,
                             matcher,
                             completions_trigger,
@@ -12714,6 +12787,7 @@ impl Input {
     fn native_completions_missed(
         &mut self,
         generation: u64,
+        no_answer: bool,
         before_cursor_text: String,
         matcher: MatchStrategy,
         completions_trigger: CompletionsTrigger,
@@ -12723,6 +12797,13 @@ impl Input {
         ctx: &mut ViewContext<'_, Input>,
     ) {
         if self.is_stale_generation(generation) {
+            return;
+        }
+        // No answer ever (the pty gave up, refused, or the shell left): an Enter held for it is
+        // handed back with its line and runs NOTHING (#1577, #1666); no timer decides what runs.
+        // (A shell that answered with no candidates, or a cancel, is not this: the typed line
+        // runs below.)
+        if no_answer && self.give_up_unanswered_remote_hold(ctx) {
             return;
         }
         if self.end_remote_native_tab_wait(
@@ -12744,6 +12825,25 @@ impl Input {
             false,
             ctx,
         );
+    }
+
+    /// The remote shell gave NO answer (see [`Self::native_completions_missed`]): the Tab request
+    /// stops being remote-native, and an Enter held for it is given up like any Tab-completion
+    /// give-up: the line is handed back, nothing runs, keys typed meanwhile stay held in order.
+    /// Returns whether an Enter was held (and so handed back).
+    fn give_up_unanswered_remote_hold(&mut self, ctx: &mut ViewContext<'_, Input>) -> bool {
+        if let Some(request) = self.tab_completion_request.as_mut() {
+            request.remote_native = false;
+        }
+        if !self
+            .verdict_wait
+            .as_ref()
+            .is_some_and(VerdictWait::holds_for_tab_completion)
+        {
+            return false;
+        }
+        self.give_up_completion_hold("remote_no_answer", ctx);
+        true
     }
 
     /// The first half of [`Self::native_completions_missed`]: the Tab request stops being
@@ -12838,9 +12938,115 @@ impl Input {
         generation != self.input_generation
     }
 
+    /// #1659: an explicit Tab while the shell's line report is pending would complete only the
+    /// editor's fragment (the report lands in front of it), and an Enter after it would run the
+    /// merged line uncompleted. The Tab waits for the report instead and runs on the merged line
+    /// ([`Self::resume_tab_after_report`]). Returns whether it was deferred. No timer is involved:
+    /// the report landing, or the hand-off leaving the state that awaits it, resumes it.
+    fn defer_tab_for_report(
+        &mut self,
+        completions_trigger: CompletionsTrigger,
+        _ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        if completions_trigger != CompletionsTrigger::Keybinding
+            || !FeatureFlag::TypeaheadHandoff.is_enabled()
+        {
+            return false;
+        }
+        let pending = self
+            .model
+            .lock()
+            .typeahead_handoff()
+            .report_pending_before_editor_text();
+        if !pending {
+            return false;
+        }
+        if !self.tab_waits_for_report {
+            warpui::input_order::log_hop("tab_deferred_for_report", String::new);
+        }
+        self.tab_waits_for_report = true;
+        true
+    }
+
+    /// Whether a Tab is waiting for the shell's line report (#1659).
+    pub(crate) fn tab_waits_for_report(&self) -> bool {
+        self.tab_waits_for_report
+    }
+
+    /// Runs the Tab that waited for the report, now on the merged line (#1659). With
+    /// `announce_settled`, [`Event::ReportTabSettled`] is emitted when its completion has been
+    /// answered (a deferred Enter behind the report runs then). Returns whether a completion is
+    /// in flight and the caller must wait for that event.
+    pub(crate) fn resume_tab_after_report(
+        &mut self,
+        announce_settled: bool,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        if !std::mem::take(&mut self.tab_waits_for_report) {
+            return false;
+        }
+        if self.editor.as_ref(ctx).is_empty(ctx) {
+            // The line was cleared while the Tab waited (^C, a submit): nothing to complete.
+            return false;
+        }
+        warpui::input_order::log_hop("tab_resumed_after_report", String::new);
+        self.open_completion_suggestions(CompletionsTrigger::Keybinding, ctx);
+        let in_flight = announce_settled && self.tab_completion_request.is_some();
+        self.announce_report_tab_settled = in_flight;
+        in_flight
+    }
+
+    /// Ends the wait of a Tab that will not be answered (Ctrl-C voided the line, the request was
+    /// superseded): a Tab nobody can run is dropped, the line is as the user left it.
+    pub(crate) fn cancel_report_tab(&mut self) {
+        self.tab_waits_for_report = false;
+        self.announce_report_tab_settled = false;
+    }
+
+    /// Closes the completion menu a Tab left open, before the Enter that waited behind that Tab
+    /// runs the visible line (#1659).
+    pub(crate) fn close_completion_menu_for_deferred_enter(&mut self, ctx: &mut ViewContext<Self>) {
+        if matches!(
+            self.suggestions_mode_model.as_ref(ctx).mode(),
+            InputSuggestionsMode::CompletionSuggestions { .. }
+        ) {
+            self.close_input_suggestions(false, ctx);
+        }
+    }
+
+    /// The completion of the resumed Tab was answered (or superseded): tells the view.
+    fn settle_report_tab(&mut self, ctx: &mut ViewContext<Self>) {
+        if std::mem::take(&mut self.announce_report_tab_settled) {
+            ctx.emit(Event::ReportTabSettled);
+        }
+    }
+
+    /// Delivers a completion result to [`Self::handle_completion_suggestions_results`] unless an
+    /// Esc, submit, clear or block completion happened since the request started. A Tab resumed
+    /// after the shell's line report tells the view when it is answered (#1659).
+    fn deliver_completion_suggestions_results(
+        &mut self,
+        generation: u64,
+        results: Option<SuggestionResults>,
+        completions_trigger: CompletionsTrigger,
+        editor_snapshot_when_completer_was_ran: EditorSnapshot,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.deliver_completion_suggestions_results_inner(
+            generation,
+            results,
+            completions_trigger,
+            editor_snapshot_when_completer_was_ran,
+            ctx,
+        );
+        if completions_trigger == CompletionsTrigger::Keybinding {
+            self.settle_report_tab(ctx);
+        }
+    }
+
     /// Delivers a completion result to [`Self::handle_completion_suggestions_results`] unless an
     /// Esc, submit, clear or block completion happened since the request started.
-    fn deliver_completion_suggestions_results(
+    fn deliver_completion_suggestions_results_inner(
         &mut self,
         generation: u64,
         results: Option<SuggestionResults>,
@@ -13588,13 +13794,7 @@ impl Input {
             self.suggestions_mode_model.as_ref(ctx).mode(),
             InputSuggestionsMode::AIContextMenu { .. }
         ) {
-            self.editor.update(ctx, |editor, ctx| {
-                if let Some(ai_context_menu) = editor.ai_context_menu() {
-                    ai_context_menu.update(ctx, |ai_context_menu, ctx| {
-                        ai_context_menu.select_current_item(ctx);
-                    });
-                }
-            });
+            self.accept_ai_context_menu_item(ctx);
             return;
         }
         // We have to manually check if "tab" is bound to
@@ -14130,13 +14330,7 @@ impl Input {
                 warpui::input_order::log_hop("enter_menu_accept", || {
                     self.ai_context_menu_enter_detail(true, ctx)
                 });
-                self.editor.update(ctx, |editor, ctx| {
-                    if let Some(ai_context_menu) = editor.ai_context_menu() {
-                        ai_context_menu.update(ctx, |ai_context_menu, ctx| {
-                            ai_context_menu.select_current_item(ctx);
-                        });
-                    }
-                });
+                self.accept_ai_context_menu_item(ctx);
                 return;
             }
 
@@ -14266,13 +14460,7 @@ impl Input {
             warpui::input_order::log_hop("enter_menu_accept", || {
                 self.ai_context_menu_enter_detail(false, ctx)
             });
-            self.editor.update(ctx, |editor, ctx| {
-                if let Some(ai_context_menu) = editor.ai_context_menu() {
-                    ai_context_menu.update(ctx, |ai_context_menu, ctx| {
-                        ai_context_menu.select_current_item(ctx);
-                    });
-                }
-            });
+            self.accept_ai_context_menu_item(ctx);
             return;
         } else if self
             .suggestions_mode_model
@@ -14943,6 +15131,16 @@ impl Input {
         if !wait.compute.is_running() {
             return;
         }
+        // A remote in-band answer has no compute cap (see `EnterHold::compute_cap`).
+        if matches!(
+            wait.hold,
+            EnterHold::TabCompletion {
+                remote_native: true,
+                ..
+            }
+        ) {
+            return;
+        }
         let remaining = wait.hold.cap_remaining(&wait.compute, wait.text.len());
         // #1651: the verdict's clock counts only the job's CPU time, so a job waiting for a CPU
         // finds its cap unreached when this timer fires, and the timer is armed again for the
@@ -14971,6 +15169,7 @@ impl Input {
             return;
         };
         let deadline = Instant::now() + delay;
+        // give-up-net: one-shot give-up timers of an Enter's verdict/Tab hold (backstop, compute cap): hand the line back, never submit
         ctx.spawn(Timer::after(delay), move |me, _, ctx| {
             log_late_timer_wake(timer, deadline);
             // Armed by an earlier watch of this wait (its hold has since changed kind): not ours.
@@ -15067,8 +15266,8 @@ impl Input {
             })
             .unwrap_or_default();
         log::warn!(
-            "Enter held {} ms for a local Tab completion gave up ({why}; completer compute {} ms, \
-             cap {} ms); the line is handed back, not run (#1666)",
+            "Enter held {} ms for a Tab completion gave up ({why}; completer compute {} ms, \
+             local cap {} ms); the line is handed back, not run (#1666)",
             waited.as_millis(),
             spent.as_millis(),
             TAB_COMPLETION_ENTER_BUDGET.as_millis()

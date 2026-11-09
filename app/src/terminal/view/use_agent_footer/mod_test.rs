@@ -125,6 +125,7 @@ fn simulate_user_started_long_running_command(view: &mut TerminalView) {
     {
         let mut model = view.model.lock();
         model.init_shell(InitShellValue {
+            pid: None,
             session_id: 0.into(),
             shell: "zsh".to_owned(),
             ..Default::default()

@@ -54,12 +54,50 @@ define_settings_group!(InputSettings,
         },
         completions_open_while_typing: CompletionsOpenWhileTyping {
             type: bool,
-            default: false,
+            // On by default, but only for LOCAL sessions: a remote session keeps it off
+            // unless the user set this explicitly (see `completions_while_typing_effective`).
+            default: true,
             supported_platforms: SupportedPlatforms::ALL,
             sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
             private: false,
             toml_path: "terminal.input.completions_open_while_typing",
-            description: "Whether the completions menu opens automatically while typing.",
+            description: "Whether the completions menu opens automatically while typing. On by default for local sessions; remote sessions keep it off unless this is set explicitly.",
+        },
+        profile_display_name: ProfileDisplayName {
+            type: String,
+            default: String::new(),
+            supported_platforms: SupportedPlatforms::ALL,
+            sync_to_cloud: SyncToCloud::Never,
+            private: false,
+            toml_path: "appearance.profile.display_name",
+            description: "The name shown next to your messages. Empty uses your OS user name.",
+        },
+        profile_avatar: ProfileAvatar {
+            type: String,
+            default: String::new(),
+            supported_platforms: SupportedPlatforms::ALL,
+            sync_to_cloud: SyncToCloud::Never,
+            private: false,
+            toml_path: "appearance.profile.avatar",
+            description: "Your avatar: an emoji, or the path of a local image file. Empty picks a fun default.",
+        },
+        show_no_helper_chip: ShowNoHelperChip {
+            type: bool,
+            default: true,
+            supported_platforms: SupportedPlatforms::ALL,
+            sync_to_cloud: SyncToCloud::Never,
+            private: false,
+            toml_path: "terminal.remote.show_no_helper_chip",
+            description: "Whether a small 'limited: no remote helper' chip is shown in Phosphorized ssh sessions that run without the remote helper.",
+        },
+        no_helper_chip_dismissed_hosts: NoHelperChipDismissedHosts {
+            type: Vec<String>,
+            default: Vec::new(),
+            supported_platforms: SupportedPlatforms::ALL,
+            sync_to_cloud: SyncToCloud::Never,
+            private: false,
+            toml_path: "terminal.remote.no_helper_chip_dismissed_hosts",
+            description: "Hosts for which the 'no remote helper' chip was dismissed.",
         },
         error_underlining: ErrorUnderliningEnabled {
             type: bool,
@@ -254,5 +292,68 @@ impl InputSettings {
 
     pub fn is_terminal_input_message_bar_enabled(&self) -> bool {
         *self.show_terminal_input_message_bar
+    }
+}
+
+/// Whether the as-you-type completions menu is on for a session. An explicit user
+/// setting always wins; otherwise the default (on) applies to local sessions only, so a
+/// remote session stays off until the user opts in.
+pub fn completions_while_typing_effective(
+    value: bool,
+    explicitly_set: bool,
+    session_is_local: bool,
+) -> bool {
+    if explicitly_set {
+        value
+    } else {
+        value && session_is_local
+    }
+}
+
+#[cfg(test)]
+mod completions_while_typing_tests {
+    use super::completions_while_typing_effective as eff;
+
+    #[test]
+    fn default_is_on_for_local_only() {
+        assert!(eff(true, false, true));
+        assert!(!eff(true, false, false));
+    }
+
+    #[test]
+    fn explicit_setting_wins_everywhere() {
+        assert!(eff(true, true, false));
+        assert!(!eff(false, true, true));
+        assert!(!eff(false, true, false));
+    }
+}
+
+/// Whether the "limited: no remote helper" chip shows for a session on `host`: the global
+/// setting is on and the host was not dismissed. Host names compare case-insensitively.
+pub fn no_helper_chip_visible(show: bool, dismissed_hosts: &[String], host: &str) -> bool {
+    show && !dismissed_hosts
+        .iter()
+        .any(|dismissed| dismissed.eq_ignore_ascii_case(host))
+}
+
+#[cfg(test)]
+mod no_helper_chip_tests {
+    use super::no_helper_chip_visible as visible;
+
+    #[test]
+    fn shown_by_default() {
+        assert!(visible(true, &[], "box1"));
+    }
+
+    #[test]
+    fn hidden_entirely_by_the_setting() {
+        assert!(!visible(false, &[], "box1"));
+    }
+
+    #[test]
+    fn dismissal_is_per_host_and_case_insensitive() {
+        let dismissed = vec!["Box1".to_string()];
+        assert!(!visible(true, &dismissed, "box1"));
+        assert!(visible(true, &dismissed, "box2"));
     }
 }

@@ -253,7 +253,11 @@ fn receive_message_header(socket_fd: &impl AsRawFd) -> Result<ReceiveMessageHead
     // our receive buffer, the control messages will be read out in the initial
     // readmsg() call, and the follow-up readmsg calls will only return payload
     // data.
-    let cmsgs = msg.cmsgs().collect_vec();
+    // (nix >= 0.28: `cmsgs()` is fallible, `ENOBUFS` when the control buffer was too small.)
+    let cmsgs = msg
+        .cmsgs()
+        .context("Control messages were truncated (control buffer too small)")?
+        .collect_vec();
 
     // Parse the message header - we convert the bytes back into a usize, which
     // tells us the size of the serialized message, in bytes.  We add the size

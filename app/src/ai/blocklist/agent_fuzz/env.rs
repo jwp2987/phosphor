@@ -7,6 +7,12 @@ use fake_llm::scenario::CmdBehaviour;
 pub enum CmdOutcome {
     /// Finishes by itself with this output and exit code.
     Completes { output: String, exit_code: i32 },
+    /// Finishes by itself, but only once it has run for `after_ms`.
+    CompletesAfter {
+        after_ms: u64,
+        output: String,
+        exit_code: i32,
+    },
     /// Keeps running until the user (or a Stop) ends it. The harness reports it to the agent as a
     /// stalled long-running command after a short wait, as the executor's stall snapshot does.
     Stays,
@@ -22,6 +28,11 @@ pub fn outcome(behaviour: &CmdBehaviour) -> CmdOutcome {
         CmdBehaviour::SetE => CmdOutcome::Completes {
             output: String::new(),
             exit_code: 1,
+        },
+        CmdBehaviour::Slow { ms, out } => CmdOutcome::CompletesAfter {
+            after_ms: *ms,
+            output: out.clone(),
+            exit_code: 0,
         },
         CmdBehaviour::Silent { .. }
         | CmdBehaviour::TrailingColon { .. }
@@ -65,6 +76,21 @@ mod tests {
         ] {
             assert_eq!(outcome(&b), CmdOutcome::Stays, "{b:?}");
         }
+    }
+
+    #[test]
+    fn a_slow_command_finishes_by_itself_after_its_delay() {
+        assert_eq!(
+            outcome(&CmdBehaviour::Slow {
+                ms: 250,
+                out: "x".into()
+            }),
+            CmdOutcome::CompletesAfter {
+                after_ms: 250,
+                output: "x".into(),
+                exit_code: 0
+            }
+        );
     }
 
     #[test]

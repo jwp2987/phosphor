@@ -196,9 +196,9 @@ The input is a real multi-line editor, not a single-line readline.
   key behaviour** dropdown is what rebinds `tab` between "open completions menu"
   (the default) and "accept autosuggestion", and it does so by writing a custom
   binding into `keybindings.yaml`.
-- `tab` opens the completions menu by default. Set
-  `terminal.input.completions_open_while_typing = true` to have it open as you
-  type instead.
+- Completions open as you type in local sessions by default; remote sessions
+  keep them on `tab` only. Set `terminal.input.completions_open_while_typing`
+  explicitly (true or false) to override that for every session.
 - `meta-.` inserts the last word of the previous command.
 
 ### Vim mode
@@ -834,7 +834,7 @@ contexts, so changing it changes both.
 | `terminal.input.autosuggestions.show_ignore_button` | Show the ignore button | `false` |
 | `terminal.input.classic_completions_mode` | Traditional completions | `false` |
 | `terminal.input.command_corrections` | Suggest fixes for mistyped commands | `true` |
-| `terminal.input.completions_open_while_typing` | Open completions as you type | `false` |
+| `terminal.input.completions_open_while_typing` | Open completions as you type (default on for local sessions, off for remote unless set) | `true` |
 | `terminal.input.enable_ai_command_search_hash_trigger` | `#` opens AI command search | `true` |
 | `terminal.input.enable_slash_commands_in_terminal` | `/` slash commands | `true` |
 | `terminal.input.error_underlining_enabled` | Underline command errors | `true` |
@@ -931,7 +931,7 @@ Paths are relative to the repository root.
 app/src/settings/block_visibility.rs:7-35        BlockVisibilitySettings; all three default false; toml appearance.blocks.*
 (app/src/settings/same_line_prompt_block.rs                DELETED 2026-09 (#638); was private, no toml_path, no reader)
 app/src/settings/input.rs:35-211                 InputSettings: show_hint_text=true, classic_completions_mode=false,
-                                                 completions_open_while_typing=false, error_underlining=true,
+                                                 completions_open_while_typing=true (local only unless set), error_underlining=true,
                                                  syntax_highlighting=true, command_corrections=true,
                                                  input_box_type=InputBoxType::Classic,
                                                  at_context_menu_in_terminal_mode=true,

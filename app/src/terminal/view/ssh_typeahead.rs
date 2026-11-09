@@ -28,6 +28,7 @@ pub(super) const SSH_TYPEAHEAD_MAX_BYTES: usize = 64 * 1024;
 /// first prompt, for the session to become able to take a command (its history registered). The
 /// event that registers it ends the wait; this only bounds a registration that never comes. Past
 /// it the keys are delivered anyway: they are never kept back for good.
+// give-up-net: first-Precmd wait cap: hands the held ssh keys back as text, writes nothing
 pub(super) const SSH_TYPEAHEAD_PRECMD_WAIT_CAP: Duration = Duration::from_secs(5);
 
 /// Whether delivery of the held keys waits (#1332). `awaiting_first_precmd` is that the session

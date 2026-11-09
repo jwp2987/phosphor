@@ -693,7 +693,10 @@ pub fn build_store_client(
         // app here would be a verdict computed and discarded — and, worse, a
         // second place where "what the endpoint is" gets decided. Startup and
         // every later settings change now take exactly one code path.
-        Arc::new(HttpEmbeddingProvider::new(http_client::Client::new(), None)),
+        Arc::new(HttpEmbeddingProvider::new(
+            http_client::Client::for_purpose(&http_client::gate::AI_ENDPOINT),
+            None,
+        )),
         Arc::new(SqliteVectorStore::with_writer(persistence_writer)),
     ));
     client.refresh_from_settings(app);

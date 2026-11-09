@@ -2555,6 +2555,30 @@ define_settings_group!(AISettings, settings: [
         description: "Whether auto-approve bypasses the command denylist.",
     }
 
+    // The safe read-only command allowlist (`ai/blocklist/safe_commands.rs`): commands such as
+    // `ls`, `cat`, `grep` and `git status` run without asking. OFF by default; the owner turns it
+    // on after the agent-approval suite's first green run (docs/testing.md, "Agent approvals").
+    safe_command_allowlist_enabled: SafeCommandAllowlistEnabled {
+        type: bool,
+        default: false,
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Never,
+        private: false,
+        toml_path: "agents.warp_agent.permissions.safe_command_allowlist_enabled",
+        description: "Whether the agent may run the safe read-only commands in the allowlist without asking.",
+    }
+
+    // The entries of the safe read-only allowlist: `program` or `program subcommand`.
+    safe_command_allowlist: SafeCommandAllowlist {
+        type: Vec<String>,
+        default: crate::ai::blocklist::safe_commands::default_safe_commands(),
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Never,
+        private: false,
+        toml_path: "agents.warp_agent.permissions.safe_command_allowlist",
+        description: "Read-only commands (a program, or a program and subcommand) that run without approval when the safe allowlist is on.",
+    }
+
     // Controls whether the conversation history view appears in the tools panel.
     show_conversation_history: ShowConversationHistory {
         type: bool,
@@ -2646,16 +2670,17 @@ define_settings_group!(AISettings, settings: [
         description: "User-configured custom Agent providers (OpenAI-compatible).",
     }
 
-    // Settings-file-only (#1791): when false, Phosphor never downloads the models.dev catalog
-    // (no request at startup load, none from the Refresh button); it keeps the on-disk cache.
+    // Settings-file-only (#1791): when true, opening the Providers page downloads the models.dev
+    // catalog in the background if the cache is stale. Default false (Wave N, no network at
+    // startup): the built-in catalog is used and only the "Refresh model list" button fetches.
     models_dev_fetch: ModelsDevFetch {
         type: bool,
-        default: true,
+        default: false,
         supported_platforms: SupportedPlatforms::ALL,
         sync_to_cloud: SyncToCloud::Never,
         private: false,
         toml_path: "agents.warp_agent.models_dev_fetch",
-        description: "Download the models.dev model catalog; false uses only the local cache.",
+        description: "Download the models.dev model catalog automatically when the Providers page opens; false (default) uses the cache or built-in catalog, and only the Refresh button downloads.",
     }
 
     // Settings-file-only: where the catalog is downloaded from (when `models_dev_fetch` is

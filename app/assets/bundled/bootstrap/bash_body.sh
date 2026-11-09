@@ -905,7 +905,8 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
           warp_send_hook_kv_pair "seq" "$__warp_seq"
           warp_send_hook_via_kv_pairs_end
         else
-          local escaped_json="{\"hook\": \"Precmd\", \"value\": {\"exit_code\": $exit_code,\"next_block_id\": \"$next_block_id\",\"pwd\": \"$escaped_pwd\",\"ps1\": \"$escaped_ps1\",\"honor_ps1\": $honor_ps1,\"ps1_is_encoded\": true,\"git_head\": \"$escaped_git_head\",\"git_branch\": \"$escaped_git_branch\",\"virtual_env\": \"$escaped_virtual_env\",\"conda_env\": \"$escaped_conda_env\",\"node_version\": \"$escaped_node_version\",\"session_id\": ${WARP_SESSION_ID:-},\"seq\": $__warp_seq}}"
+          __phosphor_cwd_listing
+          local escaped_json="{\"hook\": \"Precmd\", \"value\": {\"exit_code\": $exit_code,\"next_block_id\": \"$next_block_id\",\"pwd\": \"$escaped_pwd\",\"ps1\": \"$escaped_ps1\",\"honor_ps1\": $honor_ps1,\"ps1_is_encoded\": true,\"git_head\": \"$escaped_git_head\",\"git_branch\": \"$escaped_git_branch\",\"virtual_env\": \"$escaped_virtual_env\",\"conda_env\": \"$escaped_conda_env\",\"node_version\": \"$escaped_node_version\",\"session_id\": ${WARP_SESSION_ID:-},\"seq\": $__warp_seq${__phosphor_cl_json-}}}"
           warp_send_json_message "$escaped_json"
         fi
     }
@@ -1137,6 +1138,80 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
       __warp_hex_encode_to "$__p" 2048
     }
 
+    # Phosphor (#1801): path detection without the remote helper. A remote shell (anything not
+    # started by Phosphor itself: WARP_IS_LOCAL_SHELL_SESSION != 1) adds a bounded listing of its
+    # cwd to the Precmd payload when the cwd or the listing changed, so the app can recognise a
+    # typed directory with no round trip. Sets $__phosphor_cl_json to `,"cwd_listing": "..."` or
+    # nothing. No forks: the glob, the directory test and the encoding are builtins. Wire format
+    # and parser: app/src/completer/pushed_listing.rs. Kill switch: PHOSPHOR_CWD_LISTING=0.
+    #   T            more than 2000 entries: not listed (and not looked at again until a cd)
+    #   L[ <t><name>]...   the listing; P instead of L when cut at 500 entries or 32 KB
+    # <t> is d (directory, symlinks followed) or f; a name's bytes outside [A-Za-z0-9._+@,=~-]
+    # are %HH, so no name can break the JSON or the DCS around it.
+    __phosphor_cl_pct () {
+      local __s=$1 __i __c __h __r=
+      for (( __i = 0; __i < ${#__s}; __i++ )); do
+        __c=${__s:__i:1}
+        if [[ $__c == [A-Za-z0-9._+@,=~-] ]]; then
+          __r+=$__c
+        else
+          builtin printf -v __h '%02X' "'$__c"
+          __r+="%${__h: -2}"
+        fi
+      done
+      __phosphor_cl_enc=$__r
+    }
+    __phosphor_cwd_listing () {
+      __phosphor_cl_json=
+      [[ ${WARP_IS_LOCAL_SHELL_SESSION:-} == 1 || ${PHOSPHOR_CWD_LISTING-} == 0 || -z ${WARP_BOOTSTRAPPED:-} ]] && return 0
+      if [[ $PWD != "${__phosphor_cl_pwd-}" ]]; then
+        __phosphor_cl_pwd=$PWD
+        __phosphor_cl_sig=
+        __phosphor_cl_big=
+      fi
+      [[ -n ${__phosphor_cl_big-} ]] && return 0
+      local LC_ALL=C GLOBIGNORE
+      local __o_n=0 __o_d=0 __o_f=0 __o_s=0 __n __t __enc
+      local -a __e
+      shopt -q nullglob && __o_n=1
+      shopt -q dotglob && __o_d=1
+      shopt -q failglob && __o_f=1
+      [[ $- == *f* ]] && { __o_s=1; set +f; }
+      shopt -s nullglob dotglob
+      shopt -u failglob
+      __e=(*)
+      (( __o_n )) || shopt -u nullglob
+      (( __o_d )) || shopt -u dotglob
+      (( __o_f )) && shopt -s failglob
+      (( __o_s )) && set -f
+      local __kind=L __out=
+      if (( ${#__e[@]} > 2000 )); then
+        __phosphor_cl_big=1
+        __kind=T
+      else
+        (( ${#__e[@]} > 500 )) && { __kind=P; __e=("${__e[@]:0:500}"); }
+        for __n in ${__e[@]+"${__e[@]}"}; do
+          if [[ -d $__n ]]; then __t=d; else __t=f; fi
+          if [[ $__n == *[!A-Za-z0-9._+@,=~-]* ]]; then
+            __phosphor_cl_pct "$__n"
+            __enc=$__phosphor_cl_enc
+          else
+            __enc=$__n
+          fi
+          __out+=" $__t$__enc"
+        done
+        if (( ${#__out} > 32768 )); then
+          __out=${__out:0:32768}
+          __out=${__out% *}
+          __kind=P
+        fi
+      fi
+      if [[ $__kind$__out != "${__phosphor_cl_sig-}" ]]; then
+        __phosphor_cl_sig=$__kind$__out
+        __phosphor_cl_json=",\"cwd_listing\": \"$__kind$__out\""
+      fi
+    }
+
     # Returns encoded InitShell hook
     # Accepts one argument: shell [bash, zsh, fish (future)]
     init_shell_hook () {
@@ -1224,16 +1299,18 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     # native-completions exchange"): this hook names it with a fresh token (OSC 9280;P;<token>),
     # and the app always ends it with ONE frame, RS <token> : <%HH bytes> US (RS = 0x1e,
     # US = 0x1f), or the cancel frame RS - : US, written in one piece. The hook consumes nothing
-    # that is not a frame: the first byte must be RS, then the frame's exact shape (a token of
-    # letters and digits, or `-`; `:`; `%HH` pairs; US) with at most 0.1 s between bytes. On any
-    # other byte, or a gap, everything read after the RS goes back to the line (text inserted, ^P
+    # that is not a frame: the first byte must be RS, then the frame's exact shape (the token
+    # `<digits>x<digits>x<digits>` or `-`; `:`; `%HH` pairs; US), judged by content only, with no
+    # inter-byte timing (a frame may arrive in pieces with any pauses). On the first byte that
+    # cannot continue a frame, everything read after the RS goes back to the line (text inserted, ^P
     # clears the line, an Enter accepts it, a bracketed paste is read whole and inserted, a
     # terminal reply such as a DA report is dropped whole) and the exchange ends. A frame for
     # another token, or the cancel, ends it with nothing. A frame that arrives after this hook
     # gave up lands at the prompt, where RS is bound to warp_native_discard, which reads the rest
     # by the same rules and drops it. US is not bound (it stays readline's undo): the discard
-    # widget consumes a frame's own US. The first byte waits PHOSPHOR_NC_DEADLINE seconds
-    # (default 20); a frame must be whole within 5 more.
+    # widget consumes a frame's own US. The only clock is the overall read deadline,
+    # PHOSPHOR_NC_DEADLINE seconds (default 20), a give-up net: on expiry the hook (or widget)
+    # hands back what it read and exits, writing nothing.
     #
     # Readline cannot run accept-line from a `bind -x` function, so ^Y and RS are bound to macros
     # that run the function and then \C-x\C-_9, which the function rebinds to accept-line when it
@@ -1259,6 +1336,7 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     # Starts a total deadline of $1 whole seconds.
     __warp_nc_deadline_set () {
         if [[ -n ${EPOCHREALTIME:-} ]]; then
+            # give-up-net: overall deadline of the exchange, its only clock; expiry hands the bytes read back to the line, writes nothing
             __warp_nc_dl=$(( ${EPOCHREALTIME/[.,]/} + $1 * 1000000 ))
         else
             __warp_nc_dl=$(( SECONDS + $1 ))
@@ -1269,6 +1347,7 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     __warp_nc_time_left () {
         local __l
         if [[ -n ${EPOCHREALTIME:-} ]]; then
+            # give-up-net: time left on the exchange's overall deadline; expiry hands the bytes read back, writes nothing
             __l=$(( __warp_nc_dl - ${EPOCHREALTIME/[.,]/} ))
             (( __l > 0 )) || return 1
             builtin printf -v __warp_nc_left '%d.%06d' $(( __l / 1000000 )) $(( __l % 1000000 ))
@@ -1284,6 +1363,7 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     __warp_nc_read_byte () {
         __warp_nc_byte=
         if (( BASH_VERSINFO[0] > 4 || BASH_VERSINFO[1] >= 1 )); then
+            # give-up-net: read bounded by the overall deadline only; expiry hands the bytes read back to the line, writes nothing
             IFS= builtin read -r -s -t "$1" -N 1 __warp_nc_byte < /dev/tty
         else
             IFS= builtin read -r -s -t "$1" -n 1 __warp_nc_byte < /dev/tty
@@ -1296,35 +1376,47 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         READLINE_POINT=$((READLINE_POINT + ${#1}))
     }
 
-    # ESC read where a frame byte was expected: read the rest of the escape sequence (at most
-    # 0.1 s between bytes). A bracketed paste (how the app writes a command after its ^P) is read
-    # to its end and its text inserted, as readline would; any other sequence (a terminal reply
-    # such as a DA report, or a key) is dropped whole, so none of it is left in the line.
+    # Reads one byte within what is left of the overall deadline (the only clock): status 1 when
+    # the deadline is over or nothing came.
+    __warp_nc_read_byte_dl () {
+        __warp_nc_time_left || { __warp_nc_byte=; return 1; }
+        __warp_nc_read_byte "$__warp_nc_left"
+    }
+
+    # ESC read where a frame byte was expected, classified by CONTENT only (no inter-byte
+    # timing): the NEXT byte decides. `[` is a CSI, read to its final byte (0x40-0x7E); `]` an OSC
+    # and `P` a DCS, read to BEL or ESC \. A terminal reply (a CSI ending in c, R, n, t or y, any
+    # OSC or DCS) is dropped whole; a bracketed paste (how the app writes a command after its ^P)
+    # is read to its end and its text inserted; any other CSI (a key) cannot be re-injected from
+    # a `bind -x` function and is dropped; anything else goes back as the byte (ESC itself cannot
+    # be re-injected). A lone ESC waits for the next byte or the deadline.
     __warp_nc_give_back_escape () {
         local __seq=
-        __warp_nc_read_byte 0.1 || return 0
+        __warp_nc_read_byte_dl || return 0
         __seq=$__warp_nc_byte
         case $__seq in
             '[')
                 # CSI: parameters and intermediates, then a final byte in @-~.
-                while __warp_nc_read_byte 0.1; do
+                while __warp_nc_read_byte_dl; do
                     __seq+=$__warp_nc_byte
                     case $__warp_nc_byte in [@A-Z\[\\\]^_\`a-z{\|}~]) break ;; esac
                     (( ${#__seq} <= 64 )) || return 0
                 done ;;
-            ']')
-                # OSC: up to BEL or ST.
-                while __warp_nc_read_byte 0.1; do
+            ']'|P)
+                # OSC / DCS: up to BEL or ST; dropped whole.
+                while __warp_nc_read_byte_dl; do
                     __seq+=$__warp_nc_byte
                     [[ $__warp_nc_byte == $'\a' || $__seq == *$'\e\\' ]] && break
                     (( ${#__seq} <= 4096 )) || return 0
                 done
                 return 0 ;;
-            O) __warp_nc_read_byte 0.1 ;;
+            *)
+                __warp_nc_give_back "" "$__seq"
+                return 0 ;;
         esac
         [[ $__seq == "[200~" ]] || return 0
         local __text=
-        while __warp_nc_read_byte 1; do
+        while __warp_nc_read_byte_dl; do
             __text+=$__warp_nc_byte
             if [[ $__text == *$'\e[201~' ]]; then
                 __text=${__text%$'\e[201~'}
@@ -1349,24 +1441,30 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         esac
     }
 
-    # Reads the rest of a frame after its RS. Returns 0 with __warp_nc_body set to
-    # "<token>:<%HH...>" when the bytes have the frame's exact shape up to its US; otherwise
-    # hands everything read back to the line and returns 1.
+    # Reads the rest of a frame after its RS, by CONTENT only (no inter-byte timing): bytes are
+    # consumed while they still form a valid prefix of `(token | -) ':' (%HH)* US`, the token
+    # being the hook's own `<digits>x<digits>x<digits>`. The first byte that cannot continue a
+    # frame ends the read: everything read so far plus that byte goes back to the line. Returns
+    # 0 with __warp_nc_body set to "<token>:<%HH...>" at the frame's US; otherwise returns 1.
+    # The caller's deadline (__warp_nc_deadline_set) is the only clock, a give-up net: on expiry
+    # what was read goes back and nothing is invented.
     __warp_nc_read_frame_body () {
         __warp_nc_body=
         local __phase=start
-        __warp_nc_deadline_set 5
         while __warp_nc_time_left; do
-            if ! __warp_nc_read_byte 0.1; then
+            if ! __warp_nc_read_byte "$__warp_nc_left"; then
                 __warp_nc_give_back "$__warp_nc_body" ""
                 return 1
             fi
             local __c=$__warp_nc_byte __ok=
             case $__phase:$__c in
                 start:-) __phase=dash __ok=1 ;;
-                start:[ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789]|tok:[ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789])
-                    __phase=tok __ok=1 ;;
-                tok:: | dash::) __phase=hex __ok=1 ;;
+                start:[0123456789]|d1:[0123456789]) __phase=d1 __ok=1 ;;
+                d1:x) __phase=x1 __ok=1 ;;
+                x1:[0123456789]|d2:[0123456789]) __phase=d2 __ok=1 ;;
+                d2:x) __phase=x2 __ok=1 ;;
+                x2:[0123456789]|d3:[0123456789]) __phase=d3 __ok=1 ;;
+                d3:: | dash::) __phase=hex __ok=1 ;;
                 hex:%) __phase=h1 __ok=1 ;;
                 h1:[0123456789ABCDEFabcdef]) __phase=h2 __ok=1 ;;
                 h2:[0123456789ABCDEFabcdef]) __phase=hex __ok=1 ;;
@@ -1437,6 +1535,9 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     # ended (the hook gave up, or was interrupted). Read the rest by the hook's rules and drop it;
     # anything that is not a frame goes back to the line. A frame is never run.
     __warp_native_discard_impl () {
+        local __pc_deadline=${PHOSPHOR_NC_DEADLINE:-20}
+        [[ $__pc_deadline =~ ^[0-9]+$ ]] || __pc_deadline=20
+        __warp_nc_deadline_set "$__pc_deadline"
         __warp_nc_read_frame_body
         return 0
     }
@@ -2268,6 +2369,7 @@ esac
             out=$( {
                 command ssh -o BatchMode=yes -o ControlMaster=no -o ControlPath="$control_path" "$@" -T 'echo warp-probe-%COMSPEC%-$PSVersionTable' </dev/null 2>/dev/null &
                 probe_pid=$!
+                # give-up-net: kills a stuck ssh probe after 5 s; never touches the tty or typed keys
                 ( command -p sleep 5; kill $probe_pid ) >/dev/null 2>&1 &
                 killer_pid=$!
                 wait $probe_pid
@@ -2422,6 +2524,7 @@ esac
                 p=$!
                 (
                     trap "kill \$s; exit 0" TERM
+                    # give-up-net: kills a stuck ssh control-master probe after 5 s; never touches the tty or typed keys
                     sleep 5 &
                     s=$!
                     wait "$s"

@@ -5415,6 +5415,40 @@ fn test_queue_keys_typed_during_a_pending_paste_apply_after_it_in_order() {
     })
 }
 
+// #1635: on the pane's shared queue (display gate on), a key the EDITOR's host delivers from a
+// non-flush drain waits for the display map exactly as on the input's host: a cursor key and a
+// typed closer open the display-map gate instead of applying against the pre-paste map.
+#[test]
+fn test_queue_editor_host_gates_every_map_reading_key_not_only_layout_ones() {
+    use crate::terminal::input_queue::GateKind;
+    for key in [
+        EditorAction::Left,
+        EditorAction::UserInsert(UserInput::new("'")),
+    ] {
+        App::test((), |mut app| async move {
+            initialize_app(&mut app);
+            let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+                EditorView::new_with_base_text("a", Default::default(), ctx)
+            });
+            view.update(&mut app, |view, ctx| {
+                let (tx, _rx) = async_channel::bounded(1);
+                view.paste_hold().enable_display_gate(tx);
+                view.move_to_buffer_end(ctx);
+                let id = start_queued_paste(view, ctx);
+                view.handle_action(&key, ctx);
+                finish_queued_paste(view, ctx, id, Ok(Vec::new()));
+                // The key did not apply: it is behind the display-map gate.
+                assert_eq!(view.buffer_text(ctx), "a", "{key:?} must not apply yet");
+                assert!(
+                    view.paste_hold().take_display_gate().is_some(),
+                    "{key:?} opened the {:?} gate",
+                    GateKind::EditorDisplayMap
+                );
+            });
+        })
+    }
+}
+
 // #1389, `PasteSequencer` path (plain editors): the twin of the test above.
 // The `for key in held` replay must not compute a cursor motion on a stale display map either.
 #[test]

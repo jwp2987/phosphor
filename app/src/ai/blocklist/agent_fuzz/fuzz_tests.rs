@@ -23,7 +23,7 @@ use proptest::test_runner::{
 };
 
 use super::coverage;
-use super::runner::{run_case, stall_cases_supported};
+use super::runner::{run_case_with, stall_cases_supported};
 
 fn config() -> Config {
     let mut config = Config::default();
@@ -53,7 +53,11 @@ fn scenarios() -> impl Strategy<Value = Scenario> {
 }
 
 fn check(scenario: Scenario) -> Result<(), TestCaseError> {
-    match run_case(&scenario) {
+    check_with(scenario, false)
+}
+
+fn check_with(scenario: Scenario, safe_allowlist: bool) -> Result<(), TestCaseError> {
+    match run_case_with(&scenario, safe_allowlist) {
         Ok(report) => {
             coverage::record(&report);
             Ok(())
@@ -112,6 +116,49 @@ fn report(error: TestError<Scenario>) -> ! {
 #[test]
 fn random_agent_conversations_hold_the_invariants() {
     if let Err(error) = runner().run(&scenarios(), check) {
+        report(error);
+    }
+}
+
+/// The same random conversations with the safe read-only allowlist ON: it only ever removes
+/// approvals, so every invariant must still hold.
+#[test]
+fn random_agent_conversations_hold_the_invariants_with_the_allowlist_on() {
+    if let Err(error) = runner().run(&scenarios(), |s| check_with(s, true)) {
+        report(error);
+    }
+}
+
+/// Random conversations at the human-fast pace: every user step lands 10-25 ms after the last
+/// (`Timing::Fast`), in bursts of up to nine, so approvals, rejects, Ctrl-C, stops, closes and
+/// follow-ups interleave with streams, retries and command completions.
+fn paced_scenarios() -> impl Strategy<Value = Scenario> {
+    use fake_llm::scenario::{ActorStep, Timing};
+    use fake_llm::strategies::{arb_op, arb_scenario};
+    (
+        arb_scenario(),
+        prop::collection::vec(arb_op().prop_map(|op| ActorStep { op, timing: Timing::Fast }), 3..10),
+    )
+        .prop_map(|(mut scenario, actor)| {
+            scenario.actor = actor;
+            scenario
+        })
+        .prop_filter(
+            "stall chaos needs PHOSPHOR_BYOP_STREAM_*_TIMEOUT_SECS <= 3 (script/agent_fuzz sets them)",
+            |scenario| stall_cases_supported() || !has_stall(scenario),
+        )
+}
+
+#[test]
+fn paced_random_sequences_hold_the_invariants() {
+    if let Err(error) = runner().run(&paced_scenarios(), check) {
+        report(error);
+    }
+}
+
+#[test]
+fn paced_random_sequences_hold_the_invariants_with_the_allowlist_on() {
+    if let Err(error) = runner().run(&paced_scenarios(), |s| check_with(s, true)) {
         report(error);
     }
 }

@@ -88,6 +88,18 @@ pub(super) fn subshell_setup_given_up_toast(why: &str, held_chunks: usize) -> St
     format!("{what}. {held}")
 }
 
+/// #1679 step 3 (owner Q9): the count-only toast of an E-SECRET / E-QUESTION hand-back: the keys
+/// (possibly a blind-typed password) are in the input as plain text, never run and never in the
+/// history; the toast never carries them.
+pub(super) fn subshell_setup_handed_back_toast(held_chunks: usize) -> String {
+    let held = match held_chunks {
+        0 => "Nothing was typed meanwhile.".to_owned(),
+        1 => "1 key typed meanwhile is in the input, not run.".to_owned(),
+        n => format!("{n} keys typed meanwhile are in the input, not run."),
+    };
+    format!("Phosphor setup paused: the shell is asking for input; answer it first. {held}")
+}
+
 /// #1661: the reason of a young Enter's hold that gave up (its toast gives the discarded count).
 pub(super) const YOUNG_HOLD_GIVE_UP_TOAST: &str =
     "The shell didn't show its prompt in time, so the Enter was not run";
@@ -239,6 +251,7 @@ pub(super) enum PromptHoldEnd {
 /// A paced CLI-agent submit is a few hundred ms to a few seconds (a Copilot bracketed paste waits
 /// 300 ms for its Enter, each image 300 ms); this is a net for a submit that never reports its end,
 /// far beyond any of them. Logged when it fires.
+// give-up-net: leak net of a paced CLI-agent submit: keys typed behind it are discarded with a count toast (#1661)
 const CLI_SUBMIT_LEAK_NET: Duration = Duration::from_secs(20);
 
 impl PasteQueueState {
@@ -345,6 +358,7 @@ pub(super) fn signal_bytes(kind: SignalKind) -> &'static [u8] {
 
 /// Net for the gate that holds the keys typed behind a deferred Enter: the patience timers and the
 /// Enter's own events end the hold long before this; logged when it fires.
+// give-up-net: leak net of a deferred Enter's gate: hands the held keys back / discards with a count toast
 const HANDOFF_GATE_LEAK_NET: Duration = Duration::from_secs(60);
 
 /// The spec of the `HandoffReport` gate named `id`.
@@ -707,6 +721,7 @@ impl Host for PtyQueueHost<'_, '_> {
     fn arm_give_up(&mut self, token: GateToken, _kind: GateKind, after: Duration) {
         // The ONE timer of a paste gate: a safety net for a reader that never answers. The reader's
         // result closes the gate first in every normal case and this then finds nothing to do.
+        // give-up-net: queue gate cap: a give-up that hands the gate's keys back to the editor or discards them with a count toast
         self.ctx.spawn(Timer::after(after), move |me, _, ctx| {
             me.on_paste_queue_give_up(token, ctx)
         });
@@ -1348,6 +1363,8 @@ impl TerminalView {
         self.powershell_setup_hold = super::PowerShellSetupHold::Off;
         self.subshell_bootstrap_announced = None;
         self.subshell_setup_net = None;
+        // #1679 step 3: a readiness-judged attempt whose keys come back is over too.
+        self.subshell_setup_state = super::SubshellSetupState::Idle;
         self.dismiss_subshell_setup_waiting_toast(ctx);
         // Review N2: in the queue's own (barrier) order, oldest gate first, so the runs of text
         // behind each gate come back in the order they were typed; a fixed kind order put a
@@ -2263,6 +2280,7 @@ impl TerminalView {
                     // Busy: asked again shortly (a hand-back, never a write).
                     None => {
                         ctx.spawn(
+                            // give-up-net: 100 ms re-ask of a hand-back whose queue was busy; the hand-back itself only returns keys to the editor, never writes (owner-listed)
                             Timer::after(Duration::from_millis(100)),
                             move |me, _, ctx| me.hand_back_gate_keys(kind, key, why, ctx),
                         );
@@ -2408,9 +2426,37 @@ impl TerminalView {
         after: Duration,
         ctx: &mut ViewContext<Self>,
     ) {
+        // give-up-net: re-arms the prompt hold's give-up cap; writes nothing
         ctx.spawn(Timer::after(after), move |me, _, ctx| {
             me.on_paste_queue_give_up(token, ctx)
         });
+    }
+
+    /// A signalling shell's line-editor ready signal did not come within its give-up net
+    /// (#1672/#1798; the controller's `LineEditorSignalGaveUp`): every live prompt hold goes
+    /// through the give-up the hold's own cap runs -- the keys go back to the editor as text, or
+    /// stay held for the events with the "waiting for the shell" toast. Nothing is written to the
+    /// pty. A busy queue leaves it to the hold's own cap.
+    pub(super) fn on_line_editor_signal_gave_up(&mut self, ctx: &mut ViewContext<Self>) {
+        let tokens: Vec<GateToken> = self
+            .paste_queue
+            .queue
+            .try_peek()
+            .map(|queue| {
+                queue
+                    .gates()
+                    .iter()
+                    .filter(|gate| gate.kind == GateKind::LineEditorActive)
+                    .map(|gate| gate.token)
+                    .collect()
+            })
+            .unwrap_or_default();
+        warpui::input_order::log_hop("line_editor_signal_gave_up", || {
+            format!("holds={}", tokens.len())
+        });
+        for token in tokens {
+            self.on_paste_queue_give_up(token, ctx);
+        }
     }
 
     /// The line editor signalled (the controller's `PromptHoldReleased`): the keys held for the
@@ -2709,22 +2755,13 @@ impl TerminalView {
         ctx: &mut ViewContext<Self>,
     ) -> SubshellPrep {
         // A queue that is mid-drain: this write is part of delivering an entry.
-        let (setup_gate, bootstrap_gate, only_subshell_gates) =
-            match self.paste_queue.queue.try_peek() {
-                Some(queue) => (
-                    queue.has_gate_kind(GateKind::SubshellSetup),
-                    queue.has_gate_kind(GateKind::SubshellBootstrapWrite),
-                    queue.gates().iter().all(|gate| {
-                        matches!(
-                            gate.kind,
-                            GateKind::SubshellSetup
-                                | GateKind::SubshellBootstrapWrite
-                                | GateKind::PowershellSetup
-                        )
-                    }),
-                ),
-                None => return SubshellPrep::Normal,
-            };
+        let (setup_gate, bootstrap_gate) = match self.paste_queue.queue.try_peek() {
+            Some(queue) => (
+                queue.has_gate_kind(GateKind::SubshellSetup),
+                queue.has_gate_kind(GateKind::SubshellBootstrapWrite),
+            ),
+            None => return SubshellPrep::Normal,
+        };
         let in_flight = self
             .subshell_bootstrap_in_flight
             .as_ref()
@@ -2764,20 +2801,12 @@ impl TerminalView {
             self.release_subshell_setup_held_bytes(ctx);
             return self.prepare_subshell_gates(bytes, ctx);
         }
-        // Not while the shell is asking for something: typing is the answer to it.
-        let awaits_answer = !abort
-            && in_flight.is_none()
-            && !bootstrap_gate
-            && powershell_off
-            && age.is_some()
-            && self.active_output_awaits_an_answer();
-        if awaits_answer && only_subshell_gates {
-            return SubshellPrep::Bypass;
-        }
-        let setup_governs = !abort
-            && !awaits_answer
-            && powershell_off
-            && super::subshell_setup_should_hold_typed_bytes(age, abort);
+        // #1679 step 4 (owner decision 2026-11-08): no bypass for a shell that asks for something.
+        // A question or a secret read while a setup is written is the readiness judge's
+        // E-QUESTION / E-SECRET: the setup is cancelled and the held keys come back, so the answer
+        // typed next passes through with no gate open. Until then every key is held, in order.
+        let setup_governs =
+            !abort && powershell_off && super::subshell_setup_should_hold_typed_bytes(age, abort);
         let queue = self.paste_queue.queue.clone();
         if setup_governs && !setup_gate {
             // No cap of its own (#1711): the setup's events close it, or the one setup net
@@ -2857,8 +2886,6 @@ impl TerminalView {
 pub(super) enum SubshellPrep {
     /// Offer it to the queue like any key (which delivers it now if nothing is held).
     Normal,
-    /// A shell prompt is asking for an answer: the key goes straight to the pty.
-    Bypass,
     /// A Ctrl-C / Ctrl-D typed during the bootstrap lines: it ended the setup and was written
     /// here (`abort_in_flight_subshell_setup`, review F1); nothing more to do with it.
     AbortHandled,

@@ -50,9 +50,25 @@ pub fn send_request(
             "local control endpoint is disabled for this instance",
         )
     })?;
-    let client = reqwest::blocking::Client::new();
+    // The network gate: the endpoint must be loopback, and environment proxies are ignored
+    // (a proxy must never see the control credential).
+    let endpoint_url = endpoint.url();
+    network_gate::check_url(&endpoint_url, &network_gate::LOCAL_CONTROL).map_err(|denied| {
+        ControlError::with_details(
+            ErrorCode::TransportUnavailable,
+            "local-control endpoint is not on loopback",
+            denied.to_string(),
+        )
+    })?;
+    let client = network_gate::blocking_loopback_client().map_err(|err| {
+        ControlError::with_details(
+            ErrorCode::TransportUnavailable,
+            "failed to create the local-control HTTP client",
+            err.to_string(),
+        )
+    })?;
     let response = client
-        .post(endpoint.url())
+        .post(endpoint_url)
         .header("Authorization", credential.authorization_value())
         .json(request)
         .send()

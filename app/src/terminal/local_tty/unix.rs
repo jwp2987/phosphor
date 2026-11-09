@@ -20,6 +20,7 @@ use itertools::Itertools;
 
 use super::event_loop::{PTY_TOKEN, SIGNALS_TOKEN};
 use super::spawner::{PtyHandle, PtySpawnInfo, PtySpawner};
+use super::terminal_attributes::tcgetattr_raw;
 use super::{ChildEvent, EventedPty, EventedReadWrite, PtyOptions, SizeInfo};
 use anyhow::{Context as _, Error, Result};
 use libc::{self, TIOCSCTTY, c_int, winsize};
@@ -59,16 +60,18 @@ fn make_pty(size: winsize) -> Result<(RawFd, RawFd)> {
     win_size.ws_ypixel = 0;
 
     let ends = openpty(Some(&win_size), None).context("openpty failed")?;
+    // nix >= 0.27 returns owned fds; hand them on as raw fds (the callers re-own them).
+    let (master, slave) = (ends.master.into_raw_fd(), ends.slave.into_raw_fd());
     // Configure the two new file descriptors to be closed on exec.  This keeps
     // us from leaking tty fds into spawned shells.  FD_CLOEXEC is _not_ shared
     // across duplicated fds, so when we call `libc::dup2()` below, those fds
     // will _not_ be closed when we exec the shell.
     unsafe {
-        libc::fcntl(ends.master, libc::F_SETFD, libc::FD_CLOEXEC);
-        libc::fcntl(ends.slave, libc::F_SETFD, libc::FD_CLOEXEC);
+        libc::fcntl(master, libc::F_SETFD, libc::FD_CLOEXEC);
+        libc::fcntl(slave, libc::F_SETFD, libc::FD_CLOEXEC);
     }
 
-    Ok((ends.master, ends.slave))
+    Ok((master, slave))
 }
 
 fn docker_sandbox_run_args(starter: &DockerSandboxShellStarter) -> Vec<std::ffi::OsString> {
@@ -559,10 +562,10 @@ fn spawn_command_in_pty(
     let _file = unsafe { File::from_raw_fd(follower) };
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    if let Ok(mut termios) = termios::tcgetattr(leader) {
+    if let Ok(mut termios) = tcgetattr_raw(leader) {
         // Set character encoding to UTF-8.
         termios.input_flags.set(InputFlags::IUTF8, true);
-        let _ = termios::tcsetattr(leader, SetArg::TCSANOW, &termios);
+        let _ = termios::tcsetattr(&leader_owned, SetArg::TCSANOW, &termios);
     }
 
     // Detect isolation platform outside pre_exec, since detect() is not async-signal-safe.
@@ -780,7 +783,7 @@ impl EventedReadWrite for Pty {
 
 /// Whether the tty behind `fd` (either end of a pty) is in canonical mode.
 fn fd_is_canonical(fd: RawFd) -> Option<bool> {
-    termios::tcgetattr(fd)
+    tcgetattr_raw(fd)
         .ok()
         .map(|t| t.local_flags.contains(termios::LocalFlags::ICANON))
 }

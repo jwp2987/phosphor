@@ -46,25 +46,30 @@ fn disabled_startup_path_never_fetches_even_with_a_custom_url() {
 }
 
 #[test]
-fn disabled_refresh_path_never_fetches_even_with_a_custom_url() {
+fn refresh_path_fetches_on_demand_from_the_one_url() {
+    // Owner decision (Wave N): the Refresh button is an explicit action and fetches even
+    // though `models_dev_fetch` defaults to false. It used to refuse when the setting was off.
     let _g = serial();
-    let called = Cell::new(false);
-    let r = futures::executor::block_on(refresh_catalog(
-        false,
-        "https://example.invalid/custom.json".to_owned(),
-        |_url| {
-            called.set(true);
-            ok_fetch(String::new())
-        },
-    ));
-    assert!(
-        !called.get(),
-        "RefreshModelsDev must not fetch when disabled"
-    );
+    let seen = RefCell::new(None);
+    let r = futures::executor::block_on(refresh_catalog(resolve_url(""), |url| {
+        *seen.borrow_mut() = Some(url);
+        ok_fetch(String::new())
+    }));
+    assert!(r.is_ok());
+    assert_eq!(seen.borrow().as_deref(), Some(DEFAULT_MODELS_DEV_URL));
+}
+
+#[test]
+fn a_failed_refresh_with_nothing_loaded_leaves_the_bundled_catalog() {
+    let _g = serial();
+    let r =
+        futures::executor::block_on(refresh_catalog(DEFAULT_MODELS_DEV_URL.to_owned(), |_url| {
+            std::future::ready(Err("offline".to_owned()))
+        }));
     assert!(r.is_err());
     assert!(
         has_catalog(),
-        "a refused refresh still leaves the bundled catalog"
+        "a failed refresh still leaves the bundled catalog"
     );
 }
 
@@ -141,7 +146,6 @@ fn enabled_fetches_from_the_configured_url() {
 
     let seen = RefCell::new(None);
     futures::executor::block_on(refresh_catalog(
-        true,
         "https://models.dev/api.json".to_owned(),
         |url| {
             *seen.borrow_mut() = Some(url);

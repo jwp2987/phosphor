@@ -908,6 +908,14 @@ impl BlockList {
     }
 
     pub fn clear_selection(&mut self) {
+        // Wave P: a key clears the selection on every press; with nothing selected there is
+        // nothing to clear and nothing for the selection-changed event to tell anyone.
+        if self.selection.is_none()
+            && self.rich_content_selections.is_empty()
+            && crate::terminal::model_lock_trace::perf_echo_enabled()
+        {
+            return;
+        }
         self.take_selection();
         self.rich_content_selections.clear();
         self.event_proxy

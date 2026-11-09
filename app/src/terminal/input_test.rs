@@ -8239,6 +8239,22 @@ fn test_second_enter_after_a_give_up_on_an_over_cap_shell_line_runs_it_in_the_sh
 /// `large_input/*` criterion benches (`app/benches/routing_bench.rs`), gated in CI.
 #[test]
 fn test_paste_of_a_large_buffer_and_the_keystroke_after_it_are_linear_in_its_size() {
+    assert_paste_and_keystroke_are_linear(
+        "please explain why the build failed; see <log> $HOME | grep error ",
+    );
+}
+
+/// #1191: the same, for a 1 MB paste of ~13,000 short lines (the multi-line case the owner
+/// measured at 7 s of no repaint): the per-line work of the edit handler must not grow with the
+/// line count either.
+#[test]
+fn test_paste_of_a_large_multi_line_buffer_and_the_keystroke_after_it_are_linear_in_its_size() {
+    assert_paste_and_keystroke_are_linear(
+        "echo line of about eighty characters; ls -la | grep foo # <x> $HOME\n",
+    );
+}
+
+fn assert_paste_and_keystroke_are_linear(unit: &'static str) {
     use std::time::Instant;
 
     const LINEAR_RATIO_CAP: f64 = 40.0;
@@ -8258,9 +8274,8 @@ fn test_paste_of_a_large_buffer_and_the_keystroke_after_it_are_linear_in_its_siz
         simulate_directory_for_completion(session_id, &terminal, &mut app, "~");
         let input = terminal.read(&app, |terminal, _| terminal.input().clone());
 
-        // Single-line prose with shell metacharacters sprinkled in, so every scan on the path
-        // (attachment patterns, operators, words) has work to do.
-        let unit = "please explain why the build failed; see <log> $HOME | grep error ";
+        // `unit` has shell metacharacters sprinkled in, so every scan on the path (attachment
+        // patterns, operators, words) has work to do.
         let mut measure_once = |bytes: usize| -> (Duration, Duration) {
             let text = unit.repeat(bytes / unit.len() + 1);
             input.update(&mut app, |input, ctx| {
@@ -14248,9 +14263,10 @@ fn test_tab_then_enter_remote_in_band_answer_runs_the_completed_line_in_both_mod
             input.update(&mut app, |input, _| {
                 input.tab_completion_request.as_mut().unwrap().remote_native = true;
             });
-            // A round trip's worth of compute, over the local 150 ms cap and within the remote one.
+            // A very late frame: a minute of waiting, far over any old budget. No clock decides
+            // what this Enter runs, so it still waits for the answer.
             let (clock, _guard) =
-                ComputeClock::running_for_test(std::time::Duration::from_millis(400));
+                ComputeClock::running_for_test(std::time::Duration::from_secs(60));
             input.update(&mut app, |input, ctx| {
                 input.input_enter(ctx);
                 let wait = input
@@ -14277,8 +14293,10 @@ fn test_tab_then_enter_remote_in_band_answer_runs_the_completed_line_in_both_mod
     }
 }
 
-/// #1801 review: a remote in-band answer that does not land within its cap hands the line back
-/// and runs nothing, the same give-up as a local Tab (#1666), in both destination modes.
+/// Owner decision (no timer decides what Enter runs): a remote in-band Tab that is NEVER answered
+/// (the pty gave up, the exchange was refused, the shell left) hands the line back and runs
+/// nothing; no clock does it, the no-answer event does. Keys typed meanwhile stay held. Both
+/// destination modes.
 #[test]
 fn test_tab_then_enter_remote_in_band_give_up_runs_nothing_in_both_modes() {
     use crate::terminal::input_queue::DestinationMode;
@@ -14291,16 +14309,22 @@ fn test_tab_then_enter_remote_in_band_give_up_runs_nothing_in_both_modes() {
             input.update(&mut app, |input, _| {
                 input.tab_completion_request.as_mut().unwrap().remote_native = true;
             });
-            let (clock, _guard) = ComputeClock::running_for_test(
-                REMOTE_NATIVE_TAB_ENTER_BUDGET + std::time::Duration::from_millis(100),
-            );
             input.update(&mut app, |input, ctx| {
                 input.input_enter(ctx);
+                // A compute clock that ran for ages must not give up either.
+                let (clock, _guard) =
+                    ComputeClock::running_for_test(std::time::Duration::from_secs(60));
                 let wait = input.verdict_wait.as_mut().expect("the Enter holds");
                 wait.compute = clock.clone();
                 let id = wait.id;
                 input.compute_cap_fired(id, ctx);
+                assert!(input.verdict_wait.is_some(), "{mode:?}: no clock gives up");
             });
+            assert!(executed.borrow().is_empty(), "{mode:?}");
+            let handed_back = input.update(&mut app, |input, ctx| {
+                input.give_up_unanswered_remote_hold(ctx)
+            });
+            assert!(handed_back, "{mode:?}");
             assert!(
                 executed.borrow().is_empty(),
                 "{mode:?}: the uncompleted line must not run"

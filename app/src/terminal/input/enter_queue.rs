@@ -61,6 +61,7 @@ use crate::workspace::ToastStack;
 /// the view's route-settle net (`AFTER_ENTER_REPLAY_PTY_WAIT`, 10 s from the submit) is the one
 /// that normally gives up on a command the pty never takes, and this net only ends a gate a bug
 /// left open. Either give-up discards what was typed behind the Enter, so no hold lasts longer.
+// give-up-net: leak net of the Enter gate: the held Enter is given up (line stays, what followed is discarded with a count toast)
 pub(super) const ENTER_GATE_LEAK_NET: Duration = Duration::from_secs(20);
 
 /// The Enter gate this input has open on the queue. The gate's key is the wait's id (#1206), so a
@@ -94,6 +95,7 @@ pub(super) struct EnterGate {
 /// (owner decision 2026-11-05, #1661), with a toast, and it is logged. Owner decision
 /// 2026-11-05: 60 s (was 15 s), so a slow shell startup (nvm, conda, a slow remote bootstrap) does
 /// not drop the typeahead; the readiness event, not this net, is how the hold normally ends.
+// give-up-net: 60 s net of an Enter held for an unready shell: the line stays in the editor unrun, what followed is discarded with a toast (#1661)
 pub(super) const UNREADY_ENTER_GIVE_UP: Duration = Duration::from_secs(60);
 
 /// #1577: the reason of an Enter gate that gave up because the shell never took the command.

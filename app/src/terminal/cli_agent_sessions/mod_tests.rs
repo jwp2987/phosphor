@@ -1694,3 +1694,34 @@ fn second_ctrl_c_while_armed_reuses_the_existing_window() {
         });
     });
 }
+
+#[test]
+fn malformed_event_is_dropped_with_a_message_that_has_no_content() {
+    let secret = "my secret prompt text";
+    for body in [
+        format!(r#"{{"v":1,"agent":"claude","event":"prompt_submit","query":"{secret}"#),
+        format!(r#"{{"v":1,"query":"{secret}" "event":"stop"}}"#),
+    ] {
+        assert!(parse_event(Some("warp://cli-agent"), &body).is_none());
+        let error = serde_json::from_str::<serde_json::Value>(&body)
+            .err()
+            .expect("the body is invalid JSON");
+        let message = super::event::malformed_event_message(&body, &error);
+        assert!(!message.contains(secret), "{message}");
+        assert!(
+            message.contains(&format!("{} bytes", body.len())),
+            "{message}"
+        );
+    }
+}
+
+#[test]
+fn prompt_with_semicolons_and_multibyte_characters_parses() {
+    let body = r#"{"v":1,"agent":"claude","event":"prompt_submit","session_id":"s","cwd":"/p","project":"p","query":"a;b; éé end"}"#;
+    let event = parse_event(Some("warp://cli-agent"), body).unwrap();
+    assert_eq!(event.event, CLIAgentEventType::PromptSubmit);
+    assert_eq!(
+        event.payload.query.as_deref(),
+        Some("a;b; \u{e9}\u{e9} end")
+    );
+}

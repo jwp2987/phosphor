@@ -1509,6 +1509,7 @@ fn test_create_new_block_with_local_status() {
 
             // Initialize a local session
             model.init_shell(InitShellValue {
+                pid: None,
                 session_id: 0.into(),
                 shell: "bash".to_owned(),
                 ..Default::default()
@@ -1544,6 +1545,7 @@ fn test_create_new_block_with_local_status() {
 
             // Create a new block with a remote session ID and remote_shell
             model.init_shell(InitShellValue {
+                pid: None,
                 session_id: 1.into(),
                 shell: "bash".to_owned(),
                 user: "user".to_owned(),
@@ -4743,6 +4745,7 @@ fn test_banner_for_incompatible_plugins() {
         terminal.update(&mut app, |view, _ctx| {
             let mut model = view.model.lock();
             model.init_shell(InitShellValue {
+                pid: None,
                 session_id: 0.into(),
                 shell: "zsh".to_owned(),
                 ..Default::default()
@@ -4858,6 +4861,7 @@ fn test_bash_vim_banner_already_shown() {
         terminal.update(&mut app, |view, _ctx| {
             let mut model = view.model.lock();
             model.init_shell(InitShellValue {
+                pid: None,
                 session_id: 0.into(),
                 shell: "bash".to_owned(),
                 ..Default::default()
@@ -4915,6 +4919,7 @@ fn test_bash_vim_banner_on() {
         terminal.update(&mut app, |view, _ctx| {
             let mut model = view.model.lock();
             model.init_shell(InitShellValue {
+                pid: None,
                 session_id: 0.into(),
                 shell: "bash".to_owned(),
                 ..Default::default()
@@ -4971,6 +4976,7 @@ fn test_bash_vim_banner_off() {
         terminal.update(&mut app, |view, _ctx| {
             let mut model = view.model.lock();
             model.init_shell(InitShellValue {
+                pid: None,
                 session_id: 0.into(),
                 shell: "bash".to_owned(),
                 ..Default::default()
@@ -5028,6 +5034,7 @@ fn test_zsh_vim_banner_on() {
         terminal.update(&mut app, |view, _ctx| {
             let mut model = view.model.lock();
             model.init_shell(InitShellValue {
+                pid: None,
                 session_id: 0.into(),
                 shell: "zsh".to_owned(),
                 ..Default::default()
@@ -5084,6 +5091,7 @@ fn test_zsh_vim_banner_off() {
         terminal.update(&mut app, |view, _ctx| {
             let mut model = view.model.lock();
             model.init_shell(InitShellValue {
+                pid: None,
                 session_id: 0.into(),
                 shell: "zsh".to_owned(),
                 ..Default::default()
@@ -5134,6 +5142,7 @@ fn test_fish_vim_banner_on() {
         terminal.update(&mut app, |view, _ctx| {
             let mut model = view.model.lock();
             model.init_shell(InitShellValue {
+                pid: None,
                 session_id: 0.into(),
                 shell: "fish".to_owned(),
                 ..Default::default()
@@ -5183,6 +5192,7 @@ fn test_fish_vim_banner_off() {
         terminal.update(&mut app, |view, _ctx| {
             let mut model = view.model.lock();
             model.init_shell(InitShellValue {
+                pid: None,
                 session_id: 0.into(),
                 shell: "fish".to_owned(),
                 ..Default::default()
@@ -5592,6 +5602,7 @@ fn inline_agent_view_exits_when_tagged_in_long_running_command_is_tagged_out() {
             {
                 let mut model = view.model.lock();
                 model.init_shell(InitShellValue {
+                    pid: None,
                     session_id: 0.into(),
                     shell: "zsh".to_owned(),
                     ..Default::default()
@@ -5654,6 +5665,7 @@ fn inline_agent_view_persists_across_transfer_takeover_for_monitored_long_runnin
             {
                 let mut model = view.model.lock();
                 model.init_shell(InitShellValue {
+                    pid: None,
                     session_id: 0.into(),
                     shell: "zsh".to_owned(),
                     ..Default::default()
@@ -6007,6 +6019,7 @@ fn exiting_lrc_user_takeover_does_not_insert_agent_view_entry_card() {
             {
                 let mut model = view.model.lock();
                 model.init_shell(InitShellValue {
+pid: None,
                     session_id: 0.into(),
                     shell: "zsh".to_owned(),
                     ..Default::default()
@@ -6078,6 +6091,7 @@ fn use_agent_footer_renders_for_transfer_handoff_even_when_user_command_footer_s
             {
                 let mut model = view.model.lock();
                 model.init_shell(InitShellValue {
+                    pid: None,
                     session_id: 0.into(),
                     shell: "zsh".to_owned(),
                     ..Default::default()
@@ -11271,6 +11285,7 @@ fn command_block_count_for_conversation(
 fn bootstrap_with_long_running_block(view: &mut TerminalView) {
     let mut model = view.model.lock();
     model.init_shell(InitShellValue {
+        pid: None,
         session_id: 0.into(),
         shell: "zsh".to_owned(),
         ..Default::default()
@@ -15324,6 +15339,77 @@ fn typeahead_handoff_ctrl_c_with_no_prompt_cycle_decides_at_once() {
     })
 }
 
+/// #1703 (busy-machine M10): the give-up of the hand-back after a Ctrl-C never commits. On a slow
+/// machine the report or prompt cycle may only be late; the editor must not take the line on the
+/// timer. The give-up only clears the wait for that one signal; owner rule (2026-11-08, a timer
+/// never writes, routes or re-asks): it asks the controller for nothing (`RetryTypeaheadHandoffRequest`
+/// is emitted by events only: the Precmd, the line editor's ready signal, a report); the pty keeps
+/// input meanwhile. Legacy and Table share this hand-off.
+#[test]
+fn typeahead_handoff_ctrl_c_give_up_does_not_commit() {
+    use crate::terminal::input_queue::DestinationMode;
+    for (prompt_cycle_expected, mode) in [false, true].into_iter().flat_map(|cycle| {
+        [DestinationMode::Legacy, DestinationMode::Table].map(move |mode| (cycle, mode))
+    }) {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let retries = Rc::new(RefCell::new(0));
+            let retries_seen = retries.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                    if let Event::RetryTypeaheadHandoffRequest = event {
+                        *retries_seen.borrow_mut() += 1;
+                    }
+                });
+            });
+
+            terminal.update(&mut app, |view, ctx| {
+                {
+                    let mut model = view.model.lock();
+                    let mut handoff = model.typeahead_handoff_mut();
+                    handoff.set_prompt_seq_enabled(true);
+                    handoff.on_precmd_seq(Some(1), Some(1));
+                    handoff.on_command_written();
+                    handoff.on_precmd();
+                }
+                view.handle_typeahead_handoff_interrupt_for_shell(prompt_cycle_expected, ctx);
+                assert!(matches!(
+                    view.model.lock().typeahead_handoff().state(),
+                    HandoffState::PtyOwned { .. }
+                ));
+                view.interrupt_give_up_fired(std::time::Duration::from_secs(2), ctx);
+                let handoff_is_waiting = {
+                    let model = view.model.lock();
+                    let handoff = model.typeahead_handoff();
+                    handoff.interrupt_barrier_pending() || handoff.interrupt_awaiting_cycle()
+                };
+                assert!(
+                    !handoff_is_waiting,
+                    "the give-up stops waiting for the signal"
+                );
+                assert!(
+                    matches!(
+                        view.model.lock().typeahead_handoff().state(),
+                        HandoffState::PtyOwned { .. }
+                    ),
+                    "a timer must not hand the line to the editor"
+                );
+            });
+            // Only the interrupt's own event-driven retry (zsh, no prompt cycle) counts: the
+            // timer's give-up adds none.
+            let expected = if prompt_cycle_expected { 0 } else { 1 };
+            assert_eq!(
+                *retries.borrow(),
+                expected,
+                "the give-up asks the controller for nothing (the interrupt's own retry counts for zsh)"
+            );
+        })
+    }
+}
+
 /// A shell that does run a prompt cycle hands input back on the cycle's Precmd: nothing is asked of
 /// the controller at the interrupt, and the Precmd commits.
 #[test]
@@ -16373,42 +16459,46 @@ fn text_typed_during_a_stalled_subshell_setup_is_held_then_delivered_in_order() 
     })
 }
 
-/// #1014: the typed-input hold must not swallow an answer to a prompt the shell is showing. With
-/// `Password: ` as the last visible output, typing reaches the pty at once; with silent output it
-/// is held. Not compiled/run when written (no builds in the fix pass).
+/// #1679 step 4 (owner decision 2026-11-08; the expectation of #1014's
+/// `typed_input_during_stalled_setup_passes_through_to_a_visible_prompt` is reversed): typing during
+/// an announced setup is HELD whether or not the output shows a prompt for input. The bypass that let
+/// it through to a `Password: ` ran keys inside the hidden setup block (macOS) and is gone; a
+/// question or secret read while the setup is written is the readiness judge's E-QUESTION /
+/// E-SECRET, which hand the held keys back. Legacy and Table hold the same way.
 #[test]
-fn typed_input_during_stalled_setup_passes_through_to_a_visible_prompt() {
-    for (output, expect_written) in [("Password: ", true), ("", false)] {
-        App::test((), move |mut app| async move {
-            initialize_app_for_terminal_view(&mut app);
-            let terminal = add_window_with_terminal(&mut app, None);
-            let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
-            let writes = pty_writes.clone();
-            app.update(|ctx| {
-                ctx.subscribe_to_view(&terminal, move |_, event, _| {
-                    if let Event::WriteBytesToPty { bytes } = event {
-                        writes.borrow_mut().push(bytes.to_vec());
-                    }
+fn typed_input_during_an_announced_setup_is_held_whatever_the_output_shows() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        for output in ["Password: ", "Continue? [y/N] ", ""] {
+            App::test((), move |mut app| async move {
+                let _mode =
+                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+                initialize_app_for_terminal_view(&mut app);
+                let terminal = add_window_with_terminal(&mut app, None);
+                let pty_writes = collect_pty_writes(&mut app, &terminal);
+                terminal.update(&mut app, |view, ctx| {
+                    view.model
+                        .lock()
+                        .simulate_long_running_block("su -", output);
+                    let block_id = view.model.lock().block_list().active_block().id().clone();
+                    view.subshell_bootstrap_announced = Some((block_id, Instant::now()));
+                    assert!(view.write_user_bytes_to_pty(b"secret".to_vec(), ctx));
                 });
-            });
-            terminal.update(&mut app, |view, ctx| {
-                view.model
-                    .lock()
-                    .simulate_long_running_block("su -", output);
-                let block_id = view.model.lock().block_list().active_block().id().clone();
-                view.subshell_bootstrap_announced = Some((block_id, Instant::now()));
-                assert!(view.write_user_bytes_to_pty(b"secret".to_vec(), ctx));
-            });
-            let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
-            if expect_written {
-                assert_eq!(written, b"secret".to_vec(), "answer to a visible prompt");
-            } else {
-                assert!(written.is_empty(), "silent shell: typing is held");
+                assert!(
+                    pty_writes.borrow().is_empty(),
+                    "{mode:?} {output:?}: held, never written into the setup block"
+                );
                 terminal.read(&app, |view, _| {
-                    assert_eq!(held_for_subshell_setup(view), (1, 6));
+                    assert_eq!(held_for_subshell_setup(view), (1, 6), "{mode:?} {output:?}");
                 });
-            }
-        })
+                // The setup's end delivers them, once, in order.
+                terminal.update(&mut app, |view, ctx| {
+                    view.release_subshell_setup_held_bytes(ctx)
+                });
+                let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+                assert_eq!(written, b"secret".to_vec(), "{mode:?} {output:?}");
+            })
+        }
     }
 }
 
@@ -19256,6 +19346,7 @@ fn ssh_pane_with_held_typeahead_for_test(
     // mode; the test drives the gate directly, so it feeds what those events would.
     view.ssh_observe(ctx);
     view.model.lock().init_shell(InitShellValue {
+        pid: None,
         session_id: SessionId::from(167303092612202),
         shell: "bash".to_owned(),
         user: "user".to_owned(),
@@ -19677,6 +19768,7 @@ fn ssh_keys_between_bootstrapped_and_first_remote_prompt_are_dropped_whole() {
             view.ssh_observe(ctx);
             // The remote shell announces itself (pending session); the gate sees it.
             view.model.lock().init_shell(InitShellValue {
+                pid: None,
                 session_id: remote_session,
                 shell: "bash".to_owned(),
                 user: "user".to_owned(),
@@ -20560,6 +20652,7 @@ fn managed_ssh_keys_are_held_through_the_master_login_and_delivered_after_the_bo
                 view.refresh_ssh_connect_gate();
                 view.ssh_observe(ctx);
                 view.model.lock().init_shell(InitShellValue {
+                    pid: None,
                     session_id: remote_session,
                     shell: "bash".to_owned(),
                     user: "user".to_owned(),
@@ -20876,6 +20969,7 @@ fn managed_ssh_bootstrap_to_first_prompt_for_test(
     view.refresh_ssh_connect_gate();
     view.ssh_observe(ctx);
     view.model.lock().init_shell(InitShellValue {
+        pid: None,
         session_id: remote_session,
         shell: "bash".to_owned(),
         user: "user".to_owned(),
@@ -24797,6 +24891,7 @@ fn a_late_bootstrapped_after_the_net_is_accepted() {
                 .expect("marker-paced");
             // The shell ran the script's head: the subshell session is pending.
             view.model.lock().init_shell(InitShellValue {
+                pid: None,
                 shell: "bash".into(),
                 user: "u".to_owned(),
                 hostname: "h".to_owned(),
@@ -26955,6 +27050,78 @@ fn a_prompt_hold_past_its_cap_hands_its_keys_back_to_the_editor_and_writes_nothi
                 pty_writes.borrow().is_empty(),
                 "{mode:?}: zero pty writes from the timer: {:?}",
                 pty_writes.borrow()
+            );
+        })
+    }
+}
+
+/// Owner rule (#1672/#1798, event-driven pipeline): the line-editor activation's give-up net
+/// (`LineEditorSignalGaveUp`) only hands text back. The keys held for a signalling shell's ready
+/// signal go back to the editor in typed order and nothing is written to the pty. Legacy and
+/// Table.
+#[test]
+fn the_line_editor_signal_give_up_hands_the_held_keys_to_the_editor_and_writes_nothing() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                conpty_prompt_hold_setup(view);
+                for key in b"ls -l" {
+                    view.write_user_bytes_to_pty(vec![*key], ctx);
+                }
+                assert!(prompt_gate_open(view), "{mode:?}");
+                view.on_line_editor_signal_gave_up(ctx);
+                assert!(!prompt_gate_open(view), "{mode:?}");
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "ls -l",
+                    "{mode:?}: every key, in order, in the editor"
+                );
+                // No hold left: a second give-up changes nothing.
+                view.on_line_editor_signal_gave_up(ctx);
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls -l", "{mode:?}");
+            });
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{mode:?}: the net wrote nothing to the pty"
+            );
+        })
+    }
+}
+
+/// #1796 (owner rule: timers never decide routing): the "may be waiting for input" notice is UI
+/// only. It writes nothing to the pty, does not touch the typeahead hand-off, and shows nothing
+/// at all unless the agent drives the active block; typing keeps routing as before. Legacy and
+/// Table.
+#[cfg(unix)]
+#[test]
+fn the_may_be_waiting_notice_writes_nothing_and_changes_no_routing() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                view.model.lock().start_command_execution();
+                let state_before = format!("{:?}", view.model.lock().typeahead_handoff().state());
+                view.on_command_may_be_waiting_for_input(ctx);
+                assert_eq!(
+                    format!("{:?}", view.model.lock().typeahead_handoff().state()),
+                    state_before,
+                    "{mode:?}: the notice decides no routing"
+                );
+            });
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{mode:?}: the notice wrote nothing"
             );
         })
     }
@@ -29801,6 +29968,22 @@ fn scenario_powershell_setup_keys(view: &mut TerminalView, ctx: &mut ViewContext
     view.keydown_on_terminal("\r", ctx);
 }
 
+/// #1679 step 4: an announced subshell setup whose output asks for an answer. Legacy holds (no
+/// bypass any more) and the table holds (row H7, no H7b): zero disagreements.
+fn scenario_announced_subshell_setup_asking(
+    view: &mut TerminalView,
+    ctx: &mut ViewContext<TerminalView>,
+) {
+    view.model
+        .lock()
+        .simulate_long_running_block("su -", "Password: ");
+    let block_id = view.model.lock().block_list().active_block().id().clone();
+    view.subshell_bootstrap_announced = Some((block_id, Instant::now()));
+    view.typed_characters_on_terminal("s", ctx);
+    view.keydown_on_terminal("\r", ctx);
+    view.control_sequence_on_terminal(b"\x1b[A", ctx);
+}
+
 fn scenario_written_by_other_origins(view: &mut TerminalView, ctx: &mut ViewContext<TerminalView>) {
     view.model.lock().simulate_long_running_block("claude", "");
     view.write_to_pty_for_syncing_long_running_commands(b"ab".to_vec(), ctx);
@@ -30253,7 +30436,7 @@ fn table_mode_a_control_key_behind_a_gate_is_delivered_at_the_gates_event() {
 /// the real view code.
 #[test]
 fn shadow_mode_reports_no_untagged_disagreement_over_the_arrival_scenarios() {
-    let scenarios: [(&str, Scenario); 9] = [
+    let scenarios: [(&str, Scenario); 10] = [
         ("running command", scenario_running_command_keys),
         (
             "block started, not yet long running",
@@ -30269,6 +30452,10 @@ fn shadow_mode_reports_no_untagged_disagreement_over_the_arrival_scenarios() {
         ("agent writes", scenario_agent_writes),
         ("navigation keys", scenario_navigation_keys),
         ("text behind a gate", scenario_text_behind_a_cli_submit_gate),
+        (
+            "announced subshell setup asking for an answer",
+            scenario_announced_subshell_setup_asking,
+        ),
     ];
     for (name, scenario) in scenarios {
         let lines = run_shadow_scenario(scenario);
@@ -31762,6 +31949,672 @@ fn a_question_shows_its_card_with_no_approval_step_and_a_skip_resolves_it_once()
     })
 }
 
+// ---- #1679 step 3 (C3b): the readiness-judged subshell setup -----------------------------------
+
+use crate::terminal::model::subshell_tty::{LeaderKind, SubshellTtyKind, SubshellTtySample};
+
+/// Installs a fake readiness probe whose sample the test changes as the scenario goes on, and the
+/// spawn pid the sample needs as its parent. Returns the shared sample.
+fn install_subshell_tty_for_test(
+    view: &TerminalView,
+    sample: SubshellTtySample,
+) -> Arc<warpui_core::sync_shim::Mutex<SubshellTtySample>> {
+    let cell = Arc::new(warpui_core::sync_shim::Mutex::new(sample));
+    let probe = cell.clone();
+    let mut model = view.model.lock();
+    model.set_local_shell_pid(1);
+    model.set_subshell_tty_probe(Arc::new(move |_| probe.lock().clone()), None);
+    cell
+}
+
+fn tty_sample(
+    kind: SubshellTtyKind,
+    leader: LeaderKind,
+    comm: &str,
+    canonical: bool,
+    queue_empty: Option<bool>,
+) -> SubshellTtySample {
+    SubshellTtySample {
+        kind,
+        leader,
+        leader_comm: (!comm.is_empty()).then(|| comm.to_owned()),
+        canonical: Some(canonical),
+        queue_empty,
+    }
+}
+
+/// bash's readline reading at its prompt, nothing unread.
+fn bash_reading() -> SubshellTtySample {
+    tty_sample(
+        SubshellTtyKind::LineReader,
+        LeaderKind::Shell,
+        "bash",
+        false,
+        Some(true),
+    )
+}
+
+/// bash running its rc (cooked), keeping up with its reads.
+fn bash_cooked() -> SubshellTtySample {
+    tty_sample(
+        SubshellTtyKind::Cooked,
+        LeaderKind::Shell,
+        "bash",
+        true,
+        Some(true),
+    )
+}
+
+/// `sudo` (use_pty) in front, the local tty raw: a relay.
+fn sudo_relay(canonical: bool) -> SubshellTtySample {
+    tty_sample(
+        SubshellTtyKind::Relay,
+        LeaderKind::Relay,
+        "sudo",
+        canonical,
+        Some(true),
+    )
+}
+
+fn secret_read() -> SubshellTtySample {
+    tty_sample(
+        SubshellTtyKind::Secret,
+        LeaderKind::Unreadable,
+        "",
+        true,
+        None,
+    )
+}
+
+fn vim_in_front() -> SubshellTtySample {
+    tty_sample(
+        SubshellTtyKind::Unknown,
+        LeaderKind::Other,
+        "vim",
+        false,
+        None,
+    )
+}
+
+fn output_wakeup(view: &mut TerminalView, ctx: &mut ViewContext<TerminalView>) {
+    view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+}
+
+fn readiness_state(view: &TerminalView) -> &'static str {
+    match &view.subshell_setup_state {
+        SubshellSetupState::Idle => "idle",
+        SubshellSetupState::Armed(_) => "armed",
+        SubshellSetupState::Written(_) => "written",
+    }
+}
+
+fn readiness_token(view: &TerminalView) -> u64 {
+    match &view.subshell_setup_state {
+        SubshellSetupState::Written(written) => written.session_id.as_u64(),
+        _ => panic!("not written: {}", readiness_state(view)),
+    }
+}
+
+fn backdate_armed(view: &mut TerminalView, by: Duration) {
+    if let SubshellSetupState::Armed(armed) = &mut view.subshell_setup_state {
+        armed.armed_at = Instant::now() - by;
+    }
+}
+
+/// #1679 step 3: the first setup line goes out on the OS proof that the shell's line editor reads
+/// (a LineReader sample with the queue empty), not on the prompt's SHAPE: a `$ ` drawn by
+/// something that is not yet a reading shell writes nothing, in Legacy and Table.
+#[test]
+fn subshell_setup_is_written_on_the_shells_proof_not_on_the_prompt_shape() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _ready = crate::terminal::bootstrap::set_subshell_ready_for_test(true);
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let written = subshell_pty_writes(&mut app, &terminal);
+            let tty = terminal.update(&mut app, |view, ctx| {
+                view.model.lock().simulate_long_running_block("bash", "");
+                let tty = install_subshell_tty_for_test(view, SubshellTtySample::unknown());
+                view.arm_subshell_setup(
+                    SubshellPromptTrigger::Banner {
+                        shell_type: Some(ShellType::Bash),
+                    },
+                    ctx,
+                );
+                assert_eq!(readiness_state(view), "armed", "{mode:?}");
+                // The shape alone: a prompt-looking line with no OS fact behind it.
+                view.model
+                    .lock()
+                    .process_bytes("loading profile\r\nbash-5.1$ ");
+                output_wakeup(view, ctx);
+                assert_eq!(
+                    readiness_state(view),
+                    "armed",
+                    "{mode:?}: the shape wrote nothing"
+                );
+                tty
+            });
+            assert!(
+                written.borrow().is_empty(),
+                "{mode:?}: nothing on the shape"
+            );
+            terminal.update(&mut app, |view, ctx| {
+                *tty.lock() = bash_reading();
+                output_wakeup(view, ctx);
+                assert_eq!(readiness_state(view), "written", "{mode:?}");
+                assert!(view.subshell_bootstrap_announced.is_some(), "{mode:?}");
+                assert!(
+                    view.subshell_setup_net.is_some(),
+                    "{mode:?}: the net is armed"
+                );
+                assert!(
+                    view.awaiting_subshell_prompt.is_none(),
+                    "{mode:?}: old path idle"
+                );
+            });
+            assert!(
+                !written.borrow().is_empty(),
+                "{mode:?}: written on the proof"
+            );
+            // Exactly once: more output does not start a second one.
+            let after = written.borrow().len();
+            terminal.update(&mut app, |view, ctx| {
+                view.model.lock().process_bytes("x");
+                output_wakeup(view, ctx);
+            });
+            assert_eq!(written.borrow().len(), after, "{mode:?}");
+        })
+    }
+}
+
+/// #1679 step 3 (R2, the "rc read -p x2" failure mode): the rc asks two questions; each answer is
+/// a non-empty line typed at an InputPrompt tail through a cooked shell keeping up with its reads:
+/// a ReArm, never a write and never a cancel. The setup goes out at the prompt that follows, when
+/// the line editor reads. Legacy and Table.
+#[test]
+fn rc_questions_re_arm_the_setup_and_the_answers_never_write_it() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _ready = crate::terminal::bootstrap::set_subshell_ready_for_test(true);
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let written = subshell_pty_writes(&mut app, &terminal);
+            let tty = terminal.update(&mut app, |view, ctx| {
+                view.model.lock().simulate_long_running_block("bash", "");
+                let tty = install_subshell_tty_for_test(view, bash_cooked());
+                view.arm_subshell_setup(
+                    SubshellPromptTrigger::Banner {
+                        shell_type: Some(ShellType::Bash),
+                    },
+                    ctx,
+                );
+                tty
+            });
+            for (question, answer) in [("Name: ", "me"), ("Team: ", "ops")] {
+                terminal.update(&mut app, |view, ctx| {
+                    view.model.lock().process_bytes(question);
+                    output_wakeup(view, ctx);
+                    assert_eq!(readiness_state(view), "armed", "{mode:?} {question:?}");
+                });
+                let before = written.borrow().len();
+                terminal.update(&mut app, |view, ctx| {
+                    assert!(view.write_user_bytes_to_pty(answer.as_bytes().to_vec(), ctx));
+                });
+                terminal.update(&mut app, |view, ctx| {
+                    assert!(view.write_user_bytes_to_pty(b"\r".to_vec(), ctx));
+                    assert_eq!(
+                        readiness_state(view),
+                        "armed",
+                        "{mode:?} {question:?}: the answer re-arms, it does not cancel"
+                    );
+                    assert_eq!(
+                        held_for_subshell_setup(view),
+                        (0, 0),
+                        "nothing is held while armed"
+                    );
+                    if let SubshellSetupState::Armed(armed) = &view.subshell_setup_state {
+                        assert!(armed.ledger.bytes_since_arm > 0);
+                        assert!(armed.ledger.lines_ended > 0);
+                    }
+                });
+                let all = written.borrow();
+                let tail = String::from_utf8_lossy(&all[before..]).into_owned();
+                assert!(
+                    tail.starts_with(answer) && !tail.contains("__hc0"),
+                    "{mode:?} {question:?}: the answer passes through, nothing of the setup: {tail:?}"
+                );
+                drop(all);
+                terminal.update(&mut app, |view, ctx| {
+                    view.model.lock().process_bytes("\r\n");
+                    output_wakeup(view, ctx);
+                    assert_eq!(readiness_state(view), "armed", "{mode:?}: no prompt yet");
+                });
+            }
+            let before = written.borrow().len();
+            terminal.update(&mut app, |view, ctx| {
+                view.model.lock().process_bytes("bash-5.1$ ");
+                *tty.lock() = bash_reading();
+                output_wakeup(view, ctx);
+                assert_eq!(readiness_state(view), "written", "{mode:?}");
+            });
+            assert!(
+                written.borrow().len() > before,
+                "{mode:?}: written at the prompt"
+            );
+        })
+    }
+}
+
+/// #1679 step 3 (R2): a non-empty line typed while no answer was asked for is the user driving the
+/// shell: the attempt is cancelled, nothing is written, and a later proof does not revive it.
+#[test]
+fn a_users_own_command_cancels_the_armed_setup_and_nothing_is_written() {
+    App::test((), |mut app| async move {
+        let _ready = crate::terminal::bootstrap::set_subshell_ready_for_test(true);
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let written = subshell_pty_writes(&mut app, &terminal);
+        let tty = terminal.update(&mut app, |view, ctx| {
+            view.model.lock().simulate_long_running_block("bash", "");
+            let tty = install_subshell_tty_for_test(view, vim_in_front());
+            view.arm_subshell_setup(
+                SubshellPromptTrigger::Banner {
+                    shell_type: Some(ShellType::Bash),
+                },
+                ctx,
+            );
+            view.model.lock().process_bytes("bash-5.1$ ");
+            output_wakeup(view, ctx);
+            assert_eq!(readiness_state(view), "armed");
+            assert!(view.write_user_bytes_to_pty(b"ls".to_vec(), ctx));
+            tty
+        });
+        terminal.update(&mut app, |view, ctx| {
+            assert!(view.write_user_bytes_to_pty(b"\r".to_vec(), ctx));
+            assert_eq!(readiness_state(view), "idle", "UserDrove");
+        });
+        let before = String::from_utf8_lossy(&written.borrow()).into_owned();
+        assert!(
+            before.starts_with("ls") && !before.contains("__hc0"),
+            "the user's keys, nothing of the setup: {before:?}"
+        );
+        terminal.update(&mut app, |view, ctx| {
+            *tty.lock() = bash_reading();
+            view.model.lock().process_bytes("\r\nbash-5.1$ ");
+            output_wakeup(view, ctx);
+            assert_eq!(readiness_state(view), "idle");
+        });
+        assert_eq!(
+            String::from_utf8_lossy(&written.borrow()),
+            before,
+            "still nothing"
+        );
+    })
+}
+
+/// #1679 step 3 (the `vim f⏎` typeahead failure mode): a line typed while the rc still runs
+/// (cooked bash keeping up with its reads) re-arms; vim then owns the alt screen (Unknown leader,
+/// alt screen on): wait; after `:q` the line editor reads: write.
+#[test]
+fn vim_typeahead_waits_through_the_alt_screen_and_the_setup_follows_it() {
+    App::test((), |mut app| async move {
+        let _ready = crate::terminal::bootstrap::set_subshell_ready_for_test(true);
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let written = subshell_pty_writes(&mut app, &terminal);
+        let tty = terminal.update(&mut app, |view, ctx| {
+            view.model.lock().simulate_long_running_block("bash", "");
+            let tty = install_subshell_tty_for_test(view, bash_cooked());
+            view.arm_subshell_setup(
+                SubshellPromptTrigger::Banner {
+                    shell_type: Some(ShellType::Bash),
+                },
+                ctx,
+            );
+            output_wakeup(view, ctx);
+            assert_eq!(readiness_state(view), "armed", "cooked bash is a read, R3");
+            assert!(view.write_user_bytes_to_pty(b"vim f".to_vec(), ctx));
+            tty
+        });
+        terminal.update(&mut app, |view, ctx| {
+            assert!(view.write_user_bytes_to_pty(b"\r".to_vec(), ctx));
+            assert_eq!(
+                readiness_state(view),
+                "armed",
+                "typeahead into a reading shell re-arms"
+            );
+        });
+        let typed_len = written.borrow().len();
+        assert!(
+            String::from_utf8_lossy(&written.borrow()).starts_with("vim f"),
+            "the typeahead passed through"
+        );
+        terminal.update(&mut app, |view, ctx| {
+            *tty.lock() = vim_in_front();
+            view.model.lock().process_bytes("\x1b[?1049h~\r\n~\r\n");
+            output_wakeup(view, ctx);
+            assert_eq!(readiness_state(view), "armed", "alt screen: wait");
+            view.model.lock().process_bytes("\x1b[?1049l");
+            *tty.lock() = bash_reading();
+            view.model.lock().process_bytes("bash-5.1$ ");
+            output_wakeup(view, ctx);
+            assert_eq!(readiness_state(view), "written");
+        });
+        assert!(written.borrow().len() > typed_len, "the setup followed vim");
+    })
+}
+
+/// #1679 step 3, E-SECRET (parity test (a), Legacy and Table): the first line is out and the user
+/// typed `secret` (held). A secret read opens (the rc ran `sudo`): in the SAME wakeup the attempt
+/// is cancelled with ZERO further pty writes, the held text comes back to the editor as plain text
+/// with the Enter guard (never run), the toast is count-only, and the attempt is re-armed so the
+/// password typed next passes through.
+#[test]
+fn e_secret_hands_the_held_keys_back_in_the_same_wakeup_and_re_arms() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _ready = crate::terminal::bootstrap::set_subshell_ready_for_test(true);
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let written = subshell_pty_writes(&mut app, &terminal);
+            let tty = terminal.update(&mut app, |view, ctx| {
+                view.model.lock().simulate_long_running_block("sudo -s", "");
+                let tty = install_subshell_tty_for_test(view, sudo_relay(false));
+                view.arm_subshell_setup(SubshellPromptTrigger::Banner { shell_type: None }, ctx);
+                view.model.lock().process_bytes("# ");
+                output_wakeup(view, ctx);
+                assert_eq!(
+                    readiness_state(view),
+                    "written",
+                    "{mode:?}: relay at its first prompt"
+                );
+                tty
+            });
+            let after_setup = written.borrow().len();
+            assert!(after_setup > 0, "{mode:?}");
+            terminal.update(&mut app, |view, ctx| {
+                for key in [b"sec".to_vec(), b"ret".to_vec()] {
+                    assert!(view.write_user_bytes_to_pty(key, ctx), "{mode:?}");
+                }
+                assert_ne!(
+                    held_for_subshell_setup(view),
+                    (0, 0),
+                    "{mode:?}: held while written"
+                );
+            });
+            assert_eq!(
+                written.borrow().len(),
+                after_setup,
+                "{mode:?}: held, not written"
+            );
+            terminal.update(&mut app, |view, ctx| {
+                *tty.lock() = secret_read();
+                output_wakeup(view, ctx);
+                assert_eq!(
+                    readiness_state(view),
+                    "armed",
+                    "{mode:?}: re-armed after E-SECRET"
+                );
+                assert_eq!(held_for_subshell_setup(view), (0, 0), "{mode:?}");
+                assert!(view.subshell_bootstrap_announced.is_none(), "{mode:?}");
+                assert!(view.subshell_bootstrap_in_flight.is_none(), "{mode:?}");
+                assert!(view.subshell_setup_net.is_none(), "{mode:?}");
+            });
+            assert_eq!(
+                written.borrow().len(),
+                after_setup,
+                "{mode:?}: zero pty writes at the hand-back"
+            );
+            terminal.read(&app, |view, ctx| {
+                view.input.read(ctx, |input, ctx| {
+                    assert_eq!(
+                        input.buffer_text(ctx),
+                        "secret",
+                        "{mode:?}: plain text, in order"
+                    );
+                    assert!(
+                        input.ssh_handover_enter_guard_armed(),
+                        "{mode:?}: never auto-run"
+                    );
+                });
+            });
+            // The password the user types now passes straight through to the secret read.
+            terminal.update(&mut app, |view, ctx| {
+                assert!(
+                    view.write_user_bytes_to_pty(b"pw".to_vec(), ctx),
+                    "{mode:?}"
+                );
+                assert_eq!(held_for_subshell_setup(view), (0, 0), "{mode:?}");
+            });
+            let all = written.borrow();
+            assert_eq!(&all[after_setup..], b"pw", "{mode:?}");
+        })
+    }
+}
+
+/// #1679 step 3, E-QUESTION (parity test (b), Legacy and Table): the first line is out, no marker
+/// came, and new output ends in `Continue? [y/N]`: the attempt is cancelled (Idle, a click re-arms),
+/// the held keys come back, and the keys typed next reach the pty in order with the SAME write list
+/// in both modes.
+#[test]
+fn e_question_cancels_and_later_keys_reach_the_pty_in_order_in_both_modes() {
+    use crate::terminal::input_queue::DestinationMode;
+    let mut write_lists: Vec<Vec<u8>> = Vec::new();
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        let list: Rc<RefCell<Vec<u8>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = list.clone();
+        App::test((), move |mut app| async move {
+            let _ready = crate::terminal::bootstrap::set_subshell_ready_for_test(true);
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let written = subshell_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                view.model.lock().simulate_long_running_block("bash", "");
+                install_subshell_tty_for_test(view, bash_reading());
+                view.arm_subshell_setup(
+                    SubshellPromptTrigger::Banner {
+                        shell_type: Some(ShellType::Bash),
+                    },
+                    ctx,
+                );
+                assert_eq!(readiness_state(view), "written", "{mode:?}: ready at once");
+                assert!(view.write_user_bytes_to_pty(b"held".to_vec(), ctx));
+                assert_ne!(held_for_subshell_setup(view), (0, 0));
+            });
+            let after_setup = written.borrow().len();
+            terminal.update(&mut app, |view, ctx| {
+                // The shell answered our line with a question, no marker: it is asking the user.
+                view.model.lock().process_bytes("\r\nContinue? [y/N] ");
+                output_wakeup(view, ctx);
+                assert_eq!(readiness_state(view), "idle", "{mode:?}: E-QUESTION");
+                assert_eq!(held_for_subshell_setup(view), (0, 0), "{mode:?}");
+                assert!(view.subshell_bootstrap_announced.is_none(), "{mode:?}");
+            });
+            terminal.read(&app, |view, ctx| {
+                view.input.read(ctx, |input, ctx| {
+                    assert_eq!(input.buffer_text(ctx), "held", "{mode:?}");
+                });
+            });
+            assert_eq!(
+                written.borrow().len(),
+                after_setup,
+                "{mode:?}: nothing written"
+            );
+            terminal.update(&mut app, |view, ctx| {
+                for key in [b"y".to_vec(), b"\r".to_vec(), b"ls".to_vec()] {
+                    assert!(view.write_user_bytes_to_pty(key, ctx), "{mode:?}");
+                }
+            });
+            let all = written.borrow();
+            let tail = String::from_utf8_lossy(&all[after_setup..]).into_owned();
+            assert!(
+                tail.starts_with('y') && tail.ends_with("ls") && !tail.contains("held"),
+                "{mode:?}: in order, through, nothing handed back is written: {tail:?}"
+            );
+            sink.borrow_mut().extend_from_slice(&all[after_setup..]);
+        });
+        write_lists.push(list.borrow().clone());
+    }
+    assert_eq!(
+        write_lists[0], write_lists[1],
+        "Legacy and Table write the same bytes"
+    );
+}
+
+/// #1679 step 3, E-UNSUPPORTED (R7, stream-ordered): our line's echo ended, then a fresh prompt
+/// shape with no token-matched marker between, and the queue is proven empty: the shell read the
+/// line as a plain command. The held keys go to the pty in order (R8: a fresh prompt proven and
+/// the line consumed), the attempt ends, the setup's ID is unregistered.
+#[test]
+fn e_unsupported_is_stream_ordered_and_delivers_the_held_keys_at_the_fresh_prompt() {
+    App::test((), |mut app| async move {
+        let _ready = crate::terminal::bootstrap::set_subshell_ready_for_test(true);
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let written = subshell_pty_writes(&mut app, &terminal);
+        let (token, line0) = terminal.update(&mut app, |view, ctx| {
+            view.model.lock().simulate_long_running_block("bash", "");
+            install_subshell_tty_for_test(view, bash_reading());
+            view.arm_subshell_setup(
+                SubshellPromptTrigger::Banner {
+                    shell_type: Some(ShellType::Bash),
+                },
+                ctx,
+            );
+            assert_eq!(readiness_state(view), "written");
+            let token = readiness_token(view);
+            let lines = init_subshell_command_lines_with_markers(
+                Some(ShellType::Bash),
+                &[],
+                SessionId::from(token),
+                true,
+                ctx,
+            );
+            assert!(view.write_user_bytes_to_pty(b"ls".to_vec(), ctx));
+            assert_ne!(held_for_subshell_setup(view), (0, 0));
+            (token, lines[0].clone())
+        });
+        let after_setup = written.borrow().len();
+        terminal.update(&mut app, |view, ctx| {
+            // A prompt shape BEFORE our echo ended (the old prompt redrawn) is no verdict.
+            view.model.lock().process_bytes("bash-5.1$ ");
+            output_wakeup(view, ctx);
+            assert_eq!(readiness_state(view), "written", "not stream-ordered yet");
+            // The tty echoes our line through its line feed...
+            let echo = format!(
+                "{}{line0}\r\n",
+                crate::terminal::model::setup_echo_filter::LINE_CLEAR_ECHO
+            );
+            view.model.lock().process_bytes(echo.as_str());
+            assert_eq!(
+                view.model.lock().setup_echo_lines_ended(),
+                1,
+                "the echo ended"
+            );
+            output_wakeup(view, ctx);
+            assert_eq!(
+                readiness_state(view),
+                "written",
+                "no fresh prompt after the echo yet"
+            );
+            // ... then the shell prints an error and a FRESH prompt, no marker.
+            view.model
+                .lock()
+                .process_bytes("__hc0=...: command not found\r\nbash-5.1$ ");
+            output_wakeup(view, ctx);
+            assert_eq!(readiness_state(view), "idle", "E-UNSUPPORTED");
+            assert_eq!(held_for_subshell_setup(view), (0, 0));
+            assert!(view.subshell_bootstrap_announced.is_none());
+            assert!(view.subshell_setup_net.is_none());
+            assert!(
+                !view
+                    .model
+                    .lock()
+                    .session_id_is_registered_for_test(SessionId::from(token)),
+                "this attempt's ID is unregistered"
+            );
+        });
+        let all = written.borrow();
+        assert_eq!(
+            &all[after_setup..],
+            b"ls",
+            "the held keys reached the pty, in order, nothing else"
+        );
+        terminal.read(&app, |view, ctx| {
+            view.input.read(ctx, |input, ctx| {
+                assert_eq!(input.buffer_text(ctx), "", "delivered, not handed back");
+            });
+        });
+    })
+}
+
+/// #1679 step 3 (R7): a token-matched marker between the echo and the prompt is progress: the
+/// attempt is kept (a healthy bash prints its prompt before reading the next line).
+#[test]
+fn a_marker_between_the_echo_and_the_prompt_keeps_the_written_attempt() {
+    App::test((), |mut app| async move {
+        let _ready = crate::terminal::bootstrap::set_subshell_ready_for_test(true);
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let _written = subshell_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().simulate_long_running_block("bash", "");
+            install_subshell_tty_for_test(view, bash_reading());
+            view.arm_subshell_setup(
+                SubshellPromptTrigger::Banner {
+                    shell_type: Some(ShellType::Bash),
+                },
+                ctx,
+            );
+            let token = readiness_token(view);
+            let lines = init_subshell_command_lines_with_markers(
+                Some(ShellType::Bash),
+                &[],
+                SessionId::from(token),
+                true,
+                ctx,
+            );
+            let echo = format!(
+                "{}{}\r\n",
+                crate::terminal::model::setup_echo_filter::LINE_CLEAR_ECHO,
+                lines[0]
+            );
+            view.model.lock().process_bytes(echo.as_str());
+            view.model
+                .lock()
+                .process_bytes(format!("\x1b]7771;{token};0\x07bash-5.1$ ").as_str());
+            output_wakeup(view, ctx);
+            assert_eq!(readiness_state(view), "written", "the marker is progress");
+            // Another attempt's marker is not ours: it neither helps nor hurts here, and a
+            // fresh prompt after it with no marker of OURS is the verdict.
+            view.model
+                .lock()
+                .process_bytes(format!("\r\n\x1b]7771;{};1\x07bash-5.1$ ", token + 1).as_str());
+            output_wakeup(view, ctx);
+            assert_eq!(
+                readiness_state(view),
+                "written",
+                "progress already seen stays seen"
+            );
+        });
+    })
+}
+
 /// A cancel (the card's Reject / Stop: `ManuallyCancelled`) resolves the question with exactly
 /// one cancelled result, and a later accept of it does nothing.
 #[test]
@@ -31897,4 +32750,233 @@ fn autonomy_max_still_waits_for_the_answer() {
         });
         assert_eq!(*finished.borrow(), 1);
     })
+}
+
+/// #1679 step 3: a click arms the attempt and judges it at once; while the shell is not proven
+/// ready nothing is written; a second click restarts the 60 s ceiling; the ceiling cancels without
+/// writing and a later proof does not revive the attempt.
+#[test]
+fn the_banner_click_arms_and_the_pre_ready_ceiling_cancels_without_writing() {
+    App::test((), |mut app| async move {
+        let _ready = crate::terminal::bootstrap::set_subshell_ready_for_test(true);
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let written = subshell_pty_writes(&mut app, &terminal);
+        let tty = terminal.update(&mut app, |view, ctx| {
+            view.model.lock().simulate_long_running_block("bash", "");
+            let tty = install_subshell_tty_for_test(view, vim_in_front());
+            view.arm_subshell_setup_from_banner(Some(ShellType::Bash), ctx);
+            assert_eq!(readiness_state(view), "armed");
+            backdate_armed(view, Duration::from_secs(59));
+            view.arm_subshell_setup_from_banner(Some(ShellType::Bash), ctx);
+            if let SubshellSetupState::Armed(armed) = &view.subshell_setup_state {
+                assert!(
+                    armed.armed_at.elapsed() < Duration::from_secs(1),
+                    "a click re-arms"
+                );
+            }
+            backdate_armed(view, subshell_ready::PRE_READY_CEILING);
+            output_wakeup(view, ctx);
+            assert_eq!(readiness_state(view), "idle", "NotAShell at the ceiling");
+            tty
+        });
+        assert!(written.borrow().is_empty());
+        terminal.update(&mut app, |view, ctx| {
+            *tty.lock() = bash_reading();
+            output_wakeup(view, ctx);
+            assert_eq!(readiness_state(view), "idle");
+        });
+        assert!(
+            written.borrow().is_empty(),
+            "the ceiling never writes, before or after"
+        );
+    })
+}
+
+/// #1679 step 3 (R4, the relay shape): a relay writes on its first new prompt only while the local
+/// tty is raw; `docker exec -t` without `-i` (cooked local tty) waits.
+#[test]
+fn a_relay_writes_on_its_first_prompt_only_with_a_raw_local_tty() {
+    App::test((), |mut app| async move {
+        let _ready = crate::terminal::bootstrap::set_subshell_ready_for_test(true);
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let written = subshell_pty_writes(&mut app, &terminal);
+        let tty = terminal.update(&mut app, |view, ctx| {
+            view.model
+                .lock()
+                .simulate_long_running_block("docker exec -t c sh", "");
+            let tty = install_subshell_tty_for_test(view, sudo_relay(true));
+            view.arm_subshell_setup(SubshellPromptTrigger::Banner { shell_type: None }, ctx);
+            view.model.lock().process_bytes("/ # ");
+            output_wakeup(view, ctx);
+            assert_eq!(
+                readiness_state(view),
+                "armed",
+                "a cooked local tty: the keys go to the parent"
+            );
+            tty
+        });
+        assert!(written.borrow().is_empty());
+        terminal.update(&mut app, |view, ctx| {
+            *tty.lock() = sudo_relay(false);
+            output_wakeup(view, ctx);
+            assert_eq!(readiness_state(view), "written");
+        });
+        let all = written.borrow();
+        let text = String::from_utf8_lossy(&all);
+        assert!(
+            text.contains("__hc0"),
+            "the sh probe's prelude went out: {text:?}"
+        );
+    })
+}
+
+/// #1679 step 3: an rc-file trigger writes for its own shell once the judge says ready, through
+/// `start_rc_file_subshell_bootstrap`, and takes the Written state.
+#[test]
+fn an_rc_file_trigger_writes_for_its_shell_once_ready() {
+    App::test((), |mut app| async move {
+        let _ready = crate::terminal::bootstrap::set_subshell_ready_for_test(true);
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let written = subshell_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.model
+                .lock()
+                .simulate_long_running_block("poetry shell", "");
+            install_subshell_tty_for_test(view, bash_cooked());
+            view.arm_subshell_setup(
+                SubshellPromptTrigger::RcFile {
+                    shell_type: ShellType::Zsh,
+                    uname: None,
+                    disable_tmux: true,
+                },
+                ctx,
+            );
+            assert_eq!(readiness_state(view), "armed", "the rc is still running");
+        });
+        assert!(written.borrow().is_empty());
+        terminal.update(&mut app, |view, ctx| {
+            if let SubshellSetupState::Armed(_) = &view.subshell_setup_state {
+                view.model.lock().process_bytes("me@host ~ % ");
+            }
+            // zsh's zle reads: the rc trigger's shell is written, whatever the comm says.
+            install_subshell_tty_for_test(
+                view,
+                tty_sample(
+                    SubshellTtyKind::LineReader,
+                    LeaderKind::Shell,
+                    "zsh",
+                    false,
+                    Some(true),
+                ),
+            );
+            output_wakeup(view, ctx);
+            assert_eq!(readiness_state(view), "written");
+            if let SubshellSetupState::Written(w) = &view.subshell_setup_state {
+                assert_eq!(w.shell_type, Some(ShellType::Zsh));
+            }
+        });
+        assert!(!written.borrow().is_empty());
+    })
+}
+
+/// #1679 step 3 (owner Q11): tmux control mode keeps writing its setup directly, but not into the
+/// alt screen: the write waits for the look that finds the alt screen off.
+#[test]
+fn tmux_control_mode_setup_waits_for_the_alt_screen_to_close() {
+    App::test((), |mut app| async move {
+        let _ready = crate::terminal::bootstrap::set_subshell_ready_for_test(true);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let written = subshell_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.model
+                .lock()
+                .simulate_long_running_block("ssh host", "");
+            view.model.lock().process_bytes("\x1b[?1049h");
+            view.start_tmux_control_mode_setup(ctx);
+            assert!(view.tmux_setup_pending, "the alt screen is on: wait");
+        });
+        assert!(written.borrow().is_empty());
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().process_bytes("\x1b[?1049l");
+            output_wakeup(view, ctx);
+            assert!(!view.tmux_setup_pending);
+            assert_eq!(
+                readiness_state(view),
+                "idle",
+                "a direct write, no judged attempt"
+            );
+        });
+        assert!(
+            !written.borrow().is_empty(),
+            "written once the alt screen closed"
+        );
+    })
+}
+
+/// #1679 step 3 (R10): `PHOSPHOR_SUBSHELL_READY=0` restores today's path: a trigger on a
+/// `Password:` prompt defers (the #1032 deferral), the judge's state stays Idle; with the switch
+/// on the trigger writes (the judge is its caller's business).
+#[test]
+fn the_rollback_switch_restores_the_deferral_and_the_first_prompt_path() {
+    App::test((), |mut app| async move {
+        let _ready = crate::terminal::bootstrap::set_subshell_ready_for_test(false);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let written = subshell_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.model
+                .lock()
+                .simulate_long_running_block("zsh", "Password: ");
+            view.trigger_subshell_bootstrap(Some(ShellType::Zsh), false, ctx);
+            assert!(view.subshell_setup_deferred.is_some(), "the old deferral");
+            assert_eq!(readiness_state(view), "idle");
+            view.subshell_setup_deferred = None;
+            // The old first-prompt arming is what the auto path uses.
+            view.arm_awaiting_subshell_prompt(
+                SubshellPromptTrigger::AutoWarpify {
+                    shell_type: ShellType::Zsh,
+                },
+                ctx,
+            );
+            assert!(view.awaiting_subshell_prompt.is_some());
+        });
+        assert!(written.borrow().is_empty());
+    });
+    App::test((), |mut app| async move {
+        let _ready = crate::terminal::bootstrap::set_subshell_ready_for_test(true);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let written = subshell_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.model
+                .lock()
+                .simulate_long_running_block("zsh", "Password: ");
+            view.trigger_subshell_bootstrap(Some(ShellType::Zsh), false, ctx);
+            assert!(
+                view.subshell_setup_deferred.is_none(),
+                "no deferral on the new path"
+            );
+        });
+        assert!(!written.borrow().is_empty());
+    })
+}
+
+/// #1679 step 3 (owner Q9): the hand-back toasts carry counts, never the typed text.
+#[test]
+fn readiness_toasts_carry_counts_never_text() {
+    for n in [0, 1, 3] {
+        let toast = paste_queue::subshell_setup_handed_back_toast(n);
+        assert!(!toast.contains("secret"));
+        if n > 0 {
+            assert!(toast.contains(&n.to_string()), "{toast}");
+        }
+        assert!(toast.contains("not run"), "{toast}");
+    }
 }

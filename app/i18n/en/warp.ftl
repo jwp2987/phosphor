@@ -160,6 +160,9 @@ workspace-menu-keyboard-shortcuts = Keyboard shortcuts
 workspace-menu-documentation = Documentation
 workspace-menu-feedback = Feedback
 workspace-menu-view-warp-logs = View Phosphor logs
+workspace-menu-report-problem = Report a problem (save a local diagnostics file)
+workspace-report-problem-success = Saved { $path }. It stays on this computer: Phosphor never uploads it and has no send button. Paths, host and user names, addresses, keys and typed text were removed; look it over before you share it.
+workspace-report-problem-failure = Could not save the problem report: { $error }
 workspace-menu-slack = Slack
 workspace-toast-failed-load-conversation = Failed to load conversation.
 workspace-toast-failed-load-conversation-for-forking = Failed to load conversation for forking.
@@ -887,9 +890,6 @@ settings-warpify-reuse-control-master = Reuse existing SSH ControlMaster
 settings-warpify-reuse-control-master-description = Attach to a live SSH ControlMaster you already have configured for the destination host instead of creating a Phosphor-owned one. Takes effect in new tabs.
 settings-warpify-split-inherits-ssh = Splits from SSH sessions open on the same host
 settings-warpify-split-inherits-ssh-description = Splitting a pane whose session is an SSH session runs the same ssh command in the new pane, then changes to the same remote directory. The new pane has its own connection, so it may ask you to authenticate again. Splitting with an explicitly chosen shell, or from a script, always opens a local shell. Off by default.
-settings-warpify-use-tmux = Use Tmux Phosphorization
-settings-warpify-tmux-description = The tmux ssh wrapper works in many situations where the default one does not, but may require you to hit a button to phosphorize. Takes effect in new tabs.
-settings-warpify-ssh-tmux-toggle-binding-label = SSH session detection for Phosphorization
 
 # --- ANCHOR-SUB-NETWORK (network-settings) ---
 # Global HTTP proxy settings page (see Issue #72).
@@ -1011,6 +1011,9 @@ settings-ai-interact-running-commands = Interact with running commands
 settings-ai-call-mcp-servers = Call MCP servers
 settings-ai-command-denylist = Command denylist
 settings-ai-command-denylist-description = Regular expressions to match commands that the Phosphor Agent should always ask permission to execute.
+settings-ai-safe-commands = Run safe read-only commands without asking
+settings-ai-safe-commands-description = Off by default. When on, the agent runs these commands without approval: an exact program name and plain arguments only, never a pipe, redirect, semicolon, && or ||, subshell, glob or variable, and never a flag that writes or never ends. Add a program (ls) or a program and subcommand (git status). A tool that runs helpers named in a repository's config (git) is as safe as that config.
+settings-ai-safe-commands-placeholder = e.g. ls or git status
 settings-ai-command-allowlist = Command allowlist
 settings-ai-command-allowlist-description = Regular expressions to match commands that can be automatically executed by the Phosphor Agent.
 settings-ai-directory-allowlist = Directory allowlist
@@ -2087,6 +2090,7 @@ keybinding-desc-workspace-link-to-user-docs = View user docs (opens external lin
 keybinding-desc-workspace-send-feedback = Send feedback (opens external link)
 keybinding-desc-workspace-send-feedback-oz = Send feedback with Phosphor Agent
 keybinding-desc-workspace-view-logs = View Phosphor logs
+keybinding-desc-workspace-report-problem = Report a problem (local diagnostics file)
 keybinding-desc-workspace-link-to-privacy-policy = View privacy policy (opens external link)
 
 # Input / terminal / project bindings (registered outside workspace/mod.rs)
@@ -3225,7 +3229,7 @@ cli-agent-plugin-codex-notification-step = Set the notification condition to "al
 cli-agent-plugin-codex-restart-note = Restart Codex to apply the changes.
 cli-agent-plugin-codex-plugin-install-title = Install Notification Plugin for Codex
 cli-agent-plugin-codex-plugin-run-commands-subtitle = Run the following commands, then restart Codex.
-cli-agent-plugin-codex-add-marketplace-step = Add the plugin marketplace repository
+cli-agent-plugin-codex-add-marketplace-step = Add the plugin marketplace that ships with Phosphor
 cli-agent-plugin-codex-plugin-restart-note = Restart Codex to activate the plugin.
 cli-agent-plugin-codex-plugin-update-title = Update Notification Plugin for Codex
 cli-agent-plugin-codex-upgrade-marketplace-step = Upgrade the marketplace
@@ -3238,7 +3242,7 @@ cli-agent-plugin-deepseek-notification-step = Set the notification condition to 
 cli-agent-plugin-deepseek-restart-note = Restart DeepSeek to apply the changes.
 cli-agent-plugin-claude-install-title = Install Notification Plugin for Claude Code
 cli-agent-plugin-claude-install-subtitle = Ensure that jq is installed on your machine. Then, run these commands.
-cli-agent-plugin-claude-add-marketplace-step = Add the plugin marketplace repository
+cli-agent-plugin-claude-add-marketplace-step = Add the plugin marketplace that ships with Phosphor
 cli-agent-plugin-install-warp-plugin-step = Install the plugin
 cli-agent-plugin-claude-restart-note = Restart Claude Code to activate the plugin.
 cli-agent-plugin-claude-known-issues-note = There are some known issues with Claude Code's plugin system. If the plugin is not found after step 1, you can try manually adding an "extraKnownMarketplaces" entry to ~/.claude/settings.json.
@@ -3259,11 +3263,11 @@ cli-agent-plugin-gemini-restart-update-note = Restart Gemini CLI to activate the
 cli-agent-plugin-opencode-install-title = Install Notification Plugin for OpenCode
 cli-agent-plugin-opencode-install-subtitle = Add the plugin to your OpenCode configuration, then restart OpenCode.
 cli-agent-plugin-opencode-open-config-step = Open or create your opencode.json. This can be in your project root, or the global config path:
-cli-agent-plugin-opencode-add-plugin-step = Add the plugin's git spec to the "plugin" array in the top-level JSON object:
+cli-agent-plugin-opencode-add-plugin-step = Add the plugin that ships with Phosphor to the "plugin" array in the top-level JSON object:
 cli-agent-plugin-opencode-restart-note = Restart OpenCode to activate the plugin.
 cli-agent-plugin-opencode-update-title = Update Notification Plugin for OpenCode
-cli-agent-plugin-opencode-update-subtitle = Point the plugin at Phosphor's copy, pinned to its latest release tag, in your opencode.json. OpenCode caches plugins per spec, so changing the pin makes it fetch the plugin again on restart.
-cli-agent-plugin-opencode-replace-plugin-step = Replace the existing "@warp-dot-dev/opencode-warp" (or older git) entry in the "plugin" array with this spec:
+cli-agent-plugin-opencode-update-subtitle = Point the plugin at the copy that ships with Phosphor in your opencode.json, then restart OpenCode. Nothing is downloaded.
+cli-agent-plugin-opencode-replace-plugin-step = Replace the existing OpenCode plugin entry for this integration in the "plugin" array with this one:
 cli-agent-plugin-opencode-restart-update-note = Restart OpenCode to load the updated plugin.
 
 # Remaining visible UI strings

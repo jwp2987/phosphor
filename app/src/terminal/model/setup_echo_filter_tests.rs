@@ -1,4 +1,4 @@
-use super::SetupEchoFilter;
+use super::{LINE_CLEAR_ECHO, SetupEchoFilter};
 
 /// What the grid would see after the filter, as the model outputs it: characters released by the
 /// filter first, then each character not swallowed.
@@ -160,4 +160,42 @@ fn a_disarm_hands_back_what_was_held_as_a_possible_prefix() {
     assert_eq!(visible(&mut filter, "Password: "), "Password:");
     filter.disarm();
     assert_eq!(filter.take_unmatched(), vec![' ']);
+}
+
+/// #1679 step 3 (review R7/R9): the filter counts the lines echoed through their `\n` and whether
+/// any echo was seen; a stand-down keeps the counts (the shell echoed the line and printed an
+/// error); a reset forgets them.
+#[test]
+fn the_echo_counts_say_when_our_line_was_taken() {
+    let mut filter = SetupEchoFilter::default();
+    assert_eq!(filter.lines_ended(), 0);
+    assert!(!filter.started());
+    filter.expect_line("ab");
+    filter.expect_line("cd");
+    assert!(filter.swallow('a'));
+    assert!(filter.started(), "a character of the line matched");
+    assert_eq!(filter.lines_ended(), 0);
+    for c in ['b', '\r', '\n'] {
+        assert!(filter.swallow(c));
+    }
+    assert_eq!(filter.lines_ended(), 1);
+    // The second line diverges after its first character: the filter stands down, the counts
+    // stay (the first line WAS taken).
+    assert!(filter.swallow('c'));
+    assert!(!filter.swallow('X'));
+    assert!(!filter.is_armed());
+    assert_eq!(filter.lines_ended(), 1);
+    assert!(filter.started());
+    filter.reset_counts();
+    assert_eq!(filter.lines_ended(), 0);
+    assert!(!filter.started());
+    // The whole line-clear prefix counts as started.
+    let mut filter = SetupEchoFilter::default();
+    filter.expect_line_clear_prefix();
+    filter.expect_line("x");
+    for c in LINE_CLEAR_ECHO.chars() {
+        assert!(filter.swallow(c));
+    }
+    assert!(filter.started());
+    assert_eq!(filter.lines_ended(), 0);
 }

@@ -340,6 +340,7 @@ impl ShellCommandExecutor {
                     .as_ref(ctx)
                     .shell_type(ctx)
                     .map(|s| ShellFamily::from(s).escape_char())
+                    .or_else(|| escape_char_without_a_session(ctx))
                 else {
                     return false;
                 };
@@ -612,12 +613,34 @@ impl ShellCommandExecutor {
                         let mut pager_closed = false;
                         // Remove the senders from the maps.
                         if let Some(handle) = handle.upgrade(ctx) {
-                            handle.update(ctx, |me, _| {
+                            handle.update(ctx, |me, ctx| {
                                 me.block_finished_senders.remove(&block_selector);
-                                me.force_refresh_senders.remove(&block_selector);
+                                // A force refresh consumes its sender, so a sender still here
+                                // means the snapshot came from the backstop timer.
+                                let refresh_pending =
+                                    me.force_refresh_senders.remove(&block_selector).is_some();
                                 me.output_watchers.remove(&block_selector);
-                                me.awaiting_completion_action_ids.remove(&action_id);
+                                let was_awaited =
+                                    me.awaiting_completion_action_ids.remove(&action_id);
                                 pager_closed = me.pager_closed_action_ids.remove(&action_id);
+                                // #1796 (owner): the 30-minute backstop only gives the agent its
+                                // result so the turn is not stuck. It never switches terminal
+                                // control; the view shows a "may be waiting for input -- Take
+                                // over" notice and the command stays with the agent.
+                                if was_awaited
+                                    && refresh_pending
+                                    && matches!(
+                                        result,
+                                        ActionResult::LongRunningCommandSnapshot {
+                                            is_preempted: true,
+                                            ..
+                                        }
+                                    )
+                                {
+                                    ctx.emit(ShellCommandExecutorEvent::BackstopReached {
+                                        action_id: action_id.clone(),
+                                    });
+                                }
                             });
                         }
 
@@ -2080,6 +2103,11 @@ pub enum ShellCommandExecutorEvent {
         action_id: AIAgentActionId,
         reason: String,
     },
+    /// `MAX_UNTIL_COMPLETION_DURATION` ran out for a command the agent waits on: the agent got
+    /// its (preempted) snapshot, and the command is still running with the agent. UI only (#1796):
+    /// the view shows a "may be waiting for input -- Take over" notice; terminal control does
+    /// not move.
+    BackstopReached { action_id: AIAgentActionId },
 }
 
 impl Entity for ShellCommandExecutor {
@@ -2150,3 +2178,21 @@ enum ActionResult {
 #[cfg(test)]
 #[path = "shell_command_tests.rs"]
 mod tests;
+
+/// The agent fuzzer's rig has no pty and so no session, hence no shell type, and a command could
+/// never be auto-executed there: the safe-allowlist runs (agent_fuzz) would silently test nothing.
+/// With the allowlist on, tests assume a POSIX shell. A release build, and every test with the
+/// allowlist off, keeps "no session -> ask".
+#[cfg(any(test, feature = "test-util"))]
+fn escape_char_without_a_session(ctx: &AppContext) -> Option<warp_util::path::EscapeChar> {
+    if *AISettings::as_ref(ctx).safe_command_allowlist_enabled {
+        Some(warp_util::path::EscapeChar::Backslash)
+    } else {
+        None
+    }
+}
+
+#[cfg(not(any(test, feature = "test-util")))]
+fn escape_char_without_a_session(_ctx: &AppContext) -> Option<warp_util::path::EscapeChar> {
+    None
+}

@@ -238,9 +238,19 @@ if [[ -x ./script/check_pty_doors ]]; then
     ./script/check_pty_doors >/dev/null 2>&1 && ok "pty doors" \
         || fail "pty doors -- run ./script/check_pty_doors for detail"
 fi
+if [[ -x ./script/check_input_path_timers ]]; then
+    ./script/check_input_path_timers >/dev/null 2>&1 && ok "input-path timers" \
+        || fail "input-path timers -- run ./script/check_input_path_timers for detail"
+    ./script/check_input_path_timers --self-test >/dev/null 2>&1 && ok "input-path timers self-test" \
+        || fail "input-path timers self-test -- run ./script/check_input_path_timers --self-test"
+fi
 if [[ -x ./script/check_outbound_redaction ]]; then
     ./script/check_outbound_redaction >/dev/null 2>&1 && ok "outbound redaction" \
         || fail "outbound redaction -- run ./script/check_outbound_redaction for detail"
+fi
+if [[ -x ./script/check_network_gate ]]; then
+    ./script/check_network_gate >/dev/null 2>&1 && ok "network gate" \
+        || fail "network gate -- run ./script/check_network_gate for detail"
 fi
 if [[ -x ./script/check_declined_collisions ]]; then
     ./script/check_declined_collisions >/dev/null 2>&1 && ok "declined collisions" \
@@ -337,7 +347,7 @@ fi
 # script/test_pwsh_hook_equivalence does the same for pwsh.ps1 against a golden
 # recording of its hook messages (#1231); it skips when pwsh is not installed.
 step "shell tests (packaging and bootstrap scripts)"
-for shell_test in ./script/macos/test_create_warpctrl_wrapper ./script/test_warpctrl_early_dispatch ./script/test_bash_bootstrap_nounset ./script/test_zsh_bootstrap_strict_options ./script/test_bootstrap_hook_equivalence ./script/test_pwsh_hook_equivalence ./script/test_nu_bootstrap_hook_equivalence ./script/test_bash_bootstrap_builtins ./script/test_ssh_keepalive ./script/test_ssh_probe_cache ./script/test_ssh_wrapper_forks ./script/test_ssh_auth_once ./script/test_ssh_raw_bootstrap_hook ./script/test_local_counted_bootstrap ./script/test_native_completions; do
+for shell_test in ./script/macos/test_create_warpctrl_wrapper ./script/test_warpctrl_early_dispatch ./script/test_bash_bootstrap_nounset ./script/test_zsh_bootstrap_strict_options ./script/test_bootstrap_hook_equivalence ./script/test_pwsh_hook_equivalence ./script/test_nu_bootstrap_hook_equivalence ./script/test_bash_bootstrap_builtins ./script/test_ssh_keepalive ./script/test_ssh_probe_cache ./script/test_ssh_wrapper_forks ./script/test_ssh_auth_once ./script/test_ssh_raw_bootstrap_hook ./script/test_local_counted_bootstrap ./script/test_native_completions ./script/test_cwd_listing; do
     [[ -x "$shell_test" ]] || continue
     _shell_rc=0
     _shell_out="$("$shell_test" 2>&1)" || _shell_rc=$?

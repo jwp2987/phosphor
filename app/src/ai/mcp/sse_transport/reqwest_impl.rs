@@ -85,7 +85,7 @@ impl SseClientTransport<reqwest::Client> {
         uri: impl Into<Arc<str>>,
     ) -> Result<Self, SseTransportError<reqwest::Error>> {
         SseClientTransport::start_with_client(
-            reqwest::Client::default(),
+            crate::ai::mcp::http_client::gated_client(),
             SseClientConfig {
                 sse_endpoint: uri.into(),
                 ..Default::default()

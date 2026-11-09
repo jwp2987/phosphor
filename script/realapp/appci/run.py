@@ -177,6 +177,12 @@ def main():
         refterm_mac.snapshot(run)       # #1485: was Terminal.app already running? (if not, a reference launch is quit by PID at exit)
     import ci_env
     ollama_url, ollama_model = ci_env.ollama()      # env, else ~/.config/phosphor-ci/ci.env; the value is never printed
+    if not ollama_url and os.environ.get("APPCI_FAKE_MODEL") == "1":      # L2 fake model (fake_model.py): a local Ollama-protocol server, never a real provider
+        import fake_model
+        fake = fake_model.FakeModel().start()
+        ollama_url, ollama_model = fake.url, "fake-model"
+        os.environ["APPCI_FAKE_MODEL_ACTIVE"] = "1"
+        print("fake model: a local scripted provider is the agent provider for this run (APPCI_FAKE_MODEL=1)", flush=True)
     sim = a.backend == "sim"
     os.environ["APPCI_PLATFORM"] = a.platform      # linux-wayland | linux-x11 | macos | windows (baselines/<platform>.json)
     if not os.environ.get("APPCI_PREV_RESULTS"):
@@ -226,7 +232,8 @@ def main():
     lab_sel = labmod.matrix_selection()
     exact_names = {n for n in a.cases.split(",") if n and not any(ch in n for ch in "*?[")}      # an arm named exactly bypasses the matrix filter; globs are filtered by it
     sel = [c for c in cases.CASES if ((not a.cases and not c.get("lab")) or (a.cases and labmod.name_matches(a.cases, c["name"])))
-           and not labmod.name_matches(a.skip, c["name"]) and (not c.get("lab") or c["name"] in exact_names or labmod.arm_selected(c["arm"], lab_sel))]
+           and not labmod.name_matches(a.skip, c["name"]) and (not c.get("lab") or c["name"] in exact_names or labmod.arm_selected(c["arm"], lab_sel))
+           and (not c["name"].startswith("lab_replay") or "lab_replay" in a.cases)]      # the 15-60 min real-use replay is never swept in by 'lab_*'; only a pattern naming it runs it
     if a.cases and not sel:       # never a silent empty (green) selection: the matrix or --skip removed everything the names matched
         for m in a.modes.split(","):
             emit(dict(name="case_selection", mode=m, status="fail", seconds=0, detail=["--cases %r selected no case (APPCI_LAB_MATRIX=%s and --skip removed them all)" % (a.cases, os.environ.get("APPCI_LAB_MATRIX", "quick"))]))
@@ -240,6 +247,8 @@ def main():
     print("[deadline] " + clock.describe(), flush=True)
 
     def case_limit(name):
+        if name.startswith("lab_replay"):         # the real-use replay runs APPCI_REPLAY_MINUTES (15) plus its setup and drain
+            return max(case_timeout, float(os.environ.get("APPCI_REPLAY_MINUTES", "15")) * 60 * 1.6 + 900)
         return max(case_timeout, float(os.environ.get("APPCI_SOAK_MIN", "60")) * 60 + 600) if name == "soak" else case_timeout
 
     for mode, pane in passes:
@@ -403,7 +412,7 @@ def main():
                 except Exception:
                     pid_start = None
                 # r18d8: soak runs APPCI_SOAK_MIN (60) minutes, longer than the 1500 s default: it hit CaseTimeout at 25 min. It gets its own length + 10 min.
-                disarm = arm_case_timeout(max(case_timeout, float(os.environ.get("APPCI_SOAK_MIN", "60")) * 60 + 600) if c["name"] == "soak" else case_timeout)
+                disarm = arm_case_timeout(case_limit(c["name"]))
                 try:
                     if sim and c["gui"]:
                         raise cases.Skip("needs a GUI backend")

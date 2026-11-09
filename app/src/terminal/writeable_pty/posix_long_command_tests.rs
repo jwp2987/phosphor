@@ -3,7 +3,9 @@ use super::*;
 fn decoded_script(line: &str) -> String {
     let start = line.find("printf %s '").unwrap() + "printf %s '".len();
     let end = start + line[start..].find('\'').unwrap();
-    String::from_utf8(STANDARD.decode(&line[start..end]).unwrap()).unwrap()
+    // A folded wrapper has newlines inside the quotes, which `base64 -d` ignores.
+    let encoded: String = line[start..end].chars().filter(|c| *c != '\n').collect();
+    String::from_utf8(STANDARD.decode(encoded).unwrap()).unwrap()
 }
 
 #[test]
@@ -70,4 +72,66 @@ fn a_single_line_command_is_never_wrapped_with_bracketed_paste() {
     // A CR also makes a multi-line paste.
     let cr = format!("{}\rb", "a".repeat(MIN_WRAPPED_BYTES_BRACKETED));
     assert!(needs_wrapper_for(&cr, true));
+}
+
+#[test]
+fn the_typed_input_wrapper_folds_the_base64_and_carries_the_command_byte_for_byte() {
+    // #1129: a shell without bracketed paste gets the keys one by one; no line may be long.
+    let command = format!(
+        "cat > f <<'EOF'\n{}\nEOF\necho \"it's\" `x` $y \\\\ \r\n caf\u{e9} \u{1f600}",
+        "line with 'quotes' and $vars\n".repeat(20_000)
+    );
+    let text = wrapper_lines_for_typed_input(&command);
+    assert!(
+        text.lines().all(|l| l.len() <= FOLD_WIDTH + 400),
+        "a line is too long"
+    );
+    assert!(!text.contains('\r'));
+    assert_eq!(
+        decoded_script(&text),
+        format!("rm -f \"$__pc\"; unset __pc\n{command}\n")
+    );
+    // Quote parity: the only single quotes are the two around the base64.
+    assert_eq!(
+        text.matches('\'').count(),
+        4,
+        "{}",
+        text.matches('\'').count()
+    );
+}
+
+#[test]
+fn the_typed_input_wrapper_has_the_same_decode_and_cleanup_shell_as_the_one_line_form() {
+    let one = wrapper_line("exit 3");
+    let folded = wrapper_lines_for_typed_input("exit 3");
+    assert_eq!(one, folded, "a short command folds to a single line");
+    assert!(!folded.contains('\n'));
+}
+
+/// The cost a line editor pays redisplaying a typed line grows with the square of its length, so
+/// the work of typing a wrapper is the sum of its lines' squares. Folding must make that grow
+/// linearly with the command: 10x the size is about 10x the work, not 100x (#1129, #1191).
+#[test]
+fn the_typed_input_wrapper_redisplay_work_scales_linearly() {
+    fn work(text: &str) -> u128 {
+        text.lines().map(|l| (l.len() as u128).pow(2)).sum()
+    }
+    let small = work(&wrapper_lines_for_typed_input(&"x".repeat(100 * 1024)));
+    let large = work(&wrapper_lines_for_typed_input(&"x".repeat(1024 * 1024)));
+    let ratio = large as f64 / small as f64;
+    assert!(
+        (8.0..13.0).contains(&ratio),
+        "work ratio {ratio} for 10x the size"
+    );
+    // The one-line form is the quadratic one this replaces.
+    let one = work(&wrapper_line(&"x".repeat(1024 * 1024))) as f64
+        / work(&wrapper_line(&"x".repeat(100 * 1024))) as f64;
+    assert!(one > 80.0, "{one}");
+    // And the widest folded line stays under macOS's MAX_CANON.
+    let widest = wrapper_lines_for_typed_input(&"x".repeat(1024 * 1024))
+        .lines()
+        .map(str::len)
+        .max()
+        .unwrap();
+    assert!(widest < 4096, "{widest}");
 }

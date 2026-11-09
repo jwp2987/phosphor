@@ -303,6 +303,8 @@ These are what stand between the agent and your shell. Read them carefully.
 | `agents.profiles.agent_mode_coding_permissions` | `"always_ask_before_reading"` \| `"always_allow_reading"` \| `"allow_reading_specific_files"` | `"always_ask_before_reading"` | How much file-reading the agent may do without asking. Note that granting read-only *command* execution above also implicitly grants file reads for coding tasks. |
 | `agents.profiles.agent_mode_coding_file_read_allowlist` | array of absolute paths | `[]` | The specific files the agent may read when `agent_mode_coding_permissions` is `allow_reading_specific_files`. Store absolute paths. |
 | `agents.warp_agent.other.auto_approve_bypasses_command_denylist` | boolean | `true` | Whether auto-approve (fast-forward) is allowed to run commands that match the denylist. Set to `false` to make the denylist absolute. |
+| `agents.warp_agent.permissions.safe_command_allowlist_enabled` | boolean | `false` | Run the commands in `safe_command_allowlist` without asking. Off by default. Matches one program with plain arguments only: no pipes, redirects, `;`, `&&`, subshells, globs or variables, and no flag that writes or never ends. The denylist still wins. |
+| `agents.warp_agent.permissions.safe_command_allowlist` | array of strings | `ls`, `cat`, `grep`, `df`, ... (no git) | Entries are a program (`ls`) or a program and subcommand (`git status`). Editable under Settings > AI > Permissions. |
 
 ### Conversation behaviour
 
@@ -331,33 +333,34 @@ These are what stand between the agent and your shell. Read them carefully.
 
 ### models.dev catalog download
 
-Set this in `settings.toml` (there is no GUI toggle):
+Phosphor makes **no network request for the model catalog at startup**. It uses the catalog built into the app (a snapshot of models.dev dated 2026-11-06). To update it, press **Refresh model list** on the Providers settings page; that downloads the catalog once, on demand.
+
+The one URL the Refresh button fetches (unless you change it below) is:
+
+`https://gitlab.com/winters-phosphor/phosphor/-/raw/main/assets/models_dev/api.json`
+
+That is a copy of models.dev's catalog kept in the Phosphor repo. Phosphor does not contact `models.dev` itself unless you set `models_dev_url` to it.
+
+Both settings are in `settings.toml` (there is no GUI toggle):
 
 ```toml
 [agents.warp_agent]
-models_dev_fetch = true
-models_dev_url = "https://gitlab.com/winters-phosphor/phosphor/-/raw/main/assets/models_dev/api.json"
+models_dev_fetch = false
+models_dev_url = ""
 ```
 
 | TOML path | Type | Default | What it does |
 |---|---|---|---|
-| `agents.warp_agent.models_dev_fetch` | boolean | `true` | Download the model catalog used by the provider "Quick add" row and attachment capabilities. With `false`, nothing is ever requested, whatever `models_dev_url` says (not at startup, not from the Refresh button). |
-| `agents.warp_agent.models_dev_url` | string | the repo copy on main (above) | Where the catalog is downloaded from. Settings file only, no GUI. A blank value means the default. |
+| `agents.warp_agent.models_dev_fetch` | boolean | `false` | Also download the catalog automatically when the Providers page opens and the cache is older than 24 hours. The Refresh button works whatever this is. |
+| `agents.warp_agent.models_dev_url` | string | the URL above | Where the catalog is downloaded from. Settings file only. A blank value means the default. |
 
-The catalog is loaded in this order: a fresh download from `models_dev_url` (only when `models_dev_fetch` is `true`), then the on-disk cache, then the catalog built into Phosphor. With `models_dev_fetch = false` and no cache, Phosphor uses the built-in catalog (a snapshot of models.dev dated 2026-11-06), so the model list is never empty. A download that is not valid catalog JSON is discarded and never cached.
+The catalog is loaded in this order: a fresh on-disk cache, then (only when `models_dev_fetch` is `true`) a download, then the stale cache, then the built-in catalog, so the model list is never empty. A download that is not valid catalog JSON is discarded and never cached. The catalog loads when you open the settings page, not when the app starts.
 
 To read models.dev itself, or your own mirror:
 
 ```toml
 [agents.warp_agent]
 models_dev_url = "https://models.dev/api.json"
-```
-
-To stop all downloads and use only the cache or the built-in catalog:
-
-```toml
-[agents.warp_agent]
-models_dev_fetch = false
 ```
 
 The repo copy and the built-in catalog are refreshed together by `python3 -I script/update_models_dev.py`.
@@ -420,6 +423,10 @@ listed for completeness.
 | `cloud_platform.third_party_api_keys.aws_bedrock_profile` | string | `"default"` | Which AWS profile to load credentials from. Desktop only. |
 | `cloud_platform.third_party_api_keys.aws_bedrock_auto_login` | boolean | `false` | Run the refresh command automatically when Bedrock credentials expire, instead of asking first. Desktop only. |
 | `cloud_platform.third_party_api_keys.aws_bedrock_auth_refresh_command` | string | `"aws login"` | The command run to refresh AWS credentials. Desktop only. |
+
+**Where Bedrock credentials come from.** Phosphor resolves them itself (no AWS SDK in the credential path): environment variables, `~/.aws/credentials` and `~/.aws/config` profiles (honouring `AWS_PROFILE`, `AWS_CONFIG_FILE`, `AWS_SHARED_CREDENTIALS_FILE`), IAM Identity Center / SSO (it refreshes the CLI's `~/.aws/sso/cache` token when it can; otherwise run `aws sso login`), `role_arn` with `source_profile` or `credential_source` (external ID and duration honoured; profiles that need an MFA code are reported, not prompted), web identity (`web_identity_token_file`, `AWS_WEB_IDENTITY_TOKEN_FILE`), `credential_process`, ECS container credentials, EC2 IMDSv2, and `aws login` sessions. With an empty profile the order is: environment, the `AWS_PROFILE`/`default` profile, web identity, container, IMDS; a named profile uses only that profile. Service endpoints follow `AWS_ENDPOINT_URL` / `AWS_ENDPOINT_URL_<SERVICE>`. Requests use Phosphor's own HTTP client, so proxy and CA settings apply.
+
+**`aws login` and the `aws-sdk-login` build feature.** `aws login` profiles (`login_session`) are still resolved by the AWS SDK in default builds (cargo feature `aws-sdk-login`, on by default) until the DPoP reimplementation in `ai::aws_creds::login` is verified against a real `aws login` session. Building without that feature drops `aws-config` and the `aws-sdk-*` crates entirely; the binary shrinks only then.
 
 ### TUI statusline
 
@@ -627,7 +634,7 @@ own chrome.
 | `terminal.input.show_hint_text` | boolean | `true` | Show hint text in an empty input. |
 | `terminal.input.input_box_type_setting` | `"classic"` \| `"universal"` | `"classic"` | The input style. `classic` is terminal-first; `universal` is AI-first. |
 | `terminal.input.classic_completions_mode` | boolean | `false` | Use the classic completions behaviour. |
-| `terminal.input.completions_open_while_typing` | boolean | `false` | Open the completions menu automatically as you type rather than on demand. |
+| `terminal.input.completions_open_while_typing` | boolean | `true` (local sessions only unless set) | Open the completions menu automatically as you type rather than on demand. |
 | `terminal.input.error_underlining_enabled` | boolean | `true` | Underline commands that will not run. Desktop only. |
 | `terminal.input.syntax_highlighting` | boolean | `true` | Syntax-highlight the input. Desktop only. |
 | `terminal.input.command_corrections` | boolean | `true` | Suggest corrections for mistyped commands. |
@@ -706,9 +713,10 @@ Settings → Network.
 
 | TOML path | Type | Default | What it does |
 |---|---|---|---|
-| `network.proxy_mode` | `"off"` \| `"system"` \| `"custom"` | `"system"` | `system` follows the system/environment configuration — on Linux the `HTTP_PROXY` family, on macOS SystemConfiguration, on Windows WinINET. This is the default, matching Warp, which honours those environment variables unconditionally. `custom` uses the URL below. `off` disables proxying entirely, *including* environment variables — the opt-out for a machine whose environment carries a stale or unreachable proxy. |
+| `network.proxy_mode` | `"off"` \| `"system"` \| `"custom"` | `"system"` | `custom` uses the URL below. Since the network gate (Wave N) Phosphor **ignores system and environment proxies** (`HTTP_PROXY` and friends, SystemConfiguration, WinINET): `system` and `off` both mean no proxy. Only a proxy you configure here is used. |
 | `network.proxy_url` | string | `""` | The proxy URL used in `custom` mode, e.g. `http://proxy.corp:8080`. |
 | `network.proxy_username` | string | `""` | The proxy username for `custom` mode. Empty means no basic auth. |
+| `network.allowed_origins` | string | `""` | Extra origins Phosphor may contact on its own, separated by commas, spaces or newlines, e.g. `https://api.example.com` or `host:8443` (a bare host allows any port). Loopback addresses and the endpoints of your configured AI providers (including Ollama and a local proxy) are always allowed. If a request you expect is blocked, the log says `network gate: denied "<purpose>" (host hash ...)`; add the origin here. |
 | `network.proxy_no_proxy` | string | `""` | Comma-separated host exceptions, e.g. `localhost,127.0.0.1,.internal`. |
 
 The proxy **password is not in this file.** It goes to the OS secure store,

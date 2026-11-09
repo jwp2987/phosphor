@@ -241,6 +241,11 @@ pub fn wire_up_pty_controller_with_surface<T: EventLoopSender, S: TerminalSurfac
             PtyControllerEvent::YoungHoldEnded => {
                 surface.update(ctx, |surface, ctx| surface.on_young_hold_ended(ctx));
             }
+            PtyControllerEvent::LineEditorSignalGaveUp => {
+                surface.update(ctx, |surface, ctx| {
+                    surface.on_line_editor_signal_gave_up(ctx)
+                });
+            }
             PtyControllerEvent::InputBufferOverflow => {
                 surface.update(ctx, |surface, ctx| surface.on_input_buffer_overflow(ctx));
             }

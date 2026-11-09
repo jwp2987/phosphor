@@ -567,3 +567,31 @@ mod key_wait {
         )));
     }
 }
+
+/// A BYOP failure the in-stream layer already retried is not retried again by the outer layer
+/// (a dead provider gets 4 requests, not 4 x 4), while an ordinary mid-stream drop is still
+/// retryable and, once actions have run, still resumes.
+#[test]
+fn exhausted_in_stream_recovery_is_terminal_but_a_mid_stream_drop_still_resumes() {
+    use crate::ai::api_error::{AIApiError, PreOutputRecoveryExhausted};
+
+    let exhausted_err = AIApiError::Other(anyhow::Error::new(PreOutputRecoveryExhausted(
+        "provider down".to_owned(),
+    )));
+    assert_eq!(
+        recovery_action(
+            false,
+            exhausted_err.is_retryable(),
+            RecoveryBudget::fresh(),
+            true
+        ),
+        RecoveryAction::Fail(FailReason::NotRecoverable)
+    );
+
+    let dropped = AIApiError::Other(anyhow::anyhow!("BYOP stream error: connection reset"));
+    assert!(dropped.is_retryable());
+    assert_eq!(
+        recovery_action(true, dropped.is_retryable(), RecoveryBudget::fresh(), true),
+        RecoveryAction::Resume
+    );
+}

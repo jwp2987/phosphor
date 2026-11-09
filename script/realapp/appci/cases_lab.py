@@ -19,7 +19,8 @@ import lab as L  # noqa: E402
 
 HOOK_TAB_INSERT = re.compile(r"hop=tab_insert\b|completion_inserted")           # [hook] the completion text reached the editor
 HOOK_TAB_MENU = re.compile(r"hop=tab_menu\b[^\n]*items=(\[[^\n]*\])")             # [hook] the ambiguous-prefix menu and its items
-HOOK_PATH_DETECT = re.compile(r"hop=path_detect\b[^\n]*path=(\S+)")             # [hook] a typed path was recognised as a directory on the remote
+HOOK_CWD_LISTING = re.compile(r"hop=cwd_listing session=(\d+) kind=([LPT]) entries=(\d+)")            # the remote shell's pushed cwd listing arrived (#1801): ids and counts only
+HOOK_PATH_DETECT = re.compile(r"hop=path_detect source=pushed session=(\d+) entries=(\d+) complete=(true|false)")   # path detection answered from that listing, no round trip (ids and counts only)
 SESSION_ABANDONED = "Session abandoned before bootstrap"
 
 
@@ -281,25 +282,34 @@ def c_tab_remote_dir(ctx, r, arm):
 # ------------------------------------------------------------------ 2. path detection while typing
 @lab_case("path_detect", shells=("bash", "zsh", "fish"), lat=("lan", "150", "300"), helper=("nohelper", "helper"), scenarios=("p_exec", "p_tinypath"))
 def c_path_detect(ctx, r, arm):
-    """A directory path typed at the remote prompt (no Enter) is detected [hook], and typing it opens ZERO new exec channels on the server: the no-helper path must
-    not run a command per keystroke (the sshd log counts 'Starting session: command' lines)."""
+    """`cd` into a remote fixture directory, then type a subdirectory's name (no Tab, no Enter): the remote shell pushed its bounded cwd listing with the prompt
+    (hop=cwd_listing, #1801: ids and counts only, never a name) and the app detects the typed word from it (hop=path_detect source=pushed), instantly, from the
+    cache. Typing it opens ZERO new exec channels on the server (sshd log 'Starting session: command'): the no-helper path must not run a command per keystroke."""
     lab, u, base, rt = ctx.lab, arm["user"], work(arm), rtt_s(arm)
     uid = unique(ctx)
-    lab.tree(u, {"pd%s/a.txt" % uid: "", "pd%s/sub/b.txt" % uid: ""})
+    lab.tree(u, {"pd%s/a.txt" % uid: "", "pd%s/sub/b.txt" % uid: ""})          # the fixture directory holds exactly 2 entries: a.txt and sub/
     if connect_or_fail(ctx, r, arm) is None:
         ctx.reset()
         return
     time.sleep(2.0 + 3 * rt)                         # the connection's own start-up channels settle first
+    off = ctx.log_size()
+    ctx.be.type("cd %spd%s" % (base, uid), type_pace(ctx), enter=True)
+    got = ctx.until(lambda: [m for m in HOOK_CWD_LISTING.finditer(ctx.log_since(off)) if m.group(3) == "2"], 10 + 6 * rt, step=0.1)
+    if got:
+        r.check(got[-1].group(2) == "L", "the pushed listing of the fixture directory is kind %s, expected L (complete)" % got[-1].group(2))
+    else:
+        r.unverifiable("[hook] no hop=cwd_listing line with entries=2 after the cd (the remote shell's bootstrap sent no listing, or the shell is not one that does): detection from the pushed listing is not proven")
+    time.sleep(0.5 + 2 * rt)
     size0 = lab.sshd_since(0)["size"]
     off = ctx.log_size()
-    ctx.be.type("ls %spd%s/sub/" % (base, uid), 30)
-    time.sleep(1.5 + 3 * rt)
-    hit = HOOK_PATH_DETECT.search(ctx.log_since(off))
+    ctx.be.type("ls sub", 30)                         # a subdirectory of the cwd, typed whole: no Tab, no Enter
+    hit = ctx.until(lambda: HOOK_PATH_DETECT.search(ctx.log_since(off)), 1.5 + 3 * rt, step=0.05)
     ctx.shot("lab_path_detect")
     if hit:
-        r.check("pd%s/sub" % uid in hit.group(1), "the app detected %r, expected the typed directory pd%s/sub" % (hit.group(1), uid))
+        r.check(hit.group(2) == "2" and hit.group(3) == "true", "path detection used a listing of %s entries (complete=%s), expected the fixture's 2 (complete)" % (hit.group(2), hit.group(3)))
     else:
-        r.unverifiable("[hook] no path-detect line in the app log (hop=path_detect path=...): detection itself is not proven; only the channel count below is checked")
+        r.unverifiable("[hook] no hop=path_detect source=pushed line in the app log: detection from the pushed listing is not proven; only the channel count below is checked")
+    time.sleep(0.5 + 2 * rt)
     starts = L.count_starts(lab.sshd_since(size0)["data"])
     r.metric("exec_channels_while_typing", starts)
     r.check(starts["command"] == 0 and starts["subsystem"] == 0, "typing a remote path opened %d exec and %d subsystem channel(s) on the server (expected none)" % (starts["command"], starts["subsystem"]))
@@ -541,3 +551,42 @@ def c_helper_install(ctx, r, arm):
     CA.exact_lines(r, "the command typed into the remote shell", [tok], ctx.remote.lines("hi_%s.txt" % tok))
     ctx.shot("lab_helper_install_%s" % mode)
     finish_remote(ctx, r)
+
+# ------------------------------------------------------------------ 9. The "limited: no remote helper" chip (Wave 1.5)
+@lab_case("no_helper_chip", shells=("bash", "zsh"), lat=("lan",), helper=("nohelper",), modes=("terminal",))
+def c_no_helper_chip(ctx, r, arm):
+    """A Phosphorized ssh session WITHOUT the remote helper shows the small, informational chip "limited: no remote helper" (OCR). It never blocks: a command
+    typed right after connecting still runs once, and the chip is not an error banner (no 'ERROR' text next to it)."""
+    import cases_caseagent as CAG
+    if connect_or_fail(ctx, r, arm) is None:
+        ctx.reset()
+        return
+    time.sleep(1.0 + 2 * rtt_s(arm))
+    txt = ctx.ocr("lab_no_helper_chip")
+    if txt is None:
+        r.unverifiable("no OCR on this machine (tesseract): the chip on screen is not checked")
+    else:
+        flat = " ".join(txt.split())
+        r.check(CAG.fuzzy_has(flat, "no remote helper"), "no 'limited: no remote helper' chip on screen in a no-helper ssh session")
+        r.check("ERROR" not in flat, "an ERROR text is on screen next to the no-helper chip: it must stay informational")
+    tok = unique(ctx)
+    ctx.be.type("echo chip%s" % tok, type_pace(ctx), enter=True)
+    time.sleep(1.0 + 2 * rtt_s(arm))
+    r.check(sum(1 for _, cmd in ctx.remote.commands() if "echo chip%s" % tok in cmd) == 1, "a command typed after connecting did not run exactly once with the chip up")
+    finish_remote(ctx, r)
+
+# ------------------------------------------------------------------ 7. a real password / keyboard-interactive prompt (#1535)
+@lab_case("password_prompt", shells=(), lat=("lan", "150"), helper=("nohelper",), scenarios=("p_password", "p_kbdint"))
+def c_password_prompt(ctx, r, arm):
+    """The owner's secret-prompt rule against a REAL sshd that asks for the unix password (the same-machine harness sshd cannot: no account password, no PAM):
+    p_password (password auth) and p_kbdint (keyboard-interactive via PAM). The ssh_password_prompt body (CR.secret_prompt): nothing is typed until ssh's prompt
+    is on screen; the secret typed after it logs in; the secret is in no shell's rec.log and not on screen; a wrong secret ends the ssh (NumberOfPasswordPrompts 1)
+    and the next command runs in the LOCAL shell. The password is the throw-away one labd leased for this run. Not covered: p_mfa (a TOTP that must be computed at
+    typing time, not at prompt time) and the passphrase prompt (ssh_password_prompt covers it on the same-machine sshd)."""
+    secret = (getattr(ctx.lab, "leased", None) or {}).get("password")
+    if not secret:
+        r.unverifiable("the lab lease carries no password for %s" % arm["user"])
+        return
+    CR.rm_remote(ctx, "pw_labpw.txt")
+    CR.secret_prompt(ctx, r, host_of(arm), secret, "password", "labpw")
+    ctx.reset()

@@ -33,8 +33,11 @@ impl TextLayoutSystem<'_> {
         max_width: f32,
         clip_config: ClipConfig,
     ) -> Line {
-        self.platform
-            .layout_line(text, line_style, style_runs, max_width, clip_config)
+        let mut line =
+            self.platform
+                .layout_line(text, line_style, style_runs, max_width, clip_config);
+        attach_find_hits(text, &mut line);
+        line
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -48,7 +51,7 @@ impl TextLayoutSystem<'_> {
         alignment: TextAlignment,
         first_line_head_indent: Option<f32>,
     ) -> TextFrame {
-        self.platform.layout_text(
+        let mut frame = self.platform.layout_text(
             text,
             line_style,
             style_runs,
@@ -56,7 +59,13 @@ impl TextLayoutSystem<'_> {
             max_height,
             alignment,
             first_line_head_indent,
-        )
+        );
+        if crate::appci_find::enabled() {
+            for line in frame.lines_mut() {
+                attach_find_hits(text, line);
+            }
+        }
+        frame
     }
 
     /// Lays out a text frame without retaining it in a [`crate::text_layout::LayoutCache`].
@@ -95,4 +104,22 @@ impl TextLayoutSystem<'_> {
             self.request_fallback_font_for_char(*ch, RequestedFallbackFontSource::UncachedText);
         }
     }
+}
+
+/// Test-harness find hook (#1789): record where the listed tokens sit in `line`. A single cached
+/// check when `PHOSPHOR_APPCI_FIND_FILE` is unset.
+fn attach_find_hits(text: &str, line: &mut Line) {
+    if !crate::appci_find::enabled() {
+        return;
+    }
+    let Some(tokens) = crate::appci_find::active_tokens() else {
+        return;
+    };
+    let glyphs: Vec<(usize, f32, f32)> = line
+        .runs
+        .iter()
+        .flat_map(|run| run.glyphs.iter())
+        .map(|g| (g.char_index(), g.position_along_baseline.x(), g.width))
+        .collect();
+    line.find_hits = crate::appci_find::hits_for_line(text, &tokens, &glyphs);
 }

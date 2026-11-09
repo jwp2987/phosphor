@@ -468,3 +468,38 @@ fn issue_1639_title_only_subgraph_renders_quickly() {
         );
     }
 }
+
+/// #1613: a flowchart with two source nodes reaching one cycle (`Decide -> Fix -> Decide`) rendered
+/// two different layouts in one process: the back-edge search started from the sources in std
+/// `HashMap` order (a fresh random seed per map), so which cycle edge was reversed changed from run
+/// to run. Found by the mermaid_render fuzz target (seed `fuzz/corpus/mermaid_render/ref_issue_1613`).
+/// The fork now walks nodes in declaration order. Every render here draws new hash seeds (the app's
+/// fetch renders on its own worker thread, and some renders also run on threads of their own), so
+/// one differing layout in many renders fails the test.
+#[test]
+fn issue_1613_cycle_with_two_sources_renders_one_layout() {
+    let src = fixture("issue_1613_cycle_two_sources.mmd");
+    let first = app_render(&src).expect("the #1613 flowchart renders");
+    assert!(is_nonblank_svg(&first));
+    for n in 0..24 {
+        assert_eq!(
+            app_render(&src).as_ref(),
+            Ok(&first),
+            "#1613: render {n} on the test thread differs"
+        );
+    }
+    let handles: Vec<_> = (0..8)
+        .map(|_| {
+            let src = src.clone();
+            std::thread::spawn(move || app_render(&src))
+        })
+        .collect();
+    for (n, handle) in handles.into_iter().enumerate() {
+        let svg = handle.join().expect("render thread does not panic");
+        assert_eq!(
+            svg.as_ref(),
+            Ok(&first),
+            "#1613: threaded render {n} differs"
+        );
+    }
+}

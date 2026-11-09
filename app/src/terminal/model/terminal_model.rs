@@ -530,6 +530,19 @@ pub struct TerminalModel {
     secret_read_probe: Option<super::block::interactive_latch::SecretReadProbe>,
     /// #1641: whether the foreground program is blocked reading the tty (an OS fact).
     tty_read_probe: Option<super::block::interactive_latch::SecretReadProbe>,
+    /// #1679 step 3: the pty sample behind [`Self::subshell_tty_sample`] (unix local ptys,
+    /// `terminal_attributes::subshell_tty_fact`; a test installs a closure of its own).
+    subshell_tty_probe: Option<super::subshell_tty::SubshellTtyProbe>,
+    /// #1679 step 3 (review R9): discards the slave's unread input, for a setup cancelled with its
+    /// bytes provably unread.
+    subshell_tty_flush: Option<super::subshell_tty::SubshellTtyFlush>,
+    /// The pid of the top-level shell this pty was spawned with: the fallback parent of a
+    /// readiness sample when the active session reported none.
+    local_shell_pid: Option<i32>,
+    /// The pid each session's shell reported in its `InitShell` hook (`$$`), by session ID: the
+    /// parent of a readiness sample taken while that session is the active one, so a `su` from a
+    /// Phosphorized `sudo -s` is judged against THAT shell, not the top-level one (review R5).
+    session_shell_pids: HashMap<SessionId, i32>,
 
     /// Stack of saved window titles. When a title is popped from this stack, the `title` for the
     /// term is set.
@@ -1175,6 +1188,7 @@ impl TerminalModel {
         let session_id = 123.into();
         terminal_model.register_session_id(session_id);
         terminal_model.init_shell(InitShellValue {
+            pid: None,
             session_id,
             shell: "zsh".to_owned(),
             hostname,
@@ -1283,6 +1297,10 @@ impl TerminalModel {
             interactive_probe: None,
             secret_read_probe: None,
             tty_read_probe: None,
+            subshell_tty_probe: None,
+            subshell_tty_flush: None,
+            local_shell_pid: None,
+            session_shell_pids: HashMap::new(),
             title_stack: Vec::new(),
             title: None,
             custom_title: None,
@@ -2020,6 +2038,57 @@ impl TerminalModel {
         self.secret_read_probe.clone()
     }
 
+    /// #1679 step 3: installs the pty sample behind [`Self::subshell_tty_sample`] and the input
+    /// flush behind [`Self::flush_subshell_tty_input`] (unix local ptys; a test installs closures
+    /// of its own).
+    pub fn set_subshell_tty_probe(
+        &mut self,
+        probe: super::subshell_tty::SubshellTtyProbe,
+        flush: Option<super::subshell_tty::SubshellTtyFlush>,
+    ) {
+        self.subshell_tty_probe = Some(probe);
+        self.subshell_tty_flush = flush;
+    }
+
+    /// Whether a readiness sample exists here at all: without the probe (ConPTY, a test that
+    /// installed none) every sample is `Unknown` and the judge can only wait.
+    pub fn has_subshell_tty_probe(&self) -> bool {
+        self.subshell_tty_probe.is_some()
+    }
+
+    /// #1679 step 3: the pid of the top-level shell this pty was spawned with.
+    pub fn set_local_shell_pid(&mut self, pid: i32) {
+        self.local_shell_pid = Some(pid);
+    }
+
+    /// The shell that ran the active block, as the parent of a subshell readiness sample: the pid
+    /// the active session's shell reported in its `InitShell` hook, else the spawn pid (review R5:
+    /// the session's own report, never a `tcgetpgrp` sample at a Precmd). `None` with neither.
+    pub fn subshell_parent_pid(&self) -> Option<i32> {
+        self.block_list()
+            .active_block()
+            .session_id()
+            .and_then(|sid| self.session_shell_pids.get(&sid).copied())
+            .or(self.local_shell_pid)
+    }
+
+    /// One readiness sample of the pty (#1679 step 3), taken now, never on a timer: `Unknown`
+    /// without a probe or a parent pid. One `tcgetattr`, one `tcgetpgrp`, at most one `/proc`
+    /// read (review R10), so it is taken once per output wakeup.
+    pub fn subshell_tty_sample(&self) -> super::subshell_tty::SubshellTtySample {
+        match (&self.subshell_tty_probe, self.subshell_parent_pid()) {
+            (Some(probe), Some(parent)) => probe(parent),
+            _ => super::subshell_tty::SubshellTtySample::unknown(),
+        }
+    }
+
+    /// Discards the slave's unread input (review R9); `false` when nothing can be flushed here.
+    pub fn flush_subshell_tty_input(&self) -> bool {
+        self.subshell_tty_flush
+            .as_ref()
+            .is_some_and(|flush| flush())
+    }
+
     /// Exclusive access to the typeahead hand-off (its own leaf lock; see [`PaneHandoff`]).
     pub fn typeahead_handoff_mut(
         &mut self,
@@ -2062,9 +2131,22 @@ impl TerminalModel {
         self.last_setup_line_marker = None;
     }
 
-    /// Stops hiding the setup echo.
+    /// Stops hiding the setup echo. A new setup starts its echo counts afresh.
     pub fn clear_setup_echo(&mut self) {
         self.disarm_setup_echo();
+        self.setup_echo_filter.reset_counts();
+    }
+
+    /// #1679 step 3 (review R7): how many setup lines the tty has echoed through their line feed
+    /// since the current setup was written: the shell took them.
+    pub fn setup_echo_lines_ended(&self) -> usize {
+        self.setup_echo_filter.lines_ended()
+    }
+
+    /// #1679 step 3 (review R9): whether any of the current setup's echo has been seen; `false`
+    /// means its bytes may still sit unread in the tty.
+    pub fn setup_echo_started(&self) -> bool {
+        self.setup_echo_filter.started()
     }
 
     /// The ledger of query replies and pty writes, shared with the pty event loop.
@@ -3066,6 +3148,13 @@ impl TerminalModel {
         self.registered_session_ids.remove(&session_id);
     }
 
+    /// Whether a minted ID is still registered (the view tests of #1679 step 3 assert a cancelled
+    /// attempt's ID is gone).
+    #[cfg(test)]
+    pub fn session_id_is_registered_for_test(&self, session_id: SessionId) -> bool {
+        self.registered_session_ids.contains(&session_id)
+    }
+
     pub fn needs_bracketed_paste(&mut self) -> bool {
         delegate!(self.needs_bracketed_paste())
     }
@@ -3255,6 +3344,11 @@ impl TerminalModel {
             env_vars.insert("KUBECONFIG".to_string(), kube_config);
         }
         let handled_after_inband = data.was_sent_after_in_band_command();
+        // #1801: a remote shell's listing of its cwd fills the per-session cache that path
+        // detection reads, so a typed directory is recognised with no round trip.
+        if let (Some(id), Some(listing)) = (session_id, data.cwd_listing.as_deref()) {
+            crate::completer::note_pushed_cwd_listing(id.into(), data.pwd.as_deref(), listing);
+        }
         self.block_list.apply_precmd_to_active(data);
         // The prompt's block is the active one now, with its own grid's modes (a program that
         // died with DECCKM or kitty flags set left them on the finished block only, #1411).
@@ -4134,6 +4228,11 @@ impl ansi::Handler for TerminalModel {
 
             let shell_type = ShellType::from_name(&data.shell)
                 .unwrap_or_else(|| panic!("invalid shell name: {}", data.shell));
+            // #1679 step 3: the shell's own pid, the parent of a readiness sample taken while this
+            // session is the active one.
+            if let Some(pid) = data.pid.and_then(|pid| i32::try_from(pid).ok()) {
+                self.session_shell_pids.insert(data.session_id, pid);
+            }
 
             // #1069: a wrapper ssh session has no `subshell_info`, so record the command the user
             // typed (the active block is still the local `ssh ...` block) for a split to replay.

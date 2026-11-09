@@ -7,7 +7,7 @@ if [ "$APPCI_APP_DISPLAY" = x11 ]; then unset WAYLAND_DISPLAY; fi
 if [ "$APPCI_APP_DISPLAY" = wayland ] && [ -z "$APPCI_KEEP_DISPLAY" ]; then unset DISPLAY; fi
 export HOME="%(home)s" XDG_CONFIG_HOME="%(home)s/.config" XDG_STATE_HOME="%(home)s/.local/state" XDG_DATA_HOME="%(home)s/.local/share"
 export SHELL=/bin/bash ZDOTDIR="%(home)s"
-export RUST_LOG=warp::input_order=debug,warp::terminal::model_lock_trace=debug,warpui::frame_cause=debug,phosphor::routing=debug,editor_memory=debug
+export RUST_LOG=warp::input_order=debug,warp::terminal::model_lock_trace=debug,warpui::frame_cause=debug,phosphor::routing=debug,editor_memory=debug,warp::terminal::cli_agent_sessions::event=info
 export WARP_INPUT_ORDER_LOG_TEXT=1
 mkdir -p "$XDG_STATE_HOME" "$XDG_DATA_HOME"
 if [ -z "$APPCI_NO_KEYRING" ]; then
@@ -15,7 +15,7 @@ if [ -z "$APPCI_NO_KEYRING" ]; then
 fi
 echo $$ > "%(run)s/app.pid"
 cd "%(home)s/w"
-exec "%(bin)s" >> "%(run)s/app.stdout" 2>&1
+exec %(wrap)s"%(bin)s" >> "%(run)s/app.stdout" 2>&1
 '''
 
 
@@ -99,11 +99,12 @@ class App:
     def __init__(self, run, home, binary, display="wayland"):
         self.run, self.home, self.bin, self.display = run, home, binary, display
         self.proc = None
+        self.wrap = ""                 # words put before the binary in the launcher's final exec (zero_network_startup: strace), "" otherwise; ends in a space
         self.keyring = "unlocked"      # #1805: a case sets another KEYRING_VARIANTS entry before start() and puts it back after
 
     def start(self):
         inner = os.path.join(self.run, "inner.sh")
-        open(inner, "w").write(INNER % {"home": self.home, "run": self.run, "bin": self.bin})
+        open(inner, "w").write(INNER % {"home": self.home, "run": self.run, "bin": self.bin, "wrap": self.wrap})
         os.chmod(inner, 0o755)
         # r18u22 (Wayland agent shell_nu): the r18cz fix below lived only in WindowsApp.env (its `os.name != "nt"` branch never ran), so on
         # Linux nu stayed off the app's PATH and the agent pass sent `nu` to the agent: "nu never executed a probe line".
@@ -209,7 +210,7 @@ class MacApp:
         env_args = []
         for k, v in (("HOME", self.home), ("SHELL", "/bin/zsh"), ("ZDOTDIR", self.home), ("APPCI_W", self.home + "/w"),
                      ("PA_CTL", os.path.join(self.run, "ctl")),
-                     ("RUST_LOG", "warp::input_order=debug,warp::terminal::model_lock_trace=debug,warpui::frame_cause=debug,phosphor::routing=debug,editor_memory=debug"),
+                     ("RUST_LOG", "warp::input_order=debug,warp::terminal::model_lock_trace=debug,warpui::frame_cause=debug,warpui::appci_find=info,phosphor::routing=debug,editor_memory=debug"),
                      ("WARP_INPUT_ORDER_LOG_TEXT", "1")):
             env_args += ["--env", "%s=%s" % (k, v)]
         for k, v in passthrough_env().items():
@@ -357,12 +358,12 @@ class WindowsApp:
         # agent_stream_cancel / agent_approval reported "no model request" on a run whose screenshot showed the finished reply. Only those two modules go to info.
         # r18u13 (#1629): winit too. Its keyboard-layout trace (WM_INPUTLANGCHANGE enter/exit, LAYOUT_CACHE takes, layout-build timing; lib/winit
         # CHANGES-PHOSPHOR.md) logs at info, and under the bare `warn` base the AltGr hang run carried none of it. winit logs nothing else through `log`.
-        e["RUST_LOG"] = "warn,winit=info,warp::ai::agent_providers=info,warp::ai::blocklist::controller=info,warp::input_order=debug,warp::terminal::model_lock_trace=debug,warpui::frame_cause=debug,phosphor::routing=debug,editor_memory=debug"
+        e["RUST_LOG"] = "warn,winit=info,warp::ai::agent_providers=info,warp::ai::blocklist::controller=info,warp::input_order=debug,warp::terminal::model_lock_trace=debug,warpui::frame_cause=debug,warpui::appci_find=info,phosphor::routing=debug,editor_memory=debug"
         e["WARP_INPUT_ORDER_LOG_TEXT"] = "1"
         e["PA_CTL"] = fwd(self.ctl)
         e["APPCI_W"] = fwd(os.path.join(self.home, "w"))
         e["PHOSPHOR_PWSH_HOOK_TIMING"] = self.hook_timing_path
-        # #1789: tokens the harness wants located; an app with the (not yet written) env-gated hook logs `appci_find token=.. x0= y0= x1= y1=` for each. An app
+        # #1789: tokens the harness wants located; an app with the env-gated hook (warpui_core::appci_find) logs `appci_find token=.. x0= y0= x1= y1=` for each. An app
         # without the hook ignores both variables and the cases fall back to OCR (cases_ui.hook_find).
         e["PHOSPHOR_APPCI_FIND_FILE"] = fwd(os.path.join(self.home, "appci_find.txt"))
         tail = os.pathsep.join(winapi.git_dirs())

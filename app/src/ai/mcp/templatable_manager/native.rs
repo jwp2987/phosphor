@@ -2043,11 +2043,8 @@ async fn spawn_server(
                 }
                 Ok(Transport::Http(None)) => {
                     logger.log("[info] MCP: Using Streaming HTTP transport".to_string());
-                    let transport = if headers.is_empty() {
-                        rmcp::transport::StreamableHttpClientTransport::from_uri(
-                            sse_server.url.clone(),
-                        )
-                    } else {
+                    // Always our gated client (never rmcp's default one), headers or not.
+                    let transport = {
                         let client = build_client_with_headers(&headers)?;
                         rmcp::transport::StreamableHttpClientTransport::with_client(
                             client,
@@ -2089,13 +2086,8 @@ async fn spawn_server(
                 }
                 Ok(Transport::Sse(None)) => {
                     logger.log("[info] MCP: Using (legacy) SSE transport (due to preflight failing with a 404)".to_string());
-                    let transport = if headers.is_empty() {
-                        SseClientTransport::start(sse_server.url.clone())
-                            .await
-                            .map_err(|e| {
-                                rmcp::RmcpError::transport_creation::<ReqwestSseTransport>(e)
-                            })?
-                    } else {
+                    // Always our gated client (never a default one), headers or not.
+                    let transport = {
                         let client = build_client_with_headers(&headers)?;
                         SseClientTransport::start_with_client(
                             client,

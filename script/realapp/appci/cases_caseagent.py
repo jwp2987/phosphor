@@ -696,6 +696,16 @@ def c_agent_mode_switch(ctx, r):
 RECYCLE_RE = re.compile(r"editor_memory agent_code_(recycled|rebuilt) block=(\S+) (?:dropped|rebuilt)=(\d+)")
 
 
+PLAN_RE = re.compile(r"editor_memory agent_code_plan (rich=\d+ visible=\[[^\]]*\] plan=\[[^\]]*\](?: \(\+\d+ more\))?)")
+
+
+def recycle_plans(text):
+    """#1787: the app's `agent_code_plan` debug lines (app/src/terminal/view.rs ai_code_recycle_plan_summary): one per CHANGED visible set, saying how
+    many rich-content entries there were, which positions were visible and each AI block's action (R recycle, B rebuild, K keep). No line at all
+    means the visible set never changed; a line with no R means the snippet answer stayed within 6 entries of a visible one."""
+    return PLAN_RE.findall(text)
+
+
 def recycle_events(text):
     """[(kind 'recycled'|'rebuilt', block id string, count)] of the app's debug lines (app/src/ai/blocklist/block.rs recycle_code_editors /
     restore_code_editors, target editor_memory)"""
@@ -768,8 +778,18 @@ def c_agent_code_recycle(ctx, r):
         recycled = [e for e in ev if e[0] == "recycled"]
         r.metric("recycle_events_after_fillers", ev)
         if not recycled:
+            plans = recycle_plans(ctx.log_since(off))
+            r.metric("recycle_plan_lines", len(plans))
+            still = visible_snippets(ctx, "rcy_norecycle_ocr", tok)
+            r.metric("snippets_visible_without_recycle", still)
             r.check(False, "no 'editor_memory agent_code_recycled' line after %d later answers: the snippet answer's editors were never recycled "
-                           "(a build before #1267, PHOSPHOR_AGENT_CODE_EDITOR_RECYCLE=0, or the answer is never > 6 rich-content entries from a visible one)" % used)
+                           "(a build before #1267, PHOSPHOR_AGENT_CODE_EDITOR_RECYCLE=0, or the answer is never > 6 rich-content entries from a visible one). "
+                           "#1787 evidence: %s; snippets still on screen (OCR): %s" % (
+                               used,
+                               ("%d agent_code_plan line(s), last %r (no R = every AI block within 6 entries of a visible one; a snippet answer still on screen is "
+                                "visible, so correctly kept)" % (len(plans), plans[-1])) if plans
+                               else "NO agent_code_plan line: the visible rich-content set never changed after the answer (nothing triggers a recycle) or the build lacks the line",
+                               still))
             return
         block = recycled[0][1]
         r.metric("recycled_editors", recycled[0][2])

@@ -1152,7 +1152,7 @@ where
                         .map(|parts| parts.join(";").trim().to_owned());
                     if let Ok(body) = body {
                         if !body.is_empty() {
-                            log::info!("Received OSC 9 notification: {}", body);
+                            log::debug!("Received OSC 9 notification: body_bytes={}", body.len());
                             self.handler.pluggable_notification(None, body);
                             return;
                         }
@@ -1270,29 +1270,22 @@ where
             // Reference: https://man.archlinux.org/man/urxvtperl.3.en
             b"777" => {
                 if params.len() >= 4 && params[1] == b"notify" {
+                    // Decode lossily, never dropping a part: a param that is not valid UTF-8
+                    // (a multi-byte character cut by a byte-oriented truncation) used to be
+                    // discarded here, which broke the JSON body (#1803).
                     let title = params
                         .get(2)
-                        .and_then(|t| str::from_utf8(t).ok())
-                        .map(|s| s.trim().to_owned())
+                        .map(|t| String::from_utf8_lossy(t).trim().to_owned())
                         .filter(|s| !s.is_empty());
-                    let body = params
-                        .get(3..)
-                        .map(|rest| {
-                            rest.iter()
-                                .flat_map(|x| str::from_utf8(x))
-                                .collect::<Vec<&str>>()
-                                .join(";")
-                                .trim()
-                                .to_owned()
-                        })
-                        .unwrap_or_default();
+                    let body = params.get(3..).map(osc_777_body).unwrap_or_default();
                     if !body.is_empty() {
-                        log::info!(
-                            "Received OSC 777 notification: title={:?}, body={}",
-                            title,
-                            body
+                        // Sizes only: the body carries the user's prompt text and paths.
+                        log::debug!(
+                            "Received OSC 777 notification: title_bytes={}, body_bytes={}",
+                            title.as_ref().map_or(0, String::len),
+                            body.len()
                         );
-                        self.handler.pluggable_notification(title, body.to_owned());
+                        self.handler.pluggable_notification(title, body);
                         return;
                     }
                 }
@@ -2110,6 +2103,20 @@ where
 // Tests for parsing escape sequences.
 //
 // Byte sequences used in these tests are recording of pty stdout.
+/// The body of an OSC 777 `notify` sequence: the params after the title, rejoined with the
+/// `;` the parser split them on, decoded as one whole (invalid UTF-8 becomes U+FFFD instead of
+/// dropping the param), trimmed.
+pub(super) fn osc_777_body(rest: &[&[u8]]) -> String {
+    let mut bytes = Vec::with_capacity(rest.iter().map(|p| p.len() + 1).sum());
+    for (index, part) in rest.iter().enumerate() {
+        if index > 0 {
+            bytes.push(b';');
+        }
+        bytes.extend_from_slice(part);
+    }
+    String::from_utf8_lossy(&bytes).trim().to_owned()
+}
+
 #[cfg(test)]
 #[path = "mod_test.rs"]
 mod tests;

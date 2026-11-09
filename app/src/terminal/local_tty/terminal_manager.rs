@@ -758,7 +758,6 @@ impl<S> TerminalManager<S> {
             *WarpifySettings::as_ref(ctx)
                 .enable_ssh_warpification
                 .value()
-                && !*WarpifySettings::as_ref(ctx).use_ssh_tmux_wrapper.value()
         } else {
             // The legacy ControlMaster wrapper's own switch. Declared once, in
             // `WarpifySettings` (#635) -- `SshSettings::enable_legacy_ssh_wrapper` was a
@@ -1103,6 +1102,21 @@ fn on_shell_determined<S: TerminalSurface>(
                 super::terminal_attributes::foreground_reads_tty(fd)
             }));
         }
+        // #1679 step 3: the subshell readiness sample (who reads the pty: a secret read, a relay,
+        // a shell's line editor or a cooked shell, and whether the slave's input queue is empty)
+        // and the R9 flush of unread setup bytes. Sampled at output wakeups and the hand-off's
+        // change, never on a timer. The parent of a sample is the active session's reported pid,
+        // falling back to this spawn's.
+        {
+            let mut model = model.lock();
+            model.set_local_shell_pid(pid as i32);
+            model.set_subshell_tty_probe(
+                Arc::new(move |parent| super::terminal_attributes::subshell_tty_fact(fd, parent)),
+                Some(Arc::new(move || {
+                    super::terminal_attributes::flush_slave_input(fd)
+                })),
+            );
+        }
         manager.pty_controller.update(ctx, |controller, _| {
             controller.set_foreground_sigint(Arc::new(move || {
                 super::terminal_attributes::sigint_foreground_group(fd)
@@ -1402,9 +1416,16 @@ where
                         surface.on_stalled_interactive_prompt(ctx);
                     });
                 }
+                // #1796: a notice, never a hand-over; polling goes on so a later `Reading`
+                // probe or an explicit marker still hands the command over.
+                PromptDetection::MayBeWaiting => {
+                    surface.update(ctx, |surface, ctx| {
+                        surface.on_command_may_be_waiting_for_input(ctx);
+                    });
+                }
             }
-            let keeps_polling =
-                surface.read(ctx, |surface, _ctx| surface.keeps_polling_after_prompt());
+            let keeps_polling = detection == PromptDetection::MayBeWaiting
+                || surface.read(ctx, |surface, _ctx| surface.keeps_polling_after_prompt());
             if !keeps_polling {
                 self.active.set(false);
                 self.epoch.set(self.epoch.get().wrapping_add(1));

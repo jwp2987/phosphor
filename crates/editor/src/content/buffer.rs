@@ -4561,20 +4561,36 @@ impl Buffer {
     /// NOTE: This will not replace the first block style anchor as it's currently implemented (this is used exclusively for
     /// code editor right now). But if you plan to use this for rich text editor, you will need to update the logic here.
     pub fn replace_all(&mut self, text: impl AsRef<str>, ctx: &mut ModelContext<Self>) {
+        // Wave P (#1340) measurement hook: where a big load's resident memory goes, stage by
+        // stage. Numbers only, debug level, and only for a text of 1 MB or more.
+        let stage_log = text.as_ref().len() >= 1_000_000
+            && log::log_enabled!(target: "editor_memory", log::Level::Debug);
+        let rss_stage = |stage: &str| {
+            if stage_log {
+                log::debug!(
+                    target: "editor_memory",
+                    "editor_memory load_stage stage={stage} rss_kb={}",
+                    load_stage_rss_kb()
+                );
+            }
+        };
+        rss_stage("start");
         // Infer line ending from the new content.
         self.line_ending_mode =
             multiline::infer_line_ending(text.as_ref(), self.session_platform.as_ref());
 
         let range = CharOffset::from(1)..self.max_charoffset();
+        let formatted_text = convert_text_with_style_to_formatted_text(
+            text.as_ref(),
+            TextStyles::default(),
+            BufferBlockStyle::PlainText,
+        );
+        rss_stage("formatted_text");
         let editor_action_set = vec![
             CoreEditorAction::new(
                 range.clone(),
                 CoreEditorActionType::Insert {
-                    text: convert_text_with_style_to_formatted_text(
-                        text.as_ref(),
-                        TextStyles::default(),
-                        BufferBlockStyle::PlainText,
-                    ),
+                    text: formatted_text,
                     source: EditOrigin::UserTyped,
                     override_next_style: false,
                     insert_on_selection: false, // We need insert_on_selection to be false here since we are replacing the entire buffer.
@@ -4584,6 +4600,7 @@ impl Buffer {
         ];
 
         let edit_result = self.apply_core_edit_actions(editor_action_set);
+        rss_stage("edit_applied");
 
         let Some(content_update) = edit_result.delta else {
             log::debug!("Editor action was no-op");
@@ -4592,6 +4609,7 @@ impl Buffer {
 
         self.version = BufferVersion::new();
         self.reset_undo_stack();
+        rss_stage("undo_reset");
 
         ctx.emit(BufferEvent::ContentReplaced {
             buffer_version: self.version,
@@ -6122,3 +6140,20 @@ pub(super) enum BoundaryEdge {
 #[cfg(test)]
 #[path = "buffer_test.rs"]
 pub mod tests;
+
+/// Resident set size in KiB for the `editor_memory load_stage` log lines (Linux: `/proc/self/statm`;
+/// other platforms: -1). Log use only.
+fn load_stage_rss_kb() -> i64 {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(statm) = std::fs::read_to_string("/proc/self/statm")
+            && let Some(pages) = statm
+                .split_whitespace()
+                .nth(1)
+                .and_then(|p| p.parse::<i64>().ok())
+        {
+            return pages * 4;
+        }
+    }
+    -1
+}

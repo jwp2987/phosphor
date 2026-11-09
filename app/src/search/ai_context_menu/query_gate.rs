@@ -18,6 +18,10 @@ pub(super) struct QueryGate {
     wait_id: u64,
     /// The newest query requested (outstanding or applied since); `None` after a reset.
     latest: Option<String>,
+    /// The query the waiting Enter was typed after (#1645): the editor's edit event for it had not
+    /// reached the menu yet when the Enter did. Its arrival is that Enter's own query, not the
+    /// user typing on.
+    expected: Option<String>,
 }
 
 impl QueryGate {
@@ -33,8 +37,26 @@ impl QueryGate {
             return;
         }
         self.latest = Some(query.clone());
+        // The waiting Enter followed the edit that produced exactly this query: keep it, it now
+        // waits for this query's results (the query is outstanding, so the gate is stale).
+        let keep_select = self.select_waiting && self.expected.as_deref() == Some(query.as_str());
         self.requested = Some(query);
-        self.cancel_select();
+        if keep_select {
+            self.expected = None;
+        } else {
+            self.cancel_select();
+        }
+    }
+
+    /// An Enter arrived with the editor's buffer already holding `typed` as the filter. When that
+    /// is not the newest query the gate has seen, the edit event for it is still on its way
+    /// (#1645): the Enter must wait for that query rather than act on the old results, and that
+    /// query's arrival must not cancel it. `None` (no editor text known) or a fresh gate: no wait.
+    pub(super) fn edit_pending_for(&self, typed: Option<&str>) -> bool {
+        match (typed, self.latest.as_deref()) {
+            (Some(typed), Some(latest)) => typed != latest,
+            _ => false,
+        }
     }
 
     /// The debounce delivered `query` to the search bar. `results_will_change` is false when the
@@ -58,6 +80,13 @@ impl QueryGate {
 
     /// Records an Enter that must wait for fresh results; returns the id for its give-up timer.
     pub(super) fn defer_select(&mut self) -> u64 {
+        self.defer_select_after(None)
+    }
+
+    /// As [`Self::defer_select`] for an Enter typed after the edit that makes `expected` the
+    /// query (its event not yet seen, #1645).
+    pub(super) fn defer_select_after(&mut self, expected: Option<String>) -> u64 {
+        self.expected = expected;
         self.select_waiting = true;
         self.wait_id = self.wait_id.wrapping_add(1);
         self.wait_id
@@ -72,12 +101,14 @@ impl QueryGate {
     pub(super) fn take_ready_select(&mut self, still_loading: bool) -> bool {
         if self.select_waiting && !self.is_stale() && !still_loading {
             self.select_waiting = false;
+            self.expected = None;
             return true;
         }
         false
     }
 
     pub(super) fn cancel_select(&mut self) {
+        self.expected = None;
         if self.select_waiting {
             self.select_waiting = false;
             self.wait_id = self.wait_id.wrapping_add(1);
@@ -89,6 +120,7 @@ impl QueryGate {
     pub(super) fn give_up(&mut self, id: u64) -> bool {
         if self.select_waiting && self.wait_id == id {
             self.select_waiting = false;
+            self.expected = None;
             // The signal never came; stop treating the display as stale so later Enters work.
             self.awaiting_results = false;
             return true;

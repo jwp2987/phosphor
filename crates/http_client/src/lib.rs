@@ -20,6 +20,10 @@ use warp_core::{
 };
 
 pub mod proxy;
+/// The runtime network gate lives in its own crate so crates below `http_client` (asset_cache)
+/// can use it without a dependency cycle.
+pub use network_gate as gate;
+pub use network_gate::{Denied, Purpose};
 pub use proxy::{ProxyConfig, ProxyMode, current_proxy_config, set_global_proxy_config};
 
 // No client-identifying headers are attached to outbound requests (#1062).
@@ -42,6 +46,10 @@ const EXTRA_HTTP_HEADERS_ENV_VAR: &str = "WARP_EXTRA_HTTP_HEADERS";
 /// run outside of a Tokio context.
 pub struct Client {
     wrapped: reqwest::Client,
+
+    /// What this client's requests are for. Every request is checked against the network
+    /// gate under this purpose (see [`gate`]).
+    purpose: &'static Purpose,
 
     /// A callback that is executed before every request is sent with a cloned
     /// version of the outbound request.  If for some reason the request cannot be
@@ -109,45 +117,38 @@ impl Default for Client {
 }
 
 impl Client {
+    /// A client with the [`gate::UNCLASSIFIED`] purpose: it may only reach loopback and the
+    /// origins the user configured. Production code uses [`Client::for_purpose`]; the
+    /// `check_network_gate` guard rejects `Client::new()` outside tests.
     pub fn new() -> Self {
-        #[cfg_attr(target_family = "wasm", expect(unused_mut))]
-        let mut builder = reqwest::Client::builder();
+        Self::for_purpose(&gate::UNCLASSIFIED)
+    }
 
-        // Set some HTTP/2-related settings that aren't available on wasm.
-        {
-            builder = builder
-                .http2_keep_alive_interval(Duration::from_secs(60))
-                // If a pong is not received within 15s, consider the connection dead.
-                .http2_keep_alive_timeout(Duration::from_secs(15))
-                // Send these even when there aren't active streams, to ensure that we detect
-                // dead connections before we attempt to use them.
-                .http2_keep_alive_while_idle(true);
-        }
-
-        // Apply the global HTTP proxy configuration (see Issue #72).
-        // The reqwest::Proxy API isn't available on the WASM target, so skip it.
-        {
-            builder = proxy::current_proxy_config().apply(builder);
-        }
-
-        Self::from_client_builder(builder).expect("should not fail to create client")
+    /// The way to get a client: the gate's builder (proxy policy, redirect re-check,
+    /// loopback-by-name resolver) plus the purpose every request is checked against.
+    pub fn for_purpose(purpose: &'static Purpose) -> Self {
+        let builder = gate::builder(purpose);
+        Self::from_client_builder_for(builder, purpose).expect("should not fail to create client")
     }
 
     #[cfg(feature = "test-util")]
     pub fn new_for_test() -> Self {
-        let client_builder = reqwest::ClientBuilder::new()
-            // Don't load any SSL/TLS certificates, as doing so can be slow and we should
-            // never be making real requests in tests.
-            .tls_certs_only([])
-            // Disable proxy usage in tests, as loading system proxy configuration can be
-            // slow.
-            .no_proxy();
-        Self::from_client_builder(client_builder).expect("should not fail to create client")
+        // Don't load any SSL/TLS certificates, as doing so can be slow and we should
+        // never be making real requests in tests. The test purpose skips the gate.
+        Self::for_purpose(&gate::TEST)
     }
 
     pub fn from_client_builder(client_builder: reqwest::ClientBuilder) -> reqwest::Result<Self> {
+        Self::from_client_builder_for(client_builder, &gate::UNCLASSIFIED)
+    }
+
+    pub fn from_client_builder_for(
+        client_builder: reqwest::ClientBuilder,
+        purpose: &'static Purpose,
+    ) -> reqwest::Result<Self> {
         client_builder.build().map(|client| Self {
             wrapped: client,
+            purpose,
             before_request_sent: None,
             after_response_received: None,
         })
@@ -222,6 +223,11 @@ impl Client {
             serialized_payload,
             prevent_sleep_reason,
         } = request;
+
+        // The gate. Nothing is sent for a denied URL, and the error carries no URL.
+        if gate::check_url(request.url().as_str(), self.purpose).is_err() {
+            return Err(gate::denied_error());
+        }
 
         if let Some(before_response_send_fn) = &self.before_request_sent {
             before_response_send_fn(&request, &serialized_payload);
@@ -304,6 +310,19 @@ impl<'a> RequestBuilder<'a> {
     /// Sends the request to the endpoint, which is assumed to be a streaming server-sent-events
     /// endpoint, and returns a corresponding `EventSource`.
     pub fn eventsource(self) -> EventSourceStream {
+        // The gate, as in `Client::execute`: a denied stream yields one transport error.
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let denied = self
+                .wrapped
+                .try_clone()
+                .and_then(|b| b.build().ok())
+                .is_some_and(|r| gate::check_url(r.url().as_str(), self.client.purpose).is_err());
+            if denied {
+                let err = reqwest_eventsource::Error::Transport(gate::denied_error());
+                return futures::stream::once(future::ready(Err(err))).boxed();
+            }
+        }
         cfg_if::cfg_if! {
             if #[cfg(target_family = "wasm")] {
                 let mut stream = self

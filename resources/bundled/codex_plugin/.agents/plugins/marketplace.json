@@ -1,0 +1,21 @@
+{
+  "name": "codex-warp",
+  "description": "Phosphor terminal integration for Codex (bundled with Phosphor)",
+  "owner": {
+    "name": "Phosphor"
+  },
+  "plugins": [
+    {
+      "name": "warp",
+      "description": "Notifications to Phosphor when Codex completes tasks or needs input",
+      "source": "./plugins/warp",
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "version": "0.4.3",
+      "category": "productivity",
+      "tags": ["notifications", "terminal"]
+    }
+  ]
+}

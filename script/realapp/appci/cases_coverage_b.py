@@ -10,6 +10,7 @@ import cases as C  # noqa: E402  (cases.py imports this module as its LAST lines
 import cases_caseagent as CA  # noqa: E402
 import cases_ui as U  # noqa: E402
 import cases_robust as R  # noqa: E402
+import cases_coverage_a as CA_  # noqa: E402
 from cases import case  # noqa: E402
 
 
@@ -618,6 +619,34 @@ def ui_work_metric(ctx, r, off, label):
         r.note("WARN UI work: %s had a main-thread item of %.1f ms (>= 16 ms drops a frame)" % (label, worst))
 
 
+def completion_stage(ctx, r, limit):
+    """#1548: the LOCAL Tab completion, seen from screenshots like the other UI actions: a unique prefix of a fresh directory + Tab. Metric `tab_completion_s`
+    (first changed frame after Tab, an UPPER bound, bound `limit`), and an EFFECT proof that the line really was completed (`test -d <prefix>` + Tab + an
+    `&& echo tok >> f` runs only if the completion produced an existing directory name). The remote Tab -> insert budget is lab_tab_remote_dir."""
+    d = "cbtab%s" % ctx.tok(5).lower().replace("_", "")
+    f = "cb_tabcomp.txt"
+    ctx.rm(f)
+    ctx.be.type("mkdir %s_dir" % d, 12, enter=True)
+    time.sleep(1.0)
+    ctx.be.type("test -d %s" % d, 12, enter=False)
+    time.sleep(0.4)
+    before = ctx.shot("cb_ui_tab_before")
+    ctx.be.key("Tab")
+    s = _until_changed(ctx, before, "cb_ui_tab", 0.0005, 6)
+    r.metric("tab_completion_s", s if s is not None else -2)
+    if s is not None and s != -1.0:
+        r.check(s <= limit, "Tab completion: first changed frame after %.2f s (bound %.1f s)" % (s, limit))
+    elif s is None:
+        r.check(False, "Tab completion: no changed frame within 6 s of Tab on a unique directory prefix")
+    tok = ctx.tok(8).lower()
+    ctx.be.type(" && " + ctx.append_cmd(ctx.pane_shell(), tok, f), 12, enter=True)
+    ctx.until(lambda: ctx.lines(f), 8)
+    CA_.exact_lines(r, "Tab completion: the completed line ran (test -d on the completed name)", [tok], ctx.lines(f))
+    ctx.be.type("rmdir %s_dir; rm -f %s" % (d, f), 12, enter=True)
+    time.sleep(0.8)
+    ctx.reset()
+
+
 @case("cb_ui_action_latency", modes=("terminal",), order=93, gui=True)
 def c_ui_action_latency(ctx, r):
     """#1548: new tab, tab switch and the Tab completion menu are observed from screenshots (each costs 50-300 ms of its own, so the numbers are an
@@ -629,6 +658,10 @@ def c_ui_action_latency(ctx, r):
     nexttab = "cmd+shift+]" if ctx.be.name == "mac" else "ctrl+Next"      # ActivateNextTab (app/src/util/bindings.rs)
     ctx.reset()
     time.sleep(0.5)
+    if not (ctx.win and ctx.pane_shell() != "bash"):
+        completion_stage(ctx, r, limit)
+    else:
+        r.note("Tab completion timing: POSIX-shell panes only (the PowerShell/cmd completers differ); skipped here")
     before = ctx.shot("cb_ui_new_before")
     off_new = ctx.log_size()
     ctx.be.key(newtab)
@@ -694,3 +727,78 @@ def c_editor_mac(ctx, r):
     r.check(R.disk(path) == R.EDIT_ORIG, "undo + save: disk has %r, expected the original" % R.disk(path)[:80])
     r.check(not ctx.cmds_since(mark), "keys meant for the editor reached the shell: %r" % ctx.cmds_since(mark)[:3])
     r.check(ctx.app.alive(), "app died in the code editor")
+
+
+# ---------------------------------------------------------------- Wave 1.5 #1: "Report a problem" diagnostics bundle
+REPORT_ZIP_RE = re.compile(r"phosphor-problem-report-\d{8}-\d{6}\.zip$")
+REPORT_ENTRIES = ("README.txt", "app-log-window.txt", "manifest.txt", "settings-scrubbed.toml")
+
+
+def find_report_zips(home, depth=3):
+    """every `phosphor-problem-report-*.zip` under `home` (the action writes to Downloads, else the home directory), newest first"""
+    found = []
+    base = os.path.abspath(home)
+    for root, dirs, files in os.walk(base):
+        if root[len(base):].count(os.sep) >= depth:
+            dirs[:] = []
+        found += [os.path.join(root, f) for f in files if REPORT_ZIP_RE.search(f)]
+    return sorted(found, key=os.path.getmtime, reverse=True)
+
+
+def report_zip_verdict(path, home, names):
+    """(problems, log_lines) for one bundle: the four entries are there, the log has lines, and none of `home` / `names` (host name, user name of the
+    machine; whole words, 3+ characters) appears in ANY entry. Pure file work, unit-tested in selftest.py."""
+    import zipfile
+    problems, log_lines = [], 0
+    with zipfile.ZipFile(path) as z:
+        got = sorted(z.namelist())
+        if got != sorted(REPORT_ENTRIES):
+            problems.append("entries are %s, expected %s" % (got, sorted(REPORT_ENTRIES)))
+        for n in got:
+            text = z.read(n).decode("utf-8", "replace")
+            if n == "app-log-window.txt":
+                log_lines = len([l for l in text.splitlines() if l.strip()])
+            for leak in [home] + list(names):
+                if not leak or len(leak) < 3:
+                    continue
+                hit = leak in text if leak == home else re.search(r"(?<![A-Za-z0-9])%s(?![A-Za-z0-9])" % re.escape(leak), text)
+                if hit:
+                    problems.append("%s contains %r" % (n, leak))
+    if log_lines == 0:
+        problems.append("app-log-window.txt has no lines")
+    return problems, log_lines
+
+
+@case("cb_report_problem", modes=("terminal",), order=94, gui=True)
+def c_report_problem(ctx, r):
+    """Wave 1.5 #1: the command palette's `Report a problem` writes ONE local zip (Downloads, else the home directory) with the last 15 minutes of the
+    app log, the manifest (version, OS, build, feature flags) and the settings with secrets removed. Checks: the file appears, has the four entries and
+    log lines, and contains neither this profile's home path nor the machine's host name / user name anywhere. Never uploaded: the action has no network
+    path (unit test + script/check_outbound_redaction); here the proof is the file itself on local disk. Palette key: APPCI_KEY_PALETTE (default ctrl+shift+p)."""
+    import getpass, socket
+    palette = os.environ.get("APPCI_KEY_PALETTE", "ctrl+shift+p")
+    text = os.environ.get("APPCI_REPORT_PALETTE_TEXT", "Report a problem")
+    home = ctx.prof.home
+    before = set(find_report_zips(home))
+    ctx.reset()
+    try:
+        ctx.be.key(palette)
+        time.sleep(1.5)
+        ctx.be.type(text, 12)
+        time.sleep(1.2)
+        ctx.be.key("Return")
+    except (RuntimeError, ValueError) as e:
+        r.skip("the command palette is not reachable on this backend: %s" % e)
+    new = []
+    ctx.until(lambda: bool([p for p in find_report_zips(home) if p not in before]), 15)
+    new = [p for p in find_report_zips(home) if p not in before]
+    ctx.shot("cb_report_problem_done")
+    if not new:
+        r.skip("no report file appeared under %s after the palette action %r (palette key %r; set APPCI_KEY_PALETTE / APPCI_REPORT_PALETTE_TEXT)" % (home, text, palette))
+    path = new[0]
+    names = [socket.gethostname(), getpass.getuser()]
+    problems, lines = report_zip_verdict(path, home, names)
+    r.metric("report_zip_bytes", os.path.getsize(path))
+    r.metric("report_log_lines", lines)
+    r.check(not problems, "the problem report is wrong: %s" % problems)
+    r.check(ctx.app.alive(), "app died while writing the problem report")

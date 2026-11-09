@@ -13,6 +13,8 @@ description = "Test-only fake model for the agent fuzzer: the scenario schema, l
 [dependencies]
 futures = { workspace = true }
 genai = { workspace = true }
+# aws_stub: an independent SigV4 verifier (HMAC-SHA256), used by the AWS credential resolver tests.
+hmac = { workspace = true }
 # default-features = false drops the OAuth mock, hot-reload and record/replay (a second
 # reqwest + rustls stack we do not want in the graph). The library server, fixtures,
 # streaming config and failure injection are all that is used.
@@ -20,4 +22,5 @@ llmposter = { version = "=0.5.0", default-features = false }
 proptest = "1.5.0"
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }

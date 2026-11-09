@@ -138,6 +138,10 @@ impl TerminalServer {
             socket::SockFlag::empty(),
         )
         .context("Failed to create Unix domain socket pair")?;
+        // nix >= 0.27 returns owned fds; the rest of this function manages them as raw fds
+        // (dup2 / close in the child, explicit close in the parent).
+        let (server_recv_fd, client_send_fd) =
+            (server_recv_fd.into_raw_fd(), client_send_fd.into_raw_fd());
 
         let (server_send_fd, client_recv_fd) = socket::socketpair(
             socket::AddressFamily::Unix,
@@ -146,6 +150,8 @@ impl TerminalServer {
             socket::SockFlag::empty(),
         )
         .context("Failed to create Unix domain socket pair")?;
+        let (server_send_fd, client_recv_fd) =
+            (server_send_fd.into_raw_fd(), client_recv_fd.into_raw_fd());
 
         // Create a concurrency-safe set to track the list of terminated
         // children that the terminal server has notified us about but

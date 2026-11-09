@@ -48,6 +48,8 @@ pub enum CommandExecutionPermission {
 pub enum CommandExecutionPermissionAllowedReason {
     Dispatched,
     ExplicitlyAllowlisted,
+    /// Matched the safe read-only command allowlist (`safe_commands.rs`; off by default).
+    SafeReadOnlyAllowlisted,
     IsReadOnlyAndSettingEnabled,
     AgentDecided,
     AlwaysAllowed,
@@ -911,6 +913,13 @@ impl BlocklistAIPermissions {
         }
     }
 
+    /// Whether the safe read-only allowlist is on and vouches for `command`.
+    fn safe_command_allowlist_matches(&self, command: &str, ctx: &AppContext) -> bool {
+        let settings = AISettings::as_ref(ctx);
+        *settings.safe_command_allowlist_enabled
+            && super::safe_commands::matches_allowlist(command, &settings.safe_command_allowlist)
+    }
+
     #[allow(clippy::too_many_arguments)]
     /// Returns whether or not Agent Mode can auto-execute the given command.
     pub fn can_autoexecute_command(
@@ -1015,6 +1024,16 @@ impl BlocklistAIPermissions {
         if auto_approve_enabled {
             return CommandExecutionPermission::Allowed(
                 CommandExecutionPermissionAllowedReason::RunToCompletion,
+            );
+        }
+
+        // The safe read-only allowlist (OFF by default). After the denylist and the
+        // command-word analysis, so a denylisted or unresolved line never reaches it; before the
+        // profile's own policy, which it can only ever make more permissive for the exact
+        // single-program lines `safe_commands` accepts. `AlwaysAllow` already allows everything.
+        if command_words_resolved && self.safe_command_allowlist_matches(&normalized_command, ctx) {
+            return CommandExecutionPermission::Allowed(
+                CommandExecutionPermissionAllowedReason::SafeReadOnlyAllowlisted,
             );
         }
 

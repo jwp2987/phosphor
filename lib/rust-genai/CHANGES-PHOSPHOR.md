@@ -210,3 +210,10 @@ change; worth a heads-up if `otel` is ever turned on.
 | file | change |
 |---|---|
 | `webc/web_stream.rs` | A 2xx response whose `Content-Type` is `text/html`/`application/xhtml`, or whose first body chunk opens with `<!DOCTYPE html`/`<html`, now ends the stream with `Error::HttpError` carrying the success status and a truncated body, instead of being parsed as SSE (it has no `data:` lines, so the stream ended silently empty and the app showed a misleading error). The app maps a success-status `HttpError` to "the provider returned a web page". No new `Error` variant, so nothing destructuring `Error` exhaustively changes. |
+
+## Network gate: `WebConfig::redirect_guard` (Wave N)
+
+`WebConfig` gains `redirect_guard: Option<RedirectGuard>`, a function `(url, hops_so_far) -> bool`
+that `apply_to_builder` turns into a custom redirect policy (a `false` answer stops the chain at
+that hop). The app passes the network gate's redirect check so a provider endpoint cannot bounce a
+request to a host the user did not configure. `None` keeps reqwest's default.

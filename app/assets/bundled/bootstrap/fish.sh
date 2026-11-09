@@ -418,6 +418,62 @@ end
 
 set block_id 0
 set -g __warp_seq 0
+# Phosphor (#1801): the bounded cwd listing a remote shell adds to its Precmd, so path detection
+# works without the remote helper. Same wire format and limits as bash_body.sh
+# (__phosphor_cwd_listing there; parser app/src/completer/pushed_listing.rs). Sets
+# $__phosphor_cl_json. No forks: fish globs, tests and url-escapes with builtins. Kill switch:
+# PHOSPHOR_CWD_LISTING=0.
+function __phosphor_cwd_listing
+    set -g __phosphor_cl_json ""
+    if test "$WARP_IS_LOCAL_SHELL_SESSION" = 1; or test "$PHOSPHOR_CWD_LISTING" = 0; or test -z "$WARP_BOOTSTRAPPED"
+        return 0
+    end
+    if test "$PWD" != "$__phosphor_cl_pwd"
+        set -g __phosphor_cl_pwd "$PWD"
+        set -g __phosphor_cl_sig ""
+        set -g __phosphor_cl_big 0
+    end
+    if test "$__phosphor_cl_big" = 1
+        return 0
+    end
+    set -l names * .*
+    set -l kind L
+    set -l out ""
+    if test (count $names) -gt 2000
+        set -g __phosphor_cl_big 1
+        set kind T
+    else
+        if test (count $names) -gt 500
+            set kind P
+            set names $names[1..500]
+        end
+        set -l dirs
+        set -l files
+        for n in $names
+            if test -d "$n"
+                set -a dirs $n
+            else
+                set -a files $n
+            end
+        end
+        if test (count $dirs) -gt 0
+            set out "$out d"(string join " d" -- (string escape --style=url -- $dirs))
+        end
+        if test (count $files) -gt 0
+            set out "$out f"(string join " f" -- (string escape --style=url -- $files))
+        end
+        if test (string length -- "$out") -gt 32768
+            set out (string sub -l 32768 -- "$out")
+            set out (string replace -r ' [^ ]*$' '' -- "$out")
+            set kind P
+        end
+    end
+    if test "$kind$out" != "$__phosphor_cl_sig"
+        set -g __phosphor_cl_sig "$kind$out"
+        set -g __phosphor_cl_json ",\"cwd_listing\": \"$kind$out\""
+    end
+end
+
 # Run before the prompt is displayed. We also need to trigger this on "fish_posterror", as
 # submitting a command containing a syntax error will not trigger "fish_preexec" or "fish_prompt".
 function warp_precmd --on-event fish_prompt --on-event fish_posterror
@@ -599,13 +655,14 @@ function warp_precmd --on-event fish_prompt --on-event fish_posterror
         set escaped_prompt (warp_escape_prompt "$raw_prompt_for_preview")
     end
 
+    __phosphor_cwd_listing
     set -l escaped_json
     if test "$WARP_HONOR_PS1" = "1"
       # Don't send lprompt or rprompt in this case - we'll use prompt markers for both directly!
-      set escaped_json "{\"hook\": \"Precmd\", \"value\": {\"exit_code\": $exit_code,\"next_block_id\": \"$next_block_id\",\"pwd\": \"$escaped_pwd\",\"ignore_prompt_markers\": false,\"ps1\": \"\",\"rprompt\": \"\",\"git_head\": \"$escaped_git_head\",\"git_branch\": \"$escaped_git_branch\",\"virtual_env\": \"$escaped_virtual_env\",\"conda_env\": \"$escaped_conda_env\",\"node_version\": \"$escaped_node_version\",\"session_id\": $WARP_SESSION_ID,\"seq\": $__warp_seq}}"
+      set escaped_json "{\"hook\": \"Precmd\", \"value\": {\"exit_code\": $exit_code,\"next_block_id\": \"$next_block_id\",\"pwd\": \"$escaped_pwd\",\"ignore_prompt_markers\": false,\"ps1\": \"\",\"rprompt\": \"\",\"git_head\": \"$escaped_git_head\",\"git_branch\": \"$escaped_git_branch\",\"virtual_env\": \"$escaped_virtual_env\",\"conda_env\": \"$escaped_conda_env\",\"node_version\": \"$escaped_node_version\",\"session_id\": $WARP_SESSION_ID,\"seq\": $__warp_seq$__phosphor_cl_json}}"
     else
       # We send an lprompt to use for prompt preview purposes only (we still use prompt markers for active prompts).
-      set escaped_json "{\"hook\": \"Precmd\", \"value\": {\"exit_code\": $exit_code,\"next_block_id\": \"$next_block_id\",\"pwd\": \"$escaped_pwd\",\"ignore_prompt_markers\": true,\"ps1\": \"$escaped_prompt\",\"rprompt\": \"\",\"git_head\": \"$escaped_git_head\",\"git_branch\": \"$escaped_git_branch\",\"virtual_env\": \"$escaped_virtual_env\",\"conda_env\": \"$escaped_conda_env\",\"node_version\": \"$escaped_node_version\",\"session_id\": $WARP_SESSION_ID,\"seq\": $__warp_seq}}"
+      set escaped_json "{\"hook\": \"Precmd\", \"value\": {\"exit_code\": $exit_code,\"next_block_id\": \"$next_block_id\",\"pwd\": \"$escaped_pwd\",\"ignore_prompt_markers\": true,\"ps1\": \"$escaped_prompt\",\"rprompt\": \"\",\"git_head\": \"$escaped_git_head\",\"git_branch\": \"$escaped_git_branch\",\"virtual_env\": \"$escaped_virtual_env\",\"conda_env\": \"$escaped_conda_env\",\"node_version\": \"$escaped_node_version\",\"session_id\": $WARP_SESSION_ID,\"seq\": $__warp_seq$__phosphor_cl_json}}"
     end
     warp_send_json_message $escaped_json
 end
@@ -1142,6 +1199,7 @@ esac
             if not kill -0 $probe_pid 2>/dev/null
                 break
             end
+            # give-up-net: polls then kills an ssh probe (<=5 s); never touches the tty or typed keys
             command sleep 0.1
         end
         kill $probe_pid 2>/dev/null
@@ -1278,6 +1336,7 @@ esac
             p=$!
             (
                 trap "kill \$s; exit 0" TERM
+                # give-up-net: kills a stuck ssh control-master probe after 5 s; never touches the tty or typed keys
                 sleep 5 &
                 s=$!
                 wait "$s"

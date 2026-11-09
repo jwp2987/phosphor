@@ -1,0 +1,34 @@
+{
+  "v": 1,
+  "name": "recovery_midstream_disconnect_no_retry",
+  "seed": 23,
+  "turns": [
+    {
+      "when": {
+        "kind": "nth",
+        "n": 0
+      },
+      "reply": {
+        "kind": "text",
+        "text": "partial reply that is cut off"
+      },
+      "chaos": {
+        "disconnect_after": 1
+      }
+    },
+    {
+      "when": {
+        "kind": "nth",
+        "n": 1
+      },
+      "reply": {
+        "kind": "text",
+        "text": "done"
+      }
+    }
+  ],
+  "env": {
+    "commands": {}
+  },
+  "actor": []
+}

@@ -97,6 +97,9 @@ guards:
     - ./script/check_pty_doors
     - ./script/check_outbound_redaction
     - ./script/check_queue_access
+    # Owner rule (2026-11-08): timers on the input path are give-up nets only. PENDING-CONVERSION entries warn here; the release tier runs it --strict (job input-timers-strict).
+    - ./script/check_input_path_timers
+    - ./script/check_input_path_timers --self-test
     # The tree is rustfmt-clean since the Rust 1.99 upgrade; this keeps it that way (whole tree, ~25 s).
     # rustfmt comes from the pinned toolchain through the maintainer's rustup proxy (read-only,
     # as in check-linux); runner shells have no toolchain on PATH.
@@ -704,9 +707,9 @@ test-workspace-rest:
           -p usage_suite -p warp_editor -p warp_cli ${TEST_FILTER:+-E "$TEST_FILTER"}
 
 # ~300 GUI-driving scenarios (crates/integration) that need a display: xvfb-run
-# supplies one, mesa-vulkan-drivers the software renderer. MANUAL and non-blocking:
-# nobody has a known-good baseline for this suite, so a red run is signal to read, not a
-# gate. `--profile ci` is required (it holds the retries), and the suite is split in
+# supplies one, mesa-vulkan-drivers the software renderer. MANUAL (tier-driven, no schedules);
+# allow_failure only keeps the hand-played pipeline green: since 2026-11-09 the candidate and
+# release tier verdicts (script/ci/ci_seq.py) GATE on it, a red shard fails the tier. `--profile ci` is required (it holds the retries), and the suite is split in
 # three by nextest's deterministic --partition.
 integration-linux:
   extends: .box_job
@@ -771,6 +774,18 @@ integration-linux-pwsh:
 # rest of the suite uses real primitives outside a model): a model test lives in a module named
 # `model_tests` or `*_model_tests` and is named `model_*`. `model_tests::` alone also matched the
 # ordinary `file_search_model_tests::test_*`, which crashes under loom outside a model (r18u22).
+# Release-tier gate (script/ci/ci_seq.py plays it): the input-path timer guard in --strict mode, which fails on any
+# PENDING-CONVERSION entry in script/input_path_timers.allow (docs/testing.md 2.3).
+input-timers-strict:
+  extends: .shim_github_env
+  stage: test
+  tags: [little-thing]
+  timeout: 10m
+  when: manual
+  script:
+    - command -v python3 >/dev/null || { echo "ERROR python3 missing" >&2; exit 1; }
+    - ./script/check_input_path_timers --strict
+
 test-shuttle-loom:
   extends: .box_job
   timeout: 150m
@@ -1352,6 +1367,17 @@ app-test-lab-windows:
     APPCI_LAB: remote
     APPCI_CASES: "lab_*"
     APPCI_LAB_BOX: "$SSHLAB_BOX"
+
+# Real-use replay (Wave 1.5 #3, docs/testing.md "Real-use replay"): a seeded "day of use" in one long case per session mode, against the fake ssh lab at
+# 150 ms and the scripted fake model. MANUAL ONLY and never part of a ci_seq.py tier (no schedule, owner): play it by hand, or from the nightly routine the
+# owner starts. Length: APPCI_REPLAY_MINUTES (default 15; the nightly plays it with 60). Skips with its reason when the lab or the fake model is unavailable.
+app-test-replay-linux:
+  extends: app-test-lab-linux
+  variables:
+    APPCI_CASES: "lab_replay*"
+    APPCI_FAKE_MODEL: "1"
+    APPCI_LAB_MATRIX: "quick"
+    APPCI_REPLAY_MINUTES: "15"
 
 # ---------------------------------------------------------------------------
 # Reuse variants (app-test-*-reuse): test an EARLIER pipeline's build of an app-identical commit instead of rebuilding

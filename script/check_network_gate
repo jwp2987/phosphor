@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# Guard: every app-initiated HTTP client is built by the network gate (crates/network_gate).
+#
+# The gate (check_url, the redirect re-check, the proxy policy, the loopback-by-name resolver)
+# only holds if no code path builds its own client. This fails when production code constructs
+# an HTTP client anywhere but the gate:
+#
+#   1. `reqwest::Client::{new,builder,default}`, `reqwest::ClientBuilder`,
+#      `reqwest::blocking::Client`, `ClientBuilder::new`, `reqwest::get(` / `reqwest::post(`
+#      outside crates/network_gate. Use `http_client::Client::for_purpose(&gate::PURPOSE)`,
+#      `http_client::gate::reqwest_client(&PURPOSE)` or `gate::builder(&PURPOSE)`.
+#   2. `http_client::Client::new()` / `Client::new()` in a file that imports
+#      `http_client::Client` (it is the UNCLASSIFIED client: allowlist only). Name a purpose.
+#   3. A genai `Client::builder()` that does not pass a `redirect_guard` (genai builds its own
+#      reqwest client from `WebConfig`, so the guard is how its redirects are checked).
+#
+# Exempt: test files and test support (`*_test(s).rs`, `/tests/`, `test_util/`,
+# `integration_testing/`, `fake_llm/`, `tui_test_support.rs`), examples, and
+# `http_client::Client::new_for_test` (the TEST purpose). Comment lines are ignored.
+#
+# Not covered, on purpose (documented in docs/testing.md "Network gate"): the websocket crate
+# (no production caller), rmcp's internal OAuth discovery, and the Settings > Network TCP
+# probe (a user-clicked raw socket to a user-typed host).
+#
+# Exit 0: clean. Exit 1: prints each problem.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+status=0
+exempt='(^crates/http_client/|_tests?\.rs|/tests?/|/tests\.rs|/test_util/|/integration_testing/|^crates/fake_llm/|tui_test_support\.rs|/examples/|^crates/network_gate/)'
+not_comment=':[0-9]+:\s*//'
+
+# The production part of a file: everything before its first inline `#[cfg(test)] mod ...`.
+prod_lines() {
+    awk '
+        /^[[:space:]]*#\[cfg\(test\)\][[:space:]]*$/ { pending = 1; next }
+        pending && /^[[:space:]]*(pub(\([a-z]+\))? )?mod[[:space:]]/ { exit }
+        { pending = 0; print NR ":" $0 }
+    ' "$1"
+}
+
+files=$(grep -rlE 'reqwest|http_client|Client::' app/src crates --include=*.rs 2>/dev/null | grep -vE "$exempt" | sort)
+
+# 1. Direct reqwest client construction.
+pat1='reqwest::(blocking::)?Client(Builder)?::(new|builder|default)\b|reqwest::ClientBuilder|reqwest::blocking::Client\b.*::|ClientBuilder::new|reqwest::(get|post)\('
+for f in $files; do
+    # genai fork (lib/) is not under app/src or crates; nothing to skip here.
+    hits=$(prod_lines "$f" | grep -E "^[0-9]+:.*($pat1)" | grep -vE "^[0-9]+:\s*//")
+    [ -z "$hits" ] && continue
+    while IFS= read -r line; do
+        echo "check_network_gate: client built outside the gate: $f:$line"
+        status=1
+    done <<< "$hits"
+done
+
+# 2. The unclassified http_client::Client::new().
+for f in $files; do
+    hits=$(prod_lines "$f" | grep -E '^[0-9]+:.*(http_client::Client::new\(\)|[^:_a-zA-Z]Client::new\(\))' | grep -vE "^[0-9]+:\s*//")
+    [ -z "$hits" ] && continue
+    # Bare `Client::new()` only counts when the file imports http_client's Client.
+    imports=$(grep -cE 'use http_client::Client\b|use http_client::\{[^}]*Client' "$f")
+    while IFS= read -r line; do
+        if printf '%s' "$line" | grep -q 'http_client::Client::new()' || [ "$imports" -gt 0 ]; then
+            echo "check_network_gate: unclassified Client::new() (name a gate purpose): $f:$line"
+            status=1
+        fi
+    done <<< "$hits"
+done
+
+# 3. genai clients must carry the redirect guard.
+for f in $files; do
+    grep -qE 'Client::builder\(\)' "$f" || continue
+    grep -qE 'genai' "$f" || continue
+    grep -q 'redirect_guard' "$f" || { echo "check_network_gate: $f builds a genai Client without redirect_guard"; status=1; }
+done
+
+# 4. The gate itself still exists and is wired into http_client.
+grep -q 'pub fn check_url' crates/network_gate/src/lib.rs || { echo "check_network_gate: network_gate::check_url is gone"; status=1; }
+grep -q 'pub use network_gate as gate' crates/http_client/src/lib.rs || { echo "check_network_gate: http_client no longer re-exports the gate"; status=1; }
+grep -q 'gate::check_url' crates/http_client/src/lib.rs || { echo "check_network_gate: http_client::Client::execute no longer calls the gate"; status=1; }
+
+[ $status -eq 0 ] && echo "check_network_gate: ok"
+exit $status

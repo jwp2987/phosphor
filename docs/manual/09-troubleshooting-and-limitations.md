@@ -303,26 +303,33 @@ flag.
 
 ## Networking and proxies
 
-### The default follows your environment
+### Environment proxies are ignored
 
-`network.proxy_mode` defaults to **`system`**: `HTTPS_PROXY`, `HTTP_PROXY`,
-`ALL_PROXY` and `NO_PROXY` are honoured out of the box, as they are in Warp,
-which reads them unconditionally and offers no setting to turn them off.
+Since the network gate (Wave N), Phosphor does **not** read `HTTPS_PROXY`,
+`HTTP_PROXY`, `ALL_PROXY` or the platform proxy configuration. Only a proxy you
+set yourself (`network.proxy_mode = "custom"` and `network.proxy_url`) is used;
+`system` and `off` both mean no proxy. This is deliberate: a stale export
+elsewhere on the machine can no longer route Phosphor's traffic, and no request
+reaches a proxy you did not choose. If you were relying on the environment
+proxy, put its URL in `network.proxy_url` and switch the mode to `custom`.
 
-If your environment carries a proxy you do *not* want Phosphor to use — a stale
-export, or one that is unreachable from where you are now — set the mode to
-`off`. That is stronger than unsetting the variables: `off` is
-`reqwest::ClientBuilder::no_proxy()`, so the platform proxy configuration is
-ignored too.
+### A request was blocked by the network gate
 
-> Builds between the introduction of this setting and its correction defaulted
-> to `off` while every description string still said `system`. If you are on one
-> of those and proxying appears dead, that is why; setting `proxy_mode =
-> "system"` explicitly works on both.
+Phosphor sends background requests only to loopback, to the endpoints of the AI
+providers you configured, and to origins you listed in `network.allowed_origins`.
+A request to anything else is refused before it is sent, and a redirect to a
+host that is not on that list stops where it is. The log says `network gate:
+denied "<purpose>" (host hash ...)`; the URL is never logged. To allow an
+origin, add it to `network.allowed_origins` (for example
+`https://api.example.com`). A name that resolves to a loopback address (a
+rebinding trick) is refused unless you configured that host; `localhost` works
+for a provider whose URL says `localhost`. Remote images in markdown, avatars and
+changelog images load only from allowed origins.
 
 | `network.proxy_mode` | Behaviour |
 |---|---|
-| `system` (default) | Follow the platform's proxy configuration. On Linux that is the standard environment variables; on macOS, SystemConfiguration; on Windows, WinINET. |
+| `system` (default) | No proxy. Environment and platform proxy configuration are ignored (network gate, Wave N). |
+| `off` | No proxy. Same as `system`. |
 | `custom` | Use `network.proxy_url`, with optional Basic auth and a no-proxy list. |
 | `off` | All proxying disabled, environment variables ignored. |
 
@@ -882,7 +889,7 @@ the part you actually want.
 | Warp feature | What it did | In Phosphor |
 |---|---|---|
 | **Oz platform plugins** (`oz-harness-support@claude-code-warp`, `orchestration@codex-warp`) | Installed skills into Claude Code / Codex that called back into `oz harness-support` and Warp's server. | **Removed.** Every skill in those plugins would fail here, because `oz harness-support` does not exist. Wiring them up would turn a working local Codex launch into a hard failure. |
-| **CLI-agent notification plugins** (`claude-code-warp`, `codex-warp`, `gemini-cli-warp`, `opencode-warp`) | Let Claude Code / Codex / Gemini CLI / opencode report progress to the terminal. | **These work.** They are installed by running the agent's own CLI against Phosphor's GitLab copies under `gitlab.com/winters-phosphor` (opencode's as a git spec in `opencode.json`) — never Warp's GitHub or npm package, never a Warp registry — and once installed they talk to the terminal over a local OSC 777 protocol. The Phosphor UI calls them "the notification plugin"; the exact package name to type is shown in the runnable command beside each instruction. |
+| **CLI-agent notification plugins** (`claude-code-warp`, `codex-warp`, `gemini-cli-warp`, `opencode-warp`) | Let Claude Code / Codex / Gemini CLI / opencode report progress to the terminal. | **These work.** All four plugins ship inside Phosphor and are installed from that local folder with no download (Claude Code, Codex and Gemini CLI through the agent's own CLI pointed at the folder; opencode as a `file://` entry in `opencode.json`) — never GitHub, GitLab, npm or a Warp registry — and once installed they talk to the terminal over a local OSC 777 protocol. The Phosphor UI calls them "the notification plugin"; the exact package name to type is shown in the runnable command beside each instruction. |
 | **Warp's SSH host manager** | Stored hosts and keys inside the app. | **Deliberately not implemented.** `~/.ssh/config` and `ssh-agent` are the source of truth and Phosphor never writes to them. SSH itself is fully supported, including the remote-server extension and the tmux wrapper (which Warp deprecated and Phosphor keeps). |
 | **Voice input / transcription** | Recorded audio and transcribed it with Warp's hosted Wispr STT. | **Not shipped.** Audio capture code still exists and works; the transcriber is hard-disabled, because the BYOP protocol cannot carry audio. The `/voice` command and the TUI voice composer are deliberately not registered rather than shipped as a control that always fails. |
 | **Screen and session recording** | Local `ffmpeg` capture, with artifact upload to Warp. | **Not shipped.** Not a cloud limitation — a product decision. |

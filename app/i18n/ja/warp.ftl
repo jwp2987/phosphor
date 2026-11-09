@@ -779,9 +779,6 @@ settings-warpify-host-placeholder = ホスト (正規表現対応)
 settings-warpify-enable-ssh = SSH セッションを Phosphorize
 settings-warpify-install-ssh-extension = SSH 拡張をインストール
 settings-warpify-install-ssh-extension-description = リモートホストに Phosphor の SSH 拡張がインストールされていない場合のインストール挙動を制御します。
-settings-warpify-use-tmux = Tmux Phosphorization を使用
-settings-warpify-tmux-description = tmux ssh ラッパーは既定のラッパーが動作しない多くの状況で機能しますが、phosphorize するためにボタン押下が必要な場合があります。新しいタブから有効になります。
-settings-warpify-ssh-tmux-toggle-binding-label = Phosphorization 用 SSH セッション検出
 settings-warpify-split-inherits-ssh = SSH セッションからの分割を同じホストで開く
 settings-warpify-split-inherits-ssh-description = SSH セッションのペインを分割すると、新しいペインで同じ ssh コマンドを実行し、同じリモートディレクトリに移動します。新しいペインは独自の接続を使うため、再度認証を求められる場合があります。シェルを明示的に選んで分割した場合やスクリプトから分割した場合は、常にローカルシェルが開きます。既定ではオフです。
 

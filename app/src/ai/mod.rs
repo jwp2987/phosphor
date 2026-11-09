@@ -15,6 +15,7 @@ pub mod artifacts;
 pub(crate) mod ask_ai;
 pub(crate) mod attachment_utils;
 pub mod aws_credentials;
+pub(crate) mod aws_creds;
 pub(crate) mod block_context;
 pub(crate) mod blocklist;
 pub(crate) mod byop_compaction;

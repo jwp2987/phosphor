@@ -60,10 +60,12 @@ mod fatal_signal;
 
 mod rotation;
 
+pub mod report_bundle;
+
 pub use imp::init;
 pub use imp::{
     ExtraFile, InlineFile, LogBundleExtras, create_log_bundle_zip, default_log_bundle_filename,
-    log_directory, log_file_path, rotate_log_files, write_log_bundle_zip_to,
+    log_directory, log_file_path, log_files_for_report, rotate_log_files, write_log_bundle_zip_to,
 };
 
 pub use imp::{

@@ -339,6 +339,9 @@ pub enum WorkspaceAction {
     /// bundle (recent logs + MCP / update logs + diagnostic manifest) to
     /// the chosen path. Used by the "Export logs" link on the About page.
     ExportLogsToPath,
+    /// "Report a problem": scrub the last ~15 minutes of the app log, the build facts and the
+    /// settings into one LOCAL zip (Downloads) and reveal it. Never uploaded; no send button.
+    ReportProblem,
     ChangeCursor(Cursor),
     ToggleBlockSnackbar,
     ToggleErrorUnderlining,
@@ -1077,6 +1080,7 @@ impl WorkspaceAction {
             | UseLocalOpenCodeWarpPlugin => false,
             ViewLogs => false,
             ExportLogsToPath => false,
+            ReportProblem => false,
             #[cfg(target_os = "macos")]
             SampleProcess => false,
             #[cfg(target_os = "macos")]

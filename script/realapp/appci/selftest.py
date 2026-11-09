@@ -1999,6 +1999,51 @@ def wayland_pointer_gate_follows_the_holder_1789():
 
 
 @check
+def app_find_hook_harness_side_1789():
+    """#1789 app find hook, harness side: RUST_LOG carries the hook's log target; hook_find reads only lines after `since`; find_token uses the hook on
+    X11 and Wayland (OCR is not called when the hook has the token), and notes the OCR fallback on `r` when it does not; x11_window_origin is None
+    without xdotool output"""
+    import cases_ui as UI
+    src = open(os.path.join(HERE, "app.py")).read()
+    assert src.count("warpui::appci_find=info") >= 2, "RUST_LOG must enable the hook's log target for the launched app"
+    tmp = tempfile.mkdtemp()
+    try:
+        log = os.path.join(tmp, "app.log")
+        open(log, "w").write("appci_find token=tokx x0=1 y0=2 x1=3 y1=4\n")
+        off = os.path.getsize(log)
+        open(log, "a").write("appci_find token=tokx x0=10 y0=20 x1=30 y1=40\n")
+        c = types.SimpleNamespace(log_path=log, log_since=lambda o: open(log).read()[o:])
+        assert UI.hook_find(c, "tokx", since=off)[3:] == (10, 30, 20, 40)
+        assert UI.hook_find(c, "tokx")[3:] == (10, 30, 20, 40)
+        assert UI.hook_find(c, "tokx", since=os.path.getsize(log)) is None
+
+        class Be:
+            name = "x11"
+            pid_fn = staticmethod(lambda: 4242)
+        c.be = Be()
+        orig = UI.x11_window_origin
+        UI.x11_window_origin = lambda pid: (100, 200)
+        try:
+            w, p = UI.find_token(c, "t", "tokx")
+            assert p is None and w[3:] == (110, 130, 220, 240), w
+            notes = []
+            r = types.SimpleNamespace(note=notes.append)
+            orig_words = UI.words
+            UI.words = lambda ctx, tag: ([], None)
+            try:
+                w, _ = UI.find_token(c, "t", "absent", r=r)
+            finally:
+                UI.words = orig_words
+            assert w is None and len(notes) == 1 and "find hook" in notes[0], notes
+        finally:
+            UI.x11_window_origin = orig
+        Be.name = "mac"
+        assert UI._hook_word(c, "tokx") is None, "no hook lookup on backends without a window origin"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@check
 def tabs_streaming_reorder_known_1658():
     """#1658 (owner 2026-11-04): the Windows streaming-tabs reorder is KNOWN at 0.1.17; FAIL on Linux, after 0.1.17, and whenever the app log shows a discard"""
     exp = ["a1", "b2", "c3", "d4"]
@@ -2151,6 +2196,10 @@ def agent_code_recycle_log_parse():
     assert ca.recycle_events(log) == [("recycled", "EntityId(42)", 12), ("rebuilt", "EntityId(42)", 12)], ca.recycle_events(log)
     assert ca.snippet_lines("AB12", 3) == ["echo RCYAB12_01", "echo RCYAB12_02", "echo RCYAB12_03"]
     assert "agent_code_recycle" in winmap.BOTH
+    plan_log = ("x DEBUG editor_memory editor_memory agent_code_plan rich=10 visible=[9] plan=[0R,2R,3K,7B]\n"
+                "y DEBUG editor_memory editor_memory agent_code_plan rich=70 visible=[] plan=[] \n"
+                "z DEBUG editor_memory editor_memory agent_code_plan rich=100 visible=[0] plan=[0B,1B] (+98 more)\n")
+    assert ca.recycle_plans(plan_log) == ["rich=10 visible=[9] plan=[0R,2R,3K,7B]", "rich=70 visible=[] plan=[]", "rich=100 visible=[0] plan=[0B,1B] (+98 more)"], ca.recycle_plans(plan_log)
 
 
 @check
@@ -2713,6 +2762,19 @@ def lab_matrix_expansion():
 
 
 @check
+def lab_path_detect_hook_lines_match_the_apps_log_format():
+    """The #1801 lab case reads two app log lines; pin the regexes to the exact text app/src/completer/pushed_listing.rs writes (ids and counts only)."""
+    import cases_lab as CL
+    m = CL.HOOK_CWD_LISTING.search("INFO hop=cwd_listing session=4242 kind=L entries=2")
+    assert m and m.groups() == ("4242", "L", "2"), m
+    assert CL.HOOK_CWD_LISTING.search("hop=cwd_listing session=4242 kind=T entries=0").group(2) == "T"
+    assert not CL.HOOK_CWD_LISTING.search("hop=cwd_listing session=4242 kind=X entries=2")
+    m = CL.HOOK_PATH_DETECT.search("INFO hop=path_detect source=pushed session=4242 entries=2 complete=true")
+    assert m and m.groups() == ("4242", "2", "true"), m
+    assert not CL.HOOK_PATH_DETECT.search("hop=path_detect session=4242 path=/x")
+
+
+@check
 def lab_cases_registry_and_selection():
     import lab as L, run
     labs = [c for c in cases.CASES if c.get("lab")]
@@ -2725,8 +2787,10 @@ def lab_cases_registry_and_selection():
     assert run.unknown_case_names("mode_proof,typo_case", reg) == ["typo_case"]       # exact names are still checked exactly
     # winmap: a lab case is never 'unclassified'; PowerShell pane skips with a reason; p_onesess is skipped on Windows
     base = {n.split(".")[0] for n in names}
-    assert base == {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i", "lab_helper_install"}, base
+    assert base == {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i", "lab_no_helper_chip", "lab_replay", "lab_password_prompt", "lab_helper_install"}, base
     assert all(c["modes"] == ("terminal",) for c in labs if c["name"].startswith("lab_ssh_drop_reconnect")), "the drop case is terminal-only"
+    pw = [c["arm"] for c in labs if c["name"].startswith("lab_password_prompt")]
+    assert {a["user"] for a in pw} == {"p_password", "p_kbdint"} and all(a["helper"] == "nohelper" and a["fault"] is None for a in pw), pw     # #1535
     ordered = sorted(labs, key=lambda c: c["order"])
     assert [c["arm"]["helper"] for c in ordered] == sorted((c["arm"]["helper"] for c in labs), key=lambda h: L.HELPERS.index(h)), "nohelper arms sort before helper arms"
     assert winmap.unclassified(sorted(reg)) == []
@@ -2926,6 +2990,29 @@ def lab_remote_adapters_and_hooks():
 
 
 @check
+def report_problem_zip_verdict():
+    """Wave 1.5 #1: the bundle verdict flags a leaked home path / host name and a missing log, and passes a clean bundle"""
+    import cases_coverage_b as cb, zipfile
+    d = tempfile.mkdtemp()
+    def make(name, log, extra=""):
+        p = os.path.join(d, name)
+        with zipfile.ZipFile(p, "w") as z:
+            z.writestr("README.txt", "local only")
+            z.writestr("manifest.txt", "Version: 1\n" + extra)
+            z.writestr("app-log-window.txt", log)
+            z.writestr("settings-scrubbed.toml", "x = true\n")
+        return p
+    ok = make("phosphor-problem-report-20261108-120000.zip", "2026-11-08T12:00:00Z [INFO] hop=enter_begin cwd=<path>\n")
+    assert cb.report_zip_verdict(ok, "/home/ci", ["buildbox", "ci-user"]) == ([], 1)
+    leak = make("b.zip", "x cwd=/home/ci/w on buildbox\n")
+    probs, _ = cb.report_zip_verdict(leak, "/home/ci", ["buildbox"])
+    assert len(probs) == 2 and any("/home/ci" in x for x in probs) and any("buildbox" in x for x in probs), probs
+    assert cb.report_zip_verdict(make("c.zip", ""), "/home/ci", [])[0] == ["app-log-window.txt has no lines"]
+    assert cb.REPORT_ZIP_RE.search("phosphor-problem-report-20261108-120000.zip") and not cb.REPORT_ZIP_RE.search("other.zip")
+    assert cb.find_report_zips(d) == [ok]
+
+
+@check
 def lab_ctl_and_daemon_pure_pieces():
     C = _load_by_path("labctl", os.path.join(SSHLAB, "labctl.py"))
     D = _load_by_path("labd", os.path.join(SSHLAB, "rootfs", "usr", "local", "sbin", "labd.py"))
@@ -3017,6 +3104,185 @@ def lab_ctl_and_daemon_pure_pieces():
     assert D.split_candidates("zsh", "\x1b[1m> \x1b[0mcd tabfx/\r\nambx_a/  ambx_b/\r\n", "cd tabfx/") == ["ambx_a/", "ambx_b/"]
     assert D.split_candidates("fish", "a/\tdirectory\nb/\tdirectory\n", "x") == ["a/", "b/"]
     assert D.totp_file_text("ABC") == 'ABC\n" TOTP_AUTH\n'
+
+# ---- the real-use replay (replay.py, fake_model.py, cases_replay.py)
+@check
+def replay_scenario_is_deterministic_and_sized():
+    import replay as RP
+    a, b = RP.gen_scenario(7, 15, "terminal"), RP.gen_scenario(7, 15, "terminal")
+    assert a == b and a != RP.gen_scenario(8, 15, "terminal")
+    assert sum(RP.est_seconds(s) for s in a) >= 15 * 60 and len(RP.gen_scenario(7, 60, "terminal")) > len(a)
+    assert len(RP.gen_scenario(1, 0.01, "agent")) >= 3
+    kinds = {s["kind"] for s in RP.flatten(RP.gen_scenario(3, 120, "terminal"))}
+    assert {"local_cmd", "cd", "tab", "ssh_session", "ctrlc", "big_seq", "big_cat", "subshell", "sudo", "remote_cmd", "remote_big"} <= kinds, kinds
+    ak = {s["kind"] for s in RP.gen_scenario(3, 120, "agent")}
+    assert ak == {"agent_approve", "agent_reject", "agent_prose", "agent_ctrlc"}, ak
+    idx = [s["idx"] for s in RP.flatten(RP.gen_scenario(3, 30, "terminal"))]
+    assert len(idx) == len(set(map(str, idx)))
+    assert len({s["eff"] for s in RP.flatten(a)}) == len(RP.flatten(a))
+
+
+@check
+def replay_effects_oracle():
+    import replay as RP
+    steps = [dict(kind="local_cmd", idx=0, tok="A", eff="e0"), dict(kind="ctrlc", idx=1, tok="B", eff="e1"), dict(kind="agent_reject", idx=2, tok="C", eff="e2"),
+             dict(kind="ssh_session", idx=3, tok="D", eff="e3", inner=[dict(kind="remote_cmd", idx="3_0", tok="E", eff="e30")])]
+    exp = RP.expected_effects(steps)
+    assert exp == {"e0": ["A"], "e2": [], "e30": ["E"]}, exp
+    assert RP.expected_effects(steps, {0}) == {"e0": ["A"]}
+    assert RP.judge_effects(exp, {"e0": ["A"], "e30": ["E"]}) == []
+    bad = RP.judge_effects(exp, {"e0": [], "e2": ["C"], "e30": ["E", "E"]})
+    assert len(bad) == 3, bad
+
+
+@check
+def replay_error_allowlist_and_hops():
+    import replay as RP
+    log = "2026 INFO ok\n2026 [ERROR] boom here\n2026 ERROR Settings file cannot be used: x\nthread panicked at a.rs:1\n2026 ERROR keyring locked\n"
+    got = RP.error_lines(log)
+    assert got == ["2026 [ERROR] boom here", "thread panicked at a.rs:1"], got
+    assert RP.error_lines(log, extra_allow=["boom"]) == [got[1]]
+    h = RP.agent_hops('hop=enter_begin deferred=false buffer="Reply with the word R1abc" input_type=AI\nhop=view_mode mode=agent pane=1\n[byop] opening stream\nqueue_actions\n')
+    assert h["enters"] == [("Reply with the word R1abc", "AI")] and h["streams"] == 1 and h["cards"] == 1 and h["views"] == ["agent"], h
+    st = [dict(idx=0, tok="R1abc", ask="Reply with the word R1abc")]
+    assert RP.judge_agent(h, st) == []
+    h2 = dict(h, enters=[("Reply with the word R1abc", "Shell")], views=["agent", "terminal"], streams=0)
+    assert len(RP.judge_agent(h2, st)) == 4, RP.judge_agent(h2, st)
+
+
+@check
+def replay_latency_and_config():
+    import replay as RP
+    s = RP.latency_stats([("a", 1.0), ("a", 3.0), ("b", 0.5)])
+    assert s["a"]["n"] == 2 and s["a"]["max"] == 3.0 and s["b"]["p50"] == 0.5, s
+    assert RP.replay_minutes({}) == 15 and RP.replay_minutes({"APPCI_REPLAY_MINUTES": "60"}) == 60
+    for v in ("x", "0", "-1"):
+        try:
+            RP.replay_minutes({"APPCI_REPLAY_MINUTES": v})
+        except ValueError:
+            continue
+        raise AssertionError(v)
+    import cases_replay as CRP
+    assert CRP.first_divergence(["cd a/ && x"], ["cd a && x"]) is None
+    assert "typed 'a'" in CRP.first_divergence(["a", "b"], ["c", "b"])
+    assert "typed 2 lines" in CRP.first_divergence(["a", "b"], ["a"])
+
+
+@check
+def fake_model_replies():
+    import fake_model as FM
+    r = FM.reply_for([{"role": "user", "content": "Please run exactly this shell command and nothing else: echo T >> /x/f.txt"}])
+    assert r["tool"]["name"] == "run_shell_command" and r["tool"]["arguments"]["command"] == "echo T >> /x/f.txt", r
+    assert FM.reply_for([{"role": "user", "content": "x"}, {"role": "tool", "content": "ok"}]) == {"text": "Done.", "tool": None}
+    assert FM.reply_for([{"role": "user", "content": "Reply with the word Q1"}])["text"] == "OK Q1"
+    assert FM.reply_for([{"role": "user", "content": "Answer slowly SLOW R1"}]).get("slow")
+    lines = [json.loads(x) for x in FM.stream_lines("m", r)]
+    assert lines[-1]["done"] and lines[-2]["message"]["tool_calls"][0]["function"]["name"] == "run_shell_command"
+    assert "".join(json.loads(x)["message"]["content"] for x in FM.stream_lines("m", {"text": "hello world", "tool": None})) == "hello world"
+    f = FM.FakeModel().start()
+    try:
+        import urllib.request
+        rq = urllib.request.Request(f.url + "/api/chat", json.dumps({"model": "m", "messages": [{"role": "user", "content": "Reply with the word Z"}]}).encode())
+        body = urllib.request.urlopen(rq, timeout=5).read().decode().splitlines()
+        assert json.loads(body[-1])["done"] and f.requests == 1
+    finally:
+        f.stop()
+
+
+@check
+def replay_cases_registered_but_not_swept_by_lab_glob():
+    names = [c["name"] for c in cases.CASES if c["name"].startswith("lab_replay")]
+    assert names == ["lab_replay.bash.150.nohelper"], names
+    c = [c for c in cases.CASES if c["name"] == names[0]][0]
+    assert c["modes"] == ("terminal", "agent") and c["lab"]
+
+
+@check
+def soak_diff_names_a_single_lost_command():
+    """#1780: one lost command used to read as 295/660 (a positional count); soak_diff reports it as ONE missing item and keeps order/unexpected apart."""
+    import cases_robust as cr
+    exp = ["s%d" % i for i in range(660)]
+    got = exp[:295] + exp[296:]
+    d = cr.soak_diff(exp, got)
+    assert d["missing"] == ["s295"] and d["arrived"] == 659 and d["unexpected"] == [] and d["order_ok"], d
+    assert sum(a == b for a, b in zip(got, exp)) == 295            # the old figure, for the record
+    d = cr.soak_diff(["a", "b", "c"], ["b", "a", "c", "x"])
+    assert d["missing"] == [] and d["unexpected"] == ["x"] and not d["order_ok"] and d["arrived"] == 3, d
+    d = cr.soak_diff(["a", "a"], ["a"])
+    assert d["missing"] == ["a"] and d["arrived"] == 1, d         # duplicates count as a multiset
+    assert cr.SOAK_ALERT.search("thread 'main' panicked at") and cr.SOAK_ALERT.search("terminal-server exited") and not cr.SOAK_ALERT.search("echo ok")
+
+@check
+def wn_zero_network_trace_and_offline_plugin():
+    """Wave N: outbound_attempts reads strace lines (loopback / unix / netlink ignored, remote inet kept); fakeclaude refuses a remote source and installs the shipped
+    bundle; the shipped hook scripts produce the four events with no network step"""
+    import cases_netless as nl
+    trace = (
+        'connect(3, {sa_family=AF_UNIX, sun_path="/run/user/1/bus"}, 110) = 0\n'
+        'connect(4, {sa_family=AF_NETLINK, nl_pid=0, nl_groups=00000000}, 12) = 0\n'
+        'connect(5, {sa_family=AF_INET, sin_port=htons(7000), sin_addr=inet_addr("127.0.0.1")}, 16) = 0\n'
+        'connect(6, {sa_family=AF_INET6, sin6_port=htons(11434), sin6_flowinfo=htonl(0), inet_pton(AF_INET6, "::1", &sin6_addr), sin6_scope_id=0}, 28) = 0\n'
+        'connect(7, {sa_family=AF_INET, sin_port=htons(443), sin_addr=inet_addr("203.0.113.9")}, 16) = -1 EINPROGRESS\n'
+        '[pid 12] sendto(8, "x", 1, MSG_NOSIGNAL, {sa_family=AF_INET6, sin6_port=htons(53), sin6_flowinfo=htonl(0), inet_pton(AF_INET6, "2001:db8::1", &sin6_addr), sin6_scope_id=0}, 28) = 1\n')
+    assert nl.outbound_attempts(trace) == [("connect", "203.0.113.9", 443), ("sendto", "2001:db8::1", 53)], nl.outbound_attempts(trace)
+    assert nl.outbound_attempts("") == []
+    # the scripted session's allowlist: an ssh target address is not an attempt, anything else still is
+    assert nl.outbound_attempts(trace, {"203.0.113.9"}) == [("sendto", "2001:db8::1", 53)]
+    assert nl.outbound_attempts(trace, {"203.0.113.9", "2001:db8::1"}) == []
+    bundle = os.path.join(nl.REPO, "resources", "bundled", "claude_plugin")
+    assert os.path.isfile(os.path.join(bundle, ".claude-plugin", "marketplace.json"))
+    if not (shutil.which("jq") and shutil.which("bash")):
+        return
+    tmp = tempfile.mkdtemp()
+    try:
+        env = dict(os.environ, CLAUDE_CONFIG_DIR=os.path.join(tmp, "cfg"))
+        fake = [sys.executable, "-I", os.path.join(HERE, "fakeclaude.py")]
+        bad = subprocess.run(fake + ["plugin", "marketplace", "add", "https://example.invalid/x.git"], env=env, capture_output=True, text=True)
+        assert bad.returncode != 0 and "local" in bad.stderr
+        problems, events = nl.run_plugin_offline(tmp, bundle, os.path.join(tmp, "cfg2"), [])
+        assert problems == [], problems
+        data = open(events, "rb").read().decode("utf-8")
+        for ev in ("prompt_submit", "tool_complete", "permission_request", '"event":"stop"'):
+            assert ev in data, (ev, data[:300])
+        assert data.count("\x1b]777;notify;warp://cli-agent;") == 4
+        assert "..." in data and "x" * 250 not in data      # the 300-character prompt was cut by characters
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@check
+def wn_agent_plugins_offline():
+    """the bundled Codex / Gemini CLI / OpenCode plugins: the fake CLIs refuse a remote source and install the shipped folders; the shipped hooks (run under a pty, as they write to
+    /dev/tty) and OpenCode's modules produce one notification sequence per event with no network step, and a multi-byte prompt is cut by characters"""
+    import cases_netless as nl
+    if not (shutil.which("jq") and shutil.which("bash")):
+        return
+    tmp = tempfile.mkdtemp()
+    try:
+        env = dict(os.environ, CODEX_HOME=os.path.join(tmp, "ch"), GEMINI_CLI_HOME=os.path.join(tmp, "gh"))
+        for fake, args in (("fakecodex.py", ["plugin", "marketplace", "add", "https://example.invalid/x.git"]),
+                           ("fakegemini.py", ["extensions", "install", "https://example.invalid/x.git", "--consent"])):
+            bad = subprocess.run([sys.executable, "-I", os.path.join(HERE, fake)] + args, env=env, capture_output=True, text=True)
+            assert bad.returncode != 0 and "local" in bad.stderr, (fake, bad.stderr)
+        for agent in ("codex", "gemini", "opencode"):
+            if agent == "opencode" and not shutil.which("node"):
+                continue
+            bundle = os.path.join(nl.REPO, "resources", "bundled", agent + "_plugin")
+            assert os.path.isfile(os.path.join(bundle, *nl.PLUGIN_MARKERS[agent])), bundle
+            work = os.path.join(tmp, agent)
+            os.makedirs(work)
+            problems, events, expected = nl.run_agent_plugin_offline(agent, work, bundle, [])
+            assert problems == [], (agent, problems)
+            data = open(events, "rb").read().decode("utf-8")
+            assert data.count("\x1b]777;notify;warp://cli-agent;") == len(expected) == 5, (agent, data.count("\x1b]777;"), expected)
+            for ev in ("session_start", "prompt_submit", "tool_complete", "permission_request", '"event":"stop"'):
+                assert ev in data, (agent, ev, data[:300])
+            assert "x" * 250 not in data
+        # the Codex / Gemini prompt (300+ characters, multi-byte) was cut by characters, not bytes
+        assert "..." in open(os.path.join(tmp, "codex", "codex_events.bin"), "rb").read().decode("utf-8")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
 
 def main():
     failed = 0

@@ -1,0 +1,5 @@
+{
+  "name": "gemini-warp",
+  "description": "Phosphor terminal integration for Gemini CLI: notifications and session status",
+  "version": "1.0.0"
+}

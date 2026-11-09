@@ -47,6 +47,14 @@ const SSH_TRANSPORT_EXIT_CODE: i32 = 255;
 /// Attempts at one remote directory listing before it is given up as empty (and not cached).
 const REMOTE_LISTING_ATTEMPTS: usize = 2;
 
+mod pushed_listing;
+
+/// Called with a Precmd's `cwd_listing` (#1801): the remote shell's own bounded listing of its
+/// cwd, kept per session for path detection and the cd/file completions.
+pub fn note_pushed_cwd_listing(session_id: SessionId, pwd: Option<&str>, raw: &str) {
+    pushed_listing::store(session_id, pwd, raw);
+}
+
 type DirectoryEntryMap = dashmap::DashMap<TypedPathBuf, Arc<Vec<EngineDirEntry>>>;
 
 /// How long a non-local session's directory listings are reused across keystrokes (#1130).
@@ -589,6 +597,14 @@ impl PathCompletionContext for SessionContext {
         }
 
         if !self.session.is_local() {
+            // The shell told us this directory's contents at its last prompt (#1801): no remote
+            // command, no TTL. A truncated listing answers only a consumer that needs no
+            // negative answer (highlighting, suggestions), never an explicit Tab.
+            if let Some((entries, complete)) = pushed_listing::lookup(self.session.id(), &directory)
+                && (complete || self.cached_listings_only)
+            {
+                return entries;
+            }
             // A per-keystroke consumer never costs a remote command (#1295).
             if self.cached_listings_only {
                 return Arc::new(vec![]);

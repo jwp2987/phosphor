@@ -63,5 +63,13 @@ while IFS=$'\t' read -r f needle; do
     grep -qF "$needle" "$f" || { echo "check_outbound_redaction: $f no longer calls $needle"; status=1; }
 done <<< "$SENDERS"
 
+# 4. The "Report a problem" diagnostics bundle is LOCAL ONLY (owner rule): its collector and builder
+#    must not name a network client, a URL opener or a mail hook (code lines only; comments may say so).
+for f in app/src/workspace/problem_report.rs crates/warp_logging/src/report_bundle.rs; do
+    [ -f "$f" ] || { echo "check_outbound_redaction: $f is missing"; status=1; continue; }
+    bad=$(grep -nE 'reqwest|hyper|ureq|TcpStream|UdpSocket|http_client|HttpClient|std::net|tokio::net|open_url|mailto:|ServerApi|graphql' "$f" | grep -vE ':[0-9]+:\s*//')
+    [ -z "$bad" ] || { echo "check_outbound_redaction: $f names a network path (the problem report is never uploaded): $bad"; status=1; }
+done
+
 [ $status -eq 0 ] && echo "check_outbound_redaction: ok"
 exit $status

@@ -272,6 +272,7 @@ pub const EVENT_HOLD_GIVE_UP: Duration = Duration::from_secs(2);
 /// events (the report, the barrier's publish, a Preexec, a program taking the tty, a command, a
 /// signal); its give-up discards the young Enter and the keys typed after it, so it is a long
 /// safety net (a busy machine must not drop typeahead whose release event is merely late).
+// give-up-net: 10 s net of a queued young hold: discards the young Enter and what followed with a count toast (#1661)
 pub const YOUNG_HOLD_GIVE_UP: Duration = Duration::from_secs(10);
 
 /// Tags the ids of a deferred Enter's `HandoffReport` gate; a young hold's ids never carry it.
@@ -333,6 +334,7 @@ pub const CONPTY_MIDLINE_QUIET: Duration = Duration::from_millis(120);
 /// (The cap itself stays short: a miss only hands keys with no Enter back to the editor as text,
 /// so its cost is a visible hand-back for that prompt, while a longer cap would make every prompt
 /// of a shell that truly never signals wait longer.)
+// give-up-net: prompt-hold give-up: keys with no Enter go back to the editor as text, a segment with an Enter stays held with a toast (#1584)
 pub const CONPTY_PROMPT_HOLD_GIVE_UP: Duration = Duration::from_millis(1500);
 
 /// #1697: how many precmd waits in a row must give up, with no ready signal ever seen this
@@ -343,6 +345,7 @@ pub const CONPTY_PROMPT_HOLD_MISSES_BEFORE_OFF: u32 = 3;
 /// #1573: when the prompt hold's cap fires after an event already ended both of its waits (the
 /// release is in flight, e.g. deferred behind a busy queue), it is checked again after this; it
 /// never gives up a hold whose release is under way.
+// give-up-net: re-checks the prompt hold's give-up cap while a release is in flight; writes nothing
 const PROMPT_HOLD_RELEASE_IN_FLIGHT_RECHECK: Duration = Duration::from_millis(100);
 
 /// Environment variable that turns the ConPTY prompt hold off when set to `0` (#1162).
@@ -1076,6 +1079,30 @@ pub enum PromptHoldCap {
 pub struct HeldAgentCommand {
     pub action_id: AIAgentActionId,
     pub conversation_id: AIConversationId,
+}
+
+/// The Enter count a Ctrl-C leaves behind (#1777). On a POSIX tty the interrupt flushes the input
+/// queue, so only the killed command's own prompt is expected after it: `precmds_seen + 1` while a
+/// command runs, `precmds_seen` at a prompt. Under ConPTY with an msys program the queue is NOT
+/// flushed (a large paste behind `cat` outlived the ^C and bash ran it line by line), so lines
+/// written behind the command may still be consumed by the shell, each answered by a prompt. There
+/// the count is kept, and the pty owns input until the prompts catch up (the stale-count reset
+/// corrects it when the lines were in fact discarded): a key typed in the meantime follows the
+/// queued lines in order instead of splitting between the editor and the pty.
+pub(crate) fn interrupt_enters_written(
+    conpty_input: bool,
+    enters_written: u32,
+    precmds_seen: u32,
+) -> u32 {
+    if precmds_seen >= enters_written {
+        return precmds_seen;
+    }
+    let after_killed_command = precmds_seen.saturating_add(1);
+    if conpty_input {
+        enters_written.max(after_killed_command)
+    } else {
+        after_killed_command
+    }
 }
 
 impl TypeaheadHandoff {
@@ -1983,6 +2010,20 @@ impl TypeaheadHandoff {
             self.state,
             HandoffState::EditorOwned | HandoffState::AwaitingReport
         )
+    }
+
+    /// The shell's report of its line is still on its way and will land in FRONT of whatever the
+    /// editor holds now (#1659): the editor owns input but waits for the report, or it owns input
+    /// with a request outstanding that must also report bytes it did not adopt, or an Enter is
+    /// deferred behind the report (the report is still to come). A Tab pressed now
+    /// would complete only the editor's fragment; it waits for the report instead.
+    pub fn report_pending_before_editor_text(&self) -> bool {
+        matches!(
+            self.owner(),
+            Owner::AwaitingReport | Owner::Hold { released: false }
+        ) || (self.state == HandoffState::EditorOwned
+            && self.untracked_line_bytes
+            && self.requests_outstanding > 0)
     }
 
     /// Whether text the editor receives now will be followed by the shell's report in front of
@@ -4000,8 +4041,9 @@ impl TypeaheadHandoff {
         self.editor_owns_input() && self.editor_took_over_at.is_some()
     }
 
-    /// A Ctrl-C was written while the pty owned input. The tty discards queued typeahead and the
-    /// shell discards its line, so nothing the user typed survives it.
+    /// A Ctrl-C was written while the pty owned input. A POSIX tty discards queued typeahead and
+    /// the shell discards its line, so nothing the user typed survives it; under ConPTY queued
+    /// lines can survive ([`interrupt_enters_written`], #1777).
     pub fn on_interrupt(&mut self) -> InterruptOutcome {
         self.on_interrupt_for_shell(true)
     }
@@ -4034,11 +4076,11 @@ impl TypeaheadHandoff {
                 self.interrupt_awaiting_cycle = seq_mode && !self.interrupt_barrier;
                 self.state = HandoffState::PtyOwned {
                     wrote_user_bytes: false,
-                    enters_written: if at_prompt {
-                        precmds_seen
-                    } else {
-                        precmds_seen.saturating_add(1)
-                    },
+                    enters_written: interrupt_enters_written(
+                        self.conpty_input,
+                        enters_written,
+                        precmds_seen,
+                    ),
                     precmds_seen,
                 };
                 if at_prompt {
