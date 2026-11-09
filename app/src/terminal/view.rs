@@ -34,6 +34,7 @@ mod wakeup_redraw;
 use wakeup_redraw::{FooterFingerprint, RenderFingerprint, WakeupRedraw};
 pub mod ssh_file_upload;
 pub(crate) mod ssh_kept_text_banner;
+pub(crate) mod ssh_no_helper_chip;
 pub(crate) mod ssh_remote_server_choice_view;
 pub(crate) mod ssh_remote_server_failed_banner;
 mod tab_metadata;
@@ -5679,6 +5680,7 @@ impl TerminalView {
                         // before the user picks an option.
                         me.remove_ssh_remote_server_choice_block(*session_id, ctx);
                         me.remove_ssh_remote_server_failed_banner(*session_id, ctx);
+                        me.remove_ssh_no_helper_chip(*session_id, ctx);
                     }
                     RemoteServerManagerEvent::BinaryInstallComplete { session_id, result } => {
                         let (remote_os, remote_arch) = RemoteServerManager::handle(ctx)
@@ -14341,6 +14343,9 @@ impl TerminalView {
             // shows nothing (v0.1.12 parity); only the feature-disabled case
             // keeps a neutral note, with no red `ERROR:` detail line.
             SessionsEvent::LegacySshFallback { session_id, reason } => {
+                // The no-helper path is the primary design: a quiet, dismissable chip, never a
+                // banner. It shows for every reason (declined, pending, or flag off).
+                self.show_ssh_no_helper_chip(session_id, ctx);
                 if legacy_fallback_shows_banner(&reason) {
                     self.show_ssh_remote_server_failed_banner(
                         session_id,

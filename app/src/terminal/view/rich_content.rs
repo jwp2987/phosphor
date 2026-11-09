@@ -15,7 +15,7 @@ use crate::{
         ssh::{error::SshErrorBlock, install_tmux::SshInstallTmuxBlock, warpify::SshWarpifyBlock},
         view::{
             block_onboarding::onboarding_agentic_suggestions_block::OnboardingAgenticSuggestionsBlock,
-            ssh_kept_text_banner::SshKeptTextBanner,
+            ssh_kept_text_banner::SshKeptTextBanner, ssh_no_helper_chip::SshNoHelperChip,
             ssh_remote_server_choice_view::SshRemoteServerChoiceView,
             ssh_remote_server_failed_banner::SshRemoteServerFailedBanner,
         },
@@ -217,6 +217,10 @@ pub enum RichContentMetadata {
     },
     SshRemoteServerFailedBanner {
         handle: ViewHandle<SshRemoteServerFailedBanner>,
+    },
+    /// The subtle "limited: no remote helper" chip of a no-helper ssh session.
+    SshNoHelperChip {
+        handle: ViewHandle<SshNoHelperChip>,
     },
     /// #1596: the text an ssh hand-back kept while the ssh block runs.
     SshKeptTextBanner {

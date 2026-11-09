@@ -63,6 +63,24 @@ define_settings_group!(InputSettings,
             toml_path: "terminal.input.completions_open_while_typing",
             description: "Whether the completions menu opens automatically while typing. On by default for local sessions; remote sessions keep it off unless this is set explicitly.",
         },
+        show_no_helper_chip: ShowNoHelperChip {
+            type: bool,
+            default: true,
+            supported_platforms: SupportedPlatforms::ALL,
+            sync_to_cloud: SyncToCloud::Never,
+            private: false,
+            toml_path: "terminal.remote.show_no_helper_chip",
+            description: "Whether a small 'limited: no remote helper' chip is shown in Phosphorized ssh sessions that run without the remote helper.",
+        },
+        no_helper_chip_dismissed_hosts: NoHelperChipDismissedHosts {
+            type: Vec<String>,
+            default: Vec::new(),
+            supported_platforms: SupportedPlatforms::ALL,
+            sync_to_cloud: SyncToCloud::Never,
+            private: false,
+            toml_path: "terminal.remote.no_helper_chip_dismissed_hosts",
+            description: "Hosts for which the 'no remote helper' chip was dismissed.",
+        },
         error_underlining: ErrorUnderliningEnabled {
             type: bool,
             default: true,
@@ -289,5 +307,35 @@ mod completions_while_typing_tests {
         assert!(eff(true, true, false));
         assert!(!eff(false, true, true));
         assert!(!eff(false, true, false));
+    }
+}
+
+/// Whether the "limited: no remote helper" chip shows for a session on `host`: the global
+/// setting is on and the host was not dismissed. Host names compare case-insensitively.
+pub fn no_helper_chip_visible(show: bool, dismissed_hosts: &[String], host: &str) -> bool {
+    show && !dismissed_hosts
+        .iter()
+        .any(|dismissed| dismissed.eq_ignore_ascii_case(host))
+}
+
+#[cfg(test)]
+mod no_helper_chip_tests {
+    use super::no_helper_chip_visible as visible;
+
+    #[test]
+    fn shown_by_default() {
+        assert!(visible(true, &[], "box1"));
+    }
+
+    #[test]
+    fn hidden_entirely_by_the_setting() {
+        assert!(!visible(false, &[], "box1"));
+    }
+
+    #[test]
+    fn dismissal_is_per_host_and_case_insensitive() {
+        let dismissed = vec!["Box1".to_string()];
+        assert!(!visible(true, &dismissed, "box1"));
+        assert!(visible(true, &dismissed, "box2"));
     }
 }
