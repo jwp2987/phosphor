@@ -2151,6 +2151,10 @@ def agent_code_recycle_log_parse():
     assert ca.recycle_events(log) == [("recycled", "EntityId(42)", 12), ("rebuilt", "EntityId(42)", 12)], ca.recycle_events(log)
     assert ca.snippet_lines("AB12", 3) == ["echo RCYAB12_01", "echo RCYAB12_02", "echo RCYAB12_03"]
     assert "agent_code_recycle" in winmap.BOTH
+    plan_log = ("x DEBUG editor_memory editor_memory agent_code_plan rich=10 visible=[9] plan=[0R,2R,3K,7B]\n"
+                "y DEBUG editor_memory editor_memory agent_code_plan rich=70 visible=[] plan=[] \n"
+                "z DEBUG editor_memory editor_memory agent_code_plan rich=100 visible=[0] plan=[0B,1B] (+98 more)\n")
+    assert ca.recycle_plans(plan_log) == ["rich=10 visible=[9] plan=[0R,2R,3K,7B]", "rich=70 visible=[] plan=[]", "rich=100 visible=[0] plan=[0B,1B] (+98 more)"], ca.recycle_plans(plan_log)
 
 
 @check
