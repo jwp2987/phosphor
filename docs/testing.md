@@ -1211,9 +1211,38 @@ and `stall_powershell_setup` (test helper) marks the net noticed instead of back
 `subshell_setup_net_armed`, `subshell_setup_progress kind=...`, `subshell_setup_given_up why=quiet_net|ceiling chunks=N` are the hops;
 "writing the rest of the subshell setup on timers" no longer exists.
 
+Review fixes (Opus, FIX-FIRST on the two commits): **F1** a Ctrl-C / Ctrl-D typed while the setup lines are in flight is the EVENT
+that ends the setup (`abort_in_flight_subshell_setup`: unwritten lines dropped, the signal written at once as the user's event, the
+setup over, the held keys behind the signal in order; it used to be stashed until the last line, which a stuck shell never wrote,
+while the notice said "Ctrl-C skips setup"); a give-up that still finds a stashed abort says "Ctrl-C was not sent: press it again".
+**F2** `setup_live` uses the APPLYING announcement (`subshell_bootstrap_announced_age`) and `subshell_bootstrap_pending`, the
+post-Bootstrapped Precmd clears the net gate or no gate (`clear_subshell_setup_net_if_setup_over`), and a block completion with the
+announced block gone drops the unwritten lines and clears the net (`end_subshell_setup_if_block_gone`). **F3** a subshell `InitShell`
+with no net armed arms one (`on_subshell_init_shell`). **F4** the generation is the view's monotonic counter
+(`subshell_setup_net_generation`), and the notice timer re-checks its generation AND that the quiet stretch is due. **N1** a PowerShell
+held line (`LineRunning`) arms the net too; its give-up is `held_line` with its own notice (the setup succeeded, the command is slow).
+**N2** `give_up_setup_gates_to_editor` hands the gates back in the queue's order. **N3** `end_subshell_setup_unsupported` acts only on
+a live attempt, a give-up unregisters the probe ID, and a late `InitSubshell` / `SubshellNotPhosphorizable` with no probe outstanding
+is ignored. **N5** once the bootstrap give-up failed a setup, progress no longer re-arms it. **N4 (known, documented):** a given-up
+setup leaves line 0 (the prelude) in the shell's tty / history: when the shell eventually reads it, `HISTCONTROL=ignorespace:...`
+(bash) or `hist_ignore_space` on / `print_exit_value` off (zsh) stay changed for that shell, because the restore is part of the
+probe line / the known-shell stage's last line that was never written. The user sees it only on a shell that then becomes usable
+without Phosphor; `exit` ends it. Expectation change (F1, review decision): `ctrl_c_during_the_subshell_bootstrap_waits_for_its_last_line`
+-> `ctrl_c_during_the_subshell_bootstrap_ends_it_and_goes_out_first` (`^C a b` whether or not announced; Legacy and Table);
+`stall_ceiling_hand_back_defers_to_the_abandon_notice` (group2) -> `setup_net_hand_back_defers_to_its_own_counted_notice`.
+
 | layer | test | asserts |
 |---|---|---|
 | view (pure) | `view_test.rs`: `subshell_setup_net_verdict_is_quiet_at_30_s_and_ceiling_at_120_s` | the truth table: Waiting / Quiet at 30 s quiet / Ceiling at 120 s even with progress 1 s ago |
+| view, Legacy and Table | `view_test.rs`: `ctrl_c_during_a_stuck_marker_paced_setup_goes_out_at_once_and_ends_it` | F1: `ec`,`ho` held, no marker, the notice up; ^C: the pty gets `\x03echo` at once, the probe line is never written, in-flight / announcement / net / notice / held counts cleared, editor empty |
+| view | `view_test.rs`: `a_finished_setup_does_not_trip_the_net_later`, `a_subshell_that_exits_during_the_setup_ends_the_net` | F2: Bootstrapped + Precmd clears the net with a key still held (the key is delivered, stale timers do nothing, nothing written); a block change with nothing pending drops the lines and clears the net |
+| view | `view_test.rs`: `an_init_shell_with_no_net_armed_arms_one` | F3: no net -> armed and progressed (seq 1); a net -> progress only |
+| view | `view_test.rs`: `a_notice_timer_of_an_earlier_setup_does_not_toast_during_a_later_one` | F4: B's generation > A's and never 1 again; A's notice timer during B toasts nothing; B's not-yet-due timer toasts nothing; B's due timer toasts |
+| view, Legacy and Table | `view_test.rs`: `a_powershell_held_line_is_watched_by_the_net_and_handed_back` | N1: `LineRunning` + net; `Get-`,`Date` held; the quiet net hands `Get-Date` back, hold Off, nothing written |
+| view | `view_test.rs`: `setup_gates_are_handed_back_in_queue_order` | N2: `a` behind the older bootstrap-write gate, `b` behind the newer setup gate -> editor `ab` |
+| view | `view_test.rs`: `a_give_up_unregisters_the_probe_id_and_a_late_probe_answer_is_ignored` | N3: after the quiet net the probe ID is unregistered; a late InitSubshell writes no stage 2; a late NotPhosphorizable writes nothing |
+| view | `view_test.rs`: `the_bootstrap_give_up_fires_at_most_once_per_setup` | N5: after `on_bootstrap_failed_timer_complete` the net's `bootstrap_failed_after` is None and progress bumps no timer generation |
+| view | `group2_timer_tests.rs`: `setup_net_hand_back_defers_to_its_own_counted_notice` | the `quiet_net` / `ceiling` whys show no generic toast; the counted notice's wording for 0 / 1 / n keys, `held_line`, and dropped aborts |
 | view | `view_test.rs`: `the_setup_net_re_arms_only_on_progress_not_on_output` | output, a prompt shape and another setup's marker leave (gen, seq) and `last_progress` alone; the notice fires and progress withdraws it; our marker is progress once; `InitSubshell` + stage 2 is a new generation with the same start; `InitShell` and `Bootstrapped` count; output after them does not |
 | view, Legacy and Table | `view_test.rs`: `the_setup_net_hands_the_held_keys_back_at_30_s_quiet_and_at_the_120_s_ceiling` | `ls`,` -la`,`x` held through five chatty outputs; the quiet net (backdated) and the ceiling (backdated, with a fresh marker) each hand back `ls -lax` with the guard armed, write nothing, clear announcement / in-flight / net / held counts / notice; late timers do nothing |
 | view | `view_test.rs`: `a_stale_net_timer_does_not_release_a_later_setups_keys` | a timer of an earlier quiet stretch or an earlier generation does nothing; the current pair hands back once; nothing written |

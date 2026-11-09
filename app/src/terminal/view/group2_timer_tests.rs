@@ -895,15 +895,43 @@ fn stall_ceiling_hands_the_keys_held_through_the_setup_back() {
     }
 }
 
-/// #1119: an abandoned subshell bootstrap is never silent. The abandon path shows its own
-/// "Phosphorize failed" notice (held keys or not), so the stall ceiling's hand-back adds no
-/// second toast; every other give-up keeps the generic one.
+/// #1119 / #1711: a given-up subshell setup is never silent. The setup net's give-up (`quiet_net`,
+/// `ceiling`) shows its own counted notice (held keys or not), so its hand-back adds no second
+/// toast; every other give-up keeps the generic one. The notice gives the COUNT of the held keys,
+/// never their text; a PowerShell held line that never showed its prompt (`held_line`, review N1)
+/// says so instead of "Phosphorize failed"; dropped abort keys are named (review F1).
 #[test]
-fn stall_ceiling_hand_back_defers_to_the_abandon_notice() {
-    assert_eq!(paste_queue::gate_give_up_toast("stall_ceiling"), None);
+fn setup_net_hand_back_defers_to_its_own_counted_notice() {
+    assert_eq!(paste_queue::gate_give_up_toast("quiet_net"), None);
+    assert_eq!(paste_queue::gate_give_up_toast("ceiling"), None);
     assert!(paste_queue::gate_give_up_toast("subshell_setup_cap").is_some());
     assert!(paste_queue::gate_give_up_toast("bootstrap_write_cap").is_some());
-    let notice = paste_queue::SUBSHELL_BOOTSTRAP_ABANDONED_TOAST;
-    assert!(notice.contains("Phosphorize failed"));
-    assert!(notice.contains("in the input, not run"));
+    let notice = paste_queue::subshell_setup_given_up_toast("quiet_net", 3, 0);
+    assert!(notice.contains("Phosphorize failed"), "{notice}");
+    assert!(
+        notice.contains("3 keys typed during the setup are in the input, not run"),
+        "{notice}"
+    );
+    assert!(!notice.contains("Ctrl-C"), "{notice}");
+    let none = paste_queue::subshell_setup_given_up_toast("ceiling", 0, 0);
+    assert!(
+        none.contains("Nothing was typed during the setup"),
+        "{none}"
+    );
+    let one = paste_queue::subshell_setup_given_up_toast("quiet_net", 1, 2);
+    assert!(
+        one.contains("1 key typed during the setup is in the input"),
+        "{one}"
+    );
+    assert!(one.contains("Ctrl-C was not sent: press it again"), "{one}");
+    let held_line = paste_queue::subshell_setup_given_up_toast("held_line", 2, 0);
+    assert!(
+        held_line.contains("has not shown its prompt"),
+        "{held_line}"
+    );
+    assert!(!held_line.contains("Phosphorize failed"), "{held_line}");
+    assert!(
+        held_line.contains("2 keys typed after it are in the input, not run"),
+        "{held_line}"
+    );
 }

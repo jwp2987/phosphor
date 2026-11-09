@@ -66,16 +66,36 @@ const GATE_GIVE_UP_TOAST: &str = "Input was waiting too long, so it was not sent
 /// or not keys were held through the setup, so a failed Phosphorize is never silent; it also
 /// covers the held keys with their COUNT (never their text), which is why the hand-back itself
 /// shows no second toast for it.
-pub(super) fn subshell_setup_given_up_toast(held_chunks: usize) -> String {
-    let held = match held_chunks {
-        0 => "Nothing was typed during the setup.".to_owned(),
-        1 => "1 key typed during the setup is in the input, not run.".to_owned(),
-        n => format!("{n} keys typed during the setup are in the input, not run."),
+pub(super) fn subshell_setup_given_up_toast(
+    why: &str,
+    held_chunks: usize,
+    dropped_aborts: usize,
+) -> String {
+    let (what, when) = if why == "held_line" {
+        // Review N1: the setup succeeded; the command run from the held input is slow.
+        (
+            "The command run from your input has not shown its prompt",
+            "after it",
+        )
+    } else {
+        (
+            "Phosphorize failed: the shell setup stopped making progress, so this tab continues \
+             as a plain shell",
+            "during the setup",
+        )
     };
-    format!(
-        "Phosphorize failed: the shell setup stopped making progress, so this tab continues as a \
-         plain shell. {held}"
-    )
+    let held = match held_chunks {
+        0 => format!("Nothing was typed {when}."),
+        1 => format!("1 key typed {when} is in the input, not run."),
+        n => format!("{n} keys typed {when} are in the input, not run."),
+    };
+    // Review F1: a stashed abort cannot come back as text and a timer never sends it; say so.
+    let aborts = if dropped_aborts > 0 {
+        " Ctrl-C was not sent: press it again."
+    } else {
+        ""
+    };
+    format!("{what}. {held}{aborts}")
 }
 
 /// #1661: the reason of a young Enter's hold that gave up (its toast gives the discarded count).
@@ -1347,21 +1367,31 @@ impl TerminalView {
         self.subshell_bootstrap_announced = None;
         self.subshell_setup_net = None;
         self.dismiss_subshell_setup_waiting_toast(ctx);
-        for kind in [
-            GateKind::PowershellSetup,
-            GateKind::SubshellSetup,
-            GateKind::SubshellBootstrapWrite,
-        ] {
-            let key = self.paste_queue.queue.try_peek().and_then(|queue| {
+        // Review N2: in the queue's own (barrier) order, oldest gate first, so the runs of text
+        // behind each gate come back in the order they were typed; a fixed kind order put a
+        // later gate's text in front of an earlier one's.
+        let gates: Vec<(GateKind, u64)> = self
+            .paste_queue
+            .queue
+            .try_peek()
+            .map(|queue| {
                 queue
                     .gates()
                     .iter()
-                    .find(|gate| gate.kind == kind)
-                    .map(|gate| gate.key)
-            });
-            if let Some(key) = key {
-                self.hand_back_gate_keys(kind, key, why, ctx);
-            }
+                    .filter(|gate| {
+                        matches!(
+                            gate.kind,
+                            GateKind::PowershellSetup
+                                | GateKind::SubshellSetup
+                                | GateKind::SubshellBootstrapWrite
+                        )
+                    })
+                    .map(|gate| (gate.kind, gate.key))
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (kind, key) in gates {
+            self.hand_back_gate_keys(kind, key, why, ctx);
         }
     }
 
@@ -2733,13 +2763,12 @@ impl TerminalView {
             // The rest of a chunked line-clear write is dropped (#1354, now a writer job #1384).
             ctx.emit(super::Event::CancelPacedSetupWrites);
             self.note_input_for_deferred_subshell_setup(bytes);
-            if setup_gate || !only_subshell_gates {
-                // An abort that also skips the setup goes FIRST once the last line is out, ahead
-                // of what was typed (the old buffer's release order); kept until then.
-                self.paste_queue.pending_aborts.push((bytes.to_vec(), true));
-                note_shadow_leaf(DestClass::Held);
-                return SubshellPrep::Stashed;
-            }
+            // Review F1 (#1711): the user's abort ENDS the in-flight setup now: unwritten lines
+            // dropped, the signal written at once, the held keys behind it in order. It used to
+            // be stashed until the last line was written, which a stuck shell never did.
+            self.abort_in_flight_subshell_setup(bytes, ctx);
+            note_shadow_leaf(DestClass::Pty);
+            return SubshellPrep::AbortHandled;
         }
         let powershell_off = self.powershell_setup_hold == super::PowerShellSetupHold::Off;
         // The setup is over (`Bootstrapped`, abandoned, ...) while keys are still held, released
@@ -2869,11 +2898,12 @@ pub(super) enum SubshellPrep {
     Normal,
     /// A shell prompt is asking for an answer: the key goes straight to the pty.
     Bypass,
-    /// An abort typed during the bootstrap lines that also skips the setup; kept until the last
-    /// line, then sent first.
-    Stashed,
-    /// An abort typed during the bootstrap lines with no setup to skip: an ordinary entry, so it
-    /// reaches the pty at its place in what was typed.
+    /// An abort typed during the bootstrap lines: it ended the setup and was written here
+    /// (`abort_in_flight_subshell_setup`, review F1); nothing more to do with it.
+    AbortHandled,
+    /// An abort that waits as an ordinary entry, at its place in what was typed. (No path
+    /// produces it since review F1: an abort during the bootstrap lines ends the setup instead.
+    /// Kept for the table's row and its tests.)
     HeldInOrder,
 }
 
