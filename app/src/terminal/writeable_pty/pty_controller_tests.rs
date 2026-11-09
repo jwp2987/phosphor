@@ -447,13 +447,14 @@ fn input_reporting_sequence_is_written_before_an_already_queued_in_band_command(
         });
         line_editor_status.update(&mut app, |_, ctx| ctx.emit(LineEditorStatusEvent::Active));
 
-        // The handler put the request at the FRONT and wrote it; the in-band command that was
-        // already waiting is still queued behind it.
+        // The handler put the request at the FRONT and, the gate being open, wrote it and then the
+        // in-band command that was already waiting, in that order (checked on the messages below);
+        // nothing is left queued. (Batch 4 asserted one write left pending: the queue drains in
+        // one pass, so that count was wrong -- the contract is the ORDER of the two messages.)
         controller.update(&mut app, |controller, ctx| {
-            assert_eq!(
-                controller.pending_writes.len(),
-                1,
-                "the in-band command should still wait behind the input reporting sequence."
+            assert!(
+                controller.pending_writes.is_empty(),
+                "both writes went out in one pass, the request first."
             );
             while let Some(write) = controller.pending_writes.pop_front() {
                 controller.send_write_to_event_loop(write, ctx);
@@ -2245,9 +2246,10 @@ mod typeahead_handoff {
             // Ctrl-C (twice: the second one finds the prompt cycle not yet parsed).
             user_types(&mut app, &harness, &[escape_sequences::C0::ETX]);
             user_types(&mut app, &harness, &[escape_sequences::C0::ETX]);
+            // The keys typed meanwhile (before the unproven activation) go out as typed.
+            user_types(&mut app, &harness, b"echo hi");
             shell_runs_a_command(&harness.model, "sleep 30");
             line_editor_becomes_active_unproven(&mut app, &harness);
-            user_types(&mut app, &harness, b"echo hi");
             harness.controller.update(&mut app, |controller, ctx| {
                 controller.retry_typeahead_handoff_request(ctx)
             });
