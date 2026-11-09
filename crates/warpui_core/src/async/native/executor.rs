@@ -129,6 +129,17 @@ impl Foreground {
     }
 }
 
+/// Upper bound on the background executor's worker threads in production.
+pub const MAX_BACKGROUND_THREADS: usize = 8;
+
+/// Worker-thread count for the production background executor: one per logical
+/// core, never fewer than one and never more than [`MAX_BACKGROUND_THREADS`].
+pub fn background_thread_count(cores: usize) -> usize {
+    let count = cores.clamp(1, MAX_BACKGROUND_THREADS);
+    debug_assert!((1..=MAX_BACKGROUND_THREADS).contains(&count));
+    count
+}
+
 pub struct Background {
     runtime: Option<tokio::runtime::Runtime>,
 }
@@ -152,9 +163,11 @@ impl Default for Background {
             // test.
             1
         } else {
-            // In production, create a thread for each logical CPU core,
-            // maximizing our possible parallelism.
-            num_cpus::get()
+            // In production, create a thread per logical CPU core, capped
+            // at `MAX_BACKGROUND_THREADS`: beyond that the extra workers only
+            // add idle threads and memory (blocking work runs on tokio's
+            // separate blocking pool, so a smaller worker set cannot starve it).
+            background_thread_count(num_cpus::get())
         };
 
         Self::new(num_threads, |i| format!("background-executor-{i}"))
@@ -217,5 +230,20 @@ impl Background {
         let (handle, registration) = AbortHandle::new_pair();
         let task = self.spawn(Abortable::new(future, registration).map(|_| ()));
         (task, handle)
+    }
+}
+
+#[cfg(test)]
+mod background_thread_cap_tests {
+    use super::*;
+
+    #[test]
+    fn background_thread_count_is_capped() {
+        assert_eq!(background_thread_count(0), 1);
+        assert_eq!(background_thread_count(1), 1);
+        assert_eq!(background_thread_count(4), 4);
+        assert_eq!(background_thread_count(8), 8);
+        assert_eq!(background_thread_count(12), MAX_BACKGROUND_THREADS);
+        assert_eq!(background_thread_count(256), MAX_BACKGROUND_THREADS);
     }
 }
