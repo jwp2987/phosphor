@@ -179,6 +179,7 @@ def main():
     ollama_url, ollama_model = ci_env.ollama()      # env, else ~/.config/phosphor-ci/ci.env; the value is never printed
     if not ollama_url and os.environ.get("APPCI_FAKE_MODEL") == "1":      # L2 fake model (fake_model.py): a local Ollama-protocol server, never a real provider
         import fake_model
+        os.environ.setdefault("APPCI_FAKE_MODEL_LOG", os.path.join(run, "fake_model_requests.jsonl"))      # #1829: what the model was sent, per request
         fake = fake_model.FakeModel().start()
         ollama_url, ollama_model = fake.url, "fake-model"
         os.environ["APPCI_FAKE_MODEL_ACTIVE"] = "1"

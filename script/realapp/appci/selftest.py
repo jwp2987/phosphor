@@ -3464,6 +3464,23 @@ def fake_model_replies():
 
 
 @check
+def agent_interactive_oracles():
+    """#1829: the request-log record, its reader and the pure judge of cases_agent_interactive.py"""
+    import fake_model as FM, cases_agent_interactive as AI
+    rec = FM.request_record([{"role": "user", "content": "hi"}, {"role": "assistant", "content": ""}, {"role": "tool", "content": "got:abc"}])
+    assert rec == {"last_role": "tool", "tool": "got:abc", "users": ["hi"]}, rec
+    assert FM.request_record([{"role": "user", "content": "x"}])["tool"] is None and FM.request_record([])["last_role"] is None
+    ok = [dict(tool=None, users=["run it"]), dict(tool="pw: \r\ngot:S1", users=["run it"])]
+    assert AI.judge_requests(ok, "S1", "got:S1") == []
+    assert AI.judge_requests(ok, "S1", "got:ZZ") and AI.judge_requests([dict(tool=None, users=["x"])], None)
+    leak = [dict(tool="o", users=["run it", "typed S1 here"])]
+    assert any("leaked" in p for p in AI.judge_requests(leak, "S1"))
+    assert FM.read_request_log("/nonexistent/none.jsonl") == []
+    names = {c["name"] for c in cases.CASES}
+    assert {"agent_interactive_password", "agent_interactive_vim", "agent_interactive_ssh", "agent_interactive_less", "agent_noninteractive_no_takeover"} <= names
+
+
+@check
 def replay_cases_registered_but_not_swept_by_lab_glob():
     names = [c["name"] for c in cases.CASES if c["name"].startswith("lab_replay")]
     assert names == ["lab_replay.bash.150.nohelper"], names

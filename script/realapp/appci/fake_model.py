@@ -7,8 +7,11 @@
 #   * "Please show this image: <url>" -> the text "Here it is: ![img](<url>)" (network_gate_notice: the app fetches the image through the network gate);
 #   * the turn after a tool result -> the text "Done." (a finished conversation);
 #   * any other user turn -> "OK <last word>" (prose only, no tool call).
+# Request log (#1829): when APPCI_FAKE_MODEL_LOG names a file, every /api/chat request appends one JSON line {t, n, last_role, tool, users} (request_record):
+# what the model was SENT, i.e. the command output the app handed back (`tool`) and every user message (`users`), so a case can prove the model's next request
+# carried the output of an interactive command and that no key typed into a program leaked into the conversation.
 # Endpoints: POST /api/chat (NDJSON stream), POST /api/show, GET /api/tags. The server counts requests (fake.requests) for the oracle.
-import json, re, threading, time
+import json, os, re, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 READ_RE = re.compile(r"read exactly this file and nothing else:\s*(\S+)\s*$")
@@ -49,6 +52,28 @@ def reply_for(messages):
     return {"text": "OK %s" % (words[-1] if words else ""), "tool": None}
 
 
+def request_record(messages):
+    """pure: what one /api/chat request carried, for the request log: the role of the last message, the content of the last tool message (None when the
+    request has none) and every user message's content, in order"""
+    msgs = messages or []
+    tool = None
+    for m in reversed(msgs):
+        if m.get("role") == "tool":
+            tool = m.get("content") if isinstance(m.get("content"), str) else json.dumps(m.get("content"))
+            break
+    return {"last_role": (msgs[-1].get("role") if msgs else None), "tool": tool,
+            "users": [m.get("content") or "" for m in msgs if m.get("role") == "user"]}
+
+
+def read_request_log(path, skip=0):
+    """the request-log rows (dicts) of `path` after the first `skip` rows; [] when the file is missing"""
+    try:
+        rows = [json.loads(l) for l in open(path, errors="replace").read().splitlines() if l.strip()]
+    except (OSError, ValueError):
+        return []
+    return rows[skip:]
+
+
 def stream_lines(model, reply, chunk=6):
     """pure: the NDJSON lines (str) of one streamed answer: the text in `chunk`-character pieces, the tool call (if any), then the done line"""
     out = []
@@ -64,6 +89,7 @@ def stream_lines(model, reply, chunk=6):
 class FakeModel:
     def __init__(self, delay_s=0.0):
         self.requests, self.delay_s, self.log = 0, delay_s, []
+        self.log_path = os.environ.get("APPCI_FAKE_MODEL_LOG") or None
         owner = self
 
         class H(BaseHTTPRequestHandler):
@@ -91,6 +117,13 @@ class FakeModel:
                 if not self.path.endswith("/api/chat"):
                     return self._send(404, b'{"error":"not found"}')
                 owner.requests += 1
+                if owner.log_path:
+                    try:
+                        rec = dict(request_record(req.get("messages") or []), t=time.time(), n=owner.requests)
+                        with open(owner.log_path, "a") as f:
+                            f.write(json.dumps(rec) + "\n")
+                    except OSError:
+                        pass
                 reply = reply_for(req.get("messages") or [])
                 owner.log.append((time.time(), reply["tool"]["arguments"]["command"] if reply["tool"] else None))
                 body = ("\n".join(stream_lines(req.get("model") or "fake-model", reply)) + "\n").encode()
