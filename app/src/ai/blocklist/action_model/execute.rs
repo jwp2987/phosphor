@@ -1778,6 +1778,26 @@ fn is_remote_session(active_session: &ActiveSession, ctx: &AppContext) -> bool {
     )
 }
 
+/// Logs which arm serves an agent tool that runs as a session command on a remote host (grep,
+/// glob), in the router's own line shape: the remote helper's executor, or the shell. Nothing
+/// for a local session. No paths, hosts or contents (#1827).
+pub(super) fn log_remote_tool_route(
+    active_session: &ActiveSession,
+    family: remote_server::backend::Family,
+    ctx: &AppContext,
+) {
+    if !is_remote_session(active_session, ctx) {
+        return;
+    }
+    let Some(session) = active_session.session(ctx) else {
+        return;
+    };
+    log::info!(
+        "{}",
+        remote_server::backend::executor_route_line(family, session.uses_remote_helper())
+    );
+}
+
 /// The path rules for the session's host: its reported OS when remote and known, else the
 /// shape of its working directory or home (see `PathHost::for_remote_session`), else local.
 pub(super) fn session_path_host(

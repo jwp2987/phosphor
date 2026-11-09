@@ -205,6 +205,18 @@ fn the_route_log_line_has_the_shape_the_lab_asserts() {
 }
 
 #[test]
+fn executor_served_families_log_the_same_line_shape() {
+    assert_eq!(
+        executor_route_line(Family::RipgrepSearch, true),
+        "hop=backend_route family=ripgrep_search backend=helper reason=caps"
+    );
+    assert_eq!(
+        executor_route_line(Family::FsBasic, false),
+        "hop=backend_route family=fs_basic backend=shell reason=caps"
+    );
+}
+
+#[test]
 fn own_writes_reach_refresh_listeners_with_the_host() {
     use std::sync::Mutex;
     let router = FeatureRouter::new();

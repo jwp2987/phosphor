@@ -3476,6 +3476,11 @@ def agent_interactive_oracles():
     leak = [dict(tool="o", users=["run it", "typed S1 here"])]
     assert any("leaked" in p for p in AI.judge_requests(leak, "S1"))
     assert FM.read_request_log("/nonexistent/none.jsonl") == []
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    src = lambda p: open(os.path.join(root, p), encoding="utf-8").read()
+    assert 'log_hop("alt_screen_enter"' in src("app/src/terminal/model/terminal_model.rs") and 'log_hop("fullscreen_handover"' in src("app/src/terminal/view.rs")
+    assert AI.hop_count("INFO input_order hop=alt_screen_enter  t=1\nhop=alt_screen_enter  t=2", AI.ALT_ENTER_RE) == 2
+    assert AI.hop_count("hop=fullscreen_handover agent_in_control=0 t=1", AI.FS_HANDOVER_RE) == 1 and AI.hop_count("hop=fullscreen_handover agent_in_control=1 t=1", AI.FS_HANDOVER_RE) == 0
     names = {c["name"] for c in cases.CASES}
     assert {"agent_interactive_password", "agent_interactive_vim", "agent_interactive_ssh", "agent_interactive_less", "agent_noninteractive_no_takeover"} <= names
 
@@ -3545,7 +3550,7 @@ def agent_file_edit_pieces():
     assert AF.SAVE_FAILED.search("ERROR Failed to save file for accepted AgentMode diffs for x: y") and AF.SAVE_FAILED.search("x changed on disk after this change was proposed")
     assert not AF.SAVE_FAILED.search("saved ok")
     names = {c["name"] for c in cases.CASES}
-    assert {"agent_edit_accept", "agent_edit_reject", "agent_edit_conflict", "agent_edit_endings"} <= names
+    assert {"agent_edit_accept", "agent_edit_reject", "agent_edit_conflict", "agent_edit_endings", "agent_edit_touch_only"} <= names
     arms = [c["arm"] for c in cases.CASES if c["name"].startswith("lab_fam_agent_edit_conflict.")]
     assert {a["helper"] for a in arms} == {"nohelper", "upload"} and {a["shell"] for a in arms} == {"bash", "dash", "nu", "pwsh"}, arms
 
