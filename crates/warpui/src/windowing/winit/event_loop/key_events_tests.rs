@@ -1,6 +1,6 @@
 use super::{
-    get_input_key, text_fallback_event_for_unconverted_key, typed_characters_follow_keydown,
-    us_qwerty_fallback_for_chord,
+    get_input_key, mark_composing, text_fallback_event_for_unconverted_key,
+    typed_characters_follow_keydown, us_qwerty_fallback_for_chord,
 };
 use winit::event::ElementState;
 use winit::keyboard::{
@@ -271,4 +271,40 @@ fn unhandled_ctrl_chord_does_not_type_its_letter() {
     // A plain unhandled key still types, and Ctrl+Alt (AltGr on Windows) still produces text.
     assert!(typed_characters_follow_keydown(false, false, false, false));
     assert!(typed_characters_follow_keydown(false, false, true, true));
+}
+
+/// #1892: a key press that arrives while an IME preedit shows is marked composing; one that does
+/// not, and every other event, is left alone.
+#[test]
+fn mark_composing_sets_the_flag_only_while_composing() {
+    let key_down = || {
+        text_fallback_event_for_unconverted_key(
+            Some("\r".to_owned()),
+            ElementState::Pressed,
+            ModifiersState::empty(),
+            false,
+        )
+        .expect("enter converts")
+    };
+    let mut idle = key_down();
+    mark_composing(&mut idle, false);
+    assert!(matches!(
+        idle,
+        crate::Event::KeyDown {
+            is_composing: false,
+            ..
+        }
+    ));
+    let mut composing = key_down();
+    mark_composing(&mut composing, true);
+    assert!(matches!(
+        composing,
+        crate::Event::KeyDown {
+            is_composing: true,
+            ..
+        }
+    ));
+    let mut typed = crate::Event::TypedCharacters { chars: "a".into() };
+    mark_composing(&mut typed, true);
+    assert!(matches!(typed, crate::Event::TypedCharacters { .. }));
 }

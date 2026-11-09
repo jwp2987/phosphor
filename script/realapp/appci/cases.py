@@ -49,6 +49,8 @@ PROVING = (
     # the ask_user_question card never hangs on "Preparing question..." (#1851)
     "agent_question_answer", "agent_question_cut", "agent_question_nodone", "agent_question_trunc", "agent_question_empty", "agent_question_slow",
     "agent_question_ctrl_c", "agent_question_steer", "agent_question_after_command", "agent_question_steer_at_end",
+    # Windows input parity (docs/design/windows-input-parity-audit.md): each skips itself off its Windows pane
+    "ssh_connect_typing_wrapper", "ssh_nested_typeahead_wrapper", "ps_ctrl_break", "ps_fast_command_young_enter",
     "subshell_ready_relay_shape", "subshell_ready_exec_fish_rc", "subshell_ready_docker_t_without_i", "subshell_ready_zsh_newuser_install", "subshell_ready_rc_clear",
 )
 # The PROVING cases that need the scripted fake model (fake_model.py): the fix tier runs them in their own app launch, the "agent@fake" pass (run.py
@@ -2323,7 +2325,7 @@ def c_ctrl(ctx, r):
         if rec:
             r.metrics.setdefault("lat", {})["ctrl_c"] = rec
             lat_checks(r, rec, "Ctrl-C")
-    if lat_ms and not short and not ctx.win and ctx.pane != "powershell":
+    if lat_ms and not short and ctx.pane != "powershell":      # #1887: the Git Bash pane on Windows measures it too (`yes` and the bash trap line are msys)
         ctrlc_flood(ctx, r, n, warm)
     why = ""
     ig, igr = ctx.cc_integrity.get("cc.txt"), ctx.cc_integrity.get("cc_ref.txt")
@@ -5655,6 +5657,7 @@ import cases_caseintl  # noqa: E402,F401  (group 8: international input, #1466)
 import cases_coverage_a  # noqa: E402,F401  (#1535-#1541: paste, alt-screen programs, sudo/su, ssh drop+reconnect, kill -9 + corrupt-db restore)
 import cases_coverage_b  # noqa: E402,F401  (g10: CI-review coverage gaps #1542-#1548: agent pickers, settings UI/migration, state relaunch, no-autoupdate, UI-action budgets, mac editor)
 import cases_ctrlc_ab  # noqa: E402,F401  (#1838: ctrl_c_flood_ab, the macOS blocked-frame gate on/off A/B)
+import cases_win_input  # noqa: E402,F401  (#1884/#1888/#1889: Windows input-parity cases: ssh wrapper variants, ps_ctrl_break, ps_fast_command_young_enter)
 import cases_shells  # noqa: E402,F401  (#1534: startup_shell_override passes: cmd.exe and pwsh 7 as the pane shell)
 import cases_lab_helper  # noqa: E402,F401  (P10: helper lifecycle / capability / routing and no-helper lab cases)
 import cases_agent_interactive  # noqa: E402,F401  (#1829: agent-run password / vim / ssh / less hand-over and hand-back, agent_interactive_*)

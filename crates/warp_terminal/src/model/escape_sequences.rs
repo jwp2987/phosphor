@@ -256,6 +256,12 @@ impl<T: ModeProvider> ToEscapeSequence<T> for KeystrokeWithDetails<'_> {
             .or_else(|| delete_keystroke_to_escape_sequence(keystroke))
             .or_else(|| meta_keystroke_to_escape_sequence(keystroke, mode_provider))
             .or_else(|| backspace_keystroke_to_escape_sequence(keystroke))
+            .or_else(|| {
+                OperatingSystem::get()
+                    .is_windows()
+                    .then(|| ctrl_break_win32_input_sequence(keystroke))
+                    .flatten()
+            })
     }
 }
 
@@ -642,6 +648,19 @@ fn meta_keystroke_to_escape_sequence(
     } else {
         Some([&[C0::ESC], key.as_bytes()].concat())
     }
+}
+
+/// #1888: Ctrl+Break (winit reports it as the `pause` key with Ctrl held) as a win32-input-mode
+/// key press and release, `CSI Vk ; Sc ; Uc ; Kd ; Cs ; Rc _` with `VK_CANCEL` (3), scan code
+/// 0x46, no character and `LEFT_CTRL_PRESSED` (8). A console that reads `0x03` as a character
+/// cannot tell Ctrl+C from Ctrl+Break; this is the form ConPTY turns into a `CTRL_BREAK_EVENT` for
+/// the console's processes, with no process-wide console attach from this GUI process (which
+/// `GenerateConsoleCtrlEvent` would need). Only Windows sends it (the caller checks).
+fn ctrl_break_win32_input_sequence(keystroke: &Keystroke) -> Option<Vec<u8>> {
+    if keystroke.key != "pause" || !keystroke.ctrl || keystroke.alt || keystroke.cmd {
+        return None;
+    }
+    Some(b"\x1b[3;70;0;1;8;1_\x1b[3;70;0;0;8;1_".to_vec())
 }
 
 /// Returns DEL (0x7f) for an unmodified or Shift-only Backspace.

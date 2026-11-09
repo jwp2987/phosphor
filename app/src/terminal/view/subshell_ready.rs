@@ -52,6 +52,9 @@ pub struct ReadinessSample {
     pub prompt_moved_since_line_end: bool,
     /// Since the arming (a banner click resets it).
     pub elapsed: Duration,
+    /// #1886: this pty has no subshell tty probe at all (ConPTY: no termios, no `/proc`), so
+    /// `tty` is the all-unknown sample and the screen facts are the only evidence there is.
+    pub no_tty_probe: bool,
 }
 
 /// What the user did since the setup was armed. Cumulative: a ReArm resets the shape baseline,
@@ -156,6 +159,20 @@ pub fn subshell_ready(
     }
     if user.hop_changed_shell_to_relay {
         return Decision::Wait(WaitWhy::Hop);
+    }
+    // #1886: no probe on this pty (Windows). The OS facts do not exist, so judge from the screen:
+    // a shell-shaped tail drawn since the baseline, with nothing the user passed through left
+    // unproven (no bytes, or a prompt drawn since the user's last line end). Only a leader that
+    // is truly unreadable takes this branch; a probe that ran and found nothing still waits.
+    if sample.no_tty_probe && sample.tty.leader == LeaderKind::Unreadable {
+        let ready = sample.tail == Tail::ShellPrompt
+            && sample.prompt_moved_since_baseline
+            && (user.bytes_since_arm == 0 || sample.prompt_moved_since_line_end);
+        return if ready {
+            Decision::Write(write_shell_type(trigger, None))
+        } else {
+            Decision::Wait(WaitWhy::Unknown)
+        };
     }
     let comm = sample.tty.leader_comm.as_deref().unwrap_or_default();
     let new_prompt = sample.tail == Tail::ShellPrompt && sample.prompt_moved_since_baseline;

@@ -23,6 +23,14 @@ def need_posix(ctx, r):
         r.skip("POSIX shells only: the readiness lab drives bash/zsh/fish/tcsh rc files and a real pty")
 
 
+def need_bash_pane(ctx, r):
+    """#1886: like need_posix, but the Windows Git Bash pane (bash --rcfile, HOME = the scratch home) is a bash pane too; a PowerShell or cmd pane is not.
+    Windows has no tty probe: the readiness judge decides from the screen facts there (subshell_ready.rs, no_tty_probe)."""
+    if ctx.win and ctx.pane == "gitbash":
+        return
+    need_posix(ctx, r)
+
+
 def write_rc(ctx, name, text):
     """an rc file under the pane's ~/w (ctx.W); returns the path the typed command uses (~ is the scratch HOME)"""
     with open(os.path.join(ctx.W, name), "w") as f:
@@ -110,7 +118,7 @@ def c_ready_rc_questions(ctx, r):
     non-empty line typed at an InputPrompt tail through a cooked shell keeping up with its reads: a ReArm (hop verdict=ReArm), never a
     write, never a cancel; the setup goes out at the prompt that follows (one `subshell_setup_ready_write`, AFTER both answers), the
     rc recorded the answers, the next line runs in the inner bash."""
-    need_posix(ctx, r)
+    need_bash_pane(ctx, r)
     f, ans = "lab_rcq.txt", "lab_rcq_answers.txt"
     ctx.rm(f, ans)
     rc = write_rc(ctx, "lab_rcq.rc", 'read -p "Name: " a; read -p "Team: " b; echo "$a $b" > ~/w/%s; PS1="LAB$ "\n' % ans)
@@ -404,7 +412,7 @@ def c_ready_zsh_newuser_install(ctx, r):
 def c_ready_rc_clear(ctx, r):
     """reviewer: an rc that runs `clear` moves the cursor to the top: the shape baselines are wrong-footed, the OS proof is not. The
     setup is written when readline reads, the first inner line runs < 2 s after its Enter."""
-    need_posix(ctx, r)
+    need_bash_pane(ctx, r)
     f = "lab_clear.txt"
     ctx.rm(f)
     rc = write_rc(ctx, "lab_clear.rc", 'sleep 1; clear; PS1="LAB$ "\n')

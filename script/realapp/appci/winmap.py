@@ -64,10 +64,17 @@ GITBASH_ONLY = {
     "cb_agent_pickers": "reads the agent input from the app log and uses rec.log to prove nothing reached the shell: runs in the Git Bash pane",
     "cb_agent_file_mention": "reads the agent input from the app log and uses rec.log to prove nothing reached the shell: runs in the Git Bash pane",
     "session_restore": "the app is stopped by pid and relaunched (#1540); bash `cd && echo` lines and `pwd -W` per tab, rec.log proves nothing re-ran: runs in the Git Bash pane",
+    "subshell_ready_rc_questions": "bash --rcfile with read -p questions: the Git Bash pane (#1886: no tty probe on ConPTY, the judge uses screen facts)",
+    "subshell_ready_rc_clear": "bash --rcfile with clear: the Git Bash pane (#1886: no tty probe on ConPTY, the judge uses screen facts)",
+    "ssh_connect_typing_wrapper": "bash pane with the managed-ssh wrapper pinned on (APPCI_SSH_WRAPPER=1, #1884); skips itself without it",
+    "ssh_nested_typeahead_wrapper": "bash pane with the managed-ssh wrapper pinned on (APPCI_SSH_WRAPPER=1, #1884); skips itself without it",
     "agent_approval": "uses rec.log and effect files in bash syntax: runs in the Git Bash pane (needs the CI model)",
 }
 # PowerShell-only: the same idea as a case that already exists for the other pane
-PS_ONLY = {}
+PS_ONLY = {
+    "ps_ctrl_break": "#1888: Ctrl+Break to a Python SIGBREAK receiver through the PowerShell pane's `&` call; the Git Bash pane's msys signals differ",
+    "ps_fast_command_young_enter": "#1889: PowerShell's Add-Content lines and its ConPTY young-Enter window; the Git Bash pane has the prompt-hold gates instead",
+}
 # not on Windows at all, with the reason
 NOT_WINDOWS = {
     "agent_interactive_password": "#1829: POSIX read/vim/less/ssh programs under the agent hand-over (and the unix-only tty-read probe); not run in a Windows pane",
@@ -86,7 +93,6 @@ NOT_WINDOWS = {
     "subshells": "uses `sh -c 'ps -o comm= -p $PPID'` to prove the subshell's parent; msys ps output differs. Not yet ported (gitbash_subshell and ctrl_c_d cover bash inside the pane)",
     "ctrl_c_flood_ab": "#1838: the blocked-frame gate it A/Bs exists only in the macOS renderer",
     "subshell_sh_probe": "dash / busybox ash / su do not exist in a Windows pane; the sh probe path is POSIX (#1710)",
-    "subshell_ready_rc_questions": "bash --rcfile with read -p questions on a real pty; the readiness judge's OS facts are POSIX (#1679 step 3)",
     "subshell_ready_vim_typeahead": "bash --rcfile + vim on a real pty (#1679 step 3)",
     "subshell_ready_unsupported_tcsh": "tcsh does not exist in a Windows pane (#1679 step 3)",
     "subshell_ready_secret_after_prompt": "bash PROMPT_COMMAND read -s on a real pty (#1679 step 3)",
@@ -94,7 +100,6 @@ NOT_WINDOWS = {
     "subshell_ready_exec_fish_rc": "fish exec'd from a bash rc on a real pty (#1679 step 3)",
     "subshell_ready_docker_t_without_i": "docker -t without -i against a Linux pty (#1679 step 3)",
     "subshell_ready_zsh_newuser_install": "zsh-newuser-install needs zsh and a POSIX HOME (#1679 step 3)",
-    "subshell_ready_rc_clear": "bash --rcfile with clear on a real pty (#1679 step 3)",
     "intl_compose_linux": "Linux xkb compose / dead keys (Windows has intl_altgr_ps / intl_altgr_bash)",
     "intl_ime_japanese": "macOS input methods (TISSelectInputSource)",
     "intl_ime_pinyin": "macOS input methods (TISSelectInputSource)",
