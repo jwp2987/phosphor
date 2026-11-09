@@ -799,9 +799,6 @@ mod alt_screen_settle_tests {
     }
 }
 
-/// Give-up for the ssh login recheck: no re-prompt for this long after non-prompt output.
-const SSH_LOGIN_RECHECK_GIVE_UP: Duration = Duration::from_secs(3);
-
 /// How long the alt-screen winsize re-send waits for the program's first output before it gives up
 /// and re-sends anyway (and the second look for `ALT_SCREEN_APPS_WITH_RESIZE_PROBLEMS`). A safety
 /// net for output that never comes; logged when it fires (#1384 P5).
@@ -37526,28 +37523,13 @@ impl TerminalView {
         match check_type {
             SshLoginStatus::RecheckBeforeWarpifying => {
                 // After a line of ssh output that is NOT a prompt (could be a banner, or "Permission
-                // denied" before a re-prompt), login is only declared done if no prompt shows up
-                // again. That is decided from OUTPUT EVENTS in the model (#1374): a re-prompt in
-                // any later chunk withdraws this recheck (`check_for_end_of_ssh_login`), and the
-                // known mid-auth lines never request it. This timer is only the logged give-up
-                // for a .hushlogin host with an unrecognised prompt: there is no remote signal
-                // to wait for, so after the grace period quiet output is taken as "login done".
-                let active_block_id = self.model.lock().block_list().active_block_id().clone();
-                ctx.spawn(
-                    async {
-                        warpui::r#async::Timer::after(SSH_LOGIN_RECHECK_GIVE_UP).await;
-                        active_block_id
-                    },
-                    move |terminal_view, active_block_id, _| {
-                        let mut model = terminal_view.model.lock();
-                        if model.block_list().active_block_id() == &active_block_id {
-                            log::debug!(
-                                "ssh login recheck gave up waiting for a re-prompt (#1374)"
-                            );
-                            model.check_for_end_of_ssh_login(true);
-                        }
-                    },
-                );
+                // denied" before a re-prompt), login is declared done only by an EVENT (#1810): a
+                // recognised prompt or last-login line in a later chunk, or the remote shell's own
+                // bootstrap DCS (`note_remote_shell_bootstrap_signal`). A re-prompt in any later
+                // chunk withdraws the recheck (`check_for_end_of_ssh_login`). There is no timer:
+                // a host that shows neither (a .hushlogin host with an unrecognised prompt) gets
+                // no warpify offer and stays a plain terminal. Nothing here writes to the pty.
+                log::debug!("ssh login: non-prompt output, waiting for a login-end event (#1810)");
             }
             SshLoginStatus::ReadyToWarpify => {
                 // After the confirmation check, we are confident enough to auto-warpify or offer warpification.

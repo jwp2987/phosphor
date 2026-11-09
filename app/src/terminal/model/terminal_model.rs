@@ -3018,7 +3018,7 @@ impl TerminalModel {
                 // so go back to monitoring each output chunk for lines indicating completion.
                 // #1374: this is decided by the output event itself, on the initial (per-chunk)
                 // check too, so a re-prompt that arrives at any time after the "NonSshOutput"
-                // line withdraws the pending recheck instead of racing its timer.
+                // line withdraws the pending recheck instead of staying pending.
                 ssh_login_state.notification_state = SshLoginNotificationState::Monitoring;
             }
         }
@@ -3029,8 +3029,9 @@ impl TerminalModel {
 
     /// #1374: a shell on the far side of the ssh connection announced itself with its own
     /// bootstrap DCS (`InitShell` / `Bootstrapped`). That is a positive "login is done" signal, so
-    /// the login is declared complete at once -- no re-check, no 3 s give-up. Hosts that never send
-    /// it still rely on the output heuristic and the logged give-up in the view.
+    /// the login is declared complete at once -- no re-check. Hosts that never send
+    /// it rely on the output heuristic (a recognised prompt or last-login line); with neither, no
+    /// warpify offer is made (#1810: no timer decides it).
     /// (The plain precmd DCS is deliberately not used: the LOCAL shell sends one when a failed
     /// `ssh` returns to its prompt, which must not be read as a finished login.)
     fn note_remote_shell_bootstrap_signal(&mut self) {

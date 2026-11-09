@@ -3236,3 +3236,13 @@ section of `script/input_path_timers.allow`). Tests (`terminal/view_test.rs`):
 `managed_ssh_verdict_after_the_old_ceiling_still_delivers_once`) now name the renamed constant and
 run unchanged. Not covered at view level: arming with an old block start (needs a clock-injected
 model); the gate-level test covers the clockless release.
+
+### #1810: no timer declares the ssh login done
+`SSH_LOGIN_RECHECK_GIVE_UP` (3 s of quiet output) is deleted. It only ever fired the warpify
+footer/prompt (`ReadyToWarpify`, re-verified: the handler shows UI and writes nothing to the pty;
+the bootstrap is written only after the user accepts). Login-done is now decided by events alone: a
+recognised prompt / last-login line in a later output chunk, or the remote shell's own bootstrap DCS
+(`note_remote_shell_bootstrap_signal`); a re-prompt withdraws the recheck. A host showing neither
+(`.hushlogin` with an unrecognised prompt) gets no offer and stays a plain terminal. The model-level
+recheck cases in `terminal/model/terminal_model_test.rs` (`check_for_end_of_ssh_login`) are unchanged;
+no test depended on the view timer.
