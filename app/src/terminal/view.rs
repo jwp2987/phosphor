@@ -678,6 +678,13 @@ pub const WAKEUP_THROTTLE_PERIOD: Duration =
 /// is never drawn faster than this while a flood stays at the 60 Hz cadence (#1138).
 pub const WAKEUP_BYPASS_FLOOR: Duration = Duration::from_millis(4);
 
+/// The floor the wakeup throttle actually uses: 1 ms (a trailing echo wakeup soon after the last
+/// paint instead of waiting out the 16.7 ms period), or [`WAKEUP_BYPASS_FLOOR`] with
+/// `PHOSPHOR_PERF_ECHO=0`.
+fn wakeup_bypass_floor() -> Duration {
+    Duration::from_millis(crate::terminal::model_lock_trace::echo_wakeup_floor_ms())
+}
+
 pub const EXECUTE_PENDING_COMMAND_DELAY: Duration = Duration::from_millis(100);
 
 /// How long after a paint-only wakeup the view checks whether that paint changed a render input
@@ -4843,7 +4850,7 @@ impl TerminalView {
         });
 
         let _ = ctx.spawn_stream_local(
-            throttle_with_bypass(WAKEUP_THROTTLE_PERIOD, WAKEUP_BYPASS_FLOOR, wakeups_rx),
+            throttle_with_bypass(WAKEUP_THROTTLE_PERIOD, wakeup_bypass_floor(), wakeups_rx),
             Self::handle_terminal_wakeup,
             |_, _| {}, /* on_done */
         );
@@ -15447,7 +15454,23 @@ impl TerminalView {
 
     /// This function is invoked every time there is some form of view event
     /// such as a state change or terminal wakeup to update the view context.
-    fn handle_terminal_wakeup(&mut self, _: Wakeup, ctx: &mut ViewContext<Self>) {
+    fn handle_terminal_wakeup(&mut self, wakeup: Wakeup, ctx: &mut ViewContext<Self>) {
+        // Wave P measurement hook: numbers only. `since_prev_us` is the gap to the previous
+        // delivered wakeup of any terminal view on this thread.
+        thread_local! {
+            static PREV_WAKEUP: std::cell::Cell<Option<std::time::Instant>> =
+                const { std::cell::Cell::new(None) };
+        }
+        if log::log_enabled!(log::Level::Debug) {
+            let now = std::time::Instant::now();
+            let since = PREV_WAKEUP.with(|p| p.replace(Some(now)));
+            log::debug!(
+                "hop=perf_echo_wakeup urgent={} floor_ms={} since_prev_us={}",
+                matches!(wakeup, Wakeup::AfterUserInput) as u8,
+                crate::terminal::model_lock_trace::echo_wakeup_floor_ms(),
+                since.map_or(-1, |t| now.duration_since(t).as_micros() as i64)
+            );
+        }
         // #1442: bookkeeping the key path left for the model was dropped because the inbox was
         // full (the pty reader sat in the model's lock for a very long time): tell the user.
         if self.model_inbox.take_overflow_report() > 0 {

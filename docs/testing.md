@@ -2827,3 +2827,18 @@ directory listings from the cache only (#1295), so without a recent Tab nothing 
 bounded cwd listing in the remote precmd payload when the cwd changes, cached per session; its case would type
 `cd <remote dir>` without Tab and assert the decoration from the app's input trace.
 
+
+## Wave P performance (code only; measured at the test run)
+
+Every item has a kill switch (env var read once at start) and a numbers-only log line (`RUST_LOG=debug`). A test run
+must collect the "before" with the switch at `0` and the "after" with it unset, in the same build.
+
+### P1 echo path (`PHOSPHOR_PERF_ECHO`, `0` = old behaviour)
+- A keypress no longer clears (or announces the clearing of) an EMPTY block-list / alt-screen selection
+  (`blocks/selection.rs` and `alt_screen.rs` `clear_selection`).
+- The wakeup throttle's echo floor is 1 ms instead of 4 ms (`wakeup_bypass_floor`).
+- Collect: `hop=perf_echo_wakeup urgent=1 floor_ms=N since_prev_us=U` (the gap between delivered wakeups; with the
+  switch on, urgent echo wakeups should cluster near 1000 us instead of 4000 us) and key-to-paint p50/p95 from the
+  existing latency case (terminal mode, typing at 10-25 ms/key). A flood (`yes`) must still show `since_prev_us` near
+  16700 for non-urgent wakeups.
+- Unit: `wave_p_switch_values` (model_lock_trace.rs).

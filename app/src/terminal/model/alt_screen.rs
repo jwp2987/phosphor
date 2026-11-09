@@ -248,6 +248,10 @@ impl AltScreen {
     }
 
     pub fn clear_selection(&mut self) {
+        // Wave P: nothing selected, nothing to clear or announce.
+        if self.selection.is_none() && crate::terminal::model_lock_trace::perf_echo_enabled() {
+            return;
+        }
         self.selection = None;
         self.key_model.store_alt_screen_selection(false);
         self.event_proxy

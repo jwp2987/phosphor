@@ -91,6 +91,36 @@ pub fn key_path_uses_model_lock() -> bool {
     })
 }
 
+/// Wave P kill switches. Each is read once; `0` restores the behaviour that shipped before.
+fn switch_off(value: Option<String>) -> bool {
+    value.is_some_and(|v| v.trim() == "0")
+}
+
+/// `PHOSPHOR_PERF_ECHO=0`: a keypress clears even an empty selection (and sends the
+/// selection-changed event for it), and the echo wakeup floor is the old 4 ms.
+pub fn perf_echo_enabled() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| !switch_off(std::env::var("PHOSPHOR_PERF_ECHO").ok()))
+}
+
+/// Echo wakeup floor in milliseconds: 1 ms, or the old 4 ms when `PHOSPHOR_PERF_ECHO=0`.
+pub fn echo_wakeup_floor_ms() -> u64 {
+    if perf_echo_enabled() { 1 } else { 4 }
+}
+
+/// `PHOSPHOR_PERF_BLOCKLIST_WINDOW=0`: the block list lays out every block again (no visible
+/// window plus margin for blocks far outside the viewport).
+pub fn perf_blocklist_window_enabled() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| !switch_off(std::env::var("PHOSPHOR_PERF_BLOCKLIST_WINDOW").ok()))
+}
+
+/// `PHOSPHOR_PERF_EDITOR_MEM=0`: the code editor keeps its old per-line allocation.
+pub fn perf_editor_mem_enabled() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| !switch_off(std::env::var("PHOSPHOR_PERF_EDITOR_MEM").ok()))
+}
+
 fn legacy_from_value(value: Option<String>) -> bool {
     value.is_some_and(|v| !v.is_empty() && v != "0")
 }
@@ -149,6 +179,14 @@ impl Drop for HoldTimer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wave_p_switch_values() {
+        assert!(!switch_off(None));
+        assert!(!switch_off(Some("1".into())));
+        assert!(switch_off(Some("0".into())));
+        assert!(switch_off(Some(" 0 ".into())));
+    }
 
     #[test]
     fn legacy_switch_values() {
