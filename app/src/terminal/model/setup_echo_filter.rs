@@ -53,6 +53,15 @@ pub struct SetupEchoFilter {
     /// Characters held back in `tentative` that turned out not to be the echo, in order. The
     /// caller outputs them (see [`SetupEchoFilter::take_unmatched`]).
     unmatched: Vec<char>,
+    /// How many expected lines were echoed through their `\n` since the counts were last reset
+    /// (#1679 step 3, review R7: "our echo was seen and ended with LF"). Not touched by a
+    /// stand-down: a shell that read the line as a plain command and printed an error has
+    /// still echoed it.
+    lines_ended: usize,
+    /// Whether any character of an expected line (or the whole line-clear prefix) was swallowed
+    /// since the counts were last reset: the tty has started echoing our bytes, so they are not
+    /// sitting unread (review R9).
+    started: bool,
 }
 
 impl SetupEchoFilter {
@@ -93,6 +102,22 @@ impl SetupEchoFilter {
         !self.expected.is_empty()
     }
 
+    /// Expected lines echoed through their line feed since [`Self::reset_counts`].
+    pub fn lines_ended(&self) -> usize {
+        self.lines_ended
+    }
+
+    /// Whether any of the expected echo has been seen since [`Self::reset_counts`].
+    pub fn started(&self) -> bool {
+        self.started
+    }
+
+    /// Forgets the echo counts, for a new setup.
+    pub fn reset_counts(&mut self) {
+        self.lines_ended = 0;
+        self.started = false;
+    }
+
     /// Characters the filter held back and released as not being the echo, in output order.
     /// They precede the character just passed to [`Self::swallow`]; the caller outputs them
     /// first, then that character if it was not swallowed.
@@ -109,7 +134,9 @@ impl SetupEchoFilter {
         }
         if self.expected.front() == Some(&c) {
             self.expected.pop_front();
+            self.started = true;
             self.matched_in_line = if c == '\n' {
+                self.lines_ended += 1;
                 0
             } else {
                 self.matched_in_line + 1
@@ -137,6 +164,7 @@ impl SetupEchoFilter {
         if self.tentative.len() == self.prefix.len() {
             // The whole prefix echo arrived: from here on it is part of the first line.
             self.matched_in_line = self.prefix.len();
+            self.started = true;
             self.prefix.clear();
             self.tentative.clear();
         }

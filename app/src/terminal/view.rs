@@ -2981,7 +2981,9 @@ enum DeferredSshWarpify {
     },
 }
 
-/// What a bootstrap trigger does once the subshell draws its first prompt (#1354).
+/// What a bootstrap trigger does once the subshell draws its first prompt (#1354), or, on the
+/// readiness path (#1679 step 3), once the judge says the shell is ready.
+#[derive(Clone, Debug)]
 enum SubshellPromptTrigger {
     /// A warpify-initiated subshell command: run the bootstrap probe.
     AutoWarpify { shell_type: ShellType },
@@ -2991,6 +2993,19 @@ enum SubshellPromptTrigger {
         uname: Option<String>,
         disable_tmux: bool,
     },
+    /// The user clicked Phosphorize (the banner, the footer, Ctrl-I) on a running subshell command
+    /// (#1679 step 3): `None` is the `sh` probe (sudo -s, su, ksu, docker exec, a nested bash).
+    Banner { shell_type: Option<ShellType> },
+}
+
+impl SubshellPromptTrigger {
+    /// The shell the trigger named, for the readiness judge's R5 comparison with the leader.
+    fn shell_type(&self) -> Option<ShellType> {
+        match self {
+            Self::AutoWarpify { shell_type } | Self::RcFile { shell_type, .. } => Some(*shell_type),
+            Self::Banner { shell_type } => *shell_type,
+        }
+    }
 }
 
 /// A bootstrap trigger that waits for the subshell's first prompt instead of a fixed delay
@@ -3090,6 +3105,108 @@ struct SubshellSetupNet {
     /// The bootstrap give-up (`start_bootstrap_timer`: 7 s, 60 s with env vars) armed for this
     /// setup, re-armed on progress so a slow but healthy marker-paced setup does not trip it.
     bootstrap_failed_after: Option<Duration>,
+}
+
+/// A subshell setup waiting for the shell to prove it is ready (#1679 step 3, C3b: the judge in
+/// `subshell_ready.rs`). Nothing is written and nothing is held while Armed: the keys pass through
+/// and are counted in the ledger (R1); a line end is judged by R2. It replaces, behind
+/// `PHOSPHOR_SUBSHELL_READY`, the first-prompt-shape wait (`AwaitingSubshellPrompt`) and the
+/// deferral behind an input prompt (`DeferredSubshellSetup`).
+struct ArmedSubshellSetup {
+    trigger: SubshellPromptTrigger,
+    /// The block the trigger was armed in; another block in front is E-GONE.
+    block_id: BlockId,
+    /// The shape baseline: a prompt counts once the cursor moved from here (re-taken at a ReArm).
+    baseline: (usize, usize, usize),
+    /// Where the output was at the user's last line end (R1: a cooked shell's or a relay's
+    /// consumption proof needs a prompt drawn after it).
+    line_end_baseline: (usize, usize, usize),
+    /// A ReArm happened on the key path while the model was busy: the baselines are re-taken at
+    /// the next look, before judging.
+    rebaseline_pending: bool,
+    armed_at: Instant,
+    ledger: subshell_ready::UserLedger,
+    tracker: subshell_ready::LineTracker,
+    /// The last sample's tty fact and tail: what a line end is judged against (R2), read without
+    /// a model lock on the key path.
+    last_tty: Option<crate::terminal::model::subshell_tty::SubshellTtySample>,
+    last_tail: subshell_ready::Tail,
+    /// R4 hop binding: a shell leader was seen; a relay after it is an unpredicted hop.
+    seen_shell_leader: bool,
+}
+
+/// A subshell setup whose first line is out (#1679 step 3): the keys are held behind the setup
+/// gates; every output wakeup judges E-SECRET, E-QUESTION, E-UNSUPPORTED and E-GONE on it
+/// (`subshell_ready::judge_written`); the net (#1711) is its give-up.
+struct WrittenSubshellSetup {
+    /// What to re-arm after an E-SECRET hand-back.
+    trigger: SubshellPromptTrigger,
+    shell_type: Option<ShellType>,
+    /// This attempt's session ID and marker token (R7: markers are token-checked; each attempt
+    /// mints a fresh one).
+    session_id: SessionId,
+    block_id: BlockId,
+    written_at: Instant,
+    /// The output position when the line went out: a prompt counts once the cursor moved.
+    baseline: (usize, usize, usize),
+    /// The line went to a relay (R7: confirmed by a second prompt or the net, not the queue).
+    relay: bool,
+    /// A token-matched marker of this attempt, its `InitSubshell`, `InitShell`, a stage-2 chunk or
+    /// `Bootstrapped` arrived since the write.
+    progress_seen: bool,
+    marker_count_at_write: u64,
+    /// Prompt-shaped lines drawn after our echo ended, with no marker between (R7).
+    fresh_prompts_after_echo: u32,
+    last_prompt_position: Option<(usize, usize, usize)>,
+    /// Where the output stood when our echo was first seen ended: a fresh prompt is one drawn
+    /// AFTER that (a prompt already on screen when the echo ended is not the shell's answer).
+    echo_end_position: Option<(usize, usize, usize)>,
+    /// A relay's E-UNSUPPORTED suspicion and its confirmation net (hand-back only, never a write).
+    unsupported_suspect_since: Option<Instant>,
+    /// The termios probe, sampled on the KEY path while written (R8: a secret read is seen at the
+    /// key, not only at output).
+    secret_probe: Option<crate::terminal::model::block::interactive_latch::SecretReadProbe>,
+    /// Tells a confirmation timer which attempt it belongs to.
+    generation: u64,
+}
+
+/// Where the readiness-judged subshell setup is (#1679 step 3).
+enum SubshellSetupState {
+    Idle,
+    Armed(ArmedSubshellSetup),
+    Written(WrittenSubshellSetup),
+}
+
+/// Why a readiness-judged setup is cancelled: before its first line (`subshell_ready::CancelKind`)
+/// or after (`subshell_ready::WrittenCancel`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SubshellCancel {
+    Armed(subshell_ready::CancelKind),
+    Written(subshell_ready::WrittenCancel),
+}
+
+/// What a WRITTEN setup's cancel knows about the tty, for R8 (where the held keys go) and R9 (the
+/// flush of unread setup bytes).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct WrittenCancelProof {
+    fresh_prompt_proven: bool,
+    queue_empty: Option<bool>,
+    echo_started: bool,
+}
+
+/// One look at the pane for the readiness judge, taken under ONE model lock (review R10: one
+/// sample per wakeup; the tty probe inside it is ioctls plus at most one `/proc` read).
+struct SubshellPaneLook {
+    block_id: BlockId,
+    position: (usize, usize, usize),
+    tail: subshell_ready::Tail,
+    alt_screen: bool,
+    tty: crate::terminal::model::subshell_tty::SubshellTtySample,
+    echo_mid_line: bool,
+    echo_lines_ended: usize,
+    echo_started: bool,
+    marker_count: u64,
+    last_marker: Option<(u64, usize)>,
 }
 
 /// How the keys typed during a PowerShell subshell setup are held (#1048). See
@@ -3623,6 +3740,16 @@ pub struct TerminalView {
     /// bootstrapped once.
     awaiting_subshell_prompt: Option<AwaitingSubshellPrompt>,
     awaiting_subshell_prompt_id: u64,
+    /// #1679 step 3: the readiness-judged subshell setup (`PHOSPHOR_SUBSHELL_READY`, on by
+    /// default). Idle on the old path.
+    subshell_setup_state: SubshellSetupState,
+    /// Bumped per written attempt; a confirmation timer acts only for its own value.
+    subshell_setup_generation: u64,
+    /// The session ID `write_init_subshell_bytes_to_pty` minted last, for the Written state.
+    last_subshell_setup_session_id: Option<SessionId>,
+    /// Owner Q11: a tmux control-mode setup that found the alt screen on or the line dirty waits
+    /// for the next look that finds both clear (an event: output or the hand-off's change).
+    tmux_setup_pending: bool,
     /// A block completed and a pending command waits for the prompt that follows it (#1354).
     pending_command_awaits_precmd: bool,
     /// Same for the remote `cd` of a replayed ssh split.
@@ -5431,6 +5558,10 @@ impl TerminalView {
             ssh_warpify_deferred: None,
             awaiting_subshell_prompt: None,
             awaiting_subshell_prompt_id: 0,
+            subshell_setup_state: SubshellSetupState::Idle,
+            subshell_setup_generation: 0,
+            last_subshell_setup_session_id: None,
+            tmux_setup_pending: false,
             pending_command_awaits_precmd: false,
             ssh_split_cd_awaits_precmd: false,
             subshell_bootstrap_generation: 0,
@@ -13729,18 +13860,14 @@ impl TerminalView {
         // is one borrow-flag read with no lock and no allocation.
         // A subshell setup or its paced bootstrap holds keys too: their gates are opened here and
         // the keys wait on the same queue.
+        // #1679 step 3 (R8): a secret read seen at the KEY while the setup is written hands the
+        // held keys back before this key is offered to the gates, so it goes to the password.
+        self.secret_read_on_key_path_cancels_written_setup(ctx);
         let mut abort_as_entry = false;
         match self.prepare_subshell_gates(&bytes, ctx) {
             paste_queue::SubshellPrep::Normal => {}
             paste_queue::SubshellPrep::HeldInOrder => abort_as_entry = true,
             paste_queue::SubshellPrep::AbortHandled => return true,
-            paste_queue::SubshellPrep::Bypass => {
-                return self.write_user_bytes_to_pty_after_paste_stage(
-                    bytes,
-                    takes_over_agent_control,
-                    ctx,
-                );
-            }
         }
         if let Some(written) =
             self.offer_to_paste_queue(&bytes, takes_over_agent_control, abort_as_entry, ctx)
@@ -13866,6 +13993,7 @@ impl TerminalView {
         ctx: &mut ViewContext<Self>,
     ) -> bool {
         self.note_input_for_deferred_subshell_setup(&bytes);
+        self.note_user_bytes_for_subshell_readiness(&bytes);
         if is_queue_signal_key(&bytes) {
             // Ctrl-C / Ctrl-D (and in `table` mode Ctrl-Z / Ctrl-\): the rest of a chunked
             // line-clear write is dropped (#1354).
@@ -14444,6 +14572,8 @@ impl TerminalView {
         self.settle_enter_queue(ctx);
         // #1562: the shell's line may have ended: a setup write waiting for that goes now.
         self.resume_deferred_setup_writes(ctx);
+        // #1679 step 3: the line ending is an event the readiness judge samples on.
+        self.judge_subshell_setup_on_event("handoff", ctx);
     }
 
     /// #1353 phase 6 (INP-10): the hand-off decided it will not engage for the Enter that just ran as
@@ -15358,6 +15488,9 @@ impl TerminalView {
         if self.awaiting_subshell_prompt.is_some() {
             self.check_awaiting_subshell_prompt(ctx);
         }
+        // #1679 step 3: output is an event the readiness judge samples on (one look, one model
+        // lock); a tmux control-mode setup waiting for the alt screen / the line is re-judged too.
+        self.judge_subshell_setup_on_event("output", ctx);
         if self.subshell_bootstrap_in_flight.is_some() {
             self.advance_subshell_bootstrap_on_marker(ctx);
         }
@@ -15772,6 +15905,10 @@ impl TerminalView {
                 uname,
                 disable_tmux,
             } => self.start_rc_file_subshell_bootstrap(shell_type, uname, disable_tmux, ctx),
+            // Only the readiness path arms a banner trigger; it never reaches here.
+            SubshellPromptTrigger::Banner { shell_type } => {
+                self.trigger_subshell_bootstrap(shell_type, false, ctx)
+            }
         }
     }
 
@@ -15821,6 +15958,13 @@ impl TerminalView {
     ) {
         self.dismiss_warpify_banner(&RememberForWarpification::DoNotRememberSubshellCommand, ctx);
 
+        // #1679 step 3: on the readiness path the judge made the checks below (a prompt for
+        // input, a dirty line) before saying Write, and a stage-2 write after `InitSubshell`
+        // follows a line the shell provably read: the write goes now.
+        if self.subshell_ready_path() {
+            self.trigger_subshell_bootstrap_now(shell_type, triggered_by_rc_file_snippet, ctx);
+            return;
+        }
         // #1032: a shell that is asking for something (an rc file's `read -s "pw?Password: "`)
         // would take the setup text as the answer, and the real answer typed next would land in
         // the input editor. Write nothing until the prompt is answered. A trigger while setup is
@@ -15868,6 +16012,7 @@ impl TerminalView {
         }
 
         self.write_init_subshell_bytes_to_pty(shell_type, ctx);
+        self.note_subshell_setup_written(shell_type, ctx);
 
         let bootstrap_failed_after = if !self.env_vars.is_empty() {
             self.env_vars = Vec::new();
@@ -18723,6 +18868,14 @@ impl TerminalView {
                             );
                             self.warpify_state
                                 .add_auto_warpify_abort_handle(auto_warpify_abort_handle);
+                        } else if self.subshell_ready_path() {
+                            // #1679 step 3: the setup is written when the judge proves the
+                            // subshell's reader ready (an event), never on the prompt's shape or
+                            // a give-up timer.
+                            self.arm_subshell_setup(
+                                SubshellPromptTrigger::AutoWarpify { shell_type },
+                                ctx,
+                            );
                         } else {
                             // #1354: bootstrap when the subshell draws its first prompt, however
                             // long that takes; the timer is only the give-up net for a prompt
@@ -18846,6 +18999,15 @@ impl TerminalView {
                 }
                 // Review F2: a subshell that exited during its setup ends the setup and its net.
                 self.end_subshell_setup_if_block_gone(ctx);
+                // #1679 step 3: the same for an armed auto-warpify attempt (the judge would say
+                // Gone at its next look; this is the earlier event).
+                if matches!(
+                    &self.subshell_setup_state,
+                    SubshellSetupState::Armed(armed)
+                        if matches!(armed.trigger, SubshellPromptTrigger::AutoWarpify { .. })
+                ) {
+                    self.subshell_setup_state = SubshellSetupState::Idle;
+                }
 
                 // #1069: a user block completing before the replayed ssh bootstrapped means that
                 // ssh failed or exited; nothing armed by the split may outlive it. The bootstrap
@@ -19576,7 +19738,7 @@ impl TerminalView {
                 }
             }
             ModelEvent::TmuxControlModeReady { .. } => {
-                self.trigger_subshell_bootstrap(None, false, ctx);
+                self.start_tmux_control_mode_setup(ctx);
             }
             ModelEvent::DetectedEndOfSshLogin(check_type) => {
                 self.handle_detected_end_of_ssh_login(check_type, ctx);
@@ -19658,6 +19820,17 @@ impl TerminalView {
                                 ctx,
                             )
                         },
+                    );
+                } else if self.subshell_ready_path() {
+                    // #1679 step 3: the bootstrap goes in when the judge proves the subshell's
+                    // reader ready, not at the first prompt shape.
+                    self.arm_subshell_setup(
+                        SubshellPromptTrigger::RcFile {
+                            shell_type,
+                            uname,
+                            disable_tmux,
+                        },
+                        ctx,
                     );
                 } else {
                     // #1354: other commands in the rc file ("poetry shell" sourcing a venv) run
@@ -22261,6 +22434,7 @@ impl TerminalView {
     ) {
         let session_id = generate_session_id();
         self.model.lock().register_session_id(session_id);
+        self.last_subshell_setup_session_id = Some(session_id);
         // The bootstrap is several short lines (#962: a canonical tty truncates a line longer
         // than MAX_CANON, 1024 bytes on macOS). The first goes out now; the rest follow at a
         // short pace so a shell that has not started reading yet is never handed more than its
@@ -22440,6 +22614,11 @@ impl TerminalView {
         kind: SubshellSetupProgress,
         ctx: &mut ViewContext<Self>,
     ) {
+        // #1679 step 3 (R7): progress of any kind clears a written attempt's suspicion.
+        if let SubshellSetupState::Written(written) = &mut self.subshell_setup_state {
+            written.progress_seen = true;
+            written.unsupported_suspect_since = None;
+        }
         let Some(net) = self.subshell_setup_net.as_mut() else {
             return;
         };
@@ -22690,6 +22869,8 @@ impl TerminalView {
         if over {
             warpui::input_order::log_hop("subshell_setup_net_cleared", || "setup over".to_owned());
             self.subshell_setup_net = None;
+            // #1679 step 3: a written attempt whose setup is over by its events is over too.
+            self.subshell_setup_state = SubshellSetupState::Idle;
             self.dismiss_subshell_setup_waiting_toast(ctx);
         }
     }
@@ -22937,6 +23118,741 @@ impl TerminalView {
         }
     }
 
+    // ---- #1679 step 3 (C3b): the readiness-judged subshell setup --------------------------------
+
+    /// Whether the subshell setup is written on the readiness judge (`PHOSPHOR_SUBSHELL_READY`,
+    /// on by default) rather than on the first prompt shape / the deferral behind a prompt.
+    fn subshell_ready_path(&self) -> bool {
+        crate::terminal::bootstrap::subshell_ready_enabled()
+    }
+
+    /// One look at the pane for the judge, under one model lock (R10). The tail is classified
+    /// here: no visible text or the cursor at column 0 is `None`; unterminated text that asks for
+    /// input is `InputPrompt`; any other unterminated text is `ShellPrompt`.
+    fn take_subshell_pane_look(&self) -> SubshellPaneLook {
+        use subshell_ready::Tail;
+        let model = self.model.lock();
+        let block = model.block_list().active_block();
+        let grid = block.output_grid();
+        let cursor = grid.grid_handler().cursor_point();
+        let position = (grid.len(), cursor.row, cursor.col);
+        let tail = if cursor.col == 0 {
+            Tail::None
+        } else {
+            let contents = grid.contents_to_string(false, Some(OUTPUT_TAIL_ROWS));
+            if !output_has_visible_text(&contents) {
+                Tail::None
+            } else if output_tail_is_input_prompt(&contents) {
+                Tail::InputPrompt
+            } else {
+                Tail::ShellPrompt
+            }
+        };
+        SubshellPaneLook {
+            block_id: block.id().clone(),
+            position,
+            tail,
+            alt_screen: model.is_alt_screen_active(),
+            tty: model.subshell_tty_sample(),
+            echo_mid_line: model.is_setup_echo_mid_line(),
+            echo_lines_ended: model.setup_echo_lines_ended(),
+            echo_started: model.setup_echo_started(),
+            marker_count: model.setup_line_marker_count(),
+            last_marker: model.last_setup_line_marker(),
+        }
+    }
+
+    /// An event the judge samples on (output, the hand-off's change): one look, then the Armed or
+    /// the Written rules; nothing when Idle. Also resumes a tmux control-mode setup that waited
+    /// for the alt screen / the line (owner Q11).
+    fn judge_subshell_setup_on_event(&mut self, source: &'static str, ctx: &mut ViewContext<Self>) {
+        if self.tmux_setup_pending {
+            self.resume_tmux_control_mode_setup(ctx);
+        }
+        match &self.subshell_setup_state {
+            SubshellSetupState::Idle => {}
+            SubshellSetupState::Armed(_) => self.judge_armed_subshell_setup(source, ctx),
+            SubshellSetupState::Written(_) => self.judge_written_subshell_setup(source, ctx),
+        }
+    }
+
+    /// Arms a readiness attempt for `trigger` (#1679 step 3) and judges it at once. An attempt
+    /// already written is left alone (one subshell, one setup); an armed one is replaced (the newer
+    /// trigger knows more: the rc file's shell type over the auto-warpify guess).
+    fn arm_subshell_setup(&mut self, trigger: SubshellPromptTrigger, ctx: &mut ViewContext<Self>) {
+        if matches!(self.subshell_setup_state, SubshellSetupState::Written(_)) {
+            log::info!("subshell setup already written; a new trigger is ignored (#1679)");
+            return;
+        }
+        let (block_id, position) = {
+            let model = self.model.lock();
+            let block = model.block_list().active_block();
+            let grid = block.output_grid();
+            let cursor = grid.grid_handler().cursor_point();
+            (block.id().clone(), (grid.len(), cursor.row, cursor.col))
+        };
+        warpui::input_order::log_hop("subshell_setup_armed", || {
+            format!("trigger={}", trigger_name(&trigger))
+        });
+        self.subshell_setup_state = SubshellSetupState::Armed(ArmedSubshellSetup {
+            trigger,
+            block_id,
+            baseline: position,
+            line_end_baseline: position,
+            rebaseline_pending: false,
+            armed_at: Instant::now(),
+            ledger: subshell_ready::UserLedger::default(),
+            tracker: subshell_ready::LineTracker::default(),
+            last_tty: None,
+            last_tail: subshell_ready::Tail::None,
+            seen_shell_leader: false,
+        });
+        self.judge_armed_subshell_setup("armed", ctx);
+    }
+
+    /// The user clicked Phosphorize (#1679 step 3): the banner goes, the attempt is armed (a click
+    /// on an armed attempt re-arms it: a fresh ceiling) and judged now; when the shell is not yet
+    /// proven ready the user is told the setup starts at its prompt.
+    fn arm_subshell_setup_from_banner(
+        &mut self,
+        shell_type: Option<ShellType>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.dismiss_warpify_banner(&RememberForWarpification::DoNotRememberSubshellCommand, ctx);
+        if matches!(self.subshell_setup_state, SubshellSetupState::Written(_)) {
+            return;
+        }
+        self.arm_subshell_setup(SubshellPromptTrigger::Banner { shell_type }, ctx);
+        if matches!(self.subshell_setup_state, SubshellSetupState::Armed(_)) {
+            self.show_subshell_setup_toast(
+                "Phosphor setup starts when the shell shows its prompt.",
+                ctx,
+            );
+        }
+    }
+
+    /// Judges an armed attempt on one look (#1679 step 3): Write, Wait or Cancel, by the pure rules.
+    fn judge_armed_subshell_setup(&mut self, source: &'static str, ctx: &mut ViewContext<Self>) {
+        use crate::terminal::model::subshell_tty::{LeaderKind, SubshellTtyKind};
+        use subshell_ready::Decision;
+        let look = self.take_subshell_pane_look();
+        let line_dirty = self.setup_write_must_wait_for_the_line();
+        let SubshellSetupState::Armed(armed) = &mut self.subshell_setup_state else {
+            return;
+        };
+        if armed.rebaseline_pending {
+            armed.baseline = look.position;
+            armed.line_end_baseline = look.position;
+            armed.rebaseline_pending = false;
+        }
+        match look.tty.leader {
+            LeaderKind::Shell => armed.seen_shell_leader = true,
+            LeaderKind::Relay if armed.seen_shell_leader => {
+                armed.ledger.hop_changed_shell_to_relay = true;
+            }
+            _ => {}
+        }
+        let moved = |base: (usize, usize, usize)| look.position != base && look.position.2 > 0;
+        let sample = subshell_ready::ReadinessSample {
+            tty: look.tty.clone(),
+            block_unchanged: look.block_id == armed.block_id,
+            alt_screen: look.alt_screen,
+            line_dirty,
+            tail: look.tail,
+            prompt_moved_since_baseline: moved(armed.baseline),
+            prompt_moved_since_line_end: moved(armed.line_end_baseline),
+            elapsed: armed.armed_at.elapsed(),
+        };
+        let relay = look.tty.kind == SubshellTtyKind::Relay;
+        armed.last_tty = Some(look.tty.clone());
+        armed.last_tail = look.tail;
+        let decision =
+            subshell_ready::subshell_ready(&sample, &armed.ledger, armed.trigger.shell_type());
+        warpui::input_order::log_hop("subshell_ready_judged", || {
+            format!(
+                "source={source} decision={decision:?} kind={:?} leader={:?} comm={:?} tail={:?} \
+                 queue_empty={:?} bytes={} lines={} age_ms={}",
+                look.tty.kind,
+                look.tty.leader,
+                look.tty.leader_comm.as_deref().unwrap_or("-"),
+                look.tail,
+                look.tty.queue_empty,
+                armed.ledger.bytes_since_arm,
+                armed.ledger.lines_ended,
+                sample.elapsed.as_millis()
+            )
+        });
+        match decision {
+            Decision::Wait(_) => {}
+            Decision::Write(shell_type) => self.write_armed_subshell_setup(shell_type, relay, ctx),
+            Decision::Cancel(kind) => self.cancel_subshell_setup(
+                SubshellCancel::Armed(kind),
+                WrittenCancelProof::default(),
+                ctx,
+            ),
+        }
+    }
+
+    /// The judge said Write (#1679 step 3): the trigger's write goes out NOW, on this event, and
+    /// the attempt is Written. `shell_type` is the judge's (R5: the probe when the leader disagrees
+    /// with the trigger); an rc-file trigger keeps its own (the snippet ran in that shell).
+    fn write_armed_subshell_setup(
+        &mut self,
+        shell_type: Option<ShellType>,
+        relay: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let SubshellSetupState::Armed(armed) =
+            std::mem::replace(&mut self.subshell_setup_state, SubshellSetupState::Idle)
+        else {
+            return;
+        };
+        warpui::input_order::log_hop("subshell_setup_ready_write", || {
+            format!(
+                "trigger={} shell={shell_type:?} relay={relay} bytes_passed={} age_ms={}",
+                trigger_name(&armed.trigger),
+                armed.ledger.bytes_since_arm,
+                armed.armed_at.elapsed().as_millis()
+            )
+        });
+        self.subshell_setup_generation = self.subshell_setup_generation.wrapping_add(1);
+        let placeholder = SessionId::from(0);
+        self.subshell_setup_state = SubshellSetupState::Written(WrittenSubshellSetup {
+            trigger: armed.trigger.clone(),
+            shell_type,
+            session_id: placeholder,
+            block_id: armed.block_id.clone(),
+            written_at: Instant::now(),
+            baseline: (0, 0, 0),
+            relay,
+            progress_seen: false,
+            marker_count_at_write: 0,
+            fresh_prompts_after_echo: 0,
+            last_prompt_position: None,
+            echo_end_position: None,
+            unsupported_suspect_since: None,
+            secret_probe: None,
+            generation: self.subshell_setup_generation,
+        });
+        self.last_subshell_setup_session_id = None;
+        match armed.trigger {
+            SubshellPromptTrigger::AutoWarpify { .. } => {
+                self.warpify_state.abort_auto_warpify();
+                self.trigger_subshell_bootstrap_now(shell_type, false, ctx);
+            }
+            SubshellPromptTrigger::RcFile {
+                shell_type: rc_shell,
+                uname,
+                disable_tmux,
+            } => self.start_rc_file_subshell_bootstrap(rc_shell, uname, disable_tmux, ctx),
+            SubshellPromptTrigger::Banner { .. } => {
+                self.trigger_subshell_bootstrap_now(shell_type, false, ctx);
+            }
+        }
+        // Nothing was written locally (an rc-file trigger over ssh continues the ssh warpify, an
+        // agent block refused): no attempt to judge.
+        if matches!(
+            &self.subshell_setup_state,
+            SubshellSetupState::Written(written) if written.session_id == placeholder
+        ) {
+            self.subshell_setup_state = SubshellSetupState::Idle;
+        }
+    }
+
+    /// A setup line went out through `trigger_subshell_bootstrap_now` (#1679 step 3): the Written
+    /// attempt takes the minted session ID / token, a fresh baseline and fresh counts (stage 2
+    /// after `InitSubshell` refreshes the same attempt: new token, new suspicion). Nothing when the
+    /// path is off or no attempt is armed (a tmux control-mode write, owner Q11).
+    fn note_subshell_setup_written(
+        &mut self,
+        shell_type: Option<ShellType>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(session_id) = self.last_subshell_setup_session_id.take() else {
+            return;
+        };
+        let (position, marker_count, secret_probe) = {
+            let model = self.model.lock();
+            let grid = model.block_list().active_block().output_grid();
+            let cursor = grid.grid_handler().cursor_point();
+            (
+                (grid.len(), cursor.row, cursor.col),
+                model.setup_line_marker_count(),
+                model.secret_read_probe(),
+            )
+        };
+        let SubshellSetupState::Written(written) = &mut self.subshell_setup_state else {
+            return;
+        };
+        written.shell_type = shell_type;
+        written.session_id = session_id;
+        written.written_at = Instant::now();
+        written.baseline = position;
+        written.progress_seen = false;
+        written.marker_count_at_write = marker_count;
+        written.fresh_prompts_after_echo = 0;
+        written.last_prompt_position = None;
+        written.echo_end_position = None;
+        written.unsupported_suspect_since = None;
+        written.secret_probe = secret_probe;
+        let _ = ctx;
+    }
+
+    /// Judges a written attempt on one look (#1679 step 3): E-GONE, E-SECRET, E-QUESTION and the
+    /// stream-ordered E-UNSUPPORTED (R7), by the pure rules.
+    fn judge_written_subshell_setup(&mut self, source: &'static str, ctx: &mut ViewContext<Self>) {
+        use subshell_ready::{Tail, WrittenCancel, WrittenVerdict};
+        let look = self.take_subshell_pane_look();
+        let SubshellSetupState::Written(written) = &mut self.subshell_setup_state else {
+            return;
+        };
+        if look.marker_count > written.marker_count_at_write
+            && look
+                .last_marker
+                .is_some_and(|(token, _)| token == written.session_id.as_u64())
+        {
+            written.progress_seen = true;
+        }
+        let tail = if look.echo_mid_line {
+            Tail::None
+        } else {
+            look.tail
+        };
+        let echo_ended = look.echo_lines_ended > 0;
+        if echo_ended && written.echo_end_position.is_none() {
+            // The first look that sees the echo ended: a prompt is fresh only once the output
+            // moved past here (R7: stream order, the prompt AFTER the echo).
+            written.echo_end_position = Some(look.position);
+        }
+        if echo_ended
+            && tail == Tail::ShellPrompt
+            && written.echo_end_position != Some(look.position)
+            && written.last_prompt_position != Some(look.position)
+        {
+            written.fresh_prompts_after_echo += 1;
+            written.last_prompt_position = Some(look.position);
+        }
+        let sample = subshell_ready::WrittenSample {
+            tty_kind: look.tty.kind,
+            block_unchanged: look.block_id == written.block_id,
+            tail,
+            prompt_moved_since_written: look.position != written.baseline && look.position.2 > 0,
+            progress_seen: written.progress_seen,
+            echo_ended,
+            fresh_prompts_after_echo: written.fresh_prompts_after_echo,
+            queue_empty: look.tty.queue_empty,
+            relay: written.relay,
+        };
+        let verdict = subshell_ready::judge_written(&sample);
+        let proof = WrittenCancelProof {
+            fresh_prompt_proven: echo_ended && written.fresh_prompts_after_echo > 0,
+            queue_empty: look.tty.queue_empty,
+            echo_started: look.echo_started,
+        };
+        let generation = written.generation;
+        warpui::input_order::log_hop("subshell_written_judged", || {
+            format!(
+                "source={source} verdict={verdict:?} kind={:?} tail={tail:?} echo_ended={echo_ended} \
+                 fresh_prompts={} progress={} queue_empty={:?} relay={}",
+                look.tty.kind,
+                sample.fresh_prompts_after_echo,
+                sample.progress_seen,
+                look.tty.queue_empty,
+                sample.relay
+            )
+        });
+        match verdict {
+            WrittenVerdict::Keep => {
+                if sample.progress_seen {
+                    written.unsupported_suspect_since = None;
+                }
+            }
+            WrittenVerdict::Gone => {
+                self.cancel_subshell_setup(SubshellCancel::Written(WrittenCancel::Gone), proof, ctx)
+            }
+            WrittenVerdict::Secret => self.cancel_subshell_setup(
+                SubshellCancel::Written(WrittenCancel::Secret),
+                proof,
+                ctx,
+            ),
+            WrittenVerdict::Question => self.cancel_subshell_setup(
+                SubshellCancel::Written(WrittenCancel::Question),
+                proof,
+                ctx,
+            ),
+            WrittenVerdict::UnsupportedSuspect => {
+                // Local: the next look (output) brings the queue proof; nothing else is needed. A
+                // relay: a second prompt confirms, or this net hands back (never a write).
+                if written.relay && written.unsupported_suspect_since.is_none() {
+                    written.unsupported_suspect_since = Some(Instant::now());
+                    ctx.spawn(
+                        Timer::after(subshell_ready::UNSUPPORTED_CONFIRMATION),
+                        move |me, _, ctx| me.unsupported_confirmation_fired(generation, ctx),
+                    );
+                }
+            }
+            WrittenVerdict::Unsupported => self.cancel_subshell_setup(
+                SubshellCancel::Written(WrittenCancel::Unsupported),
+                proof,
+                ctx,
+            ),
+        }
+    }
+
+    /// The relay's E-UNSUPPORTED confirmation net (#1679 step 3): the suspicion stood for
+    /// `UNSUPPORTED_CONFIRMATION` with no progress: the attempt is given up and the held keys come
+    /// back (R8: a relay's fresh prompt is a shape, not a proof, so the editor). Nothing when the
+    /// attempt moved on.
+    fn unsupported_confirmation_fired(&mut self, generation: u64, ctx: &mut ViewContext<Self>) {
+        let SubshellSetupState::Written(written) = &self.subshell_setup_state else {
+            return;
+        };
+        if written.generation != generation
+            || written.progress_seen
+            || written.unsupported_suspect_since.is_none()
+        {
+            return;
+        }
+        self.cancel_subshell_setup(
+            SubshellCancel::Written(subshell_ready::WrittenCancel::Unsupported),
+            WrittenCancelProof::default(),
+            ctx,
+        );
+    }
+
+    /// R8 on the key path: a secret read opened while the setup is written (a `sudo` inside the
+    /// rc after our line) is seen at the key, not only at the next output: the held keys come back
+    /// to the editor now and this key passes through to the password. A cheap `tcgetattr`, only
+    /// while written; the key never waits for the model.
+    fn secret_read_on_key_path_cancels_written_setup(&mut self, ctx: &mut ViewContext<Self>) {
+        let SubshellSetupState::Written(written) = &self.subshell_setup_state else {
+            return;
+        };
+        let Some(probe) = written.secret_probe.clone() else {
+            return;
+        };
+        if !probe() {
+            return;
+        }
+        // R9's facts, without waiting for the pty reader: a busy model means no flush.
+        let proof = match self.model.try_lock() {
+            Some(model) => WrittenCancelProof {
+                fresh_prompt_proven: false,
+                queue_empty: model.subshell_tty_sample().queue_empty,
+                echo_started: model.setup_echo_started(),
+            },
+            None => WrittenCancelProof {
+                fresh_prompt_proven: false,
+                queue_empty: None,
+                echo_started: true,
+            },
+        };
+        self.cancel_subshell_setup(
+            SubshellCancel::Written(subshell_ready::WrittenCancel::Secret),
+            proof,
+            ctx,
+        );
+    }
+
+    /// The user's bytes pass through to the pty while a setup is armed (#1679 step 3): counted in
+    /// the ledger (R1), and every line end is judged (R2): an empty or answering line re-arms the
+    /// shape baseline, any other non-empty line is the user driving the shell and cancels the
+    /// attempt. Nothing is written here, ever.
+    fn note_user_bytes_for_subshell_readiness(&mut self, bytes: &[u8]) {
+        use crate::terminal::model::subshell_tty::SubshellTtyKind;
+        let SubshellSetupState::Armed(armed) = &mut self.subshell_setup_state else {
+            return;
+        };
+        armed.ledger.bytes_since_arm = armed.ledger.bytes_since_arm.saturating_add(bytes.len());
+        let ends = armed.tracker.note(bytes);
+        if ends.is_empty() {
+            return;
+        }
+        let (fact_at_enter, cooked_reading) =
+            armed
+                .last_tty
+                .as_ref()
+                .map_or((SubshellTtyKind::Unknown, false), |tty| {
+                    (
+                        tty.kind,
+                        tty.kind == SubshellTtyKind::Cooked && tty.queue_empty == Some(true),
+                    )
+                });
+        let tail_at_enter = armed.last_tail;
+        let mut cancel = false;
+        for end in ends {
+            armed.ledger.lines_ended = armed.ledger.lines_ended.saturating_add(1);
+            let verdict = subshell_ready::on_user_line_ended(
+                end.non_empty,
+                fact_at_enter,
+                cooked_reading,
+                tail_at_enter,
+            );
+            warpui::input_order::log_hop("subshell_ready_line_end", || {
+                format!(
+                    "non_empty={} fact={fact_at_enter:?} cooked_reading={cooked_reading} \
+                     tail={tail_at_enter:?} verdict={verdict:?}",
+                    end.non_empty
+                )
+            });
+            if verdict == subshell_ready::LineEndVerdict::Cancel {
+                cancel = true;
+                break;
+            }
+        }
+        if cancel {
+            // Judged on the key path: nothing is held, nothing is written; the state goes Idle
+            // and the cancel's bookkeeping runs without a model lock.
+            let SubshellSetupState::Armed(armed) =
+                std::mem::replace(&mut self.subshell_setup_state, SubshellSetupState::Idle)
+            else {
+                return;
+            };
+            warpui::input_order::log_hop("subshell_setup_cancelled", || {
+                format!(
+                    "why=UserDrove trigger={} bytes={} lines={}",
+                    trigger_name(&armed.trigger),
+                    armed.ledger.bytes_since_arm,
+                    armed.ledger.lines_ended
+                )
+            });
+            if matches!(armed.trigger, SubshellPromptTrigger::AutoWarpify { .. }) {
+                self.warpify_state.abort_auto_warpify();
+            }
+            return;
+        }
+        // ReArm: the shape baseline and the line-end mark are re-taken at the output now (the key
+        // path never waits for the pty reader: busy means at the next look, before judging).
+        match self.model.try_lock() {
+            Some(model) => {
+                let grid = model.block_list().active_block().output_grid();
+                let cursor = grid.grid_handler().cursor_point();
+                let position = (grid.len(), cursor.row, cursor.col);
+                drop(model);
+                if let SubshellSetupState::Armed(armed) = &mut self.subshell_setup_state {
+                    armed.baseline = position;
+                    armed.line_end_baseline = position;
+                }
+            }
+            None => {
+                if let SubshellSetupState::Armed(armed) = &mut self.subshell_setup_state {
+                    armed.rebaseline_pending = true;
+                }
+            }
+        }
+    }
+
+    /// The ONE cancel of a readiness-judged setup (#1679 step 3). Armed: nothing was written or
+    /// held; the state goes Idle (an auto-warpify trigger is aborted) and the user is told why
+    /// when it is theirs to act on. Written: the pending lines are cut, the setup's ID is
+    /// unregistered (a late hook of this attempt is refused), the echo filter and marker cleared,
+    /// provably unread setup bytes flushed (R9), the held keys sent where R8 says (the editor as
+    /// plain text with a count-only toast, never auto-submitted; or the pty in order for a proven
+    /// unsupported prompt); an E-SECRET re-arms the attempt.
+    fn cancel_subshell_setup(
+        &mut self,
+        why: SubshellCancel,
+        proof: WrittenCancelProof,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        use subshell_ready::{CancelKind, WrittenCancel};
+        let state = std::mem::replace(&mut self.subshell_setup_state, SubshellSetupState::Idle);
+        match (state, why) {
+            (SubshellSetupState::Armed(armed), SubshellCancel::Armed(kind)) => {
+                warpui::input_order::log_hop("subshell_setup_cancelled", || {
+                    format!(
+                        "why={kind:?} trigger={} bytes={} lines={} age_ms={}",
+                        trigger_name(&armed.trigger),
+                        armed.ledger.bytes_since_arm,
+                        armed.ledger.lines_ended,
+                        armed.armed_at.elapsed().as_millis()
+                    )
+                });
+                if matches!(armed.trigger, SubshellPromptTrigger::AutoWarpify { .. }) {
+                    self.warpify_state.abort_auto_warpify();
+                }
+                match kind {
+                    CancelKind::TooLong | CancelKind::NotAShell => self.show_subshell_setup_toast(
+                        "Phosphor setup did not start: the shell never showed it was ready. \
+                         Click Phosphorize to try again.",
+                        ctx,
+                    ),
+                    CancelKind::Unsupported => {
+                        let shell = armed
+                            .last_tty
+                            .as_ref()
+                            .and_then(|tty| tty.leader_comm.clone())
+                            .unwrap_or_else(|| "this shell".to_owned());
+                        self.show_subshell_setup_toast(
+                            &format!(
+                                "Phosphor setup skipped: {shell} is a shell Phosphor cannot set \
+                                 up. This tab continues as a plain shell."
+                            ),
+                            ctx,
+                        );
+                    }
+                    CancelKind::UserDrove | CancelKind::Gone => {}
+                }
+            }
+            (SubshellSetupState::Written(written), SubshellCancel::Written(kind)) => {
+                self.end_written_subshell_setup(written, kind, proof, ctx);
+            }
+            (SubshellSetupState::Idle, _) => {}
+            // A kind of the wrong phase: the attempt is over either way; nothing is held when
+            // armed, and a written attempt's keys are judged by the net.
+            (SubshellSetupState::Armed(_), SubshellCancel::Written(_)) => {}
+            (SubshellSetupState::Written(written), SubshellCancel::Armed(_)) => {
+                self.end_written_subshell_setup(written, WrittenCancel::Gone, proof, ctx);
+            }
+        }
+    }
+
+    /// The Written half of [`Self::cancel_subshell_setup`].
+    fn end_written_subshell_setup(
+        &mut self,
+        written: WrittenSubshellSetup,
+        kind: subshell_ready::WrittenCancel,
+        proof: WrittenCancelProof,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        use subshell_ready::{HeldKeysDest, WrittenCancel};
+        let held = self
+            .paste_queue
+            .queue
+            .try_peek()
+            .map_or((0, 0), |queue| queue.queued_summary());
+        let line_consumed = proof.queue_empty == Some(true);
+        let dest =
+            subshell_ready::held_keys_destination(kind, proof.fresh_prompt_proven, line_consumed);
+        let flush =
+            subshell_ready::cancel_flushes_unread_setup(proof.queue_empty, proof.echo_started);
+        warpui::input_order::log_hop("subshell_setup_cancelled", || {
+            format!(
+                "why={kind:?} dest={dest:?} chunks={} bytes={} flush={flush} age_ms={}",
+                held.0,
+                held.1,
+                written.written_at.elapsed().as_millis()
+            )
+        });
+        log::info!(
+            "subshell setup cancelled ({kind:?}) after {} ms: {} held key chunk(s) go to the \
+             {dest:?} (#1679 step 3)",
+            written.written_at.elapsed().as_millis(),
+            held.0
+        );
+        // Nothing more of the setup goes out: the lines not yet written are abandoned, a paced
+        // line-clear write still in the writer is cut.
+        self.subshell_bootstrap_in_flight = None;
+        ctx.emit(Event::CancelPacedSetupWrites);
+        self.cancel_bootstrap_failed_timer();
+        self.subshell_probe_session_id = None;
+        {
+            let mut model = self.model.lock();
+            model.clear_setup_echo();
+            model.clear_setup_line_marker();
+            // This attempt's ID: a late hook carrying it is refused (unlike the net's give-up,
+            // which keeps the ID for a late `Bootstrapped`: here the shell provably did not run
+            // the setup, or is reading something else).
+            model.unregister_session_id(written.session_id);
+            if flush {
+                let flushed = model.flush_subshell_tty_input();
+                log::info!(
+                    "subshell setup bytes provably unread: tty input flushed={flushed} (R9)"
+                );
+            }
+            model.abandon_stalled_subshell_bootstrap();
+        }
+        self.subshell_setup_net = None;
+        self.dismiss_subshell_setup_waiting_toast(ctx);
+        match dest {
+            HeldKeysDest::Pty => {
+                // The shell is at a fresh prompt and read our line as a plain command (#1710's
+                // event path): the held keys follow, in order. (An abort typed meanwhile ended
+                // the setup at once, review F1: nothing is stashed for this moment.)
+                self.finish_subshell_bootstrap(ctx);
+                self.release_subshell_setup_held_bytes(ctx);
+            }
+            HeldKeysDest::Editor => {
+                // The held keys come back as text (never auto-submitted: the Enter guard; never
+                // history), with a count-only toast (R8, owner Q9).
+                self.give_up_setup_gates_to_editor(cancel_reason(kind), ctx);
+            }
+        }
+        self.update_long_running_ssh_block_with_lock(|block| {
+            block.unhide();
+        });
+        match kind {
+            WrittenCancel::Secret | WrittenCancel::Question => {
+                self.show_subshell_setup_toast(
+                    &paste_queue::subshell_setup_handed_back_toast(held.0),
+                    ctx,
+                );
+            }
+            WrittenCancel::Unsupported => {
+                let text = match dest {
+                    HeldKeysDest::Pty => {
+                        "Phosphor setup skipped: this is a plain shell here. Your typing was \
+                         passed through."
+                    }
+                    HeldKeysDest::Editor => {
+                        "Phosphor setup skipped: this is a plain shell here. What you typed during \
+                         the setup is in the input, not run."
+                    }
+                };
+                self.show_subshell_setup_toast(text, ctx);
+            }
+            WrittenCancel::Gone | WrittenCancel::Net => {}
+        }
+        ctx.notify();
+        if kind == WrittenCancel::Secret {
+            // The shell is reading a secret the user will answer; the setup waits for it again.
+            self.arm_subshell_setup(written.trigger, ctx);
+        }
+    }
+
+    /// Owner Q11: tmux control mode keeps writing its setup directly (no OS fact exists for the
+    /// pane behind tmux and OSC 7771's survival of `%output` is proven for the markers, #1710),
+    /// but not into the alt screen and not onto a dirty line: those wait for the next look that
+    /// finds both clear. On the old path, today's call.
+    fn start_tmux_control_mode_setup(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.subshell_ready_path() {
+            self.trigger_subshell_bootstrap(None, false, ctx);
+            return;
+        }
+        self.tmux_setup_pending = true;
+        self.resume_tmux_control_mode_setup(ctx);
+    }
+
+    /// Writes the tmux control-mode setup once the alt screen is off and the line is clean.
+    fn resume_tmux_control_mode_setup(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.tmux_setup_pending {
+            return;
+        }
+        let alt_screen = self.model.lock().is_alt_screen_active();
+        let line_dirty = self.setup_write_must_wait_for_the_line();
+        if alt_screen || line_dirty {
+            log::info!(
+                "tmux control-mode setup waits: alt_screen={alt_screen} line_dirty={line_dirty} (Q11)"
+            );
+            return;
+        }
+        self.tmux_setup_pending = false;
+        self.trigger_subshell_bootstrap_now(None, false, ctx);
+    }
+
+    /// An informational toast of the readiness path (never the typed text).
+    fn show_subshell_setup_toast(&self, text: &str, ctx: &mut ViewContext<Self>) {
+        if !ctx.has_singleton_model::<ToastStack>() {
+            return;
+        }
+        let window_id = ctx.window_id();
+        let text = text.to_owned();
+        ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+            let toast = DismissibleToast::new(text, ToastFlavor::Default);
+            toast_stack.add_ephemeral_toast(toast, window_id, ctx);
+        });
+    }
+
     /// Supersedes the bootstrap give-up timer armed by `start_bootstrap_timer` (#1566 carries a
     /// generation: a timer whose generation is behind does nothing when it fires). For a setup
     /// that ended by an event that is not `Bootstrapped` (#1710), where the timer has nothing to
@@ -22972,6 +23888,7 @@ impl TerminalView {
         self.subshell_bootstrap_announced = None;
         // The setup ended by its event: its net has nothing left to judge (#1711).
         self.subshell_setup_net = None;
+        self.subshell_setup_state = SubshellSetupState::Idle;
         self.dismiss_subshell_setup_waiting_toast(ctx);
         // Setup is over: the keys held on the input queue follow, in order (#1353 phase 2): the
         // PowerShell gate's first (its hold is a state of its own), then the generic setup gate.
@@ -22993,6 +23910,7 @@ impl TerminalView {
     fn deliver_powershell_setup_keys(&mut self, ctx: &mut ViewContext<Self>) {
         self.subshell_bootstrap_announced = None;
         self.subshell_setup_net = None;
+        self.subshell_setup_state = SubshellSetupState::Idle;
         self.dismiss_subshell_setup_waiting_toast(ctx);
         self.take_powershell_held_then(PowershellKeysThen::Deliver, ctx);
     }
@@ -37564,7 +38482,13 @@ impl TypedActionView for TerminalView {
             }
             TriggerSubshellBootstrap => {
                 let shell_type = self.pending_subshell_shell_type(ctx);
-                self.trigger_subshell_bootstrap(shell_type, false, ctx);
+                if self.subshell_ready_path() {
+                    // #1679 step 3: the click arms the attempt and judges at once; the write
+                    // waits for the proof like every other trigger.
+                    self.arm_subshell_setup_from_banner(shell_type, ctx);
+                } else {
+                    self.trigger_subshell_bootstrap(shell_type, false, ctx);
+                }
             }
             ShowSubshellBanner(command) => {
                 // Abort handle is no longer needed since we've waited the 1s already.
@@ -39546,6 +40470,27 @@ fn subshell_bootstrap_announcement_applies(
     !read_only && (block_unchanged || (subshell_session_pending && !active_block_bootstrapped))
 }
 
+/// The trigger's name for the hops (#1679 step 3).
+fn trigger_name(trigger: &SubshellPromptTrigger) -> &'static str {
+    match trigger {
+        SubshellPromptTrigger::AutoWarpify { .. } => "auto",
+        SubshellPromptTrigger::RcFile { .. } => "rc_file",
+        SubshellPromptTrigger::Banner { .. } => "banner",
+    }
+}
+
+/// The hand-back reason a written attempt's cancel gives the gates (#1679 step 3).
+fn cancel_reason(kind: subshell_ready::WrittenCancel) -> &'static str {
+    use subshell_ready::WrittenCancel;
+    match kind {
+        WrittenCancel::Secret => "subshell_secret",
+        WrittenCancel::Question => "subshell_question",
+        WrittenCancel::Net => "subshell_net",
+        WrittenCancel::Gone => "subshell_gone",
+        WrittenCancel::Unsupported => "subshell_unsupported",
+    }
+}
+
 /// Whether a keystroke typed now is held by the app instead of written to the tty (#1014): an
 /// announced setup is unfinished, however old (#1711: the setup net, not an age, ends a hold that
 /// stops progressing, by handing the keys back). Abort keys always go through.
@@ -40301,6 +41246,8 @@ mod route_facts;
 mod ssh_edges;
 mod ssh_queue;
 mod ssh_typeahead;
+/// #1679 step 3: the pure readiness judge of the subshell setup (C3a: additive; C3b switches to it).
+mod subshell_ready;
 
 #[cfg(test)]
 #[path = "view_test.rs"]

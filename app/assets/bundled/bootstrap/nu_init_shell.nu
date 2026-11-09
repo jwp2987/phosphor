@@ -15,5 +15,5 @@ $env.__wbh = $env.config.history.ignore_space_prefixed
 $env.config.history.ignore_space_prefixed = true
 let _user = (do -i { ^whoami } | default ($env.USER? | default "") | into string | str trim | str replace -a -r '[\x00-\x1f\x7f]' '' | to json -r)
 let _host = (do -i { sys host | get hostname } | default ($env.HOSTNAME? | default "") | into string | str trim | str replace -a -r '[\x00-\x1f\x7f]' '' | to json -r)
-let _hex = ($'{"hook": "InitShell", "value": {"session_id": ($env.WARP_SESSION_ID), "shell": "nu", "user": ($_user), "hostname": ($_host)}}' | encode hex --lower)
+let _hex = ($'{"hook": "InitShell", "value": {"session_id": ($env.WARP_SESSION_ID), "shell": "nu", "user": ($_user), "hostname": ($_host), "pid": ($nu.pid)}}' | encode hex --lower)
 if $env.WARP_USING_WINDOWS_CON_PTY == "true" { print -n $"\e]9278;d;($_hex)\u{7}" } else { print -n $"\eP$d($_hex)"; print -n -r 0x[9c] }

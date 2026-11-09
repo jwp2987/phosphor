@@ -199,6 +199,7 @@ fn new_session() -> BlockList {
     sizes.size = SizeInfo::new_without_font_metrics(10, 80);
     let mut block_list = TestBlockListBuilder::new().with_block_sizes(sizes).build();
     let init_shell_value = ansi::InitShellValue {
+        pid: None,
         shell: "zsh".into(),
         ..Default::default()
     };

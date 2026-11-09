@@ -1137,10 +1137,11 @@ impl TerminalView {
             // The comparison closes before the key is written, so the leaf is what the write will
             // do: a PowerShell setup or an open gate of the pane queue holds the key (the writer's
             // own `Held` leaf, which first-wins would never see here). The queue clause mirrors
-            // `offer_to_paste_queue` and over-approximates two writer paths it cannot see: a
-            // `SubshellPrep::Bypass` key (an announced setup whose output awaits an answer) and a
-            // stale young hold settled at the offer, both of which reach the pty. Shadow-only: it
-            // can misreport those, never change routing (review of fix/r18d9-r2-shadow).
+            // `offer_to_paste_queue` and over-approximates one writer path it cannot see: a
+            // stale young hold settled at the offer, which reaches the pty. (The
+            // `SubshellPrep::Bypass` key was the other until #1679 step 4 removed the bypass.)
+            // Shadow-only: it can misreport that, never change routing (review of
+            // fix/r18d9-r2-shadow).
             let held = legacy
                 && (self.holds_keys_for_powershell_subshell_setup()
                     || (self

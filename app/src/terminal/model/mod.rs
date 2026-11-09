@@ -37,6 +37,7 @@ pub mod secrets;
 pub mod selection;
 pub mod session;
 pub mod setup_echo_filter;
+pub mod subshell_tty;
 pub mod terminal_model;
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_utils;

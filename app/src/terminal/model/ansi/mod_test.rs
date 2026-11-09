@@ -1318,6 +1318,7 @@ fn parse_dcs_init_shell_7bit_st() {
         DProtoHook::InitShell { value } => assert_eq!(
             *value,
             InitShellValue {
+                pid: None,
                 session_id: SessionId::from(167303092612201),
                 user: "andy".to_owned(),
                 hostname: "ubuntu-test".to_owned(),
@@ -1349,6 +1350,7 @@ fn parse_dcs_init_shell() {
         DProtoHook::InitShell { value } => assert_eq!(
             *value,
             InitShellValue {
+                pid: None,
                 session_id: SessionId::from(167303092612201),
                 user: "andy".to_owned(),
                 hostname: "ubuntu-test".to_owned(),
