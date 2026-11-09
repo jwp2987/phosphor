@@ -3343,3 +3343,35 @@ Capability gating in the app (#1804): every feature family that looked a client 
 
 ## Young-line verdict wait: decided type goes at once, the timers only hand back (owner ruling 2026-11-09)
 `TerminalView::finish_young_detection_wait`: when the input type is already decided (`input_type_is_decided`: locked, or autodetection off) and a classifier can run, the young line's deferred Enter is submitted immediately (the detection in flight is abandoned, `give_up_pending_detection_for_submit`) -- no verdict can change the route, so there is nothing to wait for and no timer is armed. A lock or setting change while the Enter waits releases it through the existing `ctx.observe(&ai_input_model)` -> `release_deferred_enter_if_verdict_settled`, which now also treats a decided type as settled. The three timers of `arm_young_timer` (compute cap, wall ceiling, 2 s backstop) are give-up nets only: the `SubmitWithoutVerdict` outcome always drops the late verdict and hands the line back (`keep_deferred_enter_text_hand_back("young_verdict_cap")`, #1661 semantics for the keys behind it unchanged); the timer callback also returns without acting when the type has become decided (the notification owns that release). `young_submit_decision_for` has exactly four outcomes (`Submit`, `Wait`, `KeepInEditor`, `SubmitWithoutVerdict`). `script/check_input_path_timers --strict` passes with zero pending. Tests: `view_test::a_decided_input_type_submits_the_young_enter_at_once_without_a_timer` (Legacy and Table), `typeahead_handoff_tests::the_young_submit_decision_has_exactly_four_outcomes`.
+
+## Remote codebase index: scan, chunk, hash (P9a)
+
+`phosphor-remote index-scan <repo> [--known <file>]` is the helper's scan half of remote indexing, runnable by hand before any
+app wiring exists (P9b adds the store, the proto and the app driver). It walks `<repo>` with `ignore` (`.gitignore`, plus
+`.warpindexingignore` / `.cursorignore` / `.cursorindexingignore` / `.codeiumignore`; no global or parent ignore files, `.git`
+never), skips binary (a NUL in the first 8000 bytes, or not UTF-8), empty and 3,000,000-byte-or-larger files, chunks with the
+app's NAIVE chunker (`shellcmd/chunk.rs`: 200 lines or 12,000 bytes per fragment, 0-based inclusive lines, half-open byte range)
+and prints JSON: `manifest` `[{path, file_hash}]`, `chunks` `[{content_hash, path, start_line, end_line, byte_start, byte_end}]`
+and `root_hash`. All hashes are SHA-256 hex (`file_hash` of the file bytes, `content_hash` of the fragment text, `root_hash` of
+the sorted `path\0file_hash\n` lines). With `--known <previous output>` it prints only the diff: `unchanged`, `added_files`,
+`changed_files`, `removed_files` and `new_content_hashes` (the fragments that need text and an embedding). Known difference from
+the app's local index: the app tries a tree-sitter split first for languages it recognises; the helper cannot carry grammars, so
+for those files its fragment boundaries (and hashes) differ from the app's. Helper and shell path agree with each other.
+
+Owner test (build on the box: `cargo build -p remote_server --profile release-remote-helper --no-default-features --features daemon --bin phosphor-remote`; use any repo, a scratch copy is safest; keep scratch under the job tmp dir, never `/tmp`):
+
+```
+H=./target/release-remote-helper/phosphor-remote
+$H index-scan "$REPO" > "$T/one.json"
+$H index-scan "$REPO" > "$T/two.json" && cmp "$T/one.json" "$T/two.json"    # identical
+echo "// touched" >> "$REPO/<one file>"
+$H index-scan "$REPO" --known "$T/one.json"      # changed_files = that file; new_content_hashes = its new fragments only
+```
+
+Unit tests (`cargo nextest run -p remote_server --features daemon --lib chunk`): `shellcmd/chunk_tests.rs` (golden spans: the
+app's `naive_tests.rs` cases and a 450-line file) and `daemon/chunk_tests.rs` (temp dirs: determinism, hash values, one file
+changed, `.gitignore` honoured without a git repo, binary / oversize / empty skipped, rename, delete, 200-line boundaries).
+
+`script/fake_embeddings.py [--port N] [--dims N]` (standard library only, loopback, no outgoing connection) answers
+OpenAI-style `POST /v1/embeddings` (`input` string or list, optional `dimensions`) with a deterministic unit vector per text
+(SHA-256 derived), `GET /health` with `ok`; the chosen port is its first stdout line. It exists for the P9b end-to-end case.

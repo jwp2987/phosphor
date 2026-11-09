@@ -39,6 +39,15 @@ pub fn run_proxy(identity_key: &str) -> anyhow::Result<()> {
     proxy::run(identity_key)
 }
 
+/// Entry point for `phosphor-remote index-scan <repo> [--known <file>]`: the deterministic JSON
+/// (manifest, fragment hashes, root hash; or only what changed since `known`).
+pub fn run_index_scan(
+    repo: &std::path::Path,
+    known: Option<&std::path::Path>,
+) -> anyhow::Result<String> {
+    chunk::run_index_scan(repo, known)
+}
+
 /// Entry point for `phosphor-remote daemon <key>`: binds the socket, writes the pid file,
 /// signals readiness to the proxy, then serves until idle for the grace period.
 pub fn run_daemon(identity_key: &str) -> anyhow::Result<()> {
