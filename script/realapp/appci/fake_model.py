@@ -4,6 +4,8 @@
 #   * a user turn "Please run exactly this shell command and nothing else: <cmd>" -> one run_shell_command tool call with that command (an approval card);
 #   * "Please read exactly this file and nothing else: <path>" -> read_files; "Please create exactly this file: <path> with this content: <text>" and
 #     "Please delete exactly this file and nothing else: <path>" -> apply_file_diffs (the remote file-tool lab cases, cases_lab_remote.py);
+#   * "Please edit exactly this file: <path> with these edits: <search>=><replace> ;; <search>=><replace>" -> apply_file_diffs with one op "edit" per pair, in order
+#     (a multi-hunk diff; a literal backslash-n in a pair is a newline; cases_agent_file_edits.py, #1835);
 #   * "Please show this image: <url>" -> the text "Here it is: ![img](<url>)" (network_gate_notice: the app fetches the image through the network gate);
 #   * the turn after a tool result -> the text "Done." (a finished conversation);
 #   * any other user turn -> "OK <last word>" (prose only, no tool call).
@@ -14,6 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 READ_RE = re.compile(r"read exactly this file and nothing else:\s*(\S+)\s*$")
 CREATE_RE = re.compile(r"create exactly this file:\s*(\S+)\s+with this content:\s*(.*?)\s*$", re.S)
 DELETE_RE = re.compile(r"delete exactly this file and nothing else:\s*(\S+)\s*$")
+EDIT_RE = re.compile(r"edit exactly this file:\s*(\S+)\s+with these edits:\s*(.*?)\s*$", re.S)
 IMG_RE = re.compile(r"show this image:\s*(\S+)\s*$")
 ASK_RE = re.compile(r"run exactly this shell command and nothing else:\s*(.+?)\s*$", re.S)
 
@@ -43,6 +46,13 @@ def reply_for(messages):
     m = DELETE_RE.search(text)
     if m:
         return {"text": "", "tool": {"name": "apply_file_diffs", "arguments": {"summary": "Delete " + m.group(1), "operations": [{"op": "delete", "file_path": m.group(1)}]}}}
+    m = EDIT_RE.search(text)
+    if m:
+        ops = []
+        for pair in m.group(2).split(" ;; "):
+            old, _, new = pair.partition("=>")
+            ops.append({"op": "edit", "file_path": m.group(1), "search": old.replace("\\n", "\n"), "replace": new.replace("\\n", "\n")})
+        return {"text": "", "tool": {"name": "apply_file_diffs", "arguments": {"summary": "Edit " + m.group(1), "operations": ops}}}
     if "SLOW" in text:
         return {"text": "slow reply", "tool": None, "slow": True}
     words = re.findall(r"\S+", text)
@@ -92,7 +102,7 @@ class FakeModel:
                     return self._send(404, b'{"error":"not found"}')
                 owner.requests += 1
                 reply = reply_for(req.get("messages") or [])
-                owner.log.append((time.time(), reply["tool"]["arguments"]["command"] if reply["tool"] else None))
+                owner.log.append((time.time(), reply["tool"]["arguments"].get("command") if reply["tool"] else None))
                 body = ("\n".join(stream_lines(req.get("model") or "fake-model", reply)) + "\n").encode()
                 if reply.get("slow") or owner.delay_s:
                     time.sleep(3.0 if reply.get("slow") else owner.delay_s)

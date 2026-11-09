@@ -62,6 +62,10 @@ GITBASH_ONLY = {
 PS_ONLY = {}
 # not on Windows at all, with the reason
 NOT_WINDOWS = {
+    "agent_edit_accept": "#1835: the file path typed to the scripted model and read back is POSIX-form; the fake-model pass is Git Bash only",
+    "agent_edit_reject": "#1835: same as agent_edit_accept",
+    "agent_edit_conflict": "#1835: same as agent_edit_accept",
+    "agent_edit_endings": "#1835: same as agent_edit_accept",
     "agent_lrc_no_false_takeover": "#1796: the interactive-prompt take-over it tests (PromptWatch, termios + /proc tty-read probe) is unix-only; ConPTY has no termios",
     "subshells": "uses `sh -c 'ps -o comm= -p $PPID'` to prove the subshell's parent; msys ps output differs. Not yet ported (gitbash_subshell and ctrl_c_d cover bash inside the pane)",
     "subshell_sh_probe": "dash / busybox ash / su do not exist in a Windows pane; the sh probe path is POSIX (#1710)",
