@@ -2988,6 +2988,14 @@ What changed and what pins it:
   (`REMOTE_NATIVE_TAB_ENTER_BUDGET` is gone; owner decision: no timer decides what Enter runs). The answer is an
   event: candidates run the completed line however late; an answer of nothing (the shell found none, or the app
   cancelled the exchange: the cancel sends an empty result) runs the typed line and the completer answers the menu;
+  The remote as-you-type completer listing has no debounce timer any more (`REMOTE_AS_YOU_TYPE_DEBOUNCE` is gone; it
+  only ever delayed the ssh side-command listing, never the `^Y`): it is single flight, latest wins (`RemoteListingFlight`:
+  a keystroke while a listing runs holds only the newest request, replayed when the listing ends if still current; an
+  explicit Tab supersedes without a replay; `test_remote_as_you_type_listing_is_single_flight_latest_wins`, pure and
+  mode-independent). A hung listing is freed by EVENTS, no timer: the next Precmd, ExitShell/Exit, `SSHControlMasterError`, `PreInteractiveSSHSession` or a cwd change aborts it and drops the held request (`end_remote_listing_on_event`; `test_remote_listing_event_frees_a_hung_flight`); the cancel closure and the result callback both go through `remote_listing_finished`, so the replay does not depend on which runs first.
+  The shell's Precmd/ExitShell/Exit ends an exchange awaiting its RESULTS too (an event beats the 15 s net, which only
+  drops state and writes/releases nothing; `the_shell_leaving_during_the_results_wait_ends_the_exchange_by_event`,
+  `the_results_net_drops_the_exchange_and_writes_nothing`);
   a second Tab for the same text while an exchange is in flight attaches to it (Tab, Tab, Enter runs the completed line;
   a cancelled first exchange runs the typed line; `a_second_tab_for_the_same_text_gets_the_first_exchanges_answer`,
   `an_attached_tab_follows_the_cancel_and_the_give_up_of_the_exchange`, pty layer shared by Legacy and Table); a different

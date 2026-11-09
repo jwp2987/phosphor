@@ -18905,3 +18905,61 @@ fn test_ssh_escape_carriage_return_leaves_a_local_session_alone() {
         });
     }
 }
+
+/// The remote as-you-type listing is single flight, latest wins, with no clock: a burst of
+/// keystrokes starts one job, holds only the newest request, and replays it (once, if still
+/// current) when the job ends; an explicit Tab supersedes without a replay. The bookkeeping is
+/// mode-independent (Legacy and Table share `Input`), so one pure test covers both.
+#[test]
+fn test_remote_as_you_type_listing_is_single_flight_latest_wins() {
+    let mut flight = RemoteListingFlight::<&str>::new();
+    assert!(!flight.is_running());
+    let job = flight.start();
+    for (generation, text) in [
+        (2, "c"),
+        (3, "cd"),
+        (4, "cd p"),
+        (5, "cd pr"),
+        (6, "cd pro"),
+    ] {
+        assert!(flight.is_running(), "keystrokes never start a second job");
+        flight.hold(generation, text);
+    }
+    // Finished while the newest request is current: exactly it is replayed.
+    assert_eq!(flight.finished(job, 6), Some("cd pro"));
+    assert!(!flight.is_running());
+    assert_eq!(flight.finished(job, 6), None, "no second replay");
+
+    // A held request that went stale (the buffer changed with no new request) is dropped.
+    let job = flight.start();
+    flight.hold(7, "x");
+    assert_eq!(flight.finished(job, 8), None);
+
+    // An older job's late end cannot free a newer job's flight.
+    let old = flight.start();
+    let new = flight.start();
+    assert_eq!(flight.finished(old, 9), None);
+    assert!(flight.is_running());
+    // An explicit Tab supersedes: the flight frees, nothing replays.
+    flight.hold(9, "y");
+    flight.superseded(new);
+    assert!(!flight.is_running());
+}
+
+/// A hung remote listing cannot block as-you-type: an event (Precmd, session end, control
+/// connection error, cwd change) abandons it and drops the held request, and the next keystroke
+/// starts a fresh listing. Mode-independent bookkeeping, as above.
+#[test]
+fn test_remote_listing_event_frees_a_hung_flight() {
+    let mut flight = RemoteListingFlight::<&str>::new();
+    let hung = flight.start();
+    flight.hold(3, "cd pro");
+    assert!(flight.abandon(), "a job was running");
+    assert!(!flight.is_running());
+    // The hung job's late end neither frees a newer flight nor replays the dropped request.
+    let fresh = flight.start();
+    assert_eq!(flight.finished(hung, 3), None);
+    assert!(flight.is_running(), "the fresh listing is untouched");
+    assert_eq!(flight.finished(fresh, 3), None, "nothing was held");
+    assert!(!flight.abandon(), "nothing running, nothing to abort");
+}

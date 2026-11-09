@@ -79,11 +79,12 @@ app/assets/bundled/bootstrap/zsh_body.sh	__warp_nc_read_frame_body	read -t bound
 app/assets/bundled/bootstrap/zsh_body.sh	__warp_nc_give_back_escape	read -t bounded by the overall deadline only; replies dropped whole, keys handed back to zle
 app/assets/bundled/bootstrap/zsh_body.sh	warp_read_completion_buffer	first-byte read -t within PHOSPHOR_NC_DEADLINE; a non-frame byte or expiry hands back to zle, nothing is written
 app/src/terminal/writeable_pty/pty_controller.rs	NATIVE_COMPLETIONS_PROMPT_TIMEOUT	2 s prompt timeout only gives up: closes the requester's channel, marks the cancel frame owed and writes nothing (43f2c9a91)
+app/src/terminal/writeable_pty/pty_controller.rs	NATIVE_COMPLETIONS_RESULTS_TIMEOUT	15 s lost-event net: drops the exchange and closes the requesters' channels; writes and releases nothing (the normal ends are events)
+app/src/terminal/writeable_pty/pty_controller.rs	arm_native_completions_watchdog	call site of the prompt and results give-up nets; neither writes or releases a key
 
 # PENDING-CONVERSION (must be gone before v0.1.18)
 # Timers that break the rule (write, release, route, commit or re-ask on a clock). The default run
 # warns for each; `--strict` (release tier) fails on any. Delete a line when its timer is gone.
-app/src/terminal/input.rs	run_completions_async	FOUND: REMOTE_AS_YOU_TYPE_DEBOUNCE (150 ms) delays the in-band completion request, i.e. a timer decides when ^Y is written
 app/src/terminal/model/block/interaction_mode.rs	INTERACTIVE_PROMPT_QUIET_EXPLICIT	FOUND: 3 s of silence on a [y/N]-style marker hands the agent's command to the user (hand-over on a clock, with evidence)
 app/src/terminal/model/block/interaction_mode.rs	INTERACTIVE_PROMPT_QUIET_TRAILING	FOUND: 15 s of silence on a trailing ?/: (plus the tty-read probe) hands the command to the user
 app/src/terminal/model/block/interaction_mode.rs	STALL_CLOSE_PAGER_AFTER	FOUND: 3 s unchanged screen makes Phosphor SEND q to a pager (a timer writes to the pty)
@@ -109,8 +110,6 @@ app/src/terminal/writeable_pty/pty_controller.rs	TYPEAHEAD_HANDOFF_STALE_COUNT_G
 app/src/terminal/writeable_pty/pty_controller.rs	TYPEAHEAD_HANDOFF_STALE_COUNT_RESET	owner-named: 250 ms timer resets the hand-off's stale line counts and retries the decision (a decision on a timer)
 app/src/terminal/writeable_pty/pty_controller.rs	arm_typeahead_handoff_stale_count_reset	owner-named: the call site of the two stale-count timers above
 
-app/src/terminal/writeable_pty/pty_controller.rs	NATIVE_COMPLETIONS_RESULTS_TIMEOUT	FOUND: 15 s watchdog drops the exchange and still calls execute_next_queued_write (not verified to be a no-op for held writes)
-app/src/terminal/writeable_pty/pty_controller.rs	arm_native_completions_watchdog	FOUND: call site of both watchdog timers; the results arm still calls execute_next_queued_write
 
 # PACING (owner-exempt 2026-11-09: our own bootstrap bytes into a relay/container/cooked tty whose consumption is unobservable, #960 #1384; never user keys)
 # Each needs a `pacing: <why>` comment next to it; the guard fails if its code path mentions a user-key API. Not counted by --strict.

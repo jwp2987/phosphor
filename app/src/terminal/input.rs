@@ -2157,6 +2157,8 @@ pub struct Input {
     /// (e.g. new input), we simply abort the existing run. The same applies to the
     /// syntax highlighting and autosuggestions features (all which use the completer).
     completions_abort_handle: Option<AbortHandle>,
+    /// The id of the remote as-you-type listing job running now, if any (single flight).
+    remote_listing: RemoteListingFlight<PendingRemoteListing>,
     /// The Tab completion request in flight, if any (#1165).
     tab_completion_request: Option<TabCompletionRequest>,
     /// The give-up timers armed for held Enters: (timer, delay), for tests.
@@ -2742,9 +2744,80 @@ pub enum CompletionsTrigger {
     SlashCommandAutoOpen,
 }
 
-/// How long the as-you-type completions menu waits, on a remote session, for the keystrokes to
-/// stop before it lists a directory over the shared ssh connection (#1295).
-const REMOTE_AS_YOU_TYPE_DEBOUNCE: Duration = Duration::from_millis(150);
+/// A remote as-you-type completion request that arrived while another remote listing was still
+/// running (single flight, latest wins): started when the running listing finishes, if still
+/// current. Event-driven; no clock decides when a remote listing starts.
+struct PendingRemoteListing {
+    before_cursor_text: String,
+    matcher: MatchStrategy,
+    editor_snapshot: EditorSnapshot,
+    cursor_position: ByteOffset,
+    completion_context: SessionContext,
+}
+
+/// The single-flight bookkeeping of the remote as-you-type listing, free of any clock: at most
+/// one job runs; a request that arrives meanwhile replaces the one held (latest wins) and is
+/// handed back when the job ends.
+struct RemoteListingFlight<T> {
+    job: Option<u64>,
+    next_job: u64,
+    pending: Option<(u64, T)>,
+}
+
+impl<T> RemoteListingFlight<T> {
+    fn new() -> Self {
+        Self {
+            job: None,
+            next_job: 0,
+            pending: None,
+        }
+    }
+
+    /// Whether a job is running.
+    fn is_running(&self) -> bool {
+        self.job.is_some()
+    }
+
+    /// Holds `request` (made at `generation`) behind the running job; only the newest is kept.
+    fn hold(&mut self, generation: u64, request: T) {
+        self.pending = Some((generation, request));
+    }
+
+    /// Takes the flight for a new job and returns its id.
+    fn start(&mut self) -> u64 {
+        self.next_job += 1;
+        self.job = Some(self.next_job);
+        self.next_job
+    }
+
+    /// Job `job` finished: frees the flight and returns the held request if it is still current
+    /// (`current_generation`).
+    fn finished(&mut self, job: u64, current_generation: u64) -> Option<T> {
+        if self.job != Some(job) {
+            return None;
+        }
+        self.job = None;
+        self.pending
+            .take()
+            .filter(|(generation, _)| *generation == current_generation)
+            .map(|(_, request)| request)
+    }
+
+    /// Job `job` was superseded (an explicit Tab): frees the flight, replays nothing.
+    fn superseded(&mut self, job: u64) {
+        if self.job == Some(job) {
+            self.job = None;
+        }
+    }
+
+    /// An event made the running listing stale (a Precmd, the session or block ending, the
+    /// connection erroring, a cwd change): frees the flight and drops the held request. Returns
+    /// whether a job was running (the caller aborts it). The next request starts fresh.
+    fn abandon(&mut self) -> bool {
+        self.pending = None;
+        self.job.take().is_some()
+    }
+}
 
 /// Represents whether the input editor should render the subshell flag.
 #[derive(Clone, Debug)]
@@ -2878,6 +2951,17 @@ impl Input {
         ctx.subscribe_to_model(&model_events, |me, _, event, ctx| {
             if let crate::terminal::model_events::ModelEvent::TerminalModeSwapped(_) = event {
                 me.update_cli_agent_editor_text_colors(ctx);
+            }
+            use crate::terminal::model_events::{AnsiHandlerEvent, ModelEvent};
+            if matches!(
+                event,
+                ModelEvent::Handler(AnsiHandlerEvent::Precmd)
+                    | ModelEvent::ExitShell { .. }
+                    | ModelEvent::Exit { .. }
+                    | ModelEvent::SSHControlMasterError
+                    | ModelEvent::PreInteractiveSSHSession
+            ) {
+                me.end_remote_listing_on_event();
             }
         });
         ctx.subscribe_to_model(&TerminalSettings::handle(ctx), move |_, _, event, ctx| {
@@ -4078,6 +4162,7 @@ impl Input {
             decorations_cleared_for_oversized_buffer: false,
             autosuggestions_abort_handle: None,
             completions_abort_handle: None,
+            remote_listing: RemoteListingFlight::new(),
             tab_completion_request: None,
             #[cfg(test)]
             hold_timers_armed_for_test: Vec::new(),
@@ -12518,6 +12603,27 @@ impl Input {
         allow_native_first: bool,
         ctx: &mut ViewContext<'_, Input>,
     ) {
+        // A remote as-you-type listing runs single flight, latest wins: a request that arrives
+        // while one runs is held (only the newest) and starts when that listing finishes. No
+        // clock is involved and no key is delayed.
+        let remote_as_you_type = completions_trigger == CompletionsTrigger::AsYouType
+            && !completion_context.session.is_local();
+        if remote_as_you_type && self.remote_listing.is_running() {
+            self.remote_listing.hold(
+                self.input_generation,
+                PendingRemoteListing {
+                    before_cursor_text,
+                    matcher,
+                    editor_snapshot,
+                    cursor_position,
+                    completion_context,
+                },
+            );
+            return;
+        }
+        if !remote_as_you_type {
+            self.remote_listing.pending = None;
+        }
         let buffer_text = self.buffer_text(ctx);
         let cursor_offset = cursor_position;
 
@@ -12616,18 +12722,10 @@ impl Input {
         let generation = self.input_generation;
         let completion_compute = ComputeClock::default();
         // An explicit Tab always asks the remote again, even for a directory that failed to list
-        // a moment ago (#1295); the as-you-type menu waits out a burst of keystrokes instead
-        // of listing for each one. The wait is abortable: the next keystroke supersedes it.
-        let remote_debounce = if completion_session.is_local() {
-            None
-        } else if completions_trigger == CompletionsTrigger::Keybinding {
+        // a moment ago (#1295); the as-you-type menu lists single flight instead (see above).
+        if !completion_session.is_local() && completions_trigger == CompletionsTrigger::Keybinding {
             crate::completer::forget_failed_remote_listings(completion_session.id());
-            None
-        } else if completions_trigger == CompletionsTrigger::AsYouType {
-            Some(REMOTE_AS_YOU_TYPE_DEBOUNCE)
-        } else {
-            None
-        };
+        }
         if completions_trigger == CompletionsTrigger::Keybinding {
             self.tab_completion_request = Some(TabCompletionRequest {
                 generation,
@@ -12703,13 +12801,12 @@ impl Input {
             return;
         }
 
+        // The single flight is taken only here, where the completer job really starts.
+        let listing_job = remote_as_you_type.then(|| self.remote_listing.start());
         let abort_handle = ctx
             .spawn_abortable(
                 async move {
                     let remote_tab_started = Instant::now();
-                    if let Some(debounce) = remote_debounce {
-                        Timer::after(debounce).await;
-                    }
                     // The completer's own compute starts here, not when the Enter arrived or the
                     // job was queued (#1351).
                     let _compute = completion_compute.begin();
@@ -12764,9 +12861,21 @@ impl Input {
                         completions_trigger,
                         editor_model,
                         ctx,
-                    )
+                    );
+                    // The listing finished (an event): start the newest request held meanwhile.
+                    if let Some(job) = listing_job {
+                        input.remote_listing_finished(job, ctx);
+                    }
                 },
-                move |_, _| {
+                move |input, ctx| {
+                    // Superseded (an explicit Tab): free the flight; the Tab runs its own request.
+                    // Same handling as a normal end, so the replay never depends on whether this
+                    // closure or the result callback runs first: `finished` frees the flight at
+                    // most once and replays only a request still held and current (an explicit
+                    // Tab and the stale-listing events clear it first).
+                    if let Some(job) = listing_job {
+                        input.remote_listing_finished(job, ctx);
+                    }
                     // Superseding this job drops its future, which cancels exactly the in-band commands it
                     // issued (`InBandCommandExecutor::execute_command`'s `on_cancel`; the local executor kills
                     // its own process group). Do NOT call `cancel_active_commands()` here: it is session-wide
@@ -12776,6 +12885,37 @@ impl Input {
             .abort_handle();
 
         self.completions_abort_handle = Some(abort_handle);
+    }
+
+    /// An event made the running remote as-you-type listing stale (the shell's next Precmd, the
+    /// shell or ssh session exiting, the ssh control connection erroring, a cwd change): aborts
+    /// it and drops the held request, so a hung listing cannot block as-you-type. No timer; the
+    /// next keystroke starts a fresh listing.
+    fn end_remote_listing_on_event(&mut self) {
+        if self.remote_listing.abandon() {
+            if let Some(handle) = self.completions_abort_handle.take() {
+                handle.abort();
+            }
+        }
+    }
+
+    /// The remote as-you-type listing `job` ended (finished, or superseded by an explicit Tab):
+    /// frees the single flight and starts the newest request held meanwhile, if still current.
+    fn remote_listing_finished(&mut self, job: u64, ctx: &mut ViewContext<'_, Input>) {
+        let generation = self.input_generation;
+        let Some(pending) = self.remote_listing.finished(job, generation) else {
+            return;
+        };
+        self.run_completions_async(
+            pending.before_cursor_text,
+            pending.matcher,
+            CompletionsTrigger::AsYouType,
+            pending.editor_snapshot,
+            pending.cursor_position,
+            pending.completion_context,
+            true,
+            ctx,
+        );
     }
 
     /// #1801: the remote shell, asked first, had no answer for the Tab of `generation` (no
@@ -17722,7 +17862,15 @@ impl Input {
                 input_suggestions.set_path_separators(session.path_separators());
             });
         }
+        let cwd_changed = self
+            .active_block_metadata
+            .as_ref()
+            .and_then(BlockMetadata::current_working_directory)
+            != active_block_metadata.current_working_directory();
         self.active_block_metadata = Some(active_block_metadata);
+        if cwd_changed {
+            self.end_remote_listing_on_event();
+        }
 
         // If needed, update the prompt display with the now-available session
         // context. In-band commands don't meaningfully change block metadata,
