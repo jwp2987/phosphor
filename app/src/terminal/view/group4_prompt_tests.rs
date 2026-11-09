@@ -114,8 +114,9 @@ fn ssh_warpify_on_a_clean_line_writes_at_once() {
     }
 }
 
-/// #1562: the subshell bootstrap waits for the line to end, then goes out once; ^U ends the line
-/// too.
+/// #1562 (ported to the readiness judge, #1814): the armed subshell setup waits for the line to
+/// end -- the dirty line is a Wait, nothing is written -- then goes out once on the hand-off's
+/// change event; ^U ends the line too.
 #[test]
 fn subshell_bootstrap_waits_for_a_line_holding_delivered_keys() {
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
@@ -124,25 +125,34 @@ fn subshell_bootstrap_waits_for_a_line_holding_delivered_keys() {
                 let _mode =
                     crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
                 initialize_app_for_terminal_view(&mut app);
+                app.add_singleton_model(|_| crate::ToastStack);
                 let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
                 let terminal = add_window_with_terminal(&mut app, None);
                 let writes = record_setup_and_pty_writes(&mut app, &terminal);
                 terminal.update(&mut app, |view, ctx| {
                     register_local_session_for_ssh_test(view, ctx);
+                    view.model.lock().simulate_long_running_block("bash", "");
+                    install_subshell_tty_for_test(view, bash_reading());
                     deliver_keys_to_an_unmanaged_prompt(view);
-                    view.trigger_subshell_bootstrap(Some(ShellType::Bash), false, ctx);
-                });
-                terminal.read(&app, |view, _| {
-                    assert!(view.subshell_setup_deferred.is_some());
+                    view.arm_subshell_setup(
+                        SubshellPromptTrigger::AutoWarpify {
+                            shell_type: ShellType::Bash,
+                        },
+                        ctx,
+                    );
+                    view.handle_typeahead_handoff_changed(ctx);
+                    assert_eq!(
+                        readiness_state(view),
+                        "armed",
+                        "{mode:?}: the line is dirty"
+                    );
                 });
                 assert!(writes.borrow().is_empty(), "{:?}", writes.borrow());
 
                 terminal.update(&mut app, |view, ctx| {
                     end_the_line(view, ender);
                     view.handle_typeahead_handoff_changed(ctx);
-                });
-                terminal.read(&app, |view, _| {
-                    assert!(view.subshell_setup_deferred.is_none());
+                    assert_eq!(readiness_state(view), "written", "{mode:?}");
                 });
                 assert!(!writes.borrow().is_empty(), "the setup went out");
             });

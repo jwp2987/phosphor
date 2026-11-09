@@ -2768,7 +2768,7 @@ impl TerminalView {
         if abort && in_flight.is_some() {
             // The rest of a chunked line-clear write is dropped (#1354, now a writer job #1384).
             ctx.emit(super::Event::CancelPacedSetupWrites);
-            self.note_input_for_deferred_subshell_setup(bytes);
+            self.note_abort_key_for_deferred_ssh_warpify(bytes);
             // Review F1 (#1711): the user's ABORT (^C / ^D) ENDS the in-flight setup now:
             // unwritten lines dropped, the signal written at once, the held keys behind it in
             // order. It used to be stashed until the last line was written, which a stuck shell

@@ -630,18 +630,6 @@ pub(crate) fn subshell_bootstrap_clears_line_editor(shell_type: Option<ShellType
     shell_type != Some(ShellType::PowerShell)
 }
 
-/// Pause between consecutive typed bootstrap lines. PSReadLine redraws on every line it reads and
-/// the first PowerShell line runs PSReadLine cmdlets (cold on Windows PowerShell 5.1); input that
-/// arrives while it is mid-redraw is what its cursor bookkeeping cannot survive (#1047), so
-/// PowerShell gets a much longer gap than the tty-queue-driven 30 ms the other shells use.
-pub(crate) fn subshell_bootstrap_line_delay(shell_type: Option<ShellType>) -> std::time::Duration {
-    if shell_type == Some(ShellType::PowerShell) {
-        std::time::Duration::from_millis(300)
-    } else {
-        std::time::Duration::from_millis(30)
-    }
-}
-
 /// Splits `script` into the paced writes of [`SUBSHELL_BOOTSTRAP_CHUNK_SIZE`] bytes each.
 pub(crate) fn subshell_bootstrap_chunks(script: &[u8]) -> Vec<Vec<u8>> {
     script
@@ -859,105 +847,6 @@ pub const SETUP_LINE_MARKER_OSC: &str = "7771";
 /// `printf` is quoted so the text typed into the shell holds no escape byte.
 fn setup_line_marker(token: u64, index: usize) -> String {
     format!(" builtin printf '\\e]{SETUP_LINE_MARKER_OSC};{token};{index}\\a'")
-}
-
-/// Whether the old timer-paced bootstrap (one fixed delay per typed line, a fixed wait before the
-/// pending command / rc-file / auto-warpify bootstrap) is wanted instead of the event-driven one:
-/// `PHOSPHOR_BOOTSTRAP_TIMED=1`. A kill switch for the events-not-timers rework (#1354).
-pub fn bootstrap_timed() -> bool {
-    static TIMED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *TIMED.get_or_init(|| std::env::var("PHOSPHOR_BOOTSTRAP_TIMED").is_ok_and(|v| v == "1"))
-}
-
-/// Whether an ssh bootstrap that really failed (the 7 s give-up, #1494) still WRITES the held
-/// typing to the remote after a ` stty sane` line: `PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS=1`.
-/// Off by default (owner decision, #1577): a timer never writes user bytes or a command to a pty,
-/// so the held keys are handed back to the input with a toast instead. A kill switch for #1494's
-/// old behaviour.
-pub fn ssh_bootstrap_giveup_delivers() -> bool {
-    #[cfg(test)]
-    if let Some(forced) = giveup_delivers_forced_for_test() {
-        return forced;
-    }
-    static DELIVERS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *DELIVERS.get_or_init(|| {
-        std::env::var("PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS").is_ok_and(|v| v == "1")
-    })
-}
-
-#[cfg(test)]
-thread_local! {
-    /// What a test forces [`ssh_bootstrap_giveup_delivers`] to on its own thread.
-    static GIVEUP_DELIVERS_FOR_TEST: std::cell::Cell<Option<bool>> =
-        const { std::cell::Cell::new(None) };
-}
-
-#[cfg(test)]
-fn giveup_delivers_forced_for_test() -> Option<bool> {
-    GIVEUP_DELIVERS_FOR_TEST.with(std::cell::Cell::get)
-}
-
-/// Restores the previous forced value when dropped.
-#[cfg(test)]
-#[must_use = "the forced value is restored when the guard drops"]
-pub struct GiveUpDeliversGuard(Option<bool>);
-
-#[cfg(test)]
-impl Drop for GiveUpDeliversGuard {
-    fn drop(&mut self) {
-        GIVEUP_DELIVERS_FOR_TEST.with(|slot| slot.set(self.0));
-    }
-}
-
-/// Forces [`ssh_bootstrap_giveup_delivers`] on the calling thread until the guard drops.
-#[cfg(test)]
-pub fn set_ssh_bootstrap_giveup_delivers_for_test(on: bool) -> GiveUpDeliversGuard {
-    GiveUpDeliversGuard(GIVEUP_DELIVERS_FOR_TEST.with(|slot| slot.replace(Some(on))))
-}
-
-/// Whether the subshell setup is written on the READINESS JUDGE (#1679 step 3, C3b: the pure
-/// `view/subshell_ready.rs` rules on OS facts and the slave-queue proof) rather than on the first
-/// prompt SHAPE with a 5 s give-up (#1354) and the deferral behind an input prompt (#1032). On by
-/// default; `PHOSPHOR_SUBSHELL_READY=0` is the rollback switch and restores today's path, whose
-/// code stays until C3c deletes it (review R10). Independent of `PHOSPHOR_BOOTSTRAP_TIMED`, which
-/// restores the blind writes of before #1354, not today's behaviour.
-pub fn subshell_ready_enabled() -> bool {
-    #[cfg(test)]
-    if let Some(forced) = subshell_ready_forced_for_test() {
-        return forced;
-    }
-    static READY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *READY.get_or_init(|| std::env::var("PHOSPHOR_SUBSHELL_READY").is_none_or(|v| v != "0"))
-}
-
-#[cfg(test)]
-thread_local! {
-    /// What a test forces [`subshell_ready_enabled`] to on its own thread.
-    static SUBSHELL_READY_FOR_TEST: std::cell::Cell<Option<bool>> =
-        const { std::cell::Cell::new(None) };
-}
-
-#[cfg(test)]
-fn subshell_ready_forced_for_test() -> Option<bool> {
-    SUBSHELL_READY_FOR_TEST.with(std::cell::Cell::get)
-}
-
-/// Restores the previous forced value when dropped.
-#[cfg(test)]
-#[must_use = "the forced value is restored when the guard drops"]
-pub struct SubshellReadyGuard(Option<bool>);
-
-#[cfg(test)]
-impl Drop for SubshellReadyGuard {
-    fn drop(&mut self) {
-        SUBSHELL_READY_FOR_TEST.with(|slot| slot.set(self.0));
-    }
-}
-
-/// Forces [`subshell_ready_enabled`] for the current test thread.
-#[cfg(test)]
-pub fn set_subshell_ready_for_test(on: bool) -> SubshellReadyGuard {
-    SubshellReadyGuard(SUBSHELL_READY_FOR_TEST.with(|slot| slot.replace(Some(on))))
 }
 
 /// Splits `raw_script` into lines that rebuild it in `$_wbs` and then evaluate it.
