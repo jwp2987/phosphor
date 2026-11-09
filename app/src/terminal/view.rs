@@ -3118,9 +3118,10 @@ struct ArmedSubshellSetup {
     /// Where the output was at the user's last line end (R1: a cooked shell's or a relay's
     /// consumption proof needs a prompt drawn after it).
     line_end_baseline: (usize, usize, usize),
-    /// A ReArm happened on the key path while the model was busy: the baselines are re-taken at
-    /// the next look, before judging.
-    rebaseline_pending: bool,
+    /// Where the output was at the LAST look (#1847): a ReArm takes its baselines from here, so
+    /// a prompt drawn after the user's Enter is always "moved" at the look that shows it (never
+    /// re-based onto it, which swallowed the prompt of an idle cooked shell).
+    last_position: (usize, usize, usize),
     armed_at: Instant,
     ledger: subshell_ready::UserLedger,
     tracker: subshell_ready::LineTracker,
@@ -22891,7 +22892,7 @@ impl TerminalView {
             block_id,
             baseline: position,
             line_end_baseline: position,
-            rebaseline_pending: false,
+            last_position: position,
             armed_at: Instant::now(),
             ledger: subshell_ready::UserLedger::default(),
             tracker: subshell_ready::LineTracker::default(),
@@ -22932,11 +22933,6 @@ impl TerminalView {
         let SubshellSetupState::Armed(armed) = &mut self.subshell_setup_state else {
             return;
         };
-        if armed.rebaseline_pending {
-            armed.baseline = look.position;
-            armed.line_end_baseline = look.position;
-            armed.rebaseline_pending = false;
-        }
         match look.tty.leader {
             LeaderKind::Shell => armed.seen_shell_leader = true,
             LeaderKind::Relay if armed.seen_shell_leader => {
@@ -22958,6 +22954,7 @@ impl TerminalView {
         let relay = look.tty.kind == SubshellTtyKind::Relay;
         armed.last_tty = Some(look.tty.clone());
         armed.last_tail = look.tail;
+        armed.last_position = look.position;
         let decision =
             subshell_ready::subshell_ready(&sample, &armed.ledger, armed.trigger.shell_type());
         warpui::input_order::log_hop("subshell_ready_judged", || {
@@ -23287,25 +23284,11 @@ impl TerminalView {
             }
             return;
         }
-        // ReArm: the shape baseline and the line-end mark are re-taken at the output now (the key
-        // path never waits for the pty reader: busy means at the next look, before judging).
-        match self.model.try_lock() {
-            Some(model) => {
-                let grid = model.block_list().active_block().output_grid();
-                let cursor = grid.grid_handler().cursor_point();
-                let position = (grid.len(), cursor.row, cursor.col);
-                drop(model);
-                if let SubshellSetupState::Armed(armed) = &mut self.subshell_setup_state {
-                    armed.baseline = position;
-                    armed.line_end_baseline = position;
-                }
-            }
-            None => {
-                if let SubshellSetupState::Armed(armed) = &mut self.subshell_setup_state {
-                    armed.rebaseline_pending = true;
-                }
-            }
-        }
+        // ReArm: the shape baseline and the line-end mark are re-taken from the LAST look's
+        // position (#1847): no model lock on the key path, and the next output look (the event
+        // that carries a fresh prompt) compares against where the output was before the Enter.
+        armed.baseline = armed.last_position;
+        armed.line_end_baseline = armed.last_position;
     }
 
     /// The ONE cancel of a readiness-judged setup (#1679 step 3). Armed: nothing was written or
