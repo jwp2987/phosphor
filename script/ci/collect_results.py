@@ -422,7 +422,8 @@ def load_runs(out):
             runs.append(m)
         except ValueError:
             pass
-    return sorted(runs, key=lambda m: (m["created_at"], m["pipeline"]))
+    # older manifests (before created_at was recorded) sort by their date, then pipeline id
+    return sorted(runs, key=lambda m: (m.get("created_at") or m.get("date") or "", m.get("pipeline") or 0))
 
 
 def rebuild(out):
