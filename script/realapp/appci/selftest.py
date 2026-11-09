@@ -3708,6 +3708,63 @@ def refterm_mac_bookkeeping():
         R.terminal_pids, R.os.kill, R.time.sleep, R._started_epoch = saved[1:]
 
 
+@check
+def agent_latency_pure_parts():
+    """#1828: key->frame and Enter->enter_begin pairing, the steer judges, the fake model's slow stream and request log"""
+    import cases_agent_latency as AL
+    import fake_model as FM
+
+    def kd(key, t, ctrl="false"):
+        return 'input_order keydown key=%s ctrl=%s alt=false shift=false cmd=false t=%s seq=1' % (key, ctrl, t)
+    log = "\n".join([kd('"m"', 1000.0), "input_order hop=key_frame layout=true t=1006.5",
+                     kd('"m"', 1100.0), kd('"m"', 1101.0), "input_order hop=key_frame layout=false t=1104.0",
+                     kd("u", 1200.0, "true"), "input_order hop=key_frame layout=false t=1203.0",
+                     kd('"m"', 1300.0), kd("enter", 1301.0), "input_order hop=key_frame layout=true t=1310.0",
+                     kd('"m"', 1400.0), "input_order hop=key_frame layout=true t=1409.0"])
+    ds = AL.key_frame_deltas(log)
+    assert ds == [6.5, 4.0, 3.0, 9.0], ds          # piled keys pair with the one frame; ctrl and Enter are not samples; a key before an unsampled key-down is not paired
+    assert AL.key_frame_deltas(log, 1050.0, 1150.0) == [4.0, 3.0], AL.key_frame_deltas(log, 1050.0, 1150.0)
+    en = "\n".join([kd("enter", 2000.0), 'input_order hop=enter_begin deferred=false buffer="ping t=5" input_type=AI t=2001.25',
+                    kd("enter", 3000.0, "true"), kd("enter", 3100.0), 'input_order hop=enter_begin deferred=false buffer="x" input_type=Shell t=3103.5'])
+    assert AL.enter_shares(en) == [1.25, 3.5], AL.enter_shares(en)
+    steer = AL.make_steer("abc12", 1)
+    assert len(steer) >= 200 and "ls -la | grep x" in steer and "$HOME" in steer, len(steer)
+    u = lambda t: {"role": "user", "content": t}
+    a = {"role": "assistant", "content": "tick"}
+    good = [{"t": 1.0, "messages": [u("first"), a, u(steer)]}]
+    assert AL.steer_verdict(good, steer) is None
+    assert "never received" in AL.steer_verdict([{"t": 1.0, "messages": [u("first")]}], steer)
+    assert "2 separate" in AL.steer_verdict(good + good, steer)
+    assert "not as a user turn equal" in AL.steer_verdict([{"t": 1.0, "messages": [u("first"), u(steer + " x")]}], steer)
+    assert "occurs 2 times" in AL.steer_verdict([{"t": 1.0, "messages": [u("x " + steer), a, u(steer)]}], steer)
+    s3 = [AL.make_steer("t%d" % i, i) for i in (1, 2, 3)]
+    msgs = [u("go"), a, u(s3[0]), a, u(s3[1]), a, u(s3[2])]
+    assert AL.steers_in_order(msgs, s3) is None
+    assert "out of order" in AL.steers_in_order([u("go"), u(s3[1]), u(s3[0]), u(s3[2])], s3)
+    assert "0 times" in AL.steers_in_order([u("go"), u(s3[0]), u(s3[2])], s3)
+    assert "2 times" in AL.steers_in_order(msgs + [u(s3[0])], s3)
+    # fake model: STREAMLONG is sticky across the conversation, streams in many small pieces, ordinary turns are unchanged
+    st = FM.reply_for([u("STREAMLONG keep talking")])
+    assert st["stream"] and st["text"] == FM.stream_text() and not st["tool"], st
+    assert FM.reply_for([u("STREAMLONG go"), a, u("a steer")])["stream"]
+    assert not FM.reply_for([u("hello there")]).get("stream") and FM.reply_for([u("hello there")])["text"] == "OK there"
+    assert FM.reply_for([u("STREAMLONG go"), {"role": "tool", "content": "ok"}]) == {"text": "Done.", "tool": None}
+    assert len(FM.stream_lines("m", st)) > FM.STREAM_CHUNKS // 2 and FM.STREAM_CHUNKS * FM.STREAM_GAP_S >= 11
+    f = FM.FakeModel().start()
+    saved = FM.STREAM_GAP_S
+    try:
+        import urllib.request
+        assert FM.FakeModel.ACTIVE is f
+        FM.STREAM_GAP_S = 0.0
+        rq = urllib.request.Request(f.url + "/api/chat", json.dumps({"model": "m", "messages": [u("STREAMLONG please")]}).encode())
+        body = urllib.request.urlopen(rq, timeout=10).read().decode().splitlines()
+        assert json.loads(body[-1])["done"] and "".join(json.loads(x)["message"].get("content", "") for x in body) == FM.stream_text()
+        assert len(f.reqs) == 1 and f.reqs[0]["messages"][0]["content"] == "STREAMLONG please"
+    finally:
+        FM.STREAM_GAP_S = saved
+        f.stop()
+
+
 def main():
     failed = 0
     for f in CHECKS:

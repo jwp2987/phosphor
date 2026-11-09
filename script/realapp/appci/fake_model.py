@@ -6,6 +6,9 @@
 #     "Please delete exactly this file and nothing else: <path>" -> apply_file_diffs (the remote file-tool lab cases, cases_lab_remote.py);
 #   * "Please show this image: <url>" -> the text "Here it is: ![img](<url>)" (network_gate_notice: the app fetches the image through the network gate);
 #   * the turn after a tool result -> the text "Done." (a finished conversation);
+#   * a conversation whose user turns contain STREAMLONG (#1828) -> a SLOW STEADY stream: STREAM_CHUNKS pieces STREAM_GAP_S apart (about 12 s), sent as
+#     they are produced (no Content-Length), so a reply is visibly running while a case types. Sticky: every later turn of that conversation streams
+#     too, so a steer (#851) typed while the reply runs is itself answered by a running stream. fake.reqs holds every /api/chat request body.
 #   * any other user turn -> "OK <last word>" (prose only, no tool call).
 # Endpoints: POST /api/chat (NDJSON stream), POST /api/show, GET /api/tags. The server counts requests (fake.requests) for the oracle.
 import json, re, threading, time
@@ -16,6 +19,19 @@ CREATE_RE = re.compile(r"create exactly this file:\s*(\S+)\s+with this content:\
 DELETE_RE = re.compile(r"delete exactly this file and nothing else:\s*(\S+)\s*$")
 IMG_RE = re.compile(r"show this image:\s*(\S+)\s*$")
 ASK_RE = re.compile(r"run exactly this shell command and nothing else:\s*(.+?)\s*$", re.S)
+
+
+STREAM_CHUNKS, STREAM_GAP_S = 240, 0.05
+
+
+def stream_text():
+    """pure: the text of the slow steady stream, 't0000 t0001 ...' cut into 6-character pieces by stream_lines"""
+    return "".join("t%04d " % i for i in range(STREAM_CHUNKS))
+
+
+def user_texts(messages):
+    """pure: the content of every user message of a /api/chat request, in order"""
+    return [m.get("content") or "" for m in messages or [] if m.get("role") == "user"]
 
 
 def reply_for(messages):
@@ -43,6 +59,8 @@ def reply_for(messages):
     m = DELETE_RE.search(text)
     if m:
         return {"text": "", "tool": {"name": "apply_file_diffs", "arguments": {"summary": "Delete " + m.group(1), "operations": [{"op": "delete", "file_path": m.group(1)}]}}}
+    if any("STREAMLONG" in t for t in user_texts(messages)):
+        return {"text": stream_text(), "tool": None, "stream": True}
     if "SLOW" in text:
         return {"text": "slow reply", "tool": None, "slow": True}
     words = re.findall(r"\S+", text)
@@ -62,8 +80,11 @@ def stream_lines(model, reply, chunk=6):
 
 
 class FakeModel:
+    ACTIVE = None                                   # the instance run.py started (cases reach the fake through it)
+
     def __init__(self, delay_s=0.0):
         self.requests, self.delay_s, self.log = 0, delay_s, []
+        self.reqs = []          # #1828: one {"t": epoch s, "messages": [...]} per /api/chat request, in arrival order (the steer cases' oracle)
         owner = self
 
         class H(BaseHTTPRequestHandler):
@@ -91,8 +112,22 @@ class FakeModel:
                 if not self.path.endswith("/api/chat"):
                     return self._send(404, b'{"error":"not found"}')
                 owner.requests += 1
+                owner.reqs.append({"t": time.time(), "messages": req.get("messages") or []})
                 reply = reply_for(req.get("messages") or [])
                 owner.log.append((time.time(), reply["tool"]["arguments"]["command"] if reply["tool"] else None))
+                if reply.get("stream"):
+                    # paced, not Content-Length'd: an HTTP/1.0 close-delimited body, each NDJSON line flushed as it is produced
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/x-ndjson")
+                    self.end_headers()
+                    try:
+                        for ln in stream_lines(req.get("model") or "fake-model", reply):
+                            self.wfile.write((ln + "\n").encode())
+                            self.wfile.flush()
+                            time.sleep(STREAM_GAP_S)
+                    except (BrokenPipeError, ConnectionResetError):
+                        pass            # the app cancelled the stream (a steer or Ctrl-C): not an error here
+                    return
                 body = ("\n".join(stream_lines(req.get("model") or "fake-model", reply)) + "\n").encode()
                 if reply.get("slow") or owner.delay_s:
                     time.sleep(3.0 if reply.get("slow") else owner.delay_s)
@@ -103,6 +138,7 @@ class FakeModel:
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
 
     def start(self):
+        FakeModel.ACTIVE = self
         self.thread.start()
         return self
 
