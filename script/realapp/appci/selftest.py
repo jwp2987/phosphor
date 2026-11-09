@@ -3436,6 +3436,7 @@ def fake_model_replies():
     r = FM.reply_for([{"role": "user", "content": "Please run exactly this shell command and nothing else: echo T >> /x/f.txt"}])
     assert r["tool"]["name"] == "run_shell_command" and r["tool"]["arguments"]["command"] == "echo T >> /x/f.txt", r
     assert FM.reply_for([{"role": "user", "content": "x"}, {"role": "tool", "content": "ok"}]) == {"text": "Done.", "tool": None}
+    assert FM.reply_for([{"role": "user", "content": "Please show this image: http://192.0.2.1:8099/x.png"}]) == {"text": "Here it is: ![img](http://192.0.2.1:8099/x.png)", "tool": None}
     rd = FM.reply_for([{"role": "user", "content": "Please read exactly this file and nothing else: /w/a.txt"}])
     assert rd["tool"] == {"name": "read_files", "arguments": {"files": [{"path": "/w/a.txt"}]}}, rd
     cr = FM.reply_for([{"role": "user", "content": "Please create exactly this file: /w/b.txt with this content: hello there"}])

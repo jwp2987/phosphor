@@ -102,6 +102,7 @@ NOT_WINDOWS = {
     "cb_ui_action_latency": "needs Pillow screenshot diffs of new-tab/switch chords not mapped in the Windows backend",
     "cb_editor_mac": "macOS-only case (Linux and Windows have editor_edit_save / editor_paste)",
     "zero_network_startup": "Wave N: traces the app with Linux strace; a Windows/macOS network trace is not built yet",
+    "network_gate_notice": "needs the Linux pointer + OCR path and a relaunch on a rewritten settings file",
     "network_gate_switch": "needs a relaunch of the app on a rewritten settings file (the Linux/macOS App handle) and the Linux profile layout",
     "claude_plugin_offline": "Wave N: needs `unshare -rn` (Linux network namespaces) and the Linux pty; the plugin's hook scripts are bash+jq",
     "agent_plugins_offline": "needs `unshare -rn` (Linux network namespaces) and the Linux pty; the Codex and Gemini hook scripts are bash+jq and write to /dev/tty",

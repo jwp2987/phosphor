@@ -4,6 +4,7 @@
 #   * a user turn "Please run exactly this shell command and nothing else: <cmd>" -> one run_shell_command tool call with that command (an approval card);
 #   * "Please read exactly this file and nothing else: <path>" -> read_files; "Please create exactly this file: <path> with this content: <text>" and
 #     "Please delete exactly this file and nothing else: <path>" -> apply_file_diffs (the remote file-tool lab cases, cases_lab_remote.py);
+#   * "Please show this image: <url>" -> the text "Here it is: ![img](<url>)" (network_gate_notice: the app fetches the image through the network gate);
 #   * the turn after a tool result -> the text "Done." (a finished conversation);
 #   * any other user turn -> "OK <last word>" (prose only, no tool call).
 # Endpoints: POST /api/chat (NDJSON stream), POST /api/show, GET /api/tags. The server counts requests (fake.requests) for the oracle.
@@ -13,6 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 READ_RE = re.compile(r"read exactly this file and nothing else:\s*(\S+)\s*$")
 CREATE_RE = re.compile(r"create exactly this file:\s*(\S+)\s+with this content:\s*(.*?)\s*$", re.S)
 DELETE_RE = re.compile(r"delete exactly this file and nothing else:\s*(\S+)\s*$")
+IMG_RE = re.compile(r"show this image:\s*(\S+)\s*$")
 ASK_RE = re.compile(r"run exactly this shell command and nothing else:\s*(.+?)\s*$", re.S)
 
 
@@ -26,6 +28,9 @@ def reply_for(messages):
         if m.get("role") == "user":
             text = m.get("content") or ""
             break
+    m = IMG_RE.search(text)
+    if m:                                      # a markdown image: the app fetches it through the network gate (purpose remote-asset)
+        return {"text": "Here it is: ![img](%s)" % m.group(1), "tool": None}
     m = ASK_RE.search(text)
     if m:
         return {"text": "", "tool": {"name": "run_shell_command", "arguments": {"command": m.group(1), "is_read_only": False, "uses_pager": False, "is_risky": False}}}
