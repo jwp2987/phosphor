@@ -182,6 +182,50 @@ fn write_file_with_an_expectation_writes_only_when_it_holds() {
 }
 
 #[test]
+fn delete_file_with_an_expectation_deletes_only_when_it_holds() {
+    use crate::proto::{WriteExpect, write_expect::State};
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("d.txt");
+    std::fs::write(&file, "proposed against").unwrap();
+    let attempt = |state: Option<State>| {
+        let server_message::Message::DeleteFileResponse(resp) = delete_file(DeleteFile {
+            path: p(&file),
+            expect: Some(WriteExpect { state }),
+        }) else {
+            panic!("wrong response type");
+        };
+        resp.result
+    };
+    // The user edits the file after the deletion was proposed: refused, bytes untouched.
+    let proposed = crate::index::sha256_hex(b"proposed against");
+    std::fs::write(&file, "user edit").unwrap();
+    let Some(delete_file_response::Result::Error(e)) =
+        attempt(Some(State::Sha256(proposed.clone())))
+    else {
+        panic!("a changed file must refuse the delete");
+    };
+    assert!(e.message.contains("changed on the host"), "{}", e.message);
+    assert!(e.message.contains("not deleted"), "{}", e.message);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "user edit");
+    // An empty expectation and an absent one match nothing while the file exists.
+    assert!(matches!(
+        attempt(None),
+        Some(delete_file_response::Result::Error(_))
+    ));
+    assert!(matches!(
+        attempt(Some(State::Absent(true))),
+        Some(delete_file_response::Result::Error(_))
+    ));
+    assert!(file.exists());
+    // The matching hash deletes.
+    assert!(matches!(
+        attempt(Some(State::Sha256(crate::index::sha256_hex(b"user edit")))),
+        Some(delete_file_response::Result::Success(_))
+    ));
+    assert!(!file.exists());
+}
+
+#[test]
 fn write_file_creates_parents_and_delete_file_removes() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("x/y/z.txt");
@@ -198,9 +242,10 @@ fn write_file_creates_parents_and_delete_file_removes() {
     ));
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "content");
 
-    let server_message::Message::DeleteFileResponse(resp) =
-        delete_file(DeleteFile { path: p(&file) })
-    else {
+    let server_message::Message::DeleteFileResponse(resp) = delete_file(DeleteFile {
+        path: p(&file),
+        expect: None,
+    }) else {
         panic!("wrong response type");
     };
     assert!(matches!(
@@ -209,9 +254,10 @@ fn write_file_creates_parents_and_delete_file_removes() {
     ));
     assert!(!file.exists());
 
-    let server_message::Message::DeleteFileResponse(resp) =
-        delete_file(DeleteFile { path: p(&file) })
-    else {
+    let server_message::Message::DeleteFileResponse(resp) = delete_file(DeleteFile {
+        path: p(&file),
+        expect: None,
+    }) else {
         panic!("wrong response type");
     };
     assert!(matches!(

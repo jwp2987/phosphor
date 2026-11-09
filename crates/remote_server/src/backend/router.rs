@@ -500,6 +500,47 @@ impl RoutedBackend {
         self.shell.take_pushes()
     }
 
+    /// [`RemoteFeatures::delete_file`](super::RemoteFeatures::delete_file) that, when `expect` is
+    /// given, deletes only if the file is still in that state (the same contract as
+    /// [`Self::write_file_expecting`]): a helper that lists `file_delete_expect` checks it
+    /// itself, any other helper or a legacy daemon is bypassed for the guarded shell script, and
+    /// with no shell channel the delete is REFUSED, never sent unguarded. Emits `AfterOwnWrite`
+    /// on success.
+    pub async fn delete_file_expecting(
+        &self,
+        path: String,
+        expect: Option<crate::shellcmd::write::Expect>,
+    ) -> Result<(), super::BackendError> {
+        use super::RemoteFeatures as _;
+        let Some(expect) = expect else {
+            return self.delete_file(path).await;
+        };
+        self.log_route(Family::FileWrite);
+        let helper_guard = self.helper_for(Family::FileWrite).filter(|client| {
+            client
+                .capabilities()
+                .supports_listed(crate::capability::FILE_DELETE_EXPECT)
+        });
+        let result = match (helper_guard, expect.to_wire()) {
+            (Some(client), Some(wire)) => client
+                .delete_file_expecting(path, Some(wire))
+                .await
+                .map_err(super::BackendError::from),
+            _ if self.shell.is_available() => {
+                self.shell.delete_file_expecting(path, Some(expect)).await
+            }
+            _ => Err(super::BackendError::Unavailable(format!(
+                "cannot delete {path} safely: the host cannot check that it is unchanged \
+                 (no helper with delete checks and no shell channel), so nothing was deleted"
+            ))),
+        };
+        if result.is_ok() {
+            self.router
+                .emit_refresh(&self.host, &RemoteRefreshEvent::AfterOwnWrite);
+        }
+        result
+    }
+
     /// [`RemoteFeatures::write_file`](super::RemoteFeatures::write_file) that, when `expect` is
     /// given, writes only if the file is still in that state; on a mismatch nothing is written
     /// and the error says the file changed (#1837). A helper that lists `file_write_expect`

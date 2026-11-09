@@ -217,3 +217,74 @@ fn a_hash_guarded_write_compares_the_files_sha256_before_the_rename() {
     assert!(p.contains("Get-FileHash"));
     assert!(p.find("-ne '").unwrap() < p.find("Move-Item").unwrap());
 }
+
+/// #1837 follow-up: a hash-guarded script tells "the file changed" (exit 5) from "this host
+/// cannot compute a hash" (exit 6), and the second never claims the file changed.
+#[test]
+fn a_hash_guarded_script_reports_a_missing_hash_tool_apart_from_a_conflict() {
+    let digest = HexDigest::parse(&"cd".repeat(32)).unwrap();
+    let c = posix_write_command(
+        "/x",
+        "n",
+        b"a",
+        FIRST_AND_LAST,
+        Some(DecodeTool::Lower),
+        Some(Expect::Sha256(digest)),
+    );
+    assert!(c.contains("|| cur=nohash"), "{c}");
+    let nohash = c.find("echo NOHASH; exit 6").expect("nohash outcome");
+    let conflict = c.find("echo CONFLICT; exit 5").expect("conflict outcome");
+    // The hash tool's absence is decided before the comparison, and both before the rename.
+    assert!(nohash < conflict && conflict < c.find("mv -f").unwrap());
+    // A stamp or absence check has no hash and so no such outcome.
+    let stamped = posix_write_command(
+        "/x",
+        "n",
+        b"a",
+        FIRST_AND_LAST,
+        Some(DecodeTool::Lower),
+        Some(Expect::Absent),
+    );
+    assert!(!stamped.contains("NOHASH"));
+    let p = pwsh_write_command(
+        "C:\\x",
+        "n",
+        b"a",
+        FIRST_AND_LAST,
+        Some(Expect::Sha256(digest)),
+    );
+    assert!(p.contains("catch { $cur = 'nohash' }"), "{p}");
+    assert!(p.contains("'NOHASH'; $global:LASTEXITCODE = 6; return"));
+    assert!(p.find("'NOHASH'").unwrap() < p.find("Move-Item").unwrap());
+
+    let msg = write_failure_message("/x", EXIT_NO_HASH, "NOHASH\n");
+    assert!(msg.contains("could not check that the file on the host is unchanged"));
+    assert!(msg.contains("no sha256 tool") && msg.contains("nothing was written"));
+    assert!(!msg.contains("changed on the host"), "{msg}");
+    let del = delete_failure_message("/x", EXIT_NO_HASH, "NOHASH\n");
+    assert!(del.contains("no sha256 tool") && del.contains("nothing was deleted"));
+    assert!(!del.contains("changed on the host"), "{del}");
+}
+
+#[test]
+fn a_guarded_delete_checks_before_it_removes_and_the_plain_one_stays_plain() {
+    let digest = HexDigest::parse(&"ab".repeat(32)).unwrap();
+    let c = posix_guarded_delete_command("/a b", Expect::Sha256(digest));
+    assert!(c.starts_with("f='/a b'\n"), "{c}");
+    let check = c
+        .find(&format!("[ \"$cur\" = '{}' ]", "ab".repeat(32)))
+        .expect("check present");
+    assert!(check < c.find("rm -- \"$f\"").unwrap());
+    assert!(c.contains("echo NOHASH; exit 6") && c.contains("echo CONFLICT; exit 5"));
+    let p = pwsh_guarded_delete_command("~/x", Expect::Sha256(digest));
+    assert!(p.contains("Join-Path $HOME 'x'"));
+    assert!(p.find("-ne '").unwrap() < p.find("Remove-Item -LiteralPath $f").unwrap());
+    assert!(p.contains("$global:LASTEXITCODE = 5; return"));
+    assert!(!p.contains("exit "), "{p}");
+    // Unguarded deletes are unchanged.
+    assert_eq!(posix_delete_command("/a b"), "f='/a b'\nrm -- \"$f\"\n");
+    assert!(
+        delete_failure_message("/x", EXIT_CONFLICT, "CONFLICT\n").contains("changed on the host")
+    );
+    assert!(delete_failure_message("/x", 1, "rm: nope").ends_with("rm: nope"));
+}

@@ -8,8 +8,9 @@ use super::super::{BackendError, Family, ShellBackend};
 use crate::client::ClientError;
 use crate::shellcmd::read::{self, FileProbe, GatherPlan};
 use crate::shellcmd::write::{
-    ChunkPosition, EXIT_CONFLICT, Expect, posix_delete_command, posix_write_command,
-    pwsh_delete_command, pwsh_write_command, split_chunks, write_failure_message,
+    ChunkPosition, EXIT_CONFLICT, Expect, delete_failure_message, posix_delete_command,
+    posix_guarded_delete_command, posix_write_command, pwsh_delete_command,
+    pwsh_guarded_delete_command, pwsh_write_command, split_chunks, write_failure_message,
 };
 use crate::shellcmd::{Script, StderrMode};
 
@@ -113,25 +114,34 @@ impl ShellBackend {
         &self,
         path: String,
     ) -> Result<(), BackendError> {
+        self.delete_file_expecting(path, None).await
+    }
+
+    /// Deletes `path`, but only if the file is still in the state `expect` names; `None` deletes
+    /// unconditionally. A mismatch removes nothing and says the file changed; a hash expectation
+    /// the host cannot check (no sha256 tool) removes nothing and says so.
+    pub async fn delete_file_expecting(
+        &self,
+        path: String,
+        expect: Option<Expect>,
+    ) -> Result<(), BackendError> {
         let executor = self.executor_for("delete_file")?;
-        let command = if executor.shell_kind().is_powershell() {
-            pwsh_delete_command(&path)
-        } else {
-            posix_delete_command(&path)
+        let pwsh = executor.shell_kind().is_powershell();
+        let command = match (pwsh, expect) {
+            (true, Some(expect)) => pwsh_guarded_delete_command(&path, expect),
+            (true, None) => pwsh_delete_command(&path),
+            (false, Some(expect)) => posix_guarded_delete_command(&path, expect),
+            (false, None) => posix_delete_command(&path),
         };
         let script = Script::new(Self::new_nonce())?.section("d", command, StderrMode::Merge)?;
         let frame = self.run_script(&script).await?;
         match frame.section("d") {
             Some(section) if section.exit == 0 => Ok(()),
-            Some(section) => {
-                let detail = section.text();
-                let detail = detail.trim();
-                Err(op_failed(if detail.is_empty() {
-                    format!("Failed to delete {path}")
-                } else {
-                    format!("Failed to delete {path}: {detail}")
-                }))
-            }
+            Some(section) => Err(op_failed(delete_failure_message(
+                &path,
+                section.exit,
+                &section.text(),
+            ))),
             None => Err(op_failed(format!(
                 "Failed to delete {path}: no answer from the host"
             ))),

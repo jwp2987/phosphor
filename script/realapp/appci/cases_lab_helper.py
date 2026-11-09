@@ -444,6 +444,15 @@ def _register_write_expect():
 _register_write_expect()
 
 
+def _register_delete_expect():
+    """file_delete_expect (#1837 follow-up): the same refinement of file_write for DeleteFile.expect. The real check is lab_fam_agent_delete_conflict (cases_agent_file_edits.py)."""
+    reg("fam_file_delete_expect", lambda ctx, r, arm: None, caps=["file_delete_expect"], shells=("bash",), lat=("lan",), helper=("nohelper", "helper"),
+        pre=lambda arm: "covered by lab_fam_agent_delete_conflict (the stale delete refused on both arms)")
+
+
+_register_delete_expect()
+
+
 # ------------------------------------------------------------------ 3. routing
 def c_route_unsupported(ctx, r, arm):
     """The helper answers UNSUPPORTED for a family mid-session: the same feature falls back to the shell arm and keeps working (no banner, branch chip still shows).

@@ -3553,6 +3553,13 @@ def agent_file_edit_pieces():
     assert {"agent_edit_accept", "agent_edit_reject", "agent_edit_conflict", "agent_edit_endings", "agent_edit_touch_only"} <= names
     arms = [c["arm"] for c in cases.CASES if c["name"].startswith("lab_fam_agent_edit_conflict.")]
     assert {a["helper"] for a in arms} == {"nohelper", "upload"} and {a["shell"] for a in arms} == {"bash", "dash", "nu", "pwsh"}, arms
+    # #1837 follow-up: the deletion proposal, its report matcher and the lab case
+    dp = FM.reply_for([{"role": "user", "content": AF.delete_prompt_for("/w/gone.txt")}])
+    assert dp["tool"]["arguments"]["operations"] == [{"op": "delete", "file_path": "/w/gone.txt"}], dp
+    assert AF.SAVE_FAILED.search("Failed to delete /w/x: the file changed on the host after it was read, so it was not deleted.")
+    assert AF.SAVE_FAILED.search("/w/x changed on the remote host after this change was proposed")
+    darms = [c["arm"] for c in cases.CASES if c["name"].startswith("lab_fam_agent_delete_conflict.")]
+    assert {a["helper"] for a in darms} == {"nohelper", "upload"}, darms
 
 
 @check
