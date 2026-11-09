@@ -2764,12 +2764,36 @@ def lab_users_tsv_parse():
 
 
 @check
+def lab_remote_mode_fails_closed_without_a_pinned_box_key():
+    import lab as L
+    keep = {k: os.environ.get(k) for k in ("APPCI_LAB", "APPCI_LAB_BOX", "APPCI_LAB_KEY", "APPCI_LAB_KNOWN_HOSTS", "SSHLAB_BOX")}
+    d = tempfile.mkdtemp()
+    try:
+        for k in keep:
+            os.environ.pop(k, None)
+        os.environ.update(APPCI_LAB="remote", APPCI_LAB_BOX="u@box.invalid", APPCI_LAB_KEY="/k")
+        m, why = L.lab_mode()
+        assert m == "off" and "APPCI_LAB_KNOWN_HOSTS" in why, (m, why)
+        os.environ["APPCI_LAB_KNOWN_HOSTS"] = os.path.join(d, "nope")
+        assert L.lab_mode()[0] == "off"
+        open(os.path.join(d, "kh"), "w").write("box ssh-ed25519 AAAA\n")
+        os.environ["APPCI_LAB_KNOWN_HOSTS"] = os.path.join(d, "kh")
+        assert L.lab_mode() == ("remote", "")
+    finally:
+        for k, v in keep.items():
+            os.environ.pop(k, None)
+            if v is not None:
+                os.environ[k] = v
+        shutil.rmtree(d, ignore_errors=True)
+
+
+@check
 def lab_tc_nft_command_generation():
     N = _netem()
     cmds = N.apply_commands({"rtt_ms": 150, "jitter_ms": 10, "loss_pct": 1, "rate_kbit": 5000})
     flat = [" ".join(c) for c in cmds]
     assert flat[0].startswith("tc qdisc del dev eth0 root"), "apply starts by clearing (idempotent)"
-    assert any("netem delay 75ms 5ms loss 1% rate 5000kbit" in c and "parent 1:1" in c for c in flat), "egress netem on band 1 with half the RTT"
+    assert any("netem delay 75ms 5ms loss 0.5% rate 5000kbit" in c and "parent 1:1" in c for c in flat), "egress netem on band 1 with half the RTT"
     assert any(c.startswith("tc qdisc add dev ifb0 root") and "delay 75ms 5ms" in c for c in flat), "ingress netem on ifb0 with the other half"
     for p in (22, 2222, 7):
         assert any("match ip sport %d 0xffff flowid 1:1" % p in c for c in flat) and any("match ip dport %d 0xffff action mirred egress redirect dev ifb0" % p in c for c in flat), p
@@ -2785,8 +2809,9 @@ def lab_tc_nft_command_generation():
             pass
     nft = N.nft_block_outbound([1002, 1001])
     assert "meta skuid { 1001, 1002 }" in nft and "ct state new reject" in nft and 'oifname != "lo"' in nft and nft.startswith("table inet sshlab_out\ndelete table")
-    assert N.nft_drop_connection("10.0.0.2", 5555, "rst", 22) == ["add rule inet sshlab_drop in ip saddr 10.0.0.2 tcp sport 5555 tcp dport 22 reject with tcp reset"]
+    assert N.nft_drop_connection("10.0.0.2", 5555, "rst", 22, "t1") == ["add rule inet t1 drop_in ip saddr 10.0.0.2 tcp sport 5555 tcp dport 22 reject with tcp reset"]
     assert len(N.nft_drop_connection("10.0.0.2", 5555, "blackhole", 22)) == 2
+    assert "chain drop_in" in N.nft_drop_setup("t2") and "table inet t2" in N.nft_drop_setup("t2") and "sshlab_drop" not in N.nft_drop_setup("t2"), "one table per drop"
     try:
         N.nft_drop_connection("10.0.0.2", 1, "x", 22)
         raise AssertionError("accepted a bad drop mode")
@@ -2883,12 +2908,14 @@ def lab_ctl_and_daemon_pure_pieces():
     C = _load_by_path("labctl", os.path.join(SSHLAB, "labctl.py"))
     D = _load_by_path("labd", os.path.join(SSHLAB, "rootfs", "usr", "local", "sbin", "labd.py"))
     # pins: the committed versions.env has PLACEHOLDERs and the build refuses them; real-looking values pass
-    v = C.parse_versions(open(os.path.join(SSHLAB, "versions.env")).read())
-    probs = C.check_pins(v)
-    assert probs and any("PLACEHOLDER" in p for p in probs), "versions.env must refuse to build until the pins are real"
+    fixture = ("DEBIAN_IMAGE=docker.io/library/debian@sha256:PLACEHOLDER_X\nDEBIAN_SNAPSHOT=20261101T000000Z\nNU_VERSION=PLACEHOLDER\n# c\n")
+    probs = C.check_pins(C.parse_versions(fixture))
+    assert probs and any("PLACEHOLDER" in p for p in probs), "a versions.env with PLACEHOLDER pins must refuse to build"
+    assert C.check_pins(C.parse_versions(open(os.path.join(SSHLAB, "versions.env")).read())) == [], "the committed versions.env must hold real pins"
     good = dict(DEBIAN_IMAGE="docker.io/library/debian@sha256:" + "a" * 64, DEBIAN_SNAPSHOT="20261101T000000Z", NU_VERSION="0.99.1", NU_URL="https://example.invalid/nu.tgz",
                 NU_SHA256="b" * 64, PWSH_VERSION="7.5.0", PWSH_URL="https://example.invalid/p.tgz", PWSH_SHA256="c" * 64)
     assert C.check_pins(good) == []
+    assert C.check_pins(dict(good, DEBIAN_IMAGE="docker.io/library/debian:trixie-slim@sha256:" + "d" * 64)) == [], "a tag before the digest is allowed"
     assert C.check_pins(dict(good, NU_SHA256="PLACEHOLDER")) and C.check_pins(dict(good, DEBIAN_IMAGE="debian:trixie-slim")) and C.check_pins({})
     # tree hash: stable, ignores labctl.py and __pycache__, changes with content
     d = tempfile.mkdtemp()
@@ -2896,11 +2923,16 @@ def lab_ctl_and_daemon_pure_pieces():
         os.makedirs(d + "/rootfs")
         open(d + "/Containerfile", "w").write("FROM x\n")
         open(d + "/rootfs/a", "w").write("1")
+        open(d + "/run.sh", "w").write("#!/bin/sh\necho hi\n")
+        os.chmod(d + "/run.sh", 0o755)
         h1 = C.tree_hash(d)
+        os.chmod(d + "/run.sh", 0o666)          # a Windows tar: no exec bit, CRLF line endings: the same tree must hash the same
+        open(d + "/run.sh", "wb").write(b"#!/bin/sh\r\necho hi\r\n")
+        assert C.tree_hash(d) == h1, "tree_hash must ignore file modes and CRLF"
         open(d + "/labctl.py", "w").write("whatever")
         os.makedirs(d + "/__pycache__")
         open(d + "/__pycache__/x.pyc", "w").write("z")
-        assert C.tree_hash(d) == h1 and C.tree_files(d) == ["Containerfile", "rootfs/a"]
+        assert C.tree_hash(d) == h1 and C.tree_files(d) == ["Containerfile", "rootfs/a", "run.sh"]
         open(d + "/rootfs/a", "w").write("2")
         assert C.tree_hash(d) != h1
     finally:
@@ -2910,6 +2942,7 @@ def lab_ctl_and_daemon_pure_pieces():
     a = C.run_argv("img:tag", "run1", "bare", 600, "tok", 1000.0)
     j = " ".join(a)
     assert a[:3] == ["podman", "run", "-d"] and "--cap-drop all" in j and "--cap-add NET_ADMIN" in j and "--network sshlab" in j and "--init" in j
+    assert "tok" not in a and "SSHLAB_TOKEN" in a and "SSHLAB_TOKEN=" not in j, "the token must not be on the command line"
     assert "phosphor.sshlab=1" in j and "phosphor.sshlab.expires=1600" in j and "-v " not in j and "--volume" not in j
     assert all(("-p 0.0.0.0::%d" % p) in j for p in (22, 2222, 7, 7000)) and "--read-only" in j and "/tmp:rw,noexec" in j and a[-1] == "img:tag"
     assert "--read-only" not in " ".join(C.run_argv("img:tag", "run1", "full", 600, "tok", 1000.0))
@@ -2955,8 +2988,12 @@ def lab_ctl_and_daemon_pure_pieces():
     assert plan[".bash_profile"].startswith("exec zsh -l") and ".zshrc" in plan and "hook.bash.p_exec" in plan[".bashrc"] and "scenarios/exec.sh" in plan[".bashrc"]
     assert ".config/fish/config.fish" in D.rc_plan(next(r for r in U.load() if r.user == "u_fish")) and "ENV=" in D.rc_plan(next(r for r in U.load() if r.user == "u_dash"))[".profile"]
     assert "hook.sh.u_ash" in D.rc_plan(next(r for r in U.load() if r.user == "u_ash"))[".profile"]
-    ss = 'ESTAB 0 0 10.89.0.2:22 10.89.0.1:51234 users:(("sshd-session",pid=77,fd=4),("sshd-session",pid=70,fd=4))\nESTAB 0 0 10.89.0.2:7000 10.89.0.1:5 \n'
-    assert D.parse_ss(ss)[0] == ("10.89.0.1", 51234, 22, [77, 70])
+    ss = '0      0      10.89.0.2:22     10.89.0.1:51234\n0      0      10.89.0.2:7000   10.89.0.1:5\n0 0 [::ffff:10.89.0.2]:2222 [::ffff:10.89.0.1]:6000\n'      # `ss -tnH state established`: no State column, no pids
+    assert D.parse_ss(ss) == [("10.89.0.1", 51234, 22), ("10.89.0.1", 5, 7000), ("::ffff:10.89.0.1", 6000, 2222)]
+    log = "sshd-session[9]: Accepted publickey for u_a from 10.89.0.1 port 51234 ssh2: ED25519\nAccepted publickey for u_ab from 10.89.0.1 port 51240 ssh2\n"
+    assert D.accepted_ports(log, "u_a") == [("10.89.0.1", 51234)]
+    assert D.split_candidates("zsh", "\x1b[1m> \x1b[0mcd tabfx/\r\nambx_a/  ambx_b/\r\n", "cd tabfx/") == ["ambx_a/", "ambx_b/"]
+    assert D.split_candidates("fish", "a/\tdirectory\nb/\tdirectory\n", "x") == ["a/", "b/"]
     assert D.totp_file_text("ABC") == 'ABC\n" TOTP_AUTH\n'
 
 def main():

@@ -1295,7 +1295,7 @@ app-test-windows:
 
 # ---------------------------------------------------------------------------
 # Fake ssh lab (docs/testing.md 2.15, Wave 0.5b). A podman container on the box that is a fake REMOTE (two sshds, a user per shell, scenario users, a tc/netem
-# fault shaper, an HTTP control port). EVERYTHING here is manual: the image is built by `sshlab-image` (automatic only when script/realapp/sshlab/** changed),
+# fault shaper, an HTTP control port). EVERYTHING here is manual: the image is built by `sshlab-image` (play it after a change under script/realapp/sshlab/**),
 # the cases run in their own jobs, never in the ordinary app-test jobs. The Mac and Windows runners reach the box through a forced-command ssh key
 # (APPCI_LAB_KEY, machine-local) and the project variable SSHLAB_BOX; neither is in the repo. APPCI_LAB_MATRIX (quick | full | spec) is a play-time variable.
 # ---------------------------------------------------------------------------
@@ -1308,11 +1308,7 @@ sshlab-image:
   variables:
     GIT_DEPTH: "1"
   rules:
-    - changes:
-        - script/realapp/sshlab/**/*
-      when: on_success
-      allow_failure: true
-    - when: manual
+    - when: manual          # manual only: a `changes` rule runs on every new branch, where there is nothing to compare with
       allow_failure: true
   script:
     # build refuses a versions.env that still has PLACEHOLDER pins; selftest asserts zero lab containers are left afterwards

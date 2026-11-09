@@ -49,20 +49,26 @@ def session_pids(ps_text, user):
 
 
 def parse_ss(ss_text):
-    """`ss -tnpH` lines for established ssh connections -> [(client_ip, client_port, server_port, [pids])]"""
+    """`ss -tnH state established` lines ('Recv-Q Send-Q Local:port Peer:port', no State column with a state filter) -> [(client_ip, client_port, server_port)].
+    No pids: sshd is non-dumpable and the container has no SYS_PTRACE, so connections are matched to users through the sshd log (accepted_ports)."""
     out = []
     for line in ss_text.splitlines():
         f = line.split()
-        if len(f) < 5:
+        if len(f) < 4 or not f[0].isdigit():
             continue
-        lip, lport = f[3].rsplit(":", 1)
-        rip, rport = f[4].rsplit(":", 1)
-        pids = [int(x) for x in re.findall(r"pid=(\d+)", line)]
         try:
-            out.append((rip.strip("[]"), int(rport), int(lport), pids))
+            lip, lport = f[2].rsplit(":", 1)
+            rip, rport = f[3].rsplit(":", 1)
+            out.append((rip.strip("[]"), int(rport), int(lport)))
         except ValueError:
             pass
     return out
+
+
+def accepted_ports(sshd_log, user):
+    """client (ip, port) pairs of 'Accepted <method> for <user> from <ip> port <n>' lines in the sshd log (LogLevel VERBOSE)"""
+    pat = re.compile(r"Accepted \S+ for %s from (\S+) port (\d+)" % re.escape(user))
+    return [(m.group(1), int(m.group(2))) for m in pat.finditer(sshd_log)]
 
 
 def totp_file_text(secret_b32):
@@ -105,10 +111,10 @@ def count_matches(text, pattern):
 
 
 # ------------------------------------------------------------------ system actions (container only)
-def sh(argv, check=False, timeout=30, input=None, user=None, cwd=None):
+def sh(argv, check=False, timeout=30, input=None, user=None, cwd=None, env=None):
     if user:
         argv = ["runuser", "-u", user, "--"] + list(argv)
-    p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, input=input, cwd=cwd)
+    p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, input=input, cwd=cwd, env=env)
     if check and p.returncode:
         raise RuntimeError("%s failed (%d): %s" % (argv[:3], p.returncode, (p.stderr or p.stdout).strip()[:300]))
     return p
@@ -135,7 +141,8 @@ def sshd_config(port, tag, rows):
         "Port %d" % port, "ListenAddress 0.0.0.0", "HostKey %s/hostkeys/%s/ssh_host_ed25519_key" % (RUN, tag), "PidFile %s/sshd_%d.pid" % (RUN, port),
         "LogLevel VERBOSE", "UsePAM yes", "PasswordAuthentication no", "KbdInteractiveAuthentication no", "PubkeyAuthentication yes",
         "AuthorizedKeysFile %s/authkeys/%%u" % RUN, "StrictModes no", "PermitTTY yes", "X11Forwarding no", "PrintMotd no", "PermitUserEnvironment no",
-        "AcceptEnv LANG LC_*", "MaxSessions 10", "MaxAuthTries 6", "LoginGraceTime 30", ""]) + "\n" + usersdb.match_blocks(rows)
+        "AcceptEnv LANG LC_*", "MaxSessions 10", "MaxAuthTries 6", "LoginGraceTime 30",
+        "Subsystem sftp /usr/lib/openssh/sftp-server" if os.path.exists("/usr/lib/openssh/sftp-server") else "", ""]) + "\n" + usersdb.match_blocks(rows)
 
 
 def start_sshds(rows):
@@ -190,7 +197,9 @@ def apply_fault(spec):
     for i, c in enumerate(cmds):
         p = sh(c)
         if p.returncode and i >= n_clear:
-            sh(netem.clear_commands()[0]); raise RuntimeError("fault command failed: %s: %s" % (" ".join(c), (p.stderr or "").strip()[:200]))
+            for cc in netem.clear_commands():
+                sh(cc)
+            raise RuntimeError("fault command failed: %s: %s" % (" ".join(c), (p.stderr or "").strip()[:200]))
     STATE["fault"] = None if netem.is_noop(spec) else netem.normalize(spec)
     return STATE["fault"]
 
@@ -283,6 +292,9 @@ def lease(req):
                     hostkeys=STATE["hostkeys"], password=pw, mfa_secret=mfa, password_users=list(usersdb.PASSWORD_USERS), mfa_users=list(usersdb.MFA_USERS))
 
 
+DROPS = {"n": 0}
+
+
 def drop(req):
     """POST /drop {user, kind: rst|blackhole|stall, seconds}: break the user's live ssh connection(s) in a chosen way"""
     user, kind, secs = req.get("user"), req.get("kind"), float(req.get("seconds") or 10)
@@ -296,16 +308,21 @@ def drop(req):
             os.kill(pid, signal.SIGSTOP)
         threading.Timer(secs, lambda: [safe_kill(p, signal.SIGCONT) for p in pids]).start()
         return dict(dropped=len(pids), kind=kind, seconds=secs)
-    conns = [c for c in parse_ss(sh(["ss", "-tnpH", "state", "established"]).stdout) if c[2] in (22, 2222) and set(c[3]) & set(pids)]
-    sh(["nft", "-f", "-"], input=netem.NFT_DROP_SETUP)
-    rules = [r for c in conns for r in netem.nft_drop_connection(c[0], c[1], kind, c[2])]
+    log = "".join(open(SSHD_LOG[p], errors="replace").read() for p in SSHD_LOG if os.path.exists(SSHD_LOG[p]))
+    mine = set(accepted_ports(log, user))
+    conns = [c for c in parse_ss(sh(["ss", "-tnH", "state", "established"]).stdout) if c[2] in (22, 2222) and (c[0], c[1]) in mine]
+    DROPS["n"] += 1
+    table = "sshlab_drop_%d" % DROPS["n"]          # one table per drop: concurrent drops never flush each other's rules
+    sh(["nft", "-f", "-"], input=netem.nft_drop_setup(table), check=True)
+    rules = [r for c in conns for r in netem.nft_drop_connection(c[0], c[1], kind, c[2], table)]
     if rules:
         sh(["nft", "-f", "-"], input="\n".join(rules) + "\n", check=True)
     if kind == "rst":
         for pid in pids:
             safe_kill(pid, signal.SIGKILL)
+        threading.Timer(30, lambda: sh(["nft", "delete", "table", "inet", table])).start()
     else:
-        threading.Timer(secs, lambda: sh(["nft", "delete", "table", "inet", "sshlab_drop"])).start()
+        threading.Timer(secs, lambda: sh(["nft", "delete", "table", "inet", table])).start()
     return dict(dropped=len(conns), kind=kind, seconds=secs)
 
 
@@ -316,13 +333,20 @@ def safe_kill(pid, sig):
         pass
 
 
+def known_user(user):
+    if user not in {r.user for r in STATE["rows"]}:
+        raise ValueError("unknown user %r" % (user,))
+    return user
+
+
 def put_tree(req):
-    """PUT /tree {user, dir (under /work/<user>), files: {rel: base64}, git: bool}"""
-    user = req.get("user")
+    """PUT /tree {user, dir (under /work/<user>), files: {rel: base64}, git: bool, branch, branches}"""
+    user = known_user(req.get("user"))
     base = safe_path("%s/%s/%s" % (WORK_ROOT, user, (req.get("dir") or "").lstrip("/")), roots=("%s/%s" % (WORK_ROOT, user),))
     if not base:
         raise ValueError("dir escapes /work/<user>")
     uid, gid = uid_of(user), pwd.getpwnam(user).pw_gid
+    os.makedirs(base, exist_ok=True)
     for rel, b64 in (req.get("files") or {}).items():
         p = safe_path(os.path.join(base, rel), roots=(base,))
         if not p:
@@ -331,11 +355,15 @@ def put_tree(req):
         open(p, "wb").write(base64.b64decode(b64))
     sh(["chown", "-R", "%d:%d" % (uid, gid), base])
     if req.get("git"):
-        env = "GIT_AUTHOR_NAME=lab GIT_AUTHOR_EMAIL=lab@lab.test GIT_COMMITTER_NAME=lab GIT_COMMITTER_EMAIL=lab@lab.test"
-        script = "cd %s && git init -q -b %s && git add -A && git commit -q -m fixture" % (base, req.get("branch") or "main")
-        sh(["sh", "-c", env + " " + script], user=user, check=True)
-        for b in req.get("branches") or []:
-            sh(["git", "-C", base, "branch", b], user=user)
+        names = [req.get("branch") or "main"] + list(req.get("branches") or [])
+        if not all(re.match(r"^[A-Za-z0-9._/-]{1,60}$", n) and not n.startswith("-") for n in names):
+            raise ValueError("bad branch name")
+        g = ["git", "-c", "user.name=lab", "-c", "user.email=lab@lab.test", "-C", base]
+        sh(g + ["init", "-q", "-b", names[0]], user=user, check=True)
+        sh(g + ["add", "-A"], user=user, check=True)
+        sh(g + ["commit", "-q", "-m", "fixture"], user=user, check=True)
+        for b in names[1:]:
+            sh(g + ["branch", b], user=user, check=True)
     return dict(dir=base, files=len(req.get("files") or {}))
 
 
@@ -366,16 +394,28 @@ cmd=${COMP_WORDS[0]}; _completion_loader "$cmd" 2>/dev/null
 spec=$(complete -p "$cmd" 2>/dev/null); fn=$(sed -n 's/.* -F \([^ ]*\).*/\1/p' <<< "$spec")
 if [ -n "$fn" ]; then "$fn" "$cmd" "$cur" "${COMP_WORDS[COMP_CWORD-1]}"; printf '%s\n' "${COMPREPLY[@]}"; else compgen -f -- "$cur"; fi''', "_"],
     "fish": ["fish", "-c", 'complete -C "$argv[1]"'],
-    "pwsh": ["pwsh", "-NoProfile", "-Command", '(TabExpansion2 -inputScript $args[0] -cursorColumn $args[0].Length).CompletionMatches | ForEach-Object { $_.CompletionText }'],
+    "pwsh": ["pwsh", "-NoProfile", "-Command", '$l = $env:LAB_LINE; (TabExpansion2 -inputScript $l -cursorColumn $l.Length).CompletionMatches | ForEach-Object { $_.CompletionText }'],
     "nu": ["nu", "--ide-complete"],
     "zsh": ["zsh", "-fc", r'''zmodload zsh/zpty; zpty z zsh -fi; zpty -w z "autoload -U compinit; compinit -u; bindkey '^I' complete-word; PS1='> '"; sleep 1
 zpty -r z -t >/dev/null 2>&1; zpty -w -n z "$1"$'\t'; sleep 1; zpty -r z out; print -r -- "$out"; zpty -d z''', "_"],
 }
 
 
+ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|\r")
+
+
+def split_candidates(key, stdout, line):
+    """one candidate per entry. bash/pwsh/nu print one per line; fish adds a TAB description; zsh returns the raw zpty screen text: strip ANSI, split on
+    whitespace, drop the prompt and the words of the typed line itself"""
+    if key == "zsh":
+        typed = set(line.split()) | {">"}
+        return [t for t in ANSI_RE.sub(" ", stdout).split() if t not in typed]
+    return [l.split("\t")[0].rstrip() for l in stdout.splitlines() if l.strip()]
+
+
 def complete(req):
     """POST /complete {user, line}: the user's OWN shell's candidates for `line` (run as that user, in /work/<user>)"""
-    user, line = req.get("user"), req.get("line", "")
+    user, line = known_user(req.get("user")), req.get("line", "")
     row = next((r for r in STATE["rows"] if r.user == user), None)
     if not row:
         raise ValueError("unknown user")
@@ -383,11 +423,16 @@ def complete(req):
     argv = list(COMPLETERS.get(key) or [])
     if not argv:
         return dict(shell=row.shell, candidates=None, note="no completion driver for %s" % row.shell)
-    argv = argv + ([line] if key != "nu" else [])
+    argv = argv + ([line] if key not in ("nu", "pwsh") else [])
     if key == "nu":
         argv = ["nu", "--ide-complete", str(len(line)), "-c", line]
-    p = sh(argv, user=user, cwd="%s/%s" % (WORK_ROOT, user), timeout=20)
-    out = [l.split("\t")[0].rstrip() for l in p.stdout.splitlines() if l.strip()]
+    env = dict(os.environ, LAB_LINE=line) if key == "pwsh" else None
+    if env:
+        argv = ["runuser", "-u", user, "--preserve-environment", "--"] + argv
+        p = sh(argv, cwd="%s/%s" % (WORK_ROOT, user), timeout=20, env=env)
+    else:
+        p = sh(argv, user=user, cwd="%s/%s" % (WORK_ROOT, user), timeout=20)
+    out = split_candidates(key, p.stdout, line)
     return dict(shell=row.shell, candidates=out, raw=p.stdout[-4000:], rc=p.returncode, stderr=p.stderr[-500:])
 
 

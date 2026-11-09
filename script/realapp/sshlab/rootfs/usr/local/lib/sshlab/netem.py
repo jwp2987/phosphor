@@ -36,8 +36,8 @@ def netem_args(spec, direction_share=0.5):
     j = s["jitter_ms"] * direction_share
     if d or j:
         a += ["delay", _num(d) + "ms"] + ([_num(j) + "ms"] if j else [])
-    if s["loss_pct"]:
-        a += ["loss", _num(s["loss_pct"]) + "%"]
+    if s["loss_pct"]:      # the spec's loss is the ROUND-TRIP-ish rate: applied in both directions, so each direction gets half
+        a += ["loss", _num(s["loss_pct"] * direction_share) + "%"]
     if s["rate_kbit"]:
         a += ["rate", _num(s["rate_kbit"]) + "kbit"]
     return a
@@ -83,18 +83,19 @@ def nft_block_outbound(uids, iface=IFACE):
             "    meta skuid { %s } oifname != \"lo\" ct state new reject\n  }\n}\n" % ids)
 
 
-def nft_drop_connection(client_ip, client_port, mode, server_port):
-    """argv-free nft rule text for one connection: 'blackhole' drops both directions silently; 'rst' answers the client's next packet with a RST.
-    Rules go in table inet sshlab_drop (created on demand by labd, flushed on /fault DELETE or after the timeout)."""
+def nft_drop_connection(client_ip, client_port, mode, server_port, table="sshlab_drop"):
+    """nft rule lines for one connection in `table` (one table per drop, see nft_drop_setup): 'blackhole' drops both directions silently; 'rst' answers the
+    client's next packet with a RST."""
     if mode not in ("blackhole", "rst"):
         raise ValueError("mode must be blackhole or rst")
     sel_in = "ip saddr %s tcp sport %d tcp dport %d" % (client_ip, client_port, server_port)
     sel_out = "ip daddr %s tcp dport %d tcp sport %d" % (client_ip, client_port, server_port)
     if mode == "rst":
-        return ["add rule inet sshlab_drop in %s reject with tcp reset" % sel_in]
-    return ["add rule inet sshlab_drop in %s drop" % sel_in, "add rule inet sshlab_drop out %s drop" % sel_out]
+        return ["add rule inet %s drop_in %s reject with tcp reset" % (table, sel_in)]
+    return ["add rule inet %s drop_in %s drop" % (table, sel_in), "add rule inet %s drop_out %s drop" % (table, sel_out)]
 
 
-NFT_DROP_SETUP = ("table inet sshlab_drop\ndelete table inet sshlab_drop\ntable inet sshlab_drop {\n"
-                  "  chain in { type filter hook input priority -10; policy accept; }\n"
-                  "  chain out { type filter hook output priority -10; policy accept; }\n}\n")
+def nft_drop_setup(table="sshlab_drop"):
+    return ("table inet %s\ndelete table inet %s\ntable inet %s {\n"
+            "  chain drop_in { type filter hook input priority -10; policy accept; }\n"
+            "  chain drop_out { type filter hook output priority -10; policy accept; }\n}\n" % (table, table, table))

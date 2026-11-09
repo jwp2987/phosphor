@@ -249,6 +249,9 @@ def lab_mode():
             return "off", "APPCI_LAB=remote but neither APPCI_LAB_BOX nor SSHLAB_BOX is set"
         if not os.environ.get("APPCI_LAB_KEY"):
             return "off", "APPCI_LAB=remote but APPCI_LAB_KEY (the forced-command key) is not set"
+        kh = os.environ.get("APPCI_LAB_KNOWN_HOSTS", "")
+        if not kh or not os.path.isfile(kh):
+            return "off", "APPCI_LAB=remote but APPCI_LAB_KNOWN_HOSTS (a machine-local known_hosts file pinning the box's host key) is not set or not a file: the lab fails closed rather than trusting a key on first use"
         return "remote", ""
     if v in ("", "local"):
         if shutil.which("podman") and os.name != "nt":
@@ -302,8 +305,8 @@ class Lab:
                 host = "127.0.0.1"
             else:
                 box = box_addr()
-                p = subprocess.run(["ssh", "-i", os.environ["APPCI_LAB_KEY"], "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=accept-new",
-                                    "-o", "UserKnownHostsFile=" + os.path.join(run, "lab_box_known_hosts"), "-o", "ConnectTimeout=20", box,
+                p = subprocess.run(["ssh", "-i", os.environ["APPCI_LAB_KEY"], "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes",
+                                    "-o", "UserKnownHostsFile=" + os.environ["APPCI_LAB_KNOWN_HOSTS"], "-o", "ConnectTimeout=20", box,
                                     "start --run %s --flavor %s --ttl %d" % (runid, flavor, ttl)], input=sshlab_tar(), capture_output=True, timeout=300)
                 p.stdout, p.stderr = p.stdout.decode(errors="replace"), p.stderr.decode(errors="replace")
                 host = _host_of(box)
@@ -389,8 +392,8 @@ class Lab:
     def ctl(self, user, name, since=0):
         return self._req("GET", "/ctl?user=%s&name=%s&since=%d" % (user, name, since))
 
-    def tree(self, user, files, dir="", git=False, branches=()):
-        return self._req("PUT", "/tree", dict(user=user, dir=dir, files={k: base64.b64encode(v if isinstance(v, bytes) else v.encode()).decode() for k, v in files.items()},
+    def tree(self, user, files, dir="", git=False, branches=(), branch="main"):
+        return self._req("PUT", "/tree", dict(user=user, dir=dir, branch=branch, files={k: base64.b64encode(v if isinstance(v, bytes) else v.encode()).decode() for k, v in files.items()},
                                               git=git, branches=list(branches)))
 
     def helper(self, user, files=None):
@@ -478,8 +481,8 @@ def stop_container(cid, mode, box_key=None):
         ctl = os.environ.get("APPCI_LAB_CTL") or os.path.join(SSHLAB_DIR, "labctl.py")
         subprocess.run([sys.executable, ctl, "stop", "--id", cid], capture_output=True, timeout=60)
     else:
-        subprocess.run(["ssh", "-i", os.environ["APPCI_LAB_KEY"], "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=accept-new",
-                        "-o", "UserKnownHostsFile=" + os.path.join(tempfile.gettempdir(), "lab_box_known_hosts"), box_addr(), "stop --id " + cid],
+        subprocess.run(["ssh", "-i", os.environ["APPCI_LAB_KEY"], "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes",
+                        "-o", "UserKnownHostsFile=" + os.environ.get("APPCI_LAB_KNOWN_HOSTS", os.devnull), box_addr(), "stop --id " + cid],
                        capture_output=True, timeout=60, stdin=subprocess.DEVNULL)
 
 

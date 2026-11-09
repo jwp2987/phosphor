@@ -16,10 +16,11 @@ NETWORK = "sshlab"
 IMAGE_REPO = "localhost/phosphor-sshlab"
 KEEP_TAGS = 3
 MAX_TTL = 8 * 3600
+MAX_CONTAINERS = 3
 CAPS = ("NET_ADMIN", "SETUID", "SETGID", "CHOWN", "DAC_OVERRIDE", "FOWNER", "SYS_CHROOT", "AUDIT_WRITE", "KILL", "NET_BIND_SERVICE")
 PORTS = (22, 2222, 7, 7000)
 PIN_RE = {
-    "DEBIAN_IMAGE": r"^[a-z0-9./_-]+@sha256:[0-9a-f]{64}$", "DEBIAN_SNAPSHOT": r"^\d{8}T\d{6}Z$",
+    "DEBIAN_IMAGE": r"^[a-z0-9./_:-]+@sha256:[0-9a-f]{64}$", "DEBIAN_SNAPSHOT": r"^\d{8}T\d{6}Z$",
     "NU_SHA256": r"^[0-9a-f]{64}$", "PWSH_SHA256": r"^[0-9a-f]{64}$", "NU_URL": r"^https://\S+$", "PWSH_URL": r"^https://\S+$",
     "NU_VERSION": r"^\d+\.\d+\.\d+$", "PWSH_VERSION": r"^\d+\.\d+\.\d+$",
 }
@@ -62,12 +63,13 @@ def tree_files(root):
 
 
 def tree_hash(root):
-    """sha256 over (relative path, exec bit, bytes) of the sshlab tree except labctl.py (the image does not contain it)"""
+    """sha256 over (relative path, #! flag, LF-normalised bytes) of the sshlab tree except labctl.py (the image does not contain it)"""
     h = hashlib.sha256()
     for rel in tree_files(root):
         p = os.path.join(root, rel)
-        h.update(("%s\0%d\0" % (rel, 1 if os.access(p, os.X_OK) else 0)).encode())
-        h.update(open(p, "rb").read())
+        data = open(p, "rb").read().replace(b"\r\n", b"\n")          # LF-normalised, and the exec bit comes from the content (a #! script), not the file mode:
+        h.update(("%s\0%d\0" % (rel, 1 if data.startswith(b"#!") else 0)).encode())      # a Windows tar (0666, CRLF) must hash like the Linux tree
+        h.update(data)
         h.update(b"\0")
     return h.hexdigest()
 
@@ -84,7 +86,7 @@ def run_argv(tag, run, flavor, ttl, token, now, name=None):
         a += ["--cap-add", c]
     a += ["--pids-limit", "1024", "--memory", "3g", 
           "--label", "%s=1" % LABEL, "--label", "%s.run=%s" % (LABEL, run), "--label", "%s.expires=%d" % (LABEL, exp), "--label", "%s.flavor=%s" % (LABEL, flavor),
-          "-e", "SSHLAB_TOKEN=" + token, "-e", "SSHLAB_TTL_S=%d" % ttl, "--tmpfs", "/run:rw,mode=755", "--tmpfs", "/home:rw,exec,mode=755",
+          "-e", "SSHLAB_TOKEN", "-e", "SSHLAB_TTL_S=%d" % ttl, "--tmpfs", "/run:rw,mode=755", "--tmpfs", "/home:rw,exec,mode=755",
           "--tmpfs", "/work:rw,exec,mode=755", "--tmpfs", "/var/lib/appci:rw,mode=755"]
     if flavor == "bare":
         a += ["--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,mode=1777"]
@@ -171,8 +173,8 @@ def safe_extract(data, dest):
 
 
 # ------------------------------------------------------------------ podman
-def podman(*args, check=True, timeout=600, input=None):
-    p = subprocess.run(["podman"] + list(args), capture_output=True, text=True, timeout=timeout, input=input)
+def podman(*args, check=True, timeout=600, input=None, env=None):
+    p = subprocess.run(["podman"] + list(args), capture_output=True, text=True, timeout=timeout, input=input, env=env)
     if check and p.returncode:
         raise SystemExit("podman %s failed (%d): %s" % (" ".join(args[:3]), p.returncode, (p.stderr or p.stdout).strip()[-600:]))
     return p
@@ -243,13 +245,15 @@ def cmd_gc():
 
 def cmd_start(root, run, flavor, ttl):
     cmd_gc()
+    if len(lab_containers()) >= MAX_CONTAINERS:
+        raise SystemExit("%d lab containers already run (cap %d): stop one (labctl.py list / stop --id) or wait for its TTL" % (len(lab_containers()), MAX_CONTAINERS))
     tag = image_tag(flavor, tree_hash(root))
     if not image_exists(tag):
         raise SystemExit("image %s is not built: run the sshlab-image job (labctl.py build)" % tag)
     if podman("network", "exists", NETWORK, check=False).returncode:
         podman("network", "create", NETWORK)
     token = secrets.token_hex(24)
-    cid = podman(*run_argv(tag, run, flavor, ttl, token, time.time())[1:]).stdout.strip()
+    cid = podman(*run_argv(tag, run, flavor, ttl, token, time.time())[1:], env=dict(os.environ, SSHLAB_TOKEN=token)).stdout.strip()      # the token travels in the environment, never on the (ps-visible) command line
     ports = parse_ports(podman("port", cid).stdout)
     deadline, h = time.time() + 90, None
     while time.time() < deadline:
@@ -266,6 +270,8 @@ def cmd_start(root, run, flavor, ttl):
 
 
 def cmd_stop(cid):
+    if not re.match(r"^[0-9a-f]{12,64}$", cid or ""):
+        raise SystemExit("stop --id needs 12-64 hex characters of the container id")
     for c in lab_containers():
         if c["Id"].startswith(cid):
             podman("rm", "-f", "-t", "2", c["Id"], check=False)
@@ -342,7 +348,7 @@ def cmd_selftest(root):
     finally:
         if info:
             cmd_stop(info["cid"])
-        left = [c for c in cmd_list()]
+        left = [c for c in cmd_list() if c["labels"].get(LABEL + ".run", "").startswith("selftest-")]      # only our own containers, not the whole box
         shutil.rmtree(tmp, ignore_errors=True)
     if left:
         failures.append("lab containers left after selftest: %s" % [c["id"][:12] for c in left])

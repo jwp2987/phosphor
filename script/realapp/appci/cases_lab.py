@@ -51,6 +51,7 @@ def lab_prepare(ctx, r, arm):
         r.skip(getattr(ctx, "lab_why", None) or "no fake ssh lab for this pass (APPCI_LAB, docs/testing.md 2.15)")
     if arm.get("flavor") and lab.info.get("flavor") not in (None, arm["flavor"]):
         r.skip("needs the %s lab image; this pass started the %s one" % (arm["flavor"], lab.info.get("flavor")))
+    ctx._lab_prev = (ctx.remote, ctx.prof.remote)          # restored by lab_cleanup: a non-lab case in a mixed run must read the same-machine remote
     ctx.arm = arm
     rem = L.LabRemote(lab, arm["user"], arm["shell"])
     ctx.remote = ctx.prof.remote = rem
@@ -87,6 +88,10 @@ def lab_cleanup(ctx, arm):
     except Exception:
         pass
     ctx.arm = None
+    prev = getattr(ctx, "_lab_prev", None)
+    if prev:
+        ctx.remote, ctx.prof.remote = prev
+        ctx._lab_prev = None
 
 
 # ------------------------------------------------------------------ helpers shared by the cases
@@ -237,7 +242,8 @@ def c_chips(ctx, r, arm):
     log; with the helper it may make none)."""
     lab, u, base, rt = ctx.lab, arm["user"], work(arm), rtt_s(arm)
     uid = unique(ctx)
-    lab.tree(u, {"README": "x\n", "src/a.rs": "fn main(){}\n"}, dir="chips" + uid, git=True, branches=("feature-x",))      # <work>/chips<uid> is the git repo
+    br = "br" + uid          # a unique branch name: the chip OCR looks for THIS token, not for "main" (which any other text on screen could contain)
+    lab.tree(u, {"README": "x\n", "src/a.rs": "fn main(){}\n"}, dir="chips" + uid, git=True, branch=br, branches=("feature-x",))      # <work>/chips<uid> is the git repo
     if connect_or_fail(ctx, r, arm) is None:
         ctx.reset()
         return
@@ -251,13 +257,13 @@ def c_chips(ctx, r, arm):
         txt = ctx.ocr("lab_chips_%d" % i)
         if txt is None:
             break
-        if re.search(r"\bmain\b|\bmaster\b", txt):
+        if br in txt:
             seen = True
             break
     if txt is None:
         r.unverifiable("no OCR on this machine (tesseract): the branch chip on screen is not checked")
     else:
-        r.check(seen, "no branch chip (main/master) on screen after cd into a git directory on the remote")
+        r.check(seen, "no branch chip (branch %s) on screen after cd into a git directory on the remote" % br)
     prompts = max(1, ctx.remote.prompts() - p0)
     calls = L.count_starts(lab.sshd_since(size0)["data"])["command"]
     r.metric("side_calls", calls)
@@ -274,8 +280,8 @@ def c_chips(ctx, r, arm):
 def c_enter_start(ctx, r, arm):
     """20 lines typed at 10-25 ms/key with an instant Enter, interleaved with the same lines typed into a PLAIN `ssh -tt` session (same lab user, same path):
     median(app) <= median(plain) + max(15 ms, 10 %) (owner 2026-11-08; the +-1 ms budget is for LAN key->echo only). Time = the shell's own record of the line
-    (rec.log, remote clock mapped by /health's clock) minus the Enter. The effect file proves every line arrived exactly once, in order. The Enter is stamped when
-    type() returns (a few ms after the Return), the plain control just before its CR: the bias favours the app by far less than the 15 ms floor."""
+    (rec.log, remote clock mapped by /health's clock) minus the Enter. The effect file proves every line arrived exactly once, in order. The Enter is stamped just before the
+    Return key event (the plain control: just before its CR write), so the injector's own spawn time counts against the app."""
     lab, u, rt = ctx.lab, arm["user"], rtt_s(arm)
     n = ctx.count_lat(20)
     eff = work(arm, "es_%s.txt" % unique(ctx, 4))
@@ -300,8 +306,9 @@ def c_enter_start(ctx, r, arm):
         for i in range(n):
             tok = "es" + unique(ctx, 5)
             line = ctx.append_cmd(shell_kind, tok, eff)
-            ctx.be.type(line, type_pace(ctx), enter=True)
-            t_enter = time.time()
+            ctx.be.type(line, type_pace(ctx))
+            t_enter = time.time()          # stamped BEFORE the Return event, like the plain control's CR write; the injector's spawn time then counts against the app
+            ctx.be.key("Return")
             app_lines.append(line)
             app_toks.append(tok)
             if timed:

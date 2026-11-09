@@ -224,8 +224,13 @@ def main():
     # fake-ssh-lab cases (cases_lab.py, docs/testing.md 2.15) run ONLY when --cases names them (the app-test-lab-* jobs pass 'lab_*'), and only the arms
     # APPCI_LAB_MATRIX selects; the ordinary jobs never start a lab container
     lab_sel = labmod.matrix_selection()
+    exact_names = {n for n in a.cases.split(",") if n and not any(ch in n for ch in "*?[")}      # an arm named exactly bypasses the matrix filter; globs are filtered by it
     sel = [c for c in cases.CASES if ((not a.cases and not c.get("lab")) or (a.cases and labmod.name_matches(a.cases, c["name"])))
-           and not labmod.name_matches(a.skip, c["name"]) and (not c.get("lab") or labmod.arm_selected(c["arm"], lab_sel))]
+           and not labmod.name_matches(a.skip, c["name"]) and (not c.get("lab") or c["name"] in exact_names or labmod.arm_selected(c["arm"], lab_sel))]
+    if a.cases and not sel:       # never a silent empty (green) selection: the matrix or --skip removed everything the names matched
+        for m in a.modes.split(","):
+            emit(dict(name="case_selection", mode=m, status="fail", seconds=0, detail=["--cases %r selected no case (APPCI_LAB_MATRIX=%s and --skip removed them all)" % (a.cases, os.environ.get("APPCI_LAB_MATRIX", "quick"))]))
+        return finish(run, a, 2)
     sel.sort(key=lambda c: c["order"])
     exit_fail = False
     crashed_exit = None
@@ -289,7 +294,6 @@ def main():
                     try:
                         lab_obj.lease()
                         lab_obj.write_ssh(prof.home)
-                        prof.remote = labmod.LabRemote(lab_obj, "u_bash")      # a lab case re-points this at its arm's user
                         print("[lab] %s lab up (%s); fault ports only, control port untouched" % (lab_obj.mode, lab_obj.info.get("image")), flush=True)
                     except Exception as e:
                         lab_why = "the lab started but the lease/config failed: %r" % (e,)
