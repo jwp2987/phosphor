@@ -15,12 +15,17 @@
 //! Wave H parity, package P5. The app keeps thin wrappers (`util::git`, `code_review::diff_state`)
 //! so its behaviour is byte-identical.
 
+pub mod diff;
 #[cfg(any(feature = "client", feature = "daemon"))]
 pub mod gh;
 pub mod ops;
 pub mod parse;
 pub mod runner;
+pub mod status;
 pub mod types;
+
+#[cfg(test)]
+pub(crate) mod test_runner;
 
 #[cfg(any(feature = "client", feature = "daemon"))]
 pub use gh::{
