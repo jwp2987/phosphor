@@ -5528,3 +5528,4 @@ import cases_lab_remote  # noqa: E402,F401  (Wave H parity: lab_read_files_remot
 import cases_lab_skills  # noqa: E402,F401  (Wave H parity P8: lab_skills_remote, the host's skills and global rules with and without the helper)
 import cases_netless  # noqa: E402,F401  (Wave N: zero_network_startup, claude_plugin_offline)
 import cases_upgrade  # noqa: E402,F401  (#1546: upgrade_from_v0_1_17, the v0.1.17 -> current profile upgrade; table in upgrade_table.py)
+import cases_agent_netgate  # noqa: E402,F401  (#1830: agent network gate: denial, Allow, live origin edits, gate off, provider key never leaves)
