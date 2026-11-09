@@ -1315,8 +1315,9 @@ app-test-windows:
 # ---------------------------------------------------------------------------
 # Fake ssh lab (docs/testing.md 2.15, Wave 0.5b). A podman container on the box that is a fake REMOTE (two sshds, a user per shell, scenario users, a tc/netem
 # fault shaper, an HTTP control port). EVERYTHING here is manual: the image is built by `sshlab-image` (play it after a change under script/realapp/sshlab/**),
-# the cases run in their own jobs, never in the ordinary app-test jobs. The Mac and Windows runners reach the box through a forced-command ssh key
-# (APPCI_LAB_KEY, machine-local) and the project variable SSHLAB_BOX; neither is in the repo. APPCI_LAB_MATRIX (quick | full | spec) is a play-time variable.
+# the cases run in their own jobs, never in the ordinary app-test jobs. The Mac and Windows runners reach PERSISTENT lab containers on the box (one per
+# platform, fixed ports, `labctl.py serve`, a systemd --user service installed by sshlab-image) over HTTP with the protected+masked project variables
+# SSHLAB_BOX and SSHLAB_TOKEN (never in the repo, never echoed). APPCI_LAB_MATRIX (quick | full | spec) is a play-time variable.
 # ---------------------------------------------------------------------------
 sshlab-image:
   tags: [little-thing]
@@ -1335,6 +1336,13 @@ sshlab-image:
     - python3 script/realapp/sshlab/labctl.py selftest
     - mkdir -p "$HOME/.phosphor-sshlab"
     - install -m 755 script/realapp/sshlab/labctl.py "$HOME/.phosphor-sshlab/labctl.py"
+    # the fixed-port slots (docs/testing.md 2.15): refresh the user service, then reconcile once so the slots run the image just built. The token file
+    # ~/.phosphor-sshlab/token (mode 600) is machine-local and is only checked for existence here, never read into the log.
+    - mkdir -p "$HOME/.config/systemd/user"
+    - install -m 644 script/realapp/sshlab/sshlab-serve.service "$HOME/.config/systemd/user/sshlab-serve.service"
+    - test -f "$HOME/.phosphor-sshlab/token" || { echo "no ~/.phosphor-sshlab/token on this machine (see script/realapp/sshlab/README.md); the slots are not started"; exit 1; }
+    - python3 "$HOME/.phosphor-sshlab/labctl.py" serve --once
+    - systemctl --user daemon-reload && systemctl --user enable --now sshlab-serve && systemctl --user restart sshlab-serve
   after_script:
     - python3 script/realapp/sshlab/labctl.py gc || true
 
@@ -1356,21 +1364,24 @@ app-test-lab-linux:
     - python3 script/ci/results_scrub.py --tree appci-out
     - for d in appci-out/*/run; do [ -d "$d" ] && python3 script/ci/slim_appci_run.py "$d"; done
 
+# SSHLAB_BOX and SSHLAB_TOKEN are protected project variables: GitLab injects them into jobs on protected refs (main, build/*, v*) automatically, so they are
+# NOT re-mapped here (re-mapping would put the token into the job's variable list/expansion). lab.py reads them from the environment through ci_env.get,
+# prints only whether they are set, and a job on an unprotected ref SKIPs the lab cases with that reason. No `set -x` anywhere near them.
 app-test-lab-macos:
   extends: app-test-macos
   resource_group: mac-gui
   variables:
-    APPCI_LAB: remote
+    APPCI_LAB: fixed
+    APPCI_LAB_SLOT: mac
     APPCI_CASES: "lab_*"
-    APPCI_LAB_BOX: "$SSHLAB_BOX"      # the project variable; the key path APPCI_LAB_KEY is set in the runner user's environment (machine-local)
 
 app-test-lab-windows:
   extends: app-test-windows
   resource_group: windows-gui
   variables:
-    APPCI_LAB: remote
+    APPCI_LAB: fixed
+    APPCI_LAB_SLOT: windows
     APPCI_CASES: "lab_*"
-    APPCI_LAB_BOX: "$SSHLAB_BOX"
 
 # Real-use replay (Wave 1.5 #3, docs/testing.md "Real-use replay"): a seeded "day of use" in one long case per session mode, against the fake ssh lab at
 # 150 ms and the scripted fake model. MANUAL ONLY and never part of a ci_seq.py tier (no schedule, owner): play it by hand, or from the nightly routine the
