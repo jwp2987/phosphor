@@ -19,7 +19,7 @@ yanked = "warn"
 unused-ignored-advisory = "warn"
 ignore = [
     # ---- vulnerabilities -------------------------------------------------
-    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5 timing variability. Only via p256 0.13 -> ecdsa/elliptic-curve 0.13, pulled by aws-config's credentials-login feature (`aws login` credentials for BYO-LLM Bedrock). aws-sigv4 1.6 is already on p256 0.14 after the Rust 1.99.1 upgrade; aws-config 1.13.0 (newest as of 2026-11-03) still pins p256 ^0.13.2. Local ECDSA only (signing the user's own login credentials), no remotely timed private-key operation. Owner 2026-11-03: keep this ignore rather than drop credentials-login or fork aws-config. Drop it when aws-config moves credentials-login to p256 >= 0.14." },
+    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5 timing variability. Only via p256 0.13 -> ecdsa/elliptic-curve 0.13, pulled by aws-config's credentials-login feature (`aws login` credentials for BYO-LLM Bedrock). aws-sigv4 1.6 is already on p256 0.14 after the Rust 1.99.1 upgrade; aws-config 1.13.0 (newest as of 2026-11-03) still pins p256 ^0.13.2. Local ECDSA only (signing the user's own login credentials), no remotely timed private-key operation. Owner 2026-11-03: keep this ignore rather than drop credentials-login or fork aws-config. Drop it when aws-config moves credentials-login to p256 >= 0.14, or when the app `aws-sdk-login` feature (default on) is turned off after the in-app DPoP `aws login` path is verified (ai::aws_creds::login)." },
 
     # ---- unmaintained ----------------------------------------------------
     { id = "RUSTSEC-2025-0141", reason = "bincode is unmaintained, but considered to be complete." },

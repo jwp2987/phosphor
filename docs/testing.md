@@ -3129,3 +3129,28 @@ must collect the "before" with the switch at `0` and the "after" with it unset, 
 - Collect: open the 7 MB txt and rs files from `editor_memory_7mb` with `RUST_LOG=editor_memory=debug` and report the
   rss_kb step between stages (the stage with the largest jump is the next thing to cut), together with the existing
   `editor_memory open ...` breakdown line and the after-open figure with `PHOSPHOR_EDITOR_TRIM_AFTER_OPEN=1`.
+
+## AWS credential resolver for Bedrock (`app/src/ai/aws_creds`)
+
+The app resolves Bedrock credentials without the AWS SDK (design: slim the SDK, no loss of access). Unit tests, all in
+`cargo nextest -p warp --lib --features warp/gui -E 'test(aws_cred)'`; none touch the process environment or the real `~/.aws`
+(the resolver takes an injected `Env`, a temp home and a frozen clock from `aws_creds/test_support.rs`, so no serial guard is needed).
+Endpoints are redirected with `AWS_ENDPOINT_URL_<SERVICE>` / the ECS and IMDS variables to `fake_llm::aws_stub::HttpStub`.
+
+| area | tests | covers |
+|---|---|---|
+| INI parser | `aws_creds::ini_tests` | headers, comments, inline comments, nested blocks, BOM, credentials-over-config precedence, `~` and file-location variables |
+| SigV4 | `aws_creds::sigv4_tests` | the AWS SigV4 test-suite vectors (get-vanilla, session token, post form), double-encoded path |
+| chain / env / profile | `aws_creds::mod_tests`, `profile_tests` | env, `AWS_PROFILE`, explicit profile, missing profile, order env > profile > web identity > container > IMDS, static keys, session tokens, source_profile chains and loops, external_id, duration, credential_source, MFA, credential_process |
+| SSO | `aws_creds::sso_tests` | valid cache, legacy start-url key, expired + refresh rewrites the cache, expired without refresh token, spent refresh, still-valid fallback, portal 401 |
+| STS | `aws_creds::sts_tests` | unsigned web identity (JSON + XML), error code/message only, SigV4-verified AssumeRole, OidcManaged path |
+| ECS / IMDS | `aws_creds::imds_tests` | full-URI auth token/file, IMDSv2 token, v1 fallback, disabled, unreachable, no role |
+| credential_process | `aws_creds::process_tests` | ok, non-zero exit (stderr never reported), version, bad JSON, expired (unix only for the spawning cases) |
+| `aws login` | `aws_creds::login_tests` | DPoP proof shape and ES256 signature, cache path, refresh with proof bound to POST+URL+time, cache rewrite, rejected refresh |
+| Bedrock signed request | `aws_creds::mod_tests::*converse*` | resolved (profile and assumed-role) credentials sign `POST /model/{id}/converse`; `fake_llm::aws_stub::BedrockStub` recomputes SigV4 independently (scope, `x-amz-security-token`, content sha256, frozen time) and also refuses wrong region/secret/token |
+| error messages | `aws_credentials_tests` | user-facing text per error kind; under `aws-sdk-login` the SDK error mapping |
+
+`crates/fake_llm/src/aws_stub.rs` has its own tests (`aws_stub_tests.rs`) including the suite vectors against the verifier.
+The `aws-sdk-login` feature is default ON; run the lib tests once with it off (`--no-default-features` plus the usual feature set, minus `aws-sdk-login`) to prove the build graph is SDK-free.
+Not covered by unit tests: a real `aws login` / SSO / IMDS endpoint. **Owner verification before turning `aws-sdk-login` off:** a Bedrock request from a real `aws login` profile, with the cache close to expiry so the DPoP refresh runs.
+**Cargo.lock:** adds `hmac 0.12`, `sha1 0.10`, `p256 0.14` to `app`, and `hmac`/`sha2` to `fake_llm`; the first box build updates it.
