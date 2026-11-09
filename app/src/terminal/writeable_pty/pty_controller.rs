@@ -147,6 +147,8 @@ const NATIVE_COMPLETIONS_PROMPT_TIMEOUT: Duration = Duration::from_secs(2);
 /// Unlike the prompt handshake this covers real work in the shell -- globbing a large directory,
 /// say -- so it is far more generous. It does not gate PTY writes; it exists so the completions
 /// request cannot leak its channel and hang the requester's future forever.
+// give-up-net: a lost-event net only (the normal ends are CompletionsFinished, the cancel and the
+// shell's Precmd/exit): drops the exchange and closes the requesters' channels; writes and releases nothing.
 const NATIVE_COMPLETIONS_RESULTS_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Shown once per pane when the shell never answers the `^Y` completions trigger.
@@ -1390,6 +1392,8 @@ impl<T: EventLoopSender> PtyController<T> {
     ) {
         self.native_completions_generation = self.native_completions_generation.wrapping_add(1);
         let generation = self.native_completions_generation;
+        // give-up-net: the prompt arm closes the requester's channel and owes the cancel frame; the
+        // results arm drops the exchange. Neither writes or releases a key.
         ctx.spawn(
             async move {
                 Timer::after(timeout).await;
@@ -1422,9 +1426,9 @@ impl<T: EventLoopSender> PtyController<T> {
                     "Native shell completions results timed out after {timeout:?}; abandoning \
                      the request."
                 );
+                // Nothing is ever queued behind the exchange, so there is nothing to release.
                 me.in_flight_native_completions_state = None;
                 me.native_attached_waiters.clear();
-                me.execute_next_queued_write(ctx);
             },
         );
     }
@@ -1493,7 +1497,9 @@ impl<T: EventLoopSender> PtyController<T> {
 
     /// #1801: the shell an exchange asked is gone, or back at its prompt without answering (a
     /// ^C in its hook, an ssh that died, the pane's shell exiting): a Precmd, an ExitShell or
-    /// an Exit while the exchange waits for its prompt. The exchange just ends: no frame (the
+    /// an Exit while the exchange waits for its prompt OR for its results (the shell is back at
+    /// its prompt, so results can no longer arrive; an event beats the 15 s net). The exchange
+    /// just ends and its requesters see "no answer": no frame (the
     /// shell that would read it is not the one asked), and nothing was ever held behind its
     /// `^Y`, so there is nothing to release or hand back.
     fn end_native_exchange_if_its_shell_left(&mut self, event: &ModelEvent) {
@@ -1506,12 +1512,7 @@ impl<T: EventLoopSender> PtyController<T> {
         if shell_left {
             self.native_cancel_owed = false;
         }
-        if shell_left
-            && self
-                .in_flight_native_completions_state
-                .as_ref()
-                .is_some_and(NativeShellCompletionsState::is_awaiting_prompt)
-        {
+        if shell_left && self.in_flight_native_completions_state.is_some() {
             log::warn!("The shell asked for native completions left before answering; ending it");
             self.in_flight_native_completions_state = None;
             self.native_attached_waiters.clear();

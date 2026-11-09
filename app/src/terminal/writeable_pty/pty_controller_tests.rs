@@ -4260,6 +4260,64 @@ fn an_attached_tab_follows_the_cancel_and_the_give_up_of_the_exchange() {
     });
 }
 
+/// The shell back at its prompt (Precmd, ExitShell) while the exchange waits for its RESULTS ends
+/// it by that event, with no timer: the requester and an attached Tab see "no answer" and nothing
+/// is written. The pty layer is shared by Legacy and Table input.
+#[test]
+fn the_shell_leaving_during_the_results_wait_ends_the_exchange_by_event() {
+    for leaving in [
+        ModelEvent::Handler(AnsiHandlerEvent::Precmd),
+        ModelEvent::ExitShell {
+            session_id: SessionId::from(9),
+        },
+    ] {
+        App::test((), move |mut app| async move {
+            let (controller, model_events, _status, sender, _tx) =
+                native_completions_controller(&mut app);
+            let first = controller.update(&mut app, |c, ctx| start_exchange(c, "cd pro", ctx));
+            let second = controller.update(&mut app, |c, ctx| start_exchange(c, "cd pro", ctx));
+            model_events.update(&mut app, |_d, ctx| {
+                ctx.emit(ModelEvent::SendCompletionsPrompt {
+                    token: Some("61".to_owned()),
+                });
+            });
+            let before = written(&sender);
+            model_events.update(&mut app, |_d, ctx| ctx.emit(leaving));
+            assert!(first.recv().await.is_err(), "no answer");
+            assert!(
+                second.recv().await.is_err(),
+                "no answer for the attached Tab"
+            );
+            assert_eq!(written(&sender), before, "nothing is written");
+            controller.read(&app, |c, _| {
+                assert!(c.in_flight_native_completions_state.is_none());
+            });
+        });
+    }
+}
+
+/// The results net only drops the exchange: it writes nothing and releases no queued write.
+#[test]
+fn the_results_net_drops_the_exchange_and_writes_nothing() {
+    App::test((), |mut app| async move {
+        let (controller, model_events, _status, sender, _tx) =
+            native_completions_controller(&mut app);
+        let rx = controller.update(&mut app, |c, ctx| start_exchange(c, "cd pro", ctx));
+        model_events.update(&mut app, |_d, ctx| {
+            ctx.emit(ModelEvent::SendCompletionsPrompt {
+                token: Some("62".to_owned()),
+            });
+        });
+        let before = written(&sender);
+        controller.update(&mut app, |c, ctx| {
+            c.arm_native_completions_watchdog(Duration::from_millis(50), false, ctx);
+        });
+        Timer::after(Duration::from_millis(300)).await;
+        assert!(rx.recv().await.is_err(), "no answer");
+        assert_eq!(written(&sender), before, "the net writes nothing");
+    });
+}
+
 /// #1801: a second request while one is in flight (a second Tab) is refused at once, and the
 /// first exchange is untouched.
 #[test]
