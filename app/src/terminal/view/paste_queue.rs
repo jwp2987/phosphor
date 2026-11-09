@@ -205,6 +205,10 @@ pub(super) struct PasteQueueState {
     /// `Replay` for text / an Enter typed behind an Enter that waited, else the entry's own.
     /// Meaningful only while `delivering`.
     pub(super) delivering_origin: Origin,
+    /// Whether the entry being delivered arrived as synced input (#1893, #1862): its own origin,
+    /// never the enclosing arrival's thread-local. Passive at delivery: it never takes over an
+    /// agent-run command.
+    pub(super) delivering_synced: bool,
     /// The hand-off held the entry being delivered; the host answers `Requeue` with this.
     requeue_request: Option<RequeueRequest>,
     /// What goes back to the front of the queue after a `Requeue` when the entry delivered is not
@@ -266,6 +270,7 @@ impl PasteQueueState {
             delivering: false,
             delivering_stamp: Stamp::UNSTAMPED,
             delivering_origin: Origin::Keyboard,
+            delivering_synced: false,
             requeue_request: None,
             requeue_replacement: None,
             prompt_hold_waiting_told: None,
@@ -646,6 +651,7 @@ impl Host for PtyQueueHost<'_, '_> {
         // "as typed" because the queue is held by this very drain.
         self.view.paste_queue.delivering = true;
         self.view.paste_queue.delivering_stamp = entry.stamp;
+        self.view.paste_queue.delivering_synced = matches!(entry.origin, Origin::Synced);
         self.view.paste_queue.delivering_origin = match &entry.kind {
             EntryKind::Held { .. } => Origin::Held,
             EntryKind::Text(_) | EntryKind::Enter => Origin::Replay(entry.id),
@@ -653,6 +659,7 @@ impl Host for PtyQueueHost<'_, '_> {
         };
         let outcome = self.deliver_entry(entry, dest, follow);
         self.view.paste_queue.delivering = false;
+        self.view.paste_queue.delivering_synced = false;
         outcome
     }
 

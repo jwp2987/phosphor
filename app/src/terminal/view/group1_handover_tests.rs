@@ -74,6 +74,47 @@ fn release_without_event_hands_over_before_the_next_key() {
     })
 }
 
+/// #1895: the connect window was released without an event handler; a PASTE as the next input
+/// hands the held text over FIRST (as a key does), so the paste lands behind it, in typed order,
+/// and never ahead of the held keys at the pty.
+#[test]
+fn release_without_event_hands_over_before_the_next_paste() {
+    App::test((), |mut app| async move {
+        let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(
+            DestinationMode::Table,
+        );
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("echo QW", ctx);
+            assert!(view.ssh_typeahead_holding);
+            view.ssh_remote_prompt_seen = true;
+            first_precmd_processed_for_test(view, ctx);
+            release_ssh_gate_for_test(view);
+            ctx.clipboard()
+                .write(ClipboardContent::plain_text("ERTY".to_owned()));
+            view.paste(false, ctx);
+            assert!(!view.ssh_typeahead_holding);
+            assert!(!view.ssh_handover_after_release);
+        });
+        for _ in 0..16 {
+            futures_lite::future::yield_now().await;
+        }
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo QWERTY");
+        });
+        let written = String::from_utf8_lossy(&pty_writes.borrow().concat()).into_owned();
+        assert_eq!(
+            written, "",
+            "nothing of the line reaches the pty ahead of the held keys"
+        );
+    })
+}
+
 /// 1d (iii): an agent write after a silent release (a give-up) schedules the hand-over for the
 /// next turn; with no remote prompt the held text goes back to the editor, unexecuted, guarded,
 /// and nothing of it reaches the pty.

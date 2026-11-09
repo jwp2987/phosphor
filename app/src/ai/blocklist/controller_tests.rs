@@ -2887,6 +2887,23 @@ mod finished_batch {
         assert_eq!(plan.follow_up, Some(FollowUpTrigger::Auto));
     }
 
+    /// #1896: the cancelled results `cancel_discarded_actions` records for actions that were never
+    /// queued emit `FinishedAction { FollowUpSubmitted { same } }`; a batch made only of cancelled
+    /// results sends NO request of its own (the user's follow-up is the one request that carries
+    /// them), so a steer sends exactly one request.
+    #[test]
+    fn discarded_actions_of_a_follow_up_send_no_request_of_their_own() {
+        let plan = plan_finished_batch(
+            Some(CancellationReason::FollowUpSubmitted {
+                is_for_same_conversation: true,
+            }),
+            &[cancelled_read(), rejected()],
+            false,
+            false,
+        );
+        assert_eq!(plan.follow_up, None);
+    }
+
     /// A user Reject or Stop ends the turn quietly: the user chose it.
     #[test]
     fn a_user_stop_ends_the_turn_without_a_notice() {

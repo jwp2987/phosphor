@@ -62,11 +62,36 @@ impl PendingPreprocessedActions {
         preprocess_id: PreprocessId,
         actions: Vec<AIAgentAction>,
     ) -> Vec<AIAgentAction> {
+        self.handle_preprocess_actions_result_with_stale(preprocess_id, actions)
+            .0
+    }
+
+    /// [`Self::handle_preprocess_actions_result`] that also hands back the actions IN HAND whose
+    /// batch is missing or abandoned (#1894): they will never be queued, so the caller must give
+    /// each a cancelled result (a turn always ends in an answerable card). Returns
+    /// `(actions to queue, stale actions to cancel)`.
+    pub fn handle_preprocess_actions_result_with_stale(
+        &mut self,
+        preprocess_id: PreprocessId,
+        actions: Vec<AIAgentAction>,
+    ) -> (Vec<AIAgentAction>, Vec<AIAgentAction>) {
+        let mut stale = Vec::new();
+        let ready = self.handle_preprocess_actions_result_inner(preprocess_id, actions, &mut stale);
+        (ready, stale)
+    }
+
+    fn handle_preprocess_actions_result_inner(
+        &mut self,
+        preprocess_id: PreprocessId,
+        actions: Vec<AIAgentAction>,
+        stale: &mut Vec<AIAgentAction>,
+    ) -> Vec<AIAgentAction> {
         let mut actions_to_queue = Vec::with_capacity(actions.len());
 
         // Find the index of the action with the given preprocess_id
         let Some(current_index) = self.0.iter().position(|batch| batch.id == preprocess_id) else {
             log::warn!("Action not found in list of preprocessed actions");
+            *stale = actions;
             return vec![];
         };
 
@@ -81,6 +106,7 @@ impl PendingPreprocessedActions {
                 "hop=agent_action status=parked late preprocess result for an abandoned batch dropped"
             );
             self.0.remove(current_index);
+            *stale = actions;
             return vec![];
         }
 

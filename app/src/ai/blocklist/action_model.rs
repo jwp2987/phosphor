@@ -1411,6 +1411,11 @@ impl BlocklistAIActionModel {
                 // executed. Nothing from an old turn runs on its own.
                 let stale = batches.release_ready();
                 self.record_stale_cancelled(conversation_id, stale);
+                // #1894: a hung apply of an abandoned batch is cancelled too, or it stays hung
+                // and its cancel sender leaks until a conversation cancel.
+                self.executor.update(ctx, |executor, ctx| {
+                    executor.cancel_preprocessing(conversation_id, ctx)
+                });
             }
         }
         self.queue_actions_without_abandoning(actions, conversation_id, ctx);
@@ -1560,11 +1565,14 @@ impl BlocklistAIActionModel {
         actions: Vec<AIAgentAction>,
         ctx: &mut ModelContext<Self>,
     ) {
-        let actions_to_enqueue = self
+        let (actions_to_enqueue, stale) = self
             .pending_preprocessed_actions
             .entry(conversation_id)
             .or_default()
-            .handle_preprocess_actions_result(preprocess_id, actions);
+            .handle_preprocess_actions_result_with_stale(preprocess_id, actions);
+        // #1894: actions in hand whose batch was abandoned (cancel / new turn) or is gone never
+        // execute, and still owe the conversation a cancelled result.
+        self.record_stale_cancelled(conversation_id, stale);
 
         self.enqueue_preprocessed_actions(conversation_id, actions_to_enqueue, ctx);
         self.try_to_execute_available_actions(conversation_id, ctx);

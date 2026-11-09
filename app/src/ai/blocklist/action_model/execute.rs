@@ -1024,6 +1024,18 @@ impl BlocklistAIActionExecutor {
         });
     }
 
+    /// Ends the conversation's diff applications that are still in preprocessing (#1894): the
+    /// `queue_actions` abandon branch calls this so a hung apply cannot stay hung.
+    pub fn cancel_preprocessing(
+        &mut self,
+        conversation_id: AIConversationId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        self.request_file_edits_executor.update(ctx, |executor, _| {
+            executor.cancel_preprocessing(conversation_id)
+        });
+    }
+
     pub fn cancel_all_running_async_actions_for_conversation(
         &mut self,
         conversation_id: AIConversationId,
