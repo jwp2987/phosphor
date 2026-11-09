@@ -88,9 +88,39 @@ fn initialize_advertises_the_helper_capabilities_and_version() {
             "run_command",
             "git_read",
             "ripgrep_search",
-            "repo_metadata"
+            "repo_metadata",
+            "file_context"
         ]
     );
+    // Parity family a: batch file reads are served by the helper.
+    assert!(caps.supports(crate::capability::FILE_CONTEXT));
+    assert!(!caps.supports(crate::capability::BUFFERS));
+}
+
+/// Family a through the server core: a real `ReadFileContext` request is answered with the
+/// shared assembler's response (the per-case coverage is in `file_context_tests.rs`).
+#[test]
+fn read_file_context_is_served_not_unsupported() {
+    let mut h = harness();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("a.txt");
+    std::fs::write(&path, "one\ntwo\n").unwrap();
+    h.send(host(
+        "rc",
+        host_scoped_request::Message::ReadFileContext(crate::proto::ReadFileContextRequest {
+            files: vec![crate::proto::ReadFileContextFile {
+                path: path.to_string_lossy().into_owned(),
+                line_ranges: vec![],
+            }],
+            ..Default::default()
+        }),
+    ));
+    let msg = h.next();
+    let Some(server_message::Message::ReadFileContextResponse(resp)) = msg.message else {
+        panic!("expected ReadFileContextResponse, got {msg:?}");
+    };
+    assert!(resp.failed_files.is_empty(), "{resp:?}");
+    assert_eq!(resp.file_contexts.len(), 1);
 }
 
 #[test]
@@ -286,10 +316,6 @@ fn a_connection_keeps_the_daemon_alive_past_the_grace_period() {
 fn every_reserved_family_request_is_unsupported_and_named() {
     let mut h = harness();
     let host_requests: Vec<(&str, host_scoped_request::Message)> = vec![
-        (
-            "ReadFileContext",
-            host_scoped_request::Message::ReadFileContext(Default::default()),
-        ),
         (
             "SaveBuffer",
             host_scoped_request::Message::SaveBuffer(Default::default()),

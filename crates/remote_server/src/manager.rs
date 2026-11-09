@@ -1019,6 +1019,9 @@ impl RemoteServerManager {
     /// (see [`crate::backend`]). Cheap; take one per operation. Call sites never fall back or
     /// retry themselves.
     pub fn backend_for_host(&self, host_id: &HostId) -> crate::backend::RoutedBackend {
+        if let Some(session_id) = session_for_shell_mode_host(host_id) {
+            return self.backend_for_session_with_host(session_id, None);
+        }
         let sessions: Vec<SessionId> = self
             .host_to_sessions
             .get(host_id)
@@ -1028,22 +1031,50 @@ impl RemoteServerManager {
             .backend(host_id, self.client_for_host(host_id).cloned(), sessions)
     }
 
-    /// The backend for one session, with the host id the app files its results under. A session
-    /// whose helper is connected uses its host; a session with only an out-of-band channel (no
-    /// helper at all) is its own shell-mode host, so its file tree and links work without one.
-    /// `None` when the session has neither, i.e. nothing can serve it.
-    pub fn backend_for_session(
+    /// [`Self::backend_for_host`] for the host `session_id` belongs to, or, when the session has
+    /// no helper connection (so no host id: the no-helper case, the primary design), a backend
+    /// keyed on the session itself whose shell arm uses that session's out-of-band channel. The
+    /// agent tools and file views call this: they know their session, not necessarily a host.
+    pub fn backend_for_session(&self, session_id: SessionId) -> crate::backend::RoutedBackend {
+        self.backend_for_session_with_host(session_id, self.host_id_for_session(session_id))
+    }
+
+    /// [`Self::backend_for_session`] when the caller already knows the host (a subshell inherits
+    /// its ssh session's host id): the helper of `host_id` if connected, and the shell arm over
+    /// the out-of-band channel of `session_id` or of any session on that host.
+    pub fn backend_for_session_with_host(
         &self,
         session_id: SessionId,
-    ) -> Option<(HostId, crate::backend::RoutedBackend)> {
-        if let Some(host_id) = self.host_id_for_session(session_id).cloned() {
-            let backend = self.backend_for_host(&host_id);
-            return Some((host_id, backend));
+        host_id: Option<&HostId>,
+    ) -> crate::backend::RoutedBackend {
+        match host_id {
+            Some(host_id) => {
+                let sessions: Vec<SessionId> = std::iter::once(session_id)
+                    .chain(
+                        self.host_to_sessions
+                            .get(host_id)
+                            .into_iter()
+                            .flat_map(|s| s.iter().copied()),
+                    )
+                    .collect();
+                self.router
+                    .backend(host_id, self.client_for_host(host_id).cloned(), sessions)
+            }
+            None => {
+                // Not a real host id: it only keys the router's per-connection fallback memory,
+                // and a helper-less session never has a helper connection to fall back from.
+                let host = shell_mode_host_id(session_id);
+                self.router.backend(&host, None, [session_id])
+            }
         }
-        self.router.executor_for([session_id])?;
-        let host_id = HostId::new(format!("shell-session-{session_id:?}"));
-        let backend = self.router.backend(&host_id, None, [session_id]);
-        Some((host_id, backend))
+    }
+
+    /// The host id the app files `session_id`'s results under: its helper's real host id, or the
+    /// shell-mode stand-in ([`shell_mode_host_id`]) for a session with no helper.
+    pub fn host_for_session_or_shell_mode(&self, session_id: SessionId) -> HostId {
+        self.host_id_for_session(session_id)
+            .cloned()
+            .unwrap_or_else(|| shell_mode_host_id(session_id))
     }
 
     /// Whether `session_id` has an out-of-band channel but no helper: its remote features run in
@@ -1057,7 +1088,7 @@ impl RemoteServerManager {
     /// metadata, or an out-of-band channel for the shell backend.
     pub fn can_serve_repo_metadata(&self, session_id: SessionId) -> bool {
         self.backend_for_session(session_id)
-            .is_some_and(|(_, backend)| backend.is_available(crate::backend::Family::RepoMetadata))
+            .is_available(crate::backend::Family::RepoMetadata)
     }
 
     /// One log line per file-tree push, for the lab and for diagnosing a stale tree. Counts and a
@@ -2010,12 +2041,8 @@ impl RemoteServerManager {
 
         // The helper (or legacy daemon) when it serves repo metadata, otherwise the shell backend
         // over the session's out-of-band channel; `Unavailable` when it has neither.
-        let Some((host_id, backend)) = self.backend_for_session(session_id) else {
-            log::debug!(
-                "navigate_to_directory: no server or out-of-band channel for {session_id:?}"
-            );
-            return;
-        };
+        let host_id = self.host_for_session_or_shell_mode(session_id);
+        let backend = self.backend_for_session(session_id);
         if !backend.is_available(crate::backend::Family::RepoMetadata) {
             log::debug!("navigate_to_directory: repo metadata is unavailable for {session_id:?}");
             return;
@@ -2079,9 +2106,7 @@ impl RemoteServerManager {
         if !self.indexed_root.contains_key(&session_id) {
             return;
         }
-        let Some((_, backend)) = self.backend_for_session(session_id) else {
-            return;
-        };
+        let backend = self.backend_for_session(session_id);
         if backend.kind(crate::backend::Family::RepoMetadata) != crate::backend::BackendKind::Shell
         {
             return;
@@ -2097,10 +2122,9 @@ impl RemoteServerManager {
     }
 
     fn start_tree_refresh(&mut self, session_id: SessionId, ctx: &mut ModelContext<Self>) {
-        let (Some(root), Some((host_id, backend))) = (
-            self.indexed_root.get(&session_id).cloned(),
-            self.backend_for_session(session_id),
-        ) else {
+        let host_id = self.host_for_session_or_shell_mode(session_id);
+        let backend = self.backend_for_session(session_id);
+        let Some(root) = self.indexed_root.get(&session_id).cloned() else {
             if let Some(c) = self.tree_refresh.get_mut(&session_id) {
                 c.finished();
             }
@@ -2170,12 +2194,8 @@ impl RemoteServerManager {
         dir_path: String,
         ctx: &mut ModelContext<Self>,
     ) {
-        let Some((host_id, backend)) = self.backend_for_session(session_id) else {
-            log::warn!(
-                "load_remote_repo_metadata_directory: no server or out-of-band channel for {session_id:?}"
-            );
-            return;
-        };
+        let host_id = self.host_for_session_or_shell_mode(session_id);
+        let backend = self.backend_for_session(session_id);
         if !backend.is_available(crate::backend::Family::RepoMetadata) {
             log::debug!(
                 "load_remote_repo_metadata_directory: repo metadata is unavailable for {session_id:?}"
@@ -3537,3 +3557,22 @@ where
 #[cfg(all(test, not(target_family = "wasm")))]
 #[path = "manager_tests.rs"]
 mod tests;
+
+const SHELL_MODE_HOST_PREFIX: &str = "shell-session:";
+
+/// The stand-in [`HostId`] for a session that has no helper (so no real host id): what file views
+/// register their remote files under, and what [`RemoteServerManager::backend_for_host`] maps
+/// back to the session's out-of-band channel.
+pub fn shell_mode_host_id(session_id: SessionId) -> HostId {
+    HostId::new(format!("{SHELL_MODE_HOST_PREFIX}{}", session_id.as_u64()))
+}
+
+/// The session a [`shell_mode_host_id`] stands for.
+pub fn session_for_shell_mode_host(host_id: &HostId) -> Option<SessionId> {
+    host_id
+        .as_str()
+        .strip_prefix(SHELL_MODE_HOST_PREFIX)?
+        .parse::<u64>()
+        .ok()
+        .map(SessionId::from)
+}

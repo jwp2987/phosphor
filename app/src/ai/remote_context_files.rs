@@ -43,6 +43,8 @@ use warp_util::host_id::HostId;
 use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warpui::{AppContext, SingletonEntity};
 
+use remote_server::backend::RemoteFeatures as _;
+
 use crate::remote_server::manager::RemoteServerManager;
 
 pub(crate) const REMOTE_CONTEXT_MAX_FILE_BYTES: u32 = 1024 * 1024;
@@ -68,14 +70,15 @@ pub(crate) fn read_remote_text_file_contents(
     // Dual-HostId bridge (see module doc comment): RemoteServerManager is
     // keyed by warp_core::HostId, paths carry warp_util::host_id::HostId.
     let core_host_id = crate::code::buffer_location::util_host_id_to_core(&host_id);
-    let client = RemoteServerManager::as_ref(ctx)
-        .client_for_host_with(&core_host_id, remote_server::capability::FILE_CONTEXT)
-        .cloned();
+    // The router picks the helper or, when the helper lacks the family, shell mode over the
+    // host's out-of-band channel; this call site never decides.
+    let backend = RemoteServerManager::as_ref(ctx).backend_for_host(&core_host_id);
+    let available = backend.is_available(remote_server::backend::Family::FileContext);
     async move {
-        let Some(client) = client else {
+        if !available {
             anyhow::bail!("No connected remote server for host {host_id}");
-        };
-        let response = client.read_file_context(request).await?;
+        }
+        let response = backend.read_file_context(request).await?;
         Ok(pair_remote_text_file_contents(
             paths,
             response.file_contexts,

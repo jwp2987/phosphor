@@ -12,6 +12,7 @@
 //! * [`tree`]: the repo file tree (listing commands, parsers, proto assembly) shared with the helper.
 //! * [`git`]: git argv builders, parsers and algorithms over a `GitRunner` (P5).
 //! * [`predicates`]: "may this command change HEAD / the cwd", the refresh-coordinator inputs.
+//! * [`read`]: batch file reads (`ReadFileContext`), shared by the helper and the shell backend.
 //!
 //! Wave H, P0.
 
@@ -20,8 +21,10 @@ pub mod chunk;
 pub mod frame;
 pub mod git;
 pub mod predicates;
+pub mod read;
 pub mod shell_kind;
 pub mod tree;
+pub mod write;
 
 pub use frame::{Frame, FrameError, ParsedSection, Script, StderrMode};
 pub use shell_kind::ShellKind;

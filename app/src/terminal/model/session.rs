@@ -123,6 +123,11 @@ pub struct Sessions {
     /// in-band command execution, keyed by session ID.
     in_band_command_output_tx_map: HashMap<SessionId, Sender<ExecutedExecutorCommandEvent>>,
 
+    /// The shell backend's out-of-band channel registrations (ssh ControlMaster side exec), keyed
+    /// by session. Dropping an entry, or this model, unregisters the channel from the router.
+    #[cfg(feature = "local_tty")]
+    shell_mode_channels: HashMap<SessionId, command_executor::OutOfBandRegistration>,
+
     /// An executor to use for all spawned sessions.
     ///
     /// This is only intended to be used in tests, which may want to use
@@ -309,6 +314,8 @@ impl Sessions {
             sessions: Default::default(),
             executor_command_tx,
             in_band_command_output_tx_map: Default::default(),
+            #[cfg(feature = "local_tty")]
+            shell_mode_channels: Default::default(),
             executor_for_all_sessions: None,
             env_vars: Default::default(),
             remote_server_setup_states: Default::default(),
@@ -323,6 +330,8 @@ impl Sessions {
             sessions: Default::default(),
             executor_command_tx,
             in_band_command_output_tx_map: Default::default(),
+            #[cfg(feature = "local_tty")]
+            shell_mode_channels: Default::default(),
             executor_for_all_sessions: None,
             env_vars: Default::default(),
             remote_server_setup_states: Default::default(),
@@ -428,6 +437,22 @@ impl Sessions {
                 ctx,
             )
         };
+        // Tests that inject one executor for every session have no ssh master to register.
+        #[cfg(feature = "local_tty")]
+        if self.executor_for_all_sessions.is_none() {
+            let parent_session_info = session_info
+                .spawning_session_id
+                .as_ref()
+                .and_then(|session_id| self.sessions.get(session_id))
+                .map(|session| session.info.clone());
+            if let Some(registration) = command_executor::register_shell_mode_channel(
+                &session_info,
+                parent_session_info.as_ref(),
+                ctx,
+            ) {
+                self.shell_mode_channels.insert(session_id, registration);
+            }
+        }
         if !in_band_command_output_tx.is_closed() {
             // If the receiving side of the channel was stored somewhere (and
             // not just dropped), store the sending side of the channel so we

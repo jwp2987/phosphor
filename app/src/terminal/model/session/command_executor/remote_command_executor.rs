@@ -6,7 +6,10 @@ use std::{any::Any, path::PathBuf};
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use command::r#async::Command;
+use futures::future::BoxFuture;
 use itertools::Itertools as _;
+use remote_server::backend::{ChannelKind, ExecError, ExecOutput, ExecRequest, OutOfBandExecutor};
+use remote_server::shellcmd::ShellKind;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use warpui::r#async::FutureExt as _;
 
@@ -64,6 +67,26 @@ impl InflightLimit {
     }
 }
 
+/// One in-flight limit per ControlMaster socket, shared by every user of that master in this
+/// process: the generator executor ([`RemoteCommandExecutor`], which is rebuilt when the helper
+/// connects or is lost) and the shell-mode channel ([`ControlMasterChannel`]). Two limits of four
+/// would put eight mux clients on a master whose sshd allows ten sessions in total.
+fn inflight_limit_for_socket(socket: &std::path::Path) -> InflightLimit {
+    static LIMITS: std::sync::LazyLock<std::sync::Mutex<HashMap<PathBuf, InflightLimit>>> =
+        std::sync::LazyLock::new(Default::default);
+    let mut limits = LIMITS.lock().unwrap_or_else(|e| e.into_inner());
+    limits
+        .entry(socket.to_path_buf())
+        .or_insert_with(|| {
+            InflightLimit::new(max_inflight_from_env(
+                std::env::var("PHOSPHOR_SSH_LEGACY_MAX_INFLIGHT")
+                    .ok()
+                    .as_deref(),
+            ))
+        })
+        .clone()
+}
+
 /// `PHOSPHOR_SSH_LEGACY_MAX_INFLIGHT`: unset or unparsable is the default, `0` is unlimited.
 pub(crate) fn max_inflight_from_env(value: Option<&str>) -> Option<usize> {
     match value.map(str::trim).and_then(|v| v.parse::<usize>().ok()) {
@@ -97,13 +120,9 @@ pub struct RemoteCommandExecutor {
 impl RemoteCommandExecutor {
     pub fn new(control_socket_path: PathBuf, wsl_distro: Option<String>) -> Self {
         Self {
+            inflight: inflight_limit_for_socket(&control_socket_path),
             control_socket_path,
             wsl_distro,
-            inflight: InflightLimit::new(max_inflight_from_env(
-                std::env::var("PHOSPHOR_SSH_LEGACY_MAX_INFLIGHT")
-                    .ok()
-                    .as_deref(),
-            )),
             command_timeout: command_timeout_from_env(
                 std::env::var("PHOSPHOR_SSH_LEGACY_COMMAND_TIMEOUT_SECS")
                     .ok()
@@ -154,51 +173,16 @@ impl CommandExecutor for RemoteCommandExecutor {
         }
         command_str.push_str(command);
 
-        // Guarded mux client (#1100): ride the existing master or fail fast, never open a new
-        // connection or prompt. Argument list only; see `remote_server::ssh::ssh_args`.
-        let mut ssh_args = remote_server::ssh::ssh_args(std::path::Path::new(
-            self.control_socket_path
-                .to_str()
-                .ok_or_else(|| anyhow!("socket path must exist"))?,
-        ));
-        ssh_args.push(command_str);
-
-        // If the SSH session originated from WSL, the ControlPath also exists inside WSL.
-        // Therefore, SSH commands directly from the Windows host will not work. They must be run
-        // inside that same WSL instance
-        let mut command = match &self.wsl_distro {
-            None => Command::new("ssh"),
-            Some(distro_name) => {
-                let mut command = Command::new("wsl");
-                command.args(["-d", distro_name.as_str(), "-e", "ssh"]);
-                command
-            }
-        };
-
-        command.args(ssh_args);
-        // A superseded generator is cancelled by dropping this future; `kill_on_drop` then kills
-        // the local ssh client, closing its channel on the shared connection (#1128).
-        let _slot = self.inflight.acquire().await;
-        let run = async {
-            command
-                .env("SHELL", "/bin/sh")
-                .stdin(std::process::Stdio::null())
-                .kill_on_drop(true)
-                .output()
-                .await
-                .map(|output| output.into())
-                .map_err(|e| anyhow!(e))
-        };
-        let result = match self.command_timeout {
-            Some(timeout) => match run.with_timeout(timeout).await {
-                Ok(result) => result,
-                // The timed-out future is dropped with its ssh child (`kill_on_drop`).
-                Err(_) => Err(anyhow!(
-                    "remote command over the ControlMaster timed out after {timeout:?}"
-                )),
-            },
-            None => run.await,
-        };
+        let result = run_over_master(
+            &self.control_socket_path,
+            self.wsl_distro.as_deref(),
+            &self.inflight,
+            self.command_timeout,
+            command_str,
+            &[],
+        )
+        .await
+        .map(|output| output.into());
         // Only the generator text (truncated), never `command_str`, which embeds env values.
         SLOW_REMOTE_COMMAND.finish(slow_start, || {
             format!(
@@ -219,6 +203,163 @@ impl CommandExecutor for RemoteCommandExecutor {
     /// in  `channel: open  failed` messages sent back over the PTY in the running sessions.
     fn supports_parallel_command_execution(&self) -> bool {
         false
+    }
+}
+
+/// Runs `command_str` as a fresh mux client on the ControlMaster at `socket` and returns what it
+/// printed. Waits (queues) for one of the session's in-flight slots; gives up after `timeout`.
+///
+/// Guarded mux client (#1100): rides the existing master or fails fast, never opens a new
+/// connection or prompts. Argument list only; see `remote_server::ssh::ssh_args`. A caller that
+/// drops the future cancels the command: `kill_on_drop` kills the local ssh client, closing its
+/// channel on the shared connection (#1128).
+async fn run_over_master(
+    socket: &std::path::Path,
+    wsl_distro: Option<&str>,
+    inflight: &InflightLimit,
+    timeout: Option<Duration>,
+    command_str: String,
+    stdin: &[u8],
+) -> Result<std::process::Output> {
+    let mut ssh_args = remote_server::ssh::ssh_args(std::path::Path::new(
+        socket
+            .to_str()
+            .ok_or_else(|| anyhow!("socket path must exist"))?,
+    ));
+    ssh_args.push(command_str);
+
+    // If the SSH session originated from WSL, the ControlPath also exists inside WSL.
+    // Therefore, SSH commands directly from the Windows host will not work. They must be run
+    // inside that same WSL instance
+    let mut command = match wsl_distro {
+        None => Command::new("ssh"),
+        Some(distro_name) => {
+            let mut command = Command::new("wsl");
+            command.args(["-d", distro_name, "-e", "ssh"]);
+            command
+        }
+    };
+    command.args(ssh_args);
+    let _slot = inflight.acquire().await;
+    let run = async {
+        command.env("SHELL", "/bin/sh").kill_on_drop(true);
+        if stdin.is_empty() {
+            return command
+                .stdin(std::process::Stdio::null())
+                .output()
+                .await
+                .map_err(|e| anyhow!(e));
+        }
+        use futures::AsyncWriteExt as _;
+        let mut child = command
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| anyhow!(e))?;
+        if let Some(mut pipe) = child.stdin.take() {
+            pipe.write_all(stdin).await.map_err(|e| anyhow!(e))?;
+            // Dropping the pipe closes the command's stdin.
+        }
+        child.output().await.map_err(|e| anyhow!(e))
+    };
+    match timeout {
+        Some(timeout) => match run.with_timeout(timeout).await {
+            Ok(result) => result,
+            // The timed-out future is dropped with its ssh child (`kill_on_drop`).
+            Err(_) => Err(anyhow!(
+                "remote command over the ControlMaster timed out after {timeout:?}"
+            )),
+        },
+        None => run.await,
+    }
+}
+
+/// The shell backend's out-of-band channel for a legacy ssh session: a fresh mux client on the
+/// session's ControlMaster per command (parity design R1). It never touches the session's pty.
+///
+/// The 60 s command timeout is the same give-up net the generator executor has: it fails the
+/// call (the caller reports the error); nothing is decided or retried on it. At most
+/// [`DEFAULT_MAX_INFLIGHT`] commands run at once per master (shared with
+/// [`RemoteCommandExecutor`]); more wait their turn.
+#[derive(Debug)]
+pub struct ControlMasterChannel {
+    control_socket_path: PathBuf,
+    wsl_distro: Option<String>,
+    shell_kind: ShellKind,
+    inflight: InflightLimit,
+    command_timeout: Option<Duration>,
+}
+
+impl ControlMasterChannel {
+    pub fn new(
+        control_socket_path: PathBuf,
+        wsl_distro: Option<String>,
+        shell_kind: ShellKind,
+    ) -> Self {
+        Self {
+            inflight: inflight_limit_for_socket(&control_socket_path),
+            control_socket_path,
+            wsl_distro,
+            shell_kind,
+            command_timeout: command_timeout_from_env(
+                std::env::var("PHOSPHOR_SSH_LEGACY_COMMAND_TIMEOUT_SECS")
+                    .ok()
+                    .as_deref(),
+            ),
+        }
+    }
+}
+
+/// Cuts `stdout` at `limit` (0 = no limit) and says whether it did.
+fn cap_stdout(mut stdout: Vec<u8>, limit: usize) -> (Vec<u8>, bool) {
+    if limit > 0 && stdout.len() > limit {
+        stdout.truncate(limit);
+        (stdout, true)
+    } else {
+        (stdout, false)
+    }
+}
+
+impl OutOfBandExecutor for ControlMasterChannel {
+    fn channel_kind(&self) -> ChannelKind {
+        ChannelKind::ControlMaster
+    }
+
+    fn shell_kind(&self) -> ShellKind {
+        self.shell_kind
+    }
+
+    fn execute(&self, request: ExecRequest) -> BoxFuture<'_, Result<ExecOutput, ExecError>> {
+        Box::pin(async move {
+            // The master's socket is the channel; once the ssh session ends it is gone.
+            if !self.control_socket_path.exists() && self.wsl_distro.is_none() {
+                return Err(ExecError::Unavailable(
+                    "the ssh session's ControlMaster is gone".to_string(),
+                ));
+            }
+            let started = instant::Instant::now();
+            let output = run_over_master(
+                &self.control_socket_path,
+                self.wsl_distro.as_deref(),
+                &self.inflight,
+                self.command_timeout,
+                request.command,
+                &request.stdin,
+            )
+            .await
+            .map_err(|e| ExecError::Failed(format!("{e:#}")))?;
+            SLOW_REMOTE_COMMAND.finish(started, || {
+                "executor=control_master, shell-mode".to_string()
+            });
+            let (stdout, truncated) = cap_stdout(output.stdout, request.max_output_bytes);
+            Ok(ExecOutput {
+                stdout,
+                stderr: output.stderr,
+                exit_code: output.status.code(),
+                truncated,
+            })
+        })
     }
 }
 

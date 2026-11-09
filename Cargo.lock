@@ -11268,6 +11268,7 @@ dependencies = [
  "async-process",
  "bounded-vec-deque",
  "command",
+ "content_inspector",
  "dashmap",
  "dirs",
  "futures",

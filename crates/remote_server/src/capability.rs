@@ -50,7 +50,6 @@ pub const LEGACY_ONLY_CAPABILITIES: &[&str] = &[
     BUFFERS,
     DIFF_STATE,
     GIT_WRITE,
-    FILE_CONTEXT,
     CODEBASE_INDEX,
     GIT_STATUS,
     GITHUB,
@@ -66,6 +65,7 @@ pub const HELPER_CAPABILITIES: &[&str] = &[
     GIT_READ,
     RIPGREP_SEARCH,
     REPO_METADATA,
+    FILE_CONTEXT,
 ];
 
 /// What the server on the other end of a session supports.

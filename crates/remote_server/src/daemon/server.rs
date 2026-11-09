@@ -299,7 +299,11 @@ impl Server {
                 }
             }
             // Reserved family modules (P0): each answers UNSUPPORTED until its package lands.
-            M::ReadFileContext(_) => file_context::handle(&reply, "ReadFileContext"),
+            M::ReadFileContext(request) => self.inflight.spawn(reply, move |cancel| {
+                server_message::Message::ReadFileContextResponse(file_context::read_file_context(
+                    &request, cancel,
+                ))
+            }),
             M::SaveBuffer(_) => buffers::handle(&reply, "SaveBuffer"),
             M::ResolveConflict(_) => buffers::handle(&reply, "ResolveConflict"),
             M::GitCommitChain(_) => git_write::handle(&reply, "GitCommitChain"),

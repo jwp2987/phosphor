@@ -6,10 +6,11 @@
 //! client from the model context, then dispatches:
 //!
 //! - **Local**: calls [`apply_edits`] with a `std::fs`-backed closure.
-//! - **Remote**: calls [`apply_edits`] with a [`RemoteServerClient`]-backed closure.
+//! - **Remote**: calls [`apply_edits`] with a router-backed closure (helper or shell mode).
 
 use ai::diff_validation::AIRequestedCodeDiff;
 use futures::FutureExt;
+use remote_server::backend::RemoteFeatures as _;
 use vec1::Vec1;
 use warpui::r#async::BoxFuture;
 use warpui::{Entity, ModelContext, ModelHandle, SingletonEntity as _};
@@ -51,17 +52,24 @@ impl ApplyDiffModel {
         let auth_state = AuthStateProvider::as_ref(ctx).get().clone();
         let ai_identifiers = ai_identifiers.clone();
 
-        let remote_client = session_context.host_id().and_then(|host_id| {
-            remote_server::manager::RemoteServerManager::as_ref(ctx)
-                .client_for_host_with(host_id, remote_server::capability::FILE_CONTEXT)
-                .cloned()
-        });
+        // Reads go through the router: the helper, or shell mode over the session's
+        // out-of-band channel. Neither available: the file tools stay unsupported here.
+        let remote_backend = self
+            .active_session
+            .as_ref(ctx)
+            .session_id(ctx)
+            .filter(|_| session_context.is_remote())
+            .map(|session_id| {
+                remote_server::manager::RemoteServerManager::as_ref(ctx)
+                    .backend_for_session_with_host(session_id, session_context.host_id())
+            })
+            .filter(|backend| backend.is_available(remote_server::backend::Family::FileContext));
 
         let is_remote = session_context.is_remote();
         let fut = async move {
             if is_remote {
-                match remote_client {
-                    Some(client) => {
+                match remote_backend {
+                    Some(backend) => {
                         apply_edits_strict(
                             edits,
                             &session_context,
@@ -70,8 +78,8 @@ impl ApplyDiffModel {
                             auth_state,
                             passive_diff,
                             |path| {
-                                let client = client.clone();
-                                async move { read_remote_file(&client, &path).await }
+                                let backend = backend.clone();
+                                async move { read_remote_file(&backend, &path).await }
                             },
                         )
                         .await
@@ -109,7 +117,7 @@ impl ApplyDiffModel {
 const MAX_DIFF_READ_BYTES: u32 = 10_000_000;
 
 async fn read_remote_file(
-    client: &remote_server::client::RemoteServerClient,
+    backend: &remote_server::backend::RoutedBackend,
     path: &str,
 ) -> FileReadResult {
     let request = remote_server::proto::ReadFileContextRequest {
@@ -120,7 +128,7 @@ async fn read_remote_file(
         max_file_bytes: Some(MAX_DIFF_READ_BYTES),
         max_batch_bytes: None,
     };
-    match client.read_file_context(request).await {
+    match backend.read_file_context(request).await {
         Ok(response) => {
             if let Some(fc) = response.file_contexts.into_iter().next() {
                 // A whole-file read that was truncated by the byte limit will

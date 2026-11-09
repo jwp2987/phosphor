@@ -856,12 +856,9 @@ impl super::TerminalView {
 
         // The backend for this session: the helper's `ListDirectory`, or the same listing over
         // the shell backend when there is no helper. Neither: nothing to validate against.
-        let Some((_, backend)) = RemoteServerManager::handle(ctx)
+        let backend = RemoteServerManager::handle(ctx)
             .as_ref(ctx)
-            .backend_for_session(session_id)
-        else {
-            return LinkValidationContext::Remote(None);
-        };
+            .backend_for_session(session_id);
         if !backend.is_available(remote_server::backend::Family::FsBasic) {
             return LinkValidationContext::Remote(None);
         }

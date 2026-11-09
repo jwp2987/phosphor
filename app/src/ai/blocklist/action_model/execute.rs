@@ -1195,6 +1195,31 @@ pub fn cap_read_batch(
     (locations, Some(note))
 }
 
+/// A remote host cannot resize for the model (the helper and shell mode return plain bytes), so
+/// images are prepared here, as `read_binary_file_context` does for a local read. Applying it to
+/// an image an older daemon already prepared is harmless: it is already small.
+#[cfg(feature = "local_fs")]
+fn prepare_remote_binary(file_name: &str, bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+    let mime_type = from_path(file_name).first_or_octet_stream().to_string();
+    if !is_supported_image_mime_type(&mime_type) {
+        return Ok(bytes);
+    }
+    match process_image_for_agent(&bytes) {
+        ProcessImageResult::Success { data } => Ok(data),
+        ProcessImageResult::TooLarge => Err("File could not be processed as an image: the image \
+                                             is too large to send even after resizing"
+            .to_string()),
+        ProcessImageResult::Error(err) => {
+            Err(format!("File could not be processed as an image: {err}"))
+        }
+    }
+}
+
+#[cfg(not(feature = "local_fs"))]
+fn prepare_remote_binary(_file_name: &str, bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+    Ok(bytes)
+}
+
 /// Turns a remote server's file contexts into agent file contexts plus per-file failures. An
 /// entry that carries no content used to vanish from both lists, so the model never learned
 /// the file was not read (#1278).
@@ -1217,7 +1242,16 @@ pub fn convert_remote_file_contexts(
                 AnyFileContent::StringContent(text)
             }
             remote_server::proto::file_context_proto::Content::BinaryContent(bytes) => {
-                AnyFileContent::BinaryContent(bytes)
+                match prepare_remote_binary(&fc.file_name, bytes) {
+                    Ok(bytes) => AnyFileContent::BinaryContent(bytes),
+                    Err(message) => {
+                        failed.push(ReadFilesFailedFile {
+                            path: fc.file_name,
+                            message,
+                        });
+                        continue;
+                    }
+                }
             }
         };
         let line_range = match (fc.line_range_start, fc.line_range_end) {

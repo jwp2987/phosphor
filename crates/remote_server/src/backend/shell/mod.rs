@@ -5,16 +5,20 @@
 //! probe. Every family's request methods answer `Unsupported` until its package fills them in
 //! (P1..P9), or `Unavailable` when the session has no out-of-band channel.
 
+mod read;
 mod tree;
+mod write;
 
 use std::sync::{Arc, Mutex};
 
 pub use tree::{ShellPush, TreeCache};
-pub(super) use tree::{list_directory, load_repo_metadata_directory, navigate_to_directory};
 
 use super::executor::{ChannelKind, ExecRequest, MAX_EXEC_OUTPUT_BYTES, OutOfBandExecutor};
 use super::{BackendError, Family};
-use crate::shellcmd::base64::{self, Base64Tool};
+use crate::proto::{
+    ListDirectoryResponse, LoadRepoMetadataDirectoryResponse, NavigatedToDirectoryResponse,
+};
+use crate::shellcmd::base64::{self, Base64Tool, DecodeTool};
 use crate::shellcmd::{Frame, Script, ShellKind, StderrMode};
 
 #[derive(Clone, Default)]
@@ -30,6 +34,8 @@ pub struct ShellBackend {
     /// with [`Self::take_pushes`]. The helper sends these unprompted; the shell backend has no
     /// connection to push on, so it hands them back.
     pushes: Arc<Mutex<Vec<ShellPush>>>,
+    /// The host's base64 decoder (for writes), probed once like the encoder.
+    decode_tool: Arc<Mutex<Option<Option<DecodeTool>>>>,
 }
 
 impl std::fmt::Debug for ShellBackend {
@@ -49,6 +55,7 @@ impl ShellBackend {
             base64_tool: Arc::default(),
             tree_cache: Arc::default(),
             pushes: Arc::default(),
+            decode_tool: Arc::default(),
         }
     }
 
@@ -61,6 +68,32 @@ impl ShellBackend {
     /// Drains the pushes produced since the last call, oldest first.
     pub fn take_pushes(&self) -> Vec<ShellPush> {
         std::mem::take(&mut *self.pushes.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
+    pub(super) fn navigate_to_directory_shell(
+        &self,
+        path: String,
+    ) -> impl std::future::Future<Output = Result<NavigatedToDirectoryResponse, BackendError>> + Send + '_
+    {
+        tree::navigate_to_directory(self, path)
+    }
+
+    pub(super) fn load_repo_metadata_directory_shell(
+        &self,
+        repo_path: String,
+        dir_path: String,
+    ) -> impl std::future::Future<Output = Result<LoadRepoMetadataDirectoryResponse, BackendError>>
+    + Send
+    + '_ {
+        tree::load_repo_metadata_directory(self, repo_path, dir_path)
+    }
+
+    pub(super) fn list_directory_shell(
+        &self,
+        path: String,
+    ) -> impl std::future::Future<Output = Result<ListDirectoryResponse, BackendError>> + Send + '_
+    {
+        tree::list_directory(self, path)
     }
 
     /// Re-reads the indexed root `repo_path` and queues the difference as a push (see
@@ -150,5 +183,35 @@ impl ShellBackend {
             .and_then(|s| Base64Tool::from_probe_output(&s.text()));
         *self.base64_tool.lock().unwrap_or_else(|e| e.into_inner()) = Some(tool);
         Ok(tool)
+    }
+
+    /// The host's base64 decoder (`None`: it has none), probed on first use and cached.
+    pub async fn decode_tool(&self) -> Result<Option<DecodeTool>, BackendError> {
+        if let Some(cached) = *self.decode_tool.lock().unwrap_or_else(|e| e.into_inner()) {
+            return Ok(cached);
+        }
+        let script = Script::new(Self::new_nonce())?.section(
+            "dec",
+            base64::decode_probe_command(),
+            StderrMode::Discard,
+        )?;
+        let frame = self.run_script(&script).await?;
+        let tool = frame
+            .section("dec")
+            .and_then(|s| DecodeTool::from_probe_output(&s.text()));
+        *self.decode_tool.lock().unwrap_or_else(|e| e.into_inner()) = Some(tool);
+        Ok(tool)
+    }
+
+    /// The out-of-band executor, or `Unavailable` naming `what`.
+    pub(super) fn executor_for(
+        &self,
+        what: &'static str,
+    ) -> Result<Arc<dyn OutOfBandExecutor>, BackendError> {
+        self.executor.clone().ok_or_else(|| {
+            BackendError::Unavailable(format!(
+                "{what}: this session has no out-of-band channel for remote commands"
+            ))
+        })
     }
 }
