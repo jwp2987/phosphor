@@ -6738,12 +6738,7 @@ fn wire_skills_env(params: &RequestParams) -> (Vec<String>, Vec<(String, String)
     (skills, env)
 }
 
-/// The stream type the send loop reads. Release builds read genai's `ChatStream`; under the test
-/// seam it is a boxed stream, because a `ChatStream` cannot be built from events outside genai.
-#[cfg(not(any(test, feature = "test-util")))]
-type SdkStream = genai::chat::ChatStream;
-#[cfg(any(test, feature = "test-util"))]
-type SdkStream = super::fake_stream_seam::SeamStream;
+use super::stream_recovery::SdkStream;
 
 /// `client.exec_chat_stream(...)`, except that a test that installed a script for `model_id`
 /// (`fake_stream_seam::install`) gets the scripted stream and no network request is made.
@@ -6760,14 +6755,20 @@ async fn open_sdk_stream(
     let response = client
         .exec_chat_stream(model_id, chat_req, Some(chat_opts))
         .await?;
-    #[cfg(any(test, feature = "test-util"))]
-    {
-        Ok(Box::pin(response.stream))
-    }
-    #[cfg(not(any(test, feature = "test-util")))]
-    {
-        Ok(response.stream)
-    }
+    Ok(Box::pin(response.stream))
+}
+
+/// Prompt size (bytes, about 4 per token) a request is trimmed to before it is sent: three
+/// quarters of the usable window, so the reply and the estimate's error have room.
+fn proactive_target_bytes_for(limit: byop_compaction::overflow::ModelLimit) -> usize {
+    let usable =
+        byop_compaction::overflow::usable(&byop_compaction::CompactionConfig::default(), limit);
+    usable.saturating_mul(4).saturating_mul(3) / 4
+}
+
+/// Unit tests wait milliseconds where production waits seconds.
+fn recovery_wait_for_runtime(wait: std::time::Duration) -> std::time::Duration {
+    if cfg!(test) { wait / 1000 } else { wait }
 }
 
 /// `task_id`: the conversation's root task id (taken from the history model on the
@@ -6824,16 +6825,22 @@ pub async fn generate_byop_output(
         } else {
             api_type
         };
+    let model_limit = byop_compaction::config::model_limit_from_parts(
+        context_window.unwrap_or(0),
+        max_output_tokens,
+    );
     let chat_req = build_chat_request_for_model(
         &params,
         force_echo_reasoning,
         shaping_api_type,
         attachment_caps,
-        byop_compaction::config::model_limit_from_parts(
-            context_window.unwrap_or(0),
-            max_output_tokens,
-        ),
+        model_limit,
     )?;
+    // Only a known window can be checked before sending; with an unknown one the provider's own
+    // overflow answer triggers the trim (`stream_recovery`).
+    let proactive_target_bytes = context_window
+        .filter(|w| *w > 0)
+        .map(|_| proactive_target_bytes_for(model_limit));
     let conversation_id = params
         .conversation_token
         .as_ref()
@@ -7307,22 +7314,62 @@ pub async fn generate_byop_output(
         }
 
         log::info!("[byop] opening stream: model={model_id}");
-        let mut sdk_stream = match open_sdk_stream(&client, &model_id, chat_req, &chat_opts).await
-        {
-            Ok(stream) => {
-                log::info!("[byop] stream opened OK (HTTP request accepted)");
-                stream
+        // Failures before the first streamed byte are retried (2/4/8 s, Retry-After honoured)
+        // and an over-long prompt is trimmed once; after the first byte nothing is retried
+        // (see `stream_recovery`).
+        let first_event_window = byop_stream_first_event_timeout();
+        let recovery = super::stream_recovery::open_with_recovery(
+            chat_req,
+            proactive_target_bytes,
+            |req| open_sdk_stream(&client, &model_id, req, &chat_opts),
+            |wait| async move {
+                warpui::r#async::Timer::after(recovery_wait_for_runtime(wait)).await;
+            },
+            || async move {
+                warpui::r#async::Timer::after(first_event_window).await;
+            },
+        )
+        .await;
+        // Time the read-ahead already spent waiting for the first real event: it counts toward
+        // the same first-event window, so the window is not spent twice.
+        let mut first_wait_used = std::time::Duration::ZERO;
+        let mut sdk_stream = match recovery {
+            Ok(opened) => {
+                first_wait_used = opened.waited;
+                log::info!(
+                    "[byop] stream opened OK (HTTP request accepted; retries={} \
+                     dropped_messages={})",
+                    opened.retries,
+                    opened.compaction.map_or(0, |c| c.dropped_messages)
+                );
+                opened.stream
             }
-            Err(e) => {
-                let mapped = map_genai_error(e);
+            Err(failure) => {
+                let note = failure.user_note();
+                let exhausted = failure.recovery_exhausted();
+                let mapped = map_genai_error(failure.error);
                 log::error!(
                     "[byop] open stream failed: {}",
                     redact_urls_in_error_text(&format!("{mapped:#}"))
                 );
                 evict_vertex_token_on_auth_failure(vertex_credential.as_ref(), &mapped);
-                let message =
+                let mut message =
                     describe_byop_open_stream_failure(&mapped, other_provider_hint.as_ref());
-                yield Err(Arc::new(byop_error_to_api_error(&mapped, message)));
+                if let Some(note) = note {
+                    message.push_str("\n\n");
+                    message.push_str(&note);
+                }
+                let api_error = byop_error_to_api_error(&mapped, message);
+                // The in-stream layer already retried (or trimmed); the outer recovery layer
+                // must not repeat it (a dead provider would get 4 x 4 requests).
+                let api_error = if exhausted {
+                    AIApiError::Other(anyhow::Error::new(
+                        crate::ai::api_error::PreOutputRecoveryExhausted(api_error.to_string()),
+                    ))
+                } else {
+                    api_error
+                };
+                yield Err(Arc::new(api_error));
                 return;
             }
         };
@@ -7433,7 +7480,14 @@ pub async fn generate_byop_output(
                         BYOP_STREAM_FIRST_EVENT_TIMEOUT_ENV,
                     )
                 };
-                let idle = warpui::r#async::Timer::after(active_timeout);
+                let wait = if received_real_event {
+                    active_timeout
+                } else {
+                    active_timeout
+                        .saturating_sub(std::mem::take(&mut first_wait_used))
+                        .max(std::time::Duration::from_millis(1))
+                };
+                let idle = warpui::r#async::Timer::after(wait);
                 futures::pin_mut!(next, idle);
                 match futures::future::select(next, idle).await {
                     futures::future::Either::Left((item, _)) => item,

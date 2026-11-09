@@ -115,6 +115,14 @@ impl InputClassifier for OnnxClassifier {
         self.classify_input(input, context)
             .await
             .map(|classification| {
+                log::debug!(
+                    "{}",
+                    crate::decision_log_line(
+                        classification.to_input_type(),
+                        classification.source,
+                        Some(classification.confidence()),
+                    )
+                );
                 InputClassificationResult::new(
                     classification.to_input_type(),
                     classification.source,

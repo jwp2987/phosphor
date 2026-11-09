@@ -65,6 +65,12 @@ pub enum SeamError {
     /// A transport failure (reset, EOF) boxed inside `WebStream`.
     Transport(String),
     Other(String),
+    /// A status that carries a `Retry-After` header value (raw, as the header holds it).
+    HttpRetryAfter {
+        status: u16,
+        body: String,
+        retry_after: String,
+    },
 }
 
 /// A scripted reply.
@@ -258,27 +264,39 @@ fn model_iden(model_id: &str) -> ModelIden {
 /// `map_genai_error` unwraps); a transport failure is a boxed plain error.
 fn into_genai_error(error: &SeamError, model_id: &str) -> genai::Error {
     match error {
-        SeamError::Http { status, body } => {
-            let status = http::StatusCode::from_u16(*status)
-                .unwrap_or(http::StatusCode::INTERNAL_SERVER_ERROR);
-            let inner = genai::Error::HttpError {
-                status,
-                canonical_reason: status.canonical_reason().unwrap_or_default().to_owned(),
-                body: body.clone(),
-                retry_after: None,
-            };
-            genai::Error::WebStream {
-                model_iden: model_iden(model_id),
-                cause: inner.to_string(),
-                error: Box::new(inner),
-            }
-        }
+        SeamError::Http { status, body } => http_error(model_id, *status, body, None),
+        SeamError::HttpRetryAfter {
+            status,
+            body,
+            retry_after,
+        } => http_error(model_id, *status, body, Some(retry_after.clone())),
         SeamError::Transport(cause) => genai::Error::WebStream {
             model_iden: model_iden(model_id),
             cause: cause.clone(),
             error: cause.clone().into(),
         },
         SeamError::Other(message) => genai::Error::Internal(message.clone()),
+    }
+}
+
+fn http_error(
+    model_id: &str,
+    status: u16,
+    body: &str,
+    retry_after: Option<String>,
+) -> genai::Error {
+    let status =
+        http::StatusCode::from_u16(status).unwrap_or(http::StatusCode::INTERNAL_SERVER_ERROR);
+    let inner = genai::Error::HttpError {
+        status,
+        canonical_reason: status.canonical_reason().unwrap_or_default().to_owned(),
+        body: body.to_owned(),
+        retry_after,
+    };
+    genai::Error::WebStream {
+        model_iden: model_iden(model_id),
+        cause: inner.to_string(),
+        error: Box::new(inner),
     }
 }
 
