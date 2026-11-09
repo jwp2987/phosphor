@@ -1240,3 +1240,37 @@ fn test_gate_bounds_what_the_inner_classifier_sees() {
         assert_eq!(gated.inner.0.lock().unwrap().len(), 2);
     });
 }
+
+/// The DEBUG line for a decision names the rule or model and the verdict, and never the text
+/// that was typed (privacy: that text can be a secret).
+#[test]
+fn the_decision_log_line_has_the_source_and_not_the_input() {
+    futures::executor::block_on(async move {
+        let gated = SafetyGatedClassifier::new(AlwaysShellClassifier);
+        // Distinctive words so a leak of any of them is unmistakable.
+        let typed = "please zxqvortex hunter2-passphrase for the quuxberry deploy";
+        let (result, line) = gated
+            .detect_traced(snapshot_without_descriptions(typed), &context(true))
+            .await;
+        assert_eq!(result.input_type, InputType::AI);
+        assert!(line.contains(&format!("{:?}", result.source)), "{line}");
+        assert!(line.contains("verdict=AI"), "{line}");
+        assert!(line.contains("confidence="), "{line}");
+        for word in typed.split_whitespace().filter(|w| w.len() >= 6) {
+            assert!(!line.contains(word), "line leaks {word:?}: {line}");
+        }
+    });
+}
+
+#[test]
+fn a_model_decision_line_carries_the_confidence() {
+    let line = crate::decision_log_line(
+        InputType::Shell,
+        InputClassifierDecisionSource::InputClassifier,
+        Some(0.91234),
+    );
+    assert_eq!(
+        line,
+        "input classifier decision: verdict=Shell decided_by=InputClassifier confidence=0.912"
+    );
+}

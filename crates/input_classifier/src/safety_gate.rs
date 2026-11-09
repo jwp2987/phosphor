@@ -40,10 +40,22 @@ impl<C> SafetyGatedClassifier<C> {
     }
 }
 
-#[cfg_attr(not(target_family = "wasm"), async_trait)]
-#[cfg_attr(target_family = "wasm", async_trait(?Send))]
-impl<C: InputClassifier> InputClassifier for SafetyGatedClassifier<C> {
-    async fn detect_input_type(
+impl<C: InputClassifier> SafetyGatedClassifier<C> {
+    /// The verdict plus the DEBUG line describing it: which rule or model decided and, when a
+    /// model did, its confidence. The line is built from the verdict, the decision source and the
+    /// model's score only. It never takes the input text, which can be a password or a secret
+    /// typed into the wrong box, so nothing the user typed can reach a log through it.
+    pub(crate) async fn detect_traced(
+        &self,
+        input: ParsedTokensSnapshot,
+        context: &Context,
+    ) -> (InputClassificationResult, String) {
+        let result = self.decide(input, context).await;
+        let line = crate::decision_log_line(result.input_type, result.source, None);
+        (result, line)
+    }
+
+    async fn decide(
         &self,
         input: ParsedTokensSnapshot,
         context: &Context,
@@ -121,6 +133,20 @@ impl<C: InputClassifier> InputClassifier for SafetyGatedClassifier<C> {
                 InputClassifierDecisionSource::KnownCommandHeadNotARequest,
             );
         }
+        result
+    }
+}
+
+#[cfg_attr(not(target_family = "wasm"), async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait(?Send))]
+impl<C: InputClassifier> InputClassifier for SafetyGatedClassifier<C> {
+    async fn detect_input_type(
+        &self,
+        input: ParsedTokensSnapshot,
+        context: &Context,
+    ) -> InputClassificationResult {
+        let (result, line) = self.detect_traced(input, context).await;
+        log::debug!("{line}");
         result
     }
 

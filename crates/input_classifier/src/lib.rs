@@ -94,6 +94,35 @@ impl InputClassificationResult {
     }
 }
 
+/// The DEBUG line for one autodetect decision: the verdict, which rule or model decided
+/// (`source`, by its variant name) and the model's confidence when a model decided. It takes no
+/// input text, so the line cannot carry any. Rule decisions have no confidence.
+pub(crate) fn decision_log_line(
+    verdict: InputType,
+    source: InputClassifierDecisionSource,
+    confidence: Option<f32>,
+) -> String {
+    match confidence {
+        Some(c) => format!(
+            "input classifier decision: verdict={verdict:?} decided_by={source:?} confidence={c:.3}"
+        ),
+        None => {
+            let why = if matches!(
+                source,
+                InputClassifierDecisionSource::InputClassifier
+                    | InputClassifierDecisionSource::InputClassifierFallbackHeuristic
+            ) {
+                "see the model line"
+            } else {
+                "none (rule)"
+            };
+            format!(
+                "input classifier decision: verdict={verdict:?} decided_by={source:?} confidence={why}"
+            )
+        }
+    }
+}
+
 /// An input classifier, which can take some parsed user input and determine
 /// what type of input it is.
 #[cfg_attr(not(target_family = "wasm"), async_trait)]
