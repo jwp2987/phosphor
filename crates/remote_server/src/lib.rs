@@ -19,6 +19,7 @@ pub mod naming;
 pub mod policy;
 pub mod protocol;
 pub mod rt;
+pub mod shellcmd;
 pub mod ssh;
 
 #[cfg(feature = "client")]
