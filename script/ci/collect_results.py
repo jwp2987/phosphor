@@ -386,7 +386,7 @@ def render_diff(d):
 
 def render_readme(m, hist):
     L = ["# %s  %s  (pipeline %s)" % (m["ref"], m["commit"][:9], m["pipeline"]), "",
-         "- date: %s, tier: %s, pipeline status: %s%s" % (m["date"], m["tier"], m["pipeline_status"], " (collected before it finished)" if m["pipeline_status"] in ("running", "pending", "created") else ""),
+         "- date: %s, tier: %s, pipeline status: %s%s" % (m.get("date", "?"), m.get("tier", "?"), m.get("pipeline_status", "unknown"), " (collected before it finished)" if m.get("pipeline_status") in ("running", "pending", "created") else ""),
          "- compile (check-linux): %s" % compile_state(m)]
     u = unit_totals(m)
     L.append("- unit: %d passed, %d failed, %d skipped of %d run (%d suites)" % (u["passed"], u["failed"], u["skipped"], u["run"], u["jobs"]))
@@ -419,7 +419,10 @@ def load_runs(out):
         try:
             m = json.load(open(p))
             m["_dir"] = os.path.dirname(p)
-            runs.append(m)
+            # manifests from the older ssh-run archive have another shape (no jobs list); the
+            # pipeline history covers only runs this collector wrote
+            if "jobs" in m:
+                runs.append(m)
         except ValueError:
             pass
     # older manifests (before created_at was recorded) sort by their date, then pipeline id

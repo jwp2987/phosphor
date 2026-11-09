@@ -1,0 +1,7 @@
+Returns at the session tap: 0; Phosphor app_send_event lines: 0; Phosphor pids: [44109, 44423]
+targeted at Phosphor but never reached its NSApplication: 0 (of which UNCOVERED, no app_send_event within 3 s = app-log gap, cause not established: 0; LOST with neighbours logged: 0)
+  app log logs/agent/phosphor.log: 2026-11-09T11:20:12Z .. 2026-11-09T11:20:23Z (63932 bytes)
+  app log logs/terminal/phosphor.log: 2026-11-09T11:19:59Z .. 2026-11-09T11:20:11Z (91710 bytes)
+targeted at another process: 0
+seen by Phosphor but not by the tap (join check, expect 0): 0
+ALL KEYS: injector sent 0; macOS delivered 0 to Phosphor, 0 to other processes; never in macOS (sent - delivered) 0 (ktap logged no key-downs: tap not running, or an old ktap binary that logs Returns only)

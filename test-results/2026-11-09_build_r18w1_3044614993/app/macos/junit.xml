@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-macos" tests="18" failures="18" skipped="0">
+<testcase classname="terminal" name="mode_proof" time="0.30">
+<failure message="harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')">harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')</failure>
+</testcase>
+<testcase classname="terminal" name="cadence" time="0.20">
+<failure message="harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')">harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')</failure>
+</testcase>
+<testcase classname="terminal" name="key_loss_control" time="0.20">
+<failure message="harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')">harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')</failure>
+</testcase>
+<testcase classname="terminal" name="enter_loss_control" time="0.20">
+<failure message="harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')">harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')</failure>
+</testcase>
+<testcase classname="terminal" name="fast_typing" time="0.20">
+<failure message="harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')">harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')</failure>
+</testcase>
+<testcase classname="terminal" name="paste_instant_enter" time="0.30">
+<failure message="harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')">harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')</failure>
+</testcase>
+<testcase classname="terminal" name="tab_enter" time="0.30">
+<failure message="harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')">harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')</failure>
+</testcase>
+<testcase classname="terminal" name="ctrl_c_d" time="0.20">
+<failure message="harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')">harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')</failure>
+</testcase>
+<testcase classname="terminal" name="ssh_connect_typing" time="0.30">
+<failure message="harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')">harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')</failure>
+</testcase>
+<testcase classname="terminal" name="harness_crash" time="0.00">
+<failure message="the terminal pass crashed outside a case: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')">the terminal pass crashed outside a case: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')</failure>
+</testcase>
+<testcase classname="agent" name="mode_proof" time="0.30">
+<failure message="harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')">harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')</failure>
+</testcase>
+<testcase classname="agent" name="cadence" time="0.20">
+<failure message="harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')">harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')</failure>
+</testcase>
+<testcase classname="agent" name="fast_typing" time="0.20">
+<failure message="harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')">harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')</failure>
+</testcase>
+<testcase classname="agent" name="paste_instant_enter" time="0.30">
+<failure message="harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')">harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')</failure>
+</testcase>
+<testcase classname="agent" name="tab_enter" time="0.20">
+<failure message="harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')">harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')</failure>
+</testcase>
+<testcase classname="agent" name="ctrl_c_d" time="0.20">
+<failure message="harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')">harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')</failure>
+</testcase>
+<testcase classname="agent" name="ssh_connect_typing" time="0.20">
+<failure message="harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')">harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')</failure>
+</testcase>
+<testcase classname="agent" name="harness_crash" time="0.00">
+<failure message="the agent pass crashed outside a case: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')">the agent pass crashed outside a case: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')</failure>
+</testcase>
+</testsuite>

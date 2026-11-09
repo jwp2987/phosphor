@@ -1,0 +1,815 @@
+{
+ "pipeline": 3044614993,
+ "web_url": "https://gitlab.com/winters-phosphor/phosphor/-/pipelines/3044614993",
+ "ref": "build/r18w1",
+ "commit": "c0ed28adfee2f4fa90600db06cb30c1f363d078a",
+ "created_at": "2026-11-09T10:59:51.200Z",
+ "date": "2026-11-09",
+ "tier": "fix",
+ "pipeline_status": "manual",
+ "jobs": {
+  "advisories": {
+   "status": "failed",
+   "duration": 7.608902,
+   "id": 17861379938,
+   "runner": ""
+  },
+  "app-test-windows-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192502,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-macos-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192501,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-linux-x11-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192500,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-linux-wayland-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192499,
+   "runner": null,
+   "note": "not run"
+  },
+  "collect-windows-run": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192498,
+   "runner": null,
+   "note": "not run"
+  },
+  "collect-macos-run": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192497,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-replay-linux": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192496,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-lab-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192495,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-lab-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192494,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-lab-linux": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192493,
+   "runner": null,
+   "note": "not run"
+  },
+  "sshlab-image": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192492,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192491,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-macos": {
+   "status": "failed",
+   "duration": 56.979344,
+   "id": 17859192490,
+   "runner": "MacBookPro-gitrunner"
+  },
+  "app-test-linux-x11": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192489,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-linux-wayland": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192488,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-windows-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192487,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-macos-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192486,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-linux-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192485,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-windows-x86_64": {
+   "status": "failed",
+   "duration": 842.139028,
+   "id": 17859192484,
+   "runner": "phosphor-windows-vm"
+  },
+  "build-linux-x86_64": {
+   "status": "failed",
+   "duration": 1811.457289,
+   "id": 17859192483,
+   "runner": ""
+  },
+  "build-macos-arm64": {
+   "status": "success",
+   "duration": 1138.027347,
+   "id": 17859192482,
+   "runner": "MacBookPro-gitrunner"
+  },
+  "guards-helper-deps": {
+   "status": "success",
+   "duration": 17.150148,
+   "id": 17859192481,
+   "runner": ""
+  },
+  "bench-remote-server": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192480,
+   "runner": null,
+   "note": "not run"
+  },
+  "usage-test-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192479,
+   "runner": null,
+   "note": "not run"
+  },
+  "usage-test-linux": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192478,
+   "runner": null,
+   "note": "not run"
+  },
+  "bench-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192477,
+   "runner": null,
+   "note": "not run"
+  },
+  "mutants-warpui-core-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192476,
+   "runner": null,
+   "note": "not run"
+  },
+  "mutants-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192475,
+   "runner": null,
+   "note": "not run"
+  },
+  "fuzz-smoke-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192474,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-shuttle-loom-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192473,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-workspace-rest-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192472,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-warpui-core-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192471,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192470,
+   "runner": null,
+   "note": "not run"
+  },
+  "bench-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192469,
+   "runner": null,
+   "note": "not run"
+  },
+  "mutants-warpui-core-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192468,
+   "runner": null,
+   "note": "not run"
+  },
+  "mutants-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192467,
+   "runner": null,
+   "note": "not run"
+  },
+  "fuzz-smoke-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192466,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-shuttle-loom-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192465,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-workspace-rest-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192464,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-warpui-core-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192463,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192462,
+   "runner": null,
+   "note": "not run"
+  },
+  "bench": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192461,
+   "runner": null,
+   "note": "not run"
+  },
+  "mutants-warpui-core": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192460,
+   "runner": null,
+   "note": "not run"
+  },
+  "mutants": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192459,
+   "runner": null,
+   "note": "not run"
+  },
+  "fuzz-smoke": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192458,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-shuttle-loom": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192457,
+   "runner": null,
+   "note": "not run"
+  },
+  "input-timers-strict": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192456,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux-pwsh": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192455,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [3]": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192454,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [2]": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192453,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [1]": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192452,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-workspace-rest": {
+   "status": "success",
+   "duration": 139.644395,
+   "id": 17859192451,
+   "runner": ""
+  },
+  "insta-snapshots": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192450,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-warpui-core": {
+   "status": "success",
+   "duration": 80.622269,
+   "id": 17859192449,
+   "runner": ""
+  },
+  "test-linux": {
+   "status": "failed",
+   "duration": 1428.026366,
+   "id": 17859192448,
+   "runner": ""
+  },
+  "licenses": {
+   "status": "success",
+   "duration": 6.966972,
+   "id": 17859192446,
+   "runner": ""
+  },
+  "check-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192445,
+   "runner": null,
+   "note": "not run"
+  },
+  "guards-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192444,
+   "runner": null,
+   "note": "not run"
+  },
+  "diag-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192443,
+   "runner": null,
+   "note": "not run"
+  },
+  "check-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192442,
+   "runner": null,
+   "note": "not run"
+  },
+  "diag-mac": {
+   "status": "manual",
+   "duration": null,
+   "id": 17859192441,
+   "runner": null,
+   "note": "not run"
+  },
+  "check-linux": {
+   "status": "success",
+   "duration": 637.213943,
+   "id": 17859192440,
+   "runner": ""
+  },
+  "guards": {
+   "status": "success",
+   "duration": 121.431293,
+   "id": 17859192439,
+   "runner": ""
+  }
+ },
+ "unit": {
+  "test-workspace-rest": {
+   "summary_line": "Summary [  28.958s] 3587 tests run: 3587 passed, 19 skipped",
+   "duration_s": 28.958,
+   "run": 3587,
+   "passed": 3587,
+   "failed": 0,
+   "timed_out": 0,
+   "skipped": 19,
+   "slow": 0,
+   "flaky": 0,
+   "failures": [],
+   "regressions": [],
+   "notes": [
+    "tests: ok (0 known failure(s), no regressions)"
+   ],
+   "job": "test-workspace-rest",
+   "status": "success",
+   "duration": 139.644395
+  },
+  "test-warpui-core": {
+   "summary_line": "Summary [   5.060s] 829 tests run: 829 passed, 7 skipped",
+   "duration_s": 5.06,
+   "run": 829,
+   "passed": 829,
+   "failed": 0,
+   "timed_out": 0,
+   "skipped": 7,
+   "slow": 0,
+   "flaky": 0,
+   "failures": [],
+   "regressions": [],
+   "notes": [
+    "tests: ok (0 known failure(s), no regressions)"
+   ],
+   "job": "test-warpui-core",
+   "status": "success",
+   "duration": 80.622269
+  },
+  "test-linux": {
+   "summary_line": null,
+   "duration_s": null,
+   "run": null,
+   "passed": 0,
+   "failed": 0,
+   "timed_out": 0,
+   "skipped": 0,
+   "slow": 0,
+   "flaky": 0,
+   "failures": [
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "ai::agent_providers::tools::web_runtime::websearch_tests::real_exa_anonymous_search",
+     "seconds": 0.263
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "ai::blocklist::agent_fuzz::corpus_replay_tests::corpus_replays_as_listed_and_reaches_the_wave0_cells",
+     "seconds": 48.145
+    }
+   ],
+   "regressions": [],
+   "notes": [],
+   "errors": [],
+   "job": "test-linux",
+   "status": "failed",
+   "duration": 1428.026366
+  }
+ },
+ "app": {
+  "macos": {
+   "job": "app-test-macos",
+   "job_id": 17859192490,
+   "status": "failed",
+   "reuse": false,
+   "cases": [
+    {
+     "mode": "terminal",
+     "name": "mode_proof",
+     "status": "fail",
+     "seconds": 0.3,
+     "detail": [
+      "harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "cadence",
+     "status": "fail",
+     "seconds": 0.2,
+     "detail": [
+      "harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "key_loss_control",
+     "status": "fail",
+     "seconds": 0.2,
+     "detail": [
+      "harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "enter_loss_control",
+     "status": "fail",
+     "seconds": 0.2,
+     "detail": [
+      "harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "fast_typing",
+     "status": "fail",
+     "seconds": 0.2,
+     "detail": [
+      "harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "paste_instant_enter",
+     "status": "fail",
+     "seconds": 0.3,
+     "detail": [
+      "harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "tab_enter",
+     "status": "fail",
+     "seconds": 0.3,
+     "detail": [
+      "harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ctrl_c_d",
+     "status": "fail",
+     "seconds": 0.2,
+     "detail": [
+      "harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ssh_connect_typing",
+     "status": "fail",
+     "seconds": 0.3,
+     "detail": [
+      "harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "harness_crash",
+     "status": "fail",
+     "seconds": 0,
+     "detail": [
+      "the terminal pass crashed outside a case: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "mode_proof",
+     "status": "fail",
+     "seconds": 0.3,
+     "detail": [
+      "harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "cadence",
+     "status": "fail",
+     "seconds": 0.2,
+     "detail": [
+      "harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "fast_typing",
+     "status": "fail",
+     "seconds": 0.2,
+     "detail": [
+      "harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "paste_instant_enter",
+     "status": "fail",
+     "seconds": 0.3,
+     "detail": [
+      "harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "tab_enter",
+     "status": "fail",
+     "seconds": 0.2,
+     "detail": [
+      "harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ctrl_c_d",
+     "status": "fail",
+     "seconds": 0.2,
+     "detail": [
+      "harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ssh_connect_typing",
+     "status": "fail",
+     "seconds": 0.2,
+     "detail": [
+      "harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "harness_crash",
+     "status": "fail",
+     "seconds": 0,
+     "detail": [
+      "the agent pass crashed outside a case: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')"
+     ],
+     "lat": {}
+    }
+   ],
+   "files": [
+    "macos/junit.xml",
+    "macos/results.json",
+    "macos/summary.md",
+    "macos/run_slim/shots/agent_cadence_FAIL.jpg",
+    "macos/run_slim/logs/enter_route.txt",
+    "macos/run_slim/shots/agent_ctrl_c_d_FAIL.jpg",
+    "macos/run_slim/shots/agent_fast_typing_FAIL.jpg",
+    "macos/run_slim/shots/agent_tab_enter_FAIL.jpg",
+    "macos/run_slim/shots/terminal_cadence_FAIL.jpg",
+    "macos/run_slim/shots/agent_ssh_connect_typing_FAIL.jpg",
+    "macos/run_slim/shots/terminal_enter_loss_control_FAIL.jpg",
+    "macos/run_slim/shots/terminal_ctrl_c_d_FAIL.jpg",
+    "macos/run_slim/shots/terminal_fast_typing_FAIL.jpg",
+    "macos/run_slim/shots/agent_paste_instant_enter_FAIL.jpg",
+    "macos/run_slim/shots/terminal_key_loss_control_FAIL.jpg",
+    "macos/run_slim/shots/agent_mode_proof_FAIL.jpg",
+    "macos/run_slim/shots/terminal_paste_instant_enter_FAIL.jpg",
+    "macos/run_slim/shots/terminal_tab_enter_FAIL.jpg",
+    "macos/run_slim/shots/terminal_ssh_connect_typing_FAIL.jpg",
+    "macos/run_slim/shots/terminal_mode_proof_FAIL.jpg"
+   ],
+   "meta": {
+    "platform": "macos",
+    "backend": "mac",
+    "app_display": "macos",
+    "seed": "1",
+    "commit": "c0ed28ad",
+    "sha": "c0ed28adfee2f4fa90600db06cb30c1f363d078a",
+    "owner_settings": "sha256 a0613b641a27",
+    "tier": "smoke",
+    "scale": "1"
+   },
+   "summary": {
+    "pass": 0,
+    "fail": 18,
+    "skip": 0,
+    "noref": 0
+   },
+   "screenshots_in_ci_artifacts": [
+    "shots/terminal_mode_proof_FAIL.png",
+    "shots/terminal_cadence_FAIL.png",
+    "shots/terminal_key_loss_control_FAIL.png",
+    "shots/terminal_enter_loss_control_FAIL.png",
+    "shots/terminal_fast_typing_FAIL.png",
+    "shots/terminal_paste_instant_enter_FAIL.png",
+    "shots/terminal_tab_enter_FAIL.png",
+    "shots/terminal_ctrl_c_d_FAIL.png",
+    "shots/terminal_ssh_connect_typing_FAIL.png",
+    "shots/agent_mode_proof_FAIL.png",
+    "shots/agent_cadence_FAIL.png",
+    "shots/agent_fast_typing_FAIL.png",
+    "shots/agent_paste_instant_enter_FAIL.png",
+    "shots/agent_tab_enter_FAIL.png",
+    "shots/agent_ctrl_c_d_FAIL.png",
+    "shots/agent_ssh_connect_typing_FAIL.png"
+   ]
+  }
+ },
+ "notes": [],
+ "compile": {
+  "warning_count": 107,
+  "warnings_by_crate": {
+   "yaml-rust (lib)": 10,
+   "font-kit (lib)": 3,
+   "arboard (lib)": 2,
+   "cosmic-text (lib)": 2,
+   "warpui_extras (lib)": 1,
+   "watcher (lib)": 1,
+   "ai (lib)": 4,
+   "remote_server (lib)": 4,
+   "difflib (lib)": 3,
+   "warp (lib)": 40,
+   "warp (lib test)": 37
+  },
+  "warning_lines_by_kind": {
+   "function": 49,
+   "unused import": 26,
+   "method": 26,
+   "field": 20,
+   "unexpected": 16,
+   "variant": 13,
+   "use of deprecated constant": 12,
+   "use of deprecated struct": 12,
+   "use of deprecated method": 12,
+   "use of deprecated type alias": 8,
+   "use of deprecated associated function": 8,
+   "unused variable": 8,
+   "constant": 8,
+   "struct": 8,
+   "unused imports": 6,
+   "associated function": 6,
+   "methods": 5,
+   "type": 5,
+   "use of deprecated module": 4,
+   "hiding a lifetime that": 4,
+   "missing documentation for an associated function": 4,
+   "missing documentation for a method": 4,
+   "unused attribute": 4,
+   "variable does not need to be mutable": 4,
+   "value assigned to": 4,
+   "enum": 4,
+   "the following packages contain code that will be rejected by": 4
+  },
+  "errors": 0,
+  "status": "success",
+  "duration": 637.213943
+ }
+}

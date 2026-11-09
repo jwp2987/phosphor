@@ -1,0 +1,460 @@
+{
+ "meta": {
+  "platform": "macos",
+  "backend": "mac",
+  "app_display": "macos",
+  "seed": "1",
+  "commit": "c0ed28ad",
+  "sha": "c0ed28adfee2f4fa90600db06cb30c1f363d078a",
+  "owner_settings": "sha256 a0613b641a27",
+  "tier": "smoke",
+  "scale": "1"
+ },
+ "generated": "2026-11-09T05:20:23-0600",
+ "summary": {
+  "pass": 0,
+  "fail": 18,
+  "skip": 0,
+  "noref": 0
+ },
+ "cases": [
+  {
+   "name": "mode_proof",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 0.3,
+   "evidence": [
+    "mode_proof: log_view_mode=None ocr_agent_markers=None ocr_terminal_hint=None queue_destination=None"
+   ],
+   "tainted": false,
+   "wall": [
+    1794223208.063,
+    1794223208.351
+   ],
+   "detail": [
+    "harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')"
+   ],
+   "metrics": {
+    "enter_taint": {
+     "taps": 0,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_mode_proof_FAIL.png"
+   ]
+  },
+  {
+   "name": "cadence",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 0.2,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794223208.443,
+    1794223208.675
+   ],
+   "detail": [
+    "harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')"
+   ],
+   "metrics": {
+    "enter_taint": {
+     "taps": 0,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_cadence_FAIL.png"
+   ]
+  },
+  {
+   "name": "key_loss_control",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 0.2,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794223208.761,
+    1794223208.995
+   ],
+   "detail": [
+    "harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')"
+   ],
+   "metrics": {
+    "enter_taint": {
+     "taps": 0,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_key_loss_control_FAIL.png"
+   ]
+  },
+  {
+   "name": "enter_loss_control",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 0.2,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794223209.085,
+    1794223209.308
+   ],
+   "detail": [
+    "harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')"
+   ],
+   "metrics": {
+    "enter_taint": {
+     "taps": 0,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_enter_loss_control_FAIL.png"
+   ]
+  },
+  {
+   "name": "fast_typing",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 0.2,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794223209.399,
+    1794223209.622
+   ],
+   "detail": [
+    "harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')"
+   ],
+   "metrics": {
+    "enter_taint": {
+     "taps": 0,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_fast_typing_FAIL.png"
+   ]
+  },
+  {
+   "name": "paste_instant_enter",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 0.3,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794223209.713,
+    1794223210.002
+   ],
+   "detail": [
+    "harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')"
+   ],
+   "metrics": {
+    "enter_taint": {
+     "taps": 0,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_paste_instant_enter_FAIL.png"
+   ]
+  },
+  {
+   "name": "tab_enter",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 0.3,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794223210.093,
+    1794223210.405
+   ],
+   "detail": [
+    "harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')"
+   ],
+   "metrics": {
+    "enter_taint": {
+     "taps": 0,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_tab_enter_FAIL.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_d",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 0.2,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794223210.491,
+    1794223210.721
+   ],
+   "detail": [
+    "harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')"
+   ],
+   "metrics": {
+    "enter_taint": {
+     "taps": 0,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_ctrl_c_d_FAIL.png"
+   ]
+  },
+  {
+   "name": "ssh_connect_typing",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 0.3,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794223210.812,
+    1794223211.094
+   ],
+   "detail": [
+    "harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')"
+   ],
+   "metrics": {
+    "enter_taint": {
+     "taps": 0,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_ssh_connect_typing_FAIL.png"
+   ]
+  },
+  {
+   "name": "harness_crash",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 0,
+   "detail": [
+    "the terminal pass crashed outside a case: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')"
+   ]
+  },
+  {
+   "name": "mode_proof",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 0.3,
+   "evidence": [
+    "mode_proof: log_view_mode=None ocr_agent_markers=None ocr_terminal_hint=None queue_destination=None"
+   ],
+   "tainted": false,
+   "wall": [
+    1794223220.489,
+    1794223220.773
+   ],
+   "detail": [
+    "harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')"
+   ],
+   "metrics": {
+    "enter_taint": {
+     "taps": 0,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_mode_proof_FAIL.png"
+   ]
+  },
+  {
+   "name": "cadence",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 0.2,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794223220.864,
+    1794223221.095
+   ],
+   "detail": [
+    "harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')"
+   ],
+   "metrics": {
+    "enter_taint": {
+     "taps": 0,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_cadence_FAIL.png"
+   ]
+  },
+  {
+   "name": "fast_typing",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 0.2,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794223221.19,
+    1794223221.416
+   ],
+   "detail": [
+    "harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')"
+   ],
+   "metrics": {
+    "enter_taint": {
+     "taps": 0,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_fast_typing_FAIL.png"
+   ]
+  },
+  {
+   "name": "paste_instant_enter",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 0.3,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794223221.498,
+    1794223221.783
+   ],
+   "detail": [
+    "harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')"
+   ],
+   "metrics": {
+    "enter_taint": {
+     "taps": 0,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_paste_instant_enter_FAIL.png"
+   ]
+  },
+  {
+   "name": "tab_enter",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 0.2,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794223221.878,
+    1794223222.109
+   ],
+   "detail": [
+    "harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')"
+   ],
+   "metrics": {
+    "enter_taint": {
+     "taps": 0,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_tab_enter_FAIL.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_d",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 0.2,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794223222.204,
+    1794223222.432
+   ],
+   "detail": [
+    "harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')"
+   ],
+   "metrics": {
+    "enter_taint": {
+     "taps": 0,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_ctrl_c_d_FAIL.png"
+   ]
+  },
+  {
+   "name": "ssh_connect_typing",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 0.2,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794223222.528,
+    1794223222.757
+   ],
+   "detail": [
+    "harness exception: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')"
+   ],
+   "metrics": {
+    "enter_taint": {
+     "taps": 0,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_ssh_connect_typing_FAIL.png"
+   ]
+  },
+  {
+   "name": "harness_crash",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 0,
+   "detail": [
+    "the agent pass crashed outside a case: RuntimeError('loginwindow is frontmost (locked screen?): refusing to send keys')"
+   ]
+  }
+ ]
+}
