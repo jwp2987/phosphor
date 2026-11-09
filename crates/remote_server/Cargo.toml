@@ -22,7 +22,7 @@ required-features = ["daemon"]
 # The app's side: manager model, transport, client, install/setup and the repo_metadata
 # conversions. Everything that names warpui, warp_core, warp_util or repo_metadata.
 default = ["client"]
-client = ["dep:warpui", "dep:warp_core", "dep:warp_util", "dep:repo_metadata"]
+client = ["dep:warpui", "dep:warp_core", "dep:warp_util", "dep:repo_metadata", "dep:serde_json", "dep:sha2"]
 # The `phosphor-remote` helper's server core (added in later Wave H steps). Deliberately does
 # NOT imply `client`: the helper is built with `--no-default-features --features daemon` and
 # its dependency tree must contain no warpui (checked in CI by `cargo tree`).
@@ -59,7 +59,8 @@ ignore = { version = "0.4.20", optional = true }
 # The helper's filesystem watcher (daemon/watch.rs): the recommended inotify/FSEvents watcher with
 # NO debouncer. Reuses the workspace's vendored notify, so the lockfile gains nothing.
 notify = { workspace = true, optional = true }
-# The index scan (daemon/chunk.rs): JSON output and SHA-256 hashes. No network, no async.
+# The index scan and store (index/, daemon/chunk.rs): JSON and SHA-256 hashes. Used by both the
+# helper and the app's no-helper path. No network, no async.
 serde_json = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 
