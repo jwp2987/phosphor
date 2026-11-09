@@ -15,7 +15,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use remote_server::client::RemoteServerClient;
+use remote_server::backend::RemoteFeatures as _;
 use remote_server::manager::RemoteServerManager;
 use warp_core::HostId;
 use warp_util::standardized_path::StandardizedPath;
@@ -476,7 +476,7 @@ impl WatcherType {
 }
 
 /// Per-file backing store.
-/// Remote files dispatch through [`RemoteServerClient`] via [`RemoteServerManager`].
+/// Remote files dispatch through `RemoteServerClient` via [`RemoteServerManager`].
 enum FileBackend {
     Local(LocalFile),
     Remote {
@@ -750,7 +750,7 @@ impl FileModel {
     /// Register a remote file path and return a `FileId`.
     ///
     /// The returned `FileId` can be used with `save()` and `delete()` which
-    /// will dispatch to the remote backend via [`RemoteServerClient`].
+    /// will dispatch to the remote backend via `RemoteServerClient`.
     pub fn register_remote_file(&mut self, host_id: HostId, path: StandardizedPath) -> FileId {
         let file_id = FileId::new();
         self.file_state.insert_remote(file_id, host_id, path);
@@ -1214,10 +1214,10 @@ impl FileModel {
                 );
             }
             FileBackend::Remote { host_id, path } => {
-                let client = Self::resolve_remote_client(host_id, ctx)?;
+                let backend = Self::resolve_remote_backend(host_id, ctx)?;
                 let path = path.as_str().to_string();
                 let future = async move {
-                    client
+                    backend
                         .write_file(path, content)
                         .await
                         .map_err(|e| e.to_string())
@@ -1378,10 +1378,10 @@ impl FileModel {
                 );
             }
             FileBackend::Remote { host_id, path } => {
-                let client = Self::resolve_remote_client(host_id, ctx)?;
+                let backend = Self::resolve_remote_backend(host_id, ctx)?;
                 let path = path.as_str().to_string();
                 let future = async move {
-                    let read_result = client.read_file_bytes(path.clone()).await;
+                    let read_result = backend.read_file_bytes(path.clone()).await;
                     if let Some(message) = remote_pre_image_refusal(
                         &path,
                         &expected,
@@ -1390,7 +1390,7 @@ impl FileModel {
                     ) {
                         return Err(message);
                     }
-                    client
+                    backend
                         .write_file(path, content)
                         .await
                         .map_err(|e| e.to_string())
@@ -1705,10 +1705,10 @@ impl FileModel {
                 );
             }
             FileBackend::Remote { host_id, path } => {
-                let client = Self::resolve_remote_client(host_id, ctx)?;
+                let backend = Self::resolve_remote_backend(host_id, ctx)?;
                 let path = path.as_str().to_string();
                 let future =
-                    async move { client.delete_file(path).await.map_err(|e| e.to_string()) };
+                    async move { backend.delete_file(path).await.map_err(|e| e.to_string()) };
                 ctx.spawn(future, move |me, result: Result<(), String>, ctx| {
                     me.report_save_outcome(
                         file_id,
@@ -1796,16 +1796,16 @@ impl FileModel {
                 );
             }
             FileBackend::Remote { host_id, path } => {
-                let client = Self::resolve_remote_client(host_id, ctx)?;
+                let backend = Self::resolve_remote_backend(host_id, ctx)?;
                 let path = path.as_str().to_string();
                 let future = async move {
-                    let read_result = client.read_file_bytes(path.clone()).await;
+                    let read_result = backend.read_file_bytes(path.clone()).await;
                     if let Some(message) =
                         remote_pre_image_refusal(&path, &expected, read_result, None)
                     {
                         return Err(message);
                     }
-                    client.delete_file(path).await.map_err(|e| e.to_string())
+                    backend.delete_file(path).await.map_err(|e| e.to_string())
                 };
                 ctx.spawn(future, move |me, result: Result<(), String>, ctx| {
                     me.report_save_outcome(
@@ -1821,17 +1821,21 @@ impl FileModel {
         Ok(())
     }
 
-    /// Look up the `RemoteServerClient` for a given host at call time.
-    fn resolve_remote_client(
+    /// The backend serving a remote file's host, looked up at call time: the helper when it
+    /// serves file writes, otherwise shell mode over the session's out-of-band channel. A host
+    /// with neither is not connected.
+    fn resolve_remote_backend(
         host_id: &HostId,
         ctx: &AppContext,
-    ) -> Result<std::sync::Arc<RemoteServerClient>, FileSaveError> {
-        RemoteServerManager::as_ref(ctx)
-            .client_for_host(host_id)
-            .cloned()
-            .ok_or_else(|| {
-                FileSaveError::RemoteError(format!("Remote host {host_id} is not connected"))
-            })
+    ) -> Result<remote_server::backend::RoutedBackend, FileSaveError> {
+        let backend = RemoteServerManager::as_ref(ctx).backend_for_host(host_id);
+        if backend.is_available(remote_server::backend::Family::FileWrite) {
+            Ok(backend)
+        } else {
+            Err(FileSaveError::RemoteError(format!(
+                "Remote host {host_id} is not connected"
+            )))
+        }
     }
 
     pub fn set_version(&mut self, file_id: FileId, version: ContentVersion) {

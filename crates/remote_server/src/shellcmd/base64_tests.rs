@@ -107,3 +107,23 @@ fn the_probe_command_tries_the_tools_in_order() {
     assert!(gnu < plain && plain < openssl && openssl < od);
     assert!(p.ends_with("fi"));
 }
+
+#[test]
+fn the_decode_probe_output_maps_to_a_decoder_and_unknown_is_none() {
+    assert_eq!(
+        DecodeTool::from_probe_output("d\n"),
+        Some(DecodeTool::Lower)
+    );
+    assert_eq!(DecodeTool::from_probe_output("D"), Some(DecodeTool::Upper));
+    assert_eq!(
+        DecodeTool::from_probe_output("openssl"),
+        Some(DecodeTool::Openssl)
+    );
+    assert_eq!(DecodeTool::from_probe_output("none"), None);
+    assert_eq!(DecodeTool::Lower.filter(), "base64 -d");
+    assert_eq!(DecodeTool::Upper.filter(), "base64 -D");
+    assert_eq!(DecodeTool::Openssl.filter(), "openssl base64 -d");
+    // Each branch decodes a known string rather than trusting that the flag exists.
+    let probe = decode_probe_command();
+    assert!(probe.contains("aGk=") && probe.contains("= hi"));
+}

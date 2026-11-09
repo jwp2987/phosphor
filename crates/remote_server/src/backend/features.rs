@@ -11,6 +11,7 @@
 use futures::future::BoxFuture;
 
 use super::helper::{HelperBackend, client_id};
+use super::refresh::RemoteRefreshEvent;
 use super::router::{HelperProbe, RoutedBackend};
 use super::shell::ShellBackend;
 use super::{BackendError, Family};
@@ -25,8 +26,22 @@ use crate::proto::{
     RipgrepSearchResponse, SaveBufferResponse,
 };
 
+/// The shell arm of one method: `unimplemented` answers `Unsupported` (or `Unavailable` without a
+/// channel) until the family's package lands; any other name is the `ShellBackend` method that
+/// serves it (in `shell/<family>.rs`).
+macro_rules! shell_call {
+    (unimplemented, $self:ident, $fam:ident, $name:ident, ($($arg:ident),+)) => {{
+        let _ = ($(&$arg,)+);
+        let error = $self.not_implemented(Family::$fam, stringify!($name));
+        Box::pin(async move { Err(error) })
+    }};
+    ($imp:ident, $self:ident, $fam:ident, $name:ident, ($($arg:ident),+)) => {
+        Box::pin($self.$imp($($arg),+))
+    };
+}
+
 macro_rules! remote_features {
-    ($( $fam:ident, $mutates:literal : fn $name:ident ( $($arg:ident : $ty:ty),+ ) -> $ret:ty; )+) => {
+    ($( $fam:ident, $mutates:literal : fn $name:ident ( $($arg:ident : $ty:ty),+ ) -> $ret:ty => $imp:ident; )+) => {
         /// Every request/response feature, served by whichever backend the router picked.
         pub trait RemoteFeatures: Send + Sync {
             $(
@@ -48,9 +63,7 @@ macro_rules! remote_features {
         impl RemoteFeatures for ShellBackend {
             $(
                 fn $name(&self, $($arg: $ty),+) -> BoxFuture<'_, Result<$ret, BackendError>> {
-                    let _ = ($(&$arg,)+);
-                    let error = self.not_implemented(Family::$fam, stringify!($name));
-                    Box::pin(async move { Err(error) })
+                    shell_call!($imp, self, $fam, $name, ($($arg),+))
                 }
             )+
         }
@@ -60,6 +73,8 @@ macro_rules! remote_features {
                 #[allow(clippy::clone_on_copy)]
                 fn $name(&self, $($arg: $ty),+) -> BoxFuture<'_, Result<$ret, BackendError>> {
                     Box::pin(async move {
+                        self.log_route(Family::$fam);
+                        let result = async {
                         let probe = self.helper_client().map(HelperProbe::of);
                         if self.router().choose(self.host(), Family::$fam, probe.as_ref())
                             == super::router::BackendKind::Helper
@@ -91,6 +106,15 @@ macro_rules! remote_features {
                             }
                         }
                         self.shell().$name($($arg),+).await
+                        }.await;
+                        // The app just changed the host itself: whatever it shows of that host
+                        // (a diff, a tree, git status) can be stale, and in shell mode nothing
+                        // pushes the change.
+                        if $mutates && result.is_ok() {
+                            self.router().emit_refresh(
+                                self.host(), &RemoteRefreshEvent::AfterOwnWrite);
+                        }
+                        result
                     })
                 }
             )+
@@ -104,25 +128,26 @@ macro_rules! remote_features {
 }
 
 remote_features! {
-    FileContext, false: fn read_file_context(request: ReadFileContextRequest) -> ReadFileContextResponse;
-    RepoMetadata, false: fn navigate_to_directory(path: String) -> NavigatedToDirectoryResponse;
-    RepoMetadata, false: fn load_repo_metadata_directory(repo_path: String, dir_path: String) -> LoadRepoMetadataDirectoryResponse;
-    Buffers, false: fn open_buffer(path: String, force_reload: bool) -> OpenBufferResponse;
-    Buffers, true: fn save_buffer(path: String) -> SaveBufferResponse;
-    Buffers, true: fn resolve_conflict(path: String, acknowledged_server_version: u64, client_content: String, current_client_version: u64) -> ResolveConflictResponse;
-    DiffState, false: fn get_diff_state(request: GetDiffState) -> GetDiffStateResponse;
-    GitRead, false: fn get_branches(request: GetBranches) -> GetBranchesResponse;
-    GitRead, false: fn get_committed_branch_files(request: GetCommittedBranchFilesRequest) -> GetCommittedBranchFilesResponse;
-    RipgrepSearch, false: fn ripgrep_search(request: RipgrepSearchRequest) -> RipgrepSearchResponse;
-    GitWrite, true: fn git_commit_chain(request: GitCommitChainRequest) -> GitCommitChainResponse;
-    GitWrite, true: fn git_push(request: GitPushRequest) -> GitPushResponse;
-    GitWrite, true: fn git_pull(request: GitPullRequest) -> GitPullResponse;
-    GitWrite, true: fn git_create_pr(request: GitCreatePrRequest) -> GitCreatePrResponse;
-    GitWrite, true: fn discard_files(request: DiscardFilesRequest) -> ();
-    GitWrite, true: fn git_stage(request: GitStageRequest) -> ();
-    FileWrite, true: fn write_file(path: String, content: String) -> ();
-    FileWrite, true: fn delete_file(path: String) -> ();
-    FsBasic, false: fn list_directory(path: String) -> ListDirectoryResponse;
-    FsBasic, false: fn resolve_path(path: String) -> ResolvePathResponse;
-    FsBasic, true: fn create_directory(path: String) -> CreateDirectoryResponse;
+    FileContext, false: fn read_file_context(request: ReadFileContextRequest) -> ReadFileContextResponse => read_file_context_shell;
+    RepoMetadata, false: fn navigate_to_directory(path: String) -> NavigatedToDirectoryResponse => unimplemented;
+    RepoMetadata, false: fn load_repo_metadata_directory(repo_path: String, dir_path: String) -> LoadRepoMetadataDirectoryResponse => unimplemented;
+    Buffers, false: fn open_buffer(path: String, force_reload: bool) -> OpenBufferResponse => unimplemented;
+    Buffers, true: fn save_buffer(path: String) -> SaveBufferResponse => unimplemented;
+    Buffers, true: fn resolve_conflict(path: String, acknowledged_server_version: u64, client_content: String, current_client_version: u64) -> ResolveConflictResponse => unimplemented;
+    DiffState, false: fn get_diff_state(request: GetDiffState) -> GetDiffStateResponse => unimplemented;
+    GitRead, false: fn get_branches(request: GetBranches) -> GetBranchesResponse => unimplemented;
+    GitRead, false: fn get_committed_branch_files(request: GetCommittedBranchFilesRequest) -> GetCommittedBranchFilesResponse => unimplemented;
+    RipgrepSearch, false: fn ripgrep_search(request: RipgrepSearchRequest) -> RipgrepSearchResponse => unimplemented;
+    GitWrite, true: fn git_commit_chain(request: GitCommitChainRequest) -> GitCommitChainResponse => unimplemented;
+    GitWrite, true: fn git_push(request: GitPushRequest) -> GitPushResponse => unimplemented;
+    GitWrite, true: fn git_pull(request: GitPullRequest) -> GitPullResponse => unimplemented;
+    GitWrite, true: fn git_create_pr(request: GitCreatePrRequest) -> GitCreatePrResponse => unimplemented;
+    GitWrite, true: fn discard_files(request: DiscardFilesRequest) -> () => unimplemented;
+    GitWrite, true: fn git_stage(request: GitStageRequest) -> () => unimplemented;
+    FileWrite, true: fn write_file(path: String, content: String) -> () => write_file_shell;
+    FileWrite, true: fn delete_file(path: String) -> () => delete_file_shell;
+    FsBasic, false: fn read_file_bytes(path: String) -> Vec<u8> => read_file_bytes_shell;
+    FsBasic, false: fn list_directory(path: String) -> ListDirectoryResponse => unimplemented;
+    FsBasic, false: fn resolve_path(path: String) -> ResolvePathResponse => unimplemented;
+    FsBasic, true: fn create_directory(path: String) -> CreateDirectoryResponse => unimplemented;
 }

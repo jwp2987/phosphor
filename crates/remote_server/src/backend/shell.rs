@@ -7,9 +7,12 @@
 
 use std::sync::{Arc, Mutex};
 
+mod read;
+mod write;
+
 use super::executor::{ChannelKind, ExecRequest, MAX_EXEC_OUTPUT_BYTES, OutOfBandExecutor};
 use super::{BackendError, Family};
-use crate::shellcmd::base64::{self, Base64Tool};
+use crate::shellcmd::base64::{self, Base64Tool, DecodeTool};
 use crate::shellcmd::{Frame, Script, StderrMode};
 
 #[derive(Clone, Default)]
@@ -18,6 +21,8 @@ pub struct ShellBackend {
     /// The host's base64 tool, probed once: `None` not probed yet, `Some(None)` probed and the
     /// host has none.
     base64_tool: Arc<Mutex<Option<Option<Base64Tool>>>>,
+    /// The host's base64 decoder (for writes), probed once like the encoder.
+    decode_tool: Arc<Mutex<Option<Option<DecodeTool>>>>,
 }
 
 impl std::fmt::Debug for ShellBackend {
@@ -35,6 +40,7 @@ impl ShellBackend {
         Self {
             executor,
             base64_tool: Arc::default(),
+            decode_tool: Arc::default(),
         }
     }
 
@@ -99,5 +105,35 @@ impl ShellBackend {
             .and_then(|s| Base64Tool::from_probe_output(&s.text()));
         *self.base64_tool.lock().unwrap_or_else(|e| e.into_inner()) = Some(tool);
         Ok(tool)
+    }
+
+    /// The host's base64 decoder (`None`: it has none), probed on first use and cached.
+    pub async fn decode_tool(&self) -> Result<Option<DecodeTool>, BackendError> {
+        if let Some(cached) = *self.decode_tool.lock().unwrap_or_else(|e| e.into_inner()) {
+            return Ok(cached);
+        }
+        let script = Script::new(Self::new_nonce())?.section(
+            "dec",
+            base64::decode_probe_command(),
+            StderrMode::Discard,
+        )?;
+        let frame = self.run_script(&script).await?;
+        let tool = frame
+            .section("dec")
+            .and_then(|s| DecodeTool::from_probe_output(&s.text()));
+        *self.decode_tool.lock().unwrap_or_else(|e| e.into_inner()) = Some(tool);
+        Ok(tool)
+    }
+
+    /// The out-of-band executor, or `Unavailable` naming `what`.
+    pub(super) fn executor_for(
+        &self,
+        what: &'static str,
+    ) -> Result<Arc<dyn OutOfBandExecutor>, BackendError> {
+        self.executor.clone().ok_or_else(|| {
+            BackendError::Unavailable(format!(
+                "{what}: this session has no out-of-band channel for remote commands"
+            ))
+        })
     }
 }

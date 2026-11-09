@@ -10,13 +10,16 @@
 //! * [`shell_kind`]: [`ShellKind`] and the `sh -c` wrapping a non-POSIX login shell needs.
 //! * [`base64`]: the base64 codec and the host base64 tool probe (binary-safe transfer).
 //! * [`predicates`]: "may this command change HEAD / the cwd", the refresh-coordinator inputs.
+//! * [`read`]: batch file reads (`ReadFileContext`), shared by the helper and the shell backend.
 //!
 //! Wave H, P0.
 
 pub mod base64;
 pub mod frame;
 pub mod predicates;
+pub mod read;
 pub mod shell_kind;
+pub mod write;
 
 pub use frame::{Frame, FrameError, ParsedSection, Script, StderrMode};
 pub use shell_kind::ShellKind;
