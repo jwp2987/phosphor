@@ -3799,7 +3799,7 @@ def agent_file_edit_pieces():
     for eol in (b"\n", b"\r\n"):
         for fin in (True, False):
             c = AF.make_file("t1", eol, fin)
-            out = AF.apply_edits(c, AF.three_edits())
+            out = AF.apply_edits(c, AF.three_edits("t1"))
             assert out != c and out.endswith(eol) == fin and AF.ending_profile(out)[:3] == AF.ending_profile(c)[:3] and b"L10 KAPPA-EDITED" in out
     assert AF.ending_profile(AF.make_file("x", b"\r\n", False)) == (9, 0, 0, False)
     try:
@@ -3808,7 +3808,7 @@ def agent_file_edit_pieces():
     except ValueError:
         pass
     c = AF.make_file("t2")
-    mine = AF.apply_edits(c, AF.three_edits())
+    mine = AF.apply_edits(c, AF.three_edits("t2"))
     user = c + b"USER\n"
     assert AF.judge_bytes(mine, mine, "x") == [] and len(AF.judge_bytes(mine.replace(b"\n", b"\r\n"), mine, "x")) == 1
     assert AF.judge_conflict(user, c, user, mine) == []
