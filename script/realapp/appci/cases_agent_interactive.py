@@ -73,9 +73,21 @@ ALT_ENTER_RE = re.compile(r"hop=alt_screen_enter\b")
 FS_HANDOVER_RE = re.compile(r"hop=fullscreen_handover agent_in_control=0")      # app: the user's first key into an agent-run full-screen program took the command over
 
 
+# The user's keys reached the full-screen program's pty as the user's own bytes (`hop=hand_route ... state=pty_owned ... command_interactive=true`, written by both input
+# modes). An ordinary agent command waiting for completion has NO control state (take_over_for_user refuses a Manual take-over then, by design #1796/#1811), so the
+# `fullscreen_handover` hop above never fires for it, yet the agent is not driving the program: its keys are exact and the agent only waits for the result.
+FS_KEYS_RE = re.compile(r"hop=hand_route reason=unheld state=pty_owned \S+ \S+ \S+ command_interactive=true")
+
+
 def hop_count(text, rx):
     """pure: how many lines of an app-log excerpt match the hop pattern"""
     return len(rx.findall(text))
+
+
+def fullscreen_keys_proven(text):
+    """pure: the app took the command over (agent had LRC control), or the user's keys went to the interactive program's pty after it took the screen"""
+    i = text.find("hop=alt_screen_enter")
+    return hop_count(text, FS_HANDOVER_RE) > 0 or (i >= 0 and hop_count(text[i:], FS_KEYS_RE) > 0)
 
 
 def wait_alt_screen(ctx, off, timeout=30):
@@ -85,8 +97,8 @@ def wait_alt_screen(ctx, off, timeout=30):
 
 def check_fullscreen_handover(ctx, r, label, off):
     """after the first keys: the app logged the take-over of the full-screen program (keys flow to it), so a green file alone cannot hide a missing hand-over"""
-    ok = ctx.until(lambda: hop_count(ctx.log_since(off), FS_HANDOVER_RE) > 0, 10, step=0.2)
-    r.check(bool(ok), "%s: no hop=fullscreen_handover in the app log after typing into the full-screen program: the hand-over is not proven" % label)
+    ok = ctx.until(lambda: fullscreen_keys_proven(ctx.log_since(off)), 10, step=0.2)
+    r.check(bool(ok), "%s: neither hop=fullscreen_handover nor a pty-owned hand_route in the app log after typing into the full-screen program: the keys' route is not proven" % label)
 
 
 # cli_controller.rs switch_control_to_user logs `hop=handover action=<id> reason=<variant>` for EVERY take-over of an agent command. The prompt-shape path logs
