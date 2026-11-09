@@ -74,6 +74,31 @@ impl AskUserQuestionExecutor {
         )
     }
 
+    /// Whether this question waits on its card for the user's answer: the executor's whole
+    /// confirmation rule for `ask_user_question` (owner decision 2026-11-08, #1797).
+    ///
+    /// There is no separate approval step. The question goes straight to its blocked state with
+    /// its card up, and answering the card (answers staged by [`Self::stage_answers`], then the
+    /// action executed by id) IS the approval. So this ignores everything the generic policy
+    /// weighs for other actions:
+    /// * who asked to run it: a plain accept (Run / Enter, the CLI subagent's Allow,
+    ///   auto-approve) carries no answer and leaves the question waiting, while the agent's own
+    ///   queue drain runs it the moment an answer is staged;
+    /// * the conversation's auto-execute override ("run to completion") and the app's
+    ///   autonomous mode: neither can answer a question, so neither completes one.
+    ///
+    /// It does not wait when there is nothing to answer (no question this client can show:
+    /// an error result) or when the profile says never to ask (a skipped result the model is
+    /// told about; the tool is not offered to the model under that setting at all); both are
+    /// [`Self::should_autoexecute`].
+    pub(super) fn waits_for_answer(
+        &self,
+        input: ExecuteActionInput,
+        ctx: &mut ModelContext<Self>,
+    ) -> bool {
+        !self.should_autoexecute(input, ctx) && !self.has_staged_answers(&input.action.id)
+    }
+
     pub(super) fn execute(
         &mut self,
         input: ExecuteActionInput,
@@ -115,8 +140,9 @@ impl AskUserQuestionExecutor {
         }
 
         // No staged answer. `BlocklistAIActionModel` refuses a user accept of a question with
-        // none (`user_accept_lacks_question_answer`), so no production path gets here; this waits
-        // on the decision channel as before.
+        // none (`user_accept_lacks_question_answer`), and the executor does not run one for any
+        // initiator (`waits_for_answer`), so no production path gets here; this waits on the
+        // decision channel as before.
         let receiver = self.result_rx.1.clone();
         // The channel is shared by every card this executor ever runs. A Stop that raced an
         // answer (or a `cancel` with nothing waiting) leaves a decision queued; without this

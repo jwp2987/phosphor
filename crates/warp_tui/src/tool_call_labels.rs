@@ -184,6 +184,11 @@ pub(crate) fn tool_call_label_with_server(
         .map(|result| &result.result);
     let label = label_for_action(&action.action, state, result, block, server_name);
     match state {
+        // A question has no approval step: its card is up and answering it is the approval
+        // (owner decision 2026-11-08, #1797), so it waits for an answer, not an approval.
+        State::Blocked if matches!(action.action, AIAgentActionType::AskUserQuestion { .. }) => {
+            format!("{label} (awaiting your answer)")
+        }
         State::Blocked => format!("{label} (awaiting approval)"),
         State::Constructing
         | State::Pending

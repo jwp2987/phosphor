@@ -453,3 +453,100 @@ fn a_question_list_with_nothing_to_show_returns_an_error_at_once() {
         );
     });
 }
+
+fn waits_for_answer_now(
+    app: &mut App,
+    executor: &ModelHandle<AskUserQuestionExecutor>,
+    action: &AIAgentAction,
+    conversation_id: AIConversationId,
+) -> bool {
+    executor.update(app, |executor, ctx| {
+        executor.waits_for_answer(
+            ExecuteActionInput {
+                action,
+                conversation_id,
+            },
+            ctx,
+        )
+    })
+}
+
+/// Owner decision 2026-11-08 (#1797): the question's confirmation rule is only "has it been
+/// answered". It waits on its card until answers are staged for it and not a moment longer;
+/// auto-approve ("run to completion") does not stand in for the answer.
+#[test]
+fn a_question_waits_for_its_answer_and_only_for_its_answer() {
+    App::test((), |mut app| async move {
+        let terminal_view_id = EntityId::new();
+        let (history, _profiles) = initialize_ask_user_question_test(&mut app, terminal_view_id);
+        let executor = app.add_model(|_| AskUserQuestionExecutor::new(terminal_view_id));
+        let action = build_action("question");
+        // Auto-approve on: the most autonomous conversation there is.
+        let conversation_id = history.update(&mut app, |history, ctx| {
+            history.start_new_conversation(terminal_view_id, true, false, ctx)
+        });
+
+        assert!(
+            waits_for_answer_now(&mut app, &executor, &action, conversation_id),
+            "no answer yet: it waits on its card, even with auto-approve on"
+        );
+
+        executor.update(&mut app, |executor, _| {
+            executor.stage_answers(
+                action.id.clone(),
+                vec![AskUserQuestionAnswerItem::Skipped {
+                    question_id: "q1".to_string(),
+                }],
+            );
+        });
+        assert!(
+            !waits_for_answer_now(&mut app, &executor, &action, conversation_id),
+            "answered: it runs, whoever asks it to"
+        );
+        assert!(
+            waits_for_answer_now(
+                &mut app,
+                &executor,
+                &build_action("another-question"),
+                conversation_id
+            ),
+            "another question's answer is not this one's"
+        );
+    });
+}
+
+/// A question with nothing to show never waits (it resolves with an error result), and neither
+/// does one the profile says never to ask (a skipped result). Neither is an answer the user
+/// gave, and neither leaves anything pending with no card.
+#[test]
+fn a_question_with_nothing_to_ask_does_not_wait() {
+    App::test((), |mut app| async move {
+        let terminal_view_id = EntityId::new();
+        let (history, profiles) = initialize_ask_user_question_test(&mut app, terminal_view_id);
+        let executor = app.add_model(|_| AskUserQuestionExecutor::new(terminal_view_id));
+        let conversation_id = history.update(&mut app, |history, ctx| {
+            history.start_new_conversation(terminal_view_id, false, false, ctx)
+        });
+        let empty = AIAgentAction {
+            action: AIAgentActionType::AskUserQuestion { questions: vec![] },
+            ..build_action("empty")
+        };
+        assert!(!waits_for_answer_now(
+            &mut app,
+            &executor,
+            &empty,
+            conversation_id
+        ));
+
+        profiles.update(&mut app, |profiles, ctx| {
+            let profile_id = *profiles.active_profile(Some(terminal_view_id), ctx).id();
+            profiles.set_ask_user_question(profile_id, AskUserQuestionPermission::Never, ctx);
+        });
+        assert!(!waits_for_answer_now(
+            &mut app,
+            &executor,
+            &build_action("never-asked"),
+            conversation_id
+        ));
+    });
+}

@@ -365,3 +365,45 @@ fn tool_call_label_spans_bold_only_the_first_word() {
         });
     });
 }
+
+/// Owner decision 2026-11-08 (#1797): an `ask_user_question` has no approval step. Its card is
+/// up as soon as it blocks and answering it is the approval, so its blocked label says it waits
+/// for an answer, never for an approval (the GUI draws no Run / Cancel for it either).
+#[test]
+fn a_blocked_question_awaits_an_answer_not_an_approval() {
+    use warp::tui_export::{AskUserQuestionItem, AskUserQuestionOption, AskUserQuestionType};
+
+    let action = AIAgentAction {
+        id: AIAgentActionId::from("question-1".to_owned()),
+        task_id: TaskId::new("task-1".to_owned()),
+        action: AIAgentActionType::AskUserQuestion {
+            questions: vec![AskUserQuestionItem {
+                question_id: "q1".to_owned(),
+                question: "Which branch?".to_owned(),
+                question_type: AskUserQuestionType::MultipleChoice {
+                    is_multiselect: false,
+                    options: vec![AskUserQuestionOption {
+                        label: "main".to_owned(),
+                        recommended: false,
+                    }],
+                    supports_other: false,
+                },
+            }],
+        },
+        requires_result: true,
+    };
+
+    let blocked = tool_call_label(&action, Some(&AIActionStatus::Blocked), false, None);
+    assert_eq!(blocked, "Asking 1 question (awaiting your answer)");
+    assert!(!blocked.contains("approval"), "{blocked}");
+    // Other blocked tool calls still await an approval.
+    assert_eq!(
+        tool_call_label(
+            &command_action("git status"),
+            Some(&AIActionStatus::Blocked),
+            false,
+            None
+        ),
+        "Run `git status` (awaiting approval)"
+    );
+}
