@@ -41,6 +41,8 @@ PLAT_SUFFIX = {MAC: "macos", WIN: "windows"}
 # release play them (the heavy ones stay in HEAVY_SUFFIX / release). GitLab names a parallel:matrix job "<name>: [<SHARD>]".
 # insta-snapshots is deliberately in no tier (it WRITES snapshots for a human to review); check-macos / check-windows are covered by
 # the build jobs, which compile the same code with a stricter profile.
+# Owner 2026-11-09: these are GATES from the first run (no baseline-first period, no "known red" list). They stay manual + allow_failure in
+# GitLab (heavy suites are manual / tier-driven, no schedules), but verdict() counts them like any other job: a red one fails the tier.
 BOX_EXTRA = ["integration-linux: [1]", "integration-linux: [2]", "integration-linux: [3]", "integration-linux-pwsh", "usage-test-linux"]
 MAC_EXTRA = ["usage-test-macos"]
 # suites that cannot exist on a platform, with the reason: reported, never played (a job that is built to fail is not a test)
@@ -307,6 +309,9 @@ def self_test():
         (["usage-test-macos" in plat_suites(WIN, True), "usage-test-macos" in plat_suites(MAC, True)], [False, True], "usage suite is Mac-only"),
         (["fuzz-smoke-macos" in plat_suites(MAC, False), "fuzz-smoke-macos" in plat_suites(MAC, True)], [False, True], "heavy suites only in release"),
         (BOX_EXTRA[:3], ["integration-linux: [%d]" % i for i in (1, 2, 3)], "integration shards are named as GitLab names a matrix job"),
+        # owner 2026-11-09: these GATE candidate and release from the first run; a red one fails the tier, no "known red" exemption
+        ([verdict(n, "failed") for n in BOX_EXTRA + MAC_EXTRA], ["FAIL"] * (len(BOX_EXTRA) + len(MAC_EXTRA)), "a red integration/usage suite is a FAIL verdict"),
+        ([verdict(n, RUNNING_DEADLINE) for n in BOX_EXTRA + MAC_EXTRA], ["TIMEOUT"] * (len(BOX_EXTRA) + len(MAC_EXTRA)), "a timed-out integration/usage suite is never a pass"),
     ):
         ok = got == want
         bad += 0 if ok else 1

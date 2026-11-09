@@ -704,9 +704,9 @@ test-workspace-rest:
           -p usage_suite -p warp_editor -p warp_cli ${TEST_FILTER:+-E "$TEST_FILTER"}
 
 # ~300 GUI-driving scenarios (crates/integration) that need a display: xvfb-run
-# supplies one, mesa-vulkan-drivers the software renderer. MANUAL and non-blocking:
-# nobody has a known-good baseline for this suite, so a red run is signal to read, not a
-# gate. `--profile ci` is required (it holds the retries), and the suite is split in
+# supplies one, mesa-vulkan-drivers the software renderer. MANUAL (tier-driven, no schedules);
+# allow_failure only keeps the hand-played pipeline green: since 2026-11-09 the candidate and
+# release tier verdicts (script/ci/ci_seq.py) GATE on it, a red shard fails the tier. `--profile ci` is required (it holds the retries), and the suite is split in
 # three by nextest's deterministic --partition.
 integration-linux:
   extends: .box_job

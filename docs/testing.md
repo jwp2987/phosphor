@@ -253,7 +253,7 @@ has < 80 GB free or the dir exceeds its cap (`ci-test` 120 GB, `ci-check-linux` 
 | `test-linux` | test | manual (auto on tags only, owner 2026-11-02 #1503: pushes to `main` do not auto-run suites; `AUTO_DERIVE` derives the filter from the pushed diff with `ci_seq.py --derive-env` when set) | `check_test_failures -p warp -p warp_tui --lib --features warp/gui`, plus `-E $TEST_FILTER` when that variable is set (fix tier; a filtered run skips the stale-known-failure rule, and FAILS when one of its `test(/.../)` terms selected no test that ran: `script/ci/check_filter_terms.py`, #1504) |
 | `test-warpui-core` | test | manual (auto on tags only, #1503) | `check_test_failures -p warpui_core --features tui` (honours `$TEST_FILTER`) |
 | `test-workspace-rest` | test | manual (auto on tags) | the 40 other packages in one invocation (honours `$TEST_FILTER`) |
-| `integration-linux` | test | manual, allow_failure | `crates/integration` under xvfb, 3 shards, `--profile ci`; sets `PHOSPHOR_REQUIRE_SSH_FIXTURE=1` and checks `sshd` / `ssh-keygen` first (the ssh scenarios use a local sshd, 2.2) |
+| `integration-linux` | test | manual, allow_failure (gating in the candidate/release tier verdict, owner 2026-11-09) | `crates/integration` under xvfb, 3 shards, `--profile ci`; sets `PHOSPHOR_REQUIRE_SSH_FIXTURE=1` and checks `sshd` / `ssh-keygen` first (the ssh scenarios use a local sshd, 2.2) |
 | `integration-linux-pwsh` | test | manual | the two pwsh scenarios with `PHOSPHOR_TEST_SHELL=pwsh` |
 | `usage-test-linux` / `usage-test-macos` | test | manual | `script/usage-test --surface both` (Linux, xvfb) / `--surface tui` (Mac has no WindowServer for the daemon) |
 | `licenses`, `advisories` | test | on box | `script/ci/cargo_deny licenses|advisories` (cargo-deny pinned, installed only when missing; a failed advisory-DB fetch falls back to a cached DB under 7 days old, with a WARNING) = `cargo deny check licenses sources`, `check advisories`; `retry: max 2` on script/runner-system failure (network-dependent: ci_seq reports a fetch outage as NETWORK-FAIL, separate from code failures; a real `error[...]` finding stays FAIL) |
@@ -944,11 +944,10 @@ test that never ran because its build failed counts as FAIL. `skipped by tier` (
 restoration) never ran. Now `candidate` and `release` play, on the box and after its three unit suites (and before the Wayland/X11 app tests, which wait for
 them): `integration-linux: [1]`..`[3]` (the matrix shards, one after the other), `integration-linux-pwsh`, `usage-test-linux`; and on the Mac, with its unit suites
 and before its app tests, `usage-test-macos`. They stay `manual` + `allow_failure` in GitLab (owner rule: heavy suites are manual or tag-only, no schedules):
-`ci_seq.py` plays them, and its verdict counts them (FAIL on a red job). The integration suite has no known-good baseline yet (`.gitlab-ci.yml` says so): the
-first candidate run records one, and a red scenario there is a finding to triage, not noise to ignore. Deliberately in NO tier: `insta-snapshots` (it writes
+`ci_seq.py` plays them, and its verdict counts them (FAIL on a red job). **Owner 2026-11-09: they GATE the candidate and release tiers from the first run** (no baseline-first period, no "known red" exemption): a red or timed-out shard, pwsh run or usage suite fails the tier verdict like `test-linux` does; a red scenario is a bug to fix or an owner-accepted entry, never noise. Being `allow_failure` in GitLab only keeps the pipeline itself green, because the jobs are played by hand. Deliberately in NO tier: `insta-snapshots` (it writes
 snapshot files for a human to review and commit), `check-macos` / `check-windows` (the build jobs compile the same code under the stricter installer profile;
 `guards-windows` already runs as the first step of every Windows app test). Shuttle/loom, fuzz, bench and the two mutants jobs were already `release` (above).
-`ci_seq.py --self-test` pins the suite lists and that a matrix job name resolves to its template's `timeout:`.
+`ci_seq.py --self-test` pins the suite lists, that every one of these suites yields a FAIL verdict when red, and that a matrix job name resolves to its template's `timeout:`.
 
 **Every suite on every platform (2026-11-03, owner: "the tests need to be the same on all boxes").** Each box suite has a `-macos` and
 a `-windows` twin (names in the table in 2.7; `test-macos` / `test-windows` are the `test-linux` lib suite). All are manual and
@@ -1901,7 +1900,7 @@ Run on a numbered release candidate, once per platform with a new agent per plat
 comparison.
 
 1. Gates green on the candidate commit: `script/precheck` (box), `guards` + `check-linux` CI, `test-linux`,
-   `test-warpui-core`, `test-workspace-rest` (play them; automatic only on tags), `integration-linux` (read, non-blocking),
+   `test-warpui-core`, `test-workspace-rest` (play them; automatic only on tags), `integration-linux` (gating since 2026-11-09),
    `integration-linux-pwsh`, `usage-test-linux` / `usage-test-macos`, `licenses`, `advisories`, `docs/STATE.md` current.
 2. Builds: `build-linux-x86_64` (AppImage launches `--version`), `build-macos-arm64`, `build-windows-x86_64`; checksums
    recorded. Release pipeline on the tag only (`v*` matching `app/Cargo.toml`); never tag or push a release without asking.
@@ -1944,7 +1943,7 @@ Real gaps that remain (each checked against `.gitlab-ci.yml` and `script/realapp
   built by hand and by no CI job.
 - `latency_paint` (key to paint) needs read-back and is skipped on Linux and Windows (Mac only, via `kl3`). The latency budgets
   are judged on overhead over the reference; when no reference can be measured the verdict is `NO-REFERENCE`, not pass.
-- `integration-linux` is manual and `allow_failure: true` in CI (a hard gate only in `precheck`); macOS and Windows have no
+- `integration-linux` is manual and `allow_failure: true` in CI, but a hard gate in `precheck` and, since 2026-11-09, in the candidate and release tier verdicts; macOS and Windows have no
   nextest job (`check-macos`/`check-windows` are `cargo check`; the Mac also runs `usage-test-macos`).
 - Wayland input is tested with a headless sway only (X11 and XWayland as reduced passes); GPU-backed rendering is untested on CI
   (llvmpipe/pixman only, or the box's render node).
