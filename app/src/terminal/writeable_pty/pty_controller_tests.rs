@@ -4195,6 +4195,71 @@ fn prompt_timeout_of_a_fallback_request_asks_for_the_toast() {
     });
 }
 
+/// A fast Tab, Tab, Enter (20 ms gaps): the second Tab, for the same text, attaches to the
+/// exchange in flight and gets ITS answer, so an Enter held for it runs the completed line. Only
+/// one `^Y` goes out. The pty layer is shared by Legacy and Table input.
+#[test]
+fn a_second_tab_for_the_same_text_gets_the_first_exchanges_answer() {
+    App::test((), |mut app| async move {
+        let (controller, model_events, _status, sender, _tx) =
+            native_completions_controller(&mut app);
+        let first = controller.update(&mut app, |c, ctx| start_exchange(c, "cd pro", ctx));
+        Timer::after(Duration::from_millis(20)).await;
+        let second = controller.update(&mut app, |c, ctx| start_exchange(c, "cd pro", ctx));
+        Timer::after(Duration::from_millis(20)).await;
+        assert!(!second.is_closed(), "attached, not refused");
+        model_events.update(&mut app, |_d, ctx| {
+            ctx.emit(ModelEvent::SendCompletionsPrompt {
+                token: Some("5".to_owned()),
+            });
+        });
+        model_events.update(&mut app, |_d, ctx| {
+            ctx.emit(ModelEvent::CompletionsFinished(vec![]));
+        });
+        assert_eq!(first.recv().await.ok(), Some(vec![]));
+        assert_eq!(second.recv().await.ok(), Some(vec![]));
+        assert_eq!(written(&sender)[0], vec![0x19], "one ^Y only");
+        assert_eq!(
+            written(&sender)
+                .iter()
+                .filter(|b| b.contains(&0x19))
+                .count(),
+            1
+        );
+    });
+}
+
+/// Tab, Tab where the first exchange is cancelled: the attached Tab gets the empty answer (an
+/// Enter held for it runs the typed line). A different text is a real refusal; a give-up closes
+/// both channels (no answer: the held Enter's line is handed back).
+#[test]
+fn an_attached_tab_follows_the_cancel_and_the_give_up_of_the_exchange() {
+    App::test((), |mut app| async move {
+        let (controller, model_events, _status, _sender, _tx) =
+            native_completions_controller(&mut app);
+        let _first = controller.update(&mut app, |c, ctx| start_exchange(c, "cd pro", ctx));
+        let other = controller.update(&mut app, |c, ctx| start_exchange(c, "cd pr", ctx));
+        assert!(other.is_closed(), "a different text is refused");
+        let second = controller.update(&mut app, |c, ctx| start_exchange(c, "cd pro", ctx));
+        model_events.update(&mut app, |_d, ctx| {
+            ctx.emit(ModelEvent::SendCompletionsPrompt { token: None });
+        });
+        assert_eq!(
+            second.recv().await.ok(),
+            Some(vec![]),
+            "cancel: empty answer"
+        );
+    });
+    App::test((), |mut app| async move {
+        let (controller, _model_events, _status, _sender, _tx) =
+            native_completions_controller(&mut app);
+        let _first = controller.update(&mut app, |c, ctx| start_exchange(c, "cd pro", ctx));
+        let second = controller.update(&mut app, |c, ctx| start_exchange(c, "cd pro", ctx));
+        Timer::after(NATIVE_COMPLETIONS_PROMPT_TIMEOUT + Duration::from_millis(300)).await;
+        assert!(second.recv().await.is_err(), "give-up: no answer");
+    });
+}
+
 /// #1801: a second request while one is in flight (a second Tab) is refused at once, and the
 /// first exchange is untouched.
 #[test]
