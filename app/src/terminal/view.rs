@@ -647,14 +647,6 @@ lazy_static! {
         Duration::from_secs(1)
     };
 
-    /// The delay between receiving the RC file snippet for subshell bootstrap and writing the
-    /// subshell InitShell command to the PTY.
-    /// This is necessary because some subshells may execute initialization commands (for example,
-    /// `poetry shell` executes a command that sources the project's python virtualenv), and we
-    /// want to submit the InitShell command _after_ those commands have finished execution.
-    /// This is purely a heuristic and may be subject to change based on user reports.
-    static ref TRIGGER_RC_FILE_SUBSHELL_BOOTSTRAP_DELAY: Duration = Duration::from_millis(100);
-
     static ref DEFAULT_IGNORED_RULES_FOR_COMMAND_CORRECTIONS: [CommandCorrectionsRuleId; 1] = [
         CommandCorrectionsHistoryRule.id()
     ];
@@ -686,8 +678,6 @@ pub const WAKEUP_BYPASS_FLOOR: Duration = Duration::from_millis(4);
 fn wakeup_bypass_floor() -> Duration {
     Duration::from_millis(crate::terminal::model_lock_trace::echo_wakeup_floor_ms())
 }
-
-pub const EXECUTE_PENDING_COMMAND_DELAY: Duration = Duration::from_millis(100);
 
 /// How long after a paint-only wakeup the view checks whether that paint changed a render input
 /// (see `wakeup_redraw`). Long enough for a program's screen redraw to have finished arriving.
@@ -1077,8 +1067,8 @@ const SUBSHELL_SETUP_DEFER_QUIET: Duration = Duration::from_millis(600);
 /// the keys are released by the command's prompt or by it becoming interactive, never this timer.
 // give-up-net: only tells the user the input waits (log + toast); the prompt event releases the keys (#1577)
 const POWERSHELL_HELD_LINE_GRACE: Duration = Duration::from_secs(2);
-/// The give-up net after a Ctrl-C that skips a PowerShell subshell setup with no marker token (the
-/// timed setup: `PHOSPHOR_BOOTSTRAP_TIMED`, or a host whose markers never came) (#1048, #1438).
+/// The give-up net after a Ctrl-C that skips a PowerShell subshell setup with no marker token (a
+/// hold without a live setup behind it) (#1048, #1438).
 /// The Windows console flushes its input buffer as it processes the Ctrl-C, so keys written right
 /// behind the ^C are lost, and without the marker the shell sends nothing that says it has been
 /// processed: the held keys are handed back to the editor as text after this, never written.
@@ -1157,11 +1147,6 @@ pub const ALIAS_EXPANSION_BANNER_SEEN_KEY: &str = "AliasExpansionBannerSeen";
 /// Key used in user defaults to save whether the user permanently dismissed the SSH
 /// ControlMaster / "completions are not working" banner via "Don't show me again".
 const CONTROL_MASTER_BANNER_SUPPRESSED_KEY: &str = "ControlMasterBannerSuppressed";
-
-/// Delay between receiving preexec hook for a command we want to auto-warpify
-/// and triggering the warpification (subshell bootstrapping).
-/// Reached this number after experimenting with different values to find a reliable delay.
-const AUTO_WARPIFY_DELAY: u64 = 1000;
 
 /// Binding names to be customized if the user indicates they prefer
 /// Emacs-style keybindings instead of IDE-style keybindings.
@@ -3106,15 +3091,12 @@ struct SubshellBootstrapInFlight {
     remaining_lines: usize,
     /// Event-driven pacing (#1354): the lines not yet written, oldest first. Line N+1 is written
     /// when the shell printed the setup-line marker of line N (see
-    /// `bootstrap::init_subshell_command_lines_with_markers`), not after a delay. Empty when the
-    /// lines are paced by timers instead.
+    /// `bootstrap::init_subshell_command_lines_with_markers`), not after a delay.
     pending_lines: VecDeque<String>,
-    /// The setup the markers belong to; `None` while the lines are paced by timers.
+    /// The setup the markers belong to.
     marker_token: Option<u64>,
     /// Index of the line whose marker releases the next one.
     awaiting_marker: usize,
-    /// Pacing of the timed setup (`PHOSPHOR_BOOTSTRAP_TIMED=1`); unused while the markers pace.
-    line_delay: Duration,
 }
 
 /// An event that proves the shell is working through a subshell setup (#1711). The one thing
@@ -14185,8 +14167,7 @@ impl TerminalView {
                     },
                 );
             } else {
-                // A timed setup (the kill switch, or a host whose markers never came) has no
-                // marker token, so the shell sends nothing that says its console has processed
+                // A hold with no marker token (no live setup behind it): the shell sends nothing that says its console has processed
                 // the Ctrl-C, and keys written before it has are flushed. With no event to release
                 // them, the timer is a give-up that hands them back to the editor (#1438, #1577).
                 ctx.spawn(Timer::after(POWERSHELL_ABORT_SETTLE), move |me, _, ctx| {
@@ -19118,18 +19099,7 @@ impl TerminalView {
                     } else if let Some(shell_type) = self.pending_auto_bootstrap_shell_type.take() {
                         // If there is a subshell we're waiting to bootstrap until we receive
                         // the preexec hook, now we can bootstrap it.
-                        if crate::terminal::bootstrap::bootstrap_timed() {
-                            // PHOSPHOR_BOOTSTRAP_TIMED=1: the old fixed delay.
-                            let auto_warpify_abort_handle = ctx.spawn_abortable(
-                                Timer::after(Duration::from_millis(AUTO_WARPIFY_DELAY)),
-                                move |me, _, ctx| {
-                                    me.trigger_subshell_bootstrap(Some(shell_type), false, ctx);
-                                },
-                                |_, _| (),
-                            );
-                            self.warpify_state
-                                .add_auto_warpify_abort_handle(auto_warpify_abort_handle);
-                        } else if self.subshell_ready_path() {
+                        if self.subshell_ready_path() {
                             // #1679 step 3: the setup is written when the judge proves the
                             // subshell's reader ready (an event), never on the prompt's shape or
                             // a give-up timer.
@@ -19279,15 +19249,7 @@ impl TerminalView {
                     BlockType::BootstrapHidden | BlockType::BootstrapVisible(_)
                         if self.ssh_split_follow_up.has_ready_cd() =>
                     {
-                        if crate::terminal::bootstrap::bootstrap_timed() {
-                            let _ = ctx.spawn(
-                                async move {
-                                    warpui::r#async::Timer::after(EXECUTE_PENDING_COMMAND_DELAY)
-                                        .await;
-                                },
-                                |me, _, ctx| me.run_ssh_split_cd(ctx),
-                            );
-                        } else {
+                        {
                             // #1354: the `cd` goes out at the prompt this completion is
                             // followed by (`Handler(Precmd)`), not after a fixed delay.
                             self.ssh_split_cd_awaits_precmd = true;
@@ -19450,14 +19412,7 @@ impl TerminalView {
                 // Additionally, it's possible for hooks to install themselves after the warp
                 // precmd. For example, `fig_precmd` does this.
                 if self.is_login_shell_bootstrapped {
-                    if crate::terminal::bootstrap::bootstrap_timed() {
-                        let _ = ctx.spawn(
-                            async move {
-                                warpui::r#async::Timer::after(EXECUTE_PENDING_COMMAND_DELAY).await;
-                            },
-                            Self::execute_pending_command_after_timer,
-                        );
-                    } else {
+                    {
                         // #1354: the command is released by the prompt this completion is
                         // followed by (`Handler(Precmd)`), and then by the pty controller's own
                         // gate (the line editor being active). Late-installing hooks like
@@ -20067,22 +20022,7 @@ impl TerminalView {
                 let uname = event.uname.clone();
                 let disable_tmux = event.tmux == Some(false);
 
-                if crate::terminal::bootstrap::bootstrap_timed() {
-                    ctx.spawn(
-                        async {
-                            warpui::r#async::Timer::after(*TRIGGER_RC_FILE_SUBSHELL_BOOTSTRAP_DELAY)
-                                .await
-                        },
-                        move |me, _, ctx| {
-                            me.start_rc_file_subshell_bootstrap(
-                                shell_type,
-                                uname,
-                                disable_tmux,
-                                ctx,
-                            )
-                        },
-                    );
-                } else if self.subshell_ready_path() {
+                if self.subshell_ready_path() {
                     // #1679 step 3: the bootstrap goes in when the judge proves the subshell's
                     // reader ready, not at the first prompt shape.
                     self.arm_subshell_setup(
@@ -22699,29 +22639,26 @@ impl TerminalView {
         self.model.lock().register_session_id(session_id);
         self.last_subshell_setup_session_id = Some(session_id);
         // The bootstrap is several short lines (#962: a canonical tty truncates a line longer
-        // than MAX_CANON, 1024 bytes on macOS). The first goes out now; the rest follow at a
-        // short pace so a shell that has not started reading yet is never handed more than its
-        // tty input queue holds.
-        let line_delay = crate::terminal::bootstrap::subshell_bootstrap_line_delay(shell_type);
+        // than MAX_CANON, 1024 bytes on macOS). The first goes out now; the rest follow one at a
+        // time, each on the shell's marker for the line before it, so a shell that has not
+        // started reading yet is never handed more than its tty input queue holds.
         // #1354/#1372/#1710: every setup is paced by the shell's markers: bash, zsh, fish, nushell
         // and PowerShell print one once they ran a line (PowerShell: once PSReadLine is about to
         // read again, i.e. after the redraw that a marker at the end of the line would race,
         // #1047), and the shell-agnostic `sh` probe (`None`: sudo -s, su, ksu, docker exec, a
         // nested bash from the banner) prints one with a plain `printf` after its prelude. The
-        // next line is written when the marker arrives, not after `line_delay`, which stays as
-        // the give-up pacing. Only PHOSPHOR_BOOTSTRAP_TIMED=1 keeps the timer pacing. The marker
-        // also survives the tmux control-mode path: `%output` carries the pane's raw bytes
+        // next line is written when the marker arrives; no timer writes a line (#1814). The
+        // marker also survives the tmux control-mode path: `%output` carries the pane's raw bytes
         // (octal-escaped), the same way the DCS hooks reach us there (review H8).
-        let marked = !crate::terminal::bootstrap::bootstrap_timed();
         self.powershell_setup_marker_token =
-            (marked && shell_type == Some(ShellType::PowerShell)).then(|| session_id.as_u64());
+            (shell_type == Some(ShellType::PowerShell)).then(|| session_id.as_u64());
         // #1710 (review H9): the probe's ID is this attempt's alone; its `InitSubshell` ends it.
         self.subshell_probe_session_id = shell_type.is_none().then_some(session_id);
         let all_lines = init_subshell_command_lines_with_markers(
             shell_type,
             &self.env_vars,
             session_id,
-            marked,
+            true,
             ctx,
         );
         // A bootstrap still in flight belongs to an older shell: release what it held first.
@@ -22789,30 +22726,16 @@ impl TerminalView {
             generation,
             block_id: self.model.lock().block_list().active_block().id().clone(),
             remaining_lines: rest.len(),
-            pending_lines: if marked {
-                rest.clone().into()
-            } else {
-                VecDeque::new()
-            },
-            marker_token: marked.then(|| session_id.as_u64()),
+            pending_lines: rest.into(),
+            marker_token: Some(session_id.as_u64()),
             awaiting_marker: 0,
-            line_delay,
         });
         // The gates open with the setup, so a paste read started meanwhile (it queues behind
         // them) and every key typed from here on wait for the bootstrap's last line.
         self.open_subshell_gates_for_setup(ctx);
-        if marked {
-            // The first line is out; the shell's marker for it releases the second. A marker that
-            // never comes is no progress, and the setup net hands the held keys back (#1711); the
-            // rest of the lines are never written on a timer.
-            return;
-        }
-        for (index, line) in rest.into_iter().enumerate() {
-            ctx.spawn(
-                Timer::after(line_delay * (index as u32 + 1)),
-                move |me, _, ctx| me.write_subshell_bootstrap_line(generation, line, ctx),
-            );
-        }
+        // The first line is out; the shell's marker for it releases the second. A marker that
+        // never comes is no progress, and the setup net hands the held keys back (#1711); the
+        // rest of the lines are never written on a timer.
     }
 
     /// Arms the setup net (#1711) for the setup whose first line just went out. A net already
@@ -25322,20 +25245,6 @@ impl TerminalView {
                 );
             });
         }
-    }
-
-    /// [`Self::execute_pending_command`] from a timer (a settling delay or a give-up net). An Enter
-    /// held because the shell was not ready (#1571) is never run by a timer: only the readiness
-    /// events run it (`retry_held_unready_enter`), and its own net hands it back instead.
-    fn execute_pending_command_after_timer(&mut self, _: (), ctx: &mut ViewContext<Self>) {
-        if self
-            .input
-            .read(ctx, |input, _| input.has_held_unready_enter())
-        {
-            log::info!("a timer found a held unready Enter; left for the readiness event (#1571)");
-            return;
-        }
-        self.execute_pending_command((), ctx);
     }
 
     /// Executes a command that was submitted by the user and not yet sent to the shell.

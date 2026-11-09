@@ -1268,8 +1268,8 @@ fn test_probe_and_known_stage_leave_at_most_the_prelude_in_history() {
 /// #1710: the shell-agnostic probe is marker-paced like the known shells. Marked, its prelude line
 /// ends in the line-0 marker as a plain `printf` with `\033` (dash, ash and ksh have no `builtin`;
 /// macOS dash's printf has no `\e`), and the probe line itself carries no marker: its own
-/// `InitSubshell` hook is what says it was consumed. Unmarked (`PHOSPHOR_BOOTSTRAP_TIMED=1`) the
-/// lines are what they were.
+/// `InitSubshell` hook is what says it was consumed. The unmarked builder is a pure
+/// content fixture; no production path writes it (#1814).
 #[test]
 fn test_sh_probe_is_marker_paced_on_its_prelude_line() {
     App::test((), |mut app| async move {
@@ -3561,7 +3561,7 @@ fn test_nu_real_subshell_bootstrap_with_a_lost_chunk_is_skipped_with_a_notice() 
 
 /// #1047: PSReadLine (Windows PowerShell 5.1) crashed with `SetCursorPosition ... Actual value was
 /// -2` on one Phosphorize in two. The ^K/^U line-clearing prefix is POSIX-line-editor only, and
-/// the PowerShell lines need a real gap between them.
+/// the PowerShell lines are paced by the shell's markers (the per-line delay is gone, #1814).
 #[test]
 fn powershell_bootstrap_is_psreadline_safe() {
     assert!(!subshell_bootstrap_clears_line_editor(Some(
@@ -3575,16 +3575,7 @@ fn powershell_bootstrap_is_psreadline_safe() {
         Some(ShellType::Nu),
     ] {
         assert!(subshell_bootstrap_clears_line_editor(shell), "{shell:?}");
-        assert_eq!(
-            subshell_bootstrap_line_delay(shell),
-            std::time::Duration::from_millis(30),
-            "{shell:?}"
-        );
     }
-    assert!(
-        subshell_bootstrap_line_delay(Some(ShellType::PowerShell))
-            >= std::time::Duration::from_millis(200)
-    );
 }
 
 #[test]

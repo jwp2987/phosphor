@@ -93,8 +93,6 @@ app/src/terminal/model/typeahead_handoff.rs	CONPTY_MIDLINE_QUIET	owner-named: 12
 app/src/terminal/model/typeahead_handoff.rs	EVENT_HOLD_GIVE_UP	FOUND: 2 s cap that is the NORMAL end of the fish no-barrier young hold (hands back, but a timer is how it ends)
 app/src/terminal/model/typeahead_handoff.rs	YOUNG_ENTER_MIN_HOLD	FOUND: 150 ms floor of the young-Enter hold (part of the YOUNG_ENTER_WINDOW clock)
 app/src/terminal/model/typeahead_handoff.rs	YOUNG_ENTER_WINDOW	owner-named: 600 ms window deciding whether an Enter is a young line (routes on a clock)
-app/src/terminal/view.rs	AUTO_WARPIFY_DELAY	FOUND: fixed delay then writes the subshell bootstrap (only with PHOSPHOR_BOOTSTRAP_TIMED=1)
-app/src/terminal/view.rs	EXECUTE_PENDING_COMMAND_DELAY	FOUND: 100 ms timer runs the pending command / ssh split cd (only with PHOSPHOR_BOOTSTRAP_TIMED=1)
 app/src/terminal/view.rs	INTERRUPT_SETTLE	owner-named: 250 ms after ^C commits the typeahead hand-off at the prompt (commits on a timer)
 app/src/terminal/view.rs	SSH_BOOTSTRAP_SWALLOW_CEILING	FOUND: typing is DROPPED while an ssh bootstrap is pending and keys pass through after 15 s (age-based route/drop)
 app/src/terminal/view.rs	SSH_CONNECT_SILENCE_CEILING	FOUND: age < 15 s decides whether the ssh connect window arms and keys are held; after it every key goes to the pty (age-based route); also the gate's give-up ceiling
@@ -102,9 +100,7 @@ app/src/terminal/view.rs	SSH_LOGIN_RECHECK_GIVE_UP	FOUND: 3 s of quiet output af
 app/src/terminal/view.rs	SUBSHELL_FIRST_PROMPT_GIVE_UP	FOUND: 5 s 'give-up timer' fires the awaiting subshell bootstrap, i.e. writes it (legacy path when subshell_ready_path() is off)
 app/src/terminal/view.rs	SUBSHELL_SETUP_DEFER_POLL	FOUND: 250 ms poll re-asking whether the prompt a deferred setup waits behind was answered
 app/src/terminal/view.rs	SUBSHELL_SETUP_DEFER_QUIET	FOUND: 600 ms unchanged-output clock before the deferred subshell setup is written
-app/src/terminal/view.rs	TRIGGER_RC_FILE_SUBSHELL_BOOTSTRAP_DELAY	FOUND: 100 ms then writes the rc-file subshell bootstrap (only with PHOSPHOR_BOOTSTRAP_TIMED=1)
 app/src/terminal/view.rs	arm_young_timer	FOUND: young-detection timer; on a reached compute cap it finishes the wait and submits the deferred Enter by the Enter-time rules (commits on a timer)
-app/src/terminal/view.rs	write_init_subshell_bytes_to_pty	FOUND: the unmarked subshell bootstrap lines are written on a per-line delay timer (the marked path is event-driven)
 app/src/terminal/writeable_pty/pty_controller.rs	CONTAINER_BOOTSTRAP_PACING	FOUND: 50 ms timer paces bootstrap chunk WRITES into a container subshell (#960); owner to rule whether pacing is exempt
 app/src/terminal/writeable_pty/pty_controller.rs	MAC_TTY_INPUT_QUEUE_PACING	FOUND: 10 ms timer paces the ssh-warpify payload WRITES on a cooked tty (#1384); owner to rule whether pacing is exempt
 app/src/terminal/writeable_pty/pty_controller.rs	RELAY_BOOTSTRAP_PACING	FOUND: 25 ms timer paces bootstrap chunk WRITES into a pty relay (#960: consumption unobservable); owner to rule whether pacing is exempt

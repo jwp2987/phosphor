@@ -6,9 +6,7 @@ Start-Transcript "$R\out\S2_transcript.txt" -Force | Out-Null
 . C:\Users\@WINUSER@\r18bj\tc.ps1
 . C:\Users\@WINUSER@\r18bj\tc2.ps1
 SetMode 'orig'
-$env:PHOSPHOR_BOOTSTRAP_TIMED="1"
 FreshApp2 "info,warp::input_order=debug,warp::terminal=debug" 14
-Remove-Item Env:PHOSPHOR_BOOTSTRAP_TIMED -ea 0
 $h=Hwnd
 [M]::Click(300,660); Start-Sleep 1
 # Git Bash tab

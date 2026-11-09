@@ -298,7 +298,6 @@ claims (#1353, #1404); only a doc comment in `app/src/terminal/input_queue/mod.r
 | `PHOSPHOR_BLOCK_LIST_PAINT_UNDER_LOCK=1`, `PHOSPHOR_ALT_SCREEN_PAINT_UNDER_LOCK=1` | paint from the locked model instead of snapshots |
 | `PHOSPHOR_ALT_SCREEN_FULL_RENDER=1`, `PHOSPHOR_BLOCK_LIST_FULL_RENDER=1`, `PHOSPHOR_BLINK_FULL_RENDER=1` | full re-render on every wakeup / blink instead of paint-only frames |
 | `PHOSPHOR_SUBSHELL_READY=0` | the subshell setup is written on the first PROMPT SHAPE (with the 5 s give-up, #1354) and deferred behind an input prompt by the #1032 rule, instead of on the readiness judge of #1679 step 3 (`view/subshell_ready.rs`: OS facts + the slave-queue proof; E-SECRET / E-QUESTION / E-UNSUPPORTED). The old code stays until C3c deletes it. It does NOT restore the bypass removed in step 4 (an announced setup asking for an answer holds typing until the net hands it back, with the #1032 deferral meaning the setup is usually not written at a prompt at all); it is independent of `PHOSPHOR_BOOTSTRAP_TIMED` |
-| `PHOSPHOR_BOOTSTRAP_TIMED=1` | timer-PACED subshell setup instead of the marker-paced one (#1354, #1711). Exactly what it restores: the setup lines (bash/zsh/fish/nu stage 2, PowerShell's three lines, and the two lines of the `sh` probe) are written on fixed delays (30 ms per line, 300 ms for PowerShell) instead of on the shell's `OSC 7771` markers, so no marker token exists (a Ctrl-C that skips a PowerShell setup then waits `POWERSHELL_ABORT_SETTLE` and hands back, #1438); the rc-file subshell bootstrap goes in 100 ms after the snippet and the auto-warpify one after `AUTO_WARPIFY_DELAY` instead of at the first prompt; the pending command / ssh split `cd` run after `EXECUTE_PENDING_COMMAND_DELAY` instead of at the Precmd. What it does NOT restore (gone with #1711, owner decision 2026-11-08): the 20 s stall ceiling's key forwarding, the 90 s typed-input hold limit, the setup gates' own caps and the 5 s marker give-up's timed writes; the one progress-based setup net (`SUBSHELL_SETUP_QUIET_NET` 30 s, `SUBSHELL_SETUP_CEILING` 120 s, notice at 10 s) applies with the switch on too, and a timed setup's line writes count as its progress. Nor does it restore the subshell setup's BYPASS (typing let through the setup gates to a `Password:` / question prompt; removed in #1679 step 4, both input modes): with any switch an announced setup holds typing until its events or the net hand it back; on the readiness path (`PHOSPHOR_SUBSHELL_READY`, default on) a question or secret read while the setup is written is E-QUESTION / E-SECRET, which cancel the setup and hand the keys back at once |
 | `PHOSPHOR_SSH_COUNTED_BOOTSTRAP=0`, `PHOSPHOR_LOCAL_COUNTED_BOOTSTRAP=0` | here-document bootstrap instead of the counted raw read (#1226) |
 | `PHOSPHOR_SSH_SPECULATIVE_CONNECT=0`, `PHOSPHOR_SSH_EARLY_BOOTSTRAP=0` | old probe-then-connect / bootstrap-after-connect order (#1266) |
 | `PHOSPHOR_REMOTE_NATIVE_COMPLETIONS=0` | Tab in a Phosphorized remote session without the helper goes back to the completer first (ControlMaster side commands) instead of asking the remote shell in-band (#1801) |
@@ -1205,8 +1204,9 @@ bootstrapped included, so its counted session-end exit is consumed and a later o
 | pane | `terminal_pane.rs` `exited_shell_tests`: `an_unbootstrapped_exit_consumes_its_session_end_count`, `a_counted_exit_of_a_bootstrapped_shell_keeps_its_pane_once` | the gate is asked for an unbootstrapped exit and its count is gone; the next ordinary exit closes |
 
 **#1438 (PowerShell abort settle).** After a Ctrl-C skips a PowerShell setup, the shell's read marker is the only release that writes
-the held keys. A setup with no marker token (`PHOSPHOR_BOOTSTRAP_TIMED=1`, or markers that never came) has no event, so
+the held keys. A hold with no marker token (the timed setup and its `PHOSPHOR_BOOTSTRAP_TIMED` switch were deleted, #1814) has no event, so
 `POWERSHELL_ABORT_SETTLE` is a give-up that hands the held keys back to the editor (`abort_settle_give_up`), never writes them.
+The Windows real-app cases `cases-r18bj/S2.ps1` and `LS2.ps1` no longer set `PHOSPHOR_BOOTSTRAP_TIMED=1` around `FreshApp2` (the switch is deleted, #1814); they run the marker-paced setup.
 
 | layer | test | asserts |
 |---|---|---|
@@ -2114,7 +2114,7 @@ Log file: Linux `~/.local/state/phosphor/phosphor.log`, Mac `~/Library/Logs/phos
 | `warpui::gpu_done=debug` with `PHOSPHOR_GPU_TIMING=1` | GPU completion time per frame (off by default; the wait never runs on the UI thread) |
 | `warp::terminal::model_lock_trace=debug` | holds of the terminal model lock >=2 ms (debug) and >8 ms (warn, rate limited 1/s) by named scope; the pty reader's `try_lock` fails while the UI holds it. `PHOSPHOR_RENDER_LOCK_LEGACY=1` compares |
 | `phosphor::routing=debug` | agent/terminal routing decision per line (`PHOSPHOR_ROUTING_V1=1` for the old rules) |
-| `PHOSPHOR_BOOTSTRAP_TIMED`, `bootstrap` timing | bootstrap InitShell to Bootstrapped timing |
+| `bootstrap` timing | bootstrap InitShell to Bootstrapped timing |
 | `PHOSPHOR_IMG_TIMING`, `WARP_STARTUP_TRACE` | image render and startup traces |
 
 Slow-operation logging follows the budgets (summary >=8 ms, WARN >=16 ms). Samply/Tracy CPU profiles: `docs/profiling.md`.

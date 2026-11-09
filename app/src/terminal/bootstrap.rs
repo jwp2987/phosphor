@@ -630,18 +630,6 @@ pub(crate) fn subshell_bootstrap_clears_line_editor(shell_type: Option<ShellType
     shell_type != Some(ShellType::PowerShell)
 }
 
-/// Pause between consecutive typed bootstrap lines. PSReadLine redraws on every line it reads and
-/// the first PowerShell line runs PSReadLine cmdlets (cold on Windows PowerShell 5.1); input that
-/// arrives while it is mid-redraw is what its cursor bookkeeping cannot survive (#1047), so
-/// PowerShell gets a much longer gap than the tty-queue-driven 30 ms the other shells use.
-pub(crate) fn subshell_bootstrap_line_delay(shell_type: Option<ShellType>) -> std::time::Duration {
-    if shell_type == Some(ShellType::PowerShell) {
-        std::time::Duration::from_millis(300)
-    } else {
-        std::time::Duration::from_millis(30)
-    }
-}
-
 /// Splits `script` into the paced writes of [`SUBSHELL_BOOTSTRAP_CHUNK_SIZE`] bytes each.
 pub(crate) fn subshell_bootstrap_chunks(script: &[u8]) -> Vec<Vec<u8>> {
     script
@@ -859,14 +847,6 @@ pub const SETUP_LINE_MARKER_OSC: &str = "7771";
 /// `printf` is quoted so the text typed into the shell holds no escape byte.
 fn setup_line_marker(token: u64, index: usize) -> String {
     format!(" builtin printf '\\e]{SETUP_LINE_MARKER_OSC};{token};{index}\\a'")
-}
-
-/// Whether the old timer-paced bootstrap (one fixed delay per typed line, a fixed wait before the
-/// pending command / rc-file / auto-warpify bootstrap) is wanted instead of the event-driven one:
-/// `PHOSPHOR_BOOTSTRAP_TIMED=1`. A kill switch for the events-not-timers rework (#1354).
-pub fn bootstrap_timed() -> bool {
-    static TIMED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *TIMED.get_or_init(|| std::env::var("PHOSPHOR_BOOTSTRAP_TIMED").is_ok_and(|v| v == "1"))
 }
 
 /// Whether an ssh bootstrap that really failed (the 7 s give-up, #1494) still WRITES the held
