@@ -3921,6 +3921,30 @@ def agent_netgate_pure_parts():
 
 
 @check
+def agent_netgate_strace_destination_parser():
+    import cases_agent_netgate as NG
+    f = NG.non_local_destinations
+    ok = [
+        'connect(5, {sa_family=AF_INET, sin_port=htons(8080), sin_addr=inet_addr("127.0.0.1")}, 16) = 0',
+        'connect(5, {sa_family=AF_INET6, sin6_port=htons(80), sin6_addr=inet_pton(AF_INET6, "::1", &sin6_addr), sin6_flowinfo=0}, 28) = 0',
+        'sendto(7, "x", 1, 0, {sa_family=AF_INET6, sin6_port=htons(53), sin6_addr=inet_pton(AF_INET6, "::ffff:127.0.0.53", &a)}, 28) = 1',
+        'connect(3, {sa_family=AF_UNIX, sun_path="/run/user/1000/bus"}, 110) = 0',
+        'sendmsg(3, {msg_name={sa_family=AF_NETLINK, nl_pid=0, nl_groups=00000000}, msg_namelen=12}, 0) = 20',
+        'connect(9, {sa_family=AF_UNSPEC, sa_data="\\0"}, 16) = 0',
+        'sendto(5, "abc", 3, MSG_NOSIGNAL, NULL, 0) = 3',
+        '--- SIGCHLD {si_signo=SIGCHLD} ---', '+++ exited with 0 +++', '',
+    ]
+    assert f("\n".join(ok)) == [], f("\n".join(ok))
+    bad = f('connect(5, {sa_family=AF_INET, sin_port=htons(443), sin_addr=inet_addr("203.0.113.9")}, 16) = -1 EINPROGRESS\n'
+            '[pid 12] sendto(6, "x", 1, 0, {sa_family=AF_INET6, sin6_port=htons(443), sin6_addr=inet_pton(AF_INET6, "2001:db8::1", &a)}, 28) = 1\n'
+            'connect(5, {sa_family=AF_INET, sin_port=htons(1)}, 16) = 0\n'
+            'connect(5, {sa_family=AF_PACKET}, 16) = 0\n'
+            'connect(5, {sa_family=AF_INET, sin_port=htons(80), sin_addr=inet_addr("127.0.0.1")}, 16) = 0 <unfinished ...>')
+    assert bad == [("connect", "AF_INET", "203.0.113.9"), ("sendto", "AF_INET6", "2001:db8::1"), ("connect", "AF_INET", "?"), ("connect", "AF_PACKET", "?")], bad
+    assert NG.hop_line("add_origin", "LocalHost") == "hop=network_gate_ui action=add_origin origin_hash=" + NG.fnv("localhost")
+
+
+@check
 def agent_netgate_capture_listener():
     import urllib.request, urllib.error
     import cases_agent_netgate as NG

@@ -1938,13 +1938,21 @@ paths exist). They need `APPCI_FAKE_MODEL=1`. The trick that makes the gate refu
 LISTENER (`Capture`: 127.0.0.1 and ::1 on one port, records method/path/headers/body) shows whether anything left the app. Every image uses a fresh token (asset cache).
 - **`agent_gate_deny_allow`**: denied -> app log `network gate: denied "remote-asset" (host hash <fnv>)`, no host/port/URL on any gate line, listener got nothing; the toast's Allow
   (OCR + click) -> `settings.toml` holds the origin once and the retry reaches the listener; then `allowed_origins` edited in `settings.toml` with the app RUNNING: removed ->
-  refused again and the listener silent, added -> reaches. No restart anywhere. The Settings > Network allowed-origins editor and log row are `UNVERIFIABLE` (noref): no verified keyboard path.
+  refused again and the listener silent, added -> reaches. No restart anywhere. The Settings > Network page is driven by KEYBOARD (no noref): the command palette entry
+  "Settings: Network: focus allowed origins" puts the page's focus ring on the origin editor; Tab / Shift-Tab walk editor -> each origin's Remove -> each denied log
+  row's Allow (the focused row is marked `> `); Enter in the editor adds the typed origin, Enter/Space on Allow/Remove acts, Delete/Backspace on Remove removes, Escape returns to the settings
+  search box. Every action logs `hop=network_gate_ui action=add_origin|remove_origin|allow_from_log|toggle_gate origin_hash=<fnv of the host>` (hashes only), judged together with settings.toml
+  and the listener. The file-edit variant stays as an extra live-reload check, and a POINTER pass repeats the steps by OCR + click (toast Allow, page Remove, log Allow, editor + Add, and in
+  `agent_gate_off_live` the gate switch, whose x offset is found by trying a few and reading the `toggle_gate` hop). A control the OCR cannot find is `UNVERIFIABLE`, never a pass.
 - **`agent_gate_off_live`**: `network.gate_enabled=false` written live -> one `network gate: turned OFF`, the request reaches the listener, no denial; `true` -> `turned ON` and refused again, listener silent.
 - **`agent_gate_key_never_leaves`**: the fake-model provider carries an `X-Appci-Key` extra header as the stand-in provider key (the key store is not scriptable). Precondition: the
   fake model (`fake_model.ACTIVE.headers`) received it, else `noref`. Then images from a denied origin, a live-allowed origin, an allowed `127.0.0.1` origin that 302-redirects to a denied
   `localhost` origin (the target must get nothing), and a gate-off request: no listener may see the sentinel (header, path, body) or any Authorization/x-api-key header; the app log has
   no sentinel and no gate line names a host, port or key.
-"Never uploaded" is not provable by a listener; `zero_network_startup` (strace) covers the idle app. Self-test rows: `agent_netgate_*`, `fake_model_records_request_headers`.
+Whole-case network oracle (all three cases, `NetOracle`): the app is relaunched under `strace -f -qq -e trace=connect,sendto,sendmsg -o <run>/netgate_<case>.strace`; at the end every
+destination must be loopback (127.*, ::1, ::ffff:127.*) or a unix/netlink socket, anything else fails naming the syscall and address (`non_local_destinations`). Without a working strace the
+step is `UNVERIFIABLE` (noref), never a pass. `zero_network_startup` still covers the idle app. Self-test rows: `agent_netgate_*` (incl. `agent_netgate_strace_destination_parser`), `fake_model_records_request_headers`.
+Unit tests for the page's keyboard ring (`app/src/settings_view/network_page_tests.rs`): ring order and wrap, Enter/Delete mapping per stop, origin hash = gate host hash, add/remove/allow text.
 
 `zero_network_startup` also drives a scripted session after the idle (`scripted_session`): the settings page is opened with its shortcut and walked with the keyboard
 (`APPCI_ZNS_PAGES` Down presses, default 12, the AI page among them; best effort, screenshots `zns_settings_*`), then an ssh connect to the fake host and `exit`. The

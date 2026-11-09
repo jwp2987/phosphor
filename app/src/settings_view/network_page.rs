@@ -30,12 +30,16 @@ use super::settings_page::{
     render_sub_header_with_description,
 };
 use crate::appearance::Appearance;
-use crate::editor::{EditorView, InteractionState, SingleLineEditorOptions, TextOptions};
+use crate::editor::{
+    EditorView, Event as EditorEvent, InteractionState, PropagateAndNoOpNavigationKeys,
+    SingleLineEditorOptions, TextOptions,
+};
 use crate::network_gate_log::{LoggedGateEvent, NetworkGateLog, NetworkGateLogEvent};
 use crate::report_if_error;
 use crate::settings::network::{NetworkSettings, ProxyMode};
 use crate::settings::network_secrets::{ProxyCredentials, ProxyPasswordLoad};
 use crate::view_components::dropdown::{Dropdown, DropdownItem};
+use warp_editor::editor::NavigationKey;
 
 /// The public URL used for "outbound connectivity" detection in System / Off mode.
 /// `generate_204` is proxy-friendly, has no body, and always returns 204.
@@ -121,6 +125,76 @@ pub(crate) fn allow_origin(origin: &str, ctx: &mut AppContext) {
     });
 }
 
+/// The keymap flag the page sets while its focus ring sits on a Remove / Allow button, so
+/// Enter / Space / Delete are bound only then (never while an editor is typing).
+pub(crate) const KB_BUTTON_FLAG: &str = "NetworkPageKbButton";
+
+/// A stop on the page's keyboard focus ring.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum KbStop {
+    OriginEditor,
+    Remove(String),
+    Allow(String),
+}
+
+/// The origin's host hash as `hop=network_gate_ui` logs it: FNV-1a of the lower-cased host
+/// (scheme, port, path and brackets dropped), the same hash a `network gate: denied` line
+/// carries. Never the origin itself.
+pub(crate) fn origin_hash(origin: &str) -> String {
+    let mut o = origin.trim();
+    if let Some((_, rest)) = o.split_once("://") {
+        o = rest;
+    }
+    o = o.split(['/', '?', '#']).next().unwrap_or(o);
+    let host = if let Some(rest) = o.strip_prefix('[') {
+        rest.split(']').next().unwrap_or(rest)
+    } else if o.matches(':').count() == 1 {
+        o.split(':').next().unwrap_or(o)
+    } else {
+        o
+    };
+    format!(
+        "{:016x}",
+        http_client::gate::hash_host(&host.to_ascii_lowercase())
+    )
+}
+
+fn log_ui_hop(action: &str, origin: &str) {
+    log::info!(
+        "hop=network_gate_ui action={action} origin_hash={}",
+        origin_hash(origin)
+    );
+}
+
+/// The ring order: the editor, then one Remove per origin, then one Allow per denied log row
+/// that has an origin. `rows` is the Allow origins in log order.
+pub(crate) fn kb_stops(origins: &[String], allow_rows: &[String]) -> Vec<KbStop> {
+    let mut v = vec![KbStop::OriginEditor];
+    v.extend(origins.iter().cloned().map(KbStop::Remove));
+    v.extend(allow_rows.iter().cloned().map(KbStop::Allow));
+    v
+}
+
+/// What Enter / Space (`remove_only` false) or Delete / Backspace (true) does on `stop`.
+pub(crate) fn kb_action_for(stop: &KbStop, remove_only: bool) -> Option<NetworkPageAction> {
+    match stop {
+        KbStop::Remove(o) => Some(NetworkPageAction::RemoveOrigin(o.clone())),
+        KbStop::Allow(o) if !remove_only => Some(NetworkPageAction::AllowOrigin(o.clone())),
+        _ => None,
+    }
+}
+
+/// `current` moved one step in `dir` (+1 / -1) over `len` stops, wrapping; `None` starts at the
+/// first (forward) or last (backward) stop.
+pub(crate) fn kb_step(current: Option<usize>, len: usize, dir: i32) -> usize {
+    match (current, dir >= 0) {
+        (None, true) => 0,
+        (None, false) => len.saturating_sub(1),
+        (Some(i), true) => (i + 1) % len.max(1),
+        (Some(i), false) => (i + len.max(1) - 1) % len.max(1),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum NetworkPageAction {
     /// Flipped the network gate switch.
@@ -131,6 +205,16 @@ pub enum NetworkPageAction {
     /// Clicked "Allow" on a denied row of the gate log; carries the origin text.
     AllowOrigin(String),
     ClearGateLog,
+    /// Keyboard: move the page's focus ring to the next / previous stop (the origin editor,
+    /// each origin's Remove, each denied log row's Allow), wrapping.
+    KbNext,
+    KbPrev,
+    /// Keyboard: Enter / Space on the focused Remove or Allow.
+    KbActivate,
+    /// Keyboard: Delete / Backspace on a focused origin.
+    KbRemove,
+    /// Keyboard: Escape, back to the settings search box.
+    KbLeave,
     /// A ProxyMode item was selected in the dropdown; persisted to settings.
     SetProxyMode(ProxyMode),
     /// Clicked the "Save" button on the URL field.
@@ -212,6 +296,8 @@ pub struct NetworkPageView {
     /// One per listed origin / per log row; resized whenever the list changes.
     origin_remove_states: Vec<MouseStateHandle>,
     log_allow_states: Vec<MouseStateHandle>,
+    /// Index into `kb_stops`; `None` while the keyboard ring is not on this page.
+    kb_stop: Option<usize>,
     gate_log_clear_state: MouseStateHandle,
 }
 
@@ -274,11 +360,25 @@ impl NetworkPageView {
             },
         );
 
-        let origin_editor = build_text_editor(
+        let origin_editor = build_text_editor_opts(
             ctx,
             false,
             crate::t!("settings-network-origins-placeholder"),
+            true,
         );
+        // Keyboard: Enter adds the typed origin, Tab / Shift-Tab walk the focus ring, Escape
+        // returns to the settings search box.
+        ctx.subscribe_to_view(&origin_editor, |me: &mut Self, _, event, ctx| match event {
+            EditorEvent::Enter => me.handle_action(&NetworkPageAction::AddOrigin, ctx),
+            EditorEvent::Navigate(NavigationKey::Tab) => {
+                me.handle_action(&NetworkPageAction::KbNext, ctx)
+            }
+            EditorEvent::Navigate(NavigationKey::ShiftTab) => {
+                me.handle_action(&NetworkPageAction::KbPrev, ctx)
+            }
+            EditorEvent::Escape => me.handle_action(&NetworkPageAction::KbLeave, ctx),
+            _ => {}
+        });
         ctx.subscribe_to_model(
             &NetworkGateLog::handle(ctx),
             |me: &mut Self, _, event, ctx| {
@@ -311,6 +411,7 @@ impl NetworkPageView {
             origin_add_state: MouseStateHandle::default(),
             origin_remove_states: Vec::new(),
             log_allow_states: Vec::new(),
+            kb_stop: None,
             gate_log_clear_state: MouseStateHandle::default(),
         };
         me.resize_row_states(ctx);
@@ -319,6 +420,36 @@ impl NetworkPageView {
         Self::sync_all_from_settings(&mut me, ctx);
         Self::sync_password_from_credentials(&mut me, ctx);
         me
+    }
+
+    fn current_stops(&self, ctx: &AppContext) -> Vec<KbStop> {
+        let origins = parse_origin_list(NetworkSettings::as_ref(ctx).allowed_origins.value());
+        let allow_rows: Vec<String> = NetworkGateLog::as_ref(ctx)
+            .entries_newest_first()
+            .iter()
+            .filter(|e| e.event.outcome == http_client::gate::Outcome::Denied)
+            .filter_map(|e| crate::network_gate_log::allow_text(&e.event))
+            .collect();
+        kb_stops(&origins, &allow_rows)
+    }
+
+    /// Puts the keyboard ring on `stop` (an index into `current_stops`): the editor takes real
+    /// focus; a button stop focuses this page, whose bindings then take Enter / Space / Delete.
+    fn kb_goto(&mut self, idx: usize, ctx: &mut ViewContext<Self>) {
+        let stops = self.current_stops(ctx);
+        let idx = idx.min(stops.len().saturating_sub(1));
+        self.kb_stop = Some(idx);
+        match stops.get(idx) {
+            Some(KbStop::OriginEditor) | None => ctx.focus(&self.origin_editor),
+            Some(_) => ctx.focus_self(),
+        }
+        ctx.notify();
+    }
+
+    /// Called by the settings view (Tab, or the command palette entry): enters the ring at the
+    /// origin editor.
+    pub(crate) fn kb_enter(&mut self, ctx: &mut ViewContext<Self>) {
+        self.kb_goto(0, ctx);
     }
 
     /// Keeps one mouse state per listed origin and per log row.
@@ -407,6 +538,7 @@ impl TypedActionView for NetworkPageView {
             NetworkPageAction::ToggleGate => {
                 NetworkSettings::handle(ctx).update(ctx, |settings, ctx| {
                     let on = *settings.gate_enabled.value();
+                    log::info!("hop=network_gate_ui action=toggle_gate on={}", !on);
                     report_if_error!(settings.gate_enabled.set_value(!on, ctx));
                 });
                 ctx.notify();
@@ -415,6 +547,7 @@ impl TypedActionView for NetworkPageView {
                 let text = self.origin_editor.as_ref(ctx).buffer_text(ctx);
                 let current = NetworkSettings::as_ref(ctx).allowed_origins.value().clone();
                 if let Some(next) = add_origin(&current, &text) {
+                    log_ui_hop("add_origin", text.trim());
                     NetworkSettings::handle(ctx).update(ctx, |settings, ctx| {
                         report_if_error!(settings.allowed_origins.set_value(next, ctx));
                     });
@@ -426,13 +559,38 @@ impl TypedActionView for NetworkPageView {
             NetworkPageAction::RemoveOrigin(origin) => {
                 let current = NetworkSettings::as_ref(ctx).allowed_origins.value().clone();
                 let next = remove_origin(&current, origin);
+                log_ui_hop("remove_origin", origin);
                 NetworkSettings::handle(ctx).update(ctx, |settings, ctx| {
                     report_if_error!(settings.allowed_origins.set_value(next, ctx));
                 });
                 ctx.notify();
             }
             NetworkPageAction::AllowOrigin(origin) => {
+                log_ui_hop("allow_from_log", origin);
                 allow_origin(origin, ctx);
+                ctx.notify();
+            }
+            NetworkPageAction::KbNext | NetworkPageAction::KbPrev => {
+                let n = self.current_stops(ctx).len();
+                let dir = if matches!(action, NetworkPageAction::KbNext) {
+                    1
+                } else {
+                    -1
+                };
+                let next = kb_step(self.kb_stop, n, dir);
+                self.kb_goto(next, ctx);
+            }
+            NetworkPageAction::KbActivate | NetworkPageAction::KbRemove => {
+                let stops = self.current_stops(ctx);
+                let remove_only = matches!(action, NetworkPageAction::KbRemove);
+                let stop = self.kb_stop.and_then(|i| stops.get(i));
+                if let Some(next) = stop.and_then(|s| kb_action_for(s, remove_only)) {
+                    self.handle_action(&next, ctx);
+                }
+            }
+            NetworkPageAction::KbLeave => {
+                self.kb_stop = None;
+                ctx.emit(SettingsPageEvent::FocusModal);
                 ctx.notify();
             }
             NetworkPageAction::ClearGateLog => {
@@ -530,6 +688,18 @@ impl TypedActionView for NetworkPageView {
 impl View for NetworkPageView {
     fn ui_name() -> &'static str {
         "NetworkPage"
+    }
+
+    fn keymap_context(&self, app: &AppContext) -> warpui::keymap::Context {
+        let mut context = Self::default_keymap_context();
+        let on_button = self
+            .kb_stop
+            .and_then(|i| self.current_stops(app).into_iter().nth(i))
+            .is_some_and(|s| s != KbStop::OriginEditor);
+        if on_button {
+            context.set.insert(KB_BUTTON_FLAG);
+        }
+        context
     }
 
     fn render(&self, app: &AppContext) -> Box<dyn Element> {
@@ -707,10 +877,26 @@ fn build_text_editor(
     is_password: bool,
     placeholder: String,
 ) -> ViewHandle<EditorView> {
+    build_text_editor_opts(ctx, is_password, placeholder, false)
+}
+
+/// `propagate_nav` makes the editor hand Tab / Shift-Tab to the page (`EditorEvent::Navigate`)
+/// instead of consuming them, so the keyboard ring can leave it.
+fn build_text_editor_opts(
+    ctx: &mut ViewContext<NetworkPageView>,
+    is_password: bool,
+    placeholder: String,
+    propagate_nav: bool,
+) -> ViewHandle<EditorView> {
     ctx.add_typed_action_view(move |ctx| {
         let appearance = Appearance::as_ref(ctx);
         let options = SingleLineEditorOptions {
             is_password,
+            propagate_and_no_op_vertical_navigation_keys: if propagate_nav {
+                PropagateAndNoOpNavigationKeys::Always
+            } else {
+                PropagateAndNoOpNavigationKeys::Never
+            },
             text: TextOptions {
                 font_size_override: Some(appearance.ui_font_size()),
                 ..Default::default()
@@ -1047,6 +1233,18 @@ fn text_button(
     .finish()
 }
 
+/// "> " in front of the row the keyboard ring is on, else nothing.
+fn kb_marker(view: &NetworkPageView, app: &AppContext, stop: &KbStop) -> &'static str {
+    let here = view
+        .kb_stop
+        .and_then(|i| view.current_stops(app).into_iter().nth(i));
+    if here.as_ref() == Some(stop) {
+        "> "
+    } else {
+        ""
+    }
+}
+
 /// One log row's text: time, outcome, purpose, host:port.
 fn log_row_text(entry: &LoggedGateEvent) -> String {
     use http_client::gate::Outcome;
@@ -1139,7 +1337,10 @@ fn render_gate_section(
                 .with_main_axis_size(MainAxisSize::Min)
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
                 .with_child(plain_text(
-                    origin.clone(),
+                    format!(
+                        "{}{origin}",
+                        kb_marker(view, app, &KbStop::Remove(origin.clone()))
+                    ),
                     theme.active_ui_text_color().into(),
                     appearance,
                 ))
@@ -1213,7 +1414,14 @@ fn render_gate_section(
             .with_main_axis_size(MainAxisSize::Min)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_child(plain_text(
-                log_row_text(entry),
+                format!(
+                    "{}{}",
+                    crate::network_gate_log::allow_text(&entry.event)
+                        .filter(|_| entry.event.outcome == http_client::gate::Outcome::Denied)
+                        .map(|o| kb_marker(view, app, &KbStop::Allow(o)))
+                        .unwrap_or(""),
+                    log_row_text(entry)
+                ),
                 theme.active_ui_text_color().into(),
                 appearance,
             ));
@@ -1245,3 +1453,22 @@ fn render_gate_section(
 #[cfg(test)]
 #[path = "network_page_tests.rs"]
 mod tests;
+
+/// Key bindings of the page's keyboard ring (see `KbStop`). Tab / Shift-Tab and Escape work from
+/// the origin editor too (it propagates them as `EditorEvent`s); Enter, Space, Delete and
+/// Backspace are bound only while the ring sits on a Remove / Allow button.
+pub(crate) fn register_bindings(app: &mut warpui::AppContext) {
+    use warpui::id;
+    use warpui::keymap::FixedBinding;
+    let page = id!("NetworkPage") & !id!("IMEOpen");
+    let on_button = page.clone() & id!(KB_BUTTON_FLAG);
+    app.register_fixed_bindings([
+        FixedBinding::new("tab", NetworkPageAction::KbNext, page.clone()),
+        FixedBinding::new("shift-tab", NetworkPageAction::KbPrev, page.clone()),
+        FixedBinding::new("escape", NetworkPageAction::KbLeave, page),
+        FixedBinding::new("enter", NetworkPageAction::KbActivate, on_button.clone()),
+        FixedBinding::new("space", NetworkPageAction::KbActivate, on_button.clone()),
+        FixedBinding::new("delete", NetworkPageAction::KbRemove, on_button.clone()),
+        FixedBinding::new("backspace", NetworkPageAction::KbRemove, on_button),
+    ]);
+}
