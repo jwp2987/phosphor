@@ -116,18 +116,21 @@ pub(crate) async fn assume_role(
     let host = host_header(&url)
         .ok_or_else(|| CredsError::InvalidConfig("the STS endpoint has no host".into()))?;
 
-    let mut body = url::form_urlencoded::Serializer::new(String::new());
-    body.append_pair("Action", "AssumeRole")
-        .append_pair("Version", STS_VERSION)
-        .append_pair("RoleArn", req.role_arn)
-        .append_pair("RoleSessionName", req.session_name);
-    if let Some(duration) = req.duration_secs {
-        body.append_pair("DurationSeconds", &duration.to_string());
-    }
-    if let Some(external_id) = req.external_id {
-        body.append_pair("ExternalId", external_id);
-    }
-    let body = body.finish();
+    // The serializer is not Send; build the body in a block so it is gone before the await.
+    let body = {
+        let mut form = url::form_urlencoded::Serializer::new(String::new());
+        form.append_pair("Action", "AssumeRole")
+            .append_pair("Version", STS_VERSION)
+            .append_pair("RoleArn", req.role_arn)
+            .append_pair("RoleSessionName", req.session_name);
+        if let Some(duration) = req.duration_secs {
+            form.append_pair("DurationSeconds", &duration.to_string());
+        }
+        if let Some(external_id) = req.external_id {
+            form.append_pair("ExternalId", external_id);
+        }
+        form.finish()
+    };
 
     let content_type = "application/x-www-form-urlencoded; charset=utf-8";
     let signed = sigv4::sign(&sigv4::SigningInput {
