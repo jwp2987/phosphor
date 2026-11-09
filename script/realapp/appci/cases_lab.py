@@ -3,7 +3,9 @@
 # jobs pass 'lab_*'), only the arms APPCI_LAB_MATRIX selects (quick | full | spec), and need a lab (APPCI_LAB=local on the box, remote from the Mac/Windows
 # runners): without one they SKIP with the reason. Before each arm the harness sets the network fault, MEASURES the echo RTT, and a mismatch makes the arm
 # UNVERIFIABLE (never a pass). `nohelper` (no remote helper on the server) is the default and always the first arm; `helper` pre-installs the binary named by
-# APPCI_LAB_HELPER_BIN (the lab blocks outbound network, so the app's own install cannot download one) with never_install, and is UNVERIFIABLE without it.
+# APPCI_LAB_HELPER_BIN (a built phosphor-remote; the lab blocks outbound network, so nothing could be downloaded anyway) with never_install, and is UNVERIFIABLE
+# without it. The Wave H arms (#1804) use the same binary as the bundle the app uploads: `upload` (nothing on the server, always_install), `upgrade` (older
+# versions pre-seeded), `never` (per-host policy never: nothing may be uploaded, the session still works). Scenario user p_noscp refuses scp/sftp.
 #
 # [hook] marks a check that rests on an app log line the Wave 0 code adds. The patterns below are the agreed names; until the app logs them the check is
 # UNVERIFIABLE (r.unverifiable: status noref), never a pass.
@@ -44,6 +46,62 @@ def _runner(fn, arm):
     return run
 
 
+# helper arm -> (ssh_extension_install_mode, the helper must be offered to the app as its bundled asset)
+HELPER_ARM_MODE = {"nohelper": "never_install", "helper": "never_install", "upload": "always_install", "upgrade": "always_install", "never": "always_install"}
+HELPER_ASSET_ENV = "PHOSPHOR_REMOTE_HELPER_ASSET_DIR"           # remote_server::setup::HELPER_ASSET_DIR_ENV
+SEED_VERSIONS = ("phosphor-remote-v0.0.1", "phosphor-remote-v0.0.2", "phosphor-oss", "phosphor-oss-v0.0.3")   # what an `upgrade` arm finds on the server
+
+
+def helper_version_line(binary):
+    """first line of `<binary> --version`: `phosphor-remote <version> protocol <n>`; None when it does not run"""
+    import subprocess
+    try:
+        out = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=20, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    line = (out.stdout.splitlines() or [""])[0]
+    return line if out.returncode == 0 and line.startswith("phosphor-remote ") else None
+
+
+def helper_file_name(version_line):
+    """the file the app installs for that helper: phosphor-remote-<version> (setup::helper_file_name)"""
+    return "phosphor-remote-" + version_line.split()[1]
+
+
+def host_label(arm):
+    """the key the app stores a host's helper policy under (connection_label_for_session_info: user@host)"""
+    return "%s@%s" % (arm["user"], host_of(arm))
+
+
+def stage_helper_asset(ctx, helper_bin):
+    """gzip the helper into <run>/helper-asset/phosphor-remote-linux-<arch>.gz and point the app at it (the env is read at launch). Returns the directory."""
+    import gzip, platform, shutil
+    arch = {"x86_64": "x86_64", "amd64": "x86_64", "aarch64": "aarch64", "arm64": "aarch64"}.get(platform.machine().lower(), "x86_64")
+    d = os.path.join(ctx.run, "helper-asset")
+    os.makedirs(d, exist_ok=True)
+    with open(helper_bin, "rb") as src, gzip.open(os.path.join(d, "phosphor-remote-linux-%s.gz" % arch), "wb", 9) as dst:
+        shutil.copyfileobj(src, dst)
+    os.environ[HELPER_ASSET_ENV] = d
+    return d
+
+
+def server_helper_files(lab, arm):
+    """the phosphor-* file names in the lab user's ~/.phosphor/remote-server (one-shot ssh as that user), sorted; None when the listing failed"""
+    try:
+        out = lab.ssh(arm["user"], "ls -1A ~/.phosphor/remote-server 2>/dev/null")
+    except Exception:
+        return None
+    return sorted(n for n in out.stdout.split() if n.startswith("phosphor-"))
+
+
+def set_denied_hosts(ctx, hosts):
+    """warpify.ssh.remote_helper_denied_hosts in the profile's settings.toml (read when the app starts)"""
+    cfg = ctx.prof.home + "/.config/phosphor/settings.toml"
+    t = open(cfg).read()
+    arr = "[" + ", ".join('"%s"' % h for h in hosts) + "]"
+    open(cfg, "w").write(CR.T.set_key(t, "warpify.ssh", "remote_helper_denied_hosts", arr))
+
+
 def lab_prepare(ctx, r, arm):
     """True when the arm may run. Skips (no lab / wrong image), or marks the arm UNVERIFIABLE and returns False (helper binary missing, RTT gate mismatch)."""
     lab = getattr(ctx, "lab", None)
@@ -56,15 +114,29 @@ def lab_prepare(ctx, r, arm):
     rem = L.LabRemote(lab, arm["user"], arm["shell"])
     ctx.remote = ctx.prof.remote = rem
     helper_bin = os.environ.get("APPCI_LAB_HELPER_BIN", "")
-    if arm["helper"] == "helper":
+    if arm["helper"] != "nohelper":
         if not (helper_bin and os.path.isfile(helper_bin)):
-            r.unverifiable("helper arm: APPCI_LAB_HELPER_BIN does not name a built remote-server binary (the lab blocks outbound network, so the app cannot download one)")
+            r.unverifiable("%s arm: APPCI_LAB_HELPER_BIN does not name a built phosphor-remote binary" % arm["helper"])
             return False
-        lab.helper(arm["user"], {"remote-server": open(helper_bin, "rb").read()})
+        line = helper_version_line(helper_bin)
+        if line is None:
+            r.unverifiable("%s arm: `%s --version` did not print `phosphor-remote <version> protocol <n>`; APPCI_LAB_HELPER_BIN must be a built phosphor-remote" % (arm["helper"], helper_bin))
+            return False
+        arm["helper_file"] = helper_file_name(line)
+    if arm["helper"] == "helper":
+        # already-installed state; the file name carries the version, which must be the one the app under test computes (built from the same tree)
+        lab.helper(arm["user"], {arm["helper_file"]: open(helper_bin, "rb").read()})
+    elif arm["helper"] == "upgrade":
+        lab.helper(arm["user"], {n: b"#!/bin/sh\nexit 0\n" for n in SEED_VERSIONS})
     else:
         lab.helper(arm["user"])
+    if arm["helper"] in ("upload", "upgrade", "never"):
+        stage_helper_asset(ctx, helper_bin)
+    elif HELPER_ASSET_ENV in os.environ:
+        del os.environ[HELPER_ASSET_ENV]
     if arm["helper"] != ctx.lab_helper_mode:
-        if not CR.set_ext_mode(ctx, "never_install"):          # relaunch only when the helper mode changes (arms are ordered helper-major)
+        set_denied_hosts(ctx, [host_label(arm)] if arm["helper"] == "never" else [])
+        if not CR.set_ext_mode(ctx, HELPER_ARM_MODE[arm["helper"]]):          # relaunch only when the helper mode changes (arms are ordered helper-major)
             r.skip("the app could not be relaunched for the helper mode change")
         ctx.lab_helper_mode = arm["helper"]
     lab.fault(rtt_ms=arm["lat_ms"]) if arm["lat_ms"] else lab.clear_fault()
@@ -427,4 +499,45 @@ def c_ctrl_c_no_esc_i(ctx, r, arm):
     else:
         r.check("^[i" not in txt and "^[ i" not in txt, "a literal ^[i is on screen after the Ctrl-C rounds")
     ctx.shot("lab_ctrlc_end")
+    finish_remote(ctx, r)
+
+
+# ------------------------------------------------------------------ 7. The helper install itself (Wave H, #1804)
+@lab_case("helper_install", shells=("bash",), lat=("lan", "150"), helper=("upload", "upgrade", "never"), scenarios=("p_noscp",), modes=("terminal",))
+def c_helper_install(ctx, r, arm):
+    """What the app does about the bundled helper on a host where the lab blocks every outbound connection:
+    upload  -- nothing on the server, always_install: exactly one phosphor-remote-<version> appears (uploaded over the ssh connection, so no download is involved),
+               it runs, and the pane is a working remote shell. On p_noscp (scp and sftp refused) this proves the in-band upload needs neither.
+    upgrade -- older phosphor-remote-* and the previous remote server's phosphor-oss* are on the server: after the connect exactly the new version is left.
+    never   -- the host's policy is never: the session works and NOTHING named phosphor-* was created or touched on the server.
+    The marker file names come from `<APPCI_LAB_HELPER_BIN> --version`, the same tree the app was built from."""
+    lab, rt = ctx.lab, rtt_s(arm)
+    want = arm["helper_file"]
+    off = ctx.log_size()
+    if connect_or_fail(ctx, r, arm) is None:
+        ctx.reset()
+        return
+    mode = arm["helper"]
+    if mode in ("upload", "upgrade"):
+        ok = ctx.until(lambda: server_helper_files(lab, arm) == [want], 120 + 20 * rt, step=1.0)
+        files = server_helper_files(lab, arm)
+        r.check(bool(ok), "%s: expected exactly [%s] on the server, found %r" % (mode, want, files))
+        shown = lab.ssh(arm["user"], "~/.phosphor/remote-server/%s --version" % want)
+        r.check(shown.returncode == 0 and shown.stdout.startswith("phosphor-remote "), "the uploaded helper does not run on the server: rc=%s %r" % (shown.returncode, shown.stderr[-200:]))
+        link = lab.ssh(arm["user"], "readlink ~/.phosphor/remote-server/current")
+        r.check(link.stdout.strip() == want, "the `current` link points at %r, expected %r" % (link.stdout.strip(), want))
+        if mode == "upgrade":
+            r.check(files == [want], "older versions were not removed: %r" % (files,))
+    else:
+        time.sleep(3 + 4 * rt)
+        files = server_helper_files(lab, arm)
+        r.check(files == [], "policy never, but the server has %r" % (files,))
+    log = ctx.log_since(off)
+    r.check("remote helper install skipped" in log or mode != "never", "the app log never says the helper install was skipped for the denied host (label %s)" % host_label(arm))
+    # the session is a working remote shell on every arm: the no-helper features do not depend on the helper
+    tok = unique(ctx, 8)
+    ctx.be.type("echo %s > %s" % (tok, work(arm, "hi_%s.txt" % tok)), type_pace(ctx), enter=True)
+    ctx.until(lambda: ctx.remote.lines("hi_%s.txt" % tok) == [tok], 10 + 4 * rt)
+    CA.exact_lines(r, "the command typed into the remote shell", [tok], ctx.remote.lines("hi_%s.txt" % tok))
+    ctx.shot("lab_helper_install_%s" % mode)
     finish_remote(ctx, r)

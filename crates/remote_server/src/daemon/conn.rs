@@ -51,12 +51,13 @@ pub(super) fn spawn_connection(stream: UnixStream, conn: ConnId, events: Sender<
     let spawned = std::thread::Builder::new()
         .name(format!("conn-{conn}-read"))
         .spawn(move || {
+            let loop_events = reader_events.clone();
             async_io::block_on(async move {
                 let mut reader = BufReader::new(read_half);
                 loop {
                     match protocol::read_client_message(&mut reader).await {
                         Ok(msg) => {
-                            if reader_events.send(Event::Message { conn, msg }).is_err() {
+                            if loop_events.send(Event::Message { conn, msg }).is_err() {
                                 log::warn!("Daemon: server gone, closing conn {conn}");
                                 break;
                             }

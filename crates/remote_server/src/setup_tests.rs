@@ -250,61 +250,139 @@ fn oss_remote_server_dir_uses_phosphor_namespace() {
 }
 
 #[test]
-fn oss_binary_name_matches_phosphor_cli() {
-    assert_eq!(binary_name(), "phosphor-oss");
+fn binary_name_is_the_bundled_helper_not_the_channel_cli() {
+    // Owner decision (Wave H, #1804): the GitLab download of the full app binary is gone, so
+    // the remote server is the bundled helper. `phosphor-oss` is only a leftover to clean up.
+    assert_eq!(binary_name(), "phosphor-remote");
+    assert_eq!(legacy_binary_name(), "phosphor-oss");
+    assert!(remote_server_binary().ends_with(&helper_file_name()));
+    assert!(helper_file_name().starts_with("phosphor-remote-"));
 }
 
 #[test]
-fn oss_download_tarball_url_uses_gitlab_release_asset() {
+fn nothing_in_the_install_path_can_reach_the_network() {
+    // The owner rule: never download from GitLab or the internet. The script gets its bytes
+    // from the client over the ssh channel it arrives on, and nothing else.
+    let script = install_script(None, None);
+    for forbidden in [
+        "curl", "wget", "http://", "https://", "gitlab", "github", "fetch",
+    ] {
+        assert!(
+            !script.to_ascii_lowercase().contains(forbidden),
+            "the install script mentions {forbidden:?}"
+        );
+    }
+    for source in [
+        include_str!("setup.rs"),
+        include_str!("../../../app/src/remote_server/ssh_transport.rs"),
+    ] {
+        assert!(!source.contains("RELEASE_REPO"));
+        assert!(!source.contains("download_tarball_url"));
+        assert!(!source.contains("fn download_url"));
+    }
+}
+
+#[test]
+fn helper_asset_names_follow_the_bundle_layout() {
     let platform = RemotePlatform {
         os: RemoteOs::Linux,
+        arch: RemoteArch::Aarch64,
+    };
+    assert_eq!(
+        helper_asset_name(&platform),
+        "phosphor-remote-linux-aarch64"
+    );
+    let platform = RemotePlatform {
+        os: RemoteOs::MacOs,
         arch: RemoteArch::X86_64,
     };
+    assert_eq!(helper_asset_name(&platform), "phosphor-remote-macos-x86_64");
+}
 
-    let url = download_tarball_url(&platform);
+#[test]
+fn install_script_renders_every_placeholder() {
+    let script = install_script(Some("~/.phosphor/remote-server/.upload.gz"), None);
+    for placeholder in [
+        "{install_dir}",
+        "{helper_file_name}",
+        "{helper_current_link}",
+        "{one_version_binaries}",
+        "{daemon_version_hash}",
+        "{staging_gz_path}",
+        "{one_version_cleanup}",
+        "{sha256_linux_x86_64}",
+        "{sha256_linux_aarch64}",
+        "{sha256_macos_x86_64}",
+        "{sha256_macos_aarch64}",
+    ] {
+        assert!(
+            !script.contains(placeholder),
+            "{placeholder} survived substitution -- install_script() is missing its .replace()"
+        );
+    }
+    assert!(script.contains("staging_gz_path=\"~/.phosphor/remote-server/.upload.gz\""));
+    assert!(script.contains(&helper_file_name()));
+}
 
+#[test]
+fn the_script_ends_in_a_single_call_so_the_payload_stays_unread() {
+    let script = install_script(None, None);
+    let last = script.lines().rev().find(|l| !l.trim().is_empty()).unwrap();
     assert_eq!(
-        url,
-        "https://gitlab.com/winters-phosphor/phosphor/-/releases/permalink/latest/downloads/phosphor-cli-linux-x86_64.tar.gz"
+        last, "main",
+        "commands after `main` would never run in-band"
     );
-    assert!(!url.contains("app.warp.dev"));
-    assert!(!url.contains("/download/cli"));
+    assert!(script.trim_end().ends_with("\nmain"));
+}
 
-    // The two halves of the 2026-08-11 bug, asserted separately so a
-    // regression names itself. Until then this URL pointed at `zerx-lab/warp`
-    // and asked for a `zap-` asset, so it 404'd for every user of this fork and
-    // remote-server setup over SSH could not succeed at all. The old test
-    // passed throughout, because it asserted the wrong string confidently.
-    assert!(
-        !url.contains("zerx-lab"),
-        "remote-server installs must not fetch from upstream Zap's releases: {url}"
-    );
-    assert!(
-        url.contains("/phosphor-cli-"),
-        "asset prefix must match what the release workflow publishes, not the \
-         channel command name (`phosphor-oss`): {url}"
+#[test]
+fn script_override_replaces_all_four_digest_placeholders() {
+    let digest = "ab".repeat(32);
+    let script = install_script(None, Some(&digest));
+    assert_eq!(
+        script
+            .matches(&format!("expected_sha256=\"{digest}\""))
+            .count(),
+        4
     );
 }
 
 #[test]
-fn install_script_uses_release_asset_prefix_and_staging_placeholder() {
-    let script = install_script(Some("~/.phosphor/remote-server/phosphor-upload.tar.gz"));
+fn pinned_helper_sha256_is_none_for_unknown_platforms() {
+    assert_eq!(pinned_helper_sha256("plan9", "x86_64"), None);
+    assert_eq!(pinned_helper_sha256("linux", "riscv64"), None);
+}
 
-    assert!(
-        script
-            .contains("staging_tarball_path=\"~/.phosphor/remote-server/phosphor-upload.tar.gz\"")
+#[test]
+fn digest_decision_fails_closed_unless_a_source_build_computed_its_own() {
+    let actual = "ab".repeat(32);
+    // Pinned and equal (case-insensitively): the pinned digest is used as is.
+    let upper = actual.to_ascii_uppercase();
+    assert_eq!(
+        decide_helper_digest(Some(&upper), &actual, false),
+        Ok(HelperDigest::Pinned(actual.clone()))
     );
-    assert!(script.contains("phosphor-cli-$os_name-$arch_name.tar.gz"));
-    // Deliberately changed on 2026-08-11: the script asked for a `zap-` asset,
-    // but the release workflow publishes `phosphor-cli-`, so every remote
-    // install 404'd. `phosphor-oss` is the channel COMMAND name, not the ASSET name.
-    assert!(
-        !script.contains("/zap-$os_name-$arch_name.tar.gz"),
-        "install script must ask for the published asset name, not the channel \
-         command name"
+    assert_eq!(HelperDigest::Pinned(actual.clone()).script_override(), None);
+    // Pinned and different: refused on every kind of build, with the reason.
+    for dev in [false, true] {
+        let err = decide_helper_digest(Some(&"0".repeat(64)), &actual, dev).unwrap_err();
+        assert!(err.contains("does not match the checksum"), "{err}");
+    }
+    // Not pinned: a release build refuses, a source build continues on what it computed.
+    assert_eq!(
+        decide_helper_digest(None, &actual, false),
+        Err(INSTALL_REFUSED_NO_PINNED_DIGEST.to_string())
     );
-    assert!(!script.contains("app.warp.dev"));
-    assert!(!script.contains("/download/cli"));
+    let computed = decide_helper_digest(None, &actual, true).unwrap();
+    assert_eq!(computed, HelperDigest::Computed(actual.clone()));
+    assert_eq!(computed.script_override(), Some(actual.as_str()));
+}
+
+#[test]
+fn staged_upload_name_is_what_failure_cleanup_removes() {
+    let cmd = install_failure_cleanup_command_for("~/d", "~/d/phosphor-remote-v1");
+    assert!(cmd.contains(&format!("~/d/{STAGED_UPLOAD_NAME}")));
+    assert!(cmd.contains("~/d/.up.*"));
 }
 
 #[test]
@@ -340,52 +418,32 @@ fn install_script_avoids_pattern_substitution_for_tilde_expansion() {
     );
 }
 
-/// Regression: the install script's tilde-expansion logic must work across
-/// the bash versions we actually invoke at install time (`run_ssh_script`
-/// pipes the script into `bash -s` on the remote). Two interpreter quirks
-/// have to be avoided simultaneously:
+/// Regression: the install script\'s tilde-expansion logic must work across the bash versions
+/// we actually invoke at install time (`run_ssh_script` pipes the script into `bash -s` on the
+/// remote). Two interpreter quirks have to be avoided simultaneously:
 ///
-///   1. bash 3.2 (macOS `/bin/bash`) keeps inner double-quotes around the
-///      replacement of `${var/pattern/replacement}` literal, so `"$HOME"`
-///      ends up as 6 literal characters and the install lands under a
-///      directory tree literally named `"`.
-///   2. bash 5.2+ with `patsub_replacement` (default-on) treats `&` in the
-///      replacement as the matched pattern, so a `$HOME` containing `&`
-///      resolves to a `~`-substituted path.
+///   1. bash 3.2 (macOS `/bin/bash`) keeps inner double-quotes around the replacement of
+///      `${var/pattern/replacement}` literal, so `"$HOME"` ends up as 6 literal characters.
+///   2. bash 5.2+ with `patsub_replacement` (default-on) treats `&` in the replacement as the
+///      matched pattern, so a `$HOME` containing `&` resolves wrongly.
 ///
-/// This test drives the *actual* production script (via [`install_script`])
-/// rather than a hand-copied snippet, and runs it against several `HOME`
-/// values to exercise the patsub-`&` trap as well as the quote-literal
-/// trap. We truncate just before `mkdir -p` so no filesystem side effects
-/// leak out of the test, and append a marker `printf` to capture the
-/// resolved `install_dir`.
-///
-/// Gated to Unix because the test invokes `/bin/bash` (or `bash` from
-/// PATH) directly.
+/// This test drives the *actual* production script (via [`install_script`]), truncated at the
+/// `mkdir -p` checkpoint so no filesystem side effects leak, with the function body closed and
+/// called so the probe is valid bash, and a marker `printf` capturing the resolved `install_dir`.
 #[cfg(unix)]
 #[test]
 fn install_script_tilde_expansion_resolves_correctly() {
-    let bash = if std::path::Path::new("/bin/bash").exists() {
-        "/bin/bash"
-    } else {
-        "bash"
-    };
-
-    let script = install_script(None);
+    let script = install_script(None, None);
     let cutoff = script.find("mkdir -p \"$install_dir\"").expect(
-        "install script no longer contains the `mkdir -p \"$install_dir\"` \
-         checkpoint this test relies on; update the test alongside the \
-         script change",
+        "install script no longer contains the `mkdir -p \"$install_dir\"` checkpoint \
+         this test relies on; update the test alongside the script change",
     );
+    // The script body lives inside `main() {`; close it and call it.
     let probe = format!(
-        "{prefix}\nprintf '%s' \"$install_dir\"\nexit 0\n",
+        "{prefix}\nprintf '%s' \"$install_dir\"\nexit 0\n}}\nmain\n",
         prefix = &script[..cutoff],
     );
 
-    // Run the probe against a matrix of HOME values. The first is an
-    // ordinary path; the second contains `&`, which exercises bash 5.2's
-    // patsub_replacement (where it would otherwise expand to the matched
-    // `~`).
     let cases = [
         ("/Users/test", "ordinary HOME"),
         (
@@ -393,9 +451,8 @@ fn install_script_tilde_expansion_resolves_correctly() {
             "HOME with `&` (bash 5.2 patsub_replacement trap)",
         ),
     ];
-
     for (fake_home, label) in cases {
-        let output = Command::new(bash)
+        let output = Command::new(bash_path())
             .arg("-c")
             .arg(&probe)
             .env("HOME", fake_home)
@@ -403,28 +460,21 @@ fn install_script_tilde_expansion_resolves_correctly() {
             .stderr(Stdio::piped())
             .output()
             .expect("failed to spawn bash");
-
         assert!(
             output.status.success(),
             "[{label}] bash exited with {:?}: stderr={}",
             output.status,
             String::from_utf8_lossy(&output.stderr),
         );
-
         let install_dir = String::from_utf8_lossy(&output.stdout);
         assert!(
             !install_dir.contains('"'),
-            "[{label}] install_dir contains literal quote characters \
-             (bash 3.2 quote-literal regression): {install_dir:?}",
+            "[{label}] install_dir contains literal quote characters: {install_dir:?}",
         );
-
-        // Cross-check against the production layout: tilde must resolve to
-        // HOME, so the result equals `remote_server_dir()` with the leading
-        // `~` replaced.
         let expected = remote_server_dir().replacen('~', fake_home, 1);
         assert_eq!(
             install_dir, expected,
-            "[{label}] install_dir resolved incorrectly",
+            "[{label}] install_dir resolved incorrectly"
         );
     }
 }
@@ -604,7 +654,7 @@ fn bundled_resources_dir_is_global_and_version_independent() {
         format!("{}/{}", remote_server_dir(), BUNDLED_RESOURCES_DIR_NAME)
     );
     // The whole point of the global location: no version in the path.
-    assert!(!dir.contains(pinned_version()));
+    assert!(!dir.contains(crate::naming::helper_version()));
 }
 
 #[test]
@@ -614,305 +664,222 @@ fn removal_command_removes_binary_but_leaves_global_resources() {
     assert!(!command.contains(BUNDLED_RESOURCES_DIR_NAME));
 }
 
-#[test]
-fn install_script_substitutes_bundled_resources_dir_name() {
-    let script = install_script(None);
-    assert!(
-        !script.contains("{bundled_resources_dir_name}"),
-        "the placeholder survived substitution -- install_script() is missing its \
-         .replace() for it, so the script would create a directory named after the \
-         literal placeholder",
-    );
-    assert!(
-        script.contains(BUNDLED_RESOURCES_DIR_NAME),
-        "the resources directory name never made it into the script",
-    );
+// ---------------------------------------------------------------------------
+// The helper install script, driven for real with bash (Wave H step 5, #1804)
+//
+// The script is piped into `bash -s` with the gzip-compressed helper appended on the same
+// stdin, exactly as `ssh::run_ssh_script_with_payload` does over the ControlMaster. These tests
+// cover the outcomes that matter: a good helper installs, a bad one does not, and each failure
+// arrives as its own documented exit code.
+// ---------------------------------------------------------------------------
+
+/// What the script is given in a test.
+#[cfg(unix)]
+struct InstallRun {
+    home: tempfile::TempDir,
+    install_dir: std::path::PathBuf,
+    output: std::process::Output,
 }
 
-/// Drives the *actual* production script end to end against a fabricated
-/// release tarball, so the assertion is about what a real install leaves on
-/// disk rather than about the template's text.
-///
-/// Uses the staging-tarball path (`install_script(Some(..))`) to skip the
-/// network download, and points `HOME` at a temp dir so `~/.phosphor/remote-server`
-/// resolves inside it.
-///
-/// Gated to Unix because the test invokes `/bin/bash` and `tar` directly.
+/// A stand-in helper: starts, answers `--version`, does nothing else.
 #[cfg(unix)]
-#[test]
-fn install_script_installs_binary_and_global_resources() {
-    let (home, script, install_dir) = run_install_with_tarball(true);
+const FAKE_HELPER: &[u8] = b"#!/bin/sh\nexit 0\n";
 
-    let binary = install_dir.join(format!("{}{}", binary_name(), version_suffix()));
-    assert!(
-        binary.is_file(),
-        "binary was not installed at {binary:?} (script: {script})",
-    );
-
-    // The resources tree landed at the global, version-independent path the
-    // daemon reads -- not under a versioned directory.
-    let resources = install_dir.join(BUNDLED_RESOURCES_DIR_NAME);
-    assert!(
-        resources.is_dir(),
-        "resources tree was not installed at {resources:?}",
-    );
-    assert_eq!(
-        std::fs::read_to_string(resources.join("skills/demo.md")).unwrap(),
-        "bundled skill",
-        "resources tree was installed but its contents are wrong",
-    );
-
-    // No staging leftovers: a concurrent daemon start must not find a
-    // half-populated directory or a stray .new/.old sibling.
-    for entry in std::fs::read_dir(&install_dir).unwrap() {
-        let name = entry.unwrap().file_name().to_string_lossy().into_owned();
-        assert!(
-            !name.contains(".new.") && !name.contains(".old."),
-            "install left a staging directory behind: {name}",
-        );
-    }
-
-    drop(home);
+#[cfg(unix)]
+fn gzip_bytes(raw: &[u8]) -> Vec<u8> {
+    use std::io::Write as _;
+    let mut child = std::process::Command::new("gzip")
+        .arg("-c")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn gzip");
+    child.stdin.take().unwrap().write_all(raw).unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    output.stdout
 }
 
-/// A tarball with no `resources/` tree must still install the binary and exit
-/// zero. This is the normal case for dev-mode installs, which cross-compile a
-/// bare binary, and for release artifacts that predate the resources tree.
 #[cfg(unix)]
-#[test]
-fn install_script_tolerates_tarball_without_resources() {
-    let (home, script, install_dir) = run_install_with_tarball(false);
-
-    let binary = install_dir.join(format!("{}{}", binary_name(), version_suffix()));
-    assert!(
-        binary.is_file(),
-        "binary was not installed at {binary:?} (script: {script})",
-    );
-    assert!(
-        !install_dir.join(BUNDLED_RESOURCES_DIR_NAME).exists(),
-        "the script invented a resources directory the tarball never contained",
-    );
-
-    drop(home);
+fn sha256_of_bytes(raw: &[u8]) -> String {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("f");
+    std::fs::write(&path, raw).unwrap();
+    sha256_of(&path)
 }
 
-/// Builds a release-shaped tarball (binary, plus a `resources/` tree when
-/// `with_resources`), runs the production install script against it with
-/// `HOME` pointed at a temp dir, and returns the temp dir guard, the script
-/// text (for failure messages) and the resolved install directory.
+/// Runs `script` under bash with `payload` on stdin after it, `HOME` in a fresh temp dir that
+/// `seed` may populate, and `shim_dir` (if any) first on PATH.
 #[cfg(unix)]
-fn run_install_with_tarball(
-    with_resources: bool,
-) -> (tempfile::TempDir, String, std::path::PathBuf) {
-    run_install_with_tarball_seeded(with_resources, |_| {})
-}
-
-/// [`run_install_with_tarball`], calling `seed` with the (not yet created) install directory
-/// first so a test can pre-populate older versions.
-#[cfg(unix)]
-fn run_install_with_tarball_seeded(
-    with_resources: bool,
+fn run_script(
+    script: &str,
+    payload: &[u8],
     seed: impl FnOnce(&std::path::Path),
-) -> (tempfile::TempDir, String, std::path::PathBuf) {
+    shims: &[(&str, &str)],
+) -> InstallRun {
+    use std::io::Write as _;
     let home = tempfile::tempdir().expect("failed to create temp HOME");
     let home_path = home.path().to_path_buf();
-    seed(std::path::Path::new(&remote_server_dir().replacen(
-        '~',
-        home_path.to_str().unwrap(),
-        1,
-    )));
-
-    // Lay out the tarball contents: the binary the script looks for, and
-    // optionally the resources tree the release pipeline ships.
-    let staging = home_path.join("tarball-src");
-    std::fs::create_dir_all(&staging).unwrap();
-    std::fs::write(staging.join(binary_name()), "#!/bin/sh\nexit 0\n").unwrap();
-    if with_resources {
-        std::fs::create_dir_all(staging.join("resources/skills")).unwrap();
-        std::fs::write(staging.join("resources/skills/demo.md"), "bundled skill").unwrap();
-    }
-
-    let tarball = home_path.join("phosphor-upload.tar.gz");
-    let tar_status = Command::new("tar")
-        .arg("-czf")
-        .arg(&tarball)
-        .arg("-C")
-        .arg(&staging)
-        .arg(".")
-        .status()
-        .expect("failed to spawn tar");
-    assert!(
-        tar_status.success(),
-        "tar failed to build the test artifact"
-    );
-
-    let script = install_script(Some(tarball.to_str().unwrap()));
-
-    let bash = if std::path::Path::new("/bin/bash").exists() {
-        "/bin/bash"
-    } else {
-        "bash"
-    };
-    let output = Command::new(bash)
-        .arg("-c")
-        .arg(&script)
-        .env("HOME", &home_path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("failed to spawn bash");
-    assert!(
-        output.status.success(),
-        "install script exited with {:?}: stderr={}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr),
-    );
-
     let install_dir =
         std::path::PathBuf::from(remote_server_dir().replacen('~', home_path.to_str().unwrap(), 1));
-    (home, script, install_dir)
-}
+    seed(&install_dir);
 
-// ---------------------------------------------------------------------------
-// Remote-server tarball integrity verification
-//
-// The install script runs on a remote host and fetches the CLI tarball from GitLab over the
-// public internet. The digest it checks against is compiled into this client and delivered
-// inside the script text over the user's authenticated SSH connection, so a tampered release
-// cannot install even if the hosted copy is replaced. These tests cover the three outcomes that
-// matter: the digest reaches the script, a good artifact installs, and a bad one does not.
-// ---------------------------------------------------------------------------
+    let shim_dir = home_path.join("shim");
+    std::fs::create_dir_all(&shim_dir).unwrap();
+    for (tool, body) in shims {
+        write_shim(&shim_dir.join(tool), body);
+    }
+    let path = format!(
+        "{}:{}",
+        shim_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
 
-#[test]
-fn install_script_substitutes_every_platform_digest_placeholder() {
-    let script = install_script(None);
-    for placeholder in [
-        "{sha256_linux_x86_64}",
-        "{sha256_linux_aarch64}",
-        "{sha256_macos_x86_64}",
-        "{sha256_macos_aarch64}",
-    ] {
-        assert!(
-            !script.contains(placeholder),
-            "{placeholder} survived substitution -- install_script() is missing its \
-             .replace() for it, so the script would compare the downloaded tarball against \
-             the literal placeholder text and every install would fail",
-        );
+    let mut child = std::process::Command::new(bash_path())
+        .arg("-s")
+        .env("HOME", &home_path)
+        .env("PATH", path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn bash");
+    let mut stdin = child.stdin.take().unwrap();
+    // A script that exits early closes the pipe; the broken pipe is the script's verdict, not
+    // this test's failure.
+    let _ = stdin.write_all(script.as_bytes());
+    let _ = stdin.write_all(payload);
+    drop(stdin);
+    let output = child.wait_with_output().expect("bash did not finish");
+    InstallRun {
+        home,
+        install_dir,
+        output,
     }
 }
 
-#[test]
-fn expected_sha256_is_empty_for_unknown_platform() {
-    assert_eq!(expected_sha256("plan9", "x86_64"), "");
-    assert_eq!(expected_sha256("linux", "riscv64"), "");
+#[cfg(unix)]
+fn stderr_of(run: &InstallRun) -> String {
+    String::from_utf8_lossy(&run.output.stderr).into_owned()
 }
 
-/// A client built without the pinned digests must REFUSE the download path, not warn and
-/// continue. This is the fail-closed property: a misconfigured build must not quietly become
-/// a build that installs unverified binaries.
-///
-/// Test builds never set `PHOSPHOR_CLI_SHA256_*`, so this exercises the real production
-/// condition. It also proves the check runs *before* the download -- there is no network in
-/// this test, and the script still exits with the documented code.
+#[cfg(unix)]
+fn installed_helper(run: &InstallRun) -> std::path::PathBuf {
+    run.install_dir.join(helper_file_name())
+}
+
+/// The happy path, in-band: the helper arrives on stdin behind the script, is unpacked,
+/// verified, made executable, linked as `current`, and nothing else is left in the directory.
 #[cfg(unix)]
 #[test]
-fn install_script_refuses_unverified_download_when_no_digest_is_pinned() {
-    let home = tempfile::tempdir().expect("failed to create temp HOME");
-    let script = install_script(None);
+fn in_band_upload_installs_verifies_and_links_the_helper() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let digest = sha256_of_bytes(FAKE_HELPER);
+    let script = install_script(None, Some(&digest));
+    let run = run_script(&script, &gzip_bytes(FAKE_HELPER), |_| {}, &[]);
+    assert!(run.output.status.success(), "stderr={}", stderr_of(&run));
 
-    let output = Command::new(bash_path())
-        .arg("-c")
-        .arg(&script)
-        .env("HOME", home.path())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("failed to spawn bash");
-
+    let helper = installed_helper(&run);
+    assert_eq!(std::fs::read(&helper).unwrap(), FAKE_HELPER);
     assert_eq!(
-        output.status.code(),
-        Some(4),
-        "expected the documented fail-closed exit code; stderr={}",
-        String::from_utf8_lossy(&output.stderr),
+        std::fs::metadata(&helper).unwrap().permissions().mode() & 0o777,
+        0o755
     );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("refusing to install an unverified remote server"),
-        "the refusal must say why; stderr={stderr}",
-    );
-}
-
-/// A tarball whose digest matches installs normally.
-#[cfg(unix)]
-#[test]
-fn install_script_accepts_download_matching_pinned_digest() {
-    let (home, install_dir, output) =
-        run_download_install_with_digest(DigestUnderTest::Matching, None);
-
-    assert!(
-        output.status.success(),
-        "a matching digest must install; stderr={}",
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let binary = install_dir.join(format!("{}{}", binary_name(), version_suffix()));
-    assert!(binary.is_file(), "binary was not installed at {binary:?}");
-
-    drop(home);
-}
-
-/// The security property itself: a tarball that does NOT match the pinned digest is rejected,
-/// and nothing is installed or made executable.
-#[cfg(unix)]
-#[test]
-fn install_script_rejects_download_failing_pinned_digest() {
-    let (home, install_dir, output) =
-        run_download_install_with_digest(DigestUnderTest::Mismatched, None);
-
     assert_eq!(
-        output.status.code(),
+        std::fs::read_link(run.install_dir.join(HELPER_CURRENT_LINK)).unwrap(),
+        std::path::PathBuf::from(helper_file_name())
+    );
+    // A directory this run created is private to the user.
+    assert_eq!(
+        std::fs::metadata(&run.install_dir)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700
+    );
+    let leftovers: Vec<_> = std::fs::read_dir(&run.install_dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with(".up"))
+        .collect();
+    assert!(leftovers.is_empty(), "staging leftovers: {leftovers:?}");
+    drop(run.home);
+}
+
+/// The SCP fallback: the file is already on the host, the script reads it (not stdin) and
+/// deletes it after unpacking.
+#[cfg(unix)]
+#[test]
+fn staged_upload_installs_and_removes_the_staged_file() {
+    let digest = sha256_of_bytes(FAKE_HELPER);
+    let staged = format!("{}/{}", remote_server_dir(), STAGED_UPLOAD_NAME);
+    let script = install_script(Some(&staged), Some(&digest));
+    let run = run_script(
+        &script,
+        b"",
+        |install_dir| {
+            std::fs::create_dir_all(install_dir).unwrap();
+            std::fs::write(
+                install_dir.join(STAGED_UPLOAD_NAME),
+                gzip_bytes(FAKE_HELPER),
+            )
+            .unwrap();
+        },
+        &[],
+    );
+    assert!(run.output.status.success(), "stderr={}", stderr_of(&run));
+    assert!(installed_helper(&run).is_file());
+    assert!(!run.install_dir.join(STAGED_UPLOAD_NAME).exists());
+    drop(run.home);
+}
+
+/// The security property itself: bytes that do not match the pinned digest are rejected, and
+/// nothing is installed, linked, or made executable.
+#[cfg(unix)]
+#[test]
+fn a_helper_failing_the_pinned_digest_is_rejected_with_the_integrity_code() {
+    let script = install_script(None, Some(&"0".repeat(64)));
+    let run = run_script(&script, &gzip_bytes(FAKE_HELPER), |_| {}, &[]);
+    assert_eq!(
+        run.output.status.code(),
         Some(6),
-        "expected the documented integrity-failure exit code; stderr={}",
-        String::from_utf8_lossy(&output.stderr),
+        "stderr={}",
+        stderr_of(&run)
     );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("failed integrity check"),
-        "the rejection must name the cause; stderr={stderr}",
-    );
-
-    let binary = install_dir.join(format!("{}{}", binary_name(), version_suffix()));
-    assert!(
-        !binary.exists(),
-        "a tarball that failed verification was installed anyway at {binary:?} -- \
-         verification must happen before the binary is moved into place",
-    );
-
-    drop(home);
+    assert!(stderr_of(&run).contains("failed integrity check"));
+    assert!(!installed_helper(&run).exists());
+    assert!(!run.install_dir.join(HELPER_CURRENT_LINK).exists());
+    drop(run.home);
 }
 
-/// "Could not compute a digest" must never be reported as "computed it, and it is not the
-/// release we pinned". Those are opposite verdicts: the first says nothing was checked and is
-/// what `EXIT_NO_DIGEST_TOOL` exists to say; the second is detected tampering.
-///
-/// The fusion was one layer below the guard that was supposed to catch it. Every branch of
-/// `compute_sha256` ends in a PIPELINE (`sha256sum | cut`, `openssl | awk`) and a pipeline's
-/// status is its LAST element's, while the script sets `set -e` but not `pipefail`. `cut` and
-/// `awk` succeed on empty input, so a digest tool that was installed and then FAILED — an
-/// unreadable staging file, an LSM denial, OOM, an openssl in a FIPS profile that refuses the
-/// algorithm — returned 0 with empty output. The caller's `|| exit "$EXIT_NO_DIGEST_TOOL"`
-/// never fired, the empty string compared unequal to the pinned digest, and the host reported
-/// `EXIT_DIGEST_MISMATCH`.
-///
-/// It fails closed, so it is not an exploit — but it raises a FALSE tampering alarm, and the
-/// client hard-fails on it (integrity failures must not retry) where the SCP fallback would
-/// have installed correctly.
-///
-/// The tarball served here MATCHES the pinned digest, so with working tools this exact setup
-/// installs and exits 0 (`install_script_accepts_download_matching_pinned_digest`). The only
-/// variable is the broken tool.
+/// A client built without a pinned digest refuses: fail closed, before reading any payload.
+#[cfg(unix)]
+#[test]
+fn no_pinned_digest_is_refused_before_anything_is_read() {
+    let script = install_script(None, Some(""));
+    let run = run_script(&script, &gzip_bytes(FAKE_HELPER), |_| {}, &[]);
+    assert_eq!(
+        run.output.status.code(),
+        Some(4),
+        "stderr={}",
+        stderr_of(&run)
+    );
+    assert!(stderr_of(&run).contains("refusing to install an unverified remote helper"));
+    assert!(
+        !run.install_dir.exists(),
+        "a refused run left its directory behind"
+    );
+    drop(run.home);
+}
+
+/// "Could not compute a digest" must never be reported as "computed, and it is not the pinned
+/// helper": opposite verdicts (see EXIT_NO_DIGEST_TOOL). The bytes here MATCH the pin; the only
+/// variable is the broken tool, shadowed ahead of the real ones on PATH.
 #[cfg(unix)]
 #[test]
 fn unusable_digest_tool_reports_no_digest_tool_never_a_mismatch() {
+    let digest = sha256_of_bytes(FAKE_HELPER);
     for (situation, shim) in [
         ("a digest tool that exists and fails", "#!/bin/sh\nexit 1\n"),
         (
@@ -920,294 +887,184 @@ fn unusable_digest_tool_reports_no_digest_tool_never_a_mismatch() {
             "#!/bin/sh\nexit 0\n",
         ),
         (
-            "a digest tool that exits 0 and prints something that is not a digest",
+            "a digest tool that prints something that is not a digest",
             "#!/bin/sh\necho 'no digest for you'\n",
         ),
     ] {
-        let (home, install_dir, output) =
-            run_download_install_with_digest(DigestUnderTest::Matching, Some(shim));
-        let stderr = String::from_utf8_lossy(&output.stderr);
-
+        let script = install_script(None, Some(&digest));
+        let shims = [("sha256sum", shim), ("shasum", shim), ("openssl", shim)];
+        let run = run_script(&script, &gzip_bytes(FAKE_HELPER), |_| {}, &shims);
         assert_ne!(
-            output.status.code(),
+            run.output.status.code(),
             Some(6),
-            "{situation} was reported as a DIGEST MISMATCH, which the client hard-fails as \
-             tampering and refuses to retry -- but nothing was compared, because no digest \
-             was ever computed; stderr={stderr}",
+            "{situation}: reported as tampering"
         );
         assert_eq!(
-            output.status.code(),
+            run.output.status.code(),
             Some(5),
-            "{situation} must be reported as the documented \"no usable digest tool\" code; \
-             stderr={stderr}",
+            "{situation}: {}",
+            stderr_of(&run)
         );
-        assert!(
-            stderr.contains("could not compute a SHA-256"),
-            "the failure must name the cause; stderr={stderr}",
-        );
-
-        let binary = install_dir.join(format!("{}{}", binary_name(), version_suffix()));
-        assert!(
-            !binary.exists(),
-            "nothing was verified, so nothing may be installed at {binary:?}",
-        );
-
-        drop(home);
+        assert!(stderr_of(&run).contains("could not compute a SHA-256"));
+        assert!(!installed_helper(&run).exists(), "{situation}");
+        drop(run.home);
     }
 }
 
-/// No code in the script's contract may collide with a status bash emits on its own behalf:
-/// 1 (general error), 2 (usage/parse error), 126 (found but not executable), 127 (not found)
-/// and 128+N (killed by signal N).
-///
-/// The ERR trap cannot backstop those. A parse error in particular aborts the interpreter
-/// before any trap is installed, so bash exits 2 with nothing to remap it — and a parse error
-/// is a reachable outcome here, because `install_script` builds this script by substituting
-/// placeholders into it at runtime. While `EXIT_UNSUPPORTED_PLATFORM` was 2, a script bash
-/// refused to parse arrived at the client claiming the remote host had an unsupported
-/// architecture. Codes outside bash's reserved set instead land in the client's
-/// unrecognised-code branch, which fails closed.
-///
-/// 255 is excluded for the same reason one layer up: it is OpenSSH's own error status, and
-/// `classify_install_failure` reads it as an SSH-level transport failure.
+/// Bytes that never arrive are a transport problem (7, SCP is a legitimate retry); bytes that
+/// arrive but are not a gzip stream that decodes to anything are not (7 when nothing decoded).
+#[cfg(unix)]
+#[test]
+fn an_empty_or_broken_stream_is_an_upload_failure_not_a_verdict() {
+    let digest = sha256_of_bytes(FAKE_HELPER);
+    let script = install_script(None, Some(&digest));
+    for (situation, payload) in [
+        ("no payload at all", Vec::new()),
+        ("garbage that is not gzip", b"definitely not gzip".to_vec()),
+    ] {
+        let run = run_script(&script, &payload, |_| {}, &[]);
+        assert_eq!(
+            run.output.status.code(),
+            Some(7),
+            "{situation}: {}",
+            stderr_of(&run)
+        );
+        assert!(!installed_helper(&run).exists());
+        assert!(
+            !run.install_dir.exists(),
+            "{situation}: a failed run kept the directory it made"
+        );
+        drop(run.home);
+    }
+}
+
+/// A helper that unpacks and matches its digest but does not start on this host is removed and
+/// reported as an install failure, and nothing older is touched.
+#[cfg(unix)]
+#[test]
+fn a_helper_that_does_not_start_is_removed_and_old_versions_are_kept() {
+    let broken: &[u8] = b"#!/bin/sh\nexit 1\n";
+    let digest = sha256_of_bytes(broken);
+    let script = install_script(None, Some(&digest));
+    let run = run_script(
+        &script,
+        &gzip_bytes(broken),
+        |install_dir| {
+            std::fs::create_dir_all(install_dir).unwrap();
+            touch_executable(&install_dir.join("phosphor-remote-v0.0.1"));
+        },
+        &[],
+    );
+    assert_eq!(
+        run.output.status.code(),
+        Some(9),
+        "stderr={}",
+        stderr_of(&run)
+    );
+    assert!(!installed_helper(&run).exists());
+    assert!(run.install_dir.join("phosphor-remote-v0.0.1").exists());
+    drop(run.home);
+}
+
+/// After a verified install exactly one version remains: older helpers, the previous remote
+/// server\'s leftovers under the channel\'s CLI name, and the legacy unversioned binary go.
+#[cfg(unix)]
+#[test]
+fn install_leaves_exactly_one_version_and_removes_the_legacy_app_binary() {
+    let digest = sha256_of_bytes(FAKE_HELPER);
+    let script = install_script(None, Some(&digest));
+    let run = run_script(
+        &script,
+        &gzip_bytes(FAKE_HELPER),
+        |install_dir| {
+            std::fs::create_dir_all(install_dir).unwrap();
+            for name in [
+                "phosphor-remote-v0.0.1",
+                "phosphor-remote-v0.0.2",
+                "phosphor-oss",
+                "phosphor-oss-v0.1.17",
+            ] {
+                touch_executable(&install_dir.join(name));
+            }
+            std::fs::write(install_dir.join("unrelated"), "x").unwrap();
+        },
+        &[],
+    );
+    assert!(run.output.status.success(), "stderr={}", stderr_of(&run));
+    assert_eq!(
+        binaries_in(&run.install_dir, "phosphor-"),
+        vec![helper_file_name()],
+        "exactly one phosphor-* file must remain"
+    );
+    assert!(run.install_dir.join("unrelated").exists());
+    drop(run.home);
+}
+
+/// A failed run that created the install directory removes it again; a pre-existing directory
+/// (holding a working install) is never removed.
+#[cfg(unix)]
+#[test]
+fn install_script_failure_does_not_leave_an_empty_install_dir() {
+    let script = install_script(None, Some(""));
+    let run = run_script(&script, b"", |_| {}, &[]);
+    assert_eq!(run.output.status.code(), Some(4));
+    assert!(!run.install_dir.exists());
+    drop(run.home);
+
+    let run = run_script(
+        &script,
+        b"",
+        |install_dir| {
+            std::fs::create_dir_all(install_dir).unwrap();
+            std::fs::write(install_dir.join("keep-me"), "x").unwrap();
+        },
+        &[],
+    );
+    assert_eq!(run.output.status.code(), Some(4));
+    assert!(run.install_dir.join("keep-me").exists());
+    let leftovers: Vec<_> = std::fs::read_dir(&run.install_dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(leftovers.len(), 1, "unexpected leftovers: {leftovers:?}");
+    drop(run.home);
+}
+
+/// No code in the script\'s contract may collide with a status bash emits on its own behalf:
+/// 1 (general error), 2 (usage/parse error), 126, 127 and 128+N (signals). A parse error aborts
+/// the interpreter before any trap exists, and `install_script` builds this script by
+/// substituting placeholders at runtime, so a mangled script must land in the client\'s
+/// unrecognised-code branch (fail closed), not impersonate a verdict. 255 is OpenSSH\'s own.
 #[test]
 fn install_script_exit_codes_avoid_bash_reserved_statuses() {
-    let script = install_script(None);
+    let script = install_script(None, None);
     let declared: Vec<(String, i32)> = script
         .lines()
         .filter_map(|line| line.trim().strip_prefix("EXIT_")?.split_once('='))
         .filter_map(|(name, value)| Some((format!("EXIT_{name}"), value.trim().parse().ok()?)))
         .collect();
-
     assert!(
         declared.len() >= 8,
         "expected the script to declare its exit-code contract as EXIT_*= assignments, \
          found {declared:?}",
     );
-
     for (name, code) in &declared {
         let reserved = matches!(*code, 0 | 1 | 2 | 126 | 127 | 255) || (128..=192).contains(code);
         assert!(
             !reserved,
-            "{name}={code} collides with a status bash (or ssh) emits on its own behalf, so \
-             the client cannot tell this script's verdict from the interpreter failing before \
-             it ever reached one",
+            "{name}={code} collides with a status bash (or ssh) emits"
         );
     }
-
     for (index, (name, code)) in declared.iter().enumerate() {
         for (other_name, other_code) in &declared[index + 1..] {
             assert_ne!(
                 code, other_code,
-                "{name} and {other_name} share exit {code}, which fuses two outcomes the \
-                 client has to tell apart",
+                "{name} and {other_name} share exit {code}"
             );
         }
     }
 }
 
-/// The regression this pins is the one a previous round shipped: `set -e` plus an unguarded
-/// `curl` made the script exit with **curl's** status, and curl's status space overlaps this
-/// script's own contract. A DNS failure (curl 6) surfaced as exit 6 — the code that means
-/// "digest MISMATCH" — so the client hard-failed a network outage as if it were tampering,
-/// losing the SCP fallback that used to handle it. In the other direction a connection
-/// refused (curl 7) or an HTTP 500 (curl 22) surfaced as codes the client did not recognise
-/// and fell through to the fallback, which installs *unverified*.
-///
-/// So the requirement is not "curl failures are handled" but "curl failures are
-/// DISTINGUISHABLE from a digest verdict": every transport failure, whatever curl's own
-/// status, must arrive as the single documented download-failure code and never as 6.
-#[cfg(unix)]
-#[test]
-fn download_failures_report_transport_failure_never_a_digest_verdict() {
-    // 6 = DNS resolution failed (the collision that caused the regression), 7 = connection
-    // refused, 22 = HTTP error such as 500, 28 = timeout, 35 = TLS handshake failure.
-    for curl_status in [6, 7, 22, 28, 35] {
-        let (home, install_dir, output) = run_download_install_with_failing_curl(curl_status);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-
-        assert_ne!(
-            output.status.code(),
-            Some(6),
-            "curl exit {curl_status} was reported as exit 6, which the client reads as a \
-             DIGEST MISMATCH -- a network failure must never be reported as tampering; \
-             stderr={stderr}",
-        );
-        assert_eq!(
-            output.status.code(),
-            Some(7),
-            "curl exit {curl_status} must be reported as the documented download-failure \
-             code so the client can allow the SCP fallback; stderr={stderr}",
-        );
-        assert!(
-            stderr.contains("could not download"),
-            "the failure must name the cause; stderr={stderr}",
-        );
-
-        let binary = install_dir.join(format!("{}{}", binary_name(), version_suffix()));
-        assert!(
-            !binary.exists(),
-            "nothing was downloaded, so nothing may be installed at {binary:?}",
-        );
-
-        drop(home);
-    }
-}
-
-/// Drives the production install script down its download branch with a `curl` shim that
-/// fails with `curl_status` and writes no output file. A digest is pinned, so reaching the
-/// digest comparison at all would be a bug: there is nothing to compare.
-#[cfg(unix)]
-fn run_download_install_with_failing_curl(
-    curl_status: i32,
-) -> (tempfile::TempDir, std::path::PathBuf, std::process::Output) {
-    let home = tempfile::tempdir().expect("failed to create temp HOME");
-    let home_path = home.path().to_path_buf();
-
-    let shim_dir = home_path.join("shim");
-    std::fs::create_dir_all(&shim_dir).unwrap();
-    write_shim(
-        &shim_dir.join("curl"),
-        &format!("#!/bin/sh\nexit {curl_status}\n"),
-    );
-
-    // Pin a digest so the script takes the download branch rather than the fail-closed
-    // "no pinned digest" branch. Its value is irrelevant: no bytes ever arrive.
-    let pinned = "0".repeat(64);
-    let script = install_script(None).replace(
-        "expected_sha256=\"\"",
-        &format!("expected_sha256=\"{pinned}\""),
-    );
-    assert!(
-        script.contains(&format!("expected_sha256=\"{pinned}\"")),
-        "the test failed to pin a digest -- the script's case arms changed shape",
-    );
-
-    let path = format!(
-        "{}:{}",
-        shim_dir.display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
-    let output = Command::new(bash_path())
-        .arg("-c")
-        .arg(&script)
-        .env("HOME", &home_path)
-        .env("PATH", path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("failed to spawn bash");
-
-    let install_dir =
-        std::path::PathBuf::from(remote_server_dir().replacen('~', home_path.to_str().unwrap(), 1));
-    (home, install_dir, output)
-}
-
-#[cfg(unix)]
-enum DigestUnderTest {
-    Matching,
-    Mismatched,
-}
-
-/// Drives the production install script down its **download** branch without touching the
-/// network, by putting a `curl` shim ahead of the real one on PATH that copies a local
-/// tarball to the requested output path.
-///
-/// The script text itself is left intact apart from pinning a digest into the platform case
-/// arms -- the digests are a compile-time input this test cannot set, so substituting the
-/// value it would have had is the only way to exercise the comparison. The comparison logic,
-/// the ordering relative to `chmod +x`/`mv`, and the exit codes are all the real thing.
-#[cfg(unix)]
-fn run_download_install_with_digest(
-    which: DigestUnderTest,
-    digest_tool_shim: Option<&str>,
-) -> (tempfile::TempDir, std::path::PathBuf, std::process::Output) {
-    let home = tempfile::tempdir().expect("failed to create temp HOME");
-    let home_path = home.path().to_path_buf();
-
-    let staging = home_path.join("tarball-src");
-    std::fs::create_dir_all(&staging).unwrap();
-    std::fs::write(staging.join(binary_name()), "#!/bin/sh\nexit 0\n").unwrap();
-
-    let tarball = home_path.join("release.tar.gz");
-    let tar_status = Command::new("tar")
-        .arg("-czf")
-        .arg(&tarball)
-        .arg("-C")
-        .arg(&staging)
-        .arg(".")
-        .status()
-        .expect("failed to spawn tar");
-    assert!(
-        tar_status.success(),
-        "tar failed to build the test artifact"
-    );
-
-    let real_digest = sha256_of(&tarball);
-    let pinned = match which {
-        DigestUnderTest::Matching => real_digest,
-        // Same length and alphabet as a real digest, so the failure is the comparison and
-        // not some incidental parsing difference.
-        DigestUnderTest::Mismatched => "0".repeat(64),
-    };
-
-    // A `curl` that serves the local tarball. Honours `-o <path>`, which is how the script
-    // invokes it; everything else is ignored.
-    let shim_dir = home_path.join("shim");
-    std::fs::create_dir_all(&shim_dir).unwrap();
-    write_shim(
-        &shim_dir.join("curl"),
-        &format!(
-            "#!/bin/sh\nout=\"\"\nprev=\"\"\nfor a in \"$@\"; do\n  \
-             if [ \"$prev\" = \"-o\" ]; then out=\"$a\"; fi\n  prev=\"$a\"\ndone\n\
-             if [ -z \"$out\" ]; then exit 1; fi\ncp {} \"$out\"\n",
-            tarball.display()
-        ),
-    );
-
-    // Optionally shadow every SHA-256 tool the script knows how to use, so what the script
-    // does when it cannot compute a digest does not depend on which tools the machine running
-    // the test happens to have installed.
-    if let Some(body) = digest_tool_shim {
-        for tool in ["sha256sum", "shasum", "openssl"] {
-            write_shim(&shim_dir.join(tool), body);
-        }
-    }
-
-    // Pin the digest into every platform arm so the test does not depend on which platform
-    // it happens to run on.
-    let script = install_script(None).replace(
-        "expected_sha256=\"\"",
-        &format!("expected_sha256=\"{pinned}\""),
-    );
-    assert!(
-        script.contains(&format!("expected_sha256=\"{pinned}\"")),
-        "the test failed to pin a digest -- the script's case arms changed shape",
-    );
-
-    let path = format!(
-        "{}:{}",
-        shim_dir.display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
-    let output = Command::new(bash_path())
-        .arg("-c")
-        .arg(&script)
-        .env("HOME", &home_path)
-        .env("PATH", path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("failed to spawn bash");
-
-    let install_dir =
-        std::path::PathBuf::from(remote_server_dir().replacen('~', home_path.to_str().unwrap(), 1));
-    (home, install_dir, output)
-}
-
-/// Writes `body` to `path` and makes it executable — a stand-in for whichever tool `path` is
-/// named after. The shims live in a directory prepended to `PATH`, so the script's own
-/// `command -v` finds them ahead of the real tools.
 #[cfg(unix)]
 fn write_shim(path: &std::path::Path, body: &str) {
     std::fs::write(path, body).unwrap();
@@ -1332,7 +1189,7 @@ fn prior_install_probe_requires_an_executable_binary_not_just_the_directory() {
     // Unrelated files (bundled resources, pid files, a staged tarball) are not an install.
     std::fs::create_dir_all(dir.join("bundled_resources")).unwrap();
     std::fs::write(dir.join("server-abc.pid"), "1").unwrap();
-    std::fs::write(dir.join("zap-upload.tar.gz"), "x").unwrap();
+    std::fs::write(dir.join(".upload.gz"), "x").unwrap();
     assert_eq!(sh_status(&probe), 1);
 
     // A non-executable (partial) binary is not an install.
@@ -1373,7 +1230,7 @@ fn failure_cleanup_removes_leftovers_but_never_a_working_install() {
 
     // Staged tarball + partial non-executable binary: both removed, then the dir.
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("zap-upload.tar.gz"), "x").unwrap();
+    std::fs::write(dir.join(".upload.gz"), "x").unwrap();
     std::fs::write(&bin, "partial").unwrap();
     assert_eq!(sh_status(&cleanup), 0);
     assert!(!dir.exists());
@@ -1389,47 +1246,6 @@ fn failure_cleanup_removes_leftovers_but_never_a_working_install() {
     // Missing directory: still exits 0.
     std::fs::remove_dir_all(&dir).unwrap();
     assert_eq!(sh_status(&cleanup), 0);
-}
-
-/// The script itself removes the install directory it created when it then fails (here: the
-/// documented no-pinned-digest refusal), and leaves a pre-existing directory alone.
-#[cfg(unix)]
-#[test]
-fn install_script_failure_does_not_leave_an_empty_install_dir() {
-    let home = tempfile::tempdir().expect("failed to create temp HOME");
-    let install_dir = home.path().join(".phosphor/remote-server");
-    let script = install_script(None);
-    let run = |script: &str| {
-        Command::new(bash_path())
-            .arg("-c")
-            .arg(script)
-            .env("HOME", home.path())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .expect("failed to spawn bash")
-    };
-
-    let output = run(&script);
-    assert_eq!(output.status.code(), Some(4));
-    assert!(
-        !install_dir.exists(),
-        "a failed install left {} behind",
-        install_dir.display()
-    );
-
-    // A directory that already existed (e.g. holding a working install) is never removed.
-    std::fs::create_dir_all(&install_dir).unwrap();
-    std::fs::write(install_dir.join("keep-me"), "x").unwrap();
-    let output = run(&script);
-    assert_eq!(output.status.code(), Some(4));
-    assert!(install_dir.join("keep-me").exists());
-    // Staging dir from the failed run is gone too.
-    let leftovers: Vec<_> = std::fs::read_dir(&install_dir)
-        .unwrap()
-        .map(|e| e.unwrap().file_name())
-        .collect();
-    assert_eq!(leftovers.len(), 1, "unexpected leftovers: {leftovers:?}");
 }
 
 // ---------------------------------------------------------------------------
@@ -1579,42 +1395,4 @@ fn one_version_cleanup_with_no_hash_sweeps_no_daemon_files() {
         one_version_cleanup_command_for(dir.to_str().unwrap(), "phosphor-oss", "phosphor-oss", "");
     assert_eq!(sh_status(&cmd), 0);
     assert!(ident.join("server.pid").exists() && ident.join("server.sock").exists());
-}
-
-/// The install script runs the same cleanup itself, after proving the new binary starts.
-#[cfg(unix)]
-#[test]
-fn install_script_leaves_exactly_one_version_installed() {
-    let (home, script, install_dir) = run_install_with_tarball_seeded(true, |install_dir| {
-        std::fs::create_dir_all(install_dir).unwrap();
-        for name in ["phosphor-oss", "phosphor-oss-v0.0.1", "phosphor-oss-v0.0.2"] {
-            // Skip a seed that collides with the version about to be installed.
-            if name != format!("{}{}", binary_name(), version_suffix()) {
-                touch_executable(&install_dir.join(name));
-            }
-        }
-    });
-    let kept = format!("{}{}", binary_name(), version_suffix());
-    assert_eq!(
-        binaries_in(&install_dir, "phosphor-"),
-        vec![kept.clone()],
-        "exactly the freshly installed version must remain (script: {script})"
-    );
-    drop(home);
-}
-
-#[test]
-fn install_script_renders_every_one_version_placeholder() {
-    let script = install_script(None);
-    for placeholder in [
-        "{one_version_cleanup}",
-        "{one_version_binaries}",
-        "{daemon_version_hash}",
-    ] {
-        assert!(
-            !script.contains(placeholder),
-            "{placeholder} left unsubstituted"
-        );
-    }
-    assert!(script.contains("ovc_keep="));
 }

@@ -1,88 +1,64 @@
 #!/usr/bin/env bash
-# Installs the Zap CLI binary on the remote host, used by remote-server-proxy.
+# Installs the bundled `phosphor-remote` helper on the remote host. Nothing is downloaded:
+# the client pipes this script into `bash -s` and appends the gzip-compressed helper to the
+# same stdin (or, for the SCP fallback, uploads the file first and names it below).
 #
 # setup.rs replaces these placeholders at runtime:
-#   {download_base_url}     - e.g. https://gitlab.com/winters-phosphor/phosphor/-/releases/permalink/latest/downloads
 #   {install_dir}           - e.g. ~/.phosphor/remote-server
-#   {binary_name}           - e.g. phosphor-oss (the channel COMMAND name)
-#   {release_asset_prefix}  - e.g. phosphor-cli (the published ASSET name --
-#                             deliberately different from {binary_name}; they
-#                             drifted apart at the rebrand and the mismatch made
-#                             every remote install 404)
-#   {version_suffix}        - e.g. -v0.2026..., empty when there's no release tag
-#   {staging_tarball_path}  - pre-uploaded tarball path for the SCP fallback; empty for the normal download path
-#   {bundled_resources_dir_name}
-#                           - e.g. bundled_resources; the global, version-independent
-#                             directory under {install_dir} that receives the release
-#                             artifact's resources/ tree (bundled skills, settings schema)
+#   {helper_file_name}      - e.g. phosphor-remote-v0.1.18 (the file this run installs)
+#   {helper_current_link}   - name of the symlink pointed at the verified helper
+#   {one_version_binaries}  - base names the one-version cleanup manages
+#   {daemon_version_hash}   - short hash of the helper version (daemon file names)
+#   {staging_gz_path}       - SCP-fallback upload to read instead of stdin; empty for in-band
 #   {sha256_linux_x86_64}, {sha256_linux_aarch64}, {sha256_macos_x86_64}, {sha256_macos_aarch64}
-#                           - SHA-256 of the published CLI tarball for each remote platform,
-#                             compiled into the client at build time (setup.rs::expected_sha256);
-#                             empty when the client was built without a pinned digest. Delivered
-#                             over the SSH channel this script arrives on, not fetched from
-#                             GitHub -- see the fail-closed check on the download path below.
+#                           - SHA-256 of the DECOMPRESSED helper for each platform, compiled
+#                             into the client (setup.rs::pinned_helper_sha256) and delivered
+#                             down the authenticated ssh channel this script arrives on.
+#   {one_version_cleanup}   - the shared cleanup fragment (one_version_cleanup.sh)
+#
+# STRUCTURE: everything is inside `main` and the last line is the call. That is load-bearing for
+# the in-band upload: bash reads this script from a pipe one command at a time, so when it runs
+# `main`, the compressed helper that follows the script on the same stdin has not been read yet,
+# and `gunzip` inside `main` receives exactly those bytes. A command placed after `main` would
+# never run (stdin is at EOF by then).
 set -e
+set -E
 
+main() {
 # ---------------------------------------------------------------------------
 # EXIT-CODE CONTRACT
 #
-# This script's exit status is the client's ONLY signal about what went wrong,
-# and the client routes on it: some failures are grounds for the SCP fallback
-# (client downloads the tarball itself and pushes it over the authenticated
-# SSH channel) and some must fail closed. The mirror of this block lives in
-# `app/src/remote_server/ssh_transport.rs::classify_install_failure`; a test
-# there parses the `EXIT_*=` assignments below out of the rendered script and
-# asserts every one of them is classified, so the two cannot drift apart.
+# This script's exit status is the client's ONLY signal about what went wrong, and the client
+# routes on it. The mirror of this block lives in
+# `app/src/remote_server/ssh_transport.rs::classify_install_failure`; a test there parses the
+# `EXIT_*=` assignments below out of the rendered script and asserts every one of them is
+# classified, so the two cannot drift apart.
 #
 # Three outcomes have to stay DISTINGUISHABLE:
 #
-#   * transport failure -- the host could not fetch the bytes at all. Nothing
-#     was verified because there was nothing to verify. The SCP fallback is the
-#     designed recovery.
-#   * integrity failure -- the bytes arrived and are NOT the pinned release, or
-#     could not be checked. Fail closed. The SCP fallback installs through the
-#     unverified staging branch below, so treating this as retryable would turn
-#     detected tampering into an unverified install. This is the security
-#     property; do not weaken it.
+#   * transport failure -- no usable bytes reached the host (EXIT_UPLOAD_FAILED). Nothing was verified
+#     because there was nothing to verify; the SCP fallback is the designed recovery.
+#   * integrity failure -- bytes arrived and are NOT the pinned helper, or could not be checked
+#     (EXIT_NO_PINNED_DIGEST, EXIT_NO_DIGEST_TOOL, EXIT_DIGEST_MISMATCH). Fail closed, never retried through another route.
 #   * success.
 #
-# Every fallible command is therefore either guarded (`|| code=$?`) or covered
-# by the ERR trap below. `set -e` on its own exits with the FAILING COMMAND'S
-# status, and curl's status space overlaps this one -- curl 6 (DNS failure) is
-# this script's "digest mismatch", curl 7 (connection refused) and 22 (HTTP
-# error) are unassigned here. Letting those leak meant a DNS failure was read
-# as tampering and hard-failed, while an attacker-injected RST or a 500 was
-# read as an unrecognised code and fell through to the unverified fallback.
-# Both directions were wrong, which is why nothing is left to `set -e` now.
+# Every code is chosen outside bash's reserved statuses (1 general error, 2 usage/PARSE error,
+# 126 not executable, 127 not found, 128+N signals): a parse error aborts the interpreter
+# before any trap exists and exits 2, so an interpreter-level abort lands in the client's
+# unrecognised-code branch (which fails closed) instead of impersonating a verdict.
 # ---------------------------------------------------------------------------
-# EXIT_UNSUPPORTED_PLATFORM is 10, NOT 2: bash reserves its own statuses --
-# 1 (general error), 2 (usage/PARSE error), 126 (found but not executable),
-# 127 (not found) and 128+N (killed by signal N). A syntax error cannot be
-# caught by the ERR trap below, because the interpreter never gets as far as
-# running the trap; it just exits 2. While this script owned 2, a script the
-# placeholder substitution in `setup.rs::install_script` had mangled would
-# have arrived at the client as "unsupported arch/OS". Every code below is
-# therefore chosen outside bash's reserved set, so an interpreter-level abort
-# lands in the client's unrecognised-code branch (which fails closed) instead
-# of impersonating a verdict this script never reached.
 EXIT_UNSUPPORTED_PLATFORM=10
-EXIT_NO_FETCHER=3
+EXIT_NO_DECOMPRESSOR=3
 EXIT_NO_PINNED_DIGEST=4
 EXIT_NO_DIGEST_TOOL=5
 EXIT_DIGEST_MISMATCH=6
-EXIT_DOWNLOAD_FAILED=7
-EXIT_BAD_TARBALL=8
+EXIT_UPLOAD_FAILED=7
+EXIT_BAD_UPLOAD=8
 EXIT_INSTALL_FAILED=9
 
-# Backstop for anything not explicitly guarded: remap an unclassified `set -e`
-# abort onto EXIT_INSTALL_FAILED so a stray tool's exit status can never be
-# mistaken for one of the codes above. An explicit `exit N` does NOT go through
-# this trap, so the assignments above still reach the client verbatim.
-#
-# What this trap does NOT cover -- and why the codes above dodge bash's
-# reserved statuses: a parse error aborts the interpreter before any trap is
-# installed, so bash's own 2 is emitted with nothing to remap it. That status
-# now belongs to no code in this contract, so it fails closed as unrecognised.
+# Backstop for anything not explicitly guarded: remap an unclassified `set -e` abort onto
+# EXIT_INSTALL_FAILED so a stray tool's status can never be mistaken for one of the codes above.
+# An explicit `exit N` does NOT go through this trap.
 on_unexpected_error() {
   status=$?
   echo "error: install script failed unexpectedly at line $1 (status $status)" >&2
@@ -104,40 +80,37 @@ case "$os_kernel" in
   *) echo "unsupported OS: $os_kernel" >&2; exit "$EXIT_UNSUPPORTED_PLATFORM" ;;
 esac
 
+# Everything this script creates is private to the user; the helper itself is chmod 755 below.
+umask 077
+
 install_dir="{install_dir}"
 case "$install_dir" in
   "~"|"~/"*) install_dir="${HOME}${install_dir#\~}" ;;
 esac
-# Remember whether this run created the install directory. A failed install must not leave
-# an EMPTY directory behind: the client treats the directory's existence as "something was
-# installed here" and would silently retry the install on every later connect instead of
-# offering the install/continue choice (#931).
+# Remember whether this run created the install directory. A failed install must not leave an
+# EMPTY directory behind: the client treats the directory's existence as "something was
+# installed here" and would silently retry on every later connect instead of offering the
+# install/continue choice (#931).
 created_install_dir=0
 [ -d "$install_dir" ] || created_install_dir=1
 mkdir -p "$install_dir"
+if [ "$created_install_dir" -eq 1 ]; then chmod 700 "$install_dir"; fi
 
-tmpdir=$(mktemp -d "$install_dir/.install.XXXXXX")
-# Best-effort cleanup of the staging directory. A failure here must not mask
-# the real install result: when the trap fires, the binary has either already
-# been moved to its final path, or the script has already failed for another
-# reason — and that other error is more worth surfacing to the caller.
+tmpfile="${install_dir:?}/.up.$$"
 cleanup() {
   status=$?
-  rm -rf "$tmpdir" 2>/dev/null || true
-  # `rmdir` only removes an EMPTY directory, so this can never delete a previous install, the
-  # resources tree, or anything the user put there -- and only a run that failed, and created
-  # the directory itself, even tries.
+  rm -f "$tmpfile" 2>/dev/null || true
+  # `rmdir` only removes an EMPTY directory, so this can never delete a previous install, and
+  # only a failed run that created the directory itself even tries.
   if [ "$status" -ne 0 ] && [ "$created_install_dir" -eq 1 ]; then
     rmdir "$install_dir" 2>/dev/null || true
   fi
 }
 trap cleanup EXIT
 
-# SHA-256 of each published tarball, compiled into the client that generated this script
-# (setup.rs::expected_sha256). It reaches this host over the authenticated SSH channel, NOT
-# from GitHub -- which is what makes it a real integrity check rather than a checksum the
-# same attacker could replace alongside the artifact. Empty means the client was built
-# without the digests; see the fail-closed branch below.
+# SHA-256 of the decompressed helper for each platform, compiled into the client that generated
+# this script. It reaches this host over the authenticated SSH channel, so no network location
+# is trusted. Empty means the client was built without a digest; see the fail-closed branch.
 case "$os_name-$arch_name" in
   linux-x86_64)   expected_sha256="{sha256_linux_x86_64}" ;;
   linux-aarch64)  expected_sha256="{sha256_linux_aarch64}" ;;
@@ -150,18 +123,11 @@ esac
 # nothing -- if it could not compute one. Tool availability differs by platform: coreutils
 # `sha256sum` on Linux, BSD `shasum` on macOS, `openssl` as a last resort.
 #
-# Every branch is a PIPELINE, and a pipeline's status is its LAST element's. `cut`/`awk` succeed
-# on empty input, so a digest tool that is installed and then FAILS -- an unreadable staging
-# file, an LSM denial, OOM, an openssl in a FIPS profile that refuses the algorithm -- used to
-# return 0 here with empty output. The caller's `|| exit "$EXIT_NO_DIGEST_TOOL"` never fired,
-# the empty string compared unequal to the pinned digest, and the script reported
-# EXIT_DIGEST_MISMATCH: "could not compute" collapsed into "computed, and it is not the release
-# we pinned". That is the same fusion one layer down that this whole contract exists to prevent,
-# and it fails closed on a FALSE tampering alarm where the SCP fallback would have worked.
-#
-# `pipefail` is set per invocation rather than globally at the top of the script: the
-# `find ... | head -n1` pipelines further down close the pipe on purpose, so `find` dies of
-# SIGPIPE and a global `pipefail` would abort those with 141 (measured, not assumed).
+# Every branch is a PIPELINE, whose status is its LAST element's; `cut`/`awk` succeed on empty
+# input, so a digest tool that is installed and then FAILS used to return 0 with empty output
+# and be reported as a digest MISMATCH ("could not compute" fused with "computed, and it is not
+# the pinned helper"). `pipefail` is set per invocation so it stays out of the rest of the
+# script.
 compute_sha256() {
   digest=""
   if command -v sha256sum >/dev/null 2>&1; then
@@ -173,140 +139,93 @@ compute_sha256() {
   else
     return 1
   fi
-  # A tool can also succeed and still hand back nothing usable. Anything that is not a bare hex
-  # string is "no digest", never a digest that happens to differ from the pinned one.
   case "$digest" in
     ""|*[!0-9a-fA-F]*) return 1 ;;
   esac
   printf '%s\n' "$digest"
 }
 
-staging_tarball_path="{staging_tarball_path}"
-if [ -n "$staging_tarball_path" ]; then
-  case "$staging_tarball_path" in
-    "~"|"~/"*) staging_tarball_path="${HOME}${staging_tarball_path#\~}" ;;
-  esac
-  mv "$staging_tarball_path" "$tmpdir/zap.tar.gz"
-  # No verification on this path, deliberately: this tarball was uploaded by the client over
-  # the same authenticated SSH connection that is running this script. There is no published
-  # release to have a digest for (it is a locally cross-compiled dev binary), and the bytes
-  # never crossed an untrusted network.
+# Refuse rather than install unverified. A client built without the digests cannot tell the
+# helper it bundled from a swapped one, and "warn and continue" would silently drop the
+# protection exactly when the build is misconfigured.
+if [ -z "$expected_sha256" ]; then
+  echo "error: this client was built without a pinned SHA-256 for $os_name-$arch_name;" >&2
+  echo "       refusing to install an unverified remote helper" >&2
+  exit "$EXIT_NO_PINNED_DIGEST"
+fi
+
+if command -v gunzip >/dev/null 2>&1; then
+  decompress="gunzip -c"
+elif command -v gzip >/dev/null 2>&1; then
+  decompress="gzip -dc"
 else
-  url="{download_base_url}/{release_asset_prefix}-$os_name-$arch_name.tar.gz"
-  # Refuse rather than install unverified. A client built without the digests cannot tell a
-  # good release from a tampered one, and "warn and continue" would silently drop the
-  # protection precisely when the build is misconfigured.
-  if [ -z "$expected_sha256" ]; then
-    echo "error: this client was built without a pinned SHA-256 for $os_name-$arch_name;" >&2
-    echo "       refusing to install an unverified remote server from $url" >&2
-    exit "$EXIT_NO_PINNED_DIGEST"
-  fi
-  # --proto/--proto-redir keep a redirect from downgrading the transport to plain HTTP;
-  # release downloads legitimately redirect to a CDN, so -L has to stay.
-  #
-  # `|| fetch_status=$?` is load-bearing: it captures the fetcher's status instead of letting
-  # `set -e` abort with it. See the EXIT-CODE CONTRACT above -- an uncaptured curl status is
-  # indistinguishable from this script's own verdict.
-  fetch_status=0
-  if command -v curl >/dev/null 2>&1; then
-    curl -fSL --proto '=https' --proto-redir '=https' --connect-timeout 15 \
-      "$url" -o "$tmpdir/zap.tar.gz" || fetch_status=$?
-  elif command -v wget >/dev/null 2>&1; then
-    wget -q --https-only -O "$tmpdir/zap.tar.gz" "$url" || fetch_status=$?
-  else
-    echo "error: neither curl nor wget is available" >&2
-    exit "$EXIT_NO_FETCHER"
-  fi
-  if [ "$fetch_status" -ne 0 ]; then
-    # DNS failure, connection refused, TLS failure, timeout, HTTP 4xx/5xx: the host never got
-    # the bytes, so no integrity claim was made and none was violated. This is a genuine
-    # transport failure and the SCP fallback is legitimate -- unlike the digest failures below.
-    echo "error: could not download the remote server tarball" >&2
-    echo "       url:          $url" >&2
-    echo "       fetcher exit: $fetch_status" >&2
-    exit "$EXIT_DOWNLOAD_FAILED"
-  fi
-
-  # Two guards for one property, deliberately: `compute_sha256` already refuses to print a
-  # non-digest, and an empty `actual_sha256` is re-checked here so that no future edit to the
-  # helper can make "no digest" arrive at the comparison below. An empty string is not a
-  # mismatching digest -- it is the absence of a verdict, which is what EXIT_NO_DIGEST_TOOL
-  # means and why the client classifies the two codes the same way but reports them apart.
-  actual_sha256=$(compute_sha256 "$tmpdir/zap.tar.gz") || actual_sha256=""
-  if [ -z "$actual_sha256" ]; then
-    echo "error: could not compute a SHA-256 of the downloaded tarball" >&2
-    echo "       (no working sha256sum, shasum or openssl on this host);" >&2
-    echo "       refusing to install an unverified remote server" >&2
-    exit "$EXIT_NO_DIGEST_TOOL"
-  fi
-  if [ "$actual_sha256" != "$expected_sha256" ]; then
-    # The download SUCCEEDED and the bytes are not the pinned release. Fail closed: the client
-    # must not retry this through the unverified staging path.
-    echo "error: remote server tarball failed integrity check" >&2
-    echo "       url:      $url" >&2
-    echo "       expected: $expected_sha256" >&2
-    echo "       actual:   $actual_sha256" >&2
-    exit "$EXIT_DIGEST_MISMATCH"
-  fi
+  echo "error: neither gunzip nor gzip is available on this host" >&2
+  exit "$EXIT_NO_DECOMPRESSOR"
 fi
 
-# On the download path the digest already matched, so a tarball that will not open or holds no
-# recognised binary is a broken *pinned* artifact. Re-fetching it via the SCP fallback would
-# pull the identical bytes, so these are fatal rather than retryable.
-tar -xzf "$tmpdir/zap.tar.gz" -C "$tmpdir" || {
-  echo "error: could not extract the remote server tarball" >&2
-  exit "$EXIT_BAD_TARBALL"
-}
-
-bin="$tmpdir/{binary_name}"
-if [ ! -f "$bin" ]; then
-  # Fallback for a tarball whose layout does not match {binary_name}: older release assets,
-  # and assets published either side of a binary rename. The names are every binary this
-  # project has shipped under -- `phosphor-oss` (current), `zap-oss` (pre-rename), and
-  # upstream's `warp-oss` / `oz*`. Dropping an old name here would strand hosts installing a
-  # previously published tarball; the digest check above already established the archive is
-  # the one this client expects, so a broad name match costs nothing.
-  bin=$(find "$tmpdir" -type f \( -name 'phosphor-oss' -o -name 'zap-oss' -o -name 'warp-oss' -o -name 'oz*' \) ! -path "$tmpdir/resources/*" ! -name '*.tar.gz' | head -n1)
-fi
-if [ -z "$bin" ]; then echo "no binary found in tarball" >&2; exit "$EXIT_BAD_TARBALL"; fi
-chmod +x "$bin"
-mv "$bin" "$install_dir/{binary_name}{version_suffix}"
-
-# Install the artifact's resources/ tree (bundled skills, settings schema) into the
-# global, version-independent directory the daemon reads at startup
-# (`remote_server_bundled_resources_dir()` in setup.rs). Deliberately NOT
-# version-scoped: the last install wins, and the removal command leaves this
-# directory in place so an already-running older daemon keeps the skills it
-# parsed at startup.
-#
-# Absent resources/ is not an error: dev-mode installs cross-compile a bare
-# binary with no resources tree, and older release artifacts predate it.
-resources_src="$tmpdir/resources"
-if [ ! -d "$resources_src" ]; then
-  resources_src=$(find "$tmpdir" -maxdepth 3 -type d -name resources | head -n1)
-fi
-if [ -n "$resources_src" ] && [ -d "$resources_src" ]; then
-  resources_dir="$install_dir/{bundled_resources_dir_name}"
-  # Swap through a staging path so a failed install cannot leave the directory
-  # half-populated for a daemon that is starting up concurrently.
-  staged="$install_dir/.{bundled_resources_dir_name}.new.$$"
-  previous="$install_dir/.{bundled_resources_dir_name}.old.$$"
-  rm -rf "$staged" "$previous"
-  mv "$resources_src" "$staged"
-  if [ -d "$resources_dir" ]; then
-    mv "$resources_dir" "$previous"
+staging_gz_path="{staging_gz_path}"
+if [ -n "$staging_gz_path" ]; then
+  case "$staging_gz_path" in
+    "~"|"~/"*) staging_gz_path="${HOME}${staging_gz_path#\~}" ;;
+  esac
+  if [ ! -s "$staging_gz_path" ]; then
+    echo "error: the uploaded helper is missing or empty: $staging_gz_path" >&2
+    exit "$EXIT_UPLOAD_FAILED"
   fi
-  mv "$staged" "$resources_dir"
-  rm -rf "$previous"
+  # `|| decompress_status=$?` is load-bearing: capture the status instead of letting `set -e`
+  # abort with the decompressor's own, which would collide with this script's codes.
+  decompress_status=0
+  $decompress < "$staging_gz_path" > "$tmpfile" || decompress_status=$?
+  rm -f "${staging_gz_path:?}" 2>/dev/null || true
+else
+  decompress_status=0
+  $decompress > "$tmpfile" || decompress_status=$?
 fi
+if [ ! -s "$tmpfile" ]; then
+  # Nothing came out of the decompressor: no bytes reached this host (an empty or immediately
+  # broken stream). Nothing was verified; a transport problem, not a verdict.
+  echo "error: no helper data arrived (decompressor status $decompress_status)" >&2
+  exit "$EXIT_UPLOAD_FAILED"
+fi
+if [ "$decompress_status" -ne 0 ]; then
+  echo "error: could not decompress the uploaded helper (status $decompress_status)" >&2
+  exit "$EXIT_BAD_UPLOAD"
+fi
+
+# An empty `actual_sha256` is not a mismatching digest -- it is the absence of a verdict, which
+# is what EXIT_NO_DIGEST_TOOL means; the client reports the two apart.
+actual_sha256=$(compute_sha256 "$tmpfile") || actual_sha256=""
+if [ -z "$actual_sha256" ]; then
+  echo "error: could not compute a SHA-256 of the uploaded helper" >&2
+  echo "       (no working sha256sum, shasum or openssl on this host);" >&2
+  echo "       refusing to install an unverified remote helper" >&2
+  exit "$EXIT_NO_DIGEST_TOOL"
+fi
+if [ "$actual_sha256" != "$expected_sha256" ]; then
+  echo "error: remote helper failed integrity check" >&2
+  echo "       expected: $expected_sha256" >&2
+  echo "       actual:   $actual_sha256" >&2
+  exit "$EXIT_DIGEST_MISMATCH"
+fi
+
+helper_path="${install_dir:?}/{helper_file_name}"
+chmod 755 "$tmpfile"
+mv "$tmpfile" "$helper_path"
+# The binary must actually start on this host before anything older is touched.
+if ! "$helper_path" --version >/dev/null 2>&1; then
+  echo "error: the installed helper does not start on this host" >&2
+  rm -f "$helper_path" 2>/dev/null || true
+  exit "$EXIT_INSTALL_FAILED"
+fi
+ln -sfn "{helper_file_name}" "$install_dir/{helper_current_link}" 2>/dev/null || true
 
 # One-version cleanup (setup.rs::one_version_cleanup_command is the client-side twin of this
-# block; both run the same fragment). Only once the new binary has proved it starts: deleting
-# the previous version before then could leave a host with no working install at all.
-if "$install_dir/{binary_name}{version_suffix}" --version >/dev/null 2>&1; then
-  ovc_dir="$install_dir"
-  ovc_binaries="{one_version_binaries}"
-  ovc_keep="{binary_name}{version_suffix}"
-  ovc_hash="{daemon_version_hash}"
+# block; both run the same fragment), now that the new helper has proved it starts.
+ovc_dir="$install_dir"
+ovc_binaries="{one_version_binaries}"
+ovc_keep="{helper_file_name}"
+ovc_hash="{daemon_version_hash}"
 {one_version_cleanup}
-fi
+}
+
+main

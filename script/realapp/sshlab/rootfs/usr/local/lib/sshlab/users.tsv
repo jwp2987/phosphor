@@ -29,4 +29,5 @@ p_force	bash	default	ForceCommand /usr/local/lib/sshlab/forced.sh
 p_nopty	bash	default	PermitTTY no
 p_onesess	bash	default	MaxSessions 1
 p_noinstall	bash	noinstall	ForceCommand /usr/local/lib/sshlab/forced-noinstall.sh
+p_noscp	bash	default	ForceCommand /usr/local/lib/sshlab/forced-noinstall.sh
 p_sudo	bash	sudo	-

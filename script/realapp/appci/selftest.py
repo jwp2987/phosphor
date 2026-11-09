@@ -2725,7 +2725,7 @@ def lab_cases_registry_and_selection():
     assert run.unknown_case_names("mode_proof,typo_case", reg) == ["typo_case"]       # exact names are still checked exactly
     # winmap: a lab case is never 'unclassified'; PowerShell pane skips with a reason; p_onesess is skipped on Windows
     base = {n.split(".")[0] for n in names}
-    assert base == {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i"}, base
+    assert base == {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i", "lab_helper_install"}, base
     assert all(c["modes"] == ("terminal",) for c in labs if c["name"].startswith("lab_ssh_drop_reconnect")), "the drop case is terminal-only"
     ordered = sorted(labs, key=lambda c: c["order"])
     assert [c["arm"]["helper"] for c in ordered] == sorted((c["arm"]["helper"] for c in labs), key=lambda h: L.HELPERS.index(h)), "nohelper arms sort before helper arms"
@@ -2735,12 +2735,34 @@ def lab_cases_registry_and_selection():
 
 
 @check
+def lab_helper_arm_pieces():
+    """Wave H (#1804): the helper arms' pure pieces. The file name is derived from `--version` exactly as setup::helper_file_name does, the host policy key is
+    user@host, the arms are helper-major with the new modes after `helper`, and a fake helper that does not print a version line is refused."""
+    import lab as L, cases_lab as CL, stat
+    assert CL.helper_file_name("phosphor-remote v0.1.18 protocol 1") == "phosphor-remote-v0.1.18"
+    assert CL.host_label(dict(user="u_bash")) == "u_bash@lab-u_bash"
+    assert L.HELPERS[:2] == ("nohelper", "helper") and set(L.HELPERS) == {"nohelper", "helper", "upload", "upgrade", "never"}
+    assert set(CL.HELPER_ARM_MODE) == set(L.HELPERS) and CL.HELPER_ARM_MODE["nohelper"] == "never_install" and CL.HELPER_ARM_MODE["upload"] == "always_install"
+    arms = L.expand_arms("helper_install", ("bash",), ("lan",), ("upload", "upgrade", "never"), (), ("p_noscp",))
+    assert [a["helper"] for a in arms] == ["upload", "upload", "upgrade", "upgrade", "never", "never"], arms
+    assert any(a["name"] == "lab_helper_install.p_noscp.lan.upload" and a["user"] == "p_noscp" for a in arms)
+    with tempfile.TemporaryDirectory() as d:
+        good, bad = os.path.join(d, "good"), os.path.join(d, "bad")
+        open(good, "w").write("#!/bin/sh\necho 'phosphor-remote v9 protocol 1'\necho 'build abc'\n")
+        open(bad, "w").write("#!/bin/sh\necho 'something else 1.0'\n")
+        for f in (good, bad):
+            os.chmod(f, os.stat(f).st_mode | stat.S_IEXEC)
+        assert CL.helper_version_line(good) == "phosphor-remote v9 protocol 1"
+        assert CL.helper_version_line(bad) is None and CL.helper_version_line(os.path.join(d, "missing")) is None
+
+
+@check
 def lab_users_tsv_parse():
     U = _usersdb()
     rows = U.load()
     byname = {r.user: r for r in rows}
     for u in ("u_bash", "u_zsh", "u_fish", "u_nu", "u_pwsh", "u_dash", "u_ash", "u_rbash", "p_banner", "p_rcerr", "p_rcprompt", "p_slowrc", "p_colon", "p_question",
-              "p_sete", "p_exec", "p_rohome", "p_nohome", "p_tinypath", "p_password", "p_kbdint", "p_mfa", "p_slowauth", "p_force", "p_nopty", "p_onesess", "p_noinstall", "p_sudo"):
+              "p_sete", "p_exec", "p_rohome", "p_nohome", "p_tinypath", "p_password", "p_kbdint", "p_mfa", "p_slowauth", "p_force", "p_nopty", "p_onesess", "p_noinstall", "p_sudo", "p_noscp"):
         assert u in byname, "users.tsv lacks %s" % u
     assert len(byname) == len(rows)
     assert byname["u_rbash"].shell == "rbash" and byname["u_nu"].shell == "nu"

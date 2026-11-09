@@ -257,9 +257,11 @@ things you asked for:
   with an unauthenticated GET, sending nothing about you.
 - **SSH sessions you open**, for the two bootstrap paths described under
   [Shell integration](#shell-integration-is-not-detected). The remote-server
-  extension has the *remote* host fetch
-  `phosphor-cli-<os>-<arch>.tar.gz` from this project's GitHub Releases (and
-  verifies it against a digest pinned into your client at build time); the tmux
+  helper (`phosphor-remote`) is uploaded by Phosphor itself over the ssh
+  connection you already opened, from the copy bundled in the app, and checked
+  against a digest compiled into your client; the remote host never contacts the
+  internet for it, and nothing is downloaded. It is optional and asked per host.
+  The tmux
   wrapper, if you turn `warpify.ssh.use_ssh_tmux_wrapper` on, has the remote host
   install tmux through its own package manager. Both run on the far end of a
   connection you initiated, and neither sends anything about you.
@@ -1003,7 +1005,7 @@ the part you actually want.
 - WARP_EXTRA_HTTP_HEADERS is read only on Channel::Integration, so it is not a user-facing switch: crates/http_client/src/lib.rs:36-39
 
 ## SSH bootstrap egress
-- the remote-server install script has the REMOTE host fetch the CLI tarball from this project's GitHub Releases, verified against a digest pinned into the client at build time: crates/remote_server/src/setup.rs:550-553, :580 (expected_sha256, baked in via option_env! — crates/remote_server/build.rs:4), asserted URL crates/remote_server/src/setup_tests.rs:255-261 (`https://github.com/jwp2987/phosphor/releases/latest/download/phosphor-cli-linux-x86_64.tar.gz`); digests pinned at .github/workflows/phosphor_release.yml:277-315, :496-524
+- the remote helper is uploaded in-band over your own ssh connection from the copy bundled in the app, verified against a digest compiled into the client: crates/remote_server/src/install_remote_server.sh (reads the gzip stream from stdin, checks `pinned_helper_sha256`), crates/remote_server/src/setup.rs (`pinned_helper_sha256`, `bundled_helper_asset_path`), app/src/remote_server/ssh_transport.rs (`install_binary_impl`, `scp_install_fallback`); no download from GitLab, GitHub or anywhere else (asserted by `nothing_in_the_install_path_can_reach_the_network` in setup_tests.rs)
 - tmux is installed on the remote host through its own package manager, only when `warpify.ssh.use_ssh_tmux_wrapper` (default false) is on: app/src/terminal/ssh/warpify.rs:184-196, app/src/terminal/warpify/settings.rs:18-56
 
 ## Graphics

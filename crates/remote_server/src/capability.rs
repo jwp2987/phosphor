@@ -18,6 +18,31 @@ pub const GIT_READ: &str = "git_read";
 /// `RipgrepSearch`.
 pub const RIPGREP_SEARCH: &str = "ripgrep_search";
 
+/// Repo metadata: `NavigatedToDirectory`, `LoadRepoMetadataDirectory` and the file-tree pushes.
+/// Only the full app daemon has it; the helper does not list it.
+pub const REPO_METADATA: &str = "repo_metadata";
+/// Buffer sync: `OpenBuffer`, `BufferEdit`, `SaveBuffer`, `ResolveConflict`, `CloseBuffer`.
+pub const BUFFERS: &str = "buffers";
+/// Diff-state subscriptions and the git status and GitHub info pushes.
+pub const DIFF_STATE: &str = "diff_state";
+/// Git write operations: commit chain, push, pull, create PR, discard, stage.
+pub const GIT_WRITE: &str = "git_write";
+/// Batch `ReadFileContext` (the agent file reader).
+pub const FILE_CONTEXT: &str = "file_context";
+/// Remote codebase indexing and search.
+pub const CODEBASE_INDEX: &str = "codebase_index";
+
+/// The families above that only the legacy full daemon implements, for documentation and for
+/// tests that pin the helper's list against them.
+pub const LEGACY_ONLY_CAPABILITIES: &[&str] = &[
+    REPO_METADATA,
+    BUFFERS,
+    DIFF_STATE,
+    GIT_WRITE,
+    FILE_CONTEXT,
+    CODEBASE_INDEX,
+];
+
 /// Every capability the helper in this build implements.
 pub const HELPER_CAPABILITIES: &[&str] =
     &[FILE_WRITE, FS_BASIC, RUN_COMMAND, GIT_READ, RIPGREP_SEARCH];
@@ -77,6 +102,16 @@ mod tests {
         assert!(caps.is_limited());
         assert!(caps.supports(FS_BASIC));
         assert!(!caps.supports(RIPGREP_SEARCH));
+    }
+
+    #[test]
+    fn the_helper_does_not_claim_what_only_the_legacy_daemon_has() {
+        for legacy_only in LEGACY_ONLY_CAPABILITIES {
+            assert!(
+                !HELPER_CAPABILITIES.contains(legacy_only),
+                "{legacy_only} is not implemented by the helper"
+            );
+        }
     }
 
     #[test]

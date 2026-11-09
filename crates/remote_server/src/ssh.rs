@@ -263,6 +263,22 @@ pub async fn run_ssh_command(
 /// The `bash -s` + stdin approach avoids all escaping issues and has no
 /// argument length limits.
 pub async fn run_ssh_script(socket_path: &Path, script: &str, timeout: Duration) -> Result<Output> {
+    run_ssh_script_with_payload(socket_path, script, &[], timeout).await
+}
+
+/// [`run_ssh_script`] with `payload` written to the same stdin right after the script text.
+///
+/// The remote `bash -s` reads its commands from that pipe one at a time, so a script that ends
+/// in a single call (`main`) leaves the payload unread for a command inside it to consume
+/// (`gunzip -c > file`). This is how the bundled helper is uploaded in-band over the existing
+/// ControlMaster, with no second connection and no scp. The script must not have commands
+/// after that call: stdin is at EOF by then.
+pub async fn run_ssh_script_with_payload(
+    socket_path: &Path,
+    script: &str,
+    payload: &[u8],
+    timeout: Duration,
+) -> Result<Output> {
     use std::process::Stdio;
 
     let mut child = Command::new("ssh")
@@ -276,23 +292,33 @@ pub async fn run_ssh_script(socket_path: &Path, script: &str, timeout: Duration)
         .spawn()
         .map_err(|e| anyhow!("Failed to spawn SSH for script: {e}"))?;
 
-    // Write the script to stdin.
-    if let Some(mut stdin) = child.stdin.take() {
-        use futures_lite::io::AsyncWriteExt;
-        stdin
-            .write_all(script.as_bytes())
+    let stdin = child.stdin.take();
+    // The upload and the wait for the remote exit share one timeout: a stalled link must not
+    // hang the install forever.
+    async move {
+        if let Some(mut stdin) = stdin {
+            use futures_lite::io::AsyncWriteExt;
+            stdin
+                .write_all(script.as_bytes())
+                .await
+                .map_err(|e| anyhow!("Failed to write script to stdin: {e}"))?;
+            if !payload.is_empty() {
+                stdin
+                    .write_all(payload)
+                    .await
+                    .map_err(|e| anyhow!("Failed to write payload to stdin: {e}"))?;
+            }
+            // Close stdin so the remote bash exits after reading the script.
+            drop(stdin);
+        }
+        child
+            .output()
             .await
-            .map_err(|e| anyhow!("Failed to write script to stdin: {e}"))?;
-        // Close stdin so the remote bash exits after reading the script.
-        drop(stdin);
+            .map_err(|e| anyhow!("Script failed: {e}"))
     }
-
-    child
-        .output()
-        .with_timeout(timeout)
-        .await
-        .map_err(|_| anyhow!("Script timed out after {timeout:?}"))?
-        .map_err(|e| anyhow!("Script failed: {e}"))
+    .with_timeout(timeout)
+    .await
+    .map_err(|_| anyhow!("Script timed out after {timeout:?}"))?
 }
 
 /// Uploads a single file to the remote host via an existing ControlMaster socket.

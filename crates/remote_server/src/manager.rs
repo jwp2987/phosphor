@@ -1714,6 +1714,16 @@ impl RemoteServerManager {
         }
     }
 
+    /// Whether the server connected for `session_id` supports `capability`
+    /// ([`crate::capability`]). `false` when the session is not connected. A legacy full daemon
+    /// supports everything; the bundled `phosphor-remote` helper only what it lists, and a
+    /// feature it lacks uses its no-helper path (or is simply unavailable) instead of sending a
+    /// request the server can only refuse.
+    pub fn session_supports(&self, session_id: SessionId, capability: &str) -> bool {
+        self.client_for_session(session_id)
+            .is_some_and(|client| client.capabilities().supports(capability))
+    }
+
     /// Rotates the daemon-wide auth credential on each connected remote host.
     /// Only sessions whose stored `identity_key` matches the current identity
     /// (from `auth_context`) receive the notification. This prevents a stale
@@ -1811,6 +1821,17 @@ impl RemoteServerManager {
             log::warn!("navigate_to_directory: no connected client for session {session_id:?}");
             return;
         };
+        // Fires on every `cd`; the helper has no repo-metadata service, and asking it would
+        // only collect a refusal each time.
+        if !client
+            .capabilities()
+            .supports(crate::capability::REPO_METADATA)
+        {
+            log::debug!(
+                "navigate_to_directory: server for session {session_id:?} has no repo metadata"
+            );
+            return;
+        }
         let Some(host_id) = self.host_id_for_session(session_id).cloned() else {
             log::warn!("navigate_to_directory: no host_id for session {session_id:?}");
             return;
@@ -1898,6 +1919,15 @@ impl RemoteServerManager {
             );
             return;
         };
+        if !client
+            .capabilities()
+            .supports(crate::capability::REPO_METADATA)
+        {
+            log::debug!(
+                "load_remote_repo_metadata_directory: server for session {session_id:?} has no repo metadata"
+            );
+            return;
+        }
         let Some(host_id) = self.host_id_for_session(session_id).cloned() else {
             log::warn!(
                 "load_remote_repo_metadata_directory: no host_id for session {session_id:?}"

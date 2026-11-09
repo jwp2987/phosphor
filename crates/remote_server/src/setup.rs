@@ -385,29 +385,44 @@ pub fn daemon_pid_name() -> String {
     }
 }
 
-/// Returns the remote remote-server binary's file name.
+/// Base name of the bundled helper binary: `phosphor-remote`. Installed on the host as
+/// `phosphor-remote-<version>` ([`remote_server_binary`]).
+pub const HELPER_BASE_NAME: &str = "phosphor-remote";
+
+/// Returns the helper's base file name. (Was the channel's CLI command name while the full app
+/// binary was downloaded from GitLab; Wave H replaced that with the bundled helper, #1804.)
 pub fn binary_name() -> &'static str {
+    HELPER_BASE_NAME
+}
+
+/// The previous remote server's file name, the full app binary installed under the channel's
+/// CLI command name. Only the one-version cleanup still names it, to delete leftovers.
+pub fn legacy_binary_name() -> &'static str {
     ChannelState::channel().cli_command_name()
 }
 
-/// Returns the full remote binary path corresponding to the current channel and client version.
+/// Returns the full remote helper path for this client version:
+/// `<remote_server_dir>/phosphor-remote-<version>`.
 ///
-/// Local builds keep the unversioned path so `script/deploy_remote_server` can
-/// overwrite the same dev slot. Zap release builds with a `GIT_RELEASE_TAG`
-/// use a version suffix, so new versions naturally trigger reinstalling;
-/// local source builds have no release tag and still use the unsuffixed path.
+/// The version is [`crate::naming::helper_version`], not the channel's app version: client and
+/// helper are built from this crate in one pipeline, so it names exactly the helper this client
+/// bundles. Two clients of different versions on one host each ensure their own file; the
+/// one-version cleanup keeps whichever installed last.
 pub fn remote_server_binary() -> String {
-    let dir = remote_server_dir();
-    let name = binary_name();
-    match ChannelState::channel() {
-        Channel::Local => format!("{dir}/{name}"),
-        Channel::Oss if ChannelState::app_version().is_none() => format!("{dir}/{name}"),
-        Channel::Oss => format!("{dir}/{name}-{}", pinned_version()),
-        Channel::Stable | Channel::Preview | Channel::Dev | Channel::Integration => {
-            format!("{dir}/{name}-{}", pinned_version())
-        }
-    }
+    format!("{}/{}", remote_server_dir(), helper_file_name())
 }
+
+/// The helper file name for this client version: `phosphor-remote-<version>`.
+pub fn helper_file_name() -> String {
+    format!("{HELPER_BASE_NAME}-{}", crate::naming::helper_version())
+}
+
+/// Name of the symlink the install points at the newest verified helper (informational; the
+/// client always launches the exact versioned path).
+pub const HELPER_CURRENT_LINK: &str = "current";
+
+/// File name the SCP fallback stages the compressed helper under, inside the install directory.
+pub const STAGED_UPLOAD_NAME: &str = ".upload.gz";
 
 /// Returns the shell command to check the remote remote-server binary exists and is executable.
 ///
@@ -436,13 +451,13 @@ pub fn prior_install_probe_command() -> String {
 }
 
 /// Shell command (run on the remote after a FAILED install) that removes what a failed install
-/// can leave behind: the staged SCP tarball, a non-executable (so necessarily partial) binary,
-/// and the install directory itself if -- and only if -- it is empty. It never touches an
-/// executable binary, the resources tree, or any other file, so it is safe after a failed
-/// update over a working install too. Always exits 0.
+/// can leave behind: the staged SCP upload, the in-band upload's temporary file, a
+/// non-executable (so necessarily partial) binary, and the install directory itself if -- and
+/// only if -- it is empty. It never touches an executable binary, the resources tree, or any
+/// other file, so it is safe after a failed update over a working install too. Always exits 0.
 pub fn install_failure_cleanup_command_for(dir: &str, binary_path: &str) -> String {
     format!(
-        "sh -c 'rm -f {dir}/zap-upload.tar.gz; if [ -e {binary_path} ] && [ ! -x {binary_path} ]; then rm -f {binary_path}; fi; rmdir {dir} 2>/dev/null; true'"
+        "sh -c 'rm -f {dir}/{STAGED_UPLOAD_NAME} {dir}/.up.*; if [ -e {binary_path} ] && [ ! -x {binary_path} ]; then rm -f {binary_path}; fi; rmdir {dir} 2>/dev/null; true'"
     )
 }
 
@@ -455,10 +470,12 @@ pub fn install_failure_cleanup_command() -> String {
 /// header of `one_version_cleanup.sh` for its inputs and what it removes.
 const ONE_VERSION_CLEANUP_FRAGMENT: &str = include_str!("one_version_cleanup.sh");
 
-/// Base names whose files [`one_version_cleanup_command`] manages in the install directory: this
-/// channel's binary name today. The legacy unversioned binary is `<base>` itself.
+/// Base names whose files [`one_version_cleanup_command`] manages in the install directory: the
+/// helper, and the channel's old full-app binary, so a host that had the previous remote server
+/// loses its roughly 270 MB of leftovers once the helper is verified. A base name's unversioned
+/// file (`<base>` itself) is removed too unless it is the one kept.
 fn one_version_binaries() -> String {
-    binary_name().to_string()
+    format!("{} {}", binary_name(), legacy_binary_name())
 }
 
 /// Shell command (run on the remote after the new binary has been verified) that leaves exactly
@@ -483,12 +500,11 @@ pub fn one_version_cleanup_command_for(
 
 /// [`one_version_cleanup_command_for`] for this channel and client version.
 pub fn one_version_cleanup_command() -> String {
-    let keep = format!("{}{}", binary_name(), version_suffix());
     one_version_cleanup_command_for(
         &remote_server_dir(),
         &one_version_binaries(),
-        &keep,
-        &version_hash().unwrap_or_default(),
+        &helper_file_name(),
+        &crate::naming::helper_version_hash(),
     )
 }
 
@@ -502,13 +518,9 @@ pub fn remote_server_removal_command() -> String {
     format!("rm -f {}", remote_server_binary())
 }
 
-/// Returns the version number used for the versioned install path. Prefers
-/// the compile-time-injected `GIT_RELEASE_TAG`; falls back to
-/// `CARGO_PKG_VERSION` when there's no release tag, keeping channels that
-/// need a versioned path deterministic, and failing clearly when the
-/// corresponding release asset is missing rather than mistakenly using the unversioned path.
+/// The version string baked into the helper's install path: [`crate::naming::helper_version`].
 fn pinned_version() -> &'static str {
-    ChannelState::app_version().unwrap_or(env!("CARGO_PKG_VERSION"))
+    crate::naming::helper_version()
 }
 
 /// Name of the global, version-independent resources directory inside
@@ -540,37 +552,43 @@ pub fn remote_server_bundled_resources_dir() -> String {
 }
 
 /// The install script template lives in a separate `.sh` file for easier maintenance.
-/// Placeholders like `{download_base_url}` are replaced by [`install_script`].
+/// Placeholders like `{install_dir}` are replaced by [`install_script`].
 const INSTALL_SCRIPT_TEMPLATE: &str = include_str!("install_remote_server.sh");
 
-/// Returns the install script. When `staging_tarball_path` is non-empty, the
-/// script skips the remote download and instead unpacks the tarball the client pre-uploaded via SCP.
-pub fn install_script(staging_tarball_path: Option<&str>) -> String {
-    let version_suffix = version_suffix();
+/// Returns the helper install script, to be piped into `bash -s` with the gzip-compressed helper
+/// appended after it on the same stdin (see [`crate::ssh::run_ssh_script_with_payload`]); the
+/// script ends in a call to `main`, so bash has read exactly the script when the helper bytes
+/// begin. With `staging_gz_path` set (the SCP fallback uploaded the file first) it reads that
+/// file instead and stdin is unused.
+///
+/// `sha256_override` is the digest of the decompressed helper to require on every platform
+/// placeholder; `None` uses the digests compiled into this client ([`pinned_helper_sha256`]).
+/// The override exists for source builds that bundle a helper they built themselves and so have
+/// no pinned digest (see [`is_dev_source_build`]); callers must not pass it on release builds.
+pub fn install_script(staging_gz_path: Option<&str>, sha256_override: Option<&str>) -> String {
+    let digest = |os: &str, arch: &str| -> String {
+        sha256_override
+            .map(str::to_string)
+            .unwrap_or_else(|| pinned_helper_sha256(os, arch).unwrap_or("").to_string())
+    };
     INSTALL_SCRIPT_TEMPLATE
-        .replace("{download_base_url}", &download_url())
         .replace("{install_dir}", &remote_server_dir())
-        .replace("{binary_name}", binary_name())
-        .replace("{release_asset_prefix}", RELEASE_ASSET_PREFIX)
-        .replace("{version_suffix}", &version_suffix)
-        .replace("{staging_tarball_path}", staging_tarball_path.unwrap_or(""))
-        .replace("{bundled_resources_dir_name}", BUNDLED_RESOURCES_DIR_NAME)
+        .replace("{helper_file_name}", &helper_file_name())
+        .replace("{helper_current_link}", HELPER_CURRENT_LINK)
         .replace("{one_version_binaries}", &one_version_binaries())
-        .replace("{daemon_version_hash}", &version_hash().unwrap_or_default())
-        // All published platforms are substituted, not just the one we think the host is:
-        // the script re-derives `uname` itself and picks the matching digest, so a host that
-        // turns out to be a different platform than the client guessed still verifies rather
-        // than silently falling through to an empty expectation.
-        .replace("{sha256_linux_x86_64}", expected_sha256("linux", "x86_64"))
         .replace(
-            "{sha256_linux_aarch64}",
-            expected_sha256("linux", "aarch64"),
+            "{daemon_version_hash}",
+            &crate::naming::helper_version_hash(),
         )
-        .replace("{sha256_macos_x86_64}", expected_sha256("macos", "x86_64"))
-        .replace(
-            "{sha256_macos_aarch64}",
-            expected_sha256("macos", "aarch64"),
-        )
+        .replace("{staging_gz_path}", staging_gz_path.unwrap_or(""))
+        // All platforms are substituted, not just the one we think the host is: the script
+        // re-derives `uname` itself and picks the matching digest, so a host that turns out to
+        // be a different platform than the client guessed still verifies rather than silently
+        // falling through to an empty expectation.
+        .replace("{sha256_linux_x86_64}", &digest("linux", "x86_64"))
+        .replace("{sha256_linux_aarch64}", &digest("linux", "aarch64"))
+        .replace("{sha256_macos_x86_64}", &digest("macos", "x86_64"))
+        .replace("{sha256_macos_aarch64}", &digest("macos", "aarch64"))
         // Last, so nothing inside the fragment is ever mistaken for a placeholder.
         .replace("{one_version_cleanup}", ONE_VERSION_CLEANUP_FRAGMENT)
 }
@@ -594,117 +612,129 @@ pub const INSTALL_REFUSED_NO_DIGEST_TOOL: &str = "remote-server install refused:
 pub const INSTALL_REFUSED_DIGEST_MISMATCH: &str = "remote-server install refused: integrity check failed, \
      so the SCP fallback (which installs unverified) was NOT attempted";
 
-/// SHA-256 of the published CLI tarball for one remote platform, embedded into this client
-/// at **build time** by the release workflow.
+/// SHA-256 of the decompressed helper binary for one remote platform, embedded into this client
+/// at **build time** from the helper files being bundled (`script/bundle` generates the
+/// `PHOSPHOR_REMOTE_SHA256_*` variables from `bundled_resources/remote/`).
 ///
-/// This is the integrity root for remote-server installs, and the reason it is a compile-time
-/// constant rather than something fetched at install time is the whole point:
+/// This is the integrity root for helper installs. Both the helper bytes and this digest come
+/// from the same signed app bundle and reach the remote host down the user's already
+/// authenticated **ssh channel**, so no network location is trusted, and nothing is fetched
+/// from the internet at all. The client re-checks its bundled file against the digest before
+/// uploading, and the remote script re-checks what it unpacked.
 ///
-/// The install script runs on the remote host and pulls the tarball from GitLab over plain
-/// HTTPS. Before this existed, whatever bytes came back were `chmod +x`'d and executed --
-/// the host's TLS and release storage were the entire trust model, and a tampered or
-/// mis-published release would install and run on every host the user SSHes into, silently.
-///
-/// A checksum published *alongside* the release would not fix that: anyone able to replace the
-/// tarball can replace a checksum file next to it. A digest compiled into the client instead
-/// reaches the remote host down the user's already-authenticated **SSH channel**, as part of
-/// the script text itself. That takes the release host out of the integrity path entirely -- the release
-/// can only install if it matches what this client was built expecting.
-///
-/// Empty when the corresponding `PHOSPHOR_CLI_SHA256_*` env var was not set at compile time
-/// (any local build). The script treats empty as **fail-closed on the download path** and
-/// refuses to install; it does not warn and continue. That is deliberate: a silent skip would
-/// make the protection vanish exactly when a build is misconfigured. It does not affect local
-/// development, because a DEBUG build with no release tag never downloads at all -- it
-/// cross-compiles and uploads over SCP (see [`is_dev_mode_install`] and `DEV_MUSL_TARGET`),
-/// and that path is trusted because it likewise arrived over SSH.
-fn expected_sha256(os: &str, arch: &str) -> &'static str {
+/// `None` when the variable was not set at compile time (any local build). Release builds then
+/// refuse to install (fail closed, [`INSTALL_REFUSED_NO_PINNED_DIGEST`]); a source build uses a
+/// digest it computes from the helper it bundles, see [`HelperDigest`].
+pub fn pinned_helper_sha256(os: &str, arch: &str) -> Option<&'static str> {
     let digest = match (os, arch) {
-        ("linux", "x86_64") => option_env!("PHOSPHOR_CLI_SHA256_LINUX_X86_64"),
-        ("linux", "aarch64") => option_env!("PHOSPHOR_CLI_SHA256_LINUX_AARCH64"),
-        ("macos", "x86_64") => option_env!("PHOSPHOR_CLI_SHA256_MACOS_X86_64"),
-        ("macos", "aarch64") => option_env!("PHOSPHOR_CLI_SHA256_MACOS_AARCH64"),
+        ("linux", "x86_64") => option_env!("PHOSPHOR_REMOTE_SHA256_LINUX_X86_64"),
+        ("linux", "aarch64") => option_env!("PHOSPHOR_REMOTE_SHA256_LINUX_AARCH64"),
+        ("macos", "x86_64") => option_env!("PHOSPHOR_REMOTE_SHA256_MACOS_X86_64"),
+        ("macos", "aarch64") => option_env!("PHOSPHOR_REMOTE_SHA256_MACOS_AARCH64"),
         _ => None,
     };
-    digest.unwrap_or("").trim()
+    digest.map(str::trim).filter(|d| !d.is_empty())
 }
 
-/// Repository the remote-server CLI tarball is downloaded from.
-///
-/// This fork's, not upstream Zap's. It pointed at `zerx-lab/warp` until
-/// 2026-08-11, inherited unchanged through the rebrand, which meant every SSH
-/// remote-server install fetched (or rather, failed to fetch) a *different
-/// project's* binary. Combined with the asset prefix below, the URL 404'd for
-/// every user of this fork, so remote-server setup over SSH could not succeed
-/// at all.
-const RELEASE_REPO: &str = "winters-phosphor/phosphor";
-
-/// Filename prefix of the published CLI tarball, e.g.
-/// `phosphor-cli-linux-x86_64.tar.gz`.
-///
-/// Deliberately NOT `binary_name()`: that returns the channel's *command* name
-/// (`phosphor-oss` on the OSS channel), which is not what the release workflow names
-/// its assets. The two drifted apart at the rebrand and nothing caught it
-/// because no test asserted the URL against a real release.
-const RELEASE_ASSET_PREFIX: &str = "phosphor-cli";
-
-/// Builds the download base URL for the CLI release asset.
-///
-/// Note `latest/download` only resolves to a **non-prerelease**. Every release
-/// published so far is marked prerelease, so the `None` arm below is currently
-/// a 404 in practice; a build carrying `GIT_RELEASE_TAG` takes the `Some` arm
-/// and works. Recorded rather than papered over — the fix is to publish a
-/// non-prerelease, not to change this code.
-fn download_url() -> String {
-    let release_path = match ChannelState::app_version() {
-        Some(tag) => tag.to_string(),
-        None => "permalink/latest".to_string(),
-    };
-    format!("https://gitlab.com/{RELEASE_REPO}/-/releases/{release_path}/downloads")
+/// Which digest an install requires, and where it came from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HelperDigest {
+    /// Compiled into this client.
+    Pinned(String),
+    /// Computed from the helper a source build bundled; guards the transfer only.
+    Computed(String),
 }
 
-fn version_suffix() -> String {
-    match ChannelState::channel() {
-        Channel::Local => String::new(),
-        Channel::Oss if ChannelState::app_version().is_none() => String::new(),
-        Channel::Oss | Channel::Stable | Channel::Preview | Channel::Dev | Channel::Integration => {
-            format!("-{}", pinned_version())
+impl HelperDigest {
+    pub fn hex(&self) -> &str {
+        match self {
+            Self::Pinned(h) | Self::Computed(h) => h,
+        }
+    }
+
+    /// The value for [`install_script`]'s `sha256_override`: `None` for a pinned digest (the
+    /// script uses the compiled-in table), the computed one otherwise.
+    pub fn script_override(&self) -> Option<&str> {
+        match self {
+            Self::Pinned(_) => None,
+            Self::Computed(h) => Some(h),
         }
     }
 }
 
-/// Returns the CLI tarball URL for the given remote platform.
+/// Decides the digest to require for a helper whose decompressed bytes hash to `actual_hex`.
 ///
-/// Must use [`RELEASE_ASSET_PREFIX`], not a literal — this is the URL the SSH
-/// transport actually fetches (`ssh_transport::…`), so a prefix here that
-/// disagrees with the one the install script asks for is a silent 404 on the
-/// one path a user goes through. The prefix was threaded through the install
-/// template but missed here, leaving the 2026-08-11 fix half-applied.
-pub fn download_tarball_url(platform: &RemotePlatform) -> String {
+/// * A pinned digest must equal `actual_hex`, or the bundle is not the one this client was built
+///   with: `Err` carries the mismatch reason (fail closed, nothing is uploaded).
+/// * With no pinned digest, only a source build (`dev_source_build`) may continue, on the
+///   digest it computed; a release build refuses ([`INSTALL_REFUSED_NO_PINNED_DIGEST`]).
+pub fn decide_helper_digest(
+    pinned: Option<&str>,
+    actual_hex: &str,
+    dev_source_build: bool,
+) -> Result<HelperDigest, String> {
+    match pinned {
+        Some(pinned) if pinned.eq_ignore_ascii_case(actual_hex) => {
+            Ok(HelperDigest::Pinned(pinned.to_ascii_lowercase()))
+        }
+        Some(pinned) => Err(format!(
+            "{INSTALL_REFUSED_DIGEST_MISMATCH_LOCAL}: expected {pinned}, bundled file is {actual_hex}"
+        )),
+        None if dev_source_build => Ok(HelperDigest::Computed(actual_hex.to_ascii_lowercase())),
+        None => Err(INSTALL_REFUSED_NO_PINNED_DIGEST.to_string()),
+    }
+}
+
+/// Headline for a bundled helper that does not match the digest compiled into this client
+/// (a damaged or swapped app bundle). Nothing was uploaded.
+pub const INSTALL_REFUSED_DIGEST_MISMATCH_LOCAL: &str = "remote-server install refused: the helper bundled with this app does not match the checksum \
+     compiled into it, so nothing was uploaded";
+
+/// Asset name of the bundled helper for a platform, without extension:
+/// `phosphor-remote-<os>-<arch>` (the file on disk is `<name>.gz`).
+pub fn helper_asset_name(platform: &RemotePlatform) -> String {
     format!(
-        "{}/{RELEASE_ASSET_PREFIX}-{}-{}.tar.gz",
-        download_url(),
+        "{HELPER_BASE_NAME}-{}-{}",
         platform.os.as_str(),
-        platform.arch.as_str(),
+        platform.arch.as_str()
     )
 }
 
-/// Zap fork: in dev mode (DEBUG source build, no release tag), the SSH
-/// transport no longer downloads a stale release from the release host — it instead
-/// cross-compiles the current `warp` binary locally and uploads it. The
-/// constants below centrally describe this cross-compiled artifact, kept
-/// consistent with `script/deploy_remote_server` (same profile / same
-/// features / same target) to avoid the two diverging.
+/// Directory under the app's bundled resources that holds the compressed helpers.
+pub const BUNDLED_HELPER_SUBDIR: &str = "remote";
+
+/// Where the compressed helper for `platform` lives in this app's bundled resources
+/// (`<bundled_resources>/remote/phosphor-remote-<os>-<arch>.gz`), if the app has a bundled
+/// resources directory at all. The file may still be absent: a missing asset means "helper
+/// unavailable" and the session stays on the no-helper path.
+pub fn bundled_helper_asset_path(platform: &RemotePlatform) -> Option<std::path::PathBuf> {
+    let file = format!("{}.gz", helper_asset_name(platform));
+    // Test and manual-run override: a directory that directly holds the `.gz` files. The real
+    // app harness (`script/realapp/appci`, the lab `upload` arms) uses it to hand a source
+    // build the helper it just built, without a bundle.
+    if let Some(dir) = std::env::var_os(HELPER_ASSET_DIR_ENV).filter(|d| !d.is_empty()) {
+        return Some(std::path::PathBuf::from(dir).join(file));
+    }
+    warp_core::paths::bundled_resources_dir().map(|dir| dir.join(BUNDLED_HELPER_SUBDIR).join(file))
+}
+
+/// Environment variable naming a directory of `phosphor-remote-<os>-<arch>.gz` files that
+/// replaces the bundled resources directory as the helper's source (tests, manual runs).
+pub const HELPER_ASSET_DIR_ENV: &str = "PHOSPHOR_REMOTE_HELPER_ASSET_DIR";
+
+/// Source builds have no bundled helper (`script/bundle` produces those), so the SSH transport
+/// cross-compiles the helper, `phosphor-remote`, locally and uploads it through the same
+/// in-band path a bundled one takes. The constants below describe that build.
 ///
 /// Cross-compile target triple.
 pub const DEV_MUSL_TARGET: &str = "x86_64-unknown-linux-musl";
 
-/// Cargo profile used for cross-compiling. Corresponds to `[profile.dev-remote]`
-/// in `Cargo.toml`, which inherits `dev` and strips symbols to reduce size and speed up upload.
-pub const DEV_REMOTE_PROFILE: &str = "dev-remote";
+/// Cargo profile used for cross-compiling: `[profile.release-remote-helper]` in the root
+/// `Cargo.toml`, the same one CI builds the bundled helpers with.
+pub const DEV_REMOTE_PROFILE: &str = "release-remote-helper";
 
-/// Features enabled for cross-compiling, consistent with `script/deploy_remote_server`.
-pub const DEV_REMOTE_FEATURES: &str = "release_bundle,crash_reporting,standalone,agent_mode_debug";
+/// Features of the helper build (`-p remote_server --no-default-features --features ...`).
+pub const DEV_REMOTE_FEATURES: &str = "daemon";
 
 /// Determines whether we're currently on the "dev-mode remote-server install" path.
 ///
@@ -753,20 +783,15 @@ pub fn is_dev_source_build() -> bool {
 /// Timeout for checking whether the binary exists.
 pub const CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Timeout for the regular remote install script.
-pub const INSTALL_TIMEOUT: Duration = Duration::from_secs(60);
+/// Timeout for the in-band upload install: the compressed helper (a few MB) streams over the
+/// existing ControlMaster, then the host unpacks and verifies it.
+pub const INSTALL_TIMEOUT: Duration = Duration::from_secs(180);
 
-/// The SCP fallback includes a local download, upload, and remote extraction, so give it a more generous timeout.
-pub const SCP_INSTALL_TIMEOUT: Duration = Duration::from_secs(120);
+/// The SCP fallback uploads the file and then runs the install script on it; same budget.
+pub const SCP_INSTALL_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// Dev-mode cross-compiling may need to build the entire crate graph from scratch, so give it a very generous timeout.
 pub const DEV_CROSS_COMPILE_TIMEOUT: Duration = Duration::from_secs(900);
-
-/// Timeout for uploading the locally cross-compiled artifact in dev mode. Dev
-/// binaries (unoptimized + debug info) can be hundreds of MB; even with scp's
-/// `-C` compression, uploading over the public internet can take minutes, so
-/// this is given a generous ceiling well above `SCP_INSTALL_TIMEOUT`.
-pub const DEV_UPLOAD_TIMEOUT: Duration = Duration::from_secs(1800);
 
 #[cfg(test)]
 #[path = "setup_tests.rs"]

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use warp_core::SessionId;
 use warpui::{Entity, ModelContext, ModelHandle, SingletonEntity, WeakModelHandle};
 
-use crate::terminal::warpify::settings::SshExtensionInstallMode;
+use remote_server::policy::{HelperDecision, HelperPolicy};
 
 use crate::remote_server::manager::{RemoteServerManager, RemoteServerManagerEvent};
 use crate::remote_server::ssh_transport::SshTransport;
@@ -510,8 +510,15 @@ impl<T: EventLoopSender> RemoteServerController<T> {
                 }
             }
             Ok(false) if has_old_binary => {
-                known_extension_hosts().forget(&connection_label_for_session_info(&session_info));
+                let host = connection_label_for_session_info(&session_info);
+                known_extension_hosts().forget(&host);
                 Self::cancel_speculative_connect(session_id, speculative, ctx);
+                // The user said "never" for this host: no update either, whatever is there.
+                if !remote_server::policy::may_update_existing(Self::host_policy(&host, ctx)) {
+                    log::info!("remote helper update skipped for {host}: the host policy is never");
+                    self.flush_stashed_bootstrap(session_info, ctx);
+                    return;
+                }
                 // Auto-update: a prior install exists, so skip the modal
                 // and reinstall.
                 self.did_install = true;
@@ -528,11 +535,16 @@ impl<T: EventLoopSender> RemoteServerController<T> {
             Ok(false) => {
                 known_extension_hosts().forget(&connection_label_for_session_info(&session_info));
                 Self::cancel_speculative_connect(session_id, speculative, ctx);
-                let install_mode = *WarpifySettings::as_ref(ctx)
+                // Per-host consent first, then the app-wide mode (which asks by default).
+                // The helper is optional: every arm but Install leaves the session on the
+                // no-helper path, which is the primary design.
+                let host = connection_label_for_session_info(&session_info);
+                let global = WarpifySettings::as_ref(ctx)
                     .ssh_extension_install_mode
-                    .value();
-                match install_mode {
-                    SshExtensionInstallMode::AlwaysAsk => {
+                    .value()
+                    .as_global_install_mode();
+                match remote_server::policy::decide(Self::host_policy(&host, ctx), global) {
+                    HelperDecision::Ask => {
                         self.state = SshInitState::AwaitingUserChoice {
                             session_info,
                             transport,
@@ -542,7 +554,7 @@ impl<T: EventLoopSender> RemoteServerController<T> {
                             d.request_remote_server_block(session_id, ctx);
                         });
                     }
-                    SshExtensionInstallMode::AlwaysInstall => {
+                    HelperDecision::Install => {
                         self.did_install = true;
                         self.state = SshInitState::AwaitingInstall {
                             session_id,
@@ -554,7 +566,11 @@ impl<T: EventLoopSender> RemoteServerController<T> {
                             mgr.install_binary(session_id, transport, false, ctx);
                         });
                     }
-                    SshExtensionInstallMode::NeverInstall => {
+                    HelperDecision::Skip => {
+                        log::info!(
+                            "remote helper install skipped for {host}: the host policy or the \
+                             app-wide mode says not to install it"
+                        );
                         self.flush_stashed_bootstrap(session_info, ctx);
                     }
                 }
@@ -570,9 +586,24 @@ impl<T: EventLoopSender> RemoteServerController<T> {
         }
     }
 
+    /// The user's stored decision about the remote helper for `host`.
+    fn host_policy(host: &str, ctx: &ModelContext<Self>) -> HelperPolicy {
+        WarpifySettings::as_ref(ctx).remote_helper_policy(host)
+    }
+
+    /// Records `policy` for `host` so the choice block is not shown again.
+    fn remember_host_policy(host: &str, policy: HelperPolicy, ctx: &mut ModelContext<Self>) {
+        WarpifySettings::handle(ctx).update(ctx, |settings, ctx| {
+            settings.set_remote_helper_policy(host, policy, ctx);
+        });
+    }
+
+    /// The user chose Install in the block. `remember` ("don't ask me again" was ticked) stores
+    /// `allow` for this host.
     pub fn handle_ssh_remote_server_install(
         &mut self,
         session_id: SessionId,
+        remember: bool,
         ctx: &mut ModelContext<Self>,
     ) {
         let SshInitState::AwaitingUserChoice { .. } = self.state else {
@@ -589,6 +620,13 @@ impl<T: EventLoopSender> RemoteServerController<T> {
             unreachable!("just matched AwaitingUserChoice above");
         };
 
+        if remember {
+            Self::remember_host_policy(
+                &connection_label_for_session_info(&session_info),
+                HelperPolicy::Allow,
+                ctx,
+            );
+        }
         // Reaching this path implies the user explicitly confirmed a
         // fresh install from the modal. Auto-update flows (with an old
         // binary detected) skip the modal entirely and go through
@@ -737,9 +775,11 @@ impl<T: EventLoopSender> RemoteServerController<T> {
         self.flush_stashed_bootstrap(session_info, ctx);
     }
 
+    /// The user chose "continue without" in the block. `remember` stores `never` for this host.
     pub fn handle_ssh_remote_server_skip(
         &mut self,
         session_id: SessionId,
+        remember: bool,
         ctx: &mut ModelContext<Self>,
     ) {
         let SshInitState::AwaitingUserChoice { session_info, .. } =
@@ -748,6 +788,13 @@ impl<T: EventLoopSender> RemoteServerController<T> {
             log::warn!("Skip clicked but state is not AwaitingUserChoice for {session_id:?}");
             return;
         };
+        if remember {
+            Self::remember_host_policy(
+                &connection_label_for_session_info(&session_info),
+                HelperPolicy::Never,
+                ctx,
+            );
+        }
         self.flush_stashed_bootstrap(session_info, ctx);
     }
 

@@ -1,8 +1,8 @@
 //! SSH-specific implementation of [`RemoteTransport`].
 //!
 //! [`SshTransport`] uses an existing SSH ControlMaster socket to check/install
-//! the remote server binary and to launch the `remote-server-proxy` process
-//! whose stdin/stdout become the protocol channel.
+//! the bundled `phosphor-remote` helper (uploaded in-band, never downloaded) and to launch its
+//! `proxy` process whose stdin/stdout become the protocol channel.
 use std::fmt;
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -14,7 +14,9 @@ use warpui::r#async::{FutureExt as _, executor};
 
 use remote_server::auth::RemoteServerAuthContext;
 use remote_server::client::RemoteServerClient;
-use remote_server::setup::{PreinstallCheckResult, RemotePlatform, parse_uname_output};
+use remote_server::setup::{
+    HelperDigest, PreinstallCheckResult, RemotePlatform, decide_helper_digest, parse_uname_output,
+};
 use remote_server::ssh::ssh_args;
 use remote_server::transport::{Connection, RemoteTransport};
 
@@ -92,7 +94,7 @@ impl SshTransport {
         let binary = remote_server::setup::remote_server_binary();
         let identity_key = self.auth_context.remote_server_identity_key();
         let quoted_identity_key = shell_words::quote(&identity_key);
-        format!("{binary} remote-server-proxy --identity-key {quoted_identity_key}")
+        format!("{binary} proxy {quoted_identity_key}")
     }
 }
 
@@ -156,13 +158,17 @@ async fn verify_installed_binary(socket_path: &Path) -> Result<()> {
     ))
 }
 
+/// Runs the install script on the host with `payload` (the gzip-compressed helper, or empty
+/// for the SCP-staged variant) appended on the same stdin.
 async fn run_install_script(
     socket_path: &Path,
-    staging_tarball_path: Option<&str>,
+    script: &str,
+    payload: &[u8],
     timeout: std::time::Duration,
 ) -> core::result::Result<(), InstallError> {
-    let script = remote_server::setup::install_script(staging_tarball_path);
-    match remote_server::ssh::run_ssh_script(socket_path, &script, timeout).await {
+    match remote_server::ssh::run_ssh_script_with_payload(socket_path, script, payload, timeout)
+        .await
+    {
         Ok(output) if output.status.success() => Ok(()),
         Ok(output) => {
             let exit_code = output.status.code().unwrap_or(-1);
@@ -175,103 +181,64 @@ async fn run_install_script(
 
 /// What an `install_remote_server.sh` failure means for the SCP fallback.
 ///
-/// The fallback re-downloads the *same* GitHub release tarball on the client
-/// and installs it through the script's staging branch, which skips digest
-/// verification on the documented assumption that a staged tarball is a
-/// locally cross-compiled dev binary that never crossed an untrusted network.
-/// For a fallback-fetched *release* tarball that assumption is false, so the
-/// fallback is only ever a legitimate recovery when nothing was verified in
-/// the first place — never as a second chance after verification failed.
+/// The in-band upload and the SCP fallback carry the SAME locally bundled bytes and run the SAME
+/// verifying script, so unlike the old download-then-scp design the fallback is never an
+/// unverified route: it exists only for when the in-band stream itself could not deliver.
+/// Integrity verdicts are still never retried, because a retry of the same bytes cannot change
+/// them and a verdict must not be shopped around.
 ///
-/// The three outcomes therefore have to be told apart, which is what the
-/// script's exit-code contract exists for. Fusing any two of them is the whole
-/// bug: "the host could not fetch" and "the bytes are not the release we
-/// pinned" are opposite verdicts, and reading one as the other is wrong in
-/// both directions.
+/// The three outcomes are told apart by the script's exit-code contract. Fusing any two of
+/// them is the whole bug: "no bytes arrived" and "the bytes are not the helper this client
+/// pinned" are opposite verdicts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InstallFailureKind {
-    /// The remote host never obtained the bytes: no fetcher installed
-    /// (exit 3), or the fetch failed at the transport layer — DNS, connection
-    /// refused, TLS, timeout, HTTP 4xx/5xx (exit 7). Also covers an SSH-level
-    /// failure where the script did not run to completion at all, which
-    /// reaches us in *two* shapes and not one: as [`InstallError::Other`]
-    /// (ssh could not be spawned, the write to its stdin failed, the run timed
-    /// out), and as a reported script exit of **255**, which is OpenSSH's own
+    /// No usable bytes reached the host: the stream ended before any data decoded (exit 7), or
+    /// ssh itself failed so the script did not run to completion at all, which reaches us in
+    /// *two* shapes: as [`InstallError::Other`] (ssh could not be spawned, the write to its
+    /// stdin failed, the run timed out), and as a reported script exit of **255**, OpenSSH's own
     /// error status rather than anything this script can emit.
     ///
-    /// No integrity claim was made and none was violated, and nothing was
-    /// installed. The client downloading and pushing over the already
-    /// authenticated SSH channel is precisely the recovery the SCP fallback
-    /// was built for.
+    /// No integrity claim was made and none was violated, and nothing was installed. Uploading
+    /// the file with scp and unpacking it on the host is the designed recovery.
     TransportFailed,
-    /// Integrity could not be established, or was established and FAILED:
-    /// exit 4 (this client was built with no pinned digest), 5 (no SHA-256
-    /// tool on the host, so the digest cannot be checked) and 6 (digest
-    /// MISMATCH — the download succeeded and the content is not the pinned
-    /// release, i.e. detected tampering).
-    ///
-    /// Fails closed. This is the security property; the fallback must not run.
+    /// Integrity could not be established, or was established and FAILED: exit 4 (this client
+    /// was built with no pinned digest), 5 (no SHA-256 tool on the host, so the digest cannot be
+    /// checked) and 6 (digest MISMATCH). Fails closed; the fallback must not run.
     IntegrityFailed,
-    /// Fatal for a reason the fallback cannot fix: exit 10 (unsupported
-    /// arch/OS — no asset exists for this host), 8 (the pinned tarball will
-    /// not open or holds no recognised binary, so re-fetching the identical
-    /// bytes is pointless), 9 (the script failed somewhere unclassified).
+    /// Fatal for a reason the fallback cannot fix: exit 10 (unsupported arch/OS), 3 (the host
+    /// has neither gunzip nor gzip, which the scp route needs too), 8 (the uploaded stream
+    /// decoded partially and then failed), 9 (the helper does not start on this host, or the
+    /// script failed somewhere unclassified).
     ///
-    /// Also the default for any code this client does not recognise. That
-    /// default is deliberately fail-closed: an unknown code means we cannot
-    /// tell whether verification happened, and "could not check" must never
-    /// collapse into "check passed". It is also what stops a future script
-    /// revision from silently re-opening this hole.
+    /// Also the default for any code this client does not recognise. That default is
+    /// deliberately fail-closed: an unknown code means we cannot tell whether verification
+    /// happened, and "could not check" must never collapse into "check passed". It is also what
+    /// stops a future script revision from silently re-opening this hole.
     Fatal,
 }
 
-/// Classifies an install failure against the exit-code contract documented at
-/// the top of `crates/remote_server/src/install_remote_server.sh`.
+/// Classifies an install failure against the exit-code contract documented at the top of
+/// `crates/remote_server/src/install_remote_server.sh`.
 ///
-/// Both files carry the same table and `exit_codes_in_install_script_are_all_classified`
-/// pins them together by parsing the script's own `EXIT_*=` assignments.
-///
-/// A note on what this replaced, because the shape recurs: the previous
-/// version was a `should_skip_scp_fallback` boolean over the codes 2/4/5/6.
-/// It was correct about those codes and still ineffective, because
-/// `install_remote_server.sh` did not actually emit them under failure — it
-/// ran `curl` under `set -e`, and `set -e` aborts with the *failing command's*
-/// status. curl's status space overlaps this one, so a DNS failure (curl 6)
-/// arrived here as `6` and was hard-failed as a digest mismatch, while a
-/// connection refused (curl 7) or an HTTP 500 (curl 22) arrived as codes this
-/// list did not know and fell through to the unverified fallback. Classifying
-/// the codes correctly is only half the fix; the script has to emit them.
+/// Both files carry the same table and `exit_codes_in_install_script_are_all_classified` pins
+/// them together by parsing the script's own `EXIT_*=` assignments.
 fn classify_install_failure(error: &InstallError) -> InstallFailureKind {
     match error {
-        // The SSH run itself failed — the socket died, the script timed out,
-        // the process was killed. The script never reported a verdict, so
-        // there is no verdict to override; nothing unverified was installed.
+        // The SSH run itself failed -- the socket died, the script timed out, the process was
+        // killed. The script never reported a verdict, so there is no verdict to override;
+        // nothing was installed.
         InstallError::Other(_) => InstallFailureKind::TransportFailed,
         InstallError::ScriptFailed { exit_code, .. } => match *exit_code {
-            3 | 7 => InstallFailureKind::TransportFailed,
-            4 | 5 | 6 => InstallFailureKind::IntegrityFailed,
-            // 255 is SSH's status, not the script's, and it arrives here
-            // wearing the script's clothes: `run_ssh_script` returns
-            // `Ok(output)` whenever the `ssh` *process* ran, and OpenSSH
-            // reports its own failures — connection closed, ControlMaster
-            // gone, host key changed, remote command killed by a signal — as
-            // exit 255. So `Other` above is reached only when ssh could not be
-            // spawned at all, its stdin write failed, or the run timed out;
-            // every other socket-level death lands in this arm.
-            //
-            // The script cannot collide with it: every explicit `exit` uses an
-            // EXIT_* constant (all ≤ 10), its ERR trap remaps any stray status
-            // onto 9, and `exit_codes_in_install_script_are_all_classified`
-            // parses the constants out of the rendered script to keep that
-            // true. 255 therefore means the script did not run to completion —
-            // the same state as `Other`, with nothing verified and nothing
-            // installed — so the SCP fallback is the designed recovery.
-            //
-            // Letting this fall into `_ => Fatal` reported "install script
-            // failed (exit 255)" for a script that never ran, and withdrew the
-            // fallback from the most common genuine transport failure there
-            // is. The doc on `TransportFailed` claimed it was covered while
-            // the code did the opposite.
+            7 => InstallFailureKind::TransportFailed,
+            4..=6 => InstallFailureKind::IntegrityFailed,
+            // 255 is SSH's status, not the script's, and it arrives here wearing the script's
+            // clothes: `run_ssh_script_with_payload` returns `Ok(output)` whenever the `ssh`
+            // *process* ran, and OpenSSH reports its own failures -- connection closed,
+            // ControlMaster gone, host key changed, remote command killed by a signal -- as
+            // exit 255. The script cannot collide with it: every explicit `exit` uses an EXIT_*
+            // constant (all <= 10), its ERR trap remaps any stray status onto 9, and
+            // `exit_codes_in_install_script_are_all_classified` parses the constants out of the
+            // rendered script to keep that true.
             255 => InstallFailureKind::TransportFailed,
             _ => InstallFailureKind::Fatal,
         },
@@ -333,27 +300,17 @@ fn route_install_failure(error: &InstallError) -> InstallFallbackRoute {
 }
 
 // ===========================================================================
-// Zap fork: dev-mode remote-server install path
+// Helper preparation: bundled asset, or (source builds) a local cross-compile
 //
-// The upstream / release build has the remote install script download a
-// precompiled remote-server binary from GitHub releases. But for a local
-// source build (`cargo run`), that would download the "latest released"
-// stale binary instead of the developer's just-edited code, making it
-// impossible to debug remote-server changes at all.
-//
-// So on a source build with no release tag — any profile, including
-// `--release`; see `remote_server::setup::is_dev_source_build()` —
-// `install_binary()` instead:
-//   1. Cross-compiles the local `warp` binary to x86_64 musl (profile /
-//      features matching `script/deploy_remote_server` exactly);
-//   2. Uploads the artifact over the existing SSH ControlMaster socket via
-//      `scp_upload`, to the remote path resolved by
-//      `remote_server::setup::remote_server_binary()`;
-//   3. Skips the GitHub download install script entirely.
-//
-// If the cross-compile prerequisites are missing (no musl target installed,
-// no musl linker), this doesn't hard-fail — it prints a clear warning and
-// falls back to the original download install flow, so dev still works.
+// The helper the app uploads is a gzip file shipped in the app bundle
+// (`<bundled_resources>/remote/phosphor-remote-<os>-<arch>.gz`, put there by
+// `script/bundle`). Nothing is downloaded. A source build has no bundle, so
+// when `remote_server::setup::is_dev_source_build()` is true and no asset
+// exists, `install_binary()` cross-compiles the helper itself (a small crate:
+// `-p remote_server --no-default-features --features daemon`, the same profile
+// CI uses) and uploads that through the identical in-band path. Without
+// prerequisites (no musl target, no linker) the helper is simply unavailable
+// and the session stays on the no-helper path.
 // ===========================================================================
 
 /// musl linker candidates that dev-mode cross-compilation may use (in
@@ -479,17 +436,12 @@ async fn musl_target_installed() -> bool {
     }
 }
 
-/// Cross-compiles the local `warp` binary to musl, returning the artifact path.
+/// Cross-compiles the `phosphor-remote` helper to musl, returning the artifact path.
 ///
 /// profile / features are aligned with `script/deploy_remote_server`.
 async fn cross_compile_remote_server(backend: &DevBuildBackend) -> Result<PathBuf> {
     let root = workspace_root();
-    // `[[bin]]` name for the current channel — the OSS fork is `warp-oss`
-    // (see app/Cargo.toml). Can't hardcode `warp`: that bin goes through
-    // `load_config!("local")`, which needs the private `warp-channel-config`
-    // to generate `local_config.json`; the OSS fork doesn't have it and
-    // would fail to compile. `warp-oss` (src/bin/oss.rs) inlines
-    // `ChannelConfig` and has no such dependency.
+    // The helper's `[[bin]]` in `crates/remote_server` (`required-features = ["daemon"]`).
     let bin_name = remote_server::setup::binary_name();
     let backend_desc = match backend {
         DevBuildBackend::Zigbuild => "cargo-zigbuild".to_string(),
@@ -500,13 +452,12 @@ async fn cross_compile_remote_server(backend: &DevBuildBackend) -> Result<PathBu
         remote_server::setup::DEV_MUSL_TARGET,
         remote_server::setup::DEV_REMOTE_PROFILE,
     );
-    // The first run compiles the entire warp binary, usually taking several
-    // minutes. stdout/stderr are inherited directly into the terminal
+    // The first run compiles the helper's small crate graph. stdout/stderr are inherited directly into the terminal
     // running Zap, so the developer can see cargo's live build progress
     // (otherwise it's silent the whole time and easy to mistake for a hang).
     log::info!(
-        "dev remote-server: cross-compiling, first run usually takes several minutes \
-         — cargo progress will print to the terminal running Phosphor"
+        "dev remote-server: cross-compiling the helper — cargo progress will print to the \
+         terminal running Phosphor"
     );
 
     let status = async {
@@ -537,13 +488,14 @@ async fn cross_compile_remote_server(backend: &DevBuildBackend) -> Result<PathBu
             }
         }
         cmd.arg("-p")
-            .arg("warp")
+            .arg("remote_server")
             .arg("--bin")
             .arg(bin_name)
             .arg("--target")
             .arg(remote_server::setup::DEV_MUSL_TARGET)
             .arg("--profile")
             .arg(remote_server::setup::DEV_REMOTE_PROFILE)
+            .arg("--no-default-features")
             .arg("--features")
             .arg(remote_server::setup::DEV_REMOTE_FEATURES)
             // inherit: pass cargo's live progress through to the terminal
@@ -591,14 +543,67 @@ async fn cross_compile_remote_server(backend: &DevBuildBackend) -> Result<PathBu
     Ok(binary)
 }
 
-/// Dev-mode install: cross-compiles the local `warp` binary and uploads it
-/// to the remote remote-server path.
-///
-/// The upload target matches `remote_server_binary()` exactly, ensuring the
-/// subsequent `check_binary()` / proxy startup can find it.
-async fn dev_install_local_binary(socket_path: &Path) -> Result<()> {
-    // Prerequisite checks: if any is missing, return an error and let the
-    // caller fall back to the download install.
+/// The compressed helper for one platform and the digest the install requires of it.
+struct PreparedHelper {
+    gz: Vec<u8>,
+    digest: HelperDigest,
+}
+
+/// Lowercase hex SHA-256 of what `gz` decompresses to.
+fn sha256_of_gunzipped(gz: &[u8]) -> std::io::Result<String> {
+    use sha2::{Digest as _, Sha256};
+    use std::io::Read as _;
+    let mut decoder = flate2::read::GzDecoder::new(gz);
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = decoder.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
+fn gzip_bytes(raw: &[u8]) -> std::io::Result<Vec<u8>> {
+    use std::io::Write as _;
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+    encoder.write_all(raw)?;
+    encoder.finish()
+}
+
+/// Why no helper could be prepared. The session stays on the no-helper path; the text reaches
+/// the setup-failed banner, so it says what to do about it.
+fn helper_unavailable(platform: &RemotePlatform, why: &str) -> String {
+    format!(
+        "the phosphor-remote helper is not available for {}-{} ({why}); continuing without it",
+        platform.os.as_str(),
+        platform.arch.as_str()
+    )
+}
+
+/// Reads the bundled compressed helper for `platform`; `Ok(None)` when this app bundle has none.
+async fn load_bundled_helper(platform: &RemotePlatform) -> Result<Option<Vec<u8>>> {
+    let Some(path) = remote_server::setup::bundled_helper_asset_path(platform) else {
+        return Ok(None);
+    };
+    match async_fs::read(&path).await {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(anyhow!("could not read {}: {e}", path.display())),
+    }
+}
+
+/// Source builds only: cross-compiles the helper locally and returns it gzip-compressed.
+async fn build_dev_helper(platform: &RemotePlatform) -> Result<Vec<u8>> {
+    // The dev build targets x86_64 musl only (`DEV_MUSL_TARGET`).
+    if platform.os.as_str() != "linux" || platform.arch.as_str() != "x86_64" {
+        return Err(anyhow!(
+            "source builds cross-compile the helper for {} only",
+            remote_server::setup::DEV_MUSL_TARGET
+        ));
+    }
     if !musl_target_installed().await {
         return Err(anyhow!(
             "rust target {} is not installed; run `rustup target add {}`",
@@ -606,160 +611,90 @@ async fn dev_install_local_binary(socket_path: &Path) -> Result<()> {
             remote_server::setup::DEV_MUSL_TARGET,
         ));
     }
-    // Select the cross-compile backend: prefer `cargo zigbuild` (zig bundles
-    // a complete C/C++ musl toolchain and can compile C++ dependencies like
-    // freetype-sys), otherwise fall back to musl-gcc. Error if neither is
-    // available.
+    // Prefer `cargo zigbuild` (zig bundles a complete C/C++ musl toolchain), otherwise musl-gcc.
     let backend = select_dev_build_backend().ok_or_else(|| {
         anyhow!(
-            "no usable musl cross-compile backend found. Install cargo-zigbuild + zig\
-             (`cargo install cargo-zigbuild`, and install `zig` via your package manager),\
+            "no usable musl cross-compile backend found. Install cargo-zigbuild + zig \
+             (`cargo install cargo-zigbuild`, and install `zig` via your package manager), \
              or install a complete musl C/C++ cross toolchain ({})",
             DEV_MUSL_LINKER_CANDIDATES.join(" / ")
         )
     })?;
-
-    let local_binary = cross_compile_remote_server(&backend).await?;
-
-    // Upload to the exact path resolved by `remote_server_binary()`, first
-    // creating the parent directory.
-    let remote_binary = remote_server::setup::remote_server_binary();
-    let remote_dir = remote_server::setup::remote_server_dir();
-    let mkdir_output = remote_server::ssh::run_ssh_command(
-        socket_path,
-        &format!("mkdir -p {remote_dir}"),
-        remote_server::setup::CHECK_TIMEOUT,
-    )
-    .await?;
-    if !mkdir_output.status.success() {
-        let code = mkdir_output.status.code().unwrap_or(-1);
-        let stderr = String::from_utf8_lossy(&mkdir_output.stderr);
-        return Err(anyhow!(
-            "remote remote-server directory creation failed (exit {code}): {stderr}"
-        ));
-    }
-
-    log::info!(
-        "dev remote-server: uploading local cross-compiled artifact to {remote_binary} (scp -C compression, may take several minutes for hundreds of MB)"
-    );
-    // Dev artifacts are hundreds of MB, so use DEV_UPLOAD_TIMEOUT (far
-    // longer than SCP_INSTALL_TIMEOUT), to avoid a large file upload being
-    // interrupted by the 120s timeout and falling back to downloading a
-    // stale release.
-    remote_server::ssh::scp_upload(
-        socket_path,
-        &local_binary,
-        &remote_binary,
-        remote_server::setup::DEV_UPLOAD_TIMEOUT,
-    )
-    .await?;
-
-    // Grant executable permission.
-    let chmod_output = remote_server::ssh::run_ssh_command(
-        socket_path,
-        &format!("chmod 755 {remote_binary}"),
-        remote_server::setup::CHECK_TIMEOUT,
-    )
-    .await?;
-    if !chmod_output.status.success() {
-        let code = chmod_output.status.code().unwrap_or(-1);
-        let stderr = String::from_utf8_lossy(&chmod_output.stderr);
-        return Err(anyhow!("remote chmod failed (exit {code}): {stderr}"));
-    }
-
-    // Reuse the existing verification logic to confirm the uploaded binary runs.
-    verify_installed_binary(socket_path).await
+    let binary = cross_compile_remote_server(&backend).await?;
+    let raw = async_fs::read(&binary).await?;
+    Ok(gzip_bytes(&raw)?)
 }
 
-async fn download_remote_server_tarball(download_url: &str, tarball_path: &Path) -> Result<()> {
-    let output = async {
-        // `--proto`/`--proto-redir` match what the remote path in
-        // `install_remote_server.sh` sets: release downloads legitimately
-        // redirect to a CDN so `-L` has to stay, but a redirect must not be
-        // allowed to downgrade the transport to plain HTTP.
-        command::r#async::Command::new("curl")
-            .arg("-fSL")
-            .arg("--proto")
-            .arg("=https")
-            .arg("--proto-redir")
-            .arg("=https")
-            .arg("--connect-timeout")
-            .arg("15")
-            .arg(download_url)
-            .arg("-o")
-            .arg(tarball_path.as_os_str())
-            .kill_on_drop(true)
-            .output()
-            .await
-    }
-    .with_timeout(remote_server::setup::SCP_INSTALL_TIMEOUT)
-    .await
-    .map_err(|_| {
-        anyhow!(
-            "local tarball download timed out after {:?}",
-            remote_server::setup::SCP_INSTALL_TIMEOUT
-        )
-    })?
-    .map_err(|e| anyhow!("local curl failed to execute: {e}"))?;
-
-    if output.status.success() {
-        return Ok(());
-    }
-
-    let code = output.status.code().unwrap_or(-1);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    Err(anyhow!(
-        "local tarball download failed with code {code}: {stderr}"
-    ))
+/// Finds the helper for `platform` (the bundle, or a local build in a source build) and decides
+/// the digest to require of it. Fails closed on a bundle that does not match the digest compiled
+/// into this client, and on a release build with no digest at all; nothing is uploaded then.
+async fn prepare_helper(platform: &RemotePlatform) -> Result<PreparedHelper, String> {
+    let dev_source_build = remote_server::setup::is_dev_source_build();
+    let gz = match load_bundled_helper(platform).await {
+        Ok(Some(gz)) => gz,
+        Ok(None) if dev_source_build => {
+            log::info!("dev remote-server: no bundled helper, cross-compiling one");
+            build_dev_helper(platform)
+                .await
+                .map_err(|e| helper_unavailable(platform, &format!("{e:#}")))?
+        }
+        Ok(None) => return Err(helper_unavailable(platform, "this app bundle has none")),
+        Err(e) => return Err(helper_unavailable(platform, &format!("{e:#}"))),
+    };
+    let actual = sha256_of_gunzipped(&gz)
+        .map_err(|e| helper_unavailable(platform, &format!("the bundled file is damaged: {e}")))?;
+    let pinned =
+        remote_server::setup::pinned_helper_sha256(platform.os.as_str(), platform.arch.as_str());
+    let digest = decide_helper_digest(pinned, &actual, dev_source_build)?;
+    Ok(PreparedHelper { gz, digest })
 }
 
-/// The install itself (dev cross-compile upload, download script, SCP fallback). Split out of
-/// `install_binary` so the caller can clean up after ANY failure (#931).
+/// The install itself: prepare the helper, upload it in-band over the ControlMaster, fall back
+/// to scp for a stream that could not deliver. Split out of `install_binary` so the caller can
+/// clean up after ANY failure (#931).
 async fn install_binary_impl(socket_path: &Path) -> Result<(), String> {
     log::info!(
-        "Installing remote server binary to {}",
+        "Installing remote helper to {}",
         remote_server::setup::remote_server_binary()
     );
-
-    // Zap fork: a DEBUG source build (no release tag) takes the
-    // dev-mode path — cross-compiling and uploading the local
-    // `warp` binary instead of downloading a stale GitHub release.
-    // On failure (missing cross-compile prerequisites, etc.), print
-    // a warning and fall back to the download install, so the dev
-    // experience isn't broken. Release builds skip this whole block
-    // and behave unchanged.
-    if remote_server::setup::is_dev_source_build() {
-        log::info!(
-            "dev remote-server: detected DEBUG source build, switching to local cross-compile install"
-        );
-        match dev_install_local_binary(socket_path).await {
-            Ok(()) => return Ok(()),
-            Err(error) => {
-                log::warn!(
-                    "dev remote-server: local cross-compile install unavailable, falling back to download install: {error:#}"
-                );
-                // Fell through — continue with the regular download install flow below.
-            }
+    let platform = detect_remote_platform(socket_path)
+        .await
+        .map_err(|e| format!("{e:#}"))?;
+    let helper = prepare_helper(&platform).await?;
+    log::info!(
+        "remote helper for {}-{}: {} bytes compressed, digest {}",
+        platform.os.as_str(),
+        platform.arch.as_str(),
+        helper.gz.len(),
+        if matches!(helper.digest, HelperDigest::Pinned(_)) {
+            "pinned"
+        } else {
+            "computed (source build)"
         }
-    }
+    );
 
-    match run_install_script(socket_path, None, remote_server::setup::INSTALL_TIMEOUT).await {
+    let script = remote_server::setup::install_script(None, helper.digest.script_override());
+    match run_install_script(
+        socket_path,
+        &script,
+        &helper.gz,
+        remote_server::setup::INSTALL_TIMEOUT,
+    )
+    .await
+    {
         Ok(()) => verify_installed_binary(socket_path)
             .await
             .map_err(|error| format!("{error:#}")),
-        // All of the policy lives in `route_install_failure`, which is
-        // what the tests exercise. This arm must stay a two-way
-        // dispatch with no judgement of its own: the previous version
-        // consulted a boolean predicate here, and the predicate was
-        // well tested while this call site was not tested at all.
+        // All of the policy lives in `route_install_failure`, which is what the tests
+        // exercise. This arm must stay a two-way dispatch with no judgement of its own.
         Err(error) => match route_install_failure(&error) {
             InstallFallbackRoute::Fail(message) => {
-                log::error!("remote-server install failed, no fallback: {message}");
+                log::error!("remote helper install failed, no fallback: {message}");
                 Err(message)
             }
             InstallFallbackRoute::ScpFallback => {
-                log::warn!("remote-server install failed, trying SCP fallback: {error}");
-                match scp_install_fallback(socket_path).await {
+                log::warn!("remote helper in-band upload failed, trying SCP fallback: {error}");
+                match scp_install_fallback(socket_path, &helper).await {
                     Ok(()) => Ok(()),
                     Err(fallback_error) => {
                         Err(format!("{error}; SCP fallback failed: {fallback_error:#}"))
@@ -793,7 +728,7 @@ async fn remove_other_installed_versions(socket_path: &Path) {
     }
 }
 
-/// Best-effort remote cleanup after a failed install: removes the staged tarball, a partial
+/// Best-effort remote cleanup after a failed install: removes the staged upload, a partial
 /// (non-executable) binary, and the install directory iff it is empty -- never a working
 /// install. See `setup::install_failure_cleanup_command`.
 async fn cleanup_failed_install(socket_path: &Path) {
@@ -817,18 +752,17 @@ async fn cleanup_failed_install(socket_path: &Path) {
     }
 }
 
-async fn scp_install_fallback(socket_path: &Path) -> Result<()> {
-    let platform = detect_remote_platform(socket_path).await?;
-    let download_url = remote_server::setup::download_tarball_url(&platform);
+/// The fallback for an in-band stream that could not deliver: the same compressed bytes go up
+/// with scp as `.upload.gz` and the same verifying script unpacks that file.
+async fn scp_install_fallback(socket_path: &Path, helper: &PreparedHelper) -> Result<()> {
     let remote_server_dir = remote_server::setup::remote_server_dir();
-    let mkdir_cmd = format!("mkdir -p {remote_server_dir}");
+    let mkdir_cmd = format!("sh -c 'umask 077; mkdir -p {remote_server_dir}'");
     let mkdir_output = remote_server::ssh::run_ssh_command(
         socket_path,
         &mkdir_cmd,
         remote_server::setup::CHECK_TIMEOUT,
     )
     .await?;
-
     if !mkdir_output.status.success() {
         let code = mkdir_output.status.code().unwrap_or(-1);
         let stderr = String::from_utf8_lossy(&mkdir_output.stderr);
@@ -838,21 +772,29 @@ async fn scp_install_fallback(socket_path: &Path) -> Result<()> {
     }
 
     let tempdir = tempfile::tempdir()?;
-    let tarball_path = tempdir.path().join("zap.tar.gz");
-    download_remote_server_tarball(&download_url, &tarball_path).await?;
+    let local_path = tempdir.path().join("phosphor-remote.gz");
+    async_fs::write(&local_path, &helper.gz).await?;
 
-    let remote_tarball_path = format!("{remote_server_dir}/zap-upload.tar.gz");
+    let remote_staged_path = format!(
+        "{remote_server_dir}/{}",
+        remote_server::setup::STAGED_UPLOAD_NAME
+    );
     remote_server::ssh::scp_upload(
         socket_path,
-        &tarball_path,
-        &remote_tarball_path,
+        &local_path,
+        &remote_staged_path,
         remote_server::setup::SCP_INSTALL_TIMEOUT,
     )
     .await?;
 
+    let script = remote_server::setup::install_script(
+        Some(&remote_staged_path),
+        helper.digest.script_override(),
+    );
     run_install_script(
         socket_path,
-        Some(&remote_tarball_path),
+        &script,
+        &[],
         remote_server::setup::SCP_INSTALL_TIMEOUT,
     )
     .await
@@ -1140,8 +1082,43 @@ mod tests {
 
         let command = transport.remote_proxy_command();
 
-        assert!(command.contains("remote-server-proxy --identity-key"));
+        // `<helper path> proxy <key>`: the exact versioned file, never a symlink another
+        // client version may have repointed.
+        assert!(
+            command.starts_with(&remote_server::setup::remote_server_binary()),
+            "{command}"
+        );
+        assert!(command.contains(" proxy "), "{command}");
+        assert!(!command.contains("remote-server-proxy"), "{command}");
         assert!(command.contains("'user id/with spaces'"));
+    }
+
+    #[test]
+    fn gzip_round_trip_hashes_the_decompressed_bytes() {
+        let raw = b"#!/bin/sh\nexit 0\n".repeat(1000);
+        let gz = gzip_bytes(&raw).unwrap();
+        assert!(gz.len() < raw.len());
+        let expected = {
+            use sha2::{Digest as _, Sha256};
+            hex::encode(Sha256::digest(&raw))
+        };
+        assert_eq!(sha256_of_gunzipped(&gz).unwrap(), expected);
+    }
+
+    #[test]
+    fn a_non_gzip_bundle_is_an_error_not_a_hash() {
+        assert!(sha256_of_gunzipped(b"definitely not gzip").is_err());
+    }
+
+    #[test]
+    fn unavailable_helper_message_names_the_platform_and_the_fallback() {
+        let platform = RemotePlatform {
+            os: remote_server::setup::RemoteOs::Linux,
+            arch: remote_server::setup::RemoteArch::Aarch64,
+        };
+        let message = helper_unavailable(&platform, "this app bundle has none");
+        assert!(message.contains("linux-aarch64"), "{message}");
+        assert!(message.contains("continuing without it"), "{message}");
     }
 
     // Regression test for GitHub issue #37: teardown unconditionally tore
@@ -1220,13 +1197,12 @@ mod tests {
     // `exit_codes_in_install_script_are_all_classified` below.
     // ---------------------------------------------------------------------
 
-    // The SCP fallback re-fetches the same GitHub release tarball locally and
-    // installs it through the script's *unverified* staging branch. So every
-    // integrity failure the script reports must stop there rather than fall
-    // through: exit 4 (client built with no pinned digest), 5 (no SHA-256 tool
-    // on the host) and 6 (digest mismatch — i.e. detected tampering).
+    // An integrity verdict is never shopped around: the SCP fallback would send the same
+    // bytes to the same check, so retrying can only hide a failure. Every integrity failure the
+    // script reports must stop there rather than fall through: exit 4 (client built with no
+    // pinned digest), 5 (no SHA-256 tool on the host) and 6 (digest mismatch).
     #[test]
-    fn integrity_failures_do_not_fall_through_to_unverified_scp_fallback() {
+    fn integrity_failures_do_not_fall_through_to_the_scp_fallback() {
         for exit_code in [4, 5, 6] {
             assert_eq!(
                 classify_install_failure(&script_failure(exit_code)),
@@ -1235,14 +1211,14 @@ mod tests {
             assert!(
                 !falls_back(&script_failure(exit_code)),
                 "exit {exit_code} is an integrity failure and must fail closed, \
-                 not fall through to the unverified SCP fallback",
+                 not fall through to the SCP fallback",
             );
         }
     }
 
     // The security property, stated on its own so it cannot be lost inside a
-    // loop over three codes: exit 6 means the download SUCCEEDED and the bytes
-    // are not the release this client pinned. That is what tampering looks
+    // loop over three codes: exit 6 means the bytes ARRIVED and are not the
+    // helper this client pinned. That is what tampering looks
     // like from here, and it must be reported as a refusal — not retried, and
     // not reported as a generic install error an operator would skim past.
     #[test]
@@ -1255,9 +1231,11 @@ mod tests {
             message.contains("integrity check failed"),
             "the refusal must say an integrity check failed, got: {message}",
         );
+        // Owner decision (Wave H, #1804): the fallback is no longer an unverified route, so
+        // the headline says the install was not retried rather than that a fallback was skipped.
         assert!(
-            message.contains("NOT attempted"),
-            "the refusal must say the unverified fallback was not attempted, got: {message}",
+            message.contains("not retried"),
+            "the refusal must say the install was not retried, got: {message}",
         );
     }
 
@@ -1322,8 +1300,7 @@ mod tests {
         }
     }
 
-    // Unsupported arch/OS: no asset exists, so retrying the same download
-    // locally cannot help either.
+    // Unsupported arch/OS: no asset exists, so retrying cannot help either.
     //
     // The code is 10 rather than 2 because bash emits 2 for a *parse* error,
     // which the ERR trap cannot catch (the interpreter never gets far enough
@@ -1369,11 +1346,11 @@ mod tests {
         );
     }
 
-    // A tarball that matched the pinned digest and then would not open, or
-    // held no recognised binary. The bytes are exactly what this client asked
-    // for, so the fallback would fetch them again and fail identically.
+    // An upload that decoded partially and then failed, or a stream the host's
+    // decompressor rejects mid-way. The bytes are exactly what this client sent, so the
+    // fallback would send them again and fail identically.
     #[test]
-    fn unusable_verified_tarball_does_not_fall_through() {
+    fn unusable_upload_does_not_fall_through() {
         assert_eq!(
             classify_install_failure(&script_failure(8)),
             InstallFailureKind::Fatal,
@@ -1381,41 +1358,30 @@ mod tests {
         assert!(!falls_back(&script_failure(8)));
     }
 
-    // Exit 3 is the case the fallback exists for: the remote host has neither
-    // curl nor wget, but the client does. Nothing was downloaded remotely, so
-    // no integrity claim was violated.
+    // Exit 3: the host has neither gunzip nor gzip. The scp route unpacks with the same tools, so
+    // retrying cannot help.
     #[test]
-    fn missing_remote_fetcher_still_uses_scp_fallback() {
+    fn missing_decompressor_does_not_fall_through() {
         assert_eq!(
             classify_install_failure(&script_failure(3)),
-            InstallFailureKind::TransportFailed,
+            InstallFailureKind::Fatal,
         );
-        assert!(
-            falls_back(&script_failure(3)),
-            "exit 3 (no curl/wget on the host) is what the SCP fallback is for",
-        );
+        assert!(!falls_back(&script_failure(3)));
     }
 
-    // Exit 7 is the other half of the same requirement and the one this round
-    // added: the host HAS a fetcher and the fetch failed — DNS, connection
-    // refused, TLS, timeout, HTTP 4xx/5xx. Nothing arrived, so nothing was
-    // verified and nothing was violated; the client fetching instead is the
-    // designed recovery, exactly as for exit 3.
-    //
-    // This case used to be unreachable. The script ran curl under `set -e`, so
-    // a DNS failure exited with curl's own 6 and was hard-failed as a digest
-    // mismatch — a regression against the fallback that used to work — while
-    // curl 7 and 22 fell through unrecognised into an unverified install.
+    // Exit 7 is what the fallback exists for: the in-band stream delivered nothing (an empty or
+    // immediately broken stream, e.g. a restricted shell that eats stdin). Nothing was verified
+    // and nothing violated; sending the file with scp instead is the designed recovery.
     #[test]
-    fn remote_download_failure_still_uses_scp_fallback() {
+    fn upload_that_delivered_nothing_still_uses_scp_fallback() {
         assert_eq!(
             classify_install_failure(&script_failure(7)),
             InstallFailureKind::TransportFailed,
         );
         assert!(
             falls_back(&script_failure(7)),
-            "exit 7 (the host could not download) is a transport failure, not an \
-             integrity failure: nothing arrived, so nothing failed verification",
+            "exit 7 (no data arrived) is a transport failure, not an integrity failure: \
+             nothing arrived, so nothing failed verification",
         );
     }
 
@@ -1493,7 +1459,7 @@ mod tests {
     // and nothing failed.
     #[test]
     fn exit_codes_in_install_script_are_all_classified() {
-        let script = remote_server::setup::install_script(None);
+        let script = remote_server::setup::install_script(None, None);
 
         let declared: Vec<(String, i32)> = script
             .lines()
@@ -1509,7 +1475,7 @@ mod tests {
 
         // Every declared code must be classified the way the contract says.
         let expected = |name: &str| match name {
-            "EXIT_NO_FETCHER" | "EXIT_DOWNLOAD_FAILED" => InstallFailureKind::TransportFailed,
+            "EXIT_UPLOAD_FAILED" => InstallFailureKind::TransportFailed,
             "EXIT_NO_PINNED_DIGEST" | "EXIT_NO_DIGEST_TOOL" | "EXIT_DIGEST_MISMATCH" => {
                 InstallFailureKind::IntegrityFailed
             }

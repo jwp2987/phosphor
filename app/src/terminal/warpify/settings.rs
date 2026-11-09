@@ -158,7 +158,42 @@ maybe_define_setting!(SshExtensionInstallModeSetting, group: WarpifySettings, {
     description: "Controls SSH extension installation behavior. never_install only stops the installation: if the remote server binary is already present on the host it is still used.",
 });
 
+// Per-host consent for the bundled `phosphor-remote` helper (Wave H, #1804). A host in neither
+// list is `ask`, the default: the app-wide mode above then decides (which asks by default). A
+// host in `allowed` gets the helper without a prompt; a host in `denied` never gets it, and an
+// existing one is never updated. Keyed by the connection label (`user@host`), the same key the
+// app already uses to remember hosts. Local to this device, like the other per-host choices.
+maybe_define_setting!(SshRemoteHelperAllowedHosts, group: WarpifySettings, {
+    type: Vec<String>,
+    default: Vec::new(),
+    supported_platforms: SupportedPlatforms::ALL,
+    sync_to_cloud: SyncToCloud::Never,
+    private: false,
+    toml_path: "warpify.ssh.remote_helper_allowed_hosts",
+    description: "SSH hosts (user@host) where the phosphor-remote helper is installed without asking.",
+});
+
+maybe_define_setting!(SshRemoteHelperDeniedHosts, group: WarpifySettings, {
+    type: Vec<String>,
+    default: Vec::new(),
+    supported_platforms: SupportedPlatforms::ALL,
+    sync_to_cloud: SyncToCloud::Never,
+    private: false,
+    toml_path: "warpify.ssh.remote_helper_denied_hosts",
+    description: "SSH hosts (user@host) where the phosphor-remote helper is never installed or updated.",
+});
+
 impl SshExtensionInstallMode {
+    /// The app-wide mode as the pure decision logic in `remote_server::policy` sees it.
+    pub fn as_global_install_mode(&self) -> remote_server::policy::GlobalInstallMode {
+        use remote_server::policy::GlobalInstallMode;
+        match self {
+            SshExtensionInstallMode::AlwaysAsk => GlobalInstallMode::AlwaysAsk,
+            SshExtensionInstallMode::AlwaysInstall => GlobalInstallMode::AlwaysInstall,
+            SshExtensionInstallMode::NeverInstall => GlobalInstallMode::NeverInstall,
+        }
+    }
+
     pub fn display_name(&self) -> String {
         match self {
             SshExtensionInstallMode::AlwaysAsk => crate::t!("ai-execution-profile-always-ask"),
@@ -228,6 +263,12 @@ pub struct WarpifySettings {
     /// Controls the installation behavior for the SSH extension (remote server) when the binary
     /// is not installed on the remote host.
     pub ssh_extension_install_mode: SshExtensionInstallModeSetting,
+
+    /// Hosts where the remote helper is installed without asking (per-host consent).
+    pub ssh_remote_helper_allowed_hosts: SshRemoteHelperAllowedHosts,
+
+    /// Hosts where the remote helper is never installed or updated (per-host consent).
+    pub ssh_remote_helper_denied_hosts: SshRemoteHelperDeniedHosts,
 }
 
 #[cfg(windows)]
@@ -381,6 +422,8 @@ impl WarpifySettings {
             enable_ssh_wrapper: EnableSshWrapper::new_from_storage(ctx),
             use_ssh_tmux_wrapper: UseSshTmuxWrapper::new_from_storage(ctx),
             ssh_extension_install_mode: SshExtensionInstallModeSetting::new_from_storage(ctx),
+            ssh_remote_helper_allowed_hosts: SshRemoteHelperAllowedHosts::new_from_storage(ctx),
+            ssh_remote_helper_denied_hosts: SshRemoteHelperDeniedHosts::new_from_storage(ctx),
         }
     }
 
@@ -407,6 +450,8 @@ impl WarpifySettings {
                 WarpifySettingsChangedEvent::EnableSshWrapper { .. } => {}
                 WarpifySettingsChangedEvent::UseSshTmuxWrapper { .. } => {}
                 WarpifySettingsChangedEvent::SshExtensionInstallModeSetting { .. } => {}
+                WarpifySettingsChangedEvent::SshRemoteHelperAllowedHosts { .. } => {}
+                WarpifySettingsChangedEvent::SshRemoteHelperDeniedHosts { .. } => {}
             })
         });
 
@@ -484,6 +529,22 @@ impl WarpifySettings {
 
         register_settings_events!(
             WarpifySettings,
+            ssh_remote_helper_allowed_hosts,
+            SshRemoteHelperAllowedHosts,
+            handle.clone(),
+            ctx
+        );
+
+        register_settings_events!(
+            WarpifySettings,
+            ssh_remote_helper_denied_hosts,
+            SshRemoteHelperDeniedHosts,
+            handle.clone(),
+            ctx
+        );
+
+        register_settings_events!(
+            WarpifySettings,
             ssh_hosts_denylist,
             SshHostsDenylist,
             handle,
@@ -515,6 +576,12 @@ pub enum WarpifySettingsChangedEvent {
         change_event_reason: ChangeEventReason,
     },
     SshExtensionInstallModeSetting {
+        change_event_reason: ChangeEventReason,
+    },
+    SshRemoteHelperAllowedHosts {
+        change_event_reason: ChangeEventReason,
+    },
+    SshRemoteHelperDeniedHosts {
         change_event_reason: ChangeEventReason,
     },
 }
@@ -680,6 +747,31 @@ impl WarpifySettings {
         let mut new_added_list = self.added_subshell_commands.to_vec();
         new_added_list.remove(index);
         report_if_error!(self.added_subshell_commands.set_value(new_added_list, ctx));
+        ctx.notify();
+    }
+
+    /// The user's decision about installing the remote helper on `host` (a connection label);
+    /// `Ask` when they have not decided.
+    pub fn remote_helper_policy(&self, host: &str) -> remote_server::policy::HelperPolicy {
+        remote_server::policy::policy_from_lists(
+            host,
+            self.ssh_remote_helper_allowed_hosts.as_slice(),
+            self.ssh_remote_helper_denied_hosts.as_slice(),
+        )
+    }
+
+    /// Records the user's decision about the remote helper for `host`.
+    pub fn set_remote_helper_policy(
+        &mut self,
+        host: &str,
+        policy: remote_server::policy::HelperPolicy,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let mut allowed = self.ssh_remote_helper_allowed_hosts.to_vec();
+        let mut denied = self.ssh_remote_helper_denied_hosts.to_vec();
+        remote_server::policy::set_policy(host, policy, &mut allowed, &mut denied);
+        report_if_error!(self.ssh_remote_helper_allowed_hosts.set_value(allowed, ctx));
+        report_if_error!(self.ssh_remote_helper_denied_hosts.set_value(denied, ctx));
         ctx.notify();
     }
 

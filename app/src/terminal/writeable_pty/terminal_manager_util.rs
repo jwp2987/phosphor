@@ -269,14 +269,20 @@ pub fn wire_up_remote_server_controller_with_view<T: EventLoopSender>(
             return;
         };
         match event {
-            view::Event::RemoteServerInstallRequested { session_id } => {
+            view::Event::RemoteServerInstallRequested {
+                session_id,
+                remember,
+            } => {
                 controller.update(ctx, |ctrl, ctx| {
-                    ctrl.handle_ssh_remote_server_install(*session_id, ctx);
+                    ctrl.handle_ssh_remote_server_install(*session_id, *remember, ctx);
                 });
             }
-            view::Event::RemoteServerSkipRequested { session_id } => {
+            view::Event::RemoteServerSkipRequested {
+                session_id,
+                remember,
+            } => {
                 controller.update(ctx, |ctrl, ctx| {
-                    ctrl.handle_ssh_remote_server_skip(*session_id, ctx);
+                    ctrl.handle_ssh_remote_server_skip(*session_id, *remember, ctx);
                 });
             }
             _ => {}

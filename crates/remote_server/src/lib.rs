@@ -16,6 +16,7 @@ pub mod codebase_index_proto;
 pub mod frames;
 pub mod host_response;
 pub mod naming;
+pub mod policy;
 pub mod protocol;
 pub mod rt;
 pub mod ssh;

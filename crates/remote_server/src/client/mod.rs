@@ -30,6 +30,7 @@ use crate::proto::{
     server_message, session_scoped_request,
 };
 
+use crate::capability::ServerCapabilities;
 use crate::protocol::{self, ProtocolError, RequestId};
 
 use warp_core::SessionId;
@@ -233,6 +234,11 @@ pub struct RemoteServerClient {
     /// field ever starts being read.
     #[expect(dead_code)]
     host_response_tx: async_channel::Sender<ServerMessage>,
+
+    /// What the server on the other end supports, set by [`Self::initialize`] from the
+    /// handshake response. Until then (and for a legacy full daemon, which sends no list) it
+    /// is "everything": see [`ServerCapabilities`].
+    capabilities: std::sync::Mutex<ServerCapabilities>,
 }
 
 impl fmt::Debug for RemoteServerClient {
@@ -327,6 +333,7 @@ impl RemoteServerClient {
                 pending_requests,
                 disconnected,
                 host_response_tx,
+                capabilities: std::sync::Mutex::new(ServerCapabilities::default()),
             },
             event_rx,
             host_response_rx,
@@ -345,6 +352,17 @@ impl RemoteServerClient {
     /// dependent feature 2.
     pub fn is_disconnected(&self) -> bool {
         self.disconnected.load(Ordering::Acquire)
+    }
+
+    /// What the connected server supports. `ServerCapabilities::default()` (everything) before
+    /// the handshake completes and for a legacy full daemon; the helper's list afterwards.
+    /// Callers gate a feature on [`ServerCapabilities::supports`] and use their no-helper path
+    /// when it is false (Wave H, #1804).
+    pub fn capabilities(&self) -> ServerCapabilities {
+        self.capabilities
+            .lock()
+            .map(|c| c.clone())
+            .unwrap_or_default()
     }
 
     /// Sends an `Initialize` request and awaits the `InitializeResponse`.
@@ -367,7 +385,19 @@ impl RemoteServerClient {
         let response = self.send_request(request_id, msg).await?;
 
         match response.message {
-            Some(server_message::Message::InitializeResponse(resp)) => Ok(resp),
+            Some(server_message::Message::InitializeResponse(resp)) => {
+                let capabilities = ServerCapabilities::from_initialize_response(&resp);
+                if capabilities.is_limited() {
+                    log::info!(
+                        "remote server is the limited helper, capabilities: {:?}",
+                        resp.capabilities
+                    );
+                }
+                if let Ok(mut slot) = self.capabilities.lock() {
+                    *slot = capabilities;
+                }
+                Ok(resp)
+            }
             other => {
                 log::error!("Unexpected response variant for Initialize: {other:?}");
                 Err(ClientError::UnexpectedResponse)
