@@ -778,7 +778,9 @@ class Ctx:
         before = count()
         self.be.type("exit", 12, enter=True)
         if not level and not self.prof.local_prompts:
-            time.sleep(min(timeout, 2.0))        # no local prompt hook in this pane (Windows PowerShell): fixed settle
+            t_exit = time.time()
+            time.sleep(min(timeout, 2.0))        # no local prompt hook in this pane (Windows PowerShell): fixed settle ...
+            self.wait_ssh_gone(t_exit, max(timeout, 8.0))       # ... then until the app itself saw the ssh block end (r18w5)
         else:
             self.until(lambda: count() > before, timeout)
         if self.shell_gone(base):
@@ -786,6 +788,21 @@ class Ctx:
             return False
         time.sleep(0.5)
         return True
+
+    def wait_ssh_gone(self, since, timeout=8.0):
+        """r18w5: wait until the app's own log shows the ssh foreground process gone (`hop=ssh_pty_owner ssh=false` since wall time `since`), so the
+        NEXT trial's keys are not typed into a dying ssh.exe. The fixed 2 s settle after `exit` was not enough: fakesshd-win closes the channel up to
+        ~2.5 s after the remote shell's output ends (cp.exited() poll), and ssh.exe stays in front until then; `ssh fake` + the typed-ahead line went to
+        it (plain-terminal pass-through, correctly) and died with the remote. Returns True when seen; without an app trace it returns at once."""
+        if not self.log_path:
+            return False
+        end = time.time() + timeout
+        while time.time() < end:
+            if any("hop=ssh_pty_owner ssh=false" in l for l in self.app_log_window(since)):
+                time.sleep(0.3)
+                return True
+            time.sleep(0.25)
+        return False
 
     def pane_responsive(self, first=8, second=40):
         """The pane's liveness by an EFFECT: type a marker command that appends to a file and look for the file. Returns 0 when the first try worked, 1 when

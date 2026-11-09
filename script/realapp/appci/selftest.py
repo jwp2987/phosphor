@@ -1288,6 +1288,28 @@ def ssh_trial_facts_name_the_issue():
 
 
 @check
+def wait_ssh_gone_waits_for_the_app_to_see_ssh_end():
+    """r18w5: leave_remote's PowerShell settle is followed by a wait for `hop=ssh_pty_owner ssh=false` (the app saw the ssh block end), so the next
+    trial is not typed into a dying ssh.exe; no trace -> no wait"""
+    d = tempfile.mkdtemp()
+    try:
+        lp = os.path.join(d, "phosphor.log")
+        t0 = time.time()
+        with open(lp, "w") as fh:
+            fh.write("x hop=ssh_pty_owner ssh=false site=block_completed t=%.1f\n" % ((t0 - 50) * 1000))     # an OLDER ssh end: must not count
+        c = types.SimpleNamespace(log_path=lp)
+        c.app_log_window = lambda t0_, t1=None: cases.Ctx.app_log_window(c, t0_, t1)
+        t = time.time()
+        assert cases.Ctx.wait_ssh_gone(c, t0, 0.6) is False and time.time() - t >= 0.5
+        with open(lp, "a") as fh:
+            fh.write("y hop=ssh_pty_owner ssh=false site=block_completed t=%.1f\n" % ((time.time() + 0.1) * 1000))
+        assert cases.Ctx.wait_ssh_gone(c, t0, 3.0) is True
+        assert cases.Ctx.wait_ssh_gone(types.SimpleNamespace(log_path=None), t0, 3.0) is False
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+@check
 def bashrc_moves_a_profile_folder_start_to_the_work_dir():
     """r18u13: Git Bash on Windows starts in %USERPROFILE% (not the scratch $HOME); the rc must move that start to $APPCI_W like a $HOME start,
     and must leave any other start (a restored tab's cwd) alone. Runs the rendered rc in bash with a stand-in cygpath."""
