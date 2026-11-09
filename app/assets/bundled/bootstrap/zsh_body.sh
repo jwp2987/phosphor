@@ -2440,33 +2440,33 @@ esac
   }
 
   # Phosphor (#1801): ESC read where a native-completions frame byte was expected (__c is ESC,
-  # __warp_nc_body the frame-alphabet text read before it). Reads the rest of the escape sequence
-  # (at most 0.1 s between bytes). A terminal reply (a CSI report ending in c, R, n, t or y, or
-  # an OSC) is dropped whole, so none of it is left in the line; anything else (a bracketed
-  # paste, a key) goes back to zle intact with the text before it.
+  # __warp_nc_body the frame-alphabet text read before it), classified by CONTENT only (no
+  # inter-byte timing): the NEXT byte decides. `[` is a CSI, read to its final byte (0x40-0x7E);
+  # `]` an OSC and `P` a DCS, read to BEL or ESC \. A terminal reply (a CSI ending in c, R, n, t
+  # or y, any OSC or DCS) is dropped whole, so none of it is left in the line; anything else (a
+  # bracketed paste, a key, ESC + a byte) goes back to zle intact with the text before it. A
+  # lone ESC waits for the next byte or the overall deadline, then goes back by itself.
   function __warp_nc_give_back_escape() {
     setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal extendedglob
     local __seq=$'\e' __b
-    if IFS= builtin read -s -r -k 1 -t 0.1 __b </dev/tty; then
+    if __warp_nc_time_left && IFS= builtin read -s -r -k 1 -t $__warp_nc_left __b </dev/tty; then
       __seq+=$__b
       case $__b in
         ('[')
-          while IFS= builtin read -s -r -k 1 -t 0.1 __b </dev/tty; do
+          while __warp_nc_time_left && IFS= builtin read -s -r -k 1 -t $__warp_nc_left __b </dev/tty; do
             __seq+=$__b
             [[ $__b == [@-~] ]] && break
             (( ${#__seq} <= 64 )) || break
           done ;;
-        (']')
-          while IFS= builtin read -s -r -k 1 -t 0.1 __b </dev/tty; do
+        (']'|P)
+          while __warp_nc_time_left && IFS= builtin read -s -r -k 1 -t $__warp_nc_left __b </dev/tty; do
             __seq+=$__b
             [[ $__b == $'\a' || $__seq == *$'\e\\' ]] && break
             (( ${#__seq} <= 4096 )) || break
           done ;;
-        (O)
-          IFS= builtin read -s -r -k 1 -t 0.1 __b </dev/tty && __seq+=$__b ;;
       esac
     fi
-    if [[ $__seq == $'\e]'* || $__seq == $'\e['[0-9\;\?\>\<=]#[cRnty] ]]; then
+    if [[ $__seq == $'\e]'* || $__seq == $'\eP'* || $__seq == $'\e['[0-9\;\?\>\<=]#[cRnty] ]]; then
       zle -U "$__warp_nc_body"
     else
       zle -U "$__warp_nc_body$__seq"

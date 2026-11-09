@@ -1373,35 +1373,47 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         READLINE_POINT=$((READLINE_POINT + ${#1}))
     }
 
-    # ESC read where a frame byte was expected: read the rest of the escape sequence (at most
-    # 0.1 s between bytes). A bracketed paste (how the app writes a command after its ^P) is read
-    # to its end and its text inserted, as readline would; any other sequence (a terminal reply
-    # such as a DA report, or a key) is dropped whole, so none of it is left in the line.
+    # Reads one byte within what is left of the overall deadline (the only clock): status 1 when
+    # the deadline is over or nothing came.
+    __warp_nc_read_byte_dl () {
+        __warp_nc_time_left || { __warp_nc_byte=; return 1; }
+        __warp_nc_read_byte "$__warp_nc_left"
+    }
+
+    # ESC read where a frame byte was expected, classified by CONTENT only (no inter-byte
+    # timing): the NEXT byte decides. `[` is a CSI, read to its final byte (0x40-0x7E); `]` an OSC
+    # and `P` a DCS, read to BEL or ESC \. A terminal reply (a CSI ending in c, R, n, t or y, any
+    # OSC or DCS) is dropped whole; a bracketed paste (how the app writes a command after its ^P)
+    # is read to its end and its text inserted; any other CSI (a key) cannot be re-injected from
+    # a `bind -x` function and is dropped; anything else goes back as the byte (ESC itself cannot
+    # be re-injected). A lone ESC waits for the next byte or the deadline.
     __warp_nc_give_back_escape () {
         local __seq=
-        __warp_nc_read_byte 0.1 || return 0
+        __warp_nc_read_byte_dl || return 0
         __seq=$__warp_nc_byte
         case $__seq in
             '[')
                 # CSI: parameters and intermediates, then a final byte in @-~.
-                while __warp_nc_read_byte 0.1; do
+                while __warp_nc_read_byte_dl; do
                     __seq+=$__warp_nc_byte
                     case $__warp_nc_byte in [@A-Z\[\\\]^_\`a-z{\|}~]) break ;; esac
                     (( ${#__seq} <= 64 )) || return 0
                 done ;;
-            ']')
-                # OSC: up to BEL or ST.
-                while __warp_nc_read_byte 0.1; do
+            ']'|P)
+                # OSC / DCS: up to BEL or ST; dropped whole.
+                while __warp_nc_read_byte_dl; do
                     __seq+=$__warp_nc_byte
                     [[ $__warp_nc_byte == $'\a' || $__seq == *$'\e\\' ]] && break
                     (( ${#__seq} <= 4096 )) || return 0
                 done
                 return 0 ;;
-            O) __warp_nc_read_byte 0.1 ;;
+            *)
+                __warp_nc_give_back "" "$__seq"
+                return 0 ;;
         esac
         [[ $__seq == "[200~" ]] || return 0
         local __text=
-        while __warp_nc_read_byte 1; do
+        while __warp_nc_read_byte_dl; do
             __text+=$__warp_nc_byte
             if [[ $__text == *$'\e[201~' ]]; then
                 __text=${__text%$'\e[201~'}

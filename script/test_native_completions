@@ -338,6 +338,33 @@ def protocol_checks(sh, shell, full=True):
     sh.write(text.encode() + b"\r")
     expect_runs(sh, shell, "RS + letters + Ctrl-C hands back by content: the next raw command runs", want)
 
+    # ESC after RS is classified by content (the NEXT byte decides): terminal replies of every kind
+    # are dropped whole, keys and a lone ESC + Enter are handed back, nothing is eaten or hung.
+    for what, data in (
+        ("a DA reply", b"\x1b[?62;22c"),
+        ("an OSC reply", b"\x1b]11;rgb:0000/0000/0000\x07"),
+        ("a DCS XTVERSION reply", b"\x1bP>|phosphor 1\x1b\\"),
+    ):
+        sh.write(RS + data)
+        sh.drain(0.3)
+        text, want = command()
+        sh.write(text.encode() + b"\r")
+        expect_runs(sh, shell, f"RS + {what} is dropped whole: the raw command after it runs clean", want)
+    # Handed back intact, so zsh acts on them as typed (Alt-x opens its minibuffer, ESC + Enter is
+    # a key too); a Ctrl-C then resets the editor and a raw command proves nothing hung or was eaten.
+    for what, data in (
+        ("ESC [ A (an arrow)", b"\x1b[A"),
+        ("ESC + a letter (Alt-x)", b"\x1bx"),
+        ("a lone ESC then Enter", b"\x1b\r"),
+    ):
+        sh.write(RS + data)
+        sh.drain(0.4)
+        sh.write(b"\x03")
+        sh.drain(0.4)
+        text, want = command()
+        sh.write(text.encode() + b"\r")
+        expect_runs(sh, shell, f"RS + {what} is handed back: nothing hangs, the next command runs", want)
+
     token = ask(sh, shell, "cut-short frame")
     if token is not None:
         sh.write(RS + token + b":%63%64")

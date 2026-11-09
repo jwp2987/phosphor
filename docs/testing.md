@@ -2962,7 +2962,7 @@ What changed and what pins it:
   Every shell writes candidates as the whole whitespace-delimited token (zsh now adds its
   IPREFIX and -P/-p prefixes, so `cd dir/fo` no longer offers `foo/`). The OSC parser rejoins a payload split at `;`
   (`completions_osc_payload_rejoins_a_payload_split_at_semicolons`). Shell side: `script/test_native_completions` (also: a frame split with 0.5 s and 3 s pauses is consumed whole with
-  no junk, RS + `ls` + Enter and RS + letters + Ctrl-C hand back by content, a stale-token frame is consumed).
+  no junk, RS + `ls` + Enter and RS + letters + Ctrl-C hand back by content, a stale-token frame is consumed; ESC after RS is classified by the NEXT byte, not by time: DA / OSC / DCS XTVERSION replies are dropped whole, an arrow, Alt-x and a lone ESC + Enter are handed back).
   Kill switch: `PHOSPHOR_REMOTE_NATIVE_COMPLETIONS=0`.
 - **Chips re-run when the session registers.** A remote session's blocks carry its id before its bootstrap completes
   (the ssh setup holds the bootstrap while it checks for the helper), so chips refreshed then failed with "could not
