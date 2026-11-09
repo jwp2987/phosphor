@@ -6,6 +6,9 @@
 //!
 //! Design points:
 //! - Three tiers of [`ProxyMode`]: `System` / `Custom` / `Off`.
+//! - NOTE (Wave N): the network gate (`network_gate`) builds every client and IGNORES system /
+//!   environment proxies; only `Custom` is used. `System` below describes reqwest's own
+//!   default, which no app client uses any more.
 //! - `System` falls back to reqwest's default behavior; the workspace's reqwest
 //!   builds with default features, which include system proxy detection,
 //!   so macOS reads SystemConfiguration, Windows reads WinINET, and Linux reads
@@ -149,6 +152,14 @@ fn slot() -> &'static RwLock<ProxyConfig> {
 /// is constructed, its proxy can't be switched, so the app layer must rebuild
 /// all shared Client instances after changing settings.
 pub fn set_global_proxy_config(cfg: ProxyConfig) {
+    // The network gate ignores system / environment proxies: it uses a proxy only when the
+    // user configured one (`Custom`). Hand it that proxy as a function.
+    let applier: Option<network_gate::ProxyApplier> = (cfg.mode == ProxyMode::Custom).then(|| {
+        let for_gate = cfg.clone();
+        let f: network_gate::ProxyApplier = std::sync::Arc::new(move |b| for_gate.apply(b));
+        f
+    });
+    network_gate::set_configured_proxy(applier);
     let lock = slot();
     if let Ok(mut guard) = lock.write() {
         *guard = cfg;

@@ -5851,6 +5851,9 @@ fn build_client_uncached(
             ServiceTargetResolver::from_resolver_fn(
         move |service_target: ServiceTarget| -> Result<ServiceTarget, genai::resolver::Error> {
             let ServiceTarget { model, .. } = service_target;
+            // The network gate: the provider's endpoint must be a configured origin.
+            http_client::gate::check_url(&endpoint_url, &http_client::gate::AI_ENDPOINT)
+                .map_err(|d| genai::resolver::Error::Custom(d.to_string()))?;
             let endpoint = Endpoint::from_owned(endpoint_url.clone());
             let auth = AuthData::from_single(key_for_resolver.clone());
             let model_name = model.model_name.as_str();
@@ -5898,9 +5901,15 @@ fn build_client_uncached(
     if let Ok(value) = build_user_agent_header() {
         headers.insert(reqwest::header::USER_AGENT, value);
     }
+    // Every redirect hop is checked by the network gate; a denied hop stops the chain.
     let mut web_config = WebConfig {
         gzip: false,
         default_headers: Some(headers),
+        redirect_guard: Some(genai::RedirectGuard::new(|url, hops| {
+            http_client::gate::global()
+                .check_redirect(url, hops, &http_client::gate::AI_ENDPOINT)
+                .is_ok()
+        })),
         ..WebConfig::default()
     };
     let proxy_cfg = current_proxy_config();
@@ -5911,9 +5920,9 @@ fn build_client_uncached(
             web_config.no_proxy = true;
         }
         http_client::ProxyMode::System => {
-            // Follows the system/environment-variable proxy (reqwest's default behavior).
-            // WebConfig doesn't set a proxy → reqwest reads macOS SystemConfiguration or
-            // the HTTP_PROXY / HTTPS_PROXY environment variables.
+            // The network gate ignores system / environment proxies: only a proxy the user
+            // configured in Phosphor settings (Custom) is used (Wave N, owner decision).
+            web_config.no_proxy = true;
         }
         http_client::ProxyMode::Custom => {
             if !proxy_cfg.url.is_empty() {
@@ -5952,6 +5961,8 @@ fn build_vertex_resolver(endpoint_url: String, credential: String) -> ServiceTar
         let credential = credential.clone();
         Box::pin(async move {
             let ServiceTarget { model, .. } = service_target;
+            http_client::gate::check_url(&endpoint_url, &http_client::gate::AI_ENDPOINT)
+                .map_err(|d| genai::resolver::Error::Custom(d.to_string()))?;
             // A request that fails purely because nobody is signed in should start the same
             // login flow the providers panel's button starts, rather than telling the user to go
             // run a command by hand. Debounced inside `maybe_launch_login_for_error`, since this

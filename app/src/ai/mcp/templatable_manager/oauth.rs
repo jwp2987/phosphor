@@ -281,7 +281,10 @@ pub async fn make_authenticated_client(
             // until the user explicitly revokes them.
             // As such, if we have an access token for a GitHub server, we must assume it's valid.
             if provider.as_ref().is_some_and(|p| p.issuer == GITHUB_ISSUER) {
-                return Ok((AuthClient::new(reqwest::Client::new(), auth_manager), false));
+                return Ok((
+                    AuthClient::new(crate::ai::mcp::http_client::gated_client(), auth_manager),
+                    false,
+                ));
             }
 
             // Else, make sure we have an up-to-date access token.
@@ -304,7 +307,10 @@ pub async fn make_authenticated_client(
             .await;
             match auth_manager.refresh_token().await {
                 Ok(_) => {
-                    return Ok((AuthClient::new(reqwest::Client::new(), auth_manager), false));
+                    return Ok((
+                        AuthClient::new(crate::ai::mcp::http_client::gated_client(), auth_manager),
+                        false,
+                    ));
                 }
                 Err(e) => {
                     log::warn!("Failed to refresh token: {e:#}");
@@ -514,7 +520,10 @@ pub async fn make_authenticated_client(
     install_persisting_credential_store(&mut am, client_secret, spawner, uuid, token_received_at)
         .await;
 
-    Ok((AuthClient::new(reqwest::Client::new(), am), true))
+    Ok((
+        AuthClient::new(crate::ai::mcp::http_client::gated_client(), am),
+        true,
+    ))
 }
 
 impl TemplatableMCPServerManager {

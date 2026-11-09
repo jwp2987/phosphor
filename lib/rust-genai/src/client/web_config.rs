@@ -38,6 +38,26 @@ pub struct WebConfig {
 	pub gzip: bool,
 	/// Enable TCP_NODELAY (disable Nagle's algorithm). Default: true.
 	pub tcp_nodelay: bool,
+	/// Phosphor: decides whether each redirect hop may be followed (`url`, hops so far).
+	/// `None` keeps reqwest's default policy. A `false` answer stops the chain at that hop.
+	pub redirect_guard: Option<RedirectGuard>,
+}
+
+/// Phosphor: a redirect decision function (see [`WebConfig::redirect_guard`]). A newtype so
+/// `WebConfig` keeps `Debug` and `Clone`.
+#[derive(Clone)]
+pub struct RedirectGuard(pub std::sync::Arc<dyn Fn(&str, usize) -> bool + Send + Sync>);
+
+impl RedirectGuard {
+	pub fn new(f: impl Fn(&str, usize) -> bool + Send + Sync + 'static) -> Self {
+		Self(std::sync::Arc::new(f))
+	}
+}
+
+impl std::fmt::Debug for RedirectGuard {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.write_str("RedirectGuard")
+	}
 }
 
 impl Default for WebConfig {
@@ -52,6 +72,7 @@ impl Default for WebConfig {
 			// Zap: gzip off by default — see struct-level docs above.
 			gzip: false,
 			tcp_nodelay: true,
+			redirect_guard: None,
 		}
 	}
 }
@@ -145,6 +166,16 @@ impl WebConfig {
 		}
 		if let Some(ref proxy) = self.proxy {
 			builder = builder.proxy(proxy.clone());
+		}
+		if let Some(guard) = &self.redirect_guard {
+			let guard = guard.0.clone();
+			builder = builder.redirect(reqwest::redirect::Policy::custom(move |attempt| {
+				if guard(attempt.url().as_str(), attempt.previous().len()) {
+					attempt.follow()
+				} else {
+					attempt.stop()
+				}
+			}));
 		}
 		// Performance optimizations
 		if self.gzip {

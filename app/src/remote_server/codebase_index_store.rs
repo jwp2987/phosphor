@@ -539,7 +539,10 @@ pub fn build_daemon_store_client(data_dir: &Path) -> Arc<DaemonStoreClient> {
     }
 
     // No endpoint yet: it arrives on the first client's `Initialize`.
-    let provider = Arc::new(HttpEmbeddingProvider::new(Client::new(), None));
+    let provider = Arc::new(HttpEmbeddingProvider::new(
+        Client::for_purpose(&http_client::gate::AI_ENDPOINT),
+        None,
+    ));
     let store = Arc::new(DaemonVectorStore::open(&db_path));
     let client = Arc::new(DaemonStoreClient::new(provider, store));
     set_daemon_store_client(Arc::clone(&client));

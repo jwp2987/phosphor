@@ -1,0 +1,16 @@
+[package]
+name = "network_gate"
+description = "The runtime network gate: check_url, the one HTTP client builder, the purposes"
+edition = "2024"
+authors.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+log.workspace = true
+reqwest.workspace = true
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+# The gate's DNS resolver runs the blocking lookup on tokio's blocking pool (as the web tools'
+# SSRF resolver does).
+tokio = { workspace = true, features = ["rt"] }

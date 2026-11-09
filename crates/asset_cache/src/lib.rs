@@ -142,14 +142,27 @@ impl AssetCacheExt for AssetCache {
 
 /// Fetches a file from the given `url` to memory.
 async fn fetch_file_to_memory(url: Url) -> Result<Bytes, anyhow::Error> {
+    // The network gate: remote assets (avatars, markdown images, changelog images) load only
+    // from origins the user configured or allowed; the gate's client also ignores system
+    // proxies and re-checks every redirect hop.
+    network_gate::check_url(url.as_str(), &network_gate::REMOTE_ASSET)
+        .map_err(anyhow::Error::from)?;
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    let client = match CLIENT.get() {
+        Some(client) => client.clone(),
+        None => {
+            let built = network_gate::reqwest_client(&network_gate::REMOTE_ASSET)?;
+            CLIENT.get_or_init(|| built).clone()
+        }
+    };
     cfg_if::cfg_if! {
         if #[cfg(target_family = "wasm")] {
-            let response = reqwest::get(url).await?;
+            let response = client.get(url).send().await?;
         } else {
             // On non-web platforms, reqwest expects that it is operating within
             // a Tokio-compatible runtime, so use async-compat to wrap the call
             // so reqwest's expectations are met.
-            let response = async_compat::Compat::new(async move { reqwest::get(url).await }).await?;
+            let response = async_compat::Compat::new(async move { client.get(url).send().await }).await?;
         }
     }
     let content = response.error_for_status()?.bytes().await?;

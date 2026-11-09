@@ -24,7 +24,7 @@ pub fn build_client_with_headers(
 ) -> Result<reqwest::Client, rmcp::RmcpError> {
     let header_map = build_header_map(headers);
 
-    reqwest::Client::builder()
+    ::http_client::gate::builder(&::http_client::gate::MCP_SERVER)
         .default_headers(header_map)
         .redirect(reqwest::redirect::Policy::none())
         .build()
@@ -33,6 +33,14 @@ pub fn build_client_with_headers(
                 "Failed to build client with headers: {e}",
             ))
         })
+}
+
+/// A client for the MCP OAuth flow and the SSE transport, built by the network gate: no
+/// system proxy, loopback-by-name refused, redirects re-checked (and, like
+/// [`build_client_with_headers`], not followed past the allowlist).
+pub fn gated_client() -> reqwest::Client {
+    ::http_client::gate::reqwest_client(&::http_client::gate::MCP_SERVER)
+        .expect("should not fail to create the MCP HTTP client")
 }
 
 #[cfg(test)]

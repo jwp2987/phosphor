@@ -277,6 +277,14 @@ pub fn init(
         if matches!(event, AISettingsChangedEvent::PromptTemplateDir { .. }) {
             apply_prompt_template_dir_to_global_slot(ctx);
         }
+        // The network gate's configured origins follow the providers and the models.dev URL.
+        if matches!(
+            event,
+            AISettingsChangedEvent::AgentProviders { .. }
+                | AISettingsChangedEvent::ModelsDevUrl { .. }
+        ) {
+            apply_network_gate_configured_origins(ctx);
+        }
     });
 
     // Tab groups (`appearance.tabs.enable_tab_groups`). Every tab-group entry
@@ -387,6 +395,10 @@ pub(crate) fn apply_network_settings_to_global_slots(ctx: &mut AppContext, passw
     let username = net.proxy_username.value().clone();
     let no_proxy = net.proxy_no_proxy.value().clone();
 
+    // The network gate's user allowlist rides on the same push (and the same subscription).
+    http_client::gate::set_user_allowed_origins(net.allowed_origins.value());
+    apply_network_gate_configured_origins(ctx);
+
     http_client::set_global_proxy_config(http_client::ProxyConfig {
         mode: mode.to_http_client_mode(),
         url: url.clone(),
@@ -401,6 +413,33 @@ pub(crate) fn apply_network_settings_to_global_slots(ctx: &mut AppContext, passw
         password: password.to_string(),
         no_proxy,
     });
+}
+
+/// Pushes the origins the user configured into the network gate (`crates/network_gate`): every
+/// BYOP provider's endpoint (Ollama and the local proxy are providers too; the embeddings and
+/// rerank endpoints are derived from them), the models.dev URL, and a custom HTTP proxy. The
+/// gate refuses a background request to anything else.
+///
+/// Read on startup and on every change to the providers, `models_dev_url` or the proxy.
+pub(crate) fn apply_network_gate_configured_origins(ctx: &AppContext) {
+    use super::network::NetworkSettings;
+    let ai = AISettings::as_ref(ctx);
+    let mut origins: Vec<String> = ai
+        .agent_providers
+        .value()
+        .iter()
+        .map(|p| p.resolved_base_url())
+        .filter(|u| !u.trim().is_empty())
+        .collect();
+    let models_dev_url = ai.models_dev_url.value().trim().to_owned();
+    if !models_dev_url.is_empty() {
+        origins.push(models_dev_url);
+    }
+    let net = NetworkSettings::as_ref(ctx);
+    if !net.proxy_url.value().trim().is_empty() {
+        origins.push(net.proxy_url.value().clone());
+    }
+    http_client::gate::set_configured_origins(origins);
 }
 
 /// Zap: pushes Settings -> AI -> System prompt template directory into `prompt_renderer`'s
