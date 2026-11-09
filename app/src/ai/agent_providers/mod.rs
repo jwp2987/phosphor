@@ -24,6 +24,8 @@ pub mod embeddings;
 #[cfg(any(test, feature = "test-util"))]
 pub mod fake_stream_seam;
 pub mod llm_id;
+#[cfg(any(test, feature = "test-util", feature = "integration_tests"))]
+pub mod mock_wiring;
 pub mod models_dev;
 pub mod oneshot;
 pub mod openai_compatible;

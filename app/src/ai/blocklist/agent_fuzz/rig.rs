@@ -14,13 +14,13 @@ use crate::ai::agent::AIAgentActionId;
 use crate::ai::agent::AIAgentActionType;
 use crate::ai::agent::conversation::{AIConversationId, ConversationStatus};
 use crate::ai::agent_providers::fake_stream_seam::{self, SeamHandle};
+use crate::ai::agent_providers::mock_wiring::wire_mock_provider_config_with_model;
 use crate::ai::blocklist::action_model::{PendingActionSnapshot, PendingStage};
 use crate::ai::blocklist::controller::BlocklistAIController;
 use crate::ai::blocklist::{
     BlocklistAIActionModel, BlocklistAIHistoryModel, QueuedQueryModel, QueuedQueryOrigin,
 };
 use crate::ai::llms::LLMPreferences;
-use crate::integration_testing::mock_provider::wire_mock_provider_config_with_model;
 use crate::terminal::TerminalView;
 use crate::test_util::terminal::{add_window_with_terminal, initialize_app_for_terminal_view};
 

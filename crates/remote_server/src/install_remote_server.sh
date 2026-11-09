@@ -14,7 +14,9 @@
 #                           - SHA-256 of the DECOMPRESSED helper for each platform, compiled
 #                             into the client (setup.rs::pinned_helper_sha256) and delivered
 #                             down the authenticated ssh channel this script arrives on.
-#   {one_version_cleanup}   - the shared cleanup fragment (one_version_cleanup.sh)
+#   one_version_cleanup     - (braced, on a line of its own further down) the shared cleanup fragment
+#                             (one_version_cleanup.sh). Not spelled braced in this comment: every
+#                             braced occurrence is substituted, comments included.
 #
 # STRUCTURE: everything is inside `main` and the last line is the call. That is load-bearing for
 # the in-band upload: bash reads this script from a pipe one command at a time, so when it runs

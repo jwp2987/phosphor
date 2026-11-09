@@ -54,6 +54,10 @@ fn gather(path: &str, plan: &GatherPlan) -> FileProbe {
     let mut chunk = vec![0u8; 64 * 1024];
     let mut newlines = 0usize;
     let mut reached_eof = false;
+    // What the chunk that held the `through` newline had past it: read from the file already, so
+    // the whole-file line count below must add it (it is not in `bytes`).
+    let mut past_cut_newlines = 0usize;
+    let mut past_cut_last: Option<u8> = None;
     while bytes.len() < plan.prefix_bytes {
         let want = chunk.len().min(plan.prefix_bytes - bytes.len());
         let n = match file.read(&mut chunk[..want]) {
@@ -77,6 +81,8 @@ fn gather(path: &str, plan: &GatherPlan) -> FileProbe {
             }
             if let Some(cut) = cut {
                 bytes.extend_from_slice(&read[..cut]);
+                past_cut_newlines = read[cut..].iter().filter(|b| **b == b'\n').count();
+                past_cut_last = read[cut..].last().copied();
                 break;
             }
         }
@@ -87,8 +93,8 @@ fn gather(path: &str, plan: &GatherPlan) -> FileProbe {
     let complete = reached_eof || (plan.through_line.is_none() && size <= bytes.len() as u64);
     let mut total_lines = None;
     if !complete {
-        let mut lines = bytes.iter().filter(|b| **b == b'\n').count();
-        let mut last = bytes.last().copied();
+        let mut lines = bytes.iter().filter(|b| **b == b'\n').count() + past_cut_newlines;
+        let mut last = past_cut_last.or_else(|| bytes.last().copied());
         loop {
             match file.read(&mut chunk) {
                 Ok(0) => break,

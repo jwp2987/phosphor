@@ -27,20 +27,14 @@
 
 use mockito::{Mock, Server, ServerGuard};
 use serde_json::json;
-use settings::Setting;
-use warpui::{AppContext, SingletonEntity};
+use warpui::AppContext;
 
-use crate::ai::agent_providers::{AgentProviderSecrets, llm_id};
-use crate::settings::{AISettings, AgentProvider, AgentProviderApiType, AgentProviderModel};
+pub use crate::ai::agent_providers::mock_wiring::{
+    MOCK_API_KEY, MOCK_PROVIDER_ID, wire_mock_provider_config_with_model,
+};
 
-/// Provider id the mock registers under (stable, so scenarios can reference it).
-pub const MOCK_PROVIDER_ID: &str = "mock-byop-provider";
 /// Model id exposed by the mock provider.
 pub const MOCK_MODEL_ID: &str = "mock-model";
-/// A non-empty dummy key. The mock never validates it; it exists only so the BYOP
-/// send path attaches an `Authorization: Bearer …` header, matching a real keyed
-/// provider. It is not a real secret.
-pub const MOCK_API_KEY: &str = "mock-key-not-a-real-secret";
 /// The canned assistant reply the mock streams back by default.
 pub const DEFAULT_CANNED_REPLY: &str = "Hello from the mock BYOP provider.";
 
@@ -160,40 +154,14 @@ pub fn wire_mock_provider_config(ctx: &mut AppContext, base_url: &str) -> ai::LL
     wire_mock_provider_config_with_model(ctx, base_url, MOCK_MODEL_ID)
 }
 
-/// [`wire_mock_provider_config`] for a provider whose one model is `model_id`. The agent fuzzer
-/// gives each case its own model id, because its stream seam (`fake_stream_seam`) is keyed by it.
-pub fn wire_mock_provider_config_with_model(
-    ctx: &mut AppContext,
-    base_url: &str,
-    model_id: &str,
-) -> ai::LLMId {
-    let provider = AgentProvider {
-        id: MOCK_PROVIDER_ID.to_owned(),
-        name: "Mock BYOP Provider".to_owned(),
-        kind: Default::default(),
-        api_type: AgentProviderApiType::OpenAi,
-        base_url: base_url.to_owned(),
-        models: vec![AgentProviderModel::from_id(model_id.to_owned())],
-        extra_headers: Vec::new(),
-        vertex_project: String::new(),
-        vertex_location: String::new(),
-        disabled: false,
-        token_price: None,
-    };
-
-    AISettings::handle(ctx).update(ctx, |settings, ctx| {
-        let _ = settings.agent_providers.set_value(vec![provider], ctx);
-    });
-    AgentProviderSecrets::handle(ctx).update(ctx, |secrets, ctx| {
-        secrets.set(MOCK_PROVIDER_ID, MOCK_API_KEY.to_owned(), ctx);
-    });
-
-    llm_id::encode(MOCK_PROVIDER_ID, model_id)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use settings::Setting;
+    use warpui::SingletonEntity;
+
+    use crate::settings::AgentProviderApiType;
 
     use futures::StreamExt;
     use genai::adapter::AdapterKind;

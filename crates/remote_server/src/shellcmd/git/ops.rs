@@ -560,8 +560,24 @@ pub async fn git_restore_and_clean(
                 }
                 Ok(())
             } else if err_msg.contains("did not match any file(s) known to git") {
-                // If some files don't exist in the branch, we need to remove them.
+                // If some files don't exist in the branch, we need to remove them. The batch
+                // restore refused ALL of its paths because of those, so with more than one path
+                // each is first restored on its own: a tracked file must be restored, never
+                // removed along with the strangers it was batched with.
                 for file_path in relative_paths {
+                    if relative_paths.len() > 1 {
+                        let single = [
+                            "restore",
+                            "--staged",
+                            "--worktree",
+                            source_arg.as_str(),
+                            "--",
+                            file_path.as_str(),
+                        ];
+                        if git_text(runner, repo, &single).await.is_ok() {
+                            continue;
+                        }
+                    }
                     log::debug!(
                         "[GIT OPERATION] diff_state.rs git_restore_and_clean git rm -f -- {file_path}"
                     );

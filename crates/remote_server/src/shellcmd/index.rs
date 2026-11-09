@@ -50,7 +50,7 @@ pub fn scan_command(repo: &str) -> String {
          if [ \"$M\" = git ]; then git ls-files -z --cached --others --exclude-standard 2>/dev/null; \
          else find . \\( -name .git -o -name node_modules -o -name target -o -name __pycache__ -o -name .venv \\) -prune -o -type f -print0 2>/dev/null; fi\n\
          }}\n\
-         list_files | xargs -0 find -maxdepth 0 -type f -size -{max}c -print0 2>/dev/null | xargs -0 $H 2>/dev/null\n\
+         list_files | xargs -0 sh -c 'find \"$@\" -maxdepth 0 -type f -size -{max}c -print0' sh 2>/dev/null | xargs -0 $H 2>/dev/null\n\
          exit 0"
     )
 }

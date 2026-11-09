@@ -151,11 +151,11 @@ fn requests_outside_the_capability_list_are_unsupported() {
     let mut h = harness();
     h.send(host(
         "r2",
-        host_scoped_request::Message::ReadFileContext(Default::default()),
+        host_scoped_request::Message::SearchRemoteCodebase(Default::default()),
     ));
     let e = error_of(h.next());
     assert_eq!(e.code, ErrorCode::Unsupported as i32);
-    assert!(e.message.contains("ReadFileContext"), "{}", e.message);
+    assert!(e.message.contains("SearchRemoteCodebase"), "{}", e.message);
 
     h.send(host(
         "r3",

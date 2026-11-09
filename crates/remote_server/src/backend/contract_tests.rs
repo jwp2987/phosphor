@@ -24,8 +24,9 @@ use crate::client::RemoteServerClient;
 use crate::proto::{
     DiscardFilesRequest, ErrorCode, ErrorResponse, FileStatusInfo, GitCommitChainMode,
     GitCommitChainRequest, GitCreatePrRequest, GitFileStatus, GitPullRequest, GitPushRequest,
-    GitStageRequest, ReadFileContextRequest, ServerMessage, git_commit_chain_response,
-    git_create_pr_response, git_file_status, git_pull_response, git_push_response, server_message,
+    GitStageRequest, ReadFileContextRequest, RipgrepSearchRequest, ServerMessage,
+    git_commit_chain_response, git_create_pr_response, git_file_status, git_pull_response,
+    git_push_response, server_message,
 };
 use crate::protocol;
 use crate::rt::FutureExt as _;
@@ -139,15 +140,21 @@ pub(super) struct Subject {
     pub backend: Arc<dyn RemoteFeatures>,
 }
 
-/// The family-independent assertion that proves the harness: a request no backend implements yet
-/// is reported as Unsupported (so the router can fall back), never a hang, a panic or a generic
-/// failure. Identical for the helper (the daemon answers `UNSUPPORTED`) and the shell skeleton.
+/// The family-independent assertion that proves the harness: a request the shell arm does not
+/// implement (git reads are helper-only) is reported as Unsupported (so the router can fall
+/// back), never a hang, a panic or a generic failure. The helper arm has no such request any
+/// more -- the daemon serves every `RemoteFeatures` method -- so its `UNSUPPORTED` handling is
+/// covered by `unsupported_from_the_helper_is_served_by_the_shell_and_sticks` and the daemon's
+/// own `requests_outside_the_capability_list_are_unsupported`.
 pub(super) async fn assert_unimplemented_is_unsupported(subject: &Subject) {
+    if subject.name.starts_with("helper") {
+        return;
+    }
     let err = subject
         .backend
-        .read_file_context(ReadFileContextRequest::default())
+        .get_branches(crate::proto::GetBranches::default())
         .await
-        .expect_err("read_file_context is not implemented by any backend yet");
+        .expect_err("get_branches is not implemented by the shell arm");
     assert!(
         err.is_unsupported(),
         "{}: expected Unsupported, got {err:?}",
@@ -1233,12 +1240,13 @@ async fn unsupported_from_the_helper_is_served_by_the_shell_and_sticks() {
     let backend = router.backend(&host, Some(Arc::new(client)), [session]);
 
     // No capability list was sent, so the router starts out trusting the helper.
-    assert_eq!(backend.kind(Family::FileContext), BackendKind::Helper);
+    assert_eq!(backend.kind(Family::RipgrepSearch), BackendKind::Helper);
 
+    // Ripgrep is helper-only (the shell arm answers Unsupported too), and this helper refuses it.
     let err = backend
-        .read_file_context(ReadFileContextRequest::default())
+        .ripgrep_search(RipgrepSearchRequest::default())
         .await
-        .expect_err("neither backend implements it yet");
+        .expect_err("neither backend serves it");
     assert!(err.is_unsupported(), "{err:?}");
     assert_eq!(
         requests.load(Ordering::SeqCst),
@@ -1247,9 +1255,9 @@ async fn unsupported_from_the_helper_is_served_by_the_shell_and_sticks() {
     );
 
     // From now on the family goes straight to the shell: the helper is not asked again.
-    assert_eq!(backend.kind(Family::FileContext), BackendKind::Shell);
+    assert_eq!(backend.kind(Family::RipgrepSearch), BackendKind::Shell);
     let _ = backend
-        .read_file_context(ReadFileContextRequest::default())
+        .ripgrep_search(RipgrepSearchRequest::default())
         .await;
     assert_eq!(requests.load(Ordering::SeqCst), 1);
     // Other families are untouched.
