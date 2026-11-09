@@ -12,14 +12,15 @@ use std::sync::{Arc, Mutex};
 
 use warp_core::SessionId;
 
-use super::Family;
 use super::executor::OutOfBandExecutor;
 use super::helper::client_id;
 use super::refresh::RemoteRefreshEvent;
-use super::shell::{ShellBackend, ShellPush, TreeCache};
+use super::shell::{PrLookup, ShellBackend, ShellPush, TreeCache};
+use super::{Family, Requested};
 use crate::HostId;
 use crate::capability::ServerCapabilities;
 use crate::client::RemoteServerClient;
+use warp_util::standardized_path::StandardizedPath;
 
 /// Which backend serves a family.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -429,6 +430,80 @@ impl RoutedBackend {
                 .emit_refresh(&self.host, &RemoteRefreshEvent::AfterOwnWrite);
         }
         result
+    }
+
+    /// Asks for the git chip's status of `repo_path`. With the helper serving `GitStatus` it is
+    /// told (`UpdateGitStatus`) and answers with a `GitStatusPush` on its connection, now and on
+    /// every change; on the shell the status is computed now (`Computed(None)`: nothing to
+    /// report) and the caller asks again on refresh events. `cached_main_branch` only matters to
+    /// the shell arm.
+    pub async fn request_git_status(
+        &self,
+        repo_path: &StandardizedPath,
+        cached_main_branch: Option<String>,
+    ) -> Result<Requested<Option<crate::proto::GitStatusPush>>, super::BackendError> {
+        self.log_route(Family::GitStatus);
+        if self.kind(Family::GitStatus) == BackendKind::Helper
+            && let Some(client) = self.helper_client()
+        {
+            client.update_git_status(repo_path);
+            return Ok(Requested::PushedByHelper);
+        }
+        self.shell
+            .git_status_shell(&repo_path.to_string(), cached_main_branch)
+            .await
+            .map(Requested::Computed)
+    }
+
+    /// Asks for PR info of `repo_path`'s current branch. The helper is told and pushes (it looks
+    /// again by itself when the branch changes). On the shell it is looked up now: always with
+    /// `force`, otherwise only when the branch differs from `known_branch`.
+    pub async fn request_pr_info(
+        &self,
+        repo_path: &StandardizedPath,
+        known_branch: Option<Option<String>>,
+        force: bool,
+    ) -> Result<Requested<PrLookup>, super::BackendError> {
+        self.log_route(Family::Github);
+        if self.kind(Family::Github) == BackendKind::Helper
+            && let Some(client) = self.helper_client()
+        {
+            client.update_github_pr_info(repo_path);
+            return Ok(Requested::PushedByHelper);
+        }
+        self.shell
+            .pr_info_shell(&repo_path.to_string(), known_branch, force)
+            .await
+            .map(Requested::Computed)
+    }
+
+    /// Asks for the repository name / owner / host of `repo_path` (from `gh`); the helper pushes,
+    /// the shell computes now.
+    pub async fn request_repository_info(
+        &self,
+        repo_path: &StandardizedPath,
+    ) -> Result<Requested<crate::proto::GitHubRepositoryInfoPush>, super::BackendError> {
+        self.log_route(Family::Github);
+        if self.kind(Family::Github) == BackendKind::Helper
+            && let Some(client) = self.helper_client()
+        {
+            client.update_github_repo_info(repo_path);
+            return Ok(Requested::PushedByHelper);
+        }
+        self.shell
+            .repository_info_shell(&repo_path.to_string())
+            .await
+            .map(Requested::Computed)
+    }
+
+    /// Tells the helper (if it serves diff state) that the subscription for `(repo, mode)` is over.
+    /// The shell arm holds no subscription, so there is nothing to end there.
+    pub fn unsubscribe_diff_state(&self, request: crate::proto::UnsubscribeDiffState) {
+        if self.kind(Family::DiffState) == BackendKind::Helper
+            && let Some(client) = self.helper_client()
+        {
+            client.unsubscribe_diff_state(request);
+        }
     }
 
     /// Whether a call for `family` could work at all right now: the helper serves it, or the
