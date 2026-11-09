@@ -750,13 +750,17 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
           # ^Y runs the hook, RS (^^) the discard widget; each is a macro that runs its `bind -x`
           # key and then \C-x\C-_9 (accept-line after a handed-back Enter, set-mark otherwise).
           # US (^_) is left alone: it stays readline's undo.
+          # The `bind -x` keys are TWO keys long on purpose: before bash 4.3 readline found a
+          # `bind -x` command only one keymap level down, so a three-key sequence ran nothing
+          # (CentOS/RHEL 7 ship 4.2). \C-x\C-_9 may stay three keys: it is a plain readline
+          # function, not `bind -x`.
           local __warp_nc_keymap
           for __warp_nc_keymap in emacs vi-insert vi-command; do
-            bind -m "$__warp_nc_keymap" -x '"\C-x\C-y1":"warp_native_complete"' 2>/dev/null
-            bind -m "$__warp_nc_keymap" -x '"\C-x\C-^1":"warp_native_discard"' 2>/dev/null
+            bind -m "$__warp_nc_keymap" -x '"\C-x\C-y":"warp_native_complete"' 2>/dev/null
+            bind -m "$__warp_nc_keymap" -x '"\C-x\C-^":"warp_native_discard"' 2>/dev/null
             bind -m "$__warp_nc_keymap" '"\C-x\C-_9": set-mark' 2>/dev/null
-            bind -m "$__warp_nc_keymap" '"\C-y": "\C-x\C-y1\C-x\C-_9"' 2>/dev/null
-            bind -m "$__warp_nc_keymap" '"\C-^": "\C-x\C-^1\C-x\C-_9"' 2>/dev/null
+            bind -m "$__warp_nc_keymap" '"\C-y": "\C-x\C-y\C-x\C-_9"' 2>/dev/null
+            bind -m "$__warp_nc_keymap" '"\C-^": "\C-x\C-^\C-x\C-_9"' 2>/dev/null
           done
         fi
 
