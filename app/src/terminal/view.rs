@@ -10577,6 +10577,41 @@ impl TerminalView {
         });
     }
 
+    /// The active conversation, when its turn is blocked on (or still running) actions with no
+    /// unfinished AI block to route a Ctrl-C through (#1799). Such a turn is not `InProgress`
+    /// (its status is `Blocked`), so neither branch above it in
+    /// [`Self::maybe_handle_ctrl_c_in_rich_content_block`] took it, and the Ctrl-C did nothing:
+    /// a pending action with no card held the turn and the follow-ups queued behind it forever.
+    fn blocked_agent_turn_to_cancel(&self, ctx: &AppContext) -> Option<AIConversationId> {
+        let conversation =
+            BlocklistAIHistoryModel::as_ref(ctx).active_conversation(self.view_id)?;
+        let conversation_id = conversation.id();
+        (conversation.status().is_blocked()
+            || self
+                .ai_action_model
+                .as_ref(ctx)
+                .has_unfinished_actions_for_conversation(conversation_id))
+        .then_some(conversation_id)
+    }
+
+    /// Ctrl-C on a turn blocked on actions (#1799): stop it the way Stop does. Every pending
+    /// action resolves as cancelled, and the conversation's end releases the follow-ups queued
+    /// behind it.
+    fn cancel_blocked_agent_turn(
+        &mut self,
+        conversation_id: AIConversationId,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        log::info!("Ctrl-C: cancelling the blocked agent turn of conversation {conversation_id:?}");
+        self.ai_controller.update(ctx, |controller, ctx| {
+            controller.cancel_conversation_progress(
+                conversation_id,
+                CancellationReason::ManuallyCancelled,
+                ctx,
+            );
+        });
+    }
+
     /// If there is an active rich content block that is set up to handle ctrl-c
     /// events, allow it to handle the event.
     /// TODO(CORE-3415): We should probably remove the FixedBindings for ctrl-c
@@ -10598,6 +10633,9 @@ impl TerminalView {
             // is running — the parent AI block is already finished but the response
             // stream is still active. Route Ctrl+C to the status bar to cancel it.
             self.cancel_active_conversation_via_status_bar(ctx);
+        } else if let Some(conversation_id) = self.blocked_agent_turn_to_cancel(ctx) {
+            log_route("cancel_blocked_turn");
+            self.cancel_blocked_agent_turn(conversation_id, ctx);
         } else if self
             .passive_suggestions_models
             .legacy

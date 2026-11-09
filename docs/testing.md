@@ -2278,3 +2278,46 @@ Harness only; `run.py --self-test` covers both (`app_log_readers`, `mac_close_ke
 ## models.dev option (#1791)
 
 Unit tests in `app/src/ai/agent_providers/models_dev_bundle_tests.rs` cover `models_dev_fetch`/`models_dev_url` on both entry points (startup `ensure_loaded`, Refresh `refresh_catalog`), the cache -> bundled fallback, response validation, and that the bundled gzip matches `app/resources/models_dev/PROVENANCE.txt` and `assets/models_dev/api.json`. They share one catalog singleton and serialize on a mutex. No app test.
+
+## Stuck agent actions: a pending or running action with no usable UI (#1797, #1799)
+
+Invariant under test: **no agent action is pending without a visible card, and nothing waits on an answer no UI can give.** Unit and
+in-process tests, no app test yet (the app cases are Wave 0.5's, below).
+
+| test | file | what it proves |
+|---|---|---|
+| `answers_staged_before_execute_are_its_result` | `action_model/execute/ask_user_question_tests.rs` | #1797: the question card stages its answers per action, then executes; `execute` returns them synchronously. The old card wrote them to the shared decision channel, which `execute` drains on entry (#1278), so the answer was dropped and the turn hung on "Preparing question..." |
+| `staged_answers_belong_to_their_action` | same | an answer staged for one question is not taken by another (the #1278 concern without a drain) and is dropped with its action (`discard_action_state`) |
+| `a_question_list_with_nothing_to_show_returns_an_error_at_once` | same | `convert_from` keeps only multiple-choice questions; a call left with none runs without approval (even under `AlwaysAsk`) and returns an `Error` result, never a pending action |
+| `user_accept_of_a_question_needs_its_staged_answer`, `question_answer_guard_leaves_other_actions_alone` | `action_model_tests.rs` | `execute_action` (every by-id accept: the generic Run / Enter `ExecuteRequestedAction`, TUI views) refuses a question with no staged answer; other actions and an empty question list are unaffected |
+| `only_a_user_reject_cancels_the_rest_of_the_turn` | same | #1799: only `ManuallyCancelled` (Reject, the status bar's Ctrl-C / Stop, the TUI reject) cancels the later actions of the turn |
+| `transfer_asks_for_approval_only_over_a_running_command`, `transfer_with_no_running_command_resolves_without_approval` | `action_model/execute/shell_command_tests.rs` | #1799 invariant: `transfer_shell_command_control_to_user`, whose only card is the CLI subagent view over a running command, waits for approval only while a command runs; with none it runs at once and returns `BlockNotFound` |
+| `cancelled_transfer_says_why`, `transfer_with_nothing_running_says_why` | `agent_providers/tools/markers.rs` | the model's tool result for a cancelled / nothing-to-hand-over transfer carries a `detail` saying why |
+| `rejecting_a_command_cancels_the_rest_of_its_turn` | `terminal/view_test.rs` | the #1799 turn (`run_shell_command` held for approval + `transfer_...` behind it, a follow-up queued `PendingApprovalFollowUp`): Reject cancels both, results in tool-call order, nothing left pending, conversation `Cancelled`, queued row unlocked, no request sent on the user's behalf |
+| `ctrl_c_cancels_a_turn_blocked_on_pending_actions` | same | Ctrl-C on a `Blocked` turn with no unfinished AI block (it matched no Ctrl-C route before and did nothing) cancels the whole turn, same end state |
+| `ctrl_c_on_a_blocked_turn_in_the_agent_view_releases_the_queued_follow_up` | same | in the agent view the queued follow-up comes back into the input after the Ctrl-C (one Enter sends it). A cancelled turn never auto-sends a queued row (#690, #1026), so "sent" means released, not fired |
+| `a_question_finishes_only_with_its_cards_answer`, `a_question_with_nothing_to_show_resolves_with_an_error` | same | through the action model: an accept with no answer leaves the question blocked (the card stays up), the card's submit finishes it with its answers; an empty question list resolves itself with an error |
+
+### Wave 0.5 fake-model scenarios for these issues (to build; scripted BYOP stand-in)
+
+Each scenario runs in agent mode and terminal mode, on the owner setup, with a screenshot per step and the exact text the model receives
+read from the stub server's request log. Fail on any pending action without a card (screen) or an `action_model` pending entry after the
+turn ends (app log), on any turn that does not end within 10 s of the last user step, and on a queued follow-up that stays queued.
+
+| scenario | script (tool calls the stub returns) | user steps | expected |
+|---|---|---|---|
+| `aq_valid` | `ask_user_question` with one multiple-choice question | answer on the card | card shows at once; the next request carries `{"status":"ok","answers":[...]}` |
+| `aq_run_without_answer` | same | press Enter / click any generic Run before answering | the card stays, focus moves to it; nothing is sent; then answer: as `aq_valid` |
+| `aq_empty` | `ask_user_question` whose only question is not multiple choice (dropped by `convert_from`) | none | no card, no "Preparing question..."; the next request carries the `Error` result |
+| `aq_malformed` | `ask_user_question` with arguments that do not parse | none | the existing invalid-arguments path: a visible error and a retry, never a hang |
+| `aq_ctrl_c` | `ask_user_question` | Ctrl-C while the card is up | turn cancelled, card shows Cancelled, a typed follow-up sends |
+| `reject_then_transfer` (#1799) | `run_shell_command` (held), `transfer_shell_command_control_to_user` | Reject the command | both cancelled, no hidden pending action, queued follow-up released; the next request carries both cancelled results, the transfer's with its `detail` |
+| `reject_middle_of_three` | `read_files`, `run_shell_command` (held), `grep` | Reject the command | `read_files` result kept, `grep` cancelled with the turn |
+| `approve_then_transfer` | `run_shell_command` (a real password prompt), `transfer_...` | approve | the CLI subagent card for the transfer appears over the running command; approve hands over |
+| `transfer_after_fast_command` | `run_shell_command` that finishes at once, `transfer_...` | approve the command | the transfer resolves on its own with `block_not_found` (no card, no wait) |
+| `ctrl_c_blocked` | `run_shell_command` (held), `transfer_...` | type a follow-up (queued), then Ctrl-C | turn cancelled, follow-up released into the input (agent view) or unlocked in the queue |
+| `stop_button_blocked` | same | Stop button instead of Ctrl-C | same as `ctrl_c_blocked` |
+
+Fuzzer oracle (the Wave 0.5 grammar generator): after every generated user step, each `pending_actions` entry is the front action with a
+rendered card or is behind one; nothing is `RunningAsync` for an `ask_user_question`; a turn whose actions are all finished leaves the
+conversation not `Blocked`. #1797 and #1799 are the acceptance cases: the fuzzer must find both from scratch on the pre-fix build.

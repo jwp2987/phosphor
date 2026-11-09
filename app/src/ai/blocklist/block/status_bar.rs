@@ -630,14 +630,19 @@ impl BlocklistAIStatusBar {
             let Some(conversation_id) = model.conversation_id(ctx) else {
                 return;
             };
-            let Some(output) = model.status(ctx).output_to_render() else {
-                return;
-            };
-            let actions = output
-                .get()
-                .actions()
-                .map(|action| action.id.clone())
-                .collect::<HashSet<_>>();
+            // No output to render (yet) is no reason to do nothing: a turn can still be blocked
+            // on actions of an earlier exchange (#1799), handled by the last branch below.
+            let actions = model
+                .status(ctx)
+                .output_to_render()
+                .map(|output| {
+                    output
+                        .get()
+                        .actions()
+                        .map(|action| action.id.clone())
+                        .collect::<HashSet<_>>()
+                })
+                .unwrap_or_default();
             if let Some(active_action_id) = self
                 .action_model
                 .as_ref(ctx)
@@ -655,11 +660,22 @@ impl BlocklistAIStatusBar {
                 });
             } else if model
                 .conversation(ctx)
-                .is_some_and(|c| c.status().is_in_progress())
+                .is_some_and(|c| c.status().is_in_progress() || c.status().is_blocked())
+                || self
+                    .action_model
+                    .as_ref(ctx)
+                    .has_unfinished_actions_for_conversation(conversation_id)
             {
-                // No streaming request or pending action, but conversation is still in progress.
-                // This happens when a subagent (e.g., computer use or advice) is running.
-                // Cancel the entire conversation's progress.
+                // No streaming request or pending action of this exchange, but the conversation
+                // is still in progress -- a subagent (e.g., computer use or advice) is running --
+                // or still blocked on, or running, actions this exchange does not show (#1799: a
+                // turn whose actions waited with no card ignored Ctrl-C and Stop). Cancel the
+                // entire conversation's progress: every pending action resolves as cancelled and
+                // queued follow-ups are released.
+                log::info!(
+                    "Stop / Ctrl-C: cancelling the progress of conversation {conversation_id:?} \
+                     (no action of the shown exchange to cancel)"
+                );
                 self.controller.update(ctx, |controller, ctx| {
                     controller.cancel_conversation_progress(
                         conversation_id,

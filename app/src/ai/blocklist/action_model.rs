@@ -267,6 +267,49 @@ fn next_action_acceptable_by_plain_accept(
         .map(|action| &action.id)
 }
 
+/// Whether a user accept of `action` must be refused because it is an `ask_user_question` whose
+/// answer has not been staged (#1797). `has_staged_answer`: the question card staged its answers
+/// for this action (`AskUserQuestionExecutor::stage_answers`).
+///
+/// A question's confirmation IS its answer. The cards stage the answer and then execute the
+/// action by id; anything else that executes it by id -- the generic Run / Enter accept
+/// (`AIBlockAction::ExecuteRequestedAction`), a TUI generic tool view -- carries no answer, and
+/// the executor would wait on a decision channel only a card's submit ever writes: the turn
+/// hung on "Preparing question..." with the card hidden (it renders only while the action is
+/// blocked, not while it runs). `execute_action` is the one place every by-id accept passes, so
+/// the refusal lives there rather than at each caller. The question stays blocked and its card
+/// stays up. A question with no answerable question never waits for an answer
+/// (`AskUserQuestionExecutor::has_no_answerable_questions`): its execution is an error result,
+/// so it is not refused.
+fn user_accept_lacks_question_answer(action: &AIAgentActionType, has_staged_answer: bool) -> bool {
+    matches!(action, AIAgentActionType::AskUserQuestion { .. })
+        && !AskUserQuestionExecutor::has_no_answerable_questions(action)
+        && !has_staged_answer
+}
+
+/// Whether rejecting one pending action cancels every later pending action of the same turn
+/// with it (#1799). True for the user's own reject / stop (`ManuallyCancelled`), the reason
+/// every Reject button, the status bar's Ctrl-C / Stop and the TUI reject pass.
+///
+/// Why every later action, not only the ones that visibly depend on the rejected one:
+/// * A turn's tool calls are planned together, on the assumption that the earlier ones run. The
+///   only dependency the client can see is a command id (`transfer_shell_command_control_to_user`
+///   / `write_to_long_running_shell_command` / `read_shell_command_output` on the command just
+///   requested), but most are invisible: a rejected `cd`, checkout or file edit changes what
+///   every later call means.
+/// * A reject is the user saying "not this". Carrying on runs, or asks approval for, the rest of
+///   a plan the user just turned down, and an action the GUI has no card for (a hand-over of a
+///   command that never ran) sat pending, unseen, with follow-ups queued behind it forever.
+/// * Nothing is lost: every cancelled call gets its cancelled result, and the batch goes to the
+///   model with the user's next message, so the model sees which calls did not run and can issue
+///   them again.
+///
+/// The queue only ever holds one turn: a stream's actions are queued together when it ends,
+/// and a new request cancels whatever is still pending first.
+fn rejection_cancels_rest_of_turn(reason: CancellationReason) -> bool {
+    matches!(reason, CancellationReason::ManuallyCancelled)
+}
+
 /// Returns whether another action may join the currently running phase.
 ///
 /// Parallel phases only admit additional actions that classify into the same group and
@@ -900,6 +943,9 @@ impl BlocklistAIActionModel {
     /// on any action, computer use included. Callers are the confirmation UIs in `block.rs`
     /// and `inline_action/ask_user_question_view.rs`.
     ///
+    /// An `ask_user_question` is accepted only with its answer staged by its question card;
+    /// any other accept of one is refused here (`user_accept_lacks_question_answer`, #1797).
+    ///
     /// A caller that is *not* a click does not belong here. The fork once had one: the LRC
     /// tag-in auto-accept, which ran the agent's first round as a forged Accept and so
     /// overrode an `Always ask` profile (#617, then removed entirely in #1070).
@@ -1016,6 +1062,29 @@ impl BlocklistAIActionModel {
             return None;
         }
 
+        let has_staged_answer = self
+            .executor
+            .as_ref(ctx)
+            .ask_user_question_executor()
+            .as_ref(ctx)
+            .has_staged_answers(action_id);
+        if initiator == ActionInitiator::User
+            && self
+                .pending_actions
+                .get(&conversation_id)
+                .and_then(|queue| queue.get(idx))
+                .is_some_and(|action| {
+                    user_accept_lacks_question_answer(&action.action, has_staged_answer)
+                })
+        {
+            // An accept with no answer: the question stays blocked and its card stays up.
+            log::info!(
+                "Refusing user accept of ask_user_question {action_id:?}: no answer was \
+                 submitted on its question card (#1797)"
+            );
+            return None;
+        }
+
         if initiator == ActionInitiator::User
             && self
                 .pending_actions
@@ -1125,6 +1194,18 @@ impl BlocklistAIActionModel {
         ctx: &mut ModelContext<Self>,
     ) {
         self.queue_actions(vec![action], conversation_id, ctx);
+    }
+
+    /// Test-only: queues `actions` as ONE turn's batch through the normal dispatch pipeline, as
+    /// the controller does when a stream ends with several tool calls.
+    #[cfg(test)]
+    pub(crate) fn queue_actions_for_test(
+        &mut self,
+        actions: Vec<AIAgentAction>,
+        conversation_id: AIConversationId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        self.queue_actions(actions, conversation_id, ctx);
     }
 
     /// Test-only: moves `action_id` from pending to running for `conversation_id`, so
@@ -1329,7 +1410,27 @@ impl BlocklistAIActionModel {
                 .find_position(|action| action.id == *action_id)
             {
                 if let Some(action) = pending_actions_for_conversation.remove(idx) {
+                    // Taken out of the queue BEFORE the rejected action's result is handled:
+                    // that handling drains the queue (`try_to_execute_available_actions`), and
+                    // would otherwise start, or block on, the next action of the turn.
+                    // Only the actions after it: an earlier one still pending is not part of
+                    // what the user turned down.
+                    let rest_of_turn = if rejection_cancels_rest_of_turn(reason) {
+                        pending_actions_for_conversation.drain(idx..).collect_vec()
+                    } else {
+                        Vec::new()
+                    };
+                    if !rest_of_turn.is_empty() {
+                        log::info!(
+                            "Action {action_id:?} was rejected: cancelling the {} later \
+                             action(s) of the same turn with it (#1799)",
+                            rest_of_turn.len()
+                        );
+                    }
                     self.cancel_pending_action(conversation_id, action, Some(reason), ctx);
+                    for later in rest_of_turn {
+                        self.cancel_pending_action(conversation_id, later, Some(reason), ctx);
+                    }
                 }
             }
         }

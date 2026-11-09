@@ -405,10 +405,13 @@ impl TuiAskQuestionView {
         self.abort_auto_advance();
         let action_id = self.action_id.clone();
         let conversation_id = self.conversation_id;
+        // Staged per action, then executed by id: `execute` returns them at once (#1797).
         self.action_model.update(ctx, |action_model, ctx| {
             action_model
                 .ask_user_question_executor(ctx)
-                .update(ctx, |executor, _| executor.complete(answers.clone()));
+                .update(ctx, |executor, _| {
+                    executor.stage_answers(action_id.clone(), answers.clone())
+                });
             action_model.execute_action(&action_id, conversation_id, ctx);
         });
     }

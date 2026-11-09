@@ -116,11 +116,27 @@ fn transfer_result_to_json(result: &api::message::tool_call_result::Result) -> O
             "exit_code": f.exit_code,
             "output": f.output,
         }),
-        Some(TR::Error(_)) => json!({ "status": "error", "message": "block_not_found" }),
-        None => json!({ "status": "cancelled" }),
+        // #1799: say why nothing was handed over, so the model does not retry blindly.
+        Some(TR::Error(_)) => json!({
+            "status": "error",
+            "message": "block_not_found",
+            "detail": TRANSFER_NOTHING_RUNNING_DETAIL,
+        }),
+        None => json!({ "status": "cancelled", "detail": TRANSFER_CANCELLED_DETAIL }),
     };
     Some(value)
 }
+
+/// The `detail` of a hand-over that found no running command (#1799).
+const TRANSFER_NOTHING_RUNNING_DETAIL: &str = "No command was running, so nothing was handed \
+     to the user. If the command this was for was rejected or has not started, it never ran.";
+
+/// The `detail` of a cancelled hand-over (#1799). A user's reject of one tool call cancels the
+/// later calls of the same turn (`rejection_cancels_rest_of_turn` in the action model), and a
+/// hand-over is usually such a later call: the command it was meant for was the one rejected.
+const TRANSFER_CANCELLED_DETAIL: &str = "Control was not handed to the user: the user \
+     cancelled this call, or rejected an earlier tool call of the same turn, which cancels the \
+     rest of that turn. If a hand-over had started, it was stopped.";
 
 pub static TRANSFER_SHELL_CONTROL: OpenAiTool = OpenAiTool {
     name: "transfer_shell_command_control_to_user",
@@ -133,3 +149,44 @@ pub static TRANSFER_SHELL_CONTROL: OpenAiTool = OpenAiTool {
     from_args: transfer_from_args,
     result_to_json: transfer_result_to_json,
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn transfer_result(
+        result: Option<api::transfer_shell_command_control_to_user_result::Result>,
+    ) -> api::message::tool_call_result::Result {
+        api::message::tool_call_result::Result::TransferShellCommandControlToUser(
+            api::TransferShellCommandControlToUserResult { result },
+        )
+    }
+
+    /// #1799: a hand-over cancelled with its turn (the command it was for was rejected) tells
+    /// the model why, instead of a bare `cancelled`.
+    #[test]
+    fn cancelled_transfer_says_why() {
+        let value = transfer_result_to_json(&transfer_result(None)).expect("transfer result");
+        assert_eq!(value["status"], "cancelled");
+        let detail = value["detail"].as_str().expect("a detail for the model");
+        assert!(detail.contains("rejected an earlier tool call"), "{detail}");
+    }
+
+    /// #1799: a hand-over with no running command (it resolves without approval) says that
+    /// nothing was handed over; the `block_not_found` code is kept for anything matching on it.
+    #[test]
+    fn transfer_with_nothing_running_says_why() {
+        let value = transfer_result_to_json(&transfer_result(Some(
+            api::transfer_shell_command_control_to_user_result::Result::Error(Default::default()),
+        )))
+        .expect("transfer result");
+        assert_eq!(value["status"], "error");
+        assert_eq!(value["message"], "block_not_found");
+        assert!(
+            value["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.contains("nothing was handed")),
+            "{value}"
+        );
+    }
+}

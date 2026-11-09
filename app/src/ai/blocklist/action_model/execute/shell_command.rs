@@ -72,6 +72,20 @@ fn write_skips_pty_permission_check(block_finished: Option<bool>) -> bool {
     block_finished == Some(true)
 }
 
+/// Whether `transfer_shell_command_control_to_user` runs without asking for approval:
+/// exactly when there is no long-running command to hand over (#1799).
+///
+/// Its only approval UI is the CLI subagent view's card, which exists only over a running
+/// command. With none running (the command the hand-over was for was rejected, never started,
+/// or already finished), the action used to wait for an approval no view could show: pending
+/// and invisible, holding the turn and every follow-up queued behind it. There is nothing to
+/// approve then: `execute` hands nothing over and returns its `BlockNotFound` error at once, so
+/// it resolves on its own and the model is told. With a command running, approval is asked as
+/// before.
+fn transfer_resolves_without_approval(active_block_is_long_running: bool) -> bool {
+    !active_block_is_long_running
+}
+
 /// Text returned to the agent for `run_shell_command` / related tools.
 ///
 /// Prefer unobfuscated grid text; some shells / timing paths leave the primary serialization empty
@@ -381,7 +395,15 @@ impl ShellCommandExecutor {
                 }
             }
             AIAgentActionType::ReadShellCommandOutput { .. } => true,
-            AIAgentActionType::TransferShellCommandControlToUser { .. } => false,
+            AIAgentActionType::TransferShellCommandControlToUser { .. } => {
+                transfer_resolves_without_approval(
+                    self.terminal_model
+                        .lock()
+                        .block_list()
+                        .active_block()
+                        .is_active_and_long_running(),
+                )
+            }
             _ => false,
         }
     }

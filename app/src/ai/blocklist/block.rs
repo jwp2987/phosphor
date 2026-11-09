@@ -2174,7 +2174,12 @@ impl AIBlock {
             }
             self.requested_action_ids = new_action_ids;
 
-            if !self.action_buttons.contains_key(&action.id) {
+            // No generic Run / Cancel for an action only its own UI can accept (an
+            // `ask_user_question`: its card collects the answer and has its own controls). A
+            // Run there executed the question with no answer and hung the turn (#1797).
+            if !self.action_buttons.contains_key(&action.id)
+                && action.action.can_be_accepted_without_its_own_ui()
+            {
                 let run_button = CompactibleActionButton::new(
                     "Run".to_string(),
                     Some(KeystrokeSource::Fixed(ENTER_KEYSTROKE.clone())),
@@ -6526,6 +6531,20 @@ impl TypedActionView for AIBlock {
                 });
             }
             AIBlockAction::ExecuteRequestedAction { action_id } => {
+                // A generic Run on a question cannot answer it: send the user to its card.
+                // (`execute_action` refuses it anyway, #1797; no Run is drawn for one.)
+                let is_question_without_answer = self
+                    .action_model
+                    .as_ref(ctx)
+                    .get_pending_action_by_id(action_id)
+                    .is_some_and(|action| !action.action.can_be_accepted_without_its_own_ui());
+                if is_question_without_answer {
+                    if let Some(view) = self.ask_user_question_view.clone() {
+                        ctx.focus(&view);
+                    }
+                    ctx.notify();
+                    return;
+                }
                 self.action_model.update(ctx, |action_model, ctx| {
                     action_model.execute_action(action_id, self.client_ids.conversation_id, ctx)
                 });

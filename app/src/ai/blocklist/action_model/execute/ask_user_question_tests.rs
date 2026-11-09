@@ -307,3 +307,149 @@ fn execute_drains_a_stale_decision_from_an_earlier_card() {
         assert!(!stale_left);
     });
 }
+
+fn execute_now(
+    app: &mut App,
+    executor: &ModelHandle<AskUserQuestionExecutor>,
+    action: &AIAgentAction,
+    conversation_id: AIConversationId,
+) -> AnyActionExecution {
+    executor.update(app, |executor, ctx| {
+        executor
+            .execute(
+                ExecuteActionInput {
+                    action,
+                    conversation_id,
+                },
+                ctx,
+            )
+            .into()
+    })
+}
+
+/// #1797: the card stages its answers and then executes the action. The answers come back as
+/// the result at once. Before, the card wrote them to the shared decision channel, which
+/// `execute` drains on entry (#1278): the answer was discarded and the action waited on an
+/// empty channel forever, stuck on "Preparing question...".
+#[test]
+fn answers_staged_before_execute_are_its_result() {
+    App::test((), |mut app| async move {
+        let terminal_view_id = EntityId::new();
+        let (history, _profiles) = initialize_ask_user_question_test(&mut app, terminal_view_id);
+        let executor = app.add_model(|_| AskUserQuestionExecutor::new(terminal_view_id));
+        let action = build_action("answered");
+        let conversation_id = history.update(&mut app, |history, ctx| {
+            history.start_new_conversation(terminal_view_id, false, false, ctx)
+        });
+        let answers = vec![AskUserQuestionAnswerItem::Skipped {
+            question_id: "q1".to_string(),
+        }];
+
+        executor.update(&mut app, |executor, _| {
+            executor.stage_answers(action.id.clone(), answers.clone());
+            assert!(executor.has_staged_answers(&action.id));
+        });
+        let execution = execute_now(&mut app, &executor, &action, conversation_id);
+
+        assert!(
+            matches!(
+                &execution,
+                AnyActionExecution::Sync(AIAgentActionResultType::AskUserQuestion(
+                    AskUserQuestionResult::Success { answers: got },
+                )) if *got == answers
+            ),
+            "{execution:?}"
+        );
+        executor.read(&app, |executor, _| {
+            assert!(
+                !executor.has_staged_answers(&action.id),
+                "taken by the execution"
+            );
+        });
+    });
+}
+
+/// #1797 / #1278: an answer is staged for one action only. Executing another question does not
+/// take it (that one still waits for its own card), and the staged answer stays for its action.
+#[test]
+fn staged_answers_belong_to_their_action() {
+    App::test((), |mut app| async move {
+        let terminal_view_id = EntityId::new();
+        let (history, _profiles) = initialize_ask_user_question_test(&mut app, terminal_view_id);
+        let executor = app.add_model(|_| AskUserQuestionExecutor::new(terminal_view_id));
+        let answered = build_action("answered");
+        let other = build_action("other");
+        let conversation_id = history.update(&mut app, |history, ctx| {
+            history.start_new_conversation(terminal_view_id, false, false, ctx)
+        });
+
+        executor.update(&mut app, |executor, _| {
+            executor.stage_answers(
+                answered.id.clone(),
+                vec![AskUserQuestionAnswerItem::Skipped {
+                    question_id: "q1".to_string(),
+                }],
+            );
+        });
+        let execution = execute_now(&mut app, &executor, &other, conversation_id);
+
+        assert!(
+            matches!(execution, AnyActionExecution::Async { .. }),
+            "{execution:?}"
+        );
+        executor.update(&mut app, |executor, _| {
+            assert!(executor.has_staged_answers(&answered.id));
+            executor.discard_staged_answers(&answered.id);
+            assert!(!executor.has_staged_answers(&answered.id));
+        });
+    });
+}
+
+/// #1797: `convert_from` drops every question that is not multiple choice, so a call can
+/// arrive with none. It never waits for an answer: `should_autoexecute` lets it run without a
+/// card, and it returns an error result the model can act on.
+#[test]
+fn a_question_list_with_nothing_to_show_returns_an_error_at_once() {
+    App::test((), |mut app| async move {
+        let terminal_view_id = EntityId::new();
+        let (history, profiles) = initialize_ask_user_question_test(&mut app, terminal_view_id);
+        // Even a profile that always asks does not hold it: there is nothing to ask.
+        profiles.update(&mut app, |profiles, ctx| {
+            let profile_id = *profiles.active_profile(Some(terminal_view_id), ctx).id();
+            profiles.set_ask_user_question(profile_id, AskUserQuestionPermission::AlwaysAsk, ctx);
+        });
+        let executor = app.add_model(|_| AskUserQuestionExecutor::new(terminal_view_id));
+        let action = AIAgentAction {
+            action: AIAgentActionType::AskUserQuestion { questions: vec![] },
+            ..build_action("empty")
+        };
+        let conversation_id = history.update(&mut app, |history, ctx| {
+            history.start_new_conversation(terminal_view_id, false, false, ctx)
+        });
+
+        let autoexecutes = executor.update(&mut app, |executor, ctx| {
+            executor.should_autoexecute(
+                ExecuteActionInput {
+                    action: &action,
+                    conversation_id,
+                },
+                ctx,
+            )
+        });
+        assert!(
+            autoexecutes,
+            "an empty question list must not wait for approval"
+        );
+
+        let execution = execute_now(&mut app, &executor, &action, conversation_id);
+        assert!(
+            matches!(
+                &execution,
+                AnyActionExecution::Sync(AIAgentActionResultType::AskUserQuestion(
+                    AskUserQuestionResult::Error(message),
+                )) if message == NO_ANSWERABLE_QUESTIONS_ERROR
+            ),
+            "{execution:?}"
+        );
+    });
+}
