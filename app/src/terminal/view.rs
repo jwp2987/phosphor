@@ -3212,8 +3212,6 @@ struct WrittenSubshellSetup {
     /// Where the output stood when our echo was first seen ended: a fresh prompt is one drawn
     /// AFTER that (a prompt already on screen when the echo ended is not the shell's answer).
     echo_end_position: Option<(usize, usize, usize)>,
-    /// A relay's E-UNSUPPORTED suspicion and its confirmation net (hand-back only, never a write).
-    unsupported_suspect_since: Option<Instant>,
     /// The termios probe, sampled on the KEY path while written (R8: a secret read is seen at the
     /// key, not only at output).
     secret_probe: Option<crate::terminal::model::block::interactive_latch::SecretReadProbe>,
@@ -22817,7 +22815,6 @@ impl TerminalView {
         // #1679 step 3 (R7): progress of any kind clears a written attempt's suspicion.
         if let SubshellSetupState::Written(written) = &mut self.subshell_setup_state {
             written.progress_seen = true;
-            written.unsupported_suspect_since = None;
         }
         let Some(net) = self.subshell_setup_net.as_mut() else {
             return;
@@ -23530,7 +23527,6 @@ impl TerminalView {
             fresh_prompts_after_echo: 0,
             last_prompt_position: None,
             echo_end_position: None,
-            unsupported_suspect_since: None,
             secret_probe: None,
             generation: self.subshell_setup_generation,
         });
@@ -23593,7 +23589,6 @@ impl TerminalView {
         written.fresh_prompts_after_echo = 0;
         written.last_prompt_position = None;
         written.echo_end_position = None;
-        written.unsupported_suspect_since = None;
         written.secret_probe = secret_probe;
         let _ = ctx;
     }
@@ -23649,7 +23644,6 @@ impl TerminalView {
             queue_empty: look.tty.queue_empty,
             echo_started: look.echo_started,
         };
-        let generation = written.generation;
         warpui::input_order::log_hop("subshell_written_judged", || {
             format!(
                 "source={source} verdict={verdict:?} kind={:?} tail={tail:?} echo_ended={echo_ended} \
@@ -23662,11 +23656,7 @@ impl TerminalView {
             )
         });
         match verdict {
-            WrittenVerdict::Keep => {
-                if sample.progress_seen {
-                    written.unsupported_suspect_since = None;
-                }
-            }
+            WrittenVerdict::Keep => {}
             WrittenVerdict::Gone => {
                 self.cancel_subshell_setup(SubshellCancel::Written(WrittenCancel::Gone), proof, ctx)
             }
@@ -23681,15 +23671,12 @@ impl TerminalView {
                 ctx,
             ),
             WrittenVerdict::UnsupportedSuspect => {
-                // Local: the next look (output) brings the queue proof; nothing else is needed. A
-                // relay: a second prompt confirms, or this net hands back (never a write).
-                if written.relay && written.unsupported_suspect_since.is_none() {
-                    written.unsupported_suspect_since = Some(Instant::now());
-                    ctx.spawn(
-                        Timer::after(subshell_ready::UNSUPPORTED_CONFIRMATION),
-                        move |me, _, ctx| me.unsupported_confirmation_fired(generation, ctx),
-                    );
-                }
+                // Local: the next look (output) brings the queue proof. A relay: a SECOND fresh
+                // prompt-shaped line with no marker between confirms (an event, in
+                // `judge_written`). Until then the attempt stays as it is; the one progress net
+                // (`SUBSHELL_SETUP_QUIET_NET`) hands the keys back if nothing comes. No timer
+                // decides here (owner rule: timers hand back, never decide), and nothing is
+                // written.
             }
             WrittenVerdict::Unsupported => self.cancel_subshell_setup(
                 SubshellCancel::Written(WrittenCancel::Unsupported),
@@ -23697,27 +23684,6 @@ impl TerminalView {
                 ctx,
             ),
         }
-    }
-
-    /// The relay's E-UNSUPPORTED confirmation net (#1679 step 3): the suspicion stood for
-    /// `UNSUPPORTED_CONFIRMATION` with no progress: the attempt is given up and the held keys come
-    /// back (R8: a relay's fresh prompt is a shape, not a proof, so the editor). Nothing when the
-    /// attempt moved on.
-    fn unsupported_confirmation_fired(&mut self, generation: u64, ctx: &mut ViewContext<Self>) {
-        let SubshellSetupState::Written(written) = &self.subshell_setup_state else {
-            return;
-        };
-        if written.generation != generation
-            || written.progress_seen
-            || written.unsupported_suspect_since.is_none()
-        {
-            return;
-        }
-        self.cancel_subshell_setup(
-            SubshellCancel::Written(subshell_ready::WrittenCancel::Unsupported),
-            WrittenCancelProof::default(),
-            ctx,
-        );
     }
 
     /// R8 on the key path: a secret read opened while the setup is written (a `sudo` inside the

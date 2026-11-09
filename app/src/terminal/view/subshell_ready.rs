@@ -21,11 +21,6 @@ use crate::terminal::shell::ShellType;
 /// (owner decision 2026-11-08, Q7: 60 s). A "click Phosphorize to try again" toast follows.
 pub const PRE_READY_CEILING: Duration = Duration::from_secs(60);
 
-/// How long an E-UNSUPPORTED suspicion behind a relay waits for a second fresh prompt or the
-/// progress net before the attempt is given up (the redesign's 2 s confirmation net; R7 says a
-/// local attempt confirms by the queue-empty proof instead and uses no timer).
-pub const UNSUPPORTED_CONFIRMATION: Duration = Duration::from_secs(2);
-
 /// What the end of the active block's output looks like.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tail {

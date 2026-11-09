@@ -1359,8 +1359,7 @@ made them) and the attempt becomes Written with the minted ID / token (`note_sub
 `InitSubshell` refreshes the same attempt with a fresh token and fresh counts). Written: `judge_written_subshell_setup` at every
 look: E-GONE, E-SECRET, E-QUESTION, and the stream-ordered E-UNSUPPORTED (our echo ended per the echo filter's new
 `lines_ended`, then a fresh prompt-shaped line counted in `fresh_prompts_after_echo`, no token-matched marker between;
-local attempts confirm by the queue proof with NO timer, a relay by a second prompt or the 2 s `UNSUPPORTED_CONFIRMATION`
-net, which only hands back). R8 on the key path: `secret_read_on_key_path_cancels_written_setup` samples the termios probe at
+local attempts confirm by the queue proof with NO timer, a relay by a SECOND fresh prompt-shaped line with no marker between; the 2 s `UNSUPPORTED_CONFIRMATION` timer is gone (owner rule: timers never decide), an unconfirmed relay suspicion waits for that event or the one `SUBSHELL_SETUP_QUIET_NET` progress net, which only hands back; pinned by `subshell_ready_tests::r7_unsupported_is_stream_ordered_and_confirmed_by_the_queue_or_a_second_prompt`). R8 on the key path: `secret_read_on_key_path_cancels_written_setup` samples the termios probe at
 each key while written and hands back before the key is offered to the gates, so it goes to the password. The ONE cancel,
 `cancel_subshell_setup(why, proof)`: Armed -> Idle (auto-warpify aborted; TooLong/NotAShell toast "click Phosphorize",
 Unsupported names the shell); Written -> the pending lines cut (`CancelPacedSetupWrites`), this attempt's ID unregistered (a late
