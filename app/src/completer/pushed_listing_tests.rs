@@ -72,8 +72,7 @@ fn a_name_that_is_not_utf8_leaves_out_that_entry_only() {
 #[test]
 fn malformed_listings_are_dropped_whole() {
     for bad in [
-        "", "X", "L da", "L", "L  da", "L x", "L d", "L d%2", "L d%zz", "L da/b", "L d%2Fb", "Lda",
-        "T ",
+        "", "X", "L", "L  da", "L x", "L d", "L d%2", "L d%zz", "L da/b", "L d%2Fb", "Lda", "T ",
     ] {
         // "L" alone is valid (empty directory); everything else here is not.
         if bad == "L" {

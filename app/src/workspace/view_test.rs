@@ -112,6 +112,8 @@ pub(crate) fn initialize_app(app: &mut App) {
     app.add_singleton_model(UndoCloseStack::new);
     app.add_singleton_model(|_| ActiveSession::default());
     app.add_singleton_model(|_| WorkspaceToastStack);
+    // Settings views (built with every workspace) read the network-gate log.
+    app.add_singleton_model(crate::network_gate_log::NetworkGateLog::new);
     app.add_singleton_model(|_| ObjectActions::new(Vec::new()));
     app.add_singleton_model(NotebookKeybindings::new);
     app.add_singleton_model(TerminalKeybindings::new);

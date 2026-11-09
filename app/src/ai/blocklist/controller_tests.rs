@@ -3256,8 +3256,9 @@ fn file_tools_are_withdrawn_for_a_server_without_file_context_and_offered_for_a_
     assert!(!super::file_tools_available(None));
     // Legacy full daemon: an empty list means everything.
     assert!(super::file_tools_available(Some(&caps(&[]))));
-    // The helper as it ships today: no FILE_CONTEXT.
-    assert!(!super::file_tools_available(Some(&caps(
+    // The helper as it ships now serves `file_context` (remote parity P1), so it offers the
+    // tools; the withdrawn case is a limited server that does not list the capability.
+    assert!(super::file_tools_available(Some(&caps(
         HELPER_CAPABILITIES
     ))));
     assert!(!super::file_tools_available(Some(&caps(&[

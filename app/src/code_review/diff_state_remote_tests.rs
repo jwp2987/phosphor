@@ -464,6 +464,8 @@ fn simple_file_diff(path: &str) -> FileDiff {
 #[test]
 fn apply_snapshot_loaded_with_diffs() {
     warpui::App::test((), |mut app| async move {
+        // The model logs which backend serves it, so the manager must exist.
+        app.add_singleton_model(remote_server::manager::RemoteServerManager::new);
         let handle = app.add_model(|_ctx| {
             RemoteDiffStateModel::new_for_test_folding(
                 DiffMode::Head,
@@ -493,6 +495,8 @@ fn apply_snapshot_loaded_with_diffs() {
 #[test]
 fn apply_snapshot_not_in_repository() {
     warpui::App::test((), |mut app| async move {
+        // The model logs which backend serves it, so the manager must exist.
+        app.add_singleton_model(remote_server::manager::RemoteServerManager::new);
         let handle = app.add_model(|_ctx| {
             RemoteDiffStateModel::new_for_test_folding(
                 DiffMode::Head,
@@ -514,6 +518,8 @@ fn apply_snapshot_not_in_repository() {
 #[test]
 fn apply_snapshot_error_stores_message() {
     warpui::App::test((), |mut app| async move {
+        // The model logs which backend serves it, so the manager must exist.
+        app.add_singleton_model(remote_server::manager::RemoteServerManager::new);
         let handle = app.add_model(|_ctx| {
             RemoteDiffStateModel::new_for_test_folding(
                 DiffMode::Head,
@@ -541,6 +547,8 @@ fn apply_snapshot_error_stores_message() {
 #[test]
 fn apply_snapshot_preserves_repo_relative_file_paths() {
     warpui::App::test((), |mut app| async move {
+        // The model logs which backend serves it, so the manager must exist.
+        app.add_singleton_model(remote_server::manager::RemoteServerManager::new);
         let handle = app.add_model(|_ctx| {
             RemoteDiffStateModel::new_for_test_folding(
                 DiffMode::Head,
@@ -576,6 +584,8 @@ fn apply_snapshot_emits_event_with_repo_relative_paths() {
     // Subscribers to NewDiffsComputed should see repo-relative paths so they
     // can index into the loaded state by the same key.
     warpui::App::test((), |mut app| async move {
+        // The model logs which backend serves it, so the manager must exist.
+        app.add_singleton_model(remote_server::manager::RemoteServerManager::new);
         let handle = app.add_model(|_ctx| {
             RemoteDiffStateModel::new_for_test_folding(
                 DiffMode::Head,
@@ -702,6 +712,8 @@ fn file_delta(repo_relative_path: &str, diff: Option<FileDiff>) -> proto::DiffSt
 #[test]
 fn apply_file_delta_ignored_when_not_loaded() {
     warpui::App::test((), |mut app| async move {
+        // The model logs which backend serves it, so the manager must exist.
+        app.add_singleton_model(remote_server::manager::RemoteServerManager::new);
         let handle = app.add_model(|_ctx| {
             RemoteDiffStateModel::new_for_test_folding(
                 DiffMode::Head,
@@ -721,6 +733,8 @@ fn apply_file_delta_ignored_when_not_loaded() {
 #[test]
 fn apply_file_delta_adds_file() {
     warpui::App::test((), |mut app| async move {
+        // The model logs which backend serves it, so the manager must exist.
+        app.add_singleton_model(remote_server::manager::RemoteServerManager::new);
         let handle = app.add_model(|_ctx| {
             RemoteDiffStateModel::new_for_test_folding(
                 DiffMode::Head,
@@ -745,6 +759,8 @@ fn apply_file_delta_adds_file() {
 #[test]
 fn apply_file_delta_preserves_repo_relative_file_path() {
     warpui::App::test((), |mut app| async move {
+        // The model logs which backend serves it, so the manager must exist.
+        app.add_singleton_model(remote_server::manager::RemoteServerManager::new);
         let handle = app.add_model(|_ctx| {
             RemoteDiffStateModel::new_for_test_folding(
                 DiffMode::Head,
@@ -772,6 +788,8 @@ fn apply_file_delta_preserves_repo_relative_file_path() {
 #[test]
 fn apply_file_delta_emits_event_with_repo_relative_path() {
     warpui::App::test((), |mut app| async move {
+        // The model logs which backend serves it, so the manager must exist.
+        app.add_singleton_model(remote_server::manager::RemoteServerManager::new);
         let handle = app.add_model(|_ctx| {
             RemoteDiffStateModel::new_for_test_folding(
                 DiffMode::Head,
@@ -818,6 +836,8 @@ fn apply_file_delta_emits_event_with_repo_relative_path() {
 #[test]
 fn apply_file_delta_none_removes_file() {
     warpui::App::test((), |mut app| async move {
+        // The model logs which backend serves it, so the manager must exist.
+        app.add_singleton_model(remote_server::manager::RemoteServerManager::new);
         let existing = GitDiffData {
             files: vec![simple_file_diff("src/old.rs")],
             total_additions: 0,

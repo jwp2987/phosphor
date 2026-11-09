@@ -242,6 +242,18 @@ fn renders_fixed_prompt_chip_command_without_interpolation() {
     );
 }
 
+/// These tests exercise explicit (Tab) completion, which appends a space after a single result
+/// only when completions-as-you-type is off. It is on by default for local sessions since
+/// 9be263e67 (owner decision), so the tests that pin the Tab behaviour switch it off explicitly
+/// rather than depend on the default.
+fn disable_completions_while_typing(app: &mut App) {
+    InputSettings::handle(app).update(app, |input_settings, ctx| {
+        let _ = input_settings
+            .completions_open_while_typing
+            .set_value(false, ctx);
+    });
+}
+
 pub fn initialize_app(app: &mut App) {
     initialize_settings_for_tests(app);
 
@@ -1784,6 +1796,7 @@ fn test_tab_completion_with_leading_space() {
 fn test_tab_completion_with_spaces() {
     App::test((), |mut app| async move {
         initialize_app(&mut app);
+        disable_completions_while_typing(&mut app);
 
         let history_file_commands = vec![
             "cd Documents/zed".to_string(),
@@ -2018,6 +2031,7 @@ fn test_tab_completion_with_spaces() {
 fn test_tab_completion() {
     App::test((), |mut app| async move {
         initialize_app(&mut app);
+        disable_completions_while_typing(&mut app);
 
         let history_file_commands = vec![
             "cd Documents/zed".to_string(),
@@ -2484,6 +2498,7 @@ fn test_tab_completion_hides_autosuggestion() {
     let _test = FeatureFlag::RemoveAutosuggestionDuringTabCompletions.override_enabled(true);
     App::test((), |mut app| async move {
         initialize_app(&mut app);
+        disable_completions_while_typing(&mut app);
 
         let terminal = add_window_with_bootstrapped_terminal(
             &mut app, None, /* history_file_commands */
@@ -3983,6 +3998,7 @@ fn test_tab_completion_single_prefix_suggestion_with_fuzzy_suggestions() {
     // we should insert that prefix suggestion directly into the buffer
     App::test((), |mut app| async move {
         initialize_app(&mut app);
+        disable_completions_while_typing(&mut app);
 
         let terminal = add_window_with_bootstrapped_terminal(
             &mut app, None, /* history_file_commands */
@@ -4142,6 +4158,7 @@ fn test_tab_completion_single_prefix_suggestion_after_fuzzy_suggestions() {
     // insert that prefix suggestion directly into the buffer.
     App::test((), |mut app| async move {
         initialize_app(&mut app);
+        disable_completions_while_typing(&mut app);
 
         let terminal = add_window_with_bootstrapped_terminal(
             &mut app, None, /* history_file_commands */
@@ -4181,6 +4198,7 @@ fn test_tab_completion_single_prefix_suggestion_after_fuzzy_suggestions() {
 fn test_tab_completion_case_sensitive_single_suggestion() {
     App::test((), |mut app| async move {
         initialize_app(&mut app);
+        disable_completions_while_typing(&mut app);
 
         let terminal = add_window_with_bootstrapped_terminal(
             &mut app, None, /* history_file_commands */
@@ -4289,6 +4307,7 @@ fn test_tab_completion_case_sensitivity_common_prefix() {
 fn test_tab_completion_case_insensitive_exact_match() {
     App::test((), |mut app| async move {
         initialize_app(&mut app);
+        disable_completions_while_typing(&mut app);
 
         let terminal = add_window_with_bootstrapped_terminal(
             &mut app, None, /* history_file_commands */
@@ -4365,6 +4384,7 @@ fn test_tab_completion_longest_common_prefix_with_fuzzy_suggestions() {
     // We also check that this behaviour works when typing to filter.
     App::test((), |mut app| async move {
         initialize_app(&mut app);
+        disable_completions_while_typing(&mut app);
 
         let terminal = add_window_with_bootstrapped_terminal(
             &mut app, None, /* history_file_commands */
@@ -10684,6 +10704,7 @@ fn question_mark_does_not_toggle_shortcuts_while_editing_queued_prompt() {
 fn test_open_slash_command_does_not_autofill_single_file_completion() {
     App::test((), |mut app| async move {
         initialize_app(&mut app);
+        disable_completions_while_typing(&mut app);
 
         let terminal = add_window_with_bootstrapped_terminal(
             &mut app, None, /* history_file_commands */
@@ -14478,6 +14499,7 @@ fn test_tab_then_enter_remote_completer_is_not_waited_for() {
 fn test_completion_in_same_generation_still_applies() {
     App::test((), |mut app| async move {
         initialize_app(&mut app);
+        disable_completions_while_typing(&mut app);
         let terminal = add_window_with_bootstrapped_terminal(
             &mut app, None, /* history_file_commands */ None,
         )

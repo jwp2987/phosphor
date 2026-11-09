@@ -27082,6 +27082,7 @@ fn a_stalled_fullscreen_program_gets_the_notice_and_the_agent_keeps_the_command(
         App::test((), move |mut app| async move {
             let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
             initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
             let terminal = add_window_with_terminal(&mut app, None);
             let pty_writes = collect_pty_writes(&mut app, &terminal);
             terminal.update(&mut app, |view, ctx| {

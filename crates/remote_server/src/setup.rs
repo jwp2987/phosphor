@@ -615,7 +615,7 @@ pub const INSTALL_REFUSED_NO_DIGEST_TOOL: &str = "remote-server install refused:
      SHA-256 digest, so the download could not be verified";
 /// Exit 6: the downloaded bytes did not match the pinned digest.
 pub const INSTALL_REFUSED_DIGEST_MISMATCH: &str = "remote-server install refused: integrity check failed, \
-     so the SCP fallback (which installs unverified) was NOT attempted";
+     so the install was not retried";
 
 /// SHA-256 of the decompressed helper binary for one remote platform, embedded into this client
 /// at **build time** from the helper files being bundled (`script/bundle` generates the

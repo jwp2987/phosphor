@@ -213,8 +213,15 @@ proptest! {
         if !secret {
             prop_assert_eq!(not_reading, None, "{:?} with NotReading", behaviour);
         }
-        if handed_over_after(&behaviour, ForegroundTtyRead::Reading, Duration::from_secs(600)).is_some() {
-            prop_assert!(behaviour.reads_tty(), "{:?} was handed over but does not read the tty", behaviour);
+        // #1796: a PROVEN tty read hands the command over at once, so the probe only ever says
+        // `Reading` for a command that reads the tty (a `Silent` / bare-colon command gets
+        // `NotReading`, checked above). Offering `Reading` for a command that does not read
+        // would be lying to the detector, so only the reading commands are driven with it.
+        if behaviour.reads_tty() {
+            prop_assert!(
+                handed_over_after(&behaviour, ForegroundTtyRead::Reading, Duration::from_secs(600)).is_some(),
+                "{:?} reads the tty with a proven probe but was never handed over", behaviour
+            );
         }
     }
 }

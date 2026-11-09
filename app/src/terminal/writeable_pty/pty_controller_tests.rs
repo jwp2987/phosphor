@@ -333,9 +333,9 @@ fn zsh_session_info() -> SessionInfo {
 /// compiled upstream since the rewrite). The surviving mechanism is the `LineEditorStatusEvent::
 /// Active` subscription in `PtyController::new`, which is what this pins.
 ///
-/// The assertion is made after draining `pending_writes` by hand, per this file's harness note:
-/// nothing here activates `LineEditorStatus`'s own `is_line_editor_active` flag, so
-/// `execute_next_queued_write` is a no-op and the queued bytes must be sent explicitly.
+/// Since #1798 the request is sent only to a line editor the shell's ready signal proved
+/// reading, so the test marks the status proven (and active, which opens the write gate); the
+/// handler then writes the request itself.
 #[test]
 fn input_reporting_sequence_is_queued_when_the_line_editor_becomes_active() {
     App::test((), |mut app| async move {
@@ -366,22 +366,20 @@ fn input_reporting_sequence_is_queued_when_the_line_editor_becomes_active() {
             )
         });
 
+        // #1798: the line-report request goes only to a line editor the shell's ready signal
+        // PROVED reading (the unproven fallback opens the gate but sends no request).
+        line_editor_status.update(&mut app, |status, _| {
+            status.set_line_editor_active_for_test(true)
+        });
         line_editor_status.update(&mut app, |_, ctx| ctx.emit(LineEditorStatusEvent::Active));
 
-        let sent = controller.update(&mut app, |controller, ctx| {
-            assert_eq!(
-                controller.pending_writes.len(),
-                1,
-                "activating the line editor should queue exactly the input reporting sequence."
+        // The gate is open, so the handler queued the request and wrote it at once.
+        controller.update(&mut app, |controller, _| {
+            assert!(
+                controller.pending_writes.is_empty(),
+                "activating a proven line editor should queue the input reporting sequence and write it."
             );
-            let write = controller
-                .pending_writes
-                .pop_front()
-                .expect("the input reporting sequence should be queued.");
-            controller.send_write_to_event_loop(write, ctx)
         });
-
-        assert!(sent);
         let messages = sender.messages.lock();
         assert_eq!(messages.len(), 1);
         assert_input_matches(&messages[0], vec![escape_sequences::C0::ESC, b'i']);
@@ -443,13 +441,19 @@ fn input_reporting_sequence_is_written_before_an_already_queued_in_band_command(
             );
         });
 
+        // #1798: only a PROVED line editor is sent the line-report request.
+        line_editor_status.update(&mut app, |status, _| {
+            status.set_line_editor_active_for_test(true)
+        });
         line_editor_status.update(&mut app, |_, ctx| ctx.emit(LineEditorStatusEvent::Active));
 
+        // The handler put the request at the FRONT and wrote it; the in-band command that was
+        // already waiting is still queued behind it.
         controller.update(&mut app, |controller, ctx| {
             assert_eq!(
                 controller.pending_writes.len(),
-                2,
-                "the input reporting sequence should be queued alongside the in-band command."
+                1,
+                "the in-band command should still wait behind the input reporting sequence."
             );
             while let Some(write) = controller.pending_writes.pop_front() {
                 controller.send_write_to_event_loop(write, ctx);

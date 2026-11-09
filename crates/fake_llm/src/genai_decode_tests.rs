@@ -167,6 +167,12 @@ fn pieces(frames: Vec<Vec<u8>>, split: Option<&Split>) -> Vec<Piece> {
 }
 
 proptest! {
+    // Not a hang: the wire server sleeps 1 ms after every piece so the reader sees each on its
+    // own, so a case that cuts a few KB of SSE into 1-byte pieces costs seconds. 256 such cases
+    // outlast the 60 s test timeout; 32 still cover every split shape (the other split tests
+    // cover fixed shapes).
+    #![proptest_config(ProptestConfig::with_cases(32))]
+
     /// Valid JSON arguments, many deltas, the frames themselves cut at arbitrary bytes.
     #[test]
     fn genai_decode_wire_split_arguments_are_byte_exact(

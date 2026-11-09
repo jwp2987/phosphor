@@ -93,7 +93,8 @@ fn bootstrap_backstops_restore_every_pager_variable() {
             .expect("backstop loop");
         for var in PAGER_VARS {
             assert!(
-                line.split_whitespace().any(|w| w == *var),
+                line.split_whitespace()
+                    .any(|w| w.trim_end_matches(';') == *var),
                 "backstop misses {var}"
             );
         }

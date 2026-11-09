@@ -40,7 +40,7 @@
   "actor": [
     {
       "op": {
-        "kind": "answer",
+        "kind": "answer_question",
         "choice": 0
       },
       "timing": "on_card"
