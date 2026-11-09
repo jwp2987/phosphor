@@ -19,6 +19,7 @@ mod lightbox_view;
 pub mod multiline_submit_confirmation_dialog;
 mod native_modal;
 mod one_time_modal_model;
+mod problem_report;
 mod registry;
 pub mod rewind_confirmation_dialog;
 pub mod sync_inputs;
@@ -1582,6 +1583,12 @@ fn add_overflow_menu_items_as_editable_binding(app: &mut AppContext) {
             "workspace:send_feedback",
             crate::t!("keybinding-desc-workspace-send-feedback"),
             WorkspaceAction::SendFeedback,
+        )
+        .with_context_predicate(id!("Workspace")),
+        EditableBinding::new(
+            "workspace:report_problem",
+            crate::t!("keybinding-desc-workspace-report-problem"),
+            WorkspaceAction::ReportProblem,
         )
         .with_context_predicate(id!("Workspace")),
         EditableBinding::new(

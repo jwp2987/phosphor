@@ -1443,6 +1443,16 @@ line inside their editor with no hook, so on ConPTY the 5 s logged give-up is st
 `hop=handoff_stale_counts_reset by=give_up shell_activity=.. markers_live=..` -- `Reading` with `markers_live=true` is a line continued
 inside the editor (pwsh on ConPTY); `Unknown` is a bootstrap without markers.
 
+### 2.14b "Report a problem" diagnostics bundle (Wave 1.5 #1)
+
+A palette / Help-menu action (`workspace:report_problem`, `WorkspaceAction::ReportProblem`) writes ONE local zip (`$PHOSPHOR_DIAG_BUNDLE_DIR`, else Downloads, else the home directory) and reveals it: `README.txt`, `manifest.txt` (version, OS, build profile, enabled feature flags), `app-log-window.txt` (the last 15 minutes of the app log, scrubbed) and `settings-scrubbed.toml`. **Never uploaded: no network call and no send button** (owner rule); the toast says so. The older Settings > About "Export logs" zip is also local-only and unchanged (it is raw, not scrubbed).
+
+| layer | where | what it proves |
+|---|---|---|
+| scrubber + builder unit tests | `crates/warp_logging/src/report_bundle_tests.rs` | home / user / host of the machine, other absolute paths, e-mail, `user@host`, IPs, URLs, tokens / API keys / Authorization / Bearer, typed text, command lines and quoted prompts are removed; `hop=` / `ms=` / `t=` timing lines and ssh lines survive byte for byte; scrubbing is idempotent; settings keep only bool / number / short enum values; the window keeps only the last 15 minutes (wrapped lines follow their parent); the zip has exactly the four entries and none of the planted leaks; the app's secret detector runs as a second pass |
+| no network path | `report_bundle_tests.rs` `no_network_client_is_reachable_from_the_report_code`, `app/src/workspace/problem_report_tests.rs`, `script/check_outbound_redaction` section 4 | neither the collector nor the builder names a network client, URL opener or mail hook |
+| real app | `appci/cases_coverage_b.py` `cb_report_problem` (terminal mode, full tier; Windows classified NOT_WINDOWS, winmap.py) | palette action writes the zip, it has the four entries and log lines, and contains neither the profile's home path nor the machine's host / user name; selftest `report_problem_zip_verdict` |
+
 ### 2.15 Fake ssh lab (`script/realapp/sshlab`, `appci/lab.py`, `appci/cases_lab.py`; Wave 0.5b)
 
 The harness's ssh server used to be the same machine (`sshd.py`: `ctx.lines(remote=True)` reads `prof.rhome` directly), so latency, a second

@@ -2904,6 +2904,29 @@ def lab_remote_adapters_and_hooks():
 
 
 @check
+def report_problem_zip_verdict():
+    """Wave 1.5 #1: the bundle verdict flags a leaked home path / host name and a missing log, and passes a clean bundle"""
+    import cases_coverage_b as cb, zipfile
+    d = tempfile.mkdtemp()
+    def make(name, log, extra=""):
+        p = os.path.join(d, name)
+        with zipfile.ZipFile(p, "w") as z:
+            z.writestr("README.txt", "local only")
+            z.writestr("manifest.txt", "Version: 1\n" + extra)
+            z.writestr("app-log-window.txt", log)
+            z.writestr("settings-scrubbed.toml", "x = true\n")
+        return p
+    ok = make("phosphor-problem-report-20261108-120000.zip", "2026-11-08T12:00:00Z [INFO] hop=enter_begin cwd=<path>\n")
+    assert cb.report_zip_verdict(ok, "/home/ci", ["buildbox", "ci-user"]) == ([], 1)
+    leak = make("b.zip", "x cwd=/home/ci/w on buildbox\n")
+    probs, _ = cb.report_zip_verdict(leak, "/home/ci", ["buildbox"])
+    assert len(probs) == 2 and any("/home/ci" in x for x in probs) and any("buildbox" in x for x in probs), probs
+    assert cb.report_zip_verdict(make("c.zip", ""), "/home/ci", [])[0] == ["app-log-window.txt has no lines"]
+    assert cb.REPORT_ZIP_RE.search("phosphor-problem-report-20261108-120000.zip") and not cb.REPORT_ZIP_RE.search("other.zip")
+    assert cb.find_report_zips(d) == [ok]
+
+
+@check
 def lab_ctl_and_daemon_pure_pieces():
     C = _load_by_path("labctl", os.path.join(SSHLAB, "labctl.py"))
     D = _load_by_path("labd", os.path.join(SSHLAB, "rootfs", "usr", "local", "sbin", "labd.py"))

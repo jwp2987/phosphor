@@ -160,6 +160,9 @@ workspace-menu-keyboard-shortcuts = Keyboard shortcuts
 workspace-menu-documentation = Documentation
 workspace-menu-feedback = Feedback
 workspace-menu-view-warp-logs = View Phosphor logs
+workspace-menu-report-problem = Report a problem (save a local diagnostics file)
+workspace-report-problem-success = Saved { $path }. It stays on this computer: Phosphor never uploads it and has no send button. Paths, host and user names, addresses, keys and typed text were removed; look it over before you share it.
+workspace-report-problem-failure = Could not save the problem report: { $error }
 workspace-menu-slack = Slack
 workspace-toast-failed-load-conversation = Failed to load conversation.
 workspace-toast-failed-load-conversation-for-forking = Failed to load conversation for forking.
@@ -2087,6 +2090,7 @@ keybinding-desc-workspace-link-to-user-docs = View user docs (opens external lin
 keybinding-desc-workspace-send-feedback = Send feedback (opens external link)
 keybinding-desc-workspace-send-feedback-oz = Send feedback with Phosphor Agent
 keybinding-desc-workspace-view-logs = View Phosphor logs
+keybinding-desc-workspace-report-problem = Report a problem (local diagnostics file)
 keybinding-desc-workspace-link-to-privacy-policy = View privacy policy (opens external link)
 
 # Input / terminal / project bindings (registered outside workspace/mod.rs)

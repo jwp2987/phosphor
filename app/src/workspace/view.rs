@@ -6277,6 +6277,57 @@ impl Workspace {
         );
     }
 
+    /// "Report a problem": a scrubbed, time-limited diagnostics zip written to a local folder
+    /// (Downloads) and revealed in the file manager. LOCAL ONLY: no upload, no network call,
+    /// no send action; the toast says so.
+    fn report_problem(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(request) = crate::workspace::problem_report::prepare() else {
+            let message = crate::t!(
+                "workspace-report-problem-failure",
+                error = "no folder to save into"
+            );
+            self.toast_stack.update(ctx, |toast_stack, ctx| {
+                toast_stack.add_persistent_toast(DismissibleToast::error(message), ctx);
+            });
+            return;
+        };
+        ctx.spawn(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    crate::workspace::problem_report::write(request)
+                })
+                .await
+            },
+            |me, result, ctx| {
+                let outcome = match result {
+                    Ok(inner) => inner.map_err(|e| e.to_string()),
+                    Err(e) => Err(e.to_string()),
+                };
+                match outcome {
+                    Ok((path, summary)) => {
+                        log::info!("problem report written ({} log lines)", summary.log_lines);
+                        ctx.open_file_path_in_explorer(&path);
+                        let path_str = path.display().to_string();
+                        let message =
+                            crate::t!("workspace-report-problem-success", path = path_str.as_str());
+                        me.toast_stack.update(ctx, |toast_stack, ctx| {
+                            toast_stack
+                                .add_persistent_toast(DismissibleToast::success(message), ctx);
+                        });
+                    }
+                    Err(error) => {
+                        log::error!("Failed to write the problem report: {error}");
+                        let message =
+                            crate::t!("workspace-report-problem-failure", error = error.as_str());
+                        me.toast_stack.update(ctx, |toast_stack, ctx| {
+                            toast_stack.add_persistent_toast(DismissibleToast::error(message), ctx);
+                        });
+                    }
+                }
+            },
+        );
+    }
+
     /// Unlike `view_logs`: lets the user pick a save location via the
     /// system's native save-file dialog, then writes the log bundle directly
     /// to that location. The bundle contents are identical to `view_logs`.
@@ -9256,6 +9307,11 @@ impl Workspace {
                 .into_item(),
         ]);
 
+        items.push(
+            MenuItemFields::new(crate::t!("workspace-menu-report-problem"))
+                .with_on_select_action(WorkspaceAction::ReportProblem)
+                .into_item(),
+        );
         items.push(
             MenuItemFields::new(crate::t!("workspace-menu-view-warp-logs"))
                 .with_on_select_action(WorkspaceAction::ViewLogs)
@@ -22422,6 +22478,7 @@ impl TypedActionView for Workspace {
             SendFeedback => self.send_feedback(ctx),
             ViewLogs => self.view_logs(ctx),
             ExportLogsToPath => self.export_logs_to_path(ctx),
+            ReportProblem => self.report_problem(ctx),
             ChangeCursor(cursor) => self.change_cursor(*cursor, ctx),
             ToggleErrorUnderlining => self.toggle_error_underlining(ctx),
             ToggleSyntaxHighlighting => self.toggle_syntax_highlighting(ctx),
