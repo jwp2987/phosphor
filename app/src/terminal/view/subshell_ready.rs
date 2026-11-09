@@ -174,9 +174,10 @@ pub fn subshell_ready(
                 // R3: bash/zsh/fish/nu/pwsh at a cooked tty is a `read` builtin (or the gap before
                 // its editor): the editor's raw tty is the proof, never a cooked one.
                 Decision::Wait(WaitWhy::CookedReadBuiltin)
-            } else if !new_prompt {
+            } else if !new_prompt && !idle_at_prompt_untouched(sample, user) {
                 Decision::Wait(WaitWhy::CookedNoPrompt)
-            } else if consumed_behind_prompt(sample, user) {
+            } else if idle_at_prompt_untouched(sample, user) || consumed_behind_prompt(sample, user)
+            {
                 // An editor-less shell has no script of its own: the probe names it, and its
                 // `InitSubshell` ends the setup as unsupported (#1710) or starts stage 2.
                 Decision::Write(None)
@@ -204,6 +205,17 @@ pub fn subshell_ready(
 /// editor redraws its line, not a new prompt, after a ^U, so no new prompt is asked for here.
 fn consumed_by_line_editor(sample: &ReadinessSample, user: &UserLedger) -> bool {
     user.bytes_since_arm == 0 || sample.tty.queue_empty == Some(true)
+}
+
+/// Owner decision 2026-11-09 (#1847): an editor-less shell that is idle at its prompt with nothing
+/// typed since arming is written to without a "moved" prompt (no event will ever move it). Only
+/// these facts: a shell-shaped tail, the shell itself is the tty's reader (leader Shell), nothing
+/// unread in the queue, and no user byte passed through (so R1 holds trivially).
+fn idle_at_prompt_untouched(sample: &ReadinessSample, user: &UserLedger) -> bool {
+    sample.tail == Tail::ShellPrompt
+        && user.bytes_since_arm == 0
+        && sample.tty.leader == LeaderKind::Shell
+        && sample.tty.queue_empty == Some(true)
 }
 
 /// R1 for a cooked shell or a relay (owner Q8: "line ended + new prompt" counts only ALONGSIDE the

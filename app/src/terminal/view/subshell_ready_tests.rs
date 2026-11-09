@@ -159,6 +159,56 @@ fn row_4_a_cooked_editor_less_shell_at_a_new_prompt_is_written_via_the_probe() {
     }
 }
 
+/// #1847 (owner decision 2026-11-09): an idle editor-less shell with nothing typed is written to
+/// without a moved prompt, and each condition alone, when false, restores the old wait.
+#[test]
+fn idle_untouched_editor_less_prompt_is_written_without_a_moved_prompt() {
+    let mut s = cooked("dash");
+    s.prompt_moved_since_baseline = false;
+    s.prompt_moved_since_line_end = false;
+    assert_eq!(subshell_ready(&s, &no_bytes(), None), Decision::Write(None));
+    let waits = |s: &ReadinessSample, user: &UserLedger| {
+        matches!(
+            subshell_ready(s, user, None),
+            Decision::Wait(WaitWhy::CookedNoPrompt | WaitWhy::InputPrompt)
+        )
+    };
+    let mut t = s.clone();
+    t.tail = Tail::None;
+    assert!(waits(&t, &no_bytes()), "no prompt-shaped tail");
+    let mut t = s.clone();
+    t.tail = Tail::InputPrompt;
+    assert!(waits(&t, &no_bytes()), "an input prompt");
+    assert!(waits(&s, &typed()), "a byte was typed: today's rule");
+    let mut t = s.clone();
+    t.tty.leader = LeaderKind::Other;
+    assert!(waits(&t, &no_bytes()), "a program, not the shell, in front");
+    let mut t = s.clone();
+    t.tty.queue_empty = Some(false);
+    assert!(waits(&t, &no_bytes()), "unread bytes in the queue");
+    let mut t = s.clone();
+    t.tty.queue_empty = None;
+    assert!(waits(&t, &no_bytes()), "queue not probed");
+    let mut t = cooked("bash");
+    t.prompt_moved_since_baseline = false;
+    assert_eq!(
+        subshell_ready(&t, &no_bytes(), None),
+        Decision::Wait(WaitWhy::CookedReadBuiltin),
+        "an editor shell at a cooked tty is a read builtin"
+    );
+    let mut t = s.clone();
+    t.tty.kind = SubshellTtyKind::Relay;
+    t.tty.canonical = Some(false);
+    t.tty.leader = LeaderKind::Relay;
+    assert!(
+        matches!(
+            subshell_ready(&t, &no_bytes(), None),
+            Decision::Wait(WaitWhy::RelayNoPrompt)
+        ),
+        "a relay is not covered"
+    );
+}
+
 /// R3: a cooked bash/zsh/fish/nu/pwsh is a `read` builtin: never written.
 #[test]
 fn r3_a_cooked_shell_with_a_line_editor_is_a_read_builtin_and_waits() {
@@ -182,8 +232,10 @@ fn rows_5_6_cooked_without_a_new_shell_prompt_waits() {
     );
     let mut s = cooked("dash");
     s.prompt_moved_since_baseline = false;
+    // Owner decision 2026-11-09 (#1847): with nothing typed this idle prompt is written to, so
+    // the wait is asserted for a ledger with typed bytes.
     assert_eq!(
-        subshell_ready(&s, &no_bytes(), None),
+        subshell_ready(&s, &typed(), None),
         Decision::Wait(WaitWhy::CookedNoPrompt)
     );
     let mut s = cooked("dash");
@@ -538,8 +590,14 @@ fn exhaustive_a_write_needs_every_precondition_and_a_proof() {
                         _ => unreachable!(),
                     }
                     if s.tty.kind != SubshellTtyKind::LineReader {
+                        // #1847: the one write without a moved prompt is the idle, untouched,
+                        // editor-less shell that is the tty's reader.
+                        let idle = s.tty.kind == SubshellTtyKind::Cooked
+                            && user.bytes_since_arm == 0
+                            && s.tty.leader == LeaderKind::Shell
+                            && s.tty.queue_empty == Some(true);
                         assert!(
-                            s.tail == Tail::ShellPrompt && s.prompt_moved_since_baseline,
+                            s.tail == Tail::ShellPrompt && (s.prompt_moved_since_baseline || idle),
                             "{s:?}"
                         );
                         assert!(
