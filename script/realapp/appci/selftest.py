@@ -866,7 +866,7 @@ def shell_depth_probe_pure_parts():
     typed, pids = [], iter(["900", "900", "100"])
     c = types.SimpleNamespace(prof=types.SimpleNamespace(prompts=lambda: 0), pane=None, be=types.SimpleNamespace(type=lambda t, *a, **k: typed.append(t)),
                               shell_pid=lambda: next(pids), until=lambda *a, **k: None, reset=lambda: None)
-    typed.clear(); pids = iter(["900", "900", "100"]); c.shell_pid = lambda: next(pids)
+    typed.clear(); pids = iter(["900", "900", "900", "900", "100"]); c.shell_pid = lambda: next(pids)
     assert cases.Ctx.leave_nested(c, "100") == "root" and typed == ["exit", "exit"], typed
     typed.clear(); c.shell_pid = lambda: "100"
     assert cases.Ctx.leave_nested(c, "100") == "root" and typed == []                  # at the root: no exit
