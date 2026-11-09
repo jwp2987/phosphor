@@ -2,7 +2,7 @@
 //! algorithms (`shellcmd::git`) on the host. Never the user's pty (ruling R1): everything goes
 //! through the executor.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
@@ -11,7 +11,7 @@ use futures::future::BoxFuture;
 use super::executor::{ExecRequest, MAX_EXEC_OUTPUT_BYTES, OutOfBandExecutor};
 use crate::shellcmd::git::{
     GIT_BASE_ARGS, GIT_ENV, GIT_NOPROMPT_ENV, GIT_SSH_COMMAND_SH_ASSIGNMENT, GIT_UNSET_ENV,
-    GitOutput, GitRunner,
+    GitOutput, GitRunner, operation_probe_script, parse_operation_probe,
 };
 use crate::shellcmd::{base64, sh_quote};
 
@@ -80,6 +80,37 @@ impl ShellGitRunner {
             env.join(" "),
             argv.join(" ")
         )
+    }
+
+    /// Whether the git dir holds an in-progress sentinel (merge, rebase, lock...), by running
+    /// [`operation_probe_script`] on the host. The execution-time guard of every git write.
+    pub fn probe_operation(&self, git_dir: PathBuf) -> BoxFuture<'static, Result<bool>> {
+        let this = self.clone();
+        Box::pin(async move {
+            let script = operation_probe_script(&git_dir.to_string_lossy());
+            let output = this.exec(script).await?;
+            Ok(parse_operation_probe(&output.stdout_lossy()))
+        })
+    }
+
+    /// Deletes working-tree files (repo-relative, never directories) the discard sequence left
+    /// behind, the host-side half of `remove_from_fs`.
+    pub async fn remove_files(&self, repo: &Path, relative_paths: &[String]) -> Result<()> {
+        if relative_paths.is_empty() {
+            return Ok(());
+        }
+        let files: Vec<String> = relative_paths.iter().map(|p| sh_quote(p)).collect();
+        let script = format!(
+            "cd {} && rm -f -- {} </dev/null",
+            sh_quote(&repo.to_string_lossy()),
+            files.join(" ")
+        );
+        let output = self.exec(script).await?;
+        if output.success() {
+            Ok(())
+        } else {
+            Err(anyhow!("rm failed: {}", output.stderr_lossy()))
+        }
     }
 
     async fn exec(&self, script: String) -> Result<GitOutput> {

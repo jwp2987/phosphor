@@ -25,8 +25,22 @@ use crate::proto::{
     RipgrepSearchResponse, SaveBufferResponse,
 };
 
+/// The shell arm of one method: `[]` is "not implemented yet" (Unsupported, or Unavailable
+/// without a channel); `[serve_x]` calls the inherent `ShellBackend::serve_x` the family's
+/// package wrote.
+macro_rules! shell_arm {
+    ([] $this:ident, $fam:ident, $name:ident, $($arg:ident),+) => {{
+        let _ = ($(&$arg,)+);
+        let error = $this.not_implemented(Family::$fam, stringify!($name));
+        Box::pin(async move { Err(error) })
+    }};
+    ([$serve:ident] $this:ident, $fam:ident, $name:ident, $($arg:ident),+) => {
+        Box::pin(async move { $this.$serve($($arg),+).await })
+    };
+}
+
 macro_rules! remote_features {
-    ($( $fam:ident, $mutates:literal : fn $name:ident ( $($arg:ident : $ty:ty),+ ) -> $ret:ty; )+) => {
+    ($( $fam:ident, $mutates:literal $(, shell = $serve:ident)? : fn $name:ident ( $($arg:ident : $ty:ty),+ ) -> $ret:ty; )+) => {
         /// Every request/response feature, served by whichever backend the router picked.
         pub trait RemoteFeatures: Send + Sync {
             $(
@@ -48,9 +62,7 @@ macro_rules! remote_features {
         impl RemoteFeatures for ShellBackend {
             $(
                 fn $name(&self, $($arg: $ty),+) -> BoxFuture<'_, Result<$ret, BackendError>> {
-                    let _ = ($(&$arg,)+);
-                    let error = self.not_implemented(Family::$fam, stringify!($name));
-                    Box::pin(async move { Err(error) })
+                    shell_arm!([$($serve)?] self, $fam, $name, $($arg),+)
                 }
             )+
         }
@@ -114,12 +126,12 @@ remote_features! {
     GitRead, false: fn get_branches(request: GetBranches) -> GetBranchesResponse;
     GitRead, false: fn get_committed_branch_files(request: GetCommittedBranchFilesRequest) -> GetCommittedBranchFilesResponse;
     RipgrepSearch, false: fn ripgrep_search(request: RipgrepSearchRequest) -> RipgrepSearchResponse;
-    GitWrite, true: fn git_commit_chain(request: GitCommitChainRequest) -> GitCommitChainResponse;
-    GitWrite, true: fn git_push(request: GitPushRequest) -> GitPushResponse;
-    GitWrite, true: fn git_pull(request: GitPullRequest) -> GitPullResponse;
-    GitWrite, true: fn git_create_pr(request: GitCreatePrRequest) -> GitCreatePrResponse;
-    GitWrite, true: fn discard_files(request: DiscardFilesRequest) -> ();
-    GitWrite, true: fn git_stage(request: GitStageRequest) -> ();
+    GitWrite, true, shell = serve_git_commit_chain: fn git_commit_chain(request: GitCommitChainRequest) -> GitCommitChainResponse;
+    GitWrite, true, shell = serve_git_push: fn git_push(request: GitPushRequest) -> GitPushResponse;
+    GitWrite, true, shell = serve_git_pull: fn git_pull(request: GitPullRequest) -> GitPullResponse;
+    GitWrite, true, shell = serve_git_create_pr: fn git_create_pr(request: GitCreatePrRequest) -> GitCreatePrResponse;
+    GitWrite, true, shell = serve_discard_files: fn discard_files(request: DiscardFilesRequest) -> ();
+    GitWrite, true, shell = serve_git_stage: fn git_stage(request: GitStageRequest) -> ();
     FileWrite, true: fn write_file(path: String, content: String) -> ();
     FileWrite, true: fn delete_file(path: String) -> ();
     FsBasic, false: fn list_directory(path: String) -> ListDirectoryResponse;

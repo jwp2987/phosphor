@@ -42,6 +42,11 @@ impl ShellBackend {
         self.executor.as_ref().map(|e| e.channel_kind())
     }
 
+    /// The out-of-band channel, when the session has one.
+    pub(super) fn executor(&self) -> Option<&Arc<dyn OutOfBandExecutor>> {
+        self.executor.as_ref()
+    }
+
     pub fn is_available(&self) -> bool {
         self.executor.is_some()
     }

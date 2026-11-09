@@ -22,6 +22,7 @@ pub mod refresh;
 mod router;
 mod shell;
 mod shell_git_runner;
+mod shell_git_write;
 
 #[cfg(test)]
 mod contract_tests;
