@@ -85,6 +85,7 @@ NOT_WINDOWS = {
     "ui_split_panes": "needs OCR word boxes + pointer synthesis; neither exists in the Windows backend yet",
     "ui_startup_time": "not yet ported: reads the Linux log format / paths",
     "ui_settings_live": "not yet ported: rewrites the Linux settings path while the app runs",
+    "upgrade_from_v0_1_17": "#1546: Linux first: the seed paths (~/.config/phosphor), the secret-tool keyring helper and the AppImage fetch are the Linux ones; the table and fixture are platform-neutral (docs/testing.md 2.18)",
     "keyring_unavailable_startup": "#1805: the no-keyring variants are D-Bus session configs of the Linux launcher (Windows has no Secret Service; DPAPI files)",
     "quit_24_tabs": "not yet ported: Linux quit key and log check",
     "flood_typed_line": "not yet ported: POSIX `seq`/`yes` floods and /proc sampling",

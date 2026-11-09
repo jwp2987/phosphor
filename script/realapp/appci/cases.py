@@ -4488,8 +4488,14 @@ def mac_footprint_kib(pid):
 
 def mem_sample(ctx):
     """{metric: MB} of the app process: 'rss' everywhere (Windows: working set), plus 'phys_footprint' on macOS when libproc answers
-    (see mac_footprint_kib). Owner 2026-11-03: on macOS BOTH are judged; either one over a budget fails the case."""
+    (see mac_footprint_kib) and 'private' (PrivateUsage) on Windows. Owner 2026-11-03: on macOS BOTH rss and phys_footprint are judged; either
+    one over a budget fails the case. Windows (#1340): only 'private' is judged (judged_sample); the working set is a note, like macOS RSS after close."""
     out = {"rss": ctx.app.cpu_ticks()[1] / 1024.0}
+    if getattr(ctx, "win", False) and hasattr(ctx.app, "private_kib"):
+        try:
+            out["private"] = ctx.app.private_kib() / 1024.0     # Windows: private bytes are judged, the working set is reported (#1340)
+        except (OSError, ValueError):
+            pass
     if ctx.be.name == "mac":
         pid = ctx.app.pid()
         fp = mac_footprint_kib(pid) if pid else None
@@ -4525,10 +4531,27 @@ def mem_metrics(r, prefix, sample, base=None):
             r.metric(name[:-3] + "_delta_mb", v - base[k])
 
 
-def mem_judge(r, sample, base, limit, what):
-    """one check per figure (owner: macOS judges RSS AND phys_footprint): `what % (delta, metric)` describes a failure"""
-    ok = True
+def judged_sample(sample):
+    """the figures a verdict is made on. Windows (#1340): private bytes only, when the sample has them: the working set is what the OS has
+    resident right now (it is trimmed under pressure and a cold start has not touched its pages yet), so 'WorkingSetSize against a cold baseline'
+    measured the process warming up, not the editor. Everywhere else every figure of the sample (macOS open cost: rss AND phys_footprint)"""
+    return {"private": sample["private"]} if "private" in sample else sample
+
+
+def note_unjudged(r, sample, base):
+    """the Windows working set is reported next to the judged private bytes (as macOS reports RSS), never a verdict"""
     for k, v in sample.items():
+        if k in base and k not in judged_sample(sample):
+            r.note("%s: %+.0f MB over the baseline (reported, not judged on Windows: the working set is OS-trimmed and shared; private bytes "
+                   "against a warm baseline are the judged figure)" % (k, v - base[k]))
+
+
+def mem_judge(r, sample, base, limit, what):
+    """one check per figure (owner: macOS judges RSS AND phys_footprint; Windows private bytes, see judged_sample): `what % (delta, metric)`
+    describes a failure"""
+    ok = True
+    note_unjudged(r, sample, base)
+    for k, v in judged_sample(sample).items():
         if k in base:
             ok &= r.check(v - base[k] <= limit, what % (v - base[k], k))
     return ok
@@ -4641,7 +4664,8 @@ def mem_judge_known(r, sample, base, limit, what, key):
     if not acc:
         return mem_judge(r, sample, base, limit, what)
     ok = True
-    for k, v in sample.items():
+    note_unjudged(r, sample, base)
+    for k, v in judged_sample(sample).items():
         if k in base and v - base[k] > limit:
             ok = False
             r.known("%s [ACCEPTED_FOR_RELEASE #%d v%s: %s]" % (what % (v - base[k], k), acc["issue"], acc["release"], acc["why"]))
@@ -4682,6 +4706,20 @@ def editor_mem_log(ctx, off):
         kv = dict(re.findall(r"(\w+)=(\S+)", m.group(2)))
         out[kinds[m.group(1)]].append({k: _log_value(v) for k, v in kv.items()})
     return out
+
+
+def load_stages(text):
+    """[dict] of the app's `editor_memory load_stage stage=<name> rss_kb=.. [ws_kb=.. private_kb=..|phys_footprint_kb=..] [t=<epoch ms>]` lines
+    (#1340: crates/editor buffer.rs log_load_stage, one per stage of a 1 MB+ load; Windows adds ws_kb / private_kb, macOS phys_footprint_kb; builds
+    older than that print rss_kb only, -1 off Linux). Per-chunk `layout_chunk_done` lines are thinned to the first and the last."""
+    out = []
+    for line in text.splitlines():
+        m = re.search(r"editor_memory load_stage (.*)$", line)
+        if m:
+            out.append({k: _log_value(v) for k, v in re.findall(r"(\w+)=(\S+)", m.group(1))})
+    chunks = [i for i, d in enumerate(out) if d.get("stage") == "layout_chunk_done"]
+    drop = set(chunks[1:-1])
+    return [d for i, d in enumerate(out) if i not in drop]
 
 
 def editor_opened(grew_mb, app_open_lines):
@@ -4744,27 +4782,34 @@ _HEAP_TRIM_RE = re.compile(r"input_order hop=heap_trim why=(\w+) ms=(\d+(?:\.\d+
 
 
 def heap_trims(text):
-    """[(end epoch_s, ms, why)] of the app's `input_order hop=heap_trim why=<open|close> ms=<ms> t=<end>` lines (app/src/alloc.rs
-    trim_free_memory_timed: one per heap trim, logged when it finishes)"""
+    """[(end epoch_s, ms, why, start epoch_s or None)] of the app's `input_order hop=heap_trim why=<open|close> ms=<ms> [freed_estimate=<n>]
+    [start=<epoch ms>] t=<end>` lines (app/src/alloc.rs trim_free_memory_timed: one per heap trim, logged when it finishes). `start` is the
+    trim's own start time (#1340); None for a build whose line lacks it (ui_trim_max then falls back to end - ms)"""
     out = []
     for line in text.splitlines():
         m = _HEAP_TRIM_RE.search(line)
         t = re.search(r" t=(\d+(?:\.\d+)?)", line) if m else None
+        st = re.search(r" start=(\d+(?:\.\d+)?)", line) if m else None
         if m and t:
-            out.append((float(t.group(1)) / 1000.0, float(m.group(2)), m.group(1)))
+            out.append((float(t.group(1)) / 1000.0, float(m.group(2)), m.group(1), float(st.group(1)) / 1000.0 if st else None))
     return out
 
 
 def ui_trim_max(items, trims, why, pad_s=0.25, exclude=()):
     """max ms of the UI items (each logged when it ENDS) that ended while a `why` trim ran, or within pad_s after it: [end - ms, end + pad_s].
     0.0 when none did (no UI item over 4 ms during the trim). `exclude`: items judged elsewhere (the load's own layout frame, see
-    ui_load_frame)"""
+    ui_load_frame). #1340: when the trim line carries its START time, an item that began before the trim did (end - ms < start) was already
+    running when the trim began, so the trim did not cause it (the load's own layout frame, which spawns the open trim, is such an item) and it
+    is not counted; the window then opens at the trim's start. Without a start (an older build) the window is [end - ms, end + pad_s] as before."""
     worst = 0.0
-    for end, ms, w in trims:
+    for tr in trims:
+        end, ms, w = tr[:3]
+        start = tr[3] if len(tr) > 3 else None
         if w != why:
             continue
-        lo, hi = end - ms / 1000.0, end + pad_s
-        worst = max([worst] + [i[1] for i in items if lo <= i[0] <= hi and i not in exclude])
+        lo, hi = (start if start is not None else end - ms / 1000.0), end + pad_s
+        worst = max([worst] + [i[1] for i in items if lo <= i[0] <= hi and i not in exclude
+                               and (start is None or i[0] - i[1] / 1000.0 >= start - 0.002)])
     return worst
 
 
@@ -4836,6 +4881,32 @@ def trim_ui_verdict(r, is_close_trim, over, msg):
         r.check(not over, msg)
 
 
+def editor_warm_up(ctx, r, palette):
+    """#1340: a WARM baseline. The first editor open in an app run pays one-off costs (code-editor and syntax machinery, fonts, thread pools, the
+    allocator's first arenas) that a cold baseline books to the 7 MB file. One small file is opened and closed first, in the same app run, and
+    the baselines are taken after it. Returns whether the warm-up ran (APPCI_EDITOR_MEM_WARM=0 turns it off; default on for Windows, 1 forces
+    it elsewhere)."""
+    path = os.path.join(ctx.W, "editor_mem_warm.txt")
+    editor_mem_file(path, "txt", 64 * 1024)
+    try:
+        editor_open(ctx, palette, path)
+        time.sleep(3.0)
+        settle_rss(ctx, quiet_s=2.0, timeout=60)
+        how = editor_close(ctx, r)
+        if not how:
+            r.note("warm baseline: no way to close the small file's pane on this platform; the baseline stays cold")
+            return False
+        time.sleep(3.0)
+        settle_rss(ctx, quiet_s=3.0, timeout=60)
+        return True
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        ctx.reset()
+
+
 def editor_trim_ab(ctx, r, palette, path):
     """#1607 perf rule: UI-thread cost of the heap trims, A/B by relaunch. One open/close of the plain-text file per variant: default (trim on
     close only), PHOSPHOR_EDITOR_TRIM_AFTER_OPEN=1 (opt-in trim after the load) and PHOSPHOR_HEAP_TRIM=0 (no trim at all, the control for the
@@ -4870,11 +4941,13 @@ def editor_trim_ab(ctx, r, palette, path):
                 r.note("trim A/B %s: no hop=ui_item line (nothing over 4 ms, a build older than the ui_item hop, or input_order logging off)" % name)
             o_max, o_over, load_ms = ui_window_max(items, t_open, after_largest=True, t_end=t_close)
             c_max, c_over, _ = ui_window_max(items, t_close)
-            load = ui_load_frame(items, t_open, t_end=t_close)
+            # #1340: no t_close clip and a window as long as the open phase: a slow (Windows) load puts its layout frame past 5 s, and a frame
+            # the lookup missed was then taken for a trim item
+            load = ui_load_frame(items, t_open, seconds=max(5.0, t_close - t_open + 1.0))
             res[name] = dict(open_max_ms=o_max, open_over=o_over, load_frame_ms=load_ms, close_max_ms=c_max, close_over=c_over,
                              trim_open_max_ms=ui_trim_max(items, trims, "open", exclude=(load,) if load else ()),
                              trim_close_max_ms=ui_trim_max(items, trims, "close"),
-                             trims=[(w, ms) for _, ms, w in trims], audit=ui_item_audit(txt))
+                             trims=[(w, ms) for _, ms, w, _s in trims], audit=ui_item_audit(txt))
             ctx.reset()
     finally:
         if not editor_mem_relaunch(ctx, {}):
@@ -4907,7 +4980,7 @@ def c_editor_mem(ctx, r):
     the pane, record memory right after close and after the undo-close grace window, and repeat open/close APPCI_EDITOR_MEM_CYCLES times
     (default 3, plain-text file only) to measure growth per cycle. Thresholds are the #1340 targets (7 MB plain text <= ~100 MB over baseline,
     7 MB Rust <= ~150 MB, <= 60 MB held after close, APPCI_EDITOR_MEM_CYCLE_GROWTH_MAX_MB = 30 MB growth from the first to the last cycle).
-    Judged: RSS (Windows: working set) on Linux/Windows; on macOS the open cost is judged on RSS and phys_footprint (owner 2026-11-03), the
+    Judged: RSS on Linux; on Windows PRIVATE bytes (PrivateUsage) against a warm baseline, the working set only reported (#1340); on macOS the open cost is judged on RSS and phys_footprint (owner 2026-11-03), the
     after-close check on phys_footprint only (owner 2026-11-05: RSS keeps freed MADV_FREE_REUSABLE pages; reported, not judged). Both are reported. A close through the command palette must be followed by the app's buffer_dropped log line. The app's own breakdown (log target
     editor_memory: buffer tree, render tree, parked chunks, hydrated frames) is attached as metrics. Then the heap-trim UI A/B (editor_trim_ab;
     APPCI_EDITOR_MEM_TRIM_AB=0 skips it). Skips (APPCI_EDITOR_MEM_STRICT=1: fails) when the file does not open, since the palette / close key
@@ -4933,6 +5006,12 @@ def c_editor_mem(ctx, r):
     if len(metrics) > 1:
         r.note("judged memory figures: %s (owner: each one is checked; macOS ps RSS also counts freed-but-reusable malloc pages)" % ", ".join(metrics))
     ab_path = None
+    warm_default = "1" if getattr(ctx, "win", False) else "0"
+    if os.environ.get("APPCI_EDITOR_MEM_WARM", warm_default) not in ("", "0"):
+        warmed = editor_warm_up(ctx, r, palette)
+        r.metric("warm_baseline", warmed)
+        if warmed:
+            r.note("baselines taken after a small-file open/close in this app run (warm baseline, #1340)")
     for kind in kinds:
         path = os.path.join(ctx.W, "editor_mem_%s.%s" % (kind, "rs" if kind == "rs" else "txt"))
         editor_mem_file(path, kind, size)
@@ -4984,6 +5063,10 @@ def c_editor_mem(ctx, r):
             br = editor_mem_log(ctx, off)
             if br["open"]:
                 r.metric("%s_app_breakdown_open" % tag, br["open"][-1])
+            if cyc == 0 and getattr(ctx, "log_path", None):
+                stages = load_stages(ctx.log_since(off))
+                if stages:
+                    r.metric("%s_load_stages" % tag, stages)
             if dropped:
                 r.metric("%s_app_buffer_dropped" % tag, dropped[-1])
                 left_open = dropped[-1].get("registered")
@@ -5023,8 +5106,12 @@ def c_editor_mem(ctx, r):
                 r.metric("%s_cycle_close%s_mb" % (kind, sfx), [round(x, 1) for x in series])
                 r.metric("%s_cycle_open%s_mb" % (kind, sfx), [round(o[k], 1) for o in opens if k in o])
                 r.metric("%s_cycle_growth%s_mb" % (kind, sfx), growth)
-                r.check(growth <= growth_max, "%s: %d open/close cycles grew the post-close %s by %.0f MB (> %.0f MB): %s" % (
-                    kind, n_cycles, k, growth, growth_max, ", ".join("%.0f" % x for x in series)))
+                msg = "%s: %d open/close cycles grew the post-close %s by %.0f MB (> %.0f MB): %s" % (
+                    kind, n_cycles, k, growth, growth_max, ", ".join("%.0f" % x for x in series))
+                if k in judged_sample(closes[0]):
+                    r.check(growth <= growth_max, msg)
+                elif growth > growth_max:
+                    r.note("reported, not judged on Windows (private bytes are): " + msg)
         time.sleep(grace)
         after = settle_rss(ctx)
         mem_metrics(r, "%s_rss_close" % kind, after, base)
@@ -5396,8 +5483,10 @@ import cases_caseintl  # noqa: E402,F401  (group 8: international input, #1466)
 import cases_coverage_a  # noqa: E402,F401  (#1535-#1541: paste, alt-screen programs, sudo/su, ssh drop+reconnect, kill -9 + corrupt-db restore)
 import cases_coverage_b  # noqa: E402,F401  (g10: CI-review coverage gaps #1542-#1548: agent pickers, settings UI/migration, state relaunch, no-autoupdate, UI-action budgets, mac editor)
 import cases_shells  # noqa: E402,F401  (#1534: startup_shell_override passes: cmd.exe and pwsh 7 as the pane shell)
+import cases_lab_helper  # noqa: E402,F401  (P10: helper lifecycle / capability / routing and no-helper lab cases)
 import cases_lab  # noqa: E402,F401  (Wave 0.5b: the fake ssh lab cases, lab_*; run only by --cases lab_*)
 import cases_lab_remote  # noqa: E402,F401  (Wave H parity: per-family helper vs no-helper lab cases, lab_file_tree_remote.*)
 import cases_subshell_ready  # noqa: E402,F401  (#1679 step 3/4: the subshell readiness lab: rc questions, vim typeahead, tcsh, secret after the prompt, relays, exec fish, docker -t, zsh-newuser-install, clear)
 import cases_replay  # noqa: E402,F401  (Wave 1.5 #3: the real-use replay, lab_replay.*; run only by --cases lab_replay*)
 import cases_netless  # noqa: E402,F401  (Wave N: zero_network_startup, claude_plugin_offline)
+import cases_upgrade  # noqa: E402,F401  (#1546: upgrade_from_v0_1_17, the v0.1.17 -> current profile upgrade; table in upgrade_table.py)

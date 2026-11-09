@@ -1679,7 +1679,7 @@ def editor_memory_breakdown_close_and_cycles():
         # heap trims: the UI items that ended during [end - ms, end + 0.25 s]
         trim_log = "z input_order hop=heap_trim why=open ms=500.00 t=%.3f\nz input_order hop=heap_trim why=close ms=10.00 t=%.3f\n" % ((t + 2.1) * 1000, (t + 8.0) * 1000)
         trims = cases.heap_trims(trim_log)
-        assert trims == [(t + 2.1, 500.0, "open"), (t + 8.0, 10.0, "close")], trims
+        assert trims == [(t + 2.1, 500.0, "open", None), (t + 8.0, 10.0, "close", None)], trims      # old format: no start=
         assert cases.ui_trim_max(items, trims, "open") == 6.5            # the 6.5 ms frame at t+2.0 ended inside the open trim
         assert cases.ui_trim_max(items, trims, "close") == 9.0           # the 9 ms action at t+8.0 ended at the close trim's end
         assert cases.ui_trim_max(items, [], "open") == 0.0
@@ -1688,10 +1688,42 @@ def editor_memory_breakdown_close_and_cycles():
         load = cases.ui_load_frame(items, t)
         assert load == (t + 0.5, 250.0, "frame"), load
         assert cases.ui_load_frame(later, t, t_end=t + 5.5) == load and cases.ui_load_frame([], t) is None
-        spawned = [(t + 0.5, 0.01, "open")]
+        spawned = [(t + 0.5, 0.01, "open", None)]
         assert cases.ui_trim_max(items, spawned, "open") == 250.0
         assert cases.ui_trim_max(items, spawned, "open", exclude=(load,)) == 0.0
         assert cases.ui_trim_max(items, trims, "open", exclude=(load,)) == 6.5      # a real item during the trim still counts
+        # #1340: the new line format carries the trim's start; an item that began before it is not the trim's, and a load frame that ends
+        # after the 5 s window is still found when the window is as long as the open phase
+        new_log = "z input_order hop=heap_trim why=open ms=500.00 freed_estimate=1 start=%d t=%d\n" % ((t + 1.6) * 1000, (t + 2.1) * 1000)
+        ntr = cases.heap_trims(new_log)
+        assert ntr == [(t + 2.1, 500.0, "open", t + 1.6)], ntr
+        # a 40 ms item ending at t+1.7 began at t+1.66 (inside the trim): counts; the 250 ms frame ended at t+0.5; a 150 ms item ending at
+        # t+1.7 began at t+1.55, before the trim started: not the trim's
+        its = [(t + 1.7, 40.0, "frame")]
+        assert cases.ui_trim_max(its, ntr, "open") == 40.0
+        assert cases.ui_trim_max([(t + 1.7, 150.0, "frame")], ntr, "open") == 0.0
+        assert cases.ui_trim_max([(t + 1.7, 150.0, "frame")], [(t + 2.1, 500.0, "open", None)], "open") == 150.0      # old format: as before
+        slow = [(t + 7.0, 300.0, "frame")]
+        assert cases.ui_load_frame(slow, t) is None and cases.ui_load_frame(slow, t, seconds=9.0) == slow[0]
+        # load_stage lines: old (rss_kb only, -1 off Linux) and new (Windows ws/private, macOS footprint) formats; chunk lines thinned
+        st_log = ("a DEBUG editor_memory editor_memory load_stage stage=start rss_kb=-1\n"
+                  "b DEBUG editor_memory editor_memory load_stage stage=layout_tasks_created rss_kb=2048 ws_kb=2048 private_kb=1024 t=5\n"
+                  "c editor_memory load_stage stage=layout_chunk_done start=10 rss_kb=1 phys_footprint_kb=2 t=6\n"
+                  "d editor_memory load_stage stage=layout_chunk_done start=20 rss_kb=1 t=7\n"
+                  "e editor_memory load_stage stage=layout_chunk_done start=30 rss_kb=1 t=8\n")
+        sg = cases.load_stages(st_log)
+        assert [d["stage"] for d in sg] == ["start", "layout_tasks_created", "layout_chunk_done", "layout_chunk_done"], sg
+        assert sg[0]["rss_kb"] == -1 and sg[1]["private_kb"] == 1024 and sg[1]["ws_kb"] == 2048 and sg[2]["phys_footprint_kb"] == 2, sg
+        assert sg[-1]["start"] == 30
+        # Windows (#1340): private bytes are judged, the working set is only a note
+        rw = cases.Result("t", "terminal")
+        assert cases.mem_judge(rw, {"rss": 400.0, "private": 40.0}, {"rss": 0.0, "private": 0.0}, 100, "cost %.0f MB of %s") and not rw.fails
+        assert any("not judged on Windows" in n for n in rw.notes), rw.notes
+        rw2 = cases.Result("t", "terminal")
+        assert not cases.mem_judge(rw2, {"rss": 40.0, "private": 140.0}, {"rss": 0.0, "private": 0.0}, 100, "cost %.0f MB of %s")
+        assert rw2.fails == ["cost 140 MB of private"], rw2.fails
+        rw3 = cases.Result("t", "terminal")
+        assert cases.mem_judge_closed(rw3, {"rss": 500.0, "private": 10.0}, {"rss": 0.0, "private": 0.0}, 60, "held %.0f MB of %s") and not rw3.fails
         # macOS: the reusable share of RSS at the close trim is a note, never a verdict
         assert cases.reusable_note("txt", {"why": "close", "freed_estimate": 0}) is None
         n = cases.reusable_note("txt", {"why": "close", "resident": 1800 * 1048576, "reusable": 460 * 1048576})
@@ -1743,7 +1775,7 @@ def editor_memory_close_trim_and_accepted_open_cost():
         assert [t["freed_estimate"] for t in br["trim"]] == [-4096, 104857600], br["trim"]
         assert br["trim"][0]["why"] == "close" and br["trim"][0]["ms"] == "3.25", br["trim"]
         assert cases.editor_wait_close_trim(c, 0, timeout=0)[-1]["freed_estimate"] == 104857600
-        assert cases.heap_trims(open(log).read()) == [(1.0, 1.0, "close")]     # the hop regex still reads the line with freed_estimate
+        assert cases.heap_trims(open(log).read()) == [(1.0, 1.0, "close", None)]     # the hop regex still reads the line with freed_estimate
         assert not cases.editor_opened(-5.5, []) and cases.editor_opened(-5.5, [{"text_bytes": 1}]) and cases.editor_opened(9.0, [])
         # versions and the acceptance window
         assert cases.version_tuple("v0.1.17") == (0, 1, 17) and cases.version_tuple("0.1.9") < cases.version_tuple("0.1.17")
@@ -2761,7 +2793,7 @@ def lab_matrix_expansion():
     assert next(a for a in arms if a["shell"] == "nu")["user"] == "u_nu"
     quick = L.matrix_selection("quick")
     q = [a["name"] for a in arms if L.arm_selected(a, quick)]
-    assert q and all(".nohelper" in n and ".300." not in n and "nu" not in n.split(".")[1] and "p_banner" not in n and n.count(".") == 3 for n in q), q
+    assert q and all((".nohelper" in n or ".helper" in n) and ".300." not in n and "p_banner" not in n and n.count(".") == 3 for n in q), q
     full = L.matrix_selection("full")
     assert all(L.arm_selected(a, full) for a in arms)
     sp = L.matrix_selection("shells=zsh;lat=150;helper=nohelper,helper;faults=1")
@@ -2802,7 +2834,9 @@ def lab_cases_registry_and_selection():
     assert run.unknown_case_names("mode_proof,typo_case", reg) == ["typo_case"]       # exact names are still checked exactly
     # winmap: a lab case is never 'unclassified'; PowerShell pane skips with a reason; p_onesess is skipped on Windows
     base = {n.split(".")[0] for n in names}
-    assert base == {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i", "lab_no_helper_chip", "lab_replay", "lab_password_prompt", "lab_helper_install", "lab_nu_agent_pager_env", "lab_file_tree_remote"}, base
+    old = {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i", "lab_no_helper_chip", "lab_replay", "lab_password_prompt", "lab_helper_install", "lab_nu_agent_pager_env"}
+    old |= {"lab_file_tree_remote"}
+    assert old <= base and all(n.startswith(("lab_fam_", "lab_helper_", "lab_nohelper_")) for n in base - old), base
     assert all(c["modes"] == ("terminal",) for c in labs if c["name"].startswith("lab_ssh_drop_reconnect")), "the drop case is terminal-only"
     pw = [c["arm"] for c in labs if c["name"].startswith("lab_password_prompt")]
     assert {a["user"] for a in pw} == {"p_password", "p_kbdint"} and all(a["helper"] == "nohelper" and a["fault"] is None for a in pw), pw     # #1535
@@ -2816,14 +2850,42 @@ def lab_cases_registry_and_selection():
 @check
 def lab_file_tree_remote_pieces():
     """Wave H parity P3: the lab case reads the app's hop=file_tree log lines. The leaf-name hash must be the one manager.rs logs (32-bit FNV-1a), the line parser
-    must take what the app prints, and the case registers exactly the nohelper and upload arms for bash and zsh."""
+    must take what the app prints, and the case registers exactly the nohelper and upload arms for bash, zsh, fish and nu."""
     import cases_lab_remote as CLR
     assert CLR.fnv1a32("") == "811c9dc5" and CLR.fnv1a32("a") == "e40c292c" and CLR.fnv1a32("foobar") == "bf9cf968"        # the published FNV-1a test vectors
     line = "INFO hop=file_tree event=update source=shell removed=1 added=2 added_hash=[e40c292c,bf9cf968]\nINFO hop=file_tree event=snapshot source=helper removed=0 added=0 added_hash=[]"
     assert CLR.tree_events(line) == [("update", "shell", 1, 2, ["e40c292c", "bf9cf968"]), ("snapshot", "helper", 0, 0, [])]
     assert CLR.saw_added(line, "a") and not CLR.saw_added(line, "b") and not CLR.saw_added(line, "a", event="snapshot")
     arms = [c["arm"] for c in cases.CASES if c.get("lab") and c["name"].startswith("lab_file_tree_remote.")]
-    assert {(a["shell"], a["helper"]) for a in arms} == {(s, h) for s in ("bash", "zsh") for h in ("nohelper", "upload")}, arms
+    assert {(a["shell"], a["helper"]) for a in arms} == {(s, h) for s in ("bash", "zsh", "fish", "nu") for h in ("nohelper", "upload")}, arms
+
+
+@check
+def lab_helper_coverage_guard():
+    """P10: every capability in capability.rs HELPER_CAPABILITIES maps to a registered lab case with a helper arm, and every backend Family (but the legacy-only
+    codebase_index) to one with a nohelper arm; the parse of the Rust source and the skip rules are pinned."""
+    import cases_lab_helper as H
+    info = H.parse_rust()
+    assert info["helper"] and set(info["helper"]) <= set(info["consts"].values()), info["helper"]
+    assert len(info["families"]) >= 15 and "RunCommand" in info["families"] and info["families"]["FsBasic"] == "fs_basic", info["families"]
+    assert info["stubbed"] and info["stubbed"] <= set(info["families"]), info["stubbed"]
+    miss_h, miss_n = H.coverage(info)
+    assert not miss_h, "helper capabilities with no lab case that has a helper arm (add one to cases_lab_helper.py): %s" % miss_h
+    assert not miss_n, "backend families with no lab case that has a nohelper arm: %s" % miss_n
+    assert H.shell_arm_implemented("RunCommand", info) and not H.shell_arm_implemented("FsBasic", dict(info, stubbed={"FsBasic"}))
+    assert H.shell_arm_implemented("GitStatus", dict(info, stubbed=set(), shell_text="Family::GitStatus"))
+    # a capability nobody covers must be reported
+    saved = dict(H.COVERS)
+    try:
+        H.COVERS.clear()
+        mh, mn = H.coverage(info)
+        assert set(mh) == set(info["helper"]) and mn, (mh, mn)
+    finally:
+        H.COVERS.update(saved)
+    skips = [c for c in cases.CASES if c.get("lab") and c["arm"]["case"].startswith("fam_") and c["arm"]["helper"] == "helper"]
+    assert skips and {c["arm"]["case"] for c in skips} >= {"fam_" + k for k in info["helper"]}
+    import lab as L
+    assert L.matrix_selection("quick")["shells"] == {"bash", "zsh", "fish", "nu"}
 
 
 @check
@@ -2899,6 +2961,95 @@ def lab_remote_mode_fails_closed_without_a_pinned_box_key():
             if v is not None:
                 os.environ[k] = v
         shutil.rmtree(d, ignore_errors=True)
+
+
+@check
+def lab_fixed_slots_ports_mode_and_no_token_leak():
+    import lab as L
+    C = _load_by_path("labctl_fx", os.path.join(SSHLAB, "labctl.py"))
+    D = _load_by_path("labd_fx", os.path.join(SSHLAB, "rootfs", "usr", "local", "sbin", "labd.py"))
+    # slot parsing and the documented port scheme: ssh S, host-key-B S+10, echo C+700, control C
+    t = C.parse_slots(C.DEFAULT_SLOTS)
+    assert t["mac"] == {22: 22202, 2222: 22212, 7: 7702, 7000: 7002} and t["windows"] == {22: 22203, 2222: 22213, 7: 7703, 7000: 7003}, t
+    for bad in ("", "mac", "mac:1:2:3", "Mac:22202:7002", "mac:22202:7002,mac:22302:7102", "a:22202:7002,b:22212:7102", "a:80:7002", "a:40000:7002", "a:22202:x"):
+        try:
+            C.parse_slots(bad)
+            raise AssertionError("accepted slots %r" % bad)
+        except ValueError:
+            pass
+    assert L.slot_ports("mac") == t["mac"] and L.default_slot("darwin") == "mac" and L.default_slot("win32") == "windows"
+    try:
+        L.slot_ports("beos")
+        raise AssertionError("accepted an unknown slot")
+    except L.LabError:
+        pass
+    # the slot container: fixed published ports, token only as a read-only mounted FILE, exclusive leases, never the token value on the command line
+    argv = C.slot_run_argv("img:t", "mac", t["mac"], 3600, "/home/x/.phosphor-sshlab/token", 1000)
+    flat = " ".join(argv)
+    for p, cp in ((22202, 22), (22212, 2222), (7702, 7), (7002, 7000)):
+        assert "-p 0.0.0.0:%d:%d" % (p, cp) in flat
+    assert "SSHLAB_TOKEN_FILE=/etc/sshlab-token" in flat and "SSHLAB_EXCLUSIVE=1" in flat and "SSHLAB_TOKEN=" not in flat and ":/etc/sshlab-token:ro" in flat and "sshlab.slot=mac" in flat
+    # reconcile decisions: create / keep / replace on image change or expiry or a dead container; defer while a client holds the lease
+    lab = {"phosphor.sshlab": "1", "phosphor.sshlab.image": "img:t", "phosphor.sshlab.expires": "5000"}
+    assert C.slot_action(None, "img:t", 100) == "create"
+    assert C.slot_action({"Labels": lab, "State": "running"}, "img:t", 100) == "keep"
+    assert C.slot_action({"Labels": lab, "State": "running"}, "img:u", 100) == "replace"
+    assert C.slot_action({"Labels": lab, "State": "running"}, "img:t", 6000) == "replace"
+    assert C.slot_action({"Labels": lab, "State": "exited"}, "img:t", 100) == "replace"
+    assert C.slot_action({"Labels": lab, "State": "running"}, "img:u", 100, leased=True) == "defer"
+    # mode selection incl. the token-missing SKIP reason; nothing printed ever holds the token
+    keep = {k: os.environ.get(k) for k in ("APPCI_LAB", "SSHLAB_BOX", "SSHLAB_TOKEN", "APPCI_LAB_SLOT", "PATH")}
+    secret = "s3cr3t-token-value-0123456789abcdef"
+    try:
+        for k in ("APPCI_LAB", "SSHLAB_BOX", "SSHLAB_TOKEN", "APPCI_LAB_SLOT"):
+            os.environ.pop(k, None)
+        L.ci_env._file = lambda: {}
+        os.environ["PATH"] = ""            # no podman
+        m, why = L.lab_mode()
+        assert m == "off" and "SSHLAB_BOX" in why, (m, why)
+        os.environ["APPCI_LAB"] = "fixed"
+        os.environ["SSHLAB_BOX"] = "box.invalid"
+        m, why = L.lab_mode()
+        assert m == "off" and "SSHLAB_TOKEN" in why and "not on a protected ref" in why, (m, why)
+        os.environ["SSHLAB_TOKEN"] = secret
+        assert L.lab_mode() == ("fixed", "")
+        del os.environ["APPCI_LAB"]
+        assert L.lab_mode() == ("fixed", ""), "auto-select on a podman-less machine with box + token"
+        os.environ["APPCI_LAB"] = "local"
+        m, why = L.lab_mode()
+        assert m == "off" and secret not in why
+        # errors printed by the client never contain the token
+        assert secret not in L.safe_text("GET /health failed: " + secret, secret) and "<token>" in L.safe_text("x" + secret, secret)
+        lb = L.Lab(dict(cid=None, ports=t["mac"], token=secret), "127.0.0.1", "fixed")
+        try:
+            lb.ports[7000] = 1            # nothing listens on port 1
+            lb.health()
+        except L.LabError as e:
+            assert secret not in str(e)
+        # a second lease on an exclusive slot is refused (409), the same owner may re-lease, an expired lease is taken over; a short token is unusable
+        assert D.lease_gate(True, True, "a", 200.0, "b", 100.0) and "another client" in D.lease_gate(True, True, "a", 200.0, "b", 100.0)
+        assert D.lease_gate(True, True, "a", 200.0, "a", 100.0) is None and D.lease_gate(True, True, "a", 50.0, "b", 100.0) is None
+        assert D.lease_gate(True, False, None, 0.0, "b", 100.0) is None and D.lease_gate(False, True, "a", 200.0, "b", 100.0) is None
+        assert D.load_token({"SSHLAB_TOKEN": "short"}) == "" and D.load_token({"SSHLAB_TOKEN": secret}) == secret and D.load_token({}) == ""
+        d = tempfile.mkdtemp()
+        try:
+            open(d + "/tok", "w").write(secret + "\n")
+            assert D.load_token({"SSHLAB_TOKEN_FILE": d + "/tok"}) == secret
+            os.chmod(d + "/tok", 0o644)
+            try:
+                C.read_token_file(d + "/tok")
+                raise AssertionError("accepted a group/world-readable token file")
+            except SystemExit as e:
+                assert secret not in str(e)
+            os.chmod(d + "/tok", 0o600)
+            assert C.read_token_file(d + "/tok") == secret and C.redact("a " + secret, secret) == "a <token>"
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+    finally:
+        for k, v in keep.items():
+            os.environ.pop(k, None)
+            if v is not None:
+                os.environ[k] = v
 
 
 @check
@@ -3310,6 +3461,120 @@ def wn_agent_plugins_offline():
         assert "..." in open(os.path.join(tmp, "codex", "codex_events.bin"), "rb").read().decode("utf-8")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+@check
+def upgrade_table_matches_fixture_and_docs():
+    """#1546: upgrade_table.py, fixtures/upgrade_v0_1_17/settings.toml and docs/testing.md 2.18 say the same thing, and every key the table names is a real
+    toml_path of the tree (a removed key only in the v0.1.17 source is marked REMOVED in its `kind`)"""
+    import upgrade_table as U
+    root = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
+    fx = open(os.path.join(U.FIXTURE_DIR, "settings.toml"), encoding="utf-8").read()
+    assert U.fixture_problems(fx) == [], U.fixture_problems(fx)
+    doc = open(os.path.join(root, "docs", "testing.md"), encoding="utf-8").read()
+    assert U.doc_problems(doc) == [], U.doc_problems(doc)
+    assert len({r["id"] for r in U.ROWS}) == len(U.ROWS)
+    for r in U.ROWS:
+        assert r["action"] in (U.KEEP, U.MIGRATE, U.DROP_SILENTLY, U.DROP_NOTICE, U.NEW), r["id"]
+        assert r["check"] in (U.C_KEPT, U.C_UNKNOWN_KEPT, U.C_ABSENT, U.C_FILE_SAME, U.C_SECRET, U.C_ENV, U.C_DB, U.C_UNIT), r["id"]
+        if r["check"] in (U.C_KEPT, U.C_UNKNOWN_KEPT):
+            assert U.seeds_of(r), "%s is a kept-key row with no seed line" % r["id"]
+        if r["check"] == U.C_ABSENT:
+            assert not U.seeds_of(r) and r["default"] is not None, r["id"]
+    # every key a TOML row names exists as a toml_path (current tree), except the removed one
+    tomls = []
+    for base in ("app/src", "crates"):
+        for d, _s, files in os.walk(os.path.join(root, base)):
+            for f in files:
+                if f.endswith(".rs") and "_test" not in f:
+                    try:
+                        tomls.append(open(os.path.join(d, f), encoding="utf-8", errors="replace").read())
+                    except OSError:
+                        pass
+    blob = "\n".join(tomls)
+    for r in U.ROWS:
+        if r["check"] not in (U.C_KEPT, U.C_UNKNOWN_KEPT, U.C_ABSENT):
+            continue
+        keys = [t + "." + k if t else k for t, k in (U.seeds_of(r) or U._absent_keys(r))]
+        for k in keys:
+            has = ('toml_path: "%s"' % k) in blob
+            if "REMOVED" in r["kind"]:
+                assert not has, "%s: %s is marked REMOVED but is still a toml_path" % (r["id"], k)
+            else:
+                assert has, "%s: %s is not a toml_path of this tree (renamed or removed?)" % (r["id"], k)
+
+
+@check
+def upgrade_case_pure_helpers():
+    """#1546 upgrade_from_v0_1_17: the seed renderer, tree hashing, keyring output framing, log verdict, downgrade report, the previous-release locator"""
+    import cases_upgrade as CU, prev_release as PR, upgrade_table as U, toml_text as T
+    assert CU.render_seed("a=@BASH@ b=@HOME@", "/bin/bash", "/h") == "a=/bin/bash b=/h"
+    tmp = tempfile.mkdtemp()
+    try:
+        os.makedirs(os.path.join(tmp, "d"))
+        open(os.path.join(tmp, "d", "a.yaml"), "w").write("x")
+        open(os.path.join(tmp, "d", "phosphor.log"), "w").write("noise")
+        open(os.path.join(tmp, "b.toml"), "w").write("y")
+        h = CU.tree_hashes(tmp)
+        assert sorted(h) == ["b.toml", "d/a.yaml"], h
+        h2 = dict(h)
+        del h2["b.toml"]
+        assert CU.lost_files(h, h2) == ["b.toml"] and CU.lost_files(h2, h) == []
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    out = "KEY:ProxyPassword\nsecret-1\nEND\nKEY:AgentProviderSecrets\n\nEND\n"
+    assert CU.parse_lookups(out) == {"ProxyPassword": "secret-1", "AgentProviderSecrets": None}
+    assert CU.secrets_equal("AgentProviderSecrets", '{"a":"1","b":"2"}', '{"b": "2", "a": "1"}')
+    assert not CU.secrets_equal("ProxyPassword", "a", None)
+    assert CU.shell_q("it's") == "'it'\\''s'"
+    # the log verdict: a panic and a settings/keyring ERROR count; an unrelated connection error does not
+    assert CU.upgrade_log_problems("2026 INFO warp started\n2026 ERROR Failed to connect to 127.0.0.1:11434: refused\n") == []
+    assert CU.upgrade_log_problems("thread 'main' panicked at app/src/x.rs:1\n")
+    assert CU.upgrade_log_problems("2026 ERROR failed to read the proxy password from the keyring\n")
+    assert CU.upgrade_log_problems("2026 ERROR Failed to migrate settings.toml\n")
+    # rows against a settings text: a kept key that changes, a removed key, and a new key written non-default are each named
+    fx = open(os.path.join(U.FIXTURE_DIR, "settings.toml"), encoding="utf-8").read()
+    pre = CU.render_seed(fx, "/bin/bash", "/h")
+    assert U.after_problems(pre, pre, T) == []
+    bad = T.del_key(pre, "network", "proxy_url")
+    assert [x[0] for x in U.after_problems(pre, bad, T)] == ["U20"]
+    bad = T.set_key(pre, "warpify.ssh", "remote_helper_allowed_hosts", '["u@h"]')
+    assert [x[0] for x in U.after_problems(pre, bad, T)] == ["U42"]
+    bad = T.set_key(pre, "privacy.secret_redaction", "enabled", "true")
+    assert [x[0] for x in U.after_problems(pre, bad, T)] == ["U09"]
+    reformatted = pre.replace("providers = [", "providers = [  # same list").replace("},\n]", "}\n]")
+    assert U.after_problems(pre, reformatted, T) == [], U.after_problems(pre, reformatted, T)
+    rep = CU.downgrade_report(pre, T.del_key(pre, "network", "allowed_origins"), True, "")
+    assert rep["reached_prompt"] and rep["seeded_keys_lost"] == []
+    rep = CU.downgrade_report(pre, T.del_key(pre, "warpify.ssh", "use_ssh_tmux_wrapper"), False, "panicked at x")
+    assert rep["seeded_keys_lost"] == ["warpify.ssh.use_ssh_tmux_wrapper"] and not rep["reached_prompt"] and rep["problem_lines"]
+    # prev_release: an explicit path wins; a bad path / a disabled fetch say why; SHA256SUMS lookup
+    assert PR.expected_sha("abc123  Phosphor-x86_64.AppImage\ndef456 *other\n", "Phosphor-x86_64.AppImage") == "abc123"
+    assert PR.expected_sha("abc123  x\n", "y") is None
+    tmp = tempfile.mkdtemp()
+    try:
+        exe = os.path.join(tmp, "phosphor")
+        open(exe, "w").write("#!/bin/sh\n")
+        os.chmod(exe, 0o755)
+        assert PR.locate(environ={"APPCI_PREV_RELEASE_BIN": exe}) == (exe, "APPCI_PREV_RELEASE_BIN")
+        got, why = PR.locate(environ={"APPCI_PREV_RELEASE_BIN": os.path.join(tmp, "missing")})
+        assert got is None and "not an executable" in why
+        got, why = PR.locate(environ={"APPCI_PREV_RELEASE_DIR": tmp, "APPCI_PREV_RELEASE_FETCH": "0"})
+        assert got is None and "APPCI_PREV_RELEASE_FETCH=0" in why
+        called = []
+        got, why = PR.locate(environ={"APPCI_PREV_RELEASE_DIR": tmp}, fetch=lambda tag, d: called.append(d) or (_ for _ in ()).throw(OSError("offline")))
+        assert got is None and ("offline" in why or "Linux" in why), why
+        app = os.path.join(PR.cache_dir("v0.1.17", {"APPCI_PREV_RELEASE_DIR": tmp}), "squashfs-root")
+        os.makedirs(app)
+        run = os.path.join(app, "AppRun")
+        open(run, "w").write("#!/bin/sh\n")
+        os.chmod(run, 0o755)
+        assert PR.locate(environ={"APPCI_PREV_RELEASE_DIR": tmp})[0] == run
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    reg = {c["name"]: c for c in cases.CASES}
+    assert "upgrade_from_v0_1_17" in reg and "upgrade_from_v0_1_17" not in cases.SMOKE
+    assert winmap.skip_reason("upgrade_from_v0_1_17", "gitbash"), "the Windows reason must be stated"
 
 
 def main():

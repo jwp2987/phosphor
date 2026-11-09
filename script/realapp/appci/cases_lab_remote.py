@@ -10,6 +10,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cases  # noqa: E402  (cases.py imports this module after cases_lab)
 import cases_coverage_a as CA  # noqa: E402
 import cases_lab as CL  # noqa: E402
+import cases_lab_helper as CLH  # noqa: E402
+
+# families this file covers (the coverage guard in cases_lab_helper counts them): the file tree, and the ListDirectory the link validation uses
+CLH.declare_external("repo_metadata", helper_case="lab_file_tree_remote", nohelper_case="lab_file_tree_remote")
+CLH.declare_external("fs_basic", helper_case="lab_file_tree_remote", nohelper_case="lab_file_tree_remote")
 
 HOOK_FILE_TREE = re.compile(r"hop=file_tree event=(snapshot|update) source=(helper|shell) removed=(\d+) added=(\d+) added_hash=\[([0-9a-f,]*)\]")
 
@@ -32,7 +37,7 @@ def saw_added(text, name, event="update"):
     return any(e == event and want in hashes for e, _s, _r, _a, hashes in tree_events(text))
 
 
-@CL.lab_case("file_tree_remote", shells=("bash", "zsh"), lat=("lan", "150"), helper=("nohelper", "upload"), modes=("terminal",))
+@CL.lab_case("file_tree_remote", shells=("bash", "zsh", "fish", "nu"), lat=("lan", "150"), helper=("nohelper", "upload"), modes=("terminal",))
 def c_file_tree_remote(ctx, r, arm):
     """The remote file tree, with and without the helper. In a git repository on the server the user `cd`s into a subdirectory: the app gets the repo's tree
     (a snapshot from the helper, or from `git ls-files` over the out-of-band channel). Then a file is created OUTSIDE the terminal (a separate ssh connection,

@@ -3,6 +3,23 @@ use std::path::Path;
 
 use anyhow::{Result, anyhow};
 
+// The pure git logic (argv builders, parsers, the algorithms over a `GitRunner`) lives in
+// `remote_server::shellcmd::git` so the helper and the shell backend run the same commands.
+// This module keeps the app's local wrappers around it (P5).
+#[cfg(feature = "local_fs")]
+use remote_server::shellcmd::git::{self as shared, GitOutput, GitRunner, gh_text, git_text};
+pub use remote_server::shellcmd::git::{
+    Commit, CommitChainMode, FileChangeEntry, PrInfo, RepositoryInfo, is_gh_auth_error,
+    is_gh_missing_error, looks_like_commit_sha,
+};
+#[cfg(feature = "local_fs")]
+use remote_server::shellcmd::git::{
+    is_pr_lookup_not_applicable_error, is_repository_lookup_not_applicable_error,
+};
+// Referenced by this module's tests only.
+#[cfg(all(test, feature = "local_fs"))]
+use remote_server::shellcmd::git::is_no_pr_for_branch_error;
+
 #[cfg(test)]
 #[path = "git_tests.rs"]
 mod tests;
@@ -23,36 +40,116 @@ pub async fn run_git_command_with_env(
     args: &[&str],
     path_env: Option<&str>,
 ) -> Result<String> {
-    use command::Stdio;
+    git_text(&LocalGitRunner::new(path_env), repo_path, args).await
+}
 
-    log::debug!(
-        "[GIT OPERATION] git.rs run_git_command git {}",
-        args.join(" ")
-    );
-    let mut git_args = vec!["-c", "diff.autoRefreshIndex=false"];
-    git_args.extend_from_slice(args);
-    let env = git_child_env(path_env);
+/// The app's local [`GitRunner`]: spawns `git` on this machine (through `wsl.exe` for a WSL UNC
+/// working directory), with the shared base arguments and environment. Exit-status policy and
+/// error text come from `remote_server::shellcmd::git::git_text`, identical to what
+/// `run_git_command_with_env` always produced.
+#[cfg(feature = "local_fs")]
+#[derive(Clone, Debug, Default)]
+pub struct LocalGitRunner {
+    path_env: Option<String>,
+}
 
-    let mut cmd = git_command(repo_path, &git_args, &env);
-    cmd.stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    let output = cmd
-        .output()
-        .await
-        .map_err(|e| anyhow!("Failed to execute git command: {}", e))?;
+#[cfg(feature = "local_fs")]
+impl LocalGitRunner {
+    /// `path_env` sets `PATH` on the child (see [`run_git_command_with_env`]).
+    pub fn new(path_env: Option<&str>) -> Self {
+        Self {
+            path_env: path_env.map(str::to_owned),
+        }
+    }
+}
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr);
+#[cfg(feature = "local_fs")]
+impl GitRunner for LocalGitRunner {
+    fn run<'a>(
+        &'a self,
+        args: &'a [&'a str],
+        stdin: Option<&'a [u8]>,
+        cwd: &'a Path,
+    ) -> futures::future::BoxFuture<'a, Result<GitOutput>> {
+        Box::pin(async move {
+            use command::Stdio;
+            use futures_lite::io::AsyncWriteExt as _;
 
-    // Handle git diff specific behavior:
-    // - Exit code 0: no differences
-    // - Exit code 1: differences found (this is normal for diff commands)
-    // - Exit code > 1: actual error
-    if output.status.success() || (output.status.code() == Some(1) && !stdout.is_empty()) {
-        Ok(stdout)
-    } else {
-        Err(anyhow!("Git command failed: {}, {}", stderr, stdout))
+            log::debug!(
+                "[GIT OPERATION] git.rs run_git_command git {}",
+                args.join(" ")
+            );
+            let mut git_args: Vec<&str> = shared::GIT_BASE_ARGS.to_vec();
+            git_args.extend_from_slice(args);
+            let env = git_child_env(self.path_env.as_deref());
+
+            let mut cmd = git_command(cwd, &git_args, &env);
+            cmd.stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true);
+            let output = match stdin {
+                None => cmd.output().await,
+                Some(bytes) => {
+                    cmd.stdin(Stdio::piped());
+                    match cmd.spawn() {
+                        Ok(mut child) => {
+                            if let Some(mut pipe) = child.stdin.take() {
+                                if let Err(e) = pipe.write_all(bytes).await {
+                                    log::debug!("git stdin write failed: {e}");
+                                }
+                                drop(pipe);
+                            }
+                            child.output().await
+                        }
+                        Err(e) => Err(e),
+                    }
+                }
+            }
+            .map_err(|e| anyhow!("Failed to execute git command: {}", e))?;
+
+            Ok(GitOutput {
+                stdout: output.stdout,
+                stderr: output.stderr,
+                exit_code: output.status.code(),
+            })
+        })
+    }
+
+    fn run_gh<'a>(
+        &'a self,
+        args: &'a [&'a str],
+        cwd: &'a Path,
+    ) -> futures::future::BoxFuture<'a, Result<GitOutput>> {
+        Box::pin(async move {
+            use command::Stdio;
+            use command::r#async::Command;
+
+            log::debug!(
+                "[GIT OPERATION] git.rs run_gh_command gh {}",
+                args.join(" ")
+            );
+
+            let mut cmd = Command::new("gh");
+            cmd.args(args)
+                .current_dir(cwd)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .env("HOMEBREW_NO_AUTO_UPDATE", "1")
+                .kill_on_drop(true);
+            if let Some(path_env) = &self.path_env {
+                cmd.env("PATH", path_env);
+            }
+            let output = cmd
+                .output()
+                .await
+                .map_err(|e| anyhow!("Failed to execute gh command: {e}"))?;
+            Ok(GitOutput {
+                stdout: output.stdout,
+                stderr: output.stderr,
+                exit_code: output.status.code(),
+            })
+        })
     }
 }
 
@@ -398,16 +495,7 @@ pub async fn detect_current_branch(_repo_path: &Path) -> Result<String> {
 /// In detached HEAD state this returns the literal string "HEAD".
 #[cfg(feature = "local_fs")]
 pub async fn detect_current_branch(repo_path: &Path) -> Result<String> {
-    log::debug!("[GIT OPERATION] git.rs detect_current_branch git rev-parse --abbrev-ref HEAD");
-    let result = run_git_command(repo_path, &["rev-parse", "--abbrev-ref", "HEAD"]).await;
-
-    if result.is_err() {
-        log::debug!("[GIT OPERATION] git.rs detect_current_branch git branch --show-current");
-        run_git_command(repo_path, &["branch", "--show-current"]).await
-    } else {
-        result
-    }
-    .map(|branch_name| branch_name.trim().to_owned())
+    shared::detect_current_branch(&LocalGitRunner::default(), repo_path).await
 }
 
 /// Like [`detect_current_branch`], but in detached HEAD state returns the short
@@ -415,20 +503,7 @@ pub async fn detect_current_branch(repo_path: &Path) -> Result<String> {
 /// (Matches the shell command `git symbolic-ref --short HEAD || git rev-parse --short HEAD`.)
 #[cfg(feature = "local_fs")]
 pub async fn detect_current_branch_display(repo_path: &Path) -> Result<String> {
-    let branch = detect_current_branch(repo_path).await?;
-    if branch == "HEAD" {
-        run_git_command(repo_path, &["rev-parse", "--short", "HEAD"])
-            .await
-            .map(|sha| sha.trim().to_owned())
-    } else {
-        Ok(branch)
-    }
-}
-
-/// Whether `s` has the shape of an abbreviated or full commit SHA (7..=40 hex digits).
-/// `detect_current_branch_display` yields one of these in detached HEAD state.
-pub fn looks_like_commit_sha(s: &str) -> bool {
-    (7..=40).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_hexdigit())
+    shared::detect_current_branch_display(&LocalGitRunner::default(), repo_path).await
 }
 
 /// Whether a shell command probably moves HEAD (switch/checkout/worktree/rebase/
@@ -498,43 +573,7 @@ pub async fn detect_main_branch(_repo_path: &Path) -> Result<String> {
 /// Detects the main branch using git-branchless style heuristics.
 #[cfg(feature = "local_fs")]
 pub async fn detect_main_branch(repo_path: &Path) -> Result<String> {
-    // First try to get the default branch from origin
-    log::debug!(
-        "[GIT OPERATION] git.rs detect_main_branch git symbolic-ref refs/remotes/origin/HEAD"
-    );
-    match run_git_command(repo_path, &["symbolic-ref", "refs/remotes/origin/HEAD"]).await {
-        Ok(output) => {
-            let branch_ref = output.trim();
-            if let Some(branch_name) = branch_ref.strip_prefix("refs/remotes/") {
-                return Ok(branch_name.to_string());
-            }
-        }
-        Err(_) => {
-            // If remote fetch fails, fall back to candidates.
-        }
-    }
-
-    // Fallback: try common main branch names in order of preference.
-    let candidates = ["origin/main", "origin/master", "main", "master", "develop"];
-
-    for candidate in candidates {
-        log::debug!(
-            "[GIT OPERATION] git.rs detect_main_branch git rev-parse --verify {candidate}^{{}}"
-        );
-        let result = run_git_command(
-            repo_path,
-            &["rev-parse", "--verify", &format!("{candidate}^{{}}")],
-        )
-        .await;
-
-        if result.is_ok() {
-            return Ok(candidate.to_string());
-        }
-    }
-
-    // Final fallback if all else fails.
-    log::debug!("[GIT OPERATION] git.rs detect_main_branch git branch --show-current");
-    run_git_command(repo_path, &["branch", "--show-current"]).await
+    shared::detect_main_branch(&LocalGitRunner::default(), repo_path).await
 }
 
 /// Returns the SHA where `HEAD` forked from any other ref. Use
@@ -553,39 +592,7 @@ pub async fn detect_fork_point(
     repo_path: &Path,
     current_branch_name: Option<&str>,
 ) -> Result<Option<String>> {
-    // Exclude `<current>` and `origin/<current>` so the branch isn't
-    // subtracted from itself.
-    let current = current_branch_name
-        .map(str::trim)
-        .filter(|branch| !branch.is_empty() && *branch != "HEAD");
-
-    let branch_exclude = current.map(|c| format!("--exclude={c}"));
-    let remote_exclude = current.map(|c| format!("--exclude=origin/{c}"));
-
-    let mut args: Vec<&str> = vec!["rev-list", "HEAD", "--not"];
-    args.extend(branch_exclude.as_deref());
-    args.push("--branches");
-    args.extend(remote_exclude.as_deref());
-    args.push("--remotes");
-
-    let unique = match run_git_command(repo_path, &args).await {
-        Ok(out) => out,
-        Err(e) => {
-            log::debug!("detect_fork_point: rev-list failed: {e}");
-            return Ok(None);
-        }
-    };
-
-    // Last non-empty line = oldest unique commit; its parent = fork point.
-    // No unique commits means HEAD is fully shared, so fork = HEAD.
-    let target = match unique.lines().rfind(|l| !l.trim().is_empty()) {
-        Some(sha) => format!("{}^", sha.trim()),
-        None => "HEAD".to_string(),
-    };
-    Ok(run_git_command(repo_path, &["rev-parse", &target])
-        .await
-        .ok()
-        .map(|s| s.trim().to_string()))
+    shared::detect_fork_point(&LocalGitRunner::default(), repo_path, current_branch_name).await
 }
 
 /// Git summary for a repo: current branch + uncommitted diff stats.
@@ -654,24 +661,6 @@ pub async fn get_repo_git_summary(repo_root: &Path) -> Option<RepoGitSummary> {
     })
 }
 
-/// Short summary of a commit: hash and subject line.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Commit {
-    pub hash: String,
-    pub subject: String,
-    pub files_changed: usize,
-    pub additions: usize,
-    pub deletions: usize,
-}
-
-/// A single changed file with per-file addition/deletion counts.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FileChangeEntry {
-    pub path: String,
-    pub additions: usize,
-    pub deletions: usize,
-}
-
 /// Returns per-file change entries. When `include_unstaged` is true, returns all
 /// uncommitted changes (staged + unstaged + untracked) vs HEAD; otherwise only staged changes.
 #[cfg(feature = "local_fs")]
@@ -679,44 +668,22 @@ pub async fn get_file_change_entries(
     repo_path: &Path,
     include_unstaged: bool,
 ) -> Result<Vec<FileChangeEntry>> {
-    let args: &[&str] = if include_unstaged {
-        &["diff", "--numstat", "HEAD"]
-    } else {
-        &["diff", "--cached", "--numstat"]
-    };
-    let output = run_git_command(repo_path, args).await.unwrap_or_default();
-    let mut entries = Vec::new();
-    for line in output.lines() {
-        if line.is_empty() {
-            continue;
-        }
-        let parts: Vec<&str> = line.split('\t').collect();
-        if parts.len() >= 3 {
-            entries.push(FileChangeEntry {
-                path: parts[2].to_string(),
-                additions: parts[0].parse().unwrap_or(0),
-                deletions: parts[1].parse().unwrap_or(0),
-            });
-        }
-    }
+    let (mut entries, untracked) = shared::file_change_entries_tracked(
+        &LocalGitRunner::default(),
+        repo_path,
+        include_unstaged,
+    )
+    .await;
 
-    // Also include untracked files when showing all changes.
-    if include_unstaged {
-        if let Ok(untracked) =
-            run_git_command(repo_path, &["ls-files", "--others", "--exclude-standard"]).await
-        {
-            for file_name in untracked.lines() {
-                if file_name.is_empty() {
-                    continue;
-                }
-                let additions = count_lines_if_text_file(&repo_path.join(file_name)) as usize;
-                entries.push(FileChangeEntry {
-                    path: file_name.to_string(),
-                    additions,
-                    deletions: 0,
-                });
-            }
-        }
+    // Also include untracked files when showing all changes (their lines are counted from the
+    // local file; a remote host counts them its own way).
+    for file_name in untracked {
+        let additions = count_lines_if_text_file(&repo_path.join(&file_name)) as usize;
+        entries.push(FileChangeEntry {
+            path: file_name,
+            additions,
+            deletions: 0,
+        });
     }
 
     Ok(entries)
@@ -737,75 +704,13 @@ pub async fn get_unpushed_commits(
     current_branch_name: Option<&str>,
     upstream_ref: Option<&str>,
 ) -> Result<Vec<Commit>> {
-    let output = if let Some(upstream_ref) = upstream_ref.map(str::trim).filter(|s| !s.is_empty()) {
-        let range = format!("{upstream_ref}..HEAD");
-        run_git_command(
-            repo_path,
-            &["log", &range, "--format=COMMIT:%H\t%s", "--numstat"],
-        )
-        .await?
-    } else {
-        // No upstream — fall back to the fork-point commit so we show
-        // exactly the commits unique to this branch
-        let fork_point = detect_fork_point(repo_path, current_branch_name)
-            .await
-            .ok()
-            .flatten();
-
-        let range = match fork_point {
-            Some(sha) => format!("{sha}..HEAD"),
-            None => "HEAD".to_string(),
-        };
-
-        run_git_command(
-            repo_path,
-            &["log", &range, "--format=COMMIT:%H\t%s", "--numstat"],
-        )
-        .await
-        .inspect_err(|e| log::warn!("Fallback unpushed-commits log failed: {e}"))
-        .unwrap_or_default()
-    };
-    parse_commit_log(&output)
-}
-
-#[cfg(feature = "local_fs")]
-fn parse_commit_log(output: &str) -> Result<Vec<Commit>> {
-    let mut commits = Vec::new();
-    let mut current: Option<Commit> = None;
-
-    for line in output.lines() {
-        if let Some(rest) = line.strip_prefix("COMMIT:") {
-            if let Some(commit) = current.take() {
-                commits.push(commit);
-            }
-            let parts: Vec<&str> = rest.splitn(2, '\t').collect();
-            if parts.len() == 2 {
-                current = Some(Commit {
-                    hash: parts[0].to_string(),
-                    subject: parts[1].to_string(),
-                    files_changed: 0,
-                    additions: 0,
-                    deletions: 0,
-                });
-            }
-        } else if !line.is_empty() {
-            // numstat line: "<additions>\t<deletions>\t<path>"
-            if let Some(ref mut commit) = current {
-                let parts: Vec<&str> = line.splitn(3, '\t').collect();
-                if parts.len() == 3 {
-                    commit.additions += parts[0].parse::<usize>().unwrap_or(0);
-                    commit.deletions += parts[1].parse::<usize>().unwrap_or(0);
-                    commit.files_changed += 1;
-                }
-            }
-        }
-    }
-
-    if let Some(commit) = current {
-        commits.push(commit);
-    }
-
-    Ok(commits)
+    shared::get_unpushed_commits(
+        &LocalGitRunner::default(),
+        repo_path,
+        current_branch_name,
+        upstream_ref,
+    )
+    .await
 }
 
 #[cfg(not(feature = "local_fs"))]
@@ -820,35 +725,7 @@ pub async fn get_unpushed_commits(
 /// Returns the list of files changed in a specific commit, with per-file stats.
 #[cfg(feature = "local_fs")]
 pub async fn get_commit_files(repo_path: &Path, hash: &str) -> Result<Vec<FileChangeEntry>> {
-    let output = run_git_command(
-        repo_path,
-        &[
-            "diff-tree",
-            "--root",
-            "--no-commit-id",
-            "-r",
-            "--numstat",
-            hash,
-        ],
-    )
-    .await?;
-
-    let mut entries = Vec::new();
-    for line in output.lines() {
-        if line.is_empty() {
-            continue;
-        }
-        let parts: Vec<&str> = line.splitn(3, '\t').collect();
-        if parts.len() == 3 {
-            entries.push(FileChangeEntry {
-                path: parts[2].to_string(),
-                additions: parts[0].parse().unwrap_or(0),
-                deletions: parts[1].parse().unwrap_or(0),
-            });
-        }
-    }
-
-    Ok(entries)
+    shared::get_commit_files(&LocalGitRunner::default(), repo_path, hash).await
 }
 
 #[cfg(not(feature = "local_fs"))]
@@ -870,29 +747,6 @@ const MAX_UNTRACKED_FILE_BYTES: usize = 4_000;
 /// binary, mirroring the heuristic in `count_lines_if_text_file`.
 #[cfg(feature = "local_fs")]
 const BINARY_CHECK_BYTES: usize = 1_024;
-
-/// Maximum number of bytes in a PR title passed to `gh pr create`. GitHub's
-/// hard limit is 256; we cap short of that to leave headroom for an
-/// ellipsis marker. Measured in bytes because it's fed to
-/// [`truncate_on_char_boundary`], which slices on byte offsets.
-#[cfg(feature = "local_fs")]
-const MAX_PR_TITLE_BYTES: usize = 200;
-
-/// Returns a prefix of `s` whose length is at most `byte_cap` and which ends
-/// on a UTF-8 char boundary. Plain `&s[..byte_cap]` panics when the cut
-/// point lands inside a multi-byte code point, which is reachable in diffs
-/// and source files containing non-ASCII text.
-#[cfg(feature = "local_fs")]
-fn truncate_on_char_boundary(s: &str, byte_cap: usize) -> &str {
-    if s.len() <= byte_cap {
-        return s;
-    }
-    let mut cut = byte_cap;
-    while cut > 0 && !s.is_char_boundary(cut) {
-        cut -= 1;
-    }
-    &s[..cut]
-}
 
 /// Returns the diff for commit message generation, truncated to avoid token
 /// limits. When `include_unstaged` is true, diffs against HEAD (all
@@ -965,7 +819,7 @@ pub async fn get_diff_for_commit_message(
                 let Ok(content) = std::str::from_utf8(&bytes) else {
                     continue;
                 };
-                let content = truncate_on_char_boundary(content, MAX_UNTRACKED_FILE_BYTES);
+                let content = shared::truncate_on_char_boundary(content, MAX_UNTRACKED_FILE_BYTES);
                 let line_count = content.lines().count();
                 diff.push_str(&format!(
                     "diff --git a/{file_name} b/{file_name}\nnew file mode 100644\n\
@@ -985,7 +839,7 @@ pub async fn get_diff_for_commit_message(
     } else {
         Ok(format!(
             "{}\n... (diff truncated)",
-            truncate_on_char_boundary(&diff, MAX_DIFF_CHARS_FOR_AI)
+            shared::truncate_on_char_boundary(&diff, MAX_DIFF_CHARS_FOR_AI)
         ))
     }
 }
@@ -1007,10 +861,13 @@ pub async fn run_commit(
     include_unstaged: bool,
     path_env: Option<&str>,
 ) -> Result<String> {
-    if include_unstaged {
-        run_git_command_with_env(repo_path, &["add", "-A"], path_env).await?;
-    }
-    run_git_command_with_env(repo_path, &["commit", "-m", message], path_env).await
+    shared::run_commit(
+        &LocalGitRunner::new(path_env),
+        repo_path,
+        message,
+        include_unstaged,
+    )
+    .await
 }
 
 #[cfg(not(feature = "local_fs"))]
@@ -1027,38 +884,7 @@ pub async fn run_commit(
 /// `origin/<current>` (or HEAD when unpushed).
 #[cfg(feature = "local_fs")]
 pub async fn get_branch_diff_entries(repo_path: &Path) -> Result<Vec<FileChangeEntry>> {
-    let base = detect_main_branch(repo_path).await?;
-    let base = base.trim();
-    let current = detect_current_branch(repo_path).await?;
-    let remote_ref = format!("origin/{current}");
-
-    // Use the remote ref if it exists, otherwise fall back to HEAD.
-    let end_ref = if run_git_command(repo_path, &["rev-parse", "--verify", &remote_ref])
-        .await
-        .is_ok()
-    {
-        remote_ref
-    } else {
-        "HEAD".to_string()
-    };
-
-    let range = format!("{base}..{end_ref}");
-    let output = run_git_command(repo_path, &["diff", "--numstat", &range]).await?;
-    let mut entries = Vec::new();
-    for line in output.lines() {
-        if line.is_empty() {
-            continue;
-        }
-        let parts: Vec<&str> = line.split('\t').collect();
-        if parts.len() >= 3 {
-            entries.push(FileChangeEntry {
-                path: parts[2].to_string(),
-                additions: parts[0].parse().unwrap_or(0),
-                deletions: parts[1].parse().unwrap_or(0),
-            });
-        }
-    }
-    Ok(entries)
+    shared::get_branch_diff_entries(&LocalGitRunner::default(), repo_path).await
 }
 
 #[cfg(not(feature = "local_fs"))]
@@ -1070,12 +896,7 @@ pub async fn get_branch_diff_entries(_repo_path: &Path) -> Result<Vec<FileChange
 /// `path_env` is forwarded so the LFS `pre-push` hook can find `git-lfs`.
 #[cfg(feature = "local_fs")]
 pub async fn run_push(repo_path: &Path, branch: &str, path_env: Option<&str>) -> Result<String> {
-    run_git_command_with_env(
-        repo_path,
-        &["push", "--set-upstream", "origin", branch],
-        path_env,
-    )
-    .await
+    shared::run_push(&LocalGitRunner::new(path_env), repo_path, branch).await
 }
 
 #[cfg(not(feature = "local_fs"))]
@@ -1091,12 +912,7 @@ pub async fn run_push(_repo_path: &Path, _branch: &str, _path_env: Option<&str>)
 /// LFS) can find `git-lfs` on the user's `PATH`, mirroring [`run_push`].
 #[cfg(feature = "local_fs")]
 pub async fn run_pull(repo_path: &Path, branch: &str, path_env: Option<&str>) -> Result<String> {
-    run_git_command_with_env(
-        repo_path,
-        &["pull", "--ff-only", "origin", branch],
-        path_env,
-    )
-    .await
+    shared::run_pull(&LocalGitRunner::new(path_env), repo_path, branch).await
 }
 
 #[cfg(not(feature = "local_fs"))]
@@ -1143,11 +959,7 @@ pub async fn run_apply_patch_cached(
         .map_err(|e| anyhow!("Failed to flush patch temp file: {e}"))?;
 
     let patch_path = file.path().to_string_lossy().to_string();
-    let mut args: Vec<&str> = vec!["apply", "--cached"];
-    if reverse {
-        args.push("--reverse");
-    }
-    args.push(&patch_path);
+    let args = shared::apply_cached_args(reverse, false, &patch_path);
 
     run_git_command(repo_path, &args).await
 }
@@ -1183,10 +995,6 @@ pub async fn run_apply_patch_cached(
 /// name is quoted, and the quoting style has changed between git releases, so
 /// the fallback matches the two stable halves of the message instead of one
 /// fixed string.
-#[cfg(feature = "local_fs")]
-fn is_unresolvable_head_error(message: &str) -> bool {
-    message.contains("could not resolve") && message.contains("HEAD")
-}
 
 #[cfg(feature = "local_fs")]
 pub async fn run_stage_paths(
@@ -1194,32 +1002,13 @@ pub async fn run_stage_paths(
     relative_paths: &[String],
     unstage: bool,
 ) -> Result<String> {
-    if relative_paths.is_empty() {
-        return Err(anyhow!("No paths given to stage"));
-    }
-
-    let mut args: Vec<&str> = if unstage {
-        vec!["restore", "--staged", "--"]
-    } else {
-        vec!["add", "--"]
-    };
-    for path in relative_paths {
-        args.push(path.as_str());
-    }
-
-    match run_git_command(repo_path, &args).await {
-        Ok(output) => Ok(output),
-        Err(err) if unstage && is_unresolvable_head_error(&err.to_string()) => {
-            // Pre-first-commit repo: the index has no HEAD version to restore
-            // from, so removing the entry outright is what "unstage" means.
-            let mut rm_args: Vec<&str> = vec!["rm", "--cached", "--"];
-            for path in relative_paths {
-                rm_args.push(path.as_str());
-            }
-            run_git_command(repo_path, &rm_args).await
-        }
-        Err(err) => Err(err),
-    }
+    shared::stage_paths(
+        &LocalGitRunner::default(),
+        repo_path,
+        relative_paths,
+        unstage,
+    )
+    .await
 }
 
 #[cfg(not(feature = "local_fs"))]
@@ -1229,18 +1018,6 @@ pub async fn run_stage_paths(
     _unstage: bool,
 ) -> Result<String> {
     Err(anyhow!("Not supported on wasm"))
-}
-
-/// What to run after the commit succeeds. Shared vocabulary for the commit
-/// chain, mirroring Warp's `CommitChainMode` (Warp keeps it on
-/// `code_review::diff_state`; the fork keeps it next to the git primitives it
-/// composes). Maps to/from the wire enum `proto::GitCommitChainMode` at the
-/// remote-server daemon boundary.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CommitChainMode {
-    CommitOnly,
-    CommitAndPush,
-    CommitAndCreatePr,
 }
 
 /// Runs the commit chain — always commits, then optionally pushes, then
@@ -1265,20 +1042,34 @@ pub async fn run_commit_chain(
     branch: &str,
     path_env: Option<&str>,
 ) -> Result<(Vec<Commit>, Option<String>, Option<PrInfo>)> {
-    run_commit(repo_path, message, include_unstaged, path_env).await?;
-    let pr_info = match mode {
-        CommitChainMode::CommitOnly => None,
-        CommitChainMode::CommitAndPush => {
-            run_push(repo_path, branch, path_env).await?;
-            None
-        }
-        CommitChainMode::CommitAndCreatePr => {
-            run_push(repo_path, branch, path_env).await?;
-            Some(create_pr(repo_path, None, None, path_env).await?)
-        }
-    };
-    let (commits, upstream_ref) = compute_unpushed_state(repo_path).await;
-    Ok((commits, upstream_ref, pr_info))
+    shared_run_commit_chain(repo_path, mode, message, include_unstaged, branch, path_env).await
+}
+
+async fn shared_run_commit_chain(
+    repo_path: &Path,
+    mode: CommitChainMode,
+    message: &str,
+    include_unstaged: bool,
+    branch: &str,
+    path_env: Option<&str>,
+) -> Result<(Vec<Commit>, Option<String>, Option<PrInfo>)> {
+    #[cfg(feature = "local_fs")]
+    {
+        shared::run_commit_chain(
+            &LocalGitRunner::new(path_env),
+            repo_path,
+            mode,
+            message,
+            include_unstaged,
+            branch,
+        )
+        .await
+    }
+    #[cfg(not(feature = "local_fs"))]
+    {
+        let _ = (repo_path, mode, message, include_unstaged, branch, path_env);
+        Err(anyhow!("Not supported on wasm"))
+    }
 }
 
 /// Computes the branch's unpushed commits together with its upstream
@@ -1289,23 +1080,7 @@ pub async fn run_commit_chain(
 /// Ported verbatim from Warp (`warp/master:app/src/util/git.rs`).
 #[cfg(feature = "local_fs")]
 pub async fn compute_unpushed_state(repo_path: &Path) -> (Vec<Commit>, Option<String>) {
-    let current_branch = detect_current_branch(repo_path).await.ok();
-    let upstream_ref = run_git_command(
-        repo_path,
-        &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
-    )
-    .await
-    .ok()
-    .map(|s| s.trim().to_string())
-    .filter(|s| !s.is_empty());
-    let unpushed = get_unpushed_commits(
-        repo_path,
-        current_branch.as_deref(),
-        upstream_ref.as_deref(),
-    )
-    .await
-    .unwrap_or_default();
-    (unpushed, upstream_ref)
+    shared::compute_unpushed_state(&LocalGitRunner::default(), repo_path).await
 }
 
 #[cfg(not(feature = "local_fs"))]
@@ -1323,35 +1098,15 @@ pub async fn compute_unpushed_state(_repo_path: &Path) -> (Vec<Commit>, Option<S
 /// Ported verbatim from Warp (`warp/master:app/src/util/git.rs`).
 #[cfg(feature = "local_fs")]
 pub fn git_operation_in_progress(repo_path: &Path) -> bool {
+    // The sentinel list and the `<repo>/.git` anchor are shared with the helper and the shell
+    // backend (`shared::guard_git_operation_in_progress`); only the existence test is local.
     let git_dir = repo_path.join(".git");
-    git_dir.join("MERGE_HEAD").exists()
-        || git_dir.join("CHERRY_PICK_HEAD").exists()
-        || git_dir.join("REVERT_HEAD").exists()
-        || git_dir.join("rebase-merge").exists()
-        || git_dir.join("rebase-apply").exists()
-        || git_dir.join("index.lock").exists()
+    shared::OPERATION_SENTINELS
+        .iter()
+        .any(|sentinel| git_dir.join(sentinel).exists())
 }
 
 // ── gh CLI helpers ───────────────────────────────────────────────────────────
-
-/// PR information returned by `gh pr view`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PrInfo {
-    pub number: u64,
-    pub url: String,
-    pub state: String,
-    pub draft: bool,
-    pub base_branch: String,
-}
-
-/// Repository information returned by `gh repo view`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RepositoryInfo {
-    pub name: String,
-    pub owner: Option<String>,
-    /// The repository host (e.g. "github.com"), parsed from the repo URL.
-    pub host: Option<String>,
-}
 
 #[cfg(feature = "local_fs")]
 fn repository_info_from_gh_output(output: &str) -> Result<RepositoryInfo> {
@@ -1426,38 +1181,7 @@ pub async fn get_repository_info(
 /// findable from macOS GUI launches (launchd's minimal `PATH` excludes it).
 #[cfg(feature = "local_fs")]
 async fn run_gh_command(repo_path: &Path, args: &[&str], path_env: Option<&str>) -> Result<String> {
-    use command::Stdio;
-    use command::r#async::Command;
-
-    log::debug!(
-        "[GIT OPERATION] git.rs run_gh_command gh {}",
-        args.join(" ")
-    );
-
-    let mut cmd = Command::new("gh");
-    cmd.args(args)
-        .current_dir(repo_path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .env("HOMEBREW_NO_AUTO_UPDATE", "1")
-        .kill_on_drop(true);
-    if let Some(path_env) = path_env {
-        cmd.env("PATH", path_env);
-    }
-    let output = cmd
-        .output()
-        .await
-        .map_err(|e| anyhow!("Failed to execute gh command: {e}"))?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-    if output.status.success() {
-        Ok(stdout)
-    } else {
-        Err(anyhow!("gh command failed: {stderr}"))
-    }
+    gh_text(&LocalGitRunner::new(path_env), repo_path, args).await
 }
 
 /// Looks up the PR for the current branch via `gh pr view`.
@@ -1541,87 +1265,11 @@ pub async fn get_pr_for_branch(
     Err(anyhow!("Not supported on wasm"))
 }
 
-/// Classifies `gh pr view` failures that mean the current branch simply has no
-/// pull request, rather than a real lookup failure.
-#[cfg(feature = "local_fs")]
-fn is_no_pr_for_branch_error(error_msg: &str) -> bool {
-    let lower = error_msg.to_lowercase();
-    lower.contains("no pull requests found for branch")
-        || lower.contains("no open pull requests found for branch")
-}
-
-/// Classifies `gh pr view` failures that authoritatively mean a PR lookup does
-/// not apply to this repository, rather than a transient fetch failure.
-#[cfg(feature = "local_fs")]
-fn is_pr_lookup_not_applicable_error(error_msg: &str) -> bool {
-    let lower = error_msg.to_lowercase();
-    is_no_pr_for_branch_error(error_msg)
-        || lower.contains(
-            "none of the git remotes configured for this repository point to a known github host",
-        )
-        || lower.contains("no github remotes")
-        || lower.contains("not a github repository")
-        || lower.contains("could not determine base repo")
-}
-
-/// Classifies `gh repo view` failures that authoritatively mean the current
-/// repository has no GitHub repository info, rather than a transient fetch
-/// failure.
-#[cfg(feature = "local_fs")]
-fn is_repository_lookup_not_applicable_error(error_msg: &str) -> bool {
-    let lower = error_msg.to_lowercase();
-    lower.contains(
-        "none of the git remotes configured for this repository point to a known github host",
-    ) || lower.contains("no github remotes")
-        || lower.contains("not a github repository")
-        || lower.contains("could not determine base repo")
-}
-
-/// Heuristic check for `gh` CLI authentication errors in an error message.
-pub fn is_gh_auth_error(error_msg: &str) -> bool {
-    let lower = error_msg.to_lowercase();
-    lower.contains("not logged in")
-        || lower.contains("authentication required")
-        || lower.contains("gh auth login")
-}
-
-/// Heuristic check for errors caused by `gh` not being executable from `PATH`.
-pub fn is_gh_missing_error(error_msg: &str) -> bool {
-    let lower = error_msg.to_lowercase();
-    lower.contains("failed to execute gh command")
-        && (lower.contains("no such file or directory")
-            || lower.contains("not found")
-            || lower.contains("cannot find")
-            || lower.contains("could not find"))
-}
-
 /// PR-ready diff (default branch vs `origin/<current>` or HEAD),
 /// truncated for AI token limits.
 #[cfg(feature = "local_fs")]
 pub async fn get_diff_for_pr(repo_path: &Path) -> Result<String> {
-    let base = detect_main_branch(repo_path).await?;
-    let base = base.trim();
-    let current = detect_current_branch(repo_path).await?;
-    let remote_ref = format!("origin/{current}");
-
-    let end_ref = if run_git_command(repo_path, &["rev-parse", "--verify", &remote_ref])
-        .await
-        .is_ok()
-    {
-        remote_ref
-    } else {
-        "HEAD".to_string()
-    };
-
-    let range = format!("{base}..{end_ref}");
-    let mut diff = run_git_command(repo_path, &["diff", &range]).await?;
-    if diff.len() > MAX_DIFF_CHARS_FOR_AI {
-        diff = format!(
-            "{}\n... (diff truncated)",
-            truncate_on_char_boundary(&diff, MAX_DIFF_CHARS_FOR_AI)
-        );
-    }
-    Ok(diff)
+    shared::get_diff_for_pr(&LocalGitRunner::default(), repo_path).await
 }
 
 #[cfg(not(feature = "local_fs"))]
@@ -1632,15 +1280,7 @@ pub async fn get_diff_for_pr(_repo_path: &Path) -> Result<String> {
 /// Commit subject lines on the current branch since the default branch.
 #[cfg(feature = "local_fs")]
 pub async fn get_branch_commit_messages(repo_path: &Path) -> Result<Vec<String>> {
-    let base = detect_main_branch(repo_path).await?;
-    let base = base.trim();
-    let range = format!("{base}..HEAD");
-    let output = run_git_command(repo_path, &["log", &range, "--format=%s"]).await?;
-    Ok(output
-        .lines()
-        .filter(|l| !l.is_empty())
-        .map(|l| l.to_string())
-        .collect())
+    shared::get_branch_commit_messages(&LocalGitRunner::default(), repo_path).await
 }
 
 #[cfg(not(feature = "local_fs"))]
@@ -1658,49 +1298,7 @@ pub async fn create_pr(
     body: Option<&str>,
     path_env: Option<&str>,
 ) -> Result<PrInfo> {
-    let base = detect_main_branch(repo_path).await?;
-    let base = base.trim();
-    let base = base.strip_prefix("origin/").unwrap_or(base);
-    let sanitized_title;
-    let args: Vec<&str> = match (title, body) {
-        (Some(t), Some(b)) => {
-            sanitized_title = sanitize_pr_title(t);
-            vec![
-                "pr",
-                "create",
-                "--base",
-                base,
-                "--title",
-                &sanitized_title,
-                "--body",
-                b,
-            ]
-        }
-        _ => vec!["pr", "create", "--base", base, "--fill"],
-    };
-    let stdout = run_gh_command(repo_path, &args, path_env).await?;
-    // `gh pr create` prints the PR URL on success.
-    let url = stdout.trim().to_string();
-    // Extract PR number from the URL (e.g. https://github.com/owner/repo/pull/123)
-    let number = url
-        .rsplit('/')
-        .next()
-        .and_then(|s| s.parse::<u64>().ok())
-        .ok_or_else(|| anyhow!("Could not parse PR number from URL: {url}"))?;
-    Ok(PrInfo {
-        number,
-        url,
-        state: "OPEN".to_string(),
-        draft: false,
-        base_branch: base.to_string(),
-    })
-}
-
-/// Trims an AI-generated PR title to a single line and caps its length.
-#[cfg(feature = "local_fs")]
-fn sanitize_pr_title(raw: &str) -> String {
-    let first_line = raw.lines().next().unwrap_or("").trim();
-    truncate_on_char_boundary(first_line, MAX_PR_TITLE_BYTES).to_string()
+    shared::create_pr(&LocalGitRunner::new(path_env), repo_path, title, body).await
 }
 
 #[cfg(not(feature = "local_fs"))]

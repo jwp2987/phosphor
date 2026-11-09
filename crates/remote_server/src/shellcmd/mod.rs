@@ -10,12 +10,15 @@
 //! * [`shell_kind`]: [`ShellKind`] and the `sh -c` wrapping a non-POSIX login shell needs.
 //! * [`base64`]: the base64 codec and the host base64 tool probe (binary-safe transfer).
 //! * [`tree`]: the repo file tree (listing commands, parsers, proto assembly) shared with the helper.
+//! * [`git`]: git argv builders, parsers and algorithms over a `GitRunner` (P5).
 //! * [`predicates`]: "may this command change HEAD / the cwd", the refresh-coordinator inputs.
 //!
 //! Wave H, P0.
 
 pub mod base64;
+pub mod chunk;
 pub mod frame;
+pub mod git;
 pub mod predicates;
 pub mod shell_kind;
 pub mod tree;

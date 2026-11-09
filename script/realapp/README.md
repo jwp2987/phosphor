@@ -7,6 +7,8 @@ run them). They are research-grade tools: each script carries a header saying wh
 platform, prerequisites and what it restores. Variants were deduplicated to the latest working
 version; logs, screenshots, DMGs, zips, binaries and captured data are deliberately NOT here.
 
+The fake ssh lab (a podman container acting as a remote machine, with a network fault shaper) is documented in `sshlab/README.md`.
+
 ## Configuration (no real hosts, users or paths in the repo)
 
 Copy `config.example.sh` to a file OUTSIDE the repo, fill in `PHOSPHOR_BOX_SSH`, `PHOSPHOR_BOX_HOST`,

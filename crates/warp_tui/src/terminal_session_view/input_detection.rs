@@ -23,6 +23,7 @@ use super::TuiTerminalSessionView;
 use crate::inline_menu::active_inline_menu;
 use crate::input_suggestions_mode::TuiInputSuggestionsMode;
 
+// give-up-net: debounces the input-type classifier run; the result is applied on its event, the debounce never submits or routes
 const INPUT_AUTODETECTION_DEBOUNCE: Duration = Duration::from_millis(10);
 const MIN_STANDALONE_COMMAND_CHARS: usize = 2;
 

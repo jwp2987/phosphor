@@ -28,6 +28,7 @@ use crate::tui_builder::TuiUiBuilder;
 
 const ASK_QUESTION_ACTIVE: &str = "TuiAskQuestionActive";
 const ASK_QUESTION_MULTISELECT_ACTIVE: &str = "TuiAskQuestionMultiselectActive";
+// ui-confirm: auto-advances a single-select question after an answer; no keys at risk
 const AUTO_ADVANCE_DELAY: Duration = Duration::from_millis(300);
 
 /// Registers controls that must win over the surrounding terminal session

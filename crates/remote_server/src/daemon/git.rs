@@ -64,22 +64,10 @@ fn detect_main_branch(repo: &Path) -> Result<String> {
     run_git(repo, &["branch", "--show-current"])
 }
 
-/// Parses `git for-each-ref --format=%(refname:short)` output into `(name, is_main)` pairs,
-/// skipping HEAD pointers and detached states and removing duplicates, newest first.
+/// Parses `git for-each-ref --format=%(refname:short)` output into `(name, is_main)` pairs.
+/// The shared parser lives in `shellcmd::git` so the shell backend reads the same output.
 pub(super) fn parse_branch_list(output: &str, main_branch: &str) -> Vec<(String, bool)> {
-    let mut seen = std::collections::HashSet::new();
-    let mut branches = Vec::new();
-    for branch in output.lines() {
-        let branch = branch.trim();
-        if branch.is_empty() || branch.contains("HEAD") || branch.starts_with('(') {
-            continue;
-        }
-        let is_main = branch == main_branch || branch == main_branch.trim_start_matches("origin/");
-        if seen.insert(branch.to_string()) {
-            branches.push((branch.to_string(), is_main));
-        }
-    }
-    branches
+    crate::shellcmd::git::parse_branch_list(output, main_branch)
 }
 
 fn all_branches(

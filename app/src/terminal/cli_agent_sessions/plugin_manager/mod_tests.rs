@@ -349,3 +349,75 @@ fn preflight_reports_an_unreachable_source() {
     )));
     assert!(log.contains("left as it is"), "{log}");
 }
+
+// #1546 (upgrade from v0.1.17): the helpers that decide whether a recorded plugin source is Phosphor's bundled folder
+// (a v0.1.17 install recorded a remote repository or an older install folder; neither may be mistaken for the bundle).
+// Written without a compiler; run on the build box.
+#[test]
+fn a_recorded_folder_is_the_bundle_only_when_it_is_that_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let bundle = dir.path().join("bundled").join("claude_plugin");
+    fs::create_dir_all(&bundle).unwrap();
+    let bundle_text = bundle.to_string_lossy().to_string();
+
+    assert!(super::same_folder(&bundle_text, &bundle));
+    assert!(super::same_folder(&format!("{bundle_text}/"), &bundle));
+    assert!(!super::same_folder("/somewhere/else", &bundle));
+    assert!(!super::same_folder("warpdotdev/claude-code-warp", &bundle));
+}
+
+#[test]
+fn a_path_looks_like_a_bundle_at_this_or_an_older_install_location() {
+    let rel = "bundled/claude_plugin";
+    assert!(super::looks_like_bundle_path(
+        "/opt/phosphor/resources/bundled/claude_plugin",
+        rel
+    ));
+    assert!(super::looks_like_bundle_path(
+        "/old/install/bundled/claude_plugin/",
+        rel
+    ));
+    assert!(super::looks_like_bundle_path(
+        "C:\\Program Files\\Phosphor\\resources\\bundled\\claude_plugin",
+        rel
+    ));
+    // a developer's own checkout and a remote repository are not bundle folders
+    assert!(!super::looks_like_bundle_path(
+        "/home/dev/claude-code-warp",
+        rel
+    ));
+    assert!(!super::looks_like_bundle_path(
+        "https://gitlab.com/winters-phosphor/claude-code-warp.git",
+        rel
+    ));
+}
+
+#[test]
+#[serial_test::serial]
+fn the_bundled_plugin_folder_needs_its_marker_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let relative = "bundled/gemini_plugin";
+    let folder = dir.path().join(relative);
+    fs::create_dir_all(&folder).unwrap();
+    // The env var names the folder; without the marker file it is not a plugin folder.
+    let var = "PHOSPHOR_TEST_UPGRADE_BUNDLE_DIR";
+    // serial: the environment is process-wide.
+    unsafe { std::env::set_var(var, &folder) };
+    assert_eq!(
+        super::bundled_plugin_dir(var, relative, "plugin.json"),
+        None
+    );
+    fs::write(folder.join("plugin.json"), "{}").unwrap();
+    assert_eq!(
+        super::bundled_plugin_dir(var, relative, "plugin.json"),
+        Some(folder.clone())
+    );
+    unsafe { std::env::remove_var(var) };
+}
+
+#[test]
+fn a_missing_bundle_says_phosphor_does_not_download_it() {
+    let err = super::bundle_missing_error("Codex", String::new());
+    assert!(err.message.contains("Codex"), "{}", err.message);
+    assert!(err.log.contains("does not download"), "{}", err.log);
+}

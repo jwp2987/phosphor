@@ -189,15 +189,15 @@ fn wall_clock_measure_counts_the_stage_wall_time() {
     assert!(clock.spent() >= Duration::from_millis(30));
 }
 
-/// #1651 review: a detection stage that waits off the CPU on something outside the classifier (a
-/// channel fed 1.5 s later stands in for a cold filesystem or a loading model) spends no CPU, but
-/// its wall time runs, and the Enter's cap is reached at the 1 s wall ceiling, well before the
-/// 2 s lost-job backstop. The timer the Enter arms at the stage's start is for that ceiling.
+/// #1651 review, reworked 2026-11-09: a detection stage that waits off the CPU on something
+/// outside the classifier (a channel fed later stands in for a cold filesystem or a loading
+/// model) spends no CPU, so the Enter's CPU cap (a hand-back net, never a submit) is NOT reached
+/// however long the wall time runs; the wall-clock lost-job backstop owns that case. The wall
+/// time is still measured (it is logged), and the cap's remainder never exceeds the cap itself.
 #[test]
-fn a_stage_waiting_off_the_cpu_reaches_the_cap_at_the_wall_ceiling() {
+fn a_stage_waiting_off_the_cpu_never_reaches_the_cpu_cap() {
     use crate::ai::blocklist::input_model::{
-        ENTER_VERDICT_BUDGET, ENTER_VERDICT_WALL_CEILING, enter_verdict_cap_reached,
-        enter_verdict_cap_remaining,
+        VERDICT_HANDBACK_CPU_CAP, verdict_handback_cap_reached, verdict_handback_cap_remaining,
     };
 
     let clock = ComputeClock::thread_cpu();
@@ -213,73 +213,42 @@ fn a_stage_waiting_off_the_cpu_reaches_the_cap_at_the_wall_ceiling() {
         })
     };
     started_rx.recv().unwrap();
-    let started = Instant::now();
     assert!(clock.is_running());
-    // The Enter's timer is armed for whichever runs out first. With no CPU spent that is the
-    // CPU budget's rest (<= 50 ms, so it re-checks at that pace, never in a tight loop), until the
-    // ceiling's rest is the shorter one.
-    assert!(
-        enter_verdict_cap_remaining(clock.spent(), clock.stage_wall(), 10) <= ENTER_VERDICT_BUDGET
-    );
+    assert!(verdict_handback_cap_remaining(clock.spent(), 10) <= VERDICT_HANDBACK_CPU_CAP);
 
     std::thread::sleep(Duration::from_millis(300));
-    // Judged on the measured stage wall time, not on the sleep: a loaded CI thread can oversleep.
-    let (cpu, wall) = (clock.spent(), clock.stage_wall());
-    if wall < ENTER_VERDICT_WALL_CEILING {
-        assert!(
-            !enter_verdict_cap_reached(cpu, wall, 10),
-            "under the wall ceiling ({wall:?}) with {cpu:?} of CPU: neither cap is reached"
-        );
-    }
-    let remaining = enter_verdict_cap_remaining(cpu, wall, 10);
-    assert!(remaining <= ENTER_VERDICT_BUDGET);
-
-    // Wait out the ceiling (the channel is fed at 1.5 s).
-    while started.elapsed() < ENTER_VERDICT_WALL_CEILING + Duration::from_millis(50) {
-        std::thread::sleep(Duration::from_millis(10));
-    }
     let (cpu, wall) = (clock.spent(), clock.stage_wall());
     assert!(
-        cpu < ENTER_VERDICT_BUDGET,
-        "a stage waiting on a channel spent {cpu:?} of CPU"
+        wall >= Duration::from_millis(250),
+        "the stage's wall time is still measured: {wall:?}"
     );
-    assert!(wall >= ENTER_VERDICT_WALL_CEILING, "{wall:?}");
     assert!(
-        enter_verdict_cap_reached(cpu, wall, 10),
-        "at ~1 s of wall time the cap is reached, before the 2 s backstop"
+        cpu < VERDICT_HANDBACK_CPU_CAP && !verdict_handback_cap_reached(cpu, 10),
+        "a stage waiting on a channel spent {cpu:?} of CPU: the CPU cap is not reached"
     );
-    while started.elapsed() < Duration::from_millis(1500) {
-        std::thread::sleep(Duration::from_millis(10));
-    }
     feed_tx.try_send(()).unwrap();
     job.join().unwrap();
     assert!(!clock.is_running());
 }
 
-/// #1651 review: a stage starved of CPU (yielded and queued, or descheduled) under the wall
-/// ceiling is not given up on before it has spent its 50 ms of CPU.
+/// #1651 review: a stage starved of CPU (yielded and queued, or descheduled) is not handed back
+/// before it has spent the CPU cap, however much wall time passes.
 #[test]
-fn a_cpu_starved_stage_under_the_ceiling_keeps_its_cpu_budget() {
-    use crate::ai::blocklist::input_model::{ENTER_VERDICT_BUDGET, enter_verdict_cap_reached};
+fn a_cpu_starved_stage_keeps_its_cpu_cap() {
+    use crate::ai::blocklist::input_model::{
+        VERDICT_HANDBACK_CPU_CAP, verdict_handback_cap_reached,
+    };
 
-    // Injected: 600 ms of wall time with only 10 ms of CPU, then the budget reached.
+    // Injected: 3 s of wall time with only 10 ms of CPU, then the cap reached.
     let (clock, guard) = ComputeClock::thread_cpu_running_for_test(
         Duration::from_millis(10),
-        Duration::from_millis(600),
+        Duration::from_secs(3),
     );
-    assert!(!enter_verdict_cap_reached(
-        clock.spent(),
-        clock.stage_wall(),
-        10
-    ));
+    assert!(!verdict_handback_cap_reached(clock.spent(), 10));
     drop(guard);
     let (clock, _guard) =
-        ComputeClock::thread_cpu_running_for_test(ENTER_VERDICT_BUDGET, Duration::from_millis(600));
-    assert!(enter_verdict_cap_reached(
-        clock.spent(),
-        clock.stage_wall(),
-        10
-    ));
+        ComputeClock::thread_cpu_running_for_test(VERDICT_HANDBACK_CPU_CAP, Duration::from_secs(3));
+    assert!(verdict_handback_cap_reached(clock.spent(), 10));
 
     // Real: a stage that yields between polls for 300 ms of wall time spends almost no CPU.
     if current_thread_cpu().is_none() {
@@ -299,8 +268,8 @@ fn a_cpu_starved_stage_under_the_ceiling_keeps_its_cpu_budget() {
         // Queued behind other work between polls.
         std::thread::sleep(Duration::from_millis(5));
         assert!(
-            !enter_verdict_cap_reached(clock.spent(), clock.stage_wall(), 10),
-            "starved under the ceiling: CPU {:?}, wall {:?}",
+            !verdict_handback_cap_reached(clock.spent(), 10),
+            "starved: CPU {:?}, wall {:?}",
             clock.spent(),
             clock.stage_wall()
         );

@@ -26,6 +26,47 @@ pub fn memory_breakdown() -> serde_json::Value {
     platform::memory_breakdown()
 }
 
+/// The memory fields of an `editor_memory load_stage` line (#1340), from a
+/// [`memory_breakdown`]-shaped object. `rss_kb` is always present (-1 when unknown); Windows adds
+/// `ws_kb` (working set) and `private_kb` (private bytes), macOS adds `phys_footprint_kb`.
+pub fn load_stage_fields_from(breakdown: &serde_json::Value) -> String {
+    let kb = |key: &str| {
+        breakdown
+            .get(key)
+            .and_then(|v| v.as_u64())
+            .map(|v| (v / 1024) as i64)
+    };
+    if let (Some(ws), Some(private)) = (kb("working_set"), kb("private_usage")) {
+        format!("rss_kb={ws} ws_kb={ws} private_kb={private}")
+    } else if let Some(footprint) = kb("total_footprint") {
+        format!(
+            "rss_kb={} phys_footprint_kb={footprint}",
+            kb("resident").unwrap_or(-1)
+        )
+    } else {
+        "rss_kb=-1".to_string()
+    }
+}
+
+/// [`load_stage_fields_from`] for the current process; falls back to `/proc/self/statm` RSS on
+/// Linux.
+pub fn load_stage_fields() -> String {
+    let fields = load_stage_fields_from(&memory_breakdown());
+    #[cfg(target_os = "linux")]
+    {
+        if fields == "rss_kb=-1"
+            && let Ok(statm) = std::fs::read_to_string("/proc/self/statm")
+            && let Some(pages) = statm
+                .split_whitespace()
+                .nth(1)
+                .and_then(|p| p.parse::<i64>().ok())
+        {
+            return format!("rss_kb={}", pages * 4);
+        }
+    }
+    fields
+}
+
 // ---------------------------------------------------------------------------
 // macOS
 // ---------------------------------------------------------------------------
@@ -253,5 +294,34 @@ mod platform {
             "private_usage": counters.private_usage,
             "peak_working_set": counters.base.PeakWorkingSetSize,
         })
+    }
+}
+
+#[cfg(test)]
+mod load_stage_tests {
+    use super::load_stage_fields_from;
+
+    #[test]
+    fn windows_breakdown_reports_working_set_and_private_bytes() {
+        let b = serde_json::json!({"working_set": 2048 * 1024, "private_usage": 1024 * 1024, "peak_working_set": 5});
+        assert_eq!(
+            load_stage_fields_from(&b),
+            "rss_kb=2048 ws_kb=2048 private_kb=1024"
+        );
+    }
+
+    #[test]
+    fn macos_breakdown_reports_footprint_and_resident() {
+        let b =
+            serde_json::json!({"total_footprint": 3 * 1024 * 1024, "resident": 4 * 1024 * 1024});
+        assert_eq!(
+            load_stage_fields_from(&b),
+            "rss_kb=4096 phys_footprint_kb=3072"
+        );
+    }
+
+    #[test]
+    fn unknown_platform_breakdown_reports_minus_one() {
+        assert_eq!(load_stage_fields_from(&serde_json::json!({})), "rss_kb=-1");
     }
 }

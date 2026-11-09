@@ -171,10 +171,12 @@ pub struct ShellCommandExecutor {
 }
 
 impl ShellCommandExecutor {
+    // give-up-net: agent command wait cap: reports to the model; writes nothing to the pty
     pub const MAX_WAIT_DURATION: Duration = Duration::from_secs(2);
     /// Maximum delay we will honor for any agent-requested wait. Applies both  
     /// to finite `ShellCommandDelay::Duration` requests and to  
     /// `ShellCommandDelay::OnCompletion`, which would otherwise wait indefinitely.  
+    // give-up-net: agent command wait cap: returns a snapshot / timeout result to the model; writes nothing to the pty
     pub const MAX_AGENT_DELAY_DURATION: Duration = Duration::from_secs(120);
     /// "Pager-hang defense": the final fallback timeout for the
     /// `wait_until_completion=true` (`ActionResultDelay::UntilCompletion`) path.
@@ -187,6 +189,7 @@ impl ShellCommandExecutor {
     /// `cargo build --release` / `docker build` / a big `npm install` aren't hurt.
     /// When it fires, the snapshot is marked as preempted via `is_preempted=true`,
     /// rather than as "command completed".
+    // give-up-net: hard fallback for an agent wait: marks the result preempted and reports to the model; writes nothing
     pub const MAX_UNTIL_COMPLETION_DURATION: Duration = Duration::from_secs(30 * 60);
 
     pub fn new(
@@ -974,6 +977,7 @@ impl ShellCommandExecutor {
                 // command finishes, when its screen stops changing on a full-screen program
                 // or a prompt, or at the latest at the timeout. The model then reacts to the
                 // snapshot (sends `q`, answers the prompt) with the write-to-command tool.
+                // give-up-net: agent wait timers (deadline, quiet re-judge): report a snapshot to the model; the model, not the timer, decides what to send
                 let deadline = Timer::after(timeout_duration).fuse();
                 pin!(deadline);
                 // Stall detection is event driven: the screen is judged when the terminal
@@ -1000,6 +1004,7 @@ impl ShellCommandExecutor {
                     let quiet_timer = async move {
                         match quiet_for {
                             Some(remaining) => {
+                                // give-up-net: agent wait timers (deadline, quiet re-judge): report a snapshot to the model; the model, not the timer, decides what to send
                                 Timer::after(remaining).await;
                             }
                             None => futures::future::pending::<()>().await,
@@ -1029,6 +1034,7 @@ impl ShellCommandExecutor {
                     }
                 }
             } else if let Some(timeout_duration) = timeout_duration {
+                // give-up-net: agent wait timers (deadline, quiet re-judge): report a snapshot to the model; the model, not the timer, decides what to send
                 let timeout = Timer::after(timeout_duration).fuse();
                 pin!(timeout);
                 select! {
@@ -1054,6 +1060,7 @@ impl ShellCommandExecutor {
                 // config (see #138). When the timeout fires, it goes through the
                 // `(Timeout, UntilCompletion)` branch of `compute_is_preempted` below
                 // and gets marked as preempted.
+                // give-up-net: agent wait timers (deadline, quiet re-judge): report a snapshot to the model; the model, not the timer, decides what to send
                 let hard_timeout = Timer::after(Self::MAX_UNTIL_COMPLETION_DURATION).fuse();
                 pin!(hard_timeout);
                 select! {

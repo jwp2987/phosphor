@@ -1,9 +1,14 @@
 # appci/lab.py: client of the fake ssh lab (script/realapp/sshlab, docs/testing.md 2.15) plus its pure pieces (matrix expansion, TOTP, the RTT gate,
 # the paired-latency verdict, sshd-log channel counts, the remote-read adapters). No keys, hostnames or IPs live in the repo: the box address comes
-# from APPCI_LAB_BOX / SSHLAB_BOX (remote mode), the forced-command key from APPCI_LAB_KEY, and every lab key is generated per run.
-#   APPCI_LAB=off|local|remote   default: local when podman exists (the box), else off (the lab cases SKIP with the reason)
+# from APPCI_LAB_BOX / SSHLAB_BOX (remote mode), the forced-command key from APPCI_LAB_KEY, and every lab key is generated per run. These settings (and APPCI_LAB, APPCI_LAB_KNOWN_HOSTS) may also come from the machine-local ~/.config/phosphor-ci/ci.env (ci_env.get; environment wins).
+#   APPCI_LAB=off|local|fixed|remote   default: local when podman exists (the box); else fixed when SSHLAB_BOX and SSHLAB_TOKEN are set (the Mac/Windows runners: a persistent
+#       lab container on a fixed port set per platform, leased over HTTP with the token, no ssh to the box); else off (the lab cases SKIP with the reason).
+#       remote = LEGACY forced-command ssh mode, kept working but no longer the documented path.
+#   APPCI_LAB_SLOT=<name> overrides the slot (default: mac on macOS, windows on Windows); APPCI_LAB_SLOTS overrides the slot table (labctl serve --slots syntax).
+#   SSHLAB_TOKEN is read through ci_env.get and is NEVER printed, logged or written to an artifact.
 #   APPCI_LAB_MATRIX=quick|full|<spec>   which arms of a lab case run (see matrix_selection)
-import base64, fnmatch, hashlib, hmac, io, itertools, json, os, re, shutil, socket, statistics, struct, subprocess, sys, tarfile, tempfile, time, urllib.parse, urllib.request, urllib.error
+import base64, secrets, fnmatch, hashlib, hmac, io, itertools, json, os, re, shutil, socket, statistics, struct, subprocess, sys, tarfile, tempfile, time, urllib.parse, urllib.request, urllib.error
+import ci_env
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SSHLAB_DIR = os.path.normpath(os.path.join(HERE, "..", "sshlab"))
@@ -26,7 +31,7 @@ def matrix_selection(value=None):
     shells/lats/helpers None = every value the case declares. Unknown keys or values raise ValueError (a typo must not select nothing)."""
     v = (value if value is not None else os.environ.get("APPCI_LAB_MATRIX", "quick")).strip() or "quick"
     if v == "quick":
-        return dict(shells={"bash", "zsh", "fish"}, lats={"lan", "150"}, helpers={"nohelper"}, faults=False, scenarios=False)
+        return dict(shells={"bash", "zsh", "fish", "nu"}, lats={"lan", "150"}, helpers={"nohelper", "helper"}, faults=False, scenarios=False)
     if v == "full":
         return dict(shells=None, lats=None, helpers=None, faults=True, scenarios=True)
     sel = dict(shells=None, lats=None, helpers={"nohelper"}, faults=False, scenarios=False)
@@ -236,33 +241,81 @@ class LabError(Exception):
     pass
 
 
+def safe_text(text, secret):
+    """text that may be printed: the secret (if any) replaced"""
+    return text.replace(secret, "<token>") if secret else text
+
+
 def _host_of(box):
     return box.rsplit("@", 1)[-1]
 
 
+def _labctl():
+    """labctl.py imported by path (its pure slot helpers; import-safe)"""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("labctl_mod", os.path.join(SSHLAB_DIR, "labctl.py"))
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+def default_slot(platform=None):
+    p = platform or sys.platform
+    return "mac" if p == "darwin" else "windows" if p.startswith(("win", "cygwin", "msys")) else "linux"
+
+
+def slot_name():
+    return (ci_env.get("APPCI_LAB_SLOT") or default_slot()).strip()
+
+
+def slot_ports(name=None, spec=None):
+    """-> {22: ssh, 2222: ssh-B, 7: echo, 7000: control} for the slot, from APPCI_LAB_SLOTS or the labctl default table. Raises LabError for an unknown slot."""
+    name = name or slot_name()
+    table = _labctl().parse_slots(spec or ci_env.get("APPCI_LAB_SLOTS") or _labctl().DEFAULT_SLOTS)
+    if name not in table:
+        raise LabError("no lab slot %r (known: %s; set APPCI_LAB_SLOT)" % (name, ", ".join(sorted(table))))
+    return table[name]
+
+
+def fixed_ready():
+    """-> '' when the fixed mode has what it needs, else the reason (never contains the token)"""
+    if not box_addr():
+        return "SSHLAB_BOX (the lab box address) is not set"
+    if not ci_env.get("SSHLAB_TOKEN"):
+        return "SSHLAB_TOKEN (the protected project variable, or the machine-local ci.env) is not set: this job is not on a protected ref, or the variable is missing"
+    return ""
+
+
 def lab_mode():
-    """-> (mode, reason): APPCI_LAB=off|local|remote; unset = local when podman is on PATH, else off"""
-    v = os.environ.get("APPCI_LAB", "").strip().lower()
+    """-> (mode, reason): APPCI_LAB=off|local|fixed|remote; unset = local when podman is on PATH, else fixed when SSHLAB_BOX + SSHLAB_TOKEN are set, else off"""
+    v = ci_env.get("APPCI_LAB", "").strip().lower()
     if v in ("off", "0", "no"):
         return "off", "APPCI_LAB=off"
+    if v == "fixed":
+        why = fixed_ready()
+        return ("off", "APPCI_LAB=fixed but " + why) if why else ("fixed", "")
     if v == "remote":
         if not box_addr():
             return "off", "APPCI_LAB=remote but neither APPCI_LAB_BOX nor SSHLAB_BOX is set"
-        if not os.environ.get("APPCI_LAB_KEY"):
+        if not ci_env.get("APPCI_LAB_KEY"):
             return "off", "APPCI_LAB=remote but APPCI_LAB_KEY (the forced-command key) is not set"
-        kh = os.environ.get("APPCI_LAB_KNOWN_HOSTS", "")
+        kh = ci_env.get("APPCI_LAB_KNOWN_HOSTS", "")
         if not kh or not os.path.isfile(kh):
             return "off", "APPCI_LAB=remote but APPCI_LAB_KNOWN_HOSTS (a machine-local known_hosts file pinning the box's host key) is not set or not a file: the lab fails closed rather than trusting a key on first use"
         return "remote", ""
     if v in ("", "local"):
         if shutil.which("podman") and os.name != "nt":
             return "local", ""
-        return "off", "no podman on this machine; set APPCI_LAB=remote with APPCI_LAB_BOX and APPCI_LAB_KEY to use the box's lab"
+        if v == "" and not fixed_ready():
+            return "fixed", ""
+        if v == "local":
+            return "off", "APPCI_LAB=local but there is no podman on this machine"
+        return "off", "no podman on this machine and the fixed lab is not configured (%s); set APPCI_LAB=fixed with SSHLAB_BOX and SSHLAB_TOKEN" % fixed_ready()
     return "off", "unknown APPCI_LAB=%r" % v
 
 
 def box_addr():
-    return os.environ.get("APPCI_LAB_BOX") or os.environ.get("SSHLAB_BOX") or ""
+    return ci_env.get("APPCI_LAB_BOX") or ci_env.get("SSHLAB_BOX") or ""
 
 
 def sshlab_tar():
@@ -284,6 +337,8 @@ class Lab:
         self.home_cfg = None
         self.stopped = False
         self.offset = None
+        self.owner = secrets.token_hex(12)        # this client's lease identity on a fixed slot (never printed)
+        self.owns_lease = False
 
     @classmethod
     def from_info(cls, info, host, key=None, local=True):
@@ -293,11 +348,38 @@ class Lab:
 
     # -- lifecycle
     @classmethod
+    def start_fixed(cls, run):
+        """-> (Lab, None) or (None, reason): attach to this platform's persistent slot on the box. Only HTTP to <box>:<control port>; nothing is started and no ssh runs."""
+        why = fixed_ready()
+        if why:
+            return None, "the fixed lab is not configured: " + why
+        try:
+            ports = slot_ports()
+        except (LabError, ValueError) as e:
+            return None, str(e)
+        info = dict(cid=None, ports=ports, token=ci_env.get("SSHLAB_TOKEN"), slot=slot_name(), image="slot:" + slot_name(), run=os.path.basename(os.path.normpath(run)), flavor="full", expires=0)
+        lab = cls(info, _host_of(box_addr()), "fixed")
+        lab.run = run
+        try:
+            h = lab.health()
+        except LabError as e:
+            return None, "the %s lab slot is not reachable (%s)" % (slot_name(), safe_text(str(e), lab.token))
+        if h.get("leased") and h.get("exclusive"):
+            return None, "the %s lab slot is busy (leased by another client, %ss left; 409): the lab cases SKIP rather than share a container" % (slot_name(), h.get("lease_left"))
+        try:
+            json.dump({"mode": "fixed", "slot": slot_name(), "run": info["run"]}, open(os.path.join(run, "lab.json"), "w"))       # no token, no address
+        except OSError:
+            pass
+        return lab, None
+
+    @classmethod
     def start(cls, run, flavor="full", ttl=3 * 3600):
-        """-> (Lab, None) or (None, reason). local: runs labctl.py here; remote: ssh to the box with the forced-command key, the sshlab tree as a tar on stdin"""
+        """-> (Lab, None) or (None, reason). local: runs labctl.py here; fixed: attach to the box's persistent slot; remote (legacy): ssh to the box with the forced-command key, the sshlab tree as a tar on stdin"""
         mode, why = lab_mode()
         if mode == "off":
             return None, why
+        if mode == "fixed":
+            return cls.start_fixed(run)
         runid = re.sub(r"[^A-Za-z0-9._-]", "-", os.path.basename(os.path.normpath(run)))[:48] or "run"
         try:
             if mode == "local":
@@ -306,8 +388,8 @@ class Lab:
                 host = "127.0.0.1"
             else:
                 box = box_addr()
-                p = subprocess.run(["ssh", "-i", os.environ["APPCI_LAB_KEY"], "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes",
-                                    "-o", "UserKnownHostsFile=" + os.environ["APPCI_LAB_KNOWN_HOSTS"], "-o", "ConnectTimeout=20", box,
+                p = subprocess.run(["ssh", "-i", ci_env.get("APPCI_LAB_KEY"), "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes",
+                                    "-o", "UserKnownHostsFile=" + ci_env.get("APPCI_LAB_KNOWN_HOSTS"), "-o", "ConnectTimeout=20", box,
                                     "start --run %s --flavor %s --ttl %d" % (runid, flavor, ttl)], input=sshlab_tar(), capture_output=True, timeout=300)
                 p.stdout, p.stderr = p.stdout.decode(errors="replace"), p.stderr.decode(errors="replace")
                 host = _host_of(box)
@@ -329,9 +411,14 @@ class Lab:
             return
         self.stopped = True
         try:
+            if self.mode == "fixed":
+                if self.owns_lease:          # never release a lease this client does not hold (a 409 on lease means somebody else's run is in there)
+                    self._req("POST", "/release", dict(owner=self.owner), timeout=60)
+                    self.owns_lease = False
+                return
             stop_container(self.cid, self.mode, self.box_key)
         except Exception as e:  # noqa: BLE001
-            print("lab: stop failed: %r (labctl gc removes it at its TTL)" % (e,), flush=True)
+            print("lab: stop failed: %s (a fixed slot's lease also expires on its own)" % safe_text(repr(e), self.token), flush=True)
 
     # -- HTTP
     def _req(self, method, path, body=None, timeout=30, raw=False):
@@ -341,9 +428,9 @@ class Lab:
         try:
             resp = urllib.request.urlopen(r, timeout=timeout).read()
         except urllib.error.HTTPError as e:
-            raise LabError("%s %s -> %d %s" % (method, path, e.code, e.read()[:200].decode(errors="replace")))
+            raise LabError("%s %s -> %d %s" % (method, path, e.code, safe_text(e.read()[:200].decode(errors="replace"), self.token)))
         except (urllib.error.URLError, OSError) as e:
-            raise LabError("%s %s failed: %s" % (method, path, e))
+            raise LabError("%s %s failed: %s" % (method, path, safe_text(str(e), self.token)))
         return resp if raw else json.loads(resp or b"{}")
 
     def health(self):
@@ -357,7 +444,15 @@ class Lab:
         if hooks is None:
             import profile
             hooks = profile.lab_hooks()
-        self.leased = self._req("POST", "/lease", dict(run=os.path.basename(getattr(self, "run", "")), pubkeys=pubkeys, hooks=hooks), timeout=120)
+        self.leased = self._req("POST", "/lease", dict(run=os.path.basename(getattr(self, "run", "")), pubkeys=pubkeys, hooks=hooks, owner=self.owner), timeout=120)
+        self.owns_lease = True
+        if self.mode == "fixed":
+            try:        # the owner id is not a secret without the token; teardown uses it to release a lease whose run crashed
+                j = json.load(open(os.path.join(self.run, "lab.json")))
+                j["owner"] = self.owner
+                json.dump(j, open(os.path.join(self.run, "lab.json"), "w"))
+            except (OSError, ValueError, AttributeError):
+                pass
         return self.leased
 
     def make_key(self):
@@ -478,11 +573,13 @@ class Lab:
 
 
 def stop_container(cid, mode, box_key=None):
+    if mode == "fixed":
+        return          # a fixed slot is never stopped by a client; release() needs the lease owner (the Lab object) and the slot's lease expires by itself
     if mode == "local":
         ctl = os.environ.get("APPCI_LAB_CTL") or os.path.join(SSHLAB_DIR, "labctl.py")
         subprocess.run([sys.executable, ctl, "stop", "--id", cid], capture_output=True, timeout=60)
     else:
-        subprocess.run(["ssh", "-i", os.environ["APPCI_LAB_KEY"], "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes",
+        subprocess.run(["ssh", "-i", ci_env.get("APPCI_LAB_KEY"), "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes",
                         "-o", "UserKnownHostsFile=" + os.environ.get("APPCI_LAB_KNOWN_HOSTS", os.devnull), box_addr(), "stop --id " + cid],
                        capture_output=True, timeout=60, stdin=subprocess.DEVNULL)
 
@@ -493,6 +590,13 @@ def stop_from_json(run):
         j = json.load(open(os.path.join(run, "lab.json")))
     except (OSError, ValueError):
         return False
+    if j.get("mode") == "fixed":
+        if not j.get("owner") or fixed_ready():
+            return False
+        lab = Lab(dict(cid=None, ports=slot_ports(j.get("slot")), token=ci_env.get("SSHLAB_TOKEN")), _host_of(box_addr()), "fixed")
+        lab.owner, lab.owns_lease = j["owner"], True
+        lab.stop()
+        return True
     stop_container(j["cid"], j.get("mode", "local"))
     return True
 

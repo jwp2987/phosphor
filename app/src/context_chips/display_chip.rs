@@ -368,31 +368,8 @@ impl GitLineChanges {
     /// Parse git diff --shortstat output into GitLineChanges struct
     /// Input example: " 1 file changed, 2 insertions(+), 17 deletions(-)"
     pub fn parse_from_git_output(raw_output: &str) -> Option<Self> {
-        let line = raw_output.trim();
-
-        if line.is_empty() {
-            return None;
-        }
-
-        let mut files_changed = 0;
-        let mut lines_added = 0;
-        let mut lines_removed = 0;
-
-        let words: Vec<&str> = line.split_whitespace().collect();
-        for (i, word) in words.iter().enumerate() {
-            if let Ok(num) = word.parse::<u32>() {
-                if let Some(next_word) = words.get(i + 1) {
-                    if next_word.starts_with("file") {
-                        files_changed = num;
-                    } else if next_word.starts_with("insertion") {
-                        lines_added = num;
-                    } else if next_word.starts_with("deletion") {
-                        lines_removed = num;
-                    }
-                }
-            }
-        }
-
+        let (files_changed, lines_added, lines_removed) =
+            remote_server::shellcmd::git::parse_shortstat(raw_output)?;
         Some(Self {
             files_changed,
             lines_added,
