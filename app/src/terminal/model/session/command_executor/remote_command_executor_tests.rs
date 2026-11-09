@@ -62,3 +62,47 @@ fn command_timeout_env_parsing() {
     );
     assert_eq!(command_timeout_from_env(Some("0")), None);
 }
+
+/// Parity design R1: the shell-mode channel's output cap marks truncation instead of failing.
+#[test]
+fn channel_output_is_cut_at_the_cap_and_marked() {
+    assert_eq!(
+        super::cap_stdout(b"abcdef".to_vec(), 4),
+        (b"abcd".to_vec(), true)
+    );
+    assert_eq!(
+        super::cap_stdout(b"abcd".to_vec(), 4),
+        (b"abcd".to_vec(), false)
+    );
+    // 0 = no cap.
+    assert_eq!(
+        super::cap_stdout(b"abcdef".to_vec(), 0),
+        (b"abcdef".to_vec(), false)
+    );
+}
+
+/// The generator executor and the shell-mode channel of one master share ONE in-flight limit
+/// (#1240): two limits of four would be eight mux clients on a master that allows ten sessions.
+#[test]
+fn one_master_has_one_inflight_limit() {
+    let socket = std::path::Path::new("/nonexistent/cm-limit-test-socket");
+    let a = super::inflight_limit_for_socket(socket);
+    let b = super::inflight_limit_for_socket(socket);
+    let _held = a.acquire().now_or_never().flatten();
+    assert_eq!(b.available(), a.available());
+    assert_eq!(a.available(), Some(3));
+    let other = super::inflight_limit_for_socket(std::path::Path::new("/nonexistent/other"));
+    assert_eq!(other.available(), Some(4));
+}
+
+#[test]
+fn login_shell_types_map_to_command_builder_kinds() {
+    use crate::terminal::shell::ShellType;
+    use remote_server::shellcmd::ShellKind;
+    let kind = super::super::shell_kind_for_remote;
+    assert_eq!(kind(ShellType::Bash), ShellKind::Posix);
+    assert_eq!(kind(ShellType::Zsh), ShellKind::Posix);
+    assert_eq!(kind(ShellType::Fish), ShellKind::Fish);
+    assert_eq!(kind(ShellType::Nu), ShellKind::Nu);
+    assert_eq!(kind(ShellType::PowerShell), ShellKind::Pwsh);
+}

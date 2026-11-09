@@ -1012,6 +1012,30 @@ impl RemoteServerManager {
             .backend(host_id, self.client_for_host(host_id).cloned(), sessions)
     }
 
+    /// [`Self::backend_for_host`] for the host `session_id` belongs to, or, when the session has
+    /// no helper connection (so no host id: the no-helper case, the primary design), a backend
+    /// keyed on the session itself whose shell arm uses that session's out-of-band channel. The
+    /// agent tools and file views call this: they know their session, not necessarily a host.
+    pub fn backend_for_session(&self, session_id: SessionId) -> crate::backend::RoutedBackend {
+        match self.host_id_for_session(session_id) {
+            Some(host_id) => {
+                let sessions: Vec<SessionId> = self
+                    .host_to_sessions
+                    .get(host_id)
+                    .map(|s| s.iter().copied().chain([session_id]).collect())
+                    .unwrap_or_else(|| vec![session_id]);
+                self.router
+                    .backend(host_id, self.client_for_host(host_id).cloned(), sessions)
+            }
+            None => {
+                // Not a real host id: it only keys the router's per-connection fallback memory,
+                // and a helper-less session never has a helper connection to fall back from.
+                let host = HostId::new(format!("session:{session_id:?}"));
+                self.router.backend(&host, None, [session_id])
+            }
+        }
+    }
+
     /// Checks if the remote server binary is installed and executable.
     /// Emits `BinaryCheckComplete { result }`.
     /// Returns Ok(true) if the binary is installed and executable,
