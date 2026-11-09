@@ -112,6 +112,32 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         Warp-Write-Osc "$oscStart$oscJsonMarker$oscParamSeparator$encodedMessage$oscEnd$trailer"
     }
 
+    # Wave P (#1280): the CommandFinished and Precmd messages are built by hand, as Preexec's is
+    # (#1582), instead of through ConvertTo-Json, the most expensive statement on the path from a
+    # command's end to the next prompt on Windows PowerShell 5.1. `PHOSPHOR_PWSH_HANDJSON=0` goes
+    # back to ConvertTo-Json. The escapes are the same as Preexec's: backslash, double quote and
+    # every control character below 0x20 as \u00XX; everything else is passed through.
+    function Warp-Json-Str([string]$text) {
+        $escaped = $text.Replace('\', '\\').Replace('"', '\"')
+        if ($escaped -match '[\x00-\x1f]') {
+            $builder = [System.Text.StringBuilder]::new($escaped.Length + 16)
+            foreach ($ch in $escaped.ToCharArray()) {
+                if ([int]$ch -lt 32) {
+                    [void]$builder.Append('\u').Append(([int]$ch).ToString('x4'))
+                } else {
+                    [void]$builder.Append($ch)
+                }
+            }
+            $escaped = $builder.ToString()
+        }
+        '"' + $escaped + '"'
+    }
+
+    # Writes an already-built JSON text the way Warp-Send-JsonMessage writes a table's.
+    function Warp-Send-RawJson([string]$json, [string]$trailer = '') {
+        Warp-Write-Osc "$oscStart$oscJsonMarker$oscParamSeparator$(Warp-Encode-HexString $json)$oscEnd$trailer"
+    }
+
     # This script block contains commands and constants that are needed in background threads.
     # If you want to be able to use it in a background thread, stick it in this block
     $warpCommon = {
@@ -770,6 +796,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
             Microsoft.PowerShell.Utility\Remove-Variable __phosphor_ap_lecset, __phosphor_ap_lec -Scope Global -ErrorAction Ignore
         }
 
+        if ($script:warpDiagOn) { [void]$script:warpDiagBuf.Append("c $([System.Diagnostics.Stopwatch]::GetTimestamp())`n") }
         $newTitle = $PWD.Path
         # Replace the literal home dir with a tilde.
         if ($newTitle.StartsWith($HOME)) {
@@ -787,7 +814,11 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
                 next_block_id = "precmd-${global:_warpSessionId}-$blockId"
             }
         }
-        Warp-Send-JsonMessage $commandFinishedMsg $oscResetGrid
+        if ($env:PHOSPHOR_PWSH_HANDJSON -eq '0') {
+            Warp-Send-JsonMessage $commandFinishedMsg $oscResetGrid
+        } else {
+            Warp-Send-RawJson ('{"hook":"CommandFinished","value":{"session_id":' + [uint64]$global:_warpSessionId + ',"exit_code":' + [int]$exitCode + ',"next_block_id":' + (Warp-Json-Str "precmd-${global:_warpSessionId}-$blockId") + '}}') $oscResetGrid
+        }
 
         # Warp-Configure-PSReadLine-IfChanged runs in Warp-Idle-Maintenance (#1279).
 
@@ -969,8 +1000,13 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
                     kube_config = $kubeConfig
                 }
             }
-            Warp-Send-JsonMessage $precmdMsg
+            if ($env:PHOSPHOR_PWSH_HANDJSON -eq '0') {
+                Warp-Send-JsonMessage $precmdMsg
+            } else {
+                Warp-Send-RawJson ('{"hook":"Precmd","value":{"pwd":' + (Warp-Json-Str $PWD.Path) + ',"ps1":"","honor_ps1":' + $(if ($honor_ps1) { 'true' } else { 'false' }) + ',"rprompt":"","git_head":' + (Warp-Json-Str "$gitHead") + ',"git_branch":' + (Warp-Json-Str "$gitBranch") + ',"virtual_env":' + (Warp-Json-Str "$virtualEnv") + ',"conda_env":' + (Warp-Json-Str "$condaEnv") + ',"node_version":' + (Warp-Json-Str "$nodeVersion") + ',"session_id":' + [uint64]$global:_warpSessionId + ',"seq":' + [int64]$script:warpSeq + ',"kube_config":' + (Warp-Json-Str "$kubeConfig") + '}}')
+            }
         }
+        if ($script:warpDiagOn) { [void]$script:warpDiagBuf.Append("r $([System.Diagnostics.Stopwatch]::GetTimestamp())`n") }
     }
 
     $script:inBandCommandCount = 0

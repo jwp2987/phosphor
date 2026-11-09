@@ -3759,6 +3759,15 @@ impl Element for BlockListElement {
         // Heights discovered by this pass are collected separately from the dirty-set pass
         // above so the second update only touches items the first did not (#810).
         let mut viewport_updated_rich_content_heights = HashMap::new();
+        // Wave P: rich content this pass already laid out at this frame's constraint. The visible
+        // pass below used to lay the same views out a second time (everything whose height did
+        // not change by a pixel), with the model lock held; once per frame is enough.
+        let reuse_first_pass_layout =
+            crate::terminal::model_lock_trace::perf_blocklist_window_enabled();
+        let mut laid_out_in_first_pass: std::collections::HashSet<EntityId> =
+            std::collections::HashSet::new();
+        let mut rich_content_layouts: u32 = 0;
+        let mut rich_content_layouts_reused: u32 = 0;
         let mut viewport_iter = viewport.iter_with_bottom_overhang(Lines::new(20.));
         for viewport_item in viewport_iter.by_ref() {
             if let BlockHeightItem::RichContent(RichContentItem {
@@ -3787,6 +3796,10 @@ impl Element for BlockListElement {
                     app,
                 );
                 let height_px = current_size.y() as f64;
+                rich_content_layouts += 1;
+                if reuse_first_pass_layout {
+                    laid_out_in_first_pass.insert(view_id);
+                }
 
                 // If the new laid out height is different from the value currently in the
                 // BlockList, then we flag the block for updating once we're done laying out.
@@ -4037,7 +4050,12 @@ impl Element for BlockListElement {
                     let height_px = if let Some(h) = updated_rich_content_heights.get(&view_id) {
                         *h
                     } else {
-                        if let Some(rich_content) = self.rich_content_elements.get_mut(&view_id) {
+                        if laid_out_in_first_pass.contains(&view_id) {
+                            rich_content_layouts_reused += 1;
+                        } else if let Some(rich_content) =
+                            self.rich_content_elements.get_mut(&view_id)
+                        {
+                            rich_content_layouts += 1;
                             let _ = rich_content.layout(
                                 SizeConstraint::tight_on_cross_axis(Axis::Vertical, constraint),
                                 ctx,
@@ -4149,6 +4167,20 @@ impl Element for BlockListElement {
         // Explicitly drop the terminal model mutex guard so that it can be freed up for other
         // threads
         drop(model);
+        // Wave P measurement hook: numbers only. `hold_us` is the layout's model-lock hold from
+        // the first lock of this frame's visible pass; `layouts` counts rich content layouts run
+        // in the viewport passes and `reused` those the visible pass skipped.
+        if log::log_enabled!(log::Level::Debug)
+            && (rich_content_layouts + rich_content_layouts_reused) > 0
+        {
+            log::debug!(
+                "hop=perf_blocklist_layout hold_us={} layouts={} reused={} switch={}",
+                hold.elapsed_us(),
+                rich_content_layouts,
+                rich_content_layouts_reused,
+                reuse_first_pass_layout as u8
+            );
+        }
         drop(hold);
 
         for (idx, element) in block_indices_with_label_elements.iter().zip(elements) {

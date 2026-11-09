@@ -3074,3 +3074,58 @@ confirms the freeze is gone, since these unit tests cannot render.
   decide again; the editor takes the line on the shell's own line-editor-active evidence (or the late Precmd/report), never
   on the timer. The older settle path for bootstraps without prompt sequence numbers (`INTERRUPT_SETTLE`, 250 ms) is not
   part of M10 and is unchanged.
+
+## Wave P performance (code only; measured at the test run)
+
+Every item has a kill switch (env var read once at start) and a numbers-only log line (`RUST_LOG=debug`). A test run
+must collect the "before" with the switch at `0` and the "after" with it unset, in the same build.
+
+### P1 echo path (`PHOSPHOR_PERF_ECHO`, `0` = old behaviour)
+- A keypress no longer clears (or announces the clearing of) an EMPTY block-list / alt-screen selection
+  (`blocks/selection.rs` and `alt_screen.rs` `clear_selection`).
+- The wakeup throttle's echo floor is 1 ms instead of 4 ms (`wakeup_bypass_floor`).
+- Collect: `hop=perf_echo_wakeup urgent=1 floor_ms=N since_prev_us=U` (the gap between delivered wakeups; with the
+  switch on, urgent echo wakeups should cluster near 1000 us instead of 4000 us) and key-to-paint p50/p95 from the
+  existing latency case (terminal mode, typing at 10-25 ms/key). A flood (`yes`) must still show `since_prev_us` near
+  16700 for non-urgent wakeups.
+- Unit: `wave_p_switch_values` (model_lock_trace.rs).
+
+### P2 agent-mode key path under an output flood (`PHOSPHOR_PERF_AGENT_KEY`, `0` = old behaviour)
+- Found: every typed key in agent mode ran `typed_on_settled_ai_target`, which built a Vec of the view ids of every AI
+  block and every settled action card (O(blocks) allocations and card walks per key). It now asks the non-allocating
+  `focused_settled_ai_target`, the same answer.
+- Collect: `hop=perf_agent_key_probe settled_target_us=U ai_blocks=N on_target=B` (probe cost against block count, with
+  the switch on and `0`), and key / Ctrl-C to pty-write p50/p95 in agent mode under `yes` / a flood, against terminal
+  mode, with a conversation of 50+ AI blocks. The remaining agent-mode gap, if any, is main-thread time spent in
+  flood-driven re-layout (P3); read `model lock held` lines for `BlockListElement::layout` at the same time.
+
+### P3 long agent conversations: block list layout (`PHOSPHOR_PERF_BLOCKLIST_WINDOW`, `0` = old behaviour)
+- `BlockListElement::layout` already lays out only the viewport plus a 20-line margin. What it did twice was the
+  visible items: the viewport pass laid every visible AI block out, and the visible-items pass laid out again each one
+  whose height had not moved by a pixel, with the model lock held. A view laid out in the first pass is not laid out
+  again in the second.
+- Collect: `hop=perf_blocklist_layout hold_us=U layouts=N reused=M switch=S` on a conversation of 100+ AI blocks, with
+  and without the switch (`hold_us` is the lock hold of the visible pass; `reused` is the layouts saved), plus the
+  existing `model lock held ... BlockListElement::layout` warn lines. Pass: hold_us falls with `reused>0`; scrolling
+  through the conversation and typing in it show no stale or mis-sized block (screenshots at the top, middle, bottom).
+
+### P4 PowerShell hooks (#1280; `PHOSPHOR_PWSH_HANDJSON`, `0` = ConvertTo-Json as before)
+- `Warp-Precmd` built its CommandFinished and Precmd messages with `ConvertTo-Json` (the most expensive statement
+  there on PS 5.1, per #1582); they are now built by hand like Preexec's (`Warp-Json-Str`, `Warp-Send-RawJson` in
+  pwsh.ps1). The decoded messages are unchanged: `script/test_pwsh_hook_equivalence` passes every scenario (its
+  `InitShell` row already differs on a `pid` field before this change, unrelated). Unicode and quote/backslash/control
+  characters in the cwd and git fields are covered by the `unicode` / `cd-*` scenarios.
+- Collect (Windows VM, PS 5.1, warp diag stamps `<tmp>.on` next to the diag file): new stamps `c` (Precmd start) and
+  `r` (Precmd end) beside the existing `p` / `q` (Preexec); Precmd cost = (r - c) / QPC frequency, median and p95 over
+  30 Enters, with `PHOSPHOR_PWSH_HANDJSON=0` and unset. Compare Enter -> prompt as in the #1280 harness.
+
+### P5 code editor memory (#1340): measurement only this wave
+- Earlier rounds already added parked line chunks (P5), the 5 MB syntax cap, no per-edit copy without a diff base and
+  the close / opt-in open trims; the last recorded txt open still cost ~217 MB of RSS over a ~75 MB retained tree
+  (buffer ~54 MB, parked lines ~10 MB), so ~140 MB is load transients the allocator keeps. No blind behaviour change was
+  made. `Buffer::replace_all` now logs, for texts of 1 MB or more, `editor_memory load_stage stage=<start|formatted_text|
+  edit_applied|undo_reset> rss_kb=N` (log target `editor_memory`, debug; Linux reads `/proc/self/statm` assuming 4 KiB
+  pages, other platforms print -1).
+- Collect: open the 7 MB txt and rs files from `editor_memory_7mb` with `RUST_LOG=editor_memory=debug` and report the
+  rss_kb step between stages (the stage with the largest jump is the next thing to cut), together with the existing
+  `editor_memory open ...` breakdown line and the after-open figure with `PHOSPHOR_EDITOR_TRIM_AFTER_OPEN=1`.
