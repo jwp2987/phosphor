@@ -5535,3 +5535,4 @@ import cases_agent_file_edits  # noqa: E402,F401  (#1835: agent_edit_accept/reje
 import cases_agent_resilience  # noqa: E402,F401  (#1831/#1832: agent_fault_* model failures, agent_restart_* quit / kill -9 mid-conversation; fake_model fault injection)
 import cases_agent_multitab  # noqa: E402,F401  (#1833: agent_multitab_streaming, N hidden streaming agent tabs while typing elsewhere)
 import cases_agent_mcp  # noqa: E402,F401  (#1834: agent_mcp_faults, misbehaving fake MCP servers)
+import cases_agent_latency  # noqa: E402,F401  (#1828: agent_latency_key, agent_latency_enter, agent_steer_fast; needs APPCI_FAKE_MODEL=1)

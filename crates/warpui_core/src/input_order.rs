@@ -315,6 +315,9 @@ fn frame_line(layout: bool) -> String {
 
 /// Set when pty output that followed user input was read, cleared by the next frame (#1092).
 static FRAME_OWED_FOR_PTY_OUTPUT: AtomicBool = AtomicBool::new(false);
+/// A key-down was logged and no frame has been built since (#1828): the next frame is logged as `hop=key_frame`. Separate from
+/// [`FRAME_OWED_FOR_PTY_OUTPUT`] so the pty-echo `frame` pairing of the existing latency cases is unchanged.
+static FRAME_OWED_FOR_KEY: AtomicBool = AtomicBool::new(false);
 
 /// Logs user input (not a query reply) having been written to a pty, `bytes` long.
 pub fn log_pty_write(bytes: usize) {
@@ -425,12 +428,18 @@ pub fn log_frame_if_pty_output_pending(layout: bool) {
     if take_frame_owed(&FRAME_OWED_FOR_PTY_OUTPUT) && enabled() {
         log::debug!(target: TARGET, "{}", frame_line(layout));
     }
+    // #1828: a typed key that never reaches the pty (the agent input) has no echo, so the line above never fires for it. The first frame
+    // after any key-down is logged on its own, `input_order hop=key_frame layout=<bool> t=<ms>`.
+    if take_frame_owed(&FRAME_OWED_FOR_KEY) && enabled() {
+        log::debug!(target: TARGET, "{}", hop_line("key_frame", &format!("layout={layout}")));
+    }
 }
 
 /// Logs a key-down being dispatched.
 pub fn log_key_down(key: &str, ctrl: bool, alt: bool, shift: bool, cmd: bool) {
     if enabled() {
         let seq = next_key_seq_for_keydown();
+        FRAME_OWED_FOR_KEY.store(true, Ordering::Relaxed);
         log::debug!(target: TARGET, "{}", key_down_line(key, ctrl, alt, shift, cmd, seq));
     }
 }
@@ -532,6 +541,20 @@ mod tests {
             frame.starts_with("input_order frame layout=false t="),
             "{frame}"
         );
+    }
+
+    #[test]
+    fn the_key_frame_line_is_the_hop_the_agent_latency_cases_parse() {
+        // script/realapp/appci/cases_agent_latency.py KEY_FRAME_RE matches `input_order hop=key_frame layout=<bool> t=<ms>`.
+        let line = hop_line("key_frame", "layout=true");
+        assert!(
+            line.starts_with("input_order hop=key_frame layout=true t="),
+            "{line}"
+        );
+        // only the first frame after the key-down is owed
+        let owed = AtomicBool::new(true);
+        assert!(take_frame_owed(&owed));
+        assert!(!take_frame_owed(&owed));
     }
 
     #[test]
