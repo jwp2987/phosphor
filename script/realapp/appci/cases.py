@@ -44,6 +44,7 @@ PROVING = (
     "agent_lrc_no_false_takeover", "ctrl_c_no_esc_i_local", "ui_completions_as_you_type_local", "remote_tab_enter_no_helper", "remote_tab_no_helper",
     "keyring_unavailable_startup", "cb_report_problem", "zero_network_startup", "claude_plugin_offline", "agent_plugins_offline",
     "subshell_sh_probe", "subshell_ready_rc_questions", "subshell_ready_vim_typeahead", "subshell_ready_unsupported_tcsh", "subshell_ready_secret_after_prompt",
+    "ctrl_c_flood_ab",
     "subshell_ready_relay_shape", "subshell_ready_exec_fish_rc", "subshell_ready_docker_t_without_i", "subshell_ready_zsh_newuser_install", "subshell_ready_rc_clear",
 )
 # The PROVING cases that need the scripted fake model (fake_model.py): the fix tier runs them in their own app launch, the "agent@fake" pass (run.py
@@ -5639,6 +5640,7 @@ import cases_caseremote  # noqa: E402,F401  (issue #1464: remote work over ssh +
 import cases_caseintl  # noqa: E402,F401  (group 8: international input, #1466)
 import cases_coverage_a  # noqa: E402,F401  (#1535-#1541: paste, alt-screen programs, sudo/su, ssh drop+reconnect, kill -9 + corrupt-db restore)
 import cases_coverage_b  # noqa: E402,F401  (g10: CI-review coverage gaps #1542-#1548: agent pickers, settings UI/migration, state relaunch, no-autoupdate, UI-action budgets, mac editor)
+import cases_ctrlc_ab  # noqa: E402,F401  (#1838: ctrl_c_flood_ab, the macOS blocked-frame gate on/off A/B)
 import cases_shells  # noqa: E402,F401  (#1534: startup_shell_override passes: cmd.exe and pwsh 7 as the pane shell)
 import cases_lab_helper  # noqa: E402,F401  (P10: helper lifecycle / capability / routing and no-helper lab cases)
 import cases_agent_interactive  # noqa: E402,F401  (#1829: agent-run password / vim / ssh / less hand-over and hand-back, agent_interactive_*)

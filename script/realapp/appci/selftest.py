@@ -523,6 +523,38 @@ def enter_split_attributes_every_hop():
 
 
 @check
+def ctrl_c_flood_ab_pure_parts_1838():
+    """#1838 A/B: log parsing (skip runs, waits, key->ctrl_c_keydown, flood throughput), merge, summary, verdict and the block order"""
+    import cases_ctrlc_ab as ab
+    L = ["input_order hop=frame_skip_run skipped=3 held_ms=12.0 t=1000000.0", "input_order hop=frame_skip_run skipped=9 held_ms=130.0 t=1000100.0",
+         "input_order hop=drawable_wait wait_ms=1.50 key_frame=false t=1000001.0", "input_order hop=drawable_wait wait_ms=20.00 key_frame=false t=1000002.0",
+         "input_order hop=os_key_event age_ms=1.0 enter=false ctrl=false t=1000003.0",
+         "input_order hop=os_key_event age_ms=1.0 enter=false ctrl=true t=1000010.0", "input_order hop=ctrl_c_keydown powershell_setup_hold=Off t=1000013.0",
+         "input_order hop=frame_skip_run skipped=1 held_ms=5.0 t=1.0"]            # the last is before t0
+    L += ["input_order pty_read bytes=1000 since_write_ms=1.0 t=%d" % (2000000 + 10 * i) for i in range(20)]   # one run: 20 reads, 190 ms
+    L += ["input_order pty_read bytes=50 since_write_ms=1.0 t=3000000.0"]                                         # a lone read: not a flood
+    m = ab.ab_arm_log_metrics(L, 1000.0)
+    assert m["skip_runs"] == 2 and m["held"] == [12.0, 130.0] and m["waits"] == [1.5, 20.0] and m["k2k"] == [3.0], m
+    assert m["flood_bytes"] == 19000 and abs(m["flood_s"] - 0.19) < 1e-6, m
+    mm = ab.ab_merge([m, m])
+    assert mm["skip_runs"] == 4 and len(mm["held"]) == 4 and mm["flood_bytes"] == 38000
+    on = ab.ab_summary([10.0, 20.0, 30.0], mm)
+    assert on["frame_skip_runs"] == 4 and on["held_ge_100ms"] == 2 and on["drawable_wait_ge_2ms"] == 2 and on["os_key_event_to_ctrl_c_keydown_p50"] == 3.0, on
+    assert on["flood_bytes_per_s"] == 100000 and on["p50"] == 20.0 and on["held_ms_max"] == 130.0, on
+    off = ab.ab_summary([40.0, 50.0, 60.0], ab.ab_merge([dict(ab.ab_arm_log_metrics([], 0), flood_bytes=100000, flood_s=1.0)]))
+    d, w = ab.ab_verdict(on, off)
+    assert d == -30.0 and len(w) == 1 and "watchdog" in w[0], (d, w)                      # equal throughput, watchdog hit
+    slow = dict(on, flood_bytes_per_s=85000, held_ge_100ms=0)
+    d, w = ab.ab_verdict(slow, off)
+    assert len(w) == 1 and "15.0% below" in w[0], w
+    assert ab.ab_verdict(dict(slow, flood_bytes_per_s=95000), off)[1] == [] and ab.ab_verdict(dict(on, p50=None), off)[0] is None
+    sched = ab.ab_schedule(10, 3)
+    assert [a for a, _c, _d in sched][:2] == ["on", "off"] and {a for a, _c, _d in sched} == {"on", "off"}
+    assert sum(c - d_ for a, c, d_ in sched if a == "on") == 10 and sum(c - d_ for a, c, d_ in sched if a == "off") == 10, sched
+    assert ab._arm_env("off") == {"PHOSPHOR_MAC_SKIP_BLOCKED_FRAMES": "0"} and ab._arm_env("on") == {}
+
+
+@check
 def injector_failures_are_errors():
     import backend
     assert backend.is_injector(["wtype", "-k", "a"]) and backend.is_injector(["xdotool", "type", "x"]) and not backend.is_injector(["xdotool", "windowfocus", "1"])

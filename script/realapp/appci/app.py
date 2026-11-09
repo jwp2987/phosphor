@@ -195,6 +195,7 @@ class MacApp:
         self._pid = None
         self.last_pid = None
         self.warn = None
+        self.extra_env = {}              # {K: V} passed to the NEXT launch through `open --env` (a case sets it before a relaunch, #1838 A/B)
         self.log_path = os.path.join(home, "Library", "Logs", "phosphor.log")
 
     def _install_settings(self):
@@ -223,6 +224,8 @@ class MacApp:
                      ("WARP_INPUT_ORDER_LOG_TEXT", "1")):
             env_args += ["--env", "%s=%s" % (k, v)]
         for k, v in passthrough_env().items():
+            env_args += ["--env", "%s=%s" % (k, v)]
+        for k, v in self.extra_env.items():
             env_args += ["--env", "%s=%s" % (k, v)]
         # exactly ONE instance per pass: refuse to launch over a leftover of this job's bundle (it would share the window/dialog state)
         left = self._instances()
