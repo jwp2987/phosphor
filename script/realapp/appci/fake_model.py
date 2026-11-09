@@ -358,7 +358,9 @@ class FakeModel:
                         owner.tool_results.append((time.time(), msgs[-1].get("content") or ""))
                     elif msgs:
                         owner.user_turns.append((time.time(), msgs[-1].get("content") or ""))
-                user_text = next((m.get("content") or "" for m in reversed(msgs) if m.get("role") == "user"), "")
+                # the app appends an <environment_context> user message AFTER the prompt (seen on Windows, round 6): match the last
+                # two user messages so a `match` token in the prompt still hits the chat request (not only the title request)
+                user_text = "\n".join(user_texts(msgs)[-2:])
                 fault = owner._take(user_text)
                 if fault:
                     owner.fired.append(fault["kind"])
