@@ -261,10 +261,8 @@ things you asked for:
   connection you already opened, from the copy bundled in the app, and checked
   against a digest compiled into your client; the remote host never contacts the
   internet for it, and nothing is downloaded. It is optional and asked per host.
-  The tmux
-  wrapper, if you turn `warpify.ssh.use_ssh_tmux_wrapper` on, has the remote host
-  install tmux through its own package manager. Both run on the far end of a
-  connection you initiated, and neither sends anything about you.
+  It runs on the far end of a connection you initiated, and sends nothing about
+  you.
 
 And that is the list. The specifics:
 
@@ -586,8 +584,7 @@ users will never see the offer:
 
 Turn `use_ssh_tmux_wrapper` on and a **Phosphorize SSH session** button appears
 in the footer once you are logged in (`terminal:warpify_ssh_session`). Phosphor
-then probes the remote host, installs tmux through its package manager if
-needed, and re-enters the session under tmux. It gives up after eight seconds.
+then probes the remote host and re-enters the session under tmux. It gives up after eight seconds.
 
 Enabling the tmux wrapper **disables** the legacy ControlMaster wrapper — they
 are mutually exclusive. If your completions have stopped working over SSH,
@@ -1013,7 +1010,6 @@ the part you actually want.
 
 ## SSH bootstrap egress
 - the remote helper is uploaded in-band over your own ssh connection from the copy bundled in the app, verified against a digest compiled into the client: crates/remote_server/src/install_remote_server.sh (reads the gzip stream from stdin, checks `pinned_helper_sha256`), crates/remote_server/src/setup.rs (`pinned_helper_sha256`, `bundled_helper_asset_path`), app/src/remote_server/ssh_transport.rs (`install_binary_impl`, `scp_install_fallback`); no download from GitLab, GitHub or anywhere else (asserted by `nothing_in_the_install_path_can_reach_the_network` in setup_tests.rs)
-- tmux is installed on the remote host through its own package manager, only when `warpify.ssh.use_ssh_tmux_wrapper` (default false) is on: app/src/terminal/ssh/warpify.rs:184-196, app/src/terminal/warpify/settings.rs:18-56
 
 ## Graphics
 - GPUSettings group with toml paths and defaults: app/src/settings/gpu.rs:9-29

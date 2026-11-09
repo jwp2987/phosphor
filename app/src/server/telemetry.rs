@@ -1611,12 +1611,6 @@ pub enum TelemetryEvent {
         error: WarpificationUnavailableReason,
         tmux_installation: Option<TmuxInstallationState>,
     },
-    /// A SSH Install Tmux Block was displayed.
-    SshInstallTmuxBlockDisplayed,
-    /// A SSH Install Tmux Block was accepted.
-    SshInstallTmuxBlockAccepted,
-    /// A SSH Install Tmux Block was dismissed.
-    SshInstallTmuxBlockDismissed,
     ShowAliasExpansionBanner,
     EnableAliasExpansionFromBanner,
     DismissAliasExpansionBanner,

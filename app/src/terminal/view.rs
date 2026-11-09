@@ -384,7 +384,6 @@ use std::hash::Hash;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::mpsc::SyncSender;
 use std::time::Duration;
@@ -567,7 +566,7 @@ use super::available_shells::AvailableShell;
 use super::block_list_viewport::FindMatchScrollLocation;
 use super::event::SshLoginStatus;
 use super::find::FindOptions;
-use super::model::ansi::{SystemDetails, WarpificationUnavailableReason};
+use super::model::ansi::WarpificationUnavailableReason;
 use super::model::block::{BlockSection, BlocklistEnvVarMetadata};
 use super::model::blocks::RichContentItem;
 use super::model::completions::ShellCompletion;
@@ -577,12 +576,8 @@ use super::model::selection::ExpandedSelectionRange;
 use super::model::session::SessionBootstrappedEvent;
 use super::settings::AltScreenPaddingMode;
 use super::ssh::SSH_WARPIFY_TIMEOUT_DURATION;
+use super::ssh::SshKeyEvent;
 use super::ssh::error::{SSH_ERROR_BLOCK_VISIBLE_KEY, SshErrorBlock, SshErrorBlockEvent};
-use super::ssh::install_tmux::{
-    SshInstallTmuxBlock, SshInstallTmuxBlockEvent, SshKeyEvent, TmuxInstallMethod,
-    install_root_tmux_script, install_tmux_script,
-};
-use super::ssh::root_access::RootAccess;
 use super::ssh::ssh_detection::evaluate_warpify_ssh_host;
 use super::ssh::util::{
     InteractiveSshCommand, SshWarpifyCommand, convert_script_to_one_line,
@@ -2996,9 +2991,6 @@ enum DeferredSshWarpify {
     Continue {
         uname: String,
         shell_type: ShellType,
-    },
-    InstallTmux {
-        install_method: TmuxInstallMethod,
     },
 }
 
@@ -16207,66 +16199,13 @@ impl TerminalView {
         // Stop the pending timeout on warpification.
         self.warpify_state.abort_ssh_warpify_timeout();
         match &reason {
-            WarpificationUnavailableReason::TmuxNotInstalled {
-                system_details,
-                root_access,
-            } => {
+            WarpificationUnavailableReason::TmuxNotInstalled { system_details, .. }
+            | WarpificationUnavailableReason::UnsupportedTmuxVersion { system_details } => {
                 if system_details.writable_home != Some(true) {
                     if let Some(shell_type) = ShellType::from_name(&system_details.shell) {
                         self.trigger_subshell_bootstrap(Some(shell_type), false, ctx);
                         return;
                     }
-                }
-
-                // The install scripts emit `TmuxInstallFailed` from the remote host; bake in an
-                // ID we minted so that hook survives validation. Both candidate scripts share
-                // it -- the user runs at most one of them.
-                let session_id = self.mint_registered_session_id();
-                if let Some(tmux_install_script) =
-                    install_tmux_script(system_details, session_id, ctx)
-                {
-                    let root_access = RootAccess::from_str(root_access).unwrap_or_default();
-                    let tmux_root_install_script = if root_access == RootAccess::NoRootAccess {
-                        None
-                    } else {
-                        install_root_tmux_script(
-                            system_details,
-                            session_id,
-                            ctx,
-                            root_access == RootAccess::CanRunSudo,
-                        )
-                    };
-                    self.add_ssh_install_tmux_block(
-                        system_details,
-                        tmux_install_script,
-                        tmux_root_install_script,
-                        false,
-                        ctx,
-                    );
-                    return;
-                }
-            }
-            WarpificationUnavailableReason::UnsupportedTmuxVersion { system_details } => {
-                if system_details.writable_home != Some(true) {
-                    if let Some(shell_type) = ShellType::from_name(&system_details.shell) {
-                        self.trigger_subshell_bootstrap(Some(shell_type), false, ctx);
-                        return;
-                    }
-                }
-
-                // See the sibling branch above: `TmuxInstallFailed` needs an ID we minted.
-                let session_id = self.mint_registered_session_id();
-                if let Some(tmux_install_script) =
-                    install_tmux_script(system_details, session_id, ctx)
-                {
-                    self.add_ssh_install_tmux_block(
-                        system_details,
-                        tmux_install_script,
-                        None,
-                        true,
-                        ctx,
-                    );
-                    return;
                 }
             }
             _ => {}
@@ -16338,70 +16277,6 @@ impl TerminalView {
             });
 
         self.warpify_ssh_session(ctx);
-    }
-
-    /// This method assumes the active block in the blocklist is a long-running SSH command.
-    fn add_ssh_install_tmux_block(
-        &mut self,
-        system_details: &SystemDetails,
-        tmux_install_script: String,
-        tmux_root_install_script: Option<String>,
-        outdated_version: bool,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        self.clear_ssh_blocks(ctx);
-
-        let show_ssh_block_debug = BlockVisibilitySettings::as_ref(ctx)
-            .should_show_ssh_block
-            .value();
-        let (full_ssh_command, hidden_ssh_block_id) = {
-            let mut model = self.model.lock();
-            if !show_ssh_block_debug {
-                model.block_list_mut().hide_active_block();
-            }
-            (
-                model.block_list().active_block().command_to_string(),
-                model.block_list().active_block_id().clone(),
-            )
-        };
-
-        let ssh_host = self.warpify_state.get_pending_ssh_host();
-
-        let ssh_install_tmux_block_handle = ctx.add_typed_action_view(|_| {
-            SshInstallTmuxBlock::new(
-                system_details.clone(),
-                tmux_install_script,
-                tmux_root_install_script,
-                full_ssh_command,
-                ssh_host,
-                outdated_version,
-            )
-        });
-        ctx.subscribe_to_view(&ssh_install_tmux_block_handle, move |me, _, event, ctx| {
-            me.handle_ssh_install_tmux_block_event(event, ctx);
-        });
-
-        self.insert_rich_content(
-            None,
-            ssh_install_tmux_block_handle.clone(),
-            Some(RichContentMetadata::SshInstallTmuxBlock {
-                ssh_install_tmux_block_handle: ssh_install_tmux_block_handle.clone(),
-            }),
-            RichContentInsertionPosition::Append {
-                insert_below_long_running_block: true,
-            },
-            ctx,
-        );
-
-        ctx.focus(&ssh_install_tmux_block_handle);
-
-        send_telemetry_from_ctx!(TelemetryEvent::SshInstallTmuxBlockDisplayed, ctx);
-
-        self.warpify_state.set_block_id(hidden_ssh_block_id);
-        self.warpify_state
-            .set_ssh_block_state(SshBlockState::InstallTmux {
-                handle: ssh_install_tmux_block_handle,
-            });
     }
 
     fn add_ssh_error_block(
@@ -16536,72 +16411,6 @@ impl TerminalView {
                 // #1774: a deferred Enter's gate must not hold this ^C.
                 self.cancel_deferred_enter_before_interrupt(ctx);
                 self.user_write_ctrl_c_to_pty(ctx);
-            }
-        }
-    }
-
-    fn handle_ssh_install_tmux_block_event(
-        &mut self,
-        event: &SshInstallTmuxBlockEvent,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        fn cancel_tmux_install(me: &mut TerminalView, ctx: &mut ViewContext<TerminalView>) {
-            send_telemetry_from_ctx!(TelemetryEvent::SshInstallTmuxBlockDismissed, ctx);
-            me.cancel_bootstrap_workflow(ctx);
-        }
-
-        match event {
-            SshInstallTmuxBlockEvent::Cancel => {
-                cancel_tmux_install(self, ctx);
-            }
-            SshInstallTmuxBlockEvent::Interrupt => {
-                cancel_tmux_install(self, ctx);
-                self.warpify_state.abort_ssh_warpify_timeout();
-                // #1774: a deferred Enter's gate must not hold this ^C.
-                self.cancel_deferred_enter_before_interrupt(ctx);
-                self.user_write_ctrl_c_to_pty(ctx);
-            }
-            SshInstallTmuxBlockEvent::InstallTmuxAndWarpify(install_method) => {
-                send_telemetry_from_ctx!(TelemetryEvent::SshInstallTmuxBlockAccepted, ctx);
-                self.clear_ssh_blocks(ctx);
-                self.install_tmux_and_warpify(ctx, install_method);
-                self.update_scroll_position_locking(
-                    ScrollPositionUpdate::AfterRichBlockUpdated,
-                    ctx,
-                );
-                ctx.notify();
-            }
-            SshInstallTmuxBlockEvent::ToggleScriptVisibility => {
-                self.update_scroll_position_locking(
-                    ScrollPositionUpdate::AfterRichBlockUpdated,
-                    ctx,
-                );
-                ctx.notify();
-            }
-            SshInstallTmuxBlockEvent::ToggleTmuxInstallVisibility => {
-                if let Some(ssh_block_id) = self.warpify_state.block_id() {
-                    if let Some(is_visible) = self
-                        .model
-                        .lock()
-                        .block_list_mut()
-                        .toggle_visibility_of_block(&ssh_block_id)
-                    {
-                        if is_visible {
-                            ctx.focus_self();
-                        }
-                    }
-                    ctx.notify();
-                }
-            }
-            SshInstallTmuxBlockEvent::UnhideTmuxInstall => {
-                if let Some(ssh_block_id) = self.warpify_state.block_id() {
-                    self.model
-                        .lock()
-                        .block_list_mut()
-                        .unhide_block(&ssh_block_id);
-                    ctx.focus_self();
-                    ctx.notify();
-                }
             }
         }
     }
@@ -36904,9 +36713,6 @@ impl TerminalView {
             DeferredSshWarpify::Continue { uname, shell_type } => {
                 self.continue_warpify_ssh_session(&uname, shell_type, ctx)
             }
-            DeferredSshWarpify::InstallTmux { install_method } => {
-                self.install_tmux_and_warpify(ctx, &install_method)
-            }
         }
     }
 
@@ -36963,31 +36769,6 @@ impl TerminalView {
                 ctx,
             );
         }
-    }
-
-    fn install_tmux_and_warpify(
-        &mut self,
-        ctx: &mut ViewContext<Self>,
-        install_method: &TmuxInstallMethod,
-    ) {
-        if self.defer_ssh_warpify_for_the_line(
-            || DeferredSshWarpify::InstallTmux {
-                install_method: install_method.clone(),
-            },
-            ctx,
-        ) {
-            return;
-        }
-        let install_with_root_method = install_method.should_use_package_manager;
-        let install_script = &install_method.script;
-        self.model
-            .lock()
-            .set_pending_warp_initiated_control_mode_with_install_tmux(install_with_root_method);
-        let payload = convert_script_to_one_line(install_script);
-        self.warpify_state.mark_ssh_payload_written(&payload);
-        // One SetupChunked job like the third writer (#1436): the probe / installer payloads are
-        // as long as the warpify script and a cooked macOS tty drops input past 1 KB.
-        self.clear_line_editor_and_write_to_pty_with_mac_workaround_hack(payload.into_bytes(), ctx);
     }
 
     fn begin_ssh_warpify_timeout(&mut self, duration: Duration, ctx: &mut ViewContext<Self>) {

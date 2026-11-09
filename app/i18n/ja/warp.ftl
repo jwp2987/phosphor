@@ -3405,7 +3405,6 @@ terminal-never-install = インストールしない
 terminal-ssh-report-issue-prefix = Phosphor の SSH 安定性向上に取り組んでいます。次の対応をご検討ください:{" "}
 terminal-ssh-report-issue-link = issue を起票
 terminal-ssh-report-issue-suffix = {" "}し、GitHub に投稿いただくと問題を特定しやすくなります。
-terminal-ssh-why-need-tmux = なぜ tmux が必要ですか？
 terminal-ssh-file-uploads-title = ファイルアップロード
 terminal-ssh-close-upload-session = アップロードセッションを閉じる
 terminal-ssh-view-upload-session = アップロードセッションを表示

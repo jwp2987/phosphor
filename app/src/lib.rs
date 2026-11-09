@@ -1962,7 +1962,6 @@ fn initialize_app(
     // Zap Wave 7-2: `settings_view::update_environment_form::init` was physically removed
     // along with the cloud ambient agent's main subsystem.
     env_vars::env_var_collection_block::init(ctx);
-    terminal::ssh::install_tmux::init(ctx);
     terminal::ssh::warpify::init(ctx);
     terminal::ssh::error::init(ctx);
     context_chips::display_menu::init(ctx);

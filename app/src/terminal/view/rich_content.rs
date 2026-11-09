@@ -12,7 +12,7 @@ use crate::{
         model::{
             blocks::RichContentItem, rich_content::RichContentType, terminal_model::BlockIndex,
         },
-        ssh::{error::SshErrorBlock, install_tmux::SshInstallTmuxBlock, warpify::SshWarpifyBlock},
+        ssh::{error::SshErrorBlock, warpify::SshWarpifyBlock},
         view::{
             block_onboarding::onboarding_agentic_suggestions_block::OnboardingAgenticSuggestionsBlock,
             ssh_kept_text_banner::SshKeptTextBanner, ssh_no_helper_chip::SshNoHelperChip,
@@ -205,9 +205,6 @@ pub enum RichContentMetadata {
     },
     SshWarpifyBlock {
         ssh_warpify_block_handle: ViewHandle<SshWarpifyBlock>,
-    },
-    SshInstallTmuxBlock {
-        ssh_install_tmux_block_handle: ViewHandle<SshInstallTmuxBlock>,
     },
     SshErrorBlock {
         ssh_error_block_handle: ViewHandle<SshErrorBlock>,

@@ -93,7 +93,7 @@ integration_tests! {
     // itself (#1506, `app/src/integration_testing/subshell/util.rs`). They SKIP with a reason on
     // stderr when sshd or the remote shell is missing, and FAIL instead when
     // PHOSPHOR_REQUIRE_SSH_FIXTURE=1 (the integration-linux CI job). The tmux-wrapper variants
-    // (`test_tmux_ssh_into_*`, `test_install_tmux_ssh_into_*`) need tmux on the remote and a
+    // (`test_tmux_ssh_into_*`) need tmux on the remote and a
     // package install, which the local sshd cannot offer, so they are not listed.
     test_legacy_ssh_into_bash,
     test_legacy_ssh_into_zsh,
