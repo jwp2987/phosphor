@@ -157,8 +157,8 @@ impl PendingPreprocessedActions {
     }
 
     /// Pops the leading batches that are no longer `Pending` and returns the actions of the
-    /// finished ones. Used after `abandon_pending`, so batches that were parked behind an
-    /// abandoned one are released immediately instead of waiting for the next batch.
+    /// finished ones. Used after `abandon_pending`: the caller CANCELS these stale actions
+    /// (owner decision 2026-11-09), it never runs them.
     pub fn release_ready(&mut self) -> Vec<AIAgentAction> {
         let mut ready = Vec::new();
         while let Some(batch) = self.0.pop_front() {
