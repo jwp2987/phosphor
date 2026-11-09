@@ -77,7 +77,7 @@ def c_codebase_index_remote(ctx, r, arm):
     # the key never reaches the host
     typed = [cmd for _, cmd in ctx.remote.commands() if sentinel() in cmd]
     r.check(not typed, "the sentinel key was typed into the remote shell")
-    leaked = lab.ssh(u, "grep -rIl -- %s $HOME/.phosphor $HOME/%s 2>/dev/null | head -3" % (sentinel(), fx))
+    leaked = lab.ssh(u, "grep -rIl -- %s $HOME/.phosphor $HOME/%s 2>/dev/null | head -3" % (sentinel(), fx)).stdout
     r.check(not (leaked or "").strip(), "the sentinel key is on the host: %r" % leaked)
 
     # an outside edit, then a HEAD-changing command: only the changed fragment is embedded
