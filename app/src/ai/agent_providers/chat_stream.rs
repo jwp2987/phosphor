@@ -4956,6 +4956,24 @@ fn tool_calls_to_dispatch(params: &RequestParams, calls: Vec<ToolCall>) -> Vec<T
     calls
 }
 
+/// Puts every tool-call message of one reply ahead of every tool-result message, each group in
+/// its existing order. Refused and rejected calls are answered at the end of the stream with a
+/// (carrier, result) pair each, so a reply with an unknown tool followed by another call would
+/// otherwise be stored `call0, result0, call1`; the request builder closes an assistant message at
+/// every result, so the next request would show the model TWO single-call turns instead of the
+/// one two-call reply it emitted (the second call's id alone in the last assistant message).
+fn calls_before_results(messages: Vec<api::Message>) -> Vec<api::Message> {
+    let is_result = |message: &api::Message| {
+        matches!(
+            message.message,
+            Some(api::message::Message::ToolCallResult(_))
+        )
+    };
+    let (results, mut ordered): (Vec<_>, Vec<_>) = messages.into_iter().partition(|m| is_result(m));
+    ordered.extend(results);
+    ordered
+}
+
 /// Gives a call with an empty `call_id` an id: the n-th empty-id call takes the n-th id the
 /// stream already invented for its chunk (so the streamed call and the End event's captured
 /// copy are ONE call, not two, #1851), and a fresh uuid once those run out.
@@ -8806,7 +8824,10 @@ pub async fn generate_byop_output(
             }
         }
         if !final_messages.is_empty() {
-            yield Ok(make_add_messages_event(&current_task_id, final_messages));
+            yield Ok(make_add_messages_event(
+                &current_task_id,
+                calls_before_results(final_messages),
+            ));
         }
 
         // Wire inspector: capture the model's response for this turn (text +
@@ -18349,6 +18370,33 @@ mod duplicate_call_id_tests {
         assert_eq!(ids, ["call_0", "call_0#2"]);
         assert_eq!(out[0].fn_arguments["command"], "ls");
         assert_eq!(out[1].fn_arguments["command"], "pwd");
+    }
+
+    /// An unknown tool followed by a second call: both calls precede both results, so the next
+    /// request holds ONE assistant message with both call ids (owner rule: every emitted call
+    /// keeps its place and gets exactly one result).
+    #[test]
+    fn carriers_of_a_reply_precede_their_results() {
+        let carrier = |id: &str| make_tool_call_carrier_message("t", "r", id, "x", "{}");
+        let result = |id: &str| make_tool_call_result_message("t", "r", id.to_owned(), "{}".into());
+        let out = calls_before_results(vec![carrier("a"), result("a"), carrier("b"), result("b")]);
+        let shape: Vec<(bool, String)> = out
+            .iter()
+            .map(|m| match &m.message {
+                Some(api::message::Message::ToolCall(tc)) => (false, tc.tool_call_id.clone()),
+                Some(api::message::Message::ToolCallResult(tr)) => (true, tr.tool_call_id.clone()),
+                _ => panic!("unexpected message"),
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                (false, "a".to_owned()),
+                (false, "b".to_owned()),
+                (true, "a".to_owned()),
+                (true, "b".to_owned())
+            ]
+        );
     }
 
     /// #1851: the End event's captured copy of an empty-id call is re-keyed to the id the
