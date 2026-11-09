@@ -2440,60 +2440,86 @@ esac
   }
 
   # Phosphor (#1801): ESC read where a native-completions frame byte was expected (__c is ESC,
-  # __warp_nc_body the frame-alphabet text read before it). Reads the rest of the escape sequence
-  # (at most 0.1 s between bytes). A terminal reply (a CSI report ending in c, R, n, t or y, or
-  # an OSC) is dropped whole, so none of it is left in the line; anything else (a bracketed
-  # paste, a key) goes back to zle intact with the text before it.
+  # __warp_nc_body the frame-alphabet text read before it), classified by CONTENT only (no
+  # inter-byte timing): the NEXT byte decides. `[` is a CSI, read to its final byte (0x40-0x7E);
+  # `]` an OSC and `P` a DCS, read to BEL or ESC \. A terminal reply (a CSI ending in c, R, n, t
+  # or y, any OSC or DCS) is dropped whole, so none of it is left in the line; anything else (a
+  # bracketed paste, a key, ESC + a byte) goes back to zle intact with the text before it. A
+  # lone ESC waits for the next byte or the overall deadline, then goes back by itself.
   function __warp_nc_give_back_escape() {
     setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal extendedglob
     local __seq=$'\e' __b
-    if IFS= builtin read -s -r -k 1 -t 0.1 __b </dev/tty; then
+    if __warp_nc_time_left && IFS= builtin read -s -r -k 1 -t $__warp_nc_left __b </dev/tty; then
       __seq+=$__b
       case $__b in
         ('[')
-          while IFS= builtin read -s -r -k 1 -t 0.1 __b </dev/tty; do
+          while __warp_nc_time_left && IFS= builtin read -s -r -k 1 -t $__warp_nc_left __b </dev/tty; do
             __seq+=$__b
             [[ $__b == [@-~] ]] && break
             (( ${#__seq} <= 64 )) || break
           done ;;
-        (']')
-          while IFS= builtin read -s -r -k 1 -t 0.1 __b </dev/tty; do
+        (']'|P)
+          while __warp_nc_time_left && IFS= builtin read -s -r -k 1 -t $__warp_nc_left __b </dev/tty; do
             __seq+=$__b
             [[ $__b == $'\a' || $__seq == *$'\e\\' ]] && break
             (( ${#__seq} <= 4096 )) || break
           done ;;
-        (O)
-          IFS= builtin read -s -r -k 1 -t 0.1 __b </dev/tty && __seq+=$__b ;;
       esac
     fi
-    if [[ $__seq == $'\e]'* || $__seq == $'\e['[0-9\;\?\>\<=]#[cRnty] ]]; then
+    if [[ $__seq == $'\e]'* || $__seq == $'\eP'* || $__seq == $'\e['[0-9\;\?\>\<=]#[cRnty] ]]; then
       zle -U "$__warp_nc_body"
     else
       zle -U "$__warp_nc_body$__seq"
     fi
   }
 
-  # Phosphor (#1801): reads the rest of a native-completions frame after its RS. Returns 0 with
-  # __warp_nc_body set to "<token>:<%HH...>" when the bytes have the frame's exact shape (a token
-  # of letters and digits, or `-`; `:`; `%HH` pairs; US = 0x1f) with at most 0.1 s between bytes
-  # and 5 s in all. Otherwise everything read goes back to zle (`zle -U`, control bytes and an
-  # Enter included, so they act as typed) and it returns 1.
+  # Phosphor (#1801): the overall read deadline, the only clock of a native-completions read (a
+  # give-up net). __warp_nc_deadline_set N starts N seconds; __warp_nc_time_left sets
+  # __warp_nc_left to what remains (a `read -t` value) and fails when nothing does. Against
+  # $EPOCHREALTIME when zsh/datetime is loaded, whole seconds of $SECONDS otherwise.
+  function __warp_nc_deadline_set() {
+    if (( ${+EPOCHREALTIME} )); then
+      typeset -gF __warp_nc_dl=$(( EPOCHREALTIME + $1 ))
+    else
+      typeset -gF __warp_nc_dl=$(( SECONDS + $1 ))
+    fi
+  }
+  function __warp_nc_time_left() {
+    local -F __l
+    if (( ${+EPOCHREALTIME} )); then
+      __l=$(( __warp_nc_dl - EPOCHREALTIME ))
+    else
+      __l=$(( __warp_nc_dl - SECONDS ))
+    fi
+    (( __l > 0 )) || return 1
+    typeset -g __warp_nc_left=$__l
+  }
+
+  # Phosphor (#1801): reads the rest of a native-completions frame after its RS, by CONTENT only
+  # (no inter-byte timing): bytes are consumed while they still form a valid prefix of
+  # `(token | -) ':' (%HH)* US`, the token being the hook's own `<digits>x<digits>x<digits>`
+  # (US = 0x1f). Returns 0 with __warp_nc_body set to "<token>:<%HH...>" at the US. The first
+  # byte that cannot continue a frame ends the read: everything read goes back to zle
+  # (`zle -U`, control bytes and an Enter included, so they act as typed) and it returns 1. The
+  # caller's deadline is the only clock; on expiry what was read goes back and nothing is invented.
   function __warp_nc_read_frame_body() {
     setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal
     typeset -g __warp_nc_body=
     local __c __phase=start __ok
-    local -F __deadline=0
-    (( ${+EPOCHREALTIME} )) && __deadline=$(( EPOCHREALTIME + 5 ))
     while :; do
-      if ! IFS= builtin read -s -r -k 1 -t 0.1 __c </dev/tty; then
+      if ! __warp_nc_time_left || ! IFS= builtin read -s -r -k 1 -t $__warp_nc_left __c </dev/tty; then
         zle -U "$__warp_nc_body"
         return 1
       fi
       __ok=
       case $__phase:$__c in
         (start:-) __phase=dash __ok=1 ;;
-        (start:[A-Za-z0-9]|tok:[A-Za-z0-9]) __phase=tok __ok=1 ;;
-        (tok::|dash::) __phase=hex __ok=1 ;;
+        (start:[0-9]|d1:[0-9]) __phase=d1 __ok=1 ;;
+        (d1:x) __phase=x1 __ok=1 ;;
+        (x1:[0-9]|d2:[0-9]) __phase=d2 __ok=1 ;;
+        (d2:x) __phase=x2 __ok=1 ;;
+        (x2:[0-9]|d3:[0-9]) __phase=d3 __ok=1 ;;
+        (d3::|dash::) __phase=hex __ok=1 ;;
         (hex:%) __phase=h1 __ok=1 ;;
         (h1:[0-9A-Fa-f]) __phase=h2 __ok=1 ;;
         (h2:[0-9A-Fa-f]) __phase=hex __ok=1 ;;
@@ -2508,8 +2534,7 @@ esac
         return 1
       fi
       __warp_nc_body+=$__c
-      # 0.1 s bounds each byte; 5 s (with zsh/datetime) or the length bounds the frame.
-      if (( ${#__warp_nc_body} > 3000000 )) || { (( ${+EPOCHREALTIME} )) && (( EPOCHREALTIME > __deadline )) }; then
+      if (( ${#__warp_nc_body} > 3000000 )); then
         zle -U "$__warp_nc_body"
         return 1
       fi
@@ -2525,8 +2550,9 @@ esac
     # frame for it: RS <token> : <%HH bytes of the text> US (RS = 0x1e, US = 0x1f), or the cancel
     # frame RS - : US, written in one piece. Nothing outside a frame is consumed: the first byte
     # must be RS (anything else goes back to zle with `zle -U` and the exchange ends), and then
-    # the frame's exact shape, with at most 0.1 s between bytes (__warp_nc_read_frame_body: on
-    # any other byte, or a gap, everything read goes back to zle). The first byte waits
+    # the frame's exact shape by content only, with no inter-byte timing
+    # (__warp_nc_read_frame_body: on the first byte that cannot continue a frame, everything read
+    # goes back to zle). The only clock is the overall read deadline, which the first byte waits
     # PHOSPHOR_NC_DEADLINE seconds (default 20; against $EPOCHREALTIME when zsh/datetime is
     # loaded). A frame with another token, the cancel, or a deadline ends the exchange with
     # nothing. A frame that arrives after that lands at the prompt, where RS is bound to
@@ -2536,13 +2562,9 @@ esac
     __warp_nc_seq=$(( ${__warp_nc_seq:-0} + 1 ))
     __tok="${RANDOM}x${__warp_nc_seq}x${RANDOM}"
     builtin printf '\e]9280;P;%s\a' "$__tok"
-    __left=$__start
-    if (( ${+EPOCHREALTIME} )); then
-      local -F __deadline=$(( EPOCHREALTIME + __start ))
-      __left=$(( __deadline - EPOCHREALTIME ))
-      (( __left > 0 )) || return 1
-    fi
-    IFS= builtin read -s -r -k 1 -t $__left __c </dev/tty || return 1
+    __warp_nc_deadline_set $__start
+    __warp_nc_time_left || return 1
+    IFS= builtin read -s -r -k 1 -t $__warp_nc_left __c </dev/tty || return 1
     if [[ $__c != $'\x1e' ]]; then
       # Not a frame: it is the user's (or another write's) first byte. Give it back to zle (a
       # terminal reply is dropped whole instead, see __warp_nc_give_back_escape).
@@ -2578,6 +2600,9 @@ esac
   # ended (the hook gave up, or was interrupted): read the rest by the hook's rules and drop it.
   # Anything that is not a frame goes back to zle. A frame is never run.
   function warp_native_discard() {
+    local __d=${PHOSPHOR_NC_DEADLINE:-20}
+    [[ $__d == <-> ]] || __d=20
+    __warp_nc_deadline_set $__d
     __warp_nc_read_frame_body
     return 0
   }

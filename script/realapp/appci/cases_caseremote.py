@@ -1003,7 +1003,7 @@ def c_remote_tab_no_helper(ctx, r):
 @case("remote_tab_enter_no_helper", order=61)
 def c_remote_tab_enter_no_helper(ctx, r):
     """#1801 review: "Tab then a fast Enter runs the completed line" over ssh WITHOUT the helper. The remote shell answers the Tab in-band, and an
-    Enter ~30 ms after the Tab waits for that answer (cap REMOTE_NATIVE_TAB_ENTER_BUDGET, 1.5 s) instead of running the uncompleted text. Evidence:
+    Enter ~30 ms after the Tab waits for that answer (no time budget: it waits for the answer) instead of running the uncompleted text. Evidence:
     the REMOTE rec.log's command is the COMPLETED `cd phxtab_<tok>/`, never `cd phxtab_<3 chars>`; a give-up (no answer within the cap) hands the
     line back and runs nothing, which is a FAIL here (a fake sshd on loopback answers in milliseconds) unless PHOSPHOR_APPCI_NETEM_NOTE says a
     delay over the cap was applied. Nothing may run locally. Repeated ctx.count(3) times with fresh directories."""
