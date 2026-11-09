@@ -272,6 +272,12 @@ impl Gate {
             ),
             Err(_) => (String::new(), None),
         };
+        // The redirect cap says nothing about the target: keep the host out of the event so
+        // the UI offers no Allow for it.
+        let (host, port) = match denied {
+            Some(d) if d.host_hash == 0 => (String::new(), None),
+            _ => (host, port),
+        };
         // Loopback traffic that was allowed is not interesting (the app talks to itself).
         let loopback = host_literal_ip(&host).is_some_and(|ip| ip.is_loopback());
         if outcome == Outcome::Allowed && (loopback || is_loopback_name(&host)) {

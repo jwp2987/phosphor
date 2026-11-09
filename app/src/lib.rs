@@ -50,6 +50,7 @@ mod menu;
 mod modal;
 mod network;
 mod network_gate_log;
+mod network_gate_notice;
 mod notebooks;
 mod notification;
 mod notifications;
@@ -1999,6 +2000,7 @@ fn initialize_app(
     ctx.add_singleton_model(keyring_notice::KeyringNotice::new);
     // The network gate decision log (Settings > Network) and the denial notice read it.
     ctx.add_singleton_model(network_gate_log::NetworkGateLog::new);
+    ctx.add_singleton_model(network_gate_notice::NetworkGateNotice::new);
     ctx.add_singleton_model(|_| GlobalCodeReviewModel);
     ctx.add_singleton_model(workspace::OneTimeModalModel::new);
     ctx.add_singleton_model(

@@ -386,3 +386,14 @@ fn proxy_policy_is_unchanged_by_the_switch() {
     let _ = apply_proxy_policy(reqwest::ClientBuilder::new());
     assert!(!g.is_enabled());
 }
+
+#[test]
+fn the_redirect_cap_event_carries_no_host() {
+    let g = Gate::new();
+    let seen = recorder(&g);
+    let _ = g.check_redirect("https://example.org/", MAX_REDIRECT_HOPS, &BACKGROUND);
+    let ev = seen.lock().unwrap().clone();
+    assert_eq!(ev.len(), 1);
+    assert_eq!(ev[0].outcome, Outcome::Denied);
+    assert!(ev[0].host.is_empty() && ev[0].host_hash == 0);
+}

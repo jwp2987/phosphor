@@ -777,6 +777,12 @@ pub enum WorkspaceAction {
         path: PathBuf,
         toast_object_id: String,
     },
+    /// The network gate denial notice's "Allow this origin" link: adds `origin` to
+    /// Settings > Network > Allowed origins (once) and dismisses the notice `toast_object_id`.
+    AllowNetworkOrigin {
+        origin: String,
+        toast_object_id: String,
+    },
     /// Sidecar action: set the hovered item as the Cmd+T default.
     TabConfigSidecarMakeDefault {
         mode: crate::settings::ai::DefaultSessionMode,
@@ -1063,6 +1069,7 @@ impl WorkspaceAction {
             | SaveCurrentTabAsNewConfig(_)
             | SyncTrafficLights
             | OpenTabConfigErrorFile { .. }
+            | AllowNetworkOrigin { .. }
             | TabConfigSidecarMakeDefault { .. }
             | TabConfigSidecarEditConfig { .. }
             | TabConfigSidecarRemoveConfig { .. }
