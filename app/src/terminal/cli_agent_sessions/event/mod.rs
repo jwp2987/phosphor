@@ -106,7 +106,13 @@ pub fn parse_event(title: Option<&str>, body: &str) -> Option<CLIAgentEvent> {
         return None;
     }
 
-    let version_probe: VersionProbe = serde_json::from_str(body).ok()?;
+    let version_probe: VersionProbe = match serde_json::from_str(body) {
+        Ok(probe) => probe,
+        Err(error) => {
+            log::warn!("{}", malformed_event_message(body, &error));
+            return None;
+        }
+    };
     let version = version_probe.v.unwrap_or(1);
 
     let index = (version as usize).checked_sub(1)?;
@@ -120,6 +126,21 @@ pub fn parse_event(title: Option<&str>, body: &str) -> Option<CLIAgentEvent> {
             None
         }
     }
+}
+
+/// The WARN line for an event body that failed to parse: its size and where/how the JSON
+/// broke, never the body and never serde's message (which can quote a field's value). The
+/// body holds the user's prompt text, paths and project name.
+pub(crate) fn malformed_event_message(body: &str, error: &serde_json::Error) -> String {
+    format!(
+        "Dropped a CLI agent event that failed to parse ({} bytes, {} characters; {:?} at line \
+         {} column {})",
+        body.len(),
+        body.chars().count(),
+        error.classify(),
+        error.line(),
+        error.column()
+    )
 }
 
 #[derive(Deserialize)]

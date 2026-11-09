@@ -19,7 +19,13 @@ fn resolve_agent(agent: &str) -> Option<CLIAgent> {
 }
 
 pub(super) fn parse(body: &str) -> Option<CLIAgentEvent> {
-    let raw: CLIAgentNotification = serde_json::from_str(body).ok()?;
+    let raw: CLIAgentNotification = match serde_json::from_str(body) {
+        Ok(raw) => raw,
+        Err(error) => {
+            log::warn!("{}", super::malformed_event_message(body, &error));
+            return None;
+        }
+    };
 
     let event = match raw.event.as_str() {
         "session_start" => CLIAgentEventType::SessionStart,
