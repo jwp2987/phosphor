@@ -5584,6 +5584,12 @@ impl BlocklistAIController {
                             log::warn!(
                                 "Could not find conversation for response stream: {stream_id:?}"
                             );
+                            self.finish_stream_without_exchanges(
+                                &stream_id,
+                                response_stream,
+                                None,
+                                ctx,
+                            );
                             return;
                         };
                         id
@@ -5594,6 +5600,12 @@ impl BlocklistAIController {
                 let Some(conversation) = history_model.as_ref(ctx).conversation(&conversation_id)
                 else {
                     log::warn!("Conversation not found.");
+                    self.finish_stream_without_exchanges(
+                        &stream_id,
+                        response_stream,
+                        Some(conversation_id),
+                        ctx,
+                    );
                     return;
                 };
                 let new_exchange_ids = conversation.new_exchange_ids_for_response(&stream_id);
@@ -5614,6 +5626,12 @@ impl BlocklistAIController {
                 for new_exchange_id in new_exchange_ids {
                     let Some(exchange) = conversation.exchange_with_id(new_exchange_id) else {
                         log::warn!("Exchange not found.");
+                        self.finish_stream_without_exchanges(
+                            &stream_id,
+                            response_stream,
+                            Some(conversation_id),
+                            ctx,
+                        );
                         return;
                     };
                     was_passive_request |= exchange.has_passive_request();
@@ -5650,6 +5668,27 @@ impl BlocklistAIController {
                         stream_cancellation.reason,
                     ) {
                         self.set_input_mode_for_cancellation(ctx);
+                    }
+
+                    // A follow-up that cancels a finished stream discards the actions the
+                    // stream carried. Without a result for them the follow-up could be held
+                    // behind an unanswered tool call, leaving the ask placeholder as the last
+                    // message and the turn InProgress (#1861).
+                    if stream_cancellation
+                        .reason
+                        .is_follow_up_for_same_conversation()
+                        && !actions_to_queue.is_empty()
+                    {
+                        let discarded = std::mem::take(&mut actions_to_queue);
+                        let reason = stream_cancellation.reason;
+                        self.action_model.update(ctx, |action_model, ctx| {
+                            action_model.cancel_discarded_actions(
+                                discarded,
+                                conversation_id,
+                                Some(reason),
+                                ctx,
+                            );
+                        });
                     }
                 } else if is_any_exchange_unfinished {
                     // Defensive: truncated streams are detected inside `ResponseStream`,
@@ -5843,6 +5882,55 @@ impl BlocklistAIController {
                 // metering sync RPCs, which have no effect after localization.
             }
         }
+    }
+
+    /// `AfterStreamFinished` found no conversation or no exchanges for the stream (pruned or
+    /// evicted between `Finished` and here). Runs the cleanup the normal path ends with and
+    /// ends the turn visibly, so a conversation left `InProgress` with an ask placeholder last
+    /// can never hang (#1860). One event, no timer.
+    fn finish_stream_without_exchanges(
+        &mut self,
+        stream_id: &ResponseStreamId,
+        response_stream: &ModelHandle<ResponseStream>,
+        conversation_id: Option<AIConversationId>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        self.in_flight_response_streams.cleanup_stream(stream_id);
+        let Some(conversation_id) = conversation_id else {
+            ctx.unsubscribe_from_model(response_stream);
+            return;
+        };
+        let history_model = BlocklistAIHistoryModel::handle(ctx);
+        let is_in_progress = history_model.update(ctx, |history_model, _| {
+            history_model
+                .conversation_mut(&conversation_id)
+                .map(|conversation| {
+                    conversation.cleanup_completed_response_stream(stream_id);
+                    conversation.status().is_in_progress()
+                })
+                .unwrap_or(false)
+        });
+        if is_in_progress {
+            history_model.update(ctx, |history_model, ctx| {
+                history_model.update_conversation_status(
+                    self.terminal_view_id,
+                    conversation_id,
+                    ConversationStatus::Cancelled,
+                    ctx,
+                );
+            });
+            ctx.emit(BlocklistAIControllerEvent::AgentStopped {
+                conversation_id,
+                reason: "the reply ended but its record was no longer available, so the turn \
+                         was stopped. Send a message to continue."
+                    .to_owned(),
+            });
+        }
+        ctx.unsubscribe_from_model(response_stream);
+        ctx.emit(BlocklistAIControllerEvent::FinishedReceivingOutput {
+            stream_id: stream_id.clone(),
+            conversation_id,
+        });
     }
 
     /// Sets the terminal input state after an AI request is cancelled.

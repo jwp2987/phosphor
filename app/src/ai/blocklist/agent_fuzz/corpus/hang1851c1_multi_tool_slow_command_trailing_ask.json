@@ -1,0 +1,86 @@
+{
+  "v": 1,
+  "name": "hang1851c1_multi_tool_slow_command_trailing_ask",
+  "seed": 18581,
+  "turns": [
+    {
+      "when": {
+        "kind": "nth",
+        "n": 0
+      },
+      "reply": {
+        "kind": "tool_calls",
+        "calls": [
+          {
+            "id": {
+              "kind": "fresh"
+            },
+            "name": "run_shell_command",
+            "args": {
+              "kind": "command",
+              "cmd": "c0"
+            }
+          },
+          {
+            "id": {
+              "kind": "fresh"
+            },
+            "name": "read_files",
+            "args": {
+              "kind": "valid"
+            }
+          },
+          {
+            "id": {
+              "kind": "fresh"
+            },
+            "name": "ask_user_question",
+            "args": {
+              "kind": "valid"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "when": {
+        "kind": "nth",
+        "n": 1
+      },
+      "reply": {
+        "kind": "text",
+        "text": "done"
+      }
+    }
+  ],
+  "env": {
+    "commands": {
+      "c0": {
+        "kind": "slow",
+        "ms": 1500,
+        "out": "slowok"
+      }
+    }
+  },
+  "actor": [
+    {
+      "op": {
+        "kind": "approve"
+      },
+      "timing": "on_card"
+    },
+    {
+      "op": {
+        "kind": "approve"
+      },
+      "timing": "on_card"
+    },
+    {
+      "op": {
+        "kind": "answer_question",
+        "choice": 0
+      },
+      "timing": "on_card"
+    }
+  ]
+}

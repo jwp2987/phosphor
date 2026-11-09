@@ -73,6 +73,10 @@ pub struct RequestFileEditsExecutor {
     /// Pre-edit contents of each file of a LOCAL batch, kept in memory so a write failure
     /// part-way through can restore the files that already landed (#1277).
     pre_edits: HashMap<AIAgentActionId, Vec<PreEdit>>,
+    /// Cancel handles of in-flight diff applications (#1859). Dropping a sender resolves that
+    /// action's preprocess as an error, so a hung apply can never park later preprocess
+    /// batches: the cancel event is what ends it, not a timer.
+    preprocess_cancels: HashMap<AIAgentActionId, (AIConversationId, oneshot::Sender<()>)>,
     terminal_view_id: EntityId,
 }
 
@@ -90,8 +94,16 @@ impl RequestFileEditsExecutor {
             tui_diff_storages: HashMap::new(),
             diff_application_failures: HashMap::new(),
             pre_edits: HashMap::new(),
+            preprocess_cancels: HashMap::new(),
             terminal_view_id,
         }
+    }
+
+    /// Cancels every in-flight diff application of `conversation_id`; each resolves its
+    /// preprocess with an error (#1859).
+    pub fn cancel_preprocessing(&mut self, conversation_id: AIConversationId) {
+        self.preprocess_cancels
+            .retain(|_, (conversation, _)| *conversation != conversation_id);
     }
 
     /// Registers a renderer-agnostic diff storage (the TUI path) to handle a RequestFileEdits
@@ -402,9 +414,22 @@ impl RequestFileEditsExecutor {
             model.apply_diffs(files, &ai_identifiers, passive_diff, ctx)
         });
 
+        let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
+        self.preprocess_cancels
+            .insert(id.clone(), (input.conversation_id, cancel_tx));
+
         ctx.spawn(
             async move {
-                let applied_diffs = apply_future.await;
+                let applied_diffs = match futures::future::select(apply_future, cancel_rx).await {
+                    futures::future::Either::Left((applied, _)) => applied,
+                    // The sender is only ever dropped (never sent on): cancel or teardown.
+                    futures::future::Either::Right(_) => {
+                        Err(vec1![DiffApplicationError::ReadFailed {
+                            file: String::new(),
+                            message: "the edit was cancelled before it could be applied".to_owned(),
+                        }])
+                    }
+                };
                 (applied_diffs, id, tx)
             },
             |me, (diffs, id, tx), ctx| {
@@ -426,6 +451,7 @@ impl RequestFileEditsExecutor {
         ctx: &mut ModelContext<Self>,
     ) {
         tx.send(()).ok();
+        self.preprocess_cancels.remove(&id);
 
         if !self.diff_views.contains_key(&id) && !self.tui_diff_storages.contains_key(&id) {
             log::warn!(

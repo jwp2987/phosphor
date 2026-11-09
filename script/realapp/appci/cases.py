@@ -48,7 +48,7 @@ PROVING = (
     "ctrl_c_flood_ab",
     # the ask_user_question card never hangs on "Preparing question..." (#1851)
     "agent_question_answer", "agent_question_cut", "agent_question_nodone", "agent_question_trunc", "agent_question_empty", "agent_question_slow",
-    "agent_question_ctrl_c", "agent_question_steer",
+    "agent_question_ctrl_c", "agent_question_steer", "agent_question_after_command", "agent_question_steer_at_end",
     "subshell_ready_relay_shape", "subshell_ready_exec_fish_rc", "subshell_ready_docker_t_without_i", "subshell_ready_zsh_newuser_install", "subshell_ready_rc_clear",
 )
 # The PROVING cases that need the scripted fake model (fake_model.py): the fix tier runs them in their own app launch, the "agent@fake" pass (run.py

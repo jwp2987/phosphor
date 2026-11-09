@@ -24,9 +24,10 @@
 #     too, so a steer (#851) typed while the reply runs is itself answered by a running stream. fake.reqs holds every /api/chat request body;
 #   * "Please ask me a question <TAG>" (#1851) -> one ask_user_question call (one multiple-choice question, options "alpha" / "beta", TAG in the question text);
 #     after the answer the turn after the tool result is "Done." like any other;
+#   * "Please run a slow command then ask me a question <TAG>" (#1858) -> ONE reply with two calls: run_shell_command `sleep 8`, then ask_user_question;
 #   * any other user turn -> "OK <last word>" (prose only, no tool call).
 # Trigger order in reply_for (no trigger shadows another): plan, tool-result "Done.", stream long reply, follow up check, call mcp tool, show this image,
-# ask me a question, run / read / create / delete / edit exactly, STREAMLONG (sticky), SLOW, fallback.
+# run a slow command then ask me a question, ask me a question, run / read / create / delete / edit exactly, STREAMLONG (sticky), SLOW, fallback.
 # Fault injection (#1831, cases_agent_resilience.py): fake.inject(kind, times=1, match=None, **kw) arms a fault that the next `times` /api/chat requests
 # (None = every one until clear_faults()) take instead of the normal answer; `match` = a substring of the request's last user text (None = any request).
 #   status      kw code=429|500|.., retry_after=secs|None   -> that HTTP status with a JSON error body (and a Retry-After header)
@@ -61,6 +62,7 @@ ASK_RE = re.compile(r"run exactly this shell command and nothing else:\s*(.+?)\s
 STREAM_RE = re.compile(r"stream long reply (\w+) chunks (\d+) gap (\d+)")
 FOLLOW_RE = re.compile(r"follow up check (\w+)")
 MCP_RE = re.compile(r"call mcp tool (\S+) on (\S+)(?: with (\{.*\}))?\s*$", re.S)
+ASKCMD_RE = re.compile(r"run a slow command then ask me a question(?:\s+(\w+))?")      # #1858: [run_shell_command sleep, ask_user_question] in ONE reply
 ASKQ_RE = re.compile(r"ask me a question(?:\s+(\w+))?")
 MARK_RE = re.compile(r"\[(\w+):(\d{4}|END)\]")
 STREAM_CHUNKS, STREAM_GAP_S = 240, 0.05
@@ -355,6 +357,10 @@ def reply_for(messages, tools=None):
     m = IMG_RE.search(text)
     if m:                                      # a markdown image: the app fetches it through the network gate (purpose remote-asset)
         return {"text": "Here it is: ![img](%s)" % m.group(1), "tool": None}
+    m = ASKCMD_RE.search(text)
+    if m:                                      # #1858: the ask trails a running command; the card must not say "Preparing question..." meanwhile
+        return {"text": "", "tool": {"name": "run_shell_command", "arguments": {"command": "sleep 8", "is_read_only": False, "uses_pager": False, "is_risky": False}},
+                "tools_after": [ask_question_call(m.group(1))], "ask_question": True}
     m = ASKQ_RE.search(text)
     if m:
         return {"text": "", "tool": ask_question_call(m.group(1)), "ask_question": True}
@@ -414,7 +420,8 @@ def stream_lines(model, reply, chunk=6):
     for piece in (reply.get("chunks") or [t[i:i + chunk] for i in range(0, len(t), chunk)]):
         out.append(json.dumps({"model": model, "message": {"role": "assistant", "content": piece}, "done": False}))
     if reply["tool"]:
-        out.append(json.dumps({"model": model, "message": {"role": "assistant", "content": "", "tool_calls": [{"function": reply["tool"]}]}, "done": False}))
+        calls = [{"function": reply["tool"]}] + [{"function": t} for t in reply.get("tools_after") or []]
+        out.append(json.dumps({"model": model, "message": {"role": "assistant", "content": "", "tool_calls": calls}, "done": False}))
     out.append(json.dumps({"model": model, "message": {"role": "assistant", "content": ""}, "done": True, "done_reason": "stop"}))
     return out
 

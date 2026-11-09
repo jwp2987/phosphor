@@ -97,3 +97,59 @@ fn test_multiple_batches() {
     assert_eq!(queued_actions[1].id, action_id2);
     assert_eq!(queued_actions[2].id, action_id3);
 }
+
+fn batch_of(actions: &mut PendingPreprocessedActions) -> (AIAgentActionId, PreprocessId) {
+    let id = generate_new_action_id();
+    let mut ids = HashSet::new();
+    ids.insert(id.clone());
+    (id, actions.insert_preprocess_action_batch(ids))
+}
+
+/// #1859: a batch that never resolves parks every later batch; abandoning it releases them.
+#[test]
+fn abandon_pending_unparks_later_batches() {
+    let mut actions = PendingPreprocessedActions::default();
+    let (_hung_id, _hung) = batch_of(&mut actions);
+    let (ask_id, ask_batch) = batch_of(&mut actions);
+
+    // The ask's batch completes first and is parked behind the hung one.
+    let parked = actions
+        .handle_preprocess_actions_result(ask_batch, vec![create_test_action(ask_id.clone())]);
+    assert!(parked.is_empty());
+
+    let abandoned = actions.abandon_pending();
+    assert_eq!(abandoned.len(), 1);
+
+    // The next turn's batch drains the abandoned marker and the parked ask.
+    let (next_id, next_batch) = batch_of(&mut actions);
+    let out = actions
+        .handle_preprocess_actions_result(next_batch, vec![create_test_action(next_id.clone())]);
+    let ids: Vec<_> = out.iter().map(|a| a.id.clone()).collect();
+    assert_eq!(ids, vec![ask_id, next_id]);
+    assert_eq!(actions.0.len(), 0);
+}
+
+/// #1859: a late result from an abandoned batch must not resurrect its actions.
+#[test]
+fn abandoned_batch_late_result_is_dropped() {
+    let mut actions = PendingPreprocessedActions::default();
+    let (id, batch) = batch_of(&mut actions);
+    actions.abandon_pending();
+    let out = actions.handle_preprocess_actions_result(batch, vec![create_test_action(id)]);
+    assert!(out.is_empty());
+    assert_eq!(actions.0.len(), 0);
+}
+
+/// #1859: cancel drops everything and returns the already-preprocessed, parked actions.
+#[test]
+fn abandon_all_returns_parked_actions() {
+    let mut actions = PendingPreprocessedActions::default();
+    let (_hung_id, _hung) = batch_of(&mut actions);
+    let (ask_id, ask_batch) = batch_of(&mut actions);
+    actions.handle_preprocess_actions_result(ask_batch, vec![create_test_action(ask_id.clone())]);
+
+    let parked = actions.abandon_all();
+    assert_eq!(parked.len(), 1);
+    assert_eq!(parked[0].id, ask_id);
+    assert_eq!(actions.0.len(), 0);
+}

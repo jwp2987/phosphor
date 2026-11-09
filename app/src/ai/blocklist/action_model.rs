@@ -332,6 +332,9 @@ fn can_start_action_with_current_phase(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PendingStage {
     Preprocessing,
+    /// Preprocessing is done but no Pending batch is ahead of it, yet it has not become
+    /// pending or blocked: it should have in the same event cascade (#1859).
+    Parked,
     /// Pending behind another action.
     Queued,
     /// The front of its conversation's queue with nothing running: waiting for the user (or the
@@ -1309,12 +1312,16 @@ impl BlocklistAIActionModel {
             }
         }
         for (conversation_id, preprocessing) in &self.pending_preprocessed_actions {
-            for action_id in preprocessing.action_ids_for_test() {
+            for (action_id, parked_with_nothing_ahead) in preprocessing.action_ids_for_test() {
                 out.push(PendingActionSnapshot {
                     conversation_id: *conversation_id,
                     action_id,
                     kind: None,
-                    stage: PendingStage::Preprocessing,
+                    stage: if parked_with_nothing_ahead {
+                        PendingStage::Parked
+                    } else {
+                        PendingStage::Preprocessing
+                    },
                 });
             }
         }
@@ -1332,7 +1339,7 @@ impl BlocklistAIActionModel {
         conversation_id: AIConversationId,
         ctx: &mut ModelContext<Self>,
     ) {
-        self.queue_actions(vec![action], conversation_id, ctx);
+        self.queue_actions_without_abandoning(vec![action], conversation_id, ctx);
     }
 
     /// Test-only: queues `actions` as ONE turn's batch through the normal dispatch pipeline, as
@@ -1344,7 +1351,7 @@ impl BlocklistAIActionModel {
         conversation_id: AIConversationId,
         ctx: &mut ModelContext<Self>,
     ) {
-        self.queue_actions(actions, conversation_id, ctx);
+        self.queue_actions_without_abandoning(actions, conversation_id, ctx);
     }
 
     /// Test-only: moves `action_id` from pending to running for `conversation_id`, so
@@ -1386,6 +1393,34 @@ impl BlocklistAIActionModel {
     /// Queues the `actions` in the given iterator for the given conversation,
     /// to be dispatched in the order in which they appear in the iterator.
     pub(super) fn queue_actions(
+        &mut self,
+        actions: Vec<AIAgentAction>,
+        conversation_id: AIConversationId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        // A new turn: earlier turns' unresolved preprocess batches can no longer legitimately
+        // produce cards, and would park this turn's batch behind them forever (#1859).
+        if let Some(batches) = self.pending_preprocessed_actions.get_mut(&conversation_id) {
+            let abandoned = batches.abandon_pending();
+            if !abandoned.is_empty() {
+                log::warn!(
+                    "hop=agent_action status=parked abandoned unresolved preprocess batches ids={abandoned:?} at new turn"
+                );
+                // Batches that had finished but were parked behind an abandoned one are
+                // released now rather than at the next batch's completion.
+                let released = batches.release_ready();
+                if !released.is_empty() {
+                    self.enqueue_preprocessed_actions(conversation_id, released, ctx);
+                    self.try_to_execute_available_actions(conversation_id, ctx);
+                }
+            }
+        }
+        self.queue_actions_without_abandoning(actions, conversation_id, ctx);
+    }
+
+    /// `queue_actions` minus the new-turn abandonment: tests that queue several single-action
+    /// batches back to back model batches of ONE turn.
+    fn queue_actions_without_abandoning(
         &mut self,
         actions: Vec<AIAgentAction>,
         conversation_id: AIConversationId,
@@ -1445,19 +1480,14 @@ impl BlocklistAIActionModel {
         ));
     }
 
-    fn handle_preprocess_actions_results(
+    /// Moves preprocessed actions into the pending queue (skipping ones that already have
+    /// results) and emits `QueuedAction` for each. Does not start execution.
+    fn enqueue_preprocessed_actions(
         &mut self,
         conversation_id: AIConversationId,
-        preprocess_id: PreprocessId,
-        actions: Vec<AIAgentAction>,
+        actions_to_enqueue: Vec<AIAgentAction>,
         ctx: &mut ModelContext<Self>,
     ) {
-        let actions_to_enqueue = self
-            .pending_preprocessed_actions
-            .entry(conversation_id)
-            .or_default()
-            .handle_preprocess_actions_result(preprocess_id, actions);
-
         for action in actions_to_enqueue {
             let action_id = action.id.clone();
             // Some actions may already have results. This can happen in session sharing when
@@ -1497,6 +1527,22 @@ impl BlocklistAIActionModel {
             self.hop(conversation_id, &action_id, "queued");
             ctx.emit(BlocklistAIActionEvent::QueuedAction(action_id));
         }
+    }
+
+    fn handle_preprocess_actions_results(
+        &mut self,
+        conversation_id: AIConversationId,
+        preprocess_id: PreprocessId,
+        actions: Vec<AIAgentAction>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let actions_to_enqueue = self
+            .pending_preprocessed_actions
+            .entry(conversation_id)
+            .or_default()
+            .handle_preprocess_actions_result(preprocess_id, actions);
+
+        self.enqueue_preprocessed_actions(conversation_id, actions_to_enqueue, ctx);
         self.try_to_execute_available_actions(conversation_id, ctx);
     }
 
@@ -1580,6 +1626,32 @@ impl BlocklistAIActionModel {
         }
     }
 
+    /// Gives actions that were never queued (the turn's stream was cancelled by a follow-up
+    /// before `queue_actions`) a cancelled result, so the follow-up request carries a result
+    /// for every tool call and is never blocked on an unanswered one (#1861).
+    pub(super) fn cancel_discarded_actions(
+        &mut self,
+        actions: Vec<AIAgentAction>,
+        conversation_id: AIConversationId,
+        reason: Option<CancellationReason>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        for action in actions {
+            let already_finished = self
+                .finished_action_results
+                .get(&conversation_id)
+                .is_some_and(|results| results.iter().any(|r| r.id == action.id));
+            if already_finished {
+                continue;
+            }
+            log::info!(
+                "hop=agent_action id={} status=discarded stream cancelled by a follow-up before the action was queued",
+                action.id
+            );
+            self.cancel_pending_action(conversation_id, action, reason, ctx);
+        }
+    }
+
     pub(super) fn cancel_all_pending_actions(
         &mut self,
         conversation_id: AIConversationId,
@@ -1589,6 +1661,22 @@ impl BlocklistAIActionModel {
         self.executor.update(ctx, |executor, ctx| {
             executor.cancel_all_running_async_actions_for_conversation(conversation_id, reason, ctx)
         });
+
+        // Preprocess batches of a cancelled turn can no longer produce cards, and one that never
+        // resolves would park every later batch (#1859). Give parked, already-preprocessed
+        // actions their cancel results.
+        let parked_actions = self
+            .pending_preprocessed_actions
+            .get_mut(&conversation_id)
+            .map(|batches| batches.abandon_all())
+            .unwrap_or_default();
+        for action in parked_actions {
+            log::warn!(
+                "hop=agent_action id={} status=parked cancelled while parked behind a preprocess batch",
+                action.id
+            );
+            self.cancel_pending_action(conversation_id, action, reason, ctx);
+        }
 
         // The conversation's pending actions are going away; so do their approval marks.
         self.full_command_shown

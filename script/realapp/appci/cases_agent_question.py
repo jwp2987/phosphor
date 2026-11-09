@@ -9,6 +9,10 @@
 #   agent_question_empty       the call's arguments are `{}` (no question)
 #   agent_question_slow        a text line, 6 s of silence on the open stream, then the call
 #   agent_question_ctrl_c      Ctrl-C while the call sits unfinished (nodone fault): the turn is `cancelled` within 5 s and the client hangs up
+#   agent_question_after_command  (#1858) one reply [run_shell_command sleep 8, ask_user_question]: while the command runs the screen must not say
+#                              "Preparing question..." (the running command's text shows); then the command ends and the card is answerable
+#   agent_question_steer_at_end  (#1861) a new prompt typed right after the stream opens (the reply ends while the steer cancels it): the steer prompt
+#                              reaches the model once and the turn is never left in progress with the ask open
 #   agent_question_steer       a new prompt typed while the call sits unfinished (#851 steer): the new prompt reaches the model, the turn ends, nothing stays pending
 # Pass rule for every fault case: the conversation reaches an END the user can see, one of
 #   (a) an answerable card (hop=agent_action kind=ask_user_question status=blocked): answered with Enter, the turn then ends `success`;
@@ -235,6 +239,71 @@ def c_agent_question_steer(ctx, r):
         r.check(not ask_open_ids(ctx.log_since(off)), "an ask_user_question action is still open after the steer: %s" % ask_open_ids(ctx.log_since(off)))
         next_prompt_works(ctx, r, f, off, "steer")
         r.check(f.requests - req0 >= 2, "the model got %d request(s) after the steer" % (f.requests - req0))
+    finally:
+        f.clear_faults()
+        AG.cleanup_tmp(ctx)
+        ctx.be.key("ctrl+c")
+
+
+@case("agent_question_after_command", modes=("agent",), order=53, gui=True)
+def c_agent_question_after_command(ctx, r):
+    """#1858: [slow command, ask] in one reply: no 'Preparing question...' on screen while the command runs; then the card is answerable and answers"""
+    ready(ctx, r)
+    f = AR.fake()
+    try:
+        f.clear_faults()
+        tok = "K" + ctx.tok(6).upper()
+        off = ctx.log_size()
+        AG.type_fast(ctx, "Please run a slow command then ask me a question %s" % tok)
+        r.check(AG.wait_marker(ctx, off, "queue_actions", timeout=60), "no action was queued within 60 s of the prompt")
+        time.sleep(1.2)
+        ctx.be.key("Return")           # focus the command card
+        time.sleep(0.8)
+        ctx.be.key("Return")           # approve it: the command runs for ~8 s with the ask queued behind it
+        time.sleep(2.5)
+        ctx.shot("question_after_command_running")
+        seen = AG.ocr_has(ctx, "question_after_command_ocr", "Preparing question")
+        if seen is None:
+            r.note("no OCR on this runner: the loading text was not read from the screen")
+        else:
+            r.check(not seen, "'Preparing question...' is on screen while the earlier command is still running (the wait is the command's)")
+        ok = ctx.until(lambda: "answerable" == verdict(ctx.log_since(off)), 60, step=0.5)
+        r.check(ok, "after the command ended the ask never became answerable (verdict %s)" % verdict(ctx.log_since(off)))
+        if ok:
+            r.check(answer_card(ctx, r, off, "after_command"), "Enter did not answer the card")
+            state = AR.wait_turn(ctx, off, ("success", "error", "cancelled"), 60)
+            r.check(state == "success", "after the answer the turn ended %r, expected `success`" % state)
+        next_prompt_works(ctx, r, f, off, "after_command")
+    finally:
+        f.clear_faults()
+        AG.cleanup_tmp(ctx)
+        ctx.be.key("ctrl+c")
+
+
+@case("agent_question_steer_at_end", modes=("agent",), order=53, gui=True)
+def c_agent_question_steer_at_end(ctx, r):
+    """#1861: a steer typed right as the question reply ends cancels a finished stream and discards its ask: the steer prompt is answered, nothing stays open"""
+    ready(ctx, r)
+    f = AR.fake()
+    try:
+        f.clear_faults()
+        tok = "E" + ctx.tok(6).upper()
+        off = ctx.log_size()
+        AG.type_fast(ctx, "Please ask me a question %s" % tok)
+        r.check(AG.wait_marker(ctx, off, "[byop] opening stream", timeout=60), "no model request within 60 s of the prompt")
+        tok2 = "T" + ctx.tok(6).upper()
+        AG.type_fast(ctx, "Reply with the word %s" % tok2)
+        r.check(ctx.until(lambda: f.fresh_with(tok2) >= 1, 30, step=0.25), "the steer prompt never reached the model")
+        # either the steer won (the ask was discarded) or the ask card came first and the steer sits behind it: both must END in something answerable/terminal
+        ctx.until(lambda: verdict(ctx.log_since(off)) in ("answerable", "ended"), BOUND_S, step=0.5)
+        v = verdict(ctx.log_since(off))
+        ctx.shot("question_steer_at_end_state")
+        r.check(v in ("answerable", "ended"), "the turn is neither answerable nor ended (verdict %s, last turn state %r)" % (v, AR.last_turn_state(ctx.log_since(off))))
+        if v == "answerable":
+            r.check(answer_card(ctx, r, off, "steer_at_end"), "Enter did not answer the card")
+        AR.wait_turn(ctx, off, ("success", "error", "cancelled"), 60)
+        r.check(f.fresh_with(tok2) == 1, "the steer prompt reached the model %d times" % f.fresh_with(tok2))
+        next_prompt_works(ctx, r, f, off, "steer_at_end")
     finally:
         f.clear_faults()
         AG.cleanup_tmp(ctx)

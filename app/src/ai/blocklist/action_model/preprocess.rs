@@ -27,13 +27,31 @@ impl PendingPreprocessedActions {
         self.0.iter().any(|action| action.contains(action_id))
     }
 
-    /// Test-only (agent fuzzer): every action id still in a preprocessing batch.
+    /// Test-only (agent fuzzer): every action id still in a preprocessing batch, with whether
+    /// it is parked with nothing ahead to wait for. Abandoned batches are not listed.
     #[cfg(any(test, feature = "test-util"))]
-    pub fn action_ids_for_test(&self) -> Vec<AIAgentActionId> {
-        self.0
-            .iter()
-            .flat_map(|batch| batch.action_ids.iter().cloned())
-            .collect()
+    pub fn action_ids_for_test(&self) -> Vec<(AIAgentActionId, bool)> {
+        let mut pending_ahead = false;
+        let mut out = Vec::new();
+        for batch in self.0.iter() {
+            match batch.status {
+                PreprocessActionStatus::Pending => {
+                    pending_ahead = true;
+                    out.extend(batch.action_ids.iter().cloned().map(|id| (id, false)));
+                }
+                PreprocessActionStatus::Abandoned => {}
+                PreprocessActionStatus::Done { .. } => {
+                    out.extend(
+                        batch
+                            .action_ids
+                            .iter()
+                            .cloned()
+                            .map(|id| (id, !pending_ahead)),
+                    );
+                }
+            }
+        }
+        out
     }
 
     /// Returns the actions that are ready to be queued now that the group of actions identified by [`PreprocessId`] have completed.
@@ -52,6 +70,20 @@ impl PendingPreprocessedActions {
             return vec![];
         };
 
+        // A batch abandoned by `abandon_pending` (cancel / new turn) must not resurrect its
+        // actions when its future finally resolves; its marker is removed here; while it
+        // waits it is an empty marker so later batches still drain in order.
+        if matches!(
+            self.0[current_index].status,
+            PreprocessActionStatus::Abandoned
+        ) {
+            log::warn!(
+                "hop=agent_action status=parked late preprocess result for an abandoned batch dropped"
+            );
+            self.0.remove(current_index);
+            return vec![];
+        }
+
         // Check if there are any pending actions before the current one
         let has_pending_before = self
             .0
@@ -62,6 +94,10 @@ impl PendingPreprocessedActions {
         if has_pending_before {
             // If there are pending actions before this one, just mark this one as done
             // and don't return any actions yet.
+            log::warn!(
+                "hop=agent_action status=parked ids={:?} waiting on an earlier preprocess batch",
+                self.0[current_index].action_ids
+            );
             self.0[current_index].status = PreprocessActionStatus::Done { actions };
             vec![]
         } else {
@@ -74,6 +110,7 @@ impl PendingPreprocessedActions {
                         #[cfg(debug_assertions)]
                         panic!("Preprocess action batch should be completed but was pending")
                     }
+                    PreprocessActionStatus::Abandoned => {}
                     PreprocessActionStatus::Done { actions } => {
                         actions_to_queue.extend(actions);
                     }
@@ -93,6 +130,7 @@ impl PendingPreprocessedActions {
                         self.0.push_front(action);
                         break;
                     }
+                    PreprocessActionStatus::Abandoned => {}
                     PreprocessActionStatus::Done { actions } => {
                         actions_to_queue.extend(actions);
                     }
@@ -101,6 +139,51 @@ impl PendingPreprocessedActions {
 
             actions_to_queue
         }
+    }
+
+    /// Marks every batch that is still `Pending` as `Abandoned` so it can no longer park the
+    /// batches behind it (#1859). Returns the ids of the abandoned batches' actions (for
+    /// logging). Batches already `Done` keep their actions and drain with the next completing
+    /// batch.
+    pub fn abandon_pending(&mut self) -> Vec<AIAgentActionId> {
+        let mut abandoned = Vec::new();
+        for batch in self.0.iter_mut() {
+            if matches!(batch.status, PreprocessActionStatus::Pending) {
+                batch.status = PreprocessActionStatus::Abandoned;
+                abandoned.extend(batch.action_ids.iter().cloned());
+            }
+        }
+        abandoned
+    }
+
+    /// Pops the leading batches that are no longer `Pending` and returns the actions of the
+    /// finished ones. Used after `abandon_pending`, so batches that were parked behind an
+    /// abandoned one are released immediately instead of waiting for the next batch.
+    pub fn release_ready(&mut self) -> Vec<AIAgentAction> {
+        let mut ready = Vec::new();
+        while let Some(batch) = self.0.pop_front() {
+            match batch.status {
+                PreprocessActionStatus::Pending => {
+                    self.0.push_front(batch);
+                    break;
+                }
+                PreprocessActionStatus::Abandoned => {}
+                PreprocessActionStatus::Done { actions } => ready.extend(actions),
+            }
+        }
+        ready
+    }
+
+    /// Drops every batch (cancel). Returns the actions of batches that had finished
+    /// preprocessing but were still parked, so the caller can give them cancel results.
+    pub fn abandon_all(&mut self) -> Vec<AIAgentAction> {
+        let mut parked = Vec::new();
+        for batch in self.0.drain(..) {
+            if let PreprocessActionStatus::Done { actions } = batch.status {
+                parked.extend(actions);
+            }
+        }
+        parked
     }
 
     /// Inserts a batch of actions that need to be preprocessed. Returns a [`PreprocessId`] that
@@ -121,7 +204,11 @@ impl PendingPreprocessedActions {
 #[derive(Clone, Debug, PartialEq)]
 enum PreprocessActionStatus {
     Pending,
-    Done { actions: Vec<AIAgentAction> },
+    /// Given up on (cancel or a newer turn); contributes no actions.
+    Abandoned,
+    Done {
+        actions: Vec<AIAgentAction>,
+    },
 }
 
 /// A batch of actions that need to be preprocessed.

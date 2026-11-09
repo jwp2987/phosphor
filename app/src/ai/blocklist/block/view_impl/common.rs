@@ -359,7 +359,10 @@ pub fn render_warping_indicator<V: View>(
         LOAD_OUTPUT_MESSAGE_FOR_PASSIVE_CODE_GEN.to_string()
     } else if is_last_message_requesting_file_edits {
         LOAD_OUTPUT_MESSAGE_FOR_CREATING_DIFF.to_string()
-    } else if is_last_message_asking_user_question {
+    } else if should_show_preparing_question(
+        is_last_message_asking_user_question,
+        props.action_model.get_async_running_action(app).is_some(),
+    ) {
         LOAD_OUTPUT_MESSAGE_FOR_PREPARING_QUESTION.to_string()
     } else if is_searching_web {
         LOAD_OUTPUT_MESSAGE_FOR_WEB_SEARCH.to_string()
@@ -4454,3 +4457,34 @@ mod ai_content_link_policy_tests {
 #[cfg(test)]
 #[path = "common_tests.rs"]
 mod tests;
+
+/// "Preparing question..." is only true while the question is what the turn is waiting on. When
+/// an earlier action of the same turn is still running, the wait is that action's, so its own
+/// loading text must show instead (#1858).
+pub(crate) fn should_show_preparing_question(
+    is_last_message_asking_user_question: bool,
+    another_action_is_running: bool,
+) -> bool {
+    is_last_message_asking_user_question && !another_action_is_running
+}
+
+#[cfg(test)]
+mod preparing_question_tests {
+    use super::should_show_preparing_question;
+
+    #[test]
+    fn question_text_only_when_nothing_else_is_running() {
+        assert!(should_show_preparing_question(true, false));
+    }
+
+    #[test]
+    fn running_action_text_wins_over_a_trailing_ask() {
+        assert!(!should_show_preparing_question(true, true));
+    }
+
+    #[test]
+    fn no_question_text_without_an_ask() {
+        assert!(!should_show_preparing_question(false, false));
+        assert!(!should_show_preparing_question(false, true));
+    }
+}
