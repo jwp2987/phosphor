@@ -67,24 +67,53 @@ def c_read_files_remote(ctx, r, arm):
     CL.finish_remote(ctx, r)
 
 
+def start_ps_sampler(ctx, arm, pat_file, out_file, ctl, seconds=45):
+    """a detached sampler on the lab host: every few ms it lists all process command lines and appends those holding a pattern from `pat_file` to `out_file`. It also
+    starts one short control process whose command line holds `ctl`, so a sampler that sees nothing can be told from one that works. The patterns live in a file so the
+    sampler's own command line never holds them. Returns False on a pwsh login shell (no sh/ps there)."""
+    import base64
+    if arm["shell"] == "pwsh":
+        return False
+    script = ("( sh -c 'sleep 2' %s & end=$(( $(date +%%s) + %d )); while [ $(date +%%s) -lt $end ]; do ps -eo args | grep -F -f %s | grep -v grep >> %s; "
+              "sleep 0.02 2>/dev/null || sleep 1; done ) </dev/null >/dev/null 2>&1 &" % (ctl, seconds, pat_file, out_file))
+    wrapped = "printf %%s %s | base64 -d | sh" % base64.b64encode(script.encode()).decode()
+    out = ctx.lab.ssh(arm["user"], "sh -c '%s'" % wrapped, timeout=60)
+    return out.returncode == 0
+
+
 @CL.lab_case("diff_apply_remote", shells=SHELLS, lat=("lan",), helper=("nohelper", "upload"), modes=("agent",))
 def c_diff_apply_remote(ctx, r, arm):
     """the write half of apply_file_diffs: create, then delete, a file on the remote host; the host's file is the oracle, the pty stays untouched"""
     CRP.need_model(ctx, r)
     tok = CL.unique(ctx, 6)
     path = CL.work(arm, "da_%s.txt" % tok)
+    # #1864: the file's content must never be in a process command line on the host (ps, audit logs). Sample every command line while the write runs.
+    mk = "SECRETMARK" + CL.unique(ctx, 8)
+    import base64
+    b64 = base64.b64encode(("hello %s" % mk).encode()).decode()[:16]
+    ctl = "CTLMARK" + CL.unique(ctx, 8)
+    pat, seen = CL.work(arm, "da_%s.pat" % tok), CL.work(arm, "da_%s.ps" % tok)
+    wrote = ctx.lab.ssh(arm["user"], "sh -c 'echo %s > %s; echo %s >> %s; echo %s >> %s'" % (mk, pat, b64, pat, ctl, pat), timeout=30).returncode == 0
+    sampling = wrote and start_ps_sampler(ctx, arm, pat, seen, ctl)
     if CL.connect_or_fail(ctx, r, arm) is None:
         ctx.reset()
         return
     time.sleep(1.0 + 2 * CL.rtt_s(arm))
-    got = ask(ctx, "Please create exactly this file: %s with this content: hello %s" % (path, tok), "file_write")
-    r.check(ctx.until(lambda: any(tok in l for l in ctx.remote.lines(path)), 30, step=0.5), "the created file is not on the host")
+    got = ask(ctx, "Please create exactly this file: %s with this content: hello %s" % (path, mk), "file_write")
+    r.check(ctx.until(lambda: any(mk in l for l in ctx.remote.lines(path)), 30, step=0.5), "the created file is not on the host")
     r.check(all(b == expected_backend(arm) for b, _ in got), "file_write routed to %r, expected %s" % (got, expected_backend(arm)))
     ask(ctx, "Please delete exactly this file and nothing else: %s" % path, "file_write")
     r.check(ctx.until(lambda: not ctx.remote.lines(path), 30, step=0.5), "the deleted file is still on the host")
     typed = [cmd for _, cmd in ctx.remote.commands() if tok in cmd]
     r.check(not typed, "the feature typed into the remote shell: %r" % typed[:2])
-    ctx.remote.rm(path)
+    if sampling:
+        ctx.until(lambda: any(ctl in l for l in ctx.remote.lines(seen)), 15, step=0.5)
+        hits = [l for l in ctx.remote.lines(seen) if mk in l or b64 in l]
+        r.check(any(ctl in l for l in ctx.remote.lines(seen)), "the process sampler never saw its own control process: the no-leak check proves nothing")
+        r.check(not hits, "file content (raw or base64) was in a process command line on the host: %r" % [h[:80] for h in hits[:2]])
+    else:
+        r.unverifiable("no process sampler on this login shell (%s): the no-content-in-argv check did not run" % arm["shell"])
+    ctx.remote.rm(path, pat, seen)
     CL.finish_remote(ctx, r)
 
 

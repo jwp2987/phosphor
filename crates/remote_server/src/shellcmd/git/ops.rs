@@ -342,7 +342,15 @@ pub async fn run_commit(
     if include_unstaged {
         git_text(runner, repo, &["add", "-A"]).await?;
     }
-    git_text(runner, repo, &["commit", "-m", message]).await
+    // The message travels on stdin (`-F -`), never in an argv a process listing or an audit log
+    // would show (#1864).
+    git_text_stdin(
+        runner,
+        repo,
+        &["commit", "-F", "-"],
+        Some(message.as_bytes()),
+    )
+    .await
 }
 
 /// Pushes the given branch to origin, setting upstream tracking.

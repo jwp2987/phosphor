@@ -208,7 +208,7 @@ fn commit_chain_runs_each_stage_in_order() {
     assert_eq!(pr, None);
     assert_eq!(up.as_deref(), Some("origin/feat"));
     assert_eq!(commits.len(), 1);
-    assert_eq!(r.calls()[..2], ["add -A", "commit -m m"]);
+    assert_eq!(r.calls()[..2], ["add -A", "commit -F -"]);
 
     let r = Fake::new(script);
     block(run_commit_chain(
@@ -222,7 +222,7 @@ fn commit_chain_runs_each_stage_in_order() {
     .unwrap();
     assert_eq!(
         r.calls()[..2],
-        ["commit -m m", "push --set-upstream origin feat"]
+        ["commit -F -", "push --set-upstream origin feat"]
     );
 
     let r = Fake::new(script);
