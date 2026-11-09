@@ -1898,6 +1898,7 @@ App cases (Linux only, `--cases 'zero_network_startup,claude_plugin_offline,agen
   `connect`/`sendto`/`sendmsg` to a non-loopback inet address (`outbound_attempts`). The harness profile has no cloud account or provider key. SKIPS (not passes)
   when `strace -f` does not work on the runner (ptrace denied); a `unshare -rn` launch was rejected because the app's D-Bus and X11 sockets are abstract and
   a new network namespace cannot reach them.
+  The scripted session proves the shell is in front after Escape (probe line; Escape does not close the settings tab) and closes the tab with the platform's close when it is not, so the ssh connect reaches the shell.
 - **`claude_plugin_offline`**: inside `unshare -rn` (network blocked; without it the case is `noref`, not a pass), `fakeclaude.py` registers the bundled folder and
   installs `warp@claude-code-warp` (it refuses a non-local source and checks the hook scripts exist and are executable), then the plugin's real hook scripts run on
   synthetic Claude Code inputs (a prompt with `;`, multi-byte characters and 300+ characters; tool; permission request; stop). A fake `claude` in a pane prints the
