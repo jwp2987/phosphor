@@ -129,8 +129,8 @@ macro_rules! remote_features {
 
 remote_features! {
     FileContext, false: fn read_file_context(request: ReadFileContextRequest) -> ReadFileContextResponse => read_file_context_shell;
-    RepoMetadata, false: fn navigate_to_directory(path: String) -> NavigatedToDirectoryResponse => unimplemented;
-    RepoMetadata, false: fn load_repo_metadata_directory(repo_path: String, dir_path: String) -> LoadRepoMetadataDirectoryResponse => unimplemented;
+    RepoMetadata, false: fn navigate_to_directory(path: String) -> NavigatedToDirectoryResponse => navigate_to_directory_shell;
+    RepoMetadata, false: fn load_repo_metadata_directory(repo_path: String, dir_path: String) -> LoadRepoMetadataDirectoryResponse => load_repo_metadata_directory_shell;
     Buffers, false: fn open_buffer(path: String, force_reload: bool) -> OpenBufferResponse => unimplemented;
     Buffers, true: fn save_buffer(path: String) -> SaveBufferResponse => unimplemented;
     Buffers, true: fn resolve_conflict(path: String, acknowledged_server_version: u64, client_content: String, current_client_version: u64) -> ResolveConflictResponse => unimplemented;
@@ -147,7 +147,7 @@ remote_features! {
     FileWrite, true: fn write_file(path: String, content: String) -> () => write_file_shell;
     FileWrite, true: fn delete_file(path: String) -> () => delete_file_shell;
     FsBasic, false: fn read_file_bytes(path: String) -> Vec<u8> => read_file_bytes_shell;
-    FsBasic, false: fn list_directory(path: String) -> ListDirectoryResponse => unimplemented;
+    FsBasic, false: fn list_directory(path: String) -> ListDirectoryResponse => list_directory_shell;
     FsBasic, false: fn resolve_path(path: String) -> ResolvePathResponse => unimplemented;
     FsBasic, true: fn create_directory(path: String) -> CreateDirectoryResponse => unimplemented;
 }

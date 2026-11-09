@@ -16726,7 +16726,11 @@ impl Workspace {
                 let has_remote_server = is_remote
                     && FeatureFlag::SshRemoteServer.is_enabled()
                     && session_id.is_some_and(|sid| {
-                        RemoteServerManager::as_ref(ctx).is_session_potentially_active(sid)
+                        let manager = RemoteServerManager::as_ref(ctx);
+                        // A helper connection (or one on the way), or no helper at all but an
+                        // out-of-band channel the shell backend can serve the tree over.
+                        manager.is_session_potentially_active(sid)
+                            || manager.can_serve_repo_metadata(sid)
                     });
 
                 // When the session has a remote server, tell it about the current

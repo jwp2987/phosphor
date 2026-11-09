@@ -7,6 +7,7 @@
 //! is answered with `ErrorCode::UNSUPPORTED` so the client takes its no-helper path.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
@@ -21,6 +22,7 @@ use crate::protocol::RequestId;
 
 use super::exec::{self, SessionShell, ShellKind};
 use super::jobs::{Inflight, Reply};
+use super::watch::{FsKind, WatchSet};
 use super::{
     buffers, diff_state, file_context, fs_ops, git, git_status, git_write, github, repo_meta,
     ripgrep,
@@ -52,11 +54,40 @@ pub(super) enum Event {
     Disconnected {
         conn: ConnId,
     },
+    /// The filesystem watcher saw a change (`daemon/watch.rs`). No debounce: one event per OS
+    /// event; consumers coalesce with their own dirty flag.
+    FsChange {
+        paths: Vec<PathBuf>,
+        kind: FsKind,
+    },
+    /// A worker finished walking a repository for `NavigatedToDirectory`.
+    RepoIndexed(Box<repo_meta::Indexed>),
+    /// A worker finished re-listing the directories a watcher event dirtied.
+    RepoRelisted(repo_meta::Relisted),
 }
 
 struct Connection {
     tx: async_channel::Sender<ServerMessage>,
     chunking: Arc<AtomicBool>,
+}
+
+/// Sends unsolicited pushes (no request id) to a connection. Handlers get one so they can push
+/// without owning the connection table.
+pub(super) struct Pusher<'a> {
+    conns: &'a HashMap<ConnId, Connection>,
+}
+
+impl Pusher<'_> {
+    /// Queues `message` for `conn`'s writer, after anything already queued for it (so a push
+    /// sent right after a response arrives right after it). A gone connection drops it.
+    pub(super) fn send(&self, conn: ConnId, message: server_message::Message) {
+        if let Some(c) = self.conns.get(&conn) {
+            let _ = c.tx.try_send(ServerMessage {
+                request_id: String::new(),
+                message: Some(message),
+            });
+        }
+    }
 }
 
 /// Whether this daemon splits large responses into `FrameChunk`s for a client that asked
@@ -85,6 +116,13 @@ pub(super) struct Server {
     auth_token: Option<String>,
     idle_since: Option<Instant>,
     grace: Duration,
+    /// The core's own sender, for workers and the watcher to report back. `None` in unit tests
+    /// that drive the core by hand; watching is then off.
+    events_tx: Option<std::sync::mpsc::Sender<Event>>,
+    /// The one refcounted watch set every consumer shares (see `watch.rs` for the API).
+    watches: WatchSet,
+    /// Indexed repository roots and their live trees (`repo_meta.rs`).
+    repos: repo_meta::RepoTrees,
 }
 
 impl Server {
@@ -103,7 +141,18 @@ impl Server {
             auth_token: None,
             idle_since: Some(Instant::now()),
             grace,
+            events_tx: None,
+            watches: WatchSet::disabled(),
+            repos: repo_meta::RepoTrees::default(),
         }
+    }
+
+    /// Gives the core a sender to its own event channel, which turns filesystem watching on and
+    /// lets worker threads report back.
+    pub(super) fn with_events(mut self, events: std::sync::mpsc::Sender<Event>) -> Self {
+        self.watches = WatchSet::new(events.clone());
+        self.events_tx = Some(events);
+        self
     }
 
     /// Runs until the event channel closes or the daemon has been idle for the grace period.
@@ -143,8 +192,19 @@ impl Server {
                 );
             }
             Event::Message { conn, msg } => self.handle_message(conn, msg),
+            Event::FsChange { paths, kind } => self.on_fs_change(&paths, kind),
+            Event::RepoIndexed(done) => {
+                let push = Pusher { conns: &self.conns };
+                self.repos.indexed(*done, &mut self.watches, &push);
+            }
+            Event::RepoRelisted(done) => {
+                let push = Pusher { conns: &self.conns };
+                self.repos
+                    .relisted(done, self.events_tx.as_ref(), &mut self.watches, &push);
+            }
             Event::Disconnected { conn } => {
                 self.conns.remove(&conn);
+                self.repos.conn_gone(conn, &mut self.watches);
                 log::info!(
                     "Daemon: connection {conn} gone, {} active",
                     self.conns.len()
@@ -154,6 +214,14 @@ impl Server {
                 }
             }
         }
+    }
+
+    /// Fans a filesystem change out to every module that watches paths. Add one line per
+    /// consumer here (the repo tree, later buffers, diff state and skills).
+    fn on_fs_change(&mut self, paths: &[PathBuf], kind: FsKind) {
+        log::trace!("Daemon: fs change {kind:?} {} path(s)", paths.len());
+        self.repos
+            .on_fs_change(paths, kind, self.events_tx.as_ref());
     }
 
     fn reply_for(&self, conn: ConnId, request_id: &RequestId) -> Option<Reply> {
@@ -275,9 +343,19 @@ impl Server {
                 self.inflight
                     .spawn(reply, move |cancel| exec::run_command(&shell, req, cancel));
             }
-            M::NavigatedToDirectory(_) => repo_meta::handle(&reply, "NavigatedToDirectory"),
-            M::LoadRepoMetadataDirectory(_) => {
-                repo_meta::handle(&reply, "LoadRepoMetadataDirectory")
+            M::NavigatedToDirectory(msg) => {
+                let push = Pusher { conns: &self.conns };
+                self.repos.navigate(
+                    conn,
+                    msg,
+                    reply,
+                    self.events_tx.as_ref(),
+                    &mut self.watches,
+                    &push,
+                );
+            }
+            M::LoadRepoMetadataDirectory(msg) => {
+                self.repos.load_directory(msg, &reply, &mut self.watches)
             }
             M::OpenBuffer(_) => buffers::handle(&reply, "OpenBuffer"),
             M::GetDiffState(_) => diff_state::handle(&reply, "GetDiffState"),

@@ -16,7 +16,7 @@ use super::Family;
 use super::executor::OutOfBandExecutor;
 use super::helper::client_id;
 use super::refresh::RemoteRefreshEvent;
-use super::shell::ShellBackend;
+use super::shell::{ShellBackend, ShellPush, TreeCache};
 use crate::HostId;
 use crate::capability::ServerCapabilities;
 use crate::client::RemoteServerClient;
@@ -144,6 +144,8 @@ struct State {
     always_shell: AlwaysShell,
     executors: HashMap<SessionId, Arc<dyn OutOfBandExecutor>>,
     fallbacks: HashMap<HostId, Fallbacks>,
+    /// Per-host shell-mode file trees, shared by every backend built for the host.
+    tree_caches: HashMap<HostId, Arc<TreeCache>>,
     refresh_listeners: Vec<RefreshListener>,
 }
 
@@ -313,7 +315,20 @@ impl FeatureRouter {
             router: self.clone(),
             host: host.clone(),
             helper,
-            shell: ShellBackend::new(self.executor_for(sessions)),
+            shell: ShellBackend::new(self.executor_for(sessions))
+                .with_tree_cache(self.tree_cache_for(host)),
+        }
+    }
+
+    /// The shell-mode file-tree state of `host` (created on first use).
+    pub fn tree_cache_for(&self, host: &HostId) -> Arc<TreeCache> {
+        Arc::clone(self.lock().tree_caches.entry(host.clone()).or_default())
+    }
+
+    /// Forgets `host`'s shell-mode file trees (the host disconnected).
+    pub fn forget_trees(&self, host: &HostId) {
+        if let Some(cache) = self.lock().tree_caches.remove(host) {
+            cache.clear();
         }
     }
 }
@@ -371,6 +386,26 @@ impl RoutedBackend {
     pub fn kind(&self, family: Family) -> BackendKind {
         let probe = self.helper.as_ref().map(HelperProbe::of);
         self.router.choose(&self.host, family, probe.as_ref())
+    }
+
+    /// Re-reads the file tree of the indexed root `repo_path` when the shell serves
+    /// `RepoMetadata` (the helper pushes its own updates, so this is then a no-op) and returns
+    /// the pushes this backend produced, ready to emit. Drive it from `RefreshCoordinator`
+    /// events; it never runs on a timer.
+    pub async fn refresh_repo_tree(
+        &self,
+        repo_path: &str,
+    ) -> Result<Vec<ShellPush>, super::BackendError> {
+        if self.kind(Family::RepoMetadata) == BackendKind::Shell {
+            self.shell.refresh_repo_tree(repo_path).await?;
+        }
+        Ok(self.shell.take_pushes())
+    }
+
+    /// The pushes shell-mode calls on this backend produced so far (file-tree snapshots after a
+    /// `navigate_to_directory`). Empty when the helper served the call: it pushes by itself.
+    pub fn take_shell_pushes(&self) -> Vec<ShellPush> {
+        self.shell.take_pushes()
     }
 
     /// [`RemoteFeatures::write_file`](super::RemoteFeatures::write_file) that, when `expect` is
