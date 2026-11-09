@@ -19094,6 +19094,16 @@ impl TerminalView {
                     // The prompt is back: a shell-mode session re-reads its file tree (at most
                     // one read in flight; a no-op for a helper session, which pushes its own
                     // updates, and for a session with nothing indexed).
+                    #[cfg(not(target_family = "wasm"))]
+                    {
+                        use crate::remote_server::remote_index_driver::RemoteIndexDriver;
+                        if ctx.has_singleton_model::<RemoteIndexDriver>() {
+                            // Re-index after a command that can have moved HEAD.
+                            RemoteIndexDriver::handle(ctx).update(ctx, |driver, ctx| {
+                                driver.on_prompt(session_id, &command, ctx);
+                            });
+                        }
+                    }
                     RemoteServerManager::handle(ctx).update(ctx, |manager, ctx| {
                         manager.on_remote_refresh_event(
                             session_id,

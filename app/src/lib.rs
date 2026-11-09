@@ -1657,6 +1657,20 @@ fn initialize_app(
     // consumes `CodebaseIndexStatusesSnapshot` and nothing ever asks a daemon
     // to index.
     ctx.add_singleton_model(remote_server::codebase_index_model::RemoteCodebaseIndexModel::new);
+    // Host-scan / app-embed remote codebase indexing (P9b): where the no-helper path keeps its
+    // stores, and the model that decides when a remote repository is (re)indexed. Off unless the
+    // user turned codebase context on.
+    #[cfg(not(target_family = "wasm"))]
+    {
+        remote_server::manager::RemoteServerManager::as_ref(ctx)
+            .router()
+            .set_index_root(
+                warp_core::paths::secure_state_dir()
+                    .unwrap_or_else(warp_core::paths::state_dir)
+                    .join("remote-index"),
+            );
+        ctx.add_singleton_model(remote_server::remote_index_driver::RemoteIndexDriver::new);
+    }
     // Zap Wave 6-1: the `remote_server::wire_auth_token_rotation(ctx)` call was physically
     // removed along with the server API token rotation event and the
     // `wire_auth_token_rotation` function itself.

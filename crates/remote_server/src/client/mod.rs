@@ -96,32 +96,10 @@ pub enum ClientError {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ClientPreferences {
     pub codebase_index_limits: Option<crate::proto::CodebaseIndexLimits>,
-    /// DEPRECATED, IGNORED (P9b owner ruling): the client no longer sends this, whatever it
-    /// holds. The user's embedding key never leaves their machine; the app embeds through the
-    /// network gate and the host only stores vectors. Kept until the app's producer is removed.
-    ///
-    /// (Former doc:) The user's own embedding endpoint. This is the BYOP replacement for the
-    /// pin's Warp bearer token — see the `EmbeddingProviderConfig` message in
-    /// `proto/remote_server.proto`.
-    ///
-    /// **This field carries a credential off this machine.** `api_key` is the
-    /// user's provider API key, read from the keychain, and everything set here
-    /// is transmitted to the remote host on `Initialize` and again on every
-    /// `UpdatePreferences`. Populate it only when remote codebase indexing is
-    /// actually in use — the sole reason the daemon needs a key. The client-side
-    /// producer (`app/src/ai/codebase_embeddings.rs::remote_client_preferences`)
-    /// gates it on `should_use_codebase_indexing`, the runtime predicate that
-    /// carries the user's consent: it requires `code.indexing.
-    /// agent_mode_codebase_context` (default `false`, user-written only) on top
-    /// of the feature flags. Do not populate this field from any path that does
-    /// not make that check.
-    ///
-    /// It previously said the gate was `FeatureFlag::RemoteCodebaseIndexing`.
-    /// That was never a gate: `remote_codebase_indexing` is in `app/Cargo.toml`'s
-    /// DEFAULT feature set, so `is_enabled()` is a constant `true` in every build
-    /// this repo ships, and the key went to every SSH host regardless. A
-    /// compile-time feature that is on by default cannot express user consent.
-    pub embedding_provider: Option<crate::proto::EmbeddingProviderConfig>,
+    // No embedding endpoint or key (P9b owner ruling): the user's provider key stays on their
+    // machine, the app embeds through the network gate and the host only stores vectors. The
+    // proto fields (`Initialize.embedding_provider`, `UpdatePreferences.embedding_provider`)
+    // stay occupied and are always sent empty.
 }
 
 /// Events received from the remote server, delivered through the event
