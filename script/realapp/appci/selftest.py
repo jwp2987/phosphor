@@ -3579,6 +3579,67 @@ def fake_model_replies():
 
 
 @check
+def fake_model_ignores_environment_context():
+    """round 6 (Windows agent@fake): the app puts an <environment_context> user message after the prompt (or inside it); triggers, fault matches and the
+    request log must read the PROMPT, and title requests are counted apart from chat requests"""
+    import fake_model as FM, urllib.request, urllib.error
+    env = "<environment_context>\n  <cwd>/w</cwd>\n</environment_context>"
+    sep = [{"role": "user", "content": "Please run exactly this shell command and nothing else: echo T >> /x/f.txt"}, {"role": "user", "content": env}]
+    inl = [{"role": "user", "content": "Please read exactly this file and nothing else: /w/a.txt\n" + env}]
+    assert FM.reply_for(sep)["tool"]["arguments"]["command"] == "echo T >> /x/f.txt"
+    assert FM.reply_for(inl)["tool"] == {"name": "read_files", "arguments": {"files": [{"path": "/w/a.txt"}]}}, FM.reply_for(inl)
+    assert FM.reply_for([{"role": "user", "content": "Reply with the word Q1"}, {"role": "user", "content": env}])["text"] == "OK Q1"
+    assert FM.reply_for([{"role": "user", "content": "x"}, {"role": "tool", "content": "ok"}, {"role": "user", "content": env}]) == {"text": "Done.", "tool": None}
+    assert FM.user_prompt(sep).startswith("Please run") and FM.user_prompt([{"role": "user", "content": env}]) == ""
+    assert FM.user_texts(inl) == ["Please read exactly this file and nothing else: /w/a.txt"]
+    assert FM.request_record(sep)["users"] == [sep[0]["content"]]
+    title = [{"role": "system", "content": "You are a thread title generator. You output ONLY a thread title."}, {"role": "user", "content": "Reply with the word TOK1"}]
+    assert FM.is_title_request(title) and not FM.is_title_request(sep)
+    f = FM.FakeModel().start()
+    try:
+        def post(msgs, path="/api/chat", **kw):
+            rq = urllib.request.Request(f.url + path, json.dumps(dict({"model": "m", "messages": msgs}, **kw)).encode())
+            try:
+                return urllib.request.urlopen(rq, timeout=5).read().decode()
+            except urllib.error.HTTPError as e:
+                return "HTTP %d" % e.code
+        text = lambda body: "".join(json.loads(l)["message"]["content"] for l in body.splitlines() if l.strip())
+        f.inject("status", times=None, match="TOK1", code=429)
+        assert post(title, stream=False).count("done") >= 1 and f.title_requests == 1 and f.requests == 0 and not f.fired      # a title request neither counts nor takes a chat fault
+        assert post([{"role": "user", "content": "Reply with the word TOK1"}, {"role": "user", "content": env}]) == "HTTP 429" and f.requests == 1 and f.fired == ["status"]
+        f.clear_faults()
+        assert text(post([{"role": "user", "content": "Reply with the word TOK2"}, {"role": "user", "content": env}])) == "OK TOK2"
+        # a fault can name a purpose
+        f.inject("status", times=1, purpose="title", code=500)
+        assert post(title, stream=False) == "HTTP 500" and f.requests == 2
+        # every purpose, with request bodies shaped like the app's (system prompt first, then the user text; tools only on the chat turn)
+        shapes = {"title": "You are a thread title generator. You output ONLY a thread title.",
+                  "commit_message": "You are a git commit message generator. You output ONLY a commit message.",
+                  "explain_command": "You explain shell commands to a user who has been asked to approve them.",
+                  "compaction": "You are an anchored context summarization assistant for coding sessions.",
+                  "next_command": "You predict the most likely next shell command a user will run, based on",
+                  "nld_predict": "You complete a partial natural-language query or shell command typed by a user",
+                  "prompt_suggestions": "You are inside a terminal emulator. The user just finished a command.\nPredict the single most useful follow-up",
+                  "relevant_files": "Given a query and a list of files (path + optional symbol summary), return ONLY the subset of paths most relevant to the query.",
+                  "workflow_metadata": "You are helping a terminal app turn a raw shell command into a reusable, parameterized workflow."}
+        for name, sysm in shapes.items():
+            body = post([{"role": "system", "content": sysm}, {"role": "user", "content": "x"}], stream=False)
+            assert json.loads(body)["message"]["content"] == FM.PURPOSE_TEXT[name], (name, body)
+            assert f.by_purpose[name] >= 1, name
+        assert json.loads(post([{"role": "system", "content": shapes["prompt_suggestions"]}, {"role": "user", "content": "x"}], stream=False))["message"]["content"] == '{"kind":"none"}'
+        assert json.loads(json.loads(post([{"role": "system", "content": shapes["workflow_metadata"]}, {"role": "user", "content": "x"}], stream=False))["message"]["content"])["arguments"] == []
+        assert FM.classify_purpose("/api/chat", {"messages": [{"role": "system", "content": "big agent system prompt"}], "tools": [{"x": 1}]}) == "chat"
+        assert FM.classify_purpose("/api/show", {}) == "show" and FM.classify_purpose("/api/tags", {}) == "tags"
+        # unknown purposes are loud, never answered as chat
+        n = f.requests
+        assert post([{"role": "system", "content": "something new"}, {"role": "user", "content": "x"}]) == "HTTP 501"
+        assert post([], "/api/embed", input="x") == "HTTP 501" and post([], "/api/generate", prompt="x") == "HTTP 501"
+        assert f.by_purpose["UNKNOWN_PURPOSE"] == 3 and len(f.unknown) == 3 and f.requests == n
+    finally:
+        f.stop()
+
+
+@check
 def agent_interactive_oracles():
     """#1829: the request-log record, its reader and the pure judge of cases_agent_interactive.py"""
     import fake_model as FM, cases_agent_interactive as AI
