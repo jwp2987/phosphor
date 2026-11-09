@@ -1820,6 +1820,13 @@ impl TerminalModel {
             .and_then(|session_info| session_info.subshell_info.as_ref())
     }
 
+    /// Whether an abandoned subshell session is kept for a late `Bootstrapped` (#1014, #1711
+    /// review H6 option (a)); for tests outside this module.
+    #[cfg(test)]
+    pub fn has_abandoned_subshell_session(&self) -> bool {
+        self.abandoned_subshell_session.is_some()
+    }
+
     pub fn block_list(&self) -> &BlockList {
         &self.block_list
     }

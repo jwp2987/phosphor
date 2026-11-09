@@ -62,12 +62,21 @@ use crate::terminal::paste_sequencer::PasteFailure;
 const GATE_GIVE_UP_TOAST: &str = "Input was waiting too long, so it was not sent; what you typed is in the input. Check it, \
      then press Enter.";
 
-/// #1119: the notice shown when the stall ceiling abandons a subshell bootstrap. It is shown
-/// whether or not keys were held through the setup, so a failed Phosphorize is never silent; it
-/// also covers the held keys, which is why the hand-back itself shows no second toast for it.
-pub(super) const SUBSHELL_BOOTSTRAP_ABANDONED_TOAST: &str = "Phosphorize failed: the shell setup \
-     stalled, so this tab continues as a plain shell. Anything typed during the setup is in the \
-     input, not run.";
+/// #1119/#1711: the notice shown when the setup net gives a subshell setup up. It is shown whether
+/// or not keys were held through the setup, so a failed Phosphorize is never silent; it also
+/// covers the held keys with their COUNT (never their text), which is why the hand-back itself
+/// shows no second toast for it.
+pub(super) fn subshell_setup_given_up_toast(held_chunks: usize) -> String {
+    let held = match held_chunks {
+        0 => "Nothing was typed during the setup.".to_owned(),
+        1 => "1 key typed during the setup is in the input, not run.".to_owned(),
+        n => format!("{n} keys typed during the setup are in the input, not run."),
+    };
+    format!(
+        "Phosphorize failed: the shell setup stopped making progress, so this tab continues as a \
+         plain shell. {held}"
+    )
+}
 
 /// #1661: the reason of a young Enter's hold that gave up (its toast gives the discarded count).
 pub(super) const YOUNG_HOLD_GIVE_UP_TOAST: &str =
@@ -118,7 +127,8 @@ fn split_line_before_first_enter(entries: Vec<InputEntry>) -> (Vec<u8>, Vec<Inpu
 /// when the caller shows its own notice: the stall ceiling's abandon notice (#1119).
 pub(super) fn gate_give_up_toast(why: &str) -> Option<&'static str> {
     match why {
-        "stall_ceiling" => None,
+        // The setup net shows its own counted toast (`subshell_setup_given_up_toast`).
+        "quiet_net" | "ceiling" => None,
         _ => Some(GATE_GIVE_UP_TOAST),
     }
 }
@@ -225,10 +235,6 @@ pub(super) enum PromptHoldEnd {
 /// 300 ms for its Enter, each image 300 ms); this is a net for a submit that never reports its end,
 /// far beyond any of them. Logged when it fires.
 const CLI_SUBMIT_LEAK_NET: Duration = Duration::from_secs(20);
-
-/// Net for a PowerShell setup gate nothing ever closed: twice the typed-input hold limit that
-/// releases it in every normal case (the setup's own events end it). Logged when it fires.
-const POWERSHELL_GATE_LEAK_NET: Duration = Duration::from_secs(180);
 
 impl PasteQueueState {
     pub(super) fn new() -> Self {
@@ -1142,22 +1148,14 @@ impl TerminalView {
         if kind == Some(GateKind::SubshellBootstrapWrite)
             && self.subshell_bootstrap_in_flight.is_some()
         {
-            // The cap passed while the paced lines are still being written: releasing the keys
-            // now would land them among the setup lines (#1399). The gate stays; its event (the
-            // last line written, or the bootstrap abandoned) delivers them in order.
+            // A give-up while the paced lines are still being written: releasing the keys now
+            // would land them among the setup lines (#1399). The gate stays; its event (the last
+            // line written, or the bootstrap abandoned) delivers them in order. The gate has no
+            // cap of its own since #1711 (the setup net is the one net), so this is a stray.
             log::warn!(
-                "input queue: bootstrap-write gate cap passed with lines still to write; \
-                 the held keys wait for the last line"
+                "input queue: a bootstrap-write gate give-up with lines still to write; the held \
+                 keys wait for the last line"
             );
-            // Re-armed for what is left (#1427): the same token stays valid while the gate is open.
-            let lines = self
-                .subshell_bootstrap_in_flight
-                .as_ref()
-                .map_or(1, |flight| flight.remaining_lines);
-            let after = super::subshell_bootstrap_gate_cap(lines);
-            ctx.spawn(Timer::after(after), move |me, _, ctx| {
-                me.on_paste_queue_give_up(token, ctx)
-            });
             return;
         }
         if kind == Some(GateKind::SubshellSetup) {
@@ -1337,7 +1335,9 @@ impl TerminalView {
     }
 
     /// #1577: a setup hold (PowerShell or subshell) gave up on a timer: setup is treated as over
-    /// and the keys held behind its gates come back to the editor as text, never written.
+    /// and the keys held behind its gates come back to the editor as text, never written. All
+    /// three setup gates (#1711: the bootstrap-write gate too, whose lines are abandoned with the
+    /// setup), in the queue's order; the setup net is over with the setup.
     pub(super) fn give_up_setup_gates_to_editor(
         &mut self,
         why: &'static str,
@@ -1345,8 +1345,13 @@ impl TerminalView {
     ) {
         self.powershell_setup_hold = super::PowerShellSetupHold::Off;
         self.subshell_bootstrap_announced = None;
+        self.subshell_setup_net = None;
         self.dismiss_subshell_setup_waiting_toast(ctx);
-        for kind in [GateKind::PowershellSetup, GateKind::SubshellSetup] {
+        for kind in [
+            GateKind::PowershellSetup,
+            GateKind::SubshellSetup,
+            GateKind::SubshellBootstrapWrite,
+        ] {
             let key = self.paste_queue.queue.try_peek().and_then(|queue| {
                 queue
                     .gates()
@@ -2591,8 +2596,8 @@ impl TerminalView {
             );
             return;
         }
-        let spec =
-            GateSpec::new(GateKind::PowershellSetup, 0).with_cap(Some(POWERSHELL_GATE_LEAK_NET));
+        // No cap of its own (#1711): the setup's events or the one setup net end it.
+        let spec = GateSpec::new(GateKind::PowershellSetup, 0).with_cap(None);
         self.hold_keys_behind_gate(spec, bytes, takes_over_agent_control, ctx);
     }
 
@@ -2760,13 +2765,9 @@ impl TerminalView {
             && super::subshell_setup_should_hold_typed_bytes(age, abort);
         let queue = self.paste_queue.queue.clone();
         if setup_governs && !setup_gate {
-            // Cap = what is left of the old hold limit; the legacy timer is the same net.
-            let left = age
-                .map_or(Duration::from_secs(1), |age| {
-                    super::SUBSHELL_SETUP_TYPED_HOLD_LIMIT.saturating_sub(age)
-                })
-                .max(Duration::from_millis(100));
-            let spec = GateSpec::new(GateKind::SubshellSetup, 0).with_cap(Some(left));
+            // No cap of its own (#1711): the setup's events close it, or the one setup net
+            // (`SUBSHELL_SETUP_QUIET_NET` / `SUBSHELL_SETUP_CEILING`) hands its keys back.
+            let spec = GateSpec::new(GateKind::SubshellSetup, 0).with_cap(None);
             match queue.try_lock() {
                 Some(mut guard) => {
                     let mut host = PtyQueueHost::new(self, ctx);
@@ -2775,11 +2776,10 @@ impl TerminalView {
                 None => queue_defer_open_gate(&queue, spec),
             }
         }
-        if let Some(lines) = in_flight
-            && !bootstrap_gate
-        {
-            let cap = super::subshell_bootstrap_gate_cap(lines);
-            let spec = GateSpec::new(GateKind::SubshellBootstrapWrite, 0).with_cap(Some(cap));
+        if in_flight.is_some() && !bootstrap_gate {
+            // No cap of its own either (#1711): the last line's event closes it, the net hands
+            // its keys back.
+            let spec = GateSpec::new(GateKind::SubshellBootstrapWrite, 0).with_cap(None);
             match queue.try_lock() {
                 Some(mut guard) => {
                     let mut host = PtyQueueHost::new(self, ctx);

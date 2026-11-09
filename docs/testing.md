@@ -293,7 +293,7 @@ claims (#1353, #1404); only a doc comment in `app/src/terminal/input_queue/mod.r
 | `PHOSPHOR_RENDER_LOCK_LEGACY=1` | previous model-lock scoping in render/layout/wakeup (round 18 R1) |
 | `PHOSPHOR_BLOCK_LIST_PAINT_UNDER_LOCK=1`, `PHOSPHOR_ALT_SCREEN_PAINT_UNDER_LOCK=1` | paint from the locked model instead of snapshots |
 | `PHOSPHOR_ALT_SCREEN_FULL_RENDER=1`, `PHOSPHOR_BLOCK_LIST_FULL_RENDER=1`, `PHOSPHOR_BLINK_FULL_RENDER=1` | full re-render on every wakeup / blink instead of paint-only frames |
-| `PHOSPHOR_BOOTSTRAP_TIMED=1` | timer-based subshell setup instead of the event-driven one (#1354) |
+| `PHOSPHOR_BOOTSTRAP_TIMED=1` | timer-PACED subshell setup instead of the marker-paced one (#1354, #1711). Exactly what it restores: the setup lines (bash/zsh/fish/nu stage 2, PowerShell's three lines, and the two lines of the `sh` probe) are written on fixed delays (30 ms per line, 300 ms for PowerShell) instead of on the shell's `OSC 7771` markers, so no marker token exists (a Ctrl-C that skips a PowerShell setup then waits `POWERSHELL_ABORT_SETTLE` and hands back, #1438); the rc-file subshell bootstrap goes in 100 ms after the snippet and the auto-warpify one after `AUTO_WARPIFY_DELAY` instead of at the first prompt; the pending command / ssh split `cd` run after `EXECUTE_PENDING_COMMAND_DELAY` instead of at the Precmd. What it does NOT restore (gone with #1711, owner decision 2026-11-08): the 20 s stall ceiling's key forwarding, the 90 s typed-input hold limit, the setup gates' own caps and the 5 s marker give-up's timed writes; the one progress-based setup net (`SUBSHELL_SETUP_QUIET_NET` 30 s, `SUBSHELL_SETUP_CEILING` 120 s, notice at 10 s) applies with the switch on too, and a timed setup's line writes count as its progress |
 | `PHOSPHOR_SSH_COUNTED_BOOTSTRAP=0`, `PHOSPHOR_LOCAL_COUNTED_BOOTSTRAP=0` | here-document bootstrap instead of the counted raw read (#1226) |
 | `PHOSPHOR_SSH_SPECULATIVE_CONNECT=0`, `PHOSPHOR_SSH_EARLY_BOOTSTRAP=0` | old probe-then-connect / bootstrap-after-connect order (#1266) |
 | `PHOSPHOR_SSH_EARLY_FLUSH_KNOWN=0` | stash the bootstrap until `check_binary` returns even for a host already known to have the extension (#1172) |
@@ -1172,7 +1172,8 @@ dash) that releases the probe line, the probe's own `InitSubshell` is its consum
 `ModelEvent::SubshellNotPhosphorizable { shell_name }` (not on the tmux-ssh path, which keeps `RemoteWarpificationIsUnavailable`):
 the view clears the announcement, closes the gates, delivers the held keys to the shell in order and shows a plain-shell toast.
 `TerminalModel::unregister_session_id` forgets the probe's ID at `InitSubshell` (review H9) and nothing else. The marker survives
-tmux control mode: `%output` carries the pane's raw bytes, like the DCS hooks (review H8).
+tmux control mode: `%output` carries the pane's raw bytes, like the DCS hooks (review H8). (Step 1 kept the 5 s marker give-up as
+the fallback; step 2 below removes it.)
 
 | layer | test | asserts |
 |---|---|---|
@@ -1183,6 +1184,44 @@ tmux control mode: `%output` carries the pane's raw bytes, like the DCS hooks (r
 | view, Legacy and Table | `view_test.rs`: `an_unsupported_subshell_ends_the_setup_and_delivers_the_held_keys_in_order` | `ec`,`ho`,Enter typed during the probe are held through the marker, and on the event reach the pty once as `echo\r` right behind the probe; announcement, in-flight, probe ID and held counts cleared; editor empty |
 | view | `view_test.rs`: `the_probe_id_is_unregistered_when_init_subshell_names_the_shell` | after `InitSubshell(bash)` the probe's ID is unregistered, a registered parent ID is untouched, stage 2 is in flight with its own registered ID |
 | appci | `subshell_sh_probe` (see the cases list) | real dash / busybox ash: first inner line < 2 s, exact lines, exit, log hops |
+
+**#1711 / #1712 step 2 (the one progress-based setup net; owner decision 2026-11-08: hand back, 30 s / 120 s / notice at ~10 s).**
+A subshell setup has ONE give-up net, `SubshellSetupNet` in `view.rs`: armed when the first setup line is written, re-armed ONLY by
+setup progress (`SubshellSetupProgress`: a setup-line marker of this setup's token, the probe's `InitSubshell`, `InitShell`, a
+stage-2 chunk written, `Bootstrapped`; review H4: output bytes never re-arm it), with a 120 s absolute ceiling that stage 2 shares
+with stage 1 and a persistent waiting notice after 10 s without progress (withdrawn by the next progress). Firing HANDS BACK: the
+keys behind all three setup gates (`SubshellSetup`, `PowershellSetup`, `SubshellBootstrapWrite`) come back to the editor as text in
+order with the Enter guard and a toast that gives their count (never their text), the unwritten setup lines are dropped, stashed
+abort keys are dropped with a logged count (a timer never sends them), a pending subshell session is abandoned so the pane leaves
+"Starting shell..." (the block is unhidden) and the session ID STAYS registered so a late `Bootstrapped` is accepted (review H6 (a)).
+It replaces: `SUBSHELL_BOOTSTRAP_STALL_CEILING`'s key forwarding (`subshell_bootstrap_key_forwarded` forwards abort keys only;
+`RouteFacts::subshell_bootstrap_stalled` is always false until step 3 removes the row condition), `SUBSHELL_SETUP_TYPED_HOLD_LIMIT`
+(the generic hold and the PowerShell hold hold for as long as the setup is announced), the gates' own caps (`default_cap` is `None`
+for the three setup gates; `POWERSHELL_GATE_LEAK_NET` is gone), and `SUBSHELL_SETUP_MARKER_GIVE_UP`'s timed writes (a marker that
+never comes is no progress; nothing is written on a timer). `BOOTSTRAP_FAILED_DURATION` (7 s) is re-armed on every progress, so a
+slow but healthy marker-paced setup does not trip it. The deferred-setup notice keeps a 20 s timer (`SUBSHELL_SETUP_DEFER_NOTICE`,
+a notice only). "Stalled" for the PowerShell Ctrl-C route (#1051) is the net's notice having fired. Expectation changes, each
+by the owner decision: typing is held however old the announcement (`subshell_announcement_applies_to_the_bootstrapped_parent_block_before_initshell`,
+`subshell_bootstrap_announcement_survives_the_initshell_block_change`), a stalled bootstrap never forwards typing
+(`a_stalled_subshell_bootstrap_still_holds_typing_the_net_hands_it_back` replaces `stalled_subshell_bootstrap_stops_holding_input`),
+the stale-timer rule moved to the net (`a_stale_net_timer_does_not_release_a_later_setups_keys` replaces
+`a_stale_hold_limit_timer_does_not_release_a_later_setups_keys`), the gate caps are gone
+(`setup_gates_have_no_cap_of_their_own_the_net_is_the_one_net` replaces `bootstrap_gate_cap_outlasts_every_line_waiting_out_the_marker_give_up`),
+and `stall_powershell_setup` (test helper) marks the net noticed instead of backdating the announcement. In an appci log:
+`subshell_setup_net_armed`, `subshell_setup_progress kind=...`, `subshell_setup_given_up why=quiet_net|ceiling chunks=N` are the hops;
+"writing the rest of the subshell setup on timers" no longer exists.
+
+| layer | test | asserts |
+|---|---|---|
+| view (pure) | `view_test.rs`: `subshell_setup_net_verdict_is_quiet_at_30_s_and_ceiling_at_120_s` | the truth table: Waiting / Quiet at 30 s quiet / Ceiling at 120 s even with progress 1 s ago |
+| view | `view_test.rs`: `the_setup_net_re_arms_only_on_progress_not_on_output` | output, a prompt shape and another setup's marker leave (gen, seq) and `last_progress` alone; the notice fires and progress withdraws it; our marker is progress once; `InitSubshell` + stage 2 is a new generation with the same start; `InitShell` and `Bootstrapped` count; output after them does not |
+| view, Legacy and Table | `view_test.rs`: `the_setup_net_hands_the_held_keys_back_at_30_s_quiet_and_at_the_120_s_ceiling` | `ls`,` -la`,`x` held through five chatty outputs; the quiet net (backdated) and the ceiling (backdated, with a fresh marker) each hand back `ls -lax` with the guard armed, write nothing, clear announcement / in-flight / net / held counts / notice; late timers do nothing |
+| view | `view_test.rs`: `a_stale_net_timer_does_not_release_a_later_setups_keys` | a timer of an earlier quiet stretch or an earlier generation does nothing; the current pair hands back once; nothing written |
+| view | `view_test.rs`: `a_late_bootstrapped_after_the_net_is_accepted` | after `InitShell` the net abandons the pending session (kept as abandoned, block list bootstrapped), the ID stays registered, `bootstrapped()` consumes the abandoned session; the held key came back |
+| view | `view_test.rs`: `a_healthy_marker_paced_setup_re_arms_the_bootstrap_give_up` | via `trigger_subshell_bootstrap_now` the net records 7 s; a marker bumps `bootstrap_timer_generation`, output does not; a setup written without the trigger re-arms nothing |
+| view, Legacy and Table | `view_test.rs`: `powershell_setup_holds_keys_however_old_the_announcement_is_until_the_net` | every `PowerShellSetupHold` state holds with a 1000 s old announcement; the net hands `Get-Date` back, hold `Off`, nothing delivered |
+| view | `view_test.rs`: `setup_gates_have_no_cap_of_their_own_the_net_is_the_one_net` | `default_cap` is `None` for the three setup gates; notice < quiet < ceiling |
+| view (existing, kept green) | `subshell_setup_lines_follow_the_shells_markers_not_the_clock`, `powershell_setup_lines_follow_the_read_markers_not_the_clock`, `ctrl_c_during_the_subshell_bootstrap_waits_for_its_last_line`, `subshell_gate_give_ups_hand_back_without_losing_or_reordering`, `text_typed_during_a_stalled_subshell_setup_is_held_then_delivered_in_order`, the PowerShell Ctrl-C route tests and `group2_timer_tests.rs` | ordering, stall hold and Ctrl-C behaviour unchanged |
 
 **#1666 / #1667 (Tab completion give-up, busy-machine audit H6/H7).** Tab then a fast Enter holds the Enter for the local
 completion (`TAB_COMPLETION_ENTER_BUDGET`, 150 ms of completer wall time, unchanged; backstop 500 ms, unchanged) and runs the

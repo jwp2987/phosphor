@@ -31,8 +31,7 @@ use warpui::ViewContext;
 use warpui::pane_key::PaneKeyContext;
 
 use super::{
-    PowerShellSetupHold, SSH_BOOTSTRAP_SWALLOW_CEILING, SUBSHELL_BOOTSTRAP_STALL_CEILING,
-    SUBSHELL_SETUP_TYPED_HOLD_LIMIT, SshBootstrapInterruptRoute, TerminalView,
+    PowerShellSetupHold, SSH_BOOTSTRAP_SWALLOW_CEILING, SshBootstrapInterruptRoute, TerminalView,
     ssh_pre_init_abort_bytes, subshell_bootstrap_key_forwarded,
 };
 use crate::features::FeatureFlag;
@@ -119,11 +118,9 @@ impl TerminalView {
             PowerShellSetupHold::Setup
             | PowerShellSetupHold::ScriptRunning
             | PowerShellSetupHold::AwaitingPrompt => PsPhase::Setup {
-                holds_keys: !snapshot.read_only
-                    && self
-                        .subshell_bootstrap_announced
-                        .as_ref()
-                        .is_some_and(|(_, at)| at.elapsed() < SUBSHELL_SETUP_TYPED_HOLD_LIMIT),
+                // #1711: held for as long as the setup is announced; the setup net, not an age,
+                // ends a setup that stops progressing.
+                holds_keys: !snapshot.read_only && self.subshell_bootstrap_announced.is_some(),
             },
         }
     }
@@ -320,8 +317,10 @@ impl TerminalView {
             subshell_awaiting_answer: announced_age.is_some()
                 && self.subshell_bootstrap_in_flight.is_none()
                 && awaits_an_answer,
-            subshell_bootstrap_stalled: announced_age
-                .is_some_and(|age| age >= SUBSHELL_BOOTSTRAP_STALL_CEILING),
+            // #1711: no age stalls a setup any more (the setup net hands back instead), so the
+            // table's `pty_typed` door for it never opens; the field stays until the readiness
+            // rework (step 3) removes the row condition with its tests.
+            subshell_bootstrap_stalled: false,
             ps,
             ssh,
             ssh_dialog_up,

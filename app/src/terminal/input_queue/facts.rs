@@ -284,8 +284,9 @@ pub struct RouteFacts {
     /// A subshell setup was announced and the shell is asking for something (a prompt waiting for
     /// an answer): typing is the answer, so the subshell holds let keys through (H7b).
     pub subshell_awaiting_answer: bool,
-    /// The announced subshell bootstrap is older than `SUBSHELL_BOOTSTRAP_STALL_CEILING`,
-    /// computed when the facts are built so the table reads no clock.
+    /// The announced subshell bootstrap was abandoned by age. Always `false` since #1711 (the
+    /// setup net hands the held keys back instead of opening the pty by age); the readiness
+    /// rework (step 3) removes the condition from the table with its tests.
     pub subshell_bootstrap_stalled: bool,
     pub ps: PsPhase,
 
