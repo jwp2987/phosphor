@@ -38,13 +38,14 @@ impl OutOfBandExecutor for LocalShExecutor {
     }
 
     fn execute(&self, request: ExecRequest) -> BoxFuture<'_, Result<ExecOutput, ExecError>> {
-        Box::pin(async move { run_local_sh(request, None) })
+        Box::pin(async move { run_local_sh(request, None, None) })
     }
 }
 
 fn run_local_sh(
     request: ExecRequest,
     path: Option<&std::ffi::OsStr>,
+    home: Option<&std::path::Path>,
 ) -> Result<ExecOutput, ExecError> {
     use std::io::Write as _;
     use std::process::{Command, Stdio};
@@ -57,6 +58,9 @@ fn run_local_sh(
         .stderr(Stdio::piped());
     if let Some(path) = path {
         command.env("PATH", path);
+    }
+    if let Some(home) = home {
+        command.env("HOME", home);
     }
     let mut child = command
         .spawn()
@@ -118,7 +122,7 @@ impl OutOfBandExecutor for NoDecoderShExecutor {
     }
 
     fn execute(&self, request: ExecRequest) -> BoxFuture<'_, Result<ExecOutput, ExecError>> {
-        Box::pin(async move { run_local_sh(request, Some(self.bin.path().as_os_str())) })
+        Box::pin(async move { run_local_sh(request, Some(self.bin.path().as_os_str()), None) })
     }
 }
 
@@ -913,4 +917,248 @@ async fn unsupported_from_the_helper_is_served_by_the_shell_and_sticks() {
     assert_eq!(requests.load(Ordering::SeqCst), 1);
     // Other families are untouched.
     assert_eq!(backend.kind(Family::GitRead), BackendKind::Helper);
+}
+
+// ---- agent context: host skills and global rules (P8, family h) -------------------------------
+
+/// A local `sh` whose `$HOME` is a fixture directory: the host whose skills the shell arm reads.
+#[derive(Debug)]
+struct HomeShExecutor {
+    home: std::path::PathBuf,
+}
+
+impl OutOfBandExecutor for HomeShExecutor {
+    fn channel_kind(&self) -> ChannelKind {
+        ChannelKind::LocalSh
+    }
+
+    fn shell_kind(&self) -> ShellKind {
+        ShellKind::Posix
+    }
+
+    fn execute(&self, request: ExecRequest) -> BoxFuture<'_, Result<ExecOutput, ExecError>> {
+        Box::pin(async move { run_local_sh(request, None, Some(&self.home)) })
+    }
+}
+
+/// Where a backend's agent-context snapshots come from: the shell arm reads on demand and queues
+/// a push when the context changed; the helper pushes on connect and when a watched directory
+/// changes.
+enum ContextSource {
+    Shell(ShellBackend),
+    #[cfg(all(feature = "daemon", unix))]
+    Helper {
+        events: async_channel::Receiver<crate::client::ClientEvent>,
+        _client: Arc<RemoteServerClient>,
+    },
+}
+
+impl ContextSource {
+    /// The next snapshot (a changed context): the shell arm reads now, the helper's arrives by
+    /// itself.
+    async fn next(&mut self) -> crate::proto::RemoteAgentContextSnapshot {
+        match self {
+            ContextSource::Shell(shell) => {
+                assert!(
+                    shell.refresh_agent_context().await.unwrap(),
+                    "the context changed, so the read must queue a snapshot"
+                );
+                let mut pushes = shell.take_pushes();
+                assert_eq!(pushes.len(), 1, "{pushes:?}");
+                let Some(ShellPush::AgentContext(snapshot)) = pushes.pop() else {
+                    panic!("expected an agent context push");
+                };
+                snapshot
+            }
+            #[cfg(all(feature = "daemon", unix))]
+            ContextSource::Helper { events, .. } => {
+                use crate::rt::FutureExt as _;
+                loop {
+                    let event = events
+                        .recv()
+                        .with_timeout(std::time::Duration::from_secs(20))
+                        .await
+                        .expect("no agent context snapshot within 20 s")
+                        .expect("the connection ended");
+                    if let crate::client::ClientEvent::RemoteAgentContextSnapshotReceived {
+                        snapshot,
+                    } = event
+                    {
+                        return snapshot;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Writes `rel` under `home` atomically (a temp file renamed into place), so a scan that runs
+/// between the create and the write never sees an empty file.
+fn put(home: &std::path::Path, rel: &str, body: &[u8]) {
+    let path = home.join(rel);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let tmp = path.with_extension("tmp-fixture");
+    std::fs::write(&tmp, body).unwrap();
+    std::fs::rename(tmp, path).unwrap();
+}
+
+/// The files both backends are expected to read: two skills and a rule file, plus four that
+/// are left out (not UTF-8, over the size cap, wrong depth, hidden).
+fn write_agent_context_fixture(home: &std::path::Path) {
+    put(home, ".agents/skills/alpha/SKILL.md", b"alpha body");
+    put(home, ".claude/skills/beta/SKILL.md", b"beta body");
+    put(home, ".agents/AGENTS.md", b"be kind");
+    put(home, ".agents/skills/bad/SKILL.md", &[0xff, 0xfe, 0x00]);
+    put(
+        home,
+        ".agents/skills/huge/SKILL.md",
+        &vec![b'a'; crate::shellcmd::agent_context::MAX_FILE_BYTES + 1],
+    );
+    put(home, ".agents/skills/deep/er/SKILL.md", b"no");
+    put(home, ".agents/skills/.hidden/SKILL.md", b"no");
+}
+
+/// The agent-context contract: both backends report the same skills (from `~/.agents/skills` and
+/// `~/.claude/skills`, one level down, UTF-8 only, size-capped), the same global rule file, never
+/// bundled skills, and a higher revision when something changed.
+///
+/// The caller wrote [`write_agent_context_fixture`] before the first snapshot was requested.
+async fn assert_agent_context(name: &str, home: &std::path::Path, source: &mut ContextSource) {
+    use crate::proto::remote_skill_proto::Source;
+
+    let one = source.next().await;
+    let h = home.to_string_lossy().into_owned();
+    assert!(one.revision >= 1, "{name}");
+    assert_eq!(one.home_dir, h, "{name}");
+    let skills: Vec<(String, String)> = one
+        .skills
+        .iter()
+        .map(|s| (s.path.clone(), s.content.clone()))
+        .collect();
+    assert_eq!(
+        skills,
+        vec![
+            (
+                format!("{h}/.agents/skills/alpha/SKILL.md"),
+                "alpha body".into()
+            ),
+            (
+                format!("{h}/.claude/skills/beta/SKILL.md"),
+                "beta body".into()
+            ),
+        ],
+        "{name}"
+    );
+    assert!(
+        one.skills
+            .iter()
+            .all(|s| matches!(s.source, Some(Source::Home(_)))),
+        "{name}: host skills only, never bundled"
+    );
+    assert_eq!(one.global_rules.len(), 1, "{name}");
+    assert_eq!(one.global_rules[0].path, format!("{h}/.agents/AGENTS.md"));
+    assert_eq!(one.global_rules[0].content, "be kind", "{name}");
+
+    // A skill is added: a new, higher revision with all three.
+    put(home, ".agents/skills/gamma/SKILL.md", b"gamma body");
+    let two = source.next().await;
+    assert!(two.revision > one.revision, "{name}");
+    assert_eq!(two.skills.len(), 3, "{name}");
+    assert!(
+        two.skills
+            .iter()
+            .any(|s| s.path == format!("{h}/.agents/skills/gamma/SKILL.md")),
+        "{name}"
+    );
+
+    // The rules file goes away.
+    std::fs::remove_file(home.join(".agents/AGENTS.md")).unwrap();
+    let three = source.next().await;
+    assert!(three.revision > two.revision, "{name}");
+    assert!(three.global_rules.is_empty(), "{name}");
+    assert_eq!(three.skills.len(), 3, "{name}");
+}
+
+#[tokio::test]
+async fn the_shell_backend_reports_the_host_agent_context() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().canonicalize().unwrap();
+    write_agent_context_fixture(&home);
+    let shell = ShellBackend::new(Some(Arc::new(HomeShExecutor { home: home.clone() })));
+    assert_agent_context("shell(local sh)", &home, &mut ContextSource::Shell(shell)).await;
+}
+
+#[cfg(all(feature = "daemon", unix))]
+#[tokio::test]
+async fn the_helper_pushes_the_host_agent_context_on_connect_and_on_change() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().canonicalize().unwrap();
+    let stream = crate::daemon::spawn_in_process_with_home_for_tests(&home);
+    let stream = async_io::Async::new(stream).unwrap();
+    let (reader, writer) = futures::io::AsyncReadExt::split(stream);
+    let executor = executor::Background::default();
+    let (client, events, _host_responses) = RemoteServerClient::new(reader, writer, &executor);
+    let client = Arc::new(client);
+    // The fixture is complete before initialize, which is what triggers the first scan.
+    write_agent_context_fixture(&home);
+    client
+        .initialize(None, crate::client::ClientPreferences::default())
+        .await
+        .unwrap();
+    let mut source = ContextSource::Helper {
+        events,
+        _client: client,
+    };
+    assert_agent_context("helper(in-process daemon)", &home, &mut source).await;
+}
+
+#[tokio::test]
+async fn an_unchanged_host_context_is_not_published_again_and_revisions_only_grow() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().canonicalize().unwrap();
+    put(&home, ".agents/skills/alpha/SKILL.md", b"alpha");
+    let shell = ShellBackend::new(Some(Arc::new(HomeShExecutor { home: home.clone() })));
+    assert!(shell.refresh_agent_context().await.unwrap());
+    let first = match shell.take_pushes().pop() {
+        Some(ShellPush::AgentContext(s)) => s,
+        other => panic!("{other:?}"),
+    };
+    // Same files: nothing queued.
+    assert!(!shell.refresh_agent_context().await.unwrap());
+    assert!(shell.take_pushes().is_empty());
+    // Touching a file that is not a skill or rule changes nothing either.
+    put(&home, ".agents/notes.txt", b"x");
+    assert!(!shell.refresh_agent_context().await.unwrap());
+    // A change: higher revision.
+    put(&home, ".agents/skills/alpha/SKILL.md", b"alpha v2");
+    assert!(shell.refresh_agent_context().await.unwrap());
+    let second = match shell.take_pushes().pop() {
+        Some(ShellPush::AgentContext(s)) => s,
+        other => panic!("{other:?}"),
+    };
+    assert!(second.revision > first.revision);
+}
+
+#[tokio::test]
+async fn the_agent_context_over_every_posix_family_login_shell_wrapper_is_one_script() {
+    // fish and nushell reach `sh -c`; the same section commands must render for all three.
+    for kind in [ShellKind::Posix, ShellKind::Fish, ShellKind::Nu] {
+        let script = Script::new("n0nce")
+            .unwrap()
+            .section(
+                "skills",
+                crate::shellcmd::agent_context::skills_command(kind).unwrap(),
+                StderrMode::Discard,
+            )
+            .unwrap();
+        let rendered = script.render(kind);
+        assert!(rendered.contains("SKILL.md"), "{kind:?}");
+    }
+}
+
+#[tokio::test]
+async fn without_a_channel_the_agent_context_is_unavailable() {
+    let shell = ShellBackend::new(None);
+    let err = shell.refresh_agent_context().await.unwrap_err();
+    assert!(matches!(err, BackendError::Unavailable(_)), "{err:?}");
 }
