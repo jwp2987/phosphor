@@ -2738,3 +2738,18 @@ fast, #1255). Unit tests (`writeable_pty/posix_long_command_tests.rs`):
 line, ~600 KB here-doc over the `fake` ssh host); on a bash 3.2 remote its 2k here-doc step's time is the metric to
 compare with the 86 s of r18u22. Unverified until the box runs it: the block header's display override is keyed by the
 exact wrapper text the shell's preexec reports, which now contains newlines (bash keeps them inside an open quote).
+
+## #1191: large-paste scaling tests (100 KB vs 1 MB)
+
+The causes found by reading the path were already fixed on this base, each by a commit named in the issue's notes: the 1.3-1.8 s
+Enter-to-shell of a 1 MB SINGLE line was the base64 wrapper (db7c0fb4a: a single line is never wrapped under bracketed paste); the
+multi-second UI freeze was per-row layout of the whole buffer (e7fd2738e, be8886829: only the viewport, the ends and the cursor
+rows are laid out, with a self-check and the `PHOSPHOR_EDITOR_FULL_LAYOUT=1` switch) plus per-edit copies and parses (e23bc8304,
+e462b84f4, #1604). What was missing was a test that would catch a quadratic step coming back on the multi-line and Enter side:
+`test_paste_of_a_large_multi_line_buffer_and_the_keystroke_after_it_are_linear_in_its_size` (`terminal/input_test.rs`, the
+single-line twin's body with ~13,000 lines; paste and the keystroke after it at 1 MB cost at most 40x their 100 KB counterparts,
+a quadratic step would be ~100x) and `a_huge_single_line_command_is_written_whole_and_in_linear_time`
+(`writeable_pty/pty_controller_command_bytes_tests.rs`: 100 KB, 1 MB and 3 MB single lines are not wrapped, the written bytes are the
+text exactly inside one bracketed paste, and the 1 MB write is within 40x the 100 KB one). The appci proof stays `big_paste`
+(byte-exact 1 MB / 3 MB, Enter-to-shell and key-to-paint metrics against the 2 ms / 4 ms budgets); a run on the box is what
+confirms the freeze is gone, since these unit tests cannot render.
