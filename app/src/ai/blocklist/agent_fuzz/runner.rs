@@ -120,6 +120,9 @@ async fn drive(
     // The input queues a follow-up behind a running or blocked turn only with these on.
     let _queue_slash = FeatureFlag::QueueSlashCommand.override_enabled(true);
     let _queue_v2 = FeatureFlag::QueuedPromptsV2.override_enabled(true);
+    // The real app enables the question tool (lib.rs flag list); without it no question card is
+    // ever built and I1 would report every ask_user_question as blocked with no card.
+    let _ask_question = FeatureFlag::AskUserQuestion.override_enabled(true);
     let panic_watch = log_capture::PanicWatch::start();
     let knobs = Knobs::from_env();
     let capture = log_capture::install();
