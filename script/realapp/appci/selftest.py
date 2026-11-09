@@ -2822,6 +2822,29 @@ def lab_path_detect_hook_lines_match_the_apps_log_format():
 
 
 @check
+def lab_git_write_remote_mirrors_the_rust_scripts():
+    """P7: the lab case runs the shell backend's git script shape and reads the app's `hop=remote_op` log line; pin both to the Rust text so a change on either side
+    fails here instead of silently testing something else."""
+    import cases_lab_git as G
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    rs = lambda p: open(os.path.join(root, "crates/remote_server/src", p), encoding="utf-8").read()
+    runner = rs("shellcmd/git/runner.rs")
+    assert 'GIT_SSH_COMMAND=\\"${GIT_SSH_COMMAND:-ssh} -o BatchMode=yes\\"' in runner, "GIT_SSH_COMMAND_SH_ASSIGNMENT changed"
+    assert '["GIT_ASKPASS", "SSH_ASKPASS"]' in runner and '("SSH_ASKPASS_REQUIRE", "never")' in runner and '("GIT_TERMINAL_PROMPT", "0")' in runner
+    assert all(x in G.ENV_PREFIX for x in ("-u GIT_ASKPASS", "-u SSH_ASKPASS", "SSH_ASKPASS_REQUIRE=never", "GIT_TERMINAL_PROMPT=0", "-o BatchMode=yes"))
+    parse = rs("shellcmd/git/parse.rs")
+    assert "MERGE_HEAD" in parse and "for f in {names}; do [ -e {dir}/" in parse, "operation_probe_script changed"
+    features = rs("backend/features.rs")
+    assert "hop=remote_op name={} backend=helper ok={}" in features and "hop=remote_op name={} backend=shell ok={}" in features
+    m = G.HOOK_REMOTE_OP.search("INFO hop=remote_op name=git_push backend=shell ok=true")
+    assert m and m.groups() == ("git_push", "shell", "true"), m
+    assert not G.HOOK_REMOTE_OP.search("hop=remote_op name=read_file_context backend=shell ok=true")
+    assert G.sh_c("echo a") == "sh -c 'echo a'"
+    labs = [c["arm"] for c in cases.CASES if c.get("lab") and c["name"].startswith("lab_git_write_remote")]
+    assert {a["shell"] for a in labs} == {"bash", "zsh", "fish", "nu"} and {a["helper"] for a in labs} == {"nohelper", "upload"}, labs
+
+
+@check
 def lab_cases_registry_and_selection():
     import lab as L, run
     labs = [c for c in cases.CASES if c.get("lab")]
@@ -2834,7 +2857,7 @@ def lab_cases_registry_and_selection():
     assert run.unknown_case_names("mode_proof,typo_case", reg) == ["typo_case"]       # exact names are still checked exactly
     # winmap: a lab case is never 'unclassified'; PowerShell pane skips with a reason; p_onesess is skipped on Windows
     base = {n.split(".")[0] for n in names}
-    assert base == {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i", "lab_no_helper_chip", "lab_replay", "lab_password_prompt", "lab_helper_install", "lab_nu_agent_pager_env"}, base
+    assert base == {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i", "lab_no_helper_chip", "lab_replay", "lab_password_prompt", "lab_helper_install", "lab_nu_agent_pager_env", "lab_git_write_remote"}, base
     assert all(c["modes"] == ("terminal",) for c in labs if c["name"].startswith("lab_ssh_drop_reconnect")), "the drop case is terminal-only"
     pw = [c["arm"] for c in labs if c["name"].startswith("lab_password_prompt")]
     assert {a["user"] for a in pw} == {"p_password", "p_kbdint"} and all(a["helper"] == "nohelper" and a["fault"] is None for a in pw), pw     # #1535

@@ -98,11 +98,24 @@ macro_rules! remote_features {
                                             return Err(e);
                                         }
                                     }
-                                    other => return other,
+                                    other => {
+                                        if $mutates {
+                                            log::info!(
+                                                "hop=remote_op name={} backend=helper ok={}",
+                                                stringify!($name), other.is_ok());
+                                        }
+                                        return other;
+                                    }
                                 }
                             }
                         }
-                        self.shell().$name($($arg),+).await
+                        let result = self.shell().$name($($arg),+).await;
+                        if $mutates {
+                            log::info!(
+                                "hop=remote_op name={} backend=shell ok={}",
+                                stringify!($name), result.is_ok());
+                        }
+                        result
                     })
                 }
             )+
