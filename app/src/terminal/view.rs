@@ -19094,6 +19094,9 @@ impl TerminalView {
                     _ => {}
                 }
 
+                // Shell-mode remote features (the file tree without a helper) re-read at the
+                // prompt: remember the command that just finished, tell the manager below.
+                let mut finished_user_command: Option<String> = None;
                 let active_session = self
                     .active_block_session_id()
                     .and_then(|id| self.sessions.as_ref(ctx).get(id));
@@ -19106,12 +19109,30 @@ impl TerminalView {
                             compute(model.block_list())
                         });
                         active_session.note_user_command(command);
+                        finished_user_command = Some(command.to_owned());
                     }
                     if !active_session.has_attempted_to_load_external_commands() {
                         ctx.background_executor()
                             .spawn(async move { active_session.load_external_commands().await })
                             .detach();
                     }
+                }
+                if let (Some(command), Some(session_id)) =
+                    (finished_user_command, self.active_block_session_id())
+                {
+                    // The prompt is back: a shell-mode session re-reads its file tree (at most
+                    // one read in flight; a no-op for a helper session, which pushes its own
+                    // updates, and for a session with nothing indexed).
+                    RemoteServerManager::handle(ctx).update(ctx, |manager, ctx| {
+                        manager.on_remote_refresh_event(
+                            session_id,
+                            remote_server::backend::refresh::RemoteRefreshEvent::Precmd {
+                                cwd: String::new(),
+                                last_cmd: Some(command),
+                            },
+                            ctx,
+                        );
+                    });
                 }
 
                 if let Some(delay) = command_finished_to_precmd_delay {

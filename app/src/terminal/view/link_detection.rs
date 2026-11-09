@@ -801,10 +801,11 @@ impl super::TerminalView {
 
             if FeatureFlag::SshRemoteServer.is_enabled() {
                 if let Some(session_id) = session_id {
-                    return RemoteServerManager::handle(ctx)
-                        .as_ref(ctx)
-                        .host_id_for_session(session_id)
-                        .is_some();
+                    let manager = RemoteServerManager::handle(ctx).as_ref(ctx);
+                    // A helper-connected session, or a no-helper one the shell backend serves
+                    // over its out-of-band channel (both are remote: their files are not local).
+                    return manager.host_id_for_session(session_id).is_some()
+                        || manager.is_shell_mode_session(session_id);
                 }
             }
         }
@@ -853,14 +854,17 @@ impl super::TerminalView {
             return LinkValidationContext::Remote(entry.clone());
         }
 
-        // Get the daemon client for this session.
-        let Some(client) = RemoteServerManager::handle(ctx)
+        // The backend for this session: the helper's `ListDirectory`, or the same listing over
+        // the shell backend when there is no helper. Neither: nothing to validate against.
+        let Some((_, backend)) = RemoteServerManager::handle(ctx)
             .as_ref(ctx)
-            .client_for_session(session_id)
-            .cloned()
+            .backend_for_session(session_id)
         else {
             return LinkValidationContext::Remote(None);
         };
+        if !backend.is_available(remote_server::backend::Family::FsBasic) {
+            return LinkValidationContext::Remote(None);
+        }
 
         // Fetching a new cwd: when over capacity, evict the oldest entry FIFO-style
         // by insertion order, then insert a `None` placeholder (marking it as
@@ -879,7 +883,10 @@ impl super::TerminalView {
         let cwd_for_store = cwd_path.clone();
         let key_for_store = cache_key.clone();
         ctx.spawn(
-            async move { client.list_directory(cwd_for_request).await },
+            async move {
+                use remote_server::backend::RemoteFeatures as _;
+                backend.list_directory(cwd_for_request).await
+            },
             move |me, result, ctx| {
                 use crate::remote_server::proto::list_directory_response;
 
