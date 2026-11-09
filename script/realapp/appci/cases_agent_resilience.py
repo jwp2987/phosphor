@@ -209,7 +209,10 @@ def fault_body(ctx, r, name, kind, arm, off_wait, expect_log, word_hint, min_req
         state = wait_turn(ctx, off, ("error", "cancelled", "success"), off_wait)
         r.metric("%s_turn_s" % name, round(time.time() - t0, 1))
         ctx.shot("%s_failed" % name)
-        r.check(state == "error", "the turn ended in %r (hop=turn), expected `error` after the %s fault" % (state, kind))
+        # A cut stream after output is surfaced (the chunk-error line) and, once actions/text arrived, the app RESUMES the conversation once (recovery_action; pinned by
+        # exhausted_in_stream_recovery_is_terminal_but_a_mid_stream_drop_still_resumes): the turn then ends `success` from the resumed request, never from the cut one.
+        resumed = kind == "disconnect" and "recovery=resume" in ctx.log_since(off)
+        r.check(state == "error" or (resumed and state == "success"), "the turn ended in %r (hop=turn), expected `error` after the %s fault" % (state, kind))
         hit = len(f.fired) - fired0
         r.metric("%s_fault_hits" % name, hit)
         r.metric("%s_requests" % name, f.requests - req0)
@@ -218,7 +221,7 @@ def fault_body(ctx, r, name, kind, arm, off_wait, expect_log, word_hint, min_req
         if min_requests > 1 and kind in ("status",):
             r.check(f.requests - req0 >= min_requests, "no retry before the error: the model got %d request(s) (retry-before-first-byte, stream_recovery.rs)" % (f.requests - req0))
         if kind == "disconnect":
-            r.check(f.requests - req0 == 1, "a stream cut AFTER output was sent was re-sent (%d requests): a retry would repeat output / tool calls" % (f.requests - req0))
+            r.check(f.requests - req0 == (2 if resumed else 1), "a stream cut AFTER output was sent was re-sent %d requests (at most ONE resume, never a verbatim retry)" % (f.requests - req0))
         log = ctx.log_since(off)
         r.check(re.search(expect_log, log, re.I) is not None, "the app log has no failure line matching %r (the error was not surfaced)" % expect_log)
         for p in judge_errors(log):
@@ -226,7 +229,7 @@ def fault_body(ctx, r, name, kind, arm, off_wait, expect_log, word_hint, min_req
         block_text_check(ctx, r, "%s_ocr" % name)
         r.check(not open_actions(log), "agent action(s) left pending after the failure: %s" % open_actions(log))
         r.check(settle_quiet(ctx, f, 8), "the app sent another request on its own after the turn ended in error (an endless retry)")
-        r.check(last_turn_state(ctx.log_since(off)) == "error", "the turn state changed on its own after the error: %r" % last_turn_state(ctx.log_since(off)))
+        r.check(last_turn_state(ctx.log_since(off)) == state, "the turn state changed on its own after it ended: %r (was %r)" % (last_turn_state(ctx.log_since(off)), state))
         # retry: the fault is gone, the same prompt is sent again and the conversation answers
         f.clear_faults()
         f.come_up()
@@ -295,7 +298,8 @@ def c_fault_slow_cancel(ctx, r):
             return
         r.check(ctx.until(lambda: f.fired and f.fired[-1] == "delay", 10), "the delayed request never reached the fake model")
         time.sleep(3.0)
-        r.check(last_turn_state(ctx.log_since(off)) == "in_progress", "during the first-token delay the turn is %r, expected in_progress" % last_turn_state(ctx.log_since(off)))
+        # hop=turn logs only on a CHANGE, and a fresh conversation is created already InProgress, so its first turn logs no line: no line since `off` means still in progress.
+        r.check(last_turn_state(ctx.log_since(off)) in (None, "in_progress"), "during the first-token delay the turn is %r, expected in_progress (or no change from the new conversation's initial in_progress)" % last_turn_state(ctx.log_since(off)))
         ctx.shot("slow_waiting")
         t0 = time.time()
         coff = ctx.log_size()
