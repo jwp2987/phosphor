@@ -2722,3 +2722,7 @@ bounded cwd listing in the remote precmd payload when the cwd changes, cached pe
   Covered by the existing macOS appci cases `flood_scrollback_find` and `remote_heredoc_paste`, which press Cmd-Shift-F,
   Escape, then type a command: before the fix the command was searched, now Escape emits `Event::Close`, the left panel
   closes and the active tab takes focus. Check on the Mac box in the next candidate run.
+- #1645: `search/ai_context_menu/query_gate_tests.rs` `an_enter_typed_after_a_pending_edit_survives_that_edits_query`,
+  `a_different_query_still_cancels_an_enter_waiting_for_a_pending_edit`, `no_edit_is_pending_for_the_newest_query_or_a_fresh_gate`.
+  The Enter carries the filter the buffer holds (`Input::accept_ai_context_menu_item`); an edit event handled after it
+  is that Enter's own query and keeps it. Both input modes share this path (the picker is above the queue).

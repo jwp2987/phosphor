@@ -768,11 +768,26 @@ impl AIContextMenu {
     }
 
     pub fn select_current_item(&mut self, ctx: &mut ViewContext<Self>) {
+        self.select_current_item_after_typing(None, ctx);
+    }
+
+    /// As [`Self::select_current_item`] for an Enter whose editor buffer already holds
+    /// `typed_query` as the filter. If the edit event for it has not reached the menu yet, the
+    /// shown results answer an older query: the Enter waits for `typed_query` and that query's
+    /// arrival does not cancel it (#1645).
+    pub fn select_current_item_after_typing(
+        &mut self,
+        typed_query: Option<String>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let edit_pending = self.query_gate.edit_pending_for(typed_query.as_deref());
         // The query reaches the mixer through a debounce, so right after a key the shown results
         // (or the main-menu filter) answer an older query. Never act on them: wait for the
         // current query's results (event driven; the timer below is only a logged give-up) (#1365).
-        if self.query_gate.is_stale() {
-            let wait_id = self.query_gate.defer_select();
+        if edit_pending || self.query_gate.is_stale() {
+            let wait_id = self
+                .query_gate
+                .defer_select_after(typed_query.filter(|_| edit_pending));
             log::debug!("ai context menu: Enter deferred until results for the typed query arrive");
             let _ = ctx.spawn(
                 async { warpui::r#async::Timer::after(SELECT_WAIT_GIVE_UP).await },

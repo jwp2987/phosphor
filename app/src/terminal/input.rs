@@ -4247,6 +4247,48 @@ impl Input {
             });
     }
 
+    /// The filter text of the open @ picker as the editor's buffer holds it now: the text between
+    /// the `@` and the cursor. The editor's event for the edit that produced it may not have
+    /// reached the menu yet (#1645).
+    fn ai_context_filter_text_now(&self, ctx: &AppContext) -> Option<String> {
+        let InputSuggestionsMode::AIContextMenu {
+            at_symbol_position, ..
+        } = self.suggestions_mode_model.as_ref(ctx).mode()
+        else {
+            return None;
+        };
+        let first_char_pos = at_symbol_position + 1;
+        let cursor_position = self
+            .editor
+            .as_ref(ctx)
+            .start_byte_index_of_last_selection(ctx)
+            .as_usize();
+        let num_chars = cursor_position.saturating_sub(first_char_pos);
+        Some(
+            self.editor
+                .as_ref(ctx)
+                .buffer_text(ctx)
+                .chars()
+                .skip(first_char_pos)
+                .take(num_chars)
+                .collect(),
+        )
+    }
+
+    /// An Enter (or Tab, Right) accepts the @ picker's row. It carries the filter the buffer holds
+    /// now, so an Enter that follows an edit whose event is still queued waits for that edit's
+    /// query instead of being cancelled by it (#1645).
+    fn accept_ai_context_menu_item(&mut self, ctx: &mut ViewContext<Self>) {
+        let typed = self.ai_context_filter_text_now(ctx);
+        self.editor.update(ctx, |editor, ctx| {
+            if let Some(ai_context_menu) = editor.ai_context_menu() {
+                ai_context_menu.update(ctx, |ai_context_menu, ctx| {
+                    ai_context_menu.select_current_item_after_typing(typed, ctx);
+                });
+            }
+        });
+    }
+
     fn handle_ai_context_menu_search(&mut self, is_navigation: bool, ctx: &mut ViewContext<Self>) {
         let InputSuggestionsMode::AIContextMenu {
             at_symbol_position,
@@ -11075,13 +11117,7 @@ impl Input {
                 // If the AI context menu is open and we're at the end of the buffer,
                 // make right arrow act like enter and select the current item
                 if self.suggestions_mode_model.as_ref(ctx).is_ai_context_menu() {
-                    self.editor.update(ctx, |editor, ctx| {
-                        if let Some(ai_context_menu) = editor.ai_context_menu() {
-                            ai_context_menu.update(ctx, |menu, ctx| {
-                                menu.select_current_item(ctx);
-                            });
-                        }
-                    });
+                    self.accept_ai_context_menu_item(ctx);
                 }
             }
             EditorEvent::Enter => self.input_enter(ctx),
@@ -13588,13 +13624,7 @@ impl Input {
             self.suggestions_mode_model.as_ref(ctx).mode(),
             InputSuggestionsMode::AIContextMenu { .. }
         ) {
-            self.editor.update(ctx, |editor, ctx| {
-                if let Some(ai_context_menu) = editor.ai_context_menu() {
-                    ai_context_menu.update(ctx, |ai_context_menu, ctx| {
-                        ai_context_menu.select_current_item(ctx);
-                    });
-                }
-            });
+            self.accept_ai_context_menu_item(ctx);
             return;
         }
         // We have to manually check if "tab" is bound to
@@ -14130,13 +14160,7 @@ impl Input {
                 warpui::input_order::log_hop("enter_menu_accept", || {
                     self.ai_context_menu_enter_detail(true, ctx)
                 });
-                self.editor.update(ctx, |editor, ctx| {
-                    if let Some(ai_context_menu) = editor.ai_context_menu() {
-                        ai_context_menu.update(ctx, |ai_context_menu, ctx| {
-                            ai_context_menu.select_current_item(ctx);
-                        });
-                    }
-                });
+                self.accept_ai_context_menu_item(ctx);
                 return;
             }
 
@@ -14266,13 +14290,7 @@ impl Input {
             warpui::input_order::log_hop("enter_menu_accept", || {
                 self.ai_context_menu_enter_detail(false, ctx)
             });
-            self.editor.update(ctx, |editor, ctx| {
-                if let Some(ai_context_menu) = editor.ai_context_menu() {
-                    ai_context_menu.update(ctx, |ai_context_menu, ctx| {
-                        ai_context_menu.select_current_item(ctx);
-                    });
-                }
-            });
+            self.accept_ai_context_menu_item(ctx);
             return;
         } else if self
             .suggestions_mode_model
