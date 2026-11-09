@@ -3157,6 +3157,9 @@ struct WrittenSubshellSetup {
     /// Prompt-shaped lines drawn after our echo ended, with no marker between (R7).
     fresh_prompts_after_echo: u32,
     last_prompt_position: Option<(usize, usize, usize)>,
+    /// Where the output stood when our echo was first seen ended: a fresh prompt is one drawn
+    /// AFTER that (a prompt already on screen when the echo ended is not the shell's answer).
+    echo_end_position: Option<(usize, usize, usize)>,
     /// A relay's E-UNSUPPORTED suspicion and its confirmation net (hand-back only, never a write).
     unsupported_suspect_since: Option<Instant>,
     /// The termios probe, sampled on the KEY path while written (R8: a secret read is seen at the
@@ -23287,6 +23290,7 @@ impl TerminalView {
             marker_count_at_write: 0,
             fresh_prompts_after_echo: 0,
             last_prompt_position: None,
+            echo_end_position: None,
             unsupported_suspect_since: None,
             secret_probe: None,
             generation: self.subshell_setup_generation,
@@ -23349,6 +23353,7 @@ impl TerminalView {
         written.marker_count_at_write = marker_count;
         written.fresh_prompts_after_echo = 0;
         written.last_prompt_position = None;
+        written.echo_end_position = None;
         written.unsupported_suspect_since = None;
         written.secret_probe = secret_probe;
         let _ = ctx;
@@ -23375,9 +23380,14 @@ impl TerminalView {
             look.tail
         };
         let echo_ended = look.echo_lines_ended > 0;
+        if echo_ended && written.echo_end_position.is_none() {
+            // The first look that sees the echo ended: a prompt is fresh only once the output
+            // moved past here (R7: stream order, the prompt AFTER the echo).
+            written.echo_end_position = Some(look.position);
+        }
         if echo_ended
             && tail == Tail::ShellPrompt
-            && look.position != written.baseline
+            && written.echo_end_position != Some(look.position)
             && written.last_prompt_position != Some(look.position)
         {
             written.fresh_prompts_after_echo += 1;
@@ -23780,10 +23790,10 @@ impl TerminalView {
             return;
         }
         let alt_screen = self.model.lock().is_alt_screen_active();
-        if alt_screen || self.setup_write_must_wait_for_the_line() {
+        let line_dirty = self.setup_write_must_wait_for_the_line();
+        if alt_screen || line_dirty {
             log::info!(
-                "tmux control-mode setup waits: alt_screen={alt_screen} line_dirty={} (Q11)",
-                !alt_screen
+                "tmux control-mode setup waits: alt_screen={alt_screen} line_dirty={line_dirty} (Q11)"
             );
             return;
         }
