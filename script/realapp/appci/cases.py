@@ -5315,7 +5315,10 @@ graph TD
 
 Closing paragraph.
 """
-MD_SMALL_TEXT = ("phosphormdprobe", "zebraapple", "quinceberry")           # heading + table cells (lower-cased, spaces stripped)
+# heading + table cells (lower-cased, spaces stripped). The heading needle is "mdprobe", not the whole "phosphormdprobe": in agent mode the
+# left panel shows conversation rows, and a pointer left over one of them (the harness never moves it) makes the app draw that row's hover
+# card over the viewer's top-left, covering the heading's first letters (#1824). The rest of the heading and the table still prove the render.
+MD_SMALL_TEXT = ("mdprobe", "zebraapple", "quinceberry")
 MD_SMALL_DIAGRAM = ("alphanodestart", "betanodemiddle", "gammanodeend")    # mermaid node labels, drawn from the SVG
 
 
