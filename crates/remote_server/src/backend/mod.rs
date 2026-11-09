@@ -21,6 +21,7 @@ mod helper;
 pub mod refresh;
 mod router;
 mod shell;
+mod shell_git_runner;
 
 #[cfg(test)]
 mod contract_tests;
@@ -32,6 +33,7 @@ pub use features::{METHODS, RemoteFeatures};
 pub use helper::HelperBackend;
 pub use router::{AlwaysShell, BackendKind, FeatureRouter, HelperProbe, RoutedBackend, decide};
 pub use shell::ShellBackend;
+pub use shell_git_runner::ShellGitRunner;
 
 use crate::capability;
 use crate::client::ClientError;

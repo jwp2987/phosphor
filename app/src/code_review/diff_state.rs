@@ -80,144 +80,16 @@ const BIDI_CHARS: [char; 9] = [
     '\u{2069}', // POP DIRECTIONAL ISOLATE
 ];
 
-/// Represents the status of a file in the git working directory
-/// This matches Git Desktop's AppFileStatusKind enum
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum GitFileStatus {
-    New,
-    Modified,
-    Deleted,
-    Renamed { old_path: String },
-    Copied { old_path: String },
-    Untracked,
-    Conflicted,
-}
-
-impl GitFileStatus {
-    pub fn is_renamed(&self) -> bool {
-        matches!(self, Self::Renamed { .. })
-    }
-
-    pub fn is_new_file(&self) -> bool {
-        matches!(self, Self::New | Self::Untracked)
-    }
-}
-
-/// Where a file's changes sit relative to the index (Zap #329).
-///
-/// Derived from the `XY` column of `git status --porcelain=v2`: `X` is the
-/// index-vs-HEAD state and `Y` the worktree-vs-index state, so `X != '.'`
-/// means "something is staged" and `Y != '.'` means "something is not".
-///
-/// Deliberately *not* stored on [`GitFileStatus`]: that enum answers "what
-/// kind of change is this" and is shared with the base-branch diff modes,
-/// which have no index at all. This answers a different question, and is
-/// carried as an `Option` on [`FileDiff`] so those modes can say "not
-/// applicable" instead of lying with `Unstaged`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum FileStagedState {
-    /// The whole diff for this path is in the index (`XY` = `X.`).
-    Staged,
-    /// Nothing for this path is in the index (`XY` = `.Y`, or untracked).
-    Unstaged,
-    /// Both columns are dirty (`XY` = `XY`): some of this file is staged and
-    /// some is not, so neither a plain "stage" nor "unstage" label is honest.
-    PartiallyStaged,
-}
-
-impl FileStagedState {
-    /// Whether *any* part of this file is in the index.
-    pub fn is_staged(&self) -> bool {
-        matches!(self, Self::Staged | Self::PartiallyStaged)
-    }
-
-    /// Whether the file's whole diff is in the index — the predicate the UI
-    /// uses to pick between the stage and unstage affordance. A partially
-    /// staged file gets the *stage* action, because `git add` on it stages
-    /// the remainder rather than discarding what is already staged.
-    pub fn is_fully_staged(&self) -> bool {
-        matches!(self, Self::Staged)
-    }
-
-    /// Reads the `XY` status field of a `git status --porcelain=v2` changed
-    /// or renamed entry. Anything that is not a two-column code (an untracked
-    /// or unmerged entry, or malformed input) is reported as unstaged, which
-    /// is what both of those are: an untracked path has no index entry, and an
-    /// unmerged one cannot be staged without resolving the conflict first.
-    fn from_status_code(status_code: &str) -> Self {
-        let mut chars = status_code.chars();
-        let (Some(index), Some(worktree)) = (chars.next(), chars.next()) else {
-            return Self::Unstaged;
-        };
-        match (index != '.', worktree != '.') {
-            (true, true) => Self::PartiallyStaged,
-            (true, false) => Self::Staged,
-            (false, _) => Self::Unstaged,
-        }
-    }
-}
-
-/// What a single staging operation applies to (Zap #329).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum StageTarget {
-    /// Whole files, by **repo-relative** path. Absolute paths would work for
-    /// the local backend and silently mean the wrong thing on the daemon,
-    /// whose repo lives at a different absolute prefix.
-    Paths(Vec<String>),
-    /// One reconstructed hunk patch from [`hunk_to_patch`], applied with
-    /// `git apply --cached`.
-    ///
-    /// The patch's line numbers are those of the diff it was built from, so a
-    /// caller must re-diff between operations rather than queueing several
-    /// hunks from one snapshot — see [`hunk_to_patch`]'s note. `git apply`
-    /// verifies context and rejects a stale patch, so getting this wrong
-    /// fails loudly instead of corrupting the index.
-    Hunk(String),
-}
-
-/// One stage/unstage operation. Shared by the local backend, the remote
-/// backend, and the daemon handler so all three express the same vocabulary.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct StageRequest {
-    pub target: StageTarget,
-    /// Un-stage rather than stage. For [`StageTarget::Paths`] this is
-    /// `git restore --staged` (index only — the working tree is untouched,
-    /// unlike the Discard Files path, which also passes `--worktree`); for
-    /// [`StageTarget::Hunk`] it is `git apply --cached --reverse`.
-    pub unstage: bool,
-}
+// The status/staging vocabulary lives in `remote_server::shellcmd::git` so the app, the helper
+// and the shell backend share one definition (P5).
+pub use remote_server::shellcmd::git::{
+    FileStagedState, GitFileStatus, GitStatusEntry, StageRequest, StageTarget,
+};
 
 #[derive(Clone, Debug)]
 pub struct FileStatusInfo {
     pub path: PathBuf,
     pub status: GitFileStatus,
-}
-
-/// One parsed `git status --porcelain=v2` entry, carrying the index state
-/// alongside the change kind.
-///
-/// [`LocalDiffStateModel::parse_git_status`] keeps returning bare
-/// `(path, status)` pairs because its five callers only ever wanted those;
-/// only the HEAD-mode diff builder needs the staged column, and it calls
-/// [`LocalDiffStateModel::parse_git_status_entries`] directly.
-#[derive(Clone, Debug, PartialEq)]
-pub struct GitStatusEntry {
-    pub path: PathBuf,
-    pub status: GitFileStatus,
-    pub staged: FileStagedState,
-}
-
-impl TryFrom<&str> for GitFileStatus {
-    type Error = anyhow::Error;
-
-    fn try_from(status_code: &str) -> Result<Self> {
-        match status_code {
-            ".M" | "M." | "MM" => Ok(GitFileStatus::Modified),
-            ".A" | "A." | "AM" => Ok(GitFileStatus::New),
-            ".D" | "D." | "AD" => Ok(GitFileStatus::Deleted),
-            _ => Ok(GitFileStatus::Modified), // Default fallback
-        }
-    }
 }
 
 /// Represents a single line in a diff hunk, as rendered by `git diff`.
@@ -913,158 +785,6 @@ impl LocalDiffStateModel {
         // Noop on WASM builds.
     }
 
-    /// Stashes uncommitted changes for specific files
-    #[cfg(feature = "local_fs")]
-    async fn stash_uncommitted_changes(repo_path: &Path, relative_paths: &[String]) -> Result<()> {
-        let app_id = ChannelState::app_id();
-        let app_name = app_id.application_name();
-        let msg = if relative_paths.len() == 1 {
-            format!("{app_name}: stash {}", relative_paths[0])
-        } else {
-            format!("{app_name}: stash {} files", relative_paths.len())
-        };
-
-        let mut stash_args = vec!["stash", "push", "-u", "-m", msg.as_str(), "--"];
-        for path in relative_paths {
-            stash_args.push(path.as_str());
-        }
-
-        log::debug!(
-            "[GIT OPERATION] diff_state.rs stash_uncommitted_changes git {}",
-            stash_args.join(" ")
-        );
-        let stash_res = run_git_command(repo_path, &stash_args).await;
-
-        match stash_res {
-            Ok(_) => Ok(()),
-            Err(err) => {
-                let err_msg = err.to_string();
-                // If there are no local changes to stash, git stash will fail
-                // In this case, we can safely ignore the error
-                if err_msg.contains("No local changes to save") {
-                    Ok(())
-                } else {
-                    let context = if relative_paths.len() == 1 {
-                        relative_paths[0].clone()
-                    } else {
-                        format!("{} files", relative_paths.len())
-                    };
-                    Err(anyhow!(
-                        "Failed to stash changes for {}: {}",
-                        context,
-                        err_msg
-                    ))
-                }
-            }
-        }
-    }
-    /// Runs git restore and git clean for one or more files
-    #[cfg(feature = "local_fs")]
-    async fn git_restore_and_clean(
-        repo_path: &Path,
-        relative_paths: &[String],
-        branch: &str,
-    ) -> Result<()> {
-        let source_arg = format!("--source={branch}");
-        let mut restore_args = vec![
-            "restore",
-            "--staged",
-            "--worktree",
-            source_arg.as_str(),
-            "--",
-        ];
-        for path in relative_paths {
-            restore_args.push(path.as_str());
-        }
-
-        log::debug!(
-            "[GIT OPERATION] diff_state.rs git_restore_and_clean git {}",
-            restore_args.join(" ")
-        );
-        let restore_res = run_git_command(repo_path, &restore_args).await;
-
-        match restore_res {
-            Ok(_) => {
-                // Clean untracked files for these specific paths
-                let mut clean_args = vec!["clean", "-fd"];
-                for path in relative_paths {
-                    clean_args.push(path.as_str());
-                }
-                log::debug!(
-                    "[GIT OPERATION] diff_state.rs git_restore_and_clean git {}",
-                    clean_args.join(" ")
-                );
-                let clean_res = run_git_command(repo_path, &clean_args).await;
-
-                match clean_res {
-                    Ok(_) => Ok(()),
-                    Err(err) => {
-                        log::warn!("Failed to clean untracked files: {err}");
-                        Ok(())
-                    }
-                }
-            }
-            Err(err) => {
-                let err_msg = err.to_string();
-                if branch == "HEAD" && err_msg.contains("could not resolve HEAD") {
-                    let mut clean_args = vec!["clean", "-fd"];
-                    for path in relative_paths {
-                        clean_args.push(path.as_str());
-                    }
-                    log::debug!(
-                        "[GIT OPERATION] diff_state.rs git_restore_and_clean git {}",
-                        clean_args.join(" ")
-                    );
-                    let clean_res = run_git_command(repo_path, &clean_args).await;
-                    if let Err(err) = clean_res {
-                        log::warn!("Failed to clean untracked files: {err}");
-                    }
-                    Ok(())
-                } else if err_msg.contains("did not match any file(s) known to git") {
-                    // If some files don't exist in the branch, we need to remove them
-                    for file_path in relative_paths {
-                        log::debug!(
-                            "[GIT OPERATION] diff_state.rs git_restore_and_clean git rm -f -- {file_path}"
-                        );
-                        let rm_res =
-                            run_git_command(repo_path, &["rm", "-f", "--", file_path.as_str()])
-                                .await;
-
-                        if let Err(rm_err) = rm_res {
-                            let rm_err_msg = rm_err.to_string();
-                            if rm_err_msg.contains("did not match any files") {
-                                // if the file was staged but it isn't in the working directory,
-                                // e.g. it was locally deleted
-                                log::debug!(
-                                    "[GIT OPERATION] diff_state.rs git_restore_and_clean git reset -- {file_path}"
-                                );
-                                if let Err(e) =
-                                    run_git_command(repo_path, &["reset", "--", file_path.as_str()])
-                                        .await
-                                {
-                                    log::warn!("Failed to unstage file '{file_path}': {e}");
-                                }
-                            } else {
-                                log::warn!("Failed to remove file '{file_path}': {rm_err_msg}");
-                            }
-                        }
-
-                        if let Err(e) = fs::remove_file(repo_path.join(file_path)) {
-                            if e.kind() != std::io::ErrorKind::NotFound {
-                                log::warn!(
-                                    "Failed to remove file '{file_path}' from filesystem: {e}"
-                                );
-                            }
-                        }
-                    }
-                    Ok(())
-                } else {
-                    Err(err)
-                }
-            }
-        }
-    }
-
     /// Removes files based on the operation type
     ///
     /// `pub(crate)` rather than private: the remote-server daemon's
@@ -1079,95 +799,46 @@ impl LocalDiffStateModel {
         should_stash: bool,
         branch: &str,
     ) -> Result<()> {
-        let mut renamed_file_infos = Vec::new();
-        let mut other_file_infos = Vec::new();
+        let app_id = ChannelState::app_id();
+        let app_name = app_id.application_name();
 
-        for info in file_infos {
-            if matches!(info.status, GitFileStatus::Renamed { .. }) {
-                renamed_file_infos.push(info);
-            } else {
-                other_file_infos.push(info);
-            }
-        }
-
-        // Handle renamed files specially
-        if !renamed_file_infos.is_empty() {
-            if branch == "HEAD" && should_stash {
-                let renamed_paths: Vec<String> = renamed_file_infos
-                    .iter()
-                    .map(|info| match info.path.strip_prefix(repo_path) {
-                        Ok(rel_path) => rel_path.to_string_lossy().to_string(),
-                        Err(_) => info.path.to_string_lossy().to_string(),
-                    })
-                    .collect();
-                Self::stash_uncommitted_changes(repo_path, &renamed_paths).await?;
-
-                for info in &renamed_file_infos {
-                    if let GitFileStatus::Renamed { old_path } = &info.status {
-                        log::debug!(
-                            "[GIT OPERATION] diff_state.rs discard_files_impl git restore --staged --worktree -- {old_path}"
-                        );
-                        let _ = run_git_command(
-                            repo_path,
-                            &["restore", "--staged", "--worktree", "--", old_path],
-                        )
-                        .await;
-                    }
-                }
-            } else {
-                for info in renamed_file_infos {
-                    if let GitFileStatus::Renamed { old_path } = &info.status {
-                        let relative_new_path = match info.path.strip_prefix(repo_path) {
-                            Ok(rel) => rel.to_string_lossy().to_string(),
-                            Err(_) => info.path.to_string_lossy().to_string(),
-                        };
-
-                        // Remove the new file
-                        log::debug!(
-                            "[GIT OPERATION] diff_state.rs discard_files_impl git rm -f -- {relative_new_path}"
-                        );
-                        if let Err(e) =
-                            run_git_command(repo_path, &["rm", "-f", "--", &relative_new_path])
-                                .await
-                        {
-                            log::warn!("Failed to remove renamed file '{relative_new_path}': {e}");
-                        }
-
-                        // Restore the old file from the branch using git checkout
-                        // We use checkout instead of restore because the old path doesn't exist in the
-                        // working directory yet, and git restore requires the path to exist
-                        log::debug!(
-                            "[GIT OPERATION] diff_state.rs discard_files_impl git checkout {branch} -- {old_path}"
-                        );
-                        if let Err(e) =
-                            run_git_command(repo_path, &["checkout", branch, "--", old_path]).await
-                        {
-                            log::error!(
-                                "Failed to restore old file '{old_path}' from branch '{branch}': {e}"
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
-        // Handle other files normally
-        if !other_file_infos.is_empty() {
-            let relative_paths: Vec<String> = other_file_infos
-                .iter()
-                .map(|info| match info.path.strip_prefix(repo_path) {
+        // Paths are made repo-relative here; the git sequence itself (rename handling, stash,
+        // restore, clean, rm fallbacks) is `remote_server::shellcmd::git::discard_files`, shared
+        // with the helper and the shell backend.
+        let targets = file_infos
+            .into_iter()
+            .map(|info| {
+                let rel_path = match info.path.strip_prefix(repo_path) {
                     Ok(rel_path) => rel_path.to_string_lossy().to_string(),
                     Err(_) => info.path.to_string_lossy().to_string(),
-                })
-                .collect();
+                };
+                let renamed_from = match info.status {
+                    GitFileStatus::Renamed { old_path } => Some(old_path),
+                    _ => None,
+                };
+                remote_server::shellcmd::git::DiscardTarget {
+                    rel_path,
+                    renamed_from,
+                }
+            })
+            .collect();
 
-            if branch == "HEAD" && should_stash {
-                Self::stash_uncommitted_changes(repo_path, &relative_paths).await?;
-            } else {
-                Self::git_restore_and_clean(repo_path, &relative_paths, branch).await?;
-            }
-        }
-        Ok(())
+        remote_server::shellcmd::git::discard_files(
+            &crate::util::git::LocalGitRunner::default(),
+            repo_path,
+            targets,
+            should_stash,
+            branch,
+            &app_name,
+            &|file_path| {
+                if let Err(e) = fs::remove_file(repo_path.join(file_path)) {
+                    if e.kind() != std::io::ErrorKind::NotFound {
+                        log::warn!("Failed to remove file '{file_path}' from filesystem: {e}");
+                    }
+                }
+            },
+        )
+        .await
     }
 
     /// Discard changes for one or more files
@@ -1963,23 +1634,7 @@ impl LocalDiffStateModel {
     /// Binary files (`-\t-`) count as 0. A rename/copy entry is
     /// `<add>\t<del>\t\0<old>\0<new>\0`, so its two path tokens are skipped.
     pub(crate) fn sum_numstat_z(output: &str) -> (usize, usize) {
-        let mut tokens = output.split('\0');
-        let (mut additions, mut deletions) = (0usize, 0usize);
-        while let Some(token) = tokens.next() {
-            let mut fields = token.splitn(3, '\t');
-            let (Some(added), Some(removed), Some(path)) =
-                (fields.next(), fields.next(), fields.next())
-            else {
-                continue;
-            };
-            additions += added.parse().unwrap_or(0);
-            deletions += removed.parse().unwrap_or(0);
-            if path.is_empty() {
-                tokens.next();
-                tokens.next();
-            }
-        }
-        (additions, deletions)
+        remote_server::shellcmd::git::sum_numstat_z(output)
     }
 
     async fn file_statuses_against_head(repo_path: &Path) -> Result<Vec<GitStatusEntry>> {
@@ -2642,159 +2297,11 @@ impl LocalDiffStateModel {
             .collect())
     }
 
-    /// Parses git status output to get changed files and their status
-    /// This handles porcelain=2 format to match git desktop implementation
-    ///
-    /// Also keeps the index (`X`) column, which the tuple-returning
-    /// [`Self::parse_git_status`] drops — see [`FileStagedState`] (Zap #329).
+    /// Parses git status output to get changed files and their status (porcelain=2).
+    /// The parser is `remote_server::shellcmd::git::parse_status_entries`, shared with the
+    /// helper and the shell backend.
     pub(crate) fn parse_git_status_entries(status_output: &str) -> Result<Vec<GitStatusEntry>> {
-        if status_output.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut files = Vec::new();
-        let tokens: Vec<&str> = status_output.split('\0').collect();
-
-        let mut i = 0;
-        while i < tokens.len() {
-            let token = tokens[i];
-
-            if token.is_empty() {
-                i += 1;
-                continue;
-            }
-
-            // Skip header lines that start with '#'
-            if token.starts_with("# ") {
-                i += 1;
-                continue;
-            }
-
-            let entry_kind = token.chars().next().unwrap_or('?');
-
-            match entry_kind {
-                '1' => {
-                    // Changed entry: 1 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <path>
-                    // Use splitn to preserve spaces in filenames (the path is the last field).
-                    let parts: Vec<&str> = token.splitn(9, ' ').collect();
-                    if parts.len() >= 9 {
-                        let status_code = parts[1];
-                        let path = parts[8];
-
-                        let status = Self::map_status_code(status_code).map_err(|e| {
-                            anyhow!(
-                                "Invalid status code '{}' for path '{}': {}",
-                                status_code,
-                                path,
-                                e
-                            )
-                        })?;
-                        files.push(GitStatusEntry {
-                            path: PathBuf::from(path),
-                            status,
-                            staged: FileStagedState::from_status_code(status_code),
-                        });
-                    } else {
-                        log::warn!(
-                            "Invalid format for changed entry: '{token}' - expected at least 9 parts, got {}",
-                            parts.len()
-                        );
-                    }
-                }
-                '2' => {
-                    // Renamed/copied entry: 2 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <X><score> <path><sep><origPath>
-                    // Use splitn to preserve spaces in filenames (the path is the last field).
-                    let parts: Vec<&str> = token.splitn(10, ' ').collect();
-                    if parts.len() >= 10 {
-                        let status_code = parts[1];
-                        let path = parts[9];
-
-                        // Get the old path from the next token
-                        let old_path = if i + 1 < tokens.len() {
-                            tokens[i + 1].to_string()
-                        } else {
-                            log::warn!("Missing old path for renamed/copied entry: '{token}'");
-                            String::new()
-                        };
-
-                        let status = if status_code.starts_with('R') {
-                            GitFileStatus::Renamed { old_path }
-                        } else if status_code.starts_with('C') {
-                            GitFileStatus::Copied { old_path }
-                        } else {
-                            Self::map_status_code(status_code).map_err(|e| {
-                                anyhow!(
-                                    "Invalid status code '{}' for renamed/copied path '{}': {}",
-                                    status_code,
-                                    path,
-                                    e
-                                )
-                            })?
-                        };
-
-                        files.push(GitStatusEntry {
-                            path: PathBuf::from(path),
-                            status,
-                            staged: FileStagedState::from_status_code(status_code),
-                        });
-                        i += 1; // Skip the old path token
-                    } else {
-                        log::warn!(
-                            "Invalid format for renamed/copied entry: '{token}' - expected at least 10 parts, got {}",
-                            parts.len()
-                        );
-                    }
-                }
-                'u' => {
-                    // Unmerged entry: u <xy> <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path>
-                    // Use splitn to preserve spaces in filenames (the path is the last field).
-                    let parts: Vec<&str> = token.splitn(11, ' ').collect();
-                    if parts.len() >= 11 {
-                        let path = parts[10];
-                        // An unmerged path cannot be staged until the conflict
-                        // is resolved, so it is never reported as staged.
-                        files.push(GitStatusEntry {
-                            path: PathBuf::from(path),
-                            status: GitFileStatus::Conflicted,
-                            staged: FileStagedState::Unstaged,
-                        });
-                    } else {
-                        log::warn!(
-                            "Invalid format for unmerged entry: '{}' - expected at least 11 parts, got {}",
-                            token,
-                            parts.len()
-                        );
-                    }
-                }
-                '?' => {
-                    // Untracked entry: ? <path>
-                    if token.len() > 2 {
-                        let path = &token[2..]; // Skip "? "
-                        files.push(GitStatusEntry {
-                            path: PathBuf::from(path),
-                            status: GitFileStatus::Untracked,
-                            // Untracked means "no index entry at all".
-                            staged: FileStagedState::Unstaged,
-                        });
-                    } else {
-                        log::warn!(
-                            "Invalid format for untracked entry: '{token}' - expected path after '? '"
-                        );
-                    }
-                }
-                '!' => {
-                    // Ignored entry: ! <path>
-                    // We skip ignored files
-                }
-                _ => {
-                    // Unknown entry type, skip
-                    log::debug!("Unknown git status entry type '{entry_kind}' in token: '{token}'");
-                }
-            }
-
-            i += 1;
-        }
-
-        Ok(files)
+        remote_server::shellcmd::git::parse_status_entries(status_output)
     }
 
     /// Get binary files using git diff --numstat
@@ -3257,80 +2764,10 @@ impl LocalDiffStateModel {
         diff_output.chars().any(|c| BIDI_CHARS.contains(&c))
     }
 
-    /// Parses git diff --name-status output with -z flag (null-separated)
-    /// Format: status<null>filename<null>status<null>filename<null>...
-    /// For renamed/copied files: status<null>old_path<null>new_path<null>
+    /// Parses git diff --name-status output with -z flag (null-separated); see
+    /// `remote_server::shellcmd::git::parse_name_status`.
     fn parse_git_diff_name_status(diff_output: &str) -> Result<Vec<(PathBuf, GitFileStatus)>> {
-        if diff_output.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let mut files = Vec::new();
-        let tokens: Vec<&str> = diff_output.split('\0').collect();
-
-        let mut i = 0;
-        while i < tokens.len() {
-            let token = tokens[i].trim();
-            if token.is_empty() {
-                i += 1;
-                continue;
-            }
-
-            // First token should be the status (M, A, D, R, C, etc.)
-            let status_char = token.chars().next().unwrap_or('M');
-
-            // Next token should be the file path
-            if i + 1 >= tokens.len() {
-                // No filename following the status, skip
-                i += 1;
-                continue;
-            }
-
-            let mut file_path = tokens[i + 1].trim();
-            if file_path.is_empty() {
-                i += 2;
-                continue;
-            }
-
-            let status = match status_char {
-                'A' => GitFileStatus::New,
-                'M' => GitFileStatus::Modified,
-                'D' => GitFileStatus::Deleted,
-                'R' => {
-                    // For renamed files: R<score> <null> old_path <null> new_path <null>
-                    // We need to get the old path from the next token
-                    if i + 2 < tokens.len() {
-                        let old_path = file_path;
-                        file_path = tokens[i + 2].trim();
-                        i += 1; // Skip the new path token (we'll increment again at the end)
-                        GitFileStatus::Renamed {
-                            old_path: old_path.to_string(),
-                        }
-                    } else {
-                        GitFileStatus::Modified
-                    }
-                }
-                'C' => {
-                    // For copied files: C<score> <null> new_path <null> old_path <null>
-                    // We need to get the old path from the next token
-                    if i + 2 < tokens.len() {
-                        let old_path = tokens[i + 2].trim().to_string();
-                        i += 1; // Skip the old path token (we'll increment again at the end)
-                        GitFileStatus::Copied { old_path }
-                    } else {
-                        GitFileStatus::Modified
-                    }
-                }
-                _ => GitFileStatus::Modified,
-            };
-
-            files.push((PathBuf::from(file_path), status));
-
-            // Move to next status token (skip status + filename, or status + old_path + new_path for R/C)
-            i += 2;
-        }
-
-        Ok(files)
+        remote_server::shellcmd::git::parse_name_status(diff_output)
     }
 
     /// Get binary files using git diff --numstat against a specific commit
@@ -3350,28 +2787,19 @@ impl LocalDiffStateModel {
             }
         };
 
-        let mut diff_metadata = std::collections::HashMap::new();
-
-        for line in numstat_output.lines() {
-            if line.is_empty() {
-                continue;
-            }
-
-            let parts: Vec<&str> = line.split('\t').collect();
-            if parts.len() >= 3 {
-                let additions = parts[0];
-                let deletions = parts[1];
-                let filename = parts[2];
-
-                let metadata = GitNumStatMetadata {
-                    lines_added: additions.parse().unwrap_or(0),
-                    lines_removed: deletions.parse().unwrap_or(0),
-                    is_binary_file: additions == "-" && deletions == "-",
-                };
-
-                diff_metadata.insert(PathBuf::from(filename), metadata);
-            }
-        }
+        let diff_metadata = remote_server::shellcmd::git::parse_numstat_map(&numstat_output)
+            .into_iter()
+            .map(|(path, stat)| {
+                (
+                    path,
+                    GitNumStatMetadata {
+                        lines_added: stat.lines_added,
+                        lines_removed: stat.lines_removed,
+                        is_binary_file: stat.is_binary_file,
+                    },
+                )
+            })
+            .collect();
 
         Ok(diff_metadata)
     }
@@ -3406,9 +2834,6 @@ impl LocalDiffStateModel {
     }
 
     /// Maps git status codes to GitFileStatus
-    fn map_status_code(status_code: &str) -> Result<GitFileStatus> {
-        GitFileStatus::try_from(status_code)
-    }
 
     fn changes_vs_main_branch_label(&self) -> String {
         let main_branch_name = self.get_main_branch_name().unwrap_or("main".to_string());

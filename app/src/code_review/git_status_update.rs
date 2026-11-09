@@ -687,11 +687,7 @@ impl LocalGitRepoStatusModel {
     }
 
     fn parse_branch_tracking_counts(output: &str) -> Option<(u32, u32, u32)> {
-        let mut parts = output.split_whitespace();
-        let ahead = parts.next()?.parse().ok()?;
-        let behind = parts.next()?.parse().ok()?;
-        let equivalent = parts.next().map(str::parse).transpose().ok()?.unwrap_or(0);
-        Some((ahead, behind, equivalent))
+        remote_server::shellcmd::git::parse_tracking_counts(output)
     }
 
     /// Compute the ahead/behind (or rebased) tracking status of `current_branch_name`
