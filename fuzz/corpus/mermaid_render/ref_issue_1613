@@ -1,0 +1,8 @@
+graph TD
+    Start[Start Node] --> Decide{Is it ready?}
+    Decide -->|Yes| Ship[Ship It]
+    Decide0 -->|No| Fix[Fix Thi[Ship It]
+    Decide -->|No| Fix[Fix Things]
+    Fix ngs]
+    Fix --> Decide
+    Ship --> Done((Finished))
