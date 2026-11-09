@@ -3031,7 +3031,7 @@ def ref_terminal(ctx):
         ctx.prof.ref_active = True
         ref_prompts0 = ctx.prompts()        # the reference shell's own prompt.log (refctl), before this launch
         ctx.prof.ref_active = False
-        rr = subprocess.run(["open", "-a", "Terminal", cmdf], capture_output=True, timeout=20)
+        rr = refterm_mac.launch(cmdf)          # #1826: no state restoration (-ApplePersistenceIgnoreState), the only Terminal.app launch path
         if rr.returncode != 0:
             ctx.ref_reason = "open -a Terminal failed: %s" % rr.stderr.decode().strip()[:120]
             return None

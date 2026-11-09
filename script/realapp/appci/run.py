@@ -482,6 +482,15 @@ def main():
                     traceback.print_exc()
                 finally:
                     disarm()
+                if a.backend == "mac" and not sim:      # #1826: a case that left a harness-started Terminal.app (with windows) running names itself in its row
+                    try:
+                        import refterm_mac
+                        leak = refterm_mac.case_guard(c["name"])
+                        if leak:
+                            r.note(leak)
+                            print("LEAK " + leak, flush=True)
+                    except Exception as e:
+                        r.note("terminal leak guard failed: %r" % (e,))
                 if k_start is not None and a.backend in ("wayland", "x11", "mac") and not sim:
                     try:       # informational (#1509): injector sent N; app saw M; lost-before-app K
                         txt, acct = injacct.account(be.calls[k_start:], list(ctx.extra_logs) + [log_path] if ctx.extra_logs else log_path, c["name"])
