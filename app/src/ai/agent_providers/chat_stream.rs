@@ -4956,6 +4956,28 @@ fn tool_calls_to_dispatch(params: &RequestParams, calls: Vec<ToolCall>) -> Vec<T
     calls
 }
 
+/// Gives a call with an empty `call_id` an id: the n-th empty-id call takes the n-th id the
+/// stream already invented for its chunk (so the streamed call and the End event's captured
+/// copy are ONE call, not two, #1851), and a fresh uuid once those run out.
+fn assign_empty_call_ids(
+    calls: impl IntoIterator<Item = ToolCall>,
+    invented: &[String],
+) -> Vec<ToolCall> {
+    let mut next = invented.iter();
+    calls
+        .into_iter()
+        .map(|mut call| {
+            if call.call_id.is_empty() {
+                call.call_id = next
+                    .next()
+                    .cloned()
+                    .unwrap_or_else(|| Uuid::new_v4().to_string());
+            }
+            call
+        })
+        .collect()
+}
+
 /// Gives every call in one reply a distinct `call_id`, in order. Providers that omit ids make
 /// genai assign `call_{index}`, and a provider can repeat an id outright; accumulating by id
 /// would overwrite the first call with the second and the model would never get its result
@@ -7535,6 +7557,10 @@ pub async fn generate_byop_output(
         // HashMap keyed by id and emit them all at once at the end of the stream.
         let mut tool_bufs: HashMap<String, ToolCall> = HashMap::new();
         let mut tool_order: Vec<String> = Vec::new();
+        // Ids this stream invented for tool-call chunks that arrived with an empty id, in
+        // arrival order; the End event's captured calls carry the same empty ids and are
+        // re-keyed to these (see `assign_empty_call_ids`).
+        let mut invented_call_ids: Vec<String> = Vec::new();
         // call_id → the id of the first-frame placeholder ToolCall message.
         // As soon as the first ToolCallChunk arrives and can be parsed, immediately emit a
         // placeholder card (so the UI can show "calling tool X" feedback before the stream's
@@ -7861,6 +7887,7 @@ pub async fn generate_byop_output(
                     // don't send a call_id, so fall back to a local uuid.
                     if call.call_id.is_empty() {
                         call.call_id = Uuid::new_v4().to_string();
+                        invented_call_ids.push(call.call_id.clone());
                     }
                     // First time seeing this call_id → immediately push a placeholder
                     // ToolCall message into pending_placeholders, so the UI shows a "calling
@@ -7994,7 +8021,10 @@ pub async fn generate_byop_output(
                             }
                         }
                         let mut captured_order: Vec<String> = Vec::new();
-                        for call in unique_call_ids(content.tool_calls().into_iter().cloned()) {
+                        for call in unique_call_ids(assign_empty_call_ids(
+                            content.tool_calls().into_iter().cloned(),
+                            &invented_call_ids,
+                        )) {
                             if !captured_order.contains(&call.call_id) {
                                 captured_order.push(call.call_id.clone());
                             }
@@ -18319,6 +18349,19 @@ mod duplicate_call_id_tests {
         assert_eq!(ids, ["call_0", "call_0#2"]);
         assert_eq!(out[0].fn_arguments["command"], "ls");
         assert_eq!(out[1].fn_arguments["command"], "pwd");
+    }
+
+    /// #1851: the End event's captured copy of an empty-id call is re-keyed to the id the
+    /// stream invented for its chunk, so one emitted call stays one call.
+    #[test]
+    fn empty_ids_take_the_ids_invented_for_the_chunks_in_order() {
+        let invented = vec!["u1".to_owned(), "u2".to_owned()];
+        let out =
+            assign_empty_call_ids([call("", "a"), call("keep", "b"), call("", "c")], &invented);
+        let ids: Vec<&str> = out.iter().map(|c| c.call_id.as_str()).collect();
+        assert_eq!(ids, ["u1", "keep", "u2"]);
+        let out = assign_empty_call_ids([call("", "a")], &[]);
+        assert!(!out[0].call_id.is_empty());
     }
 
     #[test]
