@@ -1575,10 +1575,6 @@ pub enum TelemetryEvent {
     ReceivedSubshellRcFileDcs,
     AddDenylistedSshTmuxWrapperHost,
     RemoveDenylistedSshTmuxWrapperHost,
-    /// User Setting for enabling SSH Tmux Wrapper changed.
-    ToggleSshTmuxWrapper {
-        enabled: bool,
-    },
     ToggleSshWarpification {
         enabled: bool,
     },

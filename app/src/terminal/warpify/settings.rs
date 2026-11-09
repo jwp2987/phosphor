@@ -58,18 +58,13 @@ maybe_define_setting!(EnableSshWarpification, group: WarpifySettings, {
 // NOTE: Upstream unified this setting into `enable_ssh_warpification` and retains
 // it only so the one-time migration (see `register`) can read a user's previous
 // value and forward it. This fork still reaches for it directly, because it keeps
-// the pre-unification code path that `FeatureFlag::SSHTmuxWrapper` selects between:
-// with that flag off, the legacy ControlMaster wrapper is the only mechanism and
-// this is its switch. Which readers are live depends on the flag, which is on in
-// every default build (`ssh_tmux_wrapper` is in `app/Cargo.toml`'s `default`):
+// the pre-unification code path: `terminal/local_tty/terminal_manager.rs` reads it when
+// `FeatureFlag::SSHTmuxWrapper` is off, and `settings_view/features_page.rs`'s
+// `SSHWrapperWidget` is shown only then. (The flag stays on in every default build, since it
+// also gates tmux control-mode handling; the tmux ssh-wrapper OPTION itself was removed.)
 //
-//   - `workspace/view.rs`'s `LEGACY_SSH_WRAPPER_CONTEXT_FLAG` -- ALWAYS live.
-//     `add_toggle_setting_context_flags` is called unconditionally and inserts the
-//     flag whenever this value is true, in every build. (What the flag then gates,
-//     the command-palette toggle, is registered only when `SSHTmuxWrapper` is off.)
-//   - `terminal/local_tty/terminal_manager.rs`'s `else` arm and
-//     `settings_view/features_page.rs`'s `SSHWrapperWidget` -- live only when
-//     `SSHTmuxWrapper` is off, so inert in a default build.
+// `workspace/view.rs`'s `LEGACY_SSH_WRAPPER_CONTEXT_FLAG` is the one reader that is always
+// live: it inserts the flag whenever this value is true.
 //
 // So in a shipped build the migration below and the context flag are what run.
 //
@@ -105,16 +100,6 @@ maybe_define_setting!(EnableSshWrapper, group: WarpifySettings, {
     storage_key: "EnableSSHWrapper",
     toml_path: "warpify.ssh.enable_legacy_ssh_wrapper",
     description: "Deprecated: unified into enable_ssh_warpification. Retained only for one-time migration.",
-});
-
-maybe_define_setting!(UseSshTmuxWrapper, group: WarpifySettings, {
-    type: bool,
-    default: false,
-    supported_platforms: SupportedPlatforms::OR(SupportedPlatforms::MAC.into(), SupportedPlatforms::LINUX.into()),
-    sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
-    private: false,
-    toml_path: "warpify.ssh.use_ssh_tmux_wrapper",
-    description: "Whether to use a tmux-based wrapper for SSH warpification.",
 });
 
 /// Controls how Zap handles the SSH extension (remote server binary) when connecting
@@ -220,10 +205,6 @@ pub struct WarpifySettings {
     /// migration in `register` can read and forward a user's previous opt-out. Not used to
     /// gate any behavior.
     pub enable_ssh_wrapper: EnableSshWrapper,
-
-    /// This setting controls whether we should prompt the user to warpify an ssh session using the
-    /// tmux wrapper instead of the default legacy wrapper.
-    pub use_ssh_tmux_wrapper: UseSshTmuxWrapper,
 
     /// Controls the installation behavior for the SSH extension (remote server) when the binary
     /// is not installed on the remote host.
@@ -379,7 +360,6 @@ impl WarpifySettings {
             ssh_hosts_denylist,
             enable_ssh_warpification: EnableSshWarpification::new_from_storage(ctx),
             enable_ssh_wrapper: EnableSshWrapper::new_from_storage(ctx),
-            use_ssh_tmux_wrapper: UseSshTmuxWrapper::new_from_storage(ctx),
             ssh_extension_install_mode: SshExtensionInstallModeSetting::new_from_storage(ctx),
         }
     }
@@ -405,7 +385,6 @@ impl WarpifySettings {
                 }
                 WarpifySettingsChangedEvent::EnableSshWarpification { .. } => {}
                 WarpifySettingsChangedEvent::EnableSshWrapper { .. } => {}
-                WarpifySettingsChangedEvent::UseSshTmuxWrapper { .. } => {}
                 WarpifySettingsChangedEvent::SshExtensionInstallModeSetting { .. } => {}
             })
         });
@@ -468,14 +447,6 @@ impl WarpifySettings {
 
         register_settings_events!(
             WarpifySettings,
-            use_ssh_tmux_wrapper,
-            UseSshTmuxWrapper,
-            handle.clone(),
-            ctx
-        );
-
-        register_settings_events!(
-            WarpifySettings,
             ssh_extension_install_mode,
             SshExtensionInstallModeSetting,
             handle.clone(),
@@ -509,9 +480,6 @@ pub enum WarpifySettingsChangedEvent {
         change_event_reason: ChangeEventReason,
     },
     EnableSshWrapper {
-        change_event_reason: ChangeEventReason,
-    },
-    UseSshTmuxWrapper {
         change_event_reason: ChangeEventReason,
     },
     SshExtensionInstallModeSetting {
@@ -556,9 +524,7 @@ impl WarpifySettings {
             return true;
         }
 
-        if !self.use_ssh_tmux_wrapper.value()
-            && SshWarpifyCommand::matches(command)
-                .is_some_and(|command| command.is_ssh_like_command())
+        if SshWarpifyCommand::matches(command).is_some_and(|command| command.is_ssh_like_command())
         {
             return true;
         }

@@ -2216,17 +2216,6 @@ fn initialize_app(
 
     ctx.add_singleton_model(move |_| timer);
 
-    let is_ssh_tmux_wrapper_enabled = ctx
-        .private_user_preferences()
-        .read_value("SshTmuxWrapperOverride")
-        .ok()
-        .flatten()
-        .and_then(|s| s.parse().ok());
-
-    if let Some(is_ssh_tmux_wrapper_enabled) = is_ssh_tmux_wrapper_enabled {
-        FeatureFlag::SSHTmuxWrapper.set_user_preference(is_ssh_tmux_wrapper_enabled);
-    }
-
     ctx.add_singleton_model(|ctx| AIExecutionProfilesModel::new(launch_mode, ctx));
 
     ctx.add_singleton_model(DefaultTerminal::new);

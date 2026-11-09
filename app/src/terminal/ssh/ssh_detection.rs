@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use warp_core::{features::FeatureFlag, settings::Setting};
 use warp_util::path::ShellFamily;
 
 use crate::terminal::warpify::settings::WarpifySettings;
@@ -22,31 +21,16 @@ pub enum SshInteractiveSessionDetected {
 }
 
 /// Determines whether a host could be warpified.
+///
+/// The tmux-wrapper prompt was the only thing that ever produced
+/// `ShouldPromptWarpification` here; that option was removed (the no-helper ssh path is
+/// primary), so a plain ssh session is never offered tmux warpification. Control-mode
+/// support for users who run tmux themselves does not go through this function.
 pub fn evaluate_warpify_ssh_host(
-    command: &str,
-    ssh_host: Option<&str>,
-    shell_family: ShellFamily,
-    warpify_settings: &WarpifySettings,
+    _command: &str,
+    _ssh_host: Option<&str>,
+    _shell_family: ShellFamily,
+    _warpify_settings: &WarpifySettings,
 ) -> SshInteractiveSessionDetected {
-    let should_prompt_ssh_tmux_wrapper = *warpify_settings.enable_ssh_warpification.value()
-        && *warpify_settings.use_ssh_tmux_wrapper.value();
-    let matches_subshell = warpify_settings.is_denylisted_subshell_command(command)
-        || warpify_settings.is_compatible_subshell_command(command, shell_family);
-    if !should_prompt_ssh_tmux_wrapper
-        || matches_subshell
-        || !FeatureFlag::SSHTmuxWrapper.is_enabled()
-    {
-        return SshInteractiveSessionDetected::FeatureDisabled;
-    }
-
-    if let Some(ssh_host) = ssh_host {
-        if warpify_settings.is_ssh_host_denylisted(ssh_host) {
-            return SshInteractiveSessionDetected::HostDenylisted;
-        }
-    }
-
-    SshInteractiveSessionDetected::ShouldPromptWarpification {
-        host: ssh_host.map(|host| host.to_owned()),
-        command: command.to_string(),
-    }
+    SshInteractiveSessionDetected::FeatureDisabled
 }
