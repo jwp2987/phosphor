@@ -35,6 +35,9 @@ async-channel.workspace = true
 # Not a workspace dependency: `app` and `warpui_core` also pin it directly.
 bounded-vec-deque = "0.1"
 command.workspace = true
+# Binary-vs-text sniffing shared by the helper's file reads and the shell backend's (same version
+# as warp_util, so the lockfile gains nothing).
+content_inspector = "0.2.4"
 dashmap.workspace = true
 dirs.workspace = true
 futures.workspace = true

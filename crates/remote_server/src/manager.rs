@@ -1003,6 +1003,9 @@ impl RemoteServerManager {
     /// (see [`crate::backend`]). Cheap; take one per operation. Call sites never fall back or
     /// retry themselves.
     pub fn backend_for_host(&self, host_id: &HostId) -> crate::backend::RoutedBackend {
+        if let Some(session_id) = session_for_shell_mode_host(host_id) {
+            return self.backend_for_session_with_host(session_id, None);
+        }
         let sessions: Vec<SessionId> = self
             .host_to_sessions
             .get(host_id)
@@ -1010,6 +1013,44 @@ impl RemoteServerManager {
             .unwrap_or_default();
         self.router
             .backend(host_id, self.client_for_host(host_id).cloned(), sessions)
+    }
+
+    /// [`Self::backend_for_host`] for the host `session_id` belongs to, or, when the session has
+    /// no helper connection (so no host id: the no-helper case, the primary design), a backend
+    /// keyed on the session itself whose shell arm uses that session's out-of-band channel. The
+    /// agent tools and file views call this: they know their session, not necessarily a host.
+    pub fn backend_for_session(&self, session_id: SessionId) -> crate::backend::RoutedBackend {
+        self.backend_for_session_with_host(session_id, self.host_id_for_session(session_id))
+    }
+
+    /// [`Self::backend_for_session`] when the caller already knows the host (a subshell inherits
+    /// its ssh session's host id): the helper of `host_id` if connected, and the shell arm over
+    /// the out-of-band channel of `session_id` or of any session on that host.
+    pub fn backend_for_session_with_host(
+        &self,
+        session_id: SessionId,
+        host_id: Option<&HostId>,
+    ) -> crate::backend::RoutedBackend {
+        match host_id {
+            Some(host_id) => {
+                let sessions: Vec<SessionId> = std::iter::once(session_id)
+                    .chain(
+                        self.host_to_sessions
+                            .get(host_id)
+                            .into_iter()
+                            .flat_map(|s| s.iter().copied()),
+                    )
+                    .collect();
+                self.router
+                    .backend(host_id, self.client_for_host(host_id).cloned(), sessions)
+            }
+            None => {
+                // Not a real host id: it only keys the router's per-connection fallback memory,
+                // and a helper-less session never has a helper connection to fall back from.
+                let host = shell_mode_host_id(session_id);
+                self.router.backend(&host, None, [session_id])
+            }
+        }
     }
 
     /// Checks if the remote server binary is installed and executable.
@@ -3360,3 +3401,22 @@ where
 #[cfg(all(test, not(target_family = "wasm")))]
 #[path = "manager_tests.rs"]
 mod tests;
+
+const SHELL_MODE_HOST_PREFIX: &str = "shell-session:";
+
+/// The stand-in [`HostId`] for a session that has no helper (so no real host id): what file views
+/// register their remote files under, and what [`RemoteServerManager::backend_for_host`] maps
+/// back to the session's out-of-band channel.
+pub fn shell_mode_host_id(session_id: SessionId) -> HostId {
+    HostId::new(format!("{SHELL_MODE_HOST_PREFIX}{}", session_id.as_u64()))
+}
+
+/// The session a [`shell_mode_host_id`] stands for.
+pub fn session_for_shell_mode_host(host_id: &HostId) -> Option<SessionId> {
+    host_id
+        .as_str()
+        .strip_prefix(SHELL_MODE_HOST_PREFIX)?
+        .parse::<u64>()
+        .ok()
+        .map(SessionId::from)
+}

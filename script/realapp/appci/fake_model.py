@@ -2,12 +2,17 @@
 # run.py starts it when APPCI_FAKE_MODEL=1 and no real provider is configured, and profile.py then writes the usual Ollama provider block pointing at it
 # (id appci-ollama, so every provider-dependent case sees the same provider name). It is deterministic: the reply is a pure function of the request.
 #   * a user turn "Please run exactly this shell command and nothing else: <cmd>" -> one run_shell_command tool call with that command (an approval card);
+#   * "Please read exactly this file and nothing else: <path>" -> read_files; "Please create exactly this file: <path> with this content: <text>" and
+#     "Please delete exactly this file and nothing else: <path>" -> apply_file_diffs (the remote file-tool lab cases, cases_lab_remote.py);
 #   * the turn after a tool result -> the text "Done." (a finished conversation);
 #   * any other user turn -> "OK <last word>" (prose only, no tool call).
 # Endpoints: POST /api/chat (NDJSON stream), POST /api/show, GET /api/tags. The server counts requests (fake.requests) for the oracle.
 import json, re, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+READ_RE = re.compile(r"read exactly this file and nothing else:\s*(\S+)\s*$")
+CREATE_RE = re.compile(r"create exactly this file:\s*(\S+)\s+with this content:\s*(.*?)\s*$", re.S)
+DELETE_RE = re.compile(r"delete exactly this file and nothing else:\s*(\S+)\s*$")
 ASK_RE = re.compile(r"run exactly this shell command and nothing else:\s*(.+?)\s*$", re.S)
 
 
@@ -24,6 +29,15 @@ def reply_for(messages):
     m = ASK_RE.search(text)
     if m:
         return {"text": "", "tool": {"name": "run_shell_command", "arguments": {"command": m.group(1), "is_read_only": False, "uses_pager": False, "is_risky": False}}}
+    m = READ_RE.search(text)
+    if m:
+        return {"text": "", "tool": {"name": "read_files", "arguments": {"files": [{"path": m.group(1)}]}}}
+    m = CREATE_RE.search(text)
+    if m:
+        return {"text": "", "tool": {"name": "apply_file_diffs", "arguments": {"summary": "Create " + m.group(1), "operations": [{"op": "create", "file_path": m.group(1), "content": m.group(2)}]}}}
+    m = DELETE_RE.search(text)
+    if m:
+        return {"text": "", "tool": {"name": "apply_file_diffs", "arguments": {"summary": "Delete " + m.group(1), "operations": [{"op": "delete", "file_path": m.group(1)}]}}}
     if "SLOW" in text:
         return {"text": "slow reply", "tool": None, "slow": True}
     words = re.findall(r"\S+", text)

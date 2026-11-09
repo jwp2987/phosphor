@@ -44,7 +44,8 @@ def parse_rust(rs=RS):
     mod = open(os.path.join(rs, "backend", "mod.rs"), encoding="utf-8").read()
     fam = {v: consts[c] for v, c in re.findall(r"Family::(\w+) => capability::(\w+),", mod) if c in consts}
     feat = open(os.path.join(rs, "backend", "features.rs"), encoding="utf-8").read()
-    stubbed = set(re.findall(r"^\s+(\w+), (?:true|false): fn ", feat, re.M))
+    # a method is a stub only while its shell arm is `=> unimplemented`; a family counts as stubbed when ANY of its methods still is
+    stubbed = set(re.findall(r"^\s+(\w+), (?:true|false): fn .*=> unimplemented;", feat, re.M))
     shell_text = ""
     for root in (os.path.join(rs, "backend"), os.path.join(rs, "shellcmd")):
         for dp, _, fs in os.walk(root):
@@ -558,3 +559,7 @@ def c_single_flight(ctx, r, arm):
 
 
 reg("nohelper_listing_single_flight", c_single_flight, shells=("bash", "zsh", "fish", "nu"), lat=("lan", "150", "300"), helper=("nohelper",))
+
+
+import cases_lab_remote as _CLR  # noqa: E402  (P1/P2 coverage declarations; see cases_lab_remote.declare_coverage)
+_CLR.declare_coverage()

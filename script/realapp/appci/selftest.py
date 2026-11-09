@@ -2834,7 +2834,7 @@ def lab_cases_registry_and_selection():
     assert run.unknown_case_names("mode_proof,typo_case", reg) == ["typo_case"]       # exact names are still checked exactly
     # winmap: a lab case is never 'unclassified'; PowerShell pane skips with a reason; p_onesess is skipped on Windows
     base = {n.split(".")[0] for n in names}
-    old = {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i", "lab_no_helper_chip", "lab_replay", "lab_password_prompt", "lab_helper_install", "lab_nu_agent_pager_env"}
+    old = {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i", "lab_no_helper_chip", "lab_replay", "lab_password_prompt", "lab_helper_install", "lab_nu_agent_pager_env", "lab_read_files_remote", "lab_diff_apply_remote"}
     assert old <= base and all(n.startswith(("lab_fam_", "lab_helper_", "lab_nohelper_")) for n in base - old), base
     assert all(c["modes"] == ("terminal",) for c in labs if c["name"].startswith("lab_ssh_drop_reconnect")), "the drop case is terminal-only"
     pw = [c["arm"] for c in labs if c["name"].startswith("lab_password_prompt")]
@@ -2861,13 +2861,15 @@ def lab_helper_coverage_guard():
     assert H.shell_arm_implemented("RunCommand", info) and not H.shell_arm_implemented("FsBasic", dict(info, stubbed={"FsBasic"}))
     assert H.shell_arm_implemented("GitStatus", dict(info, stubbed=set(), shell_text="Family::GitStatus"))
     # a capability nobody covers must be reported
-    saved = dict(H.COVERS)
+    saved, saved_ext = dict(H.COVERS), dict(H.EXTERNAL_COVERS)
     try:
         H.COVERS.clear()
+        H.EXTERNAL_COVERS.clear()
         mh, mn = H.coverage(info)
         assert set(mh) == set(info["helper"]) and mn, (mh, mn)
     finally:
         H.COVERS.update(saved)
+        H.EXTERNAL_COVERS.update(saved_ext)
     skips = [c for c in cases.CASES if c.get("lab") and c["arm"]["case"].startswith("fam_") and c["arm"]["helper"] == "helper"]
     assert skips and {c["arm"]["case"] for c in skips} >= {"fam_" + k for k in info["helper"]}
     import lab as L
@@ -3339,6 +3341,12 @@ def fake_model_replies():
     r = FM.reply_for([{"role": "user", "content": "Please run exactly this shell command and nothing else: echo T >> /x/f.txt"}])
     assert r["tool"]["name"] == "run_shell_command" and r["tool"]["arguments"]["command"] == "echo T >> /x/f.txt", r
     assert FM.reply_for([{"role": "user", "content": "x"}, {"role": "tool", "content": "ok"}]) == {"text": "Done.", "tool": None}
+    rd = FM.reply_for([{"role": "user", "content": "Please read exactly this file and nothing else: /w/a.txt"}])
+    assert rd["tool"] == {"name": "read_files", "arguments": {"files": [{"path": "/w/a.txt"}]}}, rd
+    cr = FM.reply_for([{"role": "user", "content": "Please create exactly this file: /w/b.txt with this content: hello there"}])
+    assert cr["tool"]["name"] == "apply_file_diffs" and cr["tool"]["arguments"]["operations"] == [{"op": "create", "file_path": "/w/b.txt", "content": "hello there"}], cr
+    dl = FM.reply_for([{"role": "user", "content": "Please delete exactly this file and nothing else: /w/b.txt"}])
+    assert dl["tool"]["arguments"]["operations"] == [{"op": "delete", "file_path": "/w/b.txt"}], dl
     assert FM.reply_for([{"role": "user", "content": "Reply with the word Q1"}])["text"] == "OK Q1"
     assert FM.reply_for([{"role": "user", "content": "Answer slowly SLOW R1"}]).get("slow")
     lines = [json.loads(x) for x in FM.stream_lines("m", r)]

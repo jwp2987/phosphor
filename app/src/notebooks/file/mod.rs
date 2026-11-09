@@ -605,9 +605,13 @@ impl FileNotebookView {
             max_batch_bytes: None,
         };
 
-        let handle = manager.as_ref(ctx).host_request_handle(&host_id);
+        // The router serves it from the helper or, failing that, shell mode.
+        let backend = manager.as_ref(ctx).backend_for_host(&host_id);
         ctx.spawn(
-            async move { handle.read_file_context(request).await },
+            async move {
+                use remote_server::backend::RemoteFeatures as _;
+                backend.read_file_context(request).await
+            },
             move |me, result, ctx| match result {
                 Ok(response) => {
                     if let Some(file_ctx) = response.file_contexts.first() {

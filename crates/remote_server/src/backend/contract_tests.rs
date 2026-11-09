@@ -38,36 +38,87 @@ impl OutOfBandExecutor for LocalShExecutor {
     }
 
     fn execute(&self, request: ExecRequest) -> BoxFuture<'_, Result<ExecOutput, ExecError>> {
-        Box::pin(async move {
-            use std::io::Write as _;
-            use std::process::{Command, Stdio};
-            let mut child = Command::new("sh")
-                .arg("-c")
-                .arg(&request.command)
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .map_err(|e| ExecError::Failed(e.to_string()))?;
-            if let Some(mut stdin) = child.stdin.take() {
-                let _ = stdin.write_all(&request.stdin);
+        Box::pin(async move { run_local_sh(request, None) })
+    }
+}
+
+fn run_local_sh(
+    request: ExecRequest,
+    path: Option<&std::ffi::OsStr>,
+) -> Result<ExecOutput, ExecError> {
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+    let mut command = Command::new("sh");
+    command
+        .arg("-c")
+        .arg(&request.command)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(path) = path {
+        command.env("PATH", path);
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|e| ExecError::Failed(e.to_string()))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(&request.stdin);
+    }
+    let out = child
+        .wait_with_output()
+        .map_err(|e| ExecError::Failed(e.to_string()))?;
+    let limit = request.max_output_bytes;
+    let truncated = limit > 0 && out.stdout.len() > limit;
+    let mut stdout = out.stdout;
+    if truncated {
+        stdout.truncate(limit);
+    }
+    Ok(ExecOutput {
+        stdout,
+        stderr: out.stderr,
+        exit_code: out.status.code(),
+        truncated,
+    })
+}
+
+/// A local `sh` whose PATH holds only the tools shell mode uses, with `base64` and `openssl`
+/// left out: a host that cannot decode base64.
+#[derive(Debug)]
+pub(super) struct NoDecoderShExecutor {
+    bin: tempfile::TempDir,
+}
+
+impl NoDecoderShExecutor {
+    pub(super) fn new() -> Self {
+        let bin = tempfile::tempdir().unwrap();
+        for tool in [
+            "mkdir", "dirname", "rm", "mv", "stat", "chmod", "wc", "tr", "head", "sed", "grep",
+            "cat", "readlink", "od", "printf", "sh", "env",
+        ] {
+            let found = std::env::var_os("PATH")
+                .into_iter()
+                .flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+                .map(|d| d.join(tool))
+                .find(|p| p.exists());
+            if let Some(found) = found {
+                std::os::unix::fs::symlink(found, bin.path().join(tool)).unwrap();
             }
-            let out = child
-                .wait_with_output()
-                .map_err(|e| ExecError::Failed(e.to_string()))?;
-            let limit = request.max_output_bytes;
-            let truncated = limit > 0 && out.stdout.len() > limit;
-            let mut stdout = out.stdout;
-            if truncated {
-                stdout.truncate(limit);
-            }
-            Ok(ExecOutput {
-                stdout,
-                stderr: out.stderr,
-                exit_code: out.status.code(),
-                truncated,
-            })
-        })
+        }
+        Self { bin }
+    }
+}
+
+impl OutOfBandExecutor for NoDecoderShExecutor {
+    fn channel_kind(&self) -> ChannelKind {
+        ChannelKind::LocalSh
+    }
+
+    fn shell_kind(&self) -> ShellKind {
+        ShellKind::Posix
+    }
+
+    fn execute(&self, request: ExecRequest) -> BoxFuture<'_, Result<ExecOutput, ExecError>> {
+        Box::pin(async move { run_local_sh(request, Some(self.bin.path().as_os_str())) })
     }
 }
 
@@ -94,9 +145,292 @@ pub(super) async fn assert_unimplemented_is_unsupported(subject: &Subject) {
     assert!(!err.is_connection_lost(), "{}: {err:?}", subject.name);
 }
 
+/// Family a: `ReadFileContext`. Every expectation below is a literal, so the helper and the shell
+/// arm are held to the SAME answers, not to each other's.
+pub(super) async fn assert_read_file_context(subject: &Subject) {
+    use crate::proto::{
+        LineRange, ReadFileContextFile, ReadFileContextRequest, file_context_proto::Content,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let write = |name: &str, bytes: &[u8]| {
+        let path = dir.path().join(name);
+        std::fs::write(&path, bytes).unwrap();
+        path.to_string_lossy().into_owned()
+    };
+    let file = |path: &str, ranges: &[(u32, u32)]| ReadFileContextFile {
+        path: path.to_string(),
+        line_ranges: ranges
+            .iter()
+            .map(|&(start, end)| LineRange { start, end })
+            .collect(),
+    };
+    let name = subject.name;
+    let text = |c: &crate::proto::FileContextProto| match c.content.as_ref().unwrap() {
+        Content::TextContent(t) => t.clone(),
+        other => panic!("{name}: expected text, got {other:?}"),
+    };
+    let message = |f: &crate::proto::FailedFileRead| f.error.as_ref().unwrap().message.clone();
+
+    // Whole files: text with its final newline, CRLF normalised, an apostrophe and a space in the
+    // name (the shell arm quotes), non-ASCII text, an empty file.
+    let plain = write("plain it's.txt", b"one\ntwo\n");
+    let crlf = write("crlf.txt", b"a\r\nb");
+    let uni = write("uni.txt", "héllo wörld\n日本語\n".as_bytes());
+    let empty = write("empty.txt", b"");
+    let r = subject
+        .backend
+        .read_file_context(ReadFileContextRequest {
+            files: vec![
+                file(&plain, &[]),
+                file(&crlf, &[]),
+                file(&uni, &[]),
+                file(&empty, &[]),
+            ],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(r.failed_files.is_empty(), "{name}: {:?}", r.failed_files);
+    let texts: Vec<_> = r.file_contexts.iter().map(&text).collect();
+    assert_eq!(
+        texts,
+        vec!["one\ntwo\n", "a\nb", "héllo wörld\n日本語\n", ""],
+        "{name}"
+    );
+    assert_eq!(r.file_contexts[0].file_name, plain, "{name}");
+    assert_eq!(r.file_contexts[0].line_count, 2, "{name}");
+    assert_eq!(r.file_contexts[1].line_count, 2, "{name}");
+    assert_eq!(r.file_contexts[3].line_count, 0, "{name}");
+    for c in &r.file_contexts {
+        assert_eq!(
+            (c.line_range_start, c.line_range_end),
+            (None, None),
+            "{name}"
+        );
+        // The shell arm has one-second resolution.
+        assert!(
+            c.last_modified_epoch_millis
+                .is_some_and(|ms| ms > 1_000_000_000_000),
+            "{name}"
+        );
+    }
+
+    // The byte cap cuts at a line and names the range that came back (`apply_diff` relies on it);
+    // line_count is the whole file's.
+    let big_body: String = (1..=3000).map(|i| format!("line {i:05}\n")).collect();
+    let big = write("big.txt", big_body.as_bytes());
+    let r = subject
+        .backend
+        .read_file_context(ReadFileContextRequest {
+            files: vec![file(&big, &[])],
+            max_file_bytes: Some(100),
+            max_batch_bytes: None,
+        })
+        .await
+        .unwrap();
+    let c = &r.file_contexts[0];
+    assert_eq!(text(c).lines().count(), 9, "{name}");
+    assert_eq!(
+        (c.line_range_start, c.line_range_end),
+        (Some(1), Some(9)),
+        "{name}"
+    );
+    assert_eq!(c.line_count, 3000, "{name}");
+
+    // Line ranges.
+    let r = subject
+        .backend
+        .read_file_context(ReadFileContextRequest {
+            files: vec![file(&big, &[(2000, 2003)]), file(&plain, &[(2, 3)])],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        text(&r.file_contexts[0]),
+        "line 02000\nline 02001\nline 02002",
+        "{name}"
+    );
+    assert_eq!(
+        (
+            r.file_contexts[0].line_range_start,
+            r.file_contexts[0].line_range_end
+        ),
+        (Some(2000), Some(2003)),
+        "{name}"
+    );
+    assert_eq!(r.file_contexts[0].line_count, 3000, "{name}");
+    assert_eq!(text(&r.file_contexts[1]), "two", "{name}");
+    assert_eq!(r.file_contexts[1].line_count, 2, "{name}");
+
+    // Per-file failures do not fail the batch; binary comes back as bytes.
+    let blob = write("blob.bin", &[0, 1, 2, 3, 255, 10, 13]);
+    let missing = dir
+        .path()
+        .join("missing.txt")
+        .to_string_lossy()
+        .into_owned();
+    let subdir = dir.path().to_string_lossy().into_owned();
+    let r = subject
+        .backend
+        .read_file_context(ReadFileContextRequest {
+            files: vec![
+                file(&missing, &[]),
+                file(&blob, &[]),
+                file(&subdir, &[]),
+                file(&plain, &[]),
+            ],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(r.file_contexts.len(), 2, "{name}");
+    assert_eq!(
+        r.file_contexts[0].content,
+        Some(Content::BinaryContent(vec![0, 1, 2, 3, 255, 10, 13])),
+        "{name}"
+    );
+    assert_eq!(text(&r.file_contexts[1]), "one\ntwo\n", "{name}");
+    assert_eq!(r.failed_files.len(), 2, "{name}");
+    assert_eq!(r.failed_files[0].path, missing, "{name}");
+    assert_eq!(message(&r.failed_files[0]), "File does not exist", "{name}");
+    assert_eq!(r.failed_files[1].path, subdir, "{name}");
+    assert!(
+        message(&r.failed_files[1]).contains("Is a directory"),
+        "{name}"
+    );
+
+    // A binary file over the cap is refused with both sizes.
+    let r = subject
+        .backend
+        .read_file_context(ReadFileContextRequest {
+            files: vec![file(&blob, &[])],
+            max_file_bytes: Some(3),
+            max_batch_bytes: None,
+        })
+        .await
+        .unwrap();
+    assert!(r.file_contexts.is_empty(), "{name}");
+    assert!(
+        message(&r.failed_files[0]).contains("too large to read"),
+        "{name}"
+    );
+
+    // The batch budget is shared; files past it are named.
+    let r = subject
+        .backend
+        .read_file_context(ReadFileContextRequest {
+            files: vec![file(&plain, &[]), file(&crlf, &[])],
+            max_file_bytes: None,
+            max_batch_bytes: Some(8),
+        })
+        .await
+        .unwrap();
+    assert_eq!(text(&r.file_contexts[0]), "one\ntwo\n", "{name}");
+    assert_eq!(r.failed_files[0].path, crlf, "{name}");
+    assert!(
+        message(&r.failed_files[0]).contains("total size limit"),
+        "{name}"
+    );
+
+    // An empty request is an empty answer.
+    let r = subject
+        .backend
+        .read_file_context(ReadFileContextRequest::default())
+        .await
+        .unwrap();
+    assert!(
+        r.file_contexts.is_empty() && r.failed_files.is_empty(),
+        "{name}"
+    );
+}
+
+/// Writes, deletes and whole-file reads (the `apply_file_diffs` write half). As above, literal
+/// expectations shared by both arms.
+pub(super) async fn assert_file_write(subject: &Subject) {
+    use std::os::unix::fs::PermissionsExt as _;
+    let name = subject.name;
+    let dir = tempfile::tempdir().unwrap();
+    let path_of = |rel: &str| dir.path().join(rel).to_string_lossy().into_owned();
+
+    // A new file in directories that do not exist yet; awkward text survives byte for byte.
+    let nested = path_of("a/b/it's new.txt");
+    let tricky = "it's \"quoted\" $HOME `x` \\ héllo 日本語\nno final newline";
+    subject
+        .backend
+        .write_file(nested.clone(), tricky.to_string())
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read_to_string(&nested).unwrap(), tricky, "{name}");
+    assert_eq!(
+        subject
+            .backend
+            .read_file_bytes(nested.clone())
+            .await
+            .unwrap(),
+        tricky.as_bytes(),
+        "{name}"
+    );
+
+    // An empty file, and a file bigger than one command's chunk.
+    let empty = path_of("empty");
+    subject
+        .backend
+        .write_file(empty.clone(), String::new())
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read(&empty).unwrap(), b"", "{name}");
+    let big: String = (0..30_000).map(|i| format!("row {i}\n")).collect();
+    assert!(big.len() > 2 * 64 * 1024);
+    let big_path = path_of("big.txt");
+    subject
+        .backend
+        .write_file(big_path.clone(), big.clone())
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read_to_string(&big_path).unwrap(), big, "{name}");
+
+    // Overwriting keeps the mode and leaves no temporary file behind.
+    let script = path_of("run.sh");
+    std::fs::write(&script, "old").unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o751)).unwrap();
+    subject
+        .backend
+        .write_file(script.clone(), "new".to_string())
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read_to_string(&script).unwrap(), "new", "{name}");
+    assert_eq!(
+        std::fs::metadata(&script).unwrap().permissions().mode() & 0o777,
+        0o751,
+        "{name}"
+    );
+    let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.contains("phosphor-tmp"))
+        .collect();
+    assert!(leftovers.is_empty(), "{name}: {leftovers:?}");
+
+    // Delete; deleting what is not there is an error, not a silent success.
+    subject.backend.delete_file(script.clone()).await.unwrap();
+    assert!(!std::path::Path::new(&script).exists(), "{name}");
+    assert!(
+        subject.backend.delete_file(script.clone()).await.is_err(),
+        "{name}"
+    );
+    assert!(
+        subject.backend.read_file_bytes(script).await.is_err(),
+        "{name}"
+    );
+}
+
 /// Every contract assertion. Family packages append theirs here.
 pub(super) async fn assert_contract(subject: &Subject) {
     assert_unimplemented_is_unsupported(subject).await;
+    assert_read_file_context(subject).await;
+    assert_file_write(subject).await;
 }
 
 fn shell_subject() -> Subject {
@@ -104,6 +438,23 @@ fn shell_subject() -> Subject {
         name: "shell(local sh)",
         backend: Arc::new(ShellBackend::new(Some(Arc::new(LocalShExecutor)))),
     }
+}
+
+/// The printf-octal fallback (parity P2): a host with no base64 or openssl still writes, byte
+/// for byte, under the same assertions as every other backend. Reads use `od` there.
+#[tokio::test]
+async fn the_shell_backend_writes_on_a_host_with_no_base64_decoder() {
+    let shell = ShellBackend::new(Some(Arc::new(NoDecoderShExecutor::new())));
+    assert_eq!(
+        shell.decode_tool().await.unwrap(),
+        None,
+        "the fake host must have no decoder"
+    );
+    let subject = Subject {
+        name: "shell(no base64 decoder)",
+        backend: Arc::new(shell),
+    };
+    assert_file_write(&subject).await;
 }
 
 #[tokio::test]
