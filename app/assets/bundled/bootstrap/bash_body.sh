@@ -931,8 +931,22 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
           warp_send_hook_via_kv_pairs_end
         else
           __phosphor_cwd_listing
-          local escaped_json="{\"hook\": \"Precmd\", \"value\": {\"exit_code\": $exit_code,\"next_block_id\": \"$next_block_id\",\"pwd\": \"$escaped_pwd\",\"ps1\": \"$escaped_ps1\",\"honor_ps1\": $honor_ps1,\"ps1_is_encoded\": true,\"git_head\": \"$escaped_git_head\",\"git_branch\": \"$escaped_git_branch\",\"virtual_env\": \"$escaped_virtual_env\",\"conda_env\": \"$escaped_conda_env\",\"node_version\": \"$escaped_node_version\",\"session_id\": ${WARP_SESSION_ID:-},\"seq\": $__warp_seq${__phosphor_cl_json-}}}"
-          warp_send_json_message "$escaped_json"
+          # Phosphor (fork-free hooks): the message is sent as three pieces whose hex is joined (hex is
+          # per byte, so the pieces concatenate to exactly the hex of the whole). The middle one (cwd,
+          # prompt, git, venv, session id) is the same on most prompts and, with a real prompt, is
+          # over the 512-byte loop limit, so the whole message went through the `od|tr` pipeline
+          # on every prompt; its hex is now kept until the piece changes. The head (exit code, block
+          # id) and tail (seq, listing) are short and go through the builtin loop as before.
+          local __warp_pc_head="{\"hook\": \"Precmd\", \"value\": {\"exit_code\": $exit_code,\"next_block_id\": \"$next_block_id\","
+          local __warp_pc_mid="\"pwd\": \"$escaped_pwd\",\"ps1\": \"$escaped_ps1\",\"honor_ps1\": $honor_ps1,\"ps1_is_encoded\": true,\"git_head\": \"$escaped_git_head\",\"git_branch\": \"$escaped_git_branch\",\"virtual_env\": \"$escaped_virtual_env\",\"conda_env\": \"$escaped_conda_env\",\"node_version\": \"$escaped_node_version\",\"session_id\": ${WARP_SESSION_ID:-},\"seq\": "
+          local __warp_pc_tail="$__warp_seq${__phosphor_cl_json-}}}"
+          __warp_hex_encode_to "$__warp_pc_head"
+          encoded_message=$__warp_hex
+          __warp_hex_encode_mid_to "$__warp_pc_mid"
+          encoded_message+=$__warp_hex
+          __warp_hex_encode_to "$__warp_pc_tail"
+          encoded_message+=$__warp_hex
+          __warp_emit_hex_message
         fi
     }
     function warp_precmd { __warp_run_relaxed __warp_precmd_impl "$@"; }
@@ -1135,6 +1149,20 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         builtin printf -v __c '%02x' "'${__s:__i:1}"
         __warp_hex+=${__c: -2}
       done
+    }
+
+    # Phosphor (fork-free hooks): __warp_hex_encode_to for the Precmd's middle piece, with the last
+    # answer kept. The hex depends on nothing but the text, so reusing it is exact; a text over the
+    # loop limit costs one `od|tr` pipeline the first time and nothing on the prompts after it.
+    __warp_hex_encode_mid_to () {
+      if [[ ${__warp_hexmid_valid-} == 1 && $1 == "${__warp_hexmid_in-}" ]]; then
+        __warp_hex=$__warp_hexmid_out
+        return 0
+      fi
+      __warp_hex_encode_to "$1"
+      __warp_hexmid_in=$1
+      __warp_hexmid_out=$__warp_hex
+      __warp_hexmid_valid=1
     }
 
     # Phosphor (#1203): what `warp_escape_ps1 "$(builtin echo "$1")"` printed, without the three

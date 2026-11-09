@@ -128,6 +128,9 @@ def cases():
         out.append(b"".join(rnd.choice(alpha) for _ in range(rnd.choice([2, 5, 20, 60]))))
     for n in (511, 512, 513, 2047, 2048, 2049, 6000):
         out.append((b'a"b\\c\xc3\xa9\x01' * (n // 8 + 1))[:n])
+    # ASCII only (no NUL, no newline), so fish's in-process hex path takes it, across its 2 KiB limit.
+    for n in (1, 2, 511, 512, 513, 2047, 2048, 2049):
+        out.append((b'a"b\\c\x1b\t d~' * (n // 8 + 1))[:n])
     return out
 
 
@@ -218,7 +221,10 @@ done
         if SHELLS["fish"]:
             body = read("fish.sh")
             ctrl = grab(body, r"^set -g WARP_ESCAPE_JSON_CTRL_SED ''\n.*?^set -e warp_ctrl_hex\n")
-            funcs = "".join(grab(body, r"^function %s *\n.*?^end\n" % n) for n in ("warp_escape_json", "warp_hex_encode_string"))
+            # The in-process hex path is switched on by a probe that runs once at bootstrap; the
+            # helper file must run it too, or only the `od` fallback would be compared.
+            probe = grab(body, r"^set -g __warp_hex_inproc 0\nif .*?^end\n")
+            funcs = probe + "".join(grab(body, r"^function %s *\n.*?^end\n" % n) for n in ("warp_escape_json", "warp_hex_encode_string"))
             path = os.path.join(tmp, "fish.fish")
             with open(path, "w") as f:
                 f.write(ctrl + funcs + """

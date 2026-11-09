@@ -85,7 +85,25 @@ end
 # Phosphor (#1170): `od` prints the bytes as space-separated lines, so the spaces and the line
 # breaks are dropped with `string` (in-process) rather than a forked `tr -d ' \n'`; this runs three
 # times per command.
+#
+# Phosphor (fork-free hooks): a message of at most 2 KiB made only of ASCII characters other than NUL
+# and the newline is encoded in-process: `string split ''` yields one element per character, each
+# gets a leading `'` (printf's "character code of" form) and `printf '%02x'` prints them all. This
+# runs three times per command (Preexec, CommandFinished, Precmd) and the `od` pipeline cost a
+# process pair each time. Anything else keeps `od`: a newline would split the element list, a
+# non-ASCII character would print its code point rather than its UTF-8 bytes, and above ~2 KiB the
+# element list costs more than the fork (measured: 1.4 ms per KiB in fish 4.2 against ~3 ms flat).
+# __warp_hex_inproc is probed once, so a fish whose printf lacks the `'c` form keeps `od`.
+set -g __warp_hex_inproc 0
+if test (builtin printf '%02x' (string split '' -- 'Az' | string replace -r '^' "'") 2>/dev/null | string join '') = 417a
+  set -g __warp_hex_inproc 1
+end
 function warp_hex_encode_string 
+  set -l s "$argv"
+  if test "$__warp_hex_inproc" = 1; and test (string length -- "$s") -le 2048; and string match -qr '^[\x01-\x09\x0b-\x7f]+\z' -- "$s"
+    builtin printf '%02x' (string split '' -- "$s" | string replace -r '^' "'")
+    return
+  end
   builtin printf '%s' (string replace -a ' ' '' -- (builtin printf '%s' "$argv" | od -An -v -tx1))
 end
 
@@ -726,6 +744,21 @@ function warp_escape_json
     # escape five values per command, and each used to cost two processes.
     if test (count $argv) -eq 1; and not string match -qr '[^[:alnum:] ._/@+:,=%~()-]' -- $argv[1]
         builtin printf '%s' $argv[1]
+        return
+    end
+    #
+    # Phosphor (fork-free hooks): one value with a double quote, a backslash, a tab or a carriage
+    # return, and no other control character, is escaped with `string replace` (the same four
+    # substitutions, backslash first). A pwd or git branch with a quote in it used to cost a sed|tr
+    # pair on every prompt, three times. A newline, \b, \f or any other control character keeps the
+    # sed path: a newline would turn the capture into a list, and the \u00XX table lives in sed.
+    if test (count $argv) -eq 1; and not string match -qr '[\x01-\x08\x0a-\x0c\x0e-\x1f\x7f]' -- $argv[1]
+        set -l v $argv[1]
+        set v (string replace -a -- '\\' '\\\\' $v)
+        set v (string replace -a -- '"' '\\"' $v)
+        set v (string replace -a -- \t '\\t' $v)
+        set v (string replace -a -- \r '\\r' $v)
+        builtin printf '%s' $v
         return
     end
     string join \n $argv | LC_ALL=C command sed -E 's/(["\\\\])/\\\\\\1/g; s/'\b'/\\\\b/g; s/'\t'/\\\\t/g; s/'\f'/\\\\f/g; s/'\r'/\\\\r/g;'"$WARP_ESCAPE_JSON_CTRL_SED"' $!s/$/\\\\n/' | LC_ALL=C command tr -d '\n'
