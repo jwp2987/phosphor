@@ -231,6 +231,8 @@ def --env __warp_node_version []: nothing -> string {
 
 # pre_prompt hook: CommandFinished then Precmd (see fish.sh warp_precmd).
 def --env __warp_precmd [] {
+    # Phosphor (#1813): put the pager variables of an agent command back, success or failure.
+    __phosphor_ap_end
     if ($env.__warp_internal? | default false) {
         $env.__warp_internal = false
         # A key-bound helper (report input, prompt switch) ran and reedline reads again: same seq.
@@ -279,9 +281,57 @@ def --env __warp_precmd [] {
     __warp_line_editor_marker
 }
 
+# Phosphor (#1813): pagers off for an agent command, nushell flavour. agent_shell_wrap.rs types the
+# command as ` <command> # __phosphor_ap_pagers` (a comment nushell ignores). The pre_execution hook
+# below sees that marker in (commandline), saves the current value (or the absence) of each pager
+# variable in $env.__phosphor_ap_saved and sets the overrides; the pre_prompt hook (__warp_precmd)
+# restores them whenever a save exists, so a failing command or a ^C cannot leave them set. The
+# command itself runs unwrapped, so its `cd` and `$env` changes persist. The overrides are a
+# MATCHED PAIR with OVERRIDES in agent_shell_wrap.rs (a unit test compares them).
+def __phosphor_ap_marker [] { "# __phosphor_ap_pagers" }
+def __phosphor_ap_overrides [] {
+    {
+        PAGER: "cat"
+        GIT_PAGER: "cat"
+        MANPAGER: "cat"
+        SYSTEMD_PAGER: "cat"
+        PSQL_PAGER: "cat"
+        AWS_PAGER: ""
+        GH_PAGER: "cat"
+        BAT_PAGER: ""
+        PERLDOC_PAGER: "cat"
+        MYSQL_PAGER: "cat"
+        LESS: "-FRX"
+        SYSTEMD_LESS: "FRXMK"
+        GIT_CONFIG_COUNT: "1"
+        GIT_CONFIG_KEY_0: "core.pager"
+        GIT_CONFIG_VALUE_0: "cat"
+    }
+}
+def --env __phosphor_ap_begin [] {
+    let over = (__phosphor_ap_overrides)
+    let have = ($env | columns)
+    let saved = ($over | columns | each {|n|
+        let present = ($n in $have)
+        {name: $n, present: $present, value: (if $present { $env | get $n } else { "" })}
+    })
+    $env.__phosphor_ap_saved = $saved
+    load-env $over
+}
+def --env __phosphor_ap_end [] {
+    let saved = ($env.__phosphor_ap_saved? | default [])
+    if ($saved | is-empty) { return }
+    hide-env -i __phosphor_ap_saved
+    let restore = ($saved | where present | reduce -f {} {|s, acc| $acc | insert $s.name $s.value })
+    load-env $restore
+    let gone = ($saved | where {|s| not $s.present } | get name)
+    if ($gone | is-not-empty) { hide-env -i ...$gone }
+}
+
 # pre_execution hook.
 def --env __warp_preexec [] {
     let line = (commandline)
+    if ($line | str trim | str ends-with (__phosphor_ap_marker)) { __phosphor_ap_begin }
     # The commands bound to keys run through executehostcommand; they are not user commands.
     if ($line | str trim | str starts-with "__warp_") { return }
     $env.__warp_seq = (($env.__warp_seq? | default 0 | into int) + 1)

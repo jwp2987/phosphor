@@ -91,6 +91,12 @@ pub(crate) const HISTORY_MARKER: &str = "__phosphor_ap_";
 pub(crate) const PWSH_WRAPPER_HISTORY_PREFIX: &str =
     ". { $__phosphor_ap = @{}; foreach ($__phosphor_ap_v in @(";
 
+/// The trailing comment that tells `nu.nu`'s `pre_execution` hook to switch pagers off for this
+/// line (#1813). nushell ignores a comment, `ignore_space_prefixed` keeps the line out of the
+/// history, and the block shows the original command (`display_command`). MATCHED PAIR with
+/// `__phosphor_ap_marker` in `nu.nu`.
+pub(crate) const NU_PAGER_MARKER: &str = "# __phosphor_ap_pagers";
+
 const MARKER_ACTIVE: &str = "__phosphor_ap_active";
 const MARKER_RC: &str = "__phosphor_ap_rc";
 
@@ -309,12 +315,15 @@ pub(super) fn wrap_command(shell_type: Option<ShellType>, command: &str) -> Stri
         }
         // nushell scopes `cd` and `$env` changes to a block, so wrapping the command in a block
         // (`with-env { ... } { <command> }`) would stop an agent's `cd` from taking effect, and
-        // setting the pager variables at the top level would leak them into the user's shell.
-        // The command goes through unwrapped, with a leading space that keeps it out of the
-        // history (`history.ignore_space_prefixed`, nushell's default); pager suppression is then
-        // ineffective and the long fallback timeout is the only protection, as for an unknown
-        // shell.
-        ShellType::Nu => format!(" {command}"),
+        // setting the pager variables at the top level would leak them into the user's shell
+        // (and a failing command would skip the restore). The command goes through as typed,
+        // with a leading space that keeps it out of the history (`history.ignore_space_prefixed`,
+        // nushell's default) and a trailing comment, [`NU_PAGER_MARKER`], that nushell ignores
+        // (#1813). The `pre_execution` hook in `nu.nu` sees the marker in `(commandline)`, saves
+        // the pager variables and sets them; the `pre_prompt` hook puts them back whenever a
+        // save exists, which also happens after a failing command or a ^C. Same backstop pattern
+        // as the bash/zsh precmd restore. MATCHED PAIR with `nu.nu`.
+        ShellType::Nu => format!(" {command} {NU_PAGER_MARKER}"),
         ShellType::PowerShell => {
             // `.` runs the block in the current scope (variables persist, like the venv
             // activation the agent may run). A command that would end the host (`exit`,
