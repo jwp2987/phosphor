@@ -28,8 +28,8 @@ use super::exec::{self, SessionShell, ShellKind};
 use super::jobs::{Inflight, Reply};
 use super::watch::{FsKind, WatchSet};
 use super::{
-    buffers, diff_state, file_context, fs_ops, git, git_status, git_write, github, repo_meta,
-    repo_watch, ripgrep,
+    agent_context, buffers, diff_state, file_context, fs_ops, git, git_status, git_write, github,
+    repo_meta, repo_watch, ripgrep,
 };
 
 /// How long the daemon waits with no connections before exiting.
@@ -79,6 +79,8 @@ pub(super) enum Event {
     GitStatus(git_status::Done),
     /// A GitHub lookup finished (`github.rs`).
     Github(github::Done),
+    /// A worker finished scanning the host's skills and global rules.
+    AgentContextScanned(Box<agent_context::Scanned>),
 }
 
 struct Connection {
@@ -93,6 +95,13 @@ pub(super) struct Pusher<'a> {
 }
 
 impl Pusher<'_> {
+    /// [`Self::send`] to every connection.
+    pub(super) fn broadcast(&self, message: server_message::Message) {
+        for conn in self.conns.keys() {
+            self.send(*conn, message.clone());
+        }
+    }
+
     /// Queues `message` for `conn`'s writer, after anything already queued for it (so a push
     /// sent right after a response arrives right after it). A gone connection drops it.
     pub(super) fn send(&self, conn: ConnId, message: server_message::Message) {
@@ -146,6 +155,10 @@ pub(super) struct Server {
     git_status: git_status::GitStatuses,
     /// GitHub PR and repository info subscriptions (`github.rs`).
     github: github::Githubs,
+    /// The host's skills and global rules (`agent_context.rs`).
+    agent: agent_context::AgentContext,
+    /// Open text buffers (`buffers.rs`).
+    buffers: buffers::Buffers,
 }
 
 impl Server {
@@ -171,7 +184,23 @@ impl Server {
             diff: diff_state::DiffStates::default(),
             git_status: git_status::GitStatuses::default(),
             github: github::Githubs::default(),
+            agent: agent_context::AgentContext::new(dirs::home_dir()),
+            buffers: buffers::Buffers::default(),
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn agent_current_for_tests(
+        &self,
+    ) -> Option<&crate::proto::RemoteAgentContextSnapshot> {
+        self.agent.current()
+    }
+
+    /// Scans another home directory than the process's (unit and contract tests).
+    #[cfg(test)]
+    pub(super) fn with_home(mut self, home: std::path::PathBuf) -> Self {
+        self.agent = agent_context::AgentContext::new(Some(home));
+        self
     }
 
     /// Gives the core a sender to its own event channel, which turns filesystem watching on and
@@ -268,6 +297,11 @@ impl Server {
                     &push,
                 );
             }
+            Event::AgentContextScanned(done) => {
+                let push = Pusher { conns: &self.conns };
+                self.agent
+                    .scanned(*done, self.events_tx.as_ref(), &mut self.watches, &push);
+            }
             Event::Disconnected { conn } => {
                 self.conns.remove(&conn);
                 self.repos.conn_gone(conn, &mut self.watches);
@@ -277,6 +311,7 @@ impl Server {
                     .conn_gone(conn, &mut self.repo_watches, &mut self.watches);
                 self.github
                     .conn_gone(conn, &mut self.repo_watches, &mut self.watches);
+                self.buffers.conn_gone(conn, &mut self.watches);
                 log::info!(
                     "Daemon: connection {conn} gone, {} active",
                     self.conns.len()
@@ -289,7 +324,7 @@ impl Server {
     }
 
     /// Fans a filesystem change out to every module that watches paths. Add one line per
-    /// consumer here (the repo tree, later buffers, diff state and skills).
+    /// consumer here (the repo tree and the agent context today; later buffers and diff state).
     fn on_fs_change(&mut self, paths: &[PathBuf], kind: FsKind) {
         log::trace!("Daemon: fs change {kind:?} {} path(s)", paths.len());
         self.repos
@@ -302,6 +337,15 @@ impl Server {
             self.github
                 .on_change(&repo, &change, self.events_tx.as_ref());
         }
+        let push = Pusher { conns: &self.conns };
+        self.agent.on_fs_change(
+            paths,
+            kind,
+            self.events_tx.as_ref(),
+            &mut self.watches,
+            &push,
+        );
+        self.buffers.on_fs_change(paths, kind, &push);
     }
 
     fn reply_for(&self, conn: ConnId, request_id: &RequestId) -> Option<Reply> {
@@ -384,14 +428,20 @@ impl Server {
                     &request, cancel,
                 ))
             }),
-            M::SaveBuffer(_) => buffers::handle(&reply, "SaveBuffer"),
-            M::ResolveConflict(_) => buffers::handle(&reply, "ResolveConflict"),
-            M::GitCommitChain(_) => git_write::handle(&reply, "GitCommitChain"),
-            M::GitPush(_) => git_write::handle(&reply, "GitPush"),
-            M::GitPull(_) => git_write::handle(&reply, "GitPull"),
-            M::GitCreatePr(_) => git_write::handle(&reply, "GitCreatePr"),
-            M::DiscardFiles(_) => git_write::handle(&reply, "DiscardFiles"),
-            M::GitStage(_) => git_write::handle(&reply, "GitStage"),
+            M::SaveBuffer(msg) => self.buffers.save(msg, &reply),
+            M::ResolveConflict(msg) => self.buffers.resolve(msg, &reply),
+            M::GitCommitChain(msg) => self
+                .inflight
+                .spawn(reply, move |_| git_write::commit_chain(msg)),
+            M::GitPush(msg) => self.inflight.spawn(reply, move |_| git_write::push(msg)),
+            M::GitPull(msg) => self.inflight.spawn(reply, move |_| git_write::pull(msg)),
+            M::GitCreatePr(msg) => self
+                .inflight
+                .spawn(reply, move |_| git_write::create_pr(msg)),
+            M::DiscardFiles(msg) => self
+                .inflight
+                .spawn(reply, move |_| git_write::discard_files(msg)),
+            M::GitStage(msg) => self.inflight.spawn(reply, move |_| git_write::stage(msg)),
             // Legacy host-side indexing: never implemented by the helper (see CODEBASE_CHUNKS).
             other => unsupported(&reply, host_scoped_name(&other)),
         }
@@ -437,7 +487,11 @@ impl Server {
             M::LoadRepoMetadataDirectory(msg) => {
                 self.repos.load_directory(msg, &reply, &mut self.watches)
             }
-            M::OpenBuffer(_) => buffers::handle(&reply, "OpenBuffer"),
+            M::OpenBuffer(msg) => {
+                let push = Pusher { conns: &self.conns };
+                self.buffers
+                    .open(conn, msg, &reply, &mut self.watches, &push);
+            }
             M::GetDiffState(msg) => self.diff.get_diff_state(
                 conn,
                 msg,
@@ -467,6 +521,13 @@ impl Server {
                 capabilities: HELPER_CAPABILITIES.iter().map(|c| c.to_string()).collect(),
             },
         ));
+        // The agent-context snapshot follows the response on the same connection. A core with
+        // no event channel (unit tests of the dispatch) does not scan the host's real home.
+        if self.events_tx.is_some() {
+            let push = Pusher { conns: &self.conns };
+            self.agent
+                .on_connect(conn, self.events_tx.as_ref(), &mut self.watches, &push);
+        }
     }
 
     fn handle_notification(
@@ -496,6 +557,8 @@ impl Server {
                 }
             }
             Some(N::SessionBootstrapped(msg)) => self.handle_session_bootstrapped(msg),
+            Some(N::BufferEdit(msg)) => self.buffers.edit(msg),
+            Some(N::CloseBuffer(msg)) => self.buffers.close(conn, &msg.path, &mut self.watches),
             Some(N::UnsubscribeDiffState(msg)) => {
                 self.diff
                     .unsubscribe(conn, msg, &mut self.repo_watches, &mut self.watches)
@@ -522,7 +585,7 @@ impl Server {
                 &mut self.watches,
             ),
             // Notifications carry no response contract. The ones the helper cannot act on
-            // (buffer sync, diff-state and git-status subscriptions, preferences) are dropped;
+            // (diff-state and git-status subscriptions, preferences) are dropped;
             // the client does not wait on a response, it waits on pushes that never come, and
             // those features run on the no-helper path because the capability list says so.
             Some(other) => log::debug!(

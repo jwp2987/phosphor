@@ -500,7 +500,7 @@ pub fn assemble(
 // ── Shell side: builders and the section parser ────────────────────────────────────────────
 
 /// `f=...` for `path`, expanding a leading `~` / `~/` on the host (not in the app).
-fn posix_assign_path(path: &str) -> String {
+pub(super) fn posix_assign_path(path: &str) -> String {
     if path == "~" {
         "f=\"$HOME\"".to_string()
     } else if let Some(rest) = path.strip_prefix("~/") {

@@ -11,6 +11,8 @@
 //! * [`types`]: the plain data (file status, staging request, commit, PR info, chain mode).
 //! * [`parse`]: porcelain v2, name-status, numstat, shortstat, branch headers, commit log.
 //! * [`ops`]: the algorithms (main-branch detection, commit chain, stage, discard, ...).
+//! * [`write`]: the six git write requests (commit chain, push, pull, create PR, discard, stage)
+//!   as proto-in, proto-out functions over a runner, shared by the helper and the shell backend.
 //!
 //! Wave H parity, package P5. The app keeps thin wrappers (`util::git`, `code_review::diff_state`)
 //! so its behaviour is byte-identical.
@@ -23,6 +25,7 @@ pub mod parse;
 pub mod runner;
 pub mod status;
 pub mod types;
+pub mod write;
 
 #[cfg(test)]
 pub(crate) mod test_runner;
@@ -34,7 +37,10 @@ pub use gh::{
 };
 pub use ops::*;
 pub use parse::*;
-pub use runner::{GIT_BASE_ARGS, GIT_ENV, GitOutput, GitRunner, gh_text, git_text, git_text_stdin};
+pub use runner::{
+    GIT_BASE_ARGS, GIT_ENV, GIT_NOPROMPT_ENV, GIT_SSH_COMMAND_SH_ASSIGNMENT, GIT_UNSET_ENV,
+    GitOutput, GitRunner, gh_text, git_ssh_command, git_text, git_text_stdin,
+};
 pub use types::*;
 
 #[cfg(test)]

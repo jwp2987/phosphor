@@ -90,6 +90,9 @@ fn initialize_advertises_the_helper_capabilities_and_version() {
             "ripgrep_search",
             "repo_metadata",
             "file_context",
+            "agent_context",
+            "buffers",
+            "git_write",
             "diff_state",
             "git_status",
             "github"
@@ -97,11 +100,14 @@ fn initialize_advertises_the_helper_capabilities_and_version() {
     );
     // Parity family a: batch file reads are served by the helper.
     assert!(caps.supports(crate::capability::FILE_CONTEXT));
+    // Parity family h: the host's skills and rules are pushed by the helper.
+    assert!(caps.supports(crate::capability::AGENT_CONTEXT));
+    // Parity family c: server-side buffers are served by the helper.
+    assert!(caps.supports(crate::capability::BUFFERS));
     // Parity families d and e: diff state, git status and GitHub info.
     assert!(caps.supports(crate::capability::DIFF_STATE));
     assert!(caps.supports(crate::capability::GIT_STATUS));
     assert!(caps.supports(crate::capability::GITHUB));
-    assert!(!caps.supports(crate::capability::BUFFERS));
 }
 
 /// Family a through the server core: a real `ReadFileContext` request is answered with the
@@ -144,15 +150,15 @@ fn requests_outside_the_capability_list_are_unsupported() {
     let mut h = harness();
     h.send(host(
         "r2",
-        host_scoped_request::Message::GitPush(Default::default()),
+        host_scoped_request::Message::ReadFileContext(Default::default()),
     ));
     let e = error_of(h.next());
     assert_eq!(e.code, ErrorCode::Unsupported as i32);
-    assert!(e.message.contains("GitPush"), "{}", e.message);
+    assert!(e.message.contains("ReadFileContext"), "{}", e.message);
 
-    h.send(session(
+    h.send(host(
         "r3",
-        session_scoped_request::Message::OpenBuffer(Default::default()),
+        host_scoped_request::Message::IndexCodebase(Default::default()),
     ));
     assert_eq!(error_of(h.next()).code, ErrorCode::Unsupported as i32);
 }
@@ -327,52 +333,118 @@ fn a_connection_keeps_the_daemon_alive_past_the_grace_period() {
 #[test]
 fn every_reserved_family_request_is_unsupported_and_named() {
     let mut h = harness();
-    let host_requests: Vec<(&str, host_scoped_request::Message)> = vec![
-        (
-            "SaveBuffer",
-            host_scoped_request::Message::SaveBuffer(Default::default()),
-        ),
-        (
-            "ResolveConflict",
-            host_scoped_request::Message::ResolveConflict(Default::default()),
-        ),
-        (
-            "GitCommitChain",
-            host_scoped_request::Message::GitCommitChain(Default::default()),
-        ),
-        (
-            "GitPull",
-            host_scoped_request::Message::GitPull(Default::default()),
-        ),
-        (
-            "GitCreatePr",
-            host_scoped_request::Message::GitCreatePr(Default::default()),
-        ),
-        (
-            "DiscardFiles",
-            host_scoped_request::Message::DiscardFiles(Default::default()),
-        ),
-        (
-            "GitStage",
-            host_scoped_request::Message::GitStage(Default::default()),
-        ),
-    ];
-    for (name, message) in host_requests {
-        h.send(host("rh", message));
-        let e = error_of(h.next());
-        assert_eq!(e.code, ErrorCode::Unsupported as i32, "{name}");
-        assert!(e.message.contains(name), "{name}: {}", e.message);
-    }
-    let session_requests: Vec<(&str, session_scoped_request::Message)> = vec![(
-        "OpenBuffer",
-        session_scoped_request::Message::OpenBuffer(Default::default()),
+    // What no helper implements: the legacy host-side indexing.
+    let session_requests: Vec<(&str, host_scoped_request::Message)> = vec![(
+        "IndexCodebase",
+        host_scoped_request::Message::IndexCodebase(Default::default()),
     )];
     for (name, message) in session_requests {
-        h.send(session("rs", message));
+        h.send(host("rs", message));
         let e = error_of(h.next());
         assert_eq!(e.code, ErrorCode::Unsupported as i32, "{name}");
         assert!(e.message.contains(name), "{name}: {}", e.message);
     }
+}
+
+/// The git write requests are answered, not UNSUPPORTED, and keep the old server's contract of
+/// reporting a bad request in the response's own error (P7). Real-git behaviour is covered in
+/// `shellcmd::git::write` and the backend contract tests.
+#[test]
+fn git_write_requests_answer_with_their_own_error_responses() {
+    use crate::proto::{
+        discard_files_response, git_commit_chain_response, git_create_pr_response,
+        git_pull_response, git_push_response, git_stage_response,
+    };
+    let mut h = harness();
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().to_string_lossy().into_owned();
+
+    h.send(host(
+        "w1",
+        host_scoped_request::Message::GitPush(crate::proto::GitPushRequest {
+            repo_path: "/definitely/not/here".into(),
+            branch: "main".into(),
+        }),
+    ));
+    let Some(server_message::Message::GitPushResponse(r)) = h.next().message else {
+        panic!("GitPushResponse expected");
+    };
+    let Some(git_push_response::Result::Error(e)) = r.result else {
+        panic!("error expected");
+    };
+    assert!(
+        e.message.starts_with("Invalid repo_path: "),
+        "{}",
+        e.message
+    );
+
+    h.send(host(
+        "w2",
+        host_scoped_request::Message::GitStage(crate::proto::GitStageRequest {
+            repo_path: repo.clone(),
+            ..Default::default()
+        }),
+    ));
+    let Some(server_message::Message::GitStageResponse(r)) = h.next().message else {
+        panic!("GitStageResponse expected");
+    };
+    let Some(git_stage_response::Result::Error(e)) = r.result else {
+        panic!("error expected");
+    };
+    assert_eq!(e.message, "GitStageRequest set neither paths nor patch");
+
+    h.send(host(
+        "w3",
+        host_scoped_request::Message::DiscardFiles(crate::proto::DiscardFilesRequest {
+            repo_path: repo.clone(),
+            ..Default::default()
+        }),
+    ));
+    let Some(server_message::Message::DiscardFilesResponse(r)) = h.next().message else {
+        panic!("DiscardFilesResponse expected");
+    };
+    let Some(discard_files_response::Result::Error(e)) = r.result else {
+        panic!("error expected");
+    };
+    assert_eq!(e.message, "No files specified in DiscardFilesRequest");
+
+    // The three network operations and the commit chain answer too (here: not a repository).
+    h.send(host(
+        "w4",
+        host_scoped_request::Message::GitCommitChain(crate::proto::GitCommitChainRequest {
+            repo_path: repo.clone(),
+            ..Default::default()
+        }),
+    ));
+    assert!(matches!(
+        h.next().message,
+        Some(server_message::Message::GitCommitChainResponse(r))
+            if matches!(r.result, Some(git_commit_chain_response::Result::Error(_)))
+    ));
+    h.send(host(
+        "w5",
+        host_scoped_request::Message::GitPull(crate::proto::GitPullRequest {
+            repo_path: repo.clone(),
+            branch: "main".into(),
+        }),
+    ));
+    assert!(matches!(
+        h.next().message,
+        Some(server_message::Message::GitPullResponse(r))
+            if matches!(r.result, Some(git_pull_response::Result::Error(_)))
+    ));
+    h.send(host(
+        "w6",
+        host_scoped_request::Message::GitCreatePr(crate::proto::GitCreatePrRequest {
+            repo_path: repo,
+            ..Default::default()
+        }),
+    ));
+    assert!(matches!(
+        h.next().message,
+        Some(server_message::Message::GitCreatePrResponse(r))
+            if matches!(r.result, Some(git_create_pr_response::Result::Error(_)))
+    ));
 }
 
 // ---- repo metadata (P3) -------------------------------------------------------------------
@@ -701,4 +773,260 @@ fn a_repo_nobody_follows_any_more_releases_its_watches() {
     live.h.server.handle_event(Event::Disconnected { conn });
     assert_eq!(live.h.server.watches.len(), 0);
     assert!(live.h.server.repos.roots().is_empty());
+}
+
+// ---- buffers (P4) -------------------------------------------------------------------------
+
+fn open_buffer_msg(id: &str, path: &Path, force_reload: bool) -> ClientMessage {
+    session(
+        id,
+        session_scoped_request::Message::OpenBuffer(crate::proto::OpenBuffer {
+            path: lossy(path),
+            force_reload,
+        }),
+    )
+}
+
+fn buffer_edit_msg(
+    path: &Path,
+    expected_server_version: u64,
+    new_client_version: u64,
+    edits: &[(u64, u64, &str)],
+) -> ClientMessage {
+    ClientMessage::notification(notification::Message::BufferEdit(
+        crate::proto::BufferEdit {
+            path: lossy(path),
+            expected_server_version,
+            new_client_version,
+            edits: edits
+                .iter()
+                .map(|&(start_offset, end_offset, text)| crate::proto::TextEdit {
+                    start_offset,
+                    end_offset,
+                    text: text.to_owned(),
+                })
+                .collect(),
+        },
+    ))
+}
+
+fn opened(h: &mut Harness, path: &Path, force_reload: bool) -> crate::proto::OpenBufferResponse {
+    h.send(open_buffer_msg("ob", path, force_reload));
+    let Some(server_message::Message::OpenBufferResponse(resp)) = h.next().message else {
+        panic!("expected OpenBufferResponse");
+    };
+    resp
+}
+
+fn saved(h: &mut Harness, path: &Path) -> Option<String> {
+    h.send(host(
+        "sb",
+        host_scoped_request::Message::SaveBuffer(crate::proto::SaveBuffer { path: lossy(path) }),
+    ));
+    let Some(server_message::Message::SaveBufferResponse(resp)) = h.next().message else {
+        panic!("expected SaveBufferResponse");
+    };
+    match resp.result {
+        Some(crate::proto::save_buffer_response::Result::Error(e)) => Some(e.message),
+        _ => None,
+    }
+}
+
+fn disk_changed(h: &mut Harness, path: &Path) {
+    h.server.handle_event(Event::FsChange {
+        paths: vec![path.to_path_buf()],
+        kind: FsKind::Modify,
+    });
+}
+
+#[test]
+fn a_buffer_opens_edits_and_saves_with_char_offsets() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("a.txt");
+    std::fs::write(&path, "héllo wörld\n").unwrap();
+    let mut h = harness();
+    let open = opened(&mut h, &path, false);
+    assert_eq!(open.content, "héllo wörld\n");
+    assert_eq!(open.server_version, 1);
+
+    // Offsets are 1-indexed characters: replace "wörld" (chars 7..12) and insert at the end of
+    // the text as it is after that first edit; an offset past the end is clamped.
+    h.send(buffer_edit_msg(
+        &path,
+        1,
+        7,
+        &[(7, 12, "there"), (999, 999, "!")],
+    ));
+    assert_eq!(saved(&mut h, &path), None);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "héllo there\n!");
+    assert!(
+        std::fs::read_dir(dir.path()).unwrap().count() == 1,
+        "the temp file is gone"
+    );
+}
+
+#[test]
+fn an_edit_with_a_stale_server_version_is_dropped_silently() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("a.txt");
+    std::fs::write(&path, "abc").unwrap();
+    let mut h = harness();
+    opened(&mut h, &path, false);
+    h.send(buffer_edit_msg(&path, 99, 1, &[(1, 1, "X")]));
+    assert!(h.rx.try_recv().is_err(), "a rejected edit gets no response");
+    assert_eq!(saved(&mut h, &path), None);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "abc");
+}
+
+#[test]
+fn a_disk_change_without_client_edits_is_pushed_as_one_edit_and_bumps_the_version() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("a.txt");
+    std::fs::write(&path, "one two three").unwrap();
+    let mut h = harness();
+    opened(&mut h, &path, false);
+    std::fs::write(&path, "one 2 three").unwrap();
+    disk_changed(&mut h, &path);
+    let push = h.next();
+    assert_eq!(push.request_id, "");
+    let Some(server_message::Message::BufferUpdated(update)) = push.message else {
+        panic!("expected BufferUpdated, got {push:?}");
+    };
+    assert_eq!(update.path, lossy(&path));
+    assert_eq!(update.new_server_version, 2);
+    assert_eq!(update.expected_client_version, 0);
+    assert_eq!(update.edits.len(), 1);
+    assert_eq!(
+        (
+            update.edits[0].start_offset,
+            update.edits[0].end_offset,
+            update.edits[0].text.as_str()
+        ),
+        (5, 8, "2")
+    );
+    // The same change again is not a change.
+    disk_changed(&mut h, &path);
+    assert!(h.rx.try_recv().is_err());
+    // An edit against the OLD server version is now stale.
+    h.send(buffer_edit_msg(&path, 1, 3, &[(1, 1, "X")]));
+    assert_eq!(saved(&mut h, &path), None);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "one 2 three");
+}
+
+#[test]
+fn a_disk_change_over_unsaved_edits_is_a_conflict_and_our_own_save_is_not() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("a.txt");
+    std::fs::write(&path, "abc").unwrap();
+    let mut h = harness();
+    opened(&mut h, &path, false);
+    h.send(buffer_edit_msg(&path, 1, 5, &[(4, 4, "d")]));
+    std::fs::write(&path, "outside").unwrap();
+    disk_changed(&mut h, &path);
+    let Some(server_message::Message::BufferConflictDetected(c)) = h.next().message else {
+        panic!("expected BufferConflictDetected");
+    };
+    assert_eq!(c.path, lossy(&path));
+    // The disk change was NOT applied: the buffer still holds the edited text.
+    // "Discard": force_reload takes the disk's copy, bumps the version, resets the client's.
+    let reopened = opened(&mut h, &path, true);
+    assert_eq!(reopened.content, "outside");
+    assert_eq!(reopened.server_version, 2);
+    // Our own save echoes through the watcher without a push.
+    h.send(buffer_edit_msg(&path, 2, 6, &[(8, 8, "!")]));
+    assert_eq!(saved(&mut h, &path), None);
+    disk_changed(&mut h, &path);
+    assert!(h.rx.try_recv().is_err());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "outside!");
+}
+
+#[test]
+fn resolve_conflict_keeps_the_clients_text_unless_the_server_version_moved() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("a.txt");
+    std::fs::write(&path, "abc").unwrap();
+    let mut h = harness();
+    opened(&mut h, &path, false);
+    let resolve = |h: &mut Harness, ack: u64, content: &str| {
+        h.send(host(
+            "rc",
+            host_scoped_request::Message::ResolveConflict(crate::proto::ResolveConflict {
+                path: lossy(&path),
+                acknowledged_server_version: ack,
+                client_content: content.to_owned(),
+                current_client_version: 9,
+            }),
+        ));
+        let Some(server_message::Message::ResolveConflictResponse(resp)) = h.next().message else {
+            panic!("expected ResolveConflictResponse");
+        };
+        match resp.result {
+            Some(crate::proto::resolve_conflict_response::Result::Error(e)) => Some(e.message),
+            _ => None,
+        }
+    };
+    let stale = resolve(&mut h, 7, "mine").expect("a stale acknowledgement is refused");
+    assert!(stale.contains("Stale"), "{stale}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "abc");
+    assert_eq!(resolve(&mut h, 1, "mine"), None);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "mine");
+}
+
+#[test]
+fn a_second_connection_is_told_about_a_force_reload_and_the_last_close_frees_the_buffer() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("a.txt");
+    std::fs::write(&path, "abc").unwrap();
+    let mut h = harness();
+    opened(&mut h, &path, false);
+    // A second connection on the same core.
+    let (tx2, rx2) = async_channel::unbounded();
+    let conn2 = next_conn_id();
+    h.server.handle_event(Event::Connected {
+        conn: conn2,
+        tx: tx2,
+        chunking: Arc::new(AtomicBool::new(false)),
+    });
+    h.server
+        .handle_message(conn2, open_buffer_msg("o2", &path, false));
+    assert!(rx2.try_recv().is_ok(), "the second open is answered");
+    std::fs::write(&path, "abcdef").unwrap();
+    // The first connection force-reloads: the second one hears the whole new text.
+    opened(&mut h, &path, true);
+    let push = rx2.try_recv().expect("the other connection is told");
+    let Some(server_message::Message::BufferUpdated(update)) = push.message else {
+        panic!("expected BufferUpdated");
+    };
+    assert_eq!(update.new_server_version, 2);
+    assert_eq!(
+        (update.edits[0].start_offset, update.edits[0].end_offset),
+        (1, 4)
+    );
+    assert_eq!(update.edits[0].text, "abcdef");
+
+    h.server.handle_message(
+        h.conn,
+        ClientMessage::notification(notification::Message::CloseBuffer(
+            crate::proto::CloseBuffer { path: lossy(&path) },
+        )),
+    );
+    assert!(
+        !h.server.buffers.is_empty(),
+        "the second connection still follows it"
+    );
+    h.server.handle_event(Event::Disconnected { conn: conn2 });
+    assert!(h.server.buffers.is_empty());
+}
+
+#[test]
+fn opening_a_missing_or_binary_file_is_an_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness();
+    h.send(open_buffer_msg("m", &dir.path().join("nope"), false));
+    assert_eq!(error_of(h.next()).code, ErrorCode::Internal as i32);
+    let bin = dir.path().join("b.bin");
+    std::fs::write(&bin, [0xff, 0xfe, 0x00]).unwrap();
+    h.send(open_buffer_msg("b", &bin, false));
+    let e = error_of(h.next());
+    assert!(e.message.contains("UTF-8"), "{}", e.message);
 }

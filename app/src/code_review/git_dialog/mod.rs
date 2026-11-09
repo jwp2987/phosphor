@@ -41,10 +41,10 @@ use crate::{
     },
     util::git::{Commit, FileChangeEntry, is_gh_auth_error},
     view_components::{
-        DismissibleToast,
+        DismissibleToast, ToastLink,
         action_button::{ActionButton, ButtonSize, NakedTheme, SecondaryTheme},
     },
-    workspace::ToastStack,
+    workspace::{ToastStack, WorkspaceAction},
     workspaces::user_workspaces::UserWorkspaces,
 };
 
@@ -101,15 +101,27 @@ pub(super) fn interactive_path_future(
 }
 
 /// Looks up the connected remote-server client for `remote`'s host, or `None`
-/// when no session is connected. Used by the git-dialog modes to address git
-/// write-op RPCs to the daemon when the code-review repo is remote (#116).
+/// when no session is connected. Only the read-only branch-file listing in the PR dialog still
+/// asks for the raw client (its family has not moved to the backend router yet); every git WRITE
+/// goes through [`remote_backend_for`].
 pub(super) fn remote_client_for(
     remote: &RemotePath,
     ctx: &AppContext,
 ) -> Option<std::sync::Arc<remote_server::client::RemoteServerClient>> {
     remote_server::manager::RemoteServerManager::as_ref(ctx)
-        .client_for_host_with(&remote.host_id, remote_server::capability::GIT_WRITE)
+        .client_for_host_with(&remote.host_id, remote_server::capability::GIT_READ)
         .cloned()
+}
+
+/// The backend serving `remote`'s host: the connected helper when it does git writes, otherwise
+/// the shell backend over the session's out-of-band channel (see `remote_server::backend`).
+/// Call sites never choose or retry; a host with neither answers `Unavailable` and the toast
+/// says so. Used by the git-dialog modes to run git write ops on a remote repo (#116).
+pub(super) fn remote_backend_for(
+    remote: &RemotePath,
+    ctx: &AppContext,
+) -> remote_server::backend::RoutedBackend {
+    remote_server::manager::RemoteServerManager::as_ref(ctx).backend_for_host(&remote.host_id)
 }
 
 /// Top-level action dispatched to `GitDialog`.
@@ -163,6 +175,78 @@ fn should_send_git_ops_ai_request(app: &AppContext) -> bool {
     FeatureFlag::GitOperationsInCodeReview.is_enabled()
         && AISettings::as_ref(app).is_git_operations_autogen_enabled(app)
         && UserWorkspaces::as_ref(app).ai_allowed_for_current_team()
+}
+
+/// Whether `raw` is git failing for want of credentials it could not obtain without a terminal.
+///
+/// Every runner sets `GIT_TERMINAL_PROMPT=0` (and the remote ones also BatchMode ssh, no askpass),
+/// which turns what would otherwise be a hung credential prompt into these forms: "terminal
+/// prompts disabled", "could not read Username/Password", or ssh's "Permission denied
+/// (publickey)". Owner ruling: never prompt; offer [`show_git_failure`]'s "Run in terminal".
+pub(super) fn is_git_auth_failure(raw: &str) -> bool {
+    let lower = raw.to_lowercase();
+    lower.contains("authentication failed")
+        || lower.contains("permission denied (publickey)")
+        || lower.contains("terminal prompts disabled")
+        || lower.contains("could not read username")
+        || lower.contains("could not read password")
+        || lower.contains("host key verification failed")
+}
+
+/// `git -C <repo> <args...>` as one line a user can paste into any common shell (bash, zsh, fish,
+/// nushell, PowerShell): words made only of safe characters stay bare, others are single-quoted.
+pub(super) fn git_command_line(repo_path: &str, args: &[&str]) -> String {
+    fn word(s: &str) -> String {
+        let plain = !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || "_./:@%+=,-".contains(c));
+        if plain {
+            s.to_string()
+        } else {
+            format!("'{}'", s.replace('\'', "'\\''"))
+        }
+    }
+    let mut line = format!("git -C {}", word(repo_path));
+    for arg in args {
+        line.push(' ');
+        line.push_str(&word(arg));
+    }
+    line
+}
+
+/// Shows the failure of a git operation. For an authentication failure the toast carries git's
+/// own words and a "Run in terminal" link that puts `terminal_command` into the active input
+/// editor WITHOUT running it, so the user runs it with their own credential helper or agent.
+/// Anything else is the plain friendly toast.
+pub(super) fn show_git_failure(
+    raw: &str,
+    terminal_command: Option<String>,
+    ctx: &mut ViewContext<GitDialog>,
+) {
+    let friendly = user_facing_git_error(raw);
+    let (Some(command), true) = (
+        terminal_command,
+        is_git_auth_failure(raw) || is_gh_auth_error(raw),
+    ) else {
+        show_toast(friendly, ctx);
+        return;
+    };
+    let detail: String = raw.trim().chars().take(600).collect();
+    let window_id = ctx.window_id();
+    ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+        let toast = DismissibleToast::error(format!("{friendly}\n{detail}"))
+            .with_link(
+                ToastLink::new("Run in terminal".to_string()).with_onclick_action(
+                    WorkspaceAction::InsertInInput {
+                        content: command,
+                        replace_buffer: true,
+                        ensure_agent_mode: false,
+                    },
+                ),
+            )
+            .with_timeout(std::time::Duration::from_secs(30));
+        toast_stack.add_ephemeral_toast(toast, window_id, ctx);
+    });
 }
 
 /// Maps a raw git error string to a user-friendly toast message. Known
@@ -243,16 +327,7 @@ fn user_facing_git_error(raw: &str) -> &'static str {
         || lower.contains("no tracking information for the current branch")
     {
         "No remote configured for this branch."
-    } else if lower.contains("authentication failed")
-        || lower.contains("permission denied (publickey)")
-        // `util::git::git_child_env` sets `GIT_TERMINAL_PROMPT=0`, which turns
-        // what would otherwise be a hung credential prompt into these forms.
-        // All three mean "git needed credentials it could not obtain without
-        // a tty".
-        || lower.contains("terminal prompts disabled")
-        || lower.contains("could not read username")
-        || lower.contains("could not read password")
-    {
+    } else if is_git_auth_failure(raw) {
         "Authentication failed. Check your Git credentials."
     } else if lower.contains("could not resolve host")
         || lower.contains("network is unreachable")

@@ -40,8 +40,8 @@ use warpui::{
 
 use crate::{
     code_review::git_dialog::{
-        GitDialog, GitDialogEvent, GitDialogMode, interactive_path_future, render_branch_section,
-        show_toast, user_facing_git_error,
+        GitDialog, GitDialogEvent, GitDialogMode, git_command_line, interactive_path_future,
+        render_branch_section, show_git_failure, show_toast, user_facing_git_error,
     },
     ui_components::icons::Icon,
 };
@@ -82,6 +82,10 @@ pub(super) fn start_confirm(me: &mut GitDialog, ctx: &mut ViewContext<GitDialog>
     }
 
     let path_future = interactive_path_future(ctx);
+    let local_pull_command = git_command_line(
+        &repo_path.to_string_lossy(),
+        &["pull", "--ff-only", "origin", &branch],
+    );
 
     ctx.spawn(
         async move {
@@ -95,7 +99,7 @@ pub(super) fn start_confirm(me: &mut GitDialog, ctx: &mut ViewContext<GitDialog>
                 }
                 Err(e) => {
                     log::error!("Pull failed: {e}");
-                    show_toast(user_facing_git_error(&e.to_string()), ctx);
+                    show_git_failure(&e.to_string(), Some(local_pull_command), ctx);
                 }
             }
             let _ = me;
@@ -111,20 +115,22 @@ pub(super) fn start_confirm(me: &mut GitDialog, ctx: &mut ViewContext<GitDialog>
 /// Sends the pull to the remote host's daemon and surfaces the same toasts as
 /// the local path.
 fn start_confirm_remote(remote: RemotePath, branch: String, ctx: &mut ViewContext<GitDialog>) {
-    use crate::code_review::git_dialog::remote_client_for;
+    use crate::code_review::git_dialog::{git_command_line, remote_backend_for};
     use crate::remote_server::proto;
+    use remote_server::backend::RemoteFeatures as _;
 
-    let Some(client) = remote_client_for(&remote, ctx) else {
-        show_toast(user_facing_git_error("could not resolve host"), ctx);
-        ctx.emit(GitDialogEvent::Completed);
-        return;
-    };
+    // Helper when it serves git writes, otherwise the shell backend; no helper is required.
+    let backend = remote_backend_for(&remote, ctx);
+    let terminal_command = git_command_line(
+        &remote.path.to_string(),
+        &["pull", "--ff-only", "origin", &branch],
+    );
     let request = proto::GitPullRequest {
         repo_path: remote.path.to_string(),
         branch,
     };
     ctx.spawn(
-        async move { client.git_pull(request).await },
+        async move { backend.git_pull(request).await },
         move |me, result, ctx| {
             match result {
                 Ok(response) => match response.result {
@@ -140,7 +146,7 @@ fn start_confirm_remote(remote: RemotePath, branch: String, ctx: &mut ViewContex
                     }
                     Some(proto::git_pull_response::Result::Error(e)) => {
                         log::error!("Remote pull failed: {}", e.message);
-                        show_toast(user_facing_git_error(&e.message), ctx);
+                        show_git_failure(&e.message, Some(terminal_command), ctx);
                     }
                     None => show_toast(user_facing_git_error(""), ctx),
                 },

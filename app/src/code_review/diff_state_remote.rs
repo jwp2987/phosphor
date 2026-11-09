@@ -553,17 +553,9 @@ impl RemoteDiffStateModel {
         branch_name: Option<String>,
         ctx: &mut ModelContext<Self>,
     ) {
-        let Some(client) = RemoteServerManager::as_ref(ctx)
-            .client_for_host_with(
-                &self.remote_path.host_id,
-                remote_server::capability::GIT_WRITE,
-            )
-            .cloned()
-        else {
-            // No connected session for the host; nothing to discard against.
-            log::warn!("RemoteDiffStateModel: discard_files has no connected session for host");
-            return;
-        };
+        // The helper when it serves git writes, else the shell backend over the session's
+        // out-of-band channel; with neither the call fails `Unavailable` and is logged.
+        let backend = RemoteServerManager::as_ref(ctx).backend_for_host(&self.remote_path.host_id);
         let request = proto::DiscardFilesRequest {
             repo_path: self.repo_path_string(),
             files: file_infos.iter().map(file_status_info_to_proto).collect(),
@@ -572,11 +564,10 @@ impl RemoteDiffStateModel {
             mode: Some(encode_diff_mode(&self.mode)),
         };
         ctx.spawn(
-            async move { client.discard_files(request).await },
-            |_me, result, _ctx| {
-                if let Err(e) = result {
-                    log::error!("RemoteDiffStateModel: discard_files failed: {e}");
-                }
+            async move { backend.discard_files(request).await },
+            |me, result, ctx| match result {
+                Ok(()) => me.after_own_write(ctx),
+                Err(e) => log::error!("RemoteDiffStateModel: discard_files failed: {e}"),
             },
         );
     }
@@ -598,17 +589,7 @@ impl RemoteDiffStateModel {
     ) {
         use super::diff_state::StageTarget;
 
-        let Some(client) = RemoteServerManager::as_ref(ctx)
-            .client_for_host_with(
-                &self.remote_path.host_id,
-                remote_server::capability::GIT_WRITE,
-            )
-            .cloned()
-        else {
-            // No connected session for the host; nothing to stage against.
-            log::warn!("RemoteDiffStateModel: stage_changes has no connected session for host");
-            return;
-        };
+        let backend = RemoteServerManager::as_ref(ctx).backend_for_host(&self.remote_path.host_id);
         let (paths, patch) = match request.target {
             StageTarget::Paths(paths) => (paths, None),
             StageTarget::Hunk(patch) => (Vec::new(), Some(patch)),
@@ -621,13 +602,24 @@ impl RemoteDiffStateModel {
             mode: Some(encode_diff_mode(&self.mode)),
         };
         ctx.spawn(
-            async move { client.git_stage(request).await },
-            |_me, result, _ctx| {
-                if let Err(e) = result {
-                    log::error!("RemoteDiffStateModel: stage_changes failed: {e}");
-                }
+            async move { backend.git_stage(request).await },
+            |me, result, ctx| match result {
+                Ok(()) => me.after_own_write(ctx),
+                Err(e) => log::error!("RemoteDiffStateModel: stage_changes failed: {e}"),
             },
         );
+    }
+
+    /// Our own write (discard, stage) finished: re-read the diff state now
+    /// (`RemoteRefreshEvent::AfterOwnWrite`). A legacy daemon also pushes a snapshot; a helper
+    /// without the diff-state family and the shell backend do not, and staging moves only the
+    /// index, which no file watcher would notice, so the model asks.
+    fn after_own_write(&mut self, ctx: &mut ModelContext<Self>) {
+        log::debug!(
+            "RemoteDiffStateModel: {:?}",
+            remote_server::backend::refresh::RemoteRefreshEvent::AfterOwnWrite
+        );
+        self.spawn_get_diff_state(ctx);
     }
 
     /// The daemon owns metadata refresh cadence, so this is a no-op.

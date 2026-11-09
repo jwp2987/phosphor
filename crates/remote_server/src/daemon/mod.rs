@@ -112,6 +112,19 @@ pub fn run_daemon(identity_key: &str) -> anyhow::Result<()> {
 /// client end; the server core runs on its own thread until the stream is dropped.
 #[cfg(test)]
 pub(crate) fn spawn_in_process_for_tests() -> std::os::unix::net::UnixStream {
+    spawn_in_process(None)
+}
+
+/// [`spawn_in_process_for_tests`] whose agent context scans `home` instead of the process's.
+#[cfg(test)]
+pub(crate) fn spawn_in_process_with_home_for_tests(
+    home: &std::path::Path,
+) -> std::os::unix::net::UnixStream {
+    spawn_in_process(Some(home.to_path_buf()))
+}
+
+#[cfg(test)]
+fn spawn_in_process(home: Option<std::path::PathBuf>) -> std::os::unix::net::UnixStream {
     let (client_end, server_end) =
         std::os::unix::net::UnixStream::pair().expect("socketpair for the in-process daemon");
     let (events_tx, events_rx) = std::sync::mpsc::channel::<server::Event>();
@@ -119,9 +132,11 @@ pub(crate) fn spawn_in_process_for_tests() -> std::os::unix::net::UnixStream {
     std::thread::Builder::new()
         .name("in-process-daemon".into())
         .spawn(move || {
-            server::Server::new(server::GRACE_PERIOD)
-                .with_events(events_tx)
-                .run(events_rx);
+            let mut server = server::Server::new(server::GRACE_PERIOD);
+            if let Some(home) = home {
+                server = server.with_home(home);
+            }
+            server.with_events(events_tx).run(events_rx);
         })
         .expect("spawn the in-process daemon");
     client_end

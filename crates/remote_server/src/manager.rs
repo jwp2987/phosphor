@@ -853,6 +853,9 @@ pub struct RemoteServerManager {
     /// Shell-mode file-tree refresh state per session: at most one refresh in flight, a dirty
     /// flag for events that arrive meanwhile, no timer.
     tree_refresh: HashMap<SessionId, crate::backend::refresh::RefreshCoordinator>,
+    /// Shell-mode agent-context (skills and rules) refresh state per session: one read in
+    /// flight, a dirty flag, no timer. An entry exists once the session's first read started.
+    agent_refresh: HashMap<SessionId, crate::backend::refresh::RefreshCoordinator>,
     /// Per-session shell info recorded at bootstrap time and re-sent to the
     /// remote server daemon on every (re)connect. Persists until
     /// `deregister_session`.
@@ -940,6 +943,7 @@ impl RemoteServerManager {
             last_navigated_path: HashMap::new(),
             indexed_root: HashMap::new(),
             tree_refresh: HashMap::new(),
+            agent_refresh: HashMap::new(),
             session_bootstrap_info: HashMap::new(),
             auth_context: None,
             session_platforms: HashMap::new(),
@@ -1153,9 +1157,35 @@ impl RemoteServerManager {
         );
     }
 
+    /// One log line per accepted agent-context snapshot, for the lab and for diagnosing a missing
+    /// skill. Counts and a 32-bit FNV-1a hash of each skill's directory name only (never the
+    /// names, paths or content).
+    fn log_agent_context(source: &str, snapshot: &crate::proto::RemoteAgentContextSnapshot) {
+        let hashes: Vec<String> = snapshot
+            .skills
+            .iter()
+            .take(64)
+            .map(|skill| {
+                let name = skill.path.rsplit('/').nth(1).unwrap_or_default();
+                let hash = name.bytes().fold(2_166_136_261u32, |h, b| {
+                    (h ^ u32::from(b)).wrapping_mul(16_777_619)
+                });
+                format!("{hash:08x}")
+            })
+            .collect();
+        log::info!(
+            "hop=agent_context source={source} revision={} skills={} rules={} names_hash=[{}]",
+            snapshot.revision,
+            snapshot.skills.len(),
+            snapshot.global_rules.len(),
+            hashes.join(",")
+        );
+    }
+
     /// Emits the pushes a shell-mode call produced as the same manager events the helper's
     /// unsolicited pushes become.
     fn emit_shell_pushes(
+        &mut self,
         host_id: &HostId,
         pushes: Vec<crate::backend::ShellPush>,
         ctx: &mut ModelContext<Self>,
@@ -1182,6 +1212,17 @@ impl RemoteServerManager {
                         ctx.emit(RemoteServerManagerEvent::RepoMetadataUpdated {
                             host_id: host_id.clone(),
                             update,
+                        });
+                    }
+                }
+                ShellPush::AgentContext(snapshot) => {
+                    // The same path as the helper's push: dedup by revision, then the event the
+                    // app's `RemoteAgentContext` reconciles.
+                    if self.accept_remote_agent_context_snapshot(host_id, snapshot.clone()) {
+                        Self::log_agent_context("shell", &snapshot);
+                        ctx.emit(RemoteServerManagerEvent::RemoteAgentContextSnapshot {
+                            host_id: host_id.clone(),
+                            snapshot,
                         });
                     }
                 }
@@ -1885,6 +1926,15 @@ impl RemoteServerManager {
         self.last_navigated_path.remove(&session_id);
         self.indexed_root.remove(&session_id);
         self.tree_refresh.remove(&session_id);
+        self.agent_refresh.remove(&session_id);
+        // A no-helper session's stand-in host ends with the session: its skills and rules go.
+        let shell_host = shell_mode_host_id(session_id);
+        if self
+            .remote_agent_context_snapshots
+            .contains_key(&shell_host)
+        {
+            self.handle_host_disconnected(shell_host, ctx);
+        }
         self.router.unregister_out_of_band(session_id);
         self.session_bootstrap_info.remove(&session_id);
         self.session_platforms.remove(&session_id);
@@ -2085,6 +2135,12 @@ impl RemoteServerManager {
         // SessionConnected is not incorrectly deduplicated.
         self.last_navigated_path.insert(session_id, path.clone());
 
+        // A no-helper session reads the host's skills and rules once, here, at its start (a
+        // helper pushes its own snapshot on connect).
+        if !self.agent_refresh.contains_key(&session_id) {
+            self.refresh_agent_context(session_id, ctx);
+        }
+
         let spawner = self.spawner.clone();
         ctx.background_executor()
             .spawn(async move {
@@ -2103,7 +2159,7 @@ impl RemoteServerManager {
                                     indexed_path: resp.indexed_path,
                                     is_git: resp.is_git,
                                 });
-                                Self::emit_shell_pushes(&host_id, pushes, ctx);
+                                me.emit_shell_pushes(&host_id, pushes, ctx);
                             })
                             .await;
                     }
@@ -2141,6 +2197,19 @@ impl RemoteServerManager {
             host_id: self.host_for_session_or_shell_mode(session_id),
             event: event.clone(),
         });
+        // The host's skills and rules: only an explicit refresh, or a command that names a skill
+        // or rule location, re-reads them in shell mode (never every prompt, never a timer).
+        let touches_agent_context = match &event {
+            crate::backend::refresh::RemoteRefreshEvent::UserAction => true,
+            crate::backend::refresh::RemoteRefreshEvent::Precmd {
+                last_cmd: Some(command),
+                ..
+            } => crate::shellcmd::agent_context::command_may_change_agent_context(command),
+            _ => false,
+        };
+        if touches_agent_context {
+            self.refresh_agent_context(session_id, ctx);
+        }
         if !self.indexed_root.contains_key(&session_id) {
             return;
         }
@@ -2157,6 +2226,60 @@ impl RemoteServerManager {
         if decision == RefreshDecision::Start {
             self.start_tree_refresh(session_id, ctx);
         }
+    }
+
+    /// Reads the skills and global rules of a no-helper session's host over its out-of-band
+    /// channel and emits them as `RemoteAgentContextSnapshot` when they changed: at session
+    /// start and on an explicit refresh. At most one read in flight, one more queued if a request
+    /// arrives meanwhile. A no-op when a helper serves the family (it pushes by itself) or the
+    /// session has no channel.
+    pub fn refresh_agent_context(&mut self, session_id: SessionId, ctx: &mut ModelContext<Self>) {
+        use crate::backend::refresh::{
+            PrecmdPolicy, RefreshCoordinator, RefreshDecision, RemoteRefreshEvent,
+        };
+        let backend = self.backend_for_session(session_id);
+        if backend.kind(crate::backend::Family::AgentContext) != crate::backend::BackendKind::Shell
+            || !backend.is_available(crate::backend::Family::AgentContext)
+        {
+            return;
+        }
+        let decision = self
+            .agent_refresh
+            .entry(session_id)
+            .or_insert_with(|| RefreshCoordinator::new(PrecmdPolicy::GitRelevant))
+            .on_event(&RemoteRefreshEvent::UserAction);
+        if decision == RefreshDecision::Start {
+            self.start_agent_context_refresh(session_id, ctx);
+        }
+    }
+
+    fn start_agent_context_refresh(&mut self, session_id: SessionId, ctx: &mut ModelContext<Self>) {
+        let host_id = self.host_for_session_or_shell_mode(session_id);
+        let backend = self.backend_for_session(session_id);
+        let spawner = self.spawner.clone();
+        ctx.background_executor()
+            .spawn(async move {
+                let pushes = match backend.refresh_agent_context().await {
+                    Ok(pushes) => pushes,
+                    Err(e) => {
+                        log::warn!("agent context read failed for session {session_id:?}: {e}");
+                        Vec::new()
+                    }
+                };
+                let _ = spawner
+                    .spawn(move |me, ctx| {
+                        me.emit_shell_pushes(&host_id, pushes, ctx);
+                        let again = me
+                            .agent_refresh
+                            .get_mut(&session_id)
+                            .is_some_and(|c| c.finished());
+                        if again {
+                            me.start_agent_context_refresh(session_id, ctx);
+                        }
+                    })
+                    .await;
+            })
+            .detach();
     }
 
     fn start_tree_refresh(&mut self, session_id: SessionId, ctx: &mut ModelContext<Self>) {
@@ -2180,7 +2303,7 @@ impl RemoteServerManager {
                 };
                 let _ = spawner
                     .spawn(move |me, ctx| {
-                        Self::emit_shell_pushes(&host_id, pushes, ctx);
+                        me.emit_shell_pushes(&host_id, pushes, ctx);
                         let again = me
                             .tree_refresh
                             .get_mut(&session_id)
@@ -2356,6 +2479,7 @@ impl RemoteServerManager {
                 // `app::ai::remote_agent_context::RemoteAgentContext` can
                 // reconcile it into SkillManager's per-host catalogs.
                 if self.accept_remote_agent_context_snapshot(&host_id, snapshot.clone()) {
+                    Self::log_agent_context("helper", &snapshot);
                     ctx.emit(RemoteServerManagerEvent::RemoteAgentContextSnapshot {
                         host_id,
                         snapshot,
@@ -3379,6 +3503,7 @@ impl RemoteServerManager {
         self.remote_agent_context_snapshots.remove(&host_id);
         // Shell-mode file trees of a host that went away are stale.
         self.router.forget_trees(&host_id);
+        self.router.forget_agent_context(&host_id);
         self.fail_pending_host_requests_for_disconnected_host(&host_id);
         ctx.emit(RemoteServerManagerEvent::HostDisconnected { host_id });
     }
