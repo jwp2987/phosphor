@@ -185,7 +185,8 @@ def collect_app(job, dest_root, notes):
     names = [n for n in z.namelist() if not n.startswith("/") and ".." not in n.split("/")]
     plats = sorted({n.split("/")[1] for n in names if n.startswith("appci-out/") and n.count("/") >= 2})
     for plat in plats:
-        pd = os.path.join(dest_root, plat)
+        key = ("lab-" if job["name"].startswith("app-test-lab-") else "") + plat      # lab jobs get their own key: they must not replace the ordinary app-test row
+        pd = os.path.join(dest_root, key)
         os.makedirs(pd, exist_ok=True)
         base = "appci-out/%s/" % plat
         info = {"job": job["name"], "job_id": job["id"], "status": job["status"], "reuse": job["name"].endswith("-reuse"), "cases": [], "files": []}
@@ -235,7 +236,7 @@ def collect_app(job, dest_root, notes):
         # Screenshots are NEVER stored in the repo (owner 2026-11-02: no screenshots in a public repo).
         # Failing cases keep a pointer to the CI job artifact that holds them (7-day expiry).
         info["screenshots_in_ci_artifacts"] = [s for _, s in fail_shots]
-        out[plat] = info
+        out[key] = info
     return out
 
 

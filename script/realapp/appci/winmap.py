@@ -104,8 +104,20 @@ def variant_cases(variant):
     return VARIANT_CASES[variant]
 
 
+def lab_skip_reason(name, pane):
+    """the fake-ssh-lab cases (cases_lab.py, lab_<case>.<shell|scenario>.<lat>.<helper>[.<fault>]): they read the local shell's rec.log / prompt.log and type bash-style
+    lines into the pane, so they run in the Git Bash pane only; Win32-OpenSSH has no ControlMaster, so the one-session scenario user cannot be exercised on Windows."""
+    if pane == "powershell":
+        return "not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"
+    if ".p_onesess." in name:
+        return "not run on Windows: p_onesess (MaxSessions 1) needs ssh ControlMaster, which Win32-OpenSSH does not have"
+    return None
+
+
 def skip_reason(name, pane):
     """None when the case runs in this pane shell, else the reason it is skipped there"""
+    if name.startswith("lab_"):
+        return lab_skip_reason(name, pane)
     if name in NOT_WINDOWS:
         return "not run on Windows: " + NOT_WINDOWS[name]
     if name in GITBASH_ONLY and pane == "powershell":
@@ -118,7 +130,7 @@ def skip_reason(name, pane):
 
 
 def unclassified(names):
-    return [n for n in names if n not in BOTH and n not in GITBASH_ONLY and n not in PS_ONLY and n not in NOT_WINDOWS]
+    return [n for n in names if not n.startswith("lab_") and n not in BOTH and n not in GITBASH_ONLY and n not in PS_ONLY and n not in NOT_WINDOWS]
 
 
 # ---------------------------------------------------------------- the Windows fix tier (APPCI_TIER=smoke), as data

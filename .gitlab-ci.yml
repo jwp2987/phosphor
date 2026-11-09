@@ -1294,6 +1294,66 @@ app-test-windows:
       junit: appci-out/windows/run/junit.xml
 
 # ---------------------------------------------------------------------------
+# Fake ssh lab (docs/testing.md 2.15, Wave 0.5b). A podman container on the box that is a fake REMOTE (two sshds, a user per shell, scenario users, a tc/netem
+# fault shaper, an HTTP control port). EVERYTHING here is manual: the image is built by `sshlab-image` (play it after a change under script/realapp/sshlab/**),
+# the cases run in their own jobs, never in the ordinary app-test jobs. The Mac and Windows runners reach the box through a forced-command ssh key
+# (APPCI_LAB_KEY, machine-local) and the project variable SSHLAB_BOX; neither is in the repo. APPCI_LAB_MATRIX (quick | full | spec) is a play-time variable.
+# ---------------------------------------------------------------------------
+sshlab-image:
+  tags: [little-thing]
+  stage: apptest
+  needs: []
+  resource_group: little-thing-sshlab
+  timeout: 1h
+  variables:
+    GIT_DEPTH: "1"
+  rules:
+    - when: manual          # manual only: a `changes` rule runs on every new branch, where there is nothing to compare with
+      allow_failure: true
+  script:
+    # build refuses a versions.env that still has PLACEHOLDER pins; selftest asserts zero lab containers are left afterwards
+    - python3 script/realapp/sshlab/labctl.py build
+    - python3 script/realapp/sshlab/labctl.py selftest
+    - mkdir -p "$HOME/.phosphor-sshlab"
+    - install -m 755 script/realapp/sshlab/labctl.py "$HOME/.phosphor-sshlab/labctl.py"
+  after_script:
+    - python3 script/realapp/sshlab/labctl.py gc || true
+
+app-test-lab-linux:
+  extends: .appci_linux
+  needs:
+    - job: build-linux-x86_64
+      artifacts: false
+  variables:
+    GIT_DEPTH: "1"
+    APPCI_LAB: local
+    APPCI_CASES: "lab_*"
+  before_script:
+    - script/ci/fetch_build.sh --this-pipeline
+  script:
+    - script/realapp/linux/wayland_session.sh --mode wayland --dist dist --out "$CI_PROJECT_DIR/appci-out/wayland"
+  after_script:
+    - script/realapp/teardown.sh "$CI_PROJECT_DIR/appci-out/wayland"
+    - python3 script/ci/results_scrub.py --tree appci-out
+    - for d in appci-out/*/run; do [ -d "$d" ] && python3 script/ci/slim_appci_run.py "$d"; done
+
+app-test-lab-macos:
+  extends: app-test-macos
+  resource_group: mac-gui
+  variables:
+    APPCI_LAB: remote
+    APPCI_CASES: "lab_*"
+    APPCI_LAB_BOX: "$SSHLAB_BOX"      # the project variable; the key path APPCI_LAB_KEY is set in the runner user's environment (machine-local)
+
+app-test-lab-windows:
+  extends: app-test-windows
+  resource_group: windows-gui
+  variables:
+    APPCI_LAB: remote
+    APPCI_CASES: "lab_*"
+    APPCI_LAB_BOX: "$SSHLAB_BOX"
+
+# ---------------------------------------------------------------------------
 # Reuse variants (app-test-*-reuse): test an EARLIER pipeline's build of an app-identical commit instead of rebuilding
 # (script/ci/ci_seq.py decides; fix tier only). They have NO `needs` on the build job: `needs:pipeline:job` takes a
 # pipeline id fixed when the pipeline is created, not at play time, so the artifact is fetched in the job through the

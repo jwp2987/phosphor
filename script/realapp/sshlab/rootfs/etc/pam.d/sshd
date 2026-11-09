@@ -1,0 +1,15 @@
+# sshlab PAM stack for sshd (UsePAM yes). Lines keyed on user names use the idiom `[success=ok default=1] pam_succeed_if` + the real module:
+# the module on the next line runs only for the matching users.
+# Password / keyboard-interactive users (p_password, p_kbdint): the unix password labd sets at lease time.
+auth [success=ok default=1] pam_succeed_if.so quiet user in p_password:p_kbdint
+auth requisite pam_unix.so
+# MFA user (p_mfa, publickey + keyboard-interactive): TOTP; the secret file is written by labd at lease time (new secret per lease).
+auth [success=ok default=1] pam_succeed_if.so quiet user = p_mfa
+auth required pam_google_authenticator.so secret=/run/sshlab/totp/${USER} user=root
+auth required pam_permit.so
+# p_slowauth: the account stack stalls 5 s (a publickey login that is slow to complete).
+account [success=ok default=1] pam_succeed_if.so quiet user = p_slowauth
+account optional pam_exec.so quiet /usr/local/lib/sshlab/slowauth.sh
+account required pam_permit.so
+session required pam_permit.so
+password required pam_deny.so
