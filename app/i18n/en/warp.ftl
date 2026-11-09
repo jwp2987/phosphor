@@ -909,6 +909,8 @@ settings-network-username-placeholder = Username (optional)
 settings-network-username-description = If the proxy requires Basic Auth, fill in the username here.
 settings-network-password-label = Password
 settings-network-password-placeholder = Password (saved to the OS keyring on submit)
+settings-network-password-loading-placeholder = Loading the saved password…
+settings-network-password-unavailable-placeholder = The OS keyring is unavailable; the saved password could not be read
 settings-network-password-description = Submitted password is stored in the OS keyring (not in settings.toml).
 settings-network-no-proxy-label = No-proxy list
 settings-network-no-proxy-placeholder = localhost,127.0.0.1,.internal
@@ -3759,6 +3761,10 @@ common-resource-not-found-or-access-denied = Resource not found or access denied
 # broken settings file shows one toast, not one per keystroke.
 # (app/src/settings_write_failure.rs, notify_settings_write_failed)
 common-settings-write-failed = Couldn't save your settings change. It may be lost the next time Phosphor starts.
+# Shown once per run when the OS keyring (Secret Service / Keychain / Credential Manager)
+# cannot be used, so stored credentials are unavailable while the app keeps working.
+# Clicking the toast retries the keyring. (app/src/keyring_notice.rs, #1805)
+common-keyring-unavailable = The OS keyring isn't available, so saved credentials (API keys, proxy password) may be missing this session. Everything else works. Click to try the keyring again.
 workspace-close-session = Close session
 workspace-auto-reload = Auto-reload
 workspace-add-new-repo = {" "}+ Add new repo

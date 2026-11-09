@@ -443,7 +443,8 @@ pub(crate) fn reapply_network_settings_preserving_password(ctx: &mut AppContext)
     use super::network_secrets::ProxyCredentials;
     // The keychain read is deferred until a custom proxy could actually use the password
     // (#1164 item 6). Switching mode to Custom re-enters here via the NetworkSettings
-    // subscription, which loads it then.
+    // subscription, which loads it then. The read runs off the UI thread (#1805): until it lands
+    // the password pushed here is empty, and its `PasswordChanged` event re-enters here with it.
     if matches!(
         *NetworkSettings::as_ref(ctx).proxy_mode.value(),
         ProxyMode::Custom

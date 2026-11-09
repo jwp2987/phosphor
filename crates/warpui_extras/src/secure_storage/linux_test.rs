@@ -249,3 +249,126 @@ fn test_fallback_write_error_names_the_path_when_dir_is_a_file() {
     );
     assert_eq!(std::fs::read(&not_a_dir).unwrap(), b"keep me");
 }
+
+/// Counts calls to [`failing_opener`]; read only while holding the availability test guard.
+static OPEN_ATTEMPTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// A collection opener that fails like a session with no Secret Service.
+fn failing_opener() -> Result<super::Collection, Error> {
+    OPEN_ATTEMPTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    Err(Error::Unknown(anyhow::anyhow!(
+        "org.freedesktop.secrets was not provided by any .service files"
+    )))
+}
+
+/// #1805: with no keyring, the first lookup on ANY handle in the process records that, and no
+/// later lookup -- on that handle or another (the app's handle and each worker's) -- contacts
+/// the keyring again. Every lookup is served by the fallback file, with its owner-only mode.
+#[test]
+fn an_unavailable_keyring_is_tried_once_per_run_across_handles() {
+    use super::super::SecureStorage as _;
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::sync::atomic::Ordering;
+
+    let _guard = super::availability::test_guard();
+    super::availability::reset_for_test();
+    OPEN_ATTEMPTS.store(0, Ordering::SeqCst);
+
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let fallback_dir = temp_dir.path().join("state");
+    std::fs::create_dir_all(&fallback_dir).expect("create fallback dir");
+    let ui = SecureStorage::with_opener("darmok", Some(fallback_dir.clone()), failing_opener);
+    let worker = SecureStorage::with_opener("darmok", Some(fallback_dir.clone()), failing_opener);
+
+    assert!(matches!(ui.read_value("key"), Err(Error::NotFound)));
+    assert!(matches!(ui.read_value("key"), Err(Error::NotFound)));
+    assert!(matches!(worker.read_value("key"), Err(Error::NotFound)));
+    worker.write_value("key", "value").expect("fallback write");
+    assert_eq!(ui.read_value("key").expect("read back"), "value");
+    assert_eq!(
+        OPEN_ATTEMPTS.load(Ordering::SeqCst),
+        1,
+        "one failing keyring attempt per run, not one per lookup or per handle"
+    );
+    assert_eq!(
+        super::availability::current(),
+        super::availability::Availability::Unavailable
+    );
+
+    // The fallback keeps its semantics: owner-only blob, readable, removable.
+    let mode = std::fs::metadata(worker.fallback_file("key").expect("path"))
+        .expect("metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600);
+    worker.remove_value("key").expect("remove from fallback");
+    assert!(matches!(ui.read_value("key"), Err(Error::NotFound)));
+    assert_eq!(OPEN_ATTEMPTS.load(Ordering::SeqCst), 1);
+
+    // Only an explicit retry contacts the keyring again -- once.
+    assert!(super::availability::retry());
+    assert!(matches!(ui.read_value("key"), Err(Error::NotFound)));
+    assert!(matches!(worker.read_value("key"), Err(Error::NotFound)));
+    assert_eq!(OPEN_ATTEMPTS.load(Ordering::SeqCst), 2);
+
+    super::availability::reset_for_test();
+}
+
+/// #1805: a Secret Service that never answers costs the give-up once; the probe's late success
+/// marks the keyring available again (the service appeared).
+#[test]
+fn a_probe_that_does_not_answer_is_given_up_on_and_a_late_success_is_kept() {
+    use std::time::{Duration, Instant};
+
+    let _guard = super::availability::test_guard();
+    super::availability::reset_for_test();
+
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let started = Instant::now();
+    let outcome = super::probe_with_give_up(
+        move || {
+            let _ = release_rx.recv();
+            Ok(())
+        },
+        Duration::from_millis(100),
+    );
+    assert_eq!(outcome, super::Probe::TimedOut);
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the caller waits for the give-up only"
+    );
+    assert_eq!(
+        super::availability::current(),
+        super::availability::Availability::Unavailable
+    );
+
+    release_tx.send(()).expect("release the probe");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while super::availability::current() != super::availability::Availability::Available {
+        assert!(Instant::now() < deadline, "the late success was lost");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    super::availability::reset_for_test();
+}
+
+/// A probe that answers in time reports its result and leaves the state to the caller.
+#[test]
+fn a_probe_that_answers_in_time_reports_its_result() {
+    use std::time::Duration;
+
+    let _guard = super::availability::test_guard();
+    super::availability::reset_for_test();
+    assert_eq!(
+        super::probe_with_give_up(|| Err("no such name".to_owned()), Duration::from_secs(5)),
+        super::Probe::Answered(Err("no such name".to_owned()))
+    );
+    assert_eq!(
+        super::probe_with_give_up(|| Ok(()), Duration::from_secs(5)),
+        super::Probe::Answered(Ok(()))
+    );
+    assert_eq!(
+        super::availability::current(),
+        super::availability::Availability::Unknown
+    );
+}

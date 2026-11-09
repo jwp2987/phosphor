@@ -40,6 +40,7 @@ mod gpu_state;
 pub mod i18n;
 mod input_classifier;
 mod interval_timer;
+mod keyring_notice;
 mod linear;
 #[cfg(feature = "local_fs")]
 mod local_control;
@@ -1972,6 +1973,8 @@ fn initialize_app(
     ctx.add_singleton_model(|_| VimRegisters::new());
     ctx.add_singleton_model(UndoCloseStack::new);
     ctx.add_singleton_model(|_| ToastStack);
+    // #1805: one non-modal notice if the OS keyring turns out to be unusable this run.
+    ctx.add_singleton_model(keyring_notice::KeyringNotice::new);
     ctx.add_singleton_model(|_| GlobalCodeReviewModel);
     ctx.add_singleton_model(workspace::OneTimeModalModel::new);
     ctx.add_singleton_model(

@@ -32,7 +32,7 @@ use crate::appearance::Appearance;
 use crate::editor::{EditorView, InteractionState, SingleLineEditorOptions, TextOptions};
 use crate::report_if_error;
 use crate::settings::network::{NetworkSettings, ProxyMode};
-use crate::settings::network_secrets::ProxyCredentials;
+use crate::settings::network_secrets::{ProxyCredentials, ProxyPasswordLoad};
 use crate::view_components::dropdown::{Dropdown, DropdownItem};
 
 /// The public URL used for "outbound connectivity" detection in System / Off mode.
@@ -263,10 +263,25 @@ impl NetworkPageView {
     }
 
     /// Pushes the current password into the password editor (managed separately by ProxyCredentials).
+    ///
+    /// The stored password loads off the UI thread (#1805): until it lands the placeholder says
+    /// it is loading, and if the keyring could not be read it says so instead of looking empty.
+    /// The load emits `PasswordChanged`, which re-enters here with the value.
     fn sync_password_from_credentials(me: &mut Self, ctx: &mut ViewContext<Self>) {
         ProxyCredentials::handle(ctx).update(ctx, |creds, ctx| creds.ensure_loaded(ctx));
-        let pw = ProxyCredentials::as_ref(ctx).password().to_string();
+        let creds = ProxyCredentials::as_ref(ctx);
+        let pw = creds.password().to_string();
+        let placeholder = match creds.load_state() {
+            ProxyPasswordLoad::NotStarted | ProxyPasswordLoad::Loading => {
+                crate::t!("settings-network-password-loading-placeholder")
+            }
+            ProxyPasswordLoad::Unavailable => {
+                crate::t!("settings-network-password-unavailable-placeholder")
+            }
+            ProxyPasswordLoad::Loaded => crate::t!("settings-network-password-placeholder"),
+        };
         me.password_editor.update(ctx, |editor, ctx| {
+            editor.set_placeholder_text(placeholder, ctx);
             editor.set_buffer_text(&pw, ctx);
         });
     }

@@ -908,6 +908,102 @@ def c_startup(ctx, r):
         shutil.copyfile(lp, os.path.join(d, "phosphor.startup.log"))
 
 
+# ---------------------------------------------------------------- (11b) startup with no usable keyring (#1805)
+KEYRING_SLOW_RX = re.compile(r"slow model update: (\d+) ms \(([^)]*)\)")
+# models that read secure storage: a slow update of one of them is the keyring on the UI thread
+KEYRING_MODELS = ("ProxyCredentials", "AgentProviderSecrets", "ApiKeyManager", "KeyringNotice", "LocalControl", "TemplatableMCPServerManager")
+KEYRING_NOTICE_LINE = "Showing the keyring-unavailable notice"          # app/src/keyring_notice.rs
+KEYRING_ACQUIRE_LINE = "Failed to acquire default Secret Service collection"
+
+
+def keyring_launch_facts(text):
+    """#1805: what ONE launch's app log says about secure storage. first_frame_ms = the `startup timing: ... total=Nms` line (process start ->
+    first frame, app/src/lib.rs on_first_frame_drawn; None if the frame was never drawn), the keyring notice count, the 'Failed to acquire'
+    count, secure-storage worker give-ups, and every slow model update of a secure-storage model as (ms, model)."""
+    m = re.search(r"startup timing: .*\btotal=(\d+)ms", text)
+    slow = [(int(ms), who) for ms, who in KEYRING_SLOW_RX.findall(text) if any(k in who for k in KEYRING_MODELS)]
+    return dict(first_frame_ms=int(m.group(1)) if m else None, notices=text.count(KEYRING_NOTICE_LINE),
+                acquire_errors=text.count(KEYRING_ACQUIRE_LINE), gave_up=text.count("abandoning the worker"), slow_secure=slow)
+
+
+def keyring_launch_verdicts(facts, variant, first_frame_max_ms):
+    """-> list of failure messages for one launch (empty = pass). With no keyring: first frame within the bound, exactly one notice, at most
+    one 'Failed to acquire' (one attempt per run), no worker give-up for "absent" (it fails at once), no secure-storage model update >= 100 ms
+    on the UI thread. With the normal unlocked keyring: no notice and at most one 'Failed to acquire' (the issue saw two)."""
+    out = []
+    if facts["first_frame_ms"] is None:
+        out.append("%s: no `startup timing` line: the first frame was never drawn" % variant)
+    elif variant != "unlocked" and facts["first_frame_ms"] > first_frame_max_ms:
+        out.append("%s: first frame after %d ms (bound %d ms)" % (variant, facts["first_frame_ms"], first_frame_max_ms))
+    if variant == "unlocked":
+        if facts["notices"]:
+            out.append("unlocked: the keyring notice was shown %d time(s) with a working keyring" % facts["notices"])
+    elif facts["notices"] != 1:
+        out.append("%s: the keyring notice was shown %d times (expected exactly once)" % (variant, facts["notices"]))
+    if facts["acquire_errors"] > 1:
+        out.append("%s: %d 'Failed to acquire default Secret Service collection' lines (one attempt per run expected)" % (variant, facts["acquire_errors"]))
+    if variant == "absent" and facts["gave_up"]:
+        out.append("absent: the secure-storage worker gave up %d time(s) on a keyring that fails at once" % facts["gave_up"])
+    slow = [(ms, who) for ms, who in facts["slow_secure"] if ms >= 100]
+    if slow:
+        out.append("%s: secure-storage work on the UI thread: %s" % (variant, "; ".join("%d ms %s" % x for x in slow[:4])))
+    return out
+
+
+def _app_log(ctx):
+    try:
+        return open(ctx.log_path, errors="replace").read() if ctx.log_path else ""
+    except OSError:
+        return ""
+
+
+@case("keyring_unavailable_startup", order=86, gui=True)
+def c_keyring_unavailable(ctx, r):
+    """#1805: launch with NO usable Secret Service ("absent": nothing owns org.freedesktop.secrets; "hang": a service file whose daemon never
+    claims the name, so a call waits out the bus's 120 s activation timeout), then the normal unlocked keyring again. Each launch: the first
+    frame is drawn within APPCI_KEYRING_FIRST_FRAME_MAX_MS (default 2000), typing right after the first prompt is exact, the keyring notice is
+    shown exactly once (never with a working keyring), the keyring is tried once per run, and no secure-storage model blocks the UI thread.
+    Linux only: the variants are D-Bus session configs of the Linux launcher (app.py keyring_dbus_files)."""
+    if ctx.app is None or not hasattr(ctx.app, "keyring") or mac(ctx) or C.plat().startswith(("macos", "windows")):
+        r.skip("needs the Linux App launcher (its private D-Bus session decides which Secret Service exists)")
+    if not shutil.which("dbus-run-session"):
+        r.skip("dbus-run-session not installed (package: dbus)")
+    limit = int(os.environ.get("APPCI_KEYRING_FIRST_FRAME_MAX_MS", "2000"))
+    try:
+        for variant in ("absent", "hang", "unlocked"):
+            ctx.app.keyring = variant
+            t = relaunch(ctx, False)
+            r.metric("%s_prompt_s" % variant, t if t is not None else -1)
+            if t is None:
+                r.check(False, "%s: no shell prompt within 90 s" % variant)
+                continue
+            ctx.be.key("Escape")                                           # as ui_startup_time, but with no settle wait: typing works at once
+            exact_burst(ctx, r, "keyring_%s" % variant, 4)
+            if variant != "unlocked":
+                # the notice follows the keyring's answer: at once for "absent", after the app's 10 s connect give-up for "hang"
+                ctx.until(lambda: KEYRING_NOTICE_LINE in _app_log(ctx), 30, step=0.5)
+                ctx.shot("keyring_%s_notice" % variant)
+            time.sleep(2)                                                  # a second notice would have to show up in this window
+            text = _app_log(ctx)
+            facts = keyring_launch_facts(text)
+            r.metric("%s_facts" % variant, dict(facts, slow_secure=facts["slow_secure"][:4]))
+            for msg in keyring_launch_verdicts(facts, variant, limit):
+                r.check(False, msg)
+            d = os.path.join(ctx.run, "logs", ctx.mode)
+            os.makedirs(d, exist_ok=True)
+            try:
+                import ci_env
+                kept = ci_env.redact(text, ci_env.ollama()[0])
+            except Exception:
+                kept = "(not kept: the redaction helper failed)\n"
+            with open(os.path.join(d, "phosphor.keyring_%s.log" % variant), "w") as f:
+                f.write(kept)
+    finally:
+        if ctx.app.keyring != "unlocked":                                  # a failed relaunch leaves the next cases a normal keyring
+            ctx.app.keyring = "unlocked"
+            relaunch(ctx, False)
+
+
 def settle_change(ctx, before, tag, thresh, timeout=10, color=False):
     """poll screenshots until one differs from `before` by >= thresh (img_diff's colour test with color=True); -> (path, diff|None) or
     (None, last diff)"""

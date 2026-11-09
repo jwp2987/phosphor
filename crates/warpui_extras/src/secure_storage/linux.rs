@@ -7,6 +7,8 @@ use std::{
     io::{Read as _, Write as _},
     os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _},
     path::PathBuf,
+    sync::{Arc, Mutex, mpsc},
+    time::Duration,
 };
 
 use anyhow::{Context, anyhow};
@@ -17,7 +19,15 @@ use secret_service::{
     blocking::{Item, SecretService},
 };
 
-use super::Error;
+use super::{Error, availability};
+
+/// Give-up net for reaching the Secret Service at all (#1805). With a D-Bus session but no
+/// keyring that answers, the first call waits for the bus's service-activation timeout (120 s by
+/// default); before this net that wait sat on the startup path. Reaching the service involves no
+/// prompt (only `unlock` can prompt, and it is not covered by this net), so a service that has
+/// not answered in this long is treated as unavailable for the run. If it does answer later the
+/// keyring is marked available again and the next lookup uses it.
+const CONNECT_GIVE_UP: Duration = Duration::from_secs(10);
 
 /// Implementation of the SecureStorage service using the Secret Service API.
 pub struct SecureStorage {
@@ -26,8 +36,14 @@ pub struct SecureStorage {
     service_name: String,
 
     /// A lazily-initialized reference to the default secret collection as
-    /// provided by the installed Secret Service API provider.
-    collection: OnceCell<Option<Collection>>,
+    /// provided by the installed Secret Service API provider. Only a
+    /// successful open is kept; a failed one is recorded process-wide in
+    /// [`availability`] instead, so every handle (the app's and each
+    /// worker's) learns of it from one failing attempt (#1805).
+    collection: OnceCell<Collection>,
+
+    /// Opens the default collection. [`open_default_collection_bounded`] outside tests.
+    open_collection: fn() -> Result<Collection, Error>,
 
     /// The fallback path to a directory in case a secret collection is
     /// not available.
@@ -46,6 +62,7 @@ impl SecureStorage {
         Self {
             service_name: service_name.to_owned(),
             collection: OnceCell::new(),
+            open_collection: open_default_collection_bounded,
             fallback_dir: None,
             encryption_key: OnceCell::new(),
         }
@@ -59,7 +76,24 @@ impl SecureStorage {
         Self {
             service_name: service_name.to_owned(),
             collection: OnceCell::new(),
+            open_collection: open_default_collection_bounded,
             fallback_dir: Some(fallback_dir),
+            encryption_key: OnceCell::new(),
+        }
+    }
+
+    /// Test hook: a handle whose collection opener is `open_collection`.
+    #[cfg(test)]
+    fn with_opener(
+        service_name: &str,
+        fallback_dir: Option<PathBuf>,
+        open_collection: fn() -> Result<Collection, Error>,
+    ) -> Self {
+        Self {
+            service_name: service_name.to_owned(),
+            collection: OnceCell::new(),
+            open_collection,
+            fallback_dir,
             encryption_key: OnceCell::new(),
         }
     }
@@ -67,31 +101,52 @@ impl SecureStorage {
     /// Returns a reference to the default secret collection, lazily
     /// instantiating the underlying service and collection reference,
     /// returning an error if the connection cannot be established or the
-    /// collection cannot be opened.
+    /// collection cannot be opened or unlocked.
     ///
-    /// TODO(vorporeal): Decide whether we want to "cache" a failed connection
-    /// or instead only store the collection on a successful connection and
-    /// return the error on an initialization failure.
+    /// A failure is cached process-wide, not per handle (#1805): once the
+    /// keyring is known to be unavailable this returns an error at once,
+    /// without touching D-Bus, and every caller uses the fallback file. The
+    /// failure is logged once per run. Only an explicit retry
+    /// ([`availability::retry`]) or a late answer from the service makes the
+    /// next call try again.
     fn collection(&self) -> Result<&secret_service::blocking::Collection<'_>, Error> {
-        self.collection
-            .get_or_init(|| match Collection::open_default_collection() {
-                Ok(collection) => Some(collection),
+        if !availability::should_contact_keyring() {
+            return Err(keyring_unavailable());
+        }
+        let collection = match self.collection.get() {
+            Some(collection) => collection,
+            None => match (self.open_collection)() {
+                Ok(collection) => self.collection.get_or_init(|| collection),
                 Err(err) => {
-                    log::error!("Failed to acquire default Secret Service collection: {err:#}");
-                    None
+                    if availability::mark_unavailable() {
+                        log::error!(
+                            "Failed to acquire default Secret Service collection: {err:#}. \
+                             Stored credentials come from the local fallback for the rest of \
+                             this run; the keyring is not tried again unless asked to."
+                        );
+                    } else {
+                        log::debug!("Secret Service collection still unavailable: {err:#}");
+                    }
+                    return Err(keyring_unavailable());
                 }
-            })
-            .as_ref()
-            .ok_or_else(|| {
-                Error::Unknown(anyhow!("Failed to initialize Secret Service connection"))
-            })
-            .and_then(|collection| {
-                let collection = collection.borrow_collection();
-                // Ensure that the collection is unlocked, otherwise we will be unable
-                // add or modify items.
-                collection.unlock()?;
-                Ok(collection)
-            })
+            },
+        };
+        let collection = collection.borrow_collection();
+        // Ensure that the collection is unlocked, otherwise we will be unable
+        // add or modify items.
+        if let Err(err) = collection.unlock() {
+            // A locked collection whose unlock was refused (or cannot be prompted
+            // for) is as unusable as a missing one: do not prompt again per lookup.
+            if availability::mark_unavailable() {
+                log::error!(
+                    "Failed to unlock the default Secret Service collection: {err:#}. \
+                     Stored credentials come from the local fallback for the rest of this run."
+                );
+            }
+            return Err(err.into());
+        }
+        availability::mark_available();
+        Ok(collection)
     }
 
     /// Returns an encryption key that can be used to encrypt
@@ -470,6 +525,96 @@ impl From<secret_service::Error> for Error {
 impl From<ring::error::Unspecified> for Error {
     fn from(value: ring::error::Unspecified) -> Self {
         Error::Unknown(anyhow!(value))
+    }
+}
+
+fn keyring_unavailable() -> Error {
+    Error::Unknown(anyhow!("the Secret Service keyring is unavailable"))
+}
+
+/// The production collection opener: [`Collection::open_default_collection`], but first a probe
+/// on a helper thread bounded by [`CONNECT_GIVE_UP`], so a bus that never answers costs that
+/// long once instead of the bus's activation timeout.
+fn open_default_collection_bounded() -> Result<Collection, Error> {
+    let probe = || {
+        Collection::open_default_collection()
+            .map(drop)
+            .map_err(|err| format!("{err:#}"))
+    };
+    match probe_with_give_up(probe, CONNECT_GIVE_UP) {
+        // The service answered and has a default collection: open the one this handle keeps.
+        // `Collection` is not moved across threads, so the probe's copy is dropped there.
+        Probe::Answered(Ok(())) => Collection::open_default_collection(),
+        Probe::Answered(Err(err)) => Err(Error::Unknown(anyhow!(err))),
+        Probe::TimedOut => Err(Error::Unknown(anyhow!(
+            "the Secret Service did not answer within {CONNECT_GIVE_UP:?}"
+        ))),
+    }
+}
+
+/// What [`probe_with_give_up`] learned.
+#[derive(Debug, PartialEq, Eq)]
+enum Probe {
+    /// The probe returned in time.
+    Answered(Result<(), String>),
+    /// It did not; the keyring has been marked unavailable. The probe keeps running on its own
+    /// thread, and if it later succeeds the keyring is marked available again.
+    TimedOut,
+}
+
+/// Runs `probe` on a helper thread and waits at most `give_up` for it. A blocking D-Bus call
+/// cannot be cancelled, so a probe that overruns is left to finish on its own; its late answer is
+/// not lost: success marks the keyring available (the service appeared), failure changes
+/// nothing.
+fn probe_with_give_up(
+    probe: impl FnOnce() -> Result<(), String> + Send + 'static,
+    give_up: Duration,
+) -> Probe {
+    // `true` once the caller stopped waiting. The helper reads it and sends under this lock, and
+    // the caller sets it (and marks the keyring unavailable) under the same lock, so a late
+    // success can never be overtaken by the caller's "unavailable".
+    let gave_up = Arc::new(Mutex::new(false));
+    let (tx, rx) = mpsc::sync_channel::<Result<(), String>>(1);
+    let helper_gave_up = gave_up.clone();
+    let spawned = std::thread::Builder::new()
+        .name("secret-service-probe".into())
+        .spawn(move || {
+            let result = probe();
+            let gave_up = helper_gave_up.lock().unwrap_or_else(|e| e.into_inner());
+            if *gave_up {
+                if result.is_ok() && availability::mark_available() {
+                    log::info!("The Secret Service answered late; using the OS keyring again.");
+                }
+                return;
+            }
+            let _ = tx.send(result);
+        });
+    if let Err(err) = spawned {
+        return Probe::Answered(Err(format!(
+            "could not start the Secret Service probe: {err}"
+        )));
+    }
+    match rx.recv_timeout(give_up) {
+        Ok(result) => Probe::Answered(result),
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Probe::Answered(Err("the Secret Service probe stopped".to_owned()))
+        }
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            let mut gave_up = gave_up.lock().unwrap_or_else(|e| e.into_inner());
+            // It may have answered between the timeout and taking the lock.
+            if let Ok(result) = rx.try_recv() {
+                return Probe::Answered(result);
+            }
+            *gave_up = true;
+            if availability::mark_unavailable() {
+                log::error!(
+                    "Failed to acquire default Secret Service collection: the service did not \
+                     answer within {give_up:?}. Stored credentials come from the local fallback \
+                     for the rest of this run, unless the service answers later."
+                );
+            }
+            Probe::TimedOut
+        }
     }
 }
 
