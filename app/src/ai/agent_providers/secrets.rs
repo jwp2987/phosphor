@@ -317,6 +317,10 @@ impl AgentProviderSecrets {
             Err(secure_storage::Error::NotFound) => return Ok(HashMap::new()),
             Err(e) => return Err(format!("{e:#}")),
         };
+        // An empty stored value is "nothing stored", not a corrupt one.
+        if raw.trim().is_empty() {
+            return Ok(HashMap::new());
+        }
         Ok(serde_json::from_str(&raw).unwrap_or_else(|e| {
             log::error!("Failed to deserialize agent provider secrets: {e:#}");
             HashMap::new()

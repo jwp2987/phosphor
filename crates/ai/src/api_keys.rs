@@ -305,6 +305,10 @@ impl ApiKeyManager {
             }
         };
 
+        // An empty stored value is "nothing stored", not a corrupt one.
+        if key_json.trim().is_empty() {
+            return ApiKeys::default();
+        }
         let keys = match serde_json::from_str(&key_json) {
             Ok(keys) => keys,
             Err(e) => {
