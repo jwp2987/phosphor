@@ -74,16 +74,17 @@ struct PendingEditBatch {
 #[cfg_attr(not(feature = "local_tty"), allow(dead_code))]
 impl PendingEditBatch {
     /// Flush this batch: send accumulated edits as a single `BufferEdit`
-    /// to the remote server and cancel the debounce timer.
-    /// Returns `Err` if the edit could not be enqueued (the connection is
-    /// dead). Zap's `send_buffer_edit` is fallible (unlike Warp's
+    /// to the host (when its helper keeps a copy of the buffer) and cancel the
+    /// debounce timer.
+    /// Returns `Err` if the edit could not be delivered (the connection is
+    /// dead). Zap's `buffer_edit` is fallible (unlike Warp's
     /// fire-and-forget variant) precisely so the caller can flag a conflict /
     /// save failure rather than silently desyncing — see `send_buffer_edit`.
     fn flush(
         self,
-        client: &remote_server::client::RemoteServerClient,
+        backend: &remote_server::backend::RoutedBackend,
         path: &str,
-    ) -> Result<(), remote_server::client::ClientError> {
+    ) -> Result<(), remote_server::backend::BackendError> {
         if let Some(timer) = &self.debounce_timer {
             timer.abort();
         }
@@ -97,7 +98,7 @@ impl PendingEditBatch {
             self.latest_client_version.as_u64(),
             self.edits.len()
         );
-        client.send_buffer_edit(
+        backend.buffer_edit(
             path.to_string(),
             self.expected_server_version,
             self.latest_client_version.as_u64(),
@@ -629,19 +630,14 @@ impl GlobalBufferModel {
     /// that it's "already saved".
     #[cfg_attr(not(feature = "local_tty"), allow(unused_variables))]
     pub fn close_buffer(&mut self, file_id: FileId, ctx: &mut ModelContext<Self>) {
-        // Remote buffer: send CloseBuffer so the daemon frees its in-memory buffer.
+        // Remote buffer: tell the host (CloseBuffer) so the daemon frees its in-memory buffer.
         #[cfg(feature = "local_tty")]
         if let Some(state) = self.buffers.get(&file_id) {
             if let BufferSource::Remote { remote_path, .. } = &state.source {
                 let host_id = remote_path.host_id.clone();
                 let path_str = remote_path.path.as_str().to_string();
-                let manager = remote_server::manager::RemoteServerManager::handle(ctx);
-                if let Some(client) = manager
-                    .as_ref(ctx)
-                    .client_for_host_with(&host_id, remote_server::capability::BUFFERS)
-                {
-                    client.close_buffer(path_str);
-                }
+                // The helper frees its copy; the shell arm forgets the file's saved state.
+                remote_backend(&host_id, ctx).close_buffer(path_str);
             }
         }
 
@@ -1833,16 +1829,19 @@ impl GlobalBufferModel {
             let path_str = remote_path.path.as_str().to_string();
             let host_id = remote_path.host_id.clone();
 
-            // Subscribe to buffer content changes so edits are sent back to the daemon.
-            let client_for_sub = {
-                let manager = remote_server::manager::RemoteServerManager::handle(ctx);
-                manager
-                    .as_ref(ctx)
-                    .client_for_host_with(&host_id, remote_server::capability::BUFFERS)
-                    .cloned()
-            };
-            if let Some(client) = client_for_sub {
+            // Which arm serves this host's buffers decides what is tracked. A helper keeps a
+            // copy of the buffer, so edits are sent to it as they are made. With no helper
+            // (shell mode, design ruling R4) there is no server copy and nothing to send: the
+            // editor's text is the only one, the file's state is remembered at open, and a
+            // changed file is found when the user saves. Degrades: no live update from another
+            // editor, conflicts only at save.
+            let backend = remote_backend(&host_id, ctx);
+            use remote_server::backend::RemoteFeatures as _;
+            let helper_keeps_a_copy = backend.kind(remote_server::backend::Family::Buffers)
+                == remote_server::backend::BackendKind::Helper;
+            if helper_keeps_a_copy {
                 let path_for_edit = path_str.clone();
+                let host_for_edit = host_id.clone();
                 ctx.subscribe_to_model(&buffer, move |me, event, ctx| {
                     if let BufferEvent::ContentChanged { delta, origin, .. } = event {
                         // Skip server-originated changes to prevent echo loop.
@@ -1887,7 +1886,7 @@ impl GlobalBufferModel {
                         // Schedule (or reschedule) the debounce timer. Uses the
                         // same Timer::after + abort_handle pattern as other
                         // debounced scans in this codebase.
-                        let client_for_flush = client.clone();
+                        let host_for_flush = host_for_edit.clone();
                         let path_for_flush = path_for_edit.clone();
                         let handle = ctx.spawn(
                             async {
@@ -1906,8 +1905,8 @@ impl GlobalBufferModel {
                                     // dead: the daemon won't receive these edits
                                     // while the local buffer has already advanced —
                                     // mark as a conflict to trigger UI resync.
-                                    if let Err(e) = batch.flush(&client_for_flush, &path_for_flush)
-                                    {
+                                    let backend = remote_backend(&host_for_flush, ctx);
+                                    if let Err(e) = batch.flush(&backend, &path_for_flush) {
                                         log::error!(
                                             "Failed to flush remote buffer edits for \
                                              {path_for_flush}: {e}"
@@ -1930,14 +1929,9 @@ impl GlobalBufferModel {
                 });
             }
 
-            // Look up the client on the main thread, then send OpenBuffer asynchronously.
-            let manager = remote_server::manager::RemoteServerManager::handle(ctx);
-            let Some(client) = manager
-                .as_ref(ctx)
-                .client_for_host_with(&host_id, remote_server::capability::BUFFERS)
-                .cloned()
-            else {
-                log::warn!("No remote server client for host {host_id:?}");
+            // Look up the backend on the main thread, then send OpenBuffer asynchronously.
+            if !backend.is_available(remote_server::backend::Family::Buffers) {
+                log::warn!("No helper or out-of-band channel for host {host_id:?}");
                 // Clean up the failed file_id so a subsequent retry can resend OpenBuffer.
                 self.cleanup_file_id(file_id, ctx);
                 ctx.emit(GlobalBufferModelEvent::FailedToLoad {
@@ -1949,7 +1943,7 @@ impl GlobalBufferModel {
 
             ctx.spawn(
                 async move {
-                    client
+                    backend
                         .open_buffer(path_str, false)
                         .await
                         .map_err(|e| format!("{e}"))
@@ -2024,23 +2018,20 @@ impl GlobalBufferModel {
         let host_id = remote_path.host_id.clone();
 
         log::debug!("[remote-buffer] Re-opening buffer with force_reload: path={path_str}");
-        let manager = remote_server::manager::RemoteServerManager::handle(ctx);
-        let Some(client) = manager
-            .as_ref(ctx)
-            .client_for_host_with(&host_id, remote_server::capability::BUFFERS)
-            .cloned()
-        else {
-            log::warn!("No remote server client for host {host_id:?}");
+        use remote_server::backend::RemoteFeatures as _;
+        let backend = remote_backend(&host_id, ctx);
+        if !backend.is_available(remote_server::backend::Family::Buffers) {
+            log::warn!("No helper or out-of-band channel for host {host_id:?}");
             ctx.emit(GlobalBufferModelEvent::FailedToLoad {
                 file_id,
                 error: Rc::new(FileLoadError::DoesNotExist),
             });
             return;
-        };
+        }
 
         ctx.spawn(
             async move {
-                client
+                backend
                     .open_buffer(path_str, true)
                     .await
                     .map_err(|e| format!("{e}"))
@@ -2600,14 +2591,19 @@ impl GlobalBufferModel {
             .is_some_and(|state| matches!(state.source, BufferSource::Remote { .. }))
     }
 
-    /// Client-side: persists the remote buffer's current content to disk on the daemon.
-    /// The daemon's in-memory buffer has already been kept in sync with user
-    /// edits in real time via `BufferEdit` (see the `ContentChanged`
+    /// Client-side: persists the remote buffer's current content to disk on the host.
+    /// With a helper the daemon's in-memory buffer has already been kept in sync
+    /// with user edits in real time via `BufferEdit` (see the `ContentChanged`
     /// subscription in `open_remote_buffer`), so this only needs to send a
-    /// `SaveBuffer` to trigger the daemon to write to disk. On success it
-    /// emits `FileSaved` so the editor/tab can update its saved state.
+    /// `SaveBuffer` to trigger the daemon to write to disk. With no helper (shell
+    /// mode, ruling R4) the editor's text is written through a guarded write that
+    /// refuses a file somebody else changed since it was opened or last saved; that
+    /// surfaces as `RemoteBufferConflict` (the conflict banner) plus a failed save,
+    /// and the banner's Overwrite (a second save) then writes unconditionally.
+    /// On success it emits `FileSaved` so the editor/tab can update its saved state.
     #[cfg(feature = "local_tty")]
     pub fn save_remote_buffer(&mut self, file_id: FileId, ctx: &mut ModelContext<Self>) {
+        use remote_server::backend::BufferSaveOutcome;
         let Some(BufferLocation::Remote(remote_path)) =
             self.location_to_id.get_by_right(&file_id).cloned()
         else {
@@ -2617,13 +2613,9 @@ impl GlobalBufferModel {
         let host_id = remote_path.host_id.clone();
         let path_str = remote_path.path.as_str().to_string();
 
-        let manager = remote_server::manager::RemoteServerManager::handle(ctx);
-        let Some(client) = manager
-            .as_ref(ctx)
-            .client_for_host_with(&host_id, remote_server::capability::BUFFERS)
-            .cloned()
-        else {
-            log::warn!("save_remote_buffer: host {host_id:?} has no remote server client");
+        let backend = remote_backend(&host_id, ctx);
+        if !backend.is_available(remote_server::backend::Family::Buffers) {
+            log::warn!("save_remote_buffer: host {host_id:?} has no helper or out-of-band channel");
             // Notify the editor that the save failed, to avoid getting stuck in a false "saved" state.
             ctx.emit(GlobalBufferModelEvent::FailedToSave {
                 file_id,
@@ -2632,7 +2624,7 @@ impl GlobalBufferModel {
                 ))),
             });
             return;
-        };
+        }
 
         // Flush any pending edit batch so the daemon has the latest content
         // before persisting to disk. Without this, edits typed inside the
@@ -2642,7 +2634,7 @@ impl GlobalBufferModel {
         if let Some(state) = self.buffers.get_mut(&file_id)
             && let BufferSource::Remote { pending_batch, .. } = &mut state.source
             && let Some(batch) = pending_batch.take()
-            && let Err(e) = batch.flush(&client, &path_str)
+            && let Err(e) = batch.flush(&backend, &path_str)
         {
             log::error!("save_remote_buffer: failed to flush pending edits for {path_str}: {e}");
             ctx.emit(GlobalBufferModelEvent::FailedToSave {
@@ -2654,28 +2646,47 @@ impl GlobalBufferModel {
             return;
         }
 
+        // The editor's text: the shell arm writes it; the helper already has it.
+        let Some(content) = self.content_for_file(file_id, ctx) else {
+            ctx.emit(GlobalBufferModelEvent::FailedToSave {
+                file_id,
+                error: Rc::new(FileSaveError::RemoteError(
+                    "The buffer is no longer open".to_string(),
+                )),
+            });
+            return;
+        };
+
         ctx.spawn(
             async move {
-                client
-                    .save_buffer(path_str)
+                backend
+                    .save_buffer_content(path_str, content)
                     .await
                     .map_err(|e| format!("{e}"))
             },
             move |_me, result, ctx| match result {
-                Ok(response) => {
-                    use remote_server::proto::save_buffer_response::Result as SaveResult;
-                    match response.result {
-                        Some(SaveResult::Success(_)) | None => {
-                            ctx.emit(GlobalBufferModelEvent::FileSaved { file_id });
-                        }
-                        Some(SaveResult::Error(err)) => {
-                            // Propagate the remote save failure up to the editor to show a failure hint.
-                            ctx.emit(GlobalBufferModelEvent::FailedToSave {
-                                file_id,
-                                error: Rc::new(FileSaveError::RemoteError(err.message)),
-                            });
-                        }
-                    }
+                Ok(BufferSaveOutcome::Saved) => {
+                    ctx.emit(GlobalBufferModelEvent::FileSaved { file_id });
+                }
+                Ok(BufferSaveOutcome::Conflict) => {
+                    // The file changed on the host under unsaved edits: the same banner the
+                    // helper's BufferConflictDetected push shows, and the save did not happen.
+                    ctx.emit(GlobalBufferModelEvent::RemoteBufferConflict { file_id });
+                    ctx.emit(GlobalBufferModelEvent::FailedToSave {
+                        file_id,
+                        error: Rc::new(FileSaveError::RemoteError(
+                            "The file changed on the host since it was opened. Choose Overwrite \
+                             to replace it or Discard to take its current version."
+                                .to_string(),
+                        )),
+                    });
+                }
+                Ok(BufferSaveOutcome::Failed(message)) => {
+                    // Propagate the remote save failure up to the editor to show a failure hint.
+                    ctx.emit(GlobalBufferModelEvent::FailedToSave {
+                        file_id,
+                        error: Rc::new(FileSaveError::RemoteError(message)),
+                    });
                 }
                 Err(error) => {
                     // Transport/protocol errors are likewise propagated up to the editor.
@@ -2689,6 +2700,17 @@ impl GlobalBufferModel {
             },
         );
     }
+}
+
+/// The backend serving `host_id`'s buffers right now (the helper if it does them, else the shell
+/// arm over the host's out-of-band channel). Taken per operation, never held.
+#[cfg(feature = "local_tty")]
+fn remote_backend(
+    host_id: &warp_core::HostId,
+    ctx: &mut ModelContext<GlobalBufferModel>,
+) -> remote_server::backend::RoutedBackend {
+    let manager = remote_server::manager::RemoteServerManager::handle(ctx);
+    manager.as_ref(ctx).backend_for_host(host_id)
 }
 
 #[cfg(test)]
