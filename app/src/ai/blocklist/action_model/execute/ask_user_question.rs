@@ -115,7 +115,7 @@ impl AskUserQuestionExecutor {
         }
 
         // No staged answer. `BlocklistAIActionModel` refuses a user accept of a question with
-        // none (`question_accept_has_no_answer`), so no production path gets here; this waits
+        // none (`user_accept_lacks_question_answer`), so no production path gets here; this waits
         // on the decision channel as before.
         let receiver = self.result_rx.1.clone();
         // The channel is shared by every card this executor ever runs. A Stop that raced an
@@ -165,7 +165,7 @@ impl AskUserQuestionExecutor {
 
     /// Drops answers staged for `action_id` whose execution never took them (the action was
     /// cancelled or refused), so they cannot outlive it.
-    pub(super) fn discard_staged_answers(&mut self, action_id: &AIAgentActionId) {
+    pub fn discard_staged_answers(&mut self, action_id: &AIAgentActionId) {
         self.staged_answers.remove(action_id);
     }
 

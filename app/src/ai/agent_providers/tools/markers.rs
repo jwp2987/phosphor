@@ -122,7 +122,10 @@ fn transfer_result_to_json(result: &api::message::tool_call_result::Result) -> O
             "message": "block_not_found",
             "detail": TRANSFER_NOTHING_RUNNING_DETAIL,
         }),
-        None => json!({ "status": "cancelled", "detail": TRANSFER_CANCELLED_DETAIL }),
+        // Not what the model reads for a cancel: a cancelled transfer has no API form
+        // (`convert.rs` ignores it), so its text comes from the result's `Display`, which
+        // carries the reason (`TRANSFER_CANCELLED_REASON`, #1799).
+        None => json!({ "status": "cancelled" }),
     };
     Some(value)
 }
@@ -130,13 +133,6 @@ fn transfer_result_to_json(result: &api::message::tool_call_result::Result) -> O
 /// The `detail` of a hand-over that found no running command (#1799).
 const TRANSFER_NOTHING_RUNNING_DETAIL: &str = "No command was running, so nothing was handed \
      to the user. If the command this was for was rejected or has not started, it never ran.";
-
-/// The `detail` of a cancelled hand-over (#1799). A user's reject of one tool call cancels the
-/// later calls of the same turn (`rejection_cancels_rest_of_turn` in the action model), and a
-/// hand-over is usually such a later call: the command it was meant for was the one rejected.
-const TRANSFER_CANCELLED_DETAIL: &str = "Control was not handed to the user: the user \
-     cancelled this call, or rejected an earlier tool call of the same turn, which cancels the \
-     rest of that turn. If a hand-over had started, it was stopped.";
 
 pub static TRANSFER_SHELL_CONTROL: OpenAiTool = OpenAiTool {
     name: "transfer_shell_command_control_to_user",
@@ -163,13 +159,32 @@ mod tests {
     }
 
     /// #1799: a hand-over cancelled with its turn (the command it was for was rejected) tells
-    /// the model why, instead of a bare `cancelled`.
+    /// the model why. Through the real serialization: a cancelled transfer has no API form, so
+    /// `serialize_action_result` gives nothing and the live request (`chat_stream`) and the
+    /// persisted message both send `display_fallback_result`, the result's `Display`.
     #[test]
-    fn cancelled_transfer_says_why() {
-        let value = transfer_result_to_json(&transfer_result(None)).expect("transfer result");
-        assert_eq!(value["status"], "cancelled");
-        let detail = value["detail"].as_str().expect("a detail for the model");
-        assert!(detail.contains("rejected an earlier tool call"), "{detail}");
+    fn cancelled_transfer_reason_reaches_the_model() {
+        use crate::ai::agent::task::TaskId;
+        use crate::ai::agent::{
+            AIAgentActionId, AIAgentActionResult, AIAgentActionResultType,
+            TransferShellCommandControlToUserResult,
+        };
+
+        let result = AIAgentActionResult {
+            id: AIAgentActionId::from("hand-over".to_owned()),
+            task_id: TaskId::new("task".to_owned()),
+            result: AIAgentActionResultType::TransferShellCommandControlToUser(
+                TransferShellCommandControlToUserResult::Cancelled,
+            ),
+        };
+        assert_eq!(
+            super::super::serialize_action_result(&result),
+            None,
+            "no API form: the Display fallback is what the model reads"
+        );
+        let text = super::super::display_fallback_result(&result);
+        assert!(text.contains("cancelled"), "{text}");
+        assert!(text.contains("rejected an earlier tool call"), "{text}");
     }
 
     /// #1799: a hand-over with no running command (it resolves without approval) says that

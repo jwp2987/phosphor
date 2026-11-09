@@ -1118,6 +1118,18 @@ pub enum TransferShellCommandControlToUserResult {
     Error(ShellCommandError),
 }
 
+/// Why a hand-over was cancelled, for the model (#1799). Part of the result's `Display`
+/// because a cancelled transfer has no API form (`convert.rs` maps it to
+/// `ConvertToAPITypeError::Ignore`), so the text the model reads is the `Display` fallback in
+/// both the live request (`chat_stream`) and the persisted BYOP message
+/// (`BlocklistAIController::byop_action_result_message`).
+///
+/// A user's reject of one tool call cancels the later calls of the same turn, and a hand-over is
+/// usually such a later call: the command it was meant for was the one rejected.
+pub const TRANSFER_CANCELLED_REASON: &str = "Control was not handed to the user: the user \
+     cancelled this call, or rejected an earlier tool call of the same turn, which cancels the \
+     rest of that turn. If a hand-over had started, it was stopped.";
+
 impl Display for TransferShellCommandControlToUserResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -1131,7 +1143,10 @@ impl Display for TransferShellCommandControlToUserResult {
                 "Command finished while user had control, exit code {}:\n{output}",
                 exit_code.value()
             ),
-            Self::Cancelled => write!(f, "Transfer shell command control to user cancelled"),
+            Self::Cancelled => write!(
+                f,
+                "Transfer shell command control to user cancelled. {TRANSFER_CANCELLED_REASON}"
+            ),
             Self::Error(e) => write!(f, "Transfer shell command control to user failed: {e:?}"),
         }
     }
