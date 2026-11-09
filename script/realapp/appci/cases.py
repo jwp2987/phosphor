@@ -5516,6 +5516,7 @@ import cases_coverage_a  # noqa: E402,F401  (#1535-#1541: paste, alt-screen prog
 import cases_coverage_b  # noqa: E402,F401  (g10: CI-review coverage gaps #1542-#1548: agent pickers, settings UI/migration, state relaunch, no-autoupdate, UI-action budgets, mac editor)
 import cases_shells  # noqa: E402,F401  (#1534: startup_shell_override passes: cmd.exe and pwsh 7 as the pane shell)
 import cases_lab_helper  # noqa: E402,F401  (P10: helper lifecycle / capability / routing and no-helper lab cases)
+import cases_agent_interactive  # noqa: E402,F401  (#1829: agent-run password / vim / ssh / less hand-over and hand-back, agent_interactive_*)
 import cases_lab  # noqa: E402,F401  (Wave 0.5b: the fake ssh lab cases, lab_*; run only by --cases lab_*)
 import cases_lab_git  # noqa: E402,F401  (wave H parity P7: lab_git_write_remote, git writes over ssh with a bare repo as the remote)
 import cases_lab_remote  # noqa: E402,F401  (Wave H parity: per-family helper vs no-helper lab cases, lab_file_tree_remote.*)

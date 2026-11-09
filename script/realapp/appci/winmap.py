@@ -62,6 +62,11 @@ GITBASH_ONLY = {
 PS_ONLY = {}
 # not on Windows at all, with the reason
 NOT_WINDOWS = {
+    "agent_interactive_password": "#1829: POSIX read/vim/less/ssh programs under the agent hand-over (and the unix-only tty-read probe); not run in a Windows pane",
+    "agent_interactive_vim": "#1829: POSIX read/vim/less/ssh programs under the agent hand-over (and the unix-only tty-read probe); not run in a Windows pane",
+    "agent_interactive_ssh": "#1829: POSIX read/vim/less/ssh programs under the agent hand-over (and the unix-only tty-read probe); not run in a Windows pane",
+    "agent_interactive_less": "#1829: POSIX read/vim/less/ssh programs under the agent hand-over (and the unix-only tty-read probe); not run in a Windows pane",
+    "agent_noninteractive_no_takeover": "#1829: POSIX read/vim/less/ssh programs under the agent hand-over (and the unix-only tty-read probe); not run in a Windows pane",
     "agent_lrc_no_false_takeover": "#1796: the interactive-prompt take-over it tests (PromptWatch, termios + /proc tty-read probe) is unix-only; ConPTY has no termios",
     "subshells": "uses `sh -c 'ps -o comm= -p $PPID'` to prove the subshell's parent; msys ps output differs. Not yet ported (gitbash_subshell and ctrl_c_d cover bash inside the pane)",
     "subshell_sh_probe": "dash / busybox ash / su do not exist in a Windows pane; the sh probe path is POSIX (#1710)",
