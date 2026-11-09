@@ -100,10 +100,10 @@ pub(crate) mod settings_page;
 mod warp_drive_page;
 mod warpify_page;
 
-pub(crate) use network_page::allow_origin as allow_network_origin;
 pub use ai_page::cli_agent_settings_widget_id;
 pub use code_page::CodeSettingsPageView;
 pub use features_page::FeaturesPageAction;
+pub(crate) use network_page::allow_origin as allow_network_origin;
 pub use privacy_page::PrivacyPageAction;
 pub use settings_page::{
     AdditionalInfo, InputListItem, LocalOnlyIconState, ToggleState, render_body_item_label,
