@@ -2278,7 +2278,11 @@ esac
     local __tok_app="${LBUFFER##*[[:space:]]}"
     local __tok_lead=
     [[ $__tok_app == *"$__tok_word" ]] && __tok_lead="${__tok_app%"$__tok_word"}"
-    local __tok_pre="${__tok_lead}${IPREFIX}${ipre[-i]}${apre[-P]}${hpre[-p]}"
+    # With -U the matches already carry the whole word (the caller did its own matching), so
+    # IPREFIX is not added again.
+    local __tok_ipre="${IPREFIX}${ipre[-i]}"
+    (( ${extra_args[(I)-U]} )) && __tok_ipre=
+    local __tok_pre="${__tok_lead}${__tok_ipre}${apre[-P]}${hpre[-p]}"
     local dsuf dscr
     for i in {1..$#__hits}; do
         # add a dir suffix?
@@ -2359,6 +2363,13 @@ esac
     # warp_read_completion_buffer) if the app's reply never arrives; bail out
     # rather than complete on a stale or empty buffer.
     zle warp_read_completion_buffer || return
+    # Phosphor (#1801): an empty buffer is the app's answer to a prompt it had already given up
+    # on; end the exchange at once instead of completing every command name.
+    if [[ -z $BUFFER ]]; then
+      warp_mark_start_of_completions_for_compadd_override
+      warp_mark_end_of_completions
+      return
+    fi
 
     compprefuncs=( warp_mark_start_of_completions_for_compadd_override )
     comppostfuncs=( warp_mark_end_of_completions )

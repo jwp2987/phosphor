@@ -205,7 +205,7 @@ pin protocol behaviour. Skips are reported as SKIPPED, never silent. A Skip rais
 | `test_local_counted_bootstrap` | counted-read bootstrap behaves identically to the here-doc form (#1226) |
 | `test_ssh_keepalive`, `test_ssh_probe_cache`, `test_ssh_wrapper_forks`, `test_ssh_raw_bootstrap_hook` | ssh wrapper options, probe cache, fork budget, `raw_bootstrap` hook (#1171, #1136, #1172, #1243) |
 | `test_ssh_auth_once` | a failed ssh login (master step 255, no control socket) or a Ctrl-C at its prompt runs ssh ONCE and returns its status, so no second password prompt eats the next command (#1626); a ssh that authenticated but cannot multiplex (socket created, then 255) still falls back to the user's plain ssh once (#1551); r18u13: the same, plus a successful login, with a `$HOME` that is not the passwd home and the absolute passwd-home SSH_SOCKET_DIR the app now exports there (the fake ssh expands `~` from `$PWHOME`, as ssh does from the passwd entry; the old literal `~/.ssh` export made the wrapper miss its own master and log in twice): the wrapper logs in ONCE and multiplexes the session over its master; #1641: the hooks the wrapper prints are logged in order with the ssh calls: `ManagedSSHSessionStarting` exactly once after the master and right before the managed session, `PlainSSHFallback` right before each plain ssh (mux failure, a RemoteCommand, a non-POSIX remote, MSYS2 in bash), nothing on an auth failure or Ctrl-C; #1641 host-key retry: under the default `stricthostkeychecking ask` the master carries `StrictHostKeyChecking=yes`, an unknown host (real `ssh-keygen` known_hosts lookup) gets ONE plain ssh retry with the fallback hook before it, a known host's auth failure makes exactly one call, a user's `accept-new` gets no override (these cases need ssh-keygen and are SKIPPED without it); bash/zsh/fish |
-| `test_native_completions` | the in-band native-completions handshake (#1801) in real bash, zsh and fish, cut from the bundled bootstrap: ^Y is answered with OSC 9280;P, the text arrives raw + EOT (zsh) or as one `%HH` line (bash, fish), candidates come back between OSC 9280;A and B; `cd pro` offers the directories, `cat dir/fi` offers the WHOLE token `dir/file1`, `echo a;ec` keeps the `a;` lead, bash `complete -F`/`-W` specs answer with COMP_WORDS/COMP_CWORD as bash sets them and keep the `--opt=` part of a token, fish `complete -c` answers; the shell runs a command afterwards. A missing shell is SKIPPED |
+| `test_native_completions` | the in-band native-completions handshake (#1801) in real bash, zsh and fish, cut from the bundled bootstrap: ^Y is answered with OSC 9280;P, the text arrives raw + EOT (zsh) or as one `%HH` line (bash, fish), candidates come back between OSC 9280;A and B; `cd pro` offers the directories, `cat dir/fi` offers the WHOLE token `dir/file1`, `echo a;ec` keeps the `a;` lead, bash `complete -F`/`-W` specs answer with COMP_WORDS/COMP_CWORD as bash sets them and keep the `--opt=` part of a token, fish `complete -c` answers; a command written behind the text (same write, 5 ms later) is not taken by the read and runs; an empty (abandoned) answer ends the exchange with no candidates and the next command runs; fish writes nothing during the exchange but the OSCs and its mode switches (those reported as a NOTE: why the app sends fish no ^Y); the shell runs a command afterwards. bash below 4.0 is SKIPPED by design. A missing shell is SKIPPED |
 | `test_pwsh_git_head.ps1` | pwsh in-process git head equals `git` (#1163) |
 | `test_warpctrl_early_dispatch` | the app binary honours `--warpctrl` before GUI startup (needs a built binary, else SKIPPED) |
 | `macos/test_create_warpctrl_wrapper` | macOS wrapper packaging |
@@ -2293,10 +2293,24 @@ What changed and what pins it:
   sends the `^Y` native-completions handshake to the session's own shell first and uses the completer only when the
   shell offers nothing (`app/src/terminal/input/native_completions.rs`, decision + span unit tests in
   `native_completions_tests.rs`; terminal mode and a shell command in agent mode take the same path, agent text never
-  does; completions-while-typing never does). bash and fish gained the handshake (bash: programmable completion with
-  COMP_* emulated, bash-completion's `-D` loader, `-C` commands, compgen actions, `-o` options; fish: `complete -C`);
-  bash/fish receive the text as `%HH` + newline (`NativeCompletionsBufferEncoding`, unit tests in
-  `pty_controller_tests.rs`). Every shell writes candidates as the whole whitespace-delimited token (zsh now adds its
+  does; completions-while-typing never does). bash 4.0+ gained the handshake (programmable completion with COMP_*
+  emulated, bash-completion's `-D` loader, `-C` commands, compgen actions, `-o` options); bash 3.2 gets no `^Y` binding
+  and the app sends it none (`native_shell_completions_need_bash_4`). fish's bootstrap answers it too (`complete -C`),
+  but the app does NOT send fish `^Y`: its read needs external commands, around which fish switches bracketed paste and
+  keypad modes off and back on after the exchange's last OSC (the harness reports those bytes as a NOTE). bash/fish
+  receive the text as `%HH` + newline (`NativeCompletionsBufferEncoding`, unit tests in `pty_controller_tests.rs`).
+  Keys are never lost to the exchange (#1801 review): bash reads the line unbuffered (`read -n`); a bash request keeps
+  the PTY write gate shut until its results are in (`percent_line_requests_hold_writes_through_the_results_phase`,
+  `completions_finished_ends_a_percent_line_request`); a remote-first prompt that is late releases the Tab at 2 s
+  (the completer runs) but keeps writes held, answers a late prompt with an EMPTY text, which every shell ends at once,
+  and gives up the hold only at the late net, just past the shell's own read timeout (zsh 20 s -> 21 s, bash 10 s ->
+  11 s): `remote_first_late_prompt_is_answered_empty_and_writes_stay_held_until_then`,
+  `abandoned_prompt_hold_ends_at_the_late_net`, `late_prompt_net_outlasts_the_shells_read_timeouts`. No "no shell
+  integration" toast on that path. Tab then a fast Enter runs the COMPLETED line remotely too: the Enter holds for the
+  in-band answer up to `REMOTE_NATIVE_TAB_ENTER_BUDGET` (1.5 s; give-up hands the line back, #1666):
+  `test_tab_then_enter_remote_in_band_answer_runs_the_completed_line_in_both_modes`,
+  `test_tab_then_enter_remote_in_band_give_up_runs_nothing` (`input_test.rs`). Known limits: a quoted word with spaces
+  is not one token to the app; a backslash-escaped word is not dequoted before bash's compgen. Every shell writes candidates as the whole whitespace-delimited token (zsh now adds its
   IPREFIX and -P/-p prefixes, so `cd dir/fo` no longer offers `foo/`). The OSC parser rejoins a payload split at `;`
   (`completions_osc_payload_rejoins_a_payload_split_at_semicolons`). Shell side: `script/test_native_completions`.
   Kill switch: `PHOSPHOR_REMOTE_NATIVE_COMPLETIONS=0`.
@@ -2311,7 +2325,9 @@ harness default `ssh_extension_install_mode = never_install` IS the helper-missi
 the remote side only (and `phxtab_local_only/` locally), `ssh fake`, types `cd phxtab_<3 chars>`, Tab, waits 1.5 s
 (3 s with a delay applied), Enter. Pass: the REMOTE rec.log's command is `cd phxtab_<tok>/`, the next remote `pwd` ends in
 `/phxtab_<tok>`, nothing reached the local shell, and the app log has `candidates from the remote shell in N ms`
-(metric `remote_tab_in_band_ms`).
+(metric `remote_tab_in_band_ms`). `remote_tab_enter_no_helper` (same setup, ctx.count(3) trials): Tab, Enter 30 ms later;
+the remote rec.log must hold the COMPLETED `cd phxte_<tok>/`, never the typed prefix. Both skip on macOS, whose test
+host's remote shell is /bin/bash 3.2 (no in-band Tab there, by design). No fish remote case: fish is off the path.
 
 Lab spec, netem 150 ms (manual; needs root, the harness never applies it): on the Linux box,
 `sudo tc qdisc add dev lo root netem delay 75ms` (150 ms round trip on loopback, where the fake sshd listens), run

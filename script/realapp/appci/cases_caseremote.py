@@ -937,6 +937,13 @@ def judge_step(ctx, r, rec, ctl, bracketed, io_lines=None):
         r.check(False, "%s (control: %s)" % (base, why))
 
 
+def need_in_band_remote_shell(r):
+    """#1801: the in-band Tab needs a remote bash 4.0+ (or zsh). The harness's macOS remote shell is /bin/bash 3.2 (force.sh), where the bootstrap
+    binds no ^Y and the app sends none, by design: the case skips there with that reason instead of judging the ControlMaster path."""
+    if sys.platform == "darwin":
+        r.skip("the macOS test host's remote shell is /bin/bash 3.2: no in-band Tab below bash 4.0 (by design, #1801 review B3)")
+
+
 @case("remote_tab_no_helper", order=61)
 def c_remote_tab_no_helper(ctx, r):
     """#1801: ssh WITHOUT the remote helper (the harness default, ssh_extension_install_mode = never_install, which is the owner's primary remote
@@ -946,6 +953,7 @@ def c_remote_tab_no_helper(ctx, r):
     Path highlighting of a typed remote directory is not observable from outside the app: a note, not judged (see testing.md, #1801 lab case).
     The netem 150 ms variant is the same case with `PHOSPHOR_APPCI_NETEM_NOTE` set by whoever applied the delay (needs root; never applied by the harness)."""
     need_ssh(ctx, r)
+    need_in_band_remote_shell(r)
     tok = ctx.tok(6).lower()
     rdir = "phxtab_" + tok
     os.makedirs(os.path.join(ctx.prof.rhome, rdir), exist_ok=True)
@@ -984,6 +992,52 @@ def c_remote_tab_no_helper(ctx, r):
     if m:
         r.metric("remote_tab_in_band_ms", int(m.group(1)))
     r.note("path highlighting of a typed remote directory is not observable from the harness; not judged here (#1801 follow-up: prompt-hook cwd listing)")
+    if not leave(ctx):
+        r.check(False, "not provably remote (probe ran in: %s), `exit` NOT typed" % ctx.left_unproven)
+    ctx.reset()
+
+
+@case("remote_tab_enter_no_helper", order=61)
+def c_remote_tab_enter_no_helper(ctx, r):
+    """#1801 review: "Tab then a fast Enter runs the completed line" over ssh WITHOUT the helper. The remote shell answers the Tab in-band, and an
+    Enter ~30 ms after the Tab waits for that answer (cap REMOTE_NATIVE_TAB_ENTER_BUDGET, 1.5 s) instead of running the uncompleted text. Evidence:
+    the REMOTE rec.log's command is the COMPLETED `cd phxtab_<tok>/`, never `cd phxtab_<3 chars>`; a give-up (no answer within the cap) hands the
+    line back and runs nothing, which is a FAIL here (a fake sshd on loopback answers in milliseconds) unless PHOSPHOR_APPCI_NETEM_NOTE says a
+    delay over the cap was applied. Nothing may run locally. Repeated ctx.count(3) times with fresh directories."""
+    need_ssh(ctx, r)
+    need_in_band_remote_shell(r)
+    netem = os.environ.get("PHOSPHOR_APPCI_NETEM_NOTE")
+    if netem:
+        r.note("network delay applied outside the harness: %s" % netem)
+    trials = []
+    for _ in range(ctx.count(3)):
+        tok = ctx.tok(6).lower()
+        trials.append(tok)
+        os.makedirs(os.path.join(ctx.prof.rhome, "phxte_" + tok), exist_ok=True)
+    secs = connect(ctx, "fake", 60)
+    r.check(secs is not None, "no remote shell prompt after `ssh fake`. Test host: %s" % (ctx.ssh_diag() if secs is None else ""))
+    if secs is None:
+        ctx.reset()
+        return
+    time.sleep(1.0)
+    lmark = ctx.cmd_mark()
+    for tok in trials:
+        rmark = len(ctx.prof.commands(remote=True))
+        prefix = "cd phxte_" + tok[:3]
+        ctx.be.type(prefix, ctx.rng.randint(10, 25))
+        ctx.be.key("Tab")
+        time.sleep(0.03)
+        ctx.be.key("Return")
+        got = ctx.until(lambda: [c for _, c in ctx.prof.commands(remote=True)[rmark:]], 8)
+        want = "cd phxte_%s/" % tok
+        r.check(bool(got) and got[0] in (want, "cd phxte_%s" % tok),
+                "Tab + Enter 30 ms later: the remote shell received %r, want the COMPLETED %r (the uncompleted %r must never run)" % (got, want, prefix))
+        if not got:
+            ctx.be.key("ctrl+c")      # a give-up left the line in the editor: clear it for the next trial
+            time.sleep(0.3)
+        ctx.be.type("cd ~", 12, enter=True)
+        time.sleep(0.5)
+    r.check(ctx.cmds_since(lmark) == [], "the LOCAL shell received commands while the remote shell was in front: %r" % ctx.cmds_since(lmark))
     if not leave(ctx):
         r.check(False, "not provably remote (probe ran in: %s), `exit` NOT typed" % ctx.left_unproven)
     ctx.reset()

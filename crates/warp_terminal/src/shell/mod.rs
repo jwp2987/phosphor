@@ -169,9 +169,17 @@ impl Shell {
         self.shell_type.force_in_band_command_executor()
     }
 
-    /// Returns whether the current shell supports native shell completions.
+    /// Returns whether the current shell supports native shell completions. bash needs 4.0 or
+    /// later, like input reporting: its `^Y` binding is a `bind -x` function, which before 4.0
+    /// (no READLINE_LINE) the bootstrap does not install (#1801 review).
     pub fn supports_native_shell_completions(&self) -> bool {
-        self.shell_type.supports_native_shell_completions()
+        if !self.shell_type.supports_native_shell_completions() {
+            return false;
+        }
+        match self.shell_type {
+            ShellType::Bash => self.input_reporting_sequence().is_some(),
+            _ => true,
+        }
     }
 
     /// Whether the shell supports "autocd" (`cd`ing into a directory without specifying
@@ -461,10 +469,17 @@ impl ShellType {
     }
 
     /// Returns whether the current shell supports native shell completions: the bootstrap binds
-    /// `^Y` to a widget that answers the in-band completions handshake. zsh from upstream;
-    /// bash (programmable completion, COMP_* emulated) and fish (`complete -C`) since #1801.
+    /// `^Y` to a widget that answers the in-band completions handshake. zsh from upstream; bash
+    /// (programmable completion, COMP_* emulated) since #1801.
+    ///
+    /// Not fish, although its bootstrap answers the handshake (`warp_native_complete`, pinned by
+    /// `script/test_native_completions`): fish can only read the text with external commands,
+    /// and around every external command it switches its terminal modes off and back on
+    /// (bracketed paste, keypad, modifyOtherKeys). The switch back comes after the exchange's
+    /// last OSC, so a write the app releases at that OSC could reach fish with bracketed paste
+    /// off, typed key by key, where abbreviations expand (#1801 review).
     fn supports_native_shell_completions(&self) -> bool {
-        matches!(self, ShellType::Zsh | ShellType::Bash | ShellType::Fish)
+        matches!(self, ShellType::Zsh | ShellType::Bash)
     }
 
     /// Given the output of the `alias` command, returns a map of alias keys to values.

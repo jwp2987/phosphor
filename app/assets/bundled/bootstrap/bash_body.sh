@@ -744,9 +744,13 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
 
         # Phosphor (#1801): ^Y asks this shell for its own completions (see
         # warp_native_complete). Readline's yank is never used here: the editor is Phosphor's.
-        bind -x '"\C-y":"warp_native_complete"' 2>/dev/null
-        bind -m vi-insert -x '"\C-y":"warp_native_complete"' 2>/dev/null
-        bind -m vi-command -x '"\C-y":"warp_native_complete"' 2>/dev/null
+        # bash 4.0+ only, like ESC-i above: the app never sends ^Y to an older bash
+        # (`Shell::supports_native_shell_completions`).
+        if [[ ${WARP_INPUT_REPORTING_SUPPORTED:-} == "1" ]]; then
+          bind -x '"\C-y":"warp_native_complete"' 2>/dev/null
+          bind -m vi-insert -x '"\C-y":"warp_native_complete"' 2>/dev/null
+          bind -m vi-command -x '"\C-y":"warp_native_complete"' 2>/dev/null
+        fi
 
         # Readline 7.0 and 8.0 (bash 4.4 and 5.0) have bracketed paste but leave it off unless the
         # user's inputrc turns it on (8.1 / bash 5.1 made it the default). Without it Phosphor
@@ -1215,14 +1219,28 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     # COMP_POINT set as bash would; -C commands; compgen actions and -o options), the
     # bash-completion dynamic loader (`complete -D`) for a command with no spec yet, command
     # names in command position, and file names otherwise.
+    #
+    # Known limits: a quoted word that contains spaces (`cat "my fi`) is not one token to the
+    # app, which replaces only the text after the last space; and a backslash-escaped word
+    # (`cd my\ di`) is handed to compgen and completion functions as typed, not dequoted, so
+    # it may match nothing.
     __warp_native_complete_impl () {
         local __pc_hex __pc_line __pc_hexre='^(%[0-9A-Fa-f][0-9A-Fa-f])*$'
         builtin printf '\e]9280;P\a'
         # Bounded, like zsh's `read -t` in warp_read_completion_buffer: an abandoned handshake
-        # must never hold this shell in `read`.
-        IFS= builtin read -r -s -t 20 __pc_hex < /dev/tty || return 0
+        # must never hold this shell in `read` (the app holds its writes for 11 s after a
+        # prompt it has not seen, `NativeCompletionsBufferEncoding::late_prompt_net`). `-n`
+        # makes bash read the tty one byte at a time, so nothing after the newline (the user's
+        # next keys) is taken by this read; a plain line read on a tty is buffered (#1801 review).
+        IFS= builtin read -r -s -t 10 -n 1000000 __pc_hex < /dev/tty || return 0
         [[ $__pc_hex =~ $__pc_hexre ]] || return 0
         builtin printf -v __pc_line '%b' "${__pc_hex//\%/\\x}"
+        # An empty line is the app's answer to a prompt it had already given up on: end the
+        # exchange at once, without completing anything.
+        if [[ -z $__pc_line ]]; then
+            builtin printf '\e]9280;A;incrementally_typed\a\e]9280;B\a'
+            return 0
+        fi
 
         __warp_native_candidates "$__pc_line" </dev/null >/dev/null 2>&1
 
@@ -1242,6 +1260,8 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     # except where bash offers no other way to capture output (`complete -p`, compgen, -C).
     __warp_native_candidates () {
         __warp_nc_out=()
+        # The compopt shim below must never outlive a run, even one that was interrupted.
+        unset -f compopt 2>/dev/null
         local line=$1
         # Only the current simple command counts: cut at the last unquoted ; | & ( or `.
         local wb=${COMP_WORDBREAKS-$' \t\n"\'><=;|&(:'}

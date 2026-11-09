@@ -11856,6 +11856,7 @@ fn test_tab_then_enter_with_completion_delivered_after_a_stall_submits_the_compl
                 .expect("the Enter holds for the Tab");
             wait.hold = EnterHold::TabCompletion {
                 since: Instant::now() - TAB_COMPLETION_ENTER_BUDGET * 3,
+                remote_native: false,
             };
             let id = wait.id;
             input.compute_cap_fired(id, ctx);
@@ -13376,6 +13377,7 @@ async fn tab_enter_fixture_with_terminal(
             generation,
             snapshot: snapshot.clone(),
             local,
+            remote_native: false,
             compute: ComputeClock::default(),
         });
         (generation, snapshot)
@@ -14228,6 +14230,80 @@ fn test_tab_then_enter_ctrl_c_during_hold_submits_nothing() {
         assert!(executed.borrow().is_empty());
         input.read(&app, |input, ctx| {
             assert!(input.buffer_text(ctx).is_empty())
+        });
+    });
+}
+
+/// #1801 review: a remote session without the helper answers Tab in-band (the remote shell, one
+/// round trip), so a fast Enter after the Tab waits for it and runs the COMPLETED line, as a local
+/// Tab does (owner rule: Tab then a fast Enter runs the completed line). Both destination modes.
+#[test]
+fn test_tab_then_enter_remote_in_band_answer_runs_the_completed_line_in_both_modes() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+            let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, false).await;
+            input.update(&mut app, |input, _| {
+                input.tab_completion_request.as_mut().unwrap().remote_native = true;
+            });
+            // A round trip's worth of compute, over the local 150 ms cap and within the remote one.
+            let (clock, _guard) =
+                ComputeClock::running_for_test(std::time::Duration::from_millis(400));
+            input.update(&mut app, |input, ctx| {
+                input.input_enter(ctx);
+                let wait = input
+                    .verdict_wait
+                    .as_mut()
+                    .expect("the Enter holds for the remote in-band answer");
+                assert!(wait.holds_for_tab_completion(), "{mode:?}");
+                wait.compute = clock.clone();
+                let id = wait.id;
+                input.compute_cap_fired(id, ctx);
+            });
+            assert!(
+                executed.borrow().is_empty(),
+                "{mode:?}: nothing runs before the answer"
+            );
+            deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);
+            assert_eq!(executed.borrow().len(), 1, "{mode:?}");
+            assert_eq!(
+                executed.borrow()[0].trim_end(),
+                "git checkout feature",
+                "{mode:?}"
+            );
+        });
+    }
+}
+
+/// #1801 review: a remote in-band answer that does not land within its cap hands the line back
+/// and runs nothing, the same give-up as a local Tab (#1666).
+#[test]
+fn test_tab_then_enter_remote_in_band_give_up_runs_nothing() {
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, false).await;
+        input.update(&mut app, |input, _| {
+            input.tab_completion_request.as_mut().unwrap().remote_native = true;
+        });
+        let (clock, _guard) = ComputeClock::running_for_test(
+            REMOTE_NATIVE_TAB_ENTER_BUDGET + std::time::Duration::from_millis(100),
+        );
+        input.update(&mut app, |input, ctx| {
+            input.input_enter(ctx);
+            let wait = input.verdict_wait.as_mut().expect("the Enter holds");
+            wait.compute = clock.clone();
+            let id = wait.id;
+            input.compute_cap_fired(id, ctx);
+        });
+        assert!(
+            executed.borrow().is_empty(),
+            "the uncompleted line must not run"
+        );
+        input.read(&app, |input, ctx| {
+            assert!(input.verdict_wait.is_none());
+            assert_eq!(input.buffer_text(ctx), "git checkout fe");
         });
     });
 }

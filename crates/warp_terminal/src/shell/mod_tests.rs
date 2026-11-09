@@ -629,3 +629,39 @@ git status`";
         vec![". ./build.ps1".to_string()]
     );
 }
+
+/// #1801 review: bash's `^Y` completions binding is a `bind -x` function the bootstrap installs
+/// only from bash 4.0 (as for input reporting), so bash 3.2 (macOS /bin/bash on a remote) must
+/// not be sent `^Y`. zsh always supports it; fish (its terminal-mode switching around the
+/// external commands its read needs, see `supports_native_shell_completions`) and the other
+/// shells never do.
+#[test]
+fn native_shell_completions_need_bash_4() {
+    let bash = |version: &str| {
+        Shell::new(
+            ShellType::Bash,
+            Some(version.to_owned()),
+            None,
+            Default::default(),
+            None,
+        )
+    };
+    assert!(!bash("3.2.57(1)-release").supports_native_shell_completions());
+    assert!(bash("4.0.0(1)-release").supports_native_shell_completions());
+    assert!(bash("5.2.15(1)-release").supports_native_shell_completions());
+    assert!(
+        !Shell::new(ShellType::Bash, None, None, Default::default(), None)
+            .supports_native_shell_completions(),
+        "an unknown bash version is not assumed to have the binding"
+    );
+    assert!(
+        Shell::new(ShellType::Zsh, None, None, Default::default(), None)
+            .supports_native_shell_completions()
+    );
+    for shell_type in [ShellType::Fish, ShellType::PowerShell, ShellType::Nu] {
+        assert!(
+            !Shell::new(shell_type, None, None, Default::default(), None)
+                .supports_native_shell_completions()
+        );
+    }
+}

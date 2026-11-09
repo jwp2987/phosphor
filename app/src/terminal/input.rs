@@ -1437,7 +1437,12 @@ enum EnterHold {
     /// submits the completed line (or the visible text on an ambiguous, empty or failed result),
     /// after the completed line's own verdict wait. A completion that does not land in time is
     /// given up by a timer, which never submits (#1666/#1667): the line is handed back.
-    TabCompletion { since: Instant },
+    TabCompletion {
+        since: Instant,
+        /// The completion is the remote shell's in-band answer (#1801), which takes a round
+        /// trip: it gets [`REMOTE_NATIVE_TAB_ENTER_BUDGET`] instead of the local budget.
+        remote_native: bool,
+    },
 }
 
 /// The Tab (`CompletionsTrigger::Keybinding`) completion request in flight, so an Enter that
@@ -1449,6 +1454,10 @@ struct TabCompletionRequest {
     /// Whether the completer runs on this machine. A remote completer cannot answer quickly and
     /// is never waited for.
     local: bool,
+    /// The remote shell is asked first, in-band (#1801): one round trip on the session's own
+    /// connection, so an Enter right after the Tab waits for it (within
+    /// [`REMOTE_NATIVE_TAB_ENTER_BUDGET`]) and runs the completed line, as a local Tab does.
+    remote_native: bool,
     /// The compute the completer job spends (#1351): the Enter's give-up cap is measured on it.
     compute: ComputeClock,
 }
@@ -1458,6 +1467,11 @@ struct TabCompletionRequest {
 /// purpose: completion does I/O. The give-up hands the uncompleted line back to the editor and
 /// runs nothing (#1666): the clock must not run a line the user meant to complete.
 const TAB_COMPLETION_ENTER_BUDGET: std::time::Duration = std::time::Duration::from_millis(150);
+/// The same cap for a remote shell's in-band Tab answer (#1801 review: "Tab then a fast Enter
+/// runs the completed line" over a slow link too). Wall time from the job's start: a round trip
+/// plus the shell's own completion work. Under the 2 s prompt watchdog, so a shell that does not
+/// answer hands the line back (#1666) rather than running the uncompleted text.
+const REMOTE_NATIVE_TAB_ENTER_BUDGET: std::time::Duration = std::time::Duration::from_millis(1500);
 /// A hold longer than this is logged at WARN, so slow completers can be traced.
 const TAB_COMPLETION_ENTER_WARN: std::time::Duration = std::time::Duration::from_millis(50);
 /// The wall-clock net of an Enter held for its verdict, before the size allowance (#1662, busy-
@@ -1525,6 +1539,10 @@ impl EnterHold {
             EnterHold::Verdict { .. } => {
                 crate::ai::blocklist::input_model::enter_verdict_budget_for(text_len)
             }
+            EnterHold::TabCompletion {
+                remote_native: true,
+                ..
+            } => REMOTE_NATIVE_TAB_ENTER_BUDGET,
             EnterHold::TabCompletion { .. } => TAB_COMPLETION_ENTER_BUDGET,
         }
     }
@@ -1548,6 +1566,11 @@ impl EnterHold {
             .min(HOLD_BACKSTOP_LIMIT),
             // #1667: kept at 500 ms. Its give-up hands the line back and runs nothing, so a busy
             // machine that outlasts it costs one more Enter, never a wrong command.
+            // #1801: the remote in-band answer's cap plus the same 350 ms margin as locally.
+            EnterHold::TabCompletion {
+                remote_native: true,
+                ..
+            } => REMOTE_NATIVE_TAB_ENTER_BUDGET + std::time::Duration::from_millis(350),
             EnterHold::TabCompletion { .. } => std::time::Duration::from_millis(500),
         }
     }
@@ -1589,7 +1612,7 @@ impl VerdictWait {
     fn tab_completion_since(&self) -> Option<Instant> {
         match self.hold {
             EnterHold::Verdict { .. } => None,
-            EnterHold::TabCompletion { since } => Some(since),
+            EnterHold::TabCompletion { since, .. } => Some(since),
         }
     }
 }
@@ -12460,10 +12483,14 @@ impl Input {
         );
         let use_native_shell_completions =
             native_use != native_completions::NativeCompletionsUse::None;
-        let native_completions_encoding =
-            crate::terminal::writeable_pty::pty_controller::NativeCompletionsBufferEncoding::for_shell(
-            completion_context.session.shell().shell_type(),
-        );
+        let native_completions_options =
+            crate::terminal::writeable_pty::pty_controller::NativeCompletionsRequestOptions {
+                encoding:
+                    crate::terminal::writeable_pty::pty_controller::NativeCompletionsBufferEncoding::for_shell(
+                        completion_context.session.shell().shell_type(),
+                    ),
+                remote_first: native_use == native_completions::NativeCompletionsUse::Preferred,
+            };
 
         // The completer's file-path fallback stays on whenever the completer is the last word
         // (no shell asked, or the shell asked first and had nothing).
@@ -12506,7 +12533,7 @@ impl Input {
             let (results_tx, results_rx) = async_channel::unbounded();
             ctx.dispatch_typed_action(&TerminalAction::RunNativeShellCompletions {
                 buffer_text: buffer_text[0..cursor_position].to_owned(),
-                encoding: native_completions_encoding,
+                options: native_completions_options,
                 results_tx,
             });
             async move { results_rx.recv().await.ok() }.boxed()
@@ -12537,6 +12564,7 @@ impl Input {
                 generation,
                 snapshot: editor_snapshot.clone(),
                 local: completion_session.is_local(),
+                remote_native: native_use == native_completions::NativeCompletionsUse::Preferred,
                 compute: completion_compute.clone(),
             });
         }
@@ -14708,18 +14736,20 @@ impl Input {
         {
             return false;
         }
-        if !request.local {
+        if !request.local && !request.remote_native {
             // Never wait on remote I/O: submit the visible text now.
             log::info!("Enter not held for a remote Tab completion; completion cancelled");
             self.tab_completion_request = None;
             self.cancel_pending_completions_for_deferred_enter();
             return false;
         }
+        let remote_native = request.remote_native;
         let text = self.editor.as_ref(ctx).buffer_text(ctx);
         let wait_id = self.start_verdict_wait(
             text,
             EnterHold::TabCompletion {
                 since: Instant::now(),
+                remote_native,
             },
             ctx,
         );
@@ -15260,7 +15290,7 @@ impl Input {
         let decision = enter_verdict_wait_decision_at(pending, spent, stage_wall, text.len());
         if decision != EnterVerdictWait::Wait {
             let waited = self.verdict_wait.as_ref().map(|wait| match wait.hold {
-                EnterHold::Verdict { since } | EnterHold::TabCompletion { since } => {
+                EnterHold::Verdict { since } | EnterHold::TabCompletion { since, .. } => {
                     since.elapsed()
                 }
             });

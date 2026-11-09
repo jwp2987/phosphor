@@ -234,6 +234,26 @@ impl NativeCompletionsBufferEncoding {
         }
     }
 
+    /// How long writes stay held for a remote-first request whose prompt the app has not seen,
+    /// after the requester was released (#1801 review). Just past the shell's own bound on its
+    /// read (zsh `read -t 20`; bash `read -t 10`; fish `timeout 10` where it exists), so a
+    /// prompt that arrives late is always answered and the read never takes the user's next
+    /// command as the text to complete.
+    pub fn late_prompt_net(self) -> Duration {
+        match self {
+            Self::RawEot => Duration::from_secs(21),
+            Self::PercentLine => Duration::from_secs(11),
+        }
+    }
+
+    /// Whether the PTY write gate stays shut until the shell's results are in, not only until
+    /// its prompt (#1801 review). bash's and fish's line reads must have consumed the line
+    /// before anything else reaches the tty; zsh reads up to the EOT inside zle, which leaves
+    /// later bytes to zle.
+    fn holds_writes_through_results(self) -> bool {
+        matches!(self, Self::PercentLine)
+    }
+
     /// The exact bytes written to the PTY for `buffer_text`, terminator included.
     pub fn payload(self, buffer_text: &str) -> Vec<u8> {
         match self {
@@ -257,20 +277,52 @@ impl NativeCompletionsBufferEncoding {
     }
 }
 
+/// How a native-completions request is sent and recovered (#1801).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NativeCompletionsRequestOptions {
+    pub encoding: NativeCompletionsBufferEncoding,
+    /// The shell is asked FIRST (a remote session without the helper on an explicit Tab). When
+    /// its prompt is late the requester is released at the usual 2 s, so the completer runs and
+    /// the UI moves on, but the PTY writes stay held until the prompt is answered or the late
+    /// net passes; and no "no shell integration" toast is shown, the session has it.
+    pub remote_first: bool,
+}
+
 enum NativeShellCompletionsState {
     AwaitingPrompt {
         buffer_text: String,
-        encoding: NativeCompletionsBufferEncoding,
+        options: NativeCompletionsRequestOptions,
         results_tx: async_channel::Sender<Vec<ShellCompletion>>,
+        remote_first: bool,
+    },
+    /// A remote-first request whose prompt did not arrive in time (#1801 review): the requester
+    /// was released, and writes stay held so that a late prompt is answered with an empty text
+    /// (the shells end the exchange at once) instead of the shell's read taking the user's next
+    /// command as the text to complete. Ends at that answer or at the late net.
+    AbandonedAwaitingPrompt {
+        encoding: NativeCompletionsBufferEncoding,
     },
     AwaitingResults {
-        results_tx: async_channel::Sender<Vec<ShellCompletion>>,
+        /// `None` for the exchange that answers an abandoned prompt: nobody waits for it.
+        results_tx: Option<async_channel::Sender<Vec<ShellCompletion>>>,
+        encoding: NativeCompletionsBufferEncoding,
     },
 }
 
 impl NativeShellCompletionsState {
     fn is_awaiting_prompt(&self) -> bool {
-        matches!(self, Self::AwaitingPrompt { .. })
+        matches!(
+            self,
+            Self::AwaitingPrompt { .. } | Self::AbandonedAwaitingPrompt { .. }
+        )
+    }
+
+    /// Whether this state keeps the PTY write gate shut.
+    fn gates_pty_writes(&self) -> bool {
+        match self {
+            Self::AwaitingPrompt { .. } | Self::AbandonedAwaitingPrompt { .. } => true,
+            Self::AwaitingResults { encoding, .. } => encoding.holds_writes_through_results(),
+        }
     }
 }
 
@@ -584,12 +636,16 @@ impl<T: EventLoopSender> PtyController<T> {
                     );
                     return;
                 }
-                let Some(NativeShellCompletionsState::AwaitingResults { results_tx }) =
+                let Some(NativeShellCompletionsState::AwaitingResults { results_tx, .. }) =
                     me.in_flight_native_completions_state.take()
                 else {
                     unreachable!("checked above");
                 };
-                let _ = block_on(results_tx.send(data.clone()));
+                if let Some(results_tx) = results_tx {
+                    let _ = block_on(results_tx.send(data.clone()));
+                }
+                // bash and fish hold writes until here (`holds_writes_through_results`).
+                me.execute_next_queued_write(ctx);
             }
             ModelEvent::SendCompletionsPrompt => {
                 // Same peek-before-take reasoning as `CompletionsFinished` above.
@@ -609,10 +665,11 @@ impl<T: EventLoopSender> PtyController<T> {
                 // `read -t` in `warp_read_completion_buffer`, per TODO.md and phosphor#770); the
                 // app's only safe move on the app side is to never type anything into a prompt it
                 // cannot see the state of.
-                if !matches!(
-                    me.in_flight_native_completions_state,
-                    Some(NativeShellCompletionsState::AwaitingPrompt { .. })
-                ) {
+                if !me
+                    .in_flight_native_completions_state
+                    .as_ref()
+                    .is_some_and(NativeShellCompletionsState::is_awaiting_prompt)
+                {
                     log::warn!(
                         "Received SendCompletionsPrompt event but wasn't awaiting a prompt \
                          (generation {}); ignoring it without touching the in-flight state.",
@@ -620,16 +677,30 @@ impl<T: EventLoopSender> PtyController<T> {
                     );
                     return;
                 }
-                let Some(NativeShellCompletionsState::AwaitingPrompt {
-                    buffer_text,
-                    encoding,
-                    results_tx,
-                }) = me.in_flight_native_completions_state.take()
-                else {
-                    unreachable!("checked above");
-                };
+                let (buffer_text, encoding, results_tx) =
+                    match me.in_flight_native_completions_state.take() {
+                        Some(NativeShellCompletionsState::AwaitingPrompt {
+                            buffer_text,
+                            encoding,
+                            results_tx,
+                            ..
+                        }) => (buffer_text, encoding, Some(results_tx)),
+                        // #1801 review: a late prompt for a request the app already released.
+                        // The shell is in its read now; an empty text ends the exchange there.
+                        Some(NativeShellCompletionsState::AbandonedAwaitingPrompt { encoding }) => {
+                            log::info!(
+                                "Late native-completions prompt answered with an empty text so \
+                                 the shell's read does not take the next command"
+                            );
+                            (String::new(), encoding, None)
+                        }
+                        _ => unreachable!("checked above"),
+                    };
                 me.in_flight_native_completions_state =
-                    Some(NativeShellCompletionsState::AwaitingResults { results_tx });
+                    Some(NativeShellCompletionsState::AwaitingResults {
+                        results_tx,
+                        encoding,
+                    });
                 me.arm_native_completions_watchdog(NATIVE_COMPLETIONS_RESULTS_TIMEOUT, false, ctx);
 
                 // The text and its terminator (EOT for zsh, a newline for bash and fish; see
@@ -646,8 +717,8 @@ impl<T: EventLoopSender> PtyController<T> {
                     ctx,
                 );
 
-                // Now that we've provided the prompt, we can start executing
-                // other queued writes.
+                // Now that we've provided the prompt, we can start executing other queued
+                // writes; for bash and fish the gate stays shut until their results are in.
                 me.execute_next_queued_write(ctx);
             }
             _ => (),
@@ -1278,6 +1349,34 @@ impl<T: EventLoopSender> PtyController<T> {
                 if !still_in_expected_phase {
                     return;
                 }
+                // #1801 review: a remote-first request's prompt is late (a slow link, a VPN
+                // stall). Release the requester now (the completer runs, the UI moves on), but
+                // keep the writes held: the shell may still be about to read, and anything
+                // written now would be taken as the text to complete.
+                if let Some(NativeShellCompletionsState::AwaitingPrompt {
+                    encoding,
+                    remote_first: true,
+                    ..
+                }) = &me.in_flight_native_completions_state
+                {
+                    let encoding = *encoding;
+                    log::warn!(
+                        "Native shell completions prompt not seen after {timeout:?}; the Tab \
+                         falls back to the completer, writes stay held for a late prompt"
+                    );
+                    me.in_flight_native_completions_state =
+                        Some(NativeShellCompletionsState::AbandonedAwaitingPrompt { encoding });
+                    me.arm_native_completions_watchdog(encoding.late_prompt_net(), true, ctx);
+                    return;
+                }
+                let report_unavailable = expect_awaiting_prompt
+                    && matches!(
+                        me.in_flight_native_completions_state,
+                        Some(NativeShellCompletionsState::AwaitingPrompt {
+                            remote_first: false,
+                            ..
+                        })
+                    );
                 // Never log the buffer text -- it is whatever the user was typing.
                 log::warn!(
                     "Native shell completions timed out after {timeout:?} (awaiting_prompt={expect_awaiting_prompt}); \
@@ -1291,7 +1390,8 @@ impl<T: EventLoopSender> PtyController<T> {
                 // acknowledged the trigger at all, which is what an un-phosphorized shell looks
                 // like; a results-phase timeout means the hooks did answer and then the work
                 // outran its budget, for which "no shell integration" would simply be untrue.
-                if expect_awaiting_prompt {
+                // Nor a remote-first request: its session has the integration (#1801 review).
+                if report_unavailable {
                     me.report_native_completions_unavailable(ctx);
                 }
             },
@@ -1340,7 +1440,8 @@ impl<T: EventLoopSender> PtyController<T> {
         self.line_editor_status.as_ref(ctx).is_line_editor_active()
             // If we're in the middle of a native completions request, we should not send any more
             // writes to the shell until we've sent the string to complete.
-            && !self.in_flight_native_completions_state.as_ref().is_some_and(|state| state.is_awaiting_prompt())
+            // (bash and fish until their results are in, #1801 review).
+            && !self.in_flight_native_completions_state.as_ref().is_some_and(|state| state.gates_pty_writes())
     }
 
     /// Executes the next queued `PtyWrite`, if able.
@@ -1475,7 +1576,7 @@ impl<T: EventLoopSender> PtyController<T> {
         let awaiting_completions_prompt = self
             .in_flight_native_completions_state
             .as_ref()
-            .is_some_and(|state| state.is_awaiting_prompt());
+            .is_some_and(|state| state.gates_pty_writes());
         log::warn!(
             "PTY write gate has been shut for {stalled_for:?} with {} write(s) queued \
              (line_editor_inactive={line_editor_inactive}, awaiting_completions_prompt={awaiting_completions_prompt}); \
@@ -2773,8 +2874,9 @@ impl<T: EventLoopSender> PtyController<T> {
             .push_back(PtyWrite::RunNativeShellCompletions(
                 NativeShellCompletionsState::AwaitingPrompt {
                     buffer_text,
-                    encoding,
+                    encoding: options.encoding,
                     results_tx,
+                    remote_first: options.remote_first,
                 },
             ));
         self.execute_next_queued_write(ctx);

@@ -23,7 +23,16 @@ starts each shell interactively in a pty in a scratch directory and checks, per 
   * `echo a;ec` offers candidates that keep `a;` (the token starts before the shell's word);
   * the shell's own completion definitions answer (bash `complete -F/-W`, with COMP_WORDS and
     COMP_CWORD as bash sets them and the `--opt=` part of a token kept; fish `complete -c`);
-  * the shell is alive and runs a command afterwards.
+  * the shell is alive and runs a command afterwards;
+  * #1801 review: a command written right behind the text (same write, and 5 ms later) is NOT
+    taken by the shell's read: it runs after the exchange;
+  * #1801 review: an abandoned exchange (the app gave up, then answers the late prompt with an
+    empty text) ends at once with no candidates, and the next command runs;
+  * #1801 review: fish writes nothing during the exchange but the OSCs and its own terminal-mode
+    switches (no echo marks, no cursor or device queries); the mode switches are reported as a
+    NOTE, and are why the app does not send fish ^Y (fish is off the remote-first path).
+bash 3.2 is not exercised here unless it is the installed bash: the bootstrap does not bind ^Y
+below bash 4.0 and the app does not send it (`Shell::supports_native_shell_completions`).
 
 USAGE
     script/test_native_completions
@@ -107,14 +116,31 @@ def check(shell, name, ok, detail=""):
         print(f"ok   {shell}: {name}")
 
 
-def complete(sh, shell, line, raw_eot):
+OSC_9280_RE = re.compile(rb"\x1b\]9280;[^\x07]*\x07")
+
+
+def payload(line, raw_eot):
+    return line.encode() + b"\x04" if raw_eot else percent_line(line)
+
+
+def complete(sh, shell, line, raw_eot, after=b"", gap=None, exchange=None):
+    """One exchange. `after` is written behind the text: in the same write (gap None) or `gap`
+    seconds later. `exchange`, if a list, receives every byte from the ^Y through OSC 9280;B."""
     sh.write(b"\x19")
-    got = sh.read_until(rb"\x1b\]9280;P\x07")
-    if b"\x1b]9280;P\x07" not in got:
-        check(shell, f"answers ^Y for {line!r}", False, f"(got {got[-200:]!r})")
+    got_p = sh.read_until(rb"\x1b\]9280;P\x07")
+    if b"\x1b]9280;P\x07" not in got_p:
+        check(shell, f"answers ^Y for {line!r}", False, f"(got {got_p[-200:]!r})")
         return None
-    sh.write(line.encode() + b"\x04" if raw_eot else percent_line(line))
+    if after and gap is None:
+        sh.write(payload(line, raw_eot) + after)
+    else:
+        sh.write(payload(line, raw_eot))
+        if after:
+            time.sleep(gap)
+            sh.write(after)
     got = sh.read_until(rb"\x1b\]9280;B\x07")
+    if exchange is not None:
+        exchange.append(got_p + got)
     if b"\x1b]9280;B\x07" not in got or b"\x1b]9280;A;incrementally_typed\x07" not in got:
         check(shell, f"ends the reply for {line!r}", False, f"(got {got[-200:]!r})")
         return None
@@ -148,6 +174,26 @@ def common_checks(sh, shell, raw_eot):
         )
 
 
+def keys_behind_the_text(sh, shell, raw_eot, command, want):
+    for gap, label in ((None, "0 ms"), (0.005, "5 ms")):
+        got = complete(sh, shell, "cd pro", raw_eot, after=command, gap=gap)
+        if got is not None:
+            check(shell, f"the exchange still answers with a command behind the text ({label})", "projects/" in got, f"(got {got})")
+        out = sh.read_until(re.escape(want))
+        check(shell, f"a command written {label} behind the text is not taken by the read: it runs", want in out,
+              f"(got {out[-200:]!r})")
+
+
+def abandoned_then_command(sh, shell, raw_eot, command, want):
+    # The app gave up on this exchange; the prompt arrives late and the app answers it empty.
+    got = complete(sh, shell, "", raw_eot)
+    if got is not None:
+        check(shell, "an empty (abandoned) answer ends the exchange with no candidates", got == [], f"(got {got[:5]})")
+    sh.write(command)
+    out = sh.read_until(re.escape(want))
+    check(shell, "the command after an abandoned exchange runs", want in out, f"(got {out[-200:]!r})")
+
+
 def alive(sh, shell, command):
     sh.write(command)
     got = sh.read_until(rb"alive-42")
@@ -159,6 +205,13 @@ def run_bash(base, lab):
     if not bash:
         skipped.append("bash")
         return
+    import subprocess
+    ver = subprocess.run([bash, "-c", "echo ${BASH_VERSINFO[0]}"], capture_output=True, text=True).stdout.strip()
+    if ver and int(ver) < 4:
+        print("NOTE bash: bash %s is below 4.0; the bootstrap does not bind ^Y there and the app does not send it" % ver)
+        skipped.append("bash (below 4.0, by design)")
+        return
+    print("NOTE bash: bash %s; bash 3.2 (macOS /bin/bash) is not exercised here (no ^Y below 4.0, by design)" % ver)
     body = read_file("bash_body.sh")
     text = (
         cut(body, r"^    __warp_relax_opts \(\) \{", r"^    \}$", "__warp_relax_opts")
@@ -200,6 +253,8 @@ def run_bash(base, lab):
         got = complete(sh, "bash", "phy --fo", False)
         if got is not None:
             check("bash", "a complete -W spec answers", got == ["--force"], f"(got {got})")
+        keys_behind_the_text(sh, "bash", False, b"echo after-$((40+2))\n", b"after-42")
+        abandoned_then_command(sh, "bash", False, b"echo next-$((40+3))\n", b"next-43")
         alive(sh, "bash", b"echo alive-$((40+2))\n")
     finally:
         sh.close()
@@ -229,6 +284,8 @@ def run_zsh(base, lab):
             check("zsh", "starts", False)
             return
         common_checks(sh, "zsh", raw_eot=True)
+        keys_behind_the_text(sh, "zsh", True, b"echo after-$((40+2))\n", b"after-42")
+        abandoned_then_command(sh, "zsh", True, b"echo next-$((40+3))\n", b"next-43")
         alive(sh, "zsh", b"echo alive-$((40+2))\n")
     finally:
         sh.close()
@@ -260,6 +317,20 @@ def run_fish(base, lab):
         got = complete(sh, "fish", "phx al", False)
         if got is not None:
             check("fish", "a complete -c definition answers", got == ["alpha"], f"(got {got})")
+        exchange = []
+        complete(sh, "fish", "cd pro", False, exchange=exchange)
+        if exchange:
+            stray = OSC_9280_RE.sub(b"", exchange[0][1:] if exchange[0][:1] == b"\x19" else exchange[0])
+            # fish switches its terminal modes around the external commands its read needs, so
+            # the exchange is not clean; that is why the app does not send fish ^Y
+            # (`ShellType::supports_native_shell_completions`). Reported, not judged: the day
+            # this is clean, fish can join the remote-first path.
+            ctl = re.sub(rb"\x1b\[\?2004[hl]|\x1b\[>4;[01]m|\x1b[=>]", b"", stray)
+            check("fish", "writes nothing during the exchange but the OSCs and fish's own mode switches", ctl == b"", f"(stray {ctl[:200]!r})")
+            if stray:
+                print("NOTE fish: mode switches during the exchange (why fish is off the app's ^Y path): %r" % stray[:120])
+        keys_behind_the_text(sh, "fish", False, b"echo after-(math 40+2)\r", b"after-42")
+        abandoned_then_command(sh, "fish", False, b"echo next-(math 40+3)\r", b"next-43")
         alive(sh, "fish", b"echo alive-(math 40+2)\r")
     finally:
         sh.close()
