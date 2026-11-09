@@ -30,9 +30,8 @@ use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::blocklist::block::cli_controller::UserTakeOverReason;
 use crate::terminal::TerminalModel;
 use crate::terminal::model::block::{
-    ForegroundTtyRead, INTERACTIVE_PROMPT_QUIET_TRAILING,
-    INTERACTIVE_PROMPT_QUIET_TRAILING_UNKNOWN_READ, InteractivePromptCandidate, PromptDetection,
-    PromptDetector, interactive_prompt_shape,
+    ForegroundTtyRead, INTERACTIVE_PROMPT_QUIET_TRAILING_UNKNOWN_READ, InteractivePromptCandidate,
+    PromptDetection, PromptDetector, interactive_prompt_shape,
 };
 
 use super::log_capture;
@@ -135,19 +134,14 @@ fn a_prompt_lookalike_is_never_handed_over_while_the_foreground_is_not_reading()
     }
 }
 
+/// #1811 (owner decision 2026-11-09; REPLACES `a_real_prompt_is_handed_over_within_the_window_plus_three_seconds`,
+/// which expected the 15 s quiet window): a command blocked reading the tty reaches the user at
+/// the first observation, with no quiet floor.
 #[test]
-fn a_real_prompt_is_handed_over_within_the_window_plus_three_seconds() {
+fn a_real_prompt_is_handed_over_at_the_first_observation() {
     let behaviour = real_prompt("Name:", false);
-    let after = handed_over_after(&behaviour, ForegroundTtyRead::Reading, THIRTY_MINUTES)
-        .expect("a command blocked reading the tty must reach the user");
-    assert!(
-        after >= INTERACTIVE_PROMPT_QUIET_TRAILING,
-        "not before the quiet window: {after:?}"
-    );
-    assert!(
-        after <= INTERACTIVE_PROMPT_QUIET_TRAILING + Duration::from_secs(3),
-        "within the window + 3 s: {after:?}"
-    );
+    let after = handed_over_after(&behaviour, ForegroundTtyRead::Reading, THIRTY_MINUTES);
+    assert_eq!(after, Some(Duration::ZERO));
 }
 
 #[test]
