@@ -1646,6 +1646,30 @@ whitelist, the tar jail, the container argv, expiry/prune planning and labd's he
 6. [ ] Helper arms: set `APPCI_LAB_HELPER_BIN` on the runner to a built remote-server binary (otherwise those arms report UNVERIFIABLE).
 7. [ ] ksu / a KDC are phase 2 and are not in this lab.
 
+### 2.16 Real-use replay (`appci/replay.py`, `appci/cases_replay.py`, `appci/fake_model.py`; Wave 1.5 #3)
+
+One long, seeded "day of use" per session mode, registered as `lab_replay.bash.150.nohelper` (fake ssh lab at 150 ms netem, the no-helper default, bash). It
+is MANUAL ONLY: job `app-test-replay-linux` (extends `app-test-lab-linux`; `APPCI_CASES=lab_replay*`, `APPCI_FAKE_MODEL=1`), never part of a `ci_seq.py` tier, no
+schedule. The `lab_*` glob of the ordinary lab jobs does NOT sweep it in (run.py runs `lab_replay*` only when `--cases` names `lab_replay`). Knobs:
+`APPCI_REPLAY_MINUTES` (default 15; the nightly plays it with 60; the case timeout follows it), the run's `--seed` / `APPCI_SEED` (same seed, minutes and mode =
+the same steps), `APPCI_REPLAY_ALLOW` (extra comma-separated regexes for the ERROR allowlist). No lab, no fake model, or a bad config is a SKIP with the reason.
+
+* **Terminal pass** (weighted random steps until the estimated time is used): a local command; `cd` (absolute, `..`, `/tmp`); Tab completion of a unique
+  directory prefix; an ssh session to the lab (2-5 inner steps: remote command, `cd`, Tab, Ctrl-C at a random delay, `seq` big output); a local Ctrl-C at a random
+  delay in `sleep 30; echo ...`; `seq 1 50000|200000`; `seq > file; cat file` (a large cat); a bash / dash subshell; `sudo -n` (skipped with a note where it does
+  not work). Typing 10-25 ms/key, instant Enter.
+* **Agent pass** (`fake_model.py` as the Ollama-protocol provider; `run.py` starts it when `APPCI_FAKE_MODEL=1` and no real provider is configured): prose; an
+  approved command (card, focus Enter, approve Enter); a rejected command (card, focus Enter, Ctrl-C); Ctrl-C mid-stream on a `SLOW` turn (3 s hold).
+* **Oracles:** (1) every effect file holds its token exactly once (a Ctrl-C'd or rejected step leaves nothing): no lost, doubled or misrouted key; (2) the exact typed
+  lines arrive, in order, in the local and the remote `rec.log` (the Tab-completed line is compared with the trailing `/` normalised); (3) no app-log ERROR or
+  panic outside `replay.ERROR_ALLOW_DEFAULT` + `APPCI_REPLAY_ALLOW`; (4) agent invariants from the `hop=` lines (`replay.judge_agent`): A1 every ask Enter is
+  `hop=enter_begin input_type=AI` carrying its token and never `Shell`; A2 `hop=view_mode` never leaves `agent`; A3 at least one `[byop] opening stream` per ask;
+  (5) latency per step kind (n, p50, p95, max) is RECORDED as the `replay_latency_s` metric and never gates.
+* **Self-test:** `python3 script/realapp/appci/run.py --self-test` pins the scenario generator (determinism, length, coverage of every kind), the effect and
+  ERROR/hop oracles, the line comparison, the config parser, the fake model's replies and its HTTP server, and the registry (the replay is not swept by `lab_*`).
+* **Unverified until a box run:** the case has never been driven against a build; the first run may show harness faults (subshell readiness, the approval-card
+  keys, the exact Tab-completed line) before it shows app bugs.
+
 ## 3. Real-app testing
 
 Automated tests do not catch lag, lost keys or broken flows; the owner feels those. Every release candidate
@@ -2652,7 +2676,7 @@ A fake AI model plus a fuzzer that drives whole agent conversations. Three layer
 |---|---|---|---|
 | **L0 wire** | the real genai client (`lib/rust-genai`, the BYOP decoder) against llmposter, a scripted raw server and a byte-level chaos proxy | `crates/fake_llm/tests/genai_decode.rs` | in this build |
 | **L1 in-process** | the real controller / action model / queue in `App::test`, fed scripted turns through the stream seam, an actor stepping the user's side, an oracle checking I1-I7 after every step | `app/src/ai/blocklist/agent_fuzz/` | in this build (see below) |
-| **L2 real app** | appci + llmposter as the provider, real PTY | `script/realapp/appci` | later |
+| **L2 real app** | appci + a scripted fake provider, real PTY | `script/realapp/appci` (`fake_model.py`, a stdlib Ollama-protocol server, `APPCI_FAKE_MODEL=1`; first user: the real-use replay, 2.16; llmposter itself is not used at L2) | in the replay |
 
 **llmposter** (crates.io, AGPL-3.0-or-later, test-only; Phosphor is AGPL-3.0-only so the licences are compatible, and `AGPL-3.0-or-later` is on the `deny.toml` / `about.toml` lists for it) supplies the HTTP mock: OpenAI SSE, character-chunked text, HTTP error statuses, frame truncation. `crates/fake_llm` writes only the gaps: the in-process seam, byte-level cuts (inside UTF-8, a JSON string, between `data:` and `\n\n`), tool-call arguments streamed as many deltas, malformed arguments, chosen call ids, and the scenario schema.
 

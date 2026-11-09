@@ -1353,6 +1353,17 @@ app-test-lab-windows:
     APPCI_CASES: "lab_*"
     APPCI_LAB_BOX: "$SSHLAB_BOX"
 
+# Real-use replay (Wave 1.5 #3, docs/testing.md "Real-use replay"): a seeded "day of use" in one long case per session mode, against the fake ssh lab at
+# 150 ms and the scripted fake model. MANUAL ONLY and never part of a ci_seq.py tier (no schedule, owner): play it by hand, or from the nightly routine the
+# owner starts. Length: APPCI_REPLAY_MINUTES (default 15; the nightly plays it with 60). Skips with its reason when the lab or the fake model is unavailable.
+app-test-replay-linux:
+  extends: app-test-lab-linux
+  variables:
+    APPCI_CASES: "lab_replay*"
+    APPCI_FAKE_MODEL: "1"
+    APPCI_LAB_MATRIX: "quick"
+    APPCI_REPLAY_MINUTES: "15"
+
 # ---------------------------------------------------------------------------
 # Reuse variants (app-test-*-reuse): test an EARLIER pipeline's build of an app-identical commit instead of rebuilding
 # (script/ci/ci_seq.py decides; fix tier only). They have NO `needs` on the build job: `needs:pipeline:job` takes a

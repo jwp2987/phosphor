@@ -185,7 +185,7 @@ def collect_app(job, dest_root, notes):
     names = [n for n in z.namelist() if not n.startswith("/") and ".." not in n.split("/")]
     plats = sorted({n.split("/")[1] for n in names if n.startswith("appci-out/") and n.count("/") >= 2})
     for plat in plats:
-        key = ("lab-" if job["name"].startswith("app-test-lab-") else "") + plat      # lab jobs get their own key: they must not replace the ordinary app-test row
+        key = ("lab-" if job["name"].startswith("app-test-lab-") else "replay-" if job["name"].startswith("app-test-replay-") else "") + plat      # lab / replay jobs get their own key: they must not replace the ordinary app-test row
         pd = os.path.join(dest_root, key)
         os.makedirs(pd, exist_ok=True)
         base = "appci-out/%s/" % plat
