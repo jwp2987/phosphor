@@ -238,6 +238,12 @@ if [[ -x ./script/check_pty_doors ]]; then
     ./script/check_pty_doors >/dev/null 2>&1 && ok "pty doors" \
         || fail "pty doors -- run ./script/check_pty_doors for detail"
 fi
+if [[ -x ./script/check_input_path_timers ]]; then
+    ./script/check_input_path_timers >/dev/null 2>&1 && ok "input-path timers" \
+        || fail "input-path timers -- run ./script/check_input_path_timers for detail"
+    ./script/check_input_path_timers --self-test >/dev/null 2>&1 && ok "input-path timers self-test" \
+        || fail "input-path timers self-test -- run ./script/check_input_path_timers --self-test"
+fi
 if [[ -x ./script/check_outbound_redaction ]]; then
     ./script/check_outbound_redaction >/dev/null 2>&1 && ok "outbound redaction" \
         || fail "outbound redaction -- run ./script/check_outbound_redaction for detail"

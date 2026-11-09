@@ -251,6 +251,7 @@ pub(super) enum PromptHoldEnd {
 /// A paced CLI-agent submit is a few hundred ms to a few seconds (a Copilot bracketed paste waits
 /// 300 ms for its Enter, each image 300 ms); this is a net for a submit that never reports its end,
 /// far beyond any of them. Logged when it fires.
+// give-up-net: leak net of a paced CLI-agent submit: keys typed behind it are discarded with a count toast (#1661)
 const CLI_SUBMIT_LEAK_NET: Duration = Duration::from_secs(20);
 
 impl PasteQueueState {
@@ -357,6 +358,7 @@ pub(super) fn signal_bytes(kind: SignalKind) -> &'static [u8] {
 
 /// Net for the gate that holds the keys typed behind a deferred Enter: the patience timers and the
 /// Enter's own events end the hold long before this; logged when it fires.
+// give-up-net: leak net of a deferred Enter's gate: hands the held keys back / discards with a count toast
 const HANDOFF_GATE_LEAK_NET: Duration = Duration::from_secs(60);
 
 /// The spec of the `HandoffReport` gate named `id`.
@@ -719,6 +721,7 @@ impl Host for PtyQueueHost<'_, '_> {
     fn arm_give_up(&mut self, token: GateToken, _kind: GateKind, after: Duration) {
         // The ONE timer of a paste gate: a safety net for a reader that never answers. The reader's
         // result closes the gate first in every normal case and this then finds nothing to do.
+        // give-up-net: queue gate cap: a give-up that hands the gate's keys back to the editor or discards them with a count toast
         self.ctx.spawn(Timer::after(after), move |me, _, ctx| {
             me.on_paste_queue_give_up(token, ctx)
         });
@@ -2277,6 +2280,7 @@ impl TerminalView {
                     // Busy: asked again shortly (a hand-back, never a write).
                     None => {
                         ctx.spawn(
+                            // give-up-net: 100 ms re-ask of a hand-back whose queue was busy; the hand-back itself only returns keys to the editor, never writes (owner-listed)
                             Timer::after(Duration::from_millis(100)),
                             move |me, _, ctx| me.hand_back_gate_keys(kind, key, why, ctx),
                         );
@@ -2422,6 +2426,7 @@ impl TerminalView {
         after: Duration,
         ctx: &mut ViewContext<Self>,
     ) {
+        // give-up-net: re-arms the prompt hold's give-up cap; writes nothing
         ctx.spawn(Timer::after(after), move |me, _, ctx| {
             me.on_paste_queue_give_up(token, ctx)
         });

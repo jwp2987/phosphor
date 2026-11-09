@@ -1,0 +1,115 @@
+# Input-path timers (script/check_input_path_timers). One line per timer:
+#   path<TAB>identifier<TAB>what it does
+# identifier = the Duration constant, or (for a call with no constant) the enclosing function.
+# Everything above the PENDING-CONVERSION marker is a give-up net: it hands text back to the editor,
+# keeps it held, or only shows a notice / logs. It never writes to the pty, releases held keys,
+# routes, commits or re-asks. Adding a line means the code carries `give-up-net: ...` next to it.
+app/assets/bundled/bootstrap/bash_body.sh	warp_ssh_mux_command	kills a stuck ssh control-master probe after 5 s; never touches the tty or typed keys
+app/assets/bundled/bootstrap/bash_body.sh	warp_ssh_remote_is_non_posix	kills a stuck ssh probe after 5 s; never touches the tty or typed keys
+app/assets/bundled/bootstrap/fish.sh	warp_ssh_mux_command	kills a stuck ssh control-master probe after 5 s; never touches the tty or typed keys
+app/assets/bundled/bootstrap/fish.sh	warp_ssh_remote_is_non_posix	polls then kills an ssh probe (<=5 s); never touches the tty or typed keys
+app/assets/bundled/bootstrap/zsh_body.sh	warp_ssh_mux_command	kills a stuck ssh control-master probe after 5 s; never touches the tty or typed keys
+app/assets/bundled/bootstrap/zsh_body.sh	warp_ssh_remote_is_non_posix	kills a stuck ssh probe after 5 s; never touches the tty or typed keys
+app/src/terminal/input.rs	COMPUTE_CAP_RECHECK_FLOOR	floor on re-arming the verdict hold's compute-cap check (the give-up that hands the line back); decides nothing itself
+app/src/terminal/input.rs	DEFERRED_ENTER_ACTIVITY_CAP	releases the macOS activity assertion held for a deferred Enter; no effect on keys
+app/src/terminal/input.rs	HOLD_BACKSTOP_LIMIT	upper bound of an Enter hold's wall-clock backstop; the backstop hands the line back to the editor
+app/src/terminal/input.rs	SLOW_ENTER_HOLD_THRESHOLD	log threshold for a slow Enter hold; log only
+app/src/terminal/input.rs	TAB_COMPLETION_ENTER_BUDGET	Enter held for a local Tab completion: on expiry the uncompleted line goes back to the editor and nothing runs (#1666)
+app/src/terminal/input.rs	VERDICT_HOLD_BACKSTOP	lost-job net of an Enter held for its verdict: hands the line back to the editor, never submits it (#1577)
+app/src/terminal/input.rs	arm_hold_timer	one-shot give-up timers of an Enter's verdict/Tab hold (backstop, compute cap): hand the line back, never submit
+app/src/terminal/input/enter_queue.rs	ENTER_GATE_LEAK_NET	leak net of the Enter gate: the held Enter is given up (line stays, what followed is discarded with a count toast)
+app/src/terminal/input/enter_queue.rs	UNREADY_ENTER_GIVE_UP	60 s net of an Enter held for an unready shell: the line stays in the editor unrun, what followed is discarded with a toast (#1661)
+app/src/terminal/input/paste_queue.rs	arm_give_up	queue gate cap: a give-up that hands the gate's keys back to the editor or discards them with a count toast
+app/src/terminal/input/paste_queue.rs	start_queued_read	delays a Pasting... progress toast; notice only
+app/src/terminal/line_editor_status.rs	LINE_EDITOR_SIGNAL_GIVE_UP	reports SignalGaveUp so held keys go back to the editor; never opens the gate or writes
+app/src/terminal/line_editor_status.rs	arm_signal_give_up	arms the line-editor ready-signal give-up; only reports SignalGaveUp (keys go back to the editor)
+app/src/terminal/model/block/interaction_mode.rs	INTERACTIVE_PROMPT_QUIET_TRAILING_UNKNOWN_READ	shows a 'may be waiting for input -- Take over' notice only; never hands the command over (#1796)
+app/src/terminal/model/block/interaction_mode.rs	STALL_SNAPSHOT_AFTER	hands the stalled screen to a snapshot-capable model; writes nothing to the pty
+app/src/terminal/model/typeahead_handoff.rs	CONPTY_PROMPT_HOLD_GIVE_UP	prompt-hold give-up: keys with no Enter go back to the editor as text, a segment with an Enter stays held with a toast (#1584)
+app/src/terminal/model/typeahead_handoff.rs	PROMPT_HOLD_RELEASE_IN_FLIGHT_RECHECK	re-checks the prompt hold's give-up cap while a release is in flight; writes nothing
+app/src/terminal/model/typeahead_handoff.rs	YOUNG_HOLD_GIVE_UP	10 s net of a queued young hold: discards the young Enter and what followed with a count toast (#1661)
+app/src/terminal/view.rs	AFTER_ENTER_REPLAY_PTY_WAIT	10 s net for keys typed after a deferred Enter: discards them with a count toast; never routes or writes (#1661)
+app/src/terminal/view.rs	AGENT_INTERRUPT_GRACE	after an ignored ^C, hands the agent's command to the user and leaves the agent view; writes no bytes (#899)
+app/src/terminal/view.rs	ALT_SCREEN_RESEND_GIVE_UP	logged net for an alt-screen winsize re-send; resizes the pty window, no key bytes
+app/src/terminal/view.rs	ALT_SCREEN_SETTLE_GIVE_UP	logged net for the alt-screen paint-settle re-check; resizes the pty window, no key bytes
+app/src/terminal/view.rs	BOOTSTRAP_PROGRESS_GRACE	one-off extension of the bootstrap-failed give-up; the failure hands held ssh keys back as text
+app/src/terminal/view.rs	CLIPBOARD_WRITE_SLOW_TOAST_DELAY	delays a 'clipboard owner not answering' toast; notice only
+app/src/terminal/view.rs	EDITOR_TAKEOVER_GIVE_UP	logged net for the editor-takeover window (ends on the focus event); writes nothing
+app/src/terminal/view.rs	INTERRUPT_GIVE_UP	logged give-up for an interrupt's expected prompt cycle that never came; hands input back via the hand-off, writes nothing
+app/src/terminal/view.rs	PASTE_PROGRESS_TOAST_DELAY	delays a Pasting... progress toast; notice only
+app/src/terminal/view.rs	PENDING_COMMAND_PRECMD_GIVE_UP	logs only; the pending command stays pending for the prompt's own event (#1588)
+app/src/terminal/view.rs	POWERSHELL_ABORT_MARKER_GIVE_UP	after a ^C skipped PowerShell setup: held keys go back to the editor as text, never written (#1577)
+app/src/terminal/view.rs	POWERSHELL_ABORT_SETTLE	timed-setup give-up after a ^C: held keys go back to the editor as text, never written (#1438)
+app/src/terminal/view.rs	POWERSHELL_HELD_LINE_GRACE	only tells the user the input waits (log + toast); the prompt event releases the keys (#1577)
+app/src/terminal/view.rs	REPORT_TAB_GIVE_UP	a Tab whose report never comes hands the line back; never runs the Enter (#1577)
+app/src/terminal/view.rs	REWIND_REVERT_WRITE_TIMEOUT	marks a file-revert write failed; not a pty write and not a key
+app/src/terminal/view.rs	SSH_CONNECT_FIRST_PROMPT_GRACE	feeds the ssh connect window's give-up deadline; firing hands the held keys back as text
+app/src/terminal/view.rs	SSH_CONNECT_POST_BLOCK_GRACE	feeds the ssh connect window's give-up deadline; firing hands the held keys back as text
+app/src/terminal/view.rs	STALE_REFLOW_CHUNK_BUDGET	model-lock budget of one deferred-reflow slice; no input effect
+app/src/terminal/view.rs	STALE_REFLOW_CHUNK_INTERVAL	paces the deferred block reflow after a resize; no input effect
+app/src/terminal/view.rs	SUBSHELL_BANNER_DELAY_DURATION	delays showing the warpify banner; notice only
+app/src/terminal/view.rs	SUBSHELL_SETUP_CEILING	absolute subshell-setup net: held keys come back to the editor with a count toast; writes nothing (#1711)
+app/src/terminal/view.rs	SUBSHELL_SETUP_DEFER_NOTICE	tells the user a deferred setup is waiting, once; notice only
+app/src/terminal/view.rs	SUBSHELL_SETUP_QUIET_NET	the one subshell-setup net: held keys come back to the editor with a count toast; writes nothing (#1711)
+app/src/terminal/view.rs	SUBSHELL_SETUP_QUIET_NOTICE	shows the 'setup is waiting' toast; notice only
+app/src/terminal/view.rs	TYPEAHEAD_REPORT_PATIENCE	report-patience give-up: the Enter does not run, keys held behind it go back to the editor/are discarded with a toast
+app/src/terminal/view.rs	UNCOVERED_REPORT_PATIENCE	the Enter does not run and stays in the editor; the keys held behind it follow (#1577)
+app/src/terminal/view.rs	YOUNG_DETECTION_BACKSTOP	lost-signal net of a young line's verdict wait: hands the line back to the editor, never submits it (#1577)
+app/src/terminal/view.rs	begin_ssh_warpify_timeout	shows an ssh-warpify timeout error block; no pty write, no keys
+app/src/terminal/view.rs	resize_alt_screen_redundantly	re-sends the alt-screen window size twice; no key bytes
+app/src/terminal/view.rs	schedule_ssh_typeahead_give_up	ONE event-armed ssh connect give-up: the held keys come back as text and never reach a pty (#1577)
+app/src/terminal/view.rs	settle_enter_queue	10 s net of keys typed after a deferred Enter: give_up_enter_route_wait discards them with a count toast
+app/src/terminal/view.rs	spawn_bootstrap_timer	bootstrap-failed give-up: marks the session failed and hands held ssh keys back as text (delivery only behind a kill switch)
+app/src/terminal/view.rs	start_slow_bootstrap_banner_auto_dismiss_timer	auto-dismisses the slow-bootstrap banner; notice only
+app/src/terminal/view.rs	wait_frame_or_give_up	bounds the wait for a drawn frame before the alt-screen re-check; no key bytes
+app/src/terminal/view/paste_queue.rs	CLI_SUBMIT_LEAK_NET	leak net of a paced CLI-agent submit: keys typed behind it are discarded with a count toast (#1661)
+app/src/terminal/view/paste_queue.rs	HANDOFF_GATE_LEAK_NET	leak net of a deferred Enter's gate: hands the held keys back / discards with a count toast
+app/src/terminal/view/paste_queue.rs	arm_give_up	queue gate cap: a give-up that hands the gate's keys back to the editor or discards them with a count toast
+app/src/terminal/view/paste_queue.rs	hand_back_gate_keys_inner	100 ms re-ask of a hand-back whose queue was busy; the hand-back itself only returns keys to the editor, never writes (owner-listed)
+app/src/terminal/view/paste_queue.rs	rearm_prompt_hold_cap	re-arms the prompt hold's give-up cap; writes nothing
+app/src/terminal/view/ssh_typeahead.rs	SSH_TYPEAHEAD_PRECMD_WAIT_CAP	first-Precmd wait cap: hands the held ssh keys back as text, writes nothing
+app/src/terminal/view/subshell_ready.rs	PRE_READY_CEILING	60 s ceiling for a setup waiting for the reader-ready proof: gives the setup up, keys return to the editor, a 'try again' toast follows
+app/src/terminal/writeable_pty/pty_controller.rs	track_pty_write_gate_stall	one-shot timer that only logs a stuck write gate
+
+# PENDING-CONVERSION (must be gone before v0.1.18)
+# Timers that break the rule (write, release, route, commit or re-ask on a clock). The default run
+# warns for each; `--strict` (release tier) fails on any. Delete a line when its timer is gone.
+app/assets/bundled/bootstrap/bash_body.sh	__warp_nc_deadline_set	owner-named remote-Tab shell gap: 5 s frame deadline and PHOSPHOR_NC_DEADLINE (default 20 s)
+app/assets/bundled/bootstrap/bash_body.sh	__warp_nc_read_byte	owner-named remote-Tab shell gap: read -t 0.1 per byte / 1 s paste gap while reading the exchange frame
+app/assets/bundled/bootstrap/bash_body.sh	__warp_nc_time_left	owner-named remote-Tab shell gap: time left against the EPOCHREALTIME/SECONDS deadline
+app/assets/bundled/bootstrap/zsh_body.sh	__warp_nc_give_back_escape	owner-named remote-Tab shell gap: read -t 0.1 gaps while draining an escape sequence
+app/assets/bundled/bootstrap/zsh_body.sh	__warp_nc_read_frame_body	owner-named remote-Tab shell gap: read -t 0.1 per byte and a 5 s frame deadline; on expiry zle -U gives the bytes back
+app/assets/bundled/bootstrap/zsh_body.sh	warp_read_completion_buffer	owner-named remote-Tab shell gap: first-byte read -t / PHOSPHOR_NC_DEADLINE (default 20 s); a non-frame byte is zle -U'd back
+app/src/terminal/input.rs	REMOTE_NATIVE_TAB_ENTER_BUDGET	owner-named: 1.5 s Enter hold for a remote in-band Tab answer
+app/src/terminal/input.rs	run_completions_async	FOUND: REMOTE_AS_YOU_TYPE_DEBOUNCE (150 ms) delays the in-band completion request, i.e. a timer decides when ^Y is written
+app/src/terminal/model/block/interaction_mode.rs	INTERACTIVE_PROMPT_QUIET_EXPLICIT	FOUND: 3 s of silence on a [y/N]-style marker hands the agent's command to the user (hand-over on a clock, with evidence)
+app/src/terminal/model/block/interaction_mode.rs	INTERACTIVE_PROMPT_QUIET_TRAILING	FOUND: 15 s of silence on a trailing ?/: (plus the tty-read probe) hands the command to the user
+app/src/terminal/model/block/interaction_mode.rs	STALL_CLOSE_PAGER_AFTER	FOUND: 3 s unchanged screen makes Phosphor SEND q to a pager (a timer writes to the pty)
+app/src/terminal/model/block/interaction_mode.rs	STALL_HAND_TO_USER_AFTER	FOUND: 5 s unchanged full-screen program hands the agent's command to the user (hand-over on a clock)
+app/src/terminal/model/block/interaction_mode.rs	STALL_PAGER_UNRESPONSIVE_AFTER	FOUND: 8 s after sending q hands the command to the user (hand-over on a clock)
+app/src/terminal/model/typeahead_handoff.rs	CONPTY_MIDLINE_QUIET	owner-named: 120 ms typing-quiet gate before the hand-off asks the shell for the line (ConPTY; re-asks on a clock)
+app/src/terminal/model/typeahead_handoff.rs	EVENT_HOLD_GIVE_UP	FOUND: 2 s cap that is the NORMAL end of the fish no-barrier young hold (hands back, but a timer is how it ends)
+app/src/terminal/model/typeahead_handoff.rs	YOUNG_ENTER_MIN_HOLD	FOUND: 150 ms floor of the young-Enter hold (part of the YOUNG_ENTER_WINDOW clock)
+app/src/terminal/model/typeahead_handoff.rs	YOUNG_ENTER_WINDOW	owner-named: 600 ms window deciding whether an Enter is a young line (routes on a clock)
+app/src/terminal/view.rs	AUTO_WARPIFY_DELAY	FOUND: fixed delay then writes the subshell bootstrap (only with PHOSPHOR_BOOTSTRAP_TIMED=1)
+app/src/terminal/view.rs	EXECUTE_PENDING_COMMAND_DELAY	FOUND: 100 ms timer runs the pending command / ssh split cd (only with PHOSPHOR_BOOTSTRAP_TIMED=1)
+app/src/terminal/view.rs	INTERRUPT_SETTLE	owner-named: 250 ms after ^C commits the typeahead hand-off at the prompt (commits on a timer)
+app/src/terminal/view.rs	SSH_BOOTSTRAP_SWALLOW_CEILING	FOUND: typing is DROPPED while an ssh bootstrap is pending and keys pass through after 15 s (age-based route/drop)
+app/src/terminal/view.rs	SSH_CONNECT_SILENCE_CEILING	FOUND: age < 15 s decides whether the ssh connect window arms and keys are held; after it every key goes to the pty (age-based route); also the gate's give-up ceiling
+app/src/terminal/view.rs	SSH_LOGIN_RECHECK_GIVE_UP	FOUND: 3 s of quiet output after non-prompt ssh output is taken as 'login done' (state decision on a timer; warpify follows)
+app/src/terminal/view.rs	SUBSHELL_FIRST_PROMPT_GIVE_UP	FOUND: 5 s 'give-up timer' fires the awaiting subshell bootstrap, i.e. writes it (legacy path when subshell_ready_path() is off)
+app/src/terminal/view.rs	SUBSHELL_SETUP_DEFER_POLL	FOUND: 250 ms poll re-asking whether the prompt a deferred setup waits behind was answered
+app/src/terminal/view.rs	SUBSHELL_SETUP_DEFER_QUIET	FOUND: 600 ms unchanged-output clock before the deferred subshell setup is written
+app/src/terminal/view.rs	TRIGGER_RC_FILE_SUBSHELL_BOOTSTRAP_DELAY	FOUND: 100 ms then writes the rc-file subshell bootstrap (only with PHOSPHOR_BOOTSTRAP_TIMED=1)
+app/src/terminal/view.rs	arm_young_timer	FOUND: young-detection timer; on a reached compute cap it finishes the wait and submits the deferred Enter by the Enter-time rules (commits on a timer)
+app/src/terminal/view.rs	write_init_subshell_bytes_to_pty	FOUND: the unmarked subshell bootstrap lines are written on a per-line delay timer (the marked path is event-driven)
+app/src/terminal/writeable_pty/pty_controller.rs	CONTAINER_BOOTSTRAP_PACING	FOUND: 50 ms timer paces bootstrap chunk WRITES into a container subshell (#960); owner to rule whether pacing is exempt
+app/src/terminal/writeable_pty/pty_controller.rs	MAC_TTY_INPUT_QUEUE_PACING	FOUND: 10 ms timer paces the ssh-warpify payload WRITES on a cooked tty (#1384); owner to rule whether pacing is exempt
+app/src/terminal/writeable_pty/pty_controller.rs	NATIVE_COMPLETIONS_PROMPT_TIMEOUT	FOUND: 2 s watchdog WRITES the cancel frame to the pty and drains queued writes (end_native_exchange_with_cancel)
+app/src/terminal/writeable_pty/pty_controller.rs	NATIVE_COMPLETIONS_RESULTS_TIMEOUT	FOUND: 15 s watchdog drops the exchange and calls execute_next_queued_write (releases queued writes on a timer)
+app/src/terminal/writeable_pty/pty_controller.rs	RELAY_BOOTSTRAP_PACING	FOUND: 25 ms timer paces bootstrap chunk WRITES into a pty relay (#960: consumption unobservable); owner to rule whether pacing is exempt
+app/src/terminal/writeable_pty/pty_controller.rs	TYPEAHEAD_HANDOFF_STALE_COUNT_GIVE_UP	owner-named: the 5 s give-up of the same wait; resets counts and retries the hand-off decision
+app/src/terminal/writeable_pty/pty_controller.rs	TYPEAHEAD_HANDOFF_STALE_COUNT_RESET	owner-named: 250 ms timer resets the hand-off's stale line counts and retries the decision (a decision on a timer)
+app/src/terminal/writeable_pty/pty_controller.rs	arm_native_completions_watchdog	FOUND: the call site of the two native-completions watchdog timers
+app/src/terminal/writeable_pty/pty_controller.rs	arm_typeahead_handoff_stale_count_reset	owner-named: the call site of the two stale-count timers above
+app/src/terminal/writeable_pty/pty_controller.rs	write_next_paced_chunk	FOUND: the timer chain that writes the next paced chunk to the pty

@@ -35,7 +35,7 @@ LINUX, MAC, WIN = "linux", "macos", "windows"
 BUILD = {LINUX: "build-linux-x86_64", MAC: "build-macos-arm64", WIN: "build-windows-x86_64"}
 APP = {LINUX: ["app-test-linux-wayland", "app-test-linux-x11"], MAC: ["app-test-macos"], WIN: ["app-test-windows"]}
 UNIT_SUFFIX = ["test", "test-warpui-core", "test-workspace-rest"]
-HEAVY_SUFFIX = ["test-shuttle-loom", "fuzz-smoke", "bench", "mutants", "mutants-warpui-core"]
+HEAVY_SUFFIX = ["input-timers-strict", "test-shuttle-loom", "fuzz-smoke", "bench", "mutants", "mutants-warpui-core"]
 PLAT_SUFFIX = {MAC: "macos", WIN: "windows"}
 # #1502: the deterministic, cheap-enough suites that used to be manual in every pipeline and never played by any tier. Candidate and
 # release play them (the heavy ones stay in HEAVY_SUFFIX / release). GitLab names a parallel:matrix job "<name>: [<SHARD>]".
@@ -771,7 +771,7 @@ def main():
                     mine = n in started
                 if mine:
                     print(n, wait(n), flush=True)
-        for n in ["test-shuttle-loom", "fuzz-smoke", "bench", "mutants", "mutants-warpui-core"]:
+        for n in ["input-timers-strict", "test-shuttle-loom", "fuzz-smoke", "bench", "mutants", "mutants-warpui-core"]:
             if n not in SKIP: play(n)
     for t in watchers:
         t.join()
@@ -781,7 +781,7 @@ def main():
         print(n, timeline.get(n, ("?",))[0], flush=True)
     for n in started + reuse_started: print(n, wait(n), flush=True)
     if tier == "release":
-        for n in ["test-shuttle-loom", "fuzz-smoke", "bench", "mutants", "mutants-warpui-core"]:
+        for n in ["input-timers-strict", "test-shuttle-loom", "fuzz-smoke", "bench", "mutants", "mutants-warpui-core"]:
             if n not in SKIP and jobs().get(n, {}).get("status") not in (None, "manual"): print(n, wait(n), flush=True)
     network_jobs(jobs, wait, timeline)
     check_app_results(jobs, timeline)

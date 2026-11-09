@@ -640,6 +640,7 @@ lazy_static! {
     static ref JUMP_TO_BOTTOM_OF_BLOCK_TOOLTIP_OFFSET_Y_PX: Pixels = (-5.).into_pixels();
 
 
+    // give-up-net: delays showing the warpify banner; notice only
     static ref SUBSHELL_BANNER_DELAY_DURATION: Duration = if cfg!(feature = "integration_tests") {
         Duration::from_secs(0)
     } else {
@@ -694,7 +695,9 @@ pub const EXECUTE_PENDING_COMMAND_DELAY: Duration = Duration::from_millis(100);
 /// in chunks of at most `STALE_REFLOW_CHUNK_BUDGET` of model-lock time, one chunk per
 /// `STALE_REFLOW_CHUNK_INTERVAL`, until none are stale. The timer is only armed while blocks are
 /// stale, so an idle terminal runs nothing.
+// give-up-net: model-lock budget of one deferred-reflow slice; no input effect
 const STALE_REFLOW_CHUNK_BUDGET: Duration = Duration::from_millis(4);
+// give-up-net: paces the deferred block reflow after a resize; no input effect
 const STALE_REFLOW_CHUNK_INTERVAL: Duration = Duration::from_millis(16);
 /// Lines above and below the viewport that reflow synchronously with a column change.
 const STALE_REFLOW_MARGIN_LINES: f64 = 60.;
@@ -803,16 +806,19 @@ const SSH_LOGIN_RECHECK_GIVE_UP: Duration = Duration::from_secs(3);
 /// and re-sends anyway (and the second look for `ALT_SCREEN_APPS_WITH_RESIZE_PROBLEMS`). A safety
 /// net for output that never comes; logged when it fires (#1384 P5).
 #[cfg(feature = "local_tty")]
+// give-up-net: logged net for an alt-screen winsize re-send; resizes the pty window, no key bytes
 const ALT_SCREEN_RESEND_GIVE_UP: Duration = Duration::from_millis(500);
 
 /// Give-up cap for the alt-screen paint-settle re-check (#1388). The re-check is driven by the
 /// frame-drawn callback of the paint-only frame; this only bounds the wait if that callback never
 /// fires (window occluded / frame dropped) and is logged when it does.
+// give-up-net: logged net for the alt-screen paint-settle re-check; resizes the pty window, no key bytes
 const ALT_SCREEN_SETTLE_GIVE_UP: Duration = Duration::from_millis(500);
 
 /// Resolves `true` when `frame_rx` signals (the frame was drawn), `false` after `cap`.
 async fn wait_frame_or_give_up(frame_rx: async_channel::Receiver<()>, cap: Duration) -> bool {
     futures_lite::future::or(async move { frame_rx.recv().await.is_ok() }, async move {
+        // give-up-net: bounds the wait for a drawn frame before the alt-screen re-check; no key bytes
         Timer::after(cap).await;
         false
     })
@@ -822,6 +828,7 @@ async fn wait_frame_or_give_up(frame_rx: async_channel::Receiver<()>, cap: Durat
 /// How long the agent's command gets to react to an interrupt (^C) before the stop is escalated:
 /// the conversation is cancelled, the command handed to the user and the agent view left
 /// (#899, #900). Long enough for an ordinary process to run its signal handlers and exit.
+// give-up-net: after an ignored ^C, hands the agent's command to the user and leaves the agent view; writes no bytes (#899)
 const AGENT_INTERRUPT_GRACE: Duration = Duration::from_secs(3);
 
 /// The longest input typed after a deferred Enter waits for the pty to take the command that
@@ -836,6 +843,7 @@ const AGENT_INTERRUPT_GRACE: Duration = Duration::from_secs(3);
 /// never handed back as editor text and never written. Together with the gate's own leak net
 /// (`enter_queue::ENTER_GATE_LEAK_NET`, 20 s from the Enter, so this net fires first) it means a
 /// hold always ends.
+// give-up-net: 10 s net for keys typed after a deferred Enter: discards them with a count toast; never routes or writes (#1661)
 const AFTER_ENTER_REPLAY_PTY_WAIT: Duration = Duration::from_secs(10);
 
 /// [`AFTER_ENTER_REPLAY_PTY_WAIT`], or the calling thread's test override.
@@ -890,6 +898,7 @@ struct EnterCommandBlock {
 /// A lost-job net only (#1664, busy-machine audit 2026-11-05): the cap is the classifier's CPU
 /// time (#1651), so this wall-clock net must not be what hands text back on a loaded machine.
 /// Was 500 ms; 2 s stays far above the 250 ms young cap.
+// give-up-net: lost-signal net of a young line's verdict wait: hands the line back to the editor, never submits it (#1577)
 const YOUNG_DETECTION_BACKSTOP: Duration = Duration::from_secs(2);
 
 /// [`YOUNG_DETECTION_BACKSTOP`] for a buffer of `text_len` chars: grows with the text like the
@@ -960,7 +969,9 @@ fn paste_bytes_for_pty(text: &str, bracketed: bool) -> Vec<u8> {
 /// A terminal paste still being read after this long gets a "Pasting..." notice (#1255).
 #[cfg(not(target_family = "wasm"))]
 /// How long a clipboard write may run before the user is told the owner is not answering.
+// give-up-net: delays a 'clipboard owner not answering' toast; notice only
 const CLIPBOARD_WRITE_SLOW_TOAST_DELAY: Duration = Duration::from_secs(3);
+// give-up-net: delays a Pasting... progress toast; notice only
 const PASTE_PROGRESS_TOAST_DELAY: Duration = Duration::from_millis(750);
 
 const BRACKETED_PASTE_PREFIX: &str = "\x1b[200~";
@@ -1000,6 +1011,7 @@ const BOOTSTRAP_FAILED_DURATION: Duration = Duration::from_secs(7);
 /// #1566: how much longer the bootstrap give-up waits, once, when the pending session is
 /// demonstrably progressing (its bootstrap prompt's `Precmd` was seen) and only `Bootstrapped`
 /// is outstanding. A logged give-up net; `Bootstrapped` itself ends the wait.
+// give-up-net: one-off extension of the bootstrap-failed give-up; the failure hands held ssh keys back as text
 const BOOTSTRAP_PROGRESS_GRACE: Duration = Duration::from_secs(3);
 /// Longest typing is dropped on behalf of one pending ssh bootstrap (#983). A healthy
 /// bootstrap finishes well inside this; a stuck or stale one must not own the keyboard.
@@ -1024,18 +1036,22 @@ const SSH_CONNECT_SILENCE_CEILING: Duration = Duration::from_secs(15);
 pub(crate) const MAY_BE_WAITING_FOR_INPUT_NOTICE: &str =
     "This command may be waiting for input \u{2014} Take over";
 
+// give-up-net: the one subshell-setup net: held keys come back to the editor with a count toast; writes nothing (#1711)
 const SUBSHELL_SETUP_QUIET_NET: Duration = Duration::from_secs(30);
 /// The absolute ceiling of a subshell setup (#1711): however steady the progress, a setup older
 /// than this is given up the same way. Stage 1 (the probe) and stage 2 share one clock.
+// give-up-net: absolute subshell-setup net: held keys come back to the editor with a count toast; writes nothing (#1711)
 const SUBSHELL_SETUP_CEILING: Duration = Duration::from_secs(120);
 /// After this long with no setup progress the user is told the setup is waiting (the persistent
 /// "Phosphor setup is waiting..." toast, #1014) and that Ctrl-C skips it. Dismissed by the next
 /// progress, shown again after another quiet stretch. Also what makes a PowerShell setup
 /// "stalled" for its Ctrl-C route (#1051: after the notice, a ^C goes to the shell).
+// give-up-net: shows the 'setup is waiting' toast; notice only
 const SUBSHELL_SETUP_QUIET_NOTICE: Duration = Duration::from_secs(10);
 /// A subshell setup deferred behind a prompt for input (#1032) that has waited this long tells
 /// the user so, once. A notice only: nothing is routed or written on it (the stall ceiling it
 /// descends from no longer routes keys, #1711).
+// give-up-net: tells the user a deferred setup is waiting, once; notice only
 const SUBSHELL_SETUP_DEFER_NOTICE: Duration = Duration::from_secs(20);
 /// How often a deferred subshell setup (#1032) re-checks whether the prompt it is waiting behind
 /// has been answered.
@@ -1049,6 +1065,7 @@ const SUBSHELL_FIRST_PROMPT_GIVE_UP: Duration = Duration::from_secs(5);
 /// Give-up net for a pending command / ssh `cd` waiting for the first prompt after a block
 /// completed (#1354); the prompt itself is what releases it. Logged when it fires. #1588: firing
 /// runs NOTHING; the command stays pending for the prompt (its text is shown in the input).
+// give-up-net: logs only; the pending command stays pending for the prompt's own event (#1588)
 const PENDING_COMMAND_PRECMD_GIVE_UP: Duration = Duration::from_secs(2);
 /// After the user answered a prompt that setup was deferred behind, the output must stay unchanged
 /// this long (the shell took the answer and went quiet) before setup is written, when the
@@ -1058,17 +1075,20 @@ const SUBSHELL_SETUP_DEFER_QUIET: Duration = Duration::from_millis(600);
 /// behind the command that line ran, waiting for its prompt (#1048). A command still running
 /// then is slow or interactive. #1577: firing only tells the user the input waits (log + toast);
 /// the keys are released by the command's prompt or by it becoming interactive, never this timer.
+// give-up-net: only tells the user the input waits (log + toast); the prompt event releases the keys (#1577)
 const POWERSHELL_HELD_LINE_GRACE: Duration = Duration::from_secs(2);
 /// The give-up net after a Ctrl-C that skips a PowerShell subshell setup with no marker token (the
 /// timed setup: `PHOSPHOR_BOOTSTRAP_TIMED`, or a host whose markers never came) (#1048, #1438).
 /// The Windows console flushes its input buffer as it processes the Ctrl-C, so keys written right
 /// behind the ^C are lost, and without the marker the shell sends nothing that says it has been
 /// processed: the held keys are handed back to the editor as text after this, never written.
+// give-up-net: timed-setup give-up after a ^C: held keys go back to the editor as text, never written (#1438)
 const POWERSHELL_ABORT_SETTLE: Duration = Duration::from_millis(500);
 /// The give-up net behind the marker that ends the settle after a Ctrl-C skipped a marker-paced
 /// PowerShell setup (#1372): the shell prints the marker when PSReadLine is about to read again;
 /// if it never does (the Ctrl-C killed the wrapper's session, a host without the hook), the held
 /// keys are handed back to the editor as text after this (#1577: never written), with a log line.
+// give-up-net: after a ^C skipped PowerShell setup: held keys go back to the editor as text, never written (#1577)
 const POWERSHELL_ABORT_MARKER_GIVE_UP: Duration = Duration::from_secs(5);
 /// Duration before we consider a session invoked from an env vars object to
 /// have failed bootstrapping. The longer duration is meant to account for
@@ -12283,6 +12303,7 @@ impl TerminalView {
         }
         self.ssh_typeahead_deadline_armed = Some(deadline);
         let wait = deadline.saturating_duration_since(now);
+        // give-up-net: ONE event-armed ssh connect give-up: the held keys come back as text and never reach a pty (#1577)
         ctx.spawn(Timer::after(wait), move |me, _, ctx| {
             if me.ssh_typeahead_deadline_armed == Some(deadline) {
                 me.ssh_typeahead_deadline_armed = None;
@@ -13681,6 +13702,7 @@ impl TerminalView {
                     .input
                     .update(ctx, |input, _| input.take_enter_route_cap_arm());
                 if let Some(key) = arm {
+                    // give-up-net: 10 s net of keys typed after a deferred Enter: give_up_enter_route_wait discards them with a count toast
                     ctx.spawn(Timer::after(enter_route_wait_net()), move |me, _, ctx| {
                         me.input
                             .update(ctx, |input, ctx| input.give_up_enter_route_wait(key, ctx));
@@ -14936,6 +14958,7 @@ impl TerminalView {
             });
             let deadline = Instant::now() + UNCOVERED_REPORT_PATIENCE;
             ctx.spawn(
+                // give-up-net: the Enter does not run and stays in the editor; the keys held behind it follow (#1577)
                 Timer::after(UNCOVERED_REPORT_PATIENCE),
                 move |me, _, ctx| {
                     log_late_timer_wake("uncovered report patience", deadline);
@@ -14987,6 +15010,7 @@ impl TerminalView {
             )
         });
         ctx.spawn(
+            // give-up-net: report-patience give-up: the Enter does not run, keys held behind it go back to the editor/are discarded with a toast
             Timer::after(TYPEAHEAD_REPORT_PATIENCE),
             move |me, _, ctx| {
                 let gate = me
@@ -15528,6 +15552,7 @@ impl TerminalView {
     ) -> bool {
         /// The window ends on the focus event (or a click on the terminal), never on a clock
         /// (#1439); this is only the logged give-up for a focus event that never comes.
+        // give-up-net: logged net for the editor-takeover window (ends on the focus event); writes nothing
         const EDITOR_TAKEOVER_GIVE_UP: Duration = Duration::from_secs(10);
         if !FeatureFlag::TypeaheadHandoff.is_enabled() {
             return false;
@@ -15623,6 +15648,7 @@ impl TerminalView {
         const INTERRUPT_SETTLE: Duration = Duration::from_millis(250);
         /// #1353 phase 6: the one give-up of the event-driven hand-back, for a prompt cycle (or a
         /// report) that was expected after the interrupt and never came.
+        // give-up-net: logged give-up for an interrupt's expected prompt cycle that never came; hands input back via the hand-off, writes nothing
         const INTERRUPT_GIVE_UP: Duration = Duration::from_secs(2);
         let (outcome, barrier, awaiting_cycle) = {
             let mut handoff = self.handoff.write();
@@ -22319,6 +22345,7 @@ impl TerminalView {
         if !crate::terminal::writeable_pty::pty_controller::write_queue_enabled() {
             // Resize twice, half a second apart.
             ctx.spawn_stream_local(
+                // give-up-net: re-sends the alt-screen window size twice; no key bytes
                 async_io::Timer::interval(Duration::from_millis(500)).take(2),
                 |view, _, ctx| view.resend_alt_screen_winsize(ctx),
                 |_, _| {},
@@ -22329,6 +22356,7 @@ impl TerminalView {
         self.alt_screen_resend_generation = self.alt_screen_resend_generation.wrapping_add(1);
         let generation = self.alt_screen_resend_generation;
         self.alt_screen_resend_pending = true;
+        // give-up-net: re-sends the alt-screen window size twice; no key bytes
         ctx.spawn(Timer::after(ALT_SCREEN_RESEND_GIVE_UP), move |me, _, ctx| {
             if me.alt_screen_resend_generation != generation {
                 return;
@@ -25361,6 +25389,7 @@ impl TerminalView {
     ) -> SpawnedFutureHandle {
         ctx.spawn(
             async move {
+                // give-up-net: auto-dismisses the slow-bootstrap banner; notice only
                 Timer::after(duration).await;
             },
             |me, _, ctx| {
@@ -25482,6 +25511,7 @@ impl TerminalView {
     ) {
         let _ = ctx.spawn(
             async move {
+                // give-up-net: bootstrap-failed give-up: marks the session failed and hands held ssh keys back as text (delivery only behind a kill switch)
                 warpui::r#async::Timer::after(duration).await;
                 arm
             },
@@ -36392,6 +36422,7 @@ impl TerminalView {
     /// rewind of the same file then queues behind it, permanently.
     ///
     /// [`RevertSequence`]: crate::ai::blocklist::rewind_revert::RevertSequence
+    // give-up-net: marks a file-revert write failed; not a pty write and not a key
     const REWIND_REVERT_WRITE_TIMEOUT: Duration = Duration::from_secs(20);
 
     /// Dispatches `revert`'s guarded write and, if it goes in flight, arms
@@ -37466,6 +37497,7 @@ impl TerminalView {
             .to_owned();
         self.warpify_state.add_ssh_warpify_timeout_handle(ctx.spawn(
             async move {
+                // give-up-net: shows an ssh-warpify timeout error block; no pty write, no keys
                 Timer::after(duration).await;
                 (timeout_id, active_block_id, system_details)
             },
@@ -40883,6 +40915,7 @@ fn choice_block_owns_input(
 
 /// How long after the ssh block ended cleanly (the remote shell's first precmd) the gate keeps
 /// holding keys while it waits for the remote session to register (#983).
+// give-up-net: feeds the ssh connect window's give-up deadline; firing hands the held keys back as text
 const SSH_CONNECT_POST_BLOCK_GRACE: Duration = Duration::from_secs(5);
 /// How long an Enter deferred behind a report that must cover untracked user bytes waits for it
 /// (#1104) before it is given up on. Reports normally take milliseconds; this only bounds a
@@ -40897,6 +40930,7 @@ const SSH_CONNECT_POST_BLOCK_GRACE: Duration = Duration::from_secs(5);
 /// The give-up net of a deferred Enter waiting for the Tab that ran after the shell's report
 /// (#1659). Never the way the Enter is released (the completion's answer is): when it fires the
 /// line is handed back and nothing is written.
+// give-up-net: a Tab whose report never comes hands the line back; never runs the Enter (#1577)
 const REPORT_TAB_GIVE_UP: Duration = Duration::from_secs(3);
 
 const UNCOVERED_REPORT_PATIENCE: Duration =
@@ -40917,6 +40951,7 @@ const TYPEAHEAD_REPORT_PATIENCE: Duration =
 /// Longest the gate keeps holding after the announced remote session finished bootstrapping
 /// while it waits for that shell's first prompt (#1085). The prompt is one precmd away; this
 /// only bounds a remote whose prompt never comes, so it cannot own the keyboard.
+// give-up-net: feeds the ssh connect window's give-up deadline; firing hands the held keys back as text
 const SSH_CONNECT_FIRST_PROMPT_GRACE: Duration = Duration::from_secs(2);
 
 /// State of one ssh connect window (#983). Pure so the transitions are unit-testable. Nothing in

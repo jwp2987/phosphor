@@ -20,6 +20,7 @@ use super::{ModelEvent, ModelEventDispatcher, shell::ShellType};
 ///   the editor (`LineEditorStatusEvent::SignalGaveUp`, handled by the controller and the view
 ///   through the existing hand-back paths) and the gate stays shut. A late signal, or the next
 ///   prompt hook, re-arms normally.
+// give-up-net: reports SignalGaveUp so held keys go back to the editor; never opens the gate or writes
 const LINE_EDITOR_SIGNAL_GIVE_UP: Duration = Duration::from_millis(1000);
 
 /// Model representing the status of the shell's line editor.
@@ -281,6 +282,7 @@ impl LineEditorStatus {
         self.signal_activation_pending = false;
 
         let abort_handle = ctx.spawn_abortable(
+            // give-up-net: arms the line-editor ready-signal give-up; only reports SignalGaveUp (keys go back to the editor)
             async move { warpui::r#async::Timer::after(delay).await },
             move |me, _, ctx| {
                 warpui::input_order::log_hop("line_editor_signal_give_up", || {
