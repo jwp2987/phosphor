@@ -24,7 +24,7 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex, Weak,
+        Arc, Mutex, MutexGuard, Weak,
         atomic::{AtomicUsize, Ordering},
         mpsc::{self, RecvTimeoutError},
     },
@@ -261,11 +261,11 @@ fn run_commands(
     routes: &Routes,
     dispatch: &mpsc::Sender<DispatchMessage>,
 ) {
-    let lock = |routes: &Routes| {
+    fn lock(routes: &Routes) -> MutexGuard<'_, HashMap<SubscriberId, Vec<Root>>> {
         routes
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-    };
+    }
     let mut subscribers: HashMap<SubscriberId, SubscriberEntry> = HashMap::new();
     while let Ok(command) = rx.recv() {
         match command {
