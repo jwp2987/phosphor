@@ -799,9 +799,6 @@ mod alt_screen_settle_tests {
     }
 }
 
-/// Give-up for the ssh login recheck: no re-prompt for this long after non-prompt output.
-const SSH_LOGIN_RECHECK_GIVE_UP: Duration = Duration::from_secs(3);
-
 /// How long the alt-screen winsize re-send waits for the program's first output before it gives up
 /// and re-sends anyway (and the second look for `ALT_SCREEN_APPS_WITH_RESIZE_PROBLEMS`). A safety
 /// net for output that never comes; logged when it fires (#1384 P5).
@@ -1013,14 +1010,13 @@ const BOOTSTRAP_FAILED_DURATION: Duration = Duration::from_secs(7);
 /// is outstanding. A logged give-up net; `Bootstrapped` itself ends the wait.
 // give-up-net: one-off extension of the bootstrap-failed give-up; the failure hands held ssh keys back as text
 const BOOTSTRAP_PROGRESS_GRACE: Duration = Duration::from_secs(3);
-/// Longest typing is dropped on behalf of one pending ssh bootstrap (#983). A healthy
-/// bootstrap finishes well inside this; a stuck or stale one must not own the keyboard.
-const SSH_BOOTSTRAP_SWALLOW_CEILING: Duration = Duration::from_secs(15);
-/// How long after an ssh command starts the silent connect phase (nothing printed yet, so no
-/// prompt can be waiting) drops typing instead of writing it to the tty, where it would be
-/// split between ssh, the remote tty and the injected bootstrap (#983). Later than this the
-/// command is a plain interactive session and every key goes to the pty.
-const SSH_CONNECT_SILENCE_CEILING: Duration = Duration::from_secs(15);
+/// #1809: the give-up net of an ssh connect window on a pty WITHOUT a tty-read probe (macOS,
+/// others), where no event tells that ssh is reading an echoing answer. After this long the
+/// window is released and the held keys are HANDED BACK to the editor as text (never written to
+/// the pty); the next key then reaches ssh as in a plain terminal. Where the probe works the
+/// window has no clock at all.
+// give-up-net: probe-less platforms only; hands held ssh keys back as text, never writes them
+const SSH_CONNECT_NO_PROBE_GIVE_UP: Duration = Duration::from_secs(15);
 /// The ONE give-up net of a subshell setup (#1711, #1712; owner decision 2026-11-08): this long
 /// with no setup PROGRESS and the setup is given up. Progress is an event that proves the shell
 /// is working through the setup ([`SubshellSetupProgress`]: a setup-line marker, `InitSubshell`,
@@ -3675,9 +3671,6 @@ pub struct TerminalView {
     bootstrap_timer_generation: u64,
     /// The arm of the timer callback currently running, so the grace re-arm keeps its identity.
     bootstrap_timer_arm_in_flight: Option<BootstrapTimerArm>,
-    /// First time input was swallowed for a pending ssh session, to bound the swallow window
-    /// by `SSH_BOOTSTRAP_SWALLOW_CEILING` even if no failure timer ever fires for it.
-    ssh_bootstrap_swallow_started: Option<(SessionId, Instant)>,
     /// The edge-driven ssh phase (#1424 step 7): fed by the events that are its edges
     /// (`view/ssh_edges.rs`); in `table` mode the facts carry its phase and the key path no longer
     /// refreshes the connect gate.
@@ -5589,7 +5582,6 @@ impl TerminalView {
             bootstrap_grace_used_session: None,
             bootstrap_timer_generation: 0,
             bootstrap_timer_arm_in_flight: None,
-            ssh_bootstrap_swallow_started: None,
             ssh_phase: input_queue::SshPhaseMachine::default(),
             ssh_give_ups: 0,
             ssh_hold_block_id: None,
@@ -11683,9 +11675,10 @@ impl TerminalView {
         // shell). Drop the whole run instead. Passwords and host-key prompts happen before the
         // pending session exists, so they are unaffected.
         //
-        // Bounded: a pending session that already hit its bootstrap-failed timer, or has been
-        // swallowing for `SSH_BOOTSTRAP_SWALLOW_CEILING`, no longer swallows (a stale pending
-        // session left by a failed su/sudo -i must not eat a later plain ssh's typing).
+        // Bounded by an event, not by age (#1808): the held keys stay held while the session is
+        // pending, and a pending session whose bootstrap-failed give-up fired no longer holds
+        // (that net hands the keys back to the editor as text; a stale pending session left by
+        // a failed su/sudo -i must not eat a later plain ssh's typing).
         let gate_armed = self.refresh_ssh_connect_gate();
         // #1348: the gate released since the last event (a ceiling passed, a failed connect):
         // hand over what is held before this key is judged, so it lands behind the held ones.
@@ -11697,12 +11690,8 @@ impl TerminalView {
         } else {
             None
         };
-        let ssh_bootstrapping = ssh_bootstrap_swallow_active(
-            pending_sid,
-            self.ssh_bootstrap_failed_session,
-            &mut self.ssh_bootstrap_swallow_started,
-            Instant::now(),
-        );
+        let ssh_bootstrapping =
+            ssh_bootstrap_swallow_active(pending_sid, self.ssh_bootstrap_failed_session);
         // #983 / #976: before the remote shell announces itself there is no pending session. Until
         // ssh OWNS the tty (`CommandBecameInteractive` for the window's block, #1611, #1612,
         // #1621) a key written to the pty could reach the local shell's line editor, so the whole
@@ -12030,6 +12019,7 @@ impl TerminalView {
             return;
         }
         let mut gate = SshConnectGate::new(Instant::now());
+        gate.tty_read_detectable = self.model.lock().tty_read_probe().is_some();
         gate.block_id = Some(announcement.block_id);
         gate.wrapper = SshWrapperHold::Managed;
         gate.wrapper_session = announcement.session;
@@ -12584,6 +12574,7 @@ impl TerminalView {
         if parse_interactive_ssh_command(command).is_some() {
             let block_id = self.model.lock().active_block_id().clone();
             let mut gate = SshConnectGate::new(Instant::now());
+            gate.tty_read_detectable = self.model.lock().tty_read_probe().is_some();
             gate.block_id = Some(block_id);
             gate.user_submitted = user_submitted;
             self.ssh_connect_gate = Some(gate);
@@ -12668,10 +12659,19 @@ impl TerminalView {
                 (Some(start), Some(released)) => start > released,
                 _ => true,
             };
-            if started_after_release && age.is_some_and(|age| age < SSH_CONNECT_SILENCE_CEILING) {
+            // #1809: armed by the EVENT that proves the window is open, not by the block's age: a
+            // command that started after the last release and whose ssh does not own the tty yet.
+            // A block whose interactive latch already fired (ssh owned the tty before any window
+            // existed) is an established session: plain terminal, no window.
+            let already_owned = facts
+                .interactive_latch
+                .as_ref()
+                .is_some_and(|latch| latch.is_latched());
+            if started_after_release && !already_owned {
                 let now = Instant::now();
                 let armed_at = now.checked_sub(age.unwrap_or_default()).unwrap_or(now);
                 let mut gate = SshConnectGate::new(armed_at);
+                gate.tty_read_detectable = self.model.lock().tty_read_probe().is_some();
                 // The id is cloned only when a gate is armed (once per ssh connect), which is why
                 // this one read keeps the model's lock.
                 gate.block_id = Some(self.model.lock().active_block_id().clone());
@@ -12915,13 +12915,8 @@ impl TerminalView {
             return None;
         }
         let sid = pending?;
-        let age = match self.ssh_bootstrap_swallow_started {
-            Some((tracked, at)) if tracked == sid => Some(at.elapsed()),
-            _ => None,
-        };
         Some(ssh_bootstrap_interrupt_route(
             self.ssh_bootstrap_failed_session == Some(sid),
-            age,
         ))
     }
 
@@ -37528,28 +37523,13 @@ impl TerminalView {
         match check_type {
             SshLoginStatus::RecheckBeforeWarpifying => {
                 // After a line of ssh output that is NOT a prompt (could be a banner, or "Permission
-                // denied" before a re-prompt), login is only declared done if no prompt shows up
-                // again. That is decided from OUTPUT EVENTS in the model (#1374): a re-prompt in
-                // any later chunk withdraws this recheck (`check_for_end_of_ssh_login`), and the
-                // known mid-auth lines never request it. This timer is only the logged give-up
-                // for a .hushlogin host with an unrecognised prompt: there is no remote signal
-                // to wait for, so after the grace period quiet output is taken as "login done".
-                let active_block_id = self.model.lock().block_list().active_block_id().clone();
-                ctx.spawn(
-                    async {
-                        warpui::r#async::Timer::after(SSH_LOGIN_RECHECK_GIVE_UP).await;
-                        active_block_id
-                    },
-                    move |terminal_view, active_block_id, _| {
-                        let mut model = terminal_view.model.lock();
-                        if model.block_list().active_block_id() == &active_block_id {
-                            log::debug!(
-                                "ssh login recheck gave up waiting for a re-prompt (#1374)"
-                            );
-                            model.check_for_end_of_ssh_login(true);
-                        }
-                    },
-                );
+                // denied" before a re-prompt), login is declared done only by an EVENT (#1810): a
+                // recognised prompt or last-login line in a later chunk, or the remote shell's own
+                // bootstrap DCS (`note_remote_shell_bootstrap_signal`). A re-prompt in any later
+                // chunk withdraws the recheck (`check_for_end_of_ssh_login`). There is no timer:
+                // a host that shows neither (a .hushlogin host with an unrecognised prompt) gets
+                // no warpify offer and stays a plain terminal. Nothing here writes to the pty.
+                log::debug!("ssh login: non-prompt output, waiting for a login-end event (#1810)");
             }
             SshLoginStatus::ReadyToWarpify => {
                 // After the confirmation check, we are confident enough to auto-warpify or offer warpification.
@@ -40835,13 +40815,10 @@ enum SshBootstrapInterruptRoute {
     Forward,
 }
 
-/// Pure rule for [`SshBootstrapInterruptRoute`]. `age` is how long this pending session has been
-/// tracked; unknown (`None`) means it only just started.
-fn ssh_bootstrap_interrupt_route(
-    failed: bool,
-    age: Option<Duration>,
-) -> SshBootstrapInterruptRoute {
-    if failed || age.is_some_and(|age| age >= SSH_BOOTSTRAP_SWALLOW_CEILING) {
+/// Pure rule for [`SshBootstrapInterruptRoute`]: Hold until the session's bootstrap-failed
+/// give-up fired (an event-armed net, #1808), never on the session's age.
+fn ssh_bootstrap_interrupt_route(failed: bool) -> SshBootstrapInterruptRoute {
+    if failed {
         SshBootstrapInterruptRoute::Forward
     } else {
         SshBootstrapInterruptRoute::Hold
@@ -41121,7 +41098,9 @@ impl SshConnectGate {
         if self.awaits_verdict_without_clock() {
             return None;
         }
-        let ceiling = self.armed_at + SSH_CONNECT_SILENCE_CEILING;
+        let ceiling = self
+            .has_no_probe_net()
+            .then(|| self.armed_at + SSH_CONNECT_NO_PROBE_GIVE_UP);
         let by_state = if self.saw_pending && !pending {
             Some(
                 self.bootstrap_done_at.unwrap_or_else(Instant::now)
@@ -41133,7 +41112,10 @@ impl SshConnectGate {
         } else {
             None
         };
-        Some(by_state.map_or(ceiling, |at| at.min(ceiling)))
+        match (by_state, ceiling) {
+            (Some(state), Some(ceiling)) => Some(state.min(ceiling)),
+            (state, ceiling) => state.or(ceiling),
+        }
     }
 
     /// The silence ceiling passed. #1641: never while the wrapper's master login runs
@@ -41145,7 +41127,16 @@ impl SshConnectGate {
     /// reaches ssh as in a plain terminal. The managed verdict restarts the clock (`armed_at`).
     fn past_ceiling(&self, now: Instant) -> bool {
         !self.awaits_verdict_without_clock()
-            && now.saturating_duration_since(self.armed_at) >= SSH_CONNECT_SILENCE_CEILING
+            && self.has_no_probe_net()
+            && now.saturating_duration_since(self.armed_at) >= SSH_CONNECT_NO_PROBE_GIVE_UP
+    }
+
+    /// #1809: the hand-back-only net exists only where no tty-read probe tells that ssh is
+    /// blocked reading the tty (macOS, others). Where the probe works (Linux with `/proc`) the
+    /// window ends by events alone: the ownership event, the managed verdict, the first prompt,
+    /// the block's end, a Ctrl-C.
+    fn has_no_probe_net(&self) -> bool {
+        !self.tty_read_detectable
     }
 
     /// #1641: waiting for the wrapper's verdict where a tty read is detectable (no clock).
@@ -41187,30 +41178,11 @@ fn is_ssh_interrupt_key(characters: &str) -> bool {
     matches!(characters, "\u{3}" | "\u{4}" | "\u{1a}" | "\u{1c}")
 }
 
-/// Whether typing is still dropped for a pending ssh bootstrap (#983). Pure so the bounds are
-/// testable: no pending session, a session whose failure timer fired, or one that has already
-/// swallowed for `SSH_BOOTSTRAP_SWALLOW_CEILING`, all let keys through.
-fn ssh_bootstrap_swallow_active(
-    pending: Option<SessionId>,
-    failed: Option<SessionId>,
-    started: &mut Option<(SessionId, Instant)>,
-    now: Instant,
-) -> bool {
-    let Some(sid) = pending else {
-        *started = None;
-        return false;
-    };
-    if failed == Some(sid) {
-        return false;
-    }
-    let first = match *started {
-        Some((tracked, at)) if tracked == sid => at,
-        _ => {
-            *started = Some((sid, now));
-            now
-        }
-    };
-    now.duration_since(first) < SSH_BOOTSTRAP_SWALLOW_CEILING
+/// Whether typing is still held for a pending ssh bootstrap (#983, #1808). Pure: held while a
+/// remote session is pending, until `Bootstrapped`/`InitShell` ends it or its bootstrap-failed
+/// give-up marked it failed. No age decides anything.
+fn ssh_bootstrap_swallow_active(pending: Option<SessionId>, failed: Option<SessionId>) -> bool {
+    pending.is_some() && failed != pending
 }
 
 fn command_first_word_and_suffix(command: &str) -> Option<(&str, &str)> {

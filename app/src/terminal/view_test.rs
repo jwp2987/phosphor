@@ -18426,59 +18426,65 @@ fn abort_keys_are_exactly_ctrl_c_and_ctrl_d() {
     assert!(!is_abort_key(b""));
 }
 
-/// #983: typing is dropped while an ssh bootstrap is pending, but only within bounds. A stale
-/// pending session (failed su/sudo -i) whose failure timer fired, or one that has swallowed past
-/// the ceiling, must let typed characters reach the pty again.
+/// #983, #1808: typing is held while an ssh bootstrap is pending, and only an EVENT ends that: the
+/// pending session going away, or its bootstrap-failed give-up marking it failed. No age does:
+/// the same answer however long the session has been pending.
 #[test]
-fn ssh_bootstrap_swallow_is_bounded() {
+fn ssh_bootstrap_swallow_is_ended_by_events_only() {
     let sid = SessionId::from(4242);
     let other = SessionId::from(4343);
-    let t0 = Instant::now();
-    let mut started = None;
 
-    // No pending session: never swallows, and forgets any tracking.
-    assert!(!ssh_bootstrap_swallow_active(None, None, &mut started, t0));
-    assert!(started.is_none());
+    // No pending session: nothing is held on its behalf.
+    assert!(!ssh_bootstrap_swallow_active(None, None));
+    assert!(!ssh_bootstrap_swallow_active(None, Some(sid)));
 
-    // Fresh pending session: swallows.
-    assert!(ssh_bootstrap_swallow_active(
-        Some(sid),
-        None,
-        &mut started,
-        t0
-    ));
-    assert!(ssh_bootstrap_swallow_active(
-        Some(sid),
-        None,
-        &mut started,
-        t0 + Duration::from_secs(5)
-    ));
+    // A pending session holds, however long it has been pending (the function takes no time).
+    assert!(ssh_bootstrap_swallow_active(Some(sid), None));
+    assert!(ssh_bootstrap_swallow_active(Some(sid), Some(other)));
 
-    // Ceiling elapsed: keys reach the pty although the session is still pending.
-    assert!(!ssh_bootstrap_swallow_active(
-        Some(sid),
-        None,
-        &mut started,
-        t0 + SSH_BOOTSTRAP_SWALLOW_CEILING
-    ));
+    // Its failure give-up fired: it no longer holds.
+    assert!(!ssh_bootstrap_swallow_active(Some(sid), Some(sid)));
 
-    // Failure timer fired for this stale session: no swallowing at all, even on first sight.
-    let mut fresh = None;
-    assert!(!ssh_bootstrap_swallow_active(
-        Some(sid),
-        Some(sid),
-        &mut fresh,
-        t0
-    ));
+    // A different (new) pending session is not covered by the old failure mark.
+    assert!(ssh_bootstrap_swallow_active(Some(other), Some(sid)));
+}
 
-    // A different (new) pending session is not covered by the old failure mark and restarts
-    // its own window.
-    assert!(ssh_bootstrap_swallow_active(
-        Some(other),
-        Some(sid),
-        &mut started,
-        t0 + Duration::from_secs(60)
-    ));
+/// #1808 (byte trace for the removed 15 s swallow ceiling): while the remote bootstrap is pending
+/// the typed line is held byte for byte, in order, with every later key joining it; nothing
+/// reaches the pty and nothing reaches the editor. Only the bootstrap-failed hand-back (or the
+/// remote prompt) ends the hold. Legacy and Table.
+#[test]
+fn ssh_keys_typed_during_a_pending_bootstrap_stay_held_in_order_and_unwritten() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_all_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                ssh_pane_with_held_typeahead_for_test(view, ctx);
+                assert_eq!(view.ssh_held_bytes(), "echo hi\r".len(), "{mode:?}");
+                // Keep typing while the bootstrap is still pending: each key joins the hold.
+                for key in "ls".chars() {
+                    view.typed_characters_on_terminal(&key.to_string(), ctx);
+                }
+                assert!(view.ssh_typeahead_holding, "{mode:?}");
+                assert_eq!(
+                    view.ssh_held_bytes(),
+                    "echo hi\rls".len(),
+                    "{mode:?}: no key lost, none doubled"
+                );
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{mode:?}");
+            });
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{mode:?}: nothing was written mid-bootstrap: {:?}",
+                pty_writes.borrow()
+            );
+        })
+    }
 }
 
 /// #988: with a command (e.g. `ksu`) running, clicking an earlier agent response must not be
@@ -19126,7 +19132,37 @@ fn ssh_connect_gate_transitions() {
     gate.note_block_completed(t0, false);
     assert!(gate.should_release(t0, false));
     let mut gate = SshConnectGate::new(t0);
-    assert!(gate.should_release(t0 + SSH_CONNECT_SILENCE_CEILING, false));
+    assert!(gate.should_release(t0 + SSH_CONNECT_NO_PROBE_GIVE_UP, false));
+}
+
+/// #1809: where the tty-read probe works there is no clock on the connect window at all: no
+/// ceiling release and no ceiling deadline, however old the window is. Only events (and the
+/// event-armed post-bootstrap / post-block graces) end it. Without a probe the hand-back-only net
+/// stays (`SSH_CONNECT_NO_PROBE_GIVE_UP`).
+#[test]
+fn ssh_gate_with_a_tty_read_probe_has_no_clock() {
+    let t0 = Instant::now();
+    let long_after = t0 + Duration::from_secs(3600);
+    let mut gate = SshConnectGate::new(t0);
+    gate.tty_read_detectable = true;
+    assert!(!gate.past_ceiling(long_after));
+    assert!(!gate.should_release(long_after, false));
+    assert_eq!(gate.give_up_deadline(false), None);
+    assert_eq!(gate.give_up_deadline(true), None);
+    // The graces are armed by events and still bound the window.
+    gate.block_done_at = Some(t0 + Duration::from_secs(1));
+    assert_eq!(
+        gate.give_up_deadline(false),
+        Some(t0 + Duration::from_secs(1) + SSH_CONNECT_POST_BLOCK_GRACE)
+    );
+    // The same window without a probe keeps the net.
+    let mut gate = SshConnectGate::new(t0);
+    gate.tty_read_detectable = false;
+    assert!(gate.past_ceiling(t0 + SSH_CONNECT_NO_PROBE_GIVE_UP));
+    assert_eq!(
+        gate.give_up_deadline(false),
+        Some(t0 + SSH_CONNECT_NO_PROBE_GIVE_UP)
+    );
 }
 
 #[test]
@@ -21259,7 +21295,7 @@ fn managed_ssh_verdict_after_the_old_ceiling_still_delivers_once() {
                 let armed = managed_ssh_held_through_the_master_login_for_test(view, ctx);
                 let gate = view.ssh_connect_gate.as_mut().unwrap();
                 gate.armed_at =
-                    Instant::now() - SSH_CONNECT_SILENCE_CEILING - Duration::from_secs(5);
+                    Instant::now() - SSH_CONNECT_NO_PROBE_GIVE_UP - Duration::from_secs(5);
                 assert_eq!(gate.give_up_deadline(false), None, "{mode:?}: no clock");
                 assert!(view.refresh_ssh_connect_gate(), "{mode:?}: still open");
                 assert!(view.ssh_typeahead_holding, "{mode:?}");
@@ -21301,7 +21337,7 @@ fn managed_ssh_without_a_tty_read_probe_keeps_the_ceiling_and_hands_back() {
                 assert_eq!(gate.wrapper, SshWrapperHold::AwaitingVerdict, "{mode:?}");
                 assert!(!gate.tty_read_detectable, "{mode:?}: no probe installed");
                 gate.armed_at =
-                    Instant::now() - SSH_CONNECT_SILENCE_CEILING - Duration::from_secs(1);
+                    Instant::now() - SSH_CONNECT_NO_PROBE_GIVE_UP - Duration::from_secs(1);
                 assert!(
                     gate.give_up_deadline(false).is_some(),
                     "{mode:?}: the ceiling's give-up is armed"
@@ -22376,16 +22412,9 @@ fn ssh_ctrl_c_while_silently_connecting_aborts_with_sigint() {
 #[test]
 fn ssh_bootstrap_interrupt_route_holds_then_forwards() {
     use SshBootstrapInterruptRoute::{Forward, Hold};
-    assert_eq!(ssh_bootstrap_interrupt_route(false, None), Hold);
-    assert_eq!(
-        ssh_bootstrap_interrupt_route(false, Some(std::time::Duration::from_secs(1))),
-        Hold
-    );
-    assert_eq!(ssh_bootstrap_interrupt_route(true, None), Forward);
-    assert_eq!(
-        ssh_bootstrap_interrupt_route(false, Some(SSH_BOOTSTRAP_SWALLOW_CEILING)),
-        Forward
-    );
+    // #1808: only the bootstrap-failed give-up flips Hold to Forward, never the session's age.
+    assert_eq!(ssh_bootstrap_interrupt_route(false), Hold);
+    assert_eq!(ssh_bootstrap_interrupt_route(true), Forward);
 }
 
 /// #1001: between the SSH hook and the remote InitShell the local tty is raw, so a Ctrl-C byte
@@ -22886,7 +22915,7 @@ fn ssh_no_prompt_ever_gives_the_text_back_to_the_input() {
                 "the one-shot safety net is armed"
             );
             let gate = view.ssh_connect_gate.as_mut().unwrap();
-            gate.armed_at = Instant::now() - SSH_CONNECT_SILENCE_CEILING - Duration::from_secs(1);
+            gate.armed_at = Instant::now() - SSH_CONNECT_NO_PROBE_GIVE_UP - Duration::from_secs(1);
             view.deliver_ssh_typeahead_if_ready("give_up", ctx);
             assert!(!view.ssh_typeahead_holding);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo lost");
@@ -22900,7 +22929,7 @@ fn ssh_no_prompt_ever_gives_the_text_back_to_the_input() {
 fn ssh_gate_give_up_deadline_mirrors_its_time_conditions() {
     let t0 = Instant::now();
     let mut gate = SshConnectGate::new(t0);
-    let ceiling = t0 + SSH_CONNECT_SILENCE_CEILING;
+    let ceiling = t0 + SSH_CONNECT_NO_PROBE_GIVE_UP;
     assert_eq!(gate.give_up_deadline(false), Some(ceiling));
     assert_eq!(gate.give_up_deadline(true), Some(ceiling));
     gate.block_done_at = Some(t0 + Duration::from_secs(1));
@@ -31110,7 +31139,7 @@ fn table_mode_a_gate_past_its_ceiling_is_released_by_a_logged_give_up() {
             submit_command(view, "ssh host", ctx);
             view.typed_characters_on_terminal("echo lost", ctx);
             let gate = view.ssh_connect_gate.as_mut().unwrap();
-            gate.armed_at = Instant::now() - SSH_CONNECT_SILENCE_CEILING - Duration::from_secs(1);
+            gate.armed_at = Instant::now() - SSH_CONNECT_NO_PROBE_GIVE_UP - Duration::from_secs(1);
             view.ssh_give_up_fired(ctx);
             assert!(!view.ssh_typeahead_holding);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo lost");
@@ -31137,7 +31166,7 @@ fn table_mode_the_give_up_ends_a_window_nothing_is_held_behind() {
             submit_command(view, "ssh host", ctx);
             assert!(view.ssh_phase.armed());
             view.ssh_connect_gate.as_mut().unwrap().armed_at =
-                Instant::now() - SSH_CONNECT_SILENCE_CEILING - Duration::from_secs(1);
+                Instant::now() - SSH_CONNECT_NO_PROBE_GIVE_UP - Duration::from_secs(1);
             view.ssh_give_up_fired(ctx);
             assert!(view.ssh_connect_gate.is_none());
             assert!(!view.ssh_phase.armed());

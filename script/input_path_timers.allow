@@ -33,6 +33,7 @@ app/src/terminal/view.rs	AGENT_INTERRUPT_GRACE	after an ignored ^C, hands the ag
 app/src/terminal/view.rs	ALT_SCREEN_RESEND_GIVE_UP	logged net for an alt-screen winsize re-send; resizes the pty window, no key bytes
 app/src/terminal/view.rs	ALT_SCREEN_SETTLE_GIVE_UP	logged net for the alt-screen paint-settle re-check; resizes the pty window, no key bytes
 app/src/terminal/view.rs	BOOTSTRAP_PROGRESS_GRACE	one-off extension of the bootstrap-failed give-up; the failure hands held ssh keys back as text
+app/src/terminal/view.rs	SSH_CONNECT_NO_PROBE_GIVE_UP	probe-less platforms only (no tty-read probe): hands the held ssh keys back as text and releases the window; never writes them
 app/src/terminal/view.rs	CLIPBOARD_WRITE_SLOW_TOAST_DELAY	delays a 'clipboard owner not answering' toast; notice only
 app/src/terminal/view.rs	EDITOR_TAKEOVER_GIVE_UP	logged net for the editor-takeover window (ends on the focus event); writes nothing
 app/src/terminal/view.rs	INTERRUPT_GIVE_UP	logged give-up for an interrupt's expected prompt cycle that never came; hands input back via the hand-off, writes nothing
@@ -97,9 +98,6 @@ app/src/terminal/model/typeahead_handoff.rs	YOUNG_ENTER_WINDOW	owner-named: 600 
 app/src/terminal/view.rs	AUTO_WARPIFY_DELAY	FOUND: fixed delay then writes the subshell bootstrap (only with PHOSPHOR_BOOTSTRAP_TIMED=1)
 app/src/terminal/view.rs	EXECUTE_PENDING_COMMAND_DELAY	FOUND: 100 ms timer runs the pending command / ssh split cd (only with PHOSPHOR_BOOTSTRAP_TIMED=1)
 app/src/terminal/view.rs	INTERRUPT_SETTLE	owner-named: 250 ms after ^C commits the typeahead hand-off at the prompt (commits on a timer)
-app/src/terminal/view.rs	SSH_BOOTSTRAP_SWALLOW_CEILING	FOUND: typing is DROPPED while an ssh bootstrap is pending and keys pass through after 15 s (age-based route/drop)
-app/src/terminal/view.rs	SSH_CONNECT_SILENCE_CEILING	FOUND: age < 15 s decides whether the ssh connect window arms and keys are held; after it every key goes to the pty (age-based route); also the gate's give-up ceiling
-app/src/terminal/view.rs	SSH_LOGIN_RECHECK_GIVE_UP	FOUND: 3 s of quiet output after non-prompt ssh output is taken as 'login done' (state decision on a timer; warpify follows)
 app/src/terminal/view.rs	SUBSHELL_FIRST_PROMPT_GIVE_UP	FOUND: 5 s 'give-up timer' fires the awaiting subshell bootstrap, i.e. writes it (legacy path when subshell_ready_path() is off)
 app/src/terminal/view.rs	SUBSHELL_SETUP_DEFER_POLL	FOUND: 250 ms poll re-asking whether the prompt a deferred setup waits behind was answered
 app/src/terminal/view.rs	SUBSHELL_SETUP_DEFER_QUIET	FOUND: 600 ms unchanged-output clock before the deferred subshell setup is written

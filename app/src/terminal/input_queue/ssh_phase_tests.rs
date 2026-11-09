@@ -154,12 +154,13 @@ fn the_bootstrap_failure_ends_the_swallow() {
     assert_eq!(m.phase(false), SshPhase::Idle);
 }
 
+/// #1808: no clock ends the bootstrap hold; the pending session stays held until an event.
 #[test]
-fn the_swallow_give_up_ends_the_swallow() {
+fn the_bootstrap_hold_has_no_clock() {
     let mut m = owned();
     m.apply(observed(|o| o.pending_session = true));
-    m.apply(SshEdge::SwallowGiveUp);
-    assert_eq!(m.phase(false), SshPhase::Idle);
+    m.apply(observed(|o| o.pending_session = true));
+    assert_eq!(m.phase(false), SshPhase::Holding);
 }
 
 #[test]

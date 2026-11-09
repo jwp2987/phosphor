@@ -3218,3 +3218,39 @@ Not covered by unit tests: a real `aws login` / SSO / IMDS endpoint. **Owner ver
 
 ## Line-editor activation is event-driven (#1672/#1798, owner rule: timers never route)
 `LINE_EDITOR_ACTIVATION_DELAY` (50 ms) is gone. A shell that has never sent the ready signal (bracketed-paste enable, PowerShell `LineEditorReading`) opens the write gate on the Precmd/EndPrompt event itself, unproven; a signalling shell opens it only on the signal. `LINE_EDITOR_SIGNAL_GIVE_UP` (1 s, or the ConPTY hold's wait) is only a net: it emits `LineEditorStatusEvent::SignalGaveUp`, the controller emits `PtyControllerEvent::LineEditorSignalGaveUp`, and the view runs the prompt hold's existing give-up (`on_line_editor_signal_gave_up`: keys back to the editor, or kept with the waiting toast); it never opens the gate or writes. A signal that could not open the gate (unanswered typeahead line, released keys not counted yet) is remembered and the next hand-off retry (`retry_typeahead_handoff_request`) opens it. Tests: `line_editor_status_tests::{a_shell_that_never_signals_opens_the_gate_on_the_prompt_event, a_signalling_shell_opens_the_gate_only_on_its_signal, the_give_up_net_hands_back_and_never_opens_the_gate, a_remembered_signal_opens_the_gate_only_when_asked, only_the_ready_signal_proves_the_line_editor_reads}`, `pty_controller_tests::the_signal_give_up_net_writes_nothing_and_leaves_the_gate_shut`, and (Legacy and Table) `view_test::the_line_editor_signal_give_up_hands_the_held_keys_to_the_editor_and_writes_nothing`. Behaviour change to know: an editor command queued for the gate waits for the signal for a signalling shell (it is no longer released by a timer); the first prompt of a session opens unproven, so it gets no ESC i request.
+
+## Remote ssh holds are event-driven (#1808, #1809, #1810; owner rule: timers never route)
+
+### #1808: the bootstrap hold has no 15 s clock
+`SSH_BOOTSTRAP_SWALLOW_CEILING` is gone. Keys typed while the remote bootstrap is pending are held
+(never dropped) until `Bootstrapped`/`InitShell` ends the session or the bootstrap-failed give-up
+(a hand-back net, already compliant) marks it failed. Tests in `terminal/view_test.rs`:
+`ssh_bootstrap_swallow_is_ended_by_events_only` (replaces `ssh_bootstrap_swallow_is_bounded`),
+`ssh_bootstrap_interrupt_route_holds_then_forwards` (only `failed` flips Hold to Forward),
+`ssh_keys_typed_during_a_pending_bootstrap_stay_held_in_order_and_unwritten` (byte trace, Legacy and
+Table: held bytes exact, nothing written, nothing in the editor); `input_queue/ssh_phase_tests.rs`
+`the_bootstrap_hold_has_no_clock` replaces `the_swallow_give_up_ends_the_swallow`.
+
+### #1809: the ssh connect window arms and ends on events
+`SSH_CONNECT_SILENCE_CEILING` is replaced. The window no longer arms on `block age < 15 s` (a first
+key typed late still finds the window open); it arms on the preexec/submit event, and not at all
+for a block whose interactive latch already fired (ssh owned the tty before any window existed: an
+established session is a plain terminal). Where the tty-read probe works there is no clock; on
+probe-less platforms `SSH_CONNECT_NO_PROBE_GIVE_UP` (15 s) remains as a hand-back-only net (compliant
+section of `script/input_path_timers.allow`). Tests (`terminal/view_test.rs`):
+`ssh_gate_with_a_tty_read_probe_has_no_clock` (new); the existing ceiling cases
+(`ssh_no_prompt_ever_gives_the_text_back_to_the_input`, the table-mode give-up cases,
+`managed_ssh_without_a_tty_read_probe_keeps_the_ceiling_and_hands_back`,
+`managed_ssh_verdict_after_the_old_ceiling_still_delivers_once`) now name the renamed constant and
+run unchanged. Not covered at view level: arming with an old block start (needs a clock-injected
+model); the gate-level test covers the clockless release.
+
+### #1810: no timer declares the ssh login done
+`SSH_LOGIN_RECHECK_GIVE_UP` (3 s of quiet output) is deleted. It only ever fired the warpify
+footer/prompt (`ReadyToWarpify`, re-verified: the handler shows UI and writes nothing to the pty;
+the bootstrap is written only after the user accepts). Login-done is now decided by events alone: a
+recognised prompt / last-login line in a later output chunk, or the remote shell's own bootstrap DCS
+(`note_remote_shell_bootstrap_signal`); a re-prompt withdraws the recheck. A host showing neither
+(`.hushlogin` with an unrecognised prompt) gets no offer and stays a plain terminal. The model-level
+recheck cases in `terminal/model/terminal_model_test.rs` (`check_for_end_of_ssh_login`) are unchanged;
+no test depended on the view timer.
