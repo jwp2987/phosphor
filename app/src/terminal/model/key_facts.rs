@@ -245,8 +245,8 @@ pub struct KeyModelSnapshot {
     pub needs_bracketed_paste: bool,
     /// The gen at which the active block's output last BECAME unterminated text (visible text
     /// with the cursor parked after it on its row: the shape of a line waiting for an answer),
-    /// `None` while it is not. Read by the subshell setup's "the shell asks for an answer" rule
-    /// (#1032, `subshell_awaiting_answer`) and the ssh ^D rule (#1111); the ssh connect itself
+    /// `None` while it is not. Read by the ssh ^D rule (#1111; the subshell setup's bypass that
+    /// read it is gone, #1679 step 4); the ssh connect itself
     /// reads nothing from the screen (#1611, #1612, #1621). Exact for the last `OUTPUT_TAIL_ROWS`
     /// rows, like the view's own `active_output_ends_in_unterminated_text`.
     pub unterminated_since_gen: Option<u64>,
@@ -385,6 +385,50 @@ pub fn output_tail_is_input_prompt(output: &str) -> bool {
         || ["password", "passphrase", "passcode", "secret"]
             .iter()
             .any(|word| lower.contains(word))
+        || line_ends_in_choice_group(line)
+        || lower.contains(ZSH_NEWUSER_INSTALL_FOOTER)
+}
+
+/// The last line of `zsh-newuser-install`'s menu (a raw zsh with no `.zshrc`): the shell reads
+/// ONE key as the menu's answer, so a setup written there picks an option (#1679 step 3, review
+/// R6: the probe's `2` of `2>&1` would choose "populate ~/.zshrc"). An input prompt, never a shell
+/// prompt.
+const ZSH_NEWUSER_INSTALL_FOOTER: &str = "type one of the keys in parentheses";
+
+/// Owner decision 2026-11-08 (Q10, narrow): a line ending in a `[..]` or `(..)` CHOICE group reads
+/// as a prompt for input: `Choose [1-3]`, `Overwrite? (y/n/a)`, `Select [1/2/3]:`. The group is a
+/// range or list of digits (`/`, `-` and digits, at least one digit) or two to five single-letter
+/// choices separated by `/`. A bare `)` or `]`, a word in brackets (`[main]`, `(venv)`: the shape
+/// of many shell prompts) or a path is NOT one. A trailing `:`, `?` or spaces after the group are
+/// allowed (the `:`/`?` endings match on their own anyway).
+pub fn line_ends_in_choice_group(line: &str) -> bool {
+    let line = line.trim_end().trim_end_matches([':', '?', ' ']);
+    let (open, close) = if line.ends_with(']') {
+        ('[', ']')
+    } else if line.ends_with(')') {
+        ('(', ')')
+    } else {
+        return false;
+    };
+    let Some(start) = line.rfind(open) else {
+        return false;
+    };
+    let inner = &line[start + 1..line.len() - close.len_utf8()];
+    if inner.is_empty() || inner.contains(open) {
+        return false;
+    }
+    let digits_range = inner.chars().any(|c| c.is_ascii_digit())
+        && inner
+            .chars()
+            .all(|c| c.is_ascii_digit() || c == '/' || c == '-');
+    if digits_range {
+        return true;
+    }
+    let letters: Vec<&str> = inner.split('/').collect();
+    (2..=5).contains(&letters.len())
+        && letters
+            .iter()
+            .all(|choice| choice.len() == 1 && choice.chars().all(|c| c.is_ascii_alphabetic()))
 }
 
 /// The cheap model facts behind "is the input box visible", so the key path can answer it from

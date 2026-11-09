@@ -113,8 +113,6 @@ fn facts(u: &mut Unstructured) -> RouteFacts {
     ][pick(u, 4)];
     f.forwards_subshell_key = flag(u);
     f.forwards_subshell_abort = flag(u);
-    f.subshell_awaiting_answer = flag(u);
-    f.subshell_bootstrap_stalled = flag(u);
     f.ps = [
         PsPhase::Off,
         PsPhase::Setup { holds_keys: true },
@@ -244,9 +242,7 @@ fuzz_target!(|data: &[u8]| {
                 && !setup_held
             {
                 assert!(not_held, "the idle CLI-agent submit was held: {plan:?}");
-            } else if !facts.subshell_awaiting_answer
-                && ((!facts.gates.is_empty() && !ssh_only) || setup_held)
-            {
+            } else if (!facts.gates.is_empty() && !ssh_only) || setup_held {
                 assert!(
                     plan.outcome.is_hold(),
                     "the unpaced CLI-agent submit passed a gate: {plan:?}"

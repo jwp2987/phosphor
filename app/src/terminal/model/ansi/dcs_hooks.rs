@@ -1091,6 +1091,13 @@ pub struct InitShellValue {
 
     #[serde(deserialize_with = "empty_string_is_none", default)]
     pub wsl_name: Option<String>,
+
+    /// The shell's own pid (`$$`, `$fish_pid`, `$nu.pid`, `$PID`), reported since #1679 step 3 so
+    /// a subshell started from THIS session is judged against the shell that ran the block (the
+    /// parent of the readiness sample), not the top-level shell's spawn pid. `None` from an older
+    /// script or the MSYS2 key-value form; the spawn pid is the fallback.
+    #[serde(default)]
+    pub pid: Option<u32>,
 }
 
 /// Emitted as part of the new ssh session bootstrapping process.

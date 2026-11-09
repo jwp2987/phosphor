@@ -611,3 +611,44 @@ fn selection_bits_overlay_the_stale_copy() {
     assert!(exact.has_block_list_selection && !exact.has_alt_screen_selection);
     assert!(!cell.load().has_block_list_selection);
 }
+
+/// #1679 step 3 (review R6, owner Q10 narrow): the input-prompt shapes added for the readiness
+/// judge. A choice group is digits with `/` or `-`, or two to five single letters with `/`; the
+/// zsh-newuser-install footer counts; a bare bracket, a bracketed word and a shell prompt do not.
+#[test]
+fn choice_groups_and_the_zsh_newuser_footer_are_input_prompts() {
+    for prompt in [
+        "Choose [1-3]",
+        "Choose [1-3]: ",
+        "Select [1/2/3]",
+        "Overwrite? (y/n/a) ",
+        "Continue (yes/no/[fingerprint])? ",
+        "Which one (a/b/c/d/e)",
+        "--- Type one of the keys in parentheses --- ",
+        "(q)  Quit and do nothing.  --- Type one of the keys in parentheses --- ",
+    ] {
+        assert!(output_tail_is_input_prompt(prompt), "{prompt:?}");
+        if !prompt.ends_with("? ") && !prompt.to_lowercase().contains("parentheses") {
+            assert!(line_ends_in_choice_group(prompt), "{prompt:?}");
+        }
+    }
+    for not_prompt in [
+        "bash-5.1$ ",
+        "(venv) me@host ~ $ ",
+        "[me@host ~]$ ",
+        "[main] ",
+        "done)",
+        "done]",
+        "(abcdef/ghij)",
+        "(a/b/c/d/e/f)",
+        "(a)",
+        "[]",
+        "[/]",
+        "(--)",
+        "[(1-3)]",
+        "~/src (main) ",
+    ] {
+        assert!(!line_ends_in_choice_group(not_prompt), "{not_prompt:?}");
+        assert!(!output_tail_is_input_prompt(not_prompt), "{not_prompt:?}");
+    }
+}

@@ -5396,3 +5396,4 @@ import cases_coverage_a  # noqa: E402,F401  (#1535-#1541: paste, alt-screen prog
 import cases_coverage_b  # noqa: E402,F401  (g10: CI-review coverage gaps #1542-#1548: agent pickers, settings UI/migration, state relaunch, no-autoupdate, UI-action budgets, mac editor)
 import cases_shells  # noqa: E402,F401  (#1534: startup_shell_override passes: cmd.exe and pwsh 7 as the pane shell)
 import cases_lab  # noqa: E402,F401  (Wave 0.5b: the fake ssh lab cases, lab_*; run only by --cases lab_*)
+import cases_subshell_ready  # noqa: E402,F401  (#1679 step 3/4: the subshell readiness lab: rc questions, vim typeahead, tcsh, secret after the prompt, relays, exec fish, docker -t, zsh-newuser-install, clear)
