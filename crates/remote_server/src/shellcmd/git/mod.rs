@@ -22,6 +22,7 @@ pub mod diff;
 pub mod gh;
 pub mod ops;
 pub mod parse;
+pub mod pwsh;
 pub mod runner;
 pub mod status;
 pub mod types;

@@ -150,9 +150,37 @@ pub fn same_context(a: &RemoteAgentContextSnapshot, b: &RemoteAgentContextSnapsh
     a.home_dir == b.home_dir && a.skills == b.skills && a.global_rules == b.global_rules
 }
 
-/// Section `home`: the host's home directory. `None` for a shell this does not support.
+/// Section `home`: the host's home directory. Every shell kind has one now (`Option` is kept
+/// for a kind added later that cannot).
 pub fn home_command(kind: ShellKind) -> Option<String> {
-    (!kind.is_powershell()).then(|| "printf '%s' \"$HOME\"".to_owned())
+    Some(if kind.is_powershell() {
+        "[Console]::Out.Write($HOME)".to_owned()
+    } else {
+        "printf '%s' \"$HOME\"".to_owned()
+    })
+}
+
+/// The PowerShell `Emit` function and the final write. Records are the same
+/// `<path> NUL <size> NUL <bytes>` as the POSIX ones, but built as ONE string (UTF-8 text only:
+/// a file that is not valid UTF-8 is dropped here, as [`assemble`] drops it on the POSIX path)
+/// and written once, so nothing interleaves with the framing markers.
+fn pwsh_emit_prelude() -> String {
+    format!(
+        "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)\n\
+         $enc = New-Object System.Text.UTF8Encoding($false, $true)\n\
+         $sb = New-Object System.Text.StringBuilder\n\
+         $script:total = 0\n\
+         function Emit($p) {{\n\
+         if (-not (Test-Path -LiteralPath $p -PathType Leaf)) {{ return }}\n\
+         $n = (Get-Item -LiteralPath $p).Length\n\
+         if ($n -gt {MAX_FILE_BYTES}) {{ return }}\n\
+         if ($script:total + $n -gt {MAX_TOTAL_BYTES}) {{ return }}\n\
+         try {{ $b = [System.IO.File]::ReadAllBytes($p); $t = $enc.GetString($b) }} catch {{ return }}\n\
+         $script:total += $b.Length\n\
+         [void]$sb.Append($p).Append([char]0).Append($b.Length).Append([char]0).Append($t)\n\
+         }}\n\
+         if (-not $HOME) {{ exit 0 }}\n"
+    )
 }
 
 /// The shared `emit` function: `<path> NUL <size> NUL <size bytes>` for a regular file within the
@@ -177,7 +205,13 @@ fn emit_function() -> String {
 /// Section `skills`: every `~/<root>/<name>/SKILL.md` as records (see [`parse_records`]).
 pub fn skills_command(kind: ShellKind) -> Option<String> {
     if kind.is_powershell() {
-        return None;
+        let roots: Vec<String> = HOME_SKILL_DIRS.iter().map(|d| format!("'{d}'")).collect();
+        return Some(format!(
+            "{}foreach ($d in @({})) {{ foreach ($f in (Get-ChildItem -Path (Join-Path $HOME $d) -Directory -ErrorAction SilentlyContinue)) {{ Emit (Join-Path $f.FullName 'SKILL.md') }} }}\n\
+             if ($sb.Length -gt 0) {{ Write-Output $sb.ToString() }}\nexit 0",
+            pwsh_emit_prelude(),
+            roots.join(", ")
+        ));
     }
     let roots = HOME_SKILL_DIRS.join(" ");
     Some(format!(
@@ -189,7 +223,13 @@ pub fn skills_command(kind: ShellKind) -> Option<String> {
 /// Section `rules`: the global rule files as records.
 pub fn rules_command(kind: ShellKind) -> Option<String> {
     if kind.is_powershell() {
-        return None;
+        let files: Vec<String> = HOME_RULE_FILES.iter().map(|f| format!("'{f}'")).collect();
+        return Some(format!(
+            "{}foreach ($r in @({})) {{ Emit (Join-Path $HOME $r) }}\n\
+             if ($sb.Length -gt 0) {{ Write-Output $sb.ToString() }}\nexit 0",
+            pwsh_emit_prelude(),
+            files.join(", ")
+        ));
     }
     let files = HOME_RULE_FILES.join(" ");
     Some(format!(

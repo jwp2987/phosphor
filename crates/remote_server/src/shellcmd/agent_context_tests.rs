@@ -124,16 +124,26 @@ fn relevant_changes_are_the_skill_roots_and_the_rule_file_only() {
 }
 
 #[test]
-fn commands_exist_for_posix_family_shells_and_not_for_powershell() {
+fn commands_exist_for_every_shell_kind() {
     for kind in [ShellKind::Posix, ShellKind::Fish, ShellKind::Nu] {
         let skills = skills_command(kind).unwrap();
         assert!(skills.contains(".agents/skills") && skills.contains("SKILL.md"));
         assert!(rules_command(kind).unwrap().contains(".agents/AGENTS.md"));
         assert!(home_command(kind).is_some());
     }
-    assert!(skills_command(ShellKind::Pwsh).is_none());
-    assert!(rules_command(ShellKind::Pwsh).is_none());
-    assert!(home_command(ShellKind::Pwsh).is_none());
+    // PowerShell hosts have all three too, as PowerShell source (#1874).
+    let skills = skills_command(ShellKind::Pwsh).unwrap();
+    assert!(
+        skills.contains("SKILL.md") && skills.contains("Emit"),
+        "{skills}"
+    );
+    assert!(skills.contains(".agents/skills"), "{skills}");
+    assert!(
+        rules_command(ShellKind::Pwsh)
+            .unwrap()
+            .contains(".agents/AGENTS.md")
+    );
+    assert!(home_command(ShellKind::Pwsh).unwrap().contains("$HOME"));
 }
 
 fn child(name: &str, is_dir: bool) -> TreeChild {

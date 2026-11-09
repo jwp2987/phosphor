@@ -213,19 +213,23 @@ fn spawn_load_file_changes(
 /// Remote arm of [`spawn_load_file_changes`]: the working tree lives on the
 /// daemon, so the committed branch file list comes over RPC.
 fn spawn_load_remote_file_changes(remote: RemotePath, ctx: &mut ViewContext<GitDialog>) {
-    use crate::code_review::git_dialog::remote_client_for;
+    use crate::code_review::git_dialog::remote_backend_for;
     use crate::remote_server::diff_state_proto::proto_to_file_change_entry;
     use crate::remote_server::proto;
 
-    let Some(client) = remote_client_for(&remote, ctx) else {
+    use remote_server::backend::{Family, RemoteFeatures as _};
+
+    // The helper when it serves git reads, else the shell backend (#1872).
+    let backend = remote_backend_for(&remote, ctx);
+    if !backend.is_available(Family::GitRead) {
         log::error!("Create PR dialog: no connected session for the code-review host");
         return;
-    };
+    }
     let request = proto::GetCommittedBranchFilesRequest {
         repo_path: remote.path.to_string(),
     };
     ctx.spawn(
-        async move { client.get_committed_branch_files(request).await },
+        async move { backend.get_committed_branch_files(request).await },
         |me, result, ctx| {
             let GitDialogMode::CreatePr(state) = &mut me.mode else {
                 return;

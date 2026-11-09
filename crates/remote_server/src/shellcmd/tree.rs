@@ -363,6 +363,80 @@ pub fn list_dir_command(kind: ShellKind, path: &str) -> String {
     }
 }
 
+/// Section `list`, with metadata: the children of directory `path` as NUL-terminated
+/// `<y><Y> <size> <mtime> <name>` records (`mtime` in seconds, possibly fractional), for
+/// `ListDirectory`, which reports sizes, modification times and symlinks (#1878). Read by
+/// [`parse_stat_records`]. The same `find -printf`, then `ls -1Ap` + `stat` fallback as
+/// [`list_dir_command`].
+pub fn list_dir_stat_command(kind: ShellKind, path: &str) -> String {
+    let q = quote(kind, path);
+    if kind.is_powershell() {
+        format!(
+            "Get-ChildItem -LiteralPath {q} -Force | ForEach-Object {{\n\
+             $y = if ($_.LinkType) {{ 'l' }} elseif ($_.PSIsContainer) {{ 'd' }} else {{ 'f' }}\n\
+             $t = if ($_.PSIsContainer) {{ 'd' }} else {{ 'f' }}\n\
+             $s = if ($_.PSIsContainer) {{ 0 }} else {{ $_.Length }}\n\
+             $ms = [DateTimeOffset]::new($_.LastWriteTimeUtc).ToUnixTimeMilliseconds()\n\
+             $m = '{{0}}.{{1:D3}}' -f [math]::Floor($ms / 1000), ($ms % 1000)\n\
+             [Console]::Out.Write($y + $t + ' ' + $s + ' ' + $m + ' ' + $_.Name + [char]0)\n\
+             }}"
+        )
+    } else {
+        format!(
+            "cd -- {q} 2>/dev/null || exit 2\n\
+             if find . -maxdepth 0 -printf '' >/dev/null 2>&1; then\n\
+             find . -mindepth 1 -maxdepth 1 -printf '%y%Y %s %T@ %f\\0'\n\
+             else\n\
+             ls -1Ap | while IFS= read -r n; do\n\
+             case \"$n\" in */) t=d; n=\"${{n%/}}\";; *) t=f;; esac\n\
+             y=$t; if [ -L \"$n\" ]; then y=l; fi\n\
+             s=$(stat -c '%s %Y' -- \"$n\" 2>/dev/null || stat -f '%z %m' -- \"$n\" 2>/dev/null || echo '0 0')\n\
+             printf '%s%s %s %s %s\\0' \"$y\" \"$t\" \"${{s% *}}\" \"${{s#* }}\" \"$n\"\n\
+             done\n\
+             fi"
+        )
+    }
+}
+
+/// One entry of [`parse_stat_records`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct StatEntry {
+    pub name: String,
+    /// `find`'s type letter for the entry itself: `d`, `f`, `l`, or another for special files.
+    pub kind: char,
+    pub size: u64,
+    pub modified_epoch_millis: Option<u64>,
+}
+
+/// Reads the output of [`list_dir_stat_command`].
+pub fn parse_stat_records(bytes: &[u8]) -> Vec<StatEntry> {
+    bytes
+        .split(|&b| b == 0)
+        .filter_map(|record| {
+            let text = String::from_utf8_lossy(record);
+            let text = text.trim_start_matches('\n');
+            let mut parts = text.splitn(4, ' ');
+            let types = parts.next()?;
+            let size = parts.next()?;
+            let mtime = parts.next()?;
+            let name = parts.next()?;
+            if types.chars().count() != 2 || name.is_empty() || name == "." || name == ".." {
+                return None;
+            }
+            Some(StatEntry {
+                name: name.to_owned(),
+                kind: types.chars().next()?,
+                size: size.parse().unwrap_or(0),
+                modified_epoch_millis: mtime
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|secs| secs.is_finite() && *secs >= 0.0)
+                    .map(|secs| (secs * 1000.0).round() as u64),
+            })
+        })
+        .collect()
+}
+
 /// Section `ignored`: which children of directory `path` git ignores (names, NUL separated).
 /// Empty outside a git repository.
 pub fn ignored_children_command(kind: ShellKind, path: &str) -> String {

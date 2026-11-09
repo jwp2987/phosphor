@@ -58,3 +58,9 @@ fn powershell_gets_an_encoded_command() {
     assert!(ShellKind::Pwsh.is_powershell());
     assert!(!ShellKind::Fish.is_powershell());
 }
+
+#[test]
+fn legacy_nu_wraps_the_script_in_an_escaped_double_quoted_string() {
+    let wrapped = ShellKind::NuLegacy.wrap("printf '%s\\n' \"$x\"\n\tdone");
+    assert_eq!(wrapped, "^sh -c \"printf '%s\\\\n' \\\"$x\\\"\\n\\tdone\"");
+}

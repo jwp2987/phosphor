@@ -3088,7 +3088,7 @@ def lab_git_write_remote_mirrors_the_rust_scripts():
     assert not G.HOOK_REMOTE_OP.search("hop=backend_route family=file_context backend=shell reason=x")
     assert G.sh_c("echo a") == "sh -c 'echo a'"
     labs = [c["arm"] for c in cases.CASES if c.get("lab") and c["name"].startswith("lab_git_write_remote")]
-    assert {a["shell"] for a in labs} == {"bash", "zsh", "fish", "nu"} and {a["helper"] for a in labs} == {"nohelper", "upload"}, labs
+    assert {a["shell"] for a in labs} == {"bash", "zsh", "fish", "nu", "dash", "ash", "pwsh"} and {a["helper"] for a in labs} == {"nohelper", "upload"}, labs
 
 
 @check
@@ -3126,13 +3126,13 @@ def lab_file_tree_remote_pieces():
     assert CLR.tree_events(line) == [("update", "shell", 1, 2, ["e40c292c", "bf9cf968"]), ("snapshot", "helper", 0, 0, [])]
     assert CLR.saw_added(line, "a") and not CLR.saw_added(line, "b") and not CLR.saw_added(line, "a", event="snapshot")
     arms = [c["arm"] for c in cases.CASES if c.get("lab") and c["name"].startswith("lab_file_tree_remote.")]
-    assert {(a["shell"], a["helper"]) for a in arms} == {(s, h) for s in ("bash", "zsh", "fish", "nu") for h in ("nohelper", "upload")}, arms
+    assert {(a["shell"], a["helper"]) for a in arms} == {(s, h) for s in ("bash", "zsh", "fish", "nu", "dash", "ash") for h in ("nohelper", "upload")}, arms
 
 
 @check
 def lab_diff_panel_and_gh_chip_pieces():
     """Wave H parity P6: the lab cases read the app's hop=diff_state / hop=git_chip / hop=gh_chip log lines exactly as the app prints them, the fake gh scripts are the ones
-    the contract tests use, and both cases register the nohelper and upload arms for bash, zsh, fish and nu and declare their families to the coverage guard."""
+    the contract tests use, and both cases register the nohelper and upload arms for bash, zsh, fish, nu, dash and ash (the diff panel also pwsh) and declare their families to the coverage guard."""
     import cases_lab_diff as D, cases_lab_helper as H
     text = ("INFO hop=diff_state event=snapshot source=shell files=2 path_hash=[e40c292c,bf9cf968]\n"
             "INFO hop=diff_state event=delta source=helper files=1 path_hash=[e40c292c]\n"
@@ -3145,7 +3145,7 @@ def lab_diff_panel_and_gh_chip_pieces():
     assert '"number":42' in D.FAKE_GH and "gh auth login" in D.SIGNED_OUT_GH
     for name in ("lab_diff_panel_remote.", "lab_gh_chip_remote."):
         arms = [c["arm"] for c in cases.CASES if c.get("lab") and c["name"].startswith(name)]
-        assert {(a["shell"], a["helper"]) for a in arms} == {(s, h) for s in ("bash", "zsh", "fish", "nu") for h in ("nohelper", "upload")}, (name, arms)
+        assert {(a["shell"], a["helper"]) for a in arms} == {(s, h) for s in (("bash", "zsh", "fish", "nu", "dash", "ash") + (("pwsh",) if name.startswith("lab_diff_panel") else ())) for h in ("nohelper", "upload")}, (name, arms)
     assert H.EXTERNAL_COVERS["diff_state"] == dict(helper="lab_diff_panel_remote", nohelper="lab_diff_panel_remote"), H.EXTERNAL_COVERS.get("diff_state")
     for cap in ("git_status", "github"):
         assert H.EXTERNAL_COVERS[cap] == dict(helper="lab_gh_chip_remote", nohelper="lab_gh_chip_remote"), cap
@@ -3172,7 +3172,7 @@ def lab_skills_remote_pieces():
     assert all(c.startswith("sh -c '") and c.endswith("'") and c.count("'") == 2 for c in seen), seen        # one single-quoted word: identical in bash, zsh, fish and nu
     assert "SKILL.md" in seen[0] and "name: labsk-x" in seen[0] and "AGENTS.md" in seen[1] and "rm -rf" in seen[2]
     arms = [c["arm"] for c in cases.CASES if c.get("lab") and c["name"].startswith("lab_skills_remote.")]
-    assert {(a["shell"], a["helper"]) for a in arms} == {(s, h) for s in ("bash", "zsh", "fish", "nu") for h in ("nohelper", "upload")}, arms
+    assert {(a["shell"], a["helper"]) for a in arms} == {(s, h) for s in ("bash", "zsh", "fish", "nu", "dash", "ash", "pwsh") for h in ("nohelper", "upload")}, arms
     import cases_lab_helper as H
     assert H.EXTERNAL_COVERS["agent_context"] == dict(helper="lab_skills_remote", nohelper="lab_skills_remote"), H.EXTERNAL_COVERS
 
@@ -3184,7 +3184,7 @@ def lab_remote_edit_pieces():
     assert CLB.routes(line) == [("shell", "caps")] and CLB.routes(line, "file_context") == [("helper", "caps")] and CLB.routes("") == []
     assert CLB.expected_backend(dict(helper="nohelper")) == "shell" and CLB.expected_backend(dict(helper="upload")) == "helper"
     arms = [c["arm"] for c in cases.CASES if c.get("lab") and c["name"].startswith("lab_remote_edit.")]
-    assert {(a["shell"], a["helper"]) for a in arms} == {(s, h) for s in ("bash", "zsh", "fish", "nu") for h in ("nohelper", "upload")}, arms
+    assert {(a["shell"], a["helper"]) for a in arms} == {(s, h) for s in ("bash", "zsh", "fish", "nu", "dash", "ash", "pwsh") for h in ("nohelper", "upload")}, arms
     assert H.EXTERNAL_COVERS["buffers"] == dict(helper="lab_remote_edit", nohelper="lab_remote_edit"), H.EXTERNAL_COVERS.get("buffers")
 
 

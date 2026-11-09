@@ -30,8 +30,9 @@ use crate::shellcmd::agent_context;
 use crate::shellcmd::tree::{
     MAX_IGNORED_LIST_BYTES, MAX_REPO_LIST_BYTES, TreeChild, apply_refresh, canonical_dir_command,
     dir_is_ignored, dir_update, finish_children, git_root_command, ignored_children_command,
-    is_within, list_dir_command, parse_list_records, parse_nav_target, parse_path_list,
-    repo_files_command, repo_ignored_command, snapshot_entries, tree_from_paths,
+    is_within, list_dir_command, list_dir_stat_command, parse_list_records, parse_nav_target,
+    parse_path_list, parse_stat_records, repo_files_command, repo_ignored_command,
+    snapshot_entries, tree_from_paths,
 };
 use crate::shellcmd::{Script, StderrMode};
 
@@ -312,7 +313,11 @@ pub(super) async fn list_directory(
             canonical_dir_command(kind, &path),
             StderrMode::Discard,
         )?
-        .section("list", list_dir_command(kind, &path), StderrMode::Discard)?;
+        .section(
+            "list",
+            list_dir_stat_command(kind, &path),
+            StderrMode::Discard,
+        )?;
     let frame = shell.run_script(&script).await?;
     let failed = |why: &str| ListDirectoryResponse {
         result: Some(list_directory_response::Result::Error(FileOperationError {
@@ -330,18 +335,23 @@ pub(super) async fn list_directory(
     let Some(list) = frame.section("list").filter(|s| s.success()) else {
         return Ok(failed("the directory cannot be listed"));
     };
-    let mut entries: Vec<DirEntry> = parse_list_records(&list.output)
+    let mut entries: Vec<DirEntry> = parse_stat_records(&list.output)
         .into_iter()
-        .map(|c| DirEntry {
-            name: c.name,
-            is_dir: c.is_dir,
-            kind: if c.is_dir {
-                FileSystemEntryKind::Directory
-            } else {
-                FileSystemEntryKind::File
-            } as i32,
-            size_bytes: None,
-            modified_epoch_millis: None,
+        .map(|c| {
+            let kind = match c.kind {
+                'd' => FileSystemEntryKind::Directory,
+                'f' => FileSystemEntryKind::File,
+                'l' => FileSystemEntryKind::Symlink,
+                _ => FileSystemEntryKind::Other,
+            };
+            DirEntry {
+                name: c.name,
+                is_dir: kind == FileSystemEntryKind::Directory,
+                kind: kind as i32,
+                // Like the helper: a size for regular files only.
+                size_bytes: (kind == FileSystemEntryKind::File).then_some(c.size),
+                modified_epoch_millis: c.modified_epoch_millis,
+            }
         })
         .collect();
     entries.sort_by(|a, b| a.name.cmp(&b.name));

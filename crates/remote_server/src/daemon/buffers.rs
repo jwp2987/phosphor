@@ -48,8 +48,8 @@ use crate::proto::{
 #[allow(dead_code)]
 pub(super) const CAPABILITY: &str = crate::capability::BUFFERS;
 
-/// The largest file a buffer opens (what a whole-file read over the shell arm returns too).
-const MAX_BUFFER_BYTES: u64 = 7 * 1024 * 1024;
+/// The largest file a buffer opens: the same 64 MiB as the shell arm (chunked reads there).
+const MAX_BUFFER_BYTES: u64 = 64 * 1024 * 1024;
 
 /// The first `server_version` of a freshly opened buffer.
 const FIRST_SERVER_VERSION: u64 = 1;

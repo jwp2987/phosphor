@@ -282,3 +282,49 @@ fn own_writes_reach_refresh_listeners_with_the_host() {
         vec![("h1".to_string(), RemoteRefreshEvent::AfterOwnWrite)]
     );
 }
+
+/// #1872: with no helper the branch picker's and the PR dialog's reads go through the router to
+/// the shell arm (a real answer from a real repository), not to "unsupported" and not around the
+/// router.
+#[tokio::test]
+async fn git_reads_with_no_helper_are_served_by_the_shell_arm() {
+    use crate::backend::contract_tests::LocalShExecutor;
+    use crate::proto::{GetBranches, get_branches_response};
+    let dir = tempfile::tempdir().unwrap();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir.path())
+            .output();
+        match out {
+            Ok(o) if o.status.success() => true,
+            _ => false,
+        }
+    };
+    if !(git(&["init", "-q", "-b", "main"])
+        && git(&["config", "user.email", "t@example.com"])
+        && git(&["config", "user.name", "t"])
+        && git(&["commit", "-q", "--allow-empty", "-m", "first"]))
+    {
+        return;
+    }
+    let router = FeatureRouter::new();
+    let session = SessionId::from(9u64);
+    router.register_out_of_band(session, Arc::new(LocalShExecutor));
+    let backend = router.backend(&host(), None, [session]);
+    assert_eq!(backend.kind(Family::GitRead), BackendKind::Shell);
+    let response = backend
+        .get_branches(GetBranches {
+            repo_path: dir.path().to_string_lossy().into_owned(),
+            max_branch_count: None,
+            include_remotes: false,
+        })
+        .await
+        .unwrap();
+    let Some(get_branches_response::Result::Success(success)) = response.result else {
+        panic!("no branch list: {response:?}");
+    };
+    assert_eq!(success.branches.len(), 1);
+    assert_eq!(success.branches[0].name, "main");
+    assert!(success.branches[0].is_main);
+}

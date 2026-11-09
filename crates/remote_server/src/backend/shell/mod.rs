@@ -8,9 +8,12 @@
 mod agent_context;
 mod buffer;
 mod diff;
+mod git_read;
 mod git_write;
+mod host_store;
 mod index;
 mod read;
+mod read_bytes;
 mod status;
 mod tree;
 mod write;
@@ -30,7 +33,7 @@ use crate::proto::{
     ListDirectoryResponse, LoadRepoMetadataDirectoryResponse, NavigatedToDirectoryResponse,
 };
 use crate::shellcmd::base64::{self, Base64Tool, DecodeTool};
-use crate::shellcmd::{Frame, Script, ShellKind, StderrMode};
+use crate::shellcmd::{Frame, FrameError, Script, ShellKind, StderrMode};
 
 #[derive(Clone, Default)]
 pub struct ShellBackend {
@@ -56,6 +59,9 @@ pub struct ShellBackend {
     /// What the buffers this host's editors opened looked like, for the guarded save (family c).
     /// Shared by every backend the router builds for the host.
     buffers: Arc<ShellBuffers>,
+    /// The login-shell wrapping that worked after the default one did not (an old nushell
+    /// without raw strings), so later calls skip the failed attempt.
+    kind_override: Arc<Mutex<Option<ShellKind>>>,
 }
 
 impl std::fmt::Debug for ShellBackend {
@@ -79,6 +85,7 @@ impl ShellBackend {
             index: None,
             agent_cache: Arc::default(),
             buffers: Arc::default(),
+            kind_override: Arc::default(),
         }
     }
 
@@ -163,6 +170,13 @@ impl ShellBackend {
             .map_or(ShellKind::Posix, |e| e.shell_kind())
     }
 
+    /// The login-shell wrapping to use now: the executor's, unless an earlier call found another
+    /// one that works (an old nushell).
+    pub(super) fn login_kind(&self) -> ShellKind {
+        (*self.kind_override.lock().unwrap_or_else(|e| e.into_inner()))
+            .unwrap_or_else(|| self.shell_kind())
+    }
+
     pub fn channel_kind(&self) -> Option<ChannelKind> {
         self.executor.as_ref().map(|e| e.channel_kind())
     }
@@ -188,7 +202,8 @@ impl ShellBackend {
     }
 
     /// [`Self::run_script`] with `stdin` on the script's standard input: how user data (file
-    /// chunks) reaches the host without appearing in any command line (#1864).
+    /// chunks, vector records) reaches the host without appearing in any command line (#1864).
+    /// Retried under another login-shell wrapping only if the first one fails to run the script.
     pub async fn run_script_stdin(
         &self,
         script: &Script,
@@ -197,20 +212,49 @@ impl ShellBackend {
         let executor = self.executor.as_ref().ok_or_else(|| {
             BackendError::Unavailable("no out-of-band channel for remote commands".into())
         })?;
-        let output = executor
-            .execute(ExecRequest {
-                command: script.render(executor.shell_kind()),
-                stdin,
-                max_output_bytes: MAX_EXEC_OUTPUT_BYTES,
-            })
-            .await?;
-        if output.truncated {
-            return Err(BackendError::Unavailable(format!(
-                "remote output over the {} byte cap",
-                crate::shellcmd::MAX_OUTPUT_BYTES
-            )));
+        let mut kind = (*self.kind_override.lock().unwrap_or_else(|e| e.into_inner()))
+            .unwrap_or_else(|| executor.shell_kind());
+        let mut retried = false;
+        loop {
+            let output = executor
+                .execute(ExecRequest {
+                    command: script.render(kind),
+                    stdin: stdin.clone(),
+                    max_output_bytes: MAX_EXEC_OUTPUT_BYTES,
+                })
+                .await?;
+            if output.truncated {
+                return Err(BackendError::Unavailable(format!(
+                    "remote output over the {} byte cap",
+                    crate::shellcmd::MAX_OUTPUT_BYTES
+                )));
+            }
+            match Frame::parse(&output.stdout, script.nonce()) {
+                Ok(frame) => return Ok(frame),
+                Err(FrameError::NoFrame) if kind == ShellKind::Nu && !retried => {
+                    // Probably a nushell without raw strings: retry once with the escaped form.
+                    retried = true;
+                    kind = ShellKind::NuLegacy;
+                    *self.kind_override.lock().unwrap_or_else(|e| e.into_inner()) = Some(kind);
+                }
+                Err(FrameError::NoFrame) if kind == ShellKind::NuLegacy && retried => {
+                    // The escaped form failed too: the raw form was not the problem.
+                    *self.kind_override.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                    return Err(BackendError::Unavailable(
+                        "the host's nushell did not run the remote script".into(),
+                    ));
+                }
+                Err(FrameError::NoFrame) if foreign_shell_complaint(&output.stderr) => {
+                    return Err(BackendError::Unavailable(
+                        "the host's login shell is not POSIX, fish, nushell or PowerShell \
+                         (csh or tcsh?), so remote commands cannot run there; the remote helper \
+                         is needed on this host"
+                            .into(),
+                    ));
+                }
+                Err(e) => return Err(e.into()),
+            }
         }
-        Ok(Frame::parse(&output.stdout, script.nonce())?)
     }
 
     /// A fresh per-call nonce for [`Script::new`].
@@ -269,5 +313,140 @@ impl ShellBackend {
                 "{what}: this session has no out-of-band channel for remote commands"
             ))
         })
+    }
+}
+
+/// Whether a login shell's stderr is the complaint of a shell that could not parse our POSIX
+/// script (csh and tcsh reject its subshells, `$(..)`, `${..%..}` and multi-line quotes).
+fn foreign_shell_complaint(stderr: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(stderr);
+    [
+        "Unmatched",
+        "Illegal variable name",
+        "Undefined variable",
+        "Badly placed",
+        "Missing }",
+        "Too many ('s",
+        "Invalid null command",
+        "Variable syntax",
+    ]
+    .iter()
+    .any(|marker| text.contains(marker))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use futures::future::BoxFuture;
+
+    use super::super::executor::{ChannelKind, ExecError, ExecOutput};
+    use super::*;
+
+    #[test]
+    fn csh_complaints_are_recognised() {
+        assert!(foreign_shell_complaint(b"Unmatched '.\n"));
+        assert!(foreign_shell_complaint(b"Illegal variable name.\n"));
+        assert!(!foreign_shell_complaint(
+            b"Permission denied (publickey).\n"
+        ));
+        assert!(!foreign_shell_complaint(b""));
+    }
+
+    /// An executor with a scripted answer per attempt; it records every command it was given.
+    #[derive(Debug)]
+    struct Scripted {
+        kind: ShellKind,
+        seen: Mutex<Vec<String>>,
+        /// Answers the Nth call (the last repeats): `None` stdout means "frame the section".
+        answers: Vec<(Option<Vec<u8>>, Vec<u8>)>,
+    }
+
+    impl OutOfBandExecutor for Scripted {
+        fn channel_kind(&self) -> ChannelKind {
+            ChannelKind::LocalSh
+        }
+        fn shell_kind(&self) -> ShellKind {
+            self.kind
+        }
+        fn execute(&self, request: ExecRequest) -> BoxFuture<'_, Result<ExecOutput, ExecError>> {
+            let mut seen = self.seen.lock().unwrap();
+            let n = seen.len();
+            seen.push(request.command.clone());
+            let (stdout, stderr) = self.answers[n.min(self.answers.len() - 1)].clone();
+            let stdout = stdout.unwrap_or_else(|| {
+                let nonce = request
+                    .command
+                    .split("@@PHOSPHOR-")
+                    .nth(1)
+                    .and_then(|rest| rest.split(' ').next())
+                    .unwrap_or_default()
+                    .to_string();
+                format!("@@PHOSPHOR-{nonce} BEGIN x\nok\n@@PHOSPHOR-{nonce} END x exit=0\n")
+                    .into_bytes()
+            });
+            Box::pin(async move {
+                Ok(ExecOutput {
+                    stdout,
+                    stderr,
+                    exit_code: Some(0),
+                    truncated: false,
+                })
+            })
+        }
+    }
+
+    fn one_section() -> Script {
+        Script::new("n0nce")
+            .unwrap()
+            .section("x", "echo ok", StderrMode::Discard)
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn an_old_nushell_without_raw_strings_gets_the_escaped_wrapping_and_keeps_it() {
+        let exec = Arc::new(Scripted {
+            kind: ShellKind::Nu,
+            seen: Mutex::default(),
+            // The raw-string form prints nothing usable; the escaped form works.
+            answers: vec![
+                (
+                    Some(Vec::new()),
+                    b"Error: nu::parser::parse_mismatch".to_vec(),
+                ),
+                (None, Vec::new()),
+            ],
+        });
+        let shell = ShellBackend::new(Some(exec.clone()));
+        let frame = shell.run_script(&one_section()).await.unwrap();
+        assert_eq!(frame.section("x").unwrap().text(), "ok");
+        {
+            let seen = exec.seen.lock().unwrap();
+            assert_eq!(seen.len(), 2);
+            assert!(seen[0].starts_with("^sh -c r#'"), "{}", seen[0]);
+            assert!(seen[1].starts_with("^sh -c \""), "{}", seen[1]);
+        }
+        // The next call goes straight to the form that worked.
+        shell.run_script(&one_section()).await.unwrap();
+        let seen = exec.seen.lock().unwrap();
+        assert_eq!(seen.len(), 3);
+        assert!(seen[2].starts_with("^sh -c \""), "{}", seen[2]);
+    }
+
+    #[tokio::test]
+    async fn a_login_shell_that_cannot_parse_the_script_is_unavailable_not_unreadable() {
+        let exec = Arc::new(Scripted {
+            kind: ShellKind::Posix,
+            seen: Mutex::default(),
+            answers: vec![(Some(Vec::new()), b"Unmatched '.\n".to_vec())],
+        });
+        let err = ShellBackend::new(Some(exec))
+            .run_script(&one_section())
+            .await
+            .unwrap_err();
+        match err {
+            BackendError::Unavailable(why) => assert!(why.contains("csh"), "{why}"),
+            other => panic!("expected Unavailable, got {other:?}"),
+        }
     }
 }

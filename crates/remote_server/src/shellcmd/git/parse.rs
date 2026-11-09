@@ -578,6 +578,19 @@ pub fn operation_probe_script(git_dir: &str) -> String {
     format!("for f in {names}; do [ -e {dir}/\"$f\" ] && printf '%s\\n' \"$f\"; done; true")
 }
 
+/// The PowerShell form of [`operation_probe_script`] (same output).
+pub fn operation_probe_script_pwsh(git_dir: &str) -> String {
+    let dir = format!("'{}'", git_dir.replace('\'', "''"));
+    let names: Vec<String> = OPERATION_SENTINELS
+        .iter()
+        .map(|n| format!("'{n}'"))
+        .collect();
+    format!(
+        "foreach ($f in @({})) {{ if (Test-Path -LiteralPath (Join-Path {dir} $f)) {{ $f }} }}",
+        names.join(", ")
+    )
+}
+
 /// Whether [`operation_probe_script`] output names any sentinel.
 pub fn parse_operation_probe(output: &str) -> bool {
     output

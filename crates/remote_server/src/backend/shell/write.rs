@@ -174,8 +174,8 @@ impl ShellBackend {
         }
     }
 
-    /// The whole file's bytes (up to [`READ_BYTES_CAP`]), as the helper's chunked read returns
-    /// them.
+    /// The whole file's bytes: the first [`READ_BYTES_CAP`] in one section, the rest in range
+    /// sections, as the helper's chunked read returns them.
     pub(in crate::backend) async fn read_file_bytes_shell(
         &self,
         path: String,
@@ -217,9 +217,11 @@ impl ShellBackend {
             ))),
             FileProbe::Failed(reason) => Err(op_failed(format!("Failed to read {path}: {reason}"))),
             FileProbe::Loaded(file) if file.complete => Ok(file.bytes),
-            FileProbe::Loaded(_) => Err(op_failed(format!(
-                "Failed to read {path}: the file is too large to read in shell mode"
-            ))),
+            // Past the first section's cap: read the rest in chunks, as the helper does.
+            FileProbe::Loaded(file) => {
+                self.read_remaining_bytes(&path, file.bytes, file.size, u64::MAX, "read")
+                    .await
+            }
         }
     }
 }

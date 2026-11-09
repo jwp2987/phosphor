@@ -100,19 +100,6 @@ pub(super) fn interactive_path_future(
     futures::future::ready(None).boxed()
 }
 
-/// Looks up the connected remote-server client for `remote`'s host, or `None`
-/// when no session is connected. Only the read-only branch-file listing in the PR dialog still
-/// asks for the raw client (its family has not moved to the backend router yet); every git WRITE
-/// goes through [`remote_backend_for`].
-pub(super) fn remote_client_for(
-    remote: &RemotePath,
-    ctx: &AppContext,
-) -> Option<std::sync::Arc<remote_server::client::RemoteServerClient>> {
-    remote_server::manager::RemoteServerManager::as_ref(ctx)
-        .client_for_host_with(&remote.host_id, remote_server::capability::GIT_READ)
-        .cloned()
-}
-
 /// The backend serving `remote`'s host: the connected helper when it does git writes, otherwise
 /// the shell backend over the session's out-of-band channel (see `remote_server::backend`).
 /// Call sites never choose or retry; a host with neither answers `Unavailable` and the toast

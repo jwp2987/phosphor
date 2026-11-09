@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cases_lab as CL  # noqa: E402
 
 ROUTE = re.compile(r"hop=backend_route family=(\w+) backend=(helper|shell|unavailable) reason=(\w+)")
-SHELLS = ("bash", "zsh", "fish", "nu")
+SHELLS = ("bash", "zsh", "fish", "nu", "dash", "ash")
 
 
 def routes(text, family="buffers"):

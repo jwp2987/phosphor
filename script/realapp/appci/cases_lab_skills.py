@@ -1,7 +1,7 @@
 # appci/cases_lab_skills.py: lab case for the remote agent context (Wave H parity P8, docs/design/remote-helper-parity.md family h), registered through lab_case.
 #   lab_skills_remote   a skill and a global rules file on the remote host reach the app: pushed by the helper (upload arm) or read by the shell backend over the
 #                       ControlMaster (nohelper arm). Bundled skills come from the app, never from the host.
-# Shells: bash, zsh, fish, nu. Terminal mode: the feature is about the remote host's context, not the agent loop. Oracle: the app's own log line
+# Shells: bash, zsh, fish, nu, dash, ash, pwsh (PowerShell source for the home/skills/rules reads, #1874). Terminal mode: the feature is about the remote host's context, not the agent loop. Oracle: the app's own log line
 # `hop=agent_context source=<helper|shell> revision=N skills=S rules=R names_hash=[...]` (manager.rs log_agent_context; counts and the FNV-1a hash of each skill's directory name
 # only), plus the host's files (made over a separate ssh connection, the way an editor or `git clone` would) and the remote shell's rec.log (the feature types nothing there).
 #   upload   -- the helper's watcher pushes the new revision with no prompt (live);
@@ -38,7 +38,7 @@ def clean(lab, user, names):
     lab.ssh(user, "sh -c 'rm -rf %s $HOME/.agents/AGENTS.md'" % " ".join("$HOME/.agents/skills/%s" % n for n in names))
 
 
-@CL.lab_case("skills_remote", shells=("bash", "zsh", "fish", "nu"), lat=("lan",), helper=("nohelper", "upload"), modes=("terminal",))
+@CL.lab_case("skills_remote", shells=("bash", "zsh", "fish", "nu", "dash", "ash", "pwsh"), lat=("lan",), helper=("nohelper", "upload"), modes=("terminal",))
 def c_skills_remote(ctx, r, arm):
     """The host's skills and global rules reach the app, with and without the helper, and a skill added behind the app's back arrives (live with the helper, on the
     next command that names a skill location without it). The context is never typed into the remote shell."""

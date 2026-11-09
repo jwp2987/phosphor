@@ -693,20 +693,16 @@ impl RemoteDiffStateModel {
     /// client. The result is emitted as
     /// [`DiffStateModelEvent::BranchesReceived`], matching the local backend.
     pub fn fetch_branches(&self, ctx: &mut ModelContext<Self>) {
-        let Some(client) = RemoteServerManager::as_ref(ctx)
-            .client_for_host_with(
-                &self.remote_path.host_id,
-                remote_server::capability::GIT_READ,
-            )
-            .cloned()
-        else {
-            // No connected session for the host; the dropdown keeps its
-            // defaults until a reconnect triggers another fetch.
+        // Through the host's backend: the helper when it serves git reads, otherwise the shell
+        // backend over the session's out-of-band channel (#1872). A host with neither keeps the
+        // dropdown's defaults.
+        let backend = RemoteServerManager::as_ref(ctx).backend_for_host(&self.remote_path.host_id);
+        if !backend.is_available(Family::GitRead) {
             return;
-        };
+        }
         let request = self.get_branches_request();
         ctx.spawn(
-            async move { client.get_branches(request).await },
+            async move { backend.get_branches(request).await },
             |me, result, ctx| match result {
                 Ok(response) => me.handle_get_branches_response(&response, ctx),
                 Err(e) => {
