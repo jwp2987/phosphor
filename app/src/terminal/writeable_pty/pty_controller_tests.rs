@@ -2218,6 +2218,64 @@ mod typeahead_handoff {
         });
     }
 
+    /// The shell's line editor is declared active by the fallback, not by its ready signal.
+    fn line_editor_becomes_active_unproven(app: &mut App, harness: &Harness) {
+        harness.line_editor_status.update(app, |status, ctx| {
+            status.set_line_editor_active_unproven_for_test();
+            ctx.emit(LineEditorStatusEvent::Active);
+        });
+    }
+
+    /// #1798/#1672: after a Ctrl-C the prompt's Precmd arrives while the shell is still
+    /// recovering and the fallback opens the write gate before the line editor reads. No
+    /// line-report request (ESC i) may be written then: the tty would echo it as `^[i`. The keys
+    /// typed meanwhile go out as typed, in order. The hand-off and its gate are the pty
+    /// controller's, shared by the Legacy and Table input modes.
+    #[test]
+    fn an_unproven_line_editor_after_ctrl_c_gets_no_request() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            submit(&mut app, &harness, "sleep 30");
+            user_types(&mut app, &harness, b"ab");
+            // Ctrl-C (twice: the second one finds the prompt cycle not yet parsed).
+            user_types(&mut app, &harness, &[escape_sequences::C0::ETX]);
+            user_types(&mut app, &harness, &[escape_sequences::C0::ETX]);
+            shell_runs_a_command(&harness.model, "sleep 30");
+            line_editor_becomes_active_unproven(&mut app, &harness);
+            user_types(&mut app, &harness, b"echo hi");
+            harness.controller.update(&mut app, |controller, ctx| {
+                controller.retry_typeahead_handoff_request(ctx)
+            });
+            let written = written(&harness);
+            assert!(
+                !written.iter().any(|w| w == &REQUEST.to_vec()),
+                "no request may be written to a line editor the shell has not signalled: {written:?}"
+            );
+            let joined: Vec<u8> = written.concat();
+            let pos = |needle: &[u8]| joined.windows(needle.len()).position(|w| w == needle);
+            assert!(
+                pos(b"ab") < pos(b"echo hi") && pos(b"echo hi").is_some(),
+                "keys keep their typed order"
+            );
+        });
+    }
+
+    /// The same prompt, once the shell's own signal has proven its line editor reads, is asked
+    /// for its line as before (a late signal after the fallback proves it too).
+    #[test]
+    fn a_proven_line_editor_after_ctrl_c_still_gets_the_request() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            submit(&mut app, &harness, "sleep 30");
+            user_types(&mut app, &harness, b"ab");
+            shell_runs_a_command(&harness.model, "sleep 30");
+            line_editor_becomes_active(&mut app, &harness);
+            assert_eq!(written(&harness).last(), Some(&REQUEST.to_vec()));
+        });
+    }
+
     /// The queued-prompts panel (or the agent) fires right after the prompt, before the line
     /// editor is active, while `foo` -- typed during the last command, no Enter -- sits in the
     /// shell's line. The command waits without starting its block, so the prompt still reads as

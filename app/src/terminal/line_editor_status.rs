@@ -18,12 +18,29 @@ use super::{ModelEvent, ModelEventDispatcher, shell::ShellType};
 /// which is the delay before a background block is rendered.
 const LINE_EDITOR_ACTIVATION_DELAY: Duration = Duration::from_millis(50);
 
+/// The give-up for a shell that has signalled its line editor's start before in this session
+/// (#1798/#1672): its readiness comes from the signal, so a prompt cycle that has not signalled
+/// yet (a shell still recovering from SIGINT, tty cooked) is not declared active at
+/// [`LINE_EDITOR_ACTIVATION_DELAY`]. This only bounds a shell that stops signalling; it opens the
+/// write gate but never proves the editor reads (see `is_proven_reading`), so no line-report
+/// request follows it.
+const LINE_EDITOR_SIGNAL_GIVE_UP: Duration = Duration::from_millis(1000);
+
 /// Model representing the status of the shell's line editor.
 ///
 /// This model also emits events when the line editor becomes active/inactive.
 pub struct LineEditorStatus {
     model_event_dispatcher: ModelHandle<ModelEventDispatcher>,
     is_line_editor_active: bool,
+    /// The shell's own ready signal ended this prompt cycle's wait (or arrived since the editor
+    /// was declared active): the line editor is proven to be reading. Cleared whenever the line
+    /// editor goes inactive or a prompt hook arms a new wait. The line-report request
+    /// (ESC i) is written only while this is set (#1798): to a shell not reading, the tty echoes
+    /// it as `^[i`.
+    proven_reading: bool,
+    /// This session's shell has signalled at least once, so a missing signal is the exception
+    /// and the activation fallback is the long give-up, not the 50 ms delay.
+    ready_signal_seen: bool,
     mark_line_editor_active_abort_handle: Option<SpawnedFutureHandle>,
     sessions: ModelHandle<Sessions>,
     /// ConPTY prompt hold (#1349): while set, a precmd's activation waits this long for the
@@ -58,6 +75,8 @@ impl LineEditorStatus {
         LineEditorStatus {
             model_event_dispatcher,
             is_line_editor_active: false,
+            proven_reading: false,
+            ready_signal_seen: false,
             mark_line_editor_active_abort_handle: None,
             did_receive_zsh_precmd: false,
             sessions,
@@ -69,10 +88,35 @@ impl LineEditorStatus {
         self.is_line_editor_active
     }
 
+    /// Whether the shell's ready signal proved its line editor is reading at this prompt (#1798).
+    /// Active without this means the fallback opened the write gate: keys may go to the pty, but
+    /// the line-report request must not.
+    pub fn is_proven_reading(&self) -> bool {
+        self.is_line_editor_active && self.proven_reading
+    }
+
+    /// The delay a prompt hook's activation waits for the shell's signal before giving up.
+    fn fallback_delay(&self) -> Duration {
+        self.signal_wait.unwrap_or(if self.ready_signal_seen {
+            LINE_EDITOR_SIGNAL_GIVE_UP
+        } else {
+            LINE_EDITOR_ACTIVATION_DELAY
+        })
+    }
+
     /// Sets the flag `LineEditorStatusEvent::Active` would set, without the precmd timer.
     #[cfg(test)]
     pub(crate) fn set_line_editor_active_for_test(&mut self, is_active: bool) {
         self.is_line_editor_active = is_active;
+        self.proven_reading = is_active;
+    }
+
+    /// Declares the line editor active the way the give-up does: the write gate is open, nothing
+    /// is proven.
+    #[cfg(test)]
+    pub(crate) fn set_line_editor_active_unproven_for_test(&mut self) {
+        self.is_line_editor_active = true;
+        self.proven_reading = false;
     }
 
     /// Marks the line editor as inactive.
@@ -87,10 +131,18 @@ impl LineEditorStatus {
     /// now, not at the end of [`LINE_EDITOR_ACTIVATION_DELAY`]. Without a pending activation the
     /// signal proves nothing (a program enabling bracketed paste itself) and the fallback stands.
     pub(super) fn note_shell_reading_line(&mut self, ctx: &mut ModelContext<Self>) {
-        if self.is_line_editor_active || self.mark_line_editor_active_abort_handle.is_none() {
+        if self.is_line_editor_active {
+            // Declared active by the give-up before the signal came: the signal proves the editor
+            // reads now (only a prompt cycle is ever active; a command's start made it inactive).
+            self.proven_reading = true;
+            return;
+        }
+        if self.mark_line_editor_active_abort_handle.is_none() {
             return;
         }
         abort_if_running(self.mark_line_editor_active_abort_handle.take());
+        self.ready_signal_seen = true;
+        self.proven_reading = true;
         self.is_line_editor_active = true;
         ctx.emit(LineEditorStatusEvent::Active);
     }
@@ -118,7 +170,7 @@ impl LineEditorStatus {
     /// Arms the activation delay as a precmd does, without the model event.
     #[cfg(test)]
     pub(crate) fn arm_activation_for_test(&mut self, ctx: &mut ModelContext<Self>) {
-        let delay = self.signal_wait.unwrap_or(LINE_EDITOR_ACTIVATION_DELAY);
+        let delay = self.fallback_delay();
         self.mark_line_editor_active_after_delay(delay, ctx);
     }
 
@@ -138,7 +190,7 @@ impl LineEditorStatus {
                 if is_active_session_zsh {
                     self.did_receive_zsh_precmd = true;
                 } else if !self.is_line_editor_active {
-                    let delay = self.signal_wait.unwrap_or(LINE_EDITOR_ACTIVATION_DELAY);
+                    let delay = self.fallback_delay();
                     self.mark_line_editor_active_after_delay(delay, ctx);
                     self.did_receive_zsh_precmd = false;
                 }
@@ -147,7 +199,8 @@ impl LineEditorStatus {
                 if is_active_session_zsh && self.did_receive_zsh_precmd =>
             {
                 if !self.is_line_editor_active {
-                    self.mark_line_editor_active_after_delay(LINE_EDITOR_ACTIVATION_DELAY, ctx);
+                    let delay = self.fallback_delay();
+                    self.mark_line_editor_active_after_delay(delay, ctx);
                 }
                 self.did_receive_zsh_precmd = false;
             }
@@ -164,6 +217,7 @@ impl LineEditorStatus {
         ctx: &mut ModelContext<Self>,
     ) {
         abort_if_running(self.mark_line_editor_active_abort_handle.take());
+        self.proven_reading = false;
 
         // For zsh, we use this heuristic -- 10ms after EndPrompt -- to approximate when the line
         // editor is active.
@@ -194,6 +248,7 @@ impl LineEditorStatus {
 
     fn set_line_editor_inactive(&mut self, ctx: &mut ModelContext<Self>) {
         abort_if_running(self.mark_line_editor_active_abort_handle.take());
+        self.proven_reading = false;
 
         if !self.is_line_editor_active {
             return;

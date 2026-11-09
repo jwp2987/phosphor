@@ -16,6 +16,7 @@ BOTH = {
     "editor_edit_save", "editor_paste",         # #1544: phosphor.exe <file URL> reaches the running instance over its named pipe (cases.open_file_in_windows_app)
     "upgrade_over_previous",                 # #1546: skips itself without APPCI_PREV_FIXTURE / APPCI_PREV_BIN
     "startup_shell_pane",                    # #1534: itself skips outside a startup_shell_override pass
+    "ctrl_c_no_esc_i_local",                 # #1798: itself skips on Windows with its reason
     "crash_kill9_restore", "crash_corrupt_db",       # #1541: taskkill /F /T + relaunch on the same profile (cases_robust.hard_kill; state under %LOCALAPPDATA%\\phosphor)
 }
 # POSIX syntax / rec.log / readline-style editing in the case: Git Bash pane only. Reason shown for the PowerShell pane.
