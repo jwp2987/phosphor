@@ -214,6 +214,9 @@ def collect_app(job, dest_root, notes):
             rel = n[len(base):]
             if rel.startswith(("run/logs/", "run/shots/")) or rel in ("session.log", "results.jsonl") or rel.endswith(".log"):   # logs are never copied wholesale
                 continue
+            # screenshots/video never enter the repo, whatever the run dir is called (the Mac job uses run_slim/)
+            if "/shots/" in "/" + rel or rel.lower().endswith((".jpg", ".jpeg", ".png", ".gif", ".webp", ".mp4", ".webm", ".mov")):
+                continue
             keep.append((n, rel))
         keep += [("appci-out/reused_build.json", "reused_build.json")] if "appci-out/reused_build.json" in names and plat == plats[0] else []
         for n, rel in keep:
