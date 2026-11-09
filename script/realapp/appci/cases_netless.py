@@ -416,3 +416,70 @@ def c_agent_plugins_offline(ctx, r):
         r.check("zq7 prompt" not in log, "%s: the prompt text reached the app log" % agent)
         ctx.shot("agent_plugins_offline_%s" % agent)
         time.sleep(3)           # let the fake agent exit before the next one starts
+
+
+# ------------------------------------------------------------------ network_gate_switch
+GATE_OFF_LOG = "network gate: turned OFF"
+GATE_ON_LOG = "network gate: turned ON"
+
+
+def gate_log_lines(text):
+    """the gate's own switch lines of an app log (the log never names a host: a host hash at most)"""
+    return [l for l in text.splitlines() if "network gate:" in l]
+
+
+@case("network_gate_switch", modes=("terminal",), order=88, gui=True)
+def c_network_gate_switch(ctx, r):
+    """Settings > Network > Network gate switch (`network.gate_enabled`, default true). Absent key: no 'turned OFF' line. `gate_enabled = false` in settings.toml:
+    the next launch logs 'network gate: turned OFF' and a later launch with the key true logs no OFF line. The app log never contains the host of the allowed-origin
+    entry the case writes. The denial notice, its 'Allow this origin' link and the Settings > Network log are UNVERIFIABLE here (see the note): no setting can make
+    the app issue a request the gate refuses, because every setting that names an origin also allows it."""
+    R.need_linux_app(ctx, "network_gate_switch")
+    marker_host = "gate-switch-%s.example.invalid" % ctx.tok(5).lower()
+    try:
+        # 1. gate_enabled absent (the v0.1.17 file shape): the gate is on, nothing is logged about the switch.
+        q = R.stop_for_restart(ctx, r, 20, "ngs_absent")
+        r.check(q["exited"], "ngs_absent: the app did not exit within 20 s")
+        p = R.settings_file(ctx)
+        text = open(p, encoding="utf-8", errors="replace").read()
+        r.check(R.T.get_key(text, "network", "gate_enabled") is None, "the profile's settings.toml already carries network.gate_enabled before the case wrote it")
+        open(p, "w", encoding="utf-8").write(R.T.set_key(text, "network", "allowed_origins", '"%s"' % marker_host))
+        _, up = R.start_app(ctx, r, "ngs_absent")
+        if not up:
+            return
+        log = ctx.log_since(0)
+        r.check(GATE_OFF_LOG not in log, "the gate was turned OFF with no gate_enabled key in settings.toml (absent must mean on)")
+        r.check(marker_host not in log, "the app log names the allowed origin's host (the log may carry a host hash only)")
+        # 2. gate_enabled = false: the next launch turns the gate off and says so once.
+        q = R.stop_for_restart(ctx, r, 20, "ngs_off")
+        r.check(q["exited"], "ngs_off: the app did not exit within 20 s")
+        open(p, "w", encoding="utf-8").write(R.T.set_key(open(p, encoding="utf-8", errors="replace").read(), "network", "gate_enabled", "false"))
+        _, up = R.start_app(ctx, r, "ngs_off")
+        if not up:
+            return
+        ctx.shot("ngs_gate_off")
+        log = ctx.log_since(0)
+        r.check(log.count(GATE_OFF_LOG) == 1, "gate_enabled=false: expected exactly one '%s' line, saw %d" % (GATE_OFF_LOG, log.count(GATE_OFF_LOG)))
+        r.check(marker_host not in log, "the app log names the allowed origin's host with the gate off")
+        # 3. back to true: no OFF line on the next launch.
+        q = R.stop_for_restart(ctx, r, 20, "ngs_on")
+        r.check(q["exited"], "ngs_on: the app did not exit within 20 s")
+        open(p, "w", encoding="utf-8").write(R.T.set_key(open(p, encoding="utf-8", errors="replace").read(), "network", "gate_enabled", "true"))
+        _, up = R.start_app(ctx, r, "ngs_on")
+        if not up:
+            return
+        log = ctx.log_since(0)
+        r.check(GATE_OFF_LOG not in log, "gate_enabled=true: the launch still logged '%s'" % GATE_OFF_LOG)
+        r.metric("gate_lines_last_launch", len(gate_log_lines(log)))
+        r.unverifiable("the denial notice (toast naming the purpose and host), its 'Allow this origin' link, the Settings > Network log row and 'Allow' button: the harness has no "
+                       "trigger for a refused request (models_dev_url and provider URLs are configured origins, so they are allowed; the Network page probe only reaches its fixed host) "
+                       "and no verified keyboard path to the Network page widgets. Covered by the unit tests in crates/network_gate, app/src/network_gate_log_tests.rs, "
+                       "app/src/network_gate_notice_tests.rs and app/src/settings_view/network_page_tests.rs")
+    finally:
+        try:
+            p = R.settings_file(ctx)
+            t = open(p, encoding="utf-8", errors="replace").read()
+            t = R.T.set_key(t, "network", "gate_enabled", "true")
+            open(p, "w", encoding="utf-8").write(R.T.set_key(t, "network", "allowed_origins", '""'))
+        except Exception:
+            pass
