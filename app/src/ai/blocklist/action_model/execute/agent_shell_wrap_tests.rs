@@ -1808,20 +1808,58 @@ fn the_exit_guard_exits_for_real_inside_subshells() {
 
 /// nushell scopes `cd` and `$env` changes to a block, so the agent's command is NOT wrapped in
 /// one (a `cd` would silently not take effect). It goes through as typed, with a leading space
-/// that keeps it out of the history (`history.ignore_space_prefixed`).
+/// that keeps it out of the history (`history.ignore_space_prefixed`) and, since #1813, a
+/// trailing comment ([`NU_PAGER_MARKER`]) that `nu.nu`'s `pre_execution` hook turns into
+/// "pagers off for this line" (owner-decision expectation change: the old assertions expected the
+/// bare ` cd /tmp`).
 #[test]
 fn nushell_commands_are_not_wrapped_in_a_block() {
-    assert_eq!(wrap_command(Some(ShellType::Nu), "cd /tmp"), " cd /tmp");
+    let m = NU_PAGER_MARKER;
+    assert_eq!(
+        wrap_command(Some(ShellType::Nu), "cd /tmp"),
+        format!(" cd /tmp {m}")
+    );
     assert_eq!(
         wrap_command(Some(ShellType::Nu), "ls | where size > 1mb\n\n"),
-        " ls | where size > 1mb"
+        format!(" ls | where size > 1mb {m}")
     );
     let multi = wrap_command(Some(ShellType::Nu), "let x = 1\n$x + 1");
-    assert_eq!(multi, " let x = 1\n$x + 1");
+    assert_eq!(multi, format!(" let x = 1\n$x + 1 {m}"));
     for wrapped in [&multi, &wrap_command(Some(ShellType::Nu), "exit 3")] {
         assert!(!wrapped.contains("{ "), "{wrapped}");
-        assert!(!wrapped.contains("__phosphor_ap"), "{wrapped}");
+        assert!(!wrapped.contains("with-env"), "{wrapped}");
+        assert!(wrapped.ends_with(m), "{wrapped}");
+        // One line more is never added: the marker is a trailing comment of the last line.
+        assert_eq!(wrapped.lines().count(), wrapped.matches('\n').count() + 1);
     }
-    // `$$` / `$PPID` do not exist in nushell, so the POSIX self-kill scan does not apply.
+}
+
+/// #1813: `nu.nu` carries the same overrides as `OVERRIDES` and the same marker, and its two
+/// hooks are the ones that act on them (MATCHED PAIR; the real-nushell behaviour is
+/// `script/test_nu_agent_pager_env`).
+#[test]
+fn nu_bootstrap_matches_the_overrides_and_the_marker() {
+    let nu = include_str!("../../../../../assets/bundled/bootstrap/nu.nu");
+    assert!(
+        nu.contains(&format!("\"{NU_PAGER_MARKER}\"")),
+        "marker differs"
+    );
+    for (name, value) in OVERRIDES {
+        assert!(
+            nu.contains(&format!("{name}: \"{value}\"")),
+            "nu.nu misses {name}: {value:?}"
+        );
+    }
+    assert!(nu.contains("__phosphor_ap_begin }"), "preexec applies them");
+    let precmd = nu.split("def --env __warp_precmd").nth(1).unwrap();
+    assert!(
+        precmd.contains("__phosphor_ap_end"),
+        "pre_prompt restores them"
+    );
+}
+
+/// `$$` / `$PPID` do not exist in nushell, so the POSIX self-kill scan does not apply.
+#[test]
+fn nushell_has_no_posix_self_kill_scan() {
     assert_eq!(kills_own_shell(Some(ShellType::Nu), "kill $$"), None);
 }

@@ -575,6 +575,49 @@ def c_no_helper_chip(ctx, r, arm):
     r.check(sum(1 for _, cmd in ctx.remote.commands() if "echo chip%s" % tok in cmd) == 1, "a command typed after connecting did not run exactly once with the chip up")
     finish_remote(ctx, r)
 
+# ------------------------------------------------------------------ 6b. nushell agent commands: pagers off, restored (#1813)
+NU_PAGER_MARKER = "# __phosphor_ap_pagers"          # agent_shell_wrap.rs NU_PAGER_MARKER (selftest keeps them equal)
+
+
+@lab_case("nu_agent_pager_env", shells=("nu",), lat=("lan",), helper=("nohelper",), modes=("terminal",))
+def c_nu_agent_pager_env(ctx, r, arm):
+    """#1813 on a REAL remote nushell (u_nu): the lines an agent command is typed as (` <command> # __phosphor_ap_pagers`, the exact wrapper form for Nu) are run
+    in the app's ssh session. `cd` and `$env.X =` of the command persist; PAGER/LESS/... are set during it (for nushell and for an external child); after a
+    success, after an external command that exits 3 and after a nushell error the user's own PAGER is back and the variables the user never had are gone; an
+    unmarked line sees the user's own PAGER. The local twin with a throw-away HOME is script/test_nu_agent_pager_env."""
+    tok = unique(ctx, 5)
+    eff = work(arm, "pg_%s.txt" % tok)
+    if connect_or_fail(ctx, r, arm) is None:
+        ctx.reset()
+        return
+    time.sleep(1.0 + 2 * rtt_s(arm))
+
+    def sv(expr):
+        return "((%s) + (char nl)) | save -a %s" % (expr, eff)
+
+    def run(line, want_lines):
+        ctx.be.type(line, type_pace(ctx), enter=True)
+        ctx.until(lambda: len(ctx.remote.lines(eff)) >= want_lines, 10 + 4 * rtt_s(arm), step=0.1)
+
+    after = sv("$\"after:($env.PAGER? | default 'unset'):($env.LESS? | default 'unset'):($env.PGTOK? | default 'none'):($env.PWD | path basename)\"")
+    sub = "pgsub" + tok
+    run(' $env.PAGER = "mypager"', 0)
+    run(" mkdir %s; cd %s; $env.PGTOK = \"%s\"; %s; ^sh -c 'echo ext:$PAGER:$LESS >> %s' %s" % (
+        sub, sub, tok, sv("$\"during:($env.PAGER):($env.LESS)\""), eff, NU_PAGER_MARKER), 2)
+    run(" " + after, 3)
+    run(" ^sh -c 'echo d3:$PAGER >> %s; exit 3' %s" % (eff, NU_PAGER_MARKER), 4)
+    run(" " + after, 5)
+    run(" %s; error make {msg: \"boom\"} %s" % (sv("$\"d4:($env.PAGER)\""), NU_PAGER_MARKER), 6)
+    run(" " + after, 7)
+    got = ctx.remote.lines(eff)
+    keep = "after:mypager:unset:%s:%s" % (tok, sub)
+    r.check(got[:2] == ["during:cat:-FRX", "ext:cat:-FRX"], "pagers not set during the command: %r" % got[:2])
+    r.check(got[2:3] == [keep], "after success: cd/$env did not persist or the user's PAGER/LESS was not restored: %r" % got[2:3])
+    r.check(got[3:5] == ["d3:cat", keep], "after an external command that exits non-zero: %r" % got[3:5])
+    r.check(got[5:7] == ["d4:cat", keep], "after a nushell error: %r" % got[5:7])
+    finish_remote(ctx, r)
+
+
 # ------------------------------------------------------------------ 7. a real password / keyboard-interactive prompt (#1535)
 @lab_case("password_prompt", shells=(), lat=("lan", "150"), helper=("nohelper",), scenarios=("p_password", "p_kbdint"))
 def c_password_prompt(ctx, r, arm):

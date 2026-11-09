@@ -1,0 +1,225 @@
+#!/usr/bin/env python3
+"""Agent commands in nushell run with pagers off, and the user's shell does not keep the pager
+variables afterwards (#1813). Real nushell in a pty, the real nu.nu bootstrap.
+
+agent_shell_wrap.rs types a Nu agent command as ` <command> # __phosphor_ap_pagers` (a comment
+nushell ignores, space-prefixed so it stays out of the history). The `pre_execution` hook in
+nu.nu sees the marker in `(commandline)`, saves the pager variables and sets the overrides; the
+`pre_prompt` hook restores them whenever a save exists. The command runs unwrapped, so its `cd`
+and `$env` changes persist (a `with-env` block would swallow them).
+
+CHECKED (nushell 0.116.1 and whatever `nu` is installed)
+  * `cd` and `$env.X = ...` of a marked command persist;
+  * the pager variables are set DURING the command, for nushell and for an external child;
+  * after a successful command, after an external command that exits non-zero, and after a
+    nushell error, the user's own PAGER is back and the variables the user never had are gone;
+  * a user's own pre_prompt / pre_execution hooks (from config.nu) still run, and ours are there;
+  * nothing of it reaches the history;
+  * an unmarked line never touches the pager variables.
+
+Isolated: a throw-away HOME and XDG dirs under $TMPDIR; the real ~/.config/nushell and its history
+are never read or written. A missing nu is reported and the script exits 0 (skipped) unless --nu.
+
+USAGE
+    script/test_nu_agent_pager_env [--nu PATH]
+"""
+
+import glob
+import json
+import os
+import pty
+import re
+import select
+import shutil
+import sys
+import tempfile
+import time
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+BOOT = os.path.join(ROOT, "app", "assets", "bundled", "bootstrap")
+HOOK_RE = re.compile(rb"\x1bP\$d([0-9a-f]*)(?:\x9c|\xc2\x9c)")
+
+args = sys.argv[1:]
+NU = None
+explicit = False
+if args[:1] == ["--nu"] and len(args) == 2:
+    NU, explicit = args[1], True
+elif args:
+    sys.exit(__doc__)
+if NU is None:
+    NU = shutil.which("nu") or ("/home/linuxbrew/.linuxbrew/bin/nu" if os.access("/home/linuxbrew/.linuxbrew/bin/nu", os.X_OK) else None)
+if not NU or not os.access(NU, os.X_OK):
+    print("nu: not installed (skipped)")
+    sys.exit(1 if explicit else 0)
+failures = []
+
+MARKER = re.search(r'NU_PAGER_MARKER: &str = "([^"]+)"', open(os.path.join(ROOT, "app/src/ai/blocklist/action_model/execute/agent_shell_wrap.rs")).read()).group(1)
+
+
+def check(cond, what, detail=""):
+    print(("  ok   " if cond else "  FAIL ") + what)
+    if not cond:
+        failures.append(what)
+        if detail:
+            print("       " + detail.replace("\n", "\n       "))
+
+
+def assemble(text):
+    """What bootstrap.rs does to a bootstrap file: keep one leading space, drop blank and comment lines."""
+    out = []
+    for line in text.split("\n"):
+        stripped = line.lstrip()
+        if len(stripped) < len(line):
+            line = " " + stripped
+        line = line.rstrip()
+        if not line.strip() or line.strip().startswith("#"):
+            continue
+        out.append(line)
+    return "\n".join(out) + "\n"
+
+
+def init_script(sid):
+    lines = [l for l in assemble(open(os.path.join(BOOT, "nu_init_shell.nu")).read()).split("\n") if l]
+    return ";".join(lines).replace("@@WARP_SESSION_ID@@", sid).replace("@@USING_CON_PTY_BOOLEAN@@", "false")
+
+
+class Shell:
+    def __init__(self, home, cwd):
+        self.home = home
+        env = {"HOME": home, "USER": os.environ.get("USER", "user"), "PATH": "/usr/local/bin:/usr/bin:/bin", "TERM": "xterm-256color",
+               "LANG": "C.UTF-8", "XDG_CONFIG_HOME": home + "/.config", "XDG_DATA_HOME": home + "/.local/share",
+               "XDG_CACHE_HOME": home + "/.cache", "WARP_HONOR_PS1": "0", "WARP_PROMPT_NODE_VERSION_ENABLED": "0",
+               "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
+        self.boot = os.path.join(home, "phosphor-nu.nu")
+        with open(self.boot, "w") as f:
+            f.write(assemble(open(os.path.join(BOOT, "nu.nu")).read()))
+        argv = [NU, "--login", "--execute", init_script("4242")]
+        self.pid, self.fd = pty.fork()
+        if self.pid == 0:
+            os.chdir(cwd)
+            os.execve(argv[0], argv, env)
+        self.buf = b""
+        self.broken = not self.pump(20, lambda: any(n == "InitShell" for n, _ in self.hooks()))
+        self.pump(0.5)
+        os.write(self.fd, (" source '%s'\r" % self.boot).encode())
+        self.broken = self.broken or not self.pump(20, lambda: any(n == "Bootstrapped" for n, _ in self.hooks()))
+        self.pump(1.0)
+
+    def pump(self, timeout, until=None):
+        end = time.time() + timeout
+        while time.time() < end:
+            if until is not None and until():
+                return True
+            r, _, _ = select.select([self.fd], [], [], 0.05)
+            if not r:
+                continue
+            try:
+                data = os.read(self.fd, 65536)
+            except OSError:
+                return until() if until else False
+            if not data:
+                return until() if until else False
+            for _ in range(data.count(b"\x1b[6n")):
+                os.write(self.fd, b"\x1b[1;1R")
+            self.buf += data
+        return until() if until else False
+
+    def hooks(self):
+        out = []
+        for m in HOOK_RE.finditer(self.buf):
+            try:
+                j = json.loads(bytes.fromhex(m.group(1).decode()).decode(errors="replace"))
+            except ValueError:
+                out.append(("INVALID", {}))
+                continue
+            out.append((j.get("hook", "?"), j.get("value") or {}))
+        return out
+
+    def cycle(self, line, timeout=10):
+        """Type a line; return the hooks it produced, waiting for its Precmd."""
+        if self.broken:
+            return []
+        n = len(self.hooks())
+        before = sum(1 for h, _ in self.hooks() if h == "Precmd")
+        os.write(self.fd, line.encode() + b"\r")
+        if not self.pump(timeout, lambda: sum(1 for h, _ in self.hooks() if h == "Precmd") > before):
+            self.broken = True
+        self.pump(0.2)
+        return self.hooks()[n:]
+
+    def close(self):
+        try:
+            os.write(self.fd, b"exit\r")
+            time.sleep(0.2)
+            os.kill(self.pid, 9)
+            os.waitpid(self.pid, 0)
+        except OSError:
+            pass
+
+
+
+def main():
+    base = tempfile.mkdtemp(prefix="phosphor-1813-")
+    R = os.path.realpath(base)
+    try:
+        cfg = os.path.join(R, ".config", "nushell")
+        os.makedirs(cfg)
+        open(os.path.join(cfg, "config.nu"), "w").write(
+            '$env.config.hooks.pre_prompt = [{|| $env.PGHOOK = "ran" }]\n'
+            '$env.config.hooks.pre_execution = [{|| $env.PGPRE = "ran" }]\n')
+        open(os.path.join(cfg, "env.nu"), "w").write("")
+        eff = os.path.join(R, "eff.txt")
+        sh = Shell(R, R)
+        check(not sh.broken, "the bootstrap came up")
+        if sh.broken:
+            sh.close()
+            return
+        agent = lambda cmd: sh.cycle(" %s %s" % (cmd, MARKER))
+        plain = lambda cmd: sh.cycle(" " + cmd)
+
+        def lines():
+            try:
+                return open(eff).read().splitlines()
+            except OSError:
+                return []
+        def sv(expr):
+            return "((%s) + (char nl)) | save -a %s" % (expr, eff)
+        after = sv('$"after:($env.PAGER? | default \'unset\'):($env.LESS? | default \'unset\'):($env.GIT_CONFIG_COUNT? | default \'unset\')'
+                 ':($env.PGTOK? | default \'none\'):($env.PWD | path basename):($env.PGHOOK? | default \'none\')"')
+
+        plain('$env.PAGER = "mypager"')
+        # 1. success: cd and $env persist; set during, for nushell and for a child
+        agent('mkdir sub; cd sub; $env.PGTOK = "t1"; %s; ^sh -c \'echo ext:$PAGER:$LESS >> %s\'' % (sv('$"during:($env.PAGER):($env.LESS):($env.GIT_PAGER):($env.AWS_PAGER)"'), eff))
+        plain(after)
+        got = lines()
+        check(got[:2] == ["during:cat:-FRX:cat:", "ext:cat:-FRX"], "pagers are set during the command (nushell and an external child)", repr(got))
+        check(got[2:3] == ["after:mypager:unset:unset:t1:sub:ran"], "after success: the user's PAGER is back, LESS/GIT_CONFIG_COUNT are gone, cd and $env persisted, the user's pre_prompt hook ran", repr(got))
+        # 2. an external command that fails
+        agent("^sh -c 'echo d3:$PAGER >> %s; exit 3'" % eff)
+        plain(after)
+        got = lines()
+        check(got[3:4] == ["d3:cat"] and got[4:5] == ["after:mypager:unset:unset:t1:sub:ran"], "after an external command that exits non-zero the variables are restored", repr(got))
+        # 3. a nushell error
+        agent('%s; error make {msg: "boom"}' % sv('$"d4:($env.PAGER)"'))
+        plain(after)
+        got = lines()
+        check(got[5:6] == ["d4:cat"] and got[6:7] == ["after:mypager:unset:unset:t1:sub:ran"], "after a nushell error the variables are restored", repr(got))
+        # 4. an unmarked line never sets them
+        plain(sv('$"plainpager:($env.PAGER)"'))
+        check(lines()[-1:] == ["plainpager:mypager"], "an unmarked line sees the user's own PAGER", repr(lines()))
+        # 5. hooks and history
+        plain(sv('$"hooks:($env.config.hooks.pre_prompt | length):($env.config.hooks.pre_execution | length):($env.PGPRE? | default \'none\')"'))
+        check(re.fullmatch(r"hooks:[2-9]:[2-9]:ran", (lines() or [""])[-1]) is not None, "our hooks were appended to the user's, not replacing them, and the user's pre_execution ran", repr(lines()[-1:]))
+        sh.cycle('$env.PGCTL = "x"')          # control: a line without the leading space IS recorded
+        plain(sv('(history | where command =~ "PGCTL" | length | into string)'))
+        control = lines()[-1:]
+        plain(sv('(history | where command =~ "phosphor_ap" | length | into string)'))
+        check(control not in (["0"], []) and lines()[-1:] == ["0"], "no agent line reached the history (control line was recorded: %s)" % control, repr(lines()[-2:]))
+        sh.close()
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+main()
+print("FAILED: %d" % len(failures) if failures else "all ok")
+sys.exit(1 if failures else 0)

@@ -2226,6 +2226,18 @@ def agent_lrc_takeover_log_parse():
 
 
 @check
+def nu_pager_marker_matches_the_app():
+    """#1813: the lab case types the exact marker agent_shell_wrap.rs appends for Nu, and nu.nu looks for the same text"""
+    import cases_lab as cl
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+    rs = open(os.path.join(root, "app/src/ai/blocklist/action_model/execute/agent_shell_wrap.rs")).read()
+    nu = open(os.path.join(root, "app/assets/bundled/bootstrap/nu.nu")).read()
+    assert 'NU_PAGER_MARKER: &str = "%s"' % cl.NU_PAGER_MARKER in rs
+    assert '"%s"' % cl.NU_PAGER_MARKER in nu
+    assert any(a["name"].startswith("lab_nu_agent_pager_env") for a in [c["arm"] for c in cases.CASES if c.get("lab")])
+
+
+@check
 def coverage_b_pure_helpers():
     """g10 coverage cases: the legacy/truncated settings builders, the startup-log and updater-line filters, the picker verdict"""
     import cases_coverage_b as cb
@@ -2790,7 +2802,7 @@ def lab_cases_registry_and_selection():
     assert run.unknown_case_names("mode_proof,typo_case", reg) == ["typo_case"]       # exact names are still checked exactly
     # winmap: a lab case is never 'unclassified'; PowerShell pane skips with a reason; p_onesess is skipped on Windows
     base = {n.split(".")[0] for n in names}
-    assert base == {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i", "lab_no_helper_chip", "lab_replay", "lab_password_prompt", "lab_helper_install"}, base
+    assert base == {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i", "lab_no_helper_chip", "lab_replay", "lab_password_prompt", "lab_helper_install", "lab_nu_agent_pager_env"}, base
     assert all(c["modes"] == ("terminal",) for c in labs if c["name"].startswith("lab_ssh_drop_reconnect")), "the drop case is terminal-only"
     pw = [c["arm"] for c in labs if c["name"].startswith("lab_password_prompt")]
     assert {a["user"] for a in pw} == {"p_password", "p_kbdint"} and all(a["helper"] == "nohelper" and a["fault"] is None for a in pw), pw     # #1535
