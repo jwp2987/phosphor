@@ -5827,3 +5827,18 @@ fn the_pty_write_count_survives_a_reset_on_exit() {
     pty.note_write();
     assert_eq!(handoff.pty_write_count().get(), 1);
 }
+
+#[test]
+fn a_report_is_pending_before_editor_text_until_it_lands() {
+    // #1659: a Tab pressed now would complete only the editor's fragment.
+    assert!(!TypeaheadHandoff::default().report_pending_before_editor_text());
+    let mut handoff = awaiting_report();
+    assert!(handoff.report_pending_before_editor_text());
+    // An Enter deferred behind the report: the report is still to come.
+    assert!(handoff.defer_enter());
+    assert!(handoff.report_pending_before_editor_text());
+    handoff.on_report();
+    assert!(!handoff.report_pending_before_editor_text());
+    // Keys the pty owns are not the editor's text at all.
+    assert!(!after_submit().report_pending_before_editor_text());
+}

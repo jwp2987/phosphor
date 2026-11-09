@@ -3457,6 +3457,11 @@ pub struct TerminalView {
     /// Identifies the young line's current wait (#1206); a backstop tick armed for an earlier one
     /// must not decide for it.
     young_enter_wait_id: u64,
+    /// #1659: the deferred Enter (`young` or not) waits for the Tab that ran on the merged line
+    /// once the shell's report was in; its id names the wait, so the give-up net of an earlier
+    /// one cannot end a later one.
+    enter_after_report_tab: Option<(bool, u64)>,
+    report_tab_wait_seq: u64,
     /// The remote shell's first prompt was seen in this connect: the point where held keys are
     /// handed to it (#1292). Without it the connect failed and they become editor text.
     ssh_remote_prompt_seen: bool,
@@ -5374,6 +5379,8 @@ impl TerminalView {
             running_block_user_submitted: false,
             young_enter_released: true,
             young_enter_wait_id: 0,
+            enter_after_report_tab: None,
+            report_tab_wait_seq: 0,
             ssh_remote_prompt_seen: false,
             ssh_give_up_in_progress: false,
             ssh_bootstrap_failed_session: None,
@@ -14435,6 +14442,15 @@ impl TerminalView {
         if has_stashed_report {
             self.insert_typeahead_from_handoff(ctx);
         }
+        // #1659: a Tab that waited for the shell's report and whose report will not come (the
+        // state left the wait without one) completes what the editor holds, as it always did.
+        if self
+            .input
+            .read(ctx, |input, _| input.tab_waits_for_report())
+            && !self.handoff.read().report_pending_before_editor_text()
+        {
+            self.resume_tab_after_report(ctx);
+        }
         let editor_owns_input = self.handoff.read().editor_owns_input();
         if editor_owns_input {
             self.note_editor_took_over();
@@ -14524,6 +14540,7 @@ impl TerminalView {
         match disposition {
             ReportDisposition::InsertLegacy => {
                 self.handle_typeahead_event(ctx);
+                self.resume_tab_after_report(ctx);
                 // #1104: bytes written behind the request this report answers are still in the
                 // shell's line; ask for them with one more request.
                 if self.handoff.read().drain_pending() {
@@ -14532,6 +14549,7 @@ impl TerminalView {
             }
             ReportDisposition::InsertKeepDeferred => {
                 self.insert_typeahead_from_handoff(ctx);
+                self.resume_tab_after_report(ctx);
                 self.arm_uncovered_deferral_timer(ctx);
                 ctx.emit(Event::RetryTypeaheadHandoffRequest);
             }
@@ -14541,6 +14559,7 @@ impl TerminalView {
                     self.input
                         .update(ctx, |input, ctx| input.mark_typeahead_young(ctx));
                 }
+                self.resume_tab_after_report(ctx);
                 self.note_editor_took_over();
                 self.redetermine_terminal_focus(ctx);
             }
@@ -14554,27 +14573,105 @@ impl TerminalView {
                     self.keep_deferred_enter_text(ctx);
                     return;
                 }
-                // #933: text the hand-off inserted was never classified (system edits do not
-                // request detection), so a line typed right after a command that reads as
-                // English is classified now, and its Enter waits for the verdict (bounded).
-                let detection = if young {
-                    self.input.update(ctx, |input, ctx| {
-                        input.request_detection_for_young_typeahead(ctx)
-                    })
-                } else {
-                    YoungTypeaheadDetection::NotNeeded
-                };
-                match detection {
-                    YoungTypeaheadDetection::NotNeeded => self.run_deferred_enter(young, ctx),
-                    YoungTypeaheadDetection::Requested => {
-                        self.young_enter_released = false;
-                        self.young_enter_wait_id = self.young_enter_wait_id.wrapping_add(1);
-                        self.submit_deferred_enter_after_detection(Instant::now(), ctx);
-                    }
-                    YoungTypeaheadDetection::CannotRun => self.keep_deferred_enter_text(ctx),
+                // #1659: a Tab pressed while this report was pending runs on the merged line
+                // first; the Enter that followed it waits for that completion, as it does for any
+                // Tab, and runs the completed line.
+                if self.resume_tab_before_deferred_enter(young, ctx) {
+                    return;
                 }
+                self.finish_report_enter(young, ctx);
             }
             ReportDisposition::Stash => {}
+        }
+    }
+
+    /// Runs a Tab that waited for the shell's line report, now on the merged line (#1659), when
+    /// no Enter is deferred behind it.
+    fn resume_tab_after_report(&mut self, ctx: &mut ViewContext<Self>) {
+        self.input
+            .update(ctx, |input, ctx| input.resume_tab_after_report(false, ctx));
+    }
+
+    /// As [`Self::resume_tab_after_report`] for a report whose deferred Enter runs next. Returns
+    /// whether the Enter now waits for the Tab's completion (the settle event, or the give-up net,
+    /// runs it).
+    fn resume_tab_before_deferred_enter(
+        &mut self,
+        young: bool,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        let waiting = self
+            .input
+            .update(ctx, |input, ctx| input.resume_tab_after_report(true, ctx));
+        if !waiting {
+            return false;
+        }
+        self.report_tab_wait_seq = self.report_tab_wait_seq.wrapping_add(1);
+        let id = self.report_tab_wait_seq;
+        self.enter_after_report_tab = Some((young, id));
+        warpui::input_order::log_hop("enter_waits_for_report_tab", || format!("id={id}"));
+        // A give-up net only: a Tab whose answer never comes hands the line back; it never runs
+        // the Enter (#1577).
+        ctx.spawn(Timer::after(REPORT_TAB_GIVE_UP), move |me, _, ctx| {
+            me.report_tab_gave_up(id, ctx);
+        });
+        true
+    }
+
+    /// The Tab that ran after the report was answered: the deferred Enter runs on the completed
+    /// line (#1659).
+    fn report_tab_settled(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some((young, _)) = self.enter_after_report_tab.take() else {
+            return;
+        };
+        if !self.handoff.read().deferred_submit_pending() {
+            // Ctrl-C or a give-up ended the Enter meanwhile: nothing left to run.
+            return;
+        }
+        // An ambiguous Tab leaves a menu open: the Enter runs the visible line, as after a held
+        // Tab (#1165), it does not accept a menu row.
+        self.input.update(ctx, |input, ctx| {
+            input.close_completion_menu_for_deferred_enter(ctx)
+        });
+        self.finish_report_enter(young, ctx);
+    }
+
+    /// The give-up net of the Enter waiting for the resumed Tab (#1659): the completion never
+    /// answered. The Enter is not run; the line stays, as for any give-up.
+    fn report_tab_gave_up(&mut self, id: u64, ctx: &mut ViewContext<Self>) {
+        if self.enter_after_report_tab.map(|(_, wait)| wait) != Some(id) {
+            return;
+        }
+        self.enter_after_report_tab = None;
+        self.input.update(ctx, |input, _| input.cancel_report_tab());
+        if !self.handoff.read().deferred_submit_pending() {
+            return;
+        }
+        log::warn!("Enter not run: the Tab completion before it did not answer; the line stays");
+        self.keep_deferred_enter_text_hand_back("report_tab_cap", ctx);
+    }
+
+    /// The part of a report that carried a deferred Enter which follows the insert: a young line
+    /// is classified first, the Enter then runs (#933).
+    fn finish_report_enter(&mut self, young: bool, ctx: &mut ViewContext<Self>) {
+        // #933: text the hand-off inserted was never classified (system edits do not
+        // request detection), so a line typed right after a command that reads as
+        // English is classified now, and its Enter waits for the verdict (bounded).
+        let detection = if young {
+            self.input.update(ctx, |input, ctx| {
+                input.request_detection_for_young_typeahead(ctx)
+            })
+        } else {
+            YoungTypeaheadDetection::NotNeeded
+        };
+        match detection {
+            YoungTypeaheadDetection::NotNeeded => self.run_deferred_enter(young, ctx),
+            YoungTypeaheadDetection::Requested => {
+                self.young_enter_released = false;
+                self.young_enter_wait_id = self.young_enter_wait_id.wrapping_add(1);
+                self.submit_deferred_enter_after_detection(Instant::now(), ctx);
+            }
+            YoungTypeaheadDetection::CannotRun => self.keep_deferred_enter_text(ctx),
         }
     }
 
@@ -31714,6 +31811,9 @@ impl TerminalView {
                     self.focus_terminal(ctx);
                 }
             }
+            InputEvent::ReportTabSettled => {
+                self.report_tab_settled(ctx);
+            }
             InputEvent::ReplayAfterDeferredEnter => {
                 self.replay_after_deferred_enter(ctx);
             }
@@ -39727,6 +39827,11 @@ const SSH_CONNECT_POST_BLOCK_GRACE: Duration = Duration::from_secs(5);
 /// slow ssh link) still releases the Enter instead of losing what followed it.
 ///
 /// [`YOUNG_HOLD_GIVE_UP`]: crate::terminal::model::typeahead_handoff::YOUNG_HOLD_GIVE_UP
+/// The give-up net of a deferred Enter waiting for the Tab that ran after the shell's report
+/// (#1659). Never the way the Enter is released (the completion's answer is): when it fires the
+/// line is handed back and nothing is written.
+const REPORT_TAB_GIVE_UP: Duration = Duration::from_secs(3);
+
 const UNCOVERED_REPORT_PATIENCE: Duration =
     crate::terminal::model::typeahead_handoff::YOUNG_HOLD_GIVE_UP;
 

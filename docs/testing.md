@@ -2726,3 +2726,12 @@ bounded cwd listing in the remote precmd payload when the cwd changes, cached pe
   `a_different_query_still_cancels_an_enter_waiting_for_a_pending_edit`, `no_edit_is_pending_for_the_newest_query_or_a_fresh_gate`.
   The Enter carries the filter the buffer holds (`Input::accept_ai_context_menu_item`); an edit event handled after it
   is that Enter's own query and keeps it. Both input modes share this path (the picker is above the queue).
+- #1659: `terminal/model/typeahead_handoff_tests.rs` `a_report_is_pending_before_editor_text_until_it_lands`. A Tab with
+  the shell's line report pending is held (`Input::defer_tab_for_report`, hop `tab_deferred_for_report`) and runs on the
+  merged line when the report lands (hop `tab_resumed_after_report`); a deferred Enter behind the report waits for that
+  completion (`Event::ReportTabSettled`, hop `enter_waits_for_report_tab`, give-up net `REPORT_TAB_GIVE_UP` that hands the
+  line back and never writes). Run `script/test_native_completions` after this change (the remote Tab goes through
+  `open_completion_suggestions`, which now returns early for a pending report only). The Windows `tab_enter` appci cascade
+  (r18u22) is the real-app check: Tab on the fragment while the report is in flight must complete the whole line and
+  Enter must run the completed line. No view-level unit test: the report/Tab interleave needs the pty-backed
+  `TerminalView` fixtures that only run on the box.
