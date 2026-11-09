@@ -327,6 +327,65 @@ fn can_start_action_with_current_phase(
     }
 }
 
+/// Where an action is, for the agent fuzzer ([`BlocklistAIActionModel::pending_snapshot_for_test`]).
+#[cfg(any(test, feature = "test-util"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingStage {
+    Preprocessing,
+    /// Pending behind another action.
+    Queued,
+    /// The front of its conversation's queue with nothing running: waiting for the user (or the
+    /// drain), so a card must be on screen if it needs the user.
+    Blocked,
+    Running,
+}
+
+#[cfg(any(test, feature = "test-util"))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingActionSnapshot {
+    pub conversation_id: AIConversationId,
+    pub action_id: AIAgentActionId,
+    /// `None` for actions already past the pending queue (their type is no longer held).
+    pub kind: Option<&'static str>,
+    pub stage: PendingStage,
+}
+
+/// The tool name of an action kind, or `None` for a kind not listed. One list for two users:
+/// the `hop=` diagnostic lines (`hop_kind`, which says "other") and the agent fuzzer
+/// ([`fuzz_action_kind`], which panics).
+fn action_kind_name(action: &AIAgentActionType) -> Option<&'static str> {
+    Some(match action {
+        AIAgentActionType::RequestCommandOutput { .. } => "run_shell_command",
+        AIAgentActionType::WriteToLongRunningShellCommand { .. } => {
+            "write_to_long_running_shell_command"
+        }
+        AIAgentActionType::ReadShellCommandOutput { .. } => "read_shell_command_output",
+        AIAgentActionType::ReadFiles(..) => "read_files",
+        AIAgentActionType::Grep { .. } => "grep",
+        AIAgentActionType::FileGlob { .. } | AIAgentActionType::FileGlobV2 { .. } => "file_glob",
+        AIAgentActionType::AskUserQuestion { .. } => "ask_user_question",
+        AIAgentActionType::TransferShellCommandControlToUser { .. } => {
+            "transfer_shell_command_control_to_user"
+        }
+        _ => return None,
+    })
+}
+
+/// The kind for the `hop=` lines: the tool's name, never any argument.
+fn hop_kind(action: &AIAgentActionType) -> &'static str {
+    action_kind_name(action).unwrap_or("other")
+}
+
+/// The fuzzer's name for an action kind. PANICS on a kind [`action_kind_name`] does not list, so
+/// a new action kind fails the fuzz run loudly until it is classified, rather than being
+/// silently treated as "needs no card".
+#[cfg(any(test, feature = "test-util"))]
+pub fn fuzz_action_kind(action: &AIAgentActionType) -> &'static str {
+    action_kind_name(action).unwrap_or_else(|| {
+        panic!("agent fuzzer: action kind {action:?} is not classified; add it to action_kind_name")
+    })
+}
+
 pub struct BlocklistAIActionModel {
     executor: ModelHandle<BlocklistAIActionExecutor>,
 
@@ -380,6 +439,11 @@ pub struct BlocklistAIActionModel {
     /// while the card is mid-update. A dropped card's flag no longer upgrades, so it cannot
     /// leave a command stuck.
     commands_being_edited: HashMap<(AIConversationId, AIAgentActionId), Weak<Cell<bool>>>,
+
+    /// The (kind, last logged status) of each action not yet finished, per conversation (action
+    /// ids are only unique within one), so the `hop=agent_action`
+    /// line is written when an action's state CHANGES and never per frame.
+    hop_state: HashMap<(AIConversationId, AIAgentActionId), (&'static str, &'static str)>,
 }
 
 impl BlocklistAIActionModel {
@@ -441,6 +505,7 @@ impl BlocklistAIActionModel {
             ambient_agent_task_id: None,
             full_command_shown: HashMap::new(),
             commands_being_edited: HashMap::new(),
+            hop_state: HashMap::new(),
         }
     }
 
@@ -647,6 +712,29 @@ impl BlocklistAIActionModel {
             std::collections::hash_map::Entry::Vacant(entry) => {
                 entry.insert(RunningActions::new(phase, action_id));
             }
+        }
+    }
+
+    /// Writes `hop=agent_action id= kind= status=` when `action_id`'s state changed (queued,
+    /// blocked, running, done, failed, cancelled). Ids, kinds and states only, never content.
+    fn hop(
+        &mut self,
+        conversation_id: AIConversationId,
+        action_id: &AIAgentActionId,
+        status: &'static str,
+    ) {
+        let key = (conversation_id, action_id.clone());
+        let entry = self.hop_state.entry(key.clone()).or_insert(("other", ""));
+        if entry.1 == status {
+            return;
+        }
+        entry.1 = status;
+        log::info!(
+            "hop=agent_action id={action_id} kind={} status={status}",
+            entry.0
+        );
+        if matches!(status, "done" | "failed" | "cancelled") {
+            self.hop_state.remove(&key);
         }
     }
 
@@ -1129,6 +1217,7 @@ impl BlocklistAIActionModel {
                     "[byop-diag] try_to_execute_action: ExecutedAsync action_id={action_id:?}"
                 );
                 self.update_conversation_in_progress_status(conversation_id, ctx);
+                self.hop(conversation_id, &action_id, "running");
                 self.add_running_action(conversation_id, action_id, phase);
                 Some(StartedAction::Async { phase })
             }
@@ -1151,6 +1240,7 @@ impl BlocklistAIActionModel {
                     .entry(conversation_id)
                     .or_default()
                     .insert(idx, (*action).clone());
+                self.hop(conversation_id, &action.id, "blocked");
                 self.handle_not_executed_action(action.as_ref(), reason, conversation_id, ctx);
                 None
             }
@@ -1180,6 +1270,55 @@ impl BlocklistAIActionModel {
             .entry(conversation_id)
             .or_default()
             .push(Arc::new(result));
+    }
+
+    /// Test-only (agent fuzzer, invariant I1): every action this model is holding, with the stage
+    /// it is in. Nothing that is pending, preprocessing or running is left out, so the oracle can
+    /// check that each one is runnable, running, or blocked behind a card.
+    ///
+    /// Panics on an action kind [`fuzz_action_kind`] does not classify: a new kind must be given a
+    /// card verdict before the fuzzer can say anything about it.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn pending_snapshot_for_test(&self) -> Vec<PendingActionSnapshot> {
+        let mut out = Vec::new();
+        for (conversation_id, queue) in &self.pending_actions {
+            for (index, action) in queue.iter().enumerate() {
+                let front_and_idle = index == 0
+                    && !self.is_view_only
+                    && !self.running_actions.contains_key(conversation_id);
+                out.push(PendingActionSnapshot {
+                    conversation_id: *conversation_id,
+                    action_id: action.id.clone(),
+                    kind: Some(fuzz_action_kind(&action.action)),
+                    stage: if front_and_idle {
+                        PendingStage::Blocked
+                    } else {
+                        PendingStage::Queued
+                    },
+                });
+            }
+        }
+        for (conversation_id, running) in &self.running_actions {
+            for action_id in &running.action_ids {
+                out.push(PendingActionSnapshot {
+                    conversation_id: *conversation_id,
+                    action_id: action_id.clone(),
+                    kind: None,
+                    stage: PendingStage::Running,
+                });
+            }
+        }
+        for (conversation_id, preprocessing) in &self.pending_preprocessed_actions {
+            for action_id in preprocessing.action_ids_for_test() {
+                out.push(PendingActionSnapshot {
+                    conversation_id: *conversation_id,
+                    action_id,
+                    kind: None,
+                    stage: PendingStage::Preprocessing,
+                });
+            }
+        }
+        out
     }
 
     /// Test-only: queues a single action through the normal dispatch pipeline so
@@ -1347,10 +1486,15 @@ impl BlocklistAIActionModel {
                 continue;
             }
 
+            self.hop_state.insert(
+                (conversation_id, action_id.clone()),
+                (hop_kind(&action.action), ""),
+            );
             self.pending_actions
                 .entry(conversation_id)
                 .or_default()
                 .push_back(action);
+            self.hop(conversation_id, &action_id, "queued");
             ctx.emit(BlocklistAIActionEvent::QueuedAction(action_id));
         }
         self.try_to_execute_available_actions(conversation_id, ctx);
@@ -1669,6 +1813,14 @@ impl BlocklistAIActionModel {
         }
 
         let action_id = action_result.id.clone();
+        let hop_status = if action_result.result.is_cancelled() {
+            "cancelled"
+        } else if action_result.result.is_failed() {
+            "failed"
+        } else {
+            "done"
+        };
+        self.hop(conversation_id, &action_id, hop_status);
 
         // Every terminal outcome (success, failure, cancellation — from any
         // path) funnels through here, so this is the one place executor-held

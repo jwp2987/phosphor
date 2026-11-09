@@ -915,6 +915,12 @@ impl AIBlockFindRenderKey {
     }
 }
 
+/// `hop=action_card`: a card for `action_id` came up in a block. Written when the card is
+/// created, once per card (ids and kinds only).
+fn log_card_shown(action_id: &AIAgentActionId, kind: &str) {
+    log::info!("hop=action_card id={action_id} kind={kind} shown=true");
+}
+
 pub struct AIBlock {
     model: Rc<dyn AIBlockModel<View = AIBlock>>,
 
@@ -2211,6 +2217,7 @@ impl AIBlock {
                         cancel_button,
                     },
                 );
+                log_card_shown(&action.id, "action_buttons");
             }
 
             // Ensure a button component exists for UseComputer actions.
@@ -3613,6 +3620,7 @@ impl AIBlock {
 
                 self.requested_commands
                     .insert(action_id.clone(), RequestedCommand { view });
+                log_card_shown(action_id, "run_shell_command");
             }
         }
     }
@@ -3810,6 +3818,7 @@ impl AIBlock {
 
                 self.requested_mcp_tools
                     .insert(action_id.clone(), RequestedCommand { view });
+                log_card_shown(action_id, "call_mcp_tool");
             }
         }
     }
@@ -3881,6 +3890,12 @@ impl AIBlock {
             Some(view) => !view.as_ref(ctx).matches_action(action_id, questions),
             None => true,
         };
+        // The view is rebuilt as the arguments stream in; the card is the same card, so the
+        // `hop=action_card` line is written only when it is a different action's.
+        let new_card = self
+            .ask_user_question_view
+            .as_ref()
+            .is_none_or(|view| view.as_ref(ctx).action_id() != action_id);
         if !needs_init {
             return;
         }
@@ -3904,6 +3919,9 @@ impl AIBlock {
         });
 
         self.ask_user_question_view = Some(view.clone());
+        if new_card {
+            log_card_shown(action_id, "ask_user_question");
+        }
         if self
             .action_model
             .as_ref(ctx)
@@ -4544,6 +4562,64 @@ impl AIBlock {
             },
         };
         Some(rich_content_link)
+    }
+
+    /// Test-only (agent fuzzer, invariants I1 and I7): the ids of the actions this block shows a
+    /// card for that the user can act on right now. A command / MCP / button card counts only
+    /// while the action model has the action blocked (a finished action's card is history, not a
+    /// control); the question card counts while it is taking answers.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn actionable_card_ids_for_test(&self, app: &AppContext) -> Vec<AIAgentActionId> {
+        let blocked = |id: &AIAgentActionId| {
+            self.action_model
+                .as_ref(app)
+                .get_action_status(id)
+                .is_some_and(|status| status.is_blocked())
+        };
+        let mut ids: Vec<AIAgentActionId> = self
+            .requested_commands
+            .keys()
+            .chain(self.requested_mcp_tools.keys())
+            .chain(self.action_buttons.keys())
+            .filter(|id| blocked(id))
+            .cloned()
+            .collect();
+        if let Some(view) = &self.ask_user_question_view {
+            let view = view.as_ref(app);
+            if view.is_awaiting_answers_for_test(app) {
+                ids.push(view.action_id().clone());
+            }
+        }
+        ids.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
+        ids.dedup();
+        ids
+    }
+
+    /// Test-only (agent fuzzer, I7): the action whose card this block would route accept keys
+    /// to right now (`pending_command_card_view_id`). That is the card's own key-routing state,
+    /// read from the front of the pending queue and the card's edit flag, not from the
+    /// blocked / finished status the other probes use: a card that still takes Enter for an
+    /// action that is done or cancelled shows up here.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn key_routed_card_action_for_test(&self, app: &AppContext) -> Option<AIAgentActionId> {
+        let routed_view = self.pending_command_card_view_id(app)?;
+        self.requested_commands
+            .iter()
+            .chain(self.requested_mcp_tools.iter())
+            .find(|(_, card)| card.view.id() == routed_view)
+            .map(|(id, _)| id.clone())
+    }
+
+    /// Test-only (agent fuzzer, I7): the ids of every action this block holds a card for, whether
+    /// or not it is still actionable.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn card_ids_for_test(&self) -> Vec<AIAgentActionId> {
+        self.requested_commands
+            .keys()
+            .chain(self.requested_mcp_tools.keys())
+            .chain(self.action_buttons.keys())
+            .cloned()
+            .collect()
     }
 
     /// Returns `true` if the block contains any actions that are blocked on user confirmation.

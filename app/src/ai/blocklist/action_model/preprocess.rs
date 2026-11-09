@@ -27,6 +27,15 @@ impl PendingPreprocessedActions {
         self.0.iter().any(|action| action.contains(action_id))
     }
 
+    /// Test-only (agent fuzzer): every action id still in a preprocessing batch.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn action_ids_for_test(&self) -> Vec<AIAgentActionId> {
+        self.0
+            .iter()
+            .flat_map(|batch| batch.action_ids.iter().cloned())
+            .collect()
+    }
+
     /// Returns the actions that are ready to be queued now that the group of actions identified by [`PreprocessId`] have completed.
     /// NOTE this may return actions that have been completed earlier to maintain the invariant that actions are returned in the
     /// order they are added.

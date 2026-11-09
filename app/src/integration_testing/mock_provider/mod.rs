@@ -157,13 +157,23 @@ impl MockProvider {
 /// `crate::ai::agent_providers::lookup_byop` resolves the model and the real send
 /// path streams from `localhost`. No cloud, no real key.
 pub fn wire_mock_provider_config(ctx: &mut AppContext, base_url: &str) -> ai::LLMId {
+    wire_mock_provider_config_with_model(ctx, base_url, MOCK_MODEL_ID)
+}
+
+/// [`wire_mock_provider_config`] for a provider whose one model is `model_id`. The agent fuzzer
+/// gives each case its own model id, because its stream seam (`fake_stream_seam`) is keyed by it.
+pub fn wire_mock_provider_config_with_model(
+    ctx: &mut AppContext,
+    base_url: &str,
+    model_id: &str,
+) -> ai::LLMId {
     let provider = AgentProvider {
         id: MOCK_PROVIDER_ID.to_owned(),
         name: "Mock BYOP Provider".to_owned(),
         kind: Default::default(),
         api_type: AgentProviderApiType::OpenAi,
         base_url: base_url.to_owned(),
-        models: vec![AgentProviderModel::from_id(MOCK_MODEL_ID.to_owned())],
+        models: vec![AgentProviderModel::from_id(model_id.to_owned())],
         extra_headers: Vec::new(),
         vertex_project: String::new(),
         vertex_location: String::new(),
@@ -178,7 +188,7 @@ pub fn wire_mock_provider_config(ctx: &mut AppContext, base_url: &str) -> ai::LL
         secrets.set(MOCK_PROVIDER_ID, MOCK_API_KEY.to_owned(), ctx);
     });
 
-    llm_id::encode(MOCK_PROVIDER_ID, MOCK_MODEL_ID)
+    llm_id::encode(MOCK_PROVIDER_ID, model_id)
 }
 
 #[cfg(test)]

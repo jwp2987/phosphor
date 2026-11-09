@@ -735,6 +735,13 @@ impl CLISubagentController {
     /// them, and the next key sees the user in control.
     pub fn switch_control_to_user(&self, reason: UserTakeOverReason, ctx: &mut ModelContext<Self>) {
         let should_cancel_conversation = reason.should_cancel_conversation();
+        // For the `hop=handover` line: the variant only, never the agent's own reason text.
+        let reason_name = match &reason {
+            UserTakeOverReason::Manual => "manual",
+            UserTakeOverReason::Stop { .. } => "stop",
+            UserTakeOverReason::TransferFromAgent { .. } => "transfer_from_agent",
+            UserTakeOverReason::BlockedOnInput => "blocked_on_input",
+        };
         let change_reason = ControlChangeReason::for_user_takeover(&reason);
         let mut terminal_model = self.terminal_model.lock();
 
@@ -755,6 +762,13 @@ impl CLISubagentController {
         // cancelled action is a shell command action, so we have to drop the terminal
         // model lock before actually cancelling the conversation.
         drop(terminal_model);
+        // Off the Ctrl-C lock path: after the model lock is released.
+        log::info!(
+            "hop=handover action={} reason={reason_name}",
+            action_id
+                .as_ref()
+                .map_or_else(|| "-".to_owned(), ToString::to_string)
+        );
 
         // Only cancel the conversation if the user initiated the take-over. An agent-driven
         // transfer, or a hand-over forced by a password prompt, needs the conversation alive.

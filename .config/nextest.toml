@@ -86,3 +86,11 @@ retries = 2
 [[profile.ci.overrides]]
 filter = 'package(warpui) & test(/windowing::winit::.*clipboard::tests::clipboard_tests::/)'
 test-group = 'system-clipboard'
+
+[[profile.default.overrides]]
+# The agent fuzzer (docs/testing.md "Agent fuzzer and fake model"): one test is many whole
+# App::test conversations with real waits (stall timeouts, retry backoff), so the default
+# 30 s / 60 s budget would kill it. Fixed seed + modest case count by default; deep runs go
+# through script/agent_fuzz.
+filter = 'test(agent_fuzz)'
+slow-timeout = { period = "120s", terminate-after = 5 }

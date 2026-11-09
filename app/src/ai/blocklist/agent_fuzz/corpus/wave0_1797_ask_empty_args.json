@@ -1,0 +1,41 @@
+{
+  "v": 1,
+  "name": "wave0_1797_ask_empty_args",
+  "seed": 1797,
+  "turns": [
+    {
+      "when": {
+        "kind": "nth",
+        "n": 0
+      },
+      "reply": {
+        "kind": "tool_calls",
+        "calls": [
+          {
+            "id": {
+              "kind": "fresh"
+            },
+            "name": "ask_user_question",
+            "args": {
+              "kind": "ask_questions_empty"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "when": {
+        "kind": "nth",
+        "n": 1
+      },
+      "reply": {
+        "kind": "text",
+        "text": "asking in plain text instead"
+      }
+    }
+  ],
+  "env": {
+    "commands": {}
+  },
+  "actor": []
+}

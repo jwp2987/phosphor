@@ -1,0 +1,70 @@
+{
+  "v": 1,
+  "name": "wave0_1799_reject_then_transfer",
+  "seed": 1799,
+  "turns": [
+    {
+      "when": {
+        "kind": "nth",
+        "n": 0
+      },
+      "reply": {
+        "kind": "tool_calls",
+        "calls": [
+          {
+            "id": {
+              "kind": "fresh"
+            },
+            "name": "run_shell_command",
+            "args": {
+              "kind": "command",
+              "cmd": "c0"
+            }
+          },
+          {
+            "id": {
+              "kind": "fresh"
+            },
+            "name": "transfer_shell_command_control_to_user",
+            "args": {
+              "kind": "refers_to",
+              "cmd": "c0"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "when": {
+        "kind": "nth",
+        "n": 1
+      },
+      "reply": {
+        "kind": "text",
+        "text": "understood"
+      }
+    }
+  ],
+  "env": {
+    "commands": {
+      "c0": {
+        "kind": "never_ends"
+      }
+    }
+  },
+  "actor": [
+    {
+      "op": {
+        "kind": "follow_up",
+        "text": "and then list the files"
+      },
+      "timing": "on_card"
+    },
+    {
+      "op": {
+        "kind": "reject"
+      },
+      "timing": "on_card"
+    }
+  ]
+}

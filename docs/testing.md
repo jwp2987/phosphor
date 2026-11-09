@@ -2416,3 +2416,118 @@ turn ends (app log), on any turn that does not end within 10 s of the last user 
 Fuzzer oracle (the Wave 0.5 grammar generator): after every generated user step, each `pending_actions` entry is the front action with a
 rendered card or is behind one; nothing is `RunningAsync` for an `ask_user_question`; a turn whose actions are all finished leaves the
 conversation not `Blocked`. #1797 and #1799 are the acceptance cases: the fuzzer must find both from scratch on the pre-fix build.
+
+## Agent fuzzer and fake model
+
+A fake AI model plus a fuzzer that drives whole agent conversations. Three layers, one scenario schema (`"v": 1`, `crates/fake_llm/src/scenario.rs`); a failing case from any layer is a JSON file any other layer can replay. Nothing here ships in a release build: `fake_llm` is a dev-dependency of `app` only, and the app-side seam is `cfg(any(test, feature = "test-util"))`.
+
+| layer | what it drives | where | state |
+|---|---|---|---|
+| **L0 wire** | the real genai client (`lib/rust-genai`, the BYOP decoder) against llmposter, a scripted raw server and a byte-level chaos proxy | `crates/fake_llm/tests/genai_decode.rs` | in this build |
+| **L1 in-process** | the real controller / action model / queue in `App::test`, fed scripted turns through the stream seam, an actor stepping the user's side, an oracle checking I1-I7 after every step | `app/src/ai/blocklist/agent_fuzz/` | in this build (see below) |
+| **L2 real app** | appci + llmposter as the provider, real PTY | `script/realapp/appci` | later |
+
+**llmposter** (crates.io, AGPL-3.0-or-later, test-only; Phosphor is AGPL-3.0-only so the licences are compatible, and `AGPL-3.0-or-later` is on the `deny.toml` / `about.toml` lists for it) supplies the HTTP mock: OpenAI SSE, character-chunked text, HTTP error statuses, frame truncation. `crates/fake_llm` writes only the gaps: the in-process seam, byte-level cuts (inside UTF-8, a JSON string, between `data:` and `\n\n`), tool-call arguments streamed as many deltas, malformed arguments, chosen call ids, and the scenario schema.
+
+### L0 (`genai_decode*`)
+
+| test | what it proves |
+|---|---|
+| `genai_decode_llmposter_text_reassembles` (proptest) | text of any shape (multi-byte, quotes, newlines) chunked any way reassembles byte-exact |
+| `genai_decode_llmposter_tool_call_arguments_parse` | every known tool's valid arguments arrive as the call's name and parsed arguments; the chunk the app accumulates by id carries the raw text |
+| `genai_decode_llmposter_turns_follow_request_order` | the nth request gets the nth turn; past the script the fake answers `END` |
+| `genai_decode_proxy_cuts_keep_text_exact` (proptest) | the stream cut at arbitrary bytes by `ChaosProxy` still decodes exactly |
+| `genai_decode_wire_split_arguments_are_byte_exact` (proptest) | arguments streamed as 1-11 deltas, frames cut at arbitrary bytes, accumulate byte-exact |
+| `genai_decode_wire_invalid_json_arguments_arrive_as_the_raw_text` | malformed / empty arguments reach the app as the exact text (the app parses and rejects them) |
+| `genai_decode_wire_two_calls_keep_their_ids_and_order` | two calls keep ids and order |
+| `genai_decode_disconnect_mid_stream_is_an_error_not_a_short_reply` | a connection dropped mid-stream is an error |
+| `genai_decode_clean_close_before_done_is_a_visibly_missing_end` | a clean close before `[DONE]` is a plain end with no End event; the only defence is the app's "ended without a terminal End event" guard (`chat_stream.rs`) |
+| `genai_decode_stall_is_catchable_with_a_timeout` | a silent connection can be timed out by the caller (the app has its idle timeouts) |
+| `genai_decode_llmposter_truncation_never_looks_complete` | llmposter's frame truncation never yields an End |
+| `genai_decode_llmposter_http_statuses_reach_the_caller`, `genai_decode_wire_html_error_page_is_an_error_with_its_status`, `genai_decode_llmposter_context_overflow_keeps_the_providers_wording`, `genai_decode_in_stream_error_event_is_an_error` | 429 / 529 / 503 / 500, an HTML 502, a context-overflow 400 and an in-stream error event reach the caller with the status or the provider's wording the app's classifiers match on |
+
+### The seam and the test-only probes (L1 plumbing)
+
+All `cfg(any(test, feature = "test-util"))`; none of it is in a release build.
+
+| piece | where | what it is |
+|---|---|---|
+| stream seam | `app/src/ai/agent_providers/fake_stream_seam.rs`, hook `open_sdk_stream` in `chat_stream.rs` | `install(model_id, script)` registers scripted turns per model id; `generate_byop_output` asks the seam just before `exec_chat_stream` and, if a script exists, reads its `ChatStreamEvent`s instead of the network. Records every request (`RecordedRequest`: tool-message ids, tool-call ids, last user text, offered tools) for I3/I4. Open errors, mid-stream `Http` / `Transport` errors, `Stall`, `Wait` and a stream that stops with no `End` are all scriptable |
+| `pending_snapshot_for_test` | `BlocklistAIActionModel` | every pending / preprocessing / running action with its stage (`PendingStage`) and kind; **panics on an action kind `fuzz_action_kind` does not classify**, so a new kind fails the fuzz run until it is given a verdict |
+| `actionable_card_ids_for_test`, `card_ids_for_test` | `AIBlock`; `TerminalView::actionable_card_ids_for_test` aggregates | the actions a block shows an actionable card for (command / MCP / button cards while the action is blocked; the question card while it takes answers) |
+| `complete_command_for_test`, `is_waiting_on_command_for_test` | `ShellCommandExecutor` | `MockTerminalManager` has no pty, so no block ever exists for a requested command; this finishes the waiting action as if the command exited, printing a chosen output |
+
+Seam unit tests: `fake_stream_seam_tests.rs` (unregistered ids fall through to the network, requests are recorded with their tool messages, dropping the handle unregisters, tool-call chunks and the End content match genai's, an open error carries its status, a duplicate id panics).
+
+### The L1 harness (`app/src/ai/blocklist/agent_fuzz/`)
+
+`cfg(test)` only. A case is one `App::test`: a real `TerminalView`, `BlocklistAIController`, action model and queue, the BYOP provider wired (`wire_mock_provider_config_with_model`) to a per-case model id whose replies come from the seam, and the active model set through `LLMPreferences`.
+
+| file | role |
+|---|---|
+| `player.rs` | scenario -> `SeamTurn` per request (`Match`: nth request / last tool result / user token / default; an unmatched request gets `END`); records the call ids each reply emitted. `Missing` id = the id genai assigns (`call_<index>`), `DuplicateOf` = a repeated id, chaos = open error / mid-stream error / stall / no `End` |
+| `rig.rs` | setup, `observe` (conversation status, stream in flight, action snapshot, actionable cards, queue rows), `drive_commands` (finishes `Quick`/`SetE` commands through `complete_command_for_test`; reports a never-ending one to the agent after a short wait, as the executor's stall snapshot does), `settle_until` |
+| `actor.rs` | the scripted user, through the UI's entry points (table in the file header): Ctrl-C is the view's real key handling (`press_ctrl_c_for_test`), a follow-up is typed into the input and `maybe_queue_input_for_in_progress_conversation` decides queue-or-submit (`type_and_try_queue_for_test`), Stop is the status bar's controller call. `AnswerQuestion` acts only on a question that is Blocked and has a card up, stages the answers, executes by id and then discards what was not taken (as `ask_user_question_view.rs` does), so it never completes a cardless question and works whether or not `ask_user_question` needs an approval step first |
+| `oracle.rs` | I1-I4, I6, I7 (I5 is `prompt_tests.rs`) |
+| `runner.rs` | one case end to end; a panic becomes an I6 violation; a failure prints the scenario as schema JSON |
+| `log_capture.rs` | ERROR-log tap on the unit-test logger (one tap per process: run under nextest) |
+| `smoke_tests.rs` | a plain reply (status `Success`, one request, no tool message), and a command that waits for approval then runs (the step was performed on a `run_shell_command` card, two requests, exactly one tool message, `Success`): the smallest cases, so read their failure first; nothing orders them before the others |
+
+Invariants (checked after every step; delta = 2 s, all waits scale with `AGENT_FUZZ_TIME_SCALE`):
+
+| id | invariant |
+|---|---|
+| I1 | every blocked action has an actionable card within delta; nothing pending sits neither blocked-with-card, runnable nor running longer than delta (`transfer_shell_command_control_to_user` counts as carded only while the rig has a live never-ending command: its card is the CLI subagent view) |
+| I2a | script used up and every card answered -> conversation terminal within 5 s (+4 s per failing turn: retry backoff) |
+| I2b | Ctrl-C / Stop -> terminal within 2 s, nothing pending or running, no stream in flight |
+| I3 | when terminal, locked queued rows unlock within 2 s; after a success, unlocked rows are sent within 3 s. After a cancel rows are restored to the input, not sent (#690 / #1026, kept by #1799) |
+| I4 | each request carries exactly one tool message per emitted call id, in order, none extra, none orphaned; duplicates renamed `id#2` |
+| I6 | no panic on any thread (a hook records panics in background futures), no ERROR log beyond the allowance per chaos kind and count: `status` / `context_overflow` / `disconnect` / `stall` 2 each, `never_end` 1, `split` / `delay` 0 (`oracle::error_allowance`). Log lines are not filtered by thread, so ERRORs from spawned futures count (run under nextest: one process per test) |
+| I7 | no card takes accept keys for an action the model no longer holds (read from the card's own key routing, `AIBlock::key_routed_card_action_for_test` over `pending_command_card_view_id`, not from the action status) |
+
+I5 (`prompt_tests.rs`): the rig has no pty, so I5 drives the real `PromptDetector::observe` (now, termios shape, screen candidate and the #1796 `foreground_tty_read` probe) at the executor's 1 Hz poll with synthetic observations built from each command behaviour, plus the real hand-over on a `TerminalModel` block (`take_over_control_for_user` / `handoff_control_to_agent`, the calls `CLISubagentController` wraps and logs ERROR on failure).
+
+| test | what it proves |
+|---|---|
+| `a_prompt_lookalike_is_never_handed_over_while_the_foreground_is_not_reading` | `Silent` / `TrailingColon` / `TrailingQuestion` with probe `NotReading`: never handed over in 30 simulated minutes (#1796) |
+| `a_real_prompt_is_handed_over_within_the_window_plus_three_seconds` | `RealPrompt` + `Reading`: not before 15 s, not after 18 s |
+| `a_secret_prompt_is_handed_over_at_once` | `read -s` (echo off, canonical) needs no probe |
+| `with_no_probe_a_bare_question_waits_ninety_seconds` | probe `Unknown`: not before 90 s, but handed over (unknown is not never) |
+| `handover_only_for_commands_that_read_the_tty` (proptest over every behaviour) | a hand-over happens only for a command that reads the tty (a secret prompt, echo off, aside) |
+| `handing_over_and_back_logs_no_error_and_leaves_the_agent_in_control` | the real block hand-over round trip: no ERROR logged, agent in control afterwards |
+| `a_second_hand_back_is_refused_without_a_panic` | a repeated hand-back is an `Err` (the controller logs it at ERROR): the executor must hand back once per take-over |
+
+Determinism: the default run uses a FIXED proptest seed and 12 cases (`AGENT_FUZZ_SEED=<0-255>` picks another, `AGENT_FUZZ_SEED=random` a fresh one), so an unrelated change is never gated by unseeded randomness. Deep runs are `script/agent_fuzz` with `AGENT_FUZZ_SEED=random PROPTEST_CASES=200` and/or `AGENT_FUZZ_MINUTES`. `.config/nextest.toml` gives `test(agent_fuzz)` a 120 s slow period (terminate after 5) because one test is many whole conversations with real waits.
+
+Environment knobs: `AGENT_FUZZ_TIME_SCALE` (default 1.0), `AGENT_FUZZ_HUMAN_SCALE` (default 0.05, scales the actor's 400-2500 ms "human" delays). `stall` chaos needs `PHOSPHOR_BYOP_STREAM_IDLE_TIMEOUT_SECS` and `PHOSPHOR_BYOP_STREAM_FIRST_EVENT_TIMEOUT_SECS` at 3 or less (`script/agent_fuzz` sets them to 1).
+
+### Corpus, known failures, coverage, entry point
+
+* `agent_fuzz/corpus/*.json` is replayed on every run by `corpus_replay_tests.rs`. Each file is a schema-v1 scenario named by its stem. The four Wave 0 scenarios are there as ordinary entries (they pass on this branch, where #1796, #1797 and #1799 are fixed): `wave0_1799_reject_then_transfer` (a held command and a hand-over behind it, a follow-up queued while blocked, then Reject), `wave0_1797_ask_empty_args` (`questions: []`), `wave0_1797_ask_valid` (a real question, answered), `wave0_1796_silent_then_handoff` (a silent, prompt-shaped command; L1 has no pty, so its detector half is `prompt_tests.rs`). Also `dup_call_ids`, `unknown_and_not_offered_tools`, `ctrl_c_during_never_ending_command`.
+* Adding a case: copy the JSON a failure prints (or the file `AGENT_FUZZ_SAVE=<dir>` wrote) into `corpus/`. Never put a scenario in the repo that you have not seen pass or listed.
+* `known_failures.toml` maps a corpus scenario to the issue that tracks it. A listed scenario must still fail with the same invariant; it fails the run the day it passes (remove the entry) or fails with another invariant (file that one). Empty today.
+* `coverage.rs` counts (tool x op x timing) for performed user steps and (chaos x phase) for the model's turns. `WAVE0_FLOOR` lists cells the corpus must reach on its own (reject / approve / answer / follow-up on a card, Ctrl-C), checked in the corpus replay (nextest runs each test in its own process, so the floor cannot live in a separate test). `AGENT_FUZZ_COVERAGE=1` prints the table.
+* `script/agent_fuzz` runs L0 + L1 through `script/check_test_failures -p fake_llm -p warp --lib --features warp/gui -E 'test(agent_fuzz) | test(genai_decode)'`, with `PHOSPHOR_BYOP_STREAM_IDLE_TIMEOUT_SECS` / `..._FIRST_EVENT_TIMEOUT_SECS` at 1 so a `stall` turn ends in test time. Knobs: `PROPTEST_CASES` (12), `AGENT_FUZZ_SEED`, `AGENT_FUZZ_MINUTES` (time-boxed fresh rounds), `AGENT_FUZZ_SAVE`, `AGENT_FUZZ_TIME_SCALE`, `AGENT_FUZZ_COVERAGE`. Proptest never writes `proptest-regressions` into the tree (the corpus is the memory), and shrinks to a minimal (script, user) pair printed as schema JSON.
+* CI jobs: none yet (manual, on the build box).
+* **Cargo.lock:** `crates/fake_llm` adds llmposter (and its axum 0.8 tree). The first box build updates `Cargo.lock`; the coordinator commits it (do not build with `--locked` before that).
+* **cargo-about:** `crates/fake_llm` is a workspace member, so `cargo about` lists llmposter in the third-party notices even though it is dev-only and never in a release binary. Over-attribution; acceptable.
+
+#### Acceptance on the pre-fix base (to run on the box, not done)
+
+On `ffdaa4536` (before #1796 / #1797 / #1799) the seeded `wave0_1799_reject_then_transfer`, `wave0_1797_ask_empty_args` and `wave0_1797_ask_valid` must FAIL with I1 / I2a, and unseeded `AGENT_FUZZ_MINUTES=10` must find each class. Method: branch from `ffdaa4536`, cherry-pick this branch's commits (the seam and probes touch `chat_stream.rs`, `action_model.rs`, `block.rs`, `terminal/view.rs`, `shell_command.rs`, `mock_provider`; expect trivial conflicts only in `action_model.rs`), drop `mod prompt_tests;` from `agent_fuzz/mod.rs` (it needs the #1796 `observe` probe argument and does not compile on the base, which is itself the signal for #1796), run `script/agent_fuzz`. On this branch all of them pass.
+
+Question scenarios tolerate either `ask_user_question` flow: the card appearing without an approval step (an owner decision in flight in another change), or after one. The actor answers whatever question is at the front by staging the answers and executing by id; `OnCard` triggers on any actionable card.
+
+#### `hop=` diagnostic lines (always on, owner-approved)
+
+Info-level, written only when a state CHANGES, ids / kinds / states only, never content (no command text, prompt text, arguments, error text or the agent's hand-over reason). The later L2 (appci) reads them from the app log to see which hop of a conversation stalled.
+
+| line | written by | states |
+|---|---|---|
+| `hop=agent_action id= kind= status=` | `BlocklistAIActionModel::hop` | `queued`, `blocked` (front of the queue, needs the user), `running`, `done`, `failed`, `cancelled` |
+| `hop=action_card id= kind= shown=true` | `AIBlock` (`log_card_shown`) | a card came up: `run_shell_command`, `call_mcp_tool`, `action_buttons`, `ask_user_question` |
+| `hop=handover action= reason=` | `CLISubagentController::switch_control_to_user` | `manual`, `stop`, `transfer_from_agent`, `blocked_on_input` (`action=-` when the block has no requested command) |
+| `hop=queued_row id= state=` | `QueuedQueryModel` | `queued_locked`, `queued`, `unlocked`, `popped` (restored to the input), `fired`, `deleted` |
+| `hop=turn conv= state=` | `AIConversation::update_status_with_error_message` | `in_progress`, `success`, `error`, `transient_error`, `cancelled`, `blocked`, `waiting_for_events` |
+
+Run: `script/agent_fuzz` (L0 + L1). Nothing in this section has been compiled yet.

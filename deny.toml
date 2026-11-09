@@ -50,6 +50,10 @@ private = { ignore = true }
 # CI enforces this via script/check_license_config_sync.
 allow = [
     "0BSD",
+    # llmposter (test-only dev-dependency of crates/fake_llm, the fake-model fuzzer; never in a
+    # release build). Phosphor itself is AGPL-3.0-only, so linking an AGPL-3.0-or-later crate is
+    # compatible (the "or later" grant includes version 3).
+    "AGPL-3.0-or-later",
     "Apache-2.0",
     "BSD-2-Clause",
     "BSD-3-Clause",

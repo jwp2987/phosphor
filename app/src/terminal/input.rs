@@ -16216,6 +16216,20 @@ impl Input {
         self.maybe_queue_input_for_in_progress_conversation(ctx)
     }
 
+    /// Test-only (agent fuzzer): types `text` into the input and presses the part of Enter that
+    /// decides between queueing and sending. Returns true if the text was queued behind the
+    /// running or blocked turn (the real `maybe_queue_input_for_in_progress_conversation`), false
+    /// if the caller must submit it.
+    #[cfg(test)]
+    pub(crate) fn type_and_try_queue_for_test(
+        &mut self,
+        text: &str,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        self.replace_buffer_content(text, ctx);
+        self.maybe_queue_input_for_in_progress_conversation(ctx)
+    }
+
     fn maybe_queue_input_for_in_progress_conversation(
         &mut self,
         ctx: &mut ViewContext<Self>,

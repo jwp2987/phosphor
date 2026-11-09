@@ -20,6 +20,9 @@ mod convert;
 /// BYOP embeddings, for the codebase index. New in this fork: the pin produced
 /// embeddings server-side and had no client for them.
 pub mod embeddings;
+// Test seam for the BYOP send path (agent fuzzer, L1); absent from release builds.
+#[cfg(any(test, feature = "test-util"))]
+pub mod fake_stream_seam;
 pub mod llm_id;
 pub mod models_dev;
 pub mod oneshot;
