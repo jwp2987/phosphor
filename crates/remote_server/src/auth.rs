@@ -1,5 +1,5 @@
+use crate::rt::BoxFuture;
 use std::sync::Arc;
-use warpui::r#async::BoxFuture;
 type GetAuthTokenFn = dyn Fn() -> BoxFuture<'static, Option<String>> + Send + Sync;
 type RemoteServerIdentityKeyFn = dyn Fn() -> String + Send + Sync;
 

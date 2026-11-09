@@ -2,9 +2,9 @@ use std::path::Path;
 use std::process::Output;
 use std::time::Duration;
 
+use crate::rt::FutureExt as _;
 use anyhow::{Result, anyhow};
 use command::r#async::Command;
-use warpui::r#async::FutureExt as _;
 
 /// Timeout for `ssh -O exit`. The command only talks to the local
 /// ControlMaster over a Unix socket, so it should return almost

@@ -6,6 +6,16 @@ authors = ["Warp Team <dev@warp.dev>"]
 publish.workspace = true
 license.workspace = true
 
+[features]
+# The app's side: manager model, transport, client, install/setup and the repo_metadata
+# conversions. Everything that names warpui, warp_core, warp_util or repo_metadata.
+default = ["client"]
+client = ["dep:warpui", "dep:warp_core", "dep:warp_util", "dep:repo_metadata"]
+# The `phosphor-remote` helper's server core (added in later Wave H steps). Deliberately does
+# NOT imply `client`: the helper is built with `--no-default-features --features daemon` and
+# its dependency tree must contain no warpui (checked in CI by `cargo tree`).
+daemon = []
+
 [dependencies]
 anyhow.workspace = true
 async-channel.workspace = true
@@ -19,13 +29,13 @@ futures.workspace = true
 futures-lite.workspace = true
 log.workspace = true
 prost.workspace = true
-repo_metadata.workspace = true
+repo_metadata = { workspace = true, optional = true }
 serde.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
-warp_core.workspace = true
-warp_util.workspace = true
-warpui.workspace = true
+warp_core = { workspace = true, optional = true }
+warp_util = { workspace = true, optional = true }
+warpui = { workspace = true, optional = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 async-io.workspace = true

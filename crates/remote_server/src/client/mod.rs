@@ -4,10 +4,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use crate::rt::FutureExt as _;
 use dashmap::DashMap;
 use futures::channel::oneshot;
 use futures::io::{AsyncRead, AsyncWrite};
-use warpui::r#async::{FutureExt as _, executor};
+use warpui::r#async::executor;
 
 use crate::proto::{
     Abort, Authenticate, BufferEdit, ClientMessage, CloseBuffer, CreateDirectory,
