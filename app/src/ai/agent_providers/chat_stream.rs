@@ -3687,6 +3687,18 @@ fn parse_first_event_timeout_secs(raw: Option<&str>) -> std::time::Duration {
         .unwrap_or(DEFAULT_BYOP_STREAM_FIRST_EVENT_TIMEOUT)
 }
 
+/// Whether `event` restarts the idle window (#1851): anything but an empty text or reasoning
+/// chunk. Those carry no content, so a provider sending only them after its last real event
+/// (a keep-alive on a response it will not finish) is silent as far as the turn is concerned,
+/// and the idle give-up ends it with a visible error like any other stall.
+fn stream_event_is_progress(event: &ChatStreamEvent) -> bool {
+    match event {
+        ChatStreamEvent::Chunk(c) => !c.content.is_empty(),
+        ChatStreamEvent::ReasoningChunk(c) => !c.content.is_empty(),
+        _ => true,
+    }
+}
+
 fn byop_stream_idle_timeout() -> std::time::Duration {
     parse_idle_timeout_secs(std::env::var(BYOP_STREAM_IDLE_TIMEOUT_ENV).ok().as_deref())
 }
@@ -7589,6 +7601,12 @@ pub async fn generate_byop_output(
 
         let stream_idle_timeout = byop_stream_idle_timeout();
         let stream_first_event_timeout = byop_stream_first_event_timeout();
+        // When the last event that carried content arrived (#1851). The idle window runs from
+        // here, not from the last event of any kind: a provider that holds the response open
+        // after its last tool call and keeps sending empty keep-alive chunks would otherwise
+        // restart the window forever and leave the turn on "Preparing question..." (or any
+        // other half-built tool card) with nothing ever ending it.
+        let mut last_progress = Instant::now();
         loop {
             // #853: bound the wait for each chunk. A provider that goes silent after the
             // first token (or never sends one) would otherwise leave the turn "thinking"
@@ -7608,6 +7626,8 @@ pub async fn generate_byop_output(
                 };
                 let wait = if received_real_event {
                     active_timeout
+                        .saturating_sub(last_progress.elapsed())
+                        .max(std::time::Duration::from_millis(1))
                 } else {
                     active_timeout
                         .saturating_sub(std::mem::take(&mut first_wait_used))
@@ -7639,6 +7659,9 @@ pub async fn generate_byop_output(
                 Ok(ev) => {
                     if !matches!(ev, ChatStreamEvent::Start) {
                         received_real_event = true;
+                    }
+                    if stream_event_is_progress(&ev) {
+                        last_progress = Instant::now();
                     }
                     ev
                 }
@@ -10362,6 +10385,28 @@ mod byop_stream_error_retry_tests {
             parse_idle_timeout_secs(Some(" 30 ")),
             std::time::Duration::from_secs(30)
         );
+    }
+
+    /// #1851: empty keep-alive chunks do not restart the idle window; content, a tool-call chunk
+    /// and the End event do.
+    #[test]
+    fn only_content_bearing_events_restart_the_idle_window() {
+        use genai::chat::StreamChunk;
+        let chunk = |content: &str| StreamChunk {
+            content: content.to_owned(),
+        };
+        assert!(!stream_event_is_progress(&ChatStreamEvent::Chunk(chunk(
+            ""
+        ))));
+        assert!(!stream_event_is_progress(&ChatStreamEvent::ReasoningChunk(
+            chunk("")
+        )));
+        assert!(stream_event_is_progress(&ChatStreamEvent::Chunk(chunk(
+            "a"
+        ))));
+        assert!(stream_event_is_progress(&ChatStreamEvent::ReasoningChunk(
+            chunk("a")
+        )));
     }
 
     #[test]

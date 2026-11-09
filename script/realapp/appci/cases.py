@@ -45,12 +45,15 @@ PROVING = (
     "keyring_unavailable_startup", "cb_report_problem", "zero_network_startup", "claude_plugin_offline", "agent_plugins_offline",
     "subshell_sh_probe", "subshell_ready_rc_questions", "subshell_ready_vim_typeahead", "subshell_ready_unsupported_tcsh", "subshell_ready_secret_after_prompt",
     "ctrl_c_flood_ab",
+    # the ask_user_question card never hangs on "Preparing question..." (#1851)
+    "agent_question_answer", "agent_question_cut", "agent_question_nodone", "agent_question_trunc", "agent_question_empty", "agent_question_slow",
+    "agent_question_ctrl_c", "agent_question_steer",
     "subshell_ready_relay_shape", "subshell_ready_exec_fish_rc", "subshell_ready_docker_t_without_i", "subshell_ready_zsh_newuser_install", "subshell_ready_rc_clear",
 )
 # The PROVING cases that need the scripted fake model (fake_model.py): the fix tier runs them in their own app launch, the "agent@fake" pass (run.py
 # fake_pass_plan), whose provider is the fake model; every other pass keeps the configured provider. All are agent-mode cases (selftest).
 PROVING_FAKE = tuple(n for n in PROVING if n.startswith(("agent_edit_", "agent_interactive_", "agent_noninteractive_", "agent_latency_", "agent_fault_", "agent_restart_",
-                                                         "agent_gate_")) or n in ("agent_steer_fast", "agent_mcp_faults", "agent_multitab_streaming", "network_gate_notice"))
+                                                         "agent_gate_", "agent_question_")) or n in ("agent_steer_fast", "agent_mcp_faults", "agent_multitab_streaming", "network_gate_notice"))
 # The PROVING lab cases (cases_lab*.py, the fake ssh lab). Globs, as --cases takes them. The fix tier plays app-test-lab-linux with these
 # (script/ci/ci_seq.py LAB_FIX_CASES), Linux only, APPCI_FAKE_MODEL=1, APPCI_LAB_MATRIX=quick.
 PROVING_LAB = ("lab_agent_remote_*", "lab_fam_agent_*")
@@ -5668,6 +5671,7 @@ import cases_upgrade  # noqa: E402,F401  (#1546: upgrade_from_v0_1_17, the v0.1.
 import cases_agent_netgate  # noqa: E402,F401  (#1830: agent network gate: denial, Allow, live origin edits, gate off, provider key never leaves)
 import cases_agent_remote  # noqa: E402,F401  (#1827: lab_agent_remote_flow/errors/drop, the agent driving a remote host with and without the helper)
 import cases_agent_file_edits  # noqa: E402,F401  (#1835: agent_edit_accept/reject/conflict/endings, lab_fam_agent_edit_conflict/endings)
+import cases_agent_question  # noqa: E402,F401  (#1851: agent_question_*, the ask_user_question card never hangs on 'Preparing question...'; fake_model ask_* faults)
 import cases_agent_resilience  # noqa: E402,F401  (#1831/#1832: agent_fault_* model failures, agent_restart_* quit / kill -9 mid-conversation; fake_model fault injection)
 import cases_agent_multitab  # noqa: E402,F401  (#1833: agent_multitab_streaming, N hidden streaming agent tabs while typing elsewhere)
 import cases_agent_mcp  # noqa: E402,F401  (#1834: agent_mcp_faults, misbehaving fake MCP servers)
