@@ -50,7 +50,6 @@ pub const LEGACY_ONLY_CAPABILITIES: &[&str] = &[
     REPO_METADATA,
     BUFFERS,
     DIFF_STATE,
-    GIT_WRITE,
     FILE_CONTEXT,
     CODEBASE_INDEX,
     GIT_STATUS,
@@ -60,8 +59,14 @@ pub const LEGACY_ONLY_CAPABILITIES: &[&str] = &[
 ];
 
 /// Every capability the helper in this build implements.
-pub const HELPER_CAPABILITIES: &[&str] =
-    &[FILE_WRITE, FS_BASIC, RUN_COMMAND, GIT_READ, RIPGREP_SEARCH];
+pub const HELPER_CAPABILITIES: &[&str] = &[
+    FILE_WRITE,
+    FS_BASIC,
+    RUN_COMMAND,
+    GIT_READ,
+    RIPGREP_SEARCH,
+    GIT_WRITE,
+];
 
 /// What the server on the other end of a session supports.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
