@@ -104,6 +104,15 @@ enum QueuedQueryKind {
     Command,
 }
 
+/// `hop=queued_row`: a queued row changed state (`queued_locked`, `queued`, `unlocked`, `popped`,
+/// `fired`, `deleted`). Ids and states only, never the prompt text.
+fn hop_row(query_id: QueuedQueryId, state: &str) {
+    log::info!(
+        "hop=queued_row id={} state={state}",
+        query_id.to_storage_string()
+    );
+}
+
 /// A single queued row: an agent prompt or a shell command.
 #[derive(Debug, Clone)]
 pub struct QueuedQuery {
@@ -819,6 +828,7 @@ impl QueuedQueryModel {
         for row in state.queue.iter_mut() {
             if row.origin == QueuedQueryOrigin::PendingLrcAutoQueue {
                 row.origin = QueuedQueryOrigin::LrcAutoQueue;
+                hop_row(row.id, "unlocked");
                 unlocked = true;
             }
         }
@@ -859,6 +869,7 @@ impl QueuedQueryModel {
         for row in state.queue.iter_mut() {
             if row.origin == QueuedQueryOrigin::PendingApprovalFollowUp {
                 row.origin = QueuedQueryOrigin::ApprovalFollowUp;
+                hop_row(row.id, "unlocked");
                 unlocked = true;
             }
         }
@@ -908,6 +919,14 @@ impl QueuedQueryModel {
         ctx: &mut ModelContext<Self>,
     ) -> QueuedQueryId {
         let query_id = query.id;
+        hop_row(
+            query_id,
+            if query.is_locked() {
+                "queued_locked"
+            } else {
+                "queued"
+            },
+        );
         let state = self.queues.entry(conversation_id).or_default();
         state.queue.push(query);
         ctx.emit(QueuedQueryEvent::Appended {
@@ -937,6 +956,7 @@ impl QueuedQueryModel {
             return None;
         }
         let popped = state.queue.remove(index);
+        hop_row(popped.id, "popped");
         if state.editing == Some(popped.id) {
             state.editing = None;
         }
@@ -997,6 +1017,7 @@ impl QueuedQueryModel {
             return;
         };
         state.queue.remove(idx);
+        hop_row(query_id, "fired");
         if state.editing == Some(query_id) {
             state.editing = None;
         }
@@ -1065,6 +1086,7 @@ impl QueuedQueryModel {
         // the panel agrees -- it disables only the Send Now button for these rows
         // (`queued_prompts_panel.rs:400`), never the trash.
         let removed = state.queue.remove(idx);
+        hop_row(query_id, "deleted");
         if state.editing == Some(query_id) {
             state.editing = None;
         }

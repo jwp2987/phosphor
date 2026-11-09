@@ -1081,6 +1081,20 @@ impl AIConversation {
         };
         let prev_status = self.status.clone();
         let new_status = status.clone();
+        if std::mem::discriminant(&prev_status) != std::mem::discriminant(&new_status) {
+            // `hop=turn`: a conversation's turn state changed. State names only, never the
+            // blocked action's description or an error message.
+            let state = match &new_status {
+                ConversationStatus::InProgress => "in_progress",
+                ConversationStatus::Success => "success",
+                ConversationStatus::Error => "error",
+                ConversationStatus::TransientError => "transient_error",
+                ConversationStatus::Cancelled => "cancelled",
+                ConversationStatus::Blocked { .. } => "blocked",
+                ConversationStatus::WaitingForEvents => "waiting_for_events",
+            };
+            log::info!("hop=turn conv={} state={state}", self.id);
+        }
         self.status = status;
         ctx.emit(BlocklistAIHistoryEvent::UpdatedConversationStatus {
             conversation_id: self.id,

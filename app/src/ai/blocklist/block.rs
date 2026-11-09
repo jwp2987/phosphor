@@ -915,6 +915,12 @@ impl AIBlockFindRenderKey {
     }
 }
 
+/// `hop=action_card`: a card for `action_id` came up in a block. Written when the card is
+/// created, once per card (ids and kinds only).
+fn log_card_shown(action_id: &AIAgentActionId, kind: &str) {
+    log::info!("hop=action_card id={action_id} kind={kind} shown=true");
+}
+
 pub struct AIBlock {
     model: Rc<dyn AIBlockModel<View = AIBlock>>,
 
@@ -2211,6 +2217,7 @@ impl AIBlock {
                         cancel_button,
                     },
                 );
+                log_card_shown(&action.id, "action_buttons");
             }
 
             // Ensure a button component exists for UseComputer actions.
@@ -3613,6 +3620,7 @@ impl AIBlock {
 
                 self.requested_commands
                     .insert(action_id.clone(), RequestedCommand { view });
+                log_card_shown(action_id, "run_shell_command");
             }
         }
     }
@@ -3810,6 +3818,7 @@ impl AIBlock {
 
                 self.requested_mcp_tools
                     .insert(action_id.clone(), RequestedCommand { view });
+                log_card_shown(action_id, "call_mcp_tool");
             }
         }
     }
@@ -3904,6 +3913,7 @@ impl AIBlock {
         });
 
         self.ask_user_question_view = Some(view.clone());
+        log_card_shown(action_id, "ask_user_question");
         if self
             .action_model
             .as_ref(ctx)

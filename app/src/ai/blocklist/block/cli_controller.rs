@@ -735,6 +735,13 @@ impl CLISubagentController {
     /// them, and the next key sees the user in control.
     pub fn switch_control_to_user(&self, reason: UserTakeOverReason, ctx: &mut ModelContext<Self>) {
         let should_cancel_conversation = reason.should_cancel_conversation();
+        // For the `hop=handover` line: the variant only, never the agent's own reason text.
+        let reason_name = match &reason {
+            UserTakeOverReason::Manual => "manual",
+            UserTakeOverReason::Stop { .. } => "stop",
+            UserTakeOverReason::TransferFromAgent { .. } => "transfer_from_agent",
+            UserTakeOverReason::BlockedOnInput => "blocked_on_input",
+        };
         let change_reason = ControlChangeReason::for_user_takeover(&reason);
         let mut terminal_model = self.terminal_model.lock();
 
@@ -748,6 +755,12 @@ impl CLISubagentController {
         let action_id = active_block.requested_command_action_id().cloned();
         let conversation_id = active_block.ai_conversation_id();
         let agent_has_control = active_block.is_agent_in_control();
+        log::info!(
+            "hop=handover action={} reason={reason_name}",
+            action_id
+                .as_ref()
+                .map_or_else(|| "-".to_owned(), ToString::to_string)
+        );
         // The key path reads "agent in control" from the published copy when the pty reader
         // holds the model: publish the change under the lock that made it (#1411).
         terminal_model.publish_key_facts();

@@ -327,6 +327,25 @@ fn can_start_action_with_current_phase(
     }
 }
 
+/// The kind of an action for the `hop=` diagnostic lines: the tool's name, never any argument.
+fn hop_kind(action: &AIAgentActionType) -> &'static str {
+    match action {
+        AIAgentActionType::RequestCommandOutput { .. } => "run_shell_command",
+        AIAgentActionType::WriteToLongRunningShellCommand { .. } => {
+            "write_to_long_running_shell_command"
+        }
+        AIAgentActionType::ReadShellCommandOutput { .. } => "read_shell_command_output",
+        AIAgentActionType::TransferShellCommandControlToUser { .. } => {
+            "transfer_shell_command_control_to_user"
+        }
+        AIAgentActionType::AskUserQuestion { .. } => "ask_user_question",
+        AIAgentActionType::ReadFiles(..) => "read_files",
+        AIAgentActionType::Grep { .. } => "grep",
+        AIAgentActionType::FileGlob { .. } | AIAgentActionType::FileGlobV2 { .. } => "file_glob",
+        _ => "other",
+    }
+}
+
 /// Where an action is, for the agent fuzzer ([`BlocklistAIActionModel::pending_snapshot_for_test`]).
 #[cfg(any(test, feature = "test-util"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -427,6 +446,10 @@ pub struct BlocklistAIActionModel {
     /// while the card is mid-update. A dropped card's flag no longer upgrades, so it cannot
     /// leave a command stuck.
     commands_being_edited: HashMap<(AIConversationId, AIAgentActionId), Weak<Cell<bool>>>,
+
+    /// The (kind, last logged status) of each action not yet finished, so the `hop=agent_action`
+    /// line is written when an action's state CHANGES and never per frame.
+    hop_state: HashMap<AIAgentActionId, (&'static str, &'static str)>,
 }
 
 impl BlocklistAIActionModel {
@@ -488,6 +511,7 @@ impl BlocklistAIActionModel {
             ambient_agent_task_id: None,
             full_command_shown: HashMap::new(),
             commands_being_edited: HashMap::new(),
+            hop_state: HashMap::new(),
         }
     }
 
@@ -694,6 +718,26 @@ impl BlocklistAIActionModel {
             std::collections::hash_map::Entry::Vacant(entry) => {
                 entry.insert(RunningActions::new(phase, action_id));
             }
+        }
+    }
+
+    /// Writes `hop=agent_action id= kind= status=` when `action_id`'s state changed (queued,
+    /// blocked, running, done, failed, cancelled). Ids, kinds and states only, never content.
+    fn hop(&mut self, action_id: &AIAgentActionId, status: &'static str) {
+        let entry = self
+            .hop_state
+            .entry(action_id.clone())
+            .or_insert(("other", ""));
+        if entry.1 == status {
+            return;
+        }
+        entry.1 = status;
+        log::info!(
+            "hop=agent_action id={action_id} kind={} status={status}",
+            entry.0
+        );
+        if matches!(status, "done" | "failed" | "cancelled") {
+            self.hop_state.remove(action_id);
         }
     }
 
@@ -1176,6 +1220,7 @@ impl BlocklistAIActionModel {
                     "[byop-diag] try_to_execute_action: ExecutedAsync action_id={action_id:?}"
                 );
                 self.update_conversation_in_progress_status(conversation_id, ctx);
+                self.hop(&action_id, "running");
                 self.add_running_action(conversation_id, action_id, phase);
                 Some(StartedAction::Async { phase })
             }
@@ -1198,6 +1243,7 @@ impl BlocklistAIActionModel {
                     .entry(conversation_id)
                     .or_default()
                     .insert(idx, (*action).clone());
+                self.hop(&action.id, "blocked");
                 self.handle_not_executed_action(action.as_ref(), reason, conversation_id, ctx);
                 None
             }
@@ -1443,10 +1489,13 @@ impl BlocklistAIActionModel {
                 continue;
             }
 
+            self.hop_state
+                .insert(action_id.clone(), (hop_kind(&action.action), ""));
             self.pending_actions
                 .entry(conversation_id)
                 .or_default()
                 .push_back(action);
+            self.hop(&action_id, "queued");
             ctx.emit(BlocklistAIActionEvent::QueuedAction(action_id));
         }
         self.try_to_execute_available_actions(conversation_id, ctx);
@@ -1765,6 +1814,14 @@ impl BlocklistAIActionModel {
         }
 
         let action_id = action_result.id.clone();
+        let hop_status = if action_result.result.is_cancelled() {
+            "cancelled"
+        } else if action_result.result.is_failed() {
+            "failed"
+        } else {
+            "done"
+        };
+        self.hop(&action_id, hop_status);
 
         // Every terminal outcome (success, failure, cancellation — from any
         // path) funnels through here, so this is the one place executor-held

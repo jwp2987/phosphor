@@ -2422,4 +2422,16 @@ On `ffdaa4536` (before #1796 / #1797 / #1799) the seeded `wave0_1799_reject_then
 
 Question scenarios tolerate either `ask_user_question` flow: the card appearing without an approval step (an owner decision in flight in another change), or after one. The actor answers whatever question is at the front by staging the answers and executing by id; `OnCard` triggers on any actionable card.
 
+#### `hop=` diagnostic lines (always on, owner-approved)
+
+Info-level, written only when a state CHANGES, ids / kinds / states only, never content (no command text, prompt text, arguments, error text or the agent's hand-over reason). The later L2 (appci) reads them from the app log to see which hop of a conversation stalled.
+
+| line | written by | states |
+|---|---|---|
+| `hop=agent_action id= kind= status=` | `BlocklistAIActionModel::hop` | `queued`, `blocked` (front of the queue, needs the user), `running`, `done`, `failed`, `cancelled` |
+| `hop=action_card id= kind= shown=true` | `AIBlock` (`log_card_shown`) | a card came up: `run_shell_command`, `call_mcp_tool`, `action_buttons`, `ask_user_question` |
+| `hop=handover action= reason=` | `CLISubagentController::switch_control_to_user` | `manual`, `stop`, `transfer_from_agent`, `blocked_on_input` (`action=-` when the block has no requested command) |
+| `hop=queued_row id= state=` | `QueuedQueryModel` | `queued_locked`, `queued`, `unlocked`, `popped` (restored to the input), `fired`, `deleted` |
+| `hop=turn conv= state=` | `AIConversation::update_status_with_error_message` | `in_progress`, `success`, `error`, `transient_error`, `cancelled`, `blocked`, `waiting_for_events` |
+
 Run: `script/agent_fuzz` (L0 + L1). Nothing in this section has been compiled yet.
