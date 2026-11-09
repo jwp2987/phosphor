@@ -1647,6 +1647,7 @@ esac
           out=$( {
               command ssh -o BatchMode=yes -o ControlMaster=no -o ControlPath="$control_path" "$@" -T 'echo warp-probe-%COMSPEC%-$PSVersionTable' </dev/null 2>/dev/null &
               local probe_pid=$!
+              # give-up-net: kills a stuck ssh probe after 5 s; never touches the tty or typed keys
               ( command -p sleep 5; kill $probe_pid ) >/dev/null 2>&1 &
               local killer_pid=$!
               wait $probe_pid
@@ -1781,6 +1782,7 @@ esac
               p=$!
               (
                   trap "kill \$s; exit 0" TERM
+                  # give-up-net: kills a stuck ssh control-master probe after 5 s; never touches the tty or typed keys
                   sleep 5 &
                   s=$!
                   wait "$s"

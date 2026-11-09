@@ -1321,6 +1321,7 @@ pub(crate) fn log_late_timer_wake(timer: &'static str, deadline: Instant) {
 }
 
 /// An Enter held longer than this is logged at WARN with the reason it was held (#1192).
+// give-up-net: log threshold for a slow Enter hold; log only
 const SLOW_ENTER_HOLD_THRESHOLD: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Whether an Enter held for `held` is slow enough to log.
@@ -1337,6 +1338,7 @@ pub(crate) fn log_slow_enter_hold(reason: &str, held: std::time::Duration) {
 }
 
 /// Longest the activity assertion of a deferred Enter is held, in case no release path runs.
+// give-up-net: releases the macOS activity assertion held for a deferred Enter; no effect on keys
 const DEFERRED_ENTER_ACTIVITY_CAP: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// A macOS activity assertion (`NSProcessInfo beginActivityWithOptions`, UserInitiated) held
@@ -1469,6 +1471,7 @@ struct TabCompletionRequest {
 /// Measured from when the completer job started running, never from the Enter. Wall time on
 /// purpose: completion does I/O. The give-up hands the uncompleted line back to the editor and
 /// runs nothing (#1666): the clock must not run a line the user meant to complete.
+// give-up-net: Enter held for a local Tab completion: on expiry the uncompleted line goes back to the editor and nothing runs (#1666)
 const TAB_COMPLETION_ENTER_BUDGET: std::time::Duration = std::time::Duration::from_millis(150);
 /// The same cap for a remote shell's in-band Tab answer (#1801 review: "Tab then a fast Enter
 /// runs the completed line" over a slow link too). Wall time from the job's start: a round trip
@@ -1480,11 +1483,13 @@ const TAB_COMPLETION_ENTER_WARN: std::time::Duration = std::time::Duration::from
 /// The wall-clock net of an Enter held for its verdict, before the size allowance (#1662, busy-
 /// machine audit 2026-11-05): long enough that only a lost or never-scheduled job reaches it, not
 /// a classifier that is merely slow to get a CPU (its cap is CPU time, #1651). Was 250 ms.
+// give-up-net: lost-job net of an Enter held for its verdict: hands the line back to the editor, never submits it (#1577)
 const VERDICT_HOLD_BACKSTOP: std::time::Duration = std::time::Duration::from_secs(2);
 /// The longest any Enter hold's backstop may be: 9 s, under the Enter gate's leak net
 /// ([`enter_queue::ENTER_GATE_LEAK_NET`], 20 s since the #1661 review; it was the net minus 1 s
 /// when the net was 10 s, and keeps that value), so for any paste size the hold gives up (the
 /// line stays in the input) before the leak net force-opens the gate (#1651 review).
+// give-up-net: upper bound of an Enter hold's wall-clock backstop; the backstop hands the line back to the editor
 pub(crate) const HOLD_BACKSTOP_LIMIT: std::time::Duration = std::time::Duration::from_secs(9);
 const _: () = assert!(
     HOLD_BACKSTOP_LIMIT.as_millis() < enter_queue::ENTER_GATE_LEAK_NET.as_millis(),
@@ -1492,6 +1497,7 @@ const _: () = assert!(
 );
 /// The shortest compute-cap timer re-armed while the awaited job's cap is not yet spent (#1651):
 /// on a CPU-time clock a starved job can sit just under its cap for as long as it gets no CPU.
+// give-up-net: floor on re-arming the verdict hold's compute-cap check (the give-up that hands the line back); decides nothing itself
 pub(crate) const COMPUTE_CAP_RECHECK_FLOOR: std::time::Duration =
     std::time::Duration::from_millis(5);
 
@@ -15119,6 +15125,7 @@ impl Input {
             return;
         };
         let deadline = Instant::now() + delay;
+        // give-up-net: one-shot give-up timers of an Enter's verdict/Tab hold (backstop, compute cap): hand the line back, never submit
         ctx.spawn(Timer::after(delay), move |me, _, ctx| {
             log_late_timer_wake(timer, deadline);
             // Armed by an earlier watch of this wait (its hold has since changed kind): not ours.

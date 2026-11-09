@@ -192,6 +192,7 @@ impl Host for InputQueueHost<'_, '_> {
     fn arm_give_up(&mut self, token: GateToken, _kind: GateKind, after: Duration) {
         // The ONE timer of a paste gate: a safety net for a reader that never answers. The reader's
         // result closes the gate first in every normal case and this then finds nothing to do.
+        // give-up-net: queue gate cap: a give-up that hands the gate's keys back to the editor or discards them with a count toast
         self.ctx.spawn(Timer::after(after), move |me, _, ctx| {
             me.on_paste_queue_give_up(token, ctx)
         });
@@ -481,6 +482,7 @@ impl Input {
         // Say what is happening when the read takes noticeable time. Time is the requirement
         // here (user feedback), not correctness.
         ctx.spawn(
+            // give-up-net: delays a Pasting... progress toast; notice only
             Timer::after(Duration::from_millis(750)),
             move |me, _, ctx| {
                 if me.editor.as_ref(ctx).paste_hold().is_pending(id)

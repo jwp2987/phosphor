@@ -1676,6 +1676,7 @@ impl<T: EventLoopSender> PtyController<T> {
             // looks dead. Arm a one-shot timer, once per stall, so the log line fires on its own.
             ctx.spawn(
                 async move {
+                    // give-up-net: one-shot timer that only logs a stuck write gate
                     Timer::after(threshold).await;
                 },
                 move |me, _, ctx| {
