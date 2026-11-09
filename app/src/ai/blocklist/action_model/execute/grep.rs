@@ -269,6 +269,11 @@ impl GrepExecutor {
             remote,
         );
 
+        super::log_remote_tool_route(
+            self.active_session.as_ref(ctx),
+            remote_server::backend::Family::RipgrepSearch,
+            ctx,
+        );
         let session = self.active_session.as_ref(ctx).session(ctx);
 
         let path_clone = path.clone();

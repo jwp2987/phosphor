@@ -80,7 +80,7 @@ def fake_model_or_skip(ctx, r):
 
 
 def check_routes(ctx, r, arm, off, want_families, required):
-    """per family: every backend_route line says the arm's backend; a family with no line is a failure when `required`, UNVERIFIABLE otherwise"""
+    """per family: every backend_route line says the arm's backend; a family with no line is a failure when `required`, UNVERIFIABLE otherwise (the app logs a line for every family the agent uses: #1827)"""
     for fam in want_families:
         got = LR.routes(ctx, off, fam)
         if not got:
@@ -148,7 +148,8 @@ def c_agent_remote_flow(ctx, r, arm):
         r.metric("codebase_result", str(res[5])[:200])
     elif not index_on:
         r.note("codebase step not run: APPCI_FAKE_EMBEDDINGS=1 is off, so the host has no embeddings provider to index with")
-    check_routes(ctx, r, arm, off, ("file_context", "file_write", "ripgrep_search", "fs_basic") + (("codebase_chunks",) if index_on else ()), ("file_context", "file_write"))
+    fams = ("file_context", "file_write", "ripgrep_search", "fs_basic") + (("codebase_chunks",) if index_on else ())
+    check_routes(ctx, r, arm, off, fams, fams)
     # nothing feature-driven reached the remote shell; the one approved command did, once
     typed = [c for _, c in ctx.remote.commands()]
     leaked = [c for c in typed if any(toks[k] in c for k in ("a", "n", "e"))]

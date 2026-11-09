@@ -11,6 +11,8 @@
 #                              the helper). The no-helper write carries an optional size+mtime Expect (crates/remote_server/src/shellcmd/write.rs): the conflict is
 #                              detected at save, the host's file keeps the user's change
 #   lab_fam_agent_edit_endings    CRLF and no-final-newline preserved over the same two arms
+#   agent_edit_touch_only      mtime moved, bytes identical, then accept: succeeds, no false conflict (local: content compare in warp_files; remote leg in the lab pair)
+# Remote writes must log hop=backend_route family=file_write (nohelper -> shell, upload -> helper); no line fails the lab cases (crates/remote_server router.rs).
 # Partial accept: the diff card has NO per-hunk accept (Up/Down only navigate hunks, code_diff_view.rs NavigateToDiffHunk): accept is all hunks or none. Every case
 # says so in a note rather than inventing a pass.
 # Platforms: Linux and Mac (the prompt carries the file path, the file is read back by the harness). Not Windows (winmap NOT_WINDOWS): the path form typed to the model
@@ -103,6 +105,12 @@ class LocalHost:
         if name not in self.made:
             self.made.append(name)
 
+    def touch(self, name):
+        """move the mtime forward, bytes untouched"""
+        t = time.time() + 10
+        os.utime(self.path(name), (t, t))
+        return True
+
     def read(self, name):
         try:
             with open(self.path(name), "rb") as f:
@@ -131,6 +139,12 @@ class LabHost:
         self.ctx.lab.tree(self.arm["user"], {name: data})
         if name not in self.made:
             self.made.append(name)
+
+    def touch(self, name):
+        import shlex
+        time.sleep(1.1)           # whole-second mtimes: make the new one differ
+        res = self.ctx.lab.ssh(self.arm["user"], "sh -c %s" % shlex.quote("touch %s" % shlex.quote(self.path(name))))
+        return getattr(res, "returncode", 1) == 0
 
     def read(self, name):
         try:
@@ -235,6 +249,39 @@ def run_conflict(ctx, r, host, label):
     r.check(bool(SAVE_FAILED.search(ctx.log_since(off))), "%s: the conflict was not reported (no 'Failed to save file for accepted AgentMode diffs' / 'changed on disk' line in the app log)" % label)
 
 
+def run_touch_only(ctx, r, host, label):
+    """the file's mtime moves after the proposal but its BYTES are identical (a `touch`, a backup tool, a checkout of the same content). The guard compares content
+    (warp_files::save_if_unchanged), so the accept must succeed: no false conflict, the expected bytes, no 'changed on disk'. Remote: the nohelper size+mtime Expect
+    may report a false conflict here; that expectation belongs to branch fix/1837-remote-edit-conflict (until it lands this case FAILS on that arm, which is the defect)."""
+    tok = CL.unique(ctx, 6)
+    name = "at_%s_%s.txt" % (label, tok)
+    content, edits = make_file(tok), three_edits()
+    expected = apply_edits(content, edits)
+    got = propose(ctx, r, host, name, content, edits)
+    if got is None:
+        return
+    off, n = got
+    if not host.touch(name) or host.read(name) != content:
+        r.unverifiable("%s: could not move the mtime with the bytes unchanged" % label)
+        return
+    if not answer(ctx, r, host, name, off, n, "accept", content):
+        return
+    ctx.until(lambda: host.read(name) == expected, 30, step=0.5)
+    a, b = stable(host, name)
+    for msg in judge_bytes(a, expected, "%s: an accept after a touch-only change (bytes identical)" % label):
+        r.check(False, msg)
+    r.check(a == b, "%s: the file changed again after the accept settled" % label)
+    r.check(not SAVE_FAILED.search(ctx.log_since(off)), "%s: a touch-only change (same bytes) was reported as a conflict (false conflict)" % label)
+
+
+def check_write_route(ctx, r, arm, off, label):
+    """the app must log which arm took the remote write (hop=backend_route family=file_write): nohelper -> shell, upload -> helper. No line = the edit did not go through the router"""
+    want = "shell" if arm["helper"] == "nohelper" else "helper"
+    routes = re.findall(r"hop=backend_route family=file_write backend=(helper|shell|unavailable)", ctx.log_since(off))
+    r.check(bool(routes), "%s: no hop=backend_route family=file_write line: the edit was not written through the backend router" % label)
+    r.check(all(b == want for b in routes), "%s: file_write routed to %r, expected %s" % (label, sorted(set(routes)), want))
+
+
 # ---------------------------------------------------------------- local cases (agent mode only)
 def local_ready(ctx, r):
     CRP.need_model(ctx, r)
@@ -291,6 +338,18 @@ def c_agent_edit_conflict(ctx, r):
         ctx.be.key("ctrl+c")
 
 
+@case("agent_edit_touch_only", modes=("agent",), order=52, gui=True)
+def c_agent_edit_touch_only(ctx, r):
+    """the mtime moves between proposal and accept, the bytes do not: the accept succeeds (content compare, no false conflict)"""
+    local_ready(ctx, r)
+    host = LocalHost(ctx)
+    try:
+        run_touch_only(ctx, r, host, "local")
+    finally:
+        host.cleanup()
+        ctx.be.key("ctrl+c")
+
+
 ENDINGS = (("crlf", b"\r\n", True), ("lf_no_eol", b"\n", False), ("crlf_no_eol", b"\r\n", False))
 
 
@@ -329,8 +388,7 @@ def c_lab_agent_edit_conflict(ctx, r, arm):
     try:
         run_accept(ctx, r, host, "remote")
         run_conflict(ctx, r, host, "remote")
-        routes = re.findall(r"hop=backend_route family=file_write backend=(helper|shell|unavailable)", ctx.log_since(off))
-        r.note("file_write routes seen: %s (expected %s; an edit that goes through the buffer protocol logs none)" % (sorted(set(routes)) or "none", "helper" if arm["helper"] != "nohelper" else "shell"))
+        check_write_route(ctx, r, arm, off, "lab_fam_agent_edit_conflict")
         partial_note(r)
     finally:
         host.cleanup()
@@ -343,9 +401,27 @@ def c_lab_agent_edit_endings(ctx, r, arm):
     if not lab_ready(ctx, r, arm):
         return
     host = LabHost(ctx, arm)
+    off = ctx.log_size()
     try:
         for label, eol, fin in ENDINGS:
             run_accept(ctx, r, host, label, eol, fin)
+        check_write_route(ctx, r, arm, off, "lab_fam_agent_edit_endings")
+    finally:
+        host.cleanup()
+        CL.finish_remote(ctx, r)
+
+
+@CL.lab_case("fam_agent_edit_touch_only", shells=("bash",), lat=("lan",), helper=("nohelper", "upload"), modes=("agent",))
+def c_lab_agent_edit_touch_only(ctx, r, arm):
+    """on the remote host: mtime moved, bytes identical, then accept: no false conflict. The nohelper arm's size+mtime Expect is expected to be fixed by fix/1837-remote-edit-conflict;
+    until that lands a failure here is that defect, not a flaky case"""
+    if not lab_ready(ctx, r, arm):
+        return
+    host = LabHost(ctx, arm)
+    off = ctx.log_size()
+    try:
+        run_touch_only(ctx, r, host, "remote")
+        check_write_route(ctx, r, arm, off, "lab_fam_agent_edit_touch_only")
     finally:
         host.cleanup()
         CL.finish_remote(ctx, r)

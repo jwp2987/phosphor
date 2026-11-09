@@ -84,6 +84,18 @@ pub fn route_log_line(family: Family, backend: &str, reason: &str) -> String {
     )
 }
 
+/// The route line for a call the app serves through the session's command executor rather than a
+/// `RoutedBackend` method (the agent's grep and glob run as session commands): `helper_serves` is
+/// whether that executor is the remote helper's. Same formatter and reasons as the router's own
+/// lines (`caps`: the arm the host's capabilities leave).
+pub fn executor_route_line(family: Family, helper_serves: bool) -> String {
+    route_log_line(
+        family,
+        if helper_serves { "helper" } else { "shell" },
+        "caps",
+    )
+}
+
 /// Per-family "always shell" override, for tests and the lab (the helper is never asked).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AlwaysShell {
@@ -503,6 +515,7 @@ impl RoutedBackend {
         if expect.is_none() || self.kind(Family::FileWrite) == BackendKind::Helper {
             return self.write_file(path, content).await;
         }
+        self.log_route(Family::FileWrite);
         let result = self.shell.write_file_expecting(path, content, expect).await;
         if result.is_ok() {
             self.router
@@ -549,6 +562,9 @@ impl RoutedBackend {
         content: String,
     ) -> Result<BufferSaveOutcome, super::BackendError> {
         use super::RemoteFeatures as _;
+        // A save through the buffer protocol is a file write too: say which arm took it, so a
+        // run that wrote nothing cannot look like one that did (#1835).
+        self.log_route(Family::FileWrite);
         let outcome = if self.helper_for(Family::Buffers).is_some() {
             use crate::proto::save_buffer_response::Result as SaveResult;
             match self.save_buffer(path).await?.result {

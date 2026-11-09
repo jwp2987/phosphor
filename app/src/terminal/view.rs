@@ -14154,6 +14154,10 @@ impl TerminalView {
                 controller.switch_control_to_user(UserTakeOverReason::Manual, ctx);
             });
             facts = self.read_key_facts();
+            // The keys now go to the full-screen program: the hand-over the case oracles read.
+            warpui::input_order::log_hop("fullscreen_handover", || {
+                format!("agent_in_control={}", u8::from(facts.agent_in_control))
+            });
         }
         // If the take-over above did not succeed the agent still owns the command.
         if facts.agent_in_control {

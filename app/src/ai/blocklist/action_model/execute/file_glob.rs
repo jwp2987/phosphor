@@ -140,6 +140,11 @@ impl FileGlobExecutor {
             remote,
         );
 
+        super::log_remote_tool_route(
+            self.active_session.as_ref(ctx),
+            remote_server::backend::Family::FsBasic,
+            ctx,
+        );
         let session = self.active_session.as_ref(ctx).session(ctx);
 
         let patterns_clone = patterns.clone();
