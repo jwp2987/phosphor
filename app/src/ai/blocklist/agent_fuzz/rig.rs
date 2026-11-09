@@ -92,6 +92,18 @@ pub fn setup(app: &mut App, scenario: &Scenario, safe_allowlist: bool) -> Rig {
     initialize_app_for_terminal_view(app);
     // The agent turn persists conversation state through this provider.
     crate::test_util::settings::initialize_history_persistence_for_tests(app);
+    // The rig has no SQLite writer, so conversations are not persisted (the same "never persisted
+    // by design" case the BYOP preflight already supports); otherwise it refuses with
+    // ByopPreflightPersistenceUnavailable and logs an ERROR.
+    app.update(|ctx| {
+        use settings::Setting as _;
+        crate::terminal::general_settings::GeneralSettings::handle(ctx).update(
+            ctx,
+            |general, ctx| {
+                let _ = general.persist_conversations.set_value(false, ctx);
+            },
+        );
+    });
     if safe_allowlist {
         enable_safe_allowlist(app);
     }
