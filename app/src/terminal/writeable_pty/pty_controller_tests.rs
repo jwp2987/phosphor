@@ -2895,14 +2895,19 @@ mod typeahead_handoff {
         session_info
     }
 
-    /// The prompt's hook armed the activation fallback; the line editor is not active yet.
+    /// The prompt's hook of a shell that signals opened the write gate (#1825); its request
+    /// decision still waits for the shell's ready signal.
     fn activation_pending(app: &mut App, harness: &Harness) {
         harness.line_editor_status.update(app, |status, ctx| {
             status.set_line_editor_active_for_test(false);
             status.arm_activation_for_test(ctx);
         });
         harness.line_editor_status.read(&*app, |status, _| {
-            assert!(!status.is_line_editor_active(), "the fallback is pending")
+            assert!(status.is_line_editor_active(), "the prompt opened the gate");
+            assert!(
+                status.decision_awaits_signal(),
+                "the decision waits for the signal"
+            );
         });
     }
 
@@ -2919,61 +2924,43 @@ mod typeahead_handoff {
             shell_marks_line_editor_reading(&mut app, &harness);
             harness.line_editor_status.read(&app, |status, _| {
                 assert!(
-                    status.is_line_editor_active(),
-                    "the marker ends the activation wait"
+                    !status.decision_awaits_signal() && status.is_proven_reading(),
+                    "the marker proves the reader and starts the decision"
                 )
             });
         });
     }
 
-    /// #1672/#1798: the activation's give-up net is a hand-back, not a release. When a
-    /// signalling shell's signal does not come the gate stays shut, nothing is written to the pty,
-    /// the controller tells the view to hand the held keys back, and a late signal then opens the
-    /// gate normally. The controller and its gate are shared by the Legacy and Table input modes.
+    /// #1825 (`unset zle_bracketed_paste`): a session that signalled before and then stops
+    /// signalling must not wedge the pane. The command the editor submits while the line editor is
+    /// inactive is parked until the gate opens; the PROMPT EVENT opens it -- no signal, no timer --
+    /// so the command is written at that prompt and runs. The controller and status are shared by
+    /// the Legacy and Table input modes.
     #[test]
-    fn the_signal_give_up_net_writes_nothing_and_leaves_the_gate_shut() {
+    fn a_command_submitted_to_a_session_that_stopped_signalling_is_written_at_its_prompt() {
         App::test((), |mut app| async move {
             let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
             let harness = harness(&mut app);
-            let gave_up = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-            {
-                let gave_up = gave_up.clone();
-                let controller = harness.controller.clone();
-                app.update(|ctx| {
-                    ctx.subscribe_to_model(&controller, move |_, event, _| {
-                        if matches!(event, PtyControllerEvent::LineEditorSignalGaveUp) {
-                            gave_up.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                        }
-                    });
-                });
-            }
-            let before = written(&harness).len();
             harness.line_editor_status.update(&mut app, |status, ctx| {
-                status.set_line_editor_active_for_test(false);
                 status.set_ready_signal_seen_for_test(true, ctx);
-                status.set_signal_wait(Some(std::time::Duration::from_millis(5)));
-                status.prompt_hook_for_test(ctx);
+                status.set_line_editor_active_for_test(false);
             });
-            warpui::r#async::Timer::after(std::time::Duration::from_millis(150)).await;
-            assert_eq!(
-                gave_up.load(std::sync::atomic::Ordering::SeqCst),
-                1,
-                "the view is told to hand the keys back"
+            submit(&mut app, &harness, "echo after-unset");
+            let command = bytes_to_execute_command("echo after-unset", SHELL, false);
+            assert!(
+                !written(&harness).iter().any(|w| w == &command),
+                "parked behind the closed gate"
             );
-            harness.line_editor_status.read(&app, |status, _| {
-                assert!(
-                    !status.is_line_editor_active(),
-                    "the net never opens the gate"
-                )
-            });
-            assert_eq!(written(&harness).len(), before, "the net wrote nothing");
-            // The next signal re-arms normally.
+            // The next prompt event, with no ready signal at all.
             harness
                 .line_editor_status
-                .update(&mut app, |status, ctx| status.note_shell_reading_line(ctx));
-            harness.line_editor_status.read(&app, |status, _| {
-                assert!(status.is_line_editor_active() && status.is_proven_reading())
-            });
+                .update(&mut app, |status, ctx| status.prompt_hook_for_test(ctx));
+            assert!(
+                written(&harness).iter().any(|w| w == &command),
+                "the prompt event opened the gate and the command went out"
+            );
+            // No request went to a reader nothing proved (#1798).
+            assert!(!written(&harness).iter().any(|w| w == &REQUEST.to_vec()));
         });
     }
 
@@ -3100,7 +3087,7 @@ mod typeahead_handoff {
             shell_marks_line_editor_reading(&mut app, &harness);
             harness
                 .line_editor_status
-                .read(&app, |status, _| assert!(!status.is_line_editor_active()));
+                .read(&app, |status, _| assert!(status.decision_awaits_signal()));
         });
     }
 
@@ -3126,8 +3113,8 @@ mod typeahead_handoff {
             shell_marks_line_editor_reading(&mut app, &harness);
             harness.line_editor_status.read(&app, |status, _| {
                 assert!(
-                    !status.is_line_editor_active(),
-                    "an unanswered line keeps the activation pending"
+                    status.decision_awaits_signal(),
+                    "an unanswered line keeps the decision pending"
                 )
             });
         });

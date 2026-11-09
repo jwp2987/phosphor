@@ -2425,33 +2425,6 @@ impl TerminalView {
         });
     }
 
-    /// A signalling shell's line-editor ready signal did not come within its give-up net
-    /// (#1672/#1798; the controller's `LineEditorSignalGaveUp`): every live prompt hold goes
-    /// through the give-up the hold's own cap runs -- the keys go back to the editor as text, or
-    /// stay held for the events with the "waiting for the shell" toast. Nothing is written to the
-    /// pty. A busy queue leaves it to the hold's own cap.
-    pub(super) fn on_line_editor_signal_gave_up(&mut self, ctx: &mut ViewContext<Self>) {
-        let tokens: Vec<GateToken> = self
-            .paste_queue
-            .queue
-            .try_peek()
-            .map(|queue| {
-                queue
-                    .gates()
-                    .iter()
-                    .filter(|gate| gate.kind == GateKind::LineEditorActive)
-                    .map(|gate| gate.token)
-                    .collect()
-            })
-            .unwrap_or_default();
-        warpui::input_order::log_hop("line_editor_signal_gave_up", || {
-            format!("holds={}", tokens.len())
-        });
-        for token in tokens {
-            self.on_paste_queue_give_up(token, ctx);
-        }
-    }
-
     /// The line editor signalled (the controller's `PromptHoldReleased`): the keys held for the
     /// prompt go out, in typed order.
     pub(super) fn on_prompt_hold_released(&mut self, hold_id: u64, ctx: &mut ViewContext<Self>) {

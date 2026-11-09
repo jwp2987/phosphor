@@ -37081,10 +37081,6 @@ impl TerminalSurface for TerminalView {
         self.drain_young_hold_ends(ctx);
     }
 
-    fn on_line_editor_signal_gave_up(&mut self, ctx: &mut ViewContext<Self>) {
-        TerminalView::on_line_editor_signal_gave_up(self, ctx);
-    }
-
     fn on_input_buffer_overflow(&mut self, ctx: &mut ViewContext<Self>) {
         self.show_ssh_typing_toast(
             "Too much input is waiting to be sent to this terminal; the newest keys were discarded, not run",

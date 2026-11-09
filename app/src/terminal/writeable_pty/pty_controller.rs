@@ -743,10 +743,11 @@ impl<T: EventLoopSender> PtyController<T> {
         });
 
         ctx.subscribe_to_model(&line_editor_status, |me, event, ctx| {
-            if let LineEditorStatusEvent::SignalGaveUp = event {
-                // #1672/#1798: a timer only hands text back. The gate stays shut and nothing is
-                // written; the view hands the keys it holds for the signal back to the editor.
-                ctx.emit(PtyControllerEvent::LineEditorSignalGaveUp);
+            if let LineEditorStatusEvent::GateOpened = event {
+                // #1825: the prompt event opened the write gate; the request decision of a
+                // session that signals waits for its signal (`Active` follows). Queued writes go
+                // now: nothing waits for a signal that a user setting may have turned off.
+                me.execute_next_queued_write(ctx);
                 return;
             }
             if let LineEditorStatusEvent::Active = event {
@@ -1111,12 +1112,15 @@ impl<T: EventLoopSender> PtyController<T> {
         if self.activate_remembered_ready_signal(ctx) {
             return;
         }
-        if self.line_editor_status.as_ref(ctx).is_line_editor_active() {
+        let status = self.line_editor_status.as_ref(ctx);
+        // The gate is open but this prompt's decision waits for the shell's signal: it decides
+        // when the signal arrives (`Active`), not on this retry.
+        if status.is_line_editor_active() && !status.decision_awaits_signal() {
             self.decide_typeahead_handoff_request(true, ctx);
         }
     }
 
-    /// Opens the gate for a ready signal remembered by `expedite_pending_activation`, once the
+    /// Starts the decision for a ready signal remembered by `expedite_pending_activation`, once the
     /// hand-off can vouch that no typeahead line is queued ahead of a write. Returns whether the
     /// line editor was activated (its `Active` event ran the decision).
     fn activate_remembered_ready_signal(&mut self, ctx: &mut ModelContext<Self>) -> bool {
@@ -2595,9 +2599,8 @@ impl<T: EventLoopSender> PtyController<T> {
     }
 
     /// ConPTY prompt hold (#1349): the session's shell signals its line editor being ready, so
-    /// the activation fallback waits for that signal for the (long) give-up cap instead of
-    /// firing 50 ms after the precmd and releasing held keys ahead of it.
-    #[allow(dead_code)] // used only by tests
+    /// the hand-off's request decision of each prompt waits for that signal (the write gate does
+    /// not, #1825); a prompt cycle that ends without one clears the wait.
     pub fn set_conpty_prompt_hold_signals(
         &mut self,
         wait: Option<std::time::Duration>,
@@ -3148,9 +3151,6 @@ pub enum PtyControllerEvent {
     /// hold, and the hand-off ended that hold (#1353 phase 5b): the view takes or drops the
     /// gate's entries.
     YoungHoldEnded,
-    /// A signalling shell's line-editor ready signal did not come within the give-up net
-    /// (#1672/#1798): the view hands the keys it holds for the signal back to the editor.
-    LineEditorSignalGaveUp,
     /// Input was dropped because a buffer on the way to the pty was full (#1442): the surface
     /// tells the user.
     InputBufferOverflow,

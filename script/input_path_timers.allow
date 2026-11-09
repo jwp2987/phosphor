@@ -21,8 +21,6 @@ app/src/terminal/input/enter_queue.rs	ENTER_GATE_LEAK_NET	leak net of the Enter 
 app/src/terminal/input/enter_queue.rs	UNREADY_ENTER_GIVE_UP	60 s net of an Enter held for an unready shell: the line stays in the editor unrun, what followed is discarded with a toast (#1661)
 app/src/terminal/input/paste_queue.rs	arm_give_up	queue gate cap: a give-up that hands the gate's keys back to the editor or discards them with a count toast
 app/src/terminal/input/paste_queue.rs	start_queued_read	delays a Pasting... progress toast; notice only
-app/src/terminal/line_editor_status.rs	LINE_EDITOR_SIGNAL_GIVE_UP	reports SignalGaveUp so held keys go back to the editor; never opens the gate or writes
-app/src/terminal/line_editor_status.rs	arm_signal_give_up	arms the line-editor ready-signal give-up; only reports SignalGaveUp (keys go back to the editor)
 app/src/terminal/model/block/interaction_mode.rs	INTERACTIVE_PROMPT_NOTICE_EXPLICIT	shows a 'may be waiting for input -- Take over' notice only (probe unknown); never hands the command over (#1811)
 app/src/terminal/model/block/interaction_mode.rs	INTERACTIVE_PROMPT_QUIET_TRAILING_UNKNOWN_READ	shows a 'may be waiting for input -- Take over' notice only; never hands the command over (#1796)
 app/src/terminal/model/block/interaction_mode.rs	STALL_NOTICE_AFTER	shows a 'may be waiting for input -- Take over' notice for an unchanged full-screen program; never hands over, never writes to the pty (#1811)

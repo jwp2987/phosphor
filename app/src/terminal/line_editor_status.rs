@@ -3,26 +3,21 @@ use std::time::Duration;
 
 use crate::terminal::model::session::{SessionId, Sessions};
 use crate::terminal::model_events::AnsiHandlerEvent;
-use warpui::{Entity, ModelContext, ModelHandle, r#async::SpawnedFutureHandle};
+use warpui::{Entity, ModelContext, ModelHandle};
 
 use super::{ModelEvent, ModelEventDispatcher, shell::ShellType};
 
-/// The give-up net for a shell whose line editor is expected to signal that it is reading
-/// (bracketed-paste enable, #1208, or the `LineEditorReading` marker, #1390; tracked by
-/// `ready_signal_seen` for the ACTIVE SESSION, or a ConPTY prompt hold that waits for the signal).
-///
-/// Owner rule (two weeks of timer bugs, #1672/#1798): the input pipeline is event-driven, and a
-/// timer may only hand text back or exit -- it never opens the write gate, never writes to the pty
-/// and never decides routing. So:
-/// * a shell that signals opens the gate ONLY on the signal;
-/// * a shell that has never signalled opens the gate on the Precmd/EndPrompt event itself, with no
-///   delay: the prompt is the only evidence it gives, and the tty buffers keys for it;
-/// * when the signal of a signalling shell does not come within this net, the held keys go back to
-///   the editor (`LineEditorStatusEvent::SignalGaveUp`, handled by the controller and the view
-///   through the existing hand-back paths) and the gate stays shut. A late signal, or the next
-///   prompt hook, re-arms normally.
-// give-up-net: reports SignalGaveUp so held keys go back to the editor; never opens the gate or writes
-const LINE_EDITOR_SIGNAL_GIVE_UP: Duration = Duration::from_millis(1000);
+// The prompt event (Precmd, or zsh's EndPrompt) ALWAYS opens the write gate (#1825): commands and
+// keys the editor submitted go to the pty at the shell's prompt, exactly as for a shell that never
+// signals; the tty buffers them for a line editor that is not reading yet. Nothing waits for the
+// shell's own ready signal (bracketed-paste enable, #1208, or the `LineEditorReading` marker,
+// #1390): a user can turn it off (`unset zle_bracketed_paste`), and a command parked behind a
+// signal that never comes wedges the pane (no Preexec, so no next prompt). The signal only
+// UPGRADES the prompt: `proven_reading` (the ESC i line-report request goes only to a proven
+// reader, #1798) and, for a session known to signal, the hand-off's request decision, which waits
+// for the signal (`awaiting_signal`) because that decision writes the request. A session whose
+// prompt cycle ended with no signal is demoted (`signal_missed`): its next prompt decides at the
+// event. No timer is involved anywhere on this path.
 
 /// Model representing the status of the shell's line editor.
 ///
@@ -36,22 +31,24 @@ pub struct LineEditorStatus {
     /// (ESC i) is written only while this is set (#1798): to a shell not reading, the tty echoes
     /// it as `^[i`.
     proven_reading: bool,
-    /// This session's shell has signalled at least once, so its readiness comes from the signal:
-    /// the prompt hook arms the give-up net instead of opening the gate.
+    /// Sessions whose shell has signalled (learned per session, #1823): their request decision
+    /// waits for the signal of each prompt (`awaiting_signal`). The gate itself never does.
     ready_signal_seen: HashSet<Option<SessionId>>,
-    /// A prompt hook armed the wait for the shell's ready signal and nothing has ended it: the
-    /// signal (even after the give-up net fired) opens the gate.
+    /// The gate is open for this prompt but the hand-off's request decision still waits for the
+    /// shell's ready signal (the session is known to signal). Cleared by the signal, by a command
+    /// start (`signal_missed` then records the miss).
     awaiting_signal: bool,
-    /// The signal arrived but could not open the gate itself (a typeahead line is queued ahead of
-    /// the hand-off, or the keys held for it are not counted yet): the next hand-off retry (an
-    /// event) opens it. See [`LineEditorStatus::activate_pending_signal`].
+    /// A prompt cycle ended (a command started) while its decision still awaited the signal: the
+    /// session did not signal for it, and is demoted at its next prompt event.
+    signal_missed: bool,
+    /// The signal arrived but could not start the decision itself (a typeahead line is queued
+    /// ahead of the hand-off, or the keys held for it are not counted yet): the next hand-off
+    /// retry (an event) starts it. See [`LineEditorStatus::activate_pending_signal`].
     signal_activation_pending: bool,
-    mark_line_editor_active_abort_handle: Option<SpawnedFutureHandle>,
     sessions: ModelHandle<Sessions>,
-    /// ConPTY prompt hold (#1349): while set, the shell is expected to signal, so a precmd arms
-    /// the give-up net (this long) instead of opening the gate on the event. It only bounds a
-    /// shell that never signals; when it fires, the shell is known not to signal and this is
-    /// cleared (the next prompt hook then opens the gate on the event).
+    /// ConPTY prompt hold (#1349): while set, the shell is expected to signal, so the hand-off's
+    /// decision waits for the signal like a learned session's. Cleared when a prompt cycle ended
+    /// without one (the hold's own cap hands the held keys back).
     signal_wait: Option<Duration>,
 
     /// `true` if the active session is zsh and precmd was received before the most recent end
@@ -82,8 +79,8 @@ impl LineEditorStatus {
             proven_reading: false,
             ready_signal_seen: HashSet::new(),
             awaiting_signal: false,
+            signal_missed: false,
             signal_activation_pending: false,
-            mark_line_editor_active_abort_handle: None,
             did_receive_zsh_precmd: false,
             sessions,
             signal_wait: None,
@@ -115,14 +112,15 @@ impl LineEditorStatus {
         self.model_event_dispatcher.as_ref(ctx).active_session_id()
     }
 
-    /// How long the wait for the shell's signal runs before the net hands the held keys back.
-    fn give_up_delay(&self) -> Duration {
-        self.signal_wait.unwrap_or(LINE_EDITOR_SIGNAL_GIVE_UP)
+    /// Whether the request decision of this prompt still waits for the shell's ready signal (the
+    /// gate itself is open, #1825).
+    pub(super) fn decision_awaits_signal(&self) -> bool {
+        self.is_line_editor_active && self.awaiting_signal
     }
 
-    /// Whether the shell's signal arrived but is waiting for a hand-off retry to open the gate.
+    /// Whether the shell's signal arrived but is waiting for a hand-off retry to start the decision.
     pub(super) fn signal_activation_pending(&self) -> bool {
-        self.signal_activation_pending && self.awaiting_signal && !self.is_line_editor_active
+        self.signal_activation_pending && self.awaiting_signal
     }
 
     /// Sets the flag `LineEditorStatusEvent::Active` would set, without the precmd timer.
@@ -148,28 +146,28 @@ impl LineEditorStatus {
     }
 
     /// The shell's line editor announced that it is reading (readline/zle enable bracketed paste
-    /// as they start a line, #1208): the wait the prompt's hook armed ends now, and this is the
-    /// only thing that opens the gate for a shell that signals. Without a wait armed the signal
-    /// proves nothing (a program enabling bracketed paste itself).
+    /// as they start a line, #1208; PowerShell's marker, #1390). The gate is already open (the
+    /// prompt event opened it); the signal proves the reader (`proven_reading`), learns the
+    /// session as a signalling one, and starts the request decision that waited for it. A signal
+    /// outside a prompt cycle proves nothing (a program enabling bracketed paste itself).
     pub(super) fn note_shell_reading_line(&mut self, ctx: &mut ModelContext<Self>) {
-        if self.is_line_editor_active {
-            // Declared active on the prompt event before the signal came: the signal proves the
-            // editor reads now (only a prompt cycle is ever active; a command's start made it
-            // inactive), and later prompts wait for the signal.
-            let session = self.active_session(ctx);
-            self.ready_signal_seen.insert(session);
-            self.proven_reading = true;
+        if !self.is_line_editor_active {
             return;
         }
-        if !self.awaiting_signal {
+        if self.awaiting_signal {
+            self.open_gate_on_signal(ctx);
             return;
         }
-        self.open_gate_on_signal(ctx);
+        // Gate opened on the event with the decision already made (a session not yet known to
+        // signal): a late proof upgrades the reader and teaches the session; no second decision.
+        let session = self.active_session(ctx);
+        self.ready_signal_seen.insert(session);
+        self.proven_reading = true;
     }
 
-    /// The shell's signal opens the gate: the line editor is proven to be reading.
+    /// The shell's signal arrived for a prompt whose decision waited for it: the line editor is
+    /// proven to be reading, and the hand-off decides (the request goes now).
     fn open_gate_on_signal(&mut self, ctx: &mut ModelContext<Self>) {
-        abort_if_running(self.mark_line_editor_active_abort_handle.take());
         self.awaiting_signal = false;
         self.signal_activation_pending = false;
         let session = self.active_session(ctx);
@@ -179,9 +177,8 @@ impl LineEditorStatus {
         ctx.emit(LineEditorStatusEvent::Active);
     }
 
-    /// Makes a precmd's fallback activation wait `wait` for the shell's ready signal (see
-    /// `signal_wait`), or restores the default fallback delay.
-    #[allow(dead_code)] // used only by tests
+    /// Makes the request decision of a prompt wait for the shell's ready signal (see
+    /// `signal_wait`), or restores the default.
     pub(super) fn set_signal_wait(&mut self, wait: Option<Duration>) {
         self.signal_wait = wait;
     }
@@ -192,7 +189,7 @@ impl LineEditorStatus {
     /// released keys or the hand-off's counts settle -- opens the gate through
     /// [`Self::activate_pending_signal`]. No timer is involved.
     pub(super) fn expedite_pending_activation(&mut self, _ctx: &mut ModelContext<Self>) {
-        if self.is_line_editor_active || !self.awaiting_signal {
+        if !self.awaiting_signal {
             return;
         }
         self.signal_activation_pending = true;
@@ -208,12 +205,11 @@ impl LineEditorStatus {
         true
     }
 
-    /// Arms the wait for the shell's signal as a precmd does for a signalling shell, without the
-    /// model event.
+    /// The prompt event of a shell that signals, without the model event: the gate opens, the
+    /// request decision waits for the signal.
     #[cfg(test)]
     pub(crate) fn arm_activation_for_test(&mut self, ctx: &mut ModelContext<Self>) {
-        let delay = self.give_up_delay();
-        self.arm_signal_give_up(delay, ctx);
+        self.open_gate_on_prompt(true, ctx);
     }
 
     /// The prompt hook as the model event runs it (any shell).
@@ -274,67 +270,46 @@ impl LineEditorStatus {
         }
     }
 
-    /// A prompt's hook (Precmd, or zsh's EndPrompt) arrived with the line editor inactive. An
-    /// event decides, never a timer: a shell that signals waits for its signal (the net only hands
-    /// keys back); a shell that never has opens the gate on this event.
+    /// A prompt's hook (Precmd, or zsh's EndPrompt) arrived with the line editor inactive. The
+    /// EVENT opens the write gate, always (#1825). A session known to signal then waits for its
+    /// signal only for the hand-off's request decision (`GateOpened`: queued writes go now);
+    /// any other session decides at the event (`Active`, unproven, as a non-signalling shell).
     fn on_prompt_hook(&mut self, ctx: &mut ModelContext<Self>) {
-        if self.expects_ready_signal(ctx) {
-            let delay = self.give_up_delay();
-            self.arm_signal_give_up(delay, ctx);
-            return;
+        let session = self.active_session(ctx);
+        if self.signal_missed {
+            // The previous prompt cycle of this shell ended with no signal: it is not (or no
+            // longer) a signalling shell, so its decisions stop waiting for one.
+            self.signal_missed = false;
+            self.ready_signal_seen.remove(&session);
+            self.signal_wait = None;
         }
-        // The prompt is the only evidence this shell gives; the tty buffers keys for it. Opened
-        // unproven: no line-report request follows (see `is_proven_reading`).
-        abort_if_running(self.mark_line_editor_active_abort_handle.take());
-        self.awaiting_signal = false;
+        let waits_for_signal = self.expects_ready_signal(ctx);
+        self.open_gate_on_prompt(waits_for_signal, ctx);
+    }
+
+    fn open_gate_on_prompt(
+        &mut self,
+        decision_waits_for_signal: bool,
+        ctx: &mut ModelContext<Self>,
+    ) {
         self.signal_activation_pending = false;
         self.proven_reading = false;
         self.is_line_editor_active = true;
-        ctx.emit(LineEditorStatusEvent::Active);
-    }
-
-    /// Arms the wait for the shell's ready signal, with `delay` as the give-up net. When it
-    /// fires it only reports that the signal did not come (`SignalGaveUp`): the held keys go back
-    /// to the editor. It never opens the gate, writes, or decides routing. The wait stays armed
-    /// (`awaiting_signal`), so a late signal still opens the gate.
-    fn arm_signal_give_up(&mut self, delay: Duration, ctx: &mut ModelContext<Self>) {
-        abort_if_running(self.mark_line_editor_active_abort_handle.take());
-        self.proven_reading = false;
-        self.awaiting_signal = true;
-        self.signal_activation_pending = false;
-        let session = self.active_session(ctx);
-
-        let abort_handle = ctx.spawn_abortable(
-            // give-up-net: arms the line-editor ready-signal give-up; only reports SignalGaveUp (keys go back to the editor)
-            async move { warpui::r#async::Timer::after(delay).await },
-            move |me, _, ctx| {
-                warpui::input_order::log_hop("line_editor_signal_give_up", || {
-                    format!("delay_ms={}", delay.as_millis())
-                });
-                if me.signal_wait.is_some_and(|wait| wait <= delay) {
-                    log::warn!(
-                        "line editor: no ready signal within {} ms of the prompt; the shell \
-                         does not signal, so held keys go back to the editor and the next prompt \
-                         opens on its own event",
-                        delay.as_millis()
-                    );
-                    me.signal_wait = None;
-                }
-                // This session did not signal for this prompt: it is not (or no longer) a
-                // signalling shell, so its next prompt event opens the gate itself (unproven)
-                // instead of waiting for a signal that may never come; a late signal learns it
-                // again.
-                me.ready_signal_seen.remove(&session);
-                ctx.emit(LineEditorStatusEvent::SignalGaveUp);
-            },
-            |_, _| (),
-        );
-        self.mark_line_editor_active_abort_handle = Some(abort_handle);
+        if decision_waits_for_signal {
+            self.awaiting_signal = true;
+            ctx.emit(LineEditorStatusEvent::GateOpened);
+        } else {
+            self.awaiting_signal = false;
+            ctx.emit(LineEditorStatusEvent::Active);
+        }
     }
 
     fn set_line_editor_inactive(&mut self, ctx: &mut ModelContext<Self>) {
-        abort_if_running(self.mark_line_editor_active_abort_handle.take());
         self.proven_reading = false;
+        if self.awaiting_signal {
+            // The cycle ended (a command started) with no signal for its decision.
+            self.signal_missed = true;
+        }
         self.awaiting_signal = false;
         self.signal_activation_pending = false;
 
@@ -346,20 +321,13 @@ impl LineEditorStatus {
     }
 }
 
-/// Aborts the given `abort_handle` if it is `Some()`.
-fn abort_if_running(abort_handle: Option<SpawnedFutureHandle>) {
-    if let Some(abort_handle) = abort_handle {
-        abort_handle.abort();
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
 pub enum LineEditorStatusEvent {
     Active,
     Inactive,
-    /// A signalling shell's ready signal did not come within the give-up net: keys held for it go
-    /// back to the editor. The gate stays shut; nothing is written (#1672/#1798).
-    SignalGaveUp,
+    /// The prompt event opened the write gate (queued writes may go), but the request decision of
+    /// this session still waits for its ready signal: `Active` follows with the signal (#1825).
+    GateOpened,
 }
 
 impl Entity for LineEditorStatus {
