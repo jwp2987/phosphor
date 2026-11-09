@@ -536,6 +536,13 @@ impl ShellCommandExecutor {
                     self.awaiting_completion_action_ids
                         .insert(action_id.clone());
                 }
+                // #1796: whether this tool call is the kind the stalled-prompt hand-over watches
+                // (appci `agent_lrc_no_false_takeover` reads it). Flags only, never the command.
+                log::info!(
+                    "agent_command_wait awaited={} wait_until_completion={} snapshots={handles_snapshots}",
+                    *wait_until_completion && !handles_snapshots,
+                    *wait_until_completion
+                );
 
                 ActionExecution::new_async(
                     self.action_result_future(

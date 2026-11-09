@@ -4,6 +4,8 @@ use nix::Result;
 use nix::sys::termios::{self, Termios};
 use warpui::{Entity, ModelContext};
 
+use crate::terminal::model::block::ForegroundTtyRead;
+
 /// The default amount of time we wait before polling the terminal attributes again.
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -46,6 +48,14 @@ impl TerminalAttributesPoller {
     /// a match).
     pub fn foreground_process_names(&self) -> Option<Vec<String>> {
         foreground_process_names(self.fd)
+    }
+
+    /// Whether ANY process of the pty's foreground process group is blocked reading the tty
+    /// right now (#1796), for a prompt-shaped line that only ends in `?`/`:`. See
+    /// [`foreground_group_tty_read`]. Asked only once such a line has been quiet for its whole
+    /// window, then at most once a second.
+    pub fn foreground_tty_read(&self) -> ForegroundTtyRead {
+        foreground_group_tty_read(self.fd)
     }
 
     /// The pty's current termios, read now (a cheap ioctl, no timer). Used by event-driven
@@ -331,6 +341,151 @@ pub fn tty_read_probe_works() -> bool {
     }
 }
 
+/// #1796: whether any process -- any THREAD of any process -- in the pty's foreground process
+/// group is blocked reading the tty. The leader alone is not enough: under `make`, `npm run`, a
+/// script that runs a child, or `( ... )` the process at the prompt is a member, not the leader,
+/// and a Go or Java program reads stdin on a thread other than its main one. `Reading` as soon as
+/// one task is; `Unknown` when the platform has no probe ([`tty_read_probe_works`]), `/proc` cannot
+/// be listed, a sleeping task's `syscall` or fd link cannot be read (ptrace restrictions such as
+/// Yama `ptrace_scope` >= 2, a member owned by another user, e.g. root under `sudo`), or the walk
+/// hit its task cap; otherwise `NotReading`. A walk of `/proc/*/stat` like
+/// [`foreground_process_names`], plus three small reads per sleeping task of the group; the
+/// #1641 per-key ssh probe ([`foreground_reads_tty`]) stays on the leader alone because it runs
+/// on the key path.
+pub fn foreground_group_tty_read(fd: RawFd) -> ForegroundTtyRead {
+    if !tty_read_probe_works() {
+        return ForegroundTtyRead::Unknown;
+    }
+    // SAFETY: `tcgetpgrp` only reads the terminal's foreground group id.
+    let pgid = unsafe { libc::tcgetpgrp(fd) };
+    if pgid <= 0 {
+        return ForegroundTtyRead::Unknown;
+    }
+    group_tty_read(pgid)
+}
+
+/// The most tasks (threads, across the whole group) [`foreground_group_tty_read`] inspects; past
+/// it the answer is `Unknown` unless a reading task was already found.
+#[cfg(target_os = "linux")]
+const MAX_GROUP_TASKS: usize = 512;
+
+#[cfg(target_os = "linux")]
+fn group_tty_read(pgid: libc::pid_t) -> ForegroundTtyRead {
+    let Some(members) = process_group_members(pgid) else {
+        return ForegroundTtyRead::Unknown;
+    };
+    let mut tasks = 0usize;
+    let mut verdicts = Vec::new();
+    for (pid, _comm) in members {
+        let base = format!("/proc/{pid}");
+        let task_dirs: Vec<String> = match std::fs::read_dir(format!("{base}/task")) {
+            Ok(dir) => dir
+                .filter_map(|entry| entry.ok())
+                .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
+                .filter(|tid| !tid.is_empty() && tid.bytes().all(|b| b.is_ascii_digit()))
+                .map(|tid| format!("{base}/task/{tid}"))
+                .collect(),
+            // No task directory (the process just exited, or an odd /proc): ask the process.
+            Err(_) => vec![base],
+        };
+        for task in task_dirs {
+            if tasks >= MAX_GROUP_TASKS {
+                verdicts.push(ForegroundTtyRead::Unknown);
+                return combine_tty_reads(verdicts);
+            }
+            tasks += 1;
+            let verdict = task_tty_read(&task);
+            if verdict == ForegroundTtyRead::Reading {
+                return verdict;
+            }
+            verdicts.push(verdict);
+        }
+    }
+    combine_tty_reads(verdicts)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn group_tty_read(_pgid: libc::pid_t) -> ForegroundTtyRead {
+    ForegroundTtyRead::Unknown
+}
+
+/// One task's answer, from its `/proc/<pid>[/task/<tid>]` directory.
+#[cfg(target_os = "linux")]
+fn task_tty_read(base: &str) -> ForegroundTtyRead {
+    let Some(read_nr) = READ_SYSCALL else {
+        return ForegroundTtyRead::Unknown;
+    };
+    let wchan = std::fs::read_to_string(format!("{base}/wchan")).ok();
+    let state = std::fs::read_to_string(format!("{base}/stat"))
+        .ok()
+        .and_then(|stat| parse_proc_stat_state(&stat));
+    let asks_syscall = state == Some('S') && !wchan.as_deref().is_some_and(wchan_is_tty_read);
+    let syscall = asks_syscall
+        .then(|| std::fs::read_to_string(format!("{base}/syscall")).ok())
+        .flatten();
+    task_tty_read_verdict(
+        wchan.as_deref(),
+        state,
+        syscall.as_deref(),
+        read_nr,
+        |read_fd| {
+            std::fs::read_link(format!("{base}/fd/{read_fd}"))
+                .ok()
+                .map(|path| path.to_string_lossy().into_owned())
+        },
+    )
+}
+
+/// The #1796 decision for one task from what could be read. `Reading`: the line discipline's
+/// read in `wchan`, or asleep (`S`) in a `read` whose fd is a terminal. `NotReading`: gone (no
+/// state), not asleep (running, stopped, a zombie, uninterruptible I/O), asleep in another
+/// syscall, or reading something that is not a terminal. `Unknown`: asleep, but the `syscall` line
+/// (or the fd link of its `read`) could not be read -- the kernel refuses both without ptrace
+/// access, which is exactly a root-owned member or a Yama-restricted system.
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn task_tty_read_verdict(
+    wchan: Option<&str>,
+    state: Option<char>,
+    syscall: Option<&str>,
+    read_nr: u64,
+    read_fd_target: impl FnOnce(i64) -> Option<String>,
+) -> ForegroundTtyRead {
+    if wchan.is_some_and(wchan_is_tty_read) {
+        return ForegroundTtyRead::Reading;
+    }
+    if state != Some('S') {
+        return ForegroundTtyRead::NotReading;
+    }
+    let Some(syscall) = syscall.map(str::trim).filter(|line| !line.is_empty()) else {
+        return ForegroundTtyRead::Unknown;
+    };
+    let Some(read_fd) = syscall_read_fd(syscall, read_nr) else {
+        return ForegroundTtyRead::NotReading;
+    };
+    match read_fd_target(read_fd) {
+        Some(target) if path_is_tty(&target) => ForegroundTtyRead::Reading,
+        Some(_) => ForegroundTtyRead::NotReading,
+        None => ForegroundTtyRead::Unknown,
+    }
+}
+
+/// Several tasks' answers: `Reading` if any is, else `Unknown` if any is, else `NotReading` (also
+/// for no tasks at all: an exited group reads nothing).
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn combine_tty_reads(
+    verdicts: impl IntoIterator<Item = ForegroundTtyRead>,
+) -> ForegroundTtyRead {
+    let mut combined = ForegroundTtyRead::NotReading;
+    for verdict in verdicts {
+        match verdict {
+            ForegroundTtyRead::Reading => return ForegroundTtyRead::Reading,
+            ForegroundTtyRead::Unknown => combined = ForegroundTtyRead::Unknown,
+            ForegroundTtyRead::NotReading => {}
+        }
+    }
+    combined
+}
+
 #[cfg(target_os = "linux")]
 fn process_reads_tty(pid: libc::pid_t) -> bool {
     let base = format!("/proc/{pid}");
@@ -509,7 +664,18 @@ pub(crate) fn parse_proc_stat(stat: &str) -> Option<(String, i32)> {
 
 #[cfg(target_os = "linux")]
 fn process_group_names(pgid: libc::pid_t) -> Option<Vec<String>> {
-    let mut names = Vec::new();
+    let names: Vec<String> = process_group_members(pgid)?
+        .into_iter()
+        .map(|(_pid, comm)| comm)
+        .collect();
+    (!names.is_empty()).then_some(names)
+}
+
+/// Every process (pid, `comm`) whose process group (field 5 of `/proc/<pid>/stat`) is `pgid`, or
+/// `None` when `/proc` cannot be listed. Processes with an empty `comm` are skipped.
+#[cfg(target_os = "linux")]
+fn process_group_members(pgid: libc::pid_t) -> Option<Vec<(libc::pid_t, String)>> {
+    let mut members = Vec::new();
     for entry in std::fs::read_dir("/proc").ok()? {
         let Ok(entry) = entry else { continue };
         let file_name = entry.file_name();
@@ -526,11 +692,12 @@ fn process_group_names(pgid: libc::pid_t) -> Option<Vec<String>> {
         if let Some((comm, pgrp)) = parse_proc_stat(&stat)
             && pgrp == pgid
             && !comm.is_empty()
+            && let Ok(pid) = file_name.parse::<libc::pid_t>()
         {
-            names.push(comm);
+            members.push((pid, comm));
         }
     }
-    (!names.is_empty()).then_some(names)
+    Some(members)
 }
 
 #[cfg(target_os = "macos")]

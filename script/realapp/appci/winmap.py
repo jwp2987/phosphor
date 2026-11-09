@@ -58,6 +58,7 @@ GITBASH_ONLY = {
 PS_ONLY = {}
 # not on Windows at all, with the reason
 NOT_WINDOWS = {
+    "agent_lrc_no_false_takeover": "#1796: the interactive-prompt take-over it tests (PromptWatch, termios + /proc tty-read probe) is unix-only; ConPTY has no termios",
     "subshells": "uses `sh -c 'ps -o comm= -p $PPID'` to prove the subshell's parent; msys ps output differs. Not yet ported (gitbash_subshell and ctrl_c_d cover bash inside the pane)",
     "intl_compose_linux": "Linux xkb compose / dead keys (Windows has intl_altgr_ps / intl_altgr_bash)",
     "intl_ime_japanese": "macOS input methods (TISSelectInputSource)",

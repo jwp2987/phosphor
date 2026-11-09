@@ -1,7 +1,9 @@
 use super::{
-    is_canonical_without_echo, is_shell_or_login_hop, parse_proc_stat, parse_proc_stat_state,
-    path_is_tty, reads_tty_decision, syscall_read_fd, wchan_is_tty_read,
+    combine_tty_reads, is_canonical_without_echo, is_shell_or_login_hop, parse_proc_stat,
+    parse_proc_stat_state, path_is_tty, reads_tty_decision, syscall_read_fd, task_tty_read_verdict,
+    wchan_is_tty_read,
 };
+use crate::terminal::model::block::ForegroundTtyRead;
 use nix::sys::termios::LocalFlags;
 
 #[test]
@@ -123,4 +125,83 @@ fn the_tty_read_decision_needs_the_line_discipline_or_a_sleeping_tty_read() {
         Some("/dev/pts/4")
     ));
     assert!(!reads_tty_decision(None, None, None));
+}
+
+/// #1796 review: one task's tri-state answer. An unreadable `syscall` (or fd link) of a sleeping
+/// task -- ptrace restrictions, a root-owned member under `sudo` -- is `Unknown`, never
+/// `NotReading`, so the detector falls back to its long-silence window instead of never.
+#[test]
+fn a_task_tty_read_is_unknown_when_its_syscall_cannot_be_read() {
+    use ForegroundTtyRead::{NotReading, Reading, Unknown};
+    let never = |_fd: i64| -> Option<String> { panic!("no fd link is needed here") };
+    let pts = |_fd: i64| Some("/dev/pts/4".to_owned());
+    let pipe = |_fd: i64| Some("pipe:[9]".to_owned());
+    let unreadable = |_fd: i64| -> Option<String> { None };
+    let read_on_fd0 = "0 0x0 0x7ffd 0x1 0 0 0 0 0";
+
+    assert_eq!(
+        task_tty_read_verdict(Some("n_tty_read"), None, None, 0, never),
+        Reading
+    );
+    assert_eq!(
+        task_tty_read_verdict(Some("wait_woken"), Some('S'), Some(read_on_fd0), 0, pts),
+        Reading
+    );
+    // Running, a zombie, gone: not reading.
+    assert_eq!(
+        task_tty_read_verdict(Some("0"), Some('R'), None, 0, never),
+        NotReading
+    );
+    assert_eq!(
+        task_tty_read_verdict(None, Some('Z'), None, 0, never),
+        NotReading
+    );
+    assert_eq!(
+        task_tty_read_verdict(None, None, None, 0, never),
+        NotReading
+    );
+    // `sleep` (nanosleep, syscall 230 on x86_64) and a read of a pipe.
+    assert_eq!(
+        task_tty_read_verdict(
+            Some("hrtimer_nanosleep"),
+            Some('S'),
+            Some("230 0x0 0x0 0x7ffd 0 0 0 0 0"),
+            0,
+            never
+        ),
+        NotReading
+    );
+    assert_eq!(
+        task_tty_read_verdict(Some("0"), Some('S'), Some(read_on_fd0), 0, pipe),
+        NotReading
+    );
+    // Asleep, but the kernel refused the syscall line or the fd link.
+    assert_eq!(
+        task_tty_read_verdict(Some("0"), Some('S'), None, 0, never),
+        Unknown
+    );
+    assert_eq!(
+        task_tty_read_verdict(Some("0"), Some('S'), Some(""), 0, never),
+        Unknown
+    );
+    assert_eq!(
+        task_tty_read_verdict(Some("0"), Some('S'), Some(read_on_fd0), 0, unreadable),
+        Unknown
+    );
+}
+
+/// #1796 review: the group's answer is `Reading` if ANY task reads the tty (a `make` child, a Go
+/// program's reader thread), else `Unknown` if any task could not be judged, else `NotReading`.
+#[test]
+fn any_reading_task_makes_the_group_read_the_tty() {
+    use ForegroundTtyRead::{NotReading, Reading, Unknown};
+    assert_eq!(combine_tty_reads([NotReading, Reading, Unknown]), Reading);
+    assert_eq!(combine_tty_reads([Unknown, NotReading, Reading]), Reading);
+    assert_eq!(combine_tty_reads([NotReading, Unknown]), Unknown);
+    assert_eq!(combine_tty_reads([NotReading, NotReading]), NotReading);
+    assert_eq!(
+        combine_tty_reads(Vec::new()),
+        NotReading,
+        "an exited group reads nothing"
+    );
 }

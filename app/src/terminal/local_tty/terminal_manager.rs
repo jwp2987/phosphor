@@ -74,8 +74,8 @@ use {
     super::terminal_attributes::TerminalAttributesPoller,
     crate::terminal::local_tty::terminal_attributes::Event as TerminalAttributesPollerEvent,
     crate::terminal::model::block::{
-        FullscreenStall, FullscreenStallDetector, PromptDetection, PromptDetector,
-        is_closable_pager_group,
+        ForegroundTtyRead, FullscreenStall, FullscreenStallDetector, PromptDetection,
+        PromptDetector, is_closable_pager_group,
     },
     crate::terminal::model::terminal_model::BlockIndex,
     crate::terminal::model_events::ModelEvent as TerminalModelEvent,
@@ -1301,10 +1301,12 @@ fn wire_up_terminal_attribute_poller_with_surface<S: TerminalSurface>(
 /// output burst). How long a prompt has "looked like a prompt" is a named duration
 /// (`INTERACTIVE_PROMPT_QUIET_*`), logged when it fires -- not a count of 1 s polls.
 ///
-/// The 1 Hz `TerminalAttributesPoller` remains, as the fallback for the one signal with no
-/// event: a program flipping ECHO off (a silent `read -s`) without printing anything. The OS
-/// raises nothing when termios changes, so only sampling can see it. Every other path is
-/// output-driven and does not depend on the poll tick.
+/// The 1 Hz `TerminalAttributesPoller` remains, as the fallback for the two signals with no
+/// event: a program flipping ECHO off (a silent `read -s`) without printing anything, and
+/// (#1796) a program that left a bare `Name:` on screen starting its tty read only after that
+/// line's quiet window passed. The OS raises nothing when termios changes or a process blocks
+/// in `read`, so only sampling can see either. Every other path is output-driven and does not
+/// depend on the poll tick.
 #[cfg(unix)]
 struct PromptWatch<S: TerminalSurface>
 where
@@ -1374,12 +1376,19 @@ where
             return;
         };
         let now = instant::Instant::now();
-        let detection = self
-            .detector
-            .borrow_mut()
-            .observe(now, is_echo_on, is_canonical, || {
-                surface.read(ctx, |surface, ctx| surface.pending_interactive_prompt(ctx))
-            });
+        let detection = self.detector.borrow_mut().observe(
+            now,
+            is_echo_on,
+            is_canonical,
+            || surface.read(ctx, |surface, ctx| surface.pending_interactive_prompt(ctx)),
+            || {
+                self.poller
+                    .upgrade(ctx)
+                    .map_or(ForegroundTtyRead::Unknown, |poller| {
+                        poller.as_ref(ctx).foreground_tty_read()
+                    })
+            },
+        );
         if let Some(detection) = detection {
             match detection {
                 PromptDetection::Password => {
