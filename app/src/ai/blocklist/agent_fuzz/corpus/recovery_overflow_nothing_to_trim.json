@@ -1,0 +1,34 @@
+{
+  "v": 1,
+  "name": "recovery_overflow_nothing_to_trim",
+  "seed": 22,
+  "turns": [
+    {
+      "when": {
+        "kind": "nth",
+        "n": 0
+      },
+      "reply": {
+        "kind": "text",
+        "text": "first attempt"
+      },
+      "chaos": {
+        "context_overflow": true
+      }
+    },
+    {
+      "when": {
+        "kind": "nth",
+        "n": 1
+      },
+      "reply": {
+        "kind": "text",
+        "text": "done"
+      }
+    }
+  ],
+  "env": {
+    "commands": {}
+  },
+  "actor": []
+}
