@@ -7,14 +7,16 @@
 //! substitute it transparently (mirrors
 //! [`RemoteGitRepoStatusModel`](crate::code_review::git_status_update_remote::RemoteGitRepoStatusModel)).
 //!
-//! Pure push receiver: holds the latest PR / repository info for its
-//! `(host_id, repo_path)`. On construction (and again on reconnect) it sends
-//! `UpdateGitHubPrInfo` / `UpdateGitHubRepoInfo` notifications asking the
-//! daemon to create the per-repo model if needed and refresh; results then
-//! arrive as server-broadcast push messages filtered by `(host_id, repo_path)`.
-//! The daemon's `GitHubRepoModel` is the single source of truth, so there is no
-//! request/response and no client-side refresh state. A disconnect preserves
-//! stale data.
+//! Holds the latest PR / repository info for its `(host_id, repo_path)`. On
+//! construction (and again on reconnect) it asks the host's backend. With a helper
+//! those are `UpdateGitHubPrInfo` / `UpdateGitHubRepoInfo` notifications and the
+//! results arrive as server-broadcast pushes filtered by `(host_id, repo_path)`
+//! (the helper also looks again by itself when the branch changes). Without one
+//! (shell mode) the backend runs the user's `gh` on the host now and the answer is
+//! applied here; PR info is asked for again only on an explicit refresh or when the
+//! branch moved since the last lookup, on `ShellRefresh` events that can have moved
+//! git state. `gh` missing or not signed in reads as no PR / no repository. A
+//! disconnect preserves stale data.
 //!
 //! Ported from `42effe840:app/src/code_review/github_repo_model/remote.rs`.
 //!
@@ -23,6 +25,8 @@
 //! backend runs on the local machine. No Warp backend, GraphQL API or HTTP
 //! client is involved.
 
+use remote_server::backend::refresh::{PrecmdPolicy, RefreshCoordinator, RemoteRefreshEvent};
+use remote_server::backend::{BackendKind, Family, PrLookup, Requested};
 use remote_server::manager::{RemoteServerManager, RemoteServerManagerEvent};
 use warpui::{Entity, ModelContext, SingletonEntity};
 
@@ -40,6 +44,10 @@ pub struct RemoteGitHubRepoModel {
     remote_path: RemotePath,
     pr_info: Option<PrInfo>,
     repository_info: Option<RepositoryInfo>,
+    /// The branch the last shell-mode PR lookup was for (`None`: no lookup yet).
+    pr_branch: Option<Option<String>>,
+    /// Git-relevant events only (shell mode): one lookup in flight, one queued.
+    refresh: RefreshCoordinator,
 }
 
 impl Entity for RemoteGitHubRepoModel {
@@ -57,6 +65,8 @@ impl RemoteGitHubRepoModel {
             remote_path: util_remote_path_to_buffer(&remote_path),
             pr_info: None,
             repository_info: None,
+            pr_branch: None,
+            refresh: RefreshCoordinator::new(PrecmdPolicy::GitRelevant),
         };
         model.request_github_info(ctx);
         model
@@ -80,6 +90,11 @@ impl RemoteGitHubRepoModel {
             {
                 self.apply_repository_info_push(push.repository_info.as_ref(), ctx);
             }
+            RemoteServerManagerEvent::ShellRefresh { host_id, event }
+                if host_id == &self.remote_path.host_id =>
+            {
+                self.handle_shell_refresh(event, ctx);
+            }
             RemoteServerManagerEvent::HostConnected { host_id }
                 if host_id == &self.remote_path.host_id =>
             {
@@ -102,23 +117,71 @@ impl RemoteGitHubRepoModel {
     }
 
     fn request_pr_info(&self, ctx: &mut ModelContext<Self>) {
-        let Some(client) = RemoteServerManager::as_ref(ctx)
-            .client_for_host_with(&self.remote_path.host_id, remote_server::capability::GITHUB)
-            .cloned()
-        else {
+        self.request_pr(ctx, true);
+    }
+
+    /// `force`: always ask `gh`; otherwise (shell mode) only when the branch moved.
+    fn request_pr(&self, ctx: &mut ModelContext<Self>, force: bool) {
+        let backend = RemoteServerManager::as_ref(ctx).backend_for_host(&self.remote_path.host_id);
+        if !backend.is_available(Family::Github) {
             return;
-        };
-        client.update_github_pr_info(&self.remote_path.path);
+        }
+        let path = self.remote_path.path.clone();
+        let known = self.pr_branch.clone();
+        ctx.spawn(
+            async move { backend.request_pr_info(&path, known, force).await },
+            |me, result, ctx| {
+                match result {
+                    Ok(Requested::Computed(PrLookup::Fetched { branch, push })) => {
+                        me.pr_branch = Some(branch);
+                        me.apply_pr_info_push(push.pr_info.as_ref(), ctx);
+                    }
+                    Ok(_) => {}
+                    Err(e) => log::debug!("RemoteGitHubRepoModel: PR request failed: {e}"),
+                }
+                if me.refresh.finished() {
+                    me.request_pr(ctx, false);
+                }
+            },
+        );
     }
 
     fn request_repository_info(&self, ctx: &mut ModelContext<Self>) {
-        let Some(client) = RemoteServerManager::as_ref(ctx)
-            .client_for_host_with(&self.remote_path.host_id, remote_server::capability::GITHUB)
-            .cloned()
-        else {
+        let backend = RemoteServerManager::as_ref(ctx).backend_for_host(&self.remote_path.host_id);
+        if !backend.is_available(Family::Github) {
             return;
-        };
-        client.update_github_repo_info(&self.remote_path.path);
+        }
+        let path = self.remote_path.path.clone();
+        ctx.spawn(
+            async move { backend.request_repository_info(&path).await },
+            |me, result, ctx| match result {
+                Ok(Requested::Computed(push)) => {
+                    me.apply_repository_info_push(push.repository_info.as_ref(), ctx)
+                }
+                Ok(Requested::PushedByHelper) => {}
+                Err(e) => log::debug!("RemoteGitHubRepoModel: repository request failed: {e}"),
+            },
+        );
+    }
+
+    /// A refresh event for the host. In shell mode a git-relevant event looks the PR up again if
+    /// the branch moved; an explicit user refresh forces both lookups (with a helper too).
+    fn handle_shell_refresh(&mut self, event: &RemoteRefreshEvent, ctx: &mut ModelContext<Self>) {
+        use remote_server::backend::refresh::RefreshDecision;
+        let shell_backed = RemoteServerManager::as_ref(ctx)
+            .backend_for_host(&self.remote_path.host_id)
+            .kind(Family::Github)
+            == BackendKind::Shell;
+        let explicit = matches!(event, RemoteRefreshEvent::UserAction);
+        if !shell_backed && !explicit {
+            return;
+        }
+        if self.refresh.on_event(event) == RefreshDecision::Start {
+            self.request_pr(ctx, explicit);
+            if explicit {
+                self.request_repository_info(ctx);
+            }
+        }
     }
 
     /// Replace the stored PR info from a push, emitting `PrInfoChanged` only
