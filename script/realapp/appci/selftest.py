@@ -2713,6 +2713,19 @@ def lab_matrix_expansion():
 
 
 @check
+def lab_path_detect_hook_lines_match_the_apps_log_format():
+    """The #1801 lab case reads two app log lines; pin the regexes to the exact text app/src/completer/pushed_listing.rs writes (ids and counts only)."""
+    import cases_lab as CL
+    m = CL.HOOK_CWD_LISTING.search("INFO hop=cwd_listing session=4242 kind=L entries=2")
+    assert m and m.groups() == ("4242", "L", "2"), m
+    assert CL.HOOK_CWD_LISTING.search("hop=cwd_listing session=4242 kind=T entries=0").group(2) == "T"
+    assert not CL.HOOK_CWD_LISTING.search("hop=cwd_listing session=4242 kind=X entries=2")
+    m = CL.HOOK_PATH_DETECT.search("INFO hop=path_detect source=pushed session=4242 entries=2 complete=true")
+    assert m and m.groups() == ("4242", "2", "true"), m
+    assert not CL.HOOK_PATH_DETECT.search("hop=path_detect session=4242 path=/x")
+
+
+@check
 def lab_cases_registry_and_selection():
     import lab as L, run
     labs = [c for c in cases.CASES if c.get("lab")]

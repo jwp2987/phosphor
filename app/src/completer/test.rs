@@ -1253,3 +1253,80 @@ pub fn test_ls_script_quotes_awkward_directory_names_per_shell() {
         }
     }
 }
+
+/// #1801: a listing the remote shell pushed in its Precmd answers path detection with no remote
+/// command; a directory it did not list still reads the cache only.
+#[test]
+pub fn test_pushed_cwd_listing_answers_background_contexts_without_a_remote_command() {
+    App::test((), |app| async move {
+        let executor = FailingListExecutor::new(0);
+        let cwd = TypedPathBuf::from("/test-1801-pushed/");
+        let ctx = test_session_context(
+            failing_remote_session(9511, executor.clone()),
+            cwd.clone(),
+            &app,
+        );
+        super::note_pushed_cwd_listing(
+            SessionId::from(9511u64),
+            Some("/test-1801-pushed"),
+            "L dsub fa.txt",
+        );
+        for background in [
+            ctx.clone().for_background(),
+            ctx.clone().for_decoration(),
+            ctx.clone().for_classification(),
+        ] {
+            let entries = warpui::r#async::block_on(background.list_directory_entries(cwd.clone()));
+            let names: Vec<_> = entries.iter().map(|e| e.file_name.as_str()).collect();
+            assert_eq!(names, vec!["sub", "a.txt"]);
+            assert!(entries[0].is_dir());
+        }
+        let other = warpui::r#async::block_on(
+            ctx.clone()
+                .for_background()
+                .list_directory_entries(TypedPathBuf::from("/test-1801-pushed/sub")),
+        );
+        assert!(other.is_empty(), "another directory is still cache-only");
+        assert_eq!(executor.calls(), 0);
+        // A command's cache invalidation does not drop the shell's listing.
+        invalidate_shared_directory_cache(SessionId::from(9511u64));
+        assert_eq!(
+            warpui::r#async::block_on(ctx.clone().for_decoration().list_directory_entries(cwd))
+                .len(),
+            2
+        );
+    });
+}
+
+/// #1801: a truncated listing may highlight but never answers an explicit Tab (a missing name
+/// proves nothing); a complete one answers both without a command.
+#[test]
+pub fn test_truncated_pushed_listing_is_not_used_for_explicit_listing() {
+    App::test((), |app| async move {
+        let executor = FailingListExecutor::new(1);
+        let cwd = TypedPathBuf::from("/test-1801-partial/");
+        let ctx = test_session_context(
+            failing_remote_session(9512, executor.clone()),
+            cwd.clone(),
+            &app,
+        );
+        let id = SessionId::from(9512u64);
+        super::note_pushed_cwd_listing(id, Some("/test-1801-partial"), "P da");
+        assert_eq!(
+            warpui::r#async::block_on(
+                ctx.clone()
+                    .for_decoration()
+                    .list_directory_entries(cwd.clone())
+            )
+            .len(),
+            1
+        );
+        assert_eq!(executor.calls(), 0);
+        warpui::r#async::block_on(ctx.list_directory_entries(cwd.clone()));
+        assert_eq!(executor.calls(), 1, "Tab asked the remote");
+        super::note_pushed_cwd_listing(id, Some("/test-1801-partial"), "L da");
+        let full = warpui::r#async::block_on(ctx.list_directory_entries(cwd));
+        assert_eq!(full.len(), 1);
+        assert_eq!(executor.calls(), 1, "a complete listing needs no command");
+    });
+}

@@ -3255,6 +3255,11 @@ impl TerminalModel {
             env_vars.insert("KUBECONFIG".to_string(), kube_config);
         }
         let handled_after_inband = data.was_sent_after_in_band_command();
+        // #1801: a remote shell's listing of its cwd fills the per-session cache that path
+        // detection reads, so a typed directory is recognised with no round trip.
+        if let (Some(id), Some(listing)) = (session_id, data.cwd_listing.as_deref()) {
+            crate::completer::note_pushed_cwd_listing(id.into(), data.pwd.as_deref(), listing);
+        }
         self.block_list.apply_precmd_to_active(data);
         // The prompt's block is the active one now, with its own grid's modes (a program that
         // died with DECCKM or kitty flags set left them on the finished block only, #1411).

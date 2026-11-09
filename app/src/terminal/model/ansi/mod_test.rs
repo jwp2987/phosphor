@@ -851,6 +851,7 @@ fn parse_dcs_precmd_classifies_payload_with_completion_metadata() {
                     ignore_prompt_markers: None,
                     is_after_in_band_command: false,
                     seq: None,
+                    cwd_listing: None,
                 },
             })
         ),

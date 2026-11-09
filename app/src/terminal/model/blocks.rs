@@ -4544,6 +4544,7 @@ impl BlockList {
             ignore_prompt_markers: None,
             is_after_in_band_command: false,
             seq: None,
+            cwd_listing: None,
         };
 
         self.create_new_block(
