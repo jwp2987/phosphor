@@ -2393,6 +2393,18 @@ Invariants (checked after every step; delta = 2 s, all waits scale with `AGENT_F
 | I6 | no panic, no ERROR log beyond 3 per chaos-failed turn |
 | I7 | no actionable card for an action that is not blocked (weak today: see `oracle.rs`) |
 
+I5 (`prompt_tests.rs`): the rig has no pty, so I5 drives the real `PromptDetector::observe` (now, termios shape, screen candidate and the #1796 `foreground_tty_read` probe) at the executor's 1 Hz poll with synthetic observations built from each command behaviour, plus the real hand-over on a `TerminalModel` block (`take_over_control_for_user` / `handoff_control_to_agent`, the calls `CLISubagentController` wraps and logs ERROR on failure).
+
+| test | what it proves |
+|---|---|
+| `a_prompt_lookalike_is_never_handed_over_while_the_foreground_is_not_reading` | `Silent` / `TrailingColon` / `TrailingQuestion` with probe `NotReading`: never handed over in 30 simulated minutes (#1796) |
+| `a_real_prompt_is_handed_over_within_the_window_plus_three_seconds` | `RealPrompt` + `Reading`: not before 15 s, not after 18 s |
+| `a_secret_prompt_is_handed_over_at_once` | `read -s` (echo off, canonical) needs no probe |
+| `with_no_probe_a_bare_question_waits_ninety_seconds` | probe `Unknown`: not before 90 s, but handed over (unknown is not never) |
+| `handover_only_for_commands_that_read_the_tty` (proptest over every behaviour) | a hand-over happens only for a command that reads the tty (a secret prompt, echo off, aside) |
+| `handing_over_and_back_logs_no_error_and_leaves_the_agent_in_control` | the real block hand-over round trip: no ERROR logged, agent in control afterwards |
+| `a_second_hand_back_is_refused_without_a_panic` | a repeated hand-back is an `Err` (the controller logs it at ERROR): the executor must hand back once per take-over |
+
 Environment knobs: `AGENT_FUZZ_TIME_SCALE` (default 1.0), `AGENT_FUZZ_HUMAN_SCALE` (default 0.05, scales the actor's 400-2500 ms "human" delays). `stall` chaos needs `PHOSPHOR_BYOP_STREAM_IDLE_TIMEOUT_SECS` and `PHOSPHOR_BYOP_STREAM_FIRST_EVENT_TIMEOUT_SECS` at 3 or less (`script/agent_fuzz` sets them to 1).
 
 Run: `script/agent_fuzz` (L0 + L1). Nothing in this section has been compiled yet.

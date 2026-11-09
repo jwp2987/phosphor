@@ -24,4 +24,6 @@ mod rig;
 mod runner;
 
 #[cfg(test)]
+mod prompt_tests;
+#[cfg(test)]
 mod smoke_tests;
