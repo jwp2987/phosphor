@@ -213,6 +213,16 @@ impl Replayed<'_> {
         }
     }
 
+    /// The text this input writes, none for a signal.
+    fn text(&self) -> Option<&str> {
+        match self {
+            Replayed::Typed(t) | Replayed::Key(t) | Replayed::Seq(t) | Replayed::Paste(t) => {
+                Some(t)
+            }
+            Replayed::Signal(_) => None,
+        }
+    }
+
     fn as_held(&self) -> Option<HeldInput> {
         match self {
             Replayed::Typed(text) => Some(HeldInput::from_chars(text)),
@@ -301,10 +311,21 @@ impl TerminalView {
         // prompt rule either: a held input reaching the pty is ssh's, whatever the screen shows
         // (#1611, #1612, #1621). The entry was delivered by the queue, so no gate covers it: the
         // facts carry none.
+        // #1854 (R8): the secret-read check and the subshell gates run for the delivered key as
+        // they do for a live one (legacy runs them in `write_user_bytes_to_pty_inner` per
+        // delivered chunk): a password must reach only the program reading it, and the setup
+        // must not be typed into a secret prompt. A signal is not such a key.
+        if let Some(text) = input.text() {
+            self.secret_read_on_key_path_cancels_written_setup(ctx);
+            let _ = self.prepare_subshell_gates(text.as_bytes(), ctx);
+        }
         let facts = self.build_route_facts(QueueFacts::default(), ctx);
-        let intent = Intent::new(input.class(), origin)
+        let mut intent = Intent::new(input.class(), origin)
             .stamped(stamp)
             .delivering();
+        if matches!(origin, Origin::Synced) {
+            intent = intent.passive();
+        }
         let plan = table::decide(&intent, &facts, None);
         warpui::input_order::log_key_hop("kh_table_decide", || {
             format!(
@@ -414,9 +435,12 @@ impl TerminalView {
                 self.report_possible_typeahead(text);
                 let written = self.write_user_bytes_to_pty_after_paste_stage(
                     Cow::Owned(text.as_bytes().to_vec()),
-                    true,
+                    !arrival_is_synced(),
                     ctx,
                 );
+                warpui::input_order::log_key_hop("kh_terminal_typed_routed", || {
+                    format!("written_to_pty={written} table=1")
+                });
                 if written {
                     if plan.effects.contains(Effects::FOCUS_TERMINAL) {
                         self.focus_terminal(ctx);
@@ -680,6 +704,12 @@ fn arrival_origin() -> Origin {
     ARRIVAL_ORIGIN.with(Cell::get)
 }
 
+/// Whether the input being written arrived as synced input (#1855, #1430): passive in both modes,
+/// it never takes over an agent-run command in this pane.
+pub(super) fn arrival_is_synced() -> bool {
+    matches!(arrival_origin(), Origin::Synced)
+}
+
 /// A live input arriving at one of the three legacy entry points.
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Arrival<'a> {
@@ -774,9 +804,28 @@ impl TerminalView {
             self.secret_read_on_key_path_cancels_written_setup(ctx);
             let _ = self.prepare_subshell_gates(text.as_bytes(), ctx);
         }
+        if is_signal {
+            // #1856: the legacy predicates armed the connect gate lazily; a ^C in the connect
+            // window before the ConnectStart edge must still find it (P1e, #1001).
+            let _ = self.refresh_ssh_connect_gate();
+        }
+        // #1857: the per-key entry hop legacy logs (`kh_terminal_typed_entry`, `kh_hold_entry`),
+        // same fields, so logs compare across modes. Counts only, never the text.
+        warpui::input_order::log_key_hop("kh_terminal_typed_entry", || {
+            format!(
+                "chars={} ssh_holding={} gate_armed={} table=1",
+                text.chars().count(),
+                self.ssh_typeahead_holding,
+                self.ssh_connect_gate.is_some()
+            )
+        });
         let queue_facts = self.paste_queue.queue.try_queue_facts().unwrap_or_default();
         let facts = self.build_route_facts(queue_facts, ctx);
-        let intent = Intent::new(class, origin).stamped(stamp);
+        let mut intent = Intent::new(class, origin).stamped(stamp);
+        if matches!(origin, Origin::Synced) {
+            // #1855: synced input is passive (it never takes over an agent's command).
+            intent = intent.passive();
+        }
         let plan = table::decide(&intent, &facts, None);
         warpui::input_order::log_key_hop("kh_table_decide", || {
             format!(
@@ -785,6 +834,32 @@ impl TerminalView {
                 plan.outcome,
                 plan.effects
             )
+        });
+        // #1857: the hold hops legacy logs around its ssh probe (`kh_hold_entry`, `kh_hold_exit`),
+        // from the facts the plan was decided on.
+        let pending_session = self.model_facts().pending_session_id.is_some();
+        warpui::input_order::log_key_hop("kh_hold_entry", || {
+            format!(
+                "holding={} held_bytes={} gate_armed={} pending_session={} table=1",
+                self.ssh_typeahead_holding,
+                self.ssh_held_bytes(),
+                self.ssh_connect_gate.is_some(),
+                pending_session
+            )
+        });
+        let held = matches!(
+            plan.outcome,
+            Outcome::Hold(_) | Outcome::HoldSignal | Outcome::Queue
+        );
+        warpui::input_order::log_key_hop("kh_hold_exit", || {
+            if held {
+                format!("branch=held held_bytes={} table=1", self.ssh_held_bytes())
+            } else {
+                format!(
+                    "branch=gate_open_live gate_armed={} table=1",
+                    self.ssh_connect_gate.is_some()
+                )
+            }
         });
         self.execute_arrival(arrival, &plan, stamp, origin, ctx);
     }
@@ -899,7 +974,12 @@ impl TerminalView {
         if !matches!(arrival, Arrival::Seq(_)) {
             self.report_possible_typeahead(arrival.text());
         }
-        self.write_user_bytes_to_pty(arrival.text().as_bytes().to_vec(), ctx);
+        let bytes = arrival.text().as_bytes().to_vec();
+        if arrival_is_synced() {
+            self.write_passive_input_to_pty(bytes, ctx);
+        } else {
+            self.write_user_bytes_to_pty(bytes, ctx);
+        }
     }
 
     /// Offers the key to the pane queue as destination-neutral content, with the stamp and the
@@ -994,8 +1074,12 @@ impl TerminalView {
         if plan.effects.contains(Effects::RESET_SSH_HOLD) {
             self.reset_ssh_typeahead();
         }
-        // An Enter that waits for its verdict is void.
-        if self.input.as_ref(ctx).enter_queue_holds_keys(ctx) {
+        // An Enter that waits for its verdict is void -- for ^C / ^D only, as legacy
+        // (`is_abort_key`). ^Z / ^\ jump the queue (OD-1) but the held Enter and the keys behind
+        // it stay (#1852): the tty does not read them as an interrupt of the line.
+        if matches!(signal, SignalKind::Interrupt | SignalKind::Eof)
+            && self.input.as_ref(ctx).enter_queue_holds_keys(ctx)
+        {
             self.input
                 .update(ctx, |input, ctx| input.abort_enter_queue(ctx));
         }

@@ -13358,7 +13358,12 @@ impl TerminalView {
             // its Enter).
             TypedRoute::PowerShellHeld => {
                 note_shadow_leaf(DestClass::Held);
-                self.write_user_bytes_to_pty(characters.as_bytes().to_vec(), ctx);
+                let bytes = characters.as_bytes().to_vec();
+                if dest_table::arrival_is_synced() {
+                    self.write_passive_input_to_pty(bytes, ctx);
+                } else {
+                    self.write_user_bytes_to_pty(bytes, ctx);
+                }
                 return;
             }
             TypedRoute::Deliver(tail) => tail,
@@ -13367,7 +13372,13 @@ impl TerminalView {
         if tail.try_pty {
             self.highlighted_link.invalidate();
             self.report_possible_typeahead(characters);
-            written_to_pty = self.write_user_bytes_to_pty(characters.as_bytes().to_vec(), ctx);
+            let bytes = characters.as_bytes().to_vec();
+            // #1855: synced input is passive in both modes (it never takes over an agent's command).
+            written_to_pty = if dest_table::arrival_is_synced() {
+                self.write_passive_input_to_pty(bytes, ctx)
+            } else {
+                self.write_user_bytes_to_pty(bytes, ctx)
+            };
         }
         warpui::input_order::log_key_hop("kh_terminal_typed_routed", || {
             format!(

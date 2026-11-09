@@ -31259,6 +31259,10 @@ mod group2_timer_tests;
 #[path = "view/keys_follow_editor_tests.rs"]
 mod keys_follow_editor_tests;
 
+// Table-vs-legacy route parity (#1852, #1854, #1855, #1856). Declared here for the same reason.
+#[path = "view/route_parity_a_tests.rs"]
+mod route_parity_a_tests;
+
 // Review follow-ups F6 / F10. Declared here for the same reason as group 1.
 #[path = "view/followup_tests.rs"]
 mod followup_tests;
