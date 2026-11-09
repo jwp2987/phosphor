@@ -366,3 +366,16 @@ fn a_change_made_before_the_read_lands_wins_over_the_read() {
         secure_storage::background::set_factory_for_test(None);
     });
 }
+
+#[test]
+fn an_empty_stored_local_control_mode_is_nothing_stored() {
+    use secure_storage::SecureStorage as _;
+    let storage = InMemorySecureStorage::default();
+    storage
+        .write_value(super::LOCAL_CONTROL_MODE_STORAGE_KEY, "  ")
+        .unwrap();
+    assert_eq!(
+        super::read_local_control_mode_from_secure_storage(&storage),
+        None
+    );
+}

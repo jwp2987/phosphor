@@ -92,6 +92,10 @@ fn read_local_control_mode_from_secure_storage(
             return None;
         }
     };
+    // An empty stored value is "nothing stored" (some backends return one for an absent entry).
+    if value.trim().is_empty() {
+        return None;
+    }
     match serde_json::from_str(&value)
         .context("Failed to deserialize local control mode from secure storage")
     {

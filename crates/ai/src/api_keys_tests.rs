@@ -394,3 +394,32 @@ fn a_failed_keyring_write_does_not_stamp_the_revision() {
         );
     });
 }
+
+/// A store that answers every read with the same text.
+struct FixedSecureStorage(&'static str);
+
+impl SecureStorage for FixedSecureStorage {
+    fn write_value(&self, _key: &str, _value: &str) -> Result<(), secure_storage::Error> {
+        Ok(())
+    }
+
+    fn read_value(&self, _key: &str) -> Result<String, secure_storage::Error> {
+        Ok(self.0.to_owned())
+    }
+
+    fn remove_value(&self, _key: &str) -> Result<(), secure_storage::Error> {
+        Ok(())
+    }
+}
+
+#[test]
+fn an_empty_stored_value_reads_as_the_default_keys() {
+    assert_eq!(
+        ApiKeyManager::read_keys(&FixedSecureStorage("")),
+        ApiKeys::default()
+    );
+    assert_eq!(
+        ApiKeyManager::read_keys(&FixedSecureStorage(" \n")),
+        ApiKeys::default()
+    );
+}

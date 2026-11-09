@@ -654,3 +654,16 @@ mod background {
         });
     }
 }
+
+#[test]
+fn an_empty_stored_value_reads_as_no_secrets() {
+    for raw in ["", "  \n"] {
+        let store = InMemorySecureStorage::default();
+        store.seed(raw);
+        assert_eq!(
+            AgentProviderSecrets::read_from(&store),
+            Ok(HashMap::new()),
+            "{raw:?}"
+        );
+    }
+}

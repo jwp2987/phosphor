@@ -46,7 +46,11 @@ use crate::{
     settings_view::keybindings::KeybindingChangedNotifier,
     system::SystemInfo,
     system::SystemStats,
-    terminal::{History, TerminalView, keys::TerminalKeybindings, resizable_data::ResizableData},
+    terminal::{
+        History, TerminalView,
+        keys::TerminalKeybindings,
+        resizable_data::{ModalSizes, ResizableData},
+    },
     workflows::local_workflows::LocalWorkflows,
     workspace::{ActiveSession, sync_inputs::SyncedInputState},
     workspaces::user_workspaces::UserWorkspaces,
@@ -149,6 +153,14 @@ pub fn add_window_with_id_and_terminal(
 ) -> (WindowId, ViewHandle<TerminalView>) {
     let tips_model = app.add_model(|_| Default::default());
     app.add_window(WindowStyle::NotStealFocus, |ctx| {
+        // A real window gets its modal sizes when it is created; the voltron menu reads its
+        // width handle from them while the view is built and logs an ERROR when it is missing.
+        if ctx.has_singleton_model::<ResizableData>() {
+            let window_id = ctx.window_id();
+            ResizableData::handle(ctx).update(ctx, |data, _| {
+                data.insert(window_id, ModalSizes::default());
+            });
+        }
         TerminalView::new_for_test(tips_model, restored_blocks, ctx)
     })
 }
