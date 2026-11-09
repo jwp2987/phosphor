@@ -31,7 +31,7 @@ def matrix_selection(value=None):
     shells/lats/helpers None = every value the case declares. Unknown keys or values raise ValueError (a typo must not select nothing)."""
     v = (value if value is not None else os.environ.get("APPCI_LAB_MATRIX", "quick")).strip() or "quick"
     if v == "quick":
-        return dict(shells={"bash", "zsh", "fish"}, lats={"lan", "150"}, helpers={"nohelper"}, faults=False, scenarios=False)
+        return dict(shells={"bash", "zsh", "fish", "nu"}, lats={"lan", "150"}, helpers={"nohelper", "helper"}, faults=False, scenarios=False)
     if v == "full":
         return dict(shells=None, lats=None, helpers=None, faults=True, scenarios=True)
     sel = dict(shells=None, lats=None, helpers={"nohelper"}, faults=False, scenarios=False)
