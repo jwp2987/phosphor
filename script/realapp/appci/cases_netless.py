@@ -8,7 +8,7 @@
 #   claude_plugin_offline  Linux: with the network namespace unshared (`unshare -rn`), the plugin bundled in the build is registered as a local marketplace and installed with
 #                          fakeclaude.py, and its real hook scripts produce the prompt / tool / permission / stop events; a fake `claude` in a pane prints those
 #                          sequences and the app must log one 'CLI agent event received' line per event, with no prompt text in the log
-import json, os, pty, re, select, shutil, subprocess, sys, time
+import json, os, re, select, shutil, subprocess, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cases  # noqa: E402  (cases.py imports this module as its last line)
@@ -239,6 +239,7 @@ def plugin_bundle_dir(ctx, agent, marker):
 
 def run_in_pty(argv, stdin_text, env, cwd, timeout=60):
     """-> (returncode, output bytes). argv runs with stdin from a file and the pty as its controlling terminal and stdout/stderr, so a hook that writes to /dev/tty is captured"""
+    import pty  # Unix only; this module is imported on Windows too (its cases are Linux-only)
     stdin_file = os.path.join(cwd, "pty_stdin.json")
     with open(stdin_file, "w") as f:
         f.write(stdin_text)
