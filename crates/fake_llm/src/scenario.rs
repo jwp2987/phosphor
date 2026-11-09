@@ -161,7 +161,9 @@ impl Call {
 }
 
 /// How a call's id is produced. The harness resolves these to concrete strings; `Missing` and
-/// `DuplicateOf` are the malformed-provider shapes (empty id / repeated id).
+/// `DuplicateOf` are the malformed-provider shapes: no id on the wire (genai then assigns
+/// `call_<index>`) and a repeated id (the app renames the repeat `<id>#2`). `Literal` with an
+/// empty `id` is an explicitly empty id (the app substitutes a uuid).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CallId {

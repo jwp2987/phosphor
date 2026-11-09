@@ -2367,4 +2367,32 @@ All `cfg(any(test, feature = "test-util"))`; none of it is in a release build.
 
 Seam unit tests: `fake_stream_seam_tests.rs` (unregistered ids fall through to the network, requests are recorded with their tool messages, dropping the handle unregisters, tool-call chunks and the End content match genai's, an open error carries its status, a duplicate id panics).
 
+### The L1 harness (`app/src/ai/blocklist/agent_fuzz/`)
+
+`cfg(test)` only. A case is one `App::test`: a real `TerminalView`, `BlocklistAIController`, action model and queue, the BYOP provider wired (`wire_mock_provider_config_with_model`) to a per-case model id whose replies come from the seam, and the active model set through `LLMPreferences`.
+
+| file | role |
+|---|---|
+| `player.rs` | scenario -> `SeamTurn` per request (`Match`: nth request / last tool result / user token / default; an unmatched request gets `END`); records the call ids each reply emitted. `Missing` id = the id genai assigns (`call_<index>`), `DuplicateOf` = a repeated id, chaos = open error / mid-stream error / stall / no `End` |
+| `rig.rs` | setup, `observe` (conversation status, stream in flight, action snapshot, actionable cards, queue rows), `drive_commands` (finishes `Quick`/`SetE` commands through `complete_command_for_test`; reports a never-ending one to the agent after a short wait, as the executor's stall snapshot does), `settle_until` |
+| `actor.rs` | the scripted user, through the UI's entry points (table in the file header). `AnswerQuestion` stages the answers and executes by id whatever the front action is, so it works whether or not `ask_user_question` shows its card before approval |
+| `oracle.rs` | I1-I4, I6, I7 (I5 is `prompt_tests.rs`) |
+| `runner.rs` | one case end to end; a panic becomes an I6 violation; a failure prints the scenario as schema JSON |
+| `log_capture.rs` | ERROR-log tap on the unit-test logger (one tap per process: run under nextest) |
+| `smoke_tests.rs` | a plain reply, and a command that waits for approval then runs: if these fail nothing else is meaningful |
+
+Invariants (checked after every step; delta = 2 s, all waits scale with `AGENT_FUZZ_TIME_SCALE`):
+
+| id | invariant |
+|---|---|
+| I1 | every blocked action has an actionable card within delta; nothing pending sits neither blocked-with-card, runnable nor running longer than delta (`transfer_shell_command_control_to_user` counts as carded only while the rig has a live never-ending command: its card is the CLI subagent view) |
+| I2a | script used up and every card answered -> conversation terminal within 5 s (+4 s per failing turn: retry backoff) |
+| I2b | Ctrl-C / Stop -> terminal within 2 s, nothing pending or running, no stream in flight |
+| I3 | when terminal, locked queued rows unlock within 2 s; after a success, unlocked rows are sent within 3 s. After a cancel rows are restored to the input, not sent (#690 / #1026, kept by #1799) |
+| I4 | each request carries exactly one tool message per emitted call id, in order, none extra, none orphaned; duplicates renamed `id#2` |
+| I6 | no panic, no ERROR log beyond 3 per chaos-failed turn |
+| I7 | no actionable card for an action that is not blocked (weak today: see `oracle.rs`) |
+
+Environment knobs: `AGENT_FUZZ_TIME_SCALE` (default 1.0), `AGENT_FUZZ_HUMAN_SCALE` (default 0.05, scales the actor's 400-2500 ms "human" delays). `stall` chaos needs `PHOSPHOR_BYOP_STREAM_IDLE_TIMEOUT_SECS` and `PHOSPHOR_BYOP_STREAM_FIRST_EVENT_TIMEOUT_SECS` at 3 or less (`script/agent_fuzz` sets them to 1).
+
 Run: `script/agent_fuzz` (L0 + L1). Nothing in this section has been compiled yet.

@@ -4,6 +4,9 @@
 // for the `warp_tui` front-end. `ai` itself stays a private module, so this
 // widens no external surface beyond what `tui_export` explicitly re-exports.
 pub mod action_model;
+// The agent fuzzer (L1), docs/testing.md "Agent fuzzer and fake model".
+#[cfg(test)]
+mod agent_fuzz;
 pub mod agent_view;
 pub mod block;
 pub mod code_block;
