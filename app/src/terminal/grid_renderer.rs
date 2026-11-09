@@ -640,6 +640,9 @@ fn render_grid_without_ligatures<'a, G: GridSource>(
         }
     }
 
+    // Test-harness find hook (#1789): None (one cached check) unless PHOSPHOR_APPCI_FIND_FILE lists tokens.
+    let find_tokens = warpui::appci_find::active_tokens();
+
     for (offset, row_idx) in visible_rows.enumerate() {
         let offset_row = start_row + offset;
 
@@ -864,6 +867,17 @@ fn render_grid_without_ligatures<'a, G: GridSource>(
                 obfuscate_secrets,
                 bg_color_sampler.as_deref_mut(),
                 ctx,
+            );
+        }
+
+        if let Some(tokens) = find_tokens.as_deref() {
+            report_find_tokens_in_row(
+                tokens,
+                (0..grid.columns()).map(|col| row[col].c),
+                offset_row,
+                cell_size,
+                grid_origin,
+                ctx.scene.scale_factor(),
             );
         }
 
@@ -1581,6 +1595,51 @@ fn paint_line(
                 glyph_color,
             );
         }
+    }
+
+    // Test-harness find hook (#1789): empty unless PHOSPHOR_APPCI_FIND_FILE is set.
+    for hit in &line.find_hits {
+        let (Some(first), Some(last)) = (
+            character_index_to_cell_map.get(hit.start as usize),
+            character_index_to_cell_map.get(hit.end.saturating_sub(1) as usize),
+        ) else {
+            continue;
+        };
+        warpui::appci_find::report(
+            &hit.token,
+            [
+                baseline.x() + *first as f32 * cell_width,
+                baseline.y() - line.ascent,
+                baseline.x() + (*last as f32 + 1.) * cell_width,
+                baseline.y() + line.descent,
+            ],
+            scene.scale_factor(),
+        );
+    }
+}
+
+/// Test-harness find hook (#1789) for the per-cell (non-ligature) renderer: one char per column, so a
+/// token's char range is its column range. `row_chars` is only called when a token list is active.
+fn report_find_tokens_in_row(
+    tokens: &[String],
+    row_chars: impl Iterator<Item = char>,
+    offset_row: usize,
+    cell_size: Vector2F,
+    grid_origin: Vector2F,
+    scale: f32,
+) {
+    let text: String = row_chars.collect();
+    for (i, start, end) in warpui::appci_find::find_token_ranges(&text, tokens) {
+        warpui::appci_find::report(
+            &tokens[i],
+            [
+                grid_origin.x() + start as f32 * cell_size.x(),
+                grid_origin.y() + offset_row as f32 * cell_size.y(),
+                grid_origin.x() + end as f32 * cell_size.x(),
+                grid_origin.y() + (offset_row + 1) as f32 * cell_size.y(),
+            ],
+            scale,
+        );
     }
 }
 

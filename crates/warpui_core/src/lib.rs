@@ -3,6 +3,7 @@ extern crate num_derive;
 
 pub mod accessibility;
 pub mod actions;
+pub mod appci_find;
 pub mod assets;
 pub mod r#async;
 pub mod clipboard;

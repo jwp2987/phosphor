@@ -1999,6 +1999,51 @@ def wayland_pointer_gate_follows_the_holder_1789():
 
 
 @check
+def app_find_hook_harness_side_1789():
+    """#1789 app find hook, harness side: RUST_LOG carries the hook's log target; hook_find reads only lines after `since`; find_token uses the hook on
+    X11 and Wayland (OCR is not called when the hook has the token), and notes the OCR fallback on `r` when it does not; x11_window_origin is None
+    without xdotool output"""
+    import cases_ui as UI
+    src = open(os.path.join(HERE, "app.py")).read()
+    assert src.count("warpui::appci_find=info") >= 2, "RUST_LOG must enable the hook's log target for the launched app"
+    tmp = tempfile.mkdtemp()
+    try:
+        log = os.path.join(tmp, "app.log")
+        open(log, "w").write("appci_find token=tokx x0=1 y0=2 x1=3 y1=4\n")
+        off = os.path.getsize(log)
+        open(log, "a").write("appci_find token=tokx x0=10 y0=20 x1=30 y1=40\n")
+        c = types.SimpleNamespace(log_path=log, log_since=lambda o: open(log).read()[o:])
+        assert UI.hook_find(c, "tokx", since=off)[3:] == (10, 30, 20, 40)
+        assert UI.hook_find(c, "tokx")[3:] == (10, 30, 20, 40)
+        assert UI.hook_find(c, "tokx", since=os.path.getsize(log)) is None
+
+        class Be:
+            name = "x11"
+            pid_fn = staticmethod(lambda: 4242)
+        c.be = Be()
+        orig = UI.x11_window_origin
+        UI.x11_window_origin = lambda pid: (100, 200)
+        try:
+            w, p = UI.find_token(c, "t", "tokx")
+            assert p is None and w[3:] == (110, 130, 220, 240), w
+            notes = []
+            r = types.SimpleNamespace(note=notes.append)
+            orig_words = UI.words
+            UI.words = lambda ctx, tag: ([], None)
+            try:
+                w, _ = UI.find_token(c, "t", "absent", r=r)
+            finally:
+                UI.words = orig_words
+            assert w is None and len(notes) == 1 and "find hook" in notes[0], notes
+        finally:
+            UI.x11_window_origin = orig
+        Be.name = "mac"
+        assert UI._hook_word(c, "tokx") is None, "no hook lookup on backends without a window origin"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@check
 def tabs_streaming_reorder_known_1658():
     """#1658 (owner 2026-11-04): the Windows streaming-tabs reorder is KNOWN at 0.1.17; FAIL on Linux, after 0.1.17, and whenever the app log shows a discard"""
     exp = ["a1", "b2", "c3", "d4"]

@@ -1092,6 +1092,7 @@ impl TextLayoutSystem {
             clip_config,
             caret_positions,
             chars_with_missing_glyphs,
+            find_hits: Vec::new(),
         }
     }
 
