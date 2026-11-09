@@ -2971,6 +2971,66 @@ mod typeahead_handoff {
         });
     }
 
+    /// Owner rule (a timer never commits): a Ctrl-C at a prompt on a session without prompt
+    /// sequence numbers (here the default test harness) no longer commits the editor 250 ms later.
+    /// Nothing changes with time; the line editor's ready signal (bracketed-paste enable) while it
+    /// is already active -- zle restarting the line after ^C, no Precmd -- hands input back. The
+    /// hand-off and controller are shared by the Legacy and Table input modes.
+    #[test]
+    fn a_ctrl_c_without_seq_numbers_is_settled_by_the_ready_signal_not_a_timer() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            submit(&mut app, &harness, "true");
+            shell_runs_a_command(&harness.model, "true");
+            line_editor_becomes_active(&mut app, &harness);
+            assert_eq!(
+                harness
+                    .model
+                    .lock()
+                    .typeahead_handoff_mut()
+                    .on_interrupt_for_shell(false),
+                InterruptOutcome::AtPrompt
+            );
+            assert!(
+                harness
+                    .model
+                    .lock()
+                    .typeahead_handoff()
+                    .interrupt_settle_pending()
+            );
+
+            Timer::after(Duration::from_millis(600)).await;
+            assert!(
+                harness.model.lock().typeahead_handoff().is_pty_owned(),
+                "no timer commits"
+            );
+            assert!(
+                harness
+                    .model
+                    .lock()
+                    .typeahead_handoff()
+                    .interrupt_settle_pending()
+            );
+
+            harness.model_events.update(&mut app, |_, ctx| {
+                ctx.emit(ModelEvent::Handler(AnsiHandlerEvent::SetBracketedPaste))
+            });
+            assert!(
+                !harness
+                    .model
+                    .lock()
+                    .typeahead_handoff()
+                    .interrupt_settle_pending()
+            );
+            assert_eq!(
+                harness.model.lock().typeahead_handoff().state(),
+                &HandoffState::EditorOwned,
+                "the ready signal handed input back"
+            );
+        });
+    }
+
     /// The other shells print the marker with their prompt, where the tty may still be cooked,
     /// and have the bracketed-paste signal: for them the marker leaves the activation alone.
     #[test]

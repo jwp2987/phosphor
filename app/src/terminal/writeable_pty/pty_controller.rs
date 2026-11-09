@@ -992,6 +992,30 @@ impl<T: EventLoopSender> PtyController<T> {
         released_queued_hold: bool,
         ctx: &mut ModelContext<Self>,
     ) {
+        let was_active = self.line_editor_status.as_ref(ctx).is_line_editor_active();
+        self.activate_line_editor_on_ready_signal_inner(released_queued_hold, ctx);
+        // A Ctrl-C at a prompt on a non-seq session left the line editor active (no Precmd, so no
+        // `Active` event): its ready signal, restarting the line, is the event that hands input
+        // back -- the decision runs now, instead of the old 250 ms settle timer committing on a
+        // guess. (`retry_` only decides while the line editor is active.)
+        if was_active
+            && FeatureFlag::TypeaheadHandoff.is_enabled()
+            && self
+                .terminal_model
+                .lock()
+                .typeahead_handoff_mut()
+                .take_interrupt_settle_pending()
+        {
+            warpui::input_order::log_hop("interrupt_settle_signal", String::new);
+            self.retry_typeahead_handoff_request(ctx);
+        }
+    }
+
+    fn activate_line_editor_on_ready_signal_inner(
+        &mut self,
+        released_queued_hold: bool,
+        ctx: &mut ModelContext<Self>,
+    ) {
         if FeatureFlag::TypeaheadHandoff.is_enabled()
             && !released_queued_hold
             && !self

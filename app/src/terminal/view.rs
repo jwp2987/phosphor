@@ -15617,10 +15617,6 @@ impl TerminalView {
         prompt_cycle_expected: bool,
         ctx: &mut ViewContext<Self>,
     ) {
-        /// Long enough for the prompt cycle bash and zsh run after an interrupted line, so the
-        /// editor is not reinitialized under the user after it took over. Only the path without
-        /// prompt sequence numbers (older bootstraps, `PHOSPHOR_PROMPT_SEQ=0`) waits this long.
-        const INTERRUPT_SETTLE: Duration = Duration::from_millis(250);
         /// #1353 phase 6: the one give-up of the event-driven hand-back, for a prompt cycle (or a
         /// report) that was expected after the interrupt and never came.
         const INTERRUPT_GIVE_UP: Duration = Duration::from_secs(2);
@@ -15656,12 +15652,16 @@ impl TerminalView {
             });
             return;
         }
-        // zsh usually runs no prompt cycle after ^C at the prompt, so no precmd or line-editor
-        // activation would otherwise come to hand input back, ask for keys typed since, or
-        // notice that the counts were off because an earlier Enter was consumed by a program.
-        ctx.spawn(Timer::after(INTERRUPT_SETTLE), |me, _, ctx| {
-            me.commit_typeahead_handoff_at_prompt(ctx);
-        });
+        // The path without prompt sequence numbers (older bootstraps, `PHOSPHOR_PROMPT_SEQ=0`).
+        // zsh usually runs no prompt cycle after ^C at the prompt. Owner rule (a timer never
+        // commits): the former 250 ms settle timer is gone. The hand-off set
+        // `interrupt_settle_pending`; the line editor's ready signal while it is already active
+        // (zle / readline restart the line) or the next Precmd hands input back, through the
+        // controller's decision. A shell that never signals and runs no prompt cycle (dash/sh)
+        // keeps the pty as input -- a plain terminal -- until its next Precmd.
+        log::debug!(
+            "typeahead hand-off: ^C without prompt sequence numbers; waiting for the line editor's signal"
+        );
     }
 
     /// This function is invoked every time there is some form of view event

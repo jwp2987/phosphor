@@ -927,6 +927,13 @@ pub struct TypeaheadHandoff {
     /// A Ctrl-C was written and the Precmd of the prompt cycle that follows it will hand input
     /// back; cleared by that Precmd. If it never comes, the view's logged give-up commits.
     interrupt_awaiting_cycle: bool,
+    /// A Ctrl-C was written at a prompt on a session WITHOUT prompt sequence numbers (older
+    /// bootstraps, `PHOSPHOR_PROMPT_SEQ=0`): no barrier request and no known prompt cycle will
+    /// hand input back. The line editor's ready signal while it is already active (zle / readline
+    /// restart the line after ^C; no Precmd, so no `Active` event) or the next Precmd does,
+    /// instead of the 250 ms `INTERRUPT_SETTLE` timer that committed on a guess. Cleared by every
+    /// event that settles it.
+    interrupt_settle_pending: bool,
     /// The command that just finished was interactive (a program was reading the keys typed into
     /// it), so every Enter typed meanwhile was consumed by it and no prompt will answer them.
     interactive_command_finished: bool,
@@ -1795,6 +1802,17 @@ impl TypeaheadHandoff {
         self.interrupt_barrier
     }
 
+    /// Whether a Ctrl-C at a prompt on a non-seq session still waits for the line editor's ready
+    /// signal or the next Precmd to hand input back (see `interrupt_settle_pending`).
+    pub fn interrupt_settle_pending(&self) -> bool {
+        self.interrupt_settle_pending
+    }
+
+    /// Takes the settle flag; `true` when it was still set.
+    pub fn take_interrupt_settle_pending(&mut self) -> bool {
+        mem::take(&mut self.interrupt_settle_pending)
+    }
+
     /// Takes the "the report of the request behind a Ctrl-C hands input back" flag; `true` when it
     /// was still set, i.e. the give-up of that wait fired with no report having come.
     pub fn take_interrupt_barrier(&mut self) -> bool {
@@ -1914,6 +1932,7 @@ impl TypeaheadHandoff {
         // prompt-sequence path again with its first number.
         self.prompt_seq = None;
         self.interrupt_barrier = false;
+        self.interrupt_settle_pending = false;
         self.interrupt_awaiting_cycle = false;
         self.interactive_command_finished = false;
         // ... and may not send line-editor markers either.
@@ -2493,6 +2512,7 @@ impl TypeaheadHandoff {
         // #1574: the command's kill prefix and Enter end whatever line it lands on.
         self.committed_delivery = false;
         self.interrupt_barrier = false;
+        self.interrupt_settle_pending = false;
         self.interrupt_awaiting_cycle = false;
         // #1614: a new command runs; whether it is interactive is this block's latch to say, and
         // its own Preexec is the next one.
@@ -2677,6 +2697,7 @@ impl TypeaheadHandoff {
         self.follow_unsampled_enter_on_precmd(now);
         warpui::input_order::note_shell_signal(warpui::input_order::ShellSignal::Precmd);
         self.interrupt_awaiting_cycle = false;
+        self.interrupt_settle_pending = false;
         // #1614: the command that was interactive is over; the shell is back at its prompt, and a
         // Preexec it never sent (an empty line, a syntax error) is not pending any more.
         self.command_interactive = false;
@@ -2851,6 +2872,7 @@ impl TypeaheadHandoff {
                 precmds_seen,
             } if precmds_seen >= enters_written => {
                 self.interrupt_barrier = false;
+                self.interrupt_settle_pending = false;
                 self.interrupt_awaiting_cycle = false;
                 self.state = HandoffState::EditorOwned;
                 // #1574: nothing typed or delivered is in the shell's line any more.
@@ -2958,6 +2980,7 @@ impl TypeaheadHandoff {
                         return ActiveDecision::Drain;
                     }
                     self.interrupt_barrier = false;
+                    self.interrupt_settle_pending = false;
                     self.state = HandoffState::EditorOwned;
                     ActiveDecision::Committed
                 } else if self.committed_delivery {
@@ -2982,6 +3005,7 @@ impl TypeaheadHandoff {
                     }
                 } else if no_line_queued && at_prompt && self.writes_in_flight == 0 {
                     self.interrupt_barrier = false;
+                    self.interrupt_settle_pending = false;
                     self.state = HandoffState::AwaitingReport;
                     // Its report covers every untracked byte written before it too (#1089).
                     self.on_request_written();
@@ -3964,6 +3988,7 @@ impl TypeaheadHandoff {
 
     fn on_typeahead_event(&mut self, answers_request: bool) -> ReportDisposition {
         self.interrupt_barrier = false;
+        self.interrupt_settle_pending = false;
         if answers_request {
             // #1089: a report for a request written before untracked bytes does not cover them.
             self.on_report_received();
@@ -4126,6 +4151,7 @@ impl TypeaheadHandoff {
     pub fn on_interrupt_for_shell(&mut self, prompt_cycle_expected: bool) -> InterruptOutcome {
         self.drop_young_hold();
         self.interrupt_barrier = false;
+        self.interrupt_settle_pending = false;
         self.interrupt_awaiting_cycle = false;
         match self.owner() {
             Owner::Pty {
@@ -4141,6 +4167,7 @@ impl TypeaheadHandoff {
                 let seq_mode = self.prompt_seq_mode();
                 self.interrupt_barrier = at_prompt && seq_mode && !prompt_cycle_expected;
                 self.interrupt_awaiting_cycle = seq_mode && !self.interrupt_barrier;
+                self.interrupt_settle_pending = !seq_mode;
                 self.state = HandoffState::PtyOwned {
                     wrote_user_bytes: false,
                     enters_written: interrupt_enters_written(
