@@ -15341,12 +15341,18 @@ fn typeahead_handoff_ctrl_c_with_no_prompt_cycle_decides_at_once() {
 
 /// #1703 (busy-machine M10): the give-up of the hand-back after a Ctrl-C never commits. On a slow
 /// machine the report or prompt cycle may only be late; the editor must not take the line on the
-/// timer. The give-up stops waiting for that one signal and asks the controller to decide again
-/// (which needs the shell's line-editor evidence); the pty keeps input meanwhile.
+/// timer. The give-up only clears the wait for that one signal; owner rule (2026-11-08, a timer
+/// never writes, routes or re-asks): it asks the controller for nothing (`RetryTypeaheadHandoffRequest`
+/// is emitted by events only: the Precmd, the line editor's ready signal, a report); the pty keeps
+/// input meanwhile. Legacy and Table share this hand-off.
 #[test]
 fn typeahead_handoff_ctrl_c_give_up_does_not_commit() {
-    for prompt_cycle_expected in [false, true] {
-        App::test((), |mut app| async move {
+    use crate::terminal::input_queue::DestinationMode;
+    for (prompt_cycle_expected, mode) in [false, true].into_iter().flat_map(|cycle| {
+        [DestinationMode::Legacy, DestinationMode::Table].map(move |mode| (cycle, mode))
+    }) {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
             initialize_app_for_terminal_view(&mut app);
             let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
             let terminal = add_window_with_terminal(&mut app, None);
@@ -15392,11 +15398,13 @@ fn typeahead_handoff_ctrl_c_give_up_does_not_commit() {
                     "a timer must not hand the line to the editor"
                 );
             });
-            let expected = if prompt_cycle_expected { 1 } else { 2 };
+            // Only the interrupt's own event-driven retry (zsh, no prompt cycle) counts: the
+            // timer's give-up adds none.
+            let expected = if prompt_cycle_expected { 0 } else { 1 };
             assert_eq!(
                 *retries.borrow(),
                 expected,
-                "the give-up asks the controller to decide again (the interrupt's own retry counts for zsh)"
+                "the give-up asks the controller for nothing (the interrupt's own retry counts for zsh)"
             );
         })
     }

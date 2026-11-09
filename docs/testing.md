@@ -3068,9 +3068,11 @@ confirms the freeze is gone, since these unit tests cannot render.
   Enter must run the completed line. No view-level unit test: the report/Tab interleave needs the pty-backed
   `TerminalView` fixtures that only run on the box.
 - #1703: `terminal/view_test.rs` `typeahead_handoff_ctrl_c_give_up_does_not_commit` (both the zsh barrier and the
-  prompt-cycle wait). The 2 s `INTERRUPT_GIVE_UP` now only stops waiting for that one signal and asks the controller to
-  decide again; the editor takes the line on the shell's own line-editor-active evidence (or the late Precmd/report), never
-  on the timer. The older settle path for bootstraps without prompt sequence numbers (`INTERRUPT_SETTLE`, 250 ms) is not
+  prompt-cycle wait, in Legacy and Table). The 2 s `INTERRUPT_GIVE_UP` now ONLY clears the wait for that one signal (owner
+  rule 2026-11-08): it emits no `RetryTypeaheadHandoffRequest` and triggers no write; the re-ask happens on the next real
+  event (the Precmd, the line editor's ready signal, a report). The test asserts 0 retries from the timer (1 for zsh: the
+  interrupt's own event-driven retry). The editor takes the line on the shell's own line-editor-active evidence (or the late
+  Precmd/report), never on the timer. The older settle path for bootstraps without prompt sequence numbers (`INTERRUPT_SETTLE`, 250 ms) is not
   part of M10 and is unchanged.
 
 ## Wave P performance (code only; measured at the test run)

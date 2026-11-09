@@ -15580,12 +15580,12 @@ impl TerminalView {
 
     /// The give-up net of the hand-back after a Ctrl-C (#1703, busy-machine M10): the prompt cycle
     /// or the report it waited for did not come within `after`. A slow machine is not a reason to
-    /// hand the line to the editor, so this does NOT commit the hand-off: it stops waiting for that
-    /// one signal and asks the controller to decide again, which hands input back only on the
-    /// shell's own line-editor-active evidence (`retry_typeahead_handoff_request`), and writes a
-    /// request only to a line editor proven reading (#1798). Until that evidence arrives the pty
-    /// keeps input, which is what a plain terminal does. A late Precmd or report still commits
-    /// through its own event.
+    /// hand the line to the editor, so this does NOT commit the hand-off: it only clears the wait
+    /// for that one signal. Owner rule (a timer never writes, routes or re-asks): it emits no
+    /// `RetryTypeaheadHandoffRequest` and triggers no write. The pty keeps input, which is what a
+    /// plain terminal does, until the next real event: the prompt cycle's Precmd, the line
+    /// editor's ready signal (`LineEditorStatusEvent::Active` decides, and writes a request only
+    /// to a line editor proven reading, #1798), or the report.
     fn interrupt_give_up_fired(&mut self, after: Duration, ctx: &mut ViewContext<Self>) {
         let gave_up = {
             let mut handoff = self.handoff.write();
@@ -15601,7 +15601,6 @@ impl TerminalView {
             after.as_secs()
         );
         warpui::input_order::log_hop("ctrl_c_handoff_give_up", String::new);
-        ctx.emit(Event::RetryTypeaheadHandoffRequest);
     }
 
     /// A Ctrl-C was written while the typeahead hand-off gave the pty input.
