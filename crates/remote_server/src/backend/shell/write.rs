@@ -8,10 +8,10 @@ use super::super::{BackendError, Family, ShellBackend};
 use crate::client::ClientError;
 use crate::shellcmd::read::{self, FileProbe, GatherPlan};
 use crate::shellcmd::write::{
-    ChunkPosition, EXIT_CONFLICT, Expect, delete_failure_message, posix_delete_command,
-    posix_guarded_delete_command, posix_write_command, posix_write_payload, pwsh_delete_command,
-    pwsh_guarded_delete_command, pwsh_write_command, pwsh_write_payload, split_chunks,
-    write_failure_message,
+    ChunkPosition, EXIT_CONFLICT, Expect, delete_failure_message, posix_cleanup_command,
+    posix_delete_command, posix_guarded_delete_command, posix_write_command, posix_write_payload,
+    pwsh_cleanup_command, pwsh_delete_command, pwsh_guarded_delete_command, pwsh_write_command,
+    pwsh_write_payload, split_chunks, write_failure_message,
 };
 use crate::shellcmd::{Script, StderrMode};
 
@@ -80,40 +80,60 @@ impl ShellBackend {
         let bytes = content.into_bytes();
         let chunks = split_chunks(&bytes);
         let count = chunks.len();
-        for (i, chunk) in chunks.into_iter().enumerate() {
-            let position = ChunkPosition {
-                first: i == 0,
-                last: i + 1 == count,
-            };
-            let (command, payload) = if pwsh {
-                (
-                    pwsh_write_command(&path, &nonce, position, expect),
-                    pwsh_write_payload(chunk),
-                )
-            } else {
-                (
-                    posix_write_command(&path, &nonce, position, decoder, expect),
-                    posix_write_payload(chunk, decoder),
-                )
-            };
-            let script =
-                Script::new(Self::new_nonce())?.section("w", command, StderrMode::Merge)?;
-            let frame = self.run_script_stdin(&script, payload).await?;
-            let section = frame.section("w").ok_or_else(|| {
-                op_failed(format!("Failed to write {path}: no answer from the host"))
-            })?;
-            if section.exit == EXIT_CONFLICT {
-                return Ok(WriteOutcome::Conflict);
+        let result = async {
+            for (i, chunk) in chunks.into_iter().enumerate() {
+                let position = ChunkPosition {
+                    first: i == 0,
+                    last: i + 1 == count,
+                };
+                let (command, payload) = if pwsh {
+                    (
+                        pwsh_write_command(&path, &nonce, position, expect),
+                        pwsh_write_payload(chunk),
+                    )
+                } else {
+                    (
+                        posix_write_command(&path, &nonce, position, decoder, expect),
+                        posix_write_payload(chunk, decoder),
+                    )
+                };
+                let script =
+                    Script::new(Self::new_nonce())?.section("w", command, StderrMode::Merge)?;
+                let frame = self.run_script_stdin(&script, payload).await?;
+                let section = frame.section("w").ok_or_else(|| {
+                    op_failed(format!("Failed to write {path}: no answer from the host"))
+                })?;
+                if section.exit == EXIT_CONFLICT {
+                    return Ok(WriteOutcome::Conflict);
+                }
+                if section.exit != 0 {
+                    return Err(op_failed(write_failure_message(
+                        &path,
+                        section.exit,
+                        &section.text(),
+                    )));
+                }
             }
-            if section.exit != 0 {
-                return Err(op_failed(write_failure_message(
-                    &path,
-                    section.exit,
-                    &section.text(),
-                )));
+            Ok::<WriteOutcome, BackendError>(WriteOutcome::Written)
+        }
+        .await;
+        if !matches!(result, Ok(WriteOutcome::Written)) {
+            // Any way out but success (a refusal, a failed chunk, a lost connection or timeout
+            // between chunks) may leave the temp file of the chunks already sent beside the
+            // target: remove it, best effort (#1868). A write future that is dropped
+            // mid-flight cannot run this; the hidden name keeps that leftover out of the tree.
+            let cleanup = if pwsh {
+                pwsh_cleanup_command(&path, &nonce)
+            } else {
+                posix_cleanup_command(&path, &nonce)
+            };
+            if let Ok(script) = Script::new(Self::new_nonce())
+                .and_then(|s| s.section("w", cleanup, StderrMode::Discard))
+            {
+                let _ = self.run_script(&script).await;
             }
         }
-        Ok(WriteOutcome::Written)
+        result
     }
 
     pub(in crate::backend) async fn delete_file_shell(

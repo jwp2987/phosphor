@@ -13,7 +13,7 @@ use crate::shellcmd::git::{
     GIT_BASE_ARGS, GIT_ENV, GIT_NOPROMPT_ENV, GIT_SSH_COMMAND_SH_ASSIGNMENT, GIT_UNSET_ENV,
     GitOutput, GitRunner, operation_probe_script, parse_operation_probe,
 };
-use crate::shellcmd::sh_quote;
+use crate::shellcmd::{sh_quote, sh_quote_path};
 
 /// Runs git/gh by handing the host's login shell one POSIX script per call.
 #[derive(Clone, Debug)]
@@ -59,7 +59,7 @@ impl ShellGitRunner {
         argv.extend(args.iter().map(|a| sh_quote(a)));
         let body = format!(
             "cd {} && {} git {}",
-            sh_quote(&cwd.to_string_lossy()),
+            sh_quote_path(&cwd.to_string_lossy()),
             env.join(" "),
             argv.join(" ")
         );
@@ -81,7 +81,7 @@ impl ShellGitRunner {
         let argv: Vec<String> = args.iter().map(|a| sh_quote(a)).collect();
         format!(
             "cd {} && {} gh {} </dev/null",
-            sh_quote(&cwd.to_string_lossy()),
+            sh_quote_path(&cwd.to_string_lossy()),
             env.join(" "),
             argv.join(" ")
         )
@@ -107,7 +107,7 @@ impl ShellGitRunner {
         let files: Vec<String> = relative_paths.iter().map(|p| sh_quote(p)).collect();
         let script = format!(
             "cd {} && rm -f -- {} </dev/null",
-            sh_quote(&repo.to_string_lossy()),
+            sh_quote_path(&repo.to_string_lossy()),
             files.join(" ")
         );
         let output = self.exec(script, Vec::new()).await?;

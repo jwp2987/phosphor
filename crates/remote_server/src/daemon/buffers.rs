@@ -108,24 +108,82 @@ fn read_text(path: &Path) -> Result<(String, Digest32), String> {
     Ok((text, digest))
 }
 
+/// Follows a chain of symlinks at `path` by hand (at most 40 hops), so a write goes THROUGH a
+/// link instead of replacing it; a dangling link resolves to its missing target. The shell arm
+/// does the same with `readlink` (#1879).
+pub(super) fn resolve_symlinks(path: &Path) -> PathBuf {
+    let mut current = path.to_path_buf();
+    for _ in 0..40 {
+        let is_link = std::fs::symlink_metadata(&current)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false);
+        if !is_link {
+            break;
+        }
+        let Ok(link) = std::fs::read_link(&current) else {
+            break;
+        };
+        current = if link.is_absolute() {
+            link
+        } else {
+            current
+                .parent()
+                .map_or_else(|| link.clone(), |parent| parent.join(&link))
+        };
+    }
+    current
+}
+
 /// Writes `text` over `path` through a temp file beside it, keeping the target's mode.
 fn write_atomically(path: &Path, text: &str) -> std::io::Result<()> {
+    write_bytes_atomically(path, text.as_bytes())
+}
+
+/// Writes `bytes` over `path` through a hidden temp file (`.<name>.phosphor-tmp-*`) beside it
+/// and a rename, so a reader never sees half a file and a failure leaves the old one (#1867).
+/// A symlink at `path` is written through. The target's mode is kept, and its owner and group as
+/// far as the user may set them. Like the shell arm, this REPLACES the inode: hard links to the
+/// old file keep the old bytes and ACLs/xattrs are not carried over (#1876). A directory at
+/// `path` is an error and nothing is created.
+pub(super) fn write_bytes_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let path = resolve_symlinks(path);
+    let path = path.as_path();
+    let existing = std::fs::metadata(path).ok();
+    if existing.as_ref().is_some_and(|m| m.is_dir()) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::IsADirectory,
+            "the path is a directory",
+        ));
+    }
     let dir = path.parent().filter(|p| !p.as_os_str().is_empty());
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
     let tmp = {
-        let tmp_name = format!(".{name}.phosphor-tmp-{}", std::process::id());
+        let tmp_name = format!(
+            ".{name}.phosphor-tmp-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
         match dir {
             Some(dir) => dir.join(tmp_name),
             None => PathBuf::from(tmp_name),
         }
     };
     let result = (|| {
-        std::fs::write(&tmp, text.as_bytes())?;
-        if let Ok(meta) = std::fs::metadata(path) {
+        std::fs::write(&tmp, bytes)?;
+        if let Some(meta) = &existing {
             std::fs::set_permissions(&tmp, meta.permissions())?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt as _;
+                // Best effort: `chown` needs privilege, `chgrp` a group the user is in.
+                if std::os::unix::fs::chown(&tmp, Some(meta.uid()), Some(meta.gid())).is_err() {
+                    let _ = std::os::unix::fs::chown(&tmp, None, Some(meta.gid()));
+                }
+            }
         }
         std::fs::rename(&tmp, path)
     })();

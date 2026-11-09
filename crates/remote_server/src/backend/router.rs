@@ -605,6 +605,27 @@ impl RoutedBackend {
         }
     }
 
+    /// Opens `path` in an editor buffer, whichever arm serves it, and makes sure the shell arm
+    /// knows the file as it was loaded: a buffer the helper served is remembered (SHA-256 of the
+    /// text) so that, if the helper goes away before the save, the save on the shell arm is
+    /// guarded and reports a conflict rather than overwriting (#1865). This inherent method is
+    /// the one call sites use; it shadows the trait method of the same name.
+    pub async fn open_buffer(
+        &self,
+        path: String,
+        force_reload: bool,
+    ) -> Result<crate::proto::OpenBufferResponse, super::BackendError> {
+        use super::RemoteFeatures;
+        let before = self.shell.begin_open(&path);
+        let result = RemoteFeatures::open_buffer(self, path.clone(), force_reload).await;
+        self.shell.finish_open(
+            &path,
+            before,
+            result.as_ref().ok().map(|opened| opened.content.as_str()),
+        );
+        result
+    }
+
     /// Tells the host the editor closed `path`.
     pub fn close_buffer(&self, path: String) {
         match self.helper_for(Family::Buffers) {

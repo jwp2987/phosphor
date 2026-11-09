@@ -114,8 +114,8 @@ impl NoDecoderShExecutor {
     fn with_extra_tools(extra: &[&str]) -> Self {
         let bin = tempfile::tempdir().unwrap();
         for tool in [
-            "mkdir", "dirname", "rm", "mv", "stat", "chmod", "wc", "tr", "head", "sed", "grep",
-            "cat", "readlink", "od", "printf", "sh", "env",
+            "mkdir", "dirname", "basename", "rm", "mv", "stat", "chmod", "chown", "chgrp", "wc",
+            "tr", "head", "sed", "grep", "cat", "readlink", "od", "printf", "sh", "env",
         ]
         .iter()
         .chain(extra)
@@ -1800,6 +1800,283 @@ async fn the_helper_arm_over_an_in_process_daemon_meets_the_buffer_contract() {
     };
     assert_eq!(subject.backend.kind(Family::Buffers), BackendKind::Helper);
     assert_buffers(&subject).await;
+}
+
+// ---- write correctness edge cases (#1865-#1868, #1876, #1877, #1879) -------------------------
+
+fn phosphor_tmp_files(dir: &std::path::Path) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for entry in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.contains("phosphor-tmp") {
+                found.push(name);
+            }
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                stack.push(entry.path());
+            }
+        }
+    }
+    found
+}
+
+/// One set of assertions for how a whole-file write treats the awkward targets: a directory, a
+/// symlink (written through, a dangling one is "present"), a hard link (the inode is replaced on
+/// BOTH arms, the other link keeps the old bytes), a leading `~`, and the temp files.
+async fn assert_write_edge_cases<F, Fut>(name: &str, write: F)
+where
+    F: Fn(String, String, Option<crate::shellcmd::write::Expect>) -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
+    use crate::shellcmd::write::Expect;
+    use std::os::unix::fs::{MetadataExt as _, symlink};
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let p = |rel: &str| root.join(rel).to_string_lossy().into_owned();
+
+    // #1866: a directory at the path is an error, with the directory untouched and no temp file.
+    std::fs::create_dir(root.join("a_dir")).unwrap();
+    let err = write(p("a_dir"), "x".into(), None).await.unwrap_err();
+    assert!(err.to_lowercase().contains("directory"), "{name}: {err}");
+    assert!(
+        std::fs::read_dir(root.join("a_dir"))
+            .unwrap()
+            .next()
+            .is_none(),
+        "{name}: the temp file went into the directory"
+    );
+    let big: String = (0..30_000).map(|i| format!("row {i}\n")).collect();
+    assert!(write(p("a_dir"), big, None).await.is_err(), "{name}");
+    assert!(
+        std::fs::read_dir(root.join("a_dir"))
+            .unwrap()
+            .next()
+            .is_none()
+    );
+
+    // #1879: a symlink is written through and stays a symlink.
+    std::fs::write(root.join("real.txt"), "old").unwrap();
+    symlink("real.txt", root.join("link.txt")).unwrap();
+    write(p("link.txt"), "new".into(), None).await.unwrap();
+    assert!(
+        std::fs::symlink_metadata(root.join("link.txt"))
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "{name}: the link was replaced"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("real.txt")).unwrap(),
+        "new",
+        "{name}"
+    );
+
+    // A dangling link counts as present for `Absent`, and a plain write goes through it.
+    symlink("missing.txt", root.join("dangling.txt")).unwrap();
+    let err = write(p("dangling.txt"), "x".into(), Some(Expect::Absent))
+        .await
+        .unwrap_err();
+    assert!(err.contains("changed on the host"), "{name}: {err}");
+    assert!(!root.join("missing.txt").exists(), "{name}");
+    write(p("dangling.txt"), "x".into(), None).await.unwrap();
+    assert!(
+        std::fs::symlink_metadata(root.join("dangling.txt"))
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "{name}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("missing.txt")).unwrap(),
+        "x",
+        "{name}"
+    );
+
+    // #1876: the inode is replaced on both arms (the other hard link keeps the old bytes); mode,
+    // owner and group stay.
+    std::fs::write(root.join("h1"), "one").unwrap();
+    std::fs::hard_link(root.join("h1"), root.join("h2")).unwrap();
+    let before = std::fs::metadata(root.join("h1")).unwrap();
+    write(p("h1"), "two".into(), None).await.unwrap();
+    assert_eq!(
+        std::fs::read_to_string(root.join("h1")).unwrap(),
+        "two",
+        "{name}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("h2")).unwrap(),
+        "one",
+        "{name}"
+    );
+    let after = std::fs::metadata(root.join("h1")).unwrap();
+    assert_eq!(
+        (before.uid(), before.gid()),
+        (after.uid(), after.gid()),
+        "{name}"
+    );
+
+    // #1877: a leading `~` expands on the host, on both arms.
+    let home = dirs::home_dir().expect("a home directory");
+    let rel = format!(
+        "phosphor-contract-tilde-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let result = write(format!("~/{rel}/f.txt"), "tilde".into(), None).await;
+    let read = std::fs::read_to_string(home.join(&rel).join("f.txt"));
+    let _ = std::fs::remove_dir_all(home.join(&rel));
+    result.unwrap_or_else(|e| panic!("{name}: {e}"));
+    assert_eq!(read.unwrap(), "tilde", "{name}");
+
+    // #1868: nothing is left beside any target.
+    assert_eq!(phosphor_tmp_files(root), Vec::<String>::new(), "{name}");
+}
+
+#[tokio::test]
+async fn the_shell_arm_handles_directory_symlink_hardlink_and_tilde_targets() {
+    let shell = Arc::new(shell_with_index().0);
+    assert_write_edge_cases("shell(local sh)", |p, c, e| {
+        let shell = Arc::clone(&shell);
+        async move {
+            shell
+                .write_file_expecting(p, c, e)
+                .await
+                .map_err(|e| e.to_string())
+        }
+    })
+    .await;
+}
+
+#[cfg(all(feature = "daemon", unix))]
+#[tokio::test]
+async fn the_helper_handles_directory_symlink_hardlink_and_tilde_targets() {
+    let stream = crate::daemon::spawn_in_process_for_tests();
+    let stream = async_io::Async::new(stream).unwrap();
+    let (reader, writer) = futures::io::AsyncReadExt::split(stream);
+    let executor = executor::Background::default();
+    let (client, _events, _host_responses) = RemoteServerClient::new(reader, writer, &executor);
+    let client = Arc::new(client);
+    assert_write_edge_cases("helper(in-process daemon)", |p, c, e| {
+        let client = Arc::clone(&client);
+        async move {
+            let wire = e.map(|e| e.to_wire().expect("absent has a wire form"));
+            client
+                .write_file_expecting(p, c, wire)
+                .await
+                .map_err(|e| e.to_string())
+        }
+    })
+    .await;
+}
+
+/// Runs everything on a local `sh` except the final move into place, which fails like a dropped
+/// connection.
+#[derive(Debug)]
+struct DropsTheFinalMoveExecutor;
+
+impl OutOfBandExecutor for DropsTheFinalMoveExecutor {
+    fn channel_kind(&self) -> ChannelKind {
+        ChannelKind::LocalSh
+    }
+
+    fn shell_kind(&self) -> ShellKind {
+        ShellKind::Posix
+    }
+
+    fn execute(&self, request: ExecRequest) -> BoxFuture<'_, Result<ExecOutput, ExecError>> {
+        Box::pin(async move {
+            if request.command.contains("mv -f") {
+                return Err(ExecError::Failed("connection dropped".into()));
+            }
+            run_local_sh(request, None, None)
+        })
+    }
+}
+
+#[tokio::test]
+async fn a_multi_chunk_write_that_fails_part_way_leaves_no_temp_file() {
+    // #1868: the chunks before the failure created the temp file; the shell arm removes it.
+    let shell = ShellBackend::new(Some(Arc::new(DropsTheFinalMoveExecutor)));
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("big.txt");
+    let big: String = (0..30_000).map(|i| format!("row {i}\n")).collect();
+    assert!(big.len() > 2 * 64 * 1024);
+    shell
+        .write_file_expecting(s(&target), big, None)
+        .await
+        .unwrap_err();
+    assert!(!target.exists());
+    assert_eq!(phosphor_tmp_files(dir.path()), Vec::<String>::new());
+}
+
+#[tokio::test]
+async fn a_buffer_save_with_no_record_of_the_loaded_file_is_refused_not_written() {
+    // #1865: never an unguarded save.
+    let router = FeatureRouter::new();
+    let host = HostId::new("buffer-no-base".to_string());
+    let session = warp_core::SessionId::from(40u64);
+    router.register_out_of_band(session, Arc::new(LocalShExecutor));
+    let backend = router.backend(&host, None, [session]);
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("f.txt");
+    std::fs::write(&file, "theirs\n").unwrap();
+    let err = backend
+        .save_buffer_content(s(&file), "mine\n".into())
+        .await
+        .unwrap_err();
+    assert!(format!("{err}").contains("Reload the file"), "{err}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "theirs\n");
+}
+
+#[cfg(all(feature = "daemon", unix))]
+#[tokio::test]
+async fn a_buffer_opened_through_the_helper_is_guarded_when_the_save_falls_back_to_the_shell() {
+    // #1865: open while the helper serves buffers, the helper goes away, the file changes on the
+    // host, save: a conflict, and the host's bytes survive.
+    let stream = crate::daemon::spawn_in_process_for_tests();
+    let stream = async_io::Async::new(stream).unwrap();
+    let (reader, writer) = futures::io::AsyncReadExt::split(stream);
+    let executor = executor::Background::default();
+    let (client, _events, _host_responses) = RemoteServerClient::new(reader, writer, &executor);
+    let client = Arc::new(client);
+    let router = FeatureRouter::new();
+    let host = HostId::new("buffer-fallback".to_string());
+    let session = warp_core::SessionId::from(41u64);
+    router.register_out_of_band(session, Arc::new(LocalShExecutor));
+    let backend = router.backend(&host, Some(Arc::clone(&client)), [session]);
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("f.txt");
+    std::fs::write(&file, "one\n").unwrap();
+
+    assert_eq!(backend.kind(Family::Buffers), BackendKind::Helper);
+    let opened = backend.open_buffer(s(&file), false).await.unwrap();
+    assert_eq!(opened.content, "one\n");
+
+    router.note_fallback(&host, super::helper::client_id(&client), Family::Buffers);
+    assert_eq!(backend.kind(Family::Buffers), BackendKind::Shell);
+    std::fs::write(&file, "theirs\n").unwrap();
+    let outcome = backend
+        .save_buffer_content(s(&file), "mine\n".into())
+        .await
+        .unwrap();
+    assert_eq!(outcome, BufferSaveOutcome::Conflict);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "theirs\n");
+
+    // With the file unchanged the same save goes through.
+    let again = backend.open_buffer(s(&file), true).await.unwrap();
+    assert_eq!(again.content, "theirs\n");
+    assert_eq!(
+        backend
+            .save_buffer_content(s(&file), "mine\n".into())
+            .await
+            .unwrap(),
+        BufferSaveOutcome::Saved
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "mine\n");
 }
 
 // ---- agent context: host skills and global rules (P8, family h) -------------------------------
