@@ -9,7 +9,7 @@
 # Facilities the cases need that a runner may lack (vim, tcsh, fish, zsh, a passwordless sudo, a usable docker with the alpine image)
 # SKIP with the reason, never fail. No case pulls an image, installs a package or needs root beyond `sudo -n true` succeeding.
 # POSIX only: the banner regexes the cases rely on are added by the profile (profile.PROBE_SUBSHELL_COMMANDS).
-import os, shutil, subprocess, sys, time
+import functools, os, shutil, subprocess, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cases  # noqa: E402
@@ -60,10 +60,42 @@ def run_in_inner(ctx, r, label, shell, f, timeout=10):
     return tok, dt
 
 
+def leave_inner(ctx, r, label):
+    """Leave every LOCAL inner shell the case started and PROVE the shell in front is the pane's ROOT shell by its PID (a plain `exit` + a
+    command proves nothing: the same command runs in the inner shell when the `exit` was eaten -- the Mac round-6 leak). `exit` is typed only
+    while a probe proves a nested shell is in front. Without a recorded root pid / PID probe it falls back to one `exit` (and says so)."""
+    ctx.left_inner = True
+    state = ctx.leave_nested(getattr(ctx, "root_pid", None))
+    if state == "unprobed":
+        r.note("%s: no root shell pid recorded or no PID probe in this pane; left the inner shell with one `exit`, unproven" % label)
+        ctx.be.type("exit", 12, enter=True)
+        time.sleep(1.0)
+        return
+    r.check(state == "root", "%s: the shell in front after leaving is the pane's ROOT shell (got %s)" % (label, state))
+
+
+def guarded(fn):
+    """every readiness case leaves its inner shell(s) in a `finally` and proves it is back in the PARENT shell, whether it passed, failed or
+    skipped (the run.py depth check is the second layer)"""
+    @functools.wraps(fn)
+    def run(ctx, r):
+        ctx.left_inner = False
+        try:
+            return fn(ctx, r)
+        finally:
+            if not ctx.left_inner:
+                try:
+                    leave_inner(ctx, r, fn.__name__)
+                except cases.Skip:
+                    raise
+                except Exception as e:       # never mask the case's own exception
+                    r.note("%s: leaving the inner shell raised %r" % (fn.__name__, e))
+    return run
+
+
 def leave_and_prove_parent(ctx, r, label, f, want_lines):
-    """`exit`, then a line in the pane's bash: the file ends with exactly the expected lines plus the parent's"""
-    ctx.be.type("exit", 12, enter=True)
-    time.sleep(1.0)
+    """leave the inner shell (proved by PID), then a line in the pane's bash: the file ends with exactly the expected lines plus the parent's"""
+    leave_inner(ctx, r, label)
     back = "back_" + ctx.tok(4)
     ctx.be.type(ctx.append_cmd("bash", back, f), 12, enter=True)
     ctx.until(lambda: back in ctx.lines(f), 8)
@@ -72,6 +104,7 @@ def leave_and_prove_parent(ctx, r, label, f, want_lines):
 
 
 @case("subshell_ready_rc_questions", order=22)
+@guarded
 def c_ready_rc_questions(ctx, r):
     """the redesign's "rc read -p x2" failure mode: a bash whose rc asks two questions, Phosphorized while it asks. Each answer is a
     non-empty line typed at an InputPrompt tail through a cooked shell keeping up with its reads: a ReArm (hop verdict=ReArm), never a
@@ -106,6 +139,7 @@ def c_ready_rc_questions(ctx, r):
 
 
 @case("subshell_ready_vim_typeahead", order=22)
+@guarded
 def c_ready_vim_typeahead(ctx, r):
     """the redesign's `vim f⏎` typeahead: a bash whose rc sleeps, Phosphorized during the sleep, `vim ...⏎` typed at once (typeahead into
     the cooked rc: a ReArm), vim then owns the alt screen (Wait(AltScreen) / an Unknown leader: nothing written), `:wq` back to the
@@ -142,6 +176,7 @@ def c_ready_vim_typeahead(ctx, r):
 
 
 @case("subshell_ready_unsupported_tcsh", order=22)
+@guarded
 def c_ready_unsupported_tcsh(ctx, r):
     """review R5: a known-unsupported leader (tcsh) is given up at once: no probe line is ever written into tcsh (it would print
     errors), the hop is `subshell_setup_cancelled why=Unsupported`, and the typed line runs in tcsh untouched."""
@@ -163,6 +198,7 @@ def c_ready_unsupported_tcsh(ctx, r):
 
 
 @case("subshell_ready_secret_after_prompt", order=22)
+@guarded
 def c_ready_secret_after_prompt(ctx, r):
     """E-SECRET after the first line: a bash whose PROMPT_COMMAND runs ONE `read -s` before its SECOND prompt, i.e. right after
     our first setup line was read and ran (the marker is progress, the secret read still wins). The line typed while the setup was
@@ -201,6 +237,7 @@ def c_ready_secret_after_prompt(ctx, r):
 
 
 @case("subshell_ready_relay_shape", order=22)
+@guarded
 def c_ready_relay_shape(ctx, r):
     """the relay shape (rows 9/10, R4): `sudo -s` with use_pty stays the foreground leader, so only the first new prompt behind it
     (with the local tty raw) says the shell is ready. Needs a passwordless sudo on the runner; skips otherwise."""
@@ -224,14 +261,14 @@ def c_ready_relay_shape(ctx, r):
             "the samples named sudo a relay (use_pty) or the root shell a shell leader: %r" % judged[-1:])
     l = ctx.lines(f)
     r.check(l[:2] == ["0", tok], "the line ran as root, once: %r" % l)
-    ctx.be.type("exit", 12, enter=True)
-    time.sleep(1.0)
+    leave_inner(ctx, r, "relay_or_fish")
     back = "back_" + ctx.tok(4)
     ctx.be.type(ctx.append_cmd("bash", back, f), 12, enter=True)
     r.check(ctx.until(lambda: back in ctx.lines(f), 8), "the pane's bash runs the next command")
 
 
 @case("subshell_ready_exec_fish_rc", order=22)
+@guarded
 def c_ready_exec_fish_rc(ctx, r):
     """reviewer R5: `exec fish` in the rc of a `bash --rcfile`. The leader in front when the setup is ready is fish, not the bash the
     command named: the probe path is taken (comm=fish in the judged hop) and the line runs in fish."""
@@ -255,14 +292,14 @@ def c_ready_exec_fish_rc(ctx, r):
             "the judge wrote on a fish leader (the exec'd shell), not on bash: %r" % [ln for h, ln in hs if "decision=Write" in ln][:1])
     l = ctx.lines(f)
     r.check(len(l) == 2 and l[0] == tok and l[1].startswith("fish"), "the line ran in fish: %r" % l)
-    ctx.be.type("exit", 12, enter=True)
-    time.sleep(1.0)
+    leave_inner(ctx, r, "relay_or_fish")
     back = "back_" + ctx.tok(4)
     ctx.be.type(ctx.append_cmd("bash", back, f), 12, enter=True)
     r.check(ctx.until(lambda: back in ctx.lines(f), 8), "the pane's bash runs the next command")
 
 
 @case("subshell_ready_docker_t_without_i", order=22)
+@guarded
 def c_ready_docker_t_without_i(ctx, r):
     """reviewer R4: `docker run -t` WITHOUT `-i` shows a prompt shape behind a relay while the LOCAL tty stays cooked: the keys go to
     the parent shell, so nothing may be written (the judge waits: RelayCooked). The line typed meanwhile runs in the PARENT bash
@@ -288,6 +325,7 @@ def c_ready_docker_t_without_i(ctx, r):
 
 
 @case("subshell_ready_zsh_newuser_install", order=22)
+@guarded
 def c_ready_zsh_newuser_install(ctx, r):
     """reviewer R6: a zsh with an EMPTY home runs zsh-newuser-install, whose menu reads ONE key: a setup written there picks an option
     (the probe's `2` of `2>&1` would populate ~/.zshrc). The footer counts as an InputPrompt: nothing is written until the user
@@ -319,6 +357,7 @@ def c_ready_zsh_newuser_install(ctx, r):
 
 
 @case("subshell_ready_rc_clear", order=22)
+@guarded
 def c_ready_rc_clear(ctx, r):
     """reviewer: an rc that runs `clear` moves the cursor to the top: the shape baselines are wrong-footed, the OS proof is not. The
     setup is written when readline reads, the first inner line runs < 2 s after its Enter."""

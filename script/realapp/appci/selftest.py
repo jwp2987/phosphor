@@ -774,6 +774,32 @@ def r18u19_settings_probe_and_theme_diff():
 
 
 @check
+def shell_depth_probe_pure_parts():
+    # the subshell leak (Mac round 6): the PID probe, its parser and which cases get the post-case depth check
+    assert cases.depth_probe_cmd("cmd", "pX") is None
+    assert cases.depth_probe_cmd("powershell", "pX") == "Add-Content ~/.appci_pid pX:$PID"
+    assert cases.depth_probe_cmd(None, "pX") == "echo pX:$$ >> ~/.appci_pid" and cases.depth_probe_cmd("gitbash", "pX").endswith(">> ~/.appci_pid")
+    assert cases.parse_depth_probe(["pA:11", "pX:4242", "pX:77"], "pX") == "77"        # the newest line of this probe
+    assert cases.parse_depth_probe(["pA:11"], "pX") is None and cases.parse_depth_probe(["pX:"], "pX") is None
+    assert cases.parse_depth_probe(["pX:12ab"], "pX") is None
+    proving = ["new_case"]
+    assert cases.wants_depth_check("new_case", proving) and cases.wants_depth_check("subshell_ready_rc_clear", proving)
+    assert cases.wants_depth_check("ssh_connect_typing", proving) and cases.wants_depth_check("remote_x", proving) and cases.wants_depth_check("lab_x", proving)
+    assert not cases.wants_depth_check("latency_enter", proving)
+    # leave_nested: exits only while a probe proves a different shell, never at the root
+    typed, pids = [], iter(["900", "900", "100"])
+    c = types.SimpleNamespace(prof=types.SimpleNamespace(prompts=lambda: 0), pane=None, be=types.SimpleNamespace(type=lambda t, *a, **k: typed.append(t)),
+                              shell_pid=lambda: next(pids), until=lambda *a, **k: None, reset=lambda: None)
+    typed.clear(); pids = iter(["900", "900", "100"]); c.shell_pid = lambda: next(pids)
+    assert cases.Ctx.leave_nested(c, "100") == "root" and typed == ["exit", "exit"], typed
+    typed.clear(); c.shell_pid = lambda: "100"
+    assert cases.Ctx.leave_nested(c, "100") == "root" and typed == []                  # at the root: no exit
+    assert cases.Ctx.leave_nested(c, None) == "unprobed" and typed == []
+    typed.clear(); c.shell_pid = lambda: "900"
+    assert cases.Ctx.leave_nested(c, "100", max_exits=2) == "nested" and typed == ["exit"] * 2
+
+
+@check
 def r18u19_windows_where_probe_ignores_earlier_runs():
     # the seeded tokens repeat in every run: a token an EARLIER run left in the real home's ~/.appci_where must not make a probe "LOCAL"
     d = tempfile.mkdtemp()
