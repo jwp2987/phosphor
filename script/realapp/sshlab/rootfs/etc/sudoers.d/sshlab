@@ -1,0 +1,2 @@
+# p_sudo: passwordless sudo, for the sudo-boundary cases
+p_sudo ALL=(ALL) NOPASSWD: ALL

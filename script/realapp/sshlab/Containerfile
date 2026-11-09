@@ -1,0 +1,50 @@
+# sshlab image (docs/testing.md 2.15). Built only by script/realapp/sshlab/labctl.py (which passes the pins from versions.env as build args and
+# refuses PLACEHOLDER values). Targets: `full` (8 shells + scenario users) and `bare` (bash + coreutils minus od/tr/base64; no scp/sftp/curl/wget;
+# the harness runs it with a read-only rootfs and a noexec /tmp).
+ARG DEBIAN_IMAGE
+FROM ${DEBIAN_IMAGE} AS base
+ARG DEBIAN_SNAPSHOT
+RUN rm -f /etc/apt/sources.list.d/* /etc/apt/sources.list \
+ && printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/%s/ trixie main\n' "$DEBIAN_SNAPSHOT" > /etc/apt/sources.list \
+ && printf 'Acquire::Check-Valid-Until "false";\nAcquire::Retries "5";\n' > /etc/apt/apt.conf.d/99snapshot \
+ && apt-get update
+
+FROM base AS tools
+ARG NU_URL
+ARG NU_SHA256
+ARG PWSH_URL
+ARG PWSH_SHA256
+RUN apt-get install -y --no-install-recommends ca-certificates curl tar gzip xz-utils \
+ && mkdir -p /opt/nu /opt/pwsh \
+ && curl -fsSL "$NU_URL" -o /tmp/nu.tgz && echo "$NU_SHA256  /tmp/nu.tgz" | sha256sum -c - \
+ && tar -xzf /tmp/nu.tgz -C /opt/nu --strip-components=1 \
+ && curl -fsSL "$PWSH_URL" -o /tmp/pwsh.tgz && echo "$PWSH_SHA256  /tmp/pwsh.tgz" | sha256sum -c - \
+ && tar -xzf /tmp/pwsh.tgz -C /opt/pwsh && chmod +x /opt/pwsh/pwsh
+
+FROM base AS common
+RUN apt-get install -y --no-install-recommends openssh-server bash dash busybox sudo util-linux iproute2 nftables procps python3 \
+      libpam-google-authenticator libpam-modules locales ca-certificates \
+ && rm -rf /var/lib/apt/lists/* && ln -sf bash /bin/rbash && mkdir -p /run/sshd /usr/libexec/sshlab \
+ && cp -L "$(readlink -f /usr/bin/python3)" /usr/libexec/sshlab/py
+COPY rootfs/ /
+RUN ln -sfn /run/sshlab /etc/sshlab
+
+FROM common AS full
+RUN apt-get update && apt-get install -y --no-install-recommends zsh fish bash-completion git curl \
+      libssl3 libstdc++6 zlib1g \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=tools /opt/nu /opt/nu
+COPY --from=tools /opt/pwsh /opt/pwsh
+ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 PYTHONHOME=/usr
+RUN /usr/local/lib/sshlab/build-users.sh
+EXPOSE 22 2222 7 7000
+ENTRYPOINT ["/usr/libexec/sshlab/py", "/usr/local/sbin/labd.py"]
+
+# bare: only bash exists (the other accounts remain but their shells are missing), and the tools an installer or helper fallback needs are removed.
+FROM common AS bare
+ENV PYTHONHOME=/usr
+RUN /usr/local/lib/sshlab/build-users.sh \
+ && rm -f /usr/bin/scp /usr/bin/sftp /usr/lib/openssh/sftp-server /usr/bin/od /usr/bin/tr /usr/bin/base64 /usr/bin/curl /usr/bin/wget /usr/bin/python3* /bin/python3* \
+ && sed -i '/sftp/d' /etc/ssh/sshd_config 2>/dev/null || true
+EXPOSE 22 2222 7 7000
+ENTRYPOINT ["/usr/libexec/sshlab/py", "/usr/local/sbin/labd.py"]
