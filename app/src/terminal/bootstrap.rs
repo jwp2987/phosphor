@@ -895,51 +895,6 @@ pub fn set_ssh_bootstrap_giveup_delivers_for_test(on: bool) -> GiveUpDeliversGua
     GiveUpDeliversGuard(GIVEUP_DELIVERS_FOR_TEST.with(|slot| slot.replace(Some(on))))
 }
 
-/// Whether the subshell setup is written on the READINESS JUDGE (#1679 step 3, C3b: the pure
-/// `view/subshell_ready.rs` rules on OS facts and the slave-queue proof) rather than on the first
-/// prompt SHAPE with a 5 s give-up (#1354) and the deferral behind an input prompt (#1032). On by
-/// default; `PHOSPHOR_SUBSHELL_READY=0` is the rollback switch and restores today's path, whose
-/// code stays until C3c deletes it (review R10). Independent of `PHOSPHOR_BOOTSTRAP_TIMED`, which
-/// restores the blind writes of before #1354, not today's behaviour.
-pub fn subshell_ready_enabled() -> bool {
-    #[cfg(test)]
-    if let Some(forced) = subshell_ready_forced_for_test() {
-        return forced;
-    }
-    static READY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *READY.get_or_init(|| std::env::var("PHOSPHOR_SUBSHELL_READY").is_none_or(|v| v != "0"))
-}
-
-#[cfg(test)]
-thread_local! {
-    /// What a test forces [`subshell_ready_enabled`] to on its own thread.
-    static SUBSHELL_READY_FOR_TEST: std::cell::Cell<Option<bool>> =
-        const { std::cell::Cell::new(None) };
-}
-
-#[cfg(test)]
-fn subshell_ready_forced_for_test() -> Option<bool> {
-    SUBSHELL_READY_FOR_TEST.with(std::cell::Cell::get)
-}
-
-/// Restores the previous forced value when dropped.
-#[cfg(test)]
-#[must_use = "the forced value is restored when the guard drops"]
-pub struct SubshellReadyGuard(Option<bool>);
-
-#[cfg(test)]
-impl Drop for SubshellReadyGuard {
-    fn drop(&mut self) {
-        SUBSHELL_READY_FOR_TEST.with(|slot| slot.set(self.0));
-    }
-}
-
-/// Forces [`subshell_ready_enabled`] for the current test thread.
-#[cfg(test)]
-pub fn set_subshell_ready_for_test(on: bool) -> SubshellReadyGuard {
-    SubshellReadyGuard(SUBSHELL_READY_FOR_TEST.with(|slot| slot.replace(Some(on))))
-}
-
 /// Splits `raw_script` into lines that rebuild it in `$_wbs` and then evaluate it.
 #[allow(dead_code)] // used only by tests
 fn chunked_eval_lines(shell_type: ShellType, raw_script: &str) -> Vec<String> {

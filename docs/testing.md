@@ -297,7 +297,6 @@ claims (#1353, #1404); only a doc comment in `app/src/terminal/input_queue/mod.r
 | `PHOSPHOR_RENDER_LOCK_LEGACY=1` | previous model-lock scoping in render/layout/wakeup (round 18 R1) |
 | `PHOSPHOR_BLOCK_LIST_PAINT_UNDER_LOCK=1`, `PHOSPHOR_ALT_SCREEN_PAINT_UNDER_LOCK=1` | paint from the locked model instead of snapshots |
 | `PHOSPHOR_ALT_SCREEN_FULL_RENDER=1`, `PHOSPHOR_BLOCK_LIST_FULL_RENDER=1`, `PHOSPHOR_BLINK_FULL_RENDER=1` | full re-render on every wakeup / blink instead of paint-only frames |
-| `PHOSPHOR_SUBSHELL_READY=0` | the subshell setup is written on the first PROMPT SHAPE (with the 5 s give-up, #1354) and deferred behind an input prompt by the #1032 rule, instead of on the readiness judge of #1679 step 3 (`view/subshell_ready.rs`: OS facts + the slave-queue proof; E-SECRET / E-QUESTION / E-UNSUPPORTED). The old code stays until C3c deletes it. It does NOT restore the bypass removed in step 4 (an announced setup asking for an answer holds typing until the net hands it back, with the #1032 deferral meaning the setup is usually not written at a prompt at all); it is independent of `PHOSPHOR_BOOTSTRAP_TIMED` |
 | `PHOSPHOR_SSH_COUNTED_BOOTSTRAP=0`, `PHOSPHOR_LOCAL_COUNTED_BOOTSTRAP=0` | here-document bootstrap instead of the counted raw read (#1226) |
 | `PHOSPHOR_SSH_SPECULATIVE_CONNECT=0`, `PHOSPHOR_SSH_EARLY_BOOTSTRAP=0` | old probe-then-connect / bootstrap-after-connect order (#1266) |
 | `PHOSPHOR_REMOTE_NATIVE_COMPLETIONS=0` | Tab in a Phosphorized remote session without the helper goes back to the completer first (ControlMaster side commands) instead of asking the remote shell in-band (#1801) |
@@ -1344,10 +1343,10 @@ prompt drawn since the user's last line end -- "line ended + new prompt" never c
 | model (pure) | `key_facts_tests.rs`: `choice_groups_and_the_zsh_newuser_footer_are_input_prompts` | `[1-3]`, `[1/2/3]`, `(y/n/a)`, `(a/b/c/d/e)`, the newuser footer are prompts; `(venv) ... $`, `[me@host ~]$`, `[main]`, `done)`, `(abcdef/ghij)`, six letters, `(a)`, `[]`, `[/]` are not |
 | view (pure) | `view/subshell_ready_tests.rs`: `row_1_secret_waits` .. `row_15_alt_screen_waits`, `r3_*`, `r4_*`, `r5_*`, `the_preconditions_apply_in_order`, `exhaustive_a_write_needs_every_precondition_and_a_proof` (every kind x leader x canonical x queue x block x alt x dirty x tail x moved x moved-since-end x age x three ledgers x two triggers), `r2_only_an_empty_or_answering_line_re_arms`, `the_line_tracker_counts_only_the_terminator_as_empty`, `the_line_tracker_understands_bracketed_paste_across_chunks`, `judge_written_rows`, `r7_unsupported_is_stream_ordered_and_confirmed_by_the_queue_or_a_second_prompt`, `r8_held_keys_go_to_the_editor_except_a_proven_unsupported_prompt`, `r9_a_cancel_flushes_only_provably_unread_setup_bytes` | every row of the redesign's table with the review's corrections; the invariant that a Write needs every precondition and a proof and that a young attempt is never cancelled on a fact alone; the ceiling names NotAShell for an unknown leader and TooLong otherwise |
 
-**#1679 / #1711 step 3, C3b (the switch to the readiness judge; owner-approved 2026-11-08). Rollback:
-`PHOSPHOR_SUBSHELL_READY=0` restores today's path (the first-prompt-shape wait `AwaitingSubshellPrompt` + 5 s give-up,
-the #1032 deferral `DeferredSubshellSetup`), whose code stays until C3c deletes it (review R10). Independent of
-`PHOSPHOR_BOOTSTRAP_TIMED`, which restores the blind writes of before #1354, not today's behaviour.**
+**#1679 / #1711 step 3, C3b (the switch to the readiness judge; owner-approved 2026-11-08). There is NO rollback: owner decision 2026-11-09,
+`PHOSPHOR_SUBSHELL_READY=0` and `PHOSPHOR_BOOTSTRAP_TIMED` are deleted with the first-prompt-shape wait (`AwaitingSubshellPrompt`,
+its 5 s give-up that wrote the setup) and the timed bootstrap, because a rollback built on timers that write defeats the rule
+that timers never write on the input path (#1814).**
 `SubshellSetupState { Idle, Armed(ArmedSubshellSetup), Written(WrittenSubshellSetup) }` in `view.rs`. Arming (auto-warpify at
 preexec, the rc-file snippet, a Phosphorize click: `arm_subshell_setup`, `arm_subshell_setup_from_banner`) holds NOTHING: keys
 pass through, counted in the ledger (R1), and every line end is judged by R2 (`note_user_bytes_for_subshell_readiness` on the
@@ -1379,7 +1378,7 @@ the look that finds the alt screen off and the line clean. In an appci log the h
 
 | layer | test | asserts |
 |---|---|---|
-| view, Legacy and Table | `view_test.rs`: `subshell_setup_is_written_on_the_shells_proof_not_on_the_prompt_shape` | a `bash-5.1$ ` with an Unknown sample writes nothing; a LineReader sample with the queue empty writes once; the old `awaiting_subshell_prompt` stays idle |
+| view, Legacy and Table | `view_test.rs`: `subshell_setup_is_written_on_the_shells_proof_not_on_the_prompt_shape` | a `bash-5.1$ ` with an Unknown sample writes nothing; a LineReader sample with the queue empty writes once |
 | view, Legacy and Table | `view_test.rs`: `rc_questions_re_arm_the_setup_and_the_answers_never_write_it` | two `read -p` questions through a cooked bash keeping up: each answer passes through exactly (`me\r`, `ops\r`), nothing held, the attempt stays armed with the ledger counting; written at the prompt once the line editor reads |
 | view | `view_test.rs`: `a_users_own_command_cancels_the_armed_setup_and_nothing_is_written` | `ls\r` with an Unknown leader cancels (UserDrove); a later proof does not revive it; the pty got only `ls\r` |
 | view | `view_test.rs`: `vim_typeahead_waits_through_the_alt_screen_and_the_setup_follows_it` | `vim f\r` into a cooked reading bash re-arms; vim (Unknown, alt screen) waits; after the alt screen closes and readline reads: written |
@@ -1391,7 +1390,8 @@ the look that finds the alt screen off and the line clean. In an appci log the h
 | view | `view_test.rs`: `a_relay_writes_on_its_first_prompt_only_with_a_raw_local_tty` | `/ # ` behind a relay with a COOKED local tty waits (R4); with a raw one the sh probe's prelude goes out |
 | view | `view_test.rs`: `an_rc_file_trigger_writes_for_its_shell_once_ready` | a cooked bash (the rc running) waits; zle reading writes the rc trigger's zsh setup, Written with `shell_type` zsh |
 | view | `view_test.rs`: `tmux_control_mode_setup_waits_for_the_alt_screen_to_close` | alt screen on: `tmux_setup_pending`, nothing written; the look after it closes writes directly, no judged attempt |
-| view | `view_test.rs`: `the_rollback_switch_restores_the_deferral_and_the_first_prompt_path` | forced off: a trigger on `Password: ` defers (#1032) and `arm_awaiting_subshell_prompt` arms; forced on: no deferral, the trigger writes |
+| view, Legacy and Table | `view_test.rs`: `a_password_prompt_gets_none_of_the_setup_and_the_prompt_after_it_does` | a `Password: ` prompt with a Secret fact writes nothing; the typed answer reaches the pty untouched; the answer and a Ctrl-C keep the attempt armed; the setup is written at the prompt that follows when the line editor reads (replaces the deleted #1032 deferral tests `subshell_setup_waits_behind_a_password_prompt_until_it_is_answered`, `ctrl_c_skips_a_deferred_subshell_setup`, `deferred_subshell_setup_is_released_by_the_output_after_the_answer`, and the deleted `the_rollback_switch_restores_the_deferral_and_the_first_prompt_path`) |
+| view | `view_test.rs`: `subshell_bootstrap_waits_for_the_shells_proof_however_long_it_takes` | an auto-warpify attempt waits past the old 1 s with nothing written, a finished banner line is no proof, the proof writes exactly once (replaces `subshell_bootstrap_waits_for_the_first_prompt_however_long_it_takes`) |
 | view (pure) | `view_test.rs`: `readiness_toasts_carry_counts_never_text` | the hand-back toast names a count and "not run", never the text |
 | appci | `cases_subshell_ready.py`: `subshell_ready_rc_questions`, `subshell_ready_vim_typeahead`, `subshell_ready_unsupported_tcsh`, `subshell_ready_secret_after_prompt`, `subshell_ready_relay_shape`, `subshell_ready_exec_fish_rc`, `subshell_ready_docker_t_without_i`, `subshell_ready_zsh_newuser_install`, `subshell_ready_rc_clear` (see the cases list) | real shells on a real pty: the write happens only on the proof, after the answers / vim / the menu, never on a shape; what was typed runs once in the right shell; the unsupported and relay-cooked cases write nothing |
 | model (pure) | `setup_echo_filter_tests.rs`: `the_echo_counts_say_when_our_line_was_taken` | `lines_ended` counts lines echoed through `\n`, `started` flips at the first matched character or the whole prefix, a stand-down keeps the counts, `reset_counts` forgets them |
@@ -1407,8 +1407,7 @@ inits (`awaits_an_answer` at :243 STAYS: the ssh ^D rule reads it), `dest_table.
 `route_decide.rs`, `table_tests` / `table_enum_tests` (`EFFECT_ONLY_ROWS` is three rows; `ALL_ROWS` 34; 40 boolean facts).
 `active_output_awaits_an_answer` stays for `ssh_connect_holds_eot`. What replaces the bypass: the readiness judge never writes
 at an input prompt (step 3), and a question or secret read AFTER the first line is E-QUESTION / E-SECRET, which cancel the setup
-and hand the held keys back in the same wakeup, so the answer typed next passes through with no gate open. Under
-`PHOSPHOR_SUBSHELL_READY=0` the bypass is not restored (documented above, review R10).
+and hand the held keys back in the same wakeup, so the answer typed next passes through with no gate open. The bypass is not coming back (the rollback switch is deleted, #1814).
 
 | layer | test | asserts |
 |---|---|---|

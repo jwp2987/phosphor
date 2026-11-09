@@ -1048,10 +1048,6 @@ const SUBSHELL_SETUP_DEFER_NOTICE: Duration = Duration::from_secs(20);
 const SUBSHELL_SETUP_DEFER_POLL: Duration = Duration::from_millis(250);
 /// How many rows from the end of the active block's output the deferred-setup checks look at.
 const OUTPUT_TAIL_ROWS: usize = 16;
-/// Give-up net for a bootstrap trigger waiting for the subshell's first prompt (#1354): a prompt
-/// that never reads as one (an empty PS1, one ending in a newline) still gets the bootstrap.
-/// Logged when it fires.
-const SUBSHELL_FIRST_PROMPT_GIVE_UP: Duration = Duration::from_secs(5);
 /// Give-up net for a pending command / ssh `cd` waiting for the first prompt after a block
 /// completed (#1354); the prompt itself is what releases it. Logged when it fires. #1588: firing
 /// runs NOTHING; the command stays pending for the prompt (its text is shown in the input).
@@ -3042,8 +3038,7 @@ enum DeferredSshWarpify {
     },
 }
 
-/// What a bootstrap trigger does once the subshell draws its first prompt (#1354), or, on the
-/// readiness path (#1679 step 3), once the judge says the shell is ready.
+/// What a bootstrap trigger does once the judge says the shell is ready (#1679 step 3).
 #[derive(Clone, Debug)]
 enum SubshellPromptTrigger {
     /// A warpify-initiated subshell command: run the bootstrap probe.
@@ -3067,18 +3062,6 @@ impl SubshellPromptTrigger {
             Self::Banner { shell_type } => *shell_type,
         }
     }
-}
-
-/// A bootstrap trigger that waits for the subshell's first prompt instead of a fixed delay
-/// (#1354). The prompt is seen as output that moved the active block's cursor and left it in
-/// unterminated text; `baseline` is the cursor state when the trigger was armed, so text printed
-/// before it (the subshell command's own echo) is not mistaken for the prompt.
-struct AwaitingSubshellPrompt {
-    trigger: SubshellPromptTrigger,
-    block_id: BlockId,
-    baseline: (usize, usize, usize),
-    /// Tells a give-up timer which arming it belongs to.
-    id: u64,
 }
 
 /// Bookkeeping for the paced subshell bootstrap write (see
@@ -3167,9 +3150,9 @@ struct SubshellSetupNet {
 
 /// A subshell setup waiting for the shell to prove it is ready (#1679 step 3, C3b: the judge in
 /// `subshell_ready.rs`). Nothing is written and nothing is held while Armed: the keys pass through
-/// and are counted in the ledger (R1); a line end is judged by R2. It replaces, behind
-/// `PHOSPHOR_SUBSHELL_READY`, the first-prompt-shape wait (`AwaitingSubshellPrompt`) and the
-/// deferral behind an input prompt (`DeferredSubshellSetup`).
+/// and are counted in the ledger (R1); a line end is judged by R2. It replaced the
+/// first-prompt-shape wait and the deferral behind an input prompt (#1032, #1354; both deleted
+/// with their rollback switch, #1814).
 struct ArmedSubshellSetup {
     trigger: SubshellPromptTrigger,
     /// The block the trigger was armed in; another block in front is E-GONE.
@@ -3796,13 +3779,7 @@ pub struct TerminalView {
     /// An ssh warpify write waiting for the shell's line to be ended, with the block it was for
     /// (#1562). Resumed by the hand-off's change and by output, never by a timer.
     ssh_warpify_deferred: Option<(DeferredSshWarpify, BlockId)>,
-    /// A subshell bootstrap trigger (auto-warpify, rc-file) waiting for the subshell's first
-    /// prompt (#1354). At most one: a newer trigger replaces an older one, so a subshell is
-    /// bootstrapped once.
-    awaiting_subshell_prompt: Option<AwaitingSubshellPrompt>,
-    awaiting_subshell_prompt_id: u64,
-    /// #1679 step 3: the readiness-judged subshell setup (`PHOSPHOR_SUBSHELL_READY`, on by
-    /// default). Idle on the old path.
+    /// #1679 step 3: the readiness-judged subshell setup.
     subshell_setup_state: SubshellSetupState,
     /// Bumped per written attempt; a confirmation timer acts only for its own value.
     subshell_setup_generation: u64,
@@ -5619,8 +5596,6 @@ impl TerminalView {
             subshell_setup_waiting_toast_id: None,
             subshell_setup_deferred: None,
             ssh_warpify_deferred: None,
-            awaiting_subshell_prompt: None,
-            awaiting_subshell_prompt_id: 0,
             subshell_setup_state: SubshellSetupState::Idle,
             subshell_setup_generation: 0,
             last_subshell_setup_session_id: None,
@@ -15724,12 +15699,6 @@ impl TerminalView {
         if let Some(tx) = &self.fullscreen_output_signal {
             let _ = tx.try_send(());
         }
-        // #1354: the bootstrap steps that used to wait a fixed time are judged on the output that
-        // can release them: the subshell's first prompt, the setup-line marker of the line just
-        // typed, the answer to a prompt a setup waits behind.
-        if self.awaiting_subshell_prompt.is_some() {
-            self.check_awaiting_subshell_prompt(ctx);
-        }
         // #1679 step 3: output is an event the readiness judge samples on (one look, one model
         // lock); a tmux control-mode setup waiting for the alt screen / the line is re-judged too.
         self.judge_subshell_setup_on_event("output", ctx);
@@ -16077,83 +16046,6 @@ impl TerminalView {
         (grid.len(), cursor.row, cursor.col)
     }
 
-    /// Whether the active block's output has a prompt on its last line that was drawn after
-    /// `baseline` was taken: the cursor moved and sits in unterminated text. This is how the first
-    /// prompt of a not-yet-bootstrapped subshell is seen (#1354); no hook reports it.
-    fn active_output_shows_prompt_after(&self, baseline: (usize, usize, usize)) -> bool {
-        let position = self.active_output_position();
-        position != baseline && position.2 > 0
-    }
-
-    /// Arms a bootstrap trigger to fire at the subshell's first prompt; returns its id for the
-    /// give-up timer. A trigger armed earlier is replaced: one subshell, one bootstrap.
-    fn arm_awaiting_subshell_prompt(
-        &mut self,
-        trigger: SubshellPromptTrigger,
-        _ctx: &mut ViewContext<Self>,
-    ) -> u64 {
-        self.awaiting_subshell_prompt_id += 1;
-        let id = self.awaiting_subshell_prompt_id;
-        let block_id = self.model.lock().block_list().active_block().id().clone();
-        let baseline = self.active_output_position();
-        self.awaiting_subshell_prompt = Some(AwaitingSubshellPrompt {
-            trigger,
-            block_id,
-            baseline,
-            id,
-        });
-        id
-    }
-
-    /// Output arrived while a trigger waits for the subshell's first prompt: fires it if the
-    /// prompt is there.
-    fn check_awaiting_subshell_prompt(&mut self, ctx: &mut ViewContext<Self>) {
-        let Some(awaiting) = self.awaiting_subshell_prompt.as_ref() else {
-            return;
-        };
-        let id = awaiting.id;
-        if self.model.lock().block_list().active_block().id() != &awaiting.block_id {
-            // The subshell's command is over (or another block took over).
-            self.awaiting_subshell_prompt = None;
-            return;
-        }
-        if self.active_output_shows_prompt_after(awaiting.baseline) {
-            self.fire_awaiting_subshell_prompt(id, "first prompt", ctx);
-        }
-    }
-
-    /// Runs the trigger armed as `id`, once: a prompt, the give-up net and a replaced trigger
-    /// all end up here, and only the first for the current arming does anything.
-    fn fire_awaiting_subshell_prompt(&mut self, id: u64, why: &str, ctx: &mut ViewContext<Self>) {
-        if self.awaiting_subshell_prompt.as_ref().map(|a| a.id) != Some(id) {
-            return;
-        }
-        let Some(awaiting) = self.awaiting_subshell_prompt.take() else {
-            return;
-        };
-        if why != "first prompt" {
-            log::warn!("Subshell bootstrap started by the {why}: no prompt was seen");
-        }
-        if self.model.lock().block_list().active_block().id() != &awaiting.block_id {
-            return;
-        }
-        match awaiting.trigger {
-            SubshellPromptTrigger::AutoWarpify { shell_type } => {
-                self.warpify_state.abort_auto_warpify();
-                self.trigger_subshell_bootstrap(Some(shell_type), false, ctx);
-            }
-            SubshellPromptTrigger::RcFile {
-                shell_type,
-                uname,
-                disable_tmux,
-            } => self.start_rc_file_subshell_bootstrap(shell_type, uname, disable_tmux, ctx),
-            // Only the readiness path arms a banner trigger; it never reaches here.
-            SubshellPromptTrigger::Banner { shell_type } => {
-                self.trigger_subshell_bootstrap(shell_type, false, ctx)
-            }
-        }
-    }
-
     /// The subshell whose rc file reported itself is ready for its bootstrap (#1354).
     fn start_rc_file_subshell_bootstrap(
         &mut self,
@@ -16200,33 +16092,9 @@ impl TerminalView {
     ) {
         self.dismiss_warpify_banner(&RememberForWarpification::DoNotRememberSubshellCommand, ctx);
 
-        // #1679 step 3: on the readiness path the judge made the checks below (a prompt for
-        // input, a dirty line) before saying Write, and a stage-2 write after `InitSubshell`
-        // follows a line the shell provably read: the write goes now.
-        if self.subshell_ready_path() {
-            self.trigger_subshell_bootstrap_now(shell_type, triggered_by_rc_file_snippet, ctx);
-            return;
-        }
-        // #1032: a shell that is asking for something (an rc file's `read -s "pw?Password: "`)
-        // would take the setup text as the answer, and the real answer typed next would land in
-        // the input editor. Write nothing until the prompt is answered. A trigger while setup is
-        // already waiting is the same request again.
-        if self.subshell_setup_deferred.is_some() {
-            return;
-        }
-        if let Some(prompt_line) = self.active_output_input_prompt_line() {
-            log::info!("Deferring subshell setup behind an input prompt ({prompt_line:?})");
-            self.defer_subshell_setup(shell_type, triggered_by_rc_file_snippet, false, ctx);
-            return;
-        }
-        // #1562: keys delivered to this shell's prompt sit in its line; the setup text would be
-        // appended to them. Wait for the line to end (Enter, ^U), by that event.
-        if self.setup_write_must_wait_for_the_line() {
-            log::info!("setup write deferred: the shell's line holds typed text");
-            self.defer_subshell_setup(shell_type, triggered_by_rc_file_snippet, true, ctx);
-            self.show_setup_waits_for_line_toast(ctx);
-            return;
-        }
+        // The readiness judge made the checks (a prompt for input, a dirty line) before saying
+        // Write, and a stage-2 write after `InitSubshell` follows a line the shell provably
+        // read: the write goes now.
         self.trigger_subshell_bootstrap_now(shell_type, triggered_by_rc_file_snippet, ctx);
     }
 
@@ -19099,32 +18967,13 @@ impl TerminalView {
                     } else if let Some(shell_type) = self.pending_auto_bootstrap_shell_type.take() {
                         // If there is a subshell we're waiting to bootstrap until we receive
                         // the preexec hook, now we can bootstrap it.
-                        if self.subshell_ready_path() {
-                            // #1679 step 3: the setup is written when the judge proves the
-                            // subshell's reader ready (an event), never on the prompt's shape or
-                            // a give-up timer.
-                            self.arm_subshell_setup(
-                                SubshellPromptTrigger::AutoWarpify { shell_type },
-                                ctx,
-                            );
-                        } else {
-                            // #1354: bootstrap when the subshell draws its first prompt, however
-                            // long that takes; the timer is only the give-up net for a prompt
-                            // that never reads as one.
-                            let id = self.arm_awaiting_subshell_prompt(
-                                SubshellPromptTrigger::AutoWarpify { shell_type },
-                                ctx,
-                            );
-                            let auto_warpify_abort_handle = ctx.spawn_abortable(
-                                Timer::after(SUBSHELL_FIRST_PROMPT_GIVE_UP),
-                                move |me, _, ctx| {
-                                    me.fire_awaiting_subshell_prompt(id, "give-up timer", ctx);
-                                },
-                                |_, _| (),
-                            );
-                            self.warpify_state
-                                .add_auto_warpify_abort_handle(auto_warpify_abort_handle);
-                        }
+                        // #1679 step 3: the setup is written when the judge proves the
+                        // subshell's reader ready (an event), never on the prompt's shape or
+                        // a give-up timer.
+                        self.arm_subshell_setup(
+                            SubshellPromptTrigger::AutoWarpify { shell_type },
+                            ctx,
+                        );
                     } else {
                         // Wait 1 second before showing the banner, just to make sure the
                         // command stays running for a bit. If the command fails instantly,
@@ -19221,13 +19070,6 @@ impl TerminalView {
                 // future already resolved, abort has no effect. We handle this as early as possible
                 // because the abort is time sensitive.
                 self.warpify_state.abort_auto_warpify();
-                if self
-                    .awaiting_subshell_prompt
-                    .as_ref()
-                    .is_some_and(|a| matches!(a.trigger, SubshellPromptTrigger::AutoWarpify { .. }))
-                {
-                    self.awaiting_subshell_prompt = None;
-                }
                 // Review F2: a subshell that exited during its setup ends the setup and its net.
                 self.end_subshell_setup_if_block_gone(ctx);
                 // #1679 step 3: the same for an armed auto-warpify attempt (the judge would say
@@ -20022,38 +19864,16 @@ impl TerminalView {
                 let uname = event.uname.clone();
                 let disable_tmux = event.tmux == Some(false);
 
-                if self.subshell_ready_path() {
-                    // #1679 step 3: the bootstrap goes in when the judge proves the subshell's
-                    // reader ready, not at the first prompt shape.
-                    self.arm_subshell_setup(
-                        SubshellPromptTrigger::RcFile {
-                            shell_type,
-                            uname,
-                            disable_tmux,
-                        },
-                        ctx,
-                    );
-                } else {
-                    // #1354: other commands in the rc file ("poetry shell" sourcing a venv) run
-                    // before the subshell shows its prompt; the bootstrap goes in at that prompt
-                    // instead of 100 ms after the snippet. The timer is only the give-up net.
-                    let id = self.arm_awaiting_subshell_prompt(
-                        SubshellPromptTrigger::RcFile {
-                            shell_type,
-                            uname,
-                            disable_tmux,
-                        },
-                        ctx,
-                    );
-                    let _ = ctx.spawn(
-                        async {
-                            warpui::r#async::Timer::after(SUBSHELL_FIRST_PROMPT_GIVE_UP).await
-                        },
-                        move |me, _, ctx| {
-                            me.fire_awaiting_subshell_prompt(id, "give-up timer", ctx)
-                        },
-                    );
-                }
+                // #1679 step 3: the bootstrap goes in when the judge proves the subshell's
+                // reader ready, not at the first prompt shape.
+                self.arm_subshell_setup(
+                    SubshellPromptTrigger::RcFile {
+                        shell_type,
+                        uname,
+                        disable_tmux,
+                    },
+                    ctx,
+                );
             }
             ModelEvent::PromptUpdated => {
                 self.input.update(ctx, |input, ctx| {
@@ -23305,12 +23125,6 @@ impl TerminalView {
 
     // ---- #1679 step 3 (C3b): the readiness-judged subshell setup --------------------------------
 
-    /// Whether the subshell setup is written on the readiness judge (`PHOSPHOR_SUBSHELL_READY`,
-    /// on by default) rather than on the first prompt shape / the deferral behind a prompt.
-    fn subshell_ready_path(&self) -> bool {
-        crate::terminal::bootstrap::subshell_ready_enabled()
-    }
-
     /// One look at the pane for the judge, under one model lock (R10). The tail is classified
     /// here: no visible text or the cursor at column 0 is `None`; unterminated text that asks for
     /// input is `InputPrompt`; any other unterminated text is `ShellPrompt`.
@@ -23967,12 +23781,8 @@ impl TerminalView {
     /// Owner Q11: tmux control mode keeps writing its setup directly (no OS fact exists for the
     /// pane behind tmux and OSC 7771's survival of `%output` is proven for the markers, #1710),
     /// but not into the alt screen and not onto a dirty line: those wait for the next look that
-    /// finds both clear. On the old path, today's call.
+    /// finds both clear.
     fn start_tmux_control_mode_setup(&mut self, ctx: &mut ViewContext<Self>) {
-        if !self.subshell_ready_path() {
-            self.trigger_subshell_bootstrap(None, false, ctx);
-            return;
-        }
         self.tmux_setup_pending = true;
         self.resume_tmux_control_mode_setup(ctx);
     }
@@ -38645,13 +38455,9 @@ impl TypedActionView for TerminalView {
             }
             TriggerSubshellBootstrap => {
                 let shell_type = self.pending_subshell_shell_type(ctx);
-                if self.subshell_ready_path() {
-                    // #1679 step 3: the click arms the attempt and judges at once; the write
-                    // waits for the proof like every other trigger.
-                    self.arm_subshell_setup_from_banner(shell_type, ctx);
-                } else {
-                    self.trigger_subshell_bootstrap(shell_type, false, ctx);
-                }
+                // #1679 step 3: the click arms the attempt and judges at once; the write
+                // waits for the proof like every other trigger.
+                self.arm_subshell_setup_from_banner(shell_type, ctx);
             }
             ShowSubshellBanner(command) => {
                 // Abort handle is no longer needed since we've waited the 1s already.

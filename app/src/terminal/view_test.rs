@@ -17375,113 +17375,6 @@ fn split_first_held_line_cuts_at_the_first_enter() {
     );
 }
 
-/// #1032: a shell showing a prompt for input (`Password: `) gets none of the setup text. Typing
-/// goes straight to the pty as the answer; once the answer was sent and the output is quiet, the
-/// setup is written.
-/// Not compiled/run when written (no builds in the fix pass).
-#[test]
-fn subshell_setup_waits_behind_a_password_prompt_until_it_is_answered() {
-    App::test((), |mut app| async move {
-        initialize_app_for_terminal_view(&mut app);
-        let terminal = add_window_with_terminal(&mut app, None);
-        let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
-        let writes = pty_writes.clone();
-        app.update(|ctx| {
-            ctx.subscribe_to_view(&terminal, move |_, event, _| {
-                if let Event::WriteBytesToPty { bytes } = event {
-                    writes.borrow_mut().push(bytes.to_vec());
-                }
-            });
-        });
-        // Pty writes are delivered as events after each update, so every check on them is
-        // made after the update that caused them.
-        let written = |writes: &Rc<RefCell<Vec<Vec<u8>>>>| -> Vec<u8> {
-            writes.borrow().iter().flatten().copied().collect()
-        };
-        let since = terminal.update(&mut app, |view, ctx| {
-            view.model
-                .lock()
-                .simulate_long_running_block("zsh", "Password: ");
-            view.trigger_subshell_bootstrap(Some(ShellType::Zsh), false, ctx);
-            assert!(view.subshell_setup_deferred.is_some(), "setup is deferred");
-            assert!(view.subshell_bootstrap_announced.is_none());
-            view.subshell_setup_deferred.as_ref().unwrap().since
-        });
-        assert!(
-            written(&pty_writes).is_empty(),
-            "no setup text reaches the prompt"
-        );
-
-        // Polling without an answer never writes, however long it has been quiet.
-        terminal.update(&mut app, |view, ctx| {
-            if let Some(d) = view.subshell_setup_deferred.as_mut() {
-                d.unchanged_since = Instant::now() - Duration::from_secs(5);
-            }
-            view.poll_deferred_subshell_setup(since, ctx);
-        });
-        assert!(
-            written(&pty_writes).is_empty(),
-            "an unanswered prompt still gets nothing"
-        );
-
-        // The user's password goes to the pty untouched and counts as the answer. Typed as the
-        // user types: the text, then Enter. (One "secret\r" chunk would run into the #933
-        // young-command Enter hold, which the just-created test block is subject to.)
-        terminal.update(&mut app, |view, ctx| {
-            assert!(view.write_user_bytes_to_pty(b"secret".to_vec(), ctx));
-        });
-        assert_eq!(
-            written(&pty_writes),
-            b"secret",
-            "the answer reaches the pty untouched"
-        );
-        terminal.update(&mut app, |view, ctx| {
-            view.write_user_bytes_to_pty(b"\r".to_vec(), ctx);
-            assert!(
-                view.subshell_setup_deferred
-                    .as_ref()
-                    .unwrap()
-                    .answered_at
-                    .is_some(),
-                "the Enter answers the prompt"
-            );
-        });
-        pty_writes.borrow_mut().clear();
-
-        // Quiet since the answer: now the setup goes out.
-        terminal.update(&mut app, |view, ctx| {
-            if let Some(d) = view.subshell_setup_deferred.as_mut() {
-                d.unchanged_since = Instant::now() - Duration::from_secs(5);
-            }
-            view.poll_deferred_subshell_setup(since, ctx);
-            assert!(view.subshell_setup_deferred.is_none());
-        });
-        assert!(
-            !written(&pty_writes).is_empty(),
-            "setup is written after the answer"
-        );
-    })
-}
-
-/// #1032: Ctrl-C while setup waits behind a prompt skips the setup; nothing is written for it.
-/// Not compiled/run when written (no builds in the fix pass).
-#[test]
-fn ctrl_c_skips_a_deferred_subshell_setup() {
-    App::test((), |mut app| async move {
-        initialize_app_for_terminal_view(&mut app);
-        let terminal = add_window_with_terminal(&mut app, None);
-        terminal.update(&mut app, |view, ctx| {
-            view.model
-                .lock()
-                .simulate_long_running_block("zsh", "Enter passphrase: ");
-            view.trigger_subshell_bootstrap(Some(ShellType::Zsh), false, ctx);
-            assert!(view.subshell_setup_deferred.is_some());
-            view.write_user_bytes_to_pty(vec![0x03], ctx);
-            assert!(view.subshell_setup_deferred.is_none());
-        });
-    })
-}
-
 /// #1032: what counts as a prompt for input, and when a deferred setup may go out.
 #[test]
 fn input_prompt_detection_and_deferred_setup_readiness() {
@@ -25647,21 +25540,20 @@ fn powershell_abort_settle_ends_on_the_read_marker_not_the_clock() {
     })
 }
 
-/// #1354: the bootstrap of an auto-warpified subshell goes in at the subshell's first prompt, however
-/// long that takes -- a subshell slower than the old fixed 1 s still gets it, once, after its
-/// prompt, and nothing before.
+/// #1354 (ported to the judge, #1814): the bootstrap of an auto-warpified subshell is written on
+/// the shell's proof, however long that takes -- a subshell slower than the old fixed 1 s still
+/// gets it, once, and nothing before. Time and a finished line write nothing.
 #[test]
-fn subshell_bootstrap_waits_for_the_first_prompt_however_long_it_takes() {
+fn subshell_bootstrap_waits_for_the_shells_proof_however_long_it_takes() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::ToastStack);
         let terminal = add_window_with_terminal(&mut app, None);
         let pty_writes = collect_pty_writes(&mut app, &terminal);
         // The model's startup events (the bootstrap block's `AfterBlockCompleted`) are still queued
-        // on the view's channel. That handler disarms a waiting auto-warpify (the subshell's
-        // command "is over"), so arming before it ran would lose the trigger to an event that
-        // precedes the subshell; in a real session the bootstrap finished long before. Wait for
-        // those events by EVENT, not by time: a marker sent through the same FIFO channel is
-        // dispatched after everything queued before it.
+        // on the view's channel; that handler ends an attempt whose block is gone. Wait for them
+        // by EVENT, not by time: a marker sent through the same FIFO channel is dispatched after
+        // everything queued before it.
         let dispatcher = terminal.read(&app, |view, _| view.model_events_handle.clone());
         let (marker_tx, marker_rx) = futures::channel::oneshot::channel::<()>();
         let marker_tx = RefCell::new(Some(marker_tx));
@@ -25681,84 +25573,131 @@ fn subshell_bootstrap_waits_for_the_first_prompt_however_long_it_takes() {
                 .send_terminal_event(crate::terminal::event::Event::CursorBlinkingChange(false));
         });
         marker_rx.await.expect("the marker event is dispatched");
-        terminal.update(&mut app, |view, ctx| {
+        let tty = terminal.update(&mut app, |view, ctx| {
             view.model.lock().simulate_long_running_block("bash", "");
-            view.arm_awaiting_subshell_prompt(
+            let tty = install_subshell_tty_for_test(view, SubshellTtySample::unknown());
+            view.arm_subshell_setup(
                 SubshellPromptTrigger::AutoWarpify {
                     shell_type: ShellType::Bash,
                 },
                 ctx,
             );
+            tty
         });
         // Slower than the old AUTO_WARPIFY_DELAY, silent: nothing is written.
         warpui::r#async::Timer::after(Duration::from_millis(1200)).await;
         terminal.update(&mut app, |view, ctx| {
-            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            output_wakeup(view, ctx);
+            assert_eq!(readiness_state(view), "armed");
         });
-        assert!(pty_writes.borrow().is_empty(), "no prompt yet");
+        assert!(pty_writes.borrow().is_empty(), "no proof yet");
 
-        // A banner line that ends in a newline is not a prompt.
+        // A banner line that ends in a newline is no prompt, and no proof either.
         terminal.update(&mut app, |view, ctx| {
             view.model.lock().process_bytes("loading profile\r\n");
-            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            output_wakeup(view, ctx);
+            assert_eq!(readiness_state(view), "armed");
         });
         assert!(
             pty_writes.borrow().is_empty(),
-            "a finished line is no prompt"
+            "a finished line is no proof"
         );
 
-        // The prompt: the bootstrap goes in.
+        // The prompt and the reading line editor: the bootstrap goes in.
         terminal.update(&mut app, |view, ctx| {
             view.model.lock().process_bytes("bash-5.1$ ");
-            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            *tty.lock() = bash_reading();
+            output_wakeup(view, ctx);
+            assert_eq!(readiness_state(view), "written");
         });
-        assert!(!pty_writes.borrow().is_empty(), "bootstrap at the prompt");
-        let after_prompt = pty_writes.borrow().len();
+        assert!(!pty_writes.borrow().is_empty(), "bootstrap on the proof");
+        let after_proof = pty_writes.borrow().len();
 
         // Exactly once: more output does not start a second one.
         terminal.update(&mut app, |view, ctx| {
             view.model.lock().process_bytes("x");
-            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
-            assert!(view.awaiting_subshell_prompt.is_none());
+            output_wakeup(view, ctx);
         });
-        assert_eq!(pty_writes.borrow().len(), after_prompt);
+        assert_eq!(pty_writes.borrow().len(), after_proof);
     })
 }
 
-/// #1354: a deferred setup (the shell showed `Password:`) is released by the output that shows the
-/// prompt gone after the answer -- an output event -- not by the next 250 ms poll.
+/// #1032 / #1354 (ported to the judge, #1814): a shell showing `Password:` gets none of the setup
+/// text. The typed answer reaches the pty untouched in Legacy and Table, a Ctrl-C keeps the attempt
+/// armed (an empty line is a re-arm, not a cancel), and the setup is written at the prompt that
+/// follows, when the line editor reads -- an output event, no poll.
 #[test]
-fn deferred_subshell_setup_is_released_by_the_output_after_the_answer() {
-    App::test((), |mut app| async move {
-        initialize_app_for_terminal_view(&mut app);
-        let terminal = add_window_with_terminal(&mut app, None);
-        let pty_writes = collect_pty_writes(&mut app, &terminal);
-        terminal.update(&mut app, |view, ctx| {
-            view.model
-                .lock()
-                .simulate_long_running_block("zsh", "Password: ");
-            view.trigger_subshell_bootstrap(Some(ShellType::Zsh), false, ctx);
-            assert!(view.subshell_setup_deferred.is_some());
-            view.write_user_bytes_to_pty(b"secret".to_vec(), ctx);
-        });
-        terminal.update(&mut app, |view, ctx| {
-            view.write_user_bytes_to_pty(b"\r".to_vec(), ctx);
-        });
-        pty_writes.borrow_mut().clear();
-        terminal.update(&mut app, |view, ctx| {
-            // The shell took the answer and printed its prompt; no poll runs here.
-            view.model.lock().process_bytes("\r\nme@host ~ % ");
-            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+fn a_password_prompt_gets_none_of_the_setup_and_the_prompt_after_it_does() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let written = subshell_pty_writes(&mut app, &terminal);
+            let tty = terminal.update(&mut app, |view, ctx| {
+                view.model
+                    .lock()
+                    .simulate_long_running_block("zsh", "Password: ");
+                let tty = install_subshell_tty_for_test(view, secret_read());
+                view.arm_subshell_setup(
+                    SubshellPromptTrigger::Banner {
+                        shell_type: Some(ShellType::Zsh),
+                    },
+                    ctx,
+                );
+                output_wakeup(view, ctx);
+                assert_eq!(readiness_state(view), "armed", "{mode:?}");
+                tty
+            });
             assert!(
-                view.subshell_setup_deferred.is_none(),
-                "released by the output"
+                written.borrow().is_empty(),
+                "{mode:?}: nothing at the prompt"
             );
-        });
-        assert!(
-            !pty_writes.borrow().is_empty(),
-            "setup written after the answer"
-        );
-    })
+            terminal.update(&mut app, |view, ctx| {
+                assert!(view.write_user_bytes_to_pty(b"secret".to_vec(), ctx));
+            });
+            assert_eq!(
+                String::from_utf8_lossy(&written.borrow()),
+                "secret",
+                "{mode:?}: the answer reaches the pty untouched"
+            );
+            terminal.update(&mut app, |view, ctx| {
+                assert!(view.write_user_bytes_to_pty(b"\r".to_vec(), ctx));
+                assert_eq!(
+                    readiness_state(view),
+                    "armed",
+                    "{mode:?}: the answer re-arms"
+                );
+            });
+            terminal.update(&mut app, |view, ctx| {
+                view.write_user_bytes_to_pty(vec![0x03], ctx);
+                assert_eq!(readiness_state(view), "armed", "{mode:?}: ^C re-arms");
+            });
+            assert!(
+                !String::from_utf8_lossy(&written.borrow()).contains("__hc0"),
+                "{mode:?}: nothing of the setup before the prompt"
+            );
+            let before = written.borrow().len();
+            terminal.update(&mut app, |view, ctx| {
+                view.model.lock().process_bytes("\r\nme@host ~ % ");
+                *tty.lock() = tty_sample(
+                    SubshellTtyKind::LineReader,
+                    LeaderKind::Shell,
+                    "zsh",
+                    false,
+                    Some(true),
+                );
+                output_wakeup(view, ctx);
+                assert_eq!(readiness_state(view), "written", "{mode:?}");
+            });
+            assert!(
+                written.borrow().len() > before,
+                "{mode:?}: written at the prompt after the answer"
+            );
+        })
+    }
 }
 
 /// #1354: the deferred-setup checks read only the end of the output; they used to copy all of it
@@ -32069,7 +32008,6 @@ fn subshell_setup_is_written_on_the_shells_proof_not_on_the_prompt_shape() {
     use crate::terminal::input_queue::DestinationMode;
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
-            let _ready = crate::terminal::bootstrap::set_subshell_ready_for_test(true);
             let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
             initialize_app_for_terminal_view(&mut app);
             app.add_singleton_model(|_| crate::ToastStack);
@@ -32110,10 +32048,6 @@ fn subshell_setup_is_written_on_the_shells_proof_not_on_the_prompt_shape() {
                     view.subshell_setup_net.is_some(),
                     "{mode:?}: the net is armed"
                 );
-                assert!(
-                    view.awaiting_subshell_prompt.is_none(),
-                    "{mode:?}: old path idle"
-                );
             });
             assert!(
                 !written.borrow().is_empty(),
@@ -32139,7 +32073,6 @@ fn rc_questions_re_arm_the_setup_and_the_answers_never_write_it() {
     use crate::terminal::input_queue::DestinationMode;
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
-            let _ready = crate::terminal::bootstrap::set_subshell_ready_for_test(true);
             let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
             initialize_app_for_terminal_view(&mut app);
             app.add_singleton_model(|_| crate::ToastStack);
@@ -32216,7 +32149,6 @@ fn rc_questions_re_arm_the_setup_and_the_answers_never_write_it() {
 #[test]
 fn a_users_own_command_cancels_the_armed_setup_and_nothing_is_written() {
     App::test((), |mut app| async move {
-        let _ready = crate::terminal::bootstrap::set_subshell_ready_for_test(true);
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::ToastStack);
         let terminal = add_window_with_terminal(&mut app, None);
@@ -32265,7 +32197,6 @@ fn a_users_own_command_cancels_the_armed_setup_and_nothing_is_written() {
 #[test]
 fn vim_typeahead_waits_through_the_alt_screen_and_the_setup_follows_it() {
     App::test((), |mut app| async move {
-        let _ready = crate::terminal::bootstrap::set_subshell_ready_for_test(true);
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::ToastStack);
         let terminal = add_window_with_terminal(&mut app, None);
@@ -32322,7 +32253,6 @@ fn e_secret_hands_the_held_keys_back_in_the_same_wakeup_and_re_arms() {
     use crate::terminal::input_queue::DestinationMode;
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
-            let _ready = crate::terminal::bootstrap::set_subshell_ready_for_test(true);
             let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
             initialize_app_for_terminal_view(&mut app);
             app.add_singleton_model(|_| crate::ToastStack);
@@ -32415,7 +32345,6 @@ fn e_question_cancels_and_later_keys_reach_the_pty_in_order_in_both_modes() {
         let list: Rc<RefCell<Vec<u8>>> = Rc::new(RefCell::new(Vec::new()));
         let sink = list.clone();
         App::test((), move |mut app| async move {
-            let _ready = crate::terminal::bootstrap::set_subshell_ready_for_test(true);
             let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
             initialize_app_for_terminal_view(&mut app);
             app.add_singleton_model(|_| crate::ToastStack);
@@ -32481,7 +32410,6 @@ fn e_question_cancels_and_later_keys_reach_the_pty_in_order_in_both_modes() {
 #[test]
 fn e_unsupported_is_stream_ordered_and_delivers_the_held_keys_at_the_fresh_prompt() {
     App::test((), |mut app| async move {
-        let _ready = crate::terminal::bootstrap::set_subshell_ready_for_test(true);
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::ToastStack);
         let terminal = add_window_with_terminal(&mut app, None);
@@ -32567,7 +32495,6 @@ fn e_unsupported_is_stream_ordered_and_delivers_the_held_keys_at_the_fresh_promp
 #[test]
 fn a_marker_between_the_echo_and_the_prompt_keeps_the_written_attempt() {
     App::test((), |mut app| async move {
-        let _ready = crate::terminal::bootstrap::set_subshell_ready_for_test(true);
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::ToastStack);
         let terminal = add_window_with_terminal(&mut app, None);
@@ -32758,7 +32685,6 @@ fn autonomy_max_still_waits_for_the_answer() {
 #[test]
 fn the_banner_click_arms_and_the_pre_ready_ceiling_cancels_without_writing() {
     App::test((), |mut app| async move {
-        let _ready = crate::terminal::bootstrap::set_subshell_ready_for_test(true);
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::ToastStack);
         let terminal = add_window_with_terminal(&mut app, None);
@@ -32799,7 +32725,6 @@ fn the_banner_click_arms_and_the_pre_ready_ceiling_cancels_without_writing() {
 #[test]
 fn a_relay_writes_on_its_first_prompt_only_with_a_raw_local_tty() {
     App::test((), |mut app| async move {
-        let _ready = crate::terminal::bootstrap::set_subshell_ready_for_test(true);
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::ToastStack);
         let terminal = add_window_with_terminal(&mut app, None);
@@ -32839,7 +32764,6 @@ fn a_relay_writes_on_its_first_prompt_only_with_a_raw_local_tty() {
 #[test]
 fn an_rc_file_trigger_writes_for_its_shell_once_ready() {
     App::test((), |mut app| async move {
-        let _ready = crate::terminal::bootstrap::set_subshell_ready_for_test(true);
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::ToastStack);
         let terminal = add_window_with_terminal(&mut app, None);
@@ -32890,7 +32814,6 @@ fn an_rc_file_trigger_writes_for_its_shell_once_ready() {
 #[test]
 fn tmux_control_mode_setup_waits_for_the_alt_screen_to_close() {
     App::test((), |mut app| async move {
-        let _ready = crate::terminal::bootstrap::set_subshell_ready_for_test(true);
         initialize_app_for_terminal_view(&mut app);
         let terminal = add_window_with_terminal(&mut app, None);
         let written = subshell_pty_writes(&mut app, &terminal);
@@ -32917,54 +32840,6 @@ fn tmux_control_mode_setup_waits_for_the_alt_screen_to_close() {
             !written.borrow().is_empty(),
             "written once the alt screen closed"
         );
-    })
-}
-
-/// #1679 step 3 (R10): `PHOSPHOR_SUBSHELL_READY=0` restores today's path: a trigger on a
-/// `Password:` prompt defers (the #1032 deferral), the judge's state stays Idle; with the switch
-/// on the trigger writes (the judge is its caller's business).
-#[test]
-fn the_rollback_switch_restores_the_deferral_and_the_first_prompt_path() {
-    App::test((), |mut app| async move {
-        let _ready = crate::terminal::bootstrap::set_subshell_ready_for_test(false);
-        initialize_app_for_terminal_view(&mut app);
-        let terminal = add_window_with_terminal(&mut app, None);
-        let written = subshell_pty_writes(&mut app, &terminal);
-        terminal.update(&mut app, |view, ctx| {
-            view.model
-                .lock()
-                .simulate_long_running_block("zsh", "Password: ");
-            view.trigger_subshell_bootstrap(Some(ShellType::Zsh), false, ctx);
-            assert!(view.subshell_setup_deferred.is_some(), "the old deferral");
-            assert_eq!(readiness_state(view), "idle");
-            view.subshell_setup_deferred = None;
-            // The old first-prompt arming is what the auto path uses.
-            view.arm_awaiting_subshell_prompt(
-                SubshellPromptTrigger::AutoWarpify {
-                    shell_type: ShellType::Zsh,
-                },
-                ctx,
-            );
-            assert!(view.awaiting_subshell_prompt.is_some());
-        });
-        assert!(written.borrow().is_empty());
-    });
-    App::test((), |mut app| async move {
-        let _ready = crate::terminal::bootstrap::set_subshell_ready_for_test(true);
-        initialize_app_for_terminal_view(&mut app);
-        let terminal = add_window_with_terminal(&mut app, None);
-        let written = subshell_pty_writes(&mut app, &terminal);
-        terminal.update(&mut app, |view, ctx| {
-            view.model
-                .lock()
-                .simulate_long_running_block("zsh", "Password: ");
-            view.trigger_subshell_bootstrap(Some(ShellType::Zsh), false, ctx);
-            assert!(
-                view.subshell_setup_deferred.is_none(),
-                "no deferral on the new path"
-            );
-        });
-        assert!(!written.borrow().is_empty());
     })
 }
 

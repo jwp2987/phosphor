@@ -97,7 +97,6 @@ app/src/terminal/view.rs	INTERRUPT_SETTLE	owner-named: 250 ms after ^C commits t
 app/src/terminal/view.rs	SSH_BOOTSTRAP_SWALLOW_CEILING	FOUND: typing is DROPPED while an ssh bootstrap is pending and keys pass through after 15 s (age-based route/drop)
 app/src/terminal/view.rs	SSH_CONNECT_SILENCE_CEILING	FOUND: age < 15 s decides whether the ssh connect window arms and keys are held; after it every key goes to the pty (age-based route); also the gate's give-up ceiling
 app/src/terminal/view.rs	SSH_LOGIN_RECHECK_GIVE_UP	FOUND: 3 s of quiet output after non-prompt ssh output is taken as 'login done' (state decision on a timer; warpify follows)
-app/src/terminal/view.rs	SUBSHELL_FIRST_PROMPT_GIVE_UP	FOUND: 5 s 'give-up timer' fires the awaiting subshell bootstrap, i.e. writes it (legacy path when subshell_ready_path() is off)
 app/src/terminal/view.rs	SUBSHELL_SETUP_DEFER_POLL	FOUND: 250 ms poll re-asking whether the prompt a deferred setup waits behind was answered
 app/src/terminal/view.rs	SUBSHELL_SETUP_DEFER_QUIET	FOUND: 600 ms unchanged-output clock before the deferred subshell setup is written
 app/src/terminal/view.rs	arm_young_timer	FOUND: young-detection timer; on a reached compute cap it finishes the wait and submits the deferred Enter by the Enter-time rules (commits on a timer)
