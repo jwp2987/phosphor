@@ -1,0 +1,27 @@
+{
+ "meta": {
+  "platform": "windows",
+  "backend": "windows",
+  "commit": "b964572f"
+ },
+ "generated": "2026-11-09T04:59:18-0800",
+ "summary": {
+  "pass": 1,
+  "fail": 0,
+  "skip": 0,
+  "noref": 0
+ },
+ "cases": [
+  {
+   "name": "restore",
+   "mode": "-",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "all 10 restore steps ok (data md5 identical, version v0.1.15, PATH/handler/uninstall/shortcuts restored)"
+   ],
+   "metrics": {},
+   "shots": []
+  }
+ ]
+}

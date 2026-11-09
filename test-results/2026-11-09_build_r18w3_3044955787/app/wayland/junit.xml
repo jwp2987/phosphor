@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-linux-wayland" tests="38" failures="3" skipped="4">
+<testcase classname="terminal" name="mode_proof" time="2.10">
+</testcase>
+<testcase classname="terminal" name="cadence" time="6.30">
+</testcase>
+<testcase classname="terminal" name="key_loss_control" time="88.90">
+</testcase>
+<testcase classname="terminal" name="enter_loss_control" time="62.70">
+</testcase>
+<testcase classname="terminal" name="fast_typing" time="56.60">
+</testcase>
+<testcase classname="terminal" name="paste_instant_enter" time="6.40">
+</testcase>
+<testcase classname="terminal" name="tab_enter" time="19.00">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_d" time="429.10">
+</testcase>
+<testcase classname="terminal" name="ssh_connect_typing" time="32.00">
+</testcase>
+<testcase classname="terminal" name="ssh_enter_then_immediate_command" time="8.30">
+</testcase>
+<testcase classname="terminal" name="ssh_nested_typeahead" time="34.30">
+<failure message="the line typed behind a nested ssh ran exactly once remotely: []">the line typed behind a nested ssh ran exactly once remotely: []
+ssh_nested_typeahead (inner): T243_27i1iv never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: debug1: Received SIGCHLD. | debug1: session_by_pid: pid 1452540 | debug1: session_exit_message: session 5 channel 3 pid 1452540 exit 1 | debug1: session_exit_message: release channel 3 | debug1: session_by_channel: session 5 channel 3 | debug1: session_close_by_channel: channel 3 child 0 | Close session: user gitlab-runner from 127.0.0.1 port 50002 id 5 | debug1: channel 3: free: server-session, nchannels 2; test sshd (openssh) listening on 127.0.0.1:41437; ssh client probe exit 0: Transferred: sent 3588, received 3556 bytes, in 0.0 seconds | Bytes per second: sent 703659.9, received 697384.2 | debug1: Exit status 0; app ssh hops: [DEBUG] input_order hop=kh_iq_hold seq=11680 queue=Q7_ssh_typeahead bytes=1 t=1794230005351.285 | [DEBUG] input_order hop=kh_iq_hold seq=11681 queue=Q7_ssh_typeahead bytes=1 t=1794230005351.373 | [DEBUG] input_order hop=kh_iq_hold seq=11682 queue=Q7_ssh_typeahead bytes=1 t=1794230005351.428 | [DEBUG] input_order hop=kh_iq_hold seq=11683 queue=Q7_ssh_typeahead bytes=1 t=1794230005351.478 | [DEBUG] input_order hop=kh_iq_hold seq=11684 queue=Q7_ssh_typeahead bytes=1 t=1794230005351.535 | [DEBUG] input_order hop=kh_iq_hold seq=11685 queue=Q7_ssh_typeahead bytes=1 t=1794230005358.993 | [DEBUG] input_order hop=kh_iq_hold seq=11686 queue=Q7_ssh_typeahead bytes=1 t=1794230005375.385 | [DEBUG] input_order hop=kh_iq_hold seq=11687 queue=Q7_ssh_typeahead bytes=1 t=1794230005391.649 | [DEBUG] input_order hop=kh_iq_hold seq=11688 queue=Q7_ssh_typeahead bytes=1 t=1794230005407.945 | [DEBUG] input_order hop=kh_iq_hold seq=11689 queue=Q7_ssh_typeahead bytes=1 t=1794230005424.268
+ssh_nested_typeahead: #1292: the line never reached the remote shell (discards=0 table_drops=0 give_ups=0); held 39 key(s)/39 byte(s), hand-over precmd@17, finish delivered=remote; the app saw every key of the line; remote got None
+ssh trial verdicts: #1292=1
+injector accounting: injector sent 53; app saw 79; lost-before-app 0 (Enter: sent 3, app saw 5); app logged 26 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 2 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="latency_enter" time="159.10">
+</testcase>
+<testcase classname="terminal" name="latency_key_log" time="14.80">
+<skipped message="NO-REFERENCE (not a pass): #1176 key -&gt; pty write median 6.04 ms (p95 6.66, n=60): OVER the 1 ms target"/>
+</testcase>
+<testcase classname="terminal" name="latency_paint" time="0.80">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only; no key-&gt;paint read-back exists on this platform, so there is nothing to compare"/>
+</testcase>
+<testcase classname="terminal" name="routing_table" time="60.50">
+</testcase>
+<testcase classname="terminal" name="agent_mode_switch" time="10.20">
+</testcase>
+<testcase classname="terminal" name="shell_fish" time="28.50">
+</testcase>
+<testcase classname="terminal" name="shell_nu" time="40.60">
+</testcase>
+<testcase classname="terminal" name="md_viewer" time="3.50">
+</testcase>
+<testcase classname="agent" name="mode_proof" time="0.80">
+</testcase>
+<testcase classname="agent" name="cadence" time="6.20">
+</testcase>
+<testcase classname="agent" name="fast_typing" time="57.20">
+</testcase>
+<testcase classname="agent" name="paste_instant_enter" time="6.40">
+</testcase>
+<testcase classname="agent" name="tab_enter" time="18.70">
+</testcase>
+<testcase classname="agent" name="ctrl_c_d" time="436.40">
+</testcase>
+<testcase classname="agent" name="ssh_connect_typing" time="30.00">
+</testcase>
+<testcase classname="agent" name="ssh_enter_then_immediate_command" time="7.90">
+</testcase>
+<testcase classname="agent" name="ssh_nested_typeahead" time="34.00">
+<failure message="the line typed behind a nested ssh ran exactly once remotely: []">the line typed behind a nested ssh ran exactly once remotely: []
+ssh_nested_typeahead (inner): T111_jblqxi never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: debug1: Received SIGCHLD. | debug1: session_by_pid: pid 1478884 | debug1: session_exit_message: session 5 channel 3 pid 1478884 exit 1 | debug1: session_exit_message: release channel 3 | debug1: session_by_channel: session 5 channel 3 | debug1: session_close_by_channel: channel 3 child 0 | Close session: user gitlab-runner from 127.0.0.1 port 47062 id 5 | debug1: channel 3: free: server-session, nchannels 2; test sshd (openssh) listening on 127.0.0.1:47397; ssh client probe exit 0: Transferred: sent 3588, received 3556 bytes, in 0.0 seconds | Bytes per second: sent 306808.0, received 304071.7 | debug1: Exit status 0; app ssh hops: [DEBUG] input_order hop=kh_iq_hold seq=10015 queue=Q7_ssh_typeahead bytes=1 t=1794230940017.533 | [DEBUG] input_order hop=kh_iq_hold seq=10016 queue=Q7_ssh_typeahead bytes=1 t=1794230940032.710 | [DEBUG] input_order hop=kh_iq_hold seq=10017 queue=Q7_ssh_typeahead bytes=1 t=1794230940048.976 | [DEBUG] input_order hop=kh_iq_hold seq=10018 queue=Q7_ssh_typeahead bytes=1 t=1794230940066.240 | [DEBUG] input_order hop=kh_iq_hold seq=10019 queue=Q7_ssh_typeahead bytes=1 t=1794230940081.662 | [DEBUG] input_order hop=kh_iq_hold seq=10020 queue=Q7_ssh_typeahead bytes=1 t=1794230940098.011 | [DEBUG] input_order hop=kh_iq_hold seq=10021 queue=Q7_ssh_typeahead bytes=1 t=1794230940114.385 | [DEBUG] input_order hop=kh_iq_hold seq=10022 queue=Q7_ssh_typeahead bytes=1 t=1794230940130.708 | [DEBUG] input_order hop=kh_iq_hold seq=10023 queue=Q7_ssh_typeahead bytes=1 t=1794230940148.660 | [DEBUG] input_order hop=kh_iq_hold seq=10024 queue=Q7_ssh_typeahead bytes=1 t=1794230940165.037
+ssh_nested_typeahead: #1292: the line never reached the remote shell (discards=0 table_drops=0 give_ups=0); held 39 key(s)/39 byte(s), hand-over precmd@15, finish delivered=remote; the app saw every key of the line; remote got None
+ssh trial verdicts: #1292=1
+injector accounting: injector sent 52; app saw 78; lost-before-app 0 (Enter: sent 3, app saw 5); app logged 26 more than were injected (keys from an earlier case or another source)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 2 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="latency_enter" time="163.90">
+</testcase>
+<testcase classname="agent" name="latency_key_log" time="15.30">
+<skipped message="NO-REFERENCE (not a pass): #1176 key -&gt; pty write median 15.81 ms (p95 16.10, n=60): OVER the 1 ms target"/>
+</testcase>
+<testcase classname="agent" name="latency_paint" time="0.60">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only; no key-&gt;paint read-back exists on this platform, so there is nothing to compare"/>
+</testcase>
+<testcase classname="agent" name="agent_stream_cancel" time="30.90">
+</testcase>
+<testcase classname="agent" name="agent_input_exact" time="7.30">
+</testcase>
+<testcase classname="agent" name="routing_table" time="60.60">
+</testcase>
+<testcase classname="agent" name="agent_mode_switch" time="9.20">
+</testcase>
+<testcase classname="agent" name="shell_fish" time="29.00">
+</testcase>
+<testcase classname="agent" name="shell_nu" time="40.20">
+</testcase>
+<testcase classname="agent" name="md_viewer" time="23.30">
+<failure message="markdown viewer: heading/table text ['phosphormdprobe', 'zebraapple', 'quinceberry'] not visible within 20 s (OCR saw 'orqsearchsessions,agents,files.qsearchtabszx=+o©0aad©xprobedfenderedraw14,pleaseexplainwhythe120.wlcancated~wnd964572108pleaseexplainwhythet120_hywingtestrunifailing,©provedwsoddasphormdprobe‘atphosphoragentvpast=pleaseexplainwhythet120_hyaw“mineintroparagraphwithinlinecodeandalink.=pleaseexplainwhy')">markdown viewer: heading/table text ['phosphormdprobe', 'zebraapple', 'quinceberry'] not visible within 20 s (OCR saw 'orqsearchsessions,agents,files.qsearchtabszx=+o©0aad©xprobedfenderedraw14,pleaseexplainwhythe120.wlcancated~wnd964572108pleaseexplainwhythet120_hywingtestrunifailing,©provedwsoddasphormdprobe‘atphosphoragentvpast=pleaseexplainwhythet120_hyaw“mineintroparagraphwithinlinecodeandalink.=pleaseexplainwhy')
+injector accounting: injector sent 1; app saw 0; lost-before-app 1 (Enter: sent 0, app saw 0)</failure>
+</testcase>
+</testsuite>
