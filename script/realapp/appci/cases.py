@@ -494,6 +494,32 @@ def where_tokens(path, skip=0):
     return raw[skip:].replace(b"\x00", b"").replace(b"\xff\xfe", b"").decode("utf-8", "replace").split()
 
 
+DEPTH_PREFIXES = ("ssh_", "remote_", "subshell", "lab_")
+
+
+def wants_depth_check(name, proving):
+    """does case `name` get the shell-depth probe after it? Every PROVING case plus the families that start nested shells (ssh_, remote_, subshell*, lab_).
+    Cost: one typed probe line (~40 chars at 12 ms/key = ~0.5 s) plus the file poll, ~0.7-1 s per checked case, and one more at the first case after a (re)launch."""
+    return name in proving or name.startswith(DEPTH_PREFIXES)
+
+
+def depth_probe_cmd(pane, tok):
+    """the line that records `tok:<pid of the shell it runs in>` in ~/.appci_pid; None for a pane with no usable syntax (cmd.exe has no PID variable)"""
+    if pane == "cmd":
+        return None
+    if pane == "powershell":
+        return "Add-Content ~/.appci_pid %s:$PID" % tok
+    return "echo %s:$$ >> ~/.appci_pid" % tok
+
+
+def parse_depth_probe(tokens, tok):
+    """the PID a probe with token `tok` recorded among the whitespace tokens of ~/.appci_pid, or None"""
+    for t in reversed(tokens):
+        if t.startswith(tok + ":") and t[len(tok) + 1:].isdigit():
+            return t[len(tok) + 1:]
+    return None
+
+
 class LogOffset(int):
     """a byte offset into the app log that also carries the identity of the file it was measured in (log_file_ident), so a reader can find
     that file again after the app's in-session rotation renamed it to <log>.in_session.N (r18u28). Behaves as the plain int everywhere else."""
@@ -590,6 +616,8 @@ class Ctx:
         self.opts = {}                # tier options of this pass (winmap.tier_plan): ref, ft_gaps, cc_short; empty = the full tier
         self.enter_control = None     # cached result of run_enter_control (#1482)
         self.cc_integrity = {}        # ctrlc_samples: per output file, how many typed sample lines the shell received exactly
+        self.root_pid = None          # PID of the pane's root shell (run.py records it at the first checked case after a launch; see leave_nested)
+        self.root_app_pid = None
         self.ctrlc_ts = []            # wall time of every Ctrl-C the harness sent (r18d2: see reset())
         self.left_unproven = None     # leave(): where the probe ran when the pane was NOT provably remote (no `exit` typed)
         self.extra_logs = []          # earlier app launches' log copies made by this case (snapshot_log), cleared per case by run.py
@@ -773,6 +801,47 @@ class Ctx:
             self.until(lambda: self.prof.prompts() > before, 10)
             time.sleep(0.5)
         return "remote"
+
+    def shell_pid(self, timeout=8):
+        """The PID of the shell in front, proven by an effect (a fresh `tok:PID` appended to `~/.appci_pid`), or None when nothing answered or the
+        pane has no PID probe (cmd.exe). `where_now` cannot tell a LOCAL nested shell from the pane's root shell (same HOME); a PID can."""
+        probe = "p" + self.tok(8)
+        cmd = depth_probe_cmd(getattr(self, "pane", None), probe)
+        if cmd is None:
+            return None
+        self.be.type(cmd, 12, enter=True)
+        homes = self.where_homes()
+
+        def seen():
+            toks = []
+            for h in homes:
+                toks += where_tokens(os.path.join(h, ".appci_pid"))
+            return parse_depth_probe(toks, probe)
+        self.until(seen, timeout)
+        return seen()
+
+    def leave_nested(self, root_pid, max_exits=3):
+        """After a case: leave every LOCAL nested shell until the shell in front is the pane's ROOT shell (`root_pid`). `exit` is typed only while a
+        probe proves a DIFFERENT shell is in front, never at the root. Returns "root", "nested" (still nested after max_exits) or "none" (no shell
+        answered, even after Ctrl-C/Ctrl-U) or "unprobed" (no PID probe in this pane / no root pid recorded)."""
+        if root_pid is None:
+            return "unprobed"
+        for i in range(max_exits + 1):
+            pid = self.shell_pid()
+            if pid is None:
+                self.reset()
+                pid = self.shell_pid()
+                if pid is None:
+                    return "none" if getattr(self, "pane", None) != "cmd" else "unprobed"
+            if pid == root_pid:
+                return "root"
+            if i == max_exits:
+                break
+            before = self.prof.prompts()
+            self.be.type("exit", 12, enter=True)
+            self.until(lambda: self.prof.prompts() > before, 10)
+            time.sleep(0.5)
+        return "nested"
 
     def leave_remote(self, r, label, rfile, tok, base, timeout=10, level=False):
         """Type `exit` ONLY if a remote shell is provably in front (tok reached the REMOTE file rfile). Otherwise `exit` would end the

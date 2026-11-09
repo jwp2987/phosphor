@@ -452,6 +452,13 @@ def main():
                     pid_start = app.pid() if app is not None and hasattr(app, "pid") else None
                 except Exception:
                     pid_start = None
+                depth_check = (not sim) and cases.wants_depth_check(c["name"], cases.PROVING) and not (win and pane == "cmd")
+                if depth_check:
+                    # the pane's ROOT shell pid, recorded at the first checked case after a (re)launch (the pane is clean there: the previous checked case left it at the root)
+                    if getattr(ctx, "root_pid", None) is None or getattr(ctx, "root_app_pid", None) != pid_start:
+                        ctx.root_pid, ctx.root_app_pid = ctx.shell_pid(), pid_start
+                        if ctx.root_pid is None:
+                            print("[appci] %s: root shell pid probe got no answer; the depth check is off for this case" % c["name"], flush=True)
                 # r18d8: soak runs APPCI_SOAK_MIN (60) minutes, longer than the 1500 s default: it hit CaseTimeout at 25 min. It gets its own length + 10 min.
                 disarm = arm_case_timeout(case_limit(c["name"]))
                 try:
@@ -551,6 +558,32 @@ def main():
                         app.start()
                         if await_shell(ctx, app, prof, win, a.startup_timeout, base=nb):
                             time.sleep(4)      # the same first-run settle as the first launch
+                        if win:
+                            be.guard()
+                            proved = False
+                        continue
+                if depth_check and ctx.root_pid is not None:
+                    try:
+                        if pid_start and app.pid() != pid_start:       # the case relaunched the app itself: a fresh pane, its root is recorded at the next case
+                            ctx.root_pid = None
+                            depth_check = False
+                    except Exception:
+                        pass
+                if depth_check and ctx.root_pid is not None:
+                    # r6 (Mac fix tier): a subshell_ready case left the pane in a LOCAL bash subshell (same HOME, so where_now saw "local") and every later case
+                    # typed into it. After a checked case the shell in front must be the pane's ROOT shell (its PID); `exit` only while a probe proves otherwise.
+                    nest = ctx.leave_nested(ctx.root_pid)
+                    if nest in ("nested", "none"):
+                        emit(dict(name="pane_not_local_after_" + c["name"], mode=label, status="fail", seconds=0,
+                                  shots=[ctx.shot("not_local_after_" + c["name"]) or ""],
+                                  detail=["after %s the pane's shell was not the root shell (%s; root pid %s); the app is relaunched so later cases start clean" % (c["name"], nest, ctx.root_pid)]))
+                        keep_instance_log(run, label, prof, a.backend, ollama_url, instance, app)
+                        instance += 1
+                        app.stop()
+                        nb = prof.prompts()
+                        app.start()
+                        if await_shell(ctx, app, prof, win, a.startup_timeout, base=nb):
+                            time.sleep(4)
                         if win:
                             be.guard()
                             proved = False
