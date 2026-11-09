@@ -333,7 +333,7 @@ impl GlobalSearch {
         // is issued directly (see [`crate::code::buffer_location`]).
         let core_host_id = crate::code::buffer_location::util_host_id_to_core(&host_id);
         let client = RemoteServerManager::as_ref(ctx)
-            .client_for_host(&core_host_id)
+            .client_for_host_with(&core_host_id, remote_server::capability::RIPGREP_SEARCH)
             .cloned();
         let spawner = ctx.spawner();
         self.spawn_source(

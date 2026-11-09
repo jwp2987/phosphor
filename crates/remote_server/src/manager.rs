@@ -952,6 +952,25 @@ impl RemoteServerManager {
             .find_map(|session_id| self.client_for_session(*session_id))
     }
 
+    /// [`Self::client_for_host`], but only when that client's server supports `capability`
+    /// ([`crate::capability`]). A feature family uses this instead of `client_for_host` so that
+    /// with the limited `phosphor-remote` helper connected it behaves EXACTLY as if no remote
+    /// server were connected and takes its no-helper path, instead of offering something the
+    /// helper can only refuse. A legacy full daemon (no capability list) supports everything.
+    pub fn client_for_host_with(
+        &self,
+        host_id: &HostId,
+        capability: &str,
+    ) -> Option<&Arc<RemoteServerClient>> {
+        self.client_for_host(host_id)
+            .filter(|client| client.capabilities().supports(capability))
+    }
+
+    /// Whether the server for `host_id` is connected and supports `capability`.
+    pub fn host_supports(&self, host_id: &HostId, capability: &str) -> bool {
+        self.client_for_host_with(host_id, capability).is_some()
+    }
+
     /// Checks if the remote server binary is installed and executable.
     /// Emits `BinaryCheckComplete { result }`.
     /// Returns Ok(true) if the binary is installed and executable,
@@ -2780,6 +2799,13 @@ impl RemoteServerManager {
         ctx: &mut ModelContext<Self>,
     ) -> bool {
         let operation = mutation_kind.operation();
+        if !self.host_supports(&host_id, crate::capability::CODEBASE_INDEX) {
+            log::debug!(
+                "Remote codebase index mutation skipped: the server for host={host_id} \
+                 has no codebase index (limited helper)"
+            );
+            return false;
+        }
         let Some(session_id) = self.connected_session_for_host(&host_id) else {
             log::warn!(
                 "Remote server codebase index mutation: no connected session \

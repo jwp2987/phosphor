@@ -32,6 +32,13 @@ pub const FILE_CONTEXT: &str = "file_context";
 /// Remote codebase indexing and search.
 pub const CODEBASE_INDEX: &str = "codebase_index";
 
+/// Aggregate git status pushes (`UpdateGitStatus` and the `GitStatusPush` the daemon sends back).
+pub const GIT_STATUS: &str = "git_status";
+/// GitHub PR and repository info (`UpdateGitHubPrInfo`, `UpdateGitHubRepoInfo` and their pushes).
+pub const GITHUB: &str = "github";
+/// The agent-context snapshot push: the host's skills and global rule files.
+pub const SKILLS: &str = "skills";
+
 /// The families above that only the legacy full daemon implements, for documentation and for
 /// tests that pin the helper's list against them.
 pub const LEGACY_ONLY_CAPABILITIES: &[&str] = &[
@@ -41,6 +48,9 @@ pub const LEGACY_ONLY_CAPABILITIES: &[&str] = &[
     GIT_WRITE,
     FILE_CONTEXT,
     CODEBASE_INDEX,
+    GIT_STATUS,
+    GITHUB,
+    SKILLS,
 ];
 
 /// Every capability the helper in this build implements.

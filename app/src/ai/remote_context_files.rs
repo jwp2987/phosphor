@@ -69,7 +69,7 @@ pub(crate) fn read_remote_text_file_contents(
     // keyed by warp_core::HostId, paths carry warp_util::host_id::HostId.
     let core_host_id = crate::code::buffer_location::util_host_id_to_core(&host_id);
     let client = RemoteServerManager::as_ref(ctx)
-        .client_for_host(&core_host_id)
+        .client_for_host_with(&core_host_id, remote_server::capability::FILE_CONTEXT)
         .cloned();
     async move {
         let Some(client) = client else {

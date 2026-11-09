@@ -108,7 +108,7 @@ pub(super) fn remote_client_for(
     ctx: &AppContext,
 ) -> Option<std::sync::Arc<remote_server::client::RemoteServerClient>> {
     remote_server::manager::RemoteServerManager::as_ref(ctx)
-        .client_for_host(&remote.host_id)
+        .client_for_host_with(&remote.host_id, remote_server::capability::GIT_WRITE)
         .cloned()
 }
 

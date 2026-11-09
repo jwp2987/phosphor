@@ -7913,7 +7913,7 @@ impl Workspace {
         let host_id = remote_path.host_id.clone();
         let Some(client) = RemoteServerManager::handle(ctx)
             .as_ref(ctx)
-            .client_for_host(&host_id)
+            .client_for_host_with(&host_id, remote_server::capability::FS_BASIC)
             .cloned()
         else {
             log::warn!("No remote server client for host {host_id:?}; cannot open remote image");

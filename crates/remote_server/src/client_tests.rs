@@ -118,6 +118,45 @@ async fn initialize_round_trip() {
     assert_eq!(resp.host_id, "test-host-id");
 }
 
+/// The handshake records what the server supports. Before it (and for a legacy full daemon,
+/// which sends no list) everything is supported; the helper's list is exact (#1804).
+#[tokio::test]
+async fn initialize_records_the_servers_capabilities() {
+    use crate::capability::{FILE_CONTEXT, FS_BASIC, RUN_COMMAND};
+
+    for (advertised, file_context, run_command) in [
+        (Vec::new(), true, true),
+        (
+            vec![FS_BASIC.to_string(), RUN_COMMAND.to_string()],
+            false,
+            true,
+        ),
+        (vec![FILE_CONTEXT.to_string()], true, false),
+    ] {
+        let caps = advertised.clone();
+        let (client, _events, _executor) = setup_mock_client(move |_| {
+            server_message::Message::InitializeResponse(InitializeResponse {
+                server_version: "test-0.1.0".to_string(),
+                host_id: "test-host-id".to_string(),
+                chunked_responses: false,
+                capabilities: caps.clone(),
+            })
+        });
+        assert!(
+            client.capabilities().supports(FILE_CONTEXT),
+            "before the handshake everything is supported"
+        );
+        client
+            .initialize(None, ClientPreferences::default())
+            .await
+            .unwrap();
+        let got = client.capabilities();
+        assert_eq!(got.supports(FILE_CONTEXT), file_context, "{advertised:?}");
+        assert_eq!(got.supports(RUN_COMMAND), run_command, "{advertised:?}");
+        assert_eq!(got.is_limited(), !advertised.is_empty());
+    }
+}
+
 #[tokio::test]
 async fn initialize_sends_empty_auth_token_when_none() {
     let (client, _disconnect_rx, _executor) = setup_mock_client(|msg| {

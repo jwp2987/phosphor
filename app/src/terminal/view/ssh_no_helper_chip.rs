@@ -29,10 +29,10 @@ pub(crate) const CHIP_LABEL: &str = "limited: no remote helper";
 
 /// What the helper adds, and how it is offered. Shown when the chip is clicked.
 pub(crate) const CHIP_EXPLANATION: &str = "This ssh session works without the optional remote \
-    helper: commands, completions and history all run. The helper adds faster, richer \
-    completions and remote file browsing. It is offered when you connect; set \
-    warpify.ssh.ssh_extension_install_mode to always_install to install it on the next \
-    connection.";
+    helper: commands, completions and history all run. Today the helper only adds faster remote \
+    file transfer, command running, branch lists and project search; more is planned. It is \
+    offered when you connect; set warpify.ssh.ssh_extension_install_mode to always_install to \
+    install it on the next connection.";
 
 #[derive(Clone, Debug)]
 pub enum SshNoHelperChipAction {

@@ -23,3 +23,20 @@ fn chip_starts_collapsed() {
     let chip = SshNoHelperChip::new(SessionId::from(1_u64), "box1".to_owned());
     assert!(!chip.is_expanded());
 }
+
+/// The helper is limited today, so the text must not promise what it lacks (file tree, buffer
+/// sync, diff panels, indexing, the agent file tools) and must say it is partial.
+#[test]
+fn explanation_does_not_promise_features_the_helper_lacks() {
+    let text = CHIP_EXPLANATION.to_lowercase();
+    for lacking in [
+        "file browsing",
+        "file tree",
+        "richer",
+        "code review",
+        "index",
+    ] {
+        assert!(!text.contains(lacking), "{lacking}");
+    }
+    assert!(text.contains("only adds") && text.contains("more is planned"));
+}

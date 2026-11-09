@@ -156,6 +156,19 @@ pub struct SessionContext {
     remote_os_category: Option<String>,
 }
 
+/// Whether the agent file tools (`read_files`, `apply_file_diffs`, `read_skill`) work on a remote
+/// host, given the capabilities of the server connected for it (`None` = no server connected).
+///
+/// They need `ReadFileContext`, so a limited server without `FILE_CONTEXT` (the bundled
+/// `phosphor-remote` helper) counts exactly like no server at all: the tools are withdrawn and
+/// the no-helper behaviour applies. A legacy full daemon sends no capability list and supports
+/// everything.
+fn file_tools_available(
+    capabilities: Option<&remote_server::capability::ServerCapabilities>,
+) -> bool {
+    capabilities.is_some_and(|caps| caps.supports(remote_server::capability::FILE_CONTEXT))
+}
+
 impl SessionContext {
     pub fn from_session(session: &ActiveSession, app: &AppContext) -> Self {
         let session_arc = session.session(app);
@@ -183,9 +196,12 @@ impl SessionContext {
                 host_id: Some(host_id),
             }) => {
                 app.has_singleton_model::<RemoteServerManager>()
-                    && RemoteServerManager::as_ref(app)
-                        .client_for_host(host_id)
-                        .is_some()
+                    && file_tools_available(
+                        RemoteServerManager::as_ref(app)
+                            .client_for_host(host_id)
+                            .map(|client| client.capabilities())
+                            .as_ref(),
+                    )
             }
             Some(SessionType::WarpifiedRemote { host_id: None })
             | Some(SessionType::Local)
