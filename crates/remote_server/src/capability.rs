@@ -18,8 +18,8 @@ pub const GIT_READ: &str = "git_read";
 /// `RipgrepSearch`.
 pub const RIPGREP_SEARCH: &str = "ripgrep_search";
 
-/// Repo metadata: `NavigatedToDirectory`, `LoadRepoMetadataDirectory` and the file-tree pushes.
-/// Only the full app daemon has it; the helper does not list it.
+/// Repo metadata: `NavigatedToDirectory`, `LoadRepoMetadataDirectory` and the file-tree pushes
+/// (`RepoMetadataSnapshot`, `RepoMetadataUpdatePush`). The helper implements it (Wave H, P3).
 pub const REPO_METADATA: &str = "repo_metadata";
 /// Buffer sync: `OpenBuffer`, `BufferEdit`, `SaveBuffer`, `ResolveConflict`, `CloseBuffer`.
 pub const BUFFERS: &str = "buffers";
@@ -47,7 +47,6 @@ pub const CODEBASE_CHUNKS: &str = "codebase_chunks";
 /// The families above that only the legacy full daemon implements, for documentation and for
 /// tests that pin the helper's list against them.
 pub const LEGACY_ONLY_CAPABILITIES: &[&str] = &[
-    REPO_METADATA,
     BUFFERS,
     DIFF_STATE,
     GIT_WRITE,
@@ -60,8 +59,14 @@ pub const LEGACY_ONLY_CAPABILITIES: &[&str] = &[
 ];
 
 /// Every capability the helper in this build implements.
-pub const HELPER_CAPABILITIES: &[&str] =
-    &[FILE_WRITE, FS_BASIC, RUN_COMMAND, GIT_READ, RIPGREP_SEARCH];
+pub const HELPER_CAPABILITIES: &[&str] = &[
+    FILE_WRITE,
+    FS_BASIC,
+    RUN_COMMAND,
+    GIT_READ,
+    RIPGREP_SEARCH,
+    REPO_METADATA,
+];
 
 /// What the server on the other end of a session supports.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]

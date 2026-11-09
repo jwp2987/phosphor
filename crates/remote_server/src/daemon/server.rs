@@ -60,11 +60,34 @@ pub(super) enum Event {
         paths: Vec<PathBuf>,
         kind: FsKind,
     },
+    /// A worker finished walking a repository for `NavigatedToDirectory`.
+    RepoIndexed(Box<repo_meta::Indexed>),
+    /// A worker finished re-listing the directories a watcher event dirtied.
+    RepoRelisted(repo_meta::Relisted),
 }
 
 struct Connection {
     tx: async_channel::Sender<ServerMessage>,
     chunking: Arc<AtomicBool>,
+}
+
+/// Sends unsolicited pushes (no request id) to a connection. Handlers get one so they can push
+/// without owning the connection table.
+pub(super) struct Pusher<'a> {
+    conns: &'a HashMap<ConnId, Connection>,
+}
+
+impl Pusher<'_> {
+    /// Queues `message` for `conn`'s writer, after anything already queued for it (so a push
+    /// sent right after a response arrives right after it). A gone connection drops it.
+    pub(super) fn send(&self, conn: ConnId, message: server_message::Message) {
+        if let Some(c) = self.conns.get(&conn) {
+            let _ = c.tx.try_send(ServerMessage {
+                request_id: String::new(),
+                message: Some(message),
+            });
+        }
+    }
 }
 
 /// Whether this daemon splits large responses into `FrameChunk`s for a client that asked
@@ -98,6 +121,8 @@ pub(super) struct Server {
     events_tx: Option<std::sync::mpsc::Sender<Event>>,
     /// The one refcounted watch set every consumer shares (see `watch.rs` for the API).
     watches: WatchSet,
+    /// Indexed repository roots and their live trees (`repo_meta.rs`).
+    repos: repo_meta::RepoTrees,
 }
 
 impl Server {
@@ -118,6 +143,7 @@ impl Server {
             grace,
             events_tx: None,
             watches: WatchSet::disabled(),
+            repos: repo_meta::RepoTrees::default(),
         }
     }
 
@@ -167,8 +193,18 @@ impl Server {
             }
             Event::Message { conn, msg } => self.handle_message(conn, msg),
             Event::FsChange { paths, kind } => self.on_fs_change(&paths, kind),
+            Event::RepoIndexed(done) => {
+                let push = Pusher { conns: &self.conns };
+                self.repos.indexed(*done, &mut self.watches, &push);
+            }
+            Event::RepoRelisted(done) => {
+                let push = Pusher { conns: &self.conns };
+                self.repos
+                    .relisted(done, self.events_tx.as_ref(), &mut self.watches, &push);
+            }
             Event::Disconnected { conn } => {
                 self.conns.remove(&conn);
+                self.repos.conn_gone(conn, &mut self.watches);
                 log::info!(
                     "Daemon: connection {conn} gone, {} active",
                     self.conns.len()
@@ -184,6 +220,8 @@ impl Server {
     /// consumer here (the repo tree, later buffers, diff state and skills).
     fn on_fs_change(&mut self, paths: &[PathBuf], kind: FsKind) {
         log::trace!("Daemon: fs change {kind:?} {} path(s)", paths.len());
+        self.repos
+            .on_fs_change(paths, kind, self.events_tx.as_ref());
     }
 
     fn reply_for(&self, conn: ConnId, request_id: &RequestId) -> Option<Reply> {
@@ -301,9 +339,19 @@ impl Server {
                 self.inflight
                     .spawn(reply, move |cancel| exec::run_command(&shell, req, cancel));
             }
-            M::NavigatedToDirectory(_) => repo_meta::handle(&reply, "NavigatedToDirectory"),
-            M::LoadRepoMetadataDirectory(_) => {
-                repo_meta::handle(&reply, "LoadRepoMetadataDirectory")
+            M::NavigatedToDirectory(msg) => {
+                let push = Pusher { conns: &self.conns };
+                self.repos.navigate(
+                    conn,
+                    msg,
+                    reply,
+                    self.events_tx.as_ref(),
+                    &mut self.watches,
+                    &push,
+                );
+            }
+            M::LoadRepoMetadataDirectory(msg) => {
+                self.repos.load_directory(msg, &reply, &mut self.watches)
             }
             M::OpenBuffer(_) => buffers::handle(&reply, "OpenBuffer"),
             M::GetDiffState(_) => diff_state::handle(&reply, "GetDiffState"),

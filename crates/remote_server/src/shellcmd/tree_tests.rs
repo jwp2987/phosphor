@@ -10,7 +10,12 @@ fn child(name: &str, is_dir: bool, ignored: bool) -> TreeChild {
 
 #[test]
 fn children_sort_directories_first_then_by_name() {
-    let mut v = vec![child("b", false, false), child("z", true, false), child("a", false, false), child("c", true, false)];
+    let mut v = vec![
+        child("b", false, false),
+        child("z", true, false),
+        child("a", false, false),
+        child("c", true, false),
+    ];
     sort_children(&mut v);
     let names: Vec<_> = v.iter().map(|c| c.name.as_str()).collect();
     assert_eq!(names, ["c", "z", "a", "b"]);
@@ -31,7 +36,11 @@ fn paths_join_with_the_hosts_separator() {
 
 #[test]
 fn a_tree_from_paths_lists_every_ancestor_loaded_and_ignored_dirs_unloaded() {
-    let files = vec!["a.txt".to_owned(), "src/lib.rs".to_owned(), "src/deep/x.rs".to_owned()];
+    let files = vec![
+        "a.txt".to_owned(),
+        "src/lib.rs".to_owned(),
+        "src/deep/x.rs".to_owned(),
+    ];
     let ignored = vec!["target/".to_owned(), "debug.log".to_owned()];
     let dirs = tree_from_paths("/repo", &files, &ignored);
     assert_eq!(
@@ -43,19 +52,27 @@ fn a_tree_from_paths_lists_every_ancestor_loaded_and_ignored_dirs_unloaded() {
             child("debug.log", false, true),
         ]
     );
-    assert_eq!(dirs["/repo/src"], vec![child("deep", true, false), child("lib.rs", false, false)]);
+    assert_eq!(
+        dirs["/repo/src"],
+        vec![child("deep", true, false), child("lib.rs", false, false)]
+    );
     assert!(!dirs.contains_key("/repo/target"));
 
     let entries = snapshot_entries("/repo", &dirs);
     // Breadth-first: root, then src, then src/deep.
-    let parents: Vec<_> = entries.iter().map(|e| e.parent_path_to_replace.as_str()).collect();
+    let parents: Vec<_> = entries
+        .iter()
+        .map(|e| e.parent_path_to_replace.as_str())
+        .collect();
     assert_eq!(parents, ["/repo", "/repo/src", "/repo/src/deep"]);
     let root_nodes = &entries[0].subtree_metadata;
-    let proto::repo_node_metadata::Node::Directory(src) = root_nodes[0].node.clone().unwrap() else {
+    let proto::repo_node_metadata::Node::Directory(src) = root_nodes[0].node.clone().unwrap()
+    else {
         panic!("src is a directory");
     };
     assert!(src.loaded && !src.ignored);
-    let proto::repo_node_metadata::Node::Directory(target) = root_nodes[1].node.clone().unwrap() else {
+    let proto::repo_node_metadata::Node::Directory(target) = root_nodes[1].node.clone().unwrap()
+    else {
         panic!("target is a directory");
     };
     assert!(!target.loaded && target.ignored);
@@ -67,8 +84,18 @@ fn a_tree_from_paths_lists_every_ancestor_loaded_and_ignored_dirs_unloaded() {
 
 #[test]
 fn a_directory_diff_removes_vanished_and_retyped_entries_and_adds_new_ones() {
-    let old = vec![child("gone", false, false), child("same", false, false), child("flip", true, false), child("ign", false, false)];
-    let new = vec![child("same", false, false), child("flip", false, false), child("new", true, false), child("ign", false, true)];
+    let old = vec![
+        child("gone", false, false),
+        child("same", false, false),
+        child("flip", true, false),
+        child("ign", false, false),
+    ];
+    let new = vec![
+        child("same", false, false),
+        child("flip", false, false),
+        child("new", true, false),
+        child("ign", false, true),
+    ];
     let (removed, added) = diff_dir("/r", &old, &new);
     assert_eq!(removed, ["/r/gone", "/r/flip"]);
     let added_paths: Vec<String> = added
@@ -88,18 +115,34 @@ fn list_records_parse_types_and_drop_symlinked_dirs_and_specials() {
     let names: Vec<_> = got.iter().map(|c| (c.name.as_str(), c.is_dir)).collect();
     assert_eq!(
         names,
-        [("src", true), ("a.txt", false), ("linkfile", false), ("with space.txt", false), (".git", true)]
+        [
+            ("src", true),
+            ("a.txt", false),
+            ("linkfile", false),
+            ("with space.txt", false),
+            (".git", true)
+        ]
     );
 }
 
 #[test]
 fn finish_children_marks_git_and_ignored_names_only_inside_a_repo() {
-    let listing = vec![child("b", false, false), child(".git", true, false), child("a", true, false), child("x.log", false, false)];
+    let listing = vec![
+        child("b", false, false),
+        child(".git", true, false),
+        child("a", true, false),
+        child("x.log", false, false),
+    ];
     let ignored: BTreeSet<String> = ["x.log".to_owned()].into();
     let in_git = finish_children(listing.clone(), &ignored, true);
     assert_eq!(
         in_git,
-        vec![child(".git", true, true), child("a", true, false), child("b", false, false), child("x.log", false, true)]
+        vec![
+            child(".git", true, true),
+            child("a", true, false),
+            child("b", false, false),
+            child("x.log", false, true)
+        ]
     );
     let outside = finish_children(listing, &ignored, false);
     assert!(outside.iter().all(|c| !c.ignored));
@@ -136,7 +179,10 @@ fn a_navigation_answer_needs_a_directory_and_optionally_a_git_root() {
     let frame = Frame::parse(ok.as_bytes(), nonce).unwrap();
     assert_eq!(
         parse_nav_target(&frame).unwrap(),
-        NavTarget { dir: "/work/p".into(), git_root: Some("/work".into()) }
+        NavTarget {
+            dir: "/work/p".into(),
+            git_root: Some("/work".into())
+        }
     );
     let no_git = format!(
         "@@PHOSPHOR-{nonce} BEGIN canon\n/work/p\n@@PHOSPHOR-{nonce} END canon exit=0\n@@PHOSPHOR-{nonce} BEGIN git\n@@PHOSPHOR-{nonce} END git exit=128\n"
