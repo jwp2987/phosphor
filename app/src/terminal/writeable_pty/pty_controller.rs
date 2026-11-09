@@ -55,11 +55,13 @@ use super::write_queue::{AbortScope, Pacing, SetupLive};
 /// it produces is not byte-exact), so this is a time gap by necessity, not a way to decide
 /// whether a chunk is written.
 #[cfg(feature = "local_fs")]
+// pacing: 25 ms gap between chunks of our own bootstrap into a user-space pty relay (#960); not a decision, never carries user keys
 const RELAY_BOOTSTRAP_PACING: Duration = Duration::from_millis(25);
 /// Gap between the chunks of a bootstrap written into a container subshell (`docker`/`podman
 /// exec -it`): a double-pty proxy that drops data on large writes or bursts (#960 family).
 /// Same reason as [`RELAY_BOOTSTRAP_PACING`]: the proxy's consumption is unobservable.
 #[cfg(feature = "local_fs")]
+// pacing: 50 ms gap between chunks of our own bootstrap into a container exec proxy (#960); not a decision, never carries user keys
 const CONTAINER_BOOTSTRAP_PACING: Duration = Duration::from_millis(50);
 
 /// Gap between the 1000-byte chunks of the ssh-warpify line-clear payload while the tty is
@@ -69,6 +71,7 @@ const CONTAINER_BOOTSTRAP_PACING: Duration = Duration::from_millis(50);
 /// there is no signal to wait on and the gap stays. A non-canonical tty (a bash/zsh line editor at
 /// its prompt) gives a real `EAGAIN` instead, and then no gap is used (see
 /// [`Pacing::GapIfCanonical`]).
+// pacing: 10 ms gap between chunks of our own ssh-warpify payload on a cooked tty (#1384); not a decision, never carries user keys
 const MAC_TTY_INPUT_QUEUE_PACING: Duration = Duration::from_millis(10);
 /// Chunk size of the line-clear payload: under the macOS tty input queue (1024 B).
 const MAC_TTY_INPUT_QUEUE_CHUNK: usize = 1000;
@@ -1898,6 +1901,7 @@ impl<T: EventLoopSender> PtyController<T> {
         if generation != self.paced_write_generation || self.paced_write_queue.is_empty() {
             return;
         }
+        // pacing: timer chain writing the next chunk of an app-built paced payload (bootstrap / warpify), never user keys
         ctx.spawn(Timer::after(gap), move |me, _, ctx| {
             me.write_next_paced_chunk(generation, gap, ctx)
         });

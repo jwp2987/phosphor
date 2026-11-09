@@ -105,13 +105,16 @@ app/src/terminal/view.rs	SUBSHELL_SETUP_DEFER_QUIET	FOUND: 600 ms unchanged-outp
 app/src/terminal/view.rs	TRIGGER_RC_FILE_SUBSHELL_BOOTSTRAP_DELAY	FOUND: 100 ms then writes the rc-file subshell bootstrap (only with PHOSPHOR_BOOTSTRAP_TIMED=1)
 app/src/terminal/view.rs	arm_young_timer	FOUND: young-detection timer; on a reached compute cap it finishes the wait and submits the deferred Enter by the Enter-time rules (commits on a timer)
 app/src/terminal/view.rs	write_init_subshell_bytes_to_pty	FOUND: the unmarked subshell bootstrap lines are written on a per-line delay timer (the marked path is event-driven)
-app/src/terminal/writeable_pty/pty_controller.rs	CONTAINER_BOOTSTRAP_PACING	FOUND: 50 ms timer paces bootstrap chunk WRITES into a container subshell (#960); owner to rule whether pacing is exempt
-app/src/terminal/writeable_pty/pty_controller.rs	MAC_TTY_INPUT_QUEUE_PACING	FOUND: 10 ms timer paces the ssh-warpify payload WRITES on a cooked tty (#1384); owner to rule whether pacing is exempt
-app/src/terminal/writeable_pty/pty_controller.rs	RELAY_BOOTSTRAP_PACING	FOUND: 25 ms timer paces bootstrap chunk WRITES into a pty relay (#960: consumption unobservable); owner to rule whether pacing is exempt
 app/src/terminal/writeable_pty/pty_controller.rs	TYPEAHEAD_HANDOFF_STALE_COUNT_GIVE_UP	owner-named: the 5 s give-up of the same wait; resets counts and retries the hand-off decision
 app/src/terminal/writeable_pty/pty_controller.rs	TYPEAHEAD_HANDOFF_STALE_COUNT_RESET	owner-named: 250 ms timer resets the hand-off's stale line counts and retries the decision (a decision on a timer)
 app/src/terminal/writeable_pty/pty_controller.rs	arm_typeahead_handoff_stale_count_reset	owner-named: the call site of the two stale-count timers above
-app/src/terminal/writeable_pty/pty_controller.rs	write_next_paced_chunk	FOUND: the timer chain that writes the next paced chunk to the pty
 
 app/src/terminal/writeable_pty/pty_controller.rs	NATIVE_COMPLETIONS_RESULTS_TIMEOUT	FOUND: 15 s watchdog drops the exchange and still calls execute_next_queued_write (not verified to be a no-op for held writes)
 app/src/terminal/writeable_pty/pty_controller.rs	arm_native_completions_watchdog	FOUND: call site of both watchdog timers; the results arm still calls execute_next_queued_write
+
+# PACING (owner-exempt 2026-11-09: our own bootstrap bytes into a relay/container/cooked tty whose consumption is unobservable, #960 #1384; never user keys)
+# Each needs a `pacing: <why>` comment next to it; the guard fails if its code path mentions a user-key API. Not counted by --strict.
+app/src/terminal/writeable_pty/pty_controller.rs	RELAY_BOOTSTRAP_PACING	25 ms gap between chunks of our own bootstrap into a user-space pty relay (#960)
+app/src/terminal/writeable_pty/pty_controller.rs	CONTAINER_BOOTSTRAP_PACING	50 ms gap between chunks of our own bootstrap into a container exec proxy (#960)
+app/src/terminal/writeable_pty/pty_controller.rs	MAC_TTY_INPUT_QUEUE_PACING	10 ms gap between chunks of our own ssh-warpify payload on a cooked tty (#1384)
+app/src/terminal/writeable_pty/pty_controller.rs	write_next_paced_chunk	timer chain writing the next chunk of an app-built paced payload (bootstrap / warpify), never user keys
