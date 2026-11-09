@@ -274,6 +274,10 @@ pub struct RouteFacts {
     /// the last known value is used (`handoff_known` false).
     pub handoff_routes: bool,
     pub handoff_known: bool,
+    /// #1658: the editor holds unsent text while the hand-off is still pty-owned, and keys follow
+    /// it (`TypeaheadHandoff::keys_follow_editor_active`). `handoff_routes` is false then; this
+    /// also keeps typed text off the pty although the block has started.
+    pub keys_follow_editor: bool,
 
     // ---- subshell / PowerShell ----
     pub subshell: SubshellPhase,

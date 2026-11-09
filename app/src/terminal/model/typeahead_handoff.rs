@@ -258,6 +258,16 @@ pub fn prompt_seq_env_enabled() -> bool {
     std::env::var(PROMPT_SEQ_ENV).map_or(true, |value| value.trim() != "0")
 }
 
+/// Environment variable that turns [`TypeaheadHandoff::keys_follow_editor`] off when set to `0`
+/// (#1658): keys typed while the hand-off is pty-owned then go to the pty even though the editor
+/// holds an unsent line, as before.
+pub const KEYS_FOLLOW_EDITOR_ENV: &str = "PHOSPHOR_KEYS_FOLLOW_EDITOR";
+
+/// Whether the keys-follow-editor fact is on: it is, unless the kill switch says `0`.
+pub fn keys_follow_editor_env_enabled() -> bool {
+    std::env::var(KEYS_FOLLOW_EDITOR_ENV).map_or(true, |value| value.trim() != "0")
+}
+
 /// The wait of a young Enter held by an event ([`TypeaheadHandoff::young_hold_wait`]): the
 /// prompt's Precmd, or the report, normally releases it within milliseconds, so reaching this
 /// means the signal is not coming. Logged by the view when it fires. It stays the cap of the
@@ -677,6 +687,15 @@ pub struct TypeaheadHandoff {
     held_agent_command: Option<HeldAgentCommand>,
     /// When the editor last took input over from the pty.
     editor_took_over_at: Option<Instant>,
+    /// #1658: the editor holds text the user has not sent while the hand-off is still
+    /// [`HandoffState::PtyOwned`] (an Enter gate gave up and kept the line before the Enter, or
+    /// handed keys back as text). Every later key follows that text into the editor, so it never
+    /// reaches the pty ahead of it or behind the shell's report of it. Set by
+    /// [`Self::note_keys_follow_editor`]; cleared by events only, never by age: the editor empties
+    /// or submits, a request or command is written, the state changes, a Preexec, the command
+    /// becoming interactive, a program owning the tty, a signal key, the user clicking the
+    /// terminal, or the session ending.
+    keys_follow_editor: bool,
     /// A key applied within that window moved focus to the editor itself; the resulting focus
     /// event must not end the window.
     focus_moved_by_takeover_key: bool,
@@ -1190,6 +1209,7 @@ impl TypeaheadHandoff {
         }
         // A bare Enter's line (`on_command_written` for an empty command): nothing queued ahead,
         // nothing typed yet; the routed `\r~X` counts its Enter and the bytes behind it.
+        self.keys_follow_editor = false;
         self.state = HandoffState::PtyOwned {
             wrote_user_bytes: false,
             enters_written: 0,
@@ -1885,6 +1905,7 @@ impl TypeaheadHandoff {
     /// now ends as typeahead only on an unsampled platform ([`YoungHoldEnd::Typeahead`]).
     pub fn note_command_interactive(&mut self) {
         self.command_interactive = true;
+        self.end_keys_follow_editor("command_interactive");
         if !self.foreground_probe.samples_shell() && self.end_young_hold_as_typeahead() {
             warpui::input_order::log_hop("young_hold_end", || {
                 format!("why=command_interactive hold_id={}", self.young_hold_id)
@@ -1938,10 +1959,46 @@ impl TypeaheadHandoff {
     /// Whether keys typed on the terminal go to the pty (or are held for it) rather than being
     /// routed by the pre-hand-off rules.
     pub fn routes_keys_to_pty(&self) -> bool {
-        matches!(
-            self.state,
-            HandoffState::PtyOwned { .. } | HandoffState::HoldAfterEnter { .. }
-        ) || self.holds_young_enter_behind_request()
+        !self.keys_follow_editor_active()
+            && matches!(
+                self.state,
+                HandoffState::PtyOwned { .. } | HandoffState::HoldAfterEnter { .. }
+            )
+            || self.holds_young_enter_behind_request()
+    }
+
+    /// #1658: keys follow the text the editor holds although the hand-off is pty-owned.
+    pub fn keys_follow_editor_active(&self) -> bool {
+        self.keys_follow_editor && matches!(self.state, HandoffState::PtyOwned { .. })
+    }
+
+    /// #1658: the editor was left holding unsent text while the pty owns input: later keys follow
+    /// it. Only a pty-owned hand-off needs it (the other states already route to the editor), and
+    /// the kill switch (`PHOSPHOR_KEYS_FOLLOW_EDITOR=0`) turns it off. Returns whether it is set.
+    pub fn note_keys_follow_editor(&mut self) -> bool {
+        self.note_keys_follow_editor_if(keys_follow_editor_env_enabled())
+    }
+
+    /// [`Self::note_keys_follow_editor`] with the kill switch's value passed in (tests).
+    fn note_keys_follow_editor_if(&mut self, enabled: bool) -> bool {
+        if !matches!(self.state, HandoffState::PtyOwned { .. }) || !enabled {
+            return false;
+        }
+        if !self.keys_follow_editor {
+            warpui::input_order::log_hop("keys_follow_editor_set", String::new);
+        }
+        self.keys_follow_editor = true;
+        true
+    }
+
+    /// #1658: an event ended the editor-holds-text fact (`why` names it). Returns whether it was
+    /// set, so the view re-decides focus.
+    pub fn end_keys_follow_editor(&mut self, why: &'static str) -> bool {
+        let was = mem::take(&mut self.keys_follow_editor);
+        if was {
+            warpui::input_order::log_hop("keys_follow_editor_end", || format!("why={why}"));
+        }
+        was
     }
 
     /// The request is outstanding and the user's Enter is held behind it (#933): keys typed now
@@ -2335,6 +2392,7 @@ impl TypeaheadHandoff {
         self.uncovered_deferral_id = None;
         self.deferred_young = false;
         self.drop_young_hold();
+        self.keys_follow_editor = false;
         self.state = HandoffState::EditorOwned;
         self.deferred_gate.take()
     }
@@ -2438,6 +2496,7 @@ impl TypeaheadHandoff {
     /// as typeahead: the end is recorded for the view, which writes them behind the command and
     /// counts them ([`Self::count_followed_young_hold`]).
     pub fn on_command_written(&mut self) {
+        self.end_keys_follow_editor("command_written");
         // Tests model "a command was written just now" as a stream with unparsed output (the
         // state #933's race needs) unless the test installed its own barrier or probe. Never in
         // production: there the pty reader's barrier is the only authority.
@@ -2520,6 +2579,7 @@ impl TypeaheadHandoff {
         }
         self.last_activity_at = Some(now);
         self.command_written_at = Some(now);
+        self.keys_follow_editor = false;
         self.state = HandoffState::PtyOwned {
             wrote_user_bytes: false,
             enters_written: enters_before.saturating_add(1),
@@ -2693,6 +2753,7 @@ impl TypeaheadHandoff {
     /// whether the pty took over input.
     pub fn on_preexec(&mut self, shell_started: bool) -> bool {
         warpui::input_order::note_shell_signal(warpui::input_order::ShellSignal::Preexec);
+        self.end_keys_follow_editor("preexec");
         self.shell_activity = ShellActivity::Running;
         // #1793: a command runs; a `\r` now would be its input.
         self.line_empty_at_writes = None;
@@ -2743,6 +2804,7 @@ impl TypeaheadHandoff {
             });
         }
         if shell_started && self.state == HandoffState::EditorOwned {
+            self.keys_follow_editor = false;
             self.state = HandoffState::PtyOwned {
                 wrote_user_bytes: false,
                 enters_written: 1,
@@ -2774,6 +2836,7 @@ impl TypeaheadHandoff {
         if self.state != HandoffState::EditorOwned {
             return false;
         }
+        self.keys_follow_editor = false;
         self.state = HandoffState::PtyOwned {
             wrote_user_bytes: false,
             enters_written: 1,
@@ -2814,6 +2877,7 @@ impl TypeaheadHandoff {
                 self.interrupt_barrier = false;
                 self.interrupt_settle_pending = false;
                 self.interrupt_awaiting_cycle = false;
+                self.keys_follow_editor = false;
                 self.state = HandoffState::EditorOwned;
                 // #1574: nothing typed or delivered is in the shell's line any more.
                 self.committed_delivery = false;
@@ -2882,6 +2946,7 @@ impl TypeaheadHandoff {
                 }
                 if !wrote_user_bytes && !self.interrupt_barrier {
                     if no_line_queued {
+                        self.keys_follow_editor = false;
                         self.state = HandoffState::EditorOwned;
                         // #1574: the shell's line is empty: no delivered bytes are left in it.
                         self.committed_delivery = false;
@@ -2898,6 +2963,7 @@ impl TypeaheadHandoff {
                                  precmds={precmds_seen}"
                             )
                         });
+                        self.keys_follow_editor = false;
                         self.state = HandoffState::EditorOwned;
                         self.committed_delivery = false;
                         ActiveDecision::Committed
@@ -2921,6 +2987,7 @@ impl TypeaheadHandoff {
                     }
                     self.interrupt_barrier = false;
                     self.interrupt_settle_pending = false;
+                    self.keys_follow_editor = false;
                     self.state = HandoffState::EditorOwned;
                     ActiveDecision::Committed
                 } else if self.committed_delivery {
@@ -2946,6 +3013,7 @@ impl TypeaheadHandoff {
                 } else if no_line_queued && at_prompt && self.writes_in_flight == 0 {
                     self.interrupt_barrier = false;
                     self.interrupt_settle_pending = false;
+                    self.keys_follow_editor = false;
                     self.state = HandoffState::AwaitingReport;
                     // Its report covers every untracked byte written before it too (#1089).
                     self.on_request_written();
@@ -3557,6 +3625,7 @@ impl TypeaheadHandoff {
     /// then waits for its verdict).
     #[cfg(test)]
     pub(crate) fn force_deferred_submit_pending_for_test(&mut self) {
+        self.keys_follow_editor = false;
         self.state = HandoffState::HoldAfterEnter { released: true };
     }
 
@@ -3920,6 +3989,7 @@ impl TypeaheadHandoff {
         }
         self.deferred_young = self.young_line;
         self.deferred_gate = Some(self.next_gate_id());
+        self.keys_follow_editor = false;
         self.state = HandoffState::HoldAfterEnter { released: false };
         true
     }
@@ -3982,11 +4052,13 @@ impl TypeaheadHandoff {
                         self.young_hold_id,
                         YoungHoldEnd::SubmitOnReport { deferred_gate },
                     ));
+                    self.keys_follow_editor = false;
                     self.state = HandoffState::HoldAfterEnter { released: true };
                     self.young_line = false;
                     return ReportDisposition::InsertThenSubmitYoung;
                 }
                 let young = mem::take(&mut self.young_line);
+                self.keys_follow_editor = false;
                 self.state = HandoffState::EditorOwned;
                 if young {
                     ReportDisposition::InsertYoung
@@ -4024,6 +4096,7 @@ impl TypeaheadHandoff {
         if self.owner() != (Owner::Hold { released: true }) {
             return None;
         }
+        self.keys_follow_editor = false;
         self.state = HandoffState::EditorOwned;
         self.deferred_gate.take()
     }
@@ -4053,6 +4126,7 @@ impl TypeaheadHandoff {
     /// did.
     pub fn end_editor_takeover_window(&mut self) {
         self.editor_took_over_at = None;
+        self.end_keys_follow_editor("window_end");
     }
 
     /// A key the window applied is about to move focus to the editor.
@@ -4064,7 +4138,9 @@ impl TypeaheadHandoff {
     /// there itself.
     pub fn on_editor_focused(&mut self) {
         if !mem::take(&mut self.focus_moved_by_takeover_key) {
-            self.end_editor_takeover_window();
+            // Focus reaching the editor is what keys-follow-editor (#1658) wants, so it ends the
+            // window only; a click on the terminal (`end_editor_takeover_window`) ends both.
+            self.editor_took_over_at = None;
         }
     }
 
@@ -4081,6 +4157,11 @@ impl TypeaheadHandoff {
     /// event that never comes: past it the window is closed with a log line, so a key typed on
     /// the terminal much later keeps its usual meaning.
     pub fn editor_takeover_open(&mut self, give_up: Duration, now: Instant) -> bool {
+        // #1658: the editor holds unsent text and keys follow it; no window, no give-up (an event
+        // ends it, never its age).
+        if self.keys_follow_editor_active() {
+            return true;
+        }
         if !self.editor_owns_input() {
             return false;
         }
@@ -4103,7 +4184,8 @@ impl TypeaheadHandoff {
     /// cannot close the window (that is `editor_takeover_open`'s job, with its give-up net), so
     /// this reports "the editor owns input and took over at some point".
     pub fn editor_takeover_would_be_open(&self) -> bool {
-        self.editor_owns_input() && self.editor_took_over_at.is_some()
+        self.keys_follow_editor_active()
+            || (self.editor_owns_input() && self.editor_took_over_at.is_some())
     }
 
     /// A Ctrl-C was written while the pty owned input. A POSIX tty discards queued typeahead and
@@ -4122,6 +4204,7 @@ impl TypeaheadHandoff {
     /// cycle expected, a request is written behind the interrupt and the shell's report -- read in
     /// stream order after anything the interrupt made it emit -- hands it back.
     pub fn on_interrupt_for_shell(&mut self, prompt_cycle_expected: bool) -> InterruptOutcome {
+        self.end_keys_follow_editor("interrupt");
         self.drop_young_hold();
         self.interrupt_barrier = false;
         self.interrupt_settle_pending = false;
@@ -4141,6 +4224,7 @@ impl TypeaheadHandoff {
                 self.interrupt_barrier = at_prompt && seq_mode && !prompt_cycle_expected;
                 self.interrupt_awaiting_cycle = seq_mode && !self.interrupt_barrier;
                 self.interrupt_settle_pending = !seq_mode;
+                self.keys_follow_editor = false;
                 self.state = HandoffState::PtyOwned {
                     wrote_user_bytes: false,
                     enters_written: interrupt_enters_written(
@@ -4171,12 +4255,14 @@ impl TypeaheadHandoff {
             Owner::Hold { released: false } => {
                 self.uncovered_deferral_id = None;
                 self.report_deferral_id = None;
+                self.keys_follow_editor = false;
                 self.state = HandoffState::AwaitingReport;
                 self.drop_deferred_gate();
                 true
             }
             // The deferred submit already ran without writing a command.
             Owner::Hold { released: true } => {
+                self.keys_follow_editor = false;
                 self.state = HandoffState::EditorOwned;
                 self.drop_deferred_gate();
                 true
