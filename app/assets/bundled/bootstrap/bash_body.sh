@@ -1336,6 +1336,7 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     # Starts a total deadline of $1 whole seconds.
     __warp_nc_deadline_set () {
         if [[ -n ${EPOCHREALTIME:-} ]]; then
+            # give-up-net: overall deadline of the exchange, its only clock; expiry hands the bytes read back to the line, writes nothing
             __warp_nc_dl=$(( ${EPOCHREALTIME/[.,]/} + $1 * 1000000 ))
         else
             __warp_nc_dl=$(( SECONDS + $1 ))
@@ -1346,6 +1347,7 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     __warp_nc_time_left () {
         local __l
         if [[ -n ${EPOCHREALTIME:-} ]]; then
+            # give-up-net: time left on the exchange's overall deadline; expiry hands the bytes read back, writes nothing
             __l=$(( __warp_nc_dl - ${EPOCHREALTIME/[.,]/} ))
             (( __l > 0 )) || return 1
             builtin printf -v __warp_nc_left '%d.%06d' $(( __l / 1000000 )) $(( __l % 1000000 ))
@@ -1361,6 +1363,7 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     __warp_nc_read_byte () {
         __warp_nc_byte=
         if (( BASH_VERSINFO[0] > 4 || BASH_VERSINFO[1] >= 1 )); then
+            # give-up-net: read bounded by the overall deadline only; expiry hands the bytes read back to the line, writes nothing
             IFS= builtin read -r -s -t "$1" -N 1 __warp_nc_byte < /dev/tty
         else
             IFS= builtin read -r -s -t "$1" -n 1 __warp_nc_byte < /dev/tty
