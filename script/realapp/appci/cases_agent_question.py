@@ -1,0 +1,241 @@
+# appci/cases_agent_question.py (#1851): the ask_user_question card must never hang on "Preparing question...". Real app, scripted fake model (fake_model.py,
+# APPCI_FAKE_MODEL=1; no real provider is used). Trigger: the user turn "Please ask me a question <TAG>" -> one ask_user_question call (fake_model.ask_question_call).
+# Faults (fake_model.inject, kinds ask_*) shape the stream around that call.
+#   agent_question_answer      the call arrives whole: the card becomes answerable (hop=agent_action blocked), Enter answers it, the model gets the answer
+#                              (a tool message in fake.tool_results), the turn ends in `success`, the input takes the next prompt
+#   agent_question_cut         the connection is cut right after the complete call
+#   agent_question_nodone      the call, then no `done` line for 20 s, then the close (a provider that never finishes; the stream ends without a terminal End)
+#   agent_question_trunc       the call's arguments are cut mid-JSON
+#   agent_question_empty       the call's arguments are `{}` (no question)
+#   agent_question_slow        a text line, 6 s of silence on the open stream, then the call
+#   agent_question_ctrl_c      Ctrl-C while the call sits unfinished (nodone fault): the turn is `cancelled` within 5 s and the client hangs up
+#   agent_question_steer       a new prompt typed while the call sits unfinished (#851 steer): the new prompt reaches the model, the turn ends, nothing stays pending
+# Pass rule for every fault case: the conversation reaches an END the user can see, one of
+#   (a) an answerable card (hop=agent_action kind=ask_user_question status=blocked): answered with Enter, the turn then ends `success`;
+#   (b) a terminal turn state (hop=turn error / cancelled / success) with no ask_user_question action left open, within a bound;
+# and in both: the input then takes a plain prompt that reaches the model exactly once and ends `success` (the turn was really freed), no agent action stays
+# pending, and the app log has no ERROR line outside the [byop] failure allowance (cases_agent_resilience.judge_errors). Never `in_progress` forever: the case
+# fails with the last state it saw. Event-driven app side (no timer decides); the idle give-up (PHOSPHOR_BYOP_STREAM_IDLE_TIMEOUT_SECS) is only a net.
+# Platforms: wherever the fake model runs (host, 127.0.0.1): Linux, macOS, Windows.
+import os, re, sys, time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import cases  # noqa: E402
+import cases_caseagent as AG  # noqa: E402
+import cases_agent_resilience as AR  # noqa: E402
+from cases import case  # noqa: E402
+
+ASK_KIND = "ask_user_question"
+BOUND_S = 150            # longest a variant may take to END: the nodone close (20 s) + resume + a possible idle give-up on a slow runner
+
+
+# ---------------------------------------------------------------- pure parts (selftest rows)
+def ask_actions(text):
+    """[(id, status)] of the ask_user_question hop=agent_action lines, in order"""
+    return [(aid, st) for aid, kind, st in AR.action_hops(text) if kind == ASK_KIND]
+
+
+def ask_blocked_ids(text):
+    """ids of ask_user_question actions that reached `blocked` (a card the user could answer)"""
+    out = []
+    for aid, st in ask_actions(text):
+        if st == "blocked" and aid not in out:
+            out.append(aid)
+    return out
+
+
+def ask_open_ids(text):
+    """ids of ask_user_question actions whose last logged status is not terminal (done / failed / cancelled)"""
+    last = {}
+    for aid, st in ask_actions(text):
+        last[aid] = st
+    return sorted(a for a, s in last.items() if s not in ("done", "failed", "cancelled"))
+
+
+def verdict(text):
+    """'answerable' | 'ended' | 'hung' for the log excerpt since the prompt: answerable = a card reached blocked and is still open; ended = the turn is
+    terminal and no ask action is open; hung = anything else (still in progress, or terminal with an ask action left open)"""
+    st = AR.last_turn_state(text)
+    open_ids = ask_open_ids(text)
+    blocked = [a for a in ask_blocked_ids(text) if a in open_ids]
+    if blocked:
+        return "answerable"
+    if st in ("error", "cancelled", "success") and not open_ids:
+        return "ended"
+    return "hung"
+
+
+# ---------------------------------------------------------------- helpers
+def ready(ctx, r):
+    AR.need_fake(ctx, r)
+    AG.fresh_conversation(ctx, r)
+
+
+def answer_card(ctx, r, off, tag):
+    """Enter (selects / confirms) up to three times until the ask action is done; True when it finished"""
+    for _ in range(3):
+        ctx.be.key("Return")
+        if ctx.until(lambda: any(st == "done" for _a, st in ask_actions(ctx.log_since(off))), 6, step=0.25):
+            ctx.shot("question_%s_answered" % tag)
+            return True
+    ctx.shot("question_%s_answer_failed" % tag)
+    return False
+
+
+def next_prompt_works(ctx, r, f, off_all, tag):
+    """the input takes a plain prompt after the variant: it reaches the model exactly once and the turn ends `success`"""
+    off, req0 = ctx.log_size(), f.requests
+    tok = "U" + ctx.tok(6).upper()
+    AG.type_fast(ctx, "Reply with the word %s" % tok)
+    r.check(AG.wait_marker(ctx, off, "[byop] opening stream", timeout=60), "%s: the prompt after the question made no model request (the input is stuck)" % tag)
+    state = AR.wait_turn(ctx, off, ("success", "error", "cancelled"), 60)
+    r.check(state == "success", "%s: the prompt after the question ended %r, expected `success`" % (tag, state))
+    r.check(f.fresh_with(tok) == 1, "%s: the next prompt reached the model %d times (expected once)" % (tag, f.fresh_with(tok)))
+    r.check(f.requests - req0 == 1, "%s: the next prompt made %d request(s), expected 1" % (tag, f.requests - req0))
+    r.check(not ask_open_ids(ctx.log_since(off_all)), "%s: an ask_user_question action is still open: %s" % (tag, ask_open_ids(ctx.log_since(off_all))))
+    for p in AR.judge_errors(ctx.log_since(off_all), limit=4):
+        r.check(False, "%s: %s" % (tag, p))
+
+
+def run_variant(ctx, r, tag, fault, **kw):
+    """arm `fault` (None: no fault), ask the question, and require the card to be answerable or the turn to have ended; then the next prompt works"""
+    ready(ctx, r)
+    f = AR.fake()
+    try:
+        f.clear_faults()
+        tok = "Q" + ctx.tok(6).upper()
+        if fault:
+            f.inject(fault, times=1, match=tok, **kw)
+        off, req0 = ctx.log_size(), f.requests
+        t0 = time.time()
+        AG.type_fast(ctx, "Please ask me a question %s" % tok)
+        if not AG.wait_marker(ctx, off, "[byop] opening stream", timeout=60):
+            r.check(False, "%s: no model request within 60 s of the prompt" % tag)
+            return
+        got = []
+
+        def settled():
+            v = verdict(ctx.log_since(off))
+            got.append(v)
+            return v in ("answerable", "ended")
+        ctx.until(settled, BOUND_S, step=0.5)
+        v = verdict(ctx.log_since(off))
+        r.metric("question_%s_seconds_to_end" % tag, round(time.time() - t0, 1))
+        ctx.shot("question_%s_state" % tag)
+        log = ctx.log_since(off)
+        r.check(v in ("answerable", "ended"),
+                "%s: the turn is neither answerable nor ended after %d s (verdict %s, last turn state %r, ask actions %r): the card hangs on 'Preparing question...'"
+                % (tag, BOUND_S, v, AR.last_turn_state(log), ask_actions(log)))
+        if v == "answerable":
+            r.check(answer_card(ctx, r, off, tag), "%s: Enter did not answer the card (no ask_user_question action reached done)" % tag)
+            state = AR.wait_turn(ctx, off, ("success", "error", "cancelled"), 60)
+            r.check(state == "success", "%s: after the answer the turn ended %r, expected `success`" % (tag, state))
+            r.check(any("alpha" in t or "ok" in t.lower() for _t, t in f.tool_results[-1:]), "%s: the model's next request carried no answer to the question" % tag)
+        elif v == "hung":
+            ctx.be.key("ctrl+c")
+        next_prompt_works(ctx, r, f, off, tag)
+        r.check(f.requests - req0 >= 2, "%s: the model got only %d request(s) for the whole variant" % (tag, f.requests - req0))
+    finally:
+        f.clear_faults()
+        AG.cleanup_tmp(ctx)
+        ctx.be.key("ctrl+c")
+
+
+# ---------------------------------------------------------------- cases
+@case("agent_question_answer", modes=("agent",), order=53, gui=True)
+def c_agent_question_answer(ctx, r):
+    """a whole ask_user_question call: the card becomes answerable, Enter answers it, the model gets the answer, the turn ends `success`, the input works"""
+    run_variant(ctx, r, "answer", None)
+
+
+@case("agent_question_cut", modes=("agent",), order=53, gui=True)
+def c_agent_question_cut(ctx, r):
+    """the connection is cut right after the complete call: an answerable card (a resume asks again) or an ended turn with a visible error; never a hang"""
+    run_variant(ctx, r, "cut", "ask_cut")
+
+
+@case("agent_question_nodone", modes=("agent",), order=53, gui=True)
+def c_agent_question_nodone(ctx, r):
+    """the call, then no `done` for 20 s, then the close without a terminal End: the turn ends (card or error), never a hang"""
+    run_variant(ctx, r, "nodone", "ask_nodone", secs=20)
+
+
+@case("agent_question_trunc", modes=("agent",), order=53, gui=True)
+def c_agent_question_trunc(ctx, r):
+    """the call's arguments are cut mid-JSON: a rejected-call card and the model's retry, or an ended turn; never a hang"""
+    run_variant(ctx, r, "trunc", "ask_trunc")
+
+
+@case("agent_question_empty", modes=("agent",), order=53, gui=True)
+def c_agent_question_empty(ctx, r):
+    """the call carries `{}` (no question): an error result goes back to the model (#1797), the turn ends; never a hang"""
+    run_variant(ctx, r, "empty", "ask_empty")
+
+
+@case("agent_question_slow", modes=("agent",), order=53, gui=True)
+def c_agent_question_slow(ctx, r):
+    """a text line, 6 s of silence on the open stream, then the call: while the call is not there the turn is simply in progress; then the card is answerable"""
+    run_variant(ctx, r, "slow", "ask_slow", secs=6)
+
+
+@case("agent_question_ctrl_c", modes=("agent",), order=53, gui=True)
+def c_agent_question_ctrl_c(ctx, r):
+    """Ctrl-C while the question call sits unfinished (the stream is held open after the call): `cancelled` within 5 s, the client hangs up, the input works"""
+    ready(ctx, r)
+    f = AR.fake()
+    try:
+        f.clear_faults()
+        tok = "C" + ctx.tok(6).upper()
+        f.inject("ask_nodone", times=1, match=tok, secs=60)
+        off, ab0 = ctx.log_size(), f.aborted
+        AG.type_fast(ctx, "Please ask me a question %s" % tok)
+        r.check(AG.wait_marker(ctx, off, "[byop] opening stream", timeout=60), "no model request within 60 s of the prompt")
+        r.check(ctx.until(lambda: bool(f.fired) and f.fired[-1] == "ask_nodone", 10), "the fault never reached the fake model")
+        time.sleep(3.0)
+        ctx.shot("question_ctrl_c_waiting")
+        t0 = time.time()
+        ctx.be.key("ctrl+c")
+        ctx.ctrlc_ts.append(time.time())
+        state = AR.wait_turn(ctx, off, ("cancelled", "error", "success"), 8)
+        took = round(time.time() - t0, 2)
+        r.metric("question_ctrl_c_to_state_s", took)
+        r.check(state == "cancelled", "Ctrl-C during the preparing state left the turn %r, expected `cancelled`" % state)
+        r.check(took <= 5.0, "the cancel took %.1f s (bound 5 s)" % took)
+        r.check(ctx.until(lambda: f.aborted > ab0, 5), "the app did not hang up the connection within 5 s of the cancel")
+        ctx.shot("question_ctrl_c_cancelled")
+        next_prompt_works(ctx, r, f, off, "ctrl_c")
+    finally:
+        f.clear_faults()
+        AG.cleanup_tmp(ctx)
+        ctx.be.key("ctrl+c")
+
+
+@case("agent_question_steer", modes=("agent",), order=53, gui=True)
+def c_agent_question_steer(ctx, r):
+    """a new prompt typed while the question call sits unfinished (#851 steer): it reaches the model once, the turn ends, nothing stays pending"""
+    ready(ctx, r)
+    f = AR.fake()
+    try:
+        f.clear_faults()
+        tok = "S" + ctx.tok(6).upper()
+        f.inject("ask_nodone", times=1, match=tok, secs=60)
+        off = ctx.log_size()
+        AG.type_fast(ctx, "Please ask me a question %s" % tok)
+        r.check(AG.wait_marker(ctx, off, "[byop] opening stream", timeout=60), "no model request within 60 s of the prompt")
+        r.check(ctx.until(lambda: bool(f.fired) and f.fired[-1] == "ask_nodone", 10), "the fault never reached the fake model")
+        time.sleep(3.0)
+        tok2 = "T" + ctx.tok(6).upper()
+        req0 = f.requests
+        AG.type_fast(ctx, "Reply with the word %s" % tok2)
+        r.check(ctx.until(lambda: f.fresh_with(tok2) >= 1, 30, step=0.25), "the steer prompt never reached the model")
+        state = AR.wait_turn(ctx, off, ("success", "error", "cancelled"), 60)
+        ctx.shot("question_steer_end")
+        r.check(state in ("success", "cancelled"), "after the steer the turn is %r, expected success (or cancelled)" % state)
+        r.check(f.fresh_with(tok2) == 1, "the steer prompt reached the model %d times" % f.fresh_with(tok2))
+        r.check(not ask_open_ids(ctx.log_since(off)), "an ask_user_question action is still open after the steer: %s" % ask_open_ids(ctx.log_since(off)))
+        next_prompt_works(ctx, r, f, off, "steer")
+        r.check(f.requests - req0 >= 2, "the model got %d request(s) after the steer" % (f.requests - req0))
+    finally:
+        f.clear_faults()
+        AG.cleanup_tmp(ctx)
+        ctx.be.key("ctrl+c")

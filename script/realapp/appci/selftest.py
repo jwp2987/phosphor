@@ -3938,6 +3938,38 @@ def agent_resilience_pure_parts():
 
 
 @check
+def agent_question_pure_parts_and_fake_asks():
+    """#1851: the ask_user_question verdicts of cases_agent_question.py, and the fake model's question trigger and ask_* fault lines"""
+    import cases_agent_question as aq
+    import fake_model as FM
+    blocked = ("hop=turn conv=c1 state=in_progress\n"
+               "hop=agent_action id=q1 kind=ask_user_question status=queued\nhop=agent_action id=q1 kind=ask_user_question status=blocked\n")
+    assert aq.verdict(blocked) == "answerable" and aq.ask_blocked_ids(blocked) == ["q1"]
+    assert aq.verdict(blocked + "hop=agent_action id=q1 kind=ask_user_question status=done\nhop=turn conv=c1 state=success\n") == "ended"
+    assert aq.verdict("hop=turn conv=c1 state=in_progress\n") == "hung" and aq.verdict("") == "hung"
+    queued_only = "hop=agent_action id=q2 kind=ask_user_question status=queued\nhop=turn conv=c1 state=error\n"
+    assert aq.verdict(queued_only) == "hung" and aq.ask_open_ids(queued_only) == ["q2"], "a terminal turn with an ask action left open is a hang"
+    assert aq.verdict("hop=turn conv=c1 state=error\n") == "ended"
+    r = FM.reply_for([{"role": "user", "content": "Please ask me a question Z9"}])
+    assert r["tool"]["name"] == "ask_user_question" and "Z9" in r["tool"]["arguments"]["questions"][0]["question"]
+    assert FM.reply_for([{"role": "user", "content": "Please ask me a question Z9"}, {"role": "tool", "content": "{}"}])["text"] == "Done."
+    for kind in ("ask_cut", "ask_nodone", "ask_trunc", "ask_empty", "ask_slow"):
+        text_l, call_l, done_l = FM.ask_fault_lines("m", kind)
+        call = json.loads(call_l)["message"]["tool_calls"][0]["function"]
+        assert call["name"] == "ask_user_question" and json.loads(done_l)["done"] is True and json.loads(text_l)["done"] is False
+    assert isinstance(json.loads(FM.ask_fault_lines("m", "ask_trunc")[1])["message"]["tool_calls"][0]["function"]["arguments"], str)
+    assert json.loads(FM.ask_fault_lines("m", "ask_empty")[1])["message"]["tool_calls"][0]["function"]["arguments"] == {}
+    f = FM.FakeModel()
+    for kind in ("ask_cut", "ask_nodone", "ask_trunc", "ask_empty", "ask_slow"):
+        f.inject(kind)
+    names = {c["name"] for c in cases.CASES}
+    want = {"agent_question_answer", "agent_question_cut", "agent_question_nodone", "agent_question_trunc", "agent_question_empty", "agent_question_slow",
+            "agent_question_ctrl_c", "agent_question_steer"}
+    assert want <= names and want <= set(cases.PROVING) and want <= set(cases.PROVING_FAKE), want - names
+    assert all(c["modes"] == ("agent",) for c in cases.CASES if c["name"] in want)
+
+
+@check
 def replay_cases_registered_but_not_swept_by_lab_glob():
     names = [c["name"] for c in cases.CASES if c["name"].startswith("lab_replay")]
     assert names == ["lab_replay.bash.150.nohelper"], names

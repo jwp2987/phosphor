@@ -22,9 +22,11 @@
 #   * a conversation whose user turns contain STREAMLONG (#1828) -> a SLOW STEADY stream: STREAM_CHUNKS pieces STREAM_GAP_S apart (about 12 s), sent as
 #     they are produced (no Content-Length), so a reply is visibly running while a case types. Sticky: every later turn of that conversation streams
 #     too, so a steer (#851) typed while the reply runs is itself answered by a running stream. fake.reqs holds every /api/chat request body;
+#   * "Please ask me a question <TAG>" (#1851) -> one ask_user_question call (one multiple-choice question, options "alpha" / "beta", TAG in the question text);
+#     after the answer the turn after the tool result is "Done." like any other;
 #   * any other user turn -> "OK <last word>" (prose only, no tool call).
 # Trigger order in reply_for (no trigger shadows another): plan, tool-result "Done.", stream long reply, follow up check, call mcp tool, show this image,
-# run / read / create / delete / edit exactly, STREAMLONG (sticky), SLOW, fallback.
+# ask me a question, run / read / create / delete / edit exactly, STREAMLONG (sticky), SLOW, fallback.
 # Fault injection (#1831, cases_agent_resilience.py): fake.inject(kind, times=1, match=None, **kw) arms a fault that the next `times` /api/chat requests
 # (None = every one until clear_faults()) take instead of the normal answer; `match` = a substring of the request's last user text (None = any request).
 #   status      kw code=429|500|.., retry_after=secs|None   -> that HTTP status with a JSON error body (and a Retry-After header)
@@ -32,6 +34,11 @@
 #   delay       kw secs=30                                   -> nothing is sent for `secs` (the first token never comes); then the normal answer. A client
 #                                                               that hangs up meanwhile is counted in fake.aborted (the proof that a cancel reached the wire)
 #   drip        kw interval=0.5, words=60                    -> a long text reply, one 6-character line every `interval` s (a reply that visibly streams)
+#   ask_cut     kw after_call=True                           -> (#1851) an ask_user_question call line, then the connection is cut (a stream cut right after a complete call)
+#   ask_nodone  kw secs=60                                   -> (#1851) the call line, then nothing (no `done` line) for `secs`, then the close: a provider that never finishes
+#   ask_trunc   -                                            -> (#1851) the call with truncated JSON arguments (a string cut mid-object), then `done`
+#   ask_empty   -                                            -> (#1851) the call with `{}` arguments (no questions), then `done`
+#   ask_slow    kw secs=3                                    -> (#1851) a text line, `secs` of silence on the open stream, then the call line and `done`
 # Faults are applied after the request is recorded and before the reply is built or streamed.
 # fake.go_down() closes the listening socket (connection refused: "the model is down"); fake.come_up() rebinds the same port.
 # Oracles the cases read: fake.requests, fake.fresh (the text of every request whose LAST message is a user turn, i.e. each prompt the app actually sent),
@@ -54,6 +61,7 @@ ASK_RE = re.compile(r"run exactly this shell command and nothing else:\s*(.+?)\s
 STREAM_RE = re.compile(r"stream long reply (\w+) chunks (\d+) gap (\d+)")
 FOLLOW_RE = re.compile(r"follow up check (\w+)")
 MCP_RE = re.compile(r"call mcp tool (\S+) on (\S+)(?: with (\{.*\}))?\s*$", re.S)
+ASKQ_RE = re.compile(r"ask me a question(?:\s+(\w+))?")
 MARK_RE = re.compile(r"\[(\w+):(\d{4}|END)\]")
 STREAM_CHUNKS, STREAM_GAP_S = 240, 0.05
 
@@ -256,6 +264,30 @@ def parse_plan(text):
     return out
 
 
+def ask_question_call(tag, args=None):
+    """pure: the ask_user_question tool call of a "Please ask me a question <TAG>" turn (args: a replacement `arguments`, e.g. a truncated string or {})"""
+    if args is None:
+        args = {"questions": [{"question": "Which one do you want? %s" % (tag or "Q"), "options": ["alpha", "beta"], "recommended_index": 0, "multi_select": False, "supports_other": False}]}
+    return {"name": "ask_user_question", "arguments": args}
+
+
+def ask_fault_lines(model, kind):
+    """pure: ([NDJSON lines before the fault's own behaviour], [lines after]) for the ask_* faults: text line, call line (truncated / empty / whole), done line"""
+    def line(msg, done=False, **kw):
+        d = {"model": model, "message": dict({"role": "assistant", "content": ""}, **msg), "done": done}
+        d.update(kw)
+        return json.dumps(d)
+    text = line({"content": "Let me ask you something. "})
+    done = line({}, True, done_reason="stop")
+    if kind == "ask_trunc":
+        call = line({"tool_calls": [{"function": ask_question_call("T", '{"questions":[{"question":"Which one do')}]})
+    elif kind == "ask_empty":
+        call = line({"tool_calls": [{"function": ask_question_call("E", {})}]})
+    else:
+        call = line({"tool_calls": [{"function": ask_question_call("F")}]})
+    return text, call, done
+
+
 def plan_call(step):
     """pure: the tool call of one parsed plan step"""
     k = step[0]
@@ -323,6 +355,9 @@ def reply_for(messages, tools=None):
     m = IMG_RE.search(text)
     if m:                                      # a markdown image: the app fetches it through the network gate (purpose remote-asset)
         return {"text": "Here it is: ![img](%s)" % m.group(1), "tool": None}
+    m = ASKQ_RE.search(text)
+    if m:
+        return {"text": "", "tool": ask_question_call(m.group(1)), "ask_question": True}
     m = ASK_RE.search(text)
     if m:
         return {"text": "", "tool": {"name": "run_shell_command", "arguments": {"command": m.group(1), "is_read_only": False, "uses_pager": False, "is_risky": False}}}
@@ -506,6 +541,36 @@ class FakeModel:
                         except OSError:
                             pass
                         return
+                    if fault["kind"].startswith("ask_"):                      # #1851: the ask_user_question call under stream faults
+                        text_l, call_l, done_l = ask_fault_lines(req.get("model") or "fake-model", fault["kind"])
+                        kind = fault["kind"]
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/x-ndjson")
+                        if kind == "ask_cut":
+                            self.send_header("Content-Length", str(100000))     # promises more than is sent: the cut is a protocol error, not a clean end
+                        self.end_headers()                                      # else HTTP/1.0: the body ends when the connection closes
+                        try:
+                            self.wfile.write((text_l + "\n").encode())
+                            self.wfile.flush()
+                            if kind == "ask_slow" and not self._wait_or_hangup(float(kw.get("secs", 3))):
+                                return
+                            self.wfile.write((call_l + "\n").encode())
+                            self.wfile.flush()
+                            if kind == "ask_cut":
+                                self.close_connection = True
+                                try:
+                                    self.connection.shutdown(socket.SHUT_RDWR)
+                                except OSError:
+                                    pass
+                                return
+                            if kind == "ask_nodone":
+                                self._wait_or_hangup(float(kw.get("secs", 60)))
+                                return
+                            self.wfile.write((done_l + "\n").encode())
+                            self.wfile.flush()
+                        except OSError:
+                            owner.aborted += 1
+                        return
                     if fault["kind"] == "delay":
                         if not self._wait_or_hangup(float(kw.get("secs", 30))):
                             return
@@ -576,7 +641,7 @@ class FakeModel:
         self.up = True
 
     def inject(self, kind, times=1, match=None, purpose="chat", **kw):
-        assert kind in ("status", "disconnect", "delay", "drip"), kind
+        assert kind in ("status", "disconnect", "delay", "drip", "ask_cut", "ask_nodone", "ask_trunc", "ask_empty", "ask_slow"), kind
         with self._lock:
             self.faults.append({"kind": kind, "left": times, "match": match, "purpose": purpose, "kw": kw})
 

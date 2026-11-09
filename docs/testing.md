@@ -2100,6 +2100,22 @@ reached the model zero times (restored rows are suspended, #1027); the fake got 
 client (Retry-After, refused connection, a cut socket), the real error block and cancel key, and persistence across quit / kill -9. Self-test rows:
 `fake_model_fault_injection`, `agent_resilience_pure_parts`.
 
+### 2.20 The question card never hangs (`appci/cases_agent_question.py`, `appci/fake_model.py`, fuzzer corpus `hang1851_*`; #1851)
+
+An agent turn hung on "Preparing question..." (the ask_user_question card, never answerable, the turn never ended). Eight agent-mode PROVING cases against the
+scripted fake model (`APPCI_FAKE_MODEL=1`), never run yet: `agent_question_answer` (whole call: card blocked, Enter answers, the model gets the answer, the turn
+succeeds), `agent_question_cut` / `_nodone` / `_trunc` / `_empty` / `_slow` (the call cut right after it, held open with no `done` then closed, arguments cut
+mid-JSON, `{}` arguments, 6 s of silence before the call), `agent_question_ctrl_c` (Ctrl-C while the call sits unfinished: `cancelled` within 5 s and the client hangs
+up) and `agent_question_steer` (#851: a new prompt typed meanwhile reaches the model once). Run: `python3 script/realapp/appci/run.py --cases 'agent_question_*'`.
+Pass rule for every fault variant: an answerable card (`hop=agent_action kind=ask_user_question status=blocked`, then answered) or a terminal turn (`error` /
+`cancelled` / `success`) with no ask action left open, within 150 s; then a plain prompt reaches the model exactly once and succeeds, and the ERROR lines stay inside
+the `[byop]` failure allowance. A turn still `in_progress`, or terminal with an ask action open, fails as the hang. Fake model additions: the user turn
+"Please ask me a question <TAG>" -> one ask_user_question call (options alpha / beta); faults `ask_cut`, `ask_nodone` (secs), `ask_trunc`, `ask_empty`, `ask_slow`
+(secs). Fuzzer corpus (`app/src/ai/blocklist/agent_fuzz/corpus/hang1851_*.json`, replayed by `corpus_replay_tests`): truncated and empty arguments, a stream with no End
+or cut after the call, a cut then a resume that asks again, a stall after the call (needs the short idle timeouts), a missing / empty / repeated call id, a question
+next to a truncated one, a steer on the blocked card, byte-split arguments. Unit: `only_content_bearing_events_restart_the_idle_window` (chat_stream.rs): empty
+keep-alive chunks no longer restart the stream idle window, so a provider that holds the response open after its last call is ended by the idle give-up.
+
 ## 3. Real-app testing
 
 Automated tests do not catch lag, lost keys or broken flows; the owner feels those. Every release candidate

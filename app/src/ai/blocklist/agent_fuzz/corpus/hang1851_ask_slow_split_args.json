@@ -1,0 +1,56 @@
+{
+  "v": 1,
+  "name": "hang1851_ask_slow_split_args",
+  "seed": 18521,
+  "turns": [
+    {
+      "when": {
+        "kind": "nth",
+        "n": 0
+      },
+      "reply": {
+        "kind": "tool_calls",
+        "calls": [
+          {
+            "id": {
+              "kind": "fresh"
+            },
+            "name": "ask_user_question",
+            "args": {
+              "kind": "valid"
+            }
+          }
+        ]
+      },
+      "chaos": {
+        "split": {
+          "kind": "bytes",
+          "n": 3
+        },
+        "delay_ms": 5
+      }
+    },
+    {
+      "when": {
+        "kind": "nth",
+        "n": 1
+      },
+      "reply": {
+        "kind": "text",
+        "text": "done"
+      }
+    }
+  ],
+  "env": {
+    "commands": {}
+  },
+  "actor": [
+    {
+      "op": {
+        "kind": "answer_question",
+        "choice": 0
+      },
+      "timing": "on_card"
+    }
+  ]
+}

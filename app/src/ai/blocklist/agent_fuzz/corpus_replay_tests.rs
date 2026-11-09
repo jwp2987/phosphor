@@ -80,6 +80,28 @@ fn corpus_files_parse_and_are_named_by_their_stem() {
             "missing corpus/{want}.json"
         );
     }
+    // #1851: the hang-shaped question scenarios (truncated or empty arguments, a stream cut or
+    // never finished after the call, a missing / empty / repeated call id, a steer on the
+    // blocked card) stay in the corpus.
+    for want in [
+        "hang1851_ask_truncated_args",
+        "hang1851_ask_empty_args",
+        "hang1851_ask_no_done_after_call",
+        "hang1851_ask_cut_after_call",
+        "hang1851_ask_cut_then_resume_asks_again",
+        "hang1851_ask_stall_after_call",
+        "hang1851_ask_missing_id",
+        "hang1851_ask_empty_id",
+        "hang1851_ask_duplicate_ids",
+        "hang1851_ask_then_truncated_ask",
+        "hang1851_ask_steer_while_blocked",
+        "hang1851_ask_slow_split_args",
+    ] {
+        assert!(
+            entries.iter().any(|(name, _)| name == want),
+            "missing corpus/{want}.json"
+        );
+    }
     for known in known_failures().keys() {
         assert!(
             entries.iter().any(|(name, _)| name == known),
