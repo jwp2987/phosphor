@@ -9,8 +9,9 @@ use crate::client::ClientError;
 use crate::shellcmd::read::{self, FileProbe, GatherPlan};
 use crate::shellcmd::write::{
     ChunkPosition, EXIT_CONFLICT, Expect, delete_failure_message, posix_delete_command,
-    posix_guarded_delete_command, posix_write_command, pwsh_delete_command,
-    pwsh_guarded_delete_command, pwsh_write_command, split_chunks, write_failure_message,
+    posix_guarded_delete_command, posix_write_command, posix_write_payload, pwsh_delete_command,
+    pwsh_guarded_delete_command, pwsh_write_command, pwsh_write_payload, split_chunks,
+    write_failure_message,
 };
 use crate::shellcmd::{Script, StderrMode};
 
@@ -68,31 +69,36 @@ impl ShellBackend {
         log::debug!("shell arm serving {:?}", Family::FileWrite);
         let executor = self.executor_for("write_file")?;
         let pwsh = executor.shell_kind().is_powershell();
-        // POSIX hosts decode base64 when they can; with no decoder the bytes travel as printf
-        // octal escapes (smaller chunks).
+        // POSIX hosts decode base64 when they can; with no decoder the bytes travel raw. Either
+        // way they ride the command's stdin, never its argv (#1864).
         let decoder = if pwsh {
             None
         } else {
             self.decode_tool().await?
         };
-        let printf = !pwsh && decoder.is_none();
         let nonce = Self::new_nonce();
         let bytes = content.into_bytes();
-        let chunks = split_chunks(&bytes, printf);
+        let chunks = split_chunks(&bytes);
         let count = chunks.len();
         for (i, chunk) in chunks.into_iter().enumerate() {
             let position = ChunkPosition {
                 first: i == 0,
                 last: i + 1 == count,
             };
-            let command = if pwsh {
-                pwsh_write_command(&path, &nonce, chunk, position, expect)
+            let (command, payload) = if pwsh {
+                (
+                    pwsh_write_command(&path, &nonce, position, expect),
+                    pwsh_write_payload(chunk),
+                )
             } else {
-                posix_write_command(&path, &nonce, chunk, position, decoder, expect)
+                (
+                    posix_write_command(&path, &nonce, position, decoder, expect),
+                    posix_write_payload(chunk, decoder),
+                )
             };
             let script =
                 Script::new(Self::new_nonce())?.section("w", command, StderrMode::Merge)?;
-            let frame = self.run_script(&script).await?;
+            let frame = self.run_script_stdin(&script, payload).await?;
             let section = frame.section("w").ok_or_else(|| {
                 op_failed(format!("Failed to write {path}: no answer from the host"))
             })?;

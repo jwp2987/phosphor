@@ -13,7 +13,7 @@ use crate::shellcmd::git::{
     GIT_BASE_ARGS, GIT_ENV, GIT_NOPROMPT_ENV, GIT_SSH_COMMAND_SH_ASSIGNMENT, GIT_UNSET_ENV,
     GitOutput, GitRunner, operation_probe_script, parse_operation_probe,
 };
-use crate::shellcmd::{base64, sh_quote};
+use crate::shellcmd::sh_quote;
 
 /// Runs git/gh by handing the host's login shell one POSIX script per call.
 #[derive(Clone, Debug)]
@@ -36,8 +36,10 @@ impl ShellGitRunner {
         self
     }
 
-    /// The POSIX script for one git call. A patch (`stdin`) travels base64-encoded inside the
-    /// script and is decoded on the host, so it needs no stdin channel on the executor.
+    /// The POSIX script for one git call. A patch or commit message (`stdin`) is NOT in the
+    /// script: the caller hands those bytes to the executor as the command's stdin (#1864), so
+    /// they never reach a command line (no `ps`/audit-log leak, no argument-length limit).
+    /// `Some` leaves the script's stdin open for git; `None` closes it (`</dev/null`).
     pub fn git_script(&self, args: &[&str], stdin: Option<&[u8]>, cwd: &Path) -> String {
         // `env -u` removes the askpass helpers; the assignments never let git or ssh prompt
         // (owner ruling), matching `daemon::git_runner` exactly.
@@ -61,7 +63,10 @@ impl ShellGitRunner {
             env.join(" "),
             argv.join(" ")
         );
-        wrap_stdin(body, stdin)
+        match stdin {
+            None => format!("{body} </dev/null"),
+            Some(_) => body,
+        }
     }
 
     /// The POSIX script for one gh call.
@@ -88,7 +93,7 @@ impl ShellGitRunner {
         let this = self.clone();
         Box::pin(async move {
             let script = operation_probe_script(&git_dir.to_string_lossy());
-            let output = this.exec(script).await?;
+            let output = this.exec(script, Vec::new()).await?;
             Ok(parse_operation_probe(&output.stdout_lossy()))
         })
     }
@@ -105,7 +110,7 @@ impl ShellGitRunner {
             sh_quote(&repo.to_string_lossy()),
             files.join(" ")
         );
-        let output = self.exec(script).await?;
+        let output = self.exec(script, Vec::new()).await?;
         if output.success() {
             Ok(())
         } else {
@@ -113,7 +118,7 @@ impl ShellGitRunner {
         }
     }
 
-    async fn exec(&self, script: String) -> Result<GitOutput> {
+    async fn exec(&self, script: String, stdin: Vec<u8>) -> Result<GitOutput> {
         let shell = self.executor.shell_kind();
         if shell.is_powershell() {
             return Err(anyhow!(
@@ -124,7 +129,7 @@ impl ShellGitRunner {
             .executor
             .execute(ExecRequest {
                 command: shell.wrap(&script),
-                stdin: Vec::new(),
+                stdin,
                 max_output_bytes: MAX_EXEC_OUTPUT_BYTES,
             })
             .await
@@ -140,16 +145,6 @@ impl ShellGitRunner {
     }
 }
 
-fn wrap_stdin(body: String, stdin: Option<&[u8]>) -> String {
-    match stdin {
-        None => format!("{body} </dev/null"),
-        Some(bytes) => format!(
-            "printf %s {} | {{ base64 -d 2>/dev/null || base64 -D; }} | {{ {body}; }}",
-            sh_quote(&base64::encode(bytes))
-        ),
-    }
-}
-
 impl GitRunner for ShellGitRunner {
     fn run<'a>(
         &'a self,
@@ -157,7 +152,13 @@ impl GitRunner for ShellGitRunner {
         stdin: Option<&'a [u8]>,
         cwd: &'a Path,
     ) -> BoxFuture<'a, Result<GitOutput>> {
-        Box::pin(async move { self.exec(self.git_script(args, stdin, cwd)).await })
+        Box::pin(async move {
+            self.exec(
+                self.git_script(args, stdin, cwd),
+                stdin.map(<[u8]>::to_vec).unwrap_or_default(),
+            )
+            .await
+        })
     }
 
     fn run_gh<'a>(
@@ -165,7 +166,7 @@ impl GitRunner for ShellGitRunner {
         args: &'a [&'a str],
         cwd: &'a Path,
     ) -> BoxFuture<'a, Result<GitOutput>> {
-        Box::pin(async move { self.exec(self.gh_script(args, cwd)).await })
+        Box::pin(async move { self.exec(self.gh_script(args, cwd), Vec::new()).await })
     }
 }
 

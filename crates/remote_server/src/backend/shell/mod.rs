@@ -184,13 +184,23 @@ impl ShellBackend {
 
     /// Runs `script` on the host and parses the framed result.
     pub async fn run_script(&self, script: &Script) -> Result<Frame, BackendError> {
+        self.run_script_stdin(script, Vec::new()).await
+    }
+
+    /// [`Self::run_script`] with `stdin` on the script's standard input: how user data (file
+    /// chunks) reaches the host without appearing in any command line (#1864).
+    pub async fn run_script_stdin(
+        &self,
+        script: &Script,
+        stdin: Vec<u8>,
+    ) -> Result<Frame, BackendError> {
         let executor = self.executor.as_ref().ok_or_else(|| {
             BackendError::Unavailable("no out-of-band channel for remote commands".into())
         })?;
         let output = executor
             .execute(ExecRequest {
                 command: script.render(executor.shell_kind()),
-                stdin: Vec::new(),
+                stdin,
                 max_output_bytes: MAX_EXEC_OUTPUT_BYTES,
             })
             .await?;

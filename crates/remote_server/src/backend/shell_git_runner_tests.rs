@@ -24,10 +24,21 @@ impl OutOfBandExecutor for LocalSh {
     fn execute(&self, request: ExecRequest) -> BoxFuture<'_, Result<ExecOutput, ExecError>> {
         Box::pin(async move {
             self.seen.lock().unwrap().push(request.command.clone());
-            let out = std::process::Command::new("sh")
+            use std::io::Write as _;
+            use std::process::Stdio;
+            let mut child = std::process::Command::new("sh")
                 .arg("-c")
                 .arg(&request.command)
-                .output()
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e| ExecError::Failed(e.to_string()))?;
+            if let Some(mut pipe) = child.stdin.take() {
+                let _ = pipe.write_all(&request.stdin);
+            }
+            let out = child
+                .wait_with_output()
                 .map_err(|e| ExecError::Failed(e.to_string()))?;
             Ok(ExecOutput {
                 stdout: out.stdout,
@@ -61,16 +72,100 @@ fn script_quotes_cwd_args_and_sets_the_shared_env() {
 }
 
 #[test]
-fn stdin_travels_as_base64_and_path_env_is_quoted() {
+fn stdin_never_enters_the_script_and_path_env_is_quoted() {
     let r = runner().0.with_path_env(Some("/a b:/bin".into()));
     let s = r.git_script(&["apply", "-"], Some(b"hi"), Path::new("/r"));
-    assert!(
-        s.starts_with("printf %s 'aGk=' | { base64 -d 2>/dev/null || base64 -D; } | { cd '/r' && ")
-    );
+    // The patch is the executor's stdin (#1864): the script has neither it nor its base64, and
+    // leaves git's stdin open.
+    assert!(s.starts_with("cd '/r' && "), "{s}");
+    assert!(!s.contains("aGk=") && !s.contains("base64") && !s.contains("</dev/null"));
     assert!(s.contains("PATH='/a b:/bin' git"));
     assert!(
         r.gh_script(&["pr", "view"], Path::new("/r"))
             .contains("gh 'pr' 'view' </dev/null")
+    );
+}
+
+/// #1869: a patch far over the 128 KiB single-argument limit (and a secret in it) is staged
+/// through stdin; the command line the executor sees carries none of it.
+#[test]
+fn a_200_kib_patch_stages_and_never_appears_in_the_command_line() {
+    if std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    let (r, sh) = runner();
+    let g = |args: &[&str]| futures_lite::future::block_on(git_text(&r, repo, args));
+    g(&["init", "-q"]).unwrap();
+    std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+    g(&["add", "a.txt"]).unwrap();
+    let mut patch = String::from(
+        "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1,2501 @@\n one\n",
+    );
+    for i in 0..2500 {
+        patch.push_str(&format!("+SECRETLINE-{i:04}-{}\n", "x".repeat(70)));
+    }
+    assert!(patch.len() > 200 * 1024);
+    let out = futures_lite::future::block_on(crate::shellcmd::git::git_text_stdin(
+        &r,
+        repo,
+        &["apply", "--cached", "--recount", "-"],
+        Some(patch.as_bytes()),
+    ));
+    assert!(out.is_ok(), "{out:?}");
+    assert!(
+        g(&["diff", "--cached"])
+            .unwrap()
+            .contains("SECRETLINE-2499")
+    );
+    let seen = sh.seen.lock().unwrap();
+    assert!(
+        seen.iter().all(|c| !c.contains("SECRETLINE")),
+        "patch text reached a command line"
+    );
+    assert!(seen.iter().all(|c| c.len() < 4096));
+}
+
+/// #1864: a commit message goes to `git commit` on stdin, not into the command line.
+#[test]
+fn a_commit_message_is_stdin_not_argv() {
+    if std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    let (r, sh) = runner();
+    let g = |args: &[&str]| futures_lite::future::block_on(git_text(&r, repo, args));
+    g(&["init", "-q"]).unwrap();
+    g(&["config", "user.email", "t@example.com"]).unwrap();
+    g(&["config", "user.name", "t"]).unwrap();
+    std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+    futures_lite::future::block_on(crate::shellcmd::git::run_commit(
+        &r,
+        repo,
+        "subject line\n\nSECRETBODY token",
+        true,
+    ))
+    .unwrap();
+    assert_eq!(
+        g(&["log", "-1", "--format=%B"]).unwrap().trim(),
+        "subject line\n\nSECRETBODY token"
+    );
+    assert!(
+        sh.seen
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|c| !c.contains("SECRETBODY"))
     );
 }
 

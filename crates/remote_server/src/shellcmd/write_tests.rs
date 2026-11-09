@@ -7,9 +7,9 @@ const FIRST_AND_LAST: ChunkPosition = ChunkPosition {
 
 #[test]
 fn chunks_are_at_most_64k_and_an_empty_file_is_one_empty_chunk() {
-    assert_eq!(split_chunks(b"", false).len(), 1);
+    assert_eq!(split_chunks(b"").len(), 1);
     let data = vec![7u8; WRITE_CHUNK_BYTES * 2 + 1];
-    let chunks = split_chunks(&data, false);
+    let chunks = split_chunks(&data);
     assert_eq!(chunks.len(), 3);
     assert!(chunks.iter().all(|c| c.len() <= WRITE_CHUNK_BYTES));
     assert_eq!(chunks.concat(), data);
@@ -20,7 +20,6 @@ fn a_single_chunk_write_is_dir_temp_decode_mode_rename_in_one_command() {
     let c = posix_write_command(
         "/a/b c.txt",
         "n0nce",
-        b"hi",
         FIRST_AND_LAST,
         Some(DecodeTool::Lower),
         None,
@@ -28,7 +27,13 @@ fn a_single_chunk_write_is_dir_temp_decode_mode_rename_in_one_command() {
     assert!(c.starts_with("f='/a/b c.txt'\n"), "{c}");
     assert!(c.contains("tmp=\"$f.phosphor-tmp-n0nce\""));
     assert!(c.contains("mkdir -p -- \"$(dirname -- \"$f\")\""));
-    assert!(c.contains("printf '%s' 'aGk=' | base64 -d > \"$tmp\""));
+    // The bytes are the command's stdin, not part of it (#1864).
+    assert!(c.contains("base64 -d > \"$tmp\""));
+    assert!(!c.contains("aGk=") && !c.contains("printf"), "{c}");
+    assert_eq!(
+        posix_write_payload(b"hi", Some(DecodeTool::Lower)),
+        b"aGk=\n"
+    );
     assert!(c.contains("stat -c %a -- \"$f\"") && c.contains("stat -f %Lp -- \"$f\""));
     assert!(c.contains("mv -f -- \"$tmp\" \"$f\""));
     assert!(!c.contains("CONFLICT"));
@@ -39,7 +44,6 @@ fn middle_chunks_append_and_only_the_last_one_renames() {
     let first = posix_write_command(
         "/x",
         "n",
-        b"a",
         ChunkPosition {
             first: true,
             last: false,
@@ -50,7 +54,6 @@ fn middle_chunks_append_and_only_the_last_one_renames() {
     let mid = posix_write_command(
         "/x",
         "n",
-        b"b",
         ChunkPosition {
             first: false,
             last: false,
@@ -61,7 +64,6 @@ fn middle_chunks_append_and_only_the_last_one_renames() {
     let last = posix_write_command(
         "/x",
         "n",
-        b"c",
         ChunkPosition {
             first: false,
             last: true,
@@ -83,7 +85,6 @@ fn a_guarded_write_checks_size_and_mtime_or_absence_before_the_rename() {
     let c = posix_write_command(
         "/x",
         "n",
-        b"a",
         FIRST_AND_LAST,
         Some(DecodeTool::Lower),
         Some(stamp),
@@ -96,7 +97,6 @@ fn a_guarded_write_checks_size_and_mtime_or_absence_before_the_rename() {
     let absent = posix_write_command(
         "/x",
         "n",
-        b"a",
         FIRST_AND_LAST,
         Some(DecodeTool::Lower),
         Some(Expect::Absent),
@@ -109,7 +109,6 @@ fn hostile_paths_are_quoted_and_tilde_expands_on_the_host() {
     let c = posix_write_command(
         "/t/it's $x",
         "n",
-        b"",
         FIRST_AND_LAST,
         Some(DecodeTool::Lower),
         None,
@@ -118,7 +117,6 @@ fn hostile_paths_are_quoted_and_tilde_expands_on_the_host() {
     let h = posix_write_command(
         "~/n.txt",
         "n",
-        b"",
         FIRST_AND_LAST,
         Some(DecodeTool::Lower),
         None,
@@ -129,15 +127,14 @@ fn hostile_paths_are_quoted_and_tilde_expands_on_the_host() {
 
 #[test]
 fn the_pwsh_write_never_uses_exit_inside_the_framed_block() {
-    let c = pwsh_write_command(
-        "C:\\it's.txt",
-        "n",
-        b"hi",
-        FIRST_AND_LAST,
-        Some(Expect::Absent),
-    );
+    let c = pwsh_write_command("C:\\it's.txt", "n", FIRST_AND_LAST, Some(Expect::Absent));
     assert!(c.starts_with("$f = 'C:\\it''s.txt'\n"), "{c}");
-    assert!(c.contains("WriteAllBytes($tmp, [Convert]::FromBase64String('aGk='))"));
+    assert!(
+        c.contains("OpenStandardInput()") && c.contains("WriteAllBytes($tmp, $b)"),
+        "{c}"
+    );
+    assert!(!c.contains("aGk="));
+    assert_eq!(pwsh_write_payload(b"hi"), b"aGk=\n");
     assert!(c.contains("Move-Item -LiteralPath $tmp -Destination $f -Force"));
     assert!(!c.contains("exit "), "{c}");
     assert!(c.contains("$global:LASTEXITCODE = 5; return"));
@@ -154,22 +151,16 @@ fn failure_messages_name_the_cause_and_a_conflict_says_nothing_was_overwritten()
 }
 
 #[test]
-fn without_a_decoder_bytes_travel_as_printf_octal_escapes_in_small_chunks() {
-    assert_eq!(printf_escape(b"ab 1~"), "ab 1~");
-    assert_eq!(printf_escape(b"100%'\\"), "100\\045\\047\\134");
-    assert_eq!(printf_escape(b"\n\0\xc3\xa9"), "\\012\\000\\303\\251");
-    let data = vec![0xffu8; PRINTF_CHUNK_BYTES * 2 + 1];
-    let chunks = split_chunks(&data, true);
-    assert_eq!(chunks.len(), 3);
-    // Worst case, four characters per byte: still one command under 64 KiB.
-    assert!(printf_escape(chunks[0]).len() <= 64 * 1024);
-    let c = posix_write_command("/x", "n", b"a%\n", FIRST_AND_LAST, None, None);
-    assert!(c.contains("printf 'a\\045\\012' > \"$tmp\""), "{c}");
-    assert!(!c.contains("base64"));
+fn without_a_decoder_the_raw_bytes_travel_on_stdin_and_cat_copies_them() {
+    // Byte-exact: nothing is escaped or encoded, every byte value survives.
+    let all: Vec<u8> = (0..=255u8).collect();
+    assert_eq!(posix_write_payload(&all, None), all);
+    let c = posix_write_command("/x", "n", FIRST_AND_LAST, None, None);
+    assert!(c.contains("cat > \"$tmp\""), "{c}");
+    assert!(!c.contains("base64") && !c.contains("printf"));
     let mid = posix_write_command(
         "/x",
         "n",
-        b"b",
         ChunkPosition {
             first: false,
             last: false,
@@ -177,7 +168,28 @@ fn without_a_decoder_bytes_travel_as_printf_octal_escapes_in_small_chunks() {
         None,
         None,
     );
-    assert!(mid.contains("printf 'b' >> \"$tmp\""));
+    assert!(mid.contains("cat >> \"$tmp\""));
+    let data = vec![0xffu8; WRITE_CHUNK_BYTES * 2 + 1];
+    assert_eq!(split_chunks(&data).len(), 3);
+}
+
+/// #1864/#1870: whatever the chunk size, no file content is in the command, and a pwsh command
+/// stays far below the 32 767-character Windows command line even after UTF-16 + base64
+/// (`-EncodedCommand`); the old builder put 88 KiB of base64 in it.
+#[test]
+fn no_content_is_in_any_write_command_and_the_pwsh_one_fits_a_windows_command_line() {
+    let content = vec![b'Q'; 200 * 1024];
+    for chunk in split_chunks(&content) {
+        let p = pwsh_write_command("C:\\repo\\f.txt", "n", FIRST_AND_LAST, Some(Expect::Absent));
+        let wrapped = crate::shellcmd::ShellKind::Pwsh.wrap(&p);
+        assert!(wrapped.len() < 6 * 1024, "{}", wrapped.len());
+        let z = posix_write_command("/r/f", "n", FIRST_AND_LAST, Some(DecodeTool::Lower), None);
+        let payload = posix_write_payload(chunk, Some(DecodeTool::Lower));
+        assert!(!z.contains("UVFR") && !p.contains("UVFR"));
+        assert!(payload.starts_with(b"UVFR"));
+        // A chunk larger than the old ~6 KiB pwsh ceiling is simply stdin now.
+        assert!(pwsh_write_payload(chunk).len() > 6 * 1024);
+    }
 }
 
 #[test]
@@ -196,7 +208,6 @@ fn a_hash_guarded_write_compares_the_files_sha256_before_the_rename() {
     let c = posix_write_command(
         "/x",
         "n",
-        b"a",
         FIRST_AND_LAST,
         Some(DecodeTool::Lower),
         Some(Expect::Sha256(digest)),
@@ -207,13 +218,7 @@ fn a_hash_guarded_write_compares_the_files_sha256_before_the_rename() {
         .expect("check present");
     assert!(check < c.find("mv -f").unwrap());
     assert!(c.contains("exit 5"));
-    let p = pwsh_write_command(
-        "C:\\x",
-        "n",
-        b"a",
-        FIRST_AND_LAST,
-        Some(Expect::Sha256(digest)),
-    );
+    let p = pwsh_write_command("C:\\x", "n", FIRST_AND_LAST, Some(Expect::Sha256(digest)));
     assert!(p.contains("Get-FileHash"));
     assert!(p.find("-ne '").unwrap() < p.find("Move-Item").unwrap());
 }
@@ -226,7 +231,6 @@ fn a_hash_guarded_script_reports_a_missing_hash_tool_apart_from_a_conflict() {
     let c = posix_write_command(
         "/x",
         "n",
-        b"a",
         FIRST_AND_LAST,
         Some(DecodeTool::Lower),
         Some(Expect::Sha256(digest)),
@@ -240,19 +244,12 @@ fn a_hash_guarded_script_reports_a_missing_hash_tool_apart_from_a_conflict() {
     let stamped = posix_write_command(
         "/x",
         "n",
-        b"a",
         FIRST_AND_LAST,
         Some(DecodeTool::Lower),
         Some(Expect::Absent),
     );
     assert!(!stamped.contains("NOHASH"));
-    let p = pwsh_write_command(
-        "C:\\x",
-        "n",
-        b"a",
-        FIRST_AND_LAST,
-        Some(Expect::Sha256(digest)),
-    );
+    let p = pwsh_write_command("C:\\x", "n", FIRST_AND_LAST, Some(Expect::Sha256(digest)));
     assert!(p.contains("catch { $cur = 'nohash' }"), "{p}");
     assert!(p.contains("'NOHASH'; $global:LASTEXITCODE = 6; return"));
     assert!(p.find("'NOHASH'").unwrap() < p.find("Move-Item").unwrap());

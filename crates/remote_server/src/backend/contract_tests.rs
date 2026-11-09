@@ -1097,8 +1097,8 @@ fn shell_subject() -> Subject {
     }
 }
 
-/// The printf-octal fallback (parity P2): a host with no base64 or openssl still writes, byte
-/// for byte, under the same assertions as every other backend. Reads use `od` there.
+/// The no-decoder fallback (parity P2; the raw bytes ride stdin to `cat` since #1864): a host with
+/// no base64 or openssl still writes, byte for byte, under the same assertions as every other backend. Reads use `od` there.
 #[tokio::test]
 async fn the_shell_backend_writes_on_a_host_with_no_base64_decoder() {
     let shell = ShellBackend::new(Some(Arc::new(NoDecoderShExecutor::new())));
@@ -1112,6 +1112,55 @@ async fn the_shell_backend_writes_on_a_host_with_no_base64_decoder() {
         backend: Arc::new(shell),
     };
     assert_file_write(&subject).await;
+}
+
+/// Wraps an executor and keeps every command line it was asked to run.
+#[derive(Debug)]
+struct Recording {
+    inner: LocalShExecutor,
+    seen: std::sync::Mutex<Vec<String>>,
+}
+
+impl OutOfBandExecutor for Recording {
+    fn channel_kind(&self) -> ChannelKind {
+        self.inner.channel_kind()
+    }
+    fn shell_kind(&self) -> ShellKind {
+        self.inner.shell_kind()
+    }
+    fn execute(&self, request: ExecRequest) -> BoxFuture<'_, Result<ExecOutput, ExecError>> {
+        self.seen.lock().unwrap().push(request.command.clone());
+        self.inner.execute(request)
+    }
+}
+
+/// #1864/#1869: a 200 KiB write lands byte-exact and no command line (the ssh argv and the
+/// host's `sh -c` argument on a real channel) holds any of it, raw or base64.
+#[tokio::test]
+async fn a_shell_write_keeps_the_file_content_out_of_every_command_line() {
+    let rec = Arc::new(Recording {
+        inner: LocalShExecutor,
+        seen: Default::default(),
+    });
+    let shell = ShellBackend::new(Some(rec.clone()));
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("big.txt").to_string_lossy().into_owned();
+    let content = "TOPSECRETMARKER-line\n".repeat(10_000);
+    assert!(content.len() > 200 * 1024);
+    shell
+        .write_file_expecting(path.clone(), content.clone(), None)
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+    let b64 = crate::shellcmd::base64::encode(b"TOPSECRETMARKER-line");
+    for c in rec.seen.lock().unwrap().iter() {
+        assert!(
+            !c.contains("TOPSECRETMARKER"),
+            "raw content in a command line"
+        );
+        assert!(!c.contains(&b64[..16]), "base64 content in a command line");
+        assert!(c.len() < 8 * 1024, "command line is {} bytes", c.len());
+    }
 }
 
 /// #1837: a write that carries the state it was computed against writes when the file still has

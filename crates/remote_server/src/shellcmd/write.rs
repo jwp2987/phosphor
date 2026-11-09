@@ -2,26 +2,25 @@
 //!
 //! A write is a temp file in the target's directory plus a rename, so a reader never sees half a
 //! file and a failed write leaves the old one: the content is base64'd by the app, sent in chunks
-//! of at most [`WRITE_CHUNK_BYTES`] (so no command line is longer than the host accepts),
-//! decoded and appended to the temp file, and the last command preserves the target's mode and
+//! of at most [`WRITE_CHUNK_BYTES`], decoded and appended to the temp file, and the last command preserves the target's mode and
 //! moves the temp file over it. The temp name carries a per-write nonce so every chunk's command
 //! finds the same file. An optional [`Expect`] makes the final command refuse (and remove the
 //! temp file) when the target is no longer in the state the caller read it in.
 //!
-//! POSIX hosts get `printf | base64 -d`; PowerShell hosts get `[IO.File]::WriteAllBytes` and
-//! `Move-Item` (a failure sets `$LASTEXITCODE` and returns: `exit` inside the framed script block
+//! The bytes never ride in the command line (a process listing and the host's audit log would show
+//! them, and the line has a length limit): the command READS them from its stdin, and the caller
+//! hands them to the executor with [`posix_write_payload`] / [`pwsh_write_payload`] (#1864).
+//! POSIX hosts get `base64 -d >> "$tmp"` (or `cat` when the host has no decoder, the bytes then
+//! travel raw); PowerShell hosts read stdin through `[Console]::OpenStandardInput()` and use
+//! `[IO.File]::WriteAllBytes` and `Move-Item` (a failure sets `$LASTEXITCODE` and returns: `exit` inside the framed script block
 //! would end the whole host and lose the frame). A symlink target is written through (like `std::fs::write`) rather than replaced.
 
 use super::base64::{self, DecodeTool};
 use super::sh_quote;
 
-/// Raw bytes per command. 64 KiB is 88 KiB of base64, under the 128 KiB a single argument may
-/// be on Linux.
+/// Raw bytes per command. The chunk travels on stdin, so no command-line limit applies; the
+/// size only bounds one round trip's memory and the 60 s per-command give-up net.
 pub const WRITE_CHUNK_BYTES: usize = 64 * 1024;
-
-/// Raw bytes per command when the host has no base64 decoder and the chunk travels as `printf`
-/// octal escapes (up to four characters per byte): the command stays under 64 KiB.
-pub const PRINTF_CHUNK_BYTES: usize = 16 * 1024;
 
 /// The exit code of the final command when the target no longer matches [`Expect`].
 pub const EXIT_CONFLICT: i32 = 5;
@@ -169,32 +168,32 @@ pub struct ChunkPosition {
 }
 
 /// Splits `content` into chunks; always at least one (an empty file is one empty chunk).
-/// `printf` is true for hosts that write through [`printf_escape`] instead of base64.
-pub fn split_chunks(content: &[u8], printf: bool) -> Vec<&[u8]> {
+pub fn split_chunks(content: &[u8]) -> Vec<&[u8]> {
     if content.is_empty() {
         return vec![content];
     }
-    content
-        .chunks(if printf {
-            PRINTF_CHUNK_BYTES
-        } else {
-            WRITE_CHUNK_BYTES
-        })
-        .collect()
+    content.chunks(WRITE_CHUNK_BYTES).collect()
 }
 
-/// `bytes` as the body of a single-quoted POSIX `printf` format: letters, digits and most
-/// punctuation as they are, everything else (including `\`, `%`, `'`, controls, NUL and every
-/// non-ASCII byte) as a three-digit octal escape, which every POSIX `printf` understands.
-pub fn printf_escape(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len());
-    for &b in bytes {
-        match b {
-            b'\\' | b'%' | b'\'' => out.push_str(&format!("\\{b:03o}")),
-            b' '..=b'~' => out.push(b as char),
-            _ => out.push_str(&format!("\\{b:03o}")),
+/// The stdin bytes for one chunk of [`posix_write_command`]: base64 text (newline-ended, every
+/// decoder takes that) when the host decodes, the raw bytes when it has no decoder (`cat`
+/// copies them, byte-exact).
+pub fn posix_write_payload(chunk: &[u8], decoder: Option<DecodeTool>) -> Vec<u8> {
+    match decoder {
+        Some(_) => {
+            let mut out = base64::encode(chunk).into_bytes();
+            out.push(b'\n');
+            out
         }
+        None => chunk.to_vec(),
     }
+}
+
+/// The stdin bytes for one chunk of [`pwsh_write_command`]: base64 text (text survives every
+/// Windows ssh/console layer; raw bytes might not).
+pub fn pwsh_write_payload(chunk: &[u8]) -> Vec<u8> {
+    let mut out = base64::encode(chunk).into_bytes();
+    out.push(b'\n');
     out
 }
 
@@ -214,11 +213,11 @@ pub(super) fn posix_target(path: &str) -> String {
     )
 }
 
-/// The POSIX command for one chunk of a write.
+/// The POSIX command for one chunk of a write. The chunk itself is the command's stdin
+/// ([`posix_write_payload`]); nothing the user wrote appears in the returned text.
 pub fn posix_write_command(
     path: &str,
     nonce: &str,
-    chunk: &[u8],
     position: ChunkPosition,
     decoder: Option<DecodeTool>,
     expect: Option<Expect>,
@@ -231,14 +230,10 @@ pub fn posix_write_command(
         ));
     }
     let redirect = if position.first { ">" } else { ">>" };
-    // With no decoder on the host the bytes travel as printf octal escapes.
+    // The chunk is on stdin (see the module docs); with no decoder it is the raw bytes.
     let write = match decoder {
-        Some(decoder) => format!(
-            "printf '%s' '{}' | {}",
-            base64::encode(chunk),
-            decoder.filter()
-        ),
-        None => format!("printf '{}'", printf_escape(chunk)),
+        Some(decoder) => decoder.filter().to_string(),
+        None => "cat".to_string(),
     };
     out.push_str(&format!(
         "{write} {redirect} \"$tmp\" || {{ rm -f -- \"$tmp\"; exit {EXIT_APPEND}; }}\n"
@@ -269,26 +264,26 @@ pub(super) fn pwsh_target(path: &str) -> String {
     }
 }
 
-/// The PowerShell command for one chunk of a write (same contract as [`posix_write_command`]).
+/// The PowerShell command for one chunk of a write (same contract as [`posix_write_command`];
+/// the chunk is stdin, [`pwsh_write_payload`]).
 pub fn pwsh_write_command(
     path: &str,
     nonce: &str,
-    chunk: &[u8],
     position: ChunkPosition,
     expect: Option<Expect>,
 ) -> String {
     let mut out = pwsh_target(path);
     out.push_str(&format!("\n$tmp = $f + '.phosphor-tmp-{nonce}'\n"));
     out.push_str("$ErrorActionPreference = 'Stop'\n");
-    let b64 = base64::encode(chunk);
+    let read = "$m = New-Object IO.MemoryStream; [Console]::OpenStandardInput().CopyTo($m); $b = [Convert]::FromBase64String([Text.Encoding]::ASCII.GetString($m.ToArray()))";
     if position.first {
         out.push_str(&format!(
             "try {{ New-Item -ItemType Directory -Force -Path (Split-Path -Parent $f) | Out-Null }} catch {{ $global:LASTEXITCODE = {EXIT_MKDIR}; return }}\n\
-             try {{ [IO.File]::WriteAllBytes($tmp, [Convert]::FromBase64String('{b64}')) }} catch {{ $global:LASTEXITCODE = {EXIT_APPEND}; return }}\n"
+             try {{ {read}; [IO.File]::WriteAllBytes($tmp, $b) }} catch {{ $global:LASTEXITCODE = {EXIT_APPEND}; return }}\n"
         ));
     } else {
         out.push_str(&format!(
-            "try {{ $b = [Convert]::FromBase64String('{b64}'); $s = [IO.File]::Open($tmp, 'Append'); $s.Write($b, 0, $b.Length); $s.Dispose() }} catch {{ Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue; $global:LASTEXITCODE = {EXIT_APPEND}; return }}\n"
+            "try {{ {read}; $s = [IO.File]::Open($tmp, 'Append'); $s.Write($b, 0, $b.Length); $s.Dispose() }} catch {{ Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue; $global:LASTEXITCODE = {EXIT_APPEND}; return }}\n"
         ));
     }
     if position.last {

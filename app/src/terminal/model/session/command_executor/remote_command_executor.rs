@@ -257,11 +257,26 @@ async fn run_over_master(
             .stderr(std::process::Stdio::piped())
             .spawn()
             .map_err(|e| anyhow!(e))?;
-        if let Some(mut pipe) = child.stdin.take() {
-            pipe.write_all(stdin).await.map_err(|e| anyhow!(e))?;
-            // Dropping the pipe closes the command's stdin.
+        // Feed stdin while collecting output: a command that prints before it has read all of
+        // its input (a big file chunk, a patch) must not deadlock on a full pipe. Dropping the
+        // pipe at the end of the feed closes the command's stdin. A feed error (the command
+        // exited early: broken pipe) is only reported when the command itself produced nothing
+        // to report.
+        let pipe = child.stdin.take();
+        let feed = async move {
+            match pipe {
+                Some(mut pipe) => pipe.write_all(stdin).await,
+                None => Ok(()),
+            }
+        };
+        let (fed, output) = futures::future::join(feed, child.output()).await;
+        let output = output.map_err(|e| anyhow!(e))?;
+        if let Err(e) = fed {
+            if e.kind() != std::io::ErrorKind::BrokenPipe {
+                return Err(anyhow!(e));
+            }
         }
-        child.output().await.map_err(|e| anyhow!(e))
+        Ok(output)
     };
     match timeout {
         Some(timeout) => match run.with_timeout(timeout).await {
