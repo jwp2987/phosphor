@@ -32,7 +32,10 @@ pub use executor::{
 };
 pub use features::{METHODS, RemoteFeatures};
 pub use helper::HelperBackend;
-pub use router::{AlwaysShell, BackendKind, FeatureRouter, HelperProbe, RoutedBackend, decide};
+pub use router::{
+    AlwaysShell, BackendKind, FeatureRouter, HelperProbe, RoutedBackend, decide,
+    executor_route_line, route_log_line,
+};
 pub use shell::{
     AgentContextCache, PrLookup, ShellBackend, ShellBuffers, ShellIndex, ShellPush, TreeCache,
 };

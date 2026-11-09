@@ -69,6 +69,26 @@ def wait_tool_result(ctx, n0, timeout=40):
     return ctx.until(lambda: any(x.get("tool") is not None for x in rows_since(n0)), timeout, step=0.3)
 
 
+ALT_ENTER_RE = re.compile(r"hop=alt_screen_enter\b")
+FS_HANDOVER_RE = re.compile(r"hop=fullscreen_handover agent_in_control=0")      # app: the user's first key into an agent-run full-screen program took the command over
+
+
+def hop_count(text, rx):
+    """pure: how many lines of an app-log excerpt match the hop pattern"""
+    return len(rx.findall(text))
+
+
+def wait_alt_screen(ctx, off, timeout=30):
+    """an EVENT, not a sleep: the app's `hop=alt_screen_enter` says the full-screen program owns the screen"""
+    return ctx.until(lambda: hop_count(ctx.log_since(off), ALT_ENTER_RE) > 0, timeout, step=0.2)
+
+
+def check_fullscreen_handover(ctx, r, label, off):
+    """after the first keys: the app logged the take-over of the full-screen program (keys flow to it), so a green file alone cannot hide a missing hand-over"""
+    ok = ctx.until(lambda: hop_count(ctx.log_since(off), FS_HANDOVER_RE) > 0, 10, step=0.2)
+    r.check(bool(ok), "%s: no hop=fullscreen_handover in the app log after typing into the full-screen program: the hand-over is not proven" % label)
+
+
 def handed(ctx, off):
     t = ctx.log_since(off)
     return AG.LRC_HANDED_TO_USER in t
@@ -143,7 +163,9 @@ def c_agent_vim(ctx, r):
         time.sleep(0.8)
         ctx.shot("ai_vim_up")
         r.note("ai_vim: hand-over line in the app log: %s" % ("yes" if handed(ctx, off) else "no (a full-screen program may be driven without the prompt hand-over)"))
+        r.check(bool(wait_alt_screen(ctx, off, 5)), "ai_vim: no hop=alt_screen_enter in the app log although vim is up")
         ctx.be.type("i" + tok, ctx.rng.randint(10, 25))
+        check_fullscreen_handover(ctx, r, "ai_vim", off)
         ctx.shot("ai_vim_insert")
         ctx.be.key("Escape")
         time.sleep(0.2)
@@ -213,12 +235,15 @@ def c_agent_less(ctx, r):
         ctx.rm("ai_less.txt")
         tok = "less" + ctx.tok(6).lower().replace("_", "")
         off, n0 = ask_run(ctx, r, "less ai_long.txt", "ai_less")
-        time.sleep(2.5)         # no program-side signal for a pager being up; keys typed early wait in the tty either way
+        if not wait_alt_screen(ctx, off, 30):
+            ctx.shot("ai_less_notup")
+            r.skip("ai_less: no hop=alt_screen_enter within 30 s, so less never took the screen and no keys were typed")
         ctx.shot("ai_less_up")
         r.note("ai_less: hand-over line in the app log: %s" % ("yes" if handed(ctx, off) else "no (a pager may be driven without the prompt hand-over)"))
         for chunk in ("G", "g", "jjjjj"):
             ctx.be.type(chunk, ctx.rng.randint(10, 25))
             time.sleep(0.3)
+        check_fullscreen_handover(ctx, r, "ai_less", off)
         ctx.be.type("/line 450", ctx.rng.randint(10, 25), enter=True)
         time.sleep(0.5)
         ctx.shot("ai_less_search")

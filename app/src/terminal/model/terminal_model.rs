@@ -2711,6 +2711,8 @@ impl TerminalModel {
             return;
         }
 
+        warpui::input_order::log_hop("alt_screen_enter", String::new);
+
         // A full-screen program owns the terminal: latch the active block as interactive/long
         // running now, however briefly it has been running (#1373).
         self.block_list
