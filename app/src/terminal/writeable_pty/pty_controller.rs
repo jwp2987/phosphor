@@ -258,6 +258,10 @@ enum PtyWrite {
 //    either clears the debt, so there is never a second cancel. If neither ever happens, the
 //    hook's own read deadline ends it. A timer is only a give-up net: it never writes and
 //    never decides routing.
+// e. A second Tab for the SAME text while an exchange is in flight (a fast Tab, Tab, Enter) is
+//    attached to it: it gets the same answer (candidates, or an empty one for a cancel) and is
+//    closed (no answer) if the exchange ends without one. No second `^Y` goes out. A different
+//    text is refused (the completer answers).
 // d. The shell leaving first (a Precmd, ExitShell or Exit while the prompt is awaited) just ends
 //    the exchange: no frame (the shell that would read it is not the one asked).
 //
@@ -413,6 +417,12 @@ pub struct PtyController<T: EventLoopSender> {
     /// goes out in front of the next real write, or when the shell's own late prompt arrives,
     /// and a Precmd/exit of the shell clears it. A give-up timer never writes.
     native_cancel_owed: bool,
+    /// The text the in-flight exchange asks about, so a second Tab for the same text can attach.
+    native_inflight_buffer: String,
+    /// Requesters of later Tabs for the SAME text, attached to the in-flight exchange (a fast
+    /// Tab, Tab, Enter): they get its answer (candidates, or an empty one for a cancel) and are
+    /// dropped (no answer) whenever the exchange ends without one. No new exchange is started.
+    native_attached_waiters: Vec<async_channel::Sender<Vec<ShellCompletion>>>,
     /// The prompt tokens taken in this pane (#1801 review M3).
     seen_native_prompt_tokens: std::collections::HashSet<String>,
     /// Delivers SIGINT to the pty's foreground process group (local ptys on Unix only); `None`
@@ -661,6 +671,9 @@ impl<T: EventLoopSender> PtyController<T> {
                     unreachable!("checked above");
                 };
                 let _ = block_on(results_tx.send(data.clone()));
+                for waiter in me.native_attached_waiters.drain(..) {
+                    let _ = block_on(waiter.send(data.clone()));
+                }
             }
             ModelEvent::SendCompletionsPrompt { token } => {
                 // Same peek-before-take reasoning as `CompletionsFinished` above. With no live
@@ -807,6 +820,8 @@ impl<T: EventLoopSender> PtyController<T> {
             has_reported_native_completions_unavailable: false,
             last_native_cancel_toasted: false,
             native_cancel_owed: false,
+            native_inflight_buffer: String::new(),
+            native_attached_waiters: Vec::new(),
             seen_native_prompt_tokens: Default::default(),
             foreground_sigint: None,
             pty_write_gate_blocked_since: None,
@@ -1407,6 +1422,7 @@ impl<T: EventLoopSender> PtyController<T> {
                      the request."
                 );
                 me.in_flight_native_completions_state = None;
+                me.native_attached_waiters.clear();
                 me.execute_next_queued_write(ctx);
             },
         );
@@ -1422,6 +1438,7 @@ impl<T: EventLoopSender> PtyController<T> {
         else {
             return false;
         };
+        self.native_attached_waiters.clear();
         self.native_cancel_owed = true;
         if remote_first {
             return false;
@@ -1455,6 +1472,9 @@ impl<T: EventLoopSender> PtyController<T> {
         // the typed line. A give-up (`abandon_native_exchange`) sends nothing: the channel just
         // closes, "no answer", and the held Enter is handed back instead.
         let _ = results_tx.try_send(Vec::new());
+        for waiter in self.native_attached_waiters.drain(..) {
+            let _ = waiter.try_send(Vec::new());
+        }
         self.native_cancel_owed = false;
         self.send_write_to_event_loop(
             PtyWrite::Bytes {
@@ -1493,6 +1513,7 @@ impl<T: EventLoopSender> PtyController<T> {
         {
             log::warn!("The shell asked for native completions left before answering; ending it");
             self.in_flight_native_completions_state = None;
+            self.native_attached_waiters.clear();
         }
     }
 
@@ -1515,6 +1536,7 @@ impl<T: EventLoopSender> PtyController<T> {
         );
         // Taken first, so the cancel frame's own write below does not come back here.
         self.in_flight_native_completions_state = None;
+        self.native_attached_waiters.clear();
         self.send_write_to_event_loop(
             PtyWrite::Bytes {
                 bytes: native_completions_cancel().into(),
@@ -2887,6 +2909,10 @@ impl<T: EventLoopSender> PtyController<T> {
                 (command.into_bytes().into(), false, None, true)
             }
             PtyWrite::RunNativeShellCompletions(state) => {
+                if let NativeShellCompletionsState::AwaitingPrompt { buffer_text, .. } = &state {
+                    self.native_inflight_buffer = buffer_text.clone();
+                }
+                self.native_attached_waiters.clear();
                 self.in_flight_native_completions_state = Some(state);
                 self.arm_native_completions_watchdog(NATIVE_COMPLETIONS_PROMPT_TIMEOUT, true, ctx);
 
@@ -3065,6 +3091,18 @@ impl<T: EventLoopSender> PtyController<T> {
         //
         // #1801 (design point a): the exchange also starts only when nothing else is queued or
         // engaged, and then at once: the `^Y` is never queued, so nothing can sit behind it.
+        // A fast Tab, Tab, Enter: a second request for the SAME text while an exchange is in
+        // flight is attached to it and gets its answer, instead of being refused as "no answer"
+        // (which would hand a waiting Enter's line back). A different text, or a given-up
+        // exchange that owes its cancel, is a real refusal.
+        if self.in_flight_native_completions_state.is_some()
+            && !self.native_cancel_owed
+            && self.native_inflight_buffer == buffer_text
+        {
+            log::info!("Native completions request attached to the exchange in flight");
+            self.native_attached_waiters.push(results_tx);
+            return;
+        }
         if let Err(why) = self.native_exchange_may_start(ctx) {
             log::info!("Native completions not started ({why}); the Tab uses the completer");
             return;

@@ -15259,8 +15259,8 @@ impl Input {
             })
             .unwrap_or_default();
         log::warn!(
-            "Enter held {} ms for a local Tab completion gave up ({why}; completer compute {} ms, \
-             cap {} ms); the line is handed back, not run (#1666)",
+            "Enter held {} ms for a Tab completion gave up ({why}; completer compute {} ms, \
+             local cap {} ms); the line is handed back, not run (#1666)",
             waited.as_millis(),
             spent.as_millis(),
             TAB_COMPLETION_ENTER_BUDGET.as_millis()

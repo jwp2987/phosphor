@@ -2987,6 +2987,10 @@ What changed and what pins it:
   (`REMOTE_NATIVE_TAB_ENTER_BUDGET` is gone; owner decision: no timer decides what Enter runs). The answer is an
   event: candidates run the completed line however late; an answer of nothing (the shell found none, or the app
   cancelled the exchange: the cancel sends an empty result) runs the typed line and the completer answers the menu;
+  a second Tab for the same text while an exchange is in flight attaches to it (Tab, Tab, Enter runs the completed line;
+  a cancelled first exchange runs the typed line; `a_second_tab_for_the_same_text_gets_the_first_exchanges_answer`,
+  `an_attached_tab_follows_the_cancel_and_the_give_up_of_the_exchange`, pty layer shared by Legacy and Table); a different
+  text is refused;
   NO answer at all (the pty's 2 s give-up closes the channel, or the shell left) hands the line back and runs nothing
   (`give_up_unanswered_remote_hold`, #1577/#1666), keys typed meanwhile held in order. Only the 9 s hold backstop
   remains as a lost-signal net with the same hand-back. Tab-path timers left: pty 2 s prompt give-up (writes nothing),
