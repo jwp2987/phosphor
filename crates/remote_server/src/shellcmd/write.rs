@@ -31,6 +31,11 @@ pub const EXIT_MKDIR: i32 = 2;
 pub const EXIT_APPEND: i32 = 3;
 /// The exit code when the temp file could not be moved over the target.
 pub const EXIT_RENAME: i32 = 4;
+/// The exit code when a hash-guarded command could not compute the target's SHA-256 (the host
+/// has no `sha256sum`, `shasum` or `Get-FileHash`, or the file cannot be hashed). Nothing was
+/// changed. Distinct from [`EXIT_CONFLICT`]: the file did NOT change as far as anyone knows, the
+/// host just cannot say, so the message must not claim it did (#1837 follow-up).
+pub const EXIT_NO_HASH: i32 = 6;
 
 /// What the target must look like for a guarded write to go ahead.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -90,6 +95,37 @@ impl Expect {
         Some(crate::proto::WriteExpect { state: Some(state) })
     }
 
+    /// The POSIX lines that compute `cur` and refuse (running `cleanup` first) unless it matches:
+    /// exit [`EXIT_NO_HASH`] when a hash cannot be computed, [`EXIT_CONFLICT`] when it differs.
+    fn posix_check(self, cleanup: &str) -> String {
+        let mut out = String::from(self.posix_current());
+        if matches!(self, Expect::Sha256(_)) {
+            out.push_str(&format!(
+                "[ \"$cur\" != nohash ] || {{ {cleanup}echo NOHASH; exit {EXIT_NO_HASH}; }}\n"
+            ));
+        }
+        out.push_str(&format!(
+            "[ \"$cur\" = '{}' ] || {{ {cleanup}echo CONFLICT; exit {EXIT_CONFLICT}; }}\n",
+            self.token()
+        ));
+        out
+    }
+
+    /// The PowerShell counterpart of [`Self::posix_check`].
+    fn pwsh_check(self, cleanup: &str) -> String {
+        let mut out = String::from(self.pwsh_current());
+        if matches!(self, Expect::Sha256(_)) {
+            out.push_str(&format!(
+                "if ($cur -eq 'nohash') {{ {cleanup}'NOHASH'; $global:LASTEXITCODE = {EXIT_NO_HASH}; return }}\n"
+            ));
+        }
+        out.push_str(&format!(
+            "if ($cur -ne '{}') {{ {cleanup}'CONFLICT'; $global:LASTEXITCODE = {EXIT_CONFLICT}; return }}\n",
+            self.token()
+        ));
+        out
+    }
+
     /// What the final command compares against: `absent` or `<size>|<mtime>`.
     fn token(self) -> String {
         match self {
@@ -107,7 +143,7 @@ impl Expect {
                 "if [ -e \"$f\" ]; then cur=\"$(wc -c < \"$f\" | tr -d ' \\t')|$(stat -c %Y -- \"$f\" 2>/dev/null || stat -f %m -- \"$f\" 2>/dev/null)\"; else cur=absent; fi\n"
             }
             Expect::Sha256(_) => {
-                "if [ -e \"$f\" ]; then cur=$( { sha256sum -- \"$f\" 2>/dev/null || shasum -a 256 -- \"$f\" 2>/dev/null; } | { read -r h _; printf '%s' \"$h\"; } ); else cur=absent; fi\n"
+                "if [ -e \"$f\" ]; then cur=$( { sha256sum -- \"$f\" 2>/dev/null || shasum -a 256 -- \"$f\" 2>/dev/null; } | { read -r h _; printf '%s' \"$h\"; } ); [ -n \"$cur\" ] || cur=nohash; else cur=absent; fi\n"
             }
         }
     }
@@ -119,7 +155,7 @@ impl Expect {
                 "if (Test-Path -LiteralPath $f) { $i = Get-Item -LiteralPath $f; $cur = '' + $i.Length + '|' + [DateTimeOffset]::new($i.LastWriteTimeUtc).ToUnixTimeSeconds() } else { $cur = 'absent' }\n"
             }
             Expect::Sha256(_) => {
-                "if (Test-Path -LiteralPath $f) { $cur = (Get-FileHash -Algorithm SHA256 -LiteralPath $f).Hash.ToLower() } else { $cur = 'absent' }\n"
+                "if (Test-Path -LiteralPath $f) { try { $cur = (Get-FileHash -Algorithm SHA256 -LiteralPath $f).Hash.ToLower() } catch { $cur = 'nohash' } } else { $cur = 'absent' }\n"
             }
         }
     }
@@ -209,11 +245,7 @@ pub fn posix_write_command(
     ));
     if position.last {
         if let Some(expect) = expect {
-            out.push_str(expect.posix_current());
-            out.push_str(&format!(
-                "[ \"$cur\" = '{}' ] || {{ rm -f -- \"$tmp\"; echo CONFLICT; exit {EXIT_CONFLICT}; }}\n",
-                expect.token()
-            ));
+            out.push_str(&expect.posix_check("rm -f -- \"$tmp\"; "));
         }
         out.push_str(&format!(
             "if [ -e \"$f\" ]; then m=$(stat -c %a -- \"$f\" 2>/dev/null || stat -f %Lp -- \"$f\" 2>/dev/null); [ -n \"$m\" ] && chmod \"$m\" \"$tmp\" 2>/dev/null; fi\n\
@@ -261,10 +293,8 @@ pub fn pwsh_write_command(
     }
     if position.last {
         if let Some(expect) = expect {
-            out.push_str(expect.pwsh_current());
-            out.push_str(&format!(
-                "if ($cur -ne '{}') {{ Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue; 'CONFLICT'; $global:LASTEXITCODE = {EXIT_CONFLICT}; return }}\n",
-                expect.token()
+            out.push_str(&expect.pwsh_check(
+                "Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue; ",
             ));
         }
         out.push_str(&format!(
@@ -277,14 +307,41 @@ pub fn pwsh_write_command(
 /// The POSIX command that deletes a file (an error, like `std::fs::remove_file`, when it does not
 /// exist or is a directory).
 pub fn posix_delete_command(path: &str) -> String {
-    let assign = if path == "~" {
+    format!("{}\nrm -- \"$f\"\n", posix_target_plain(path))
+}
+
+/// `f=...` for `path` (`~` expands on the host), with no symlink resolution: a delete removes the
+/// link itself.
+fn posix_target_plain(path: &str) -> String {
+    if path == "~" {
         "f=\"$HOME\"".to_string()
     } else if let Some(rest) = path.strip_prefix("~/") {
         format!("f=\"$HOME\"{}", sh_quote(&format!("/{rest}")))
     } else {
         format!("f={}", sh_quote(path))
-    };
-    format!("{assign}\nrm -- \"$f\"\n")
+    }
+}
+
+/// [`posix_delete_command`] that removes the file only if it is still in the state `expect`
+/// names (#1837 follow-up): exit [`EXIT_CONFLICT`] when it differs, [`EXIT_NO_HASH`] when a
+/// hash expectation cannot be checked; nothing is removed in either case. A file that is gone
+/// is a conflict under a hash expectation. The check and the `rm` are two commands in one
+/// script, a window of milliseconds, the same as the guarded write's check and rename.
+pub fn posix_guarded_delete_command(path: &str, expect: Expect) -> String {
+    let mut out = posix_target_plain(path);
+    out.push('\n');
+    out.push_str(&expect.posix_check(""));
+    out.push_str("rm -- \"$f\"\n");
+    out
+}
+
+/// The PowerShell counterpart of [`posix_guarded_delete_command`].
+pub fn pwsh_guarded_delete_command(path: &str, expect: Expect) -> String {
+    let mut out = pwsh_target(path);
+    out.push_str("\n$ErrorActionPreference = 'Stop'\n");
+    out.push_str(&expect.pwsh_check(""));
+    out.push_str("Remove-Item -LiteralPath $f\n");
+    out
 }
 
 pub fn pwsh_delete_command(path: &str) -> String {
@@ -304,6 +361,12 @@ pub fn write_failure_message(path: &str, exit: i32, output: &str) -> String {
                  was not overwritten."
             );
         }
+        EXIT_NO_HASH => {
+            return format!(
+                "Failed to write {path}: could not check that the file on the host is unchanged \
+                 (no sha256 tool), so nothing was written."
+            );
+        }
         EXIT_MKDIR => "could not create the directory",
         EXIT_APPEND => "could not write the temporary file",
         EXIT_RENAME => "could not move the temporary file into place",
@@ -313,6 +376,45 @@ pub fn write_failure_message(path: &str, exit: i32, output: &str) -> String {
         format!("Failed to write {path}: {why}")
     } else {
         format!("Failed to write {path}: {why} ({detail})")
+    }
+}
+
+/// The message for a guarded delete whose command exited `exit` with `output` (stderr merged).
+pub fn delete_failure_message(path: &str, exit: i32, output: &str) -> String {
+    match exit {
+        EXIT_CONFLICT => format!(
+            "Failed to delete {path}: the file changed on the host after it was read, so it \
+             was not deleted."
+        ),
+        EXIT_NO_HASH => format!(
+            "Failed to delete {path}: could not check that the file on the host is unchanged \
+             (no sha256 tool), so nothing was deleted."
+        ),
+        _ => {
+            let detail = output.trim();
+            if detail.is_empty() {
+                format!("Failed to delete {path}")
+            } else {
+                format!("Failed to delete {path}: {detail}")
+            }
+        }
+    }
+}
+
+#[cfg(any(feature = "client", feature = "daemon"))]
+/// Whether the file at `path` is in the state `expect` names: absent, or bytes with that SHA-256.
+/// An unreadable file or an empty `WriteExpect` does not match. Shared by the helper and the app
+/// daemon's guarded delete (#1837 follow-up).
+pub fn wire_expectation_holds(path: &std::path::Path, expect: &crate::proto::WriteExpect) -> bool {
+    use crate::proto::write_expect::State;
+    match &expect.state {
+        Some(State::Absent(true)) => {
+            std::fs::symlink_metadata(path).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+        }
+        Some(State::Sha256(want)) => std::fs::read(path)
+            .map(|bytes| crate::index::sha256_hex(&bytes).eq_ignore_ascii_case(want.trim()))
+            .unwrap_or(false),
+        _ => false,
     }
 }
 

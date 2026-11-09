@@ -14,6 +14,9 @@ pub const FILE_WRITE: &str = "file_write";
 /// (see [`ServerCapabilities::supports_listed`]), because an older daemon ignores the field and
 /// would write unguarded.
 pub const FILE_WRITE_EXPECT: &str = "file_write_expect";
+/// `DeleteFile.expect`: the delete is refused (nothing removed) when the file is no longer in the
+/// state the request names. Explicit-only, like [`FILE_WRITE_EXPECT`].
+pub const FILE_DELETE_EXPECT: &str = "file_delete_expect";
 /// `ListDirectory`, `ResolvePath`, `CreateDirectory`, `ReadFileChunk`, `WriteFileChunk`.
 pub const FS_BASIC: &str = "fs_basic";
 /// `SessionBootstrapped` and `RunCommand`.
@@ -60,6 +63,7 @@ pub const LEGACY_ONLY_CAPABILITIES: &[&str] = &[CODEBASE_INDEX];
 pub const HELPER_CAPABILITIES: &[&str] = &[
     FILE_WRITE,
     FILE_WRITE_EXPECT,
+    FILE_DELETE_EXPECT,
     FS_BASIC,
     RUN_COMMAND,
     GIT_READ,
@@ -175,6 +179,11 @@ mod tests {
             ..Default::default()
         });
         assert!(!old_helper.supports_listed(FILE_WRITE_EXPECT));
+        // The delete guard is the same: never assumed, only listed.
+        assert!(legacy.supports(FILE_DELETE_EXPECT));
+        assert!(!legacy.supports_listed(FILE_DELETE_EXPECT));
+        assert!(!old_helper.supports_listed(FILE_DELETE_EXPECT));
+        assert!(HELPER_CAPABILITIES.contains(&FILE_DELETE_EXPECT));
     }
 
     #[test]

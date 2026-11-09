@@ -102,11 +102,24 @@ pub(super) struct NoDecoderShExecutor {
 
 impl NoDecoderShExecutor {
     pub(super) fn new() -> Self {
+        Self::with_extra_tools(&[])
+    }
+
+    /// A host that decodes base64 but has no `sha256sum`, `shasum` or `openssl`: a guarded
+    /// write or delete that compares a hash cannot be checked there.
+    pub(super) fn with_base64_but_no_hash_tool() -> Self {
+        Self::with_extra_tools(&["base64"])
+    }
+
+    fn with_extra_tools(extra: &[&str]) -> Self {
         let bin = tempfile::tempdir().unwrap();
         for tool in [
             "mkdir", "dirname", "rm", "mv", "stat", "chmod", "wc", "tr", "head", "sed", "grep",
             "cat", "readlink", "od", "printf", "sh", "env",
-        ] {
+        ]
+        .iter()
+        .chain(extra)
+        {
             let found = std::env::var_os("PATH")
                 .into_iter()
                 .flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
@@ -1165,6 +1178,129 @@ where
         "{name}"
     );
     assert!(!std::path::Path::new(&path).exists(), "{name}");
+}
+
+/// #1837 follow-up: a guarded delete removes the file when it still has the bytes the deletion
+/// was proposed against, and removes NOTHING when the user changed it (or it is gone). Both
+/// backends run the same assertions.
+async fn assert_guarded_delete<F, Fut>(name: &str, delete: F)
+where
+    F: Fn(String, crate::shellcmd::write::Expect) -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
+    use crate::shellcmd::write::{Expect, HexDigest};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("doomed.txt").to_string_lossy().into_owned();
+    let sha =
+        |bytes: &[u8]| Expect::Sha256(HexDigest::parse(&crate::index::sha256_hex(bytes)).unwrap());
+
+    // The user edits the file after the deletion was proposed: refused, their bytes survive.
+    std::fs::write(&path, "proposed against").unwrap();
+    let user = b"user edit\r\nbytes \xff\n";
+    std::fs::write(&path, user).unwrap();
+    let err = delete(path.clone(), sha(b"proposed against"))
+        .await
+        .unwrap_err();
+    assert!(err.contains("changed on the host"), "{name}: {err}");
+    assert!(err.contains("not deleted"), "{name}: {err}");
+    assert_eq!(std::fs::read(&path).unwrap(), user, "{name}");
+
+    // A matching hash deletes.
+    delete(path.clone(), sha(user)).await.unwrap();
+    assert!(!std::path::Path::new(&path).exists(), "{name}");
+
+    // Already gone: a hash expectation cannot hold, so it is an error, not a silent success.
+    assert!(delete(path.clone(), sha(user)).await.is_err(), "{name}");
+}
+
+#[tokio::test]
+async fn the_shell_backend_refuses_a_stale_guarded_delete() {
+    let shell = Arc::new(shell_with_index().0);
+    assert_guarded_delete("shell(local sh)", |p, e| {
+        let shell = Arc::clone(&shell);
+        async move {
+            shell
+                .delete_file_expecting(p, Some(e))
+                .await
+                .map_err(|e| e.to_string())
+        }
+    })
+    .await;
+}
+
+#[cfg(all(feature = "daemon", unix))]
+#[tokio::test]
+async fn the_helper_refuses_a_stale_guarded_delete() {
+    let stream = crate::daemon::spawn_in_process_for_tests();
+    let stream = async_io::Async::new(stream).unwrap();
+    let (reader, writer) = futures::io::AsyncReadExt::split(stream);
+    let executor = executor::Background::default();
+    let (client, _events, _host_responses) = RemoteServerClient::new(reader, writer, &executor);
+    let client = Arc::new(client);
+    assert_guarded_delete("helper(in-process daemon)", |p, e| {
+        let client = Arc::clone(&client);
+        async move {
+            let wire = e.to_wire().expect("hash and absent have a wire form");
+            client
+                .delete_file_expecting(p, Some(wire))
+                .await
+                .map_err(|e| e.to_string())
+        }
+    })
+    .await;
+}
+
+/// #1837 follow-up: on a host with no sha256 tool a hash-guarded write or delete fails closed
+/// (nothing written, nothing removed) and says it could not CHECK, not that the file changed.
+/// Checks that need no hash (absent) still work there.
+#[tokio::test]
+async fn a_host_with_no_sha256_tool_refuses_guarded_changes_and_says_why() {
+    use crate::shellcmd::write::{Expect, HexDigest};
+    let shell = ShellBackend::new(Some(Arc::new(
+        NoDecoderShExecutor::with_base64_but_no_hash_tool(),
+    )));
+    assert!(
+        shell.decode_tool().await.unwrap().is_some(),
+        "the fake host must decode base64, so only the hash tool is missing"
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("f.txt").to_string_lossy().into_owned();
+    std::fs::write(&path, "user").unwrap();
+    let digest = HexDigest::parse(&crate::index::sha256_hex(b"user")).unwrap();
+
+    let err = shell
+        .write_file_expecting(path.clone(), "agent".into(), Some(Expect::Sha256(digest)))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("no sha256 tool"), "{err}");
+    assert!(err.contains("nothing was written"), "{err}");
+    assert!(!err.contains("changed on the host"), "{err}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "user");
+
+    let err = shell
+        .delete_file_expecting(path.clone(), Some(Expect::Sha256(digest)))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("no sha256 tool"), "{err}");
+    assert!(err.contains("nothing was deleted"), "{err}");
+    assert!(!err.contains("changed on the host"), "{err}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "user");
+    let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().contains("phosphor-tmp"))
+        .collect();
+    assert!(leftovers.is_empty(), "temp file left behind");
+
+    // No hash needed for an absent check: creating a new file still works.
+    let fresh = dir.path().join("new.txt").to_string_lossy().into_owned();
+    shell
+        .write_file_expecting(fresh.clone(), "created".into(), Some(Expect::Absent))
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read_to_string(&fresh).unwrap(), "created");
 }
 
 #[tokio::test]

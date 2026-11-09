@@ -434,7 +434,8 @@ def c_network_gate_switch(ctx, r):
     """Settings > Network > Network gate switch (`network.gate_enabled`, default true). Absent key: no 'turned OFF' line. `gate_enabled = false` in settings.toml:
     the next launch logs 'network gate: turned OFF' and a later launch with the key true logs no OFF line. The app log never contains the host of the allowed-origin
     entry the case writes. The denial notice, its 'Allow this origin' link and the Settings > Network log are UNVERIFIABLE here (see the note): no setting can make
-    the app issue a request the gate refuses, because every setting that names an origin also allows it."""
+    the app issue a request the gate refuses, because every setting that names an origin also allows it. The page's origin rows (Remove, typed add) ARE judged here, by the keyboard
+    ring and the `hop=network_gate_ui` lines (#1830 follow-up)."""
     R.need_linux_app(ctx, "network_gate_switch")
     marker_host = "gate-switch-%s.example.invalid" % ctx.tok(5).lower()
     try:
@@ -472,10 +473,33 @@ def c_network_gate_switch(ctx, r):
         log = ctx.log_since(0)
         r.check(GATE_OFF_LOG not in log, "gate_enabled=true: the launch still logged '%s'" % GATE_OFF_LOG)
         r.metric("gate_lines_last_launch", len(gate_log_lines(log)))
-        r.unverifiable("the denial notice (toast naming the purpose and host), its 'Allow this origin' link, the Settings > Network log row and 'Allow' button: the harness has no "
-                       "trigger for a refused request (models_dev_url and provider URLs are configured origins, so they are allowed; the Network page probe only reaches its fixed host) "
-                       "and no verified keyboard path to the Network page widgets. Covered by the unit tests in crates/network_gate, app/src/network_gate_log_tests.rs, "
-                       "app/src/network_gate_notice_tests.rs and app/src/settings_view/network_page_tests.rs")
+        # 4. The Settings > Network page rows, driven by KEYBOARD through the page's focus ring (#1830): the palette entry "Settings: Network: focus allowed origins" puts the ring on
+        # the origin editor, Tab moves to the listed origin's Remove, Delete removes it; typing the origin + Enter adds it. Judged by the app's own `hop=network_gate_ui` lines, the
+        # settings file and the log never naming the host (the hop lines carry a host hash only).
+        import cases_agent_netgate as NG
+        off = ctx.log_size()
+        NG.open_network_kb(ctx, r)
+        ctx.be.key("Tab")
+        time.sleep(0.5)
+        ctx.shot("ngs_kb_remove_focus")
+        ctx.be.key("Delete")
+        time.sleep(0.8)
+        NG.expect_hop(ctx, r, off, "remove_origin", "keyboard Remove of the allowed origin", host=marker_host)
+        r.check(NG.origin_count(ctx, marker_host) == 0, "keyboard Remove: settings.toml still holds the allowed origin")
+        NG.close_settings(ctx)
+        off = ctx.log_size()
+        NG.open_network_kb(ctx, r)
+        ctx.be.type(marker_host, 12)
+        time.sleep(0.3)
+        ctx.be.key("Return")
+        time.sleep(0.8)
+        NG.expect_hop(ctx, r, off, "add_origin", "keyboard add (typed origin + Enter)", host=marker_host)
+        r.check(NG.origin_count(ctx, marker_host) == 1, "keyboard add: settings.toml holds the origin %d times (expected once)" % NG.origin_count(ctx, marker_host))
+        ctx.shot("ngs_kb_added")
+        NG.close_settings(ctx)
+        r.check(marker_host not in ctx.log_since(0), "the app log names the allowed origin's host after the page edits (hop lines carry a host hash only)")
+        r.unverifiable("the denial notice (toast naming the purpose and host), its 'Allow this origin' link and the log row's 'Allow' button need a request the gate refuses, which no setting "
+                       "this case writes can cause (every setting that names an origin also allows it); agent_gate_deny_allow and network_gate_notice trigger one and judge those rows")
     finally:
         try:
             p = R.settings_file(ctx)

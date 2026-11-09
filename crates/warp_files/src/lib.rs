@@ -1826,12 +1826,25 @@ impl FileModel {
                 let path = path.as_str().to_string();
                 let future = async move {
                     let read_result = backend.read_file_bytes(path.clone()).await;
+                    // What the host must still hold at delete time: the exact bytes the check
+                    // below approves (#1837 follow-up). Re-verified atomically with the delete.
+                    let host_expect = remote_write_expectation(&expected, &read_result);
                     if let Some(message) =
                         remote_pre_image_refusal(&path, &expected, read_result, None)
                     {
                         return Err(message);
                     }
-                    backend.delete_file(path).await.map_err(|e| e.to_string())
+                    // Never an unguarded delete: with nothing exact to compare, refuse.
+                    let Some(host_expect) = host_expect else {
+                        return Err(format!(
+                            "{path} could not be checked against the text this deletion was \
+                             proposed from, so it was not deleted. Nothing was changed."
+                        ));
+                    };
+                    backend
+                        .delete_file_expecting(path, Some(host_expect))
+                        .await
+                        .map_err(|e| e.to_string())
                 };
                 ctx.spawn(future, move |me, result: Result<(), String>, ctx| {
                     me.report_save_outcome(

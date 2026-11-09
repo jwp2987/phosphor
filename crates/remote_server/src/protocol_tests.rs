@@ -42,6 +42,7 @@ async fn round_trip_client_message_host_scoped() {
         "host-123".to_string(),
         host_scoped_request::Message::DeleteFile(crate::proto::DeleteFile {
             path: "/tmp/f".to_string(),
+            expect: None,
         }),
     );
 

@@ -12,6 +12,8 @@
 #                              (#1837): the shell script (nohelper) or the helper (`WriteFile.expect`, capability file_write_expect) compares atomically with the write
 #                              and refuses with "the file changed on the host after it was read, so it was not overwritten" (matched by SAVE_FAILED); the host's
 #                              file keeps the user's change
+#   lab_fam_agent_delete_conflict  the agent proposes DELETING a file and the user edits it on the host before the accept: the file is kept, the conflict reported (#1837 follow-up;
+#                              the delete carries the SHA-256 of what the accept read, `DeleteFile.expect` / capability file_delete_expect)
 #   lab_fam_agent_edit_endings    CRLF and no-final-newline preserved over the same two arms
 #   agent_edit_touch_only      mtime moved, bytes identical, then accept: succeeds, no false conflict (local: content compare in warp_files; remote leg in the lab pair)
 # Remote writes must log hop=backend_route family=file_write (nohelper -> shell, upload -> helper); no line fails the lab cases (crates/remote_server router.rs).
@@ -30,7 +32,7 @@ import cases_replay as CRP  # noqa: E402
 
 EDIT_SEP = " ;; "
 WORDS = ("alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota", "kappa")
-SAVE_FAILED = re.compile(r"Failed to save file for accepted AgentMode diffs|changed on (?:disk|the host)|was not overwritten")
+SAVE_FAILED = re.compile(r"Failed to save file for accepted AgentMode diffs|changed on (?:disk|the (?:remote )?host)|was not overwritten|was not deleted")
 STREAM = "[byop] opening stream"
 
 
@@ -164,12 +166,16 @@ def streams(ctx, off):
     return AG.count_in_log(ctx, off, STREAM)
 
 
+def delete_prompt_for(path):
+    return "Please delete exactly this file and nothing else: %s" % path
+
+
 def propose(ctx, r, host, name, content, edits):
-    """write the file, ask the agent for the edit, wait for the diff card; returns (off, streams_at_card) or None (UNVERIFIABLE already recorded)"""
+    """write the file, ask the agent for the edit (edits=None: for the file's DELETION), wait for the diff card; returns (off, streams_at_card) or None (UNVERIFIABLE already recorded)"""
     host.write(name, content)
     off = ctx.log_size()
     cards0 = AG.count_in_log(ctx, off, "queue_actions")
-    AG.type_fast(ctx, prompt_for(host.path(name), edits))
+    AG.type_fast(ctx, prompt_for(host.path(name), edits) if edits is not None else delete_prompt_for(host.path(name)))
     if not ctx.until(lambda: AG.count_in_log(ctx, off, "queue_actions") > cards0, 60, step=0.25):
         r.unverifiable("no action card for the proposed edit within 60 s (no '[byop-diag] queue_actions' in the app log): the fake model's edit never reached the diff view, nothing to accept or reject")
         return None
@@ -249,6 +255,34 @@ def run_conflict(ctx, r, host, label):
         r.check(False, "%s: %s" % (label, msg))
     r.check(a == b, "%s: the file changed again after the refused accept" % label)
     r.check(bool(SAVE_FAILED.search(ctx.log_since(off))), "%s: the conflict was not reported (no 'Failed to save file for accepted AgentMode diffs' / 'changed on disk' line in the app log)" % label)
+
+
+def run_delete_conflict(ctx, r, host, label):
+    """#1837 follow-up: the agent proposes DELETING a file and the user edits it on the host before the accept: the file must still be there with exactly the user's bytes and the
+    refusal must be reported. (The host-side check closes the window between the app's read and the delete; the contract tests prove that; this proves the whole accept path.)"""
+    tok = CL.unique(ctx, 6)
+    name = "ad_%s_%s.txt" % (label, tok)
+    content = make_file(tok)
+    got = propose(ctx, r, host, name, content, None)
+    if got is None:
+        return
+    off, n = got
+    user = content + ("USER_EDIT_%s\n" % tok).encode()
+    host.write(name, user)
+    if host.read(name) != user:
+        r.unverifiable("%s: could not change the file between the deletion proposal and the accept" % label)
+        return
+    if not answer(ctx, r, host, name, off, n, "accept", user):
+        return
+    ctx.until(lambda: host.read(name) != user, 8, step=0.5)       # an unwanted delete would land here; a refusal never changes the file
+    a, b = stable(host, name)
+    if a is None:
+        r.check(False, "%s: the file was deleted although it changed on the host after the deletion was proposed (the user's edit is gone)" % label)
+    else:
+        for msg in judge_bytes(a, user, "%s: the refused delete altered the file" % label):
+            r.check(False, msg)
+    r.check(a == b, "%s: the file changed again after the refused delete" % label)
+    r.check(bool(SAVE_FAILED.search(ctx.log_since(off))), "%s: the conflict was not reported (no 'Failed to save file for accepted AgentMode diffs' / 'changed on the remote host' / 'was not deleted' line in the app log)" % label)
 
 
 def run_touch_only(ctx, r, host, label):
@@ -392,6 +426,22 @@ def c_lab_agent_edit_conflict(ctx, r, arm):
         run_conflict(ctx, r, host, "remote")
         check_write_route(ctx, r, arm, off, "lab_fam_agent_edit_conflict")
         partial_note(r)
+    finally:
+        host.cleanup()
+        CL.finish_remote(ctx, r)
+
+
+@CL.lab_case("fam_agent_delete_conflict", shells=("bash", "dash", "pwsh"), lat=("lan",), helper=("nohelper", "upload"), modes=("agent",))
+def c_lab_agent_delete_conflict(ctx, r, arm):
+    """on the remote host: the agent proposes deleting a file, the user edits it on the host before the accept: the file is kept with the user's bytes and the conflict is reported.
+    The delete carries the SHA-256 of what the accept read to the shell script (nohelper) or to the helper (`DeleteFile.expect`, capability file_delete_expect)"""
+    if not lab_ready(ctx, r, arm):
+        return
+    host = LabHost(ctx, arm)
+    off = ctx.log_size()
+    try:
+        run_delete_conflict(ctx, r, host, "remote")
+        check_write_route(ctx, r, arm, off, "lab_fam_agent_delete_conflict")
     finally:
         host.cleanup()
         CL.finish_remote(ctx, r)

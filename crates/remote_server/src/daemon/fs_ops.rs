@@ -248,6 +248,20 @@ pub(super) fn write_file(msg: WriteFile) -> server_message::Message {
 
 pub(super) fn delete_file(msg: DeleteFile) -> server_message::Message {
     log::info!("Handling DeleteFile path={}", msg.path);
+    if let Some(expect) = &msg.expect {
+        if !crate::shellcmd::write::wire_expectation_holds(std::path::Path::new(&msg.path), expect)
+        {
+            return server_message::Message::DeleteFileResponse(DeleteFileResponse {
+                result: Some(delete_file_response::Result::Error(FileOperationError {
+                    message: crate::shellcmd::write::delete_failure_message(
+                        &msg.path,
+                        crate::shellcmd::write::EXIT_CONFLICT,
+                        "",
+                    ),
+                })),
+            });
+        }
+    }
     let result = match std::fs::remove_file(&msg.path) {
         Ok(()) => delete_file_response::Result::Success(DeleteFileSuccess {}),
         Err(err) => delete_file_response::Result::Error(FileOperationError {

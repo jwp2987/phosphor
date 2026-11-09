@@ -804,10 +804,22 @@ impl RemoteServerClient {
 
     /// Deletes a file on the remote host.
     pub async fn delete_file(&self, path: String) -> Result<(), ClientError> {
+        self.delete_file_expecting(path, None).await
+    }
+
+    /// [`Self::delete_file`] that, when `expect` is given, makes the server delete only if the
+    /// file is still in that state (a mismatch is a `FileOperationFailed` and nothing is
+    /// removed). Only for a server that lists the `file_delete_expect` capability: an older one
+    /// ignores the field and would delete unguarded.
+    pub async fn delete_file_expecting(
+        &self,
+        path: String,
+        expect: Option<crate::proto::WriteExpect>,
+    ) -> Result<(), ClientError> {
         let request_id = RequestId::new();
         let msg = ClientMessage::host_scoped(
             request_id.to_string(),
-            host_scoped_request::Message::DeleteFile(DeleteFile { path }),
+            host_scoped_request::Message::DeleteFile(DeleteFile { path, expect }),
         );
         let response = self.send_request(request_id, msg).await?;
         match response.message {

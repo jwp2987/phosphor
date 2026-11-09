@@ -569,6 +569,11 @@ message WriteFileSuccess {}
 // Client → server: delete a file.
 message DeleteFile {
   string path = 1;
+  // Optional precondition (#1837 follow-up), as WriteFile.expect: absent deletes unconditionally;
+  // present deletes only if the file is still in that state, else deletes NOTHING and answers
+  // with a FileOperationError saying the file changed. A server that does not advertise the
+  // `file_delete_expect` capability ignores this field, so the client never sends it to one.
+  WriteExpect expect = 2;
 }
 
 // Server → client: result of a DeleteFile request.

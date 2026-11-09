@@ -16,7 +16,9 @@ fn every_known_capability_belongs_to_a_family() {
     for cap in HELPER_CAPABILITIES.iter().chain(LEGACY_ONLY_CAPABILITIES) {
         // A refinement of `file_write` (the request field `expect`), not a family of its own: the
         // router asks for it on top of the FileWrite decision.
-        if *cap == crate::capability::FILE_WRITE_EXPECT {
+        if *cap == crate::capability::FILE_WRITE_EXPECT
+            || *cap == crate::capability::FILE_DELETE_EXPECT
+        {
             continue;
         }
         assert!(

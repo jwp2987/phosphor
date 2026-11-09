@@ -4533,6 +4533,25 @@ impl ServerModel {
         );
         let path = Path::new(&msg.path);
 
+        // #1837 follow-up: a delete that names the state it expects is refused (nothing removed)
+        // when the file is no longer in it. The client only sends this to a server that
+        // advertises `file_delete_expect`.
+        if let Some(expect) = &msg.expect {
+            if !remote_server::shellcmd::write::wire_expectation_holds(path, expect) {
+                return HandlerOutcome::Sync(server_message::Message::DeleteFileResponse(
+                    DeleteFileResponse {
+                        result: Some(delete_file_response::Result::Error(FileOperationError {
+                            message: remote_server::shellcmd::write::delete_failure_message(
+                                &msg.path,
+                                remote_server::shellcmd::write::EXIT_CONFLICT,
+                                "",
+                            ),
+                        })),
+                    },
+                ));
+            }
+        }
+
         let (file_id, version) = self.pending_file_ops.insert(
             path,
             request_id.clone(),
