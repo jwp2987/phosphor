@@ -16677,6 +16677,33 @@ fn subshell_pty_writes(app: &mut App, terminal: &ViewHandle<TerminalView>) -> Rc
     written
 }
 
+/// Waits, by EVENT, until the model events queued at window creation (the bootstrap block's
+/// `AfterBlockCompleted` / `Precmd`) have been dispatched: they release held setup keys and end an
+/// in-flight setup whose announcement does not apply, so a test that crosses an update boundary or
+/// an await must not start its setup before they ran. A marker sent through the same FIFO channel
+/// is dispatched after everything queued before it.
+async fn drain_model_startup_events(app: &mut App, terminal: &ViewHandle<TerminalView>) {
+    let dispatcher = terminal.read(app, |view, _| view.model_events_handle.clone());
+    let (marker_tx, marker_rx) = futures::channel::oneshot::channel::<()>();
+    let marker_tx = RefCell::new(Some(marker_tx));
+    app.update(|ctx| {
+        ctx.subscribe_to_model(&dispatcher, move |_, event, _| {
+            if matches!(event, ModelEvent::CursorBlinkingChange(_)) {
+                if let Some(tx) = marker_tx.borrow_mut().take() {
+                    let _ = tx.send(());
+                }
+            }
+        });
+    });
+    terminal.read(app, |view, _| {
+        view.model
+            .lock()
+            .event_proxy
+            .send_terminal_event(crate::terminal::event::Event::CursorBlinkingChange(false));
+    });
+    marker_rx.await.expect("the marker event is dispatched");
+}
+
 /// Puts `view` in the state of a paced bootstrap that is still writing its lines, with the setup
 /// announced when `announce` (what a real `write_init_subshell_bytes_to_pty` leaves behind).
 fn start_subshell_bootstrap(view: &mut TerminalView, announce: bool) {
@@ -16714,6 +16741,7 @@ fn ctrl_c_during_the_subshell_bootstrap_ends_it_and_goes_out_first() {
             let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
             initialize_app_for_terminal_view(&mut app);
             let terminal = add_window_with_terminal(&mut app, None);
+            drain_model_startup_events(&mut app, &terminal).await;
             let written = subshell_pty_writes(&mut app, &terminal);
             terminal.update(&mut app, |view, ctx| {
                 view.model.lock().simulate_long_running_block("bash", "");
@@ -16757,6 +16785,7 @@ fn table_mode_ctrl_z_during_the_bootstrap_lines_waits_in_order_and_does_not_end_
         );
         initialize_app_for_terminal_view(&mut app);
         let terminal = add_window_with_terminal(&mut app, None);
+        drain_model_startup_events(&mut app, &terminal).await;
         let written = subshell_pty_writes(&mut app, &terminal);
         let token = terminal.update(&mut app, |view, ctx| {
             view.model.lock().simulate_long_running_block("sudo -s", "");
@@ -16790,11 +16819,31 @@ fn table_mode_ctrl_z_during_the_bootstrap_lines_waits_in_order_and_does_not_end_
             view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
             assert!(view.subshell_bootstrap_in_flight.is_none());
         });
+        let probe_end = {
+            let all = written.borrow();
+            let tail = String::from_utf8_lossy(&all[after_setup..]).into_owned();
+            assert!(
+                tail.contains("InitSubshell") && tail.ends_with('\r'),
+                "the probe line is the last thing written; the keys stay held behind the setup \
+                 gate until the setup ends (its InitSubshell / Bootstrapped), not at its last \
+                 line: {tail:?}"
+            );
+            all.len()
+        };
+        terminal.read(&app, |view, _| {
+            assert_eq!(held_for_subshell_setup(view).0, 2, "still held");
+        });
+        // The setup ends (here: the probe named an unsupported shell): `a` and the ^Z follow, in
+        // typed order.
+        terminal.update(&mut app, |view, ctx| {
+            view.release_subshell_setup_held_bytes(ctx)
+        });
         let all = written.borrow();
-        let tail = String::from_utf8_lossy(&all[after_setup..]).into_owned();
-        assert!(
-            tail.contains("InitSubshell") && tail.ends_with("\ra\u{1a}"),
-            "the probe line, then `a` and the ^Z in typed order: {tail:?}"
+        assert_eq!(
+            &all[probe_end..],
+            b"a\x1a",
+            "`a` and the ^Z in typed order: {:?}",
+            String::from_utf8_lossy(&all[probe_end..])
         );
     })
 }
@@ -16870,6 +16919,7 @@ fn paste_during_the_subshell_bootstrap_then_keys_arrive_in_order_after_it() {
     App::test((), move |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         let terminal = add_window_with_terminal(&mut app, None);
+        drain_model_startup_events(&mut app, &terminal).await;
         let written = subshell_pty_writes(&mut app, &terminal);
         let (release, parked) = std::sync::mpsc::channel::<()>();
         let reader: BackgroundTextReader = Box::new(move || {
@@ -24309,6 +24359,7 @@ fn the_sh_probe_is_marker_paced_not_timed() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         let terminal = add_window_with_terminal(&mut app, None);
+        drain_model_startup_events(&mut app, &terminal).await;
         let pty_writes = collect_pty_writes(&mut app, &terminal);
         let token = terminal.update(&mut app, |view, ctx| {
             view.model.lock().simulate_long_running_block("sudo -s", "");
@@ -24386,6 +24437,7 @@ fn an_unsupported_subshell_ends_the_setup_and_delivers_the_held_keys_in_order() 
             initialize_app_for_terminal_view(&mut app);
             app.add_singleton_model(|_| crate::ToastStack);
             let terminal = add_window_with_terminal(&mut app, None);
+            drain_model_startup_events(&mut app, &terminal).await;
             let written = subshell_pty_writes(&mut app, &terminal);
             let token = terminal.update(&mut app, |view, ctx| {
                 view.model.lock().simulate_long_running_block("dash", "");
@@ -24403,7 +24455,7 @@ fn an_unsupported_subshell_ends_the_setup_and_delivers_the_held_keys_in_order() 
             });
             let before = written.borrow().clone();
             assert!(
-                !String::from_utf8_lossy(&before).contains("echo"),
+                !String::from_utf8_lossy(&before).contains("echo\r"),
                 "{mode:?}: typed keys reached the pty during the probe: {:?}",
                 String::from_utf8_lossy(&before)
             );
@@ -24415,7 +24467,9 @@ fn an_unsupported_subshell_ends_the_setup_and_delivers_the_held_keys_in_order() 
             });
             let after_probe = written.borrow().clone();
             assert!(
-                !String::from_utf8_lossy(&after_probe).contains("echo"),
+                // (The probe line itself holds the word `echo`; the typed `echo` + Enter is the
+                // thing that must not be there.)
+                !String::from_utf8_lossy(&after_probe).contains("echo\r"),
                 "{mode:?}: typed keys reached the pty with the probe line"
             );
             assert!(
@@ -24555,6 +24609,7 @@ fn the_setup_net_re_arms_only_on_progress_not_on_output() {
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::ToastStack);
         let terminal = add_window_with_terminal(&mut app, None);
+        drain_model_startup_events(&mut app, &terminal).await;
         let _pty_writes = collect_pty_writes(&mut app, &terminal);
         terminal.update(&mut app, |view, ctx| {
             view.model.lock().simulate_long_running_block("sudo -s", "");
@@ -24588,7 +24643,11 @@ fn the_setup_net_re_arms_only_on_progress_not_on_output() {
                 last
             );
 
-            // The notice comes with no progress, and progress withdraws it.
+            // The notice comes with no progress, and progress withdraws it. (The rule is judged,
+            // not the timer's firing: the quiet stretch must really have been that long.)
+            view.subshell_setup_net.as_mut().unwrap().last_progress = Instant::now()
+                .checked_sub(SUBSHELL_SETUP_QUIET_NOTICE + Duration::from_secs(1))
+                .expect("the clock goes back far enough");
             view.subshell_setup_quiet_notice(generation, 0, ctx);
             assert!(view.subshell_setup_net.as_ref().unwrap().noticed);
             assert!(
@@ -24988,6 +25047,7 @@ fn ctrl_c_during_a_stuck_marker_paced_setup_goes_out_at_once_and_ends_it() {
             initialize_app_for_terminal_view(&mut app);
             app.add_singleton_model(|_| crate::ToastStack);
             let terminal = add_window_with_terminal(&mut app, None);
+            drain_model_startup_events(&mut app, &terminal).await;
             let written = subshell_pty_writes(&mut app, &terminal);
             let probe = terminal.update(&mut app, |view, ctx| {
                 view.model.lock().simulate_long_running_block("sudo -s", "");
@@ -25557,29 +25617,7 @@ fn subshell_bootstrap_waits_for_the_shells_proof_however_long_it_takes() {
         app.add_singleton_model(|_| crate::ToastStack);
         let terminal = add_window_with_terminal(&mut app, None);
         let pty_writes = collect_pty_writes(&mut app, &terminal);
-        // The model's startup events (the bootstrap block's `AfterBlockCompleted`) are still queued
-        // on the view's channel; that handler ends an attempt whose block is gone. Wait for them
-        // by EVENT, not by time: a marker sent through the same FIFO channel is dispatched after
-        // everything queued before it.
-        let dispatcher = terminal.read(&app, |view, _| view.model_events_handle.clone());
-        let (marker_tx, marker_rx) = futures::channel::oneshot::channel::<()>();
-        let marker_tx = RefCell::new(Some(marker_tx));
-        app.update(|ctx| {
-            ctx.subscribe_to_model(&dispatcher, move |_, event, _| {
-                if matches!(event, ModelEvent::CursorBlinkingChange(_)) {
-                    if let Some(tx) = marker_tx.borrow_mut().take() {
-                        let _ = tx.send(());
-                    }
-                }
-            });
-        });
-        terminal.read(&app, |view, _| {
-            view.model
-                .lock()
-                .event_proxy
-                .send_terminal_event(crate::terminal::event::Event::CursorBlinkingChange(false));
-        });
-        marker_rx.await.expect("the marker event is dispatched");
+        drain_model_startup_events(&mut app, &terminal).await;
         let tty = terminal.update(&mut app, |view, ctx| {
             view.model.lock().simulate_long_running_block("bash", "");
             let tty = install_subshell_tty_for_test(view, SubshellTtySample::unknown());
@@ -32855,6 +32893,9 @@ fn readiness_toasts_carry_counts_never_text() {
         if n > 0 {
             assert!(toast.contains(&n.to_string()), "{toast}");
         }
-        assert!(toast.contains("not run"), "{toast}");
+        // With nothing typed there is nothing that was not run.
+        if n > 0 {
+            assert!(toast.contains("not run"), "{toast}");
+        }
     }
 }
