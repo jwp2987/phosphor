@@ -388,7 +388,9 @@ class Profile:
 
     # #1710: the shells the `subshell_sh_probe` case starts. Neither is a built-in subshell match (bash/zsh/fish, sudo -s, su, ksu,
     # docker ... bash are), so without this the pane shows no Phosphorize banner for them and the probe is never written.
-    PROBE_SUBSHELL_COMMANDS = ("^dash$", "^busybox ash$")
+    # #1679 step 3: the readiness lab (cases_lab.py) adds `bash --rcfile <file>` (its rc files ask questions, sleep, exec fish, clear),
+    # `tcsh -f` (the known-unsupported leader) and the docker `-t` without `-i` command (a relay with a cooked local tty).
+    PROBE_SUBSHELL_COMMANDS = ("^dash$", "^busybox ash$", "^bash --rcfile .*", "^tcsh -f$", "^docker run --rm -t alpine .*")
 
     def probe_subshell_commands_toml(self, existing):
         """TOML array literal of warpify.subshells.added_subshell_commands: the owner's own entries (`existing` is the seed's `key = value`

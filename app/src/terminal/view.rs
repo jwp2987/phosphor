@@ -23228,10 +23228,11 @@ impl TerminalView {
             subshell_ready::subshell_ready(&sample, &armed.ledger, armed.trigger.shell_type());
         warpui::input_order::log_hop("subshell_ready_judged", || {
             format!(
-                "source={source} decision={decision:?} kind={:?} leader={:?} tail={:?} \
+                "source={source} decision={decision:?} kind={:?} leader={:?} comm={:?} tail={:?} \
                  queue_empty={:?} bytes={} lines={} age_ms={}",
                 look.tty.kind,
                 look.tty.leader,
+                look.tty.leader_comm.as_deref().unwrap_or("-"),
                 look.tail,
                 look.tty.queue_empty,
                 armed.ledger.bytes_since_arm,
