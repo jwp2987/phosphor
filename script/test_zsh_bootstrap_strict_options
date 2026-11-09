@@ -368,6 +368,39 @@ def scenario_err_exit():
         sh.close()
 
 
+def scenario_xtrace_allexport_pipefail():
+    print("pipe_fail, all_export and xtrace typed at the prompt")
+    # The hooks run inside the user's shell: under all_export every scratch variable a hook
+    # assigns would be exported into each command's environment, and under xtrace each hook
+    # command would print a trace line into the terminal at every prompt. They switch both off
+    # for their own body (setopt localoptions, first line) and the user's options come back
+    # untouched. (pipe_fail is typed here, not set in .zshrc: this script sources the body
+    # directly, and the app's outer script zsh.sh is what puts a pipe_fail from the rc back.)
+    sh = Shell("")
+    try:
+        check(sh.bootstrap(), "bootstraps", sh)
+        check_cycle(sh, "setopt pipe_fail all_export xtrace", 0)
+        n = len(sh.text())
+        check_cycle(sh, "echo traced$((4+4))", 0)
+        out = sh.text()[n:]
+        check("traced8" in out, "the command's own output arrives", sh)
+        # Only the hook's first lines (its `local exit_code=$?` and the `setopt localoptions ...
+        # noxtrace` that switches the trace off) may show: nothing after them.
+        extra = [l for l in out.splitlines()
+                 if l.startswith("+") and not re.search(r"setopt localoptions|local exit_code|echo traced", l)]
+        check(not extra, f"no hook body is traced past its first line (got {extra[:3]!r})", sh)
+        check_cycle(sh, "false | true", 1)
+        check_cycle(sh, "unsetopt xtrace", 0)
+        check_cycle(sh, "echo optprobe:${options[allexport]}:${options[xtrace]}:${options[pipefail]}:${parameters[__warp_hex]-none}:", 0)
+        m = re.findall(r"optprobe:(\w+):(\w+):(\w+):([^:]*):", sh.text())
+        check(bool(m) and m[-1][:3] == ("on", "off", "on"),
+              f"all_export and pipe_fail are still on for the user, xtrace is off (got {m[-1] if m else None!r})", sh)
+        check(bool(m) and "export" not in m[-1][3], f"no hook scratch variable was exported (got {m[-1][3] if m else None!r})", sh)
+        check(not sh.dead, "the shell is still alive", sh)
+    finally:
+        sh.close()
+
+
 def scenario_errexit_repair_agent_rc():
     """#855: errexit plus a prompt cycle that skipped warp_precmd forces the repair path
     (#844/#828), which passes the wrapper tail's $? (0) as $1; the agent command's real
@@ -509,6 +542,7 @@ def main():
     scenario("precmd_functions=() in .zshrc (#926)", "precmd_functions=()")
     scenario_clear_hook_arrays_at_prompt()
     scenario_err_exit()
+    scenario_xtrace_allexport_pipefail()
     scenario_detached_head_strict()
     scenario_errexit_repair_agent_rc()
     scenario_hostile_home()

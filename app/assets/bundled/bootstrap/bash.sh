@@ -166,6 +166,9 @@
          # shellcheck disable=SC2034
 
          __bp_last_ret_value="$?" BP_PIPESTATUS=("${PIPESTATUS[@]}")
+ #### Phosphor (fork-free hooks): this runs inside __warp_run_relaxed, whose own commands have
+ #### overwritten PIPESTATUS by now; it kept the user's in __warp_run_pipe as its first command.
+         if [[ -n ${__warp_run_pipe+x} ]]; then BP_PIPESTATUS=("${__warp_run_pipe[@]}"); fi
 
          # Don't invoke precmds if we are inside an execution of an "original
          # prompt command" by another precmd execution loop. This avoids infinite

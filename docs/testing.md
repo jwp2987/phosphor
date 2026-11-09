@@ -194,7 +194,7 @@ pin protocol behaviour. Skips are reported as SKIPPED, never silent. A Skip rais
 
 | script | checks |
 |---|---|
-| `test_bash_bootstrap_nounset`, `test_zsh_bootstrap_strict_options` | hooks survive `set -u` / `err_return` / failing user precmd (#825, #836, #844); a detached HEAD under strict options reports git's hash every prompt (#1616) |
+| `test_bash_bootstrap_nounset`, `test_zsh_bootstrap_strict_options` | hooks survive `set -u` / `err_return` / failing user precmd (#825, #836, #844); a detached HEAD under strict options reports git's hash every prompt (#1616). Option guard (every hook entry saves the user's options, turns them off for its own body and gives them back exactly): bash also covers `set -E` + an ERR trap (never fires inside a hook, once for the user's own `false`), `set -a` (no hook scratch variable is exported), `set -x` (no hook body is traced), and `$?` / `PIPESTATUS` / `$BP_PIPESTATUS` as the user's PROMPT_COMMAND sees them, plain and under `set -u -o pipefail`; zsh covers `pipe_fail` + `all_export` + `xtrace` the same way. fish has no errexit; its `$status` capture is the first line of `warp_precmd` |
 | `test_fish_bootstrap` | fish hooks fire end to end in a pty (#829, #879) |
 | `test_bootstrap_hook_equivalence` (bash/zsh/fish), `test_nu_bootstrap_hook_equivalence`, `test_pwsh_hook_equivalence` (+ `testdata/pwsh_hooks_golden.json`) | fork-free hook helpers emit byte-identical DCS payloads to the old forking code (#1170, #1233, #1231); a detached HEAD runs git once per directory and HEAD commit, a moved HEAD is seen at the next prompt, `PHOSPHOR_GIT_HEAD_CACHE=0` restores git per prompt (#1616) |
 | `test_bash_bootstrap_builtins` | fork-free `sort -V`/os-release/`shopt` replacements match the commands (#1164) |

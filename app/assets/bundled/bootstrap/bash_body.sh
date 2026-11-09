@@ -63,12 +63,19 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     # __warp_relax_opts <var>: store in <var> the `set` commands that restore
     # the CALLER's errexit/nounset/pipefail, then turn all three off. Builtins
     # only -- this runs on every prompt and every command, so no forks.
+    #
+    # Also off while a hook runs, and given back exactly: errtrace (`set -E`), under which the
+    # user's ERR trap is inherited by the hook functions and fires on every probe of theirs that
+    # fails, and allexport (`set -a`), which would export each of the hooks' scratch variables
+    # into every command's environment.
     __warp_relax_opts () {
         local __warp_relax_restore=
         case $- in *e*) __warp_relax_restore+='set -e;' ;; esac
         case $- in *u*) __warp_relax_restore+='set -u;' ;; esac
+        case $- in *E*) __warp_relax_restore+='set -E;' ;; esac
+        case $- in *a*) __warp_relax_restore+='set -a;' ;; esac
         if [[ -o pipefail ]]; then __warp_relax_restore+='set -o pipefail;'; fi
-        set +e +u +o pipefail
+        set +e +u +E +a +o pipefail
         builtin printf -v "$1" '%s' "$__warp_relax_restore"
     }
 
@@ -79,13 +86,31 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     # (warp_precmd reads the finished command's status from it) and the
     # function's own status on the way out (bash-preexec gives preexec return
     # values meaning under `extdebug`).
+    #
+    # With `set -x` on, the hook runs untraced: its own commands would otherwise print a
+    # hundred trace lines into the user's terminal at every prompt. The group's stderr goes to
+    # /dev/null so the `set +x` itself is not traced either, and xtrace comes back as the last
+    # thing before the return. (bash-preexec's own dispatcher is still traced, as it always was.)
     __warp_run_relaxed () {
-        local __warp_run_status=$? __warp_run_restore
+        # PIPESTATUS is read in the very first command (any later command overwrites it) and kept
+        # in __warp_run_pipe for the dispatcher, which hands it to the user's prompt as BP_PIPESTATUS.
+        { __warp_run_in_status=$? __warp_run_pipe=("${PIPESTATUS[@]}"); } 2>/dev/null
+        { local __warp_run_status=$__warp_run_in_status __warp_run_xtrace=; case $- in *x*) __warp_run_xtrace=1; set +x ;; esac; } 2>/dev/null
+        local __warp_run_restore
         __warp_relax_opts __warp_run_restore
-        __warp_set_status "$__warp_run_status"
-        "$@"
+        # `$?` must hold the user's status when <function> starts, and the call that puts it there
+        # (`return N`) is a failing command: under `set -E` the user's ERR trap fires on it, and
+        # bash cannot be told otherwise once inside a function (the trap is switched off or on at
+        # function entry, not by a later `set +E`). As the left side of `||` a failure is exempt
+        # from ERR, and <function> runs on that failure with the status still in `$?`.
+        if (( __warp_run_status == 0 )); then
+            "$@"
+        else
+            __warp_set_status "$__warp_run_status" || "$@"
+        fi
         __warp_run_status=$?
         eval "$__warp_run_restore"
+        if [[ -n $__warp_run_xtrace ]]; then set -x; fi
         return "$__warp_run_status"
     }
 

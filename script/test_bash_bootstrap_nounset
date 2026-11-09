@@ -456,6 +456,72 @@ def scenario_set_e_at_prompt():
         sh.close()
 
 
+def scenario_errtrace_allexport_xtrace():
+    print("set -E with an ERR trap, set -a and set -x typed at the prompt")
+    # The hooks run inside the user's shell. Under `set -E` the user's ERR trap is inherited by
+    # the hook functions and fired on every probe of theirs that fails; under `set -a` each
+    # scratch variable a hook assigns is exported into every command's environment; under
+    # `set -x` each hook command printed a trace line into the terminal. The hooks must switch
+    # these off for their own body and hand them back unchanged.
+    sh = Shell()
+    try:
+        check(sh.wait_bootstrapped(), "bootstraps", sh)
+        check(sh.run("trap 'echo ERRTRAP-$((6*7))' ERR; set -E -a"), "the `set -E -a` block finishes (Precmd)", sh)
+        check(sh.run("echo quiet$((1+1))", r"quiet2"), "a command finishes (Precmd)", sh)
+        check(sh.generator(31), "a generator finishes", sh)
+        check(sh.run("echo quiet$((2+2))", r"quiet4"), "another command finishes (Precmd)", sh)
+        check(not has(sh, r"ERRTRAP-42"), "the user's ERR trap never fires inside a hook", sh)
+        check(sh.run("false", ), "a failing user command finishes", sh)
+        check(sh.run("echo after$((3+3))", r"after6"), "the command after it finishes", sh)
+        check(len(re.findall(r"ERRTRAP-42", sh.text())) == 1, "the ERR trap fired once, for the user's own `false`", sh)
+        check(sh.run("echo xp-$(env | grep -c '^__warp_he[x]=' || :)-$(env | grep -c '^__phosphor_c[l]_' || :)-end", r"xp-\d+-\d+-end"),
+              "export probe finishes", sh)
+        check(has(sh, r"xp-0-0-end"), "no hook scratch variable was exported under `set -a`", sh)
+        check(sh.run('echo "opts:$-:"', r"opts:[^:$]*:"), "option probe finishes", sh)
+        m = re.findall(r"opts:([^:$]*):", sh.text())
+        check(bool(m) and "E" in m[-1] and "a" in m[-1], f"errtrace and allexport are still on for the user (got {m[-1] if m else None!r})", sh)
+        # set -x: only the user's own command is traced, not the hook bodies.
+        check(sh.run("set +E +a; set -x"), "the `set -x` block finishes (Precmd)", sh)
+        n = len(sh.text())
+        check(sh.run("echo traced$((4+4))", r"traced8"), "a command under set -x finishes (Precmd)", sh)
+        out = sh.text()[n:]
+        check("__warp_hex_encode_to" not in out and "__warp_precmd_impl" not in out and "__phosphor_cwd_listing" not in out,
+              "no hook body is traced under `set -x`", sh)
+        check(sh.run("set +x; echo opts2:$-:", r"opts2:[^:$]*:"), "set +x finishes", sh)
+        m = re.findall(r"opts2:([^:$]*):", sh.text())
+        check(bool(m) and "x" not in m[-1], "xtrace is off again after `set +x`", sh)
+    finally:
+        sh.close()
+
+
+def scenario_status_reaches_user_prompt():
+    print("$? and PIPESTATUS reach the user's own PROMPT_COMMAND")
+    # A prompt that shows the last status runs after the hooks. Natively bash-preexec hands `$?`
+    # to PROMPT_COMMAND, and the hooks must not change it (also under strict options). PIPESTATUS
+    # is a copy-only variable: bash-preexec's own dispatcher resets it for every precmd function
+    # and PROMPT_COMMAND (its TODO at `BP_PIPESTATUS`), so a multi-stage pipeline reaches the
+    # prompt only as $BP_PIPESTATUS, and a single command's PIPESTATUS is `$?`. Both are checked.
+    for label, opts in (("plain", ""), ("set -u -o pipefail", "set -u -o pipefail; ")):
+        sh = Shell(profile="PROMPT_COMMAND='echo \"PC<$?:${PIPESTATUS[*]}:${BP_PIPESTATUS[*]}>\"'")
+        try:
+            check(sh.wait_bootstrapped(), f"{label}: bootstraps", sh)
+            check(sh.run(opts + "true"), f"{label}: a first command finishes", sh)
+            sh.pump(1)
+            pcs = lambda: re.findall(r"PC<(\d+):([^:>]*):([^>]*)>", sh.text())
+            for cmd, status, pipe in (("(exit 3)", "3", "3"), ("true | (exit 4)", "4", "0 4")):
+                before = len(pcs())
+                check(sh.run(cmd), f"{label}: `{cmd}` finishes", sh)
+                # PROMPT_COMMAND runs after the Precmd hook has been sent.
+                sh.pump(5, lambda: len(pcs()) > before)
+                m = pcs()[before:]
+                check(bool(m) and m[-1][0] == status, f"{label}: `{cmd}`: PROMPT_COMMAND sees $? = {status} (got {m[-1] if m else None!r})", sh)
+                check(bool(m) and m[-1][2] == pipe, f"{label}: `{cmd}`: $BP_PIPESTATUS is '{pipe}' (got {m[-1] if m else None!r})", sh)
+                if "|" not in cmd:
+                    check(bool(m) and m[-1][1] == pipe, f"{label}: `{cmd}`: PIPESTATUS is '{pipe}' (got {m[-1] if m else None!r})", sh)
+        finally:
+            sh.close()
+
+
 def scenario_noclobber():
     print("set -o noclobber typed at the prompt")
     sh = Shell()
@@ -651,6 +717,8 @@ def main():
     scenario_set_e_own_return_trap_failure_still_exits()
     scenario_return_trap_in_rcfile_function()
     scenario_noclobber()
+    scenario_errtrace_allexport_xtrace()
+    scenario_status_reaches_user_prompt()
     scenario_options_untouched_without_set_u()
     scenario_detached_head_under_strict_options()
     if failures:
