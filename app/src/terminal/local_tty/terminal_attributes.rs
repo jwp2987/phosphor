@@ -1,4 +1,7 @@
-use std::{os::fd::RawFd, time::Duration};
+use std::{
+    os::fd::{BorrowedFd, RawFd},
+    time::Duration,
+};
 
 use nix::Result;
 use nix::sys::termios::{self, Termios};
@@ -88,6 +91,18 @@ impl TerminalAttributesPoller {
 
 /// Queries the terminal attributes via the `termios` API.
 fn fetch_termial_attributes(fd: RawFd) -> Result<Termios> {
+    tcgetattr_raw(fd)
+}
+
+/// `tcgetattr` on a raw fd. nix >= 0.27 takes an `AsFd` (I/O safety), so the raw descriptor is
+/// borrowed for the one call. A negative fd is `EBADF` (`BorrowedFd::borrow_raw(-1)` is not
+/// allowed), matching what the kernel answers for it.
+pub(super) fn tcgetattr_raw(fd: RawFd) -> Result<Termios> {
+    if fd < 0 {
+        return Err(nix::errno::Errno::EBADF);
+    }
+    // SAFETY: the borrow does not outlive this call, and the caller owns `fd` for its duration.
+    let fd = unsafe { BorrowedFd::borrow_raw(fd) };
     termios::tcgetattr(fd)
 }
 
