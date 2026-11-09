@@ -69,3 +69,34 @@ fn a_signal_waiting_activation_is_not_the_default_fifty_ms_timer() {
         });
     });
 }
+
+/// #1798/#1672: only the shell's own signal proves its line editor reads. The fallback opens the
+/// write gate but proves nothing, so no line-report request follows it; a late signal proves it,
+/// and a shell that has signalled once waits for the signal far longer than 50 ms.
+#[test]
+fn only_the_ready_signal_proves_the_line_editor_reads() {
+    App::test((), |mut app| async move {
+        let (_model_events_tx, model_events_rx) = async_channel::unbounded();
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let model_events =
+            app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
+        let status = app.add_model(|ctx| LineEditorStatus::new(model_events, sessions, ctx));
+
+        status.update(&mut app, |status, ctx| {
+            assert_eq!(status.fallback_delay(), LINE_EDITOR_ACTIVATION_DELAY);
+            status.arm_activation_for_test(ctx);
+            status.note_shell_reading_line(ctx);
+            assert!(status.is_proven_reading());
+            // Once the shell has signalled, the fallback is the long give-up.
+            assert_eq!(status.fallback_delay(), LINE_EDITOR_SIGNAL_GIVE_UP);
+            // A command start (Ctrl-C included) drops the proof.
+            status.did_execute_command(ctx);
+            assert!(!status.is_proven_reading());
+            // The fallback's activation opens the gate without proof; a late signal proves it.
+            status.set_line_editor_active_unproven_for_test();
+            assert!(status.is_line_editor_active() && !status.is_proven_reading());
+            status.note_shell_reading_line(ctx);
+            assert!(status.is_proven_reading());
+        });
+    });
+}

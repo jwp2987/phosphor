@@ -706,12 +706,14 @@ impl<T: EventLoopSender> PtyController<T> {
                     me.decide_typeahead_handoff_request(false, ctx);
                     return;
                 }
+                let proven = me.line_editor_status.as_ref(ctx).is_proven_reading();
                 let input_reporting_seq = me
                     .model_event_dispatcher
                     .as_ref(ctx)
                     .active_session_id()
                     .and_then(|id| me.sessions.as_ref(ctx).get(id))
-                    .and_then(|session| session.shell().input_reporting_sequence());
+                    .and_then(|session| session.shell().input_reporting_sequence())
+                    .filter(|_| proven);
                 if let Some(bytes) = input_reporting_seq {
                     me.pending_writes.push_front(PtyWrite::Bytes {
                         bytes: Cow::Owned(bytes.to_vec()),
@@ -815,12 +817,24 @@ impl<T: EventLoopSender> PtyController<T> {
             return;
         }
 
+        // #1798/#1672: the request (ESC i) is written only to a line editor the shell's own ready
+        // signal proved to be reading at this prompt. The fallback that opens the write gate
+        // without the signal (a shell still recovering from a ^C, a nested shell, a PS2) proves
+        // nothing: a shell not reading echoes the request as `^[i`. Without the proof the
+        // hand-off decides as for a shell with no request binding, and the keys go as typed.
+        let editor_proven = self.line_editor_status.as_ref(ctx).is_proven_reading();
+        if !editor_proven {
+            warpui::input_order::log_hop("handoff_request_skipped", || {
+                "reason=line_editor_not_proven".to_owned()
+            });
+        }
         let input_reporting_seq = self
             .model_event_dispatcher
             .as_ref(ctx)
             .active_session_id()
             .and_then(|id| self.sessions.as_ref(ctx).get(id))
-            .and_then(|session| session.shell().input_reporting_sequence());
+            .and_then(|session| session.shell().input_reporting_sequence())
+            .filter(|_| editor_proven);
         // The one model read is the exact "at a prompt" fact (the decision depends on it, so it is
         // not a published copy); the hand-off is mutated through its own handle, after the model's
         // lock is released, so the decision never holds the model while it takes the hand-off.

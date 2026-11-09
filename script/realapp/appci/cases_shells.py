@@ -65,3 +65,42 @@ def c_startup_shell_pane(ctx, r):
     r.check(bool(ok), "%s: Ctrl-C did not end the running command: the next line never ran within 10 s" % variant)
     ctx.shot("startup_shell_%s_after_ctrl_c" % variant)
     r.check(ctx.app.alive(), "the app died in the %s pane" % variant)
+
+
+@case("ctrl_c_no_esc_i_local", order=73, gui=True)
+def c_ctrl_c_no_esc_i_local(ctx, r):
+    """#1798/#1672 (local, both modes; the ssh lab variant is lab_ctrl_c_no_esc_i): `sleep 30`, then Ctrl-C x1/x2/x3 at gaps 0/50/200 ms, then a typed echo.
+    The echo's effect file is exact, the shell received exactly [sleep 30, the echo] (no ESC-i / `^[i` ran as text), the app log never says
+    "Session abandoned before bootstrap", and one OCR at the end finds no visible `^[i`. Skips where the pane has no rec.log (Windows PowerShell)."""
+    if ctx.win:
+        r.skip("the ESC-i line report is a Unix tty echo failure; the Windows pane has no rec.log")
+    f = "ccl_%s.txt" % ctx.tok(4)
+    ctx.rm(f)
+    toks = []
+    for nctl in (1, 2, 3):
+        for gap in (0, 50, 200):
+            label = "x%d gap %d ms" % (nctl, gap)
+            off, mark = ctx.log_size(), ctx.cmd_mark()
+            ctx.be.type("sleep 30", 12, enter=True)
+            time.sleep(0.8)
+            for i in range(nctl):
+                ctx.be.key("ctrl+c")
+                if i < nctl - 1 and gap:
+                    time.sleep(gap / 1000.0)
+            tok = ctx.tok(8).lower()
+            toks.append(tok)
+            time.sleep(0.4)
+            ctx.be.type(ctx.append_cmd(ctx.pane_shell(), tok, f), 12, enter=True)
+            ctx.until(lambda: len(ctx.lines(f)) >= len(toks), 10)
+            time.sleep(0.3)
+            r.check(ctx.lines(f) == toks, "[%s] effect file %r, expected %r" % (label, ctx.lines(f), toks))
+            new = ctx.cmds_since(mark)
+            r.check(len(new) == 2 and new[0].strip() == "sleep 30" and tok in new[-1], "[%s] the shell received %r, expected exactly [sleep 30, the echo]" % (label, new))
+            r.check(not any("\x1bi" in c or "^[i" in c for c in new), "[%s] an ESC-i (^[i) reached the shell: %r" % (label, new))
+            r.check("Session abandoned before bootstrap" not in ctx.log_since(off), "[%s] the app log says 'Session abandoned before bootstrap'" % label)
+    txt = ctx.ocr("ctrl_c_no_esc_i_local_end")
+    if txt is None:
+        r.note("no OCR: a visible ^[i on screen was not looked for")
+    else:
+        r.check("^[i" not in txt and "^[ i" not in txt, "a literal ^[i is on screen after the Ctrl-C rounds")
+    ctx.shot("ctrl_c_no_esc_i_local_end")
