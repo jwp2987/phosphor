@@ -131,6 +131,9 @@ pub enum LeftPanelEvent {
         terminal_view_id: Option<warpui::EntityId>,
     },
     ShowDeleteAllConfirmationDialog,
+    /// Escape in Global Search: close the panel and focus the terminal (#1643).
+    #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
+    CloseGlobalSearch,
 }
 
 /// Which left-panel sub-feature originated a [`LeftPanelEvent::OpenFileWithTarget`]
@@ -850,6 +853,7 @@ impl LeftPanelView {
                     }
                 }
             }
+            GlobalSearchViewEvent::Close => ctx.emit(LeftPanelEvent::CloseGlobalSearch),
         }
     }
 

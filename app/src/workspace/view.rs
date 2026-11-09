@@ -6064,6 +6064,12 @@ impl Workspace {
                     ctx,
                 );
             }
+            // #1643: Escape in Global Search closes it and returns focus to the terminal, so the
+            // next typed line is not taken as a search pattern.
+            LeftPanelEvent::CloseGlobalSearch => {
+                self.close_left_panel(ctx);
+                self.focus_active_tab(ctx);
+            }
         }
     }
 

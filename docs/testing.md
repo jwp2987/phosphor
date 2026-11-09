@@ -2718,3 +2718,7 @@ bounded cwd listing in the remote precmd payload when the cwd changes, cached pe
 - #1635: `editor/view/mod_test.rs` `test_queue_editor_host_gates_every_map_reading_key_not_only_layout_ones` (the editor's
   own queue host opens the display-map gate for a cursor key and a typed closer, as the input's host does; it used to
   gate only layout-reading keys and applied the rest against the pre-paste map).
+- #1643: no unit test (GlobalSearchView has no view-test harness; building one needs the full workspace singletons).
+  Covered by the existing macOS appci cases `flood_scrollback_find` and `remote_heredoc_paste`, which press Cmd-Shift-F,
+  Escape, then type a command: before the fix the command was searched, now Escape emits `Event::Close`, the left panel
+  closes and the active tab takes focus. Check on the Mac box in the next candidate run.
