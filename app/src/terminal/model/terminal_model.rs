@@ -4201,6 +4201,9 @@ impl ansi::Handler for TerminalModel {
         {
             self.abandoned_subshell_session = None;
         }
+        // #1897: the session's typeahead mode ends with it (one entry per bootstrapped session
+        // would otherwise live as long as the pane).
+        self.typeahead_mode_by_session.remove(&data.session_id);
         self.event_proxy.send_terminal_event(Event::ExitShell {
             session_id: data.session_id,
         });

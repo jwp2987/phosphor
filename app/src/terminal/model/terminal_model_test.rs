@@ -3931,3 +3931,22 @@ fn unregister_session_id_forgets_only_that_id() {
     terminal.register_session_id(probe);
     assert!(terminal.is_registered_session(probe));
 }
+
+/// #1897: a session's remembered typeahead mode ends with the session.
+#[test]
+fn exit_shell_removes_the_sessions_typeahead_mode() {
+    let mut terminal = TerminalModel::mock(None, None);
+    let session: SessionId = 7.into();
+    terminal
+        .typeahead_mode_by_session
+        .insert(session, TypeaheadMode::ShellReported);
+    let other: SessionId = 8.into();
+    terminal
+        .typeahead_mode_by_session
+        .insert(other, TypeaheadMode::ShellReported);
+    terminal.exit_shell(ExitShellValue {
+        session_id: session,
+    });
+    assert!(!terminal.typeahead_mode_by_session.contains_key(&session));
+    assert!(terminal.typeahead_mode_by_session.contains_key(&other));
+}

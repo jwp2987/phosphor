@@ -29182,6 +29182,41 @@ fn synced_input_is_held_not_written_into_an_open_hand_over_gate() {
     })
 }
 
+/// #1893 / #1862: whether the input being written is synced is the DELIVERING entry's own origin
+/// while the queue delivers, never the enclosing arrival's thread-local: a drain run inside a synced
+/// arrival writes the user's own held keys as the user's (they take over an agent program), and a
+/// synced entry drained from a pty event stays passive. Not a mode choice: both input paths (legacy
+/// writer and table executor) read this one predicate.
+#[test]
+fn synced_ness_at_delivery_is_the_entrys_not_the_enclosing_arrivals() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, _| {
+            // A live arrival: the arrival's origin decides.
+            assert!(!view.input_is_synced());
+            {
+                let _synced = dest_table::set_arrival_origin(input_queue::Origin::Synced);
+                assert!(view.input_is_synced());
+                // A drain inside the synced arrival delivers the user's own held key.
+                view.paste_queue.delivering = true;
+                view.paste_queue.delivering_synced = false;
+                assert!(
+                    !view.input_is_synced(),
+                    "a held keyboard entry is not synced because synced text triggered the drain"
+                );
+                view.paste_queue.delivering = false;
+            }
+            // A synced entry drained from a pty event (arrival origin is Keyboard).
+            view.paste_queue.delivering = true;
+            view.paste_queue.delivering_synced = true;
+            assert!(view.input_is_synced(), "a held synced entry stays passive");
+            view.paste_queue.delivering = false;
+            view.paste_queue.delivering_synced = false;
+        });
+    })
+}
+
 /// #1431: the agent's pty writes are refused while a subshell / PowerShell setup is in progress
 /// (they would land in the bootstrap); outside of one they go out as before.
 #[test]

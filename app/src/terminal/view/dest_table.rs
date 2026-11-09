@@ -323,7 +323,9 @@ impl TerminalView {
         let mut intent = Intent::new(input.class(), origin)
             .stamped(stamp)
             .delivering();
-        if matches!(origin, Origin::Synced) {
+        // #1893/#1862: the delivered entry's own synced-ness (the queue entry's origin), since a
+        // delivery is judged as Held/Replay.
+        if matches!(origin, Origin::Synced) || self.paste_queue.delivering_synced {
             intent = intent.passive();
         }
         let plan = table::decide(&intent, &facts, None);
@@ -435,7 +437,7 @@ impl TerminalView {
                 self.report_possible_typeahead(text);
                 let written = self.write_user_bytes_to_pty_after_paste_stage(
                     Cow::Owned(text.as_bytes().to_vec()),
-                    !arrival_is_synced(),
+                    !self.input_is_synced(),
                     ctx,
                 );
                 warpui::input_order::log_key_hop("kh_terminal_typed_routed", || {
@@ -710,6 +712,19 @@ pub(super) fn arrival_is_synced() -> bool {
     matches!(arrival_origin(), Origin::Synced)
 }
 
+impl TerminalView {
+    /// Whether the input being written is synced input (#1855, #1893): the delivering entry's own
+    /// origin while the queue delivers (a drain run inside a synced arrival, or a synced entry
+    /// drained from a pty event, must not read the enclosing arrival's origin), else the arrival's.
+    pub(super) fn input_is_synced(&self) -> bool {
+        if self.paste_queue.delivering {
+            self.paste_queue.delivering_synced
+        } else {
+            arrival_is_synced()
+        }
+    }
+}
+
 /// A live input arriving at one of the three legacy entry points.
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Arrival<'a> {
@@ -975,7 +990,7 @@ impl TerminalView {
             self.report_possible_typeahead(arrival.text());
         }
         let bytes = arrival.text().as_bytes().to_vec();
-        if arrival_is_synced() {
+        if self.input_is_synced() {
             self.write_passive_input_to_pty(bytes, ctx);
         } else {
             self.write_user_bytes_to_pty(bytes, ctx);

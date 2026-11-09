@@ -176,3 +176,37 @@ fn stale_parked_command_is_released_for_cancel_not_queued_with_new_turn() {
     let ids: Vec<_> = out.iter().map(|a| a.id.clone()).collect();
     assert_eq!(ids, vec![new_id], "only the new turn's action runs");
 }
+
+/// #1894: the actions in hand when an ABANDONED batch's late result arrives are handed back to be
+/// cancelled (they never execute, but still owe a result); same when the batch is missing.
+#[test]
+fn late_result_of_an_abandoned_or_missing_batch_hands_back_its_actions_to_cancel() {
+    let mut actions = PendingPreprocessedActions::default();
+    let (id, batch) = batch_of(&mut actions);
+    actions.abandon_pending();
+    let (queue, stale) = actions.handle_preprocess_actions_result_with_stale(
+        batch.clone(),
+        vec![create_test_action(id.clone())],
+    );
+    assert!(queue.is_empty());
+    assert_eq!(stale.len(), 1);
+    assert_eq!(stale[0].id, id);
+    assert_eq!(actions.0.len(), 0);
+
+    // The marker is gone now: the same id again is a missing batch.
+    let (queue, stale) = actions
+        .handle_preprocess_actions_result_with_stale(batch, vec![create_test_action(id.clone())]);
+    assert!(queue.is_empty());
+    assert_eq!(stale.len(), 1);
+}
+
+/// #1894: a live batch hands back nothing to cancel.
+#[test]
+fn live_batch_result_has_no_stale_actions() {
+    let mut actions = PendingPreprocessedActions::default();
+    let (id, batch) = batch_of(&mut actions);
+    let (queue, stale) =
+        actions.handle_preprocess_actions_result_with_stale(batch, vec![create_test_action(id)]);
+    assert_eq!(queue.len(), 1);
+    assert!(stale.is_empty());
+}

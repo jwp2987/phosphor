@@ -3699,6 +3699,13 @@ fn stream_event_is_progress(event: &ChatStreamEvent) -> bool {
     }
 }
 
+/// Whether `event` moves the stream out of the first-event window into the idle window (#1898):
+/// progress, and not the `Start` marker. Tied to [`stream_event_is_progress`] so the two windows
+/// can never disagree about what counts.
+fn stream_event_is_real_event(event: &ChatStreamEvent) -> bool {
+    !matches!(event, ChatStreamEvent::Start) && stream_event_is_progress(event)
+}
+
 fn byop_stream_idle_timeout() -> std::time::Duration {
     parse_idle_timeout_secs(std::env::var(BYOP_STREAM_IDLE_TIMEOUT_ENV).ok().as_deref())
 }
@@ -7657,7 +7664,10 @@ pub async fn generate_byop_output(
             let Some(item) = next_item else { break };
             let event = match item {
                 Ok(ev) => {
-                    if !matches!(ev, ChatStreamEvent::Start) {
+                    // #1898: one notion of progress. An empty first chunk is neither `Start` nor
+                    // content, so it must not move the loop from the first-event window to the
+                    // (shorter) idle window measured from a `last_progress` that never moved.
+                    if stream_event_is_real_event(&ev) {
                         received_real_event = true;
                     }
                     if stream_event_is_progress(&ev) {
@@ -10407,6 +10417,25 @@ mod byop_stream_error_retry_tests {
         assert!(stream_event_is_progress(&ChatStreamEvent::ReasoningChunk(
             chunk("a")
         )));
+    }
+
+    /// #1898: an empty first chunk (or `Start`) keeps the first-event window; content leaves it.
+    #[test]
+    fn an_empty_first_chunk_keeps_the_first_event_window() {
+        use genai::chat::StreamChunk;
+        let chunk = |content: &str| StreamChunk {
+            content: content.to_owned(),
+        };
+        assert!(!stream_event_is_real_event(&ChatStreamEvent::Start));
+        assert!(!stream_event_is_real_event(&ChatStreamEvent::Chunk(chunk(
+            ""
+        ))));
+        assert!(!stream_event_is_real_event(
+            &ChatStreamEvent::ReasoningChunk(chunk(""))
+        ));
+        assert!(stream_event_is_real_event(&ChatStreamEvent::Chunk(chunk(
+            "a"
+        ))));
     }
 
     #[test]

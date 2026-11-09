@@ -13360,7 +13360,7 @@ impl TerminalView {
             TypedRoute::PowerShellHeld => {
                 note_shadow_leaf(DestClass::Held);
                 let bytes = characters.as_bytes().to_vec();
-                if dest_table::arrival_is_synced() {
+                if self.input_is_synced() {
                     self.write_passive_input_to_pty(bytes, ctx);
                 } else {
                     self.write_user_bytes_to_pty(bytes, ctx);
@@ -13375,7 +13375,7 @@ impl TerminalView {
             self.report_possible_typeahead(characters);
             let bytes = characters.as_bytes().to_vec();
             // #1855: synced input is passive in both modes (it never takes over an agent's command).
-            written_to_pty = if dest_table::arrival_is_synced() {
+            written_to_pty = if self.input_is_synced() {
                 self.write_passive_input_to_pty(bytes, ctx)
             } else {
                 self.write_user_bytes_to_pty(bytes, ctx)
@@ -25881,6 +25881,11 @@ impl TerminalView {
         // it runs) is not consulted, or a paste could be judged "open" while the keys typed just
         // before it are held and reach the pty ahead of them.
         let table_plan = if table_mode {
+            // #1895: a window released without a hand-over hands over BEFORE the paste is judged,
+            // as `arrive_via_table` does for a key, so the paste lands behind the held keys.
+            if self.ssh_handover_after_release {
+                self.deliver_ssh_typeahead_if_ready("released_before_key", ctx);
+            }
             let routing_shadow = self.shadow_begin(Class::Paste, ctx);
             let planned = self.paste_plan_via_table(ctx);
             match planned.0.outcome {

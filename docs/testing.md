@@ -2130,6 +2130,15 @@ Owner decision 2026-11-09 (#1859): earlier-turn actions that finished preprocess
 (a `cancelled` result each, no execution, no FinishedAction event); unit `stale_parked_command_is_released_for_cancel_not_queued_with_new_turn`. The Parked oracle and the
 corpus did not assume release, so they are unchanged.
 
+Pre-build review round 8 fixes (#1893-#1898; unit tests only, none built or run yet):
+`synced_ness_at_delivery_is_the_entrys_not_the_enclosing_arrivals` (view_test.rs; the one predicate `input_is_synced` both the legacy writer and the table executor read, so it
+covers Legacy and Table: a drain inside a synced arrival keeps the user's own keys taking over, a held synced entry stays passive; #1893/#1862),
+`late_result_of_an_abandoned_or_missing_batch_hands_back_its_actions_to_cancel` / `live_batch_result_has_no_stale_actions` (preprocess_tests.rs; #1894),
+`release_without_event_hands_over_before_the_next_paste` (group1_handover_tests.rs, Table mode: the paste lands behind the held keys; #1895),
+`discarded_actions_of_a_follow_up_send_no_request_of_their_own` (controller_tests.rs: a batch of only the cancelled results of discarded actions plans no follow-up request, so a
+steer sends exactly one; #1896), `exit_shell_removes_the_sessions_typeahead_mode` (terminal_model_test.rs; #1897) and `an_empty_first_chunk_keeps_the_first_event_window`
+(chat_stream.rs; #1898).
+
 ## 3. Real-app testing
 
 Automated tests do not catch lag, lost keys or broken flows; the owner feels those. Every release candidate
