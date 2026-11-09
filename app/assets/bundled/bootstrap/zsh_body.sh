@@ -2451,6 +2451,7 @@ esac
   function __warp_nc_give_back_escape() {
     setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal extendedglob
     local __seq=$'\e' __b
+    # give-up-net: read bounded by the overall deadline only; expiry hands back or drops a reply, writes nothing
     if __warp_nc_time_left && IFS= builtin read -s -r -k 1 -t $__warp_nc_left __b </dev/tty; then
       __seq+=$__b
       case $__b in
@@ -2461,6 +2462,7 @@ esac
             (( ${#__seq} <= 64 )) || break
           done ;;
         (']'|P)
+          # give-up-net: read bounded by the overall deadline only; expiry hands back or drops a reply, writes nothing
           while __warp_nc_time_left && IFS= builtin read -s -r -k 1 -t $__warp_nc_left __b </dev/tty; do
             __seq+=$__b
             [[ $__b == $'\a' || $__seq == *$'\e\\' ]] && break
@@ -2480,6 +2482,7 @@ esac
   # __warp_nc_left to what remains (a `read -t` value) and fails when nothing does. Against
   # $EPOCHREALTIME when zsh/datetime is loaded, whole seconds of $SECONDS otherwise.
   function __warp_nc_deadline_set() {
+    # give-up-net: overall deadline of the exchange, its only clock; expiry hands the bytes read back to the line, writes nothing
     if (( ${+EPOCHREALTIME} )); then
       typeset -gF __warp_nc_dl=$(( EPOCHREALTIME + $1 ))
     else
@@ -2488,6 +2491,7 @@ esac
   }
   function __warp_nc_time_left() {
     local -F __l
+    # give-up-net: time left on the exchange's overall deadline; expiry hands the bytes read back, writes nothing
     if (( ${+EPOCHREALTIME} )); then
       __l=$(( __warp_nc_dl - EPOCHREALTIME ))
     else
@@ -2509,6 +2513,7 @@ esac
     typeset -g __warp_nc_body=
     local __c __phase=start __ok
     while :; do
+      # give-up-net: read bounded by the overall deadline only; expiry hands everything read back to zle
       if ! __warp_nc_time_left || ! IFS= builtin read -s -r -k 1 -t $__warp_nc_left __c </dev/tty; then
         zle -U "$__warp_nc_body"
         return 1
@@ -2566,6 +2571,7 @@ esac
     builtin printf '\e]9280;P;%s\a' "$__tok"
     __warp_nc_deadline_set $__start
     __warp_nc_time_left || return 1
+    # give-up-net: first-byte read within the overall deadline; expiry hands back to zle, writes nothing
     IFS= builtin read -s -r -k 1 -t $__warp_nc_left __c </dev/tty || return 1
     if [[ $__c != $'\x1e' ]]; then
       # Not a frame: it is the user's (or another write's) first byte. Give it back to zle (a

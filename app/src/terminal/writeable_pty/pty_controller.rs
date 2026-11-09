@@ -139,6 +139,7 @@ const SWITCH_TO_WARP_PROMPT_ESCAPE_SEQUENCE: &[u8] = &[escape_sequences::C0::ESC
 /// milliseconds, or they are not installed and it never returns at all. The latter is the common
 /// case in an escalated or otherwise un-warpified shell (`su`, `sudo su -`, `ksu`), where `^Y` is
 /// just readline's yank and nothing answers.
+// give-up-net: only gives up -- closes the requester channel and marks the cancel frame owed; writes nothing
 const NATIVE_COMPLETIONS_PROMPT_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// How long to wait for completion results once the prompt has been sent.
