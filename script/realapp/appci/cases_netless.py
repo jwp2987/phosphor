@@ -1,6 +1,8 @@
 # appci/cases_netless.py: Wave N, "no network at startup" (docs/testing.md 2.16). Registered with the same @case decorator as cases.py (imported by its last line).
 #   zero_network_startup   Linux: the app, with the harness profile (no cloud account, no provider key), is launched under `strace -f` and left idle for APPCI_ZNS_IDLE_S
-#                          (default 120 s); NO connect()/sendto() to a non-loopback inet address may appear in the trace
+#                          (default 120 s), then drives a short scripted session (the settings page walked with the keyboard, which visits the AI page, and an ssh connect to the
+#                          fake host); NO connect()/sendto() to an inet address beyond loopback + the fake ssh host (+ APPCI_ZNS_ALLOW, comma separated) may appear in the trace
+#                          (the runtime network gate, crates/network_gate: docs/testing.md "Network gate")
 #   claude_plugin_offline  Linux: with the network namespace unshared (`unshare -rn`), the plugin bundled in the build is registered as a local marketplace and installed with
 #                          fakeclaude.py, and its real hook scripts produce the prompt / tool / permission / stop events; a fake `claude` in a pane prints those
 #                          sequences and the app must log one 'CLI agent event received' line per event, with no prompt text in the log
@@ -20,8 +22,9 @@ ATTEMPT = re.compile(r"\b(connect|sendto|sendmsg)\(.*?sa_family=(AF_INET6?)\b.*?
 HOST_ONLY = re.compile(r"^(127\.|0\.0\.0\.0$|::1$|::$|::ffff:127\.)")
 
 
-def outbound_attempts(trace_text):
-    """-> [(syscall, address, port)] for every connect()/sendto()/sendmsg() in an `strace -f -e trace=network` text whose inet address is NOT loopback or unspecified.
+def outbound_attempts(trace_text, allow=()):
+    """-> [(syscall, address, port)] for every connect()/sendto()/sendmsg() in an `strace -f -e trace=network` text whose inet address is NOT loopback, unspecified or in
+    `allow` (the destinations the scripted session is expected to reach, e.g. the fake ssh host).
     AF_UNIX / AF_NETLINK lines never match (no sa_family=AF_INET)."""
     out = []
     for line in trace_text.splitlines():
@@ -29,7 +32,7 @@ def outbound_attempts(trace_text):
         if not m:
             continue
         addr = m.group(4) or m.group(5) or ""
-        if not HOST_ONLY.match(addr):
+        if not HOST_ONLY.match(addr) and addr not in allow:
             out.append((m.group(1), addr, int(m.group(3))))
     return out
 
@@ -67,16 +70,56 @@ def c_zero_network_startup(ctx, r):
             r.check(ctx.app.alive(), "the app exited while idling")
             if not ctx.app.alive():
                 break
+        allow = scripted_session(ctx, r)
     finally:
         ctx.app.wrap = ""
         ctx.app.stop()
     text = open(trace, errors="replace").read() if os.path.exists(trace) else ""
     r.check(bool(text), "the trace is empty: strace did not follow the app (no socket call at all is implausible)")
-    bad = outbound_attempts(text)
+    bad = outbound_attempts(text, allow)
     r.metric("network_syscalls_traced", len(text.splitlines()))
     r.metric("outbound_attempts", len(bad))
     r.check(not bad, "the app tried to reach the network at startup/idle: %s" % "; ".join("%s %s:%d" % b for b in bad[:8]))
     R.start_app(ctx, r, "zns_restore")                      # leave a normally-launched app for the cases that follow
+
+
+def session_allowlist(ctx):
+    """addresses the scripted session may reach beyond loopback: APPCI_ZNS_ALLOW plus the fake ssh host's address when it is an IP literal"""
+    allow = {a.strip() for a in os.environ.get("APPCI_ZNS_ALLOW", "").split(",") if a.strip()}
+    host = (getattr(ctx, "ssh", None) or {}).get("host") if isinstance(getattr(ctx, "ssh", None), dict) else None
+    if isinstance(host, str) and re.match(r"^[0-9a-fA-F:.]+$", host):
+        allow.add(host)
+    return allow
+
+
+def scripted_session(ctx, r):
+    """a short user session under the trace: open the settings page and walk its pages with the keyboard (the AI page among them), close it, then ssh to the fake host
+    and back. Returns the extra addresses the trace may contain. Every step is best effort EXCEPT the final liveness check; the network assertion is the caller's."""
+    import cases_coverage_b as CB
+    import cases_caseremote as CR
+    allow = session_allowlist(ctx)
+    key = CB.SETTINGS_KEY["mac" if ctx.be.name == "mac" else "linux"]
+    ctx.reset()
+    time.sleep(0.3)
+    ctx.be.key(key)
+    time.sleep(1.5)
+    for i in range(int(os.environ.get("APPCI_ZNS_PAGES", "12"))):         # nav list: Down moves to the next page; the AI page is one of them
+        ctx.be.key("Down")
+        time.sleep(0.4)
+        if i in (3, 6, 9):
+            ctx.shot("zns_settings_%d" % i)
+    ctx.be.key("Escape")
+    time.sleep(0.8)
+    r.note("scripted session: settings page walked with the keyboard (best effort; shots/zns_settings_*), allowlist beyond loopback: %s" % (sorted(allow) or "none"))
+    if getattr(ctx, "ssh", None):
+        secs = CR.connect(ctx, "fake", 60)
+        r.check(secs is not None, "the scripted ssh connect to the fake host did not reach a remote prompt")
+        ctx.be.type("exit", 12, enter=True)
+        time.sleep(1.0)
+    else:
+        r.note("no local ssh server: the ssh part of the scripted session was skipped (%s)" % (getattr(ctx, "ssh_why", None) or "unavailable"))
+    r.check(ctx.app.alive(), "the app exited during the scripted session")
+    return allow
 
 
 def bundle_dir(ctx):

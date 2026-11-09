@@ -3011,6 +3011,9 @@ def wn_zero_network_trace_and_offline_plugin():
         '[pid 12] sendto(8, "x", 1, MSG_NOSIGNAL, {sa_family=AF_INET6, sin6_port=htons(53), sin6_flowinfo=htonl(0), inet_pton(AF_INET6, "2001:db8::1", &sin6_addr), sin6_scope_id=0}, 28) = 1\n')
     assert nl.outbound_attempts(trace) == [("connect", "203.0.113.9", 443), ("sendto", "2001:db8::1", 53)], nl.outbound_attempts(trace)
     assert nl.outbound_attempts("") == []
+    # the scripted session's allowlist: an ssh target address is not an attempt, anything else still is
+    assert nl.outbound_attempts(trace, {"203.0.113.9"}) == [("sendto", "2001:db8::1", 53)]
+    assert nl.outbound_attempts(trace, {"203.0.113.9", "2001:db8::1"}) == []
     bundle = os.path.join(nl.REPO, "resources", "bundled", "claude_plugin")
     assert os.path.isfile(os.path.join(bundle, ".claude-plugin", "marketplace.json"))
     if not (shutil.which("jq") and shutil.which("bash")):

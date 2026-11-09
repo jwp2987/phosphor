@@ -2953,3 +2953,17 @@ work to race and nothing drains the main queue, so such a read runs in place.
   AppKit).
 - Not reopened by: moving the macOS pasteboard read back onto a worker thread (#1305/#1306).
 <!-- markers: keep:read_on_main_thread_with keep:OFF_MAIN_WAIT -->
+
+- **Runtime network gate: environment proxies ignored, background requests allowlist-only**
+  (Wave N, owner-approved, `crates/network_gate`, `script/check_network_gate`).
+  **Upstream:** reqwest's default builder reads `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`
+  and the platform proxy unconditionally (the `#638` correction defaulted the proxy mode to
+  `system` for that reason), and any code path can open a client to any host.
+  **We do instead:** one gate (`check_url` + the one client builder) in front of every
+  app-initiated request; redirect hops re-checked; names that resolve to loopback refused
+  unless configured; only a proxy set in Phosphor settings is used, so proxy mode `system`
+  behaves like `off`; denials log the purpose and a host hash, never the URL.
+  **Evidence:** an environment proxy can route a local control credential or a provider key
+  through a host the user never chose; a redirect from a provider endpoint can leave the
+  configured origin. A re-pin diff that restores env-proxy reading or a raw
+  `reqwest::Client::new()` is drift to reject.

@@ -707,9 +707,10 @@ Settings → Network.
 
 | TOML path | Type | Default | What it does |
 |---|---|---|---|
-| `network.proxy_mode` | `"off"` \| `"system"` \| `"custom"` | `"system"` | `system` follows the system/environment configuration — on Linux the `HTTP_PROXY` family, on macOS SystemConfiguration, on Windows WinINET. This is the default, matching Warp, which honours those environment variables unconditionally. `custom` uses the URL below. `off` disables proxying entirely, *including* environment variables — the opt-out for a machine whose environment carries a stale or unreachable proxy. |
+| `network.proxy_mode` | `"off"` \| `"system"` \| `"custom"` | `"system"` | `custom` uses the URL below. Since the network gate (Wave N) Phosphor **ignores system and environment proxies** (`HTTP_PROXY` and friends, SystemConfiguration, WinINET): `system` and `off` both mean no proxy. Only a proxy you configure here is used. |
 | `network.proxy_url` | string | `""` | The proxy URL used in `custom` mode, e.g. `http://proxy.corp:8080`. |
 | `network.proxy_username` | string | `""` | The proxy username for `custom` mode. Empty means no basic auth. |
+| `network.allowed_origins` | string | `""` | Extra origins Phosphor may contact on its own, separated by commas, spaces or newlines, e.g. `https://api.example.com` or `host:8443` (a bare host allows any port). Loopback addresses and the endpoints of your configured AI providers (including Ollama and a local proxy) are always allowed. If a request you expect is blocked, the log says `network gate: denied "<purpose>" (host hash ...)`; add the origin here. |
 | `network.proxy_no_proxy` | string | `""` | Comma-separated host exceptions, e.g. `localhost,127.0.0.1,.internal`. |
 
 The proxy **password is not in this file.** It goes to the OS secure store,

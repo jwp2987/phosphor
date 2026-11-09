@@ -242,6 +242,10 @@ if [[ -x ./script/check_outbound_redaction ]]; then
     ./script/check_outbound_redaction >/dev/null 2>&1 && ok "outbound redaction" \
         || fail "outbound redaction -- run ./script/check_outbound_redaction for detail"
 fi
+if [[ -x ./script/check_network_gate ]]; then
+    ./script/check_network_gate >/dev/null 2>&1 && ok "network gate" \
+        || fail "network gate -- run ./script/check_network_gate for detail"
+fi
 if [[ -x ./script/check_declined_collisions ]]; then
     ./script/check_declined_collisions >/dev/null 2>&1 && ok "declined collisions" \
         || fail "declined collisions -- run ./script/check_declined_collisions for detail"
