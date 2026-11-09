@@ -399,8 +399,12 @@ fn report_denial(d: &Denied) {
 /// this is the builder error of an unparseable URL: it carries no URL, and the real reason is
 /// in the log and the denial listener.
 pub fn denied_error() -> reqwest::Error {
-    use reqwest::IntoUrl;
-    match "//denied-by-network-gate".into_url() {
+    // `IntoUrl::into_url` is sealed, so build (never send) a request to a scheme-less URL:
+    // `RequestBuilder::build` reports the parse failure as a builder error.
+    match reqwest::Client::new()
+        .get("//denied-by-network-gate")
+        .build()
+    {
         Err(e) => e.without_url(),
         // Cannot happen: a scheme-less URL does not parse. Keep the type total.
         Ok(_) => unreachable!("scheme-less URL parsed"),
