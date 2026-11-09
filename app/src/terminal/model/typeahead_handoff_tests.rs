@@ -5984,3 +5984,35 @@ fn a_powershell_marker_after_the_last_enter_proves_stale_counts_without_a_probe(
     );
     assert!(handoff.has_unanswered_lines_for_activation());
 }
+
+/// The outcome set of `young_submit_decision_for`, read in full (2026-11-09): no classifier ->
+/// `KeepInEditor`; a landed verdict -> `Submit`; a pending verdict past the compute cap ->
+/// `SubmitWithoutVerdict` (the view hands the text back for an undecided type, it never submits on
+/// the clock); otherwise `Wait`. Nothing else.
+#[test]
+fn the_young_submit_decision_has_exactly_four_outcomes() {
+    let cap = young_detection_cap_for(10);
+    for waited in [Duration::ZERO, cap - Duration::from_millis(1), cap, cap * 4] {
+        assert_eq!(
+            young_submit_decision_for(false, true, waited, 10),
+            YoungSubmit::KeepInEditor
+        );
+        assert_eq!(
+            young_submit_decision_for(false, false, waited, 10),
+            YoungSubmit::KeepInEditor
+        );
+        assert_eq!(
+            young_submit_decision_for(true, false, waited, 10),
+            YoungSubmit::Submit
+        );
+        let pending = young_submit_decision_for(true, true, waited, 10);
+        assert_eq!(
+            pending,
+            if waited >= cap {
+                YoungSubmit::SubmitWithoutVerdict
+            } else {
+                YoungSubmit::Wait
+            }
+        );
+    }
+}

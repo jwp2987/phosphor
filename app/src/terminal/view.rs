@@ -15136,6 +15136,25 @@ impl TerminalView {
             self.young_enter_released = true;
             return;
         }
+        // Owner ruling 2026-11-09 (a timer never commits): with the input type already decided
+        // (locked, or autodetection off) no verdict can change the route, so the Enter does not
+        // wait for one -- it goes now, an event (the Enter's own arrival, or the lock / setting
+        // change that `release_deferred_enter_if_verdict_settled` observes), never a cap's expiry.
+        // Without a classifier at all (`!can_run`) the decision below keeps the text in the editor.
+        let (decided, can_classify) = self.input.read(ctx, |input, ctx| {
+            (
+                input.input_type_is_decided(ctx),
+                input.can_classify_buffer(ctx),
+            )
+        });
+        if decided && can_classify {
+            self.young_enter_released = true;
+            self.input.update(ctx, |input, ctx| {
+                input.give_up_pending_detection_for_submit(ctx)
+            });
+            self.run_deferred_enter(true, ctx);
+            return;
+        }
         // #1604: text over the parse cap is classified without a parse, by a background job the
         // Enter starts if the edit path did not (over `MAX_EAGER_ROUTING_BYTES`), and waits for
         // with a compute cap that grows with the text. It used to be abandoned here and the Enter
@@ -15189,28 +15208,18 @@ impl TerminalView {
                     "young line waited for the input-type verdict and gave up",
                     started.elapsed(),
                 );
-                // #1577: the clock never chooses between the shell and the agent. With the input
-                // type already decided (locked, or autodetection off) the Enter runs as before;
-                // otherwise it is not run: the text stays in the editor and the next Enter
-                // submits it once the verdict is in.
-                let decided = self
-                    .input
-                    .read(ctx, |input, ctx| input.input_type_is_decided(ctx));
-                if decided {
-                    self.input.update(ctx, |input, ctx| {
-                        input.give_up_pending_detection_for_submit(ctx)
-                    });
-                    self.run_deferred_enter(true, ctx);
-                } else {
-                    // The late verdict is dropped: the next Enter is the user's say-so. (A large
-                    // buffer's is kept, #1604: the next Enter waits for it or submits on it.)
-                    self.input.update(ctx, |input, ctx| {
-                        input.ai_input_model().update(ctx, |model, _| {
-                            model.abandon_pending_detection_after_give_up()
-                        })
-                    });
-                    self.keep_deferred_enter_text_hand_back("young_verdict_cap", ctx);
-                }
+                // #1577 / owner rule: the clock never chooses between the shell and the agent, and
+                // never submits. A decided input type went out above, at the Enter; a give-up
+                // here hands the text back: it stays in the editor and the next Enter submits it
+                // once the verdict is in (#1661 semantics for the keys behind it unchanged).
+                // The late verdict is dropped: the next Enter is the user's say-so. (A large
+                // buffer's is kept, #1604: the next Enter waits for it or submits on it.)
+                self.input.update(ctx, |input, ctx| {
+                    input.ai_input_model().update(ctx, |model, _| {
+                        model.abandon_pending_detection_after_give_up()
+                    })
+                });
+                self.keep_deferred_enter_text_hand_back("young_verdict_cap", ctx);
             }
             YoungSubmit::Wait => self.watch_young_detection(ctx),
             YoungSubmit::KeepInEditor => {
@@ -15278,6 +15287,8 @@ impl TerminalView {
         self.arm_young_timer(id, delay, false, ctx);
     }
 
+    // give-up-net: the young Enter's compute-cap / wall-ceiling / backstop timers only hand the text
+    // back to the editor (keep_deferred_enter_text_hand_back); they never submit or write
     fn arm_young_timer(
         &mut self,
         id: u64,
@@ -15286,10 +15297,19 @@ impl TerminalView {
         ctx: &mut ViewContext<Self>,
     ) {
         let deadline = Instant::now() + delay;
+        // give-up-net: hands the young line back to the editor; never submits (see above)
         ctx.spawn(Timer::after(delay), move |me, _, ctx| {
             log_late_timer_wake("young detection wait", deadline);
             // #1206: only the wait this timer was armed for, and only while it still waits.
             if me.young_enter_released || me.young_enter_wait_id != id {
+                return;
+            }
+            // A type decided meanwhile is released by the model notification
+            // (`release_deferred_enter_if_verdict_settled`), an event; a timer never submits it.
+            if me
+                .input
+                .read(ctx, |input, ctx| input.input_type_is_decided(ctx))
+            {
                 return;
             }
             if backstop {
@@ -15323,13 +15343,16 @@ impl TerminalView {
         if self.young_enter_released {
             return;
         }
-        let (can_run, pending) = self.input.read(ctx, |input, ctx| {
+        let (can_run, pending, decided) = self.input.read(ctx, |input, ctx| {
             (
                 input.can_classify_buffer(ctx),
                 input.detection_pending_for_buffer(ctx),
+                input.input_type_is_decided(ctx),
             )
         });
-        if can_run && pending {
+        // A verdict still pending keeps waiting -- unless the input type became decided (a lock,
+        // autodetection switched off): then no verdict can change the route.
+        if can_run && pending && !decided {
             return;
         }
         self.submit_deferred_enter_after_detection(Instant::now(), ctx);

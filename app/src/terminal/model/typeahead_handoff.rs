@@ -3553,6 +3553,13 @@ impl TypeaheadHandoff {
         }
     }
 
+    /// The state after the report arrived for a deferred Enter: its submit is due (a young line
+    /// then waits for its verdict).
+    #[cfg(test)]
+    pub(crate) fn force_deferred_submit_pending_for_test(&mut self) {
+        self.state = HandoffState::HoldAfterEnter { released: true };
+    }
+
     /// Models a stream with unparsed output (a Precmd may be in it), for tests of the young hold
     /// on a session no sample covers.
     #[cfg(test)]

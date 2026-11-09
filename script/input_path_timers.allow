@@ -85,11 +85,11 @@ app/src/terminal/writeable_pty/pty_controller.rs	NATIVE_COMPLETIONS_PROMPT_TIMEO
 app/src/terminal/writeable_pty/pty_controller.rs	NATIVE_COMPLETIONS_RESULTS_TIMEOUT	15 s lost-event net: drops the exchange and closes the requesters' channels; writes and releases nothing (the normal ends are events)
 app/src/terminal/writeable_pty/pty_controller.rs	arm_native_completions_watchdog	call site of the prompt and results give-up nets; neither writes or releases a key
 app/src/terminal/model/typeahead_handoff.rs	EVENT_HOLD_GIVE_UP	2 s net of a queued young hold: the no-barrier hold hands its keys back to the editor at its cap; events release it first
+app/src/terminal/view.rs	arm_young_timer	young-detection timers (compute cap, wall ceiling, backstop): on expiry the line goes back to the editor and the next Enter submits it; never submits or writes
 
 # PENDING-CONVERSION (must be gone before v0.1.18)
 # Timers that break the rule (write, release, route, commit or re-ask on a clock). The default run
 # warns for each; `--strict` (release tier) fails on any. Delete a line when its timer is gone.
-app/src/terminal/view.rs	arm_young_timer	FOUND: young-detection timer; on a reached compute cap it finishes the wait and submits the deferred Enter by the Enter-time rules (commits on a timer)
 
 
 # PACING (owner-exempt 2026-11-09: our own bootstrap bytes into a relay/container/cooked tty whose consumption is unobservable, #960 #1384; never user keys)
