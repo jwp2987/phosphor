@@ -5533,3 +5533,5 @@ import cases_agent_netgate  # noqa: E402,F401  (#1830: agent network gate: denia
 import cases_agent_remote  # noqa: E402,F401  (#1827: lab_agent_remote_flow/errors/drop, the agent driving a remote host with and without the helper)
 import cases_agent_file_edits  # noqa: E402,F401  (#1835: agent_edit_accept/reject/conflict/endings, lab_fam_agent_edit_conflict/endings)
 import cases_agent_resilience  # noqa: E402,F401  (#1831/#1832: agent_fault_* model failures, agent_restart_* quit / kill -9 mid-conversation; fake_model fault injection)
+import cases_agent_multitab  # noqa: E402,F401  (#1833: agent_multitab_streaming, N hidden streaming agent tabs while typing elsewhere)
+import cases_agent_mcp  # noqa: E402,F401  (#1834: agent_mcp_faults, misbehaving fake MCP servers)

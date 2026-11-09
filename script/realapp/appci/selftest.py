@@ -3945,6 +3945,98 @@ def fake_model_records_request_headers():
         f.stop()
 
 
+@check
+def agent_multitab_pure_pieces():
+    """#1833: the fake model's long stream / history check, and the multi-tab case's judges"""
+    import fake_model as FM
+    import cases_agent_multitab as MT
+    ch = FM.stream_chunks("S2", 3)
+    assert ch[0].startswith("[S2:0001]") and ch[-1] == "[S2:END]" and len(ch) == 4, ch
+    rep = FM.reply_for([{"role": "user", "content": "Please stream long reply S2 chunks 3 gap 7"}])
+    assert rep["chunks"] == ch and rep["gap_ms"] == 7 and rep["tag"] == "S2" and rep["tool"] is None, rep
+    lines = [json.loads(x) for x in FM.stream_lines("m", rep)]
+    assert [l["message"]["content"] for l in lines[:-1]] == ch and lines[-1]["done"]
+    conv = [{"role": "user", "content": "Please stream long reply S2 chunks 3 gap 7"}, {"role": "assistant", "content": "".join(ch)},
+            {"role": "user", "content": "Please follow up check S2"}]
+    assert FM.reply_for(conv)["text"] == "CHECKED S2 ok"
+    lost = [conv[0], {"role": "assistant", "content": "".join(ch[:1] + ch[2:])}, conv[2]]
+    assert FM.reply_for(lost)["text"] == "CHECKED S2 chunks 2/3", FM.reply_for(lost)["text"]
+    bleed = [conv[0], {"role": "assistant", "content": "".join(ch) + " [S5:0001]"}, conv[2]]
+    assert FM.reply_for(bleed)["text"] == "CHECKED S2 foreign S5"
+    noend = [conv[0], {"role": "assistant", "content": "".join(ch[:3])}, conv[2]]
+    assert "no END" in FM.reply_for(noend)["text"]
+    assert FM.reply_for([conv[0], conv[2]])["text"] == "CHECKED S2 empty"
+    dup = [conv[0], {"role": "assistant", "content": "".join(ch + ch[:1])}, conv[2]]
+    assert "dup 1" in FM.reply_for(dup)["text"]
+    tools = [{"type": "function", "function": {"name": "mcp__fxok__ping"}}, {"type": "function", "function": {"name": "read_files"}}]
+    m = FM.reply_for([{"role": "user", "content": 'Please call mcp tool ping on fxok with {"text": "abc"}'}], tools)
+    assert m["tool"] == {"name": "mcp__fxok__ping", "arguments": {"text": "abc"}}, m
+    n = FM.reply_for([{"role": "user", "content": "Please call mcp tool ping on fxhang"}], tools)
+    assert n["tool"] is None and n["text"] == "NO-MCP-TOOL fxhang/ping" and n["mcp_missing"] == ("fxhang", "ping"), n
+    # judges
+    ok, msg = MT.compare_latency([10.0 + i * 0.1 for i in range(30)], [10.5 + i * 0.1 for i in range(30)])
+    assert ok is True, msg
+    ok, msg = MT.compare_latency([10.0 + i * 0.1 for i in range(30)], [16.0 + i * 0.1 for i in range(30)])
+    assert ok is False, msg
+    assert MT.compare_latency([1.0] * 3, [1.0] * 30)[0] is None
+    good = {"S2": {"finished": True, "broken": False, "sent": 4, "total": 4}}
+    assert MT.streams_problems(good, ["S2"], 4) == []
+    assert len(MT.streams_problems({"S2": dict(good["S2"], broken=True)}, ["S2"], 4)) == 1
+    assert len(MT.streams_problems({"S2": dict(good["S2"], sent=2, finished=False)}, ["S2"], 4)) == 1
+    assert len(MT.streams_problems({}, ["S2"], 4)) == 1
+    fu = {"S2": {"verdict": "ok", "user_text": "Please stream long reply S2"}, "S3": {"verdict": "chunks 1/3", "user_text": ""}}
+    bad, unp = MT.bleed_problems(fu, ["S2", "S3", "S4"], ["abc123"])
+    assert bad == ["S3: chunks 1/3"] and len(unp) == 1, (bad, unp)
+    bad, _ = MT.bleed_problems({"S2": {"verdict": "ok", "user_text": "x abc123 y"}}, ["S2"], ["abc123"])
+    assert len(bad) == 1 and "typing tab" in bad[0]
+    bad, unp = MT.bleed_problems({"S2": {"verdict": "empty", "user_text": ""}}, ["S2"], [])
+    assert bad == [] and len(unp) == 1
+    log = "x frame 1: updated=[\"A\"] removed=0\nfoo\nx frame 2: updated=[] removed=0 redraw=true\n"
+    assert MT.frames_per_s(log, 2.0) == 1.0
+
+
+@check
+def agent_mcp_pure_pieces():
+    """#1834: fakemcp.py's pure handler, the config builder, and the case's judges"""
+    import fakemcp as FX
+    import cases_agent_mcp as MC
+    init = FX.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}}, "ok")[0][0]
+    assert json.loads(init)["result"]["protocolVersion"] == "2025-06-18"
+    assert FX.handle({"jsonrpc": "2.0", "method": "notifications/initialized"}, "ok") == ([], None)
+    tl = json.loads(FX.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, "ok")[0][0])
+    assert tl["result"]["tools"][0]["name"] == "ping"
+    call = {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "ping", "arguments": {"text": "t1"}}}
+    assert json.loads(FX.handle(call, "ok")[0][0])["result"]["content"][0]["text"] == "PONG:t1"
+    assert FX.handle(call, "crash_call") == ([], "exit:4")
+    assert FX.handle(call, "hang") == ([], "hang")
+    lines, act = FX.handle(call, "garbage")
+    assert act is None and len(lines) == 5 and json.loads(lines[-1])["id"] == 3
+    bad = 0
+    for l in lines[:-1]:
+        try:
+            v = json.loads(l)
+            bad += 0 if (isinstance(v, dict) and v.get("id") == 3) else 1
+        except ValueError:
+            bad += 1
+    assert bad == 4, bad
+    big = json.loads(FX.handle(call, "big")[0][0])["result"]["content"][0]["text"]
+    assert len(big) == 5 * 1024 * 1024 and big.startswith("BIG:")
+    lines, act = FX.handle(call, "flaky", launch=2)
+    assert act == "exit:0" and json.loads(lines[0])["result"]["content"][0]["text"] == "LAUNCH-2:t1"
+    assert json.loads(FX.handle({"jsonrpc": "2.0", "id": 4, "method": "nope"}, "ok")[0][0])["error"]["code"] == -32601
+    assert MC.state_events("start\ncall ok\ncall ok\nstart\n") == (2, 2) and MC.state_events("") == (0, 0)
+    cfg = json.loads(MC.mcp_config("/usr/bin/python3", "/x/fakemcp.py", "/w/s"))
+    assert sorted(cfg["mcpServers"]) == sorted(n for n, _ in MC.SERVERS)
+    assert cfg["mcpServers"]["fxhang"] == {"command": "/usr/bin/python3", "args": ["/x/fakemcp.py", "hang", "/w/s/fxhang.state"], "tool_timeout_secs": MC.TOOL_TIMEOUT_S}
+    assert MC.error_is_clear("MCP tool call timed out after 20 seconds without a result") and MC.error_is_clear("Error: transport closed")
+    assert not MC.error_is_clear("") and not MC.error_is_clear("PONG:x") and not MC.error_is_clear("all good") and not MC.error_is_clear("thread panicked at src: error")
+    assert MC.panics("a\nthread 'main' panicked at x.rs:1\nb") == ["thread 'main' panicked at x.rs:1"]
+    assert MC.flaky_verdict(["LAUNCH-1:a", "LAUNCH-2:b"])[0] and MC.flaky_verdict(["LAUNCH-1:a", "error: closed", "LAUNCH-3:c"])[0]
+    assert not MC.flaky_verdict(["LAUNCH-1:a", "error", "error"])[0] and not MC.flaky_verdict([])[0] and not MC.flaky_verdict(["error"])[0]
+    names = [c["name"] for c in cases.CASES]
+    assert "agent_mcp_faults" in names and "agent_multitab_streaming" in names
+
+
 def main():
     failed = 0
     for f in CHECKS:
