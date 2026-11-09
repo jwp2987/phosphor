@@ -182,6 +182,13 @@ impl AIApiError {
         }
     }
 
+    /// The provider could not be reached (or answered nothing) even after the in-stream recovery's whole 2/4/8 s schedule
+    /// (`PreOutputRecoveryExhausted`). That is a condition of the user's environment which the UI already reports in the
+    /// conversation, not a defect in Phosphor: the final failure note is logged at WARN, so an ERROR line keeps meaning "a bug".
+    pub fn is_expected_provider_failure(&self) -> bool {
+        matches!(self, AIApiError::Other(error) if error.downcast_ref::<PreOutputRecoveryExhausted>().is_some())
+    }
+
     pub fn is_retryable(&self) -> bool {
         fn is_retryable_status(status: http::StatusCode) -> bool {
             !status.is_client_error()
@@ -226,6 +233,15 @@ mod tests {
         );
 
         assert!(!error.is_retryable());
+    }
+
+    #[test]
+    fn an_unreachable_provider_is_an_expected_failure_not_a_bug() {
+        let down =
+            AIApiError::Other(PreOutputRecoveryExhausted("provider unreachable".into()).into());
+        assert!(down.is_expected_provider_failure());
+        assert!(!AIApiError::NoContextFound.is_expected_provider_failure());
+        assert!(!AIApiError::Other(anyhow::anyhow!("a real bug")).is_expected_provider_failure());
     }
 
     #[test]

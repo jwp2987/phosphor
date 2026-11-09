@@ -357,6 +357,9 @@ def c_fault_queued_rows(ctx, r):
         if not AG.wait_marker(ctx, off, "[byop] opening stream", timeout=60):
             r.check(False, "no model request within 60 s of the prompt")
             return
+        if last_turn_state(ctx.log_since(off)) != "in_progress":
+            r.skip("the first prompt is already %r when the rows are typed: /queue sends at once when no reply is running (no hop=queued_row), so there is nothing to queue behind "
+                   "(the 500 fault did not hold the reply open: a fake model that does not see the prompt text, round 6)" % last_turn_state(ctx.log_since(off)))
         queue_rows(ctx, r, f, rows, off)                 # during the 14 s retry schedule the first prompt is still in progress
         r.check(last_turn_state(ctx.log_since(off)) in ("in_progress", "error"), "unexpected turn state while queueing: %r" % last_turn_state(ctx.log_since(off)))
         state = wait_turn(ctx, off, ("error", "success", "cancelled"), 150)
