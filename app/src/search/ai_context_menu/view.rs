@@ -69,6 +69,7 @@ const DEFAULT_PALETTE_WIDTH: f32 = 320.0;
 const MAX_DISPLAYED_RESULT_COUNT: usize = 8;
 const PALETTE_HEIGHT: f32 = 423.0;
 const PADDING: f32 = 10.0;
+// give-up-net: debounces the @-menu query into the mixer; an Enter typed meanwhile waits on the results event, never on this clock
 const SEARCH_DEBOUNCE_PERIOD: Duration = Duration::from_millis(60);
 const DETAILS_PANEL_MARGIN: f32 = 4.0;
 const PANEL_POSITION_ID: &str = "AIContextMenuPanel";
@@ -790,6 +791,7 @@ impl AIContextMenu {
                 .defer_select_after(typed_query.filter(|_| edit_pending));
             log::debug!("ai context menu: Enter deferred until results for the typed query arrive");
             let _ = ctx.spawn(
+                // give-up-net: 10 s net of an @-menu Enter waiting for results: the Enter is not applied, the typed query stays, a toast says so (#1728)
                 async { warpui::r#async::Timer::after(SELECT_WAIT_GIVE_UP).await },
                 move |me, _, ctx| me.select_wait_gave_up(wait_id, ctx),
             );

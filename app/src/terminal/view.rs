@@ -1072,6 +1072,7 @@ const ENV_VAR_BOOTSTRAP_FAILED_DURATION: Duration = Duration::from_secs(60);
 /// before Warp's shell integration runs), nothing ever clears it. Auto-
 /// dismissal keeps the warning informational without turning it into a
 /// permanent fixture.
+// give-up-net: auto-dismisses the slow-bootstrap banner; notice only
 const SLOW_BOOTSTRAP_BANNER_AUTO_DISMISS_DURATION: Duration = Duration::from_secs(30);
 /// Repaint interval for the live elapsed-duration counter shown on a still-executing
 /// block's label. See issue #426.
@@ -1119,6 +1120,7 @@ const MIN_DELTA_FOR_TEXT_SELECTION: f32 = 0.5;
 const NOTIFICATIONS_LEARN_MORE_URL: &str = "";
 pub const NOTIFICATIONS_TROUBLESHOOT_URL: &str = "";
 
+// give-up-net: debounces link detection (find-link) after output; no input effect
 const DEBOUNCE_PERIOD: Duration = Duration::from_millis(40);
 
 /// Key used in user defaults to save whether the user has seen the banner.

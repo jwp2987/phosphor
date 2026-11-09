@@ -39,6 +39,14 @@ functions of the file, strips comments and strings, and fails when the body ment
 PtyIntent). The pacing path may only move bytes the app itself built. This is a name-based check: a new
 user-key entry point with a different name must be added to USER_KEY_RE.
 
+SCOPE RULE (widened 2026-11-09). INPUT_PATH_FILES are scanned in full. INPUT_PATH_LISTED_FILES are
+mostly-non-input files (UI, AI, network, rendering) that hold a few timers touching where a key, paste,
+Enter or pty write goes, or deciding input state: only the identifiers listed in the allowlist for that
+file are enforced (comment, allowlist, stale check); their other timers are ignored as noise. A timer
+that never touches input (animation, telemetry, network retry, shutdown, rendering) belongs in neither
+list. A new input-relevant timer in a listed file is NOT detected until its identifier is added, so
+add the file to INPUT_PATH_FILES when it grows several.
+
 ADDING A TIMER. Prefer an event. If a give-up net is truly needed: add the constant (or call), put
 `// give-up-net: <what it hands back / keeps held>` next to it, and add one line to
 script/input_path_timers.allow. If you cannot honestly write that comment, the timer is not allowed.
@@ -77,6 +85,31 @@ INPUT_PATH_FILES = [
     "app/assets/bundled/bootstrap",
     "app/assets/bundled/ssh",
 ]
+# Files that are MOSTLY NOT input (UI, network, AI, rendering) but hold one or more timers that touch
+# where a key, paste, Enter or pty write goes, or decide input state. They are scanned like the files
+# above, but only the identifiers LISTED in script/input_path_timers.allow for that file are enforced
+# (comment + allowlist, and stale detection); other timers in these files are ignored as noise.
+# Scope rule: a whole file goes in INPUT_PATH_FILES when most of its timers are input-relevant; a file
+# goes here when only a few are. Anything that never touches input stays out of both lists.
+INPUT_PATH_LISTED_FILES = [
+    "app/src/search/ai_context_menu/view.rs",
+    "app/src/terminal/model/block.rs",
+    "app/src/terminal/model/session.rs",
+    "app/src/terminal/local_tty/terminal_manager.rs",
+    "app/src/terminal/local_tty/terminal_attributes.rs",
+    "app/src/terminal/local_tty/event_loop.rs",
+    "app/src/terminal/cli_agent_sessions/mod.rs",
+    "app/src/ai/blocklist/controller.rs",
+    "app/src/ai/blocklist/input_model.rs",
+    "app/src/ai/blocklist/agent_view/controller.rs",
+    "app/src/ai/blocklist/inline_action/ask_user_question_view.rs",
+    "app/src/ai/blocklist/action_model/execute/shell_command.rs",
+    "crates/warpui_core/src/runtime/terminal_probe.rs",
+    "crates/warpui/src/windowing/winit/linux/clipboard.rs",
+    "crates/warp_tui/src/terminal_session_view.rs",
+    "crates/warp_tui/src/terminal_session_view/input_detection.rs",
+    "crates/warp_tui/src/tui_ask_question_view.rs",
+]
 ALLOW_FILE = "script/input_path_timers.allow"
 PENDING_MARK = "# PENDING-CONVERSION"
 PACING_MARK = "# PACING"
@@ -90,7 +123,7 @@ WINDOW = 5
 # A whole underscore-delimited token anywhere in the name (so THRESHOLD never matches HOLD).
 NAME_RE = re.compile(
     r"(?:^|_)(?:GIVE_UP|DELAY|WINDOW|QUIET|SETTLE|BUDGET|RESET|NET|CEILING|TIMEOUT|GRACE|PATIENCE|HOLD|"
-    r"CAP|BACKSTOP|WAIT|PACING|POLL|RECHECK|NOTICE|AFTER)(?:_|$)"
+    r"CAP|BACKSTOP|WAIT|PACING|POLL|RECHECK|NOTICE|AFTER|DEBOUNCE|DEADLINE|DRAIN|DISMISS)(?:_|$)"
 )
 CONST_RE = re.compile(r"\b(?:const|static\s+ref|static)\s+([A-Z][A-Z0-9_]+)\s*:")
 DUR_RE = re.compile(r"Duration")
@@ -294,7 +327,7 @@ def pacing_user_key_errors(root, allow_pacing):
     return errs
 
 
-def run(root, files, allow_text, strict):
+def run(root, files, allow_text, strict, listed=()):
     allow_ok, allow_pending, allow_pacing = parse_allow(allow_text)
     allowed = {**allow_ok, **allow_pending, **allow_pacing}
     errors, warnings = [], []
@@ -339,6 +372,9 @@ def run(root, files, allow_text, strict):
         if not comment_near(per_file[rel][0], ln, "//", tag):
             missing_note.append(((rel, name), f"{rel}:{ln + 1}: timer constant {name} has no `// {tag}: <why>` comment within {WINDOW} lines"))
     errors.extend(pacing_user_key_errors(root, allow_pacing))
+    # Listed (mostly-non-input) files: only identifiers named in the allowlist are enforced.
+    found = {k for k in found if k[0] not in listed or k in allowed}
+    missing_note = [(k, m) for k, m in missing_note if k[0] not in listed or k in allowed]
     errors.extend(m for k, m in missing_note if k not in allow_pending)
     for key in sorted(found):
         if key not in allowed:
@@ -399,6 +435,20 @@ def self_test():
         pend = "s.sh\tf\ty\nf.rs\tA_GIVE_UP\tz\n" + PENDING_MARK + "\ng.rs\tgo2\tz\n"
         expect("pending warns", pend, "", want_fail=False)
         expect("pending fails under --strict", pend, "PENDING-CONVERSION", strict=True)
+        # Listed (mostly-non-input) file: an unlisted timer is ignored, a listed stale one fails.
+        (root / "l.rs").write_text("fn noisy() {\n    ctx.spawn(Timer::after(d), |m| {});\n}\n")
+        rest, _ = run(root, ["l.rs"], "", False, {"l.rs"})
+        if rest:
+            print(f"self-test FAIL: listed file reported an unlisted timer: {rest}")
+            ok = False
+        else:
+            print("self-test ok: listed file ignores unlisted timers")
+        stale, _ = run(root, ["l.rs"], "l.rs\tgone\tz\n", False, {"l.rs"})
+        if not any("STALE" in e for e in stale):
+            print(f"self-test FAIL: listed stale entry not caught: {stale}")
+            ok = False
+        else:
+            print("self-test ok: listed file stale entry caught")
         # PACING rule: needs a `pacing:` comment (give-up-net does not do), is not pending under
         # --strict, and fails when its code path mentions a user-key API.
         PAC = PACING_MARK + "\n"
@@ -429,12 +479,13 @@ def main():
         return self_test()
     strict = "--strict" in args
     root = Path(__file__).resolve().parent.parent
-    files = expand(root, INPUT_PATH_FILES)
+    files = expand(root, INPUT_PATH_FILES + INPUT_PATH_LISTED_FILES)
+    listed = set(expand(root, INPUT_PATH_LISTED_FILES)) - set(expand(root, INPUT_PATH_FILES))
     if not files:
         print("check_input_path_timers: no input-path files found (INPUT_PATH_FILES stale?)", file=sys.stderr)
         return 1
     allow_text = (root / ALLOW_FILE).read_text()
-    errors, warnings = run(root, files, allow_text, strict)
+    errors, warnings = run(root, files, allow_text, strict, listed)
     for w in warnings:
         print("WARNING " + w, file=sys.stderr)
     if errors:

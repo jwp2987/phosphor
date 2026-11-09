@@ -17,6 +17,7 @@ use crate::{
 /// How many times the text read is attempted when the owner is slow (#1173).
 const TEXT_READ_ATTEMPTS: usize = 3;
 /// Pause between attempts, so a busy owner can finish serving the previous request.
+// give-up-net: pause between bounded retries of a clipboard READ (3 attempts); reads only, never writes or routes
 const TEXT_READ_RETRY_PAUSE: Duration = Duration::from_millis(50);
 /// A failed read that returned faster than this was an immediate "no text" answer from the
 /// owner (an empty clipboard), not a timeout. arboard's X11 chunk timeout is 10 ms, so a timed-out
@@ -28,12 +29,14 @@ const TEXT_READ_TIMEOUT_FLOOR: Duration = Duration::from_millis(8);
 /// the owner's first answers (#1192). The owner just answered the text request, so a probe it
 /// ignores is a stall, not a slow owner; unbounded, each one held the UI thread (and the Enter
 /// typed behind a paste) for arboard's whole 10 s first-answer timeout.
+// give-up-net: caps the html/image probes after a text read; the probe is skipped, nothing is written
 const PROBE_BUDGET: Duration = Duration::from_millis(750);
 
 /// How long the input editor's paste may wait, in total, for a clipboard owner that never answers
 /// (#1331). arboard waits 10 s per attempt and the text read retries, so a hung owner (a crashed
 /// clipboard manager, a remote-desktop bridge) held the typed keys for 30+ s. Only the wait for
 /// the owner's FIRST answer is capped; a transfer that has started keeps its stall window.
+// give-up-net: caps the paste's wait for a clipboard owner that never answers; the read fails, nothing is written to the pty (#1331)
 const FULL_READ_BUDGET: Duration = Duration::from_millis(2_000);
 
 /// How long quitting waits for an in-flight copy to land before handing the clipboard to the

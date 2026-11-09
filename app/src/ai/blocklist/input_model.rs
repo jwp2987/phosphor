@@ -1519,6 +1519,7 @@ impl BlocklistAIInputModel {
         let wait = deadline.saturating_duration_since(now) + std::time::Duration::from_millis(50);
         ctx.spawn(
             async move {
+                // give-up-net: re-renders so a stale misroute-recovery label disappears; UI only
                 warpui::r#async::Timer::after(wait).await;
             },
             |_, _, ctx| ctx.notify(),
