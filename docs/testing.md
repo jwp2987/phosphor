@@ -3799,7 +3799,7 @@ inner shell when the `exit` was eaten, and run.py's `where_now()` cannot see a l
 - `cases_subshell_ready.py`: every case is wrapped by `@guarded` (leaves its inner shell in a `finally` on pass, fail or skip) and leaves through
   `leave_inner`, which proves the ROOT shell by PID (`Ctx.leave_nested`), typing `exit` only while a probe shows a different shell in front (max 3).
 - `run.py`: after every case for which `cases.wants_depth_check` is true (all PROVING cases plus names starting `ssh_`, `remote_`, `subshell`, `lab_`) the shell in front
-  must be the pane's root shell. The root PID is recorded (`echo tok:$$ >> ~/.appci_pid`, PowerShell `Add-Content ~/.appci_pid tok:$PID`) at the first checked case after
+  must be the pane's root shell. The root PID is recorded (`sh -c 'echo tok:$PPID >> ~/.appci_pid'`, shell-agnostic: fish has no `$$`, PowerShell `Add-Content ~/.appci_pid tok:$PID`) at the first checked case after
   each (re)launch; cmd.exe panes have no PID probe and skip the check. Otherwise `exit` is typed while the PID differs (max 3, never at the root); still nested or no answer
   emits `pane_not_local_after_<case>` and relaunches the app, as the ssh block does. A case that relaunched the app itself skips the check (fresh pane). The probe runs in
   whatever view the pane is in, exactly like `where_now`. Cost: one typed line plus a file poll, about 0.7-1 s per checked case and once per relaunch.

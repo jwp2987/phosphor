@@ -510,7 +510,9 @@ def depth_probe_cmd(pane, tok):
         return None
     if pane == "powershell":
         return "Add-Content ~/.appci_pid %s:$PID" % tok
-    return "echo %s:$$ >> ~/.appci_pid" % tok
+    # shell-agnostic: fish has no `$$` (it is `$fish_pid`; `echo tok:$$` errors there and no probe answers, the Mac round-7 "got none"). A
+    # child `sh` reports its PARENT, which is the shell in front in bash, zsh, fish, dash and ksh alike.
+    return "sh -c 'echo %s:$PPID >> ~/.appci_pid'" % tok
 
 
 def parse_depth_probe(tokens, tok):
