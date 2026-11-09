@@ -1,0 +1,59 @@
+# appci fixture: a settings.toml in the shape v0.1.17 writes (every table/key below is a toml_path of v0.1.17 at tag v0.1.17;
+# checked by selftest `upgrade_table_matches_fixture_and_docs`). The shape is the owner-like setup of docs/testing.md 3.1: agent mode default,
+# autodetect + natural-language detection on, a local model provider plus a local Claude proxy, vertical tabs, bash, redaction patterns set
+# but redaction OFF. Every value is made up; every endpoint is loopback; no secret is in this file (secrets go to the keyring).
+# @BASH@ is replaced by the path of the bash the harness found.
+
+[general]
+default_session_mode = "agent"
+restore_session = false
+
+[session]
+startup_shell_override = "@BASH@"
+
+[agents.warp_agent.input]
+ai_auto_detection_enabled = true
+nld_in_terminal_enabled = true
+
+[agents.warp_agent]
+providers = [
+  { id = "upg-ollama", name = "Upgrade Local Model", api_type = "ollama", base_url = "http://127.0.0.1:11434", models = [ { name = "probe-model", id = "probe-model" } ] },
+  { id = "upg-claude-proxy", name = "Upgrade Claude Proxy", api_type = "anthropic", base_url = "http://127.0.0.1:8317/", models = [ { name = "probe-sonnet", id = "probe-sonnet" } ] },
+]
+models_dev_fetch = true
+models_dev_url = "http://127.0.0.1:8081/api.json"
+
+[agents.byop]
+last_used_model_id = "byop:upg-ollama:probe-model"
+
+[appearance.vertical_tabs]
+enabled = true
+
+[appearance.themes]
+theme = "tokyo_night"
+
+[appearance.text]
+font_size = 14.0
+
+[network]
+proxy_mode = "custom"
+proxy_url = "http://127.0.0.1:3128"
+proxy_username = "upgrade-probe"
+proxy_no_proxy = "localhost,127.0.0.1"
+
+[warpify.ssh]
+use_ssh_tmux_wrapper = true
+ssh_extension_install_mode = "always_install"
+
+[terminal.input]
+completions_open_while_typing = false
+
+[privacy]
+telemetry_enabled = false
+custom_secret_regex_list = [
+  { pattern = "UPG-[A-Z0-9]{8}", name = "Upgrade probe token" },
+  { pattern = "upgsecret_[a-z]{12}" },
+]
+
+[privacy.secret_redaction]
+enabled = false

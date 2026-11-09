@@ -5400,3 +5400,4 @@ import cases_lab  # noqa: E402,F401  (Wave 0.5b: the fake ssh lab cases, lab_*; 
 import cases_subshell_ready  # noqa: E402,F401  (#1679 step 3/4: the subshell readiness lab: rc questions, vim typeahead, tcsh, secret after the prompt, relays, exec fish, docker -t, zsh-newuser-install, clear)
 import cases_replay  # noqa: E402,F401  (Wave 1.5 #3: the real-use replay, lab_replay.*; run only by --cases lab_replay*)
 import cases_netless  # noqa: E402,F401  (Wave N: zero_network_startup, claude_plugin_offline)
+import cases_upgrade  # noqa: E402,F401  (#1546: upgrade_from_v0_1_17, the v0.1.17 -> current profile upgrade; table in upgrade_table.py)

@@ -1,0 +1,26 @@
+# appci fixture: a user theme in the v0.1.17 theme format (copy of the bundled green theme, renamed)
+---
+name: Upgrade Probe
+background: '#0a0f0a'
+foreground: '#3bf07a'
+accent: '#22ffa0'
+details: darker
+terminal_colors:
+  normal:
+    black: '#0a0f0a'
+    red: '#ff6b5e'
+    green: '#3bf07a'
+    yellow: '#b6e84a'
+    blue: '#2fd9a0'
+    magenta: '#7ff09a'
+    cyan: '#2ff0c8'
+    white: '#a7e6b8'
+  bright:
+    black: '#2e4a38'
+    red: '#ff8a7e'
+    green: '#5cff98'
+    yellow: '#d2ff6a'
+    blue: '#5cf0c0'
+    magenta: '#a6ffbe'
+    cyan: '#5cffe0'
+    white: '#e6ffe9'

@@ -1577,3 +1577,43 @@ fn safe_command_allowlist_ships_off_with_a_nonempty_default_list() {
         Some("agents.warp_agent.permissions.safe_command_allowlist_enabled")
     );
 }
+
+/// #1546 (upgrade from v0.1.17): the models.dev catalog download default moved from true to false, and a settings file in the
+/// v0.1.17 shape (two providers, one local model and one local Claude proxy, as inline tables) must still parse into the same
+/// providers: they are what the network gate admits as configured origins. Written without a compiler; run on the build box.
+#[test]
+fn models_dev_fetch_defaults_off_and_a_v0_1_17_provider_list_still_parses() {
+    assert!(
+        !*ModelsDevFetch::new(None).value(),
+        "an unset models_dev_fetch is false now (v0.1.17: true); only an explicit true downloads automatically"
+    );
+    assert!(
+        *ModelsDevFetch::new(Some(true)).value(),
+        "an explicit true from a v0.1.17 file is honoured"
+    );
+    assert!(!ModelsDevUrl::new(None).value().trim().is_empty());
+
+    #[derive(serde::Deserialize)]
+    struct V0117File {
+        providers: Vec<AgentProvider>,
+    }
+    let file: V0117File = toml::from_str(
+        r#"providers = [
+  { id = "a", name = "Local", api_type = "ollama", base_url = "http://127.0.0.1:11434", models = [ { name = "m", id = "m" } ] },
+  { id = "b", name = "Proxy", api_type = "anthropic", base_url = "http://127.0.0.1:8317/", models = [ { name = "s", id = "s" } ] },
+]"#,
+    )
+    .expect("a v0.1.17 provider list parses");
+    assert_eq!(file.providers.len(), 2);
+    assert_eq!(file.providers[0].api_type, AgentProviderApiType::Ollama);
+    assert_eq!(
+        file.providers[0].resolved_base_url(),
+        "http://127.0.0.1:11434"
+    );
+    assert_eq!(file.providers[1].api_type, AgentProviderApiType::Anthropic);
+    assert_eq!(
+        file.providers[1].resolved_base_url(),
+        "http://127.0.0.1:8317/"
+    );
+    assert!(!file.providers[0].disabled && !file.providers[1].disabled);
+}
