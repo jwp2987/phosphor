@@ -48,6 +48,21 @@ impl TerminalAttributesPoller {
         foreground_process_names(self.fd)
     }
 
+    /// Whether the pty's foreground process group is blocked reading the tty right now (#1796),
+    /// for a prompt-shaped line that only ends in `?`/`:`. `Unknown` where
+    /// [`tty_read_probe_works`] says the platform cannot tell. A few small `/proc` reads of the
+    /// group leader, made only once such a line has been quiet for its whole window.
+    pub fn foreground_tty_read(&self) -> crate::terminal::model::block::ForegroundTtyRead {
+        use crate::terminal::model::block::ForegroundTtyRead;
+        if !tty_read_probe_works() {
+            ForegroundTtyRead::Unknown
+        } else if foreground_reads_tty(self.fd) {
+            ForegroundTtyRead::Reading
+        } else {
+            ForegroundTtyRead::NotReading
+        }
+    }
+
     /// The pty's current termios, read now (a cheap ioctl, no timer). Used by event-driven
     /// checks that need the raw/cooked state at the moment output arrived.
     pub fn current_attributes(&self) -> Option<Termios> {

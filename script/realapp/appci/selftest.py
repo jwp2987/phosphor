@@ -2154,6 +2154,20 @@ def agent_code_recycle_log_parse():
 
 
 @check
+def agent_lrc_takeover_log_parse():
+    """#1796: agent_lrc_no_false_takeover reads the detector's hand-over / kept-with-agent lines and counts the LRC hand-back ERROR from the app log;
+    the needles must match the app's own wording (interaction_mode.rs PromptDetector, cli_controller.rs handoff_active_command_control_to_agent)"""
+    log = ("2026-11-06T05:32:47Z [INFO] interactive prompt Some(\"Continue? [y/N] \") unchanged for 3s (required 3s); handing the command to the user\n"
+           "2026-11-06T05:32:47Z [ERROR] Failed to enter inline agent view for LRC handoff: Already in agent mode.\n")
+    assert ca.lrc_takeover_verdict(log) == (True, False, 1), ca.lrc_takeover_verdict(log)
+    kept = ("x [INFO] prompt-shaped line Some(\"Waiting:\") unchanged for 15s, but the foreground is not reading the tty; "
+            "leaving the command with the agent\n")
+    assert ca.lrc_takeover_verdict(kept) == (False, True, 0), ca.lrc_takeover_verdict(kept)
+    assert ca.lrc_takeover_verdict("") == (False, False, 0)
+    assert "agent_lrc_no_false_takeover" in winmap.NOT_WINDOWS
+
+
+@check
 def coverage_b_pure_helpers():
     """g10 coverage cases: the legacy/truncated settings builders, the startup-log and updater-line filters, the picker verdict"""
     import cases_coverage_b as cb

@@ -2260,7 +2260,9 @@ const PASSWORD: (bool, bool) = (false, true);
 const RAW: (bool, bool) = (false, false);
 
 /// One observation `at` after `t0`. Nothing here counts polls: only the time between
-/// observations matters.
+/// observations matters. The foreground tty-read probe must not be asked: an explicit marker
+/// and the password shape need no OS evidence (#1796), and a trailing `?`/`:` inside its quiet
+/// window is not judged yet.
 fn poll(
     detector: &mut PromptDetector,
     t0: instant::Instant,
@@ -2268,7 +2270,26 @@ fn poll(
     (echo, canonical): (bool, bool),
     prompt: Option<InteractivePromptCandidate>,
 ) -> Option<PromptDetection> {
-    detector.observe(t0 + at, echo, canonical, || prompt)
+    detector.observe(
+        t0 + at,
+        echo,
+        canonical,
+        || prompt,
+        || panic!("the foreground tty-read probe was asked when nothing needed it"),
+    )
+}
+
+/// One observation of a cooked tty `at` after `t0`, with the foreground tty-read probe
+/// answering `tty_read` (#1796).
+fn poll_with_tty(
+    detector: &mut PromptDetector,
+    t0: instant::Instant,
+    at: Duration,
+    prompt: Option<InteractivePromptCandidate>,
+    tty_read: ForegroundTtyRead,
+) -> Option<PromptDetection> {
+    let (echo, canonical) = COOKED;
+    detector.observe(t0 + at, echo, canonical, || prompt, || tty_read)
 }
 
 #[test]
@@ -2315,25 +2336,131 @@ fn prompt_detector_fires_after_the_prompt_is_quiet_for_its_duration_not_after_n_
     );
     assert_eq!(detector.next_wake(), None, "nothing left to wait for");
 
-    // A bare trailing `:` must sit far longer: `printf "Waiting for DB:"; sleep 30`.
-    let waiting = || Some(candidate("Waiting for DB:", 15));
+    // A bare trailing `:` must sit far longer, and then the foreground must also be reading
+    // the tty (#1796): here a `read -p "Enter a name: "`.
+    let name = || Some(candidate("Enter a name: ", 14));
     let mut detector = PromptDetector::default();
-    assert_eq!(poll(&mut detector, t0, ms(0), COOKED, waiting()), None);
+    assert_eq!(poll(&mut detector, t0, ms(0), COOKED, name()), None);
+    assert_eq!(poll(&mut detector, t0, explicit * 2, COOKED, name()), None);
     assert_eq!(
-        poll(&mut detector, t0, explicit * 2, COOKED, waiting()),
+        detector.next_wake(),
+        Some(t0 + INTERACTIVE_PROMPT_QUIET_TRAILING)
+    );
+    assert_eq!(
+        poll_with_tty(
+            &mut detector,
+            t0,
+            INTERACTIVE_PROMPT_QUIET_TRAILING,
+            name(),
+            ForegroundTtyRead::Reading
+        ),
+        Some(PromptDetection::Interactive)
+    );
+    assert!(INTERACTIVE_PROMPT_QUIET_TRAILING > INTERACTIVE_PROMPT_QUIET_EXPLICIT);
+}
+
+/// #1796: `printf 'Waiting:'; sleep 20; echo done` run by the agent. The line ends in `:` and
+/// sits unchanged past the trailing-punctuation window, but the foreground (`sleep`) is not
+/// reading the tty, so the command stays with the agent. The old rule (15 s of silence after a
+/// trailing `?`/`:` was enough) handed this to the user as "Command needs your input".
+#[test]
+fn a_silent_command_after_a_trailing_colon_is_not_handed_to_the_user() {
+    let t0 = instant::Instant::now();
+    let s = Duration::from_secs;
+    let waiting = || Some(candidate("Waiting:", 8));
+    let mut detector = PromptDetector::default();
+
+    assert_eq!(poll(&mut detector, t0, s(0), COOKED, waiting()), None);
+    // Every 1 Hz termios poll and the quiet timer through the whole `sleep 20`: no hand-over,
+    // whether the probe says "not reading" or the platform cannot tell.
+    for second in 15..=20u64 {
+        let tty_read = if second % 2 == 0 {
+            ForegroundTtyRead::NotReading
+        } else {
+            ForegroundTtyRead::Unknown
+        };
+        assert_eq!(
+            poll_with_tty(&mut detector, t0, s(second), waiting(), tty_read),
+            None,
+            "{second}s: silence after a trailing `:` is not an input wait"
+        );
+    }
+    assert_eq!(
+        detector.next_wake(),
+        None,
+        "no quiet timer once the window has passed without a tty read: the 1 Hz poll asks again"
+    );
+
+    // `done` arrives: the line ends in a newline, so there is no candidate any more.
+    assert_eq!(poll(&mut detector, t0, s(20), COOKED, None), None);
+    assert_eq!(detector.next_wake(), None);
+}
+
+/// #1796: a command that prints `Name:` and only starts reading later (`printf 'Name: ';
+/// sleep 30; read x`) is still handed over once the read starts, by the 1 Hz poll, with no
+/// further output to drive it.
+#[test]
+fn a_trailing_colon_is_handed_over_once_the_foreground_starts_reading_the_tty() {
+    let t0 = instant::Instant::now();
+    let s = Duration::from_secs;
+    let name = || Some(candidate("Name: ", 6));
+    let mut detector = PromptDetector::default();
+
+    assert_eq!(poll(&mut detector, t0, s(0), COOKED, name()), None);
+    for second in 15..30u64 {
+        assert_eq!(
+            poll_with_tty(
+                &mut detector,
+                t0,
+                s(second),
+                name(),
+                ForegroundTtyRead::NotReading
+            ),
+            None
+        );
+    }
+    assert_eq!(
+        poll_with_tty(&mut detector, t0, s(30), name(), ForegroundTtyRead::Reading),
+        Some(PromptDetection::Interactive)
+    );
+    assert_eq!(
+        poll_with_tty(&mut detector, t0, s(31), name(), ForegroundTtyRead::Reading),
+        None,
+        "once per episode"
+    );
+
+    // New output (a second prompt) starts a fresh window and a fresh tty-read requirement.
+    let again = || Some(candidate("Name again: ", 12));
+    assert_eq!(poll(&mut detector, t0, s(40), COOKED, again()), None);
+    assert_eq!(
+        detector.next_wake(),
+        Some(t0 + s(40) + INTERACTIVE_PROMPT_QUIET_TRAILING)
+    );
+}
+
+/// #1796: `printf 'Continue? [y/N] '; read` is still handed over on the explicit marker alone,
+/// after the short explicit window, without asking the OS anything.
+#[test]
+fn an_explicit_marker_is_still_handed_over_without_a_tty_read_probe() {
+    let t0 = instant::Instant::now();
+    let confirm = || Some(candidate("Continue? [y/N] ", 16));
+    let mut detector = PromptDetector::default();
+
+    assert_eq!(
+        poll(&mut detector, t0, Duration::ZERO, COOKED, confirm()),
         None
     );
     assert_eq!(
         poll(
             &mut detector,
             t0,
-            INTERACTIVE_PROMPT_QUIET_TRAILING,
+            INTERACTIVE_PROMPT_QUIET_EXPLICIT,
             COOKED,
-            waiting()
+            confirm()
         ),
-        Some(PromptDetection::Interactive)
+        Some(PromptDetection::Interactive),
+        "`poll` panics if the tty-read probe is asked, so this also proves it was not"
     );
-    assert!(INTERACTIVE_PROMPT_QUIET_TRAILING > INTERACTIVE_PROMPT_QUIET_EXPLICIT);
 }
 
 /// An agent-run `ssh` stops on the host-key question, the user answers and hands control

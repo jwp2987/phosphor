@@ -20,7 +20,7 @@ use crate::{
         blocklist::{
             BlocklistAIActionEvent, BlocklistAIActionModel, BlocklistAIController,
             BlocklistAIHistoryEvent,
-            agent_view::{AgentViewController, AgentViewEntryOrigin},
+            agent_view::{AgentViewController, AgentViewEntryOrigin, AgentViewState},
         },
     },
     terminal::{
@@ -810,7 +810,7 @@ impl CLISubagentController {
         drop(terminal_model);
         if let Some(agent_view_controller) = &self.agent_view_controller {
             agent_view_controller.update(ctx, |controller, ctx| {
-                if !controller.is_inline() {
+                if lrc_handoff_enters_inline_agent_view(controller.agent_view_state()) {
                     if let Err(e) = controller.try_enter_inline_agent_view(
                         conversation_id,
                         AgentViewEntryOrigin::LongRunningCommand,
@@ -1112,6 +1112,16 @@ fn needs_byop_monitor_upgrade(block: &Block) -> bool {
     block.is_agent_driving_command()
         && block.long_running_control_state().is_none()
         && !block.finished()
+}
+
+/// Whether handing a long-running command back to the agent should open the inline agent view
+/// (#1796). Only when no agent view is showing: an inline one is already what the hand-back
+/// wants, and a full-screen one already shows the conversation. `try_enter_inline_agent_view`
+/// refuses both with `AlreadyInAgentView`, and asking it anyway logged that refusal as an
+/// `ERROR` on every hand-back made from the full-screen agent view (a false error, nothing
+/// failed). The old guard tested `is_inline()` only, so it let the full-screen case through.
+fn lrc_handoff_enters_inline_agent_view(state: &AgentViewState) -> bool {
+    !state.is_active()
 }
 
 #[cfg(test)]

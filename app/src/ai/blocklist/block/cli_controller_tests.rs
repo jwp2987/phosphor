@@ -1,6 +1,10 @@
 use super::{
     AIAgentActionId, AIConversationId, ControlChangeReason, LongRunningCommandControlState, TaskId,
-    TerminalModel, UserTakeOverReason, needs_byop_monitor_upgrade,
+    TerminalModel, UserTakeOverReason, lrc_handoff_enters_inline_agent_view,
+    needs_byop_monitor_upgrade,
+};
+use crate::ai::blocklist::agent_view::{
+    AgentViewDisplayMode, AgentViewEntryOrigin, AgentViewState,
 };
 
 // Blocks persisted before `should_auto_resume` stored `Stop` as a bare unit variant. These must
@@ -275,4 +279,29 @@ fn only_input_waiting_takeovers_override_a_user_collapsed_card() {
     assert!(!overrides(UserTakeOverReason::Stop {
         should_auto_resume: false
     }));
+}
+
+/// #1796: handing a long-running command back to the agent from the FULL-SCREEN agent view
+/// must not ask to enter the inline agent view. `try_enter_inline_agent_view` refuses any active
+/// view with `AlreadyInAgentView`, and the old `!is_inline()` guard let the full-screen case
+/// through, logging "Failed to enter inline agent view for LRC handoff: Already in agent mode."
+/// as an ERROR on a hand-back that had in fact succeeded.
+#[test]
+fn lrc_handoff_opens_the_inline_agent_view_only_when_no_agent_view_is_active() {
+    let active = |display_mode| AgentViewState::Active {
+        conversation_id: AIConversationId::new(),
+        origin: AgentViewEntryOrigin::LongRunningCommand,
+        display_mode,
+        original_conversation_length: 0,
+    };
+    assert!(
+        !lrc_handoff_enters_inline_agent_view(&active(AgentViewDisplayMode::FullScreen)),
+        "the full-screen agent view is already showing the conversation"
+    );
+    assert!(!lrc_handoff_enters_inline_agent_view(&active(
+        AgentViewDisplayMode::Inline
+    )));
+    assert!(lrc_handoff_enters_inline_agent_view(
+        &AgentViewState::Inactive
+    ));
 }
