@@ -1360,7 +1360,10 @@ fn remote_write_expectation_names_the_exact_bytes_that_were_read() {
     let Some(Expect::Sha256(digest)) = remote_write_expectation(&content, &read) else {
         panic!("a successful read of an expected-content file must be guarded by a hash");
     };
-    assert_eq!(digest.as_str(), remote_server::index::sha256_hex(b"a\r\nb"));
+    assert_eq!(
+        digest.as_str(),
+        remote_server::index::types::sha256_hex(b"a\r\nb")
+    );
     // The hash changes when the bytes do (a user edit after the proposal).
     let edited: Result<Vec<u8>, String> = Ok(b"a\r\nb edited".to_vec());
     assert_ne!(

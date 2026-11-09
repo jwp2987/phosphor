@@ -417,7 +417,7 @@ pub(crate) fn remote_write_expectation<E>(
         (ExpectedDiskState::Absent, Err(_)) => Some(Expect::Absent),
         (ExpectedDiskState::Absent, Ok(_)) => None,
         (ExpectedDiskState::Content(_), Ok(bytes)) => {
-            HexDigest::parse(&remote_server::index::sha256_hex(bytes)).map(Expect::Sha256)
+            HexDigest::parse(&remote_server::index::types::sha256_hex(bytes)).map(Expect::Sha256)
         }
         (ExpectedDiskState::Content(_), Err(_)) => None,
     }
