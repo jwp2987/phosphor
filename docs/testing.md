@@ -2049,6 +2049,36 @@ unset, the plugin manager really offering the move for U83) is covered by `zero_
 (what "don't ask again" + Install wrote) keeps applying to EVERY host that has no own decision; no per-host list is filled from it because a v0.1.17 profile holds no
 host names.
 
+### 2.19 Agent resilience: model failures and restarts (`appci/cases_agent_resilience.py`, `appci/fake_model.py`; #1831, #1832)
+
+Twelve agent-mode cases against the scripted fake model (`APPCI_FAKE_MODEL=1`; without it they SKIP with the reason, a real provider is never used). Not run yet:
+they first run in round 6, so expect harness faults before app findings. Run: `python3 script/realapp/appci/run.py --cases 'agent_fault_*,agent_restart_*'`.
+
+**Fake model fault injection** (`fake_model.py`): `fake.inject(kind, times, match, **kw)` makes the next `times` matching `/api/chat` requests (`match` = substring of
+the last user text) take a fault: `status` (code, optional `Retry-After`), `disconnect` (cut mid-body after N lines), `delay` (nothing for N s, hang-up counted in
+`fake.aborted`), `drip` (a long reply, one line per interval). `fake.go_down()` / `come_up()` close and rebind the listening socket (connection refused).
+Oracles: `fake.requests`, `fake.fresh` (each prompt the app really sent), `fake.fired`, `fake.aborted`.
+
+**#1831 model failures** (all platforms; the fake runs on the host): `agent_fault_429` (Retry-After 1 on every try), `agent_fault_500`, `agent_fault_disconnect`
+(no retry once output was seen), `agent_fault_down` (connection refused), `agent_fault_slow_cancel` (30 s first-token delay, Ctrl-C within 5 s, the connection is
+hung up), `agent_fault_queued_rows` (two `/queue` rows behind a failing reply). Oracles: `hop=turn` ends in `error` / `cancelled` / `success`, never `in_progress`; no
+`hop=agent_action` left open; the app log has the failure line (`[byop] open stream failed | stream chunk error`) and ERROR lines stay inside the fuzzer's allowance
+(`oracle.rs error_allowance`: 2 per failing chain, only the `[byop]` failure kinds); no request on its own after the turn (no endless retry); the re-sent prompt
+reaches the model exactly once and succeeds; OCR of the block is checked for error wording when an engine exists. Queued rows: each token is sent once XOR still held
+(queued_prompts / input), never lost, never twice, and the `fired` hops equal the prompts the model got (`judge_rows`).
+
+**#1832 restarts** (`agent_restart_{quit,kill}_{stream,queued,blocked}`; kill: Linux, macOS, Windows; quit: Linux only, the other harnesses have no quit key and the
+case SKIPs): `restore_session` on, one completed turn first, then a streaming reply / two `/queue` rows behind it / an approval card blocked on a command with a queued
+follow-up, then a clean quit or SIGKILL, then a relaunch on the same profile (`cases_robust` helpers). Oracles: the completed turn is in `warp.sqlite`
+(`agent_conversations` / `ai_queries`, read read-only with sqlite3); each queued row is in `queued_prompts` (or on the screen if the app popped it back to the input) and
+reached the model zero times (restored rows are suspended, #1027); the fake got no request on its own; no `hop=agent_action status=running` and no
+`hop=turn state=in_progress` in the relaunch log; the blocked command left no effect file, no rec.log line and no pty write; a new prompt then works.
+
+**Overlap with the in-process fuzzer** (`app/src/ai/blocklist/agent_fuzz`): the fuzzer replaces the provider seam (events, not HTTP) and checks state invariants under
+`status` / `disconnect` / `stall` / `delay` / `never_end` chaos; it never touches the wire, restarts the app or reads the sqlite store. These cases cover the real HTTP
+client (Retry-After, refused connection, a cut socket), the real error block and cancel key, and persistence across quit / kill -9. Self-test rows:
+`fake_model_fault_injection`, `agent_resilience_pure_parts`.
+
 ## 3. Real-app testing
 
 Automated tests do not catch lag, lost keys or broken flows; the owner feels those. Every release candidate
