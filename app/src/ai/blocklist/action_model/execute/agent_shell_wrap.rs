@@ -42,6 +42,10 @@ pub(super) const PAGER_VARS: &[&str] = &[
     "AWS_PAGER",
     "GH_PAGER",
     "BAT_PAGER",
+    "PERLDOC_PAGER",
+    "MYSQL_PAGER",
+    "LESS",
+    "SYSTEMD_LESS",
     "GIT_CONFIG_COUNT",
     "GIT_CONFIG_KEY_0",
     "GIT_CONFIG_VALUE_0",
@@ -60,6 +64,13 @@ const OVERRIDES: &[(&str, &str)] = &[
     ("AWS_PAGER", ""),
     ("GH_PAGER", "cat"),
     ("BAT_PAGER", ""),
+    ("PERLDOC_PAGER", "cat"),
+    ("MYSQL_PAGER", "cat"),
+    // Belt and braces (#1813): if a `less` still starts (a program that runs it directly), it
+    // quits on one screen, keeps colours and does not use the alt screen. Phosphor never
+    // writes `q` to a pager on a timer; a pager that opens anyway gets the take-over notice.
+    ("LESS", "-FRX"),
+    ("SYSTEMD_LESS", "FRXMK"),
     ("GIT_CONFIG_COUNT", "1"),
     ("GIT_CONFIG_KEY_0", "core.pager"),
     ("GIT_CONFIG_VALUE_0", "cat"),
