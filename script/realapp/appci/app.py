@@ -476,6 +476,12 @@ class WindowsApp:
         import winapi
         return winapi.process_times(self.proc.pid)
 
+    def private_kib(self):
+        """private committed bytes of the app process in KiB (PROCESS_MEMORY_COUNTERS_EX.PrivateUsage; #1340: the working set is trimmed by the OS
+        and shared with other processes, so it is reported but not the figure the editor memory case judges)"""
+        import winapi
+        return winapi.process_times_private(self.proc.pid)[2]
+
     def find_log(self):
         """newest phosphor*.log under the app's data dirs (the location is not HOME-relative on Windows), or None"""
         best = None

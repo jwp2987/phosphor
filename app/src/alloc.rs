@@ -190,7 +190,7 @@ pub(crate) fn trim_free_memory() -> Option<u64> {
 }
 
 /// [`trim_free_memory`] plus one `input_order hop=heap_trim why=<why> ms=<ms> freed_estimate=<bytes>
-/// t=<end>` line (only while input-order logging is on), so the appci editor_memory trim A/B can judge
+/// start=<epoch ms> t=<end>` line (only while input-order logging is on), so the appci editor_memory trim A/B can judge
 /// the UI items that ran DURING the trim, and one `editor_memory heap_trim why=<why> ms=<ms>
 /// freed_estimate=<bytes>` line (target `editor_memory`, debug) that the case reads next to
 /// `buffer_dropped` (#1607). `why` is `open` (after a file-sized layout) or `close`.
@@ -205,18 +205,28 @@ pub(crate) fn trim_free_memory_timed(why: &'static str) {
         return;
     }
     let before = footprint_bytes();
+    let start_ms = epoch_ms();
     let start = std::time::Instant::now();
     let released = trim_free_memory();
     let ms = start.elapsed().as_secs_f64() * 1000.0;
     let freed_estimate = before as i128 - footprint_bytes() as i128;
     warpui::input_order::log_hop("heap_trim", || {
-        format!("why={why} ms={ms:.2} freed_estimate={freed_estimate}")
+        format!("why={why} ms={ms:.2} freed_estimate={freed_estimate} start={start_ms}")
     });
     log::debug!(
         target: "editor_memory",
-        "editor_memory heap_trim why={why} ms={ms:.2} freed_estimate={freed_estimate}{}",
+        "editor_memory heap_trim why={why} ms={ms:.2} freed_estimate={freed_estimate} start={start_ms}{}",
         trim_detail(released)
     );
+}
+
+/// Wall-clock milliseconds since the epoch (the `t=` clock of the `input_order` lines), so a run
+/// can tell which UI items began before the trim did (#1340 measurement).
+fn epoch_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
 }
 
 /// The extra `key=value` fields of the `editor_memory heap_trim` line: ` released=<bytes>` when
