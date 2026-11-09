@@ -1,4 +1,5 @@
 use super::*;
+use crate::backend::RemoteFeatures as _;
 use crate::capability::{self, ServerCapabilities};
 use crate::proto::InitializeResponse;
 
