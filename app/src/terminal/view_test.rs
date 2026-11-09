@@ -15361,6 +15361,9 @@ fn typeahead_handoff_ctrl_c_without_seq_numbers_does_not_commit_on_a_timer() {
                     }
                 });
             });
+            // Let the pane's own start-up events (its bootstrap Precmd commits the hand-off at the
+            // prompt) land first: they are not the timer this test is about.
+            let_app_settle(&mut app).await;
             terminal.update(&mut app, |view, ctx| {
                 {
                     let mut model = view.model.lock();

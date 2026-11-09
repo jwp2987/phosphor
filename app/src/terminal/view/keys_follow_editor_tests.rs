@@ -93,6 +93,10 @@ fn a_program_or_an_empty_editor_returns_keys_to_the_pty() {
             let terminal = add_window_with_terminal(&mut app, None);
             let pty_writes = collect_pty_writes(&mut app, &terminal);
             terminal.update(&mut app, |view, ctx| {
+                // Legacy writes typed text to the pty only for a bootstrapped session (the stalled
+                // setup no longer opens that door by age, #1711); the Table mode decides from its
+                // facts. A key reaching the program needs the session, as in a real pane.
+                register_local_session_for_ssh_test(view, ctx);
                 give_up_keeping_a_line(view, ctx);
                 // A program starts and owns the tty (a Preexec): keys are its.
                 view.model.lock().typeahead_handoff_mut().on_preexec(false);
