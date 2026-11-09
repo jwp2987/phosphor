@@ -100,6 +100,12 @@ impl PanicWatch {
             let at = info
                 .location()
                 .map_or_else(String::new, |l| format!(" at {}:{}", l.file(), l.line()));
+            // The hook replaces the default one, so without this a panic that ends in an abort
+            // (a panic in a destructor while unwinding) leaves no trace of what the first one was.
+            eprintln!("agent_fuzz: panic: {message}{at}");
+            if std::env::var_os("RUST_BACKTRACE").is_some() {
+                eprintln!("{}", std::backtrace::Backtrace::force_capture());
+            }
             PANICS
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
