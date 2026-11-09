@@ -486,6 +486,8 @@ pub struct WindowState {
     callbacks: WindowCallbacks,
     next_scene: RefCell<Option<Rc<Scene>>>,
     draw_owed: frame_latency::DrawOwed,
+    /// Consecutive frames skipped because `nextDrawable` would have blocked (#1838).
+    pub(super) frame_skip_run: frame_latency::SkipRun,
     device: Option<Device>,
     renderer_manager: Option<Rc<RefCell<RendererManager>>>,
     synthetic_drag_counter: Cell<usize>,
@@ -617,6 +619,7 @@ impl Window {
                 callbacks,
                 next_scene: Default::default(),
                 draw_owed: Default::default(),
+                frame_skip_run: Default::default(),
                 renderer_manager: Some(renderer_manager),
                 device,
                 synthetic_drag_counter: Cell::new(0),
@@ -1524,6 +1527,24 @@ extern "C-unwind" fn warp_note_key_event(
     is_ctrl: std::ffi::c_int,
 ) {
     warpui_core::input_order::log_os_key_event(age_ms, is_enter != 0, is_ctrl != 0);
+}
+
+/// Logs one stage of a Control key-down inside the Objective-C layer (#1838), as
+/// `input_order hop=mac_ctrl stage=<stage> since_send_ms=<ms since -[NSApplication sendEvent:]>`.
+/// Splits the time between the app dequeuing a Ctrl-C and `ctrl_c_keydown` into the stages
+/// (`key_down_impl_entry`, `after_interpret_key_events`, `after_handle_view_event`), so a frame
+/// that runs inside one of them (flood frames blocked in `nextDrawable`) shows up there.
+#[unsafe(no_mangle)]
+extern "C-unwind" fn warp_log_ctrl_key_stage(stage: *const std::ffi::c_char, since_send_ms: f64) {
+    let stage = if stage.is_null() {
+        std::borrow::Cow::Borrowed("")
+    } else {
+        // SAFETY: the caller passes a NUL-terminated C string that outlives this call.
+        unsafe { std::ffi::CStr::from_ptr(stage) }.to_string_lossy()
+    };
+    warpui_core::input_order::log_hop("mac_ctrl", || {
+        format!("stage={stage} since_send_ms={since_send_ms:.3}")
+    });
 }
 
 /// Returns whether this event was handled.

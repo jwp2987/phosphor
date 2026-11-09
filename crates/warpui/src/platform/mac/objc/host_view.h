@@ -10,6 +10,15 @@ void warp_log_enter(const char *stage, const char *detail);
 // Flags only; is_enter/is_ctrl are passed as 0/1.
 void warp_note_key_event(double age_ms, int is_enter, int is_ctrl);
 
+// Control key-down stage tracing (#1838), implemented in Rust (`warp_log_ctrl_key_stage` in
+// window.rs): logs `input_order hop=mac_ctrl stage=<stage> since_send_ms=<ms>`.
+void warp_log_ctrl_key_stage(const char *stage, double since_send_ms);
+// Implemented in host_view.m: `warpCtrlSendMark` stamps the moment -[WarpApplication sendEvent:]
+// saw a Control key-down; `warpCtrlStage` logs a stage relative to that stamp (no-op for other
+// events). Flags and times only, never the key.
+void warpCtrlSendMark(NSEvent *event);
+void warpCtrlStage(NSEvent *event, const char *stage);
+
 static inline BOOL warpIsEnterKeyDown(NSEvent *event) {
     return event != nil && [event type] == NSEventTypeKeyDown &&
            ([event keyCode] == 36 || [event keyCode] == 76);

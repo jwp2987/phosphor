@@ -408,6 +408,87 @@ pub fn log_os_key_event(age_ms: f64, enter: bool, ctrl: bool) {
     }
 }
 
+/// Epoch microseconds of the last `^C` pty write; 0 means none is being watched (#1838).
+static CTRL_C_WRITE_US: AtomicU64 = AtomicU64::new(0);
+/// Frames logged for the watched `^C` so far.
+static CTRL_C_FRAMES: AtomicU64 = AtomicU64::new(0);
+/// A watched `^C` stops being followed this long after its write.
+const CTRL_C_WATCH_MS: u64 = 600;
+/// At most this many frame lines per watched `^C` (a flood paints a frame every few ms).
+const CTRL_C_WATCH_MAX_FRAMES: u64 = 24;
+
+fn epoch_us() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_micros() as u64
+}
+
+/// Starts following the frames presented after a `^C` reached the pty (#1838), so the part of
+/// the Ctrl-C overhead that sits after the shell reacted (the prompt waiting for a frame) can be
+/// told from the part before it. One atomic store when input-order logging is off.
+pub fn note_ctrl_c_written() {
+    if enabled() {
+        CTRL_C_FRAMES.store(0, Ordering::Relaxed);
+        CTRL_C_WRITE_US.store(epoch_us(), Ordering::Relaxed);
+    }
+}
+
+/// What to log for a frame presented `now_us` while a `^C` written at `write_us` is watched:
+/// `Some((detail, last))`, `None` when the watch is over. `precmd_ms` is the epoch-ms stamp of the
+/// last prompt hook (0 = never). `last` is true for the first frame at or after the prompt hook
+/// (the frame that can carry the new prompt), the line the harness reads.
+fn ctrl_c_frame_step(
+    write_us: u64,
+    now_us: u64,
+    frames_logged: u64,
+    precmd_ms: u64,
+    presented: bool,
+) -> Option<(String, bool)> {
+    if write_us == 0
+        || frames_logged >= CTRL_C_WATCH_MAX_FRAMES
+        || now_us.saturating_sub(write_us) > CTRL_C_WATCH_MS * 1000
+    {
+        return None;
+    }
+    let precmd_us = precmd_ms.saturating_mul(1000);
+    let precmd_seen = precmd_us >= write_us.saturating_sub(1000);
+    let after_precmd = precmd_seen && now_us >= precmd_us;
+    let since_precmd = if precmd_seen {
+        format!("{:.1}", (now_us as f64 - precmd_us as f64) / 1000.0)
+    } else {
+        "none".to_string()
+    };
+    Some((
+        format!(
+            "since_write_ms={:.1} since_precmd_ms={since_precmd} presented={presented} after_precmd={after_precmd}",
+            now_us.saturating_sub(write_us) as f64 / 1000.0
+        ),
+        after_precmd,
+    ))
+}
+
+/// Logs a frame that reached the screen while a `^C` is watched (#1838) as
+/// `input_order hop=ctrl_c_frame since_write_ms=.. since_precmd_ms=.. presented=.. after_precmd=..`.
+/// The watch ends at the first frame after the prompt hook. Costs one atomic load when idle.
+pub fn log_ctrl_c_frame_presented(presented: bool) {
+    let write_us = CTRL_C_WRITE_US.load(Ordering::Relaxed);
+    if write_us == 0 || !enabled() {
+        return;
+    }
+    let frames = CTRL_C_FRAMES.fetch_add(1, Ordering::Relaxed);
+    let precmd_ms = SHELL_SIGNAL_MS[ShellSignal::Precmd.index()].load(Ordering::Relaxed);
+    match ctrl_c_frame_step(write_us, epoch_us(), frames, precmd_ms, presented) {
+        Some((detail, last)) => {
+            log::debug!(target: TARGET, "{}", hop_line("ctrl_c_frame", &detail));
+            if last {
+                CTRL_C_WRITE_US.store(0, Ordering::Relaxed);
+            }
+        }
+        None => CTRL_C_WRITE_US.store(0, Ordering::Relaxed),
+    }
+}
+
 /// Logs the first pty output read after user input was written, `since_write` after the write,
 /// and arms [`log_frame_if_pty_output_pending`] for the frame that should show it.
 pub fn log_pty_read_after_write(bytes: usize, since_write: Duration) {
@@ -594,6 +675,44 @@ mod tests {
         let line = os_key_event_line(0.4126, true, false);
         assert!(
             line.starts_with("input_order hop=os_key_event age_ms=0.413 enter=true ctrl=false t="),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn ctrl_c_frames_are_followed_until_the_first_frame_after_the_prompt_hook() {
+        // 10 ms after the write, no prompt hook yet: logged, watch continues.
+        let (detail, last) = ctrl_c_frame_step(1_000_000, 1_010_000, 0, 0, true).unwrap();
+        assert!(detail.starts_with("since_write_ms=10.0 since_precmd_ms=none presented=true"));
+        assert!(!last);
+        // prompt hook at +20 ms (epoch ms 1_020), frame at +35 ms: last, 15 ms after the hook.
+        let (detail, last) = ctrl_c_frame_step(1_000_000, 1_035_000, 3, 1_020, true).unwrap();
+        assert!(detail.contains("since_precmd_ms=15.0"), "{detail}");
+        assert!(detail.ends_with("after_precmd=true"), "{detail}");
+        assert!(last);
+        // a frame before the hook of this ^C is not "after".
+        let (_, last) = ctrl_c_frame_step(1_000_000, 1_015_000, 1, 1_020, true).unwrap();
+        assert!(!last);
+        // an old prompt hook (before the write) does not count as this ^C's.
+        let (detail, last) = ctrl_c_frame_step(5_000_000, 5_010_000, 0, 1_020, true).unwrap();
+        assert!(detail.contains("since_precmd_ms=none"), "{detail}");
+        assert!(!last);
+    }
+
+    #[test]
+    fn the_ctrl_c_watch_ends_on_time_count_or_when_unarmed() {
+        assert!(ctrl_c_frame_step(0, 1_000, 0, 0, true).is_none());
+        assert!(ctrl_c_frame_step(1_000_000, 1_000_000 + 601_000, 0, 0, true).is_none());
+        assert!(
+            ctrl_c_frame_step(1_000_000, 1_010_000, CTRL_C_WATCH_MAX_FRAMES, 0, true).is_none()
+        );
+    }
+
+    #[test]
+    fn the_ctrl_c_frame_line_is_a_greppable_hop() {
+        let line = hop_line("ctrl_c_frame", "since_write_ms=1.0");
+        assert!(
+            line.starts_with("input_order hop=ctrl_c_frame since_write_ms=1.0 t="),
             "{line}"
         );
     }

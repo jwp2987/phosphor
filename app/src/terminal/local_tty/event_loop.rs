@@ -1499,6 +1499,7 @@ where
                             if !current.is_reply() {
                                 warpui::input_order::log_pty_write(current.source.len());
                                 if current.source.contains(&0x03) {
+                                    warpui::input_order::note_ctrl_c_written();
                                     warpui::input_order::log_hop("ctrl_c_pty_write", || {
                                         format!("bytes={}", current.source.len())
                                     });

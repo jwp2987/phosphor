@@ -79,3 +79,62 @@ fn a_new_drop_after_a_flush_queues_a_new_flush() {
     assert!(owed.note_deferred());
     assert!(owed.take_for_flush());
 }
+
+fn gate(unpresented: i32, skipping_for_ms: Option<u64>) -> GateInputs {
+    GateInputs {
+        enabled: true,
+        must_draw: false,
+        presented_once: unpresented >= 0,
+        unpresented,
+        skipping_for_ms,
+    }
+}
+
+#[test]
+fn the_gate_skips_only_when_a_drawable_is_already_queued() {
+    // Nothing has reached the screen yet (-1): the first drawables are free.
+    assert_eq!(gate_decision(gate(-1, None)), GateDecision::Draw);
+    // One on screen, none queued: the next nextDrawable returns at once.
+    assert_eq!(gate_decision(gate(0, None)), GateDecision::Draw);
+    // One on screen, one queued: nextDrawable would block the main thread.
+    assert_eq!(gate_decision(gate(1, None)), GateDecision::Skip);
+    assert_eq!(gate_decision(gate(2, Some(10))), GateDecision::Skip);
+}
+
+#[test]
+fn the_gate_never_skips_when_disabled_or_when_a_draw_is_required() {
+    let mut inputs = gate(1, None);
+    inputs.enabled = false;
+    assert_eq!(gate_decision(inputs), GateDecision::Draw);
+    let mut inputs = gate(1, None);
+    inputs.must_draw = true;
+    assert_eq!(gate_decision(inputs), GateDecision::Draw);
+}
+
+#[test]
+fn the_gate_watchdog_forces_a_draw_after_a_long_skip_run() {
+    assert_eq!(
+        gate_decision(gate(1, Some(GATE_WATCHDOG_MS - 1))),
+        GateDecision::Skip
+    );
+    assert_eq!(
+        gate_decision(gate(1, Some(GATE_WATCHDOG_MS))),
+        GateDecision::Draw
+    );
+}
+
+#[test]
+fn a_skip_run_counts_frames_and_ends_when_a_frame_is_drawn() {
+    let run = SkipRun::default();
+    assert_eq!(run.running_for_ms(5), None);
+    assert_eq!(run.finish(5), None);
+    run.note_skip(10);
+    run.note_skip(14);
+    run.note_skip(30);
+    assert_eq!(run.running_for_ms(40), Some(30));
+    assert_eq!(run.finish(40), Some((3, 30)));
+    // the run is over: the next one starts fresh
+    assert_eq!(run.running_for_ms(50), None);
+    run.note_skip(60);
+    assert_eq!(run.finish(61), Some((1, 1)));
+}

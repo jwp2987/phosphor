@@ -2,6 +2,7 @@
 
 #import <Metal/Metal.h>
 #import <os/signpost.h>
+#import <objc/runtime.h>
 #import <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
@@ -70,6 +71,84 @@ static BOOL warpDisplaySyncOffWhileTyping(void) {
     return enabled;
 }
 
+// Control key-down stage tracing (#1838). Main thread only.
+static _Atomic uint64_t warpCtrlSendNs = 0;
+
+static BOOL warpIsCtrlKeyDown(NSEvent *event) {
+    return event != nil && [event type] == NSEventTypeKeyDown &&
+           ([event modifierFlags] & NSEventModifierFlagControl) != 0;
+}
+
+void warpCtrlSendMark(NSEvent *event) {
+    if (warpIsCtrlKeyDown(event)) {
+        atomic_store(&warpCtrlSendNs, warpNowNs());
+    }
+}
+
+void warpCtrlStage(NSEvent *event, const char *stage) {
+    if (!warpIsCtrlKeyDown(event)) return;
+    uint64_t sendNs = atomic_load(&warpCtrlSendNs);
+    double sinceMs = sendNs == 0 ? -1.0 : (double)(warpNowNs() - sendNs) / 1e6;
+    warp_log_ctrl_key_stage(stage, sinceMs);
+}
+
+// Blocked-frame gate (#1838). With `maximumDrawableCount = 2` one drawable is on screen and at
+// most one more can be queued; a third `nextDrawable` then blocks the MAIN thread until the queued
+// one is presented (15-40 ms under an output flood), and a key waits behind it. The gate counts
+// drawables handed out whose presented handler has not run, so the renderer can skip a frame that
+// would block (see `gate_decision` in frame_latency.rs) and leave the main thread free to dequeue
+// input. When the in-flight drawable is presented its handler asks the view to draw again if a
+// frame was skipped, so no frame is lost. One gate per CAMetalLayer, attached as an associated
+// object.
+@interface WarpFrameGate : NSObject {
+  @public
+    _Atomic int unpresented;
+    _Atomic BOOL presentedOnce;
+    _Atomic BOOL skipped;
+    // Bumped on every arm; a safety timer only acts if no newer arm or wake has happened.
+    _Atomic uint64_t armSeq;
+    // Main thread only; cleared by the view's dealloc.
+    NSView *view;
+}
+@end
+@implementation WarpFrameGate
+@end
+
+static const char warpFrameGateKey = 0;
+
+static WarpFrameGate *warpFrameGateFor(CAMetalLayer *layer) {
+    return (WarpFrameGate *)objc_getAssociatedObject(layer, &warpFrameGateKey);
+}
+
+// Drawables handed out and not yet presented, or -1 when nothing has reached the screen yet (the
+// first drawable is free) or the layer has no gate.
+int warp_frame_gate_unpresented(CAMetalLayer *layer) {
+    WarpFrameGate *gate = warpFrameGateFor(layer);
+    if (gate == nil || !atomic_load(&gate->presentedOnce)) return -1;
+    return atomic_load(&gate->unpresented);
+}
+
+// The renderer is about to skip a frame: arrange for the next presented handler to request a draw.
+// Returns NO when the drawable was presented in the meantime (draw now instead).
+BOOL warp_frame_gate_arm(CAMetalLayer *layer) {
+    WarpFrameGate *gate = warpFrameGateFor(layer);
+    if (gate == nil) return NO;
+    atomic_store(&gate->skipped, YES);
+    if (atomic_load(&gate->unpresented) < 1) {
+        atomic_store(&gate->skipped, NO);
+        return NO;
+    }
+    // Safety net (not the mechanism): a presented handler that never fires must not leave the
+    // window stale. The redraw it requests draws unconditionally once the skip run is old enough.
+    uint64_t seq = atomic_fetch_add(&gate->armSeq, 1) + 1;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+      if (atomic_load(&gate->skipped) && atomic_load(&gate->armSeq) == seq) {
+          [gate->view setNeedsDisplay:YES];
+      }
+    });
+    return YES;
+}
+
 // Called on the main thread, after nextDrawable and before the drawable is presented. Attaches the
 // pending key press (if any) to this frame and reports key -> presented latency from the
 // drawable's presented handler. `waitNs` is how long nextDrawable blocked.
@@ -79,7 +158,19 @@ void warp_frame_track_drawable(id<MTLDrawable> drawable, uint64_t waitNs) {
                            waitNs / 1000);
     if (@available(macOS 10.15.4, *)) {
         if ([drawable respondsToSelector:@selector(addPresentedHandler:)]) {
+            CAMetalLayer *drawableLayer = [(id<CAMetalDrawable>)drawable layer];
+            WarpFrameGate *gate = drawableLayer ? warpFrameGateFor(drawableLayer) : nil;
+            if (gate) atomic_fetch_add(&gate->unpresented, 1);
             [drawable addPresentedHandler:^(id<MTLDrawable> presented) {
+              if (gate) {
+                  if (presented.presentedTime > 0) atomic_store(&gate->presentedOnce, YES);
+                  atomic_fetch_sub(&gate->unpresented, 1);
+                  if (atomic_exchange(&gate->skipped, NO)) {
+                      dispatch_async(dispatch_get_main_queue(), ^{
+                        [gate->view setNeedsDisplay:YES];
+                      });
+                  }
+              }
               CFTimeInterval presentedTime = presented.presentedTime;
               uint64_t presentedNs = (uint64_t)(presentedTime * 1e9);
               BOOL wasPresented = presentedTime > 0;
@@ -122,6 +213,9 @@ void warp_frame_track_drawable(id<MTLDrawable> drawable, uint64_t waitNs) {
 
     // The metal device for our layer.
     id metalDevice;
+
+    // This view's blocked-frame gate (#1838); the layer owns it, this is only for dealloc.
+    id frameGate;
 
     NSMutableAttributedString *markedText;
     NSMutableString *textToInsert;
@@ -290,6 +384,7 @@ void warp_frame_track_drawable(id<MTLDrawable> drawable, uint64_t waitNs) {
     }
     os_signpost_event_emit(warpDrawLog(), OS_SIGNPOST_ID_EXCLUSIVE, "keyDown");
 
+    warpCtrlStage(event, "key_down_impl_entry");
     BOOL wasComposing = [self hasMarkedText];
     WARP_LOG_ENTER(event, "key_down_impl_entry",
                    @"keycode=%u ts=%.9f key_window=%d was_composing=%d ready_for_warp=%d",
@@ -304,6 +399,7 @@ void warp_frame_track_drawable(id<MTLDrawable> drawable, uint64_t waitNs) {
     [self interpretKeyEvents:[NSArray arrayWithObject:event]];
     interpretingKeyEvents = NO;
 
+    warpCtrlStage(event, "after_interpret_key_events");
     WARP_LOG_ENTER(event, "after_interpret_key_events",
                    @"keycode=%u ts=%.9f has_marked_text=%d text_to_insert_len=%lu",
                    (unsigned)[event keyCode], (double)[event timestamp], (int)[self hasMarkedText],
@@ -313,6 +409,7 @@ void warp_frame_track_drawable(id<MTLDrawable> drawable, uint64_t waitNs) {
     if (self.readyForWarp) {
         handled = warp_handle_view_event(self, event, wasComposing || [self hasMarkedText]);
     }
+    warpCtrlStage(event, "after_handle_view_event");
     WARP_LOG_ENTER(event, "after_handle_view_event", @"keycode=%u ts=%.9f handled=%d composing=%d",
                    (unsigned)[event keyCode], (double)[event timestamp], (int)handled,
                    (int)(wasComposing || [self hasMarkedText]));
@@ -409,6 +506,7 @@ void warp_frame_track_drawable(id<MTLDrawable> drawable, uint64_t waitNs) {
 }
 
 - (void)dealloc {
+    if (frameGate) ((WarpFrameGate *)frameGate)->view = nil;
     [markedText release];
     [textToInsert release];
     [metalDevice release];
@@ -429,6 +527,10 @@ void warp_frame_track_drawable(id<MTLDrawable> drawable, uint64_t waitNs) {
     layer.needsDisplayOnBoundsChange = YES;
     layer.presentsWithTransaction = NO;
     layer.delegate = self;
+    WarpFrameGate *gate = [[[WarpFrameGate alloc] init] autorelease];
+    gate->view = self;
+    frameGate = gate;
+    objc_setAssociatedObject(layer, &warpFrameGateKey, gate, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     layer.opaque = NO;
     return layer;
 }

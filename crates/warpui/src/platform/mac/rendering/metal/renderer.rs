@@ -30,6 +30,7 @@ use warpui_core::rendering::{self};
 use warpui_core::scene::{CornerRadius, GlyphFade, GlyphKey, Icon, Image, Layer, Scene};
 
 use super::frame_capture::capture_frame;
+use crate::platform::mac::frame_latency;
 use crate::platform::mac::rendering::renderer::Device;
 use crate::platform::mac::window::WindowState;
 use crate::rendering::atlas::{AllocatedRegion, TextureId};
@@ -39,6 +40,12 @@ unsafe extern "C" {
     /// Implemented in `objc/host_view.m`: attaches the pending key press to this frame and
     /// reports key -> presented latency once the drawable reaches the screen.
     fn warp_frame_track_drawable(drawable: *mut c_void, wait_ns: u64);
+    /// Implemented in `objc/host_view.m` (#1838): drawables handed out and not yet presented, or
+    /// -1 while nothing has reached the screen yet.
+    fn warp_frame_gate_unpresented(layer: *mut c_void) -> i32;
+    /// Implemented in `objc/host_view.m` (#1838): arms the wake-up that asks the view to draw
+    /// again when the in-flight drawable is presented. False when it was presented meanwhile.
+    fn warp_frame_gate_arm(layer: *mut c_void) -> bool;
 }
 
 const METAL_LIB_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shaders.metallib"));
@@ -1072,6 +1079,32 @@ impl super::super::Renderer for Renderer {
 
         let metal_layer = window.metal_layer();
         let presents_with_transaction = metal_layer.presentsWithTransaction();
+        // #1838: when `nextDrawable` would block the main thread (a drawable is already queued),
+        // skip this frame instead and let the in-flight frame's presented handler request it
+        // again, so a key is dequeued now rather than after a 15-40 ms wait.
+        let layer_ptr = Retained::as_ptr(&metal_layer) as *mut c_void;
+        // SAFETY: `layer_ptr` is the live window CAMetalLayer; the call only reads atomics.
+        let unpresented = unsafe { warp_frame_gate_unpresented(layer_ptr) };
+        let now_ms = frame_latency::gate_now_ms();
+        let decision = frame_latency::gate_decision(frame_latency::GateInputs {
+            enabled: frame_latency::gate_enabled(),
+            must_draw: presents_with_transaction || window.capture_callback.borrow().is_some(),
+            presented_once: unpresented >= 0,
+            unpresented,
+            skipping_for_ms: window.frame_skip_run.running_for_ms(now_ms),
+        });
+        // SAFETY: as above.
+        if decision == frame_latency::GateDecision::Skip
+            && unsafe { warp_frame_gate_arm(layer_ptr) }
+        {
+            window.frame_skip_run.note_skip(now_ms);
+            return;
+        }
+        if let Some((skipped, held_ms)) = window.frame_skip_run.finish(now_ms) {
+            warpui_core::input_order::log_hop("frame_skip_run", || {
+                format!("skipped={skipped} held_ms={held_ms}")
+            });
+        }
         let drawable_wait_start = Instant::now();
         // With `allowsNextDrawableTimeout` enabled this returns nil after ~1s when no drawable
         // frees up. Skip the frame rather than panic, and ask for another pass (the scene is
