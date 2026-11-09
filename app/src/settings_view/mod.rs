@@ -740,7 +740,15 @@ pub fn init_actions_from_parent_view<T: Action + Clone>(
     app.register_fixed_bindings([
         FixedBinding::new("down", SettingsAction::Down, context.clone()),
         FixedBinding::new("up", SettingsAction::Up, context.clone()),
+        // Tab on the Network page enters its keyboard ring (allowed origins, log Allow).
+        FixedBinding::new("tab", SettingsAction::Tab, context.clone()),
     ]);
+    network_page::register_bindings(app);
+    app.register_fixed_bindings([FixedBinding::empty(
+        "Settings: Network: focus allowed origins".to_string(),
+        builder(SettingsAction::NetworkFocus),
+        id!("Workspace"),
+    )]);
 }
 
 /// The string the user will see when the action is enabled or disabled.
@@ -979,6 +987,8 @@ pub enum SettingsAction {
     ZapDrive(warp_drive_page::WarpDriveSettingsPageAction),
     WarpifyPageToggle(WarpifyPageAction),
     Tab,
+    /// Open-page-agnostic entry to the Network page's keyboard ring (command palette).
+    NetworkFocus,
     Split(Direction),
     ToggleMaximizePane,
     Close,
@@ -2273,7 +2283,10 @@ impl SettingsView {
         if let Some(current_page) = self.current_settings_page() {
             if let SettingsPageViewHandle::Keybindings(view_handle) = &current_page.view_handle {
                 view_handle.update(ctx, |view, ctx| view.on_tab_pressed(ctx));
-            };
+            }
+            if let SettingsPageViewHandle::Network(view_handle) = &current_page.view_handle {
+                view_handle.update(ctx, |view, ctx| view.kb_enter(ctx));
+            }
         }
     }
 
@@ -2771,6 +2784,15 @@ impl TypedActionView for SettingsView {
                 }
             }
             SettingsAction::Tab => self.input_tab(ctx),
+            SettingsAction::NetworkFocus => {
+                self.set_and_refresh_current_page_internal(
+                    SettingsSection::Network,
+                    true,
+                    true,
+                    ctx,
+                );
+                self.input_tab(ctx)
+            }
             SettingsAction::Split(direction) => {
                 let event = match direction {
                     Direction::Left => PaneEvent::SplitLeft(None),
