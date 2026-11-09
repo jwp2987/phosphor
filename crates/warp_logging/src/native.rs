@@ -993,6 +993,15 @@ pub fn write_log_bundle_zip_to(
     write_log_bundle_zip_inner(output_path.as_ref(), &extras, &log_files)
 }
 
+/// Every log file of this instance (active, in-session chunks, previous startups), for the
+/// problem-report bundle, which filters them by time itself.
+pub fn log_files_for_report() -> Result<Vec<PathBuf>> {
+    let state = LOG_STATE
+        .get()
+        .ok_or_else(|| anyhow::anyhow!("Logging not initialized"))?;
+    collect_log_paths_in(&state.log_directory, &state.logfile_name)
+}
+
 fn temp_log_file_path(log_directory: impl AsRef<Path>, channel_logfile_name: &str) -> PathBuf {
     log_directory
         .as_ref()

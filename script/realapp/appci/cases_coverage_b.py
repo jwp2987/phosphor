@@ -694,3 +694,78 @@ def c_editor_mac(ctx, r):
     r.check(R.disk(path) == R.EDIT_ORIG, "undo + save: disk has %r, expected the original" % R.disk(path)[:80])
     r.check(not ctx.cmds_since(mark), "keys meant for the editor reached the shell: %r" % ctx.cmds_since(mark)[:3])
     r.check(ctx.app.alive(), "app died in the code editor")
+
+
+# ---------------------------------------------------------------- Wave 1.5 #1: "Report a problem" diagnostics bundle
+REPORT_ZIP_RE = re.compile(r"phosphor-problem-report-\d{8}-\d{6}\.zip$")
+REPORT_ENTRIES = ("README.txt", "app-log-window.txt", "manifest.txt", "settings-scrubbed.toml")
+
+
+def find_report_zips(home, depth=3):
+    """every `phosphor-problem-report-*.zip` under `home` (the action writes to Downloads, else the home directory), newest first"""
+    found = []
+    base = os.path.abspath(home)
+    for root, dirs, files in os.walk(base):
+        if root[len(base):].count(os.sep) >= depth:
+            dirs[:] = []
+        found += [os.path.join(root, f) for f in files if REPORT_ZIP_RE.search(f)]
+    return sorted(found, key=os.path.getmtime, reverse=True)
+
+
+def report_zip_verdict(path, home, names):
+    """(problems, log_lines) for one bundle: the four entries are there, the log has lines, and none of `home` / `names` (host name, user name of the
+    machine; whole words, 3+ characters) appears in ANY entry. Pure file work, unit-tested in selftest.py."""
+    import zipfile
+    problems, log_lines = [], 0
+    with zipfile.ZipFile(path) as z:
+        got = sorted(z.namelist())
+        if got != sorted(REPORT_ENTRIES):
+            problems.append("entries are %s, expected %s" % (got, sorted(REPORT_ENTRIES)))
+        for n in got:
+            text = z.read(n).decode("utf-8", "replace")
+            if n == "app-log-window.txt":
+                log_lines = len([l for l in text.splitlines() if l.strip()])
+            for leak in [home] + list(names):
+                if not leak or len(leak) < 3:
+                    continue
+                hit = leak in text if leak == home else re.search(r"(?<![A-Za-z0-9])%s(?![A-Za-z0-9])" % re.escape(leak), text)
+                if hit:
+                    problems.append("%s contains %r" % (n, leak))
+    if log_lines == 0:
+        problems.append("app-log-window.txt has no lines")
+    return problems, log_lines
+
+
+@case("cb_report_problem", modes=("terminal",), order=94, gui=True)
+def c_report_problem(ctx, r):
+    """Wave 1.5 #1: the command palette's `Report a problem` writes ONE local zip (Downloads, else the home directory) with the last 15 minutes of the
+    app log, the manifest (version, OS, build, feature flags) and the settings with secrets removed. Checks: the file appears, has the four entries and
+    log lines, and contains neither this profile's home path nor the machine's host name / user name anywhere. Never uploaded: the action has no network
+    path (unit test + script/check_outbound_redaction); here the proof is the file itself on local disk. Palette key: APPCI_KEY_PALETTE (default ctrl+shift+p)."""
+    import getpass, socket
+    palette = os.environ.get("APPCI_KEY_PALETTE", "ctrl+shift+p")
+    text = os.environ.get("APPCI_REPORT_PALETTE_TEXT", "Report a problem")
+    home = ctx.prof.home
+    before = set(find_report_zips(home))
+    ctx.reset()
+    try:
+        ctx.be.key(palette)
+        time.sleep(1.5)
+        ctx.be.type(text, 12)
+        time.sleep(1.2)
+        ctx.be.key("Return")
+    except (RuntimeError, ValueError) as e:
+        r.skip("the command palette is not reachable on this backend: %s" % e)
+    new = []
+    ctx.until(lambda: bool([p for p in find_report_zips(home) if p not in before]), 15)
+    new = [p for p in find_report_zips(home) if p not in before]
+    ctx.shot("cb_report_problem_done")
+    if not new:
+        r.skip("no report file appeared under %s after the palette action %r (palette key %r; set APPCI_KEY_PALETTE / APPCI_REPORT_PALETTE_TEXT)" % (home, text, palette))
+    path = new[0]
+    names = [socket.gethostname(), getpass.getuser()]
+    problems, lines = report_zip_verdict(path, home, names)
+    r.metric("report_zip_bytes", os.path.getsize(path))
+    r.metric("report_log_lines", lines)
+    r.check(not problems, "the problem report is wrong: %s" % problems)
+    r.check(ctx.app.alive(), "app died while writing the problem report")

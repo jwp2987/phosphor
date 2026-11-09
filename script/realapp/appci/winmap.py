@@ -96,6 +96,7 @@ NOT_WINDOWS = {
     "ssh_drop_reconnect": "not yet ported: the `~.` escape and `kill -9 $$` need verifying against the msys/Win32 ssh clients (#1535)",
     "cb_settings_ui_open": "the Windows backend has no verified Ctrl-, chord and the page is not OCR-able there",
     "cb_settings_migration": "needs a relaunch of the app on a rewritten settings file (the Linux/macOS App handle); the Windows relaunch is the separate runner flow",
+    "cb_report_problem": "the Windows Downloads folder is a known folder, not under the scratch HOME, so the bundle does not land where the case looks (set PHOSPHOR_DIAG_BUNDLE_DIR in the app's environment to enable)",
     "cb_state_relaunch": "needs the App stop/start handle on a profile with state; Windows has a separate flow",
     "cb_ui_action_latency": "needs Pillow screenshot diffs of new-tab/switch chords not mapped in the Windows backend",
     "cb_editor_mac": "macOS-only case (Linux and Windows have editor_edit_save / editor_paste)",

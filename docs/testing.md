@@ -1565,6 +1565,16 @@ inside the editor (pwsh on ConPTY); `Unknown` is a bootstrap without markers.
 - `no_helper_chip_visible` (`settings/input.rs`) and `ssh_no_helper_chip_tests.rs`: the chip shows unless the `terminal.remote.show_no_helper_chip` setting is off or the host is in `terminal.remote.no_helper_chip_dismissed_hosts` (case-insensitive). Lab case `lab_no_helper_chip` (2.15).
 - `auth/local_identity_tests.rs` (#1806): display name (configured, then OS user, never "Test User"), stable default emoji, emoji/image-path/missing-file resolution. No real-app avatar case yet: the avatar only renders beside an agent query block, which needs a model scenario (open item).
 
+### 2.14c "Report a problem" diagnostics bundle (Wave 1.5 #1)
+
+A palette / Help-menu action (`workspace:report_problem`, `WorkspaceAction::ReportProblem`) writes ONE local zip (`$PHOSPHOR_DIAG_BUNDLE_DIR`, else Downloads, else the home directory) and reveals it: `README.txt`, `manifest.txt` (version, OS, build profile, enabled feature flags), `app-log-window.txt` (the last 15 minutes of the app log, scrubbed) and `settings-scrubbed.toml`. **Never uploaded: no network call and no send button** (owner rule); the toast says so. The older Settings > About "Export logs" zip is also local-only and unchanged (it is raw, not scrubbed).
+
+| layer | where | what it proves |
+|---|---|---|
+| scrubber + builder unit tests | `crates/warp_logging/src/report_bundle_tests.rs` | home / user / host of the machine, other absolute paths, e-mail, `user@host`, IPs, URLs, tokens / API keys / Authorization / Bearer, typed text, command lines and quoted prompts are removed; `hop=` / `ms=` / `t=` timing lines and ssh lines survive byte for byte; scrubbing is idempotent; settings keep only bool / number / short enum values; the window keeps only the last 15 minutes (wrapped lines follow their parent); the zip has exactly the four entries and none of the planted leaks; the app's secret detector runs as a second pass |
+| no network path | `report_bundle_tests.rs` `no_network_client_is_reachable_from_the_report_code`, `app/src/workspace/problem_report_tests.rs`, `script/check_outbound_redaction` section 4 | neither the collector nor the builder names a network client, URL opener or mail hook |
+| real app | `appci/cases_coverage_b.py` `cb_report_problem` (terminal mode, full tier; Windows classified NOT_WINDOWS, winmap.py) | palette action writes the zip, it has the four entries and log lines, and contains neither the profile's home path nor the machine's host / user name; selftest `report_problem_zip_verdict` |
+
 ### 2.15 Fake ssh lab (`script/realapp/sshlab`, `appci/lab.py`, `appci/cases_lab.py`; Wave 0.5b)
 
 The harness's ssh server used to be the same machine (`sshd.py`: `ctx.lines(remote=True)` reads `prof.rhome` directly), so latency, a second
