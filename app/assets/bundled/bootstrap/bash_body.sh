@@ -63,12 +63,19 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     # __warp_relax_opts <var>: store in <var> the `set` commands that restore
     # the CALLER's errexit/nounset/pipefail, then turn all three off. Builtins
     # only -- this runs on every prompt and every command, so no forks.
+    #
+    # Also off while a hook runs, and given back exactly: errtrace (`set -E`), under which the
+    # user's ERR trap is inherited by the hook functions and fires on every probe of theirs that
+    # fails, and allexport (`set -a`), which would export each of the hooks' scratch variables
+    # into every command's environment.
     __warp_relax_opts () {
         local __warp_relax_restore=
         case $- in *e*) __warp_relax_restore+='set -e;' ;; esac
         case $- in *u*) __warp_relax_restore+='set -u;' ;; esac
+        case $- in *E*) __warp_relax_restore+='set -E;' ;; esac
+        case $- in *a*) __warp_relax_restore+='set -a;' ;; esac
         if [[ -o pipefail ]]; then __warp_relax_restore+='set -o pipefail;'; fi
-        set +e +u +o pipefail
+        set +e +u +E +a +o pipefail
         builtin printf -v "$1" '%s' "$__warp_relax_restore"
     }
 
@@ -79,13 +86,31 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     # (warp_precmd reads the finished command's status from it) and the
     # function's own status on the way out (bash-preexec gives preexec return
     # values meaning under `extdebug`).
+    #
+    # With `set -x` on, the hook runs untraced: its own commands would otherwise print a
+    # hundred trace lines into the user's terminal at every prompt. The group's stderr goes to
+    # /dev/null so the `set +x` itself is not traced either, and xtrace comes back as the last
+    # thing before the return. (bash-preexec's own dispatcher is still traced, as it always was.)
     __warp_run_relaxed () {
-        local __warp_run_status=$? __warp_run_restore
+        # PIPESTATUS is read in the very first command (any later command overwrites it) and kept
+        # in __warp_run_pipe for the dispatcher, which hands it to the user's prompt as BP_PIPESTATUS.
+        { __warp_run_in_status=$? __warp_run_pipe=("${PIPESTATUS[@]}"); } 2>/dev/null
+        { local __warp_run_status=$__warp_run_in_status __warp_run_xtrace=; case $- in *x*) __warp_run_xtrace=1; set +x ;; esac; } 2>/dev/null
+        local __warp_run_restore
         __warp_relax_opts __warp_run_restore
-        __warp_set_status "$__warp_run_status"
-        "$@"
+        # `$?` must hold the user's status when <function> starts, and the call that puts it there
+        # (`return N`) is a failing command: under `set -E` the user's ERR trap fires on it, and
+        # bash cannot be told otherwise once inside a function (the trap is switched off or on at
+        # function entry, not by a later `set +E`). As the left side of `||` a failure is exempt
+        # from ERR, and <function> runs on that failure with the status still in `$?`.
+        if (( __warp_run_status == 0 )); then
+            "$@"
+        else
+            __warp_set_status "$__warp_run_status" || "$@"
+        fi
         __warp_run_status=$?
         eval "$__warp_run_restore"
+        if [[ -n $__warp_run_xtrace ]]; then set -x; fi
         return "$__warp_run_status"
     }
 
@@ -906,8 +931,22 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
           warp_send_hook_via_kv_pairs_end
         else
           __phosphor_cwd_listing
-          local escaped_json="{\"hook\": \"Precmd\", \"value\": {\"exit_code\": $exit_code,\"next_block_id\": \"$next_block_id\",\"pwd\": \"$escaped_pwd\",\"ps1\": \"$escaped_ps1\",\"honor_ps1\": $honor_ps1,\"ps1_is_encoded\": true,\"git_head\": \"$escaped_git_head\",\"git_branch\": \"$escaped_git_branch\",\"virtual_env\": \"$escaped_virtual_env\",\"conda_env\": \"$escaped_conda_env\",\"node_version\": \"$escaped_node_version\",\"session_id\": ${WARP_SESSION_ID:-},\"seq\": $__warp_seq${__phosphor_cl_json-}}}"
-          warp_send_json_message "$escaped_json"
+          # Phosphor (fork-free hooks): the message is sent as three pieces whose hex is joined (hex is
+          # per byte, so the pieces concatenate to exactly the hex of the whole). The middle one (cwd,
+          # prompt, git, venv, session id) is the same on most prompts and, with a real prompt, is
+          # over the 512-byte loop limit, so the whole message went through the `od|tr` pipeline
+          # on every prompt; its hex is now kept until the piece changes. The head (exit code, block
+          # id) and tail (seq, listing) are short and go through the builtin loop as before.
+          local __warp_pc_head="{\"hook\": \"Precmd\", \"value\": {\"exit_code\": $exit_code,\"next_block_id\": \"$next_block_id\","
+          local __warp_pc_mid="\"pwd\": \"$escaped_pwd\",\"ps1\": \"$escaped_ps1\",\"honor_ps1\": $honor_ps1,\"ps1_is_encoded\": true,\"git_head\": \"$escaped_git_head\",\"git_branch\": \"$escaped_git_branch\",\"virtual_env\": \"$escaped_virtual_env\",\"conda_env\": \"$escaped_conda_env\",\"node_version\": \"$escaped_node_version\",\"session_id\": ${WARP_SESSION_ID:-},\"seq\": "
+          local __warp_pc_tail="$__warp_seq${__phosphor_cl_json-}}}"
+          __warp_hex_encode_to "$__warp_pc_head"
+          encoded_message=$__warp_hex
+          __warp_hex_encode_mid_to "$__warp_pc_mid"
+          encoded_message+=$__warp_hex
+          __warp_hex_encode_to "$__warp_pc_tail"
+          encoded_message+=$__warp_hex
+          __warp_emit_hex_message
         fi
     }
     function warp_precmd { __warp_run_relaxed __warp_precmd_impl "$@"; }
@@ -1110,6 +1149,20 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         builtin printf -v __c '%02x' "'${__s:__i:1}"
         __warp_hex+=${__c: -2}
       done
+    }
+
+    # Phosphor (fork-free hooks): __warp_hex_encode_to for the Precmd's middle piece, with the last
+    # answer kept. The hex depends on nothing but the text, so reusing it is exact; a text over the
+    # loop limit costs one `od|tr` pipeline the first time and nothing on the prompts after it.
+    __warp_hex_encode_mid_to () {
+      if [[ ${__warp_hexmid_valid-} == 1 && $1 == "${__warp_hexmid_in-}" ]]; then
+        __warp_hex=$__warp_hexmid_out
+        return 0
+      fi
+      __warp_hex_encode_to "$1"
+      __warp_hexmid_in=$1
+      __warp_hexmid_out=$__warp_hex
+      __warp_hexmid_valid=1
     }
 
     # Phosphor (#1203): what `warp_escape_ps1 "$(builtin echo "$1")"` printed, without the three

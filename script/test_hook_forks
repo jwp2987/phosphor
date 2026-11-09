@@ -1,0 +1,238 @@
+#!/usr/bin/env python3
+"""Count the processes the prompt hooks start on every prompt, and time Enter to Precmd.
+
+WHY THIS EXISTS
+---------------
+The bash, zsh and fish bootstraps run inside the user's interactive shell, so every process the
+precmd/preexec hooks start (sed, tr, od, base64, git, date, basename, dirname, cat, a `$(...)`
+subshell) is paid on every Enter before the next prompt can draw. Concept from warp-nine
+716941b6e (Enter to prompt 111 ms to 11 ms by making the hooks fork-free). The hooks use shell
+builtins for all of it; this script keeps them that way.
+
+HOW
+---
+Runs the REAL assembled bootstraps in a pty (the Shell class of script/test_cwd_listing) as a
+LOCAL shell, with every shell started under `strace -f -e trace=execve,clone,clone3,fork,vfork`.
+After the bootstrap has settled it types `true` TEN times in a plain directory and in a git
+repository whose branch and directory names need JSON escaping, and counts, between the first
+Enter and the last Precmd:
+  * exec  every successful execve (an external program: the name is printed);
+  * fork  every fork/clone that is not a thread (a `$(...)`, a pipeline stage, a background job).
+Each Precmd must be valid JSON (the odd names must not break it). Timing is a separate run
+WITHOUT strace: the median Enter-to-Precmd of `true`.
+
+A budget per shell and directory kind fails the run if a hook starts a process it did not before.
+The budgets are the measured counts after the fork-free change; "per prompt" is the count / 10.
+
+USAGE
+    script/test_hook_forks [--root REPO] [--no-budget] [--keep DIR]
+--root measures another checkout's bootstraps (e.g. a worktree of an older commit) to get a
+"before" number; --keep DIR saves the traced segments for reading; --no-budget prints the numbers without failing on them.
+Needs strace for the counts (SKIPPED without it; the timing still runs). Exit 0 when every check
+passes, 1 otherwise.
+"""
+
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+args = sys.argv[1:]
+ROOT = os.path.abspath(os.path.join(HERE, ".."))
+BUDGET = True
+KEEP = None
+while args:
+    a = args.pop(0)
+    if a == "--root":
+        ROOT = os.path.abspath(args.pop(0))
+    elif a == "--keep":
+        KEEP = os.path.abspath(args.pop(0))
+    elif a == "--no-budget":
+        BUDGET = False
+    else:
+        sys.exit(__doc__)
+
+loader = importlib.machinery.SourceFileLoader("cwdl", os.path.join(HERE, "test_cwd_listing"))
+cwdl = importlib.util.module_from_spec(importlib.util.spec_from_loader("cwdl", loader))
+loader.exec_module(cwdl)
+cwdl.ASSETS = os.path.join(ROOT, "app", "assets")
+cwdl.BOOTSTRAP = os.path.join(cwdl.ASSETS, "bundled", "bootstrap")
+
+# fish's stock prompt runs git (fish_git_prompt: four processes in a repository) on every prompt,
+# which is the user's prompt and not a hook. The fish bootstrap is given a plain prompt so only
+# the hooks' own processes are counted.
+_read = cwdl.read
+cwdl.read = lambda name: ("function fish_prompt; builtin echo -n '> '; end\n" + _read(name)) if name == "fish_init_shell.sh" else _read(name)
+
+STRACE = shutil.which("strace")
+RUNS = 10
+# Two prompt modes. "honor": the shell draws the user's own prompt and the Precmd carries none
+# (short messages). "ps1": the Precmd carries the rendered prompt (long messages, and fish runs
+# the user's fish_prompt once more per prompt to build the preview).
+MODES = {"honor": {"WARP_HONOR_PS1": "1"}, "ps1": {"WARP_HONOR_PS1": "0"}}
+# Per prompt, execs and forks (measured after the fork-free change; see docs/testing.md).
+# kind -> (max execs, max forks) per prompt.
+BUDGETS = {
+    ("bash", "plain"): (0, 0), ("bash", "repo"): (0, 0),
+    ("zsh", "plain"): (0, 0), ("zsh", "repo"): (0, 0),
+    ("fish", "plain"): (0, 0), ("fish", "repo"): (0, 0),
+}
+failures = []
+results = []
+
+
+def check(name, ok, detail=""):
+    print(("ok   " if ok else "FAIL ") + name + (" " + detail if detail and not ok else ""))
+    if not ok:
+        failures.append(name)
+
+
+def make_dirs(base):
+    plain = os.path.join(base, "plain dir")
+    os.makedirs(plain)
+    repo = os.path.join(base, 'repo "q" \\ back')
+    os.makedirs(repo)
+    env = dict(os.environ, GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_SYSTEM="/dev/null")
+    subprocess.run(["git", "init", "-q", repo], check=True, env=env)
+    with open(os.path.join(repo, ".git", "HEAD"), "w") as f:
+        f.write('ref: refs/heads/odd"br\\anch\n')
+    sub = os.path.join(repo, "sub dir", "deeper")
+    os.makedirs(sub)
+    return plain, sub
+
+
+def strace_wrapper(base, real, log):
+    path = os.path.join(base, "wrap-" + os.path.basename(real))
+    with open(path, "w") as f:
+        f.write('#!/bin/sh\nexec %s -f -qq -e trace=execve,clone,clone3,fork,vfork -o %s %s "$@"\n' % (STRACE, log, real))
+    os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
+    return path
+
+
+def parse(segment):
+    """(names of successfully exec'd programs, count of non-thread forks) in a strace segment."""
+    execs, forks = [], 0
+    pending = {}
+    for line in segment.splitlines():
+        m = re.match(r'(\d+)\s+execve\("([^"]*)"', line)
+        if m:
+            if line.rstrip().endswith("= 0"):
+                execs.append(os.path.basename(m.group(2)))
+            elif "<unfinished" in line:
+                pending[m.group(1)] = os.path.basename(m.group(2))
+            continue
+        m = re.match(r"(\d+)\s+<\.\.\. execve resumed>.*= (-?\d+)", line)
+        if m:
+            name = pending.pop(m.group(1), None)
+            if name and m.group(2) == "0":
+                execs.append(name)
+            continue
+        if "CLONE_THREAD" in line:
+            continue
+        if re.search(r"\b(clone3?|fork|vfork)\(.*\) = [1-9][0-9]*$", line) or re.search(
+            r"<\.\.\. (clone3?|fork|vfork) resumed>.*= [1-9][0-9]*$", line
+        ):
+            forks += 1
+    return execs, forks
+
+
+def run_prompts(sh, n=RUNS):
+    """Type `true` n times; return the precmds seen and the median Enter-to-Precmd ms."""
+    return cwdl.prompt_ms(sh, b"true", runs=n)
+
+
+def measure(shell, kind, cwd, base, traced, mode):
+    home = tempfile.mkdtemp(prefix="home-", dir=base)
+    log = os.path.join(base, f"{shell}-{kind}-{mode}.strace")
+    saved = cwdl.SHELLS[shell]
+    if traced:
+        cwdl.SHELLS[shell] = strace_wrapper(base, saved, log)
+    try:
+        sh = cwdl.Shell(shell, home, cwd, local=True, extra_env=MODES[mode])
+        if not sh.ok:
+            check(f"{shell} {kind}/{mode}: bootstraps", False)
+            sh.close()
+            return None
+        sh.run(b"true")
+        sh.pump(0.3)
+        if traced:
+            start = os.path.getsize(log)
+        ms = run_prompts(sh)
+        sh.pump(0.3)
+        pre = sh.precmds()
+        invalid = [p for p in pre if "exit_code" not in p]
+        check(f"{shell} {kind}/{mode}: every Precmd is valid JSON", not invalid and len(pre) >= RUNS)
+        if kind == "repo":
+            last = pre[-1] if pre else {}
+            check(f"{shell} {kind}/{mode}: the odd branch name arrives intact", last.get("git_branch") == 'odd"br\\anch',
+                  repr(last.get("git_branch")))
+            check(f"{shell} {kind}/{mode}: the odd directory name arrives intact", last.get("pwd") == cwd, repr(last.get("pwd")))
+        out = (ms, None, None)
+        if traced:
+            with open(log, errors="replace") as f:
+                f.seek(start)
+                seg = f.read()
+            execs, forks = parse(seg)
+            if KEEP:
+                os.makedirs(KEEP, exist_ok=True)
+                with open(os.path.join(KEEP, f"{shell}-{kind}-{mode}.strace"), "w") as o:
+                    o.write(seg)
+            out = (ms, execs, forks)
+        sh.close()
+        return out
+    finally:
+        cwdl.SHELLS[shell] = saved
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def main():
+    global failures
+    with tempfile.TemporaryDirectory(prefix="phx-forks-", dir=os.environ.get("TMPDIR")) as base:
+        plain, repo = make_dirs(base)
+        print(f"bootstraps from {ROOT}; strace: {STRACE or 'MISSING (counts skipped)'}")
+        for shell in ("bash", "zsh", "fish"):
+            if not cwdl.SHELLS[shell]:
+                print(f"SKIPPED {shell}: not installed")
+                continue
+            for mode, (kind, cwd) in [(m, k) for m in MODES for k in (("plain", plain), ("repo", repo))]:
+                label = f"{kind}/{mode}"
+                t = measure(shell, kind, cwd, base, traced=False, mode=mode)
+                counts = measure(shell, kind, cwd, base, traced=True, mode=mode) if STRACE else None
+                if not t:
+                    continue
+                ms = t[0]
+                execs = forks = None
+                if counts and counts[1] is not None:
+                    execs, forks = counts[1], counts[2]
+                results.append((shell, label, ms, execs, forks))
+                if execs is not None:
+                    from collections import Counter
+                    print(f"  {shell} {label}: execs per prompt: {len(execs) / RUNS:.1f} {dict(Counter(execs)) if execs else ''}; forks per prompt: {forks / RUNS:.1f}")
+                    if BUDGET:
+                        me, mf = BUDGETS[(shell, kind)]
+                        check(f"{shell} {label}: <= {me} execs and <= {mf} forks per prompt",
+                              len(execs) <= me * RUNS and forks <= mf * RUNS,
+                              f"(execs {len(execs)}/{RUNS}, forks {forks}/{RUNS})")
+    print()
+    print("SUMMARY (per prompt; ms is the median Enter-to-Precmd of `true`, untraced)")
+    for shell, kind, ms, execs, forks in results:
+        e = "n/a" if execs is None else f"{len(execs) / RUNS:.1f}"
+        fk = "n/a" if forks is None else f"{forks / RUNS:.1f}"
+        print(f"  {shell:5} {kind:11} execs {e:>5}  forks {fk:>5}  Enter-to-Precmd {ms:6.2f} ms")
+    if failures:
+        print(f"test_hook_forks: {len(failures)} check(s) failed")
+        return 1
+    print("test_hook_forks: all checks passed")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

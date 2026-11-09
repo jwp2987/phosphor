@@ -307,7 +307,7 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
       # Phosphor (#836): a user's err_return/err_exit/nounset must not turn an
       # expected-failure probe in this hook (no repo, an unset variable) into an
       # early return, a killed shell or a lost Precmd.
-      setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal
+      setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal noxtrace noallexport
       # Phosphor (#828): a Preexec is out; the block it opens is finished only by
       # warp_precmd. _warp_repair_hooks reads this to tell whether a prompt cycle
       # skipped that precmd (and so owes one) or already ran it.
@@ -364,7 +364,7 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
   function warp_kill_buffer_and_reset_insert_mode () {
     # Phosphor (#1014): runs from a widget/completion with the user's options; none of errexit,
     # nounset, pipefail may turn an expected-failure probe into a dead shell or a lost widget.
-    setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal
+    setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal noxtrace noallexport
     zle kill-buffer
     if [[ $KEYMAP == vicmd ]]; then
       zle -K viins
@@ -398,7 +398,7 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
       # Phosphor (#836): a user's err_return/err_exit/nounset must not turn an
       # expected-failure probe in this hook (no repo, an unset variable) into an
       # early return, a killed shell or a lost Precmd.
-      setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal
+      setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal noxtrace noallexport
       # Phosphor (#855): an agent command run under errexit hands its status over in
       # __phosphor_ap_rc instead of re-raising it (which would exit the user's shell).
       # Phosphor (#855): see __phosphor_ap_restore_pagers.
@@ -905,7 +905,7 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
     # Disable oh-my-zsh default title otherwise.
     DISABLE_AUTO_TITLE="true"
 
-    setopt localoptions nopromptsubst noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal
+    setopt localoptions nopromptsubst noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal noxtrace noallexport
 
     # Don't set the title if inside emacs, unless using vterm
     [[ -n "${INSIDE_EMACS:-}" && "${INSIDE_EMACS:-}" != vterm ]] && return
@@ -922,7 +922,7 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
     # Phosphor (#836): a user's err_return/err_exit/nounset must not turn an
     # expected-failure probe in this hook (no repo, an unset variable) into an
     # early return, a killed shell or a lost Precmd.
-    setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal
+    setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal noxtrace noallexport
     # If the user wants to set the title using oh-my-zsh, they can
     # set the WARP_DISABLE_AUTO_TITLE flag.
     [[ "${WARP_DISABLE_AUTO_TITLE:-}" != true ]] || return
@@ -940,7 +940,7 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
     # Phosphor (#836): a user's err_return/err_exit/nounset must not turn an
     # expected-failure probe in this hook (no repo, an unset variable) into an
     # early return, a killed shell or a lost Precmd.
-    setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal
+    setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal noxtrace noallexport
     # If the user wants to set the title using oh-my-zsh, they can
     # set the WARP_DISABLE_AUTO_TITLE flag.
     [[ "${WARP_DISABLE_AUTO_TITLE:-}" != true ]] || return
@@ -1021,7 +1021,7 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
   function warp_report_input {
     # Phosphor (#1014): runs from a widget/completion with the user's options; none of errexit,
     # nounset, pipefail may turn an expected-failure probe into a dead shell or a lost widget.
-    setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal
+    setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal noxtrace noallexport
     __warp_strip_terminal_replies "$BUFFER"
     local escaped_input="$(warp_escape_json "$__warp_stripped")"
     warp_send_json_message "{ \"hook\": \"InputBuffer\", \"value\": { \"buffer\": \"$escaped_input\", \"session_id\": $WARP_SESSION_ID } }"
@@ -1102,7 +1102,7 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
     # Phosphor (#836): a user's err_return/err_exit/nounset must not turn an
     # expected-failure probe in this hook (no repo, an unset variable) into an
     # early return, a killed shell or a lost Precmd.
-    setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal
+    setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal noxtrace noallexport
     # 133;A and 133;B are standard prompt marker OSCs. We also follow the standard for the rprompt OSC below.
     # See https://learn.microsoft.com/en-us/windows/terminal/tutorials/shell-integration and
     # https://gitlab.freedesktop.org/terminal-wg/specifications/-/merge_requests/6/diffs for details.
@@ -1237,7 +1237,7 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
   function warp_change_prompt_modes_to_ps1() {
     # Phosphor (#1014): runs from a widget/completion with the user's options; none of errexit,
     # nounset, pipefail may turn an expected-failure probe into a dead shell or a lost widget.
-    setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal
+    setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal noxtrace noallexport
     PROMPT="$SAVED_PROMPT"
     RPROMPT="$SAVED_RPROMPT"
     WARP_HONOR_PS1=1
@@ -1256,7 +1256,7 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
   function warp_change_prompt_modes_to_warp_prompt() {
     # Phosphor (#1014): runs from a widget/completion with the user's options; none of errexit,
     # nounset, pipefail may turn an expected-failure probe into a dead shell or a lost widget.
-    setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal
+    setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal noxtrace noallexport
     WARP_HONOR_PS1=0
 
     warp_update_prompt_vars
@@ -1959,7 +1959,7 @@ esac
   _warp_zshaddhistory() {
     # Phosphor (#904): the deliberate non-zero returns below ("do not save") must
     # not trip a user's err_exit/err_return and kill or unwind the shell.
-    setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal
+    setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal noxtrace noallexport
     # Phosphor (#828): last-resort repair, for when the zle-line-init repair
     # below did not run (a plugin or the user replaced that widget too). Each
     # zshaddhistory function sees the previous command's status in $?. Never
@@ -2104,7 +2104,7 @@ esac
   # _WARP_REPAIRED_PRECMD to 1 when it emitted the precmd the prompt cycle
   # skipped, and to "" otherwise.
   _warp_repair_hooks() {
-    setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal
+    setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal noxtrace noallexport
     _WARP_REPAIRED_PRECMD=""
     [[ -n ${_WARP_HOOKS_INSTALLED:-} ]] || return 0
     local -a warp_missing_precmd warp_missing_preexec
@@ -2272,7 +2272,7 @@ esac
   function compadd () {
     # Phosphor (#1014): runs from a widget/completion with the user's options; none of errexit,
     # nounset, pipefail may turn an expected-failure probe into a dead shell or a lost widget.
-    setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal
+    setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal noxtrace noallexport
     # If we're not expecting to override compadd or if any of -O, -A or -D are given,
     # then just delegate to the main compadd.
     if [[ -z "${COMPADD_OVERRIDE}" || "${COMPADD_OVERRIDE}" == "false" || ${@[1,(i)(-|--)]} == *-(O|A|D)\ * ]]; then
@@ -2405,7 +2405,7 @@ esac
   function warp_complete_via_list_choices () {
     # Phosphor (#1014): runs from a widget/completion with the user's options; none of errexit,
     # nounset, pipefail may turn an expected-failure probe into a dead shell or a lost widget.
-    setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal
+    setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal noxtrace noallexport
     # Start by reading in the completion buffer. This can time out (see
     # warp_read_completion_buffer) if the app's reply never arrives; bail out
     # rather than complete on a stale or empty buffer.
@@ -2427,7 +2427,7 @@ esac
   function warp_complete_via_compadd_override () {
     # Phosphor (#1014): runs from a widget/completion with the user's options; none of errexit,
     # nounset, pipefail may turn an expected-failure probe into a dead shell or a lost widget.
-    setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal
+    setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal noxtrace noallexport
     # Start by reading in the completion buffer. This can time out (see
     # warp_read_completion_buffer) if the app's reply never arrives; bail out
     # rather than complete on a stale or empty buffer.
@@ -2449,7 +2449,7 @@ esac
   # bracketed paste, a key, ESC + a byte) goes back to zle intact with the text before it. A
   # lone ESC waits for the next byte or the overall deadline, then goes back by itself.
   function __warp_nc_give_back_escape() {
-    setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal extendedglob
+    setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal noxtrace noallexport extendedglob
     local __seq=$'\e' __b
     # give-up-net: read bounded by the overall deadline only; expiry hands back or drops a reply, writes nothing
     if __warp_nc_time_left && IFS= builtin read -s -r -k 1 -t $__warp_nc_left __b </dev/tty; then
@@ -2509,7 +2509,7 @@ esac
   # (`zle -U`, control bytes and an Enter included, so they act as typed) and it returns 1. The
   # caller's deadline is the only clock; on expiry what was read goes back and nothing is invented.
   function __warp_nc_read_frame_body() {
-    setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal
+    setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal noxtrace noallexport
     typeset -g __warp_nc_body=
     local __c __phase=start __ok
     while :; do
@@ -2551,7 +2551,7 @@ esac
   function warp_read_completion_buffer() {
     # Phosphor (#1014): runs from a widget/completion with the user's options; none of errexit,
     # nounset, pipefail may turn an expected-failure probe into a dead shell or a lost widget.
-    setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal extendedglob
+    setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal noxtrace noallexport extendedglob
     # Phosphor (#1801): the exchange is self-identifying (design in pty_controller.rs, "The
     # in-band native-completions exchange"). Name it with a fresh token, then read the app's ONE
     # frame for it: RS <token> : <%HH bytes of the text> US (RS = 0x1e, US = 0x1f), or the cancel
