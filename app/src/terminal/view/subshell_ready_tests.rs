@@ -712,6 +712,11 @@ fn judge_written_rows() {
     s.block_unchanged = false;
     s.tty_kind = SubshellTtyKind::Secret;
     assert_eq!(judge_written(&s), WrittenVerdict::Gone);
+    // #1840: once progress was seen, a changed block is the bootstrap's own InitShell block.
+    let mut s = written();
+    s.block_unchanged = false;
+    s.progress_seen = true;
+    assert_eq!(judge_written(&s), WrittenVerdict::Keep);
     // E-SECRET: in the same wakeup, whatever else.
     let mut s = written();
     s.tty_kind = SubshellTtyKind::Secret;
