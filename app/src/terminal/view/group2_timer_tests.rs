@@ -372,12 +372,11 @@ fn make_young_hold_a_sequence_path_hold(view: &TerminalView) {
     );
 }
 
-/// Keys are never lost (owner rule 2026-11-09; this test used to pin the #1661 discard): a
-/// sequence-path young hold whose events never come gives up at the 10 s net and hands the Enter
-/// and the keys typed after it back to the editor in order (guard armed, counted toast, nothing
-/// written). Both modes.
+/// #1661 (owner decision 2026-11-05): a sequence-path young hold whose events never come gives
+/// up at the 10 s net and DISCARDS the Enter and the keys typed after it: nothing in the editor,
+/// no guard, nothing written. Both modes.
 #[test]
-fn young_hold_cap_hands_the_enter_and_the_keys_after_it_back_on_the_sequence_path() {
+fn young_hold_cap_discards_the_enter_and_the_keys_after_it() {
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
             let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
@@ -394,17 +393,18 @@ fn young_hold_cap_hands_the_enter_and_the_keys_after_it_back_on_the_sequence_pat
                 let token = gate_token_of(view, input_queue::GateKind::PromptSeen);
                 view.on_paste_queue_give_up(token, ctx);
             });
-            assert_handed_back(&terminal, &app, &writes, "\nls");
+            assert_enter_gate_discarded(&terminal, &app, &writes);
         });
     }
 }
 
-/// The line typed BEFORE a sequence-path young Enter is not in the hold. The hand-off holds a young
-/// Enter only on a write that STARTS with the Enter (`should_hold_young_enter_sampled`); `ls` typed
-/// before it went to the pty as typed, into the shell's own line, where it stays. Keys are never
-/// lost (owner rule 2026-11-09, replacing the #1661 discard): the give-up hands the Enter and the
-/// `x` typed after it back to the editor, in order, writes nothing more, and `ls` stays in the
-/// shell. Both modes.
+/// #1661 (owner decision 2026-11-05): the line typed BEFORE a sequence-path young Enter is not in
+/// the hold. The hand-off holds a young Enter only on a write that STARTS with the Enter
+/// (`should_hold_young_enter_sampled`); `ls` typed before it went to the pty as typed, into the
+/// shell's own line, where it stays. The give-up discards only the Enter and `x` typed after it:
+/// nothing in the editor, no guard, nothing more written. Both modes. (r18u27: this test assumed
+/// `ls\r` in one write is held with its line; it is not held at all, so the assumption was wrong,
+/// not the code.)
 #[test]
 fn young_hold_cap_leaves_the_line_typed_before_the_enter_in_the_shell() {
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
@@ -436,12 +436,8 @@ fn young_hold_cap_leaves_the_line_typed_before_the_enter_in_the_shell() {
             );
             terminal.read(&app, |view, ctx| {
                 view.input.read(ctx, |input, ctx| {
-                    assert_eq!(
-                        input.buffer_text(ctx),
-                        "\nx",
-                        "{mode:?}: the Enter and the key after it came back, in order"
-                    );
-                    assert!(input.ssh_handover_enter_guard_armed(), "{mode:?}");
+                    assert_eq!(input.buffer_text(ctx), "", "{mode:?}: nothing came back");
+                    assert!(!input.ssh_handover_enter_guard_armed(), "{mode:?}");
                 });
                 assert!(ssh_queue_is_idle(view), "{mode:?}");
             });
@@ -454,7 +450,7 @@ fn young_hold_cap_leaves_the_line_typed_before_the_enter_in_the_shell() {
 /// mailbox behind it and is offered once the gate is gone. It is NOT discarded with what the gate
 /// held (a 100 ms timer retry let it land behind the still-open gate). Both modes.
 #[test]
-fn a_key_typed_after_a_busy_young_hold_give_up_is_not_lost() {
+fn a_key_typed_after_a_busy_young_hold_give_up_is_not_discarded() {
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
             let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
@@ -480,7 +476,7 @@ fn a_key_typed_after_a_busy_young_hold_give_up_is_not_lost() {
                 let queue = view.paste_queue.queue.clone();
                 {
                     let _busy = queue.peek();
-                    view.hand_back_young_hold_keys(hold_id, "young_hold_cap", None, ctx);
+                    view.hand_back_young_hold_keys(hold_id, "young_hold_cap", None, false, ctx);
                     assert!(
                         queue.has_deferred(),
                         "{mode:?}: the take waits for the queue"
@@ -501,23 +497,14 @@ fn a_key_typed_after_a_busy_young_hold_give_up_is_not_lost() {
             let buffer = terminal.read(&app, |view, ctx| view.input.as_ref(ctx).buffer_text(ctx));
             assert!(
                 written.contains(&b'x') || buffer.contains('x'),
-                "{mode:?}: the key typed after the give-up was lost: pty {:?}, editor {buffer:?}",
-                String::from_utf8_lossy(&written)
-            );
-            // Keys are never lost: what the gate held came back to the editor (not the pty), and
-            // before the key typed after the give-up.
-            assert!(
-                !written.windows(2).any(|pair| pair == b"ls"),
-                "{mode:?}: the give-up wrote the held keys to the pty: {:?}",
+                "{mode:?}: the key typed after the give-up was discarded: pty {:?}, editor {buffer:?}",
                 String::from_utf8_lossy(&written)
             );
             assert!(
-                buffer.contains("ls"),
-                "{mode:?}: what the gate held was lost: editor {buffer:?}"
+                !written.windows(2).any(|pair| pair == b"ls") && !buffer.contains("ls"),
+                "{mode:?}: what the gate held was discarded: pty {:?}, editor {buffer:?}",
+                String::from_utf8_lossy(&written)
             );
-            if let (Some(held), Some(after)) = (buffer.find("ls"), buffer.find('x')) {
-                assert!(held < after, "{mode:?}: typed order kept: {buffer:?}");
-            }
         });
     }
 }

@@ -1881,30 +1881,45 @@ impl TerminalView {
         {
             return;
         }
-        let (expiry, evidence) = {
+        let (expiry, evidence, normal_end) = {
             let mut handoff = self.handoff.write();
             let evidence = handoff.young_hold_evidence();
-            (handoff.expire_queued_young_hold(hold_id), evidence)
+            // Owner decision 2026-11-05 (#1661): read before the expiry, with the evidence.
+            let normal_end = handoff.young_hold_cap_is_normal_end();
+            (
+                handoff.expire_queued_young_hold(hold_id),
+                evidence,
+                normal_end,
+            )
         };
         match expiry {
             YoungHoldExpiry::Keep => {}
             YoungHoldExpiry::Gone => {
                 self.drain_young_hold_ends(ctx);
                 if self.young_hold_gate_has_key(hold_id) {
-                    // A defect path: the gate outlived a hold the hand-off has no record of. Keys
-                    // are never lost: they go back to the editor, in order, with the counted
-                    // toast (owner rule 2026-11-09; this replaced the #1661 discard).
+                    // A defect path: the gate outlived a hold the hand-off has no record of (no
+                    // recorded end, so no class to say the cap is its normal end). Its cap is a
+                    // give-up, and by the owner's rule of 2026-11-05 (#1661) a give-up DISCARDS
+                    // the held Enter and the keys typed after it, with the counted toast (a line
+                    // typed before the Enter in the held bytes stays in the editor). Deliberate:
+                    // the keys are not handed back here.
                     log::warn!(
                         "input queue: young hold {hold_id} is gone but its gate is open; its \
-                         Enter and the keys after it are handed back to the editor"
+                         Enter and the keys after it are discarded (#1661)"
                     );
-                    self.hand_back_young_hold_keys(hold_id, "young_hold_gone", evidence, ctx);
+                    self.hand_back_young_hold_keys(
+                        hold_id,
+                        "young_hold_gone",
+                        evidence,
+                        false,
+                        ctx,
+                    );
                 }
             }
-            // #1577: the cap is a give-up, and a timer never writes user bytes to the pty. Keys
-            // are never lost: the held Enter and the keys typed after it go back to the editor
-            // in order, with the counted toast (owner rule 2026-11-09; this replaced the #1661
-            // discard). The cap is a 10 s net (`YOUNG_HOLD_GIVE_UP`); the event-driven ends
+            // #1577: the cap is a give-up, and a timer never writes user bytes to the pty. Owner
+            // decision 2026-11-05 (#1661): the held Enter and the keys typed after it are
+            // DISCARDED with the counted toast (a line typed before the Enter stays in the
+            // editor). The cap is a 10 s net (`YOUNG_HOLD_GIVE_UP`); the event-driven ends
             // (`drain_young_hold_ends`: a command, the report, a Preexec, the barrier) still
             // write them as typeahead.
             YoungHoldExpiry::Release => {
@@ -1913,23 +1928,32 @@ impl TerminalView {
                 // #1661: except the two holds whose cap is their normal end (hand-back).
                 log::warn!(
                     "typeahead young hold {hold_id} ({evidence:?}) ran to its cap with no release \
-                     event; the Enter and the keys after it are handed back to the editor \
+                     event; normal_end={normal_end}: the keys are handed back if the cap is the \
+                     hold's normal end, else the Enter and the keys after it are discarded \
                      (young_hold_cap)"
                 );
-                self.hand_back_young_hold_keys(hold_id, "young_hold_cap", evidence, ctx);
+                self.hand_back_young_hold_keys(
+                    hold_id,
+                    "young_hold_cap",
+                    evidence,
+                    normal_end,
+                    ctx,
+                );
             }
         }
     }
 
     /// The cap of young hold `hold_id` (#1577), then the hand-off's own bookkeeping: the hold
-    /// ended without a write. Keys are never lost (owner rule 2026-11-09, replacing the #1661
-    /// discard of a give-up cap): whatever the evidence, the Enter (a newline, guarded) and what
-    /// was typed after it go back to the editor in typed order, with the counted toast.
+    /// ended without a write. Owner decision 2026-11-05 (#1661): when the cap is the hold's
+    /// NORMAL end (`normal_end`: the fish no-barrier hold, a window hold with no prompt sequence
+    /// numbers) the keys go back to the editor as before (the Enter a newline, guarded); every
+    /// other cap is a give-up and DISCARDS the Enter and what was typed after it.
     pub(super) fn hand_back_young_hold_keys(
         &mut self,
         hold_id: u64,
         why: &'static str,
         evidence: Option<YoungHoldEvidence>,
+        normal_end: bool,
         ctx: &mut ViewContext<Self>,
     ) {
         // `evidence` is the caller's, read before the expiry cleared the hold's record.
@@ -1943,9 +1967,15 @@ impl TerminalView {
             )
         });
         self.handoff.write().finish_young_hold_handed_back(hold_id);
-        // Keys are never lost, whatever the evidence: the Enter (a newline, guarded) and the keys
-        // typed after it go back to the editor in typed order, with the counted toast.
-        self.hand_back_gate_keys(GateKind::PromptSeen, hold_id, why, ctx);
+        if normal_end {
+            // The cap is how this hold ends: the keys come back as they did before #1661.
+            self.hand_back_gate_keys(GateKind::PromptSeen, hold_id, why, ctx);
+        } else {
+            // Owner decision 2026-11-05 (#1661): the young Enter and the keys typed after it are
+            // DISCARDED with the counted toast; a line typed before it in the held bytes stays in
+            // the editor, unrun.
+            self.discard_gate_keys_after_enter(GateKind::PromptSeen, hold_id, why, true, ctx);
+        }
         self.input
             .update(ctx, |input, _| input.clear_handoff_enter_hold());
         // #1614: the hold is gone, so a decision now cannot write held keys (it can only commit
