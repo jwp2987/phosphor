@@ -381,7 +381,12 @@ pub enum WrittenVerdict {
 
 /// R7 (stream-ordered), R8 and the redesign's Written rows.
 pub fn judge_written(s: &WrittenSample) -> WrittenVerdict {
-    if !s.block_unchanged {
+    // A changed block is "gone" only before the setup showed progress: the subshell's own
+    // `InitShell` finishes the block the line was typed into and starts another, so after a marker
+    // or `InitSubshell` the change is the bootstrap's (cancelling it truncated the script and
+    // handed the user's typed line back, #1840). A subshell that really exits ends through the
+    // block-completed path (`end_subshell_setup_if_block_gone`).
+    if !s.block_unchanged && !s.progress_seen {
         return WrittenVerdict::Gone;
     }
     if s.tty_kind == SubshellTtyKind::Secret {
