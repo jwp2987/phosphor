@@ -14241,16 +14241,11 @@ impl TerminalView {
                         id,
                         // #1661: the long net; the events release the hold.
                         handoff.young_hold_give_up(Instant::now()),
-                        handoff.queued_line_bytes_stamp(),
                     )
                 });
-                hold_start.prompt = handoff.take_prompt_hold_started().map(|id| {
-                    (
-                        id,
-                        handoff.prompt_hold_give_up(),
-                        handoff.queued_line_bytes_stamp(),
-                    )
-                });
+                hold_start.prompt = handoff
+                    .take_prompt_hold_started()
+                    .map(|id| (id, handoff.prompt_hold_give_up()));
                 hold_start.deferred = handoff.take_deferred_key_started();
             }
             route
@@ -14264,14 +14259,13 @@ impl TerminalView {
         if handoff_route == UserBytesRoute::Held {
             input_queue::trace::hold(input_queue::trace::legacy::HANDOFF, bytes.len());
             // #933: an Enter held because the command may already have finished.
-            if let Some((hold_id, hold_wait, stamp)) = hold_start.young {
+            if let Some((hold_id, hold_wait)) = hold_start.young {
                 // #1016: keys the editor takes while this Enter waits for the report follow it.
                 self.input
                     .update(ctx, |input, ctx| input.note_handoff_enter(ctx));
                 // #1353 phase 5b: the Enter and the keys behind it are entries of the input
                 // queue behind a `PromptSeen` gate; the prompt's precmd, the report, a command
                 // or a signal end the hold (events), and the gate's cap is only the give-up.
-                self.paste_queue.line_stamp.get_or_insert(stamp);
                 self.hold_young_keys_in_queue(
                     hold_id,
                     hold_wait,
@@ -14283,8 +14277,7 @@ impl TerminalView {
             }
             // #1162: keys held between a prompt's precmd and its line editor's ready signal. The
             // hold's give-up cap is the only timer (#1349): the gate's own.
-            if let Some((prompt_hold_id, prompt_hold_expiry, stamp)) = hold_start.prompt {
-                self.paste_queue.line_stamp.get_or_insert(stamp);
+            if let Some((prompt_hold_id, prompt_hold_expiry)) = hold_start.prompt {
                 self.hold_prompt_keys_in_queue(
                     prompt_hold_id,
                     prompt_hold_expiry,
@@ -40855,21 +40848,12 @@ fn subshell_bootstrap_key_forwarded(
 /// What a user key that the hand-off held started, read under the key path's one model lock.
 #[derive(Default)]
 struct HandoffHoldStart {
-    /// A young Enter was held: the hold's id, its give-up cap and the mid-line stamp to share.
-    young: Option<(
-        u64,
-        Duration,
-        crate::terminal::model::typeahead_handoff::QueuedLineBytesStamp,
-    )>,
+    /// A young Enter was held: the hold's id and its give-up cap.
+    young: Option<(u64, Duration)>,
     /// A key was held behind an Enter deferred for the shell's report: the gate's id.
     deferred: Option<u64>,
-    /// Keys are held for the prompt (ConPTY): the hold's id, its give-up cap and the mid-line
-    /// stamp to share.
-    prompt: Option<(
-        u64,
-        Duration,
-        crate::terminal::model::typeahead_handoff::QueuedLineBytesStamp,
-    )>,
+    /// Keys are held for the prompt (ConPTY): the hold's id and its give-up cap.
+    prompt: Option<(u64, Duration)>,
 }
 
 /// Whether any SSH setup choice block belongs to the pending session (#976). Stale blocks of

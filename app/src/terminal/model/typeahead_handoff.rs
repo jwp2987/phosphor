@@ -66,8 +66,8 @@
 
 use std::collections::VecDeque;
 use std::mem;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use warpui_core::sync_shim::{RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -290,13 +290,6 @@ pub struct PromptSeq {
     pub preexecs_before: Option<u64>,
 }
 
-/// On a ConPTY session (#1162): how long the user must have stopped typing before the hand-off
-/// asks the shell for a line that holds raw-typed keys. A request (`ESC i`) landing between two
-/// keys of a line the user is still typing is written into the middle of that line's raw
-/// writes, and ConPTY / MSYS readline lose the line. Well above the 10-25 ms between keys of
-/// fast typing, below the stale-count reset (250 ms) that re-runs a waiting decision.
-pub const CONPTY_MIDLINE_QUIET: Duration = Duration::from_millis(120);
-
 /// On a ConPTY session (#1162, #1349): raw user keys typed between a prompt's precmd and the
 /// shell's line editor becoming ready are held, and released by the line editor's own signal
 /// (the bracketed-paste enable `ESC[?2004h` that readline, zle and fish emit as they start
@@ -386,32 +379,6 @@ pub fn conpty_enter_hold_from(env: Option<&str>, table_mode: bool) -> bool {
     match env {
         Some(value) => value.trim() == "1",
         None => table_mode,
-    }
-}
-
-/// Milliseconds on a process-wide monotonic clock, never 0 (0 means "never" in a stamp). Used only
-/// for the mid-line guard's stamp that the view writes without taking the model lock.
-fn stamp_now_ms() -> u64 {
-    static BASE: OnceLock<Instant> = OnceLock::new();
-    let base = BASE.get_or_init(Instant::now);
-    (Instant::now().saturating_duration_since(*base).as_millis() as u64).saturating_add(1)
-}
-
-/// The shared stamp of the last user byte that the view queued for the shell's line while a
-/// prompt hold held keys (#1353 phase 5). The view stores to it without the model lock; the
-/// ConPTY mid-line guard ([`CONPTY_MIDLINE_QUIET`]) reads it with the hand-off's own stamp.
-#[derive(Clone, Debug, Default)]
-pub struct QueuedLineBytesStamp(Arc<AtomicU64>);
-
-impl QueuedLineBytesStamp {
-    /// Records "the user typed a byte for the shell's line just now".
-    pub fn note_now(&self) {
-        self.0.store(stamp_now_ms(), Ordering::Relaxed);
-    }
-
-    fn recent(&self, within: Duration) -> bool {
-        let stamp = self.0.load(Ordering::Relaxed);
-        stamp != 0 && stamp_now_ms().saturating_sub(stamp) < within.as_millis() as u64
     }
 }
 
@@ -783,7 +750,7 @@ pub struct TypeaheadHandoff {
     last_parsed_hook: Option<ParsedShellHook>,
     /// Whether this session's input goes through ConPTY (Windows). There a held run of keys is
     /// written back one chunk per key event, never as one write with an embedded Enter, and no
-    /// request is written while the user is still typing a line (see [`CONPTY_MIDLINE_QUIET`]).
+    /// request is written while a line is in progress (see `typing_a_line_on_conpty`).
     conpty_input: bool,
     /// Whether the ConPTY prompt hold is on (see [`CONPTY_PROMPT_HOLD_GIVE_UP`]); it also needs
     /// `conpty_input`, so no other platform is ever affected.
@@ -846,12 +813,8 @@ pub struct TypeaheadHandoff {
     /// Cleared by the view when it has released them ([`Self::finish_queued_prompt_hold`]) or by
     /// a signal that takes them ([`Self::take_queued_prompt_hold_for_signal`]).
     prompt_hold_queued: bool,
-    /// Typing into a queued prompt hold, stamped by the view without the model lock.
-    queued_line_bytes: QueuedLineBytesStamp,
     /// When the last precmd arrived, whether or not a hold follows (for the release hop).
     last_precmd_at: Option<Instant>,
-    /// When the user last typed a byte that reached the shell's line.
-    last_line_bytes_at: Option<Instant>,
     /// Whether the line the user is typing began within [`YOUNG_ENTER_WINDOW`] of the last
     /// activity, i.e. before the app could know the shell was at its prompt (#933).
     young_line: bool,
@@ -1204,12 +1167,6 @@ impl TypeaheadHandoff {
     pub fn check_queued_young_hold(&mut self) -> bool {
         self.drop_stale_hold();
         self.young_hold_end_pending()
-    }
-
-    /// The stamp the view writes, without the model lock, for each key it queues behind a prompt
-    /// hold, so the ConPTY mid-line guard sees keys that never came through here.
-    pub fn queued_line_bytes_stamp(&self) -> QueuedLineBytesStamp {
-        self.queued_line_bytes.clone()
     }
 
     /// #1793: the pty write count `PtyController` increments for every write it hands the pty.
@@ -1663,9 +1620,13 @@ impl TypeaheadHandoff {
         }
     }
 
-    /// Whether, on a ConPTY session, the user typed into the shell's line so recently that a
-    /// request now would land in the middle of the line (#1162).
-    fn typing_a_line_on_conpty(&self, now: Instant) -> bool {
+    /// Whether, on a ConPTY session, a line is in progress -- the user's keys are in the shell's
+    /// line without its Enter, or held in the view's queue behind a hold -- so a request now would
+    /// land in the middle of the line (#1162). A STATE fact, no clock (owner rule 2026-11-08, a
+    /// timer never decides): the request is decided again at the next boundary event -- the
+    /// flushed Enter (`write_handoff_user_bytes_inner`), the Precmd, a hold's end -- and a
+    /// partial line the user paused on stays in the shell until one of them. Nothing is lost.
+    fn typing_a_line_on_conpty(&self) -> bool {
         // #1387: with the prompt-sequence path the request is written at a queue boundary, not
         // after a guessed pause. Keys of the line that are still on their way are the hand-off's
         // own writes in flight and the keys the input queue holds; `on_line_editor_active` already
@@ -1675,10 +1636,14 @@ impl TypeaheadHandoff {
             return false;
         }
         self.conpty_input
-            && (self
-                .last_line_bytes_at
-                .is_some_and(|at| now.saturating_duration_since(at) < CONPTY_MIDLINE_QUIET)
-                || self.queued_line_bytes.recent(CONPTY_MIDLINE_QUIET))
+            && (matches!(
+                self.state,
+                HandoffState::PtyOwned {
+                    wrote_user_bytes: true,
+                    ..
+                }
+            ) || self.young_hold_queued
+                || self.prompt_hold_queued)
     }
 
     pub fn set_foreground_probe(&mut self, probe: ForegroundProbe) {
@@ -2997,7 +2962,7 @@ impl TypeaheadHandoff {
                         });
                     }
                     ActiveDecision::Drain
-                } else if self.typing_a_line_on_conpty(Instant::now()) {
+                } else if self.typing_a_line_on_conpty() {
                     // #1162: keys of a line are still arriving raw; the request waits for a
                     // pause (the quiet-period timer or the next flushed write decides again).
                     ActiveDecision::Wait {
@@ -3079,7 +3044,6 @@ impl TypeaheadHandoff {
             let now = Instant::now();
             self.prompt_hold_started_at = Some(now);
             self.prompt_hold_release_decided_at = None;
-            self.last_line_bytes_at = Some(now);
             self.log_route_decision("held_prompt_hold_started", bytes);
             return UserBytesRoute::Held;
         }
@@ -3837,7 +3801,6 @@ impl TypeaheadHandoff {
                     if first_byte_young {
                         self.young_line = true;
                     }
-                    self.last_line_bytes_at = Some(Instant::now());
                     let (enters, dirty) =
                         scan_line_terminators(bytes, *wrote_user_bytes, ctrl_u_kills);
                     *enters_written = enters_written.saturating_add(enters);
@@ -3870,9 +3833,7 @@ impl TypeaheadHandoff {
             // puts it behind the gate; it is never held here.
             HandoffState::HoldAfterEnter { .. } if self.deferred_gate.is_some() => {
                 self.deferred_key_started = true;
-                if reaches_shell_line {
-                    self.last_line_bytes_at = Some(Instant::now());
-                }
+                if reaches_shell_line {}
                 UserBytesRoute::Held
             }
             HandoffState::HoldAfterEnter { .. } => {
@@ -4068,7 +4029,6 @@ impl TypeaheadHandoff {
             young_hold_id: self.young_hold_id,
             deferred_gate_seq: self.deferred_gate_seq,
             young_hold_ends: mem::take(&mut self.young_hold_ends),
-            queued_line_bytes: self.queued_line_bytes.clone(),
             // #1793: the controller keeps counting into the same cell.
             pty_writes: self.pty_writes.clone(),
             ..Self::default()

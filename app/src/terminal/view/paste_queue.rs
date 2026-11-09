@@ -210,8 +210,6 @@ pub(super) struct PasteQueueState {
     /// What goes back to the front of the queue after a `Requeue` when the entry delivered is not
     /// itself the entry the held bytes belong to (set by the host from the kind it delivered).
     requeue_replacement: Option<EntryKind>,
-    /// The stamp for keys queued behind a prompt hold (shared with the hand-off).
-    pub(super) line_stamp: Option<crate::terminal::model::typeahead_handoff::QueuedLineBytesStamp>,
     /// #1584: the prompt hold whose overdue keys were already announced (log + toast), so a
     /// re-armed cap does not repeat it.
     prompt_hold_waiting_told: Option<u64>,
@@ -269,7 +267,6 @@ impl PasteQueueState {
             delivering_origin: Origin::Keyboard,
             requeue_request: None,
             requeue_replacement: None,
-            line_stamp: None,
             prompt_hold_waiting_told: None,
         }
     }
@@ -818,16 +815,6 @@ impl TerminalView {
             }
             None => {
                 trace::hold(self.held_trace_name(), bytes.len());
-                // A key typed for the shell's line behind a prompt hold: the ConPTY mid-line
-                // guard learns of it here, without the model lock.
-                if let Some(stamp) = &self.paste_queue.line_stamp
-                    && self.paste_queue.queue.try_peek().is_some_and(|queue| {
-                        queue.has_gate_kind(GateKind::LineEditorActive)
-                            || queue.has_gate_kind(GateKind::PromptSeen)
-                    })
-                {
-                    stamp.note_now();
-                }
                 EntryKind::PtyBytes {
                     bytes: bytes.to_vec(),
                     takes_over_agent_control,

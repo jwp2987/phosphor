@@ -1997,11 +1997,19 @@ fn conpty_writes_no_request_while_a_line_is_still_being_typed() {
             precmds_seen: 1,
         }
     );
-    // Once the user paused, the request goes out.
-    handoff.last_line_bytes_at = Some(Instant::now() - CONPTY_MIDLINE_QUIET * 2);
+    // Owner rule (a timer never decides): no pause releases the request. The line is a STATE
+    // (its keys are in the shell's line without an Enter); only a boundary event decides again --
+    // here the line's Enter and its Precmd.
+    assert!(matches!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::Wait { .. }
+    ));
+    handoff.age_last_activity_for_test();
+    type_and_flush(&mut handoff, b"\r");
+    handoff.on_precmd();
     assert_eq!(
         handoff.on_line_editor_active(true, true),
-        ActiveDecision::SendRequest
+        ActiveDecision::Committed
     );
 }
 
@@ -2021,18 +2029,16 @@ fn conpty_still_commits_without_a_request_at_a_line_boundary() {
 
 /// #1189: keys that are Held behind a young Enter are still typing; the ConPTY mid-line guard
 /// counted only keys written to the pty, so requests landed between held keys.
-/// Old code: `typing_a_line_on_conpty` stayed false after the held key.
-/// Not compiled/run when written.
+/// The guard is a state fact now (no clock): a line in progress, or a live young hold, counts.
 #[test]
 fn conpty_midline_guard_counts_held_keys() {
     let mut handoff = conpty_young_after_submit();
+    assert!(!handoff.typing_a_line_on_conpty());
     type_and_flush(&mut handoff, b"abc");
+    assert!(handoff.typing_a_line_on_conpty());
     assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
-    handoff.last_line_bytes_at = Some(Instant::now() - CONPTY_MIDLINE_QUIET * 2);
-    assert!(!handoff.typing_a_line_on_conpty(Instant::now()));
-    // A key typed behind the hold goes to the view's queue, which stamps it for the guard.
-    handoff.queued_line_bytes_stamp().note_now();
-    assert!(handoff.typing_a_line_on_conpty(Instant::now()));
+    assert!(handoff.young_hold_queued());
+    assert!(handoff.typing_a_line_on_conpty());
 }
 
 /// #1131: a new session's shell (the remote shell of an `ssh`) has its own loop; the previous
@@ -2859,16 +2865,21 @@ fn a_signal_takes_the_queued_hold_and_ends_the_wait() {
     );
 }
 
-/// Keys queued behind a prompt hold are still typing: the view stamps them lock-free and the
-/// ConPTY mid-line guard sees the stamp (#1189 for the queue).
+/// Keys queued behind a prompt hold are a line in progress: the hold is a state flag (no stamp,
+/// no clock), and the guard sees it. Not on the prompt-sequence path.
 #[test]
-fn the_midline_guard_sees_keys_the_view_queued() {
+fn the_midline_guard_sees_keys_held_behind_a_prompt_hold() {
     let mut handoff = conpty_young_after_submit();
     handoff.age_last_activity_for_test();
-    handoff.last_line_bytes_at = Some(Instant::now() - CONPTY_MIDLINE_QUIET * 2);
-    assert!(!handoff.typing_a_line_on_conpty(Instant::now()));
-    handoff.queued_line_bytes_stamp().note_now();
-    assert!(handoff.typing_a_line_on_conpty(Instant::now()));
+    assert!(!handoff.typing_a_line_on_conpty());
+    handoff.prompt_hold_queued = true;
+    assert!(handoff.typing_a_line_on_conpty());
+    handoff.set_prompt_seq_enabled(true);
+    handoff.on_precmd_seq(Some(7), Some(1));
+    assert!(
+        !handoff.typing_a_line_on_conpty(),
+        "the sequence path decides at queue boundaries"
+    );
 }
 
 // ---- #1353 phase 6: prompt sequence numbers replace the timing guesses -------------------------
