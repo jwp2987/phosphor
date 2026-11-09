@@ -26626,6 +26626,158 @@ fn ssh_middle_click_paste_with_a_pending_read_keeps_typed_order_around_it() {
     });
 }
 
+/// Waits (condition-driven) until no paste read is pending on the pane queue.
+async fn wait_for_paste_read_to_land(terminal: &ViewHandle<TerminalView>, app: &App) -> bool {
+    for _ in 0..10_000 {
+        let landed = terminal.read(app, |view, _| {
+            !view
+                .paste_queue
+                .queue
+                .borrow()
+                .has_gate_kind(crate::terminal::input_queue::GateKind::PasteReading)
+        });
+        if landed {
+            return true;
+        }
+        warpui::r#async::Timer::after(std::time::Duration::from_millis(1)).await;
+    }
+    false
+}
+
+/// #1853 (audit finding 2): a paste made between held keys of an ssh connect is held with them,
+/// in typed order, and reaches the editor / remote only after ownership. Legacy and Table: the
+/// table decides the paste from the same ssh phase as the keys around it, never the legacy probe.
+#[test]
+fn ssh_paste_between_held_keys_keeps_typed_order_in_both_modes() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            let deferral = warpui::clipboard::deferred_reads::defer();
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                submit_command(view, "ssh host", ctx);
+                view.typed_characters_on_terminal("ls", ctx);
+                assert!(ssh_gate_open(view), "{mode:?}");
+                ctx.clipboard()
+                    .write(ClipboardContent::plain_text("-la".to_owned()));
+                view.paste(false, ctx);
+                view.typed_characters_on_terminal("x", ctx);
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "",
+                    "{mode:?}: all held"
+                );
+                assert!(
+                    pty_writes.borrow().is_empty(),
+                    "{mode:?}: nothing reaches the pty ahead of the held keys: {:?}",
+                    pty_writes.borrow()
+                );
+            });
+            deferral.release();
+            assert!(
+                wait_for_paste_read_to_land(&terminal, &app).await,
+                "{mode:?}"
+            );
+            terminal.update(&mut app, |view, ctx| {
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{mode:?}");
+                view.ssh_remote_prompt_seen = true;
+                first_precmd_processed_for_test(view, ctx);
+                release_ssh_gate_for_test(view);
+                view.deliver_ssh_typeahead_if_ready("precmd", ctx);
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "ls-lax",
+                    "{mode:?}: once, in typed order"
+                );
+                assert!(ssh_queue_is_idle(view), "{mode:?}");
+                assert!(
+                    pty_writes.borrow().is_empty(),
+                    "{mode:?}: {:?}",
+                    pty_writes.borrow()
+                );
+            });
+        });
+    }
+}
+
+/// #1853: a paste made during a subshell setup waits behind the keys held before it and is
+/// delivered after them, in both destination modes.
+#[test]
+fn paste_during_a_subshell_setup_is_held_behind_earlier_keys_in_both_modes() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                let block_id = view.model.lock().block_list().active_block().id().clone();
+                view.subshell_bootstrap_announced = Some((block_id, Instant::now()));
+                assert!(view.write_user_bytes_to_pty(b"ls".to_vec(), ctx));
+                ctx.clipboard()
+                    .write(ClipboardContent::plain_text("-la".to_owned()));
+                view.paste(false, ctx);
+            });
+            assert!(
+                wait_for_paste_read_to_land(&terminal, &app).await,
+                "{mode:?}"
+            );
+            terminal.update(&mut app, |view, ctx| {
+                assert!(
+                    pty_writes.borrow().is_empty(),
+                    "{mode:?}: held behind the setup: {:?}",
+                    pty_writes.borrow()
+                );
+                view.release_subshell_setup_held_bytes(ctx);
+            });
+            let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+            let written = String::from_utf8_lossy(&written).into_owned();
+            assert!(
+                written.starts_with("ls") && written.ends_with("-la"),
+                "{mode:?}: typed order kept: {written:?}"
+            );
+        });
+    }
+}
+
+/// #1853: the same for a PowerShell setup.
+#[test]
+fn paste_during_a_powershell_setup_is_held_behind_earlier_keys_in_both_modes() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                view.powershell_setup_hold = PowerShellSetupHold::LineRunning { generation: 1 };
+                assert!(view.write_user_bytes_to_pty(b"ls".to_vec(), ctx));
+                ctx.clipboard()
+                    .write(ClipboardContent::plain_text("-la".to_owned()));
+                view.paste(false, ctx);
+            });
+            assert!(
+                wait_for_paste_read_to_land(&terminal, &app).await,
+                "{mode:?}"
+            );
+            terminal.read(&app, |_, _| {
+                assert!(
+                    pty_writes.borrow().is_empty(),
+                    "{mode:?}: held behind the setup: {:?}",
+                    pty_writes.borrow()
+                );
+            });
+        });
+    }
+}
+
 /// The held line reaches the remote shell once: at most one `echo hi` runs, and the Enter stays
 /// behind the text it ends.
 #[test]

@@ -3853,3 +3853,7 @@ inner shell when the `exit` was eaten, and run.py's `where_now()` cannot see a l
   is logged). The app judged dash once (`Wait(CookedNoPrompt)`, tail none, right after the first line's Enter) and never again for
   6 s, so it never wrote the probe at the idle prompt. Open app issue; not fixed here (needs a live tty).
 - `subshell_ready_secret_after_prompt` on Linux (round 7): not an app bug. The log shows `Secret` judged 5 ms after the setup write (0 held chunks), then 41 `Pty(Typed)` keys straight to the `read -s`: the typed line (no Enter, by design) and `hunter2` reached the read in typed order as one line. The rc now sleeps 1 s before the `read -s` so the line is typed while the setup is still out and is held, then handed back.
+
+## Paste routing in table mode (#1853)
+
+In `table` mode `paste()` is decided by the table's plan alone (`paste_plan_via_table`); the legacy ssh probe is not consulted, so one phase source (the ssh edge machine) judges the paste and the keys around it. Unit tests in `view_test.rs` (Legacy and Table via `set_destination_mode_for_test`): `ssh_paste_between_held_keys_keeps_typed_order_in_both_modes` (keys, paste, key held together; delivered once, in order, after ownership), `paste_during_a_subshell_setup_is_held_behind_earlier_keys_in_both_modes`, `paste_during_a_powershell_setup_is_held_behind_earlier_keys_in_both_modes`. Written without a compiler; first run is on the build box.
