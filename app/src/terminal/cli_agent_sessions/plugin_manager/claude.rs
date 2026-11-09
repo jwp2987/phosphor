@@ -11,31 +11,30 @@ use serde_json::Value;
 use super::{
     CliAgentPluginManager, ConfigFileCheckCache, PluginCommandRunner, PluginInstallError,
     PluginInstructionStep, PluginInstructions, ShellCommandRunner, compare_versions,
-    is_warp_plugin_source, plugin_source_reachable, source_unreachable_error,
+    is_warp_plugin_source,
 };
 use crate::terminal::shell::ShellType;
 
 const PLUGIN_KEY: &str = "warp@claude-code-warp";
 /// The env var the Claude CLI honors when locating its config/state directory.
 const CLAUDE_CONFIG_DIR_ENV: &str = "CLAUDE_CONFIG_DIR";
-/// Phosphor's GitLab copy of the marketplace (full-history mirror of
-/// `warpdotdev/claude-code-warp`). Claude Code takes a non-GitHub host only as a
-/// full git URL ending in `.git`: `owner/repo` shorthand always means
-/// github.com, and an `https://` URL without `.git` is fetched as a hosted
-/// `marketplace.json` instead of cloned. Keep the two instruction commands
-/// below in step with this (a test pins them).
-const MARKETPLACE_URL: &str = "https://gitlab.com/winters-phosphor/claude-code-warp.git";
-/// The marketplace's `name` in its `marketplace.json`, unchanged by the move.
+/// Overrides where the bundled marketplace folder is looked up (unit tests, app tests and
+/// dev builds that run outside an installed bundle). Unset in a normal install.
+pub(crate) const BUNDLE_DIR_ENV: &str = "PHOSPHOR_CLAUDE_PLUGIN_DIR";
+/// The marketplace's `name` in its `marketplace.json`. Kept from the original plugin so an
+/// existing install's `warp@claude-code-warp` key stays valid.
 const MARKETPLACE_NAME: &str = "claude-code-warp";
+/// Where the plugin lives inside the app's resources (`resources/bundled/claude_plugin` in
+/// the repo): a folder that is a complete Claude Code marketplace.
+const BUNDLE_RELATIVE: &str = "bundled/claude_plugin";
 
 static SOURCE_MIGRATION_CHECK: ConfigFileCheckCache = ConfigFileCheckCache::new();
 
-/// Set once this process has *completed* a move attempt (the pre-flight passed
-/// and the remove/add ran, whatever its outcome). After it,
-/// `needs_source_migration` stays `false`, so the move chip is not offered
-/// again in this process: a move that left a stale record, or failed after
-/// its rollback, is retried after a restart, not on every render. A failed
-/// pre-flight does not set it -- nothing was attempted, so the chip stays.
+/// Set once this process has *completed* a move attempt (the bundle was found and the
+/// remove/add ran, whatever its outcome). After it, `needs_source_migration` stays `false`,
+/// so the move chip is not offered again in this process: a move that left a stale record,
+/// or failed, is retried after a restart, not on every render. A move with no bundle to move
+/// to does not set it -- nothing was attempted.
 static SOURCE_MOVE_ATTEMPTED: AtomicBool = AtomicBool::new(false);
 
 /// Logged at most once per process (see [`note_settings_still_declare_warp`]).
@@ -48,9 +47,37 @@ static SETTINGS_NOTE_LOGGED: AtomicBool = AtomicBool::new(false);
 static OPERATION_LOCK: LazyLock<futures::lock::Mutex<()>> =
     LazyLock::new(|| futures::lock::Mutex::new(()));
 
-// Keep in sync with the plugin version in winters-phosphor/claude-code-warp.
-// (See the Versioning section of that repo's README.)
-const MINIMUM_PLUGIN_VERSION: &str = "2.0.0";
+/// The plugin version shipped in `resources/bundled/claude_plugin` (a unit test pins this to
+/// that folder's `plugin.json` and `marketplace.json`). Plugin updates arrive with Phosphor
+/// releases, so this moves in step with the event parser in `cli_agent_sessions/event`.
+const MINIMUM_PLUGIN_VERSION: &str = "2.4.1";
+
+/// The folder holding the plugin that ships with this build, if it can be found:
+/// `$PHOSPHOR_CLAUDE_PLUGIN_DIR`, else `<bundled resources>/bundled/claude_plugin`. `None`
+/// when that folder has no `.claude-plugin/marketplace.json`. Phosphor never fetches the
+/// plugin from anywhere, so without it install/update fail with a clear message.
+pub(crate) fn bundled_marketplace_dir() -> Option<PathBuf> {
+    let candidate = match env::var_os(BUNDLE_DIR_ENV).filter(|v| !v.is_empty()) {
+        Some(dir) => PathBuf::from(dir),
+        None => warp_core::paths::bundled_resources_dir()?.join(BUNDLE_RELATIVE),
+    };
+    candidate
+        .join(".claude-plugin")
+        .join("marketplace.json")
+        .is_file()
+        .then_some(candidate)
+}
+
+fn bundle_missing_error(mut log: String) -> PluginInstallError {
+    log.push_str(
+        "The Claude Code plugin that ships with Phosphor was not found in the app's resources. \
+         Phosphor does not download it; reinstall Phosphor.\n",
+    );
+    PluginInstallError {
+        message: "The bundled Claude Code plugin was not found".to_owned(),
+        log,
+    }
+}
 
 pub(super) struct ClaudeCodePluginManager {
     runner: Arc<dyn PluginCommandRunner>,
@@ -77,25 +104,25 @@ impl ClaudeCodePluginManager {
         self.runner.run("claude", args, &[], log).await
     }
 
-    /// Puts the marketplace back on `original` (its recorded source before
-    /// this operation removed it) and reinstalls the plugin from it, after the
-    /// add from Phosphor's copy failed. Best effort: the outcome is logged.
+    /// Puts the marketplace back on `original` (its recorded source before this operation
+    /// removed it) after the add of the bundled folder failed. Only a local-folder source is
+    /// restored: a remote one would mean fetching it, which Phosphor never does.
     async fn restore_marketplace(&self, original: Option<&Value>, log: &mut String) {
-        let Some(source) = original.and_then(marketplace_add_argument) else {
+        let Some(path) = original.and_then(local_source_path) else {
             log.push_str(
-                "Restore: no recorded marketplace source to restore; run the update again once \
-                 gitlab.com is reachable\n",
+                "Restore: the previous marketplace source is not a local folder and is not \
+                 re-fetched; run the update again\n",
             );
             return;
         };
         log.push_str(&format!(
-            "Restore: re-registering the marketplace from its previous source {source}\n"
+            "Restore: re-registering the marketplace from its previous folder {path}\n"
         ));
         let _ = self
             .run_logged(&["plugin", "marketplace", "remove", MARKETPLACE_NAME], log)
             .await;
         let restored = self
-            .run_logged(&["plugin", "marketplace", "add", source.as_str()], log)
+            .run_logged(&["plugin", "marketplace", "add", path.as_str()], log)
             .await
             .is_ok()
             && self
@@ -109,18 +136,20 @@ impl ClaudeCodePluginManager {
         });
     }
 
-    /// `marketplace remove` + `add` from Phosphor's copy + `plugin install`,
-    /// restoring the previous source when the add or install fails.
-    async fn readd_marketplace(
+    /// `marketplace remove` + `add` of the bundled folder + `plugin install`, restoring the
+    /// previous source when the add or install fails. Every step is local.
+    async fn register_bundle_and_install(
         &self,
+        bundle: &Path,
         original: Option<&Value>,
         log: &mut String,
     ) -> Result<(), PluginInstallError> {
+        let bundle_arg = bundle.to_string_lossy().into_owned();
         let _ = self
             .run_logged(&["plugin", "marketplace", "remove", MARKETPLACE_NAME], log)
             .await;
         let added = match self
-            .run_logged(&["plugin", "marketplace", "add", MARKETPLACE_URL], log)
+            .run_logged(&["plugin", "marketplace", "add", bundle_arg.as_str()], log)
             .await
         {
             Ok(()) => {
@@ -164,11 +193,11 @@ impl CliAgentPluginManager for ClaudeCodePluginManager {
         claude_code_marketplace_has_local_override(&claude_dir)
     }
 
-    /// Runs `claude plugin` CLI commands via the session shell.
+    /// Registers the bundled folder as a local marketplace and installs the plugin from it.
     ///
-    /// Never moves anything: a `claude-code-warp` marketplace already
-    /// registered (from Warp's GitHub, or a local override) is installed from
-    /// as it is, and the move chip then offers the move.
+    /// A developer's local override is installed from as it is. A marketplace registered from
+    /// anywhere remote (Warp's GitHub, an older GitLab copy) or from a stale bundle folder is
+    /// replaced by the bundled one first, so nothing is ever fetched over the network.
     async fn install(&self) -> Result<(), PluginInstallError> {
         let _operation = OPERATION_LOCK.lock().await;
         let mut log = String::new();
@@ -177,23 +206,36 @@ impl CliAgentPluginManager for ClaudeCodePluginManager {
             // Installed meanwhile (another install held the lock).
             return Ok(());
         }
-        if claude_dir
+        let Some(bundle) = bundled_marketplace_dir() else {
+            return Err(bundle_missing_error(log));
+        };
+        let registered = claude_dir
             .as_deref()
-            .and_then(registered_marketplace_source)
-            .is_none()
-        {
-            self.run_logged(&["plugin", "marketplace", "add", MARKETPLACE_URL], &mut log)
+            .and_then(registered_marketplace_source);
+        match registered.as_ref() {
+            None => {
+                let bundle_arg = bundle.to_string_lossy().into_owned();
+                self.run_logged(
+                    &["plugin", "marketplace", "add", bundle_arg.as_str()],
+                    &mut log,
+                )
                 .await?;
+            }
+            Some(source) if source_is_current_bundle(source, &bundle) => {}
+            Some(source) if source_is_developer_local(source) => {}
+            Some(_) => {
+                return self
+                    .register_bundle_and_install(&bundle, registered.as_ref(), &mut log)
+                    .await;
+            }
         }
         self.run_logged(&["plugin", "install", PLUGIN_KEY], &mut log)
             .await?;
         Ok(())
     }
 
-    /// Version update only -- as before Phosphor moved the source, with
-    /// Phosphor's URL for the re-add. Run by the update chip and by the
-    /// background launch paths; it never moves a Warp-registered marketplace
-    /// on its own: such an install is left to the move chip.
+    /// Version update: re-registers the bundled folder (which carries this build's plugin
+    /// version) and reinstalls from it. A developer's local override is left alone.
     async fn update(&self) -> Result<(), PluginInstallError> {
         let _operation = OPERATION_LOCK.lock().await;
         let mut log = String::new();
@@ -209,8 +251,6 @@ impl CliAgentPluginManager for ClaudeCodePluginManager {
             .as_deref()
             .is_some_and(claude_code_marketplace_has_local_override)
         {
-            // Pre-existing bug, fixed here: an override registered only in
-            // known_marketplaces.json used to be removed by the re-add below.
             log.push_str(
                 "The claude-code-warp marketplace is a local override; update it from that \
                  checkout. Left as it is.\n",
@@ -220,43 +260,16 @@ impl CliAgentPluginManager for ClaudeCodePluginManager {
                 log,
             });
         }
+        let Some(bundle) = bundled_marketplace_dir() else {
+            return Err(bundle_missing_error(log));
+        };
         let original = claude_dir
             .as_deref()
             .and_then(registered_marketplace_source);
-        if original
-            .as_ref()
-            .is_some_and(marketplace_source_is_phosphor)
-        {
-            // Remove/re-add the marketplace to ensure the local clone is fresh,
-            // then reinstall the plugin. We use `plugin install` (not `plugin
-            // update`) because `marketplace remove` unlinks the plugin, so
-            // `plugin update` would fail with "Plugin is not installed".
-            // The remove is destructive, so it waits for the pre-flight, and
-            // the previous source is restored if the add or install fails.
-            // Only for Phosphor's own URL: re-adding it changes no source.
-            if !plugin_source_reachable(&*self.runner, MARKETPLACE_URL, &mut log).await {
-                return Err(source_unreachable_error(log));
-            }
-            self.readd_marketplace(original.as_ref(), &mut log).await?;
-        } else {
-            // Any other registration -- Warp's GitHub, a mirror or fork, or a
-            // missing/unreadable record -- is updated in place from the source
-            // it already has. An update never changes where the plugin comes
-            // from (the background launch paths run it unattended); moving
-            // off Warp's source is the move chip's job.
-            log.push_str(
-                "The marketplace is not registered from Phosphor's source; updating it in place\n",
-            );
-            self.run_logged(
-                &["plugin", "marketplace", "update", MARKETPLACE_NAME],
-                &mut log,
-            )
+        // `marketplace remove` unlinks the plugin, so this uses `plugin install` (not
+        // `plugin update`, which would fail with "Plugin is not installed").
+        self.register_bundle_and_install(&bundle, original.as_ref(), &mut log)
             .await?;
-            // `plugin update` (Claude Code: "Update a plugin to the latest
-            // version"): `plugin install` on an installed plugin is a no-op.
-            self.run_logged(&["plugin", "update", PLUGIN_KEY], &mut log)
-                .await?;
-        }
 
         // Sanity check: verify the on-disk version actually changed.
         let still_outdated = claude_home_dir()
@@ -274,27 +287,30 @@ impl CliAgentPluginManager for ClaudeCodePluginManager {
         Ok(())
     }
 
-    /// Moves a marketplace registered from Warp's GitHub to Phosphor's copy:
-    /// pre-flight, `marketplace remove` + `add` + `plugin install`, restoring
-    /// the recorded source if the add or install fails.
+    /// Moves a marketplace registered from a remote repository (or from a bundle folder at an
+    /// old install location) to the bundled folder, restoring a local previous source if the
+    /// add or install fails.
     async fn move_to_phosphor_source(&self) -> Result<(), PluginInstallError> {
         let _operation = OPERATION_LOCK.lock().await;
         let mut log = String::new();
         let claude_dir = claude_home_dir().ok();
+        let bundle = bundled_marketplace_dir();
         if !claude_dir
             .as_deref()
-            .is_some_and(marketplace_registered_from_warp)
+            .is_some_and(|dir| plugin_needs_source_migration(dir, bundle.as_deref()))
         {
             // Moved meanwhile (another move held the lock), or nothing to move.
             return Ok(());
         }
-        if !plugin_source_reachable(&*self.runner, MARKETPLACE_URL, &mut log).await {
-            return Err(source_unreachable_error(log));
-        }
+        let Some(bundle) = bundle else {
+            return Err(bundle_missing_error(log));
+        };
         let original = claude_dir
             .as_deref()
             .and_then(registered_marketplace_source);
-        let result = self.readd_marketplace(original.as_ref(), &mut log).await;
+        let result = self
+            .register_bundle_and_install(&bundle, original.as_ref(), &mut log)
+            .await;
         SOURCE_MOVE_ATTEMPTED.store(true, Ordering::Relaxed);
         if let Some(dir) = claude_dir.as_deref() {
             note_settings_still_declare_warp(dir);
@@ -311,7 +327,7 @@ impl CliAgentPluginManager for ClaudeCodePluginManager {
     }
 
     fn move_success_message(&self) -> &'static str {
-        "Notification plugin moved to Phosphor's source. Please run /reload-plugins to activate."
+        "Notification plugin moved to the copy bundled with Phosphor. Please run /reload-plugins to activate."
     }
 
     fn install_instructions(&self) -> &'static PluginInstructions {
@@ -322,7 +338,7 @@ impl CliAgentPluginManager for ClaudeCodePluginManager {
         &UPDATE_INSTRUCTIONS
     }
 
-    /// Version only, as before the source moved: the move has its own chip.
+    /// Version only: the move has its own chip.
     fn needs_update(&self) -> bool {
         let Ok(claude_dir) = claude_home_dir() else {
             return false;
@@ -343,8 +359,9 @@ impl CliAgentPluginManager for ClaudeCodePluginManager {
             // Read for the local-override exclusion.
             claude_dir.join("settings.json"),
         ];
+        let bundle = bundled_marketplace_dir();
         SOURCE_MIGRATION_CHECK.get_or_compute(&files, || {
-            let needed = plugin_needs_source_migration(&claude_dir);
+            let needed = plugin_needs_source_migration(&claude_dir, bundle.as_deref());
             if !needed {
                 note_settings_still_declare_warp(&claude_dir);
             }
@@ -359,13 +376,25 @@ pub(super) fn reset_source_move_attempt() {
     SOURCE_MOVE_ATTEMPTED.store(false, Ordering::Relaxed);
 }
 
+/// `claude plugin marketplace add <bundled folder>`, as a command a user can paste. The
+/// folder is resolved once; a build run outside an install shows a placeholder path.
+fn add_bundle_command() -> &'static str {
+    static COMMAND: LazyLock<&'static str> = LazyLock::new(|| {
+        let folder = bundled_marketplace_dir()
+            .map(|dir| dir.display().to_string())
+            .unwrap_or_else(|| format!("<Phosphor install folder>/resources/{BUNDLE_RELATIVE}"));
+        Box::leak(format!("claude plugin marketplace add \"{folder}\"").into_boxed_str())
+    });
+    *COMMAND
+}
+
 static INSTALL_INSTRUCTIONS: LazyLock<PluginInstructions> = LazyLock::new(|| PluginInstructions {
     title: crate::t_static!("cli-agent-plugin-claude-install-title"),
     subtitle: crate::t_static!("cli-agent-plugin-claude-install-subtitle"),
     steps: vec![
         PluginInstructionStep {
             description: crate::t_static!("cli-agent-plugin-claude-add-marketplace-step"),
-            command: "claude plugin marketplace add https://gitlab.com/winters-phosphor/claude-code-warp.git",
+            command: add_bundle_command(),
             executable: true,
             link: None,
         },
@@ -394,7 +423,7 @@ static UPDATE_INSTRUCTIONS: LazyLock<PluginInstructions> = LazyLock::new(|| Plug
         },
         PluginInstructionStep {
             description: crate::t_static!("cli-agent-plugin-readd-marketplace-step"),
-            command: "claude plugin marketplace add https://gitlab.com/winters-phosphor/claude-code-warp.git",
+            command: add_bundle_command(),
             executable: true,
             link: None,
         },
@@ -424,8 +453,19 @@ fn plugin_is_outdated(claude_dir: &Path) -> bool {
     }
 }
 
-fn plugin_needs_source_migration(claude_dir: &Path) -> bool {
-    check_installed(claude_dir) && marketplace_registered_from_warp(claude_dir)
+/// Whether the installed plugin's marketplace is registered from somewhere other than the
+/// bundled folder: a remote repository (Warp's GitHub, an older GitLab copy) or a bundle
+/// folder at an old install location. A developer's own local folder is never moved, and
+/// with no bundled folder to move to there is nothing to offer.
+fn plugin_needs_source_migration(claude_dir: &Path, bundle: Option<&Path>) -> bool {
+    let Some(bundle) = bundle else {
+        return false;
+    };
+    if !check_installed(claude_dir) || claude_code_marketplace_has_local_override(claude_dir) {
+        return false;
+    }
+    registered_marketplace_source(claude_dir)
+        .is_some_and(|source| !source_is_current_bundle(&source, bundle))
 }
 
 /// Whether the `claude-code-warp` marketplace is registered from Warp's GitHub
@@ -483,55 +523,54 @@ fn note_settings_still_declare_warp(claude_dir: &Path) {
     if !SETTINGS_NOTE_LOGGED.swap(true, Ordering::Relaxed) {
         log::info!(
             "[PLUGIN_INSTALL] {} still declares extraKnownMarketplaces[\"{MARKETPLACE_NAME}\"] \
-             from warpdotdev/claude-code-warp; Phosphor does not edit it. Point it at \
-             {MARKETPLACE_URL} to stop Claude Code re-registering the warpdotdev copy.",
+             from warpdotdev/claude-code-warp; Phosphor does not edit it. Remove that entry to \
+             stop Claude Code re-registering the warpdotdev copy over the network.",
             claude_dir.join("settings.json").display()
         );
     }
 }
 
-/// The `claude plugin marketplace add` argument that registers `source` (a
-/// recorded marketplace source) again.
-fn marketplace_add_argument(source: &Value) -> Option<String> {
-    let with_ref = |location: &str, source: &serde_json::Map<String, Value>| match source
-        .get("ref")
-        .and_then(Value::as_str)
-    {
-        Some(git_ref) if !git_ref.is_empty() => format!("{location}#{git_ref}"),
-        _ => location.to_owned(),
-    };
+/// The folder a recorded marketplace source points at, when the source is a local folder
+/// (`{"source": "directory", "path": ...}`, or a bare local path string).
+fn local_source_path(source: &Value) -> Option<String> {
     match source {
-        Value::String(location) => Some(location.clone()),
         Value::Object(source) => {
-            let field = match source.get("source").and_then(Value::as_str)? {
-                "github" => "repo",
-                "git" | "url" => "url",
-                "directory" | "file" => "path",
-                _ => return None,
-            };
-            let location = source.get(field).and_then(Value::as_str)?;
-            Some(with_ref(location, source))
+            let kind = source.get("source").and_then(Value::as_str);
+            let path = source.get("path").and_then(Value::as_str);
+            if matches!(kind, Some("directory" | "file")) {
+                path.filter(|path| !path.is_empty()).map(str::to_owned)
+            } else {
+                None
+            }
         }
+        Value::String(source) if is_local_marketplace_path(source) => Some(source.clone()),
         _ => None,
     }
 }
 
-/// Whether a recorded marketplace source is Phosphor's GitLab URL
-/// (`{"source": "git", "url": ...}`, or a bare string), with or without
-/// `.git`, a trailing `/` or a `#ref`, in any letter case.
-fn marketplace_source_is_phosphor(source: &Value) -> bool {
-    let location = match source {
-        Value::Object(source) => source.get("url").and_then(Value::as_str),
-        Value::String(source) => Some(source.as_str()),
-        _ => None,
-    };
-    let normalize = |location: &str| {
-        let location = location.trim().to_ascii_lowercase();
-        let location = location.split('#').next().unwrap_or_default().to_owned();
-        let location = location.trim_end_matches('/');
-        location.strip_suffix(".git").unwrap_or(location).to_owned()
-    };
-    location.is_some_and(|location| normalize(location) == normalize(MARKETPLACE_URL))
+/// Whether `path` is where a Phosphor install keeps the plugin
+/// (`.../bundled/claude_plugin`), at this install location or an older one.
+fn looks_like_bundle_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    normalized.trim_end_matches('/').ends_with(BUNDLE_RELATIVE)
+}
+
+fn same_folder(recorded: &str, bundle: &Path) -> bool {
+    let trim = |p: &str| p.trim_end_matches(['/', '\\']).to_owned();
+    let canonical = |p: &Path| fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    trim(recorded) == trim(&bundle.to_string_lossy())
+        || canonical(Path::new(recorded)) == canonical(bundle)
+}
+
+/// Whether a recorded source is the bundled folder of this install.
+fn source_is_current_bundle(source: &Value, bundle: &Path) -> bool {
+    local_source_path(source).is_some_and(|path| same_folder(&path, bundle))
+}
+
+/// Whether a recorded source is a local folder that is NOT a Phosphor bundle: a developer's
+/// own checkout, which Phosphor leaves alone.
+fn source_is_developer_local(source: &Value) -> bool {
+    local_source_path(source).is_some_and(|path| !looks_like_bundle_path(&path))
 }
 
 fn marketplace_source_is_warp(source: &Value) -> bool {
@@ -613,22 +652,9 @@ fn claude_code_marketplace_has_local_override(claude_dir: &Path) -> bool {
     declared || registered
 }
 
+/// A local-folder entry that is a developer's own, not one of Phosphor's bundle folders.
 fn marketplace_entry_has_local_path(entry: &Value) -> bool {
-    let Some(source) = entry.get("source") else {
-        return false;
-    };
-    match source {
-        Value::Object(source) => {
-            // A `directory` (or `file`) source is a path on this machine,
-            // whatever its spelling (`C:\...` on Windows included).
-            let source_kind = source.get("source").and_then(Value::as_str);
-            let path = source.get("path").and_then(Value::as_str);
-            matches!(source_kind, Some("directory" | "file"))
-                && path.is_some_and(|path| !path.is_empty())
-        }
-        Value::String(source) => is_local_marketplace_path(source),
-        _ => false,
-    }
+    entry.get("source").is_some_and(source_is_developer_local)
 }
 
 fn is_local_marketplace_path(source: &str) -> bool {

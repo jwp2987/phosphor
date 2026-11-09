@@ -536,9 +536,8 @@ impl AgentProvidersWidget {
             rows.insert(provider.id.clone(), row);
         }
 
-        // Triggers a catalog load (disk cache + network if needed) as soon as the page is
-        // entered.
-        ctx.dispatch_typed_action_deferred(AISettingsPageAction::EnsureModelsDevLoaded);
+        // The catalog load is NOT started here: this constructor runs when the settings view
+        // is built (for search), not when the page is opened. `on_page_selected` starts it.
 
         // ---- Search box ----
         let initial_query = crate::ai::agent_providers::models_dev::search_query();

@@ -1,10 +1,10 @@
 //! models.dev data source integration.
 //!
-//! When the user opens the Providers settings page, `https://models.dev/api.json`
-//! is fetched asynchronously in the background and cached to
-//! `${cache_dir}/models-dev.json`. The next launch reads the cache directly; if the
-//! cache is present and hasn't exceeded its TTL (24h by default), no new request is
-//! sent; when it's stale or missing, it fetches again.
+//! The app uses the catalog built into the binary (a gzip of `assets/models_dev/api.json`)
+//! and makes NO request by default. The "Refresh model list" button downloads
+//! [`DEFAULT_MODELS_DEV_URL`] (or the user's `models_dev_url`) on demand and caches it to
+//! `${cache_dir}/models-dev.json`. With `agents.warp_agent.models_dev_fetch = true`, opening
+//! the Providers page also downloads when the cache is stale (24 h TTL).
 //!
 //! The data structure mirrors opencode's `provider/models.ts`: the top level is
 //! `{ <provider_id>: Provider }`, and Provider contains `models: { <model_id>: Model }`.
@@ -30,9 +30,10 @@ use std::time::{Duration, SystemTime};
 use http_client::Client;
 use serde::{Deserialize, Serialize};
 
-/// Default for `agents.warp_agent.models_dev_url`: the repo copy of the catalog on main
-/// (`assets/models_dev/api.json`, refreshed by `script/update_models_dev.py`). Set the
-/// setting to `https://models.dev/api.json` to read upstream directly.
+/// The ONE URL an on-demand "Refresh model list" fetches, unless the user sets
+/// `agents.warp_agent.models_dev_url` themselves: the repo copy of the catalog on main
+/// (`assets/models_dev/api.json`, refreshed by `script/update_models_dev.py`). Nothing else
+/// in the app contacts models.dev (or any URL) for the catalog.
 pub const DEFAULT_MODELS_DEV_URL: &str =
     "https://gitlab.com/winters-phosphor/phosphor/-/raw/main/assets/models_dev/api.json";
 /// The gzip of the repo copy, embedded as the last-resort catalog.
@@ -483,14 +484,15 @@ where
     }
 }
 
-/// The Refresh button (`RefreshModelsDev`). Never calls `fetch` when `enabled` is false.
-/// On failure with nothing loaded, falls back to the bundled catalog.
-pub async fn refresh_catalog<F, Fut>(enabled: bool, url: String, fetch: F) -> Result<(), String>
+/// The Refresh button (`RefreshModelsDev`): an explicit user action, so it fetches on demand
+/// whatever `models_dev_fetch` says (that setting only gates the automatic load). On failure
+/// with nothing loaded, falls back to the bundled catalog.
+pub async fn refresh_catalog<F, Fut>(url: String, fetch: F) -> Result<(), String>
 where
     F: FnOnce(String) -> Fut,
     Fut: std::future::Future<Output = Result<(), String>>,
 {
-    let r = fetch_if_enabled(enabled, || fetch(url)).await;
+    let r = fetch(url).await;
     if r.is_err() && !has_catalog() {
         load_bundled();
     }

@@ -162,6 +162,8 @@ This is the part that surprises people, so it is worth stating exactly:
 The toggle is `agents.mcp_servers.file_based_mcp_enabled` in `settings.toml`,
 default `false`.
 
+In short: only servers that appear in a config file you (or your own tools) wrote can start, and a default install starts none from other tools' configs or from any project. Phosphor never downloads or adds an MCP server on its own.
+
 **The TUI is not a blanket "nothing auto-starts" surface.** Global *Phosphor*
 servers are only *deferred* there, not suppressed: nothing spawns during the
 pre-mount config scan, and then the TUI front-end releases them immediately

@@ -1,0 +1,20 @@
+{
+  "name": "claude-code-warp",
+  "description": "Phosphor terminal integration for Claude Code (bundled with Phosphor)",
+  "owner": {
+    "name": "Phosphor"
+  },
+  "plugins": [
+    {
+      "name": "warp",
+      "description": "Notifications to Phosphor when Claude completes tasks or needs input",
+      "source": "./plugins/warp",
+      "version": "2.4.1",
+      "category": "productivity",
+      "tags": [
+        "notifications",
+        "terminal"
+      ]
+    }
+  ]
+}

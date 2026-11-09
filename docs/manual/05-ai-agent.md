@@ -697,23 +697,32 @@ quick-launch button for a command you can type anyway would withhold nothing.
 Their visibility is controlled only by the per-agent settings above.
 
 Richer status (a working indicator that tracks the agent's turn) needs the
-vendor's Phosphor notification plugin: `claude-code-warp` ≥ 2.0.0 for
-Claude Code, `codex-warp` ≥ 0.4.0 for Codex, `gemini-cli-warp` ≥ 1.0.0 for
-Gemini CLI, `opencode-warp` for OpenCode. Phosphor fetches them from its own GitLab copies under
+vendor's Phosphor notification plugin: `claude-code-warp` for Claude Code
+(shipped inside Phosphor, see below), `codex-warp` ≥ 0.4.0 for Codex,
+`gemini-cli-warp` ≥ 1.0.0 for Gemini CLI, `opencode-warp` for OpenCode. The
+latter three Phosphor fetches from its own GitLab copies under
 [`gitlab.com/winters-phosphor`](https://gitlab.com/winters-phosphor) (mirrors of
-Warp's repositories, MIT notices kept), not from Warp's GitHub. Claude's installs
-automatically; Codex's is behind a build feature that is on by default; Gemini's
-needs an opt-in flag and is effectively off. A plugin you installed earlier from
-Warp's GitHub is offered a separate "Move plugin to Phosphor source" chip in the
-agent footer; nothing moves until you click it, and background launches never
-move anything. The move first checks that gitlab.com answers and puts the old
-install back if the new one fails to install;
-a marketplace or extension you pointed at a local checkout is left alone. For
-OpenCode the entry is the git spec
+Warp's repositories, MIT notices kept), not from Warp's GitHub. Codex's is behind
+a build feature that is on by default; Gemini's needs an opt-in flag and is
+effectively off. For OpenCode the entry is the git spec
 `git+https://gitlab.com/winters-phosphor/opencode-warp.git#v0.2.0`; an older
 `@warp-dot-dev/opencode-warp` entry in your global `opencode.json` is rewritten
 to it when you click the move chip (nothing else in the file changes), and a local
 `file://` entry is never touched.
+
+**The Claude Code plugin ships with Phosphor.** Its files are in the app's
+resources (`resources/bundled/claude_plugin`, a complete Claude Code marketplace
+named `claude-code-warp` holding the one plugin `warp`). Installing registers
+that folder with `claude plugin marketplace add <folder>` and runs
+`claude plugin install warp@claude-code-warp`: nothing is downloaded, no GitHub,
+no GitLab, and it works offline. The plugin makes no network calls itself; it only
+writes OSC 777 sequences to the terminal. Plugin updates arrive with Phosphor
+releases, so the plugin version always matches the event parser in the app: after
+you update Phosphor the footer offers the update chip, and it re-registers the
+new folder. A plugin you installed earlier from Warp's GitHub or Phosphor's old
+GitLab copy is offered a "Move plugin" chip; nothing moves until you click it, and
+background launches never move anything. A marketplace you pointed at your own
+local checkout is left alone. The `oz-harness-support` plugin is not included.
 
 ### 2. Driving a CLI agent *as* Phosphor's harness
 

@@ -100,6 +100,8 @@ NOT_WINDOWS = {
     "cb_state_relaunch": "needs the App stop/start handle on a profile with state; Windows has a separate flow",
     "cb_ui_action_latency": "needs Pillow screenshot diffs of new-tab/switch chords not mapped in the Windows backend",
     "cb_editor_mac": "macOS-only case (Linux and Windows have editor_edit_save / editor_paste)",
+    "zero_network_startup": "Wave N: traces the app with Linux strace; a Windows/macOS network trace is not built yet",
+    "claude_plugin_offline": "Wave N: needs `unshare -rn` (Linux network namespaces) and the Linux pty; the plugin's hook scripts are bash+jq",
 }
 
 

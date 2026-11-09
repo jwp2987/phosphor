@@ -2646,16 +2646,17 @@ define_settings_group!(AISettings, settings: [
         description: "User-configured custom Agent providers (OpenAI-compatible).",
     }
 
-    // Settings-file-only (#1791): when false, Phosphor never downloads the models.dev catalog
-    // (no request at startup load, none from the Refresh button); it keeps the on-disk cache.
+    // Settings-file-only (#1791): when true, opening the Providers page downloads the models.dev
+    // catalog in the background if the cache is stale. Default false (Wave N, no network at
+    // startup): the built-in catalog is used and only the "Refresh model list" button fetches.
     models_dev_fetch: ModelsDevFetch {
         type: bool,
-        default: true,
+        default: false,
         supported_platforms: SupportedPlatforms::ALL,
         sync_to_cloud: SyncToCloud::Never,
         private: false,
         toml_path: "agents.warp_agent.models_dev_fetch",
-        description: "Download the models.dev model catalog; false uses only the local cache.",
+        description: "Download the models.dev model catalog automatically when the Providers page opens; false (default) uses the cache or built-in catalog, and only the Refresh button downloads.",
     }
 
     // Settings-file-only: where the catalog is downloaded from (when `models_dev_fetch` is
