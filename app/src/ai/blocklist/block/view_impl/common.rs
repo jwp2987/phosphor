@@ -4036,7 +4036,9 @@ pub fn render_user_avatar(
                 url: url.to_owned(),
                 display_name: user_display_name.to_owned(),
             })
-            .unwrap_or(AvatarContent::DisplayName(user_display_name.to_owned())),
+            .unwrap_or_else(|| {
+                crate::ui_components::avatar::local_user_avatar_content(app, user_display_name)
+            }),
         UiComponentStyles {
             width: Some(icon_size(app)),
             height: Some(icon_size(app)),

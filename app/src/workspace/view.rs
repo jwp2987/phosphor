@@ -20309,10 +20309,7 @@ impl Workspace {
 
     fn render_avatar_button(&self, appearance: &Appearance, ctx: &AppContext) -> Box<dyn Element> {
         let is_anonymous = self.auth_state.is_anonymous_or_logged_out();
-        let display_name = self
-            .auth_state
-            .username_for_display()
-            .unwrap_or(DEFAULT_USER_DISPLAY_NAME.to_owned());
+        let display_name = crate::auth::local_identity::current_display_name(ctx);
 
         let avatar_content = if self.auth_state.is_anonymous_or_logged_out() {
             AvatarContent::Icon(icons::Icon::Gear)
@@ -20323,7 +20320,9 @@ impl Workspace {
                     url,
                     display_name: display_name.clone(),
                 })
-                .unwrap_or(AvatarContent::DisplayName(display_name.clone()))
+                .unwrap_or_else(|| {
+                    crate::ui_components::avatar::local_user_avatar_content(ctx, &display_name)
+                })
         };
 
         let mut avatar = Avatar::new(
