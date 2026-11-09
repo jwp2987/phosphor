@@ -575,6 +575,10 @@ class Ctx:
             backend.STDERR_LOG = os.path.join(run, "logs", "injector-stderr.log")      # r18d8: wtype/xdotool stderr is kept, not /dev/null
         except Exception:
             pass
+        self.lab, self.lab_why, self.arm = None, None, None      # the fake ssh lab of this pass (run.py), why there is none, and the lab arm being run (cases_lab.py)
+        self.lab_helper_mode = "nohelper"                          # the helper mode the app was last launched with (cases_lab relaunches only when it changes)
+        import lab as _lab
+        self.remote = _lab.LocalRemote(prof)                      # ctx.lines(remote=True): the same-machine rhome today; a lab arm swaps in lab.LabRemote
         self.n = 0
         self.scale = float(os.environ.get("APPCI_SCALE", "1"))   # <1 shortens counts for smoke runs
         # the app's own pane has no rc hook (Windows PowerShell): rec.log is empty, prompt.log is empty. Cases already treat an empty rec.log as
@@ -601,6 +605,9 @@ class Ctx:
         return pred()
 
     def lines(self, name, remote=False):
+        rem = getattr(self, "remote", None)
+        if remote and rem is not None:
+            return rem.lines(name)
         base = self.prof.rhome if remote else self.W
         for attempt in range(5):
             try:
@@ -1034,6 +1041,8 @@ class Ctx:
                 except OSError as e:
                     out.append("test sshd (%s) NOT listening on 127.0.0.1:%d (%s)%s" % (info.get("kind"), port, e,
                                "; process EXITED rc=%s" % info["popen"].poll() if info.get("popen") is not None and info["popen"].poll() is not None else ""))
+            if getattr(self, "lab", None) is not None:
+                out.append(self.lab.diag())
             if not self.win:
                 out.append(self.ssh_client_probe())
             hops = self.ssh_app_hops(self.t_case0)
@@ -5321,3 +5330,4 @@ import cases_caseintl  # noqa: E402,F401  (group 8: international input, #1466)
 import cases_coverage_a  # noqa: E402,F401  (#1535-#1541: paste, alt-screen programs, sudo/su, ssh drop+reconnect, kill -9 + corrupt-db restore)
 import cases_coverage_b  # noqa: E402,F401  (g10: CI-review coverage gaps #1542-#1548: agent pickers, settings UI/migration, state relaunch, no-autoupdate, UI-action budgets, mac editor)
 import cases_shells  # noqa: E402,F401  (#1534: startup_shell_override passes: cmd.exe and pwsh 7 as the pane shell)
+import cases_lab  # noqa: E402,F401  (Wave 0.5b: the fake ssh lab cases, lab_*; run only by --cases lab_*)

@@ -20,6 +20,9 @@ def need_ssh(ctx, r):
 
 
 def rm_remote(ctx, *names):
+    rem = getattr(ctx, "remote", None)
+    if rem is not None and hasattr(rem, "rm"):          # the fake ssh lab (lab.LabRemote) removes over HTTP; lab.LocalRemote is the loop below
+        return rem.rm(*names)
     for n in names:
         try:
             os.remove(os.path.join(ctx.prof.rhome, n))

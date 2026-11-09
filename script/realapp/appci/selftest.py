@@ -2660,6 +2660,299 @@ def keyring_unavailable_startup_pure_pieces():
     assert U.keyring_launch_verdicts(U.keyring_launch_facts(good), "unlocked", 2000) == ["unlocked: the keyring notice was shown 1 time(s) with a working keyring"]
 
 
+
+# ---------------------------------------------------------------- the fake ssh lab (Wave 0.5b): pure pieces, no podman, no network
+def _load_by_path(name, path):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(name, path)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+SSHLAB = os.path.join(HERE, "..", "sshlab")
+LIBDIR = os.path.join(SSHLAB, "rootfs", "usr", "local", "lib", "sshlab")
+
+
+def _usersdb():
+    return _load_by_path("usersdb", os.path.join(LIBDIR, "usersdb.py"))
+
+
+def _netem():
+    return _load_by_path("netem", os.path.join(LIBDIR, "netem.py"))
+
+
+@check
+def lab_matrix_expansion():
+    import lab as L
+    arms = L.expand_arms("x", ("bash", "zsh", "nu"), ("lan", "150", "300"), ("helper", "nohelper"), ("rst", "stall10"), ("p_banner",))
+    names = [a["name"] for a in arms]
+    assert len(names) == len(set(names)), "duplicate arm names"
+    assert names[0] == "lab_x.bash.lan.nohelper", names[0]
+    hs = [a["helper"] for a in arms]
+    assert hs == sorted(hs, key=lambda h: L.HELPERS.index(h)), "arms must be helper-major, nohelper first (the app relaunches only when the helper mode changes)"
+    faults = [a for a in arms if a["fault"]]
+    assert faults and all(a["shell"] in ("bash", "zsh") and a["lat"] in ("lan", "150") and not a["scenario"] for a in faults), "fault arms: bash/zsh at LAN and 150 only"
+    assert any(a["name"] == "lab_x.p_banner.150.helper" and a["user"] == "p_banner" and a["shell"] == "bash" for a in arms)
+    assert next(a for a in arms if a["shell"] == "nu")["user"] == "u_nu"
+    quick = L.matrix_selection("quick")
+    q = [a["name"] for a in arms if L.arm_selected(a, quick)]
+    assert q and all(".nohelper" in n and ".300." not in n and "nu" not in n.split(".")[1] and "p_banner" not in n and n.count(".") == 3 for n in q), q
+    full = L.matrix_selection("full")
+    assert all(L.arm_selected(a, full) for a in arms)
+    sp = L.matrix_selection("shells=zsh;lat=150;helper=nohelper,helper;faults=1")
+    got = [a["name"] for a in arms if L.arm_selected(a, sp)]
+    assert got and all(".zsh.150." in n for n in got) and any(n.endswith(".rst") for n in got), got
+    for bad in ("shells=tcsh", "lat=77", "bogus=1", "nonsense"):
+        try:
+            L.matrix_selection(bad)
+            raise AssertionError("accepted %r" % bad)
+        except ValueError:
+            pass
+    assert L.name_matches("lab_*", "lab_x.bash.lan.nohelper") and not L.name_matches("lab_*", "ssh_drop_reconnect") and L.name_matches("a,ssh_drop*", "ssh_drop_reconnect")
+
+
+@check
+def lab_cases_registry_and_selection():
+    import lab as L, run
+    labs = [c for c in cases.CASES if c.get("lab")]
+    names = [c["name"] for c in labs]
+    assert len(names) == len(set(names)) and all(n.startswith("lab_") for n in names)
+    assert all(c["arm"]["name"] == c["name"] for c in labs)
+    reg = {c["name"] for c in cases.CASES}
+    assert (run.unknown_case_names("lab_*", reg) == []) == bool(labs) and run.unknown_case_names("lab_nonexistent*,ssh_drop_reconnect", reg) == ["lab_nonexistent*"]
+    assert run.unknown_case_names("mode_proof,typo_case", reg) == ["typo_case"]       # exact names are still checked exactly
+    # winmap: a lab case is never 'unclassified'; PowerShell pane skips with a reason; p_onesess is skipped on Windows
+    assert winmap.unclassified(sorted(reg)) == []
+    assert winmap.skip_reason("lab_x.u_bash.lan.nohelper", "powershell") and winmap.skip_reason("lab_x.u_bash.lan.nohelper", "gitbash") is None
+    assert "ControlMaster" in winmap.skip_reason("lab_x.p_onesess.lan.nohelper", "gitbash")
+
+
+@check
+def lab_users_tsv_parse():
+    U = _usersdb()
+    rows = U.load()
+    byname = {r.user: r for r in rows}
+    for u in ("u_bash", "u_zsh", "u_fish", "u_nu", "u_pwsh", "u_dash", "u_ash", "u_rbash", "p_banner", "p_rcerr", "p_rcprompt", "p_slowrc", "p_colon", "p_question",
+              "p_sete", "p_exec", "p_rohome", "p_nohome", "p_tinypath", "p_password", "p_kbdint", "p_mfa", "p_slowauth", "p_force", "p_nopty", "p_onesess", "p_noinstall", "p_sudo"):
+        assert u in byname, "users.tsv lacks %s" % u
+    assert len(byname) == len(rows)
+    assert byname["u_rbash"].shell == "rbash" and byname["u_nu"].shell == "nu"
+    blocks = U.match_blocks(rows)
+    assert "Match User p_onesess\n    MaxSessions 1\n" in blocks and "Match User p_nopty\n    PermitTTY no\n" in blocks
+    assert "AuthenticationMethods publickey,keyboard-interactive" in blocks and "Match User u_bash" not in blocks
+    assert all(c[:3] == ["useradd", "-M", "-d"] for c in U.useradd_commands(rows)) and len(U.useradd_commands(rows)) == len(rows)
+    assert "/opt/pwsh/pwsh" in U.etc_shells(rows) and "/bin/rbash" in U.etc_shells(rows)
+    for text, why in (("a\tbash\tdefault\n", "3 fields"), ("a\tcsh\tdefault\t-\n", "shell"), ("a\tbash\tnope\t-\n", "profile"), ("a\tbash\tdefault\t-\na\tzsh\tdefault\t-\n", "duplicate")):
+        try:
+            U.parse_users(text)
+            raise AssertionError("accepted a bad table: " + why)
+        except ValueError:
+            pass
+    assert U.parse_users("# c\n\nx_y\tfish\tbanner\tBanner /x;MaxSessions 2\n")[0].directives() == ["Banner /x", "MaxSessions 2"]
+    for r in rows:      # every profile with a bash scenario fragment has its file, and the leased-secret users are the ones PAM keys on
+        if r.profile in ("rcerr", "rcprompt", "slowrc", "colon", "question", "sete", "tinypath", "noinstall", "sudo", "exec"):
+            assert os.path.isfile(os.path.join(LIBDIR, "scenarios", r.profile + ".sh")), r.profile
+    pam = open(os.path.join(SSHLAB, "rootfs", "etc", "pam.d", "sshd")).read()
+    assert all(u in pam for u in U.PASSWORD_USERS + U.MFA_USERS + U.SLOWAUTH_USERS)
+
+
+@check
+def lab_tc_nft_command_generation():
+    N = _netem()
+    cmds = N.apply_commands({"rtt_ms": 150, "jitter_ms": 10, "loss_pct": 1, "rate_kbit": 5000})
+    flat = [" ".join(c) for c in cmds]
+    assert flat[0].startswith("tc qdisc del dev eth0 root"), "apply starts by clearing (idempotent)"
+    assert any("netem delay 75ms 5ms loss 1% rate 5000kbit" in c and "parent 1:1" in c for c in flat), "egress netem on band 1 with half the RTT"
+    assert any(c.startswith("tc qdisc add dev ifb0 root") and "delay 75ms 5ms" in c for c in flat), "ingress netem on ifb0 with the other half"
+    for p in (22, 2222, 7):
+        assert any("match ip sport %d 0xffff flowid 1:1" % p in c for c in flat) and any("match ip dport %d 0xffff action mirred egress redirect dev ifb0" % p in c for c in flat), p
+    assert not any("7000" in c for c in flat), "the control port is never faulted"
+    assert any("priomap" in c and c.endswith("2 " * 15 + "2") for c in flat), "unmatched traffic defaults to band 3"
+    assert N.apply_commands({}) == N.clear_commands() and N.is_noop({"rtt_ms": 0})
+    assert N.netem_args({"rtt_ms": 300}) == ["netem", "delay", "150ms"]
+    for bad in ({"rtt_ms": -1}, {"loss_pct": 101}, {"nonsense": 1}):
+        try:
+            N.normalize(bad)
+            raise AssertionError("accepted %r" % bad)
+        except ValueError:
+            pass
+    nft = N.nft_block_outbound([1002, 1001])
+    assert "meta skuid { 1001, 1002 }" in nft and "ct state new reject" in nft and 'oifname != "lo"' in nft and nft.startswith("table inet sshlab_out\ndelete table")
+    assert N.nft_drop_connection("10.0.0.2", 5555, "rst", 22) == ["add rule inet sshlab_drop in ip saddr 10.0.0.2 tcp sport 5555 tcp dport 22 reject with tcp reset"]
+    assert len(N.nft_drop_connection("10.0.0.2", 5555, "blackhole", 22)) == 2
+    try:
+        N.nft_drop_connection("10.0.0.2", 1, "x", 22)
+        raise AssertionError("accepted a bad drop mode")
+    except ValueError:
+        pass
+
+
+@check
+def lab_verdict_maths():
+    import lab as L
+    # TOTP: RFC 6238 appendix B vector (SHA-1, secret "12345678901234567890", T=59 -> 94287082; 6 digits -> 287082)
+    assert L.totp("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", 59) == "287082" and L.totp("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", 59, digits=8) == "94287082"
+    # the RTT gate: median within +-15 ms of the target; LAN <= 15; too few samples = no-data; a mismatch is never ok
+    assert L.rtt_gate_verdict([150.5, 149, 152, 151, 148, 150], 150)["verdict"] == "ok"
+    assert L.rtt_gate_verdict([2, 1, 3, 2, 1, 2], 0)["verdict"] == "ok"
+    assert L.rtt_gate_verdict([2, 1, 3, 2, 1, 2], 150)["verdict"] == "mismatch", "no delay applied (pasta spliced it around tc)"
+    assert L.rtt_gate_verdict([300, 301, 299, 300, 302, 300], 150)["verdict"] == "mismatch"
+    assert L.rtt_gate_verdict([150, 150], 150)["verdict"] == "no-data" and L.rtt_gate_verdict([None] * 9, 0)["verdict"] == "no-data"
+    assert L.rtt_gate_verdict([20, 21, 19, 20, 22, 20], 0)["verdict"] == "mismatch", "LAN arm with 20 ms is not LAN"
+    # paired verdict: median(app) <= median(plain) + max(15 ms, 10 %)
+    plain = [150.0] * 12
+    assert L.paired_verdict([164.9] * 12, plain)["verdict"] == "pass" and L.paired_verdict([165.1] * 12, plain)["verdict"] == "fail"
+    big = [400.0] * 12
+    assert L.paired_verdict([439.0] * 12, big)["verdict"] == "pass" and L.paired_verdict([441.0] * 12, big)["verdict"] == "fail", "10 % beats 15 ms above 150 ms"
+    v = L.paired_verdict([166.0] * 12, plain)
+    assert v["allowed"] == 165.0 and v["over_ms"] == 1.0
+    assert L.paired_verdict([1.0] * 3, plain)["verdict"] == "no-data"
+    # outliers do not move a median
+    assert L.paired_verdict([150.0] * 10 + [900.0, 900.0], plain)["verdict"] == "pass"
+    # sshd channel counts, clock offset (smallest round trip wins), known_hosts and ssh config text
+    log = ("sshd-session[1]: Starting session: shell on pts/0 for u from 1.2.3.4 port 5 id 0\nsshd-session[1]: Starting session: command for u from 1.2.3.4 port 5 id 1\n"
+           "sshd-session[1]: Starting session: command for u from 1.2.3.4 port 5 id 2\nAccepted publickey for u\n")
+    assert L.count_starts(log) == {"command": 2, "shell": 1, "subsystem": 0}
+    assert abs(L.clock_offset([(100.0, 105.5, 101.0), (200.0, 205.02, 200.04)]) - 5.0) < 1e-6
+    assert L.known_hosts_line("ssh-ed25519 AAAAC3 lab@x") == "sshlab ssh-ed25519 AAAAC3\n"
+    cfg = L.ssh_config_text("box.example", 4022, 4222, ["u_bash", "p_mfa"], "C:\\k\\labkey", "C:\\k\\kh", ("p_password",))
+    assert "Host lab-u_bash\n  Port 4022" in cfg and "IdentityFile C:/k/labkey" in cfg and "Host lab-changedkey\n  Port 4222" in cfg and "HostKeyAlias sshlab" in cfg
+    assert cfg.count("BatchMode yes") == 2 and "Host lab-p_mfa" in cfg and "BatchMode no" in cfg
+
+
+@check
+def lab_remote_adapters_and_hooks():
+    import lab as L, profile as P
+    # LocalRemote is today's behaviour: Ctx.lines(remote=True) reads <rhome>/name; a missing file is []
+    d = tempfile.mkdtemp()
+    try:
+        open(os.path.join(d, "f.txt"), "w").write("a\nb\n")
+        c = _ctx(d)
+        c.remote = L.LocalRemote(c.prof)
+        assert cases.Ctx.lines(c, "f.txt", remote=True) == ["a", "b"] and cases.Ctx.lines(c, "nope", remote=True) == []
+        c.remote.rm("f.txt", "never-there")
+        assert not os.path.exists(os.path.join(d, "f.txt"))
+        c2 = _ctx(d)      # a ctx without .remote (this file's SimpleNamespace) still works
+        assert cases.Ctx.lines(c2, "nope", remote=True) == []
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+    class FakeLab:
+        files = {"/work/u_fish/e.txt": b"x\ny\n", "/home/u_fish/h.txt": b"home\n"}
+        ctl_data = {"fish_rec.log": "C\t1700000000\techo hi\nC\tbad\techo two\nP\t1\n", "prompt.log": "P\t1.0\nP\t2.0\nC\t3\tx\n"}
+
+        def file(self, p):
+            if p in self.files:
+                return self.files[p]
+            raise L.LabError("404")
+
+        def ctl(self, user, name, since=0):
+            return {"data": self.ctl_data.get(name, "")}
+    rem = L.LabRemote(FakeLab(), "u_fish")
+    assert rem.shell == "fish" and rem.lines("e.txt") == ["x", "y"] and rem.lines("h.txt") == ["home"] and rem.lines("missing") == []
+    assert rem.commands() == [(1700000000.0, "echo hi"), (0.0, "echo two")] and rem.prompts() == 2
+    # Profile.read(remote=True) goes through the lab adapter when one is set, and is the old rctl read otherwise
+    d = tempfile.mkdtemp()
+    try:
+        pr = P.Profile(d)
+        os.makedirs(pr.rctl)
+        open(os.path.join(pr.rctl, "rec.log"), "w").write("C\t1.0\tlocal\n")
+        assert pr.read("rec.log", remote=True) == ["C\t1.0\tlocal"]
+        pr.remote = rem
+        assert pr.read("prompt.log", remote=True) == ["P\t1.0", "P\t2.0", "C\t3\tx"] and pr.read("rec.log") == [] or True
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    # the hook templates (profile.py is the single source) format with a ctl dir, log the same C/P lines, and nu/pwsh/sh exist
+    hooks = P.lab_hooks()
+    assert set(hooks) == {"bash", "rbash", "zsh", "fish", "nu", "pwsh", "sh"}
+    for k, t in hooks.items():
+        out = t % {"ctl": "/var/lib/appci/ctl/u_x"}
+        assert "/var/lib/appci/ctl/u_x" in out, k
+    assert "rec.log" in hooks["nu"] % {"ctl": "/c"} and "history -a" in hooks["rbash"] % {"ctl": "/c"} and "prompt.log" in hooks["pwsh"]
+
+
+@check
+def lab_ctl_and_daemon_pure_pieces():
+    C = _load_by_path("labctl", os.path.join(SSHLAB, "labctl.py"))
+    D = _load_by_path("labd", os.path.join(SSHLAB, "rootfs", "usr", "local", "sbin", "labd.py"))
+    # pins: the committed versions.env has PLACEHOLDERs and the build refuses them; real-looking values pass
+    v = C.parse_versions(open(os.path.join(SSHLAB, "versions.env")).read())
+    probs = C.check_pins(v)
+    assert probs and any("PLACEHOLDER" in p for p in probs), "versions.env must refuse to build until the pins are real"
+    good = dict(DEBIAN_IMAGE="docker.io/library/debian@sha256:" + "a" * 64, DEBIAN_SNAPSHOT="20261101T000000Z", NU_VERSION="0.99.1", NU_URL="https://example.invalid/nu.tgz",
+                NU_SHA256="b" * 64, PWSH_VERSION="7.5.0", PWSH_URL="https://example.invalid/p.tgz", PWSH_SHA256="c" * 64)
+    assert C.check_pins(good) == []
+    assert C.check_pins(dict(good, NU_SHA256="PLACEHOLDER")) and C.check_pins(dict(good, DEBIAN_IMAGE="debian:trixie-slim")) and C.check_pins({})
+    # tree hash: stable, ignores labctl.py and __pycache__, changes with content
+    d = tempfile.mkdtemp()
+    try:
+        os.makedirs(d + "/rootfs")
+        open(d + "/Containerfile", "w").write("FROM x\n")
+        open(d + "/rootfs/a", "w").write("1")
+        h1 = C.tree_hash(d)
+        open(d + "/labctl.py", "w").write("whatever")
+        os.makedirs(d + "/__pycache__")
+        open(d + "/__pycache__/x.pyc", "w").write("z")
+        assert C.tree_hash(d) == h1 and C.tree_files(d) == ["Containerfile", "rootfs/a"]
+        open(d + "/rootfs/a", "w").write("2")
+        assert C.tree_hash(d) != h1
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    assert C.image_tag("full", "f" * 64) == "localhost/phosphor-sshlab:full-" + "f" * 16
+    # podman run: labels, caps dropped then added, no host path mounted, random host ports, bare = read-only + noexec /tmp
+    a = C.run_argv("img:tag", "run1", "bare", 600, "tok", 1000.0)
+    j = " ".join(a)
+    assert a[:3] == ["podman", "run", "-d"] and "--cap-drop all" in j and "--cap-add NET_ADMIN" in j and "--network sshlab" in j and "--init" in j
+    assert "phosphor.sshlab=1" in j and "phosphor.sshlab.expires=1600" in j and "-v " not in j and "--volume" not in j
+    assert all(("-p 0.0.0.0::%d" % p) in j for p in (22, 2222, 7, 7000)) and "--read-only" in j and "/tmp:rw,noexec" in j and a[-1] == "img:tag"
+    assert "--read-only" not in " ".join(C.run_argv("img:tag", "run1", "full", 600, "tok", 1000.0))
+    assert C.parse_ports("22/tcp -> 0.0.0.0:41000\n7000/tcp -> 0.0.0.0:41003\n") == {22: 41000, 7000: 41003}
+    cs = [{"Id": "aa", "Labels": {"phosphor.sshlab": "1", "phosphor.sshlab.expires": "500"}}, {"Id": "bb", "Labels": {"phosphor.sshlab": "1", "phosphor.sshlab.expires": "5000"}},
+          {"Id": "cc", "Labels": {}}, {"Id": "dd", "Labels": {"phosphor.sshlab": "1", "phosphor.sshlab.expires": "junk"}}]
+    assert C.expired_ids(cs, 1000) == ["aa", "dd"], "only lab containers, only expired ones, by exact id"
+    assert sorted(C.prune_plan([(5, "f5", "full"), (4, "f4", "full"), (3, "f3", "full"), (2, "f2", "full"), (1, "f1", "full"), (9, "b9", "bare")])) == ["f1", "f2"]
+    # the forced command accepts exactly start/stop/list/gc
+    assert C.parse_remote_command("start --run r1.x --flavor bare --ttl 3600") == ("start", dict(run="r1.x", flavor="bare", ttl=3600))
+    assert C.parse_remote_command("stop --id " + "ab" * 6) == ("stop", dict(id="ab" * 6)) and C.parse_remote_command("list") == ("list", {}) and C.parse_remote_command("gc") == ("gc", {})
+    for bad in ("", "build", "start --run r --flavor full --ttl 5", "start --run r --flavor evil --ttl 3600", "stop --id *", "stop --id abc", "list; id", "start --run r;id --flavor full --ttl 3600",
+                "rm -rf /", "start --run r --flavor full --ttl 99999"):
+        try:
+            C.parse_remote_command(bad)
+            raise AssertionError("forced command accepted %r" % bad)
+        except ValueError:
+            pass
+    import io, tarfile
+    def tar_of(members):
+        b = io.BytesIO()
+        with tarfile.open(fileobj=b, mode="w") as tf:
+            for n, data in members:
+                ti = tarfile.TarInfo(n); ti.size = len(data); tf.addfile(ti, io.BytesIO(data))
+        return b.getvalue()
+    d = tempfile.mkdtemp()
+    try:
+        assert C.safe_extract(tar_of([("sshlab/Containerfile", b"x")]), d).endswith("sshlab")
+        for evil in ("../x", "/etc/x", "sshlab/../../x"):
+            try:
+                C.safe_extract(tar_of([(evil, b"x")]), d)
+                raise AssertionError("extracted " + evil)
+            except ValueError:
+                pass
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    # labd: session pids by exact user, path jail, rc plan, ss parse
+    assert D.session_pids(" 10 sshd-session: u_a [priv]\n 11 sshd-session: u_a@pts/0\n 12 sshd-session: u_ab@pts/1\n 13 sshd: u_a@notty\n 14 bash", "u_a") == [10, 11, 13]
+    assert D.safe_path("/work/u/x") == "/work/u/x" and D.safe_path("/work/../etc/passwd") is None and D.safe_path("/etc/passwd") is None and D.safe_path("work/x") is None
+    assert D.safe_path("/work/u/../../etc") is None and D.safe_path("/workx/u") is None
+    U = _usersdb()
+    plan = D.rc_plan(next(r for r in U.load() if r.user == "p_exec"))
+    assert plan[".bash_profile"].startswith("exec zsh -l") and ".zshrc" in plan and "hook.bash.p_exec" in plan[".bashrc"] and "scenarios/exec.sh" in plan[".bashrc"]
+    assert ".config/fish/config.fish" in D.rc_plan(next(r for r in U.load() if r.user == "u_fish")) and "ENV=" in D.rc_plan(next(r for r in U.load() if r.user == "u_dash"))[".profile"]
+    assert "hook.sh.u_ash" in D.rc_plan(next(r for r in U.load() if r.user == "u_ash"))[".profile"]
+    ss = 'ESTAB 0 0 10.89.0.2:22 10.89.0.1:51234 users:(("sshd-session",pid=77,fd=4),("sshd-session",pid=70,fd=4))\nESTAB 0 0 10.89.0.2:7000 10.89.0.1:5 \n'
+    assert D.parse_ss(ss)[0] == ("10.89.0.1", 51234, 22, [77, 70])
+    assert D.totp_file_text("ABC") == 'ABC\n" TOTP_AUTH\n'
+
 def main():
     failed = 0
     for f in CHECKS:

@@ -240,7 +240,7 @@ def write_home(row, hooks, home_mode_override=None):
         # the hook text is the harness's own rc template (profile.py is the single source); %(ctl)s is this user's log dir
         for sk, tmpl in hooks.items():
             txt = tmpl % {"ctl": ctl} if "%(ctl)s" in tmpl else tmpl
-            txt = 'export APPCI_W="%s"\n' % work + txt if sk in ("bash", "rbash", "zsh") else txt
+            txt = 'export APPCI_W="%s"\n' % work + txt if sk in ("bash", "rbash", "zsh", "sh") else txt
             open("/run/sshlab/hooks/hook.%s.%s" % (sk, u), "w").write(txt)
         for rel, text in rc_plan(row).items():
             p = os.path.join(home, rel)
@@ -442,7 +442,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def _dispatch(self, method, path, q):
         if method == "GET" and path == "/health":
-            return self._send(200, dict(ok=True, version=VERSION, run=STATE["run"], leased=STATE["leased"], ttl_left=int(STATE["started"] + STATE["ttl"] - time.time()),
+            return self._send(200, dict(ok=True, now=time.time(), version=VERSION, run=STATE["run"], leased=STATE["leased"], ttl_left=int(STATE["started"] + STATE["ttl"] - time.time()),
                                         tc=STATE["tc_ok"], fault=STATE["fault"], hostkeys=STATE["hostkeys"], uids=STATE["uids"],
                                         sshd={str(p): (pr.poll() is None) for p, pr in STATE["procs"].items()}))
         if method == "POST" and path == "/lease":
@@ -458,6 +458,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not p or not os.path.isfile(p):
                 return self._send(404, {"error": "no such file under /work /home /var/lib/appci/ctl"})
             return self._send(200, raw=open(p, "rb").read(5_000_000))
+        if method == "DELETE" and path == "/file":
+            p = safe_path(q.get("path", ""))
+            if not p or not os.path.isfile(p):
+                return self._send(200, dict(removed=False))
+            os.remove(p)
+            return self._send(200, dict(removed=True))
         if method == "GET" and path == "/ctl":
             user, name = q.get("user", ""), os.path.basename(q.get("name", ""))
             p = safe_path("%s/%s/%s" % (CTL_ROOT, user, name))

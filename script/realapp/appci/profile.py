@@ -126,6 +126,45 @@ function __pa_postexec --on-event fish_postexec; printf 'C\\t%%s\\t%%s\\n' (date
 '''
 
 
+# --- the fake ssh lab (appci/lab.py, script/realapp/sshlab): the hook each lab user's rc sources. profile.py stays the single source: lab_hooks() is
+# pushed to labd at lease time and formatted per user with that user's log dir. Same log format as the local rc files: C<TAB>epoch<TAB>line / P<TAB>epoch.
+NU_HOOK = r"""# appci lab hook (nu): same log format, pre_execution -> rec.log, pre_prompt -> prompt.log
+$env.PA_CTL = "%(ctl)s"
+$env.PROMPT_COMMAND = {|| "nu> " }
+$env.PROMPT_INDICATOR = ""
+$env.config = ($env.config | upsert hooks {
+  pre_prompt: [{|| $"P\t(date now | format date '%%s.%%f')\n" | save --append $"($env.PA_CTL)/prompt.log" }]
+  pre_execution: [{|| $"C\t(date now | format date '%%s.%%f')\t(commandline)\n" | save --append $"($env.PA_CTL)/rec.log" }]
+})
+"""
+PWSH_HOOK = r"""# appci lab hook (pwsh): prompt() logs P, and C for each new history entry
+$env:PA_CTL = '%(ctl)s'
+$global:__pa_n = 0
+function global:prompt {
+  $ts = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() / 1000.0
+  $h = Get-History -Count 1
+  if ($h -and $h.Id -ne $global:__pa_n) { $global:__pa_n = $h.Id; Add-Content -Path "$env:PA_CTL/rec.log" -Value ("C`t{0}`t{1}" -f $ts, $h.CommandLine) }
+  Add-Content -Path "$env:PA_CTL/prompt.log" -Value ("P`t{0}" -f $ts)
+  "PS> "
+}
+"""
+SH_HOOK = r"""# appci lab hook (dash / busybox ash): no history hook exists, so effect files only; the prompt is fixed
+PA_CTL="%(ctl)s"; export PA_CTL
+PS1='$ '
+cd "$APPCI_W" 2>/dev/null || true
+"""
+RBASH_TAIL = r"""
+# rbash: the history file is the record (restricted shells cannot redirect writes to the ctl dir from commands)
+HISTFILE="%(ctl)s/bash_history"
+PROMPT_COMMAND="history -a${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+"""
+
+
+def lab_hooks():
+    """{shell key: template with %(ctl)s} for labd's lease: the same BASHRC / ZSHRC / FISH the local scratch home uses, plus nu, pwsh, sh (dash/ash) and rbash"""
+    return {"bash": BASHRC, "rbash": BASHRC + RBASH_TAIL, "zsh": ZSHRC, "fish": FISH, "nu": NU_HOOK, "pwsh": PWSH_HOOK, "sh": SH_HOOK}
+
+
 def history_lines(n=2200, seed=1):
     r = random.Random(seed)
     verbs = ["ls", "cd", "git", "cat", "grep", "make", "cargo", "docker", "ssh", "echo", "find", "tar", "sudo", "vim", "less"]
@@ -155,6 +194,7 @@ class Profile:
         self.ref_boot_rc = os.path.join(self.home, ".refrc_boot")      # #1583 G2: ref_rc, then Phosphor's own bash bootstrap sourced (the shell hooks the pane has)
         self.ref_active = False                        # True while the reference terminal is the target: commands()/read() then read refctl
         self.rhome = os.path.join(run, "rhome")
+        self.remote = None                              # fake ssh lab: a lab.LabRemote; read(remote=True) goes through it (None = the same-machine rctl)
         self.shots = os.path.join(run, "shots")
 
     @property
@@ -456,6 +496,8 @@ class Profile:
         _wr(cfg + "/settings.toml", "\n".join(lines))
 
     def read(self, which, remote=False):
+        if remote and self.remote is not None:
+            return self.remote.read(which)
         p = os.path.join(self.rctl if remote else (self.refctl if self.ref_active else self.ctl), which)
         try:
             return open(p, errors="replace").read().splitlines()

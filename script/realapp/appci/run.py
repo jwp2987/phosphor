@@ -11,7 +11,7 @@
 import argparse, json, os, re, shutil, subprocess, sys, time, traceback
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import backend, cases, deadline, injacct, profile, sshd, winmap, app as appmod  # noqa: E402
+import backend, cases, deadline, injacct, lab as labmod, profile, sshd, winmap, app as appmod  # noqa: E402
 
 
 def skip_status(r, why):
@@ -25,7 +25,8 @@ def skip_status(r, why):
 
 def unknown_case_names(requested, registry_names):
     """names in a comma list (--cases / --skip) that no registered case has (#1508: a misspelling used to select nothing and exit 0)"""
-    return [n for n in (requested or "").split(",") if n and n not in registry_names]
+    import fnmatch      # --cases / --skip also take fnmatch globs (lab_* arms): a glob is unknown only when it matches no registered case
+    return [n for n in (requested or "").split(",") if n and not any(fnmatch.fnmatchcase(r, n) for r in registry_names)]
 
 
 class CaseTimeout(Exception):
@@ -220,7 +221,11 @@ def main():
         for m in a.modes.split(","):
             emit(dict(name="case_selection", mode=m, status="fail", seconds=0, detail=["unknown case name(s) %s (not in the registry: renamed or misspelled?)" % ", ".join(bad_names)]))
         return finish(run, a, 2)
-    sel = [c for c in cases.CASES if (not a.cases or c["name"] in a.cases.split(",")) and c["name"] not in a.skip.split(",")]
+    # fake-ssh-lab cases (cases_lab.py, docs/testing.md 2.15) run ONLY when --cases names them (the app-test-lab-* jobs pass 'lab_*'), and only the arms
+    # APPCI_LAB_MATRIX selects; the ordinary jobs never start a lab container
+    lab_sel = labmod.matrix_selection()
+    sel = [c for c in cases.CASES if ((not a.cases and not c.get("lab")) or (a.cases and labmod.name_matches(a.cases, c["name"])))
+           and not labmod.name_matches(a.skip, c["name"]) and (not c.get("lab") or labmod.arm_selected(c["arm"], lab_sel))]
     sel.sort(key=lambda c: c["order"])
     exit_fail = False
     crashed_exit = None
@@ -250,6 +255,7 @@ def main():
                 continue
         ssh_info = None
         ssh_why = None       # why the ssh cases skip when there is no usable ssh test host
+        lab_obj, lab_why = None, None      # the fake ssh lab (labmod.Lab) of this pass, and why there is none
         app = None
         instance = 1       # app instance number within this mode: each instance's log is kept as phosphor.<n>.log (#1457)
         if not clock.allows(0)[0]:
@@ -277,6 +283,20 @@ def main():
                     print("ssh probe failed, ssh cases will skip: %s" % ssh_why, flush=True)
                     sshd.stop(ssh_info)
                     ssh_info = None
+            if any(c.get("lab") and mode in c["modes"] and (not win or not winmap.skip_reason(c["name"], pane)) for c in sel):
+                lab_obj, lab_why = labmod.Lab.start(run)
+                if lab_obj:
+                    try:
+                        lab_obj.lease()
+                        lab_obj.write_ssh(prof.home)
+                        prof.remote = labmod.LabRemote(lab_obj, "u_bash")      # a lab case re-points this at its arm's user
+                        print("[lab] %s lab up (%s); fault ports only, control port untouched" % (lab_obj.mode, lab_obj.info.get("image")), flush=True)
+                    except Exception as e:
+                        lab_why = "the lab started but the lease/config failed: %r" % (e,)
+                        lab_obj.stop()
+                        lab_obj = None
+                if lab_obj is None:
+                    print("[lab] no lab for this pass, the lab cases will skip: %s" % lab_why, flush=True)
             print("owner settings: %s" % profile.Profile.owner_note, flush=True)
             log_path = os.environ.get("APPCI_APP_LOG") or (prof.home + "/.local/state/phosphor/phosphor.log" if a.backend != "mac" else prof.home + "/Library/Logs/phosphor.log")
             if win:
@@ -297,6 +317,7 @@ def main():
                 if a.backend in ("mac", "windows", "wayland"):
                     be.pid_fn = app.pid           # the guard compares the frontmost PID with THIS pid before every injection
             ctx = cases.Ctx(be, prof, app, run, mode, a.seed, ssh_info, bool(ollama_url), log_path, ssh_why, pane=pane, variant=variant)
+            ctx.lab, ctx.lab_why = lab_obj, lab_why
             if win:       # #1540/#1541: a case that relaunches the app by itself re-proves the keys and re-sets the pane state exactly as the relaunch branch below does
                 ctx.reprove = lambda: prove_keys(ctx, be, pane, label)
             tier_names = None
@@ -599,6 +620,9 @@ def main():
                     print("teardown[%s]: app pid %s stop status unknown: %r" % (label, pid_before, e), flush=True)
             sshd.stop(ssh_info)
             print("teardown[%s]: test sshd %s" % (label, "stopped" if ssh_info else "was not running"), flush=True)
+            if lab_obj:
+                lab_obj.stop()
+                print("teardown[%s]: lab container %s stopped" % (label, lab_obj.cid[:12]), flush=True)
             if sim and be:
                 be.close()
             logs = os.path.join(run, "logs", label)
