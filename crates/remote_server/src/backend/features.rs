@@ -25,8 +25,21 @@ use crate::proto::{
     RipgrepSearchResponse, SaveBufferResponse,
 };
 
+/// The shell backend's body for one method: `Unsupported` (or `Unavailable`) until the family's
+/// package supplies `shell = path::to::fn`, an `async fn(&ShellBackend, args...) -> Result<..>`.
+macro_rules! shell_body {
+    ($self:ident, $fam:ident, $name:ident, [$($arg:ident),+]) => {{
+        let _ = ($(&$arg,)+);
+        let error = $self.not_implemented(Family::$fam, stringify!($name));
+        Box::pin(async move { Err(error) })
+    }};
+    ($self:ident, $fam:ident, $name:ident, [$($arg:ident),+], $imp:path) => {
+        Box::pin($imp($self, $($arg),+))
+    };
+}
+
 macro_rules! remote_features {
-    ($( $fam:ident, $mutates:literal : fn $name:ident ( $($arg:ident : $ty:ty),+ ) -> $ret:ty; )+) => {
+    ($( $fam:ident, $mutates:literal $(, shell = $shell:path)? : fn $name:ident ( $($arg:ident : $ty:ty),+ ) -> $ret:ty; )+) => {
         /// Every request/response feature, served by whichever backend the router picked.
         pub trait RemoteFeatures: Send + Sync {
             $(
@@ -48,9 +61,7 @@ macro_rules! remote_features {
         impl RemoteFeatures for ShellBackend {
             $(
                 fn $name(&self, $($arg: $ty),+) -> BoxFuture<'_, Result<$ret, BackendError>> {
-                    let _ = ($(&$arg,)+);
-                    let error = self.not_implemented(Family::$fam, stringify!($name));
-                    Box::pin(async move { Err(error) })
+                    shell_body!(self, $fam, $name, [$($arg),+] $(, $shell)?)
                 }
             )+
         }
@@ -105,8 +116,8 @@ macro_rules! remote_features {
 
 remote_features! {
     FileContext, false: fn read_file_context(request: ReadFileContextRequest) -> ReadFileContextResponse;
-    RepoMetadata, false: fn navigate_to_directory(path: String) -> NavigatedToDirectoryResponse;
-    RepoMetadata, false: fn load_repo_metadata_directory(repo_path: String, dir_path: String) -> LoadRepoMetadataDirectoryResponse;
+    RepoMetadata, false, shell = super::shell::navigate_to_directory: fn navigate_to_directory(path: String) -> NavigatedToDirectoryResponse;
+    RepoMetadata, false, shell = super::shell::load_repo_metadata_directory: fn load_repo_metadata_directory(repo_path: String, dir_path: String) -> LoadRepoMetadataDirectoryResponse;
     Buffers, false: fn open_buffer(path: String, force_reload: bool) -> OpenBufferResponse;
     Buffers, true: fn save_buffer(path: String) -> SaveBufferResponse;
     Buffers, true: fn resolve_conflict(path: String, acknowledged_server_version: u64, client_content: String, current_client_version: u64) -> ResolveConflictResponse;
@@ -122,7 +133,7 @@ remote_features! {
     GitWrite, true: fn git_stage(request: GitStageRequest) -> ();
     FileWrite, true: fn write_file(path: String, content: String) -> ();
     FileWrite, true: fn delete_file(path: String) -> ();
-    FsBasic, false: fn list_directory(path: String) -> ListDirectoryResponse;
+    FsBasic, false, shell = super::shell::list_directory: fn list_directory(path: String) -> ListDirectoryResponse;
     FsBasic, false: fn resolve_path(path: String) -> ResolvePathResponse;
     FsBasic, true: fn create_directory(path: String) -> CreateDirectoryResponse;
 }

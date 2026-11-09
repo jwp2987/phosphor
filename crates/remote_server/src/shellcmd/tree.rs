@@ -128,6 +128,18 @@ pub fn dir_update(
     }
 }
 
+/// Whether `dir` sits inside an ignored directory: its parent's listing flags it ignored.
+/// Everything inside such a directory is ignored whatever the rules say.
+pub fn dir_is_ignored(dirs: &BTreeMap<String, Vec<TreeChild>>, dir: &str) -> bool {
+    let Some(parent) = parent_of(dir) else {
+        return false;
+    };
+    let name = dir[parent.trim_end_matches(['/', '\\']).len()..].trim_start_matches(['/', '\\']);
+    dirs.get(parent)
+        .and_then(|cs| cs.iter().find(|c| c.name == name))
+        .is_some_and(|c| c.ignored)
+}
+
 /// The snapshot entries for the known directory listings in `dirs` (keyed by absolute path),
 /// breadth-first from `root`, one update per non-empty directory. Directories whose listing is
 /// not in `dirs` are sent unloaded.
@@ -249,6 +261,44 @@ pub fn diff_dir(
         }
     }
     (removed, added)
+}
+
+/// Applies a freshly computed set of listings `new` to the cached `old` and returns what the
+/// client must be told: removed paths and per-directory insertions. Only directories present in
+/// BOTH are diffed (a new directory arrives as an unloaded node in its parent's diff and is
+/// listed when the client expands it; a cached directory `new` does not mention, such as a lazily
+/// loaded ignored one, is left alone). Removed directories take their cached subtree with them.
+pub fn apply_refresh(
+    old: &mut BTreeMap<String, Vec<TreeChild>>,
+    new: &BTreeMap<String, Vec<TreeChild>>,
+) -> (Vec<String>, Vec<proto::RepoMetadataEntryUpdate>) {
+    let mut removed = Vec::new();
+    let mut updates = Vec::new();
+    for (dir, new_children) in new {
+        let Some(old_children) = old.get(dir).cloned() else {
+            continue;
+        };
+        let (gone, added) = diff_dir(dir, &old_children, new_children);
+        for path in gone {
+            let below: Vec<String> = old
+                .keys()
+                .filter(|k| is_within(&path, k))
+                .cloned()
+                .collect();
+            for k in below {
+                old.remove(&k);
+            }
+            removed.push(path);
+        }
+        if !added.is_empty() {
+            updates.push(proto::RepoMetadataEntryUpdate {
+                parent_path_to_replace: dir.clone(),
+                subtree_metadata: added,
+            });
+        }
+        old.insert(dir.clone(), new_children.clone());
+    }
+    (removed, updates)
 }
 
 // ---------------------------------------------------------------- command builders

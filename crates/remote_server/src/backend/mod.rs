@@ -31,7 +31,7 @@ pub use executor::{
 pub use features::{METHODS, RemoteFeatures};
 pub use helper::HelperBackend;
 pub use router::{AlwaysShell, BackendKind, FeatureRouter, HelperProbe, RoutedBackend, decide};
-pub use shell::ShellBackend;
+pub use shell::{ShellBackend, ShellPush, TreeCache};
 
 use crate::capability;
 use crate::client::ClientError;

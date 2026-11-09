@@ -173,16 +173,7 @@ struct Repo {
 impl Repo {
     /// Whether `dir` sits inside an ignored directory (its parent's listing flags it).
     fn dir_is_ignored(&self, dir: &str) -> bool {
-        let Some(parent) = parent_of(dir) else {
-            return false;
-        };
-        let name = dir[parent.trim_end_matches(['/', '\\']).len()..]
-            .trim_start_matches(['/', '\\'])
-            .to_owned();
-        self.dirs
-            .get(parent)
-            .and_then(|cs| cs.iter().find(|c| c.name == name))
-            .is_some_and(|c| c.ignored)
+        crate::shellcmd::tree::dir_is_ignored(&self.dirs, dir)
     }
 
     /// Starts watching `dir` unless it is ignored; marks the repo unwatched if that fails.

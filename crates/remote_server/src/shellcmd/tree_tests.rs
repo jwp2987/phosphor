@@ -193,3 +193,55 @@ fn a_navigation_answer_needs_a_directory_and_optionally_a_git_root() {
     let frame = Frame::parse(bad.as_bytes(), nonce).unwrap();
     assert!(parse_nav_target(&frame).is_err());
 }
+
+#[test]
+fn a_directory_is_ignored_when_its_parents_listing_says_so() {
+    let mut dirs = BTreeMap::new();
+    dirs.insert(
+        "/r".to_owned(),
+        vec![child("target", true, true), child("src", true, false)],
+    );
+    assert!(dir_is_ignored(&dirs, "/r/target"));
+    assert!(!dir_is_ignored(&dirs, "/r/src"));
+    assert!(!dir_is_ignored(&dirs, "/r"));
+    assert!(!dir_is_ignored(&dirs, "/r/unknown"));
+}
+
+#[test]
+fn a_refresh_diffs_shared_directories_and_drops_removed_subtrees() {
+    let mut old = tree_from_paths(
+        "/r",
+        &["a.txt".to_owned(), "gone/x".to_owned(), "keep/y".to_owned()],
+        &["build/".to_owned()],
+    );
+    // A lazily loaded ignored directory the fresh git listing knows nothing about.
+    old.insert("/r/build".to_owned(), vec![child("o", false, true)]);
+    let new = tree_from_paths(
+        "/r",
+        &[
+            "a.txt".to_owned(),
+            "keep/y".to_owned(),
+            "keep/z".to_owned(),
+            "fresh/q".to_owned(),
+        ],
+        &["build/".to_owned()],
+    );
+    let (removed, updates) = apply_refresh(&mut old, &new);
+    assert_eq!(removed, ["/r/gone"]);
+    assert!(
+        !old.contains_key("/r/gone"),
+        "the removed subtree is forgotten"
+    );
+    assert!(
+        old.contains_key("/r/build"),
+        "an unlisted cached directory is left alone"
+    );
+    let parents: Vec<_> = updates
+        .iter()
+        .map(|u| u.parent_path_to_replace.as_str())
+        .collect();
+    assert_eq!(parents, ["/r", "/r/keep"]);
+    // Refreshing again with the same listing says nothing.
+    let (removed, updates) = apply_refresh(&mut old, &new);
+    assert!(removed.is_empty() && updates.is_empty());
+}

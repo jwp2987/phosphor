@@ -97,6 +97,304 @@ pub(super) async fn assert_unimplemented_is_unsupported(subject: &Subject) {
 /// Every contract assertion. Family packages append theirs here.
 pub(super) async fn assert_contract(subject: &Subject) {
     assert_unimplemented_is_unsupported(subject).await;
+    assert_repo_metadata(subject).await;
+}
+
+// ---- repo metadata / file tree (P3) ----------------------------------------------------------
+
+use crate::proto::repo_node_metadata;
+
+/// (path, is_dir, ignored, loaded) of each node of each entry update, in order.
+fn view(
+    entries: &[crate::proto::RepoMetadataEntryUpdate],
+) -> Vec<(String, Vec<(String, bool, bool, bool)>)> {
+    entries
+        .iter()
+        .map(|e| {
+            let nodes = e
+                .subtree_metadata
+                .iter()
+                .map(|n| match n.node.clone().unwrap() {
+                    repo_node_metadata::Node::Directory(d) => (d.path, true, d.ignored, d.loaded),
+                    repo_node_metadata::Node::File(f) => (f.path, false, f.ignored, false),
+                })
+                .collect();
+            (e.parent_path_to_replace.clone(), nodes)
+        })
+        .collect()
+}
+
+fn git_available() -> bool {
+    std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+/// A real git repository: `.gitignore` (`*.log`, `target/`), `src/lib.rs`, `src/deep/x.rs`,
+/// `a.txt`, an ignored `x.log` and an ignored `target/debug/`.
+pub(super) fn make_repo() -> (tempfile::TempDir, std::path::PathBuf) {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    let init = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&root)
+        .status()
+        .unwrap();
+    assert!(init.success());
+    std::fs::write(root.join(".gitignore"), "*.log\ntarget/\n").unwrap();
+    std::fs::create_dir_all(root.join("src/deep")).unwrap();
+    std::fs::write(root.join("src/lib.rs"), "").unwrap();
+    std::fs::write(root.join("src/deep/x.rs"), "").unwrap();
+    std::fs::write(root.join("a.txt"), "").unwrap();
+    std::fs::write(root.join("x.log"), "").unwrap();
+    std::fs::create_dir_all(root.join("target/debug")).unwrap();
+    std::fs::write(root.join("target/debug/o"), "").unwrap();
+    (tmp, root)
+}
+
+fn s(p: &std::path::Path) -> String {
+    p.to_string_lossy().into_owned()
+}
+
+/// The file tree contract: the same requests give the same answers from the helper and the
+/// shell backend (answers, not pushes; the pushes are compared by their own tests).
+pub(super) async fn assert_repo_metadata(subject: &Subject) {
+    let name = subject.name;
+    let backend = &subject.backend;
+
+    // Outside git: indexed_path is the directory itself, is_git false.
+    let plain = tempfile::tempdir().unwrap();
+    let plain_root = plain.path().canonicalize().unwrap();
+    std::fs::write(plain_root.join("f.txt"), "").unwrap();
+    let nav = backend
+        .navigate_to_directory(s(&plain_root))
+        .await
+        .unwrap_or_else(|e| panic!("{name}: {e:?}"));
+    assert_eq!(nav.indexed_path, s(&plain_root), "{name}");
+    assert!(!nav.is_git, "{name}");
+
+    // A path that does not exist is an invalid request, not Unsupported and not a lost connection.
+    let err = backend
+        .navigate_to_directory("/no/such/dir/for/phosphor".into())
+        .await
+        .expect_err("a missing path");
+    assert!(
+        !err.is_unsupported() && !err.is_connection_lost(),
+        "{name}: {err:?}"
+    );
+    assert!(
+        format!("{err:?}").contains("InvalidRequest") && format!("{err}").contains("Invalid path"),
+        "{name}: {err:?}"
+    );
+
+    if !git_available() {
+        eprintln!("no git on this machine; skipping the repository half of the file tree contract");
+        return;
+    }
+    let (_tmp, root) = make_repo();
+
+    // Inside a repository, from a subdirectory: the root comes back.
+    let nav = backend
+        .navigate_to_directory(s(&root.join("src/deep")))
+        .await
+        .unwrap_or_else(|e| panic!("{name}: {e:?}"));
+    assert_eq!(nav.indexed_path, s(&root), "{name}");
+    assert!(nav.is_git, "{name}");
+
+    // Lazy load: an ordinary directory lists its children, subdirectories already listed in
+    // the snapshot are loaded.
+    let loaded = backend
+        .load_repo_metadata_directory(s(&root), s(&root.join("src")))
+        .await
+        .unwrap_or_else(|e| panic!("{name}: {e:?}"));
+    assert_eq!(
+        (loaded.repo_path.as_str(), loaded.dir_path.as_str()),
+        (s(&root).as_str(), s(&root.join("src")).as_str()),
+        "{name}"
+    );
+    assert_eq!(
+        view(&loaded.entries),
+        vec![(
+            s(&root.join("src")),
+            vec![
+                (s(&root.join("src/deep")), true, false, true),
+                (s(&root.join("src/lib.rs")), false, false, false),
+            ]
+        )],
+        "{name}"
+    );
+
+    // An ignored directory loads with everything in it ignored.
+    let loaded = backend
+        .load_repo_metadata_directory(s(&root), s(&root.join("target")))
+        .await
+        .unwrap_or_else(|e| panic!("{name}: {e:?}"));
+    assert_eq!(
+        view(&loaded.entries),
+        vec![(
+            s(&root.join("target")),
+            vec![(s(&root.join("target/debug")), true, true, false)]
+        )],
+        "{name}"
+    );
+
+    // An empty directory is an empty answer.
+    std::fs::create_dir(root.join("empty")).unwrap();
+    let loaded = backend
+        .load_repo_metadata_directory(s(&root), s(&root.join("empty")))
+        .await
+        .unwrap_or_else(|e| panic!("{name}: {e:?}"));
+    assert!(loaded.entries.is_empty(), "{name}");
+
+    // A directory outside the repository is refused.
+    let outside = backend
+        .load_repo_metadata_directory(s(&root), s(&plain_root))
+        .await
+        .expect_err("outside the repo");
+    assert!(
+        format!("{outside}").contains("is not a descendant of repo_path"),
+        "{name}: {outside:?}"
+    );
+    // A directory that does not exist names the bad field.
+    let missing = backend
+        .load_repo_metadata_directory(s(&root), s(&root.join("missing")))
+        .await
+        .expect_err("a missing dir");
+    assert!(
+        format!("{missing}").contains("Invalid dir_path"),
+        "{name}: {missing:?}"
+    );
+}
+
+/// The snapshot a navigation pushes, as (parent, children) pairs, whichever way it was pushed.
+fn snapshot_view(update: &repo_metadata::RepoMetadataUpdate) -> Vec<(String, Vec<String>)> {
+    update
+        .update_entries
+        .iter()
+        .map(|e| {
+            let kids = e
+                .subtree_metadata
+                .iter()
+                .map(|n| match n {
+                    repo_metadata::file_tree_update::RepoNodeMetadata::Directory(d) => {
+                        format!("d{}{}:{}", u8::from(d.ignored), u8::from(d.loaded), d.path)
+                    }
+                    repo_metadata::file_tree_update::RepoNodeMetadata::File(f) => {
+                        format!("f{}:{}", u8::from(f.ignored), f.path)
+                    }
+                })
+                .collect();
+            (e.parent_path_to_replace.to_string(), kids)
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn the_shell_backend_queues_the_snapshot_the_helper_pushes() {
+    if !git_available() {
+        return;
+    }
+    let (_tmp, root) = make_repo();
+
+    // Shell: the pushes queued by the call.
+    let shell = ShellBackend::new(Some(Arc::new(LocalShExecutor)));
+    shell.navigate_to_directory(s(&root)).await.unwrap();
+    let pushes = shell.take_pushes();
+    assert_eq!(pushes.len(), 1);
+    let ShellPush::RepoMetadataSnapshot(snapshot) = &pushes[0] else {
+        panic!("expected a snapshot, got {pushes:?}");
+    };
+    let shell_view =
+        snapshot_view(&crate::repo_metadata_proto::proto_snapshot_to_update(snapshot).unwrap());
+    assert!(shell.take_pushes().is_empty(), "drained");
+
+    // The expected tree, written out.
+    let r = |rel: &str| s(&root.join(rel));
+    assert_eq!(
+        shell_view,
+        vec![
+            (
+                s(&root),
+                vec![
+                    format!("d10:{}", r(".git")),
+                    format!("d01:{}", r("src")),
+                    format!("d10:{}", r("target")),
+                    format!("f0:{}", r(".gitignore")),
+                    format!("f0:{}", r("a.txt")),
+                    format!("f1:{}", r("x.log")),
+                ]
+            ),
+            (
+                r("src"),
+                vec![
+                    format!("d01:{}", r("src/deep")),
+                    format!("f0:{}", r("src/lib.rs"))
+                ]
+            ),
+            (r("src/deep"), vec![format!("f0:{}", r("src/deep/x.rs"))]),
+        ]
+    );
+
+    // Helper: the same snapshot, pushed on the connection.
+    #[cfg(all(feature = "daemon", unix))]
+    {
+        let stream = crate::daemon::spawn_in_process_for_tests();
+        let stream = async_io::Async::new(stream).unwrap();
+        let (reader, writer) = futures::io::AsyncReadExt::split(stream);
+        let executor = executor::Background::default();
+        let (client, events, _host_responses) = RemoteServerClient::new(reader, writer, &executor);
+        let helper = HelperBackend::new(Arc::new(client));
+        let nav = helper.navigate_to_directory(s(&root)).await.unwrap();
+        assert!(nav.is_git);
+        let update = loop {
+            match events.recv().await.expect("the connection ended") {
+                crate::client::ClientEvent::RepoMetadataSnapshotReceived { update } => {
+                    break update;
+                }
+                _ => continue,
+            }
+        };
+        assert_eq!(snapshot_view(&update), shell_view);
+    }
+}
+
+#[tokio::test]
+async fn a_shell_refresh_queues_only_what_changed_and_never_before_it_is_asked() {
+    if !git_available() {
+        return;
+    }
+    let (_tmp, root) = make_repo();
+    let shell = ShellBackend::new(Some(Arc::new(LocalShExecutor)));
+    shell.navigate_to_directory(s(&root)).await.unwrap();
+    shell.take_pushes();
+
+    // Nothing changed: a refresh says nothing.
+    shell.refresh_repo_tree(&s(&root)).await.unwrap();
+    assert!(shell.take_pushes().is_empty());
+
+    // A file appears and one vanishes behind the app's back: nothing is seen until it asks.
+    std::fs::write(root.join("src/new.rs"), "").unwrap();
+    std::fs::remove_file(root.join("a.txt")).unwrap();
+    assert!(shell.take_pushes().is_empty());
+    shell.refresh_repo_tree(&s(&root)).await.unwrap();
+    let pushes = shell.take_pushes();
+    assert_eq!(pushes.len(), 1);
+    let ShellPush::RepoMetadataUpdate(update) = &pushes[0] else {
+        panic!("expected an update, got {pushes:?}");
+    };
+    assert_eq!(update.repo_path, s(&root));
+    assert_eq!(update.remove_entries, vec![s(&root.join("a.txt"))]);
+    assert_eq!(
+        view(&update.update_entries),
+        vec![(
+            s(&root.join("src")),
+            vec![(s(&root.join("src/new.rs")), false, false, false)]
+        )]
+    );
+    // And it is remembered: the same refresh again is silent.
+    shell.refresh_repo_tree(&s(&root)).await.unwrap();
+    assert!(shell.take_pushes().is_empty());
 }
 
 fn shell_subject() -> Subject {
