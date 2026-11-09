@@ -1093,7 +1093,11 @@ impl AIConversation {
                 ConversationStatus::Blocked { .. } => "blocked",
                 ConversationStatus::WaitingForEvents => "waiting_for_events",
             };
-            log::info!("hop=turn conv={} state={state}", self.id);
+            // Through the input-order hop logger like every other `hop=` line: a plain `info!` here
+            // is filtered out by the app-test RUST_LOG (only named targets are on), so no case ever
+            // saw a `success`/`error` turn.
+            let conv = self.id.to_string();
+            warpui::input_order::log_hop("turn", || format!("conv={conv} state={state}"));
         }
         self.status = status;
         ctx.emit(BlocklistAIHistoryEvent::UpdatedConversationStatus {
