@@ -23,6 +23,55 @@ def terminal_pids():
     return pids
 
 
+# #1826 (round 6): Terminal.app restores the windows it saved when it was SIGTERM'd ("Restored session: ..."), so every relaunch brought back all earlier
+# reference windows (276 `login` shells under one Terminal). The reference launch passes -ApplePersistenceIgnoreState YES (a per-launch argument, no `defaults write`,
+# no preference change): the new instance neither restores nor needs the saved state deleted. Measured on the Mac: 137-161 logins after a plain relaunch, 1 with the flag.
+IGNORE_STATE_ARGS = ["--args", "-ApplePersistenceIgnoreState", "YES"]
+
+
+def launch_argv(cmdf):
+    """pure: the ONLY way the harness opens Terminal.app (self-test `refterm_single_launch_path` greps for any other)"""
+    return ["open", "-a", "Terminal", cmdf] + IGNORE_STATE_ARGS
+
+
+def launch(cmdf):
+    """open the reference .command in Terminal.app without state restoration; the caller then calls note_launched(run). If a Terminal.app is already running `open`
+    hands the file to it and the arguments are ignored: that Terminal is not ours and is never quit (see note_launched / left_open_note)."""
+    return subprocess.run(launch_argv(cmdf), capture_output=True, timeout=20)
+
+
+def count_children(ps_out, pid, comm_suffix="login"):
+    """pure: how many processes in `ps -A -o ppid=,comm=` output are children of `pid` whose command ends with `comm_suffix`"""
+    n = 0
+    for line in ps_out.splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) == 2 and parts[0] == str(pid) and parts[1].strip().endswith(comm_suffix):
+            n += 1
+    return n
+
+
+def login_children(pid):
+    try:
+        out = subprocess.run(["ps", "-A", "-o", "ppid=,comm="], capture_output=True, text=True, timeout=10).stdout
+    except Exception:
+        return 0
+    return count_children(out, pid)
+
+
+def case_guard(case_name):
+    """#1826: call after EACH case (macOS). A reference block quits its Terminal.app in close(), so a Terminal.app of ours that is still running now leaked: when it
+    owns `login` shells (windows) it is quit by exact PID and the note names the case that leaked. Returns the note, or None. Never touches a Terminal that was
+    already running at harness start."""
+    pid = _ours_pid()
+    if not pid or pid not in terminal_pids():
+        return None
+    n = login_children(pid)
+    if n <= 0:
+        return None
+    ok = quit_launched("leaked by case %s" % case_name)
+    return "reference Terminal.app leaked by this case: pid %s owned %d login shell(s) (windows) after the case ended; quit by PID (%s)" % (pid, n, "gone" if ok else "STILL RUNNING")
+
+
 def snapshot(run):
     """call once at harness start, BEFORE any reference launch: was Terminal.app already running?"""
     if _state["snapshotted"]:

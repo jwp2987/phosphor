@@ -3975,6 +3975,25 @@ def upgrade_case_pure_helpers():
 
 
 @check
+def refterm_single_launch_path():
+    """#1826: Terminal.app is launched ONLY through refterm_mac.launch (no state restoration, PID recorded, quit per block); any other launch path leaks windows"""
+    import re, refterm_mac as R
+    argv = R.launch_argv("/x/ref.command")
+    assert argv[:4] == ["open", "-a", "Terminal", "/x/ref.command"] and argv[4:] == ["--args", "-ApplePersistenceIgnoreState", "YES"], argv
+    assert R.count_children("  10 /usr/bin/login\n  10 /bin/zsh\n 11 /usr/bin/login\n 100 /usr/bin/login\n", 10) == 1
+    assert R.count_children("", 10) == 0
+    bad = []
+    for fn in sorted(os.listdir(HERE)):
+        if not fn.endswith(".py") or fn in ("refterm_mac.py", "selftest.py"):
+            continue
+        for n, line in enumerate(open(os.path.join(HERE, fn), encoding="utf-8", errors="replace"), 1):
+            code = line.split("#", 1)[0]
+            if re.search(r"""["']open["']\s*,\s*(["']-[a-zA-Z]+["']\s*,\s*)*["']Terminal""", code) or re.search(r"tell application .?Terminal.? to (do script|activate)", code):
+                bad.append("%s:%d" % (fn, n))
+    assert not bad, "Terminal.app launched outside refterm_mac.launch: %s" % bad
+
+
+@check
 def refterm_mac_bookkeeping():
     """#1826: which Terminal.app is ours, and quitting it at the end of each reference block (pure parts; no process is touched)"""
     import refterm_mac as R
