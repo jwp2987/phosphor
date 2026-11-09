@@ -95,3 +95,13 @@ def del_key(text, table, key):
 def get_key(text, table, key):
     f = _find(text, table, key)
     return None if not f else text[f[0]:f[1]]
+
+
+def edit_file(path, table, key, literal):
+    """set_key on the file at `path`, READ FIRST. a one-line write that opens the file for writing and reads it inside the argument truncates the file before the read
+    runs (the receiver of .write is evaluated before its arguments), so the edit is applied to an empty file and every other key is lost (round 7)."""
+    with open(path, encoding="utf-8", errors="replace") as f:
+        text = f.read()
+    out = set_key(text, table, key, literal)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(out)

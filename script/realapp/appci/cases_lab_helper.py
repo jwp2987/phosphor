@@ -286,7 +286,7 @@ def c_policy(ctx, r, arm):
     r.unverifiable("'Don't ask me again for this host' (ask mode + a click on the choice block) has no scripted driver yet")
     CL.finish_remote(ctx, r)
     CL.set_denied_hosts(ctx, [])
-    open(cfg, "w").write(CR.T.set_key(open(cfg).read(), "warpify.ssh", "remote_helper_allowed_hosts", "[]"))
+    CR.T.edit_file(cfg, "warpify.ssh", "remote_helper_allowed_hosts", "[]")
 
 
 reg("helper_policy", c_policy, shells=("bash",), lat=("lan",), helper=("upload",))
