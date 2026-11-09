@@ -68,6 +68,7 @@ impl HelperGitRunner {
         cmd.args(args)
             .current_dir(cwd)
             .env("HOMEBREW_NO_AUTO_UPDATE", "1")
+            .env("GH_PROMPT_DISABLED", "1")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());

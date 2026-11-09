@@ -53,7 +53,10 @@ impl ShellGitRunner {
 
     /// The POSIX script for one gh call.
     pub fn gh_script(&self, args: &[&str], cwd: &Path) -> String {
-        let mut env = vec!["HOMEBREW_NO_AUTO_UPDATE=1".to_string()];
+        let mut env = vec![
+            "HOMEBREW_NO_AUTO_UPDATE=1".to_string(),
+            "GH_PROMPT_DISABLED=1".to_string(),
+        ];
         if let Some(path) = &self.path_env {
             env.push(format!("PATH={}", sh_quote(path)));
         }

@@ -7,18 +7,16 @@ use anyhow::{Result, anyhow};
 // `remote_server::shellcmd::git` so the helper and the shell backend run the same commands.
 // This module keeps the app's local wrappers around it (P5).
 #[cfg(feature = "local_fs")]
-use remote_server::shellcmd::git::{self as shared, GitOutput, GitRunner, gh_text, git_text};
+use remote_server::shellcmd::git::{self as shared, GitOutput, GitRunner, git_text};
 pub use remote_server::shellcmd::git::{
     Commit, CommitChainMode, FileChangeEntry, PrInfo, RepositoryInfo, is_gh_auth_error,
     is_gh_missing_error, looks_like_commit_sha,
 };
-#[cfg(feature = "local_fs")]
-use remote_server::shellcmd::git::{
-    is_pr_lookup_not_applicable_error, is_repository_lookup_not_applicable_error,
-};
 // Referenced by this module's tests only.
 #[cfg(all(test, feature = "local_fs"))]
-use remote_server::shellcmd::git::is_no_pr_for_branch_error;
+use remote_server::shellcmd::git::{
+    is_no_pr_for_branch_error, is_repository_lookup_not_applicable_error,
+};
 
 #[cfg(test)]
 #[path = "git_tests.rs"]
@@ -136,6 +134,7 @@ impl GitRunner for LocalGitRunner {
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .env("HOMEBREW_NO_AUTO_UPDATE", "1")
+                .env("GH_PROMPT_DISABLED", "1")
                 .kill_on_drop(true);
             if let Some(path_env) = &self.path_env {
                 cmd.env("PATH", path_env);
@@ -1110,28 +1109,9 @@ pub fn git_operation_in_progress(repo_path: &Path) -> bool {
 
 #[cfg(feature = "local_fs")]
 fn repository_info_from_gh_output(output: &str) -> Result<RepositoryInfo> {
-    let parsed: serde_json::Value = serde_json::from_str(output.trim())
-        .map_err(|e| anyhow!("Failed to parse gh output: {e}"))?;
-    let name = parsed["name"]
-        .as_str()
-        .filter(|name| !name.is_empty())
-        .ok_or_else(|| anyhow!("Missing 'name' in gh output"))?
-        .to_string();
-    let owner = parsed["owner"]["login"]
-        .as_str()
-        .filter(|owner| !owner.is_empty())
-        .ok_or_else(|| anyhow!("Missing 'owner.login' in gh output"))?
-        .to_string();
-    // The host is best-effort: parsed from the repo URL when present.
-    let host = parsed["url"]
-        .as_str()
-        .and_then(|u| url::Url::parse(u).ok())
-        .and_then(|u| u.host_str().map(|host| host.to_string()));
-    Ok(RepositoryInfo {
-        name,
-        owner: Some(owner),
-        host,
-    })
+    // The reading lives in `remote_server::shellcmd::git::gh`, shared with the helper and the
+    // shell backend.
+    shared::repository_info_from_gh_output(output)
 }
 
 /// Looks up the GitHub repository for `repo_path` via `gh repo view`.
@@ -1142,30 +1122,7 @@ pub async fn get_repository_info(
     repo_path: &Path,
     path_env: Option<&str>,
 ) -> Result<Option<RepositoryInfo>> {
-    if run_git_command(repo_path, &["rev-parse", "--is-inside-work-tree"])
-        .await
-        .is_err()
-    {
-        return Ok(None);
-    }
-
-    match run_gh_command(
-        repo_path,
-        &["repo", "view", "--json", "name,owner,url"],
-        path_env,
-    )
-    .await
-    {
-        Ok(stdout) => repository_info_from_gh_output(&stdout).map(Some),
-        Err(e) => {
-            let msg = e.to_string();
-            if is_repository_lookup_not_applicable_error(&msg) {
-                Ok(None)
-            } else {
-                Err(e)
-            }
-        }
-    }
+    shared::get_repository_info(&LocalGitRunner::new(path_env), repo_path).await
 }
 
 #[cfg(not(feature = "local_fs"))]
@@ -1176,85 +1133,15 @@ pub async fn get_repository_info(
     Err(anyhow!("Not supported without local_fs"))
 }
 
-/// Runs a `gh` CLI command and returns stdout on success. `path_env`, when
-/// `Some`, is set as the child's `PATH` so a Homebrew-installed `gh` is
-/// findable from macOS GUI launches (launchd's minimal `PATH` excludes it).
-#[cfg(feature = "local_fs")]
-async fn run_gh_command(repo_path: &Path, args: &[&str], path_env: Option<&str>) -> Result<String> {
-    gh_text(&LocalGitRunner::new(path_env), repo_path, args).await
-}
-
 /// Looks up the PR for the current branch via `gh pr view`.
 /// Returns `Ok(None)` when the repo context is not eligible for a PR lookup or
 /// there is simply no PR for this branch. Returns `Err` for real failures
-/// (auth, network, gh not installed).
+/// (auth, network, gh not installed). `path_env`, when `Some`, is set as the
+/// child's `PATH` so a Homebrew-installed `gh` is findable from macOS GUI
+/// launches (launchd's minimal `PATH` excludes it).
 #[cfg(feature = "local_fs")]
 pub async fn get_pr_for_branch(repo_path: &Path, path_env: Option<&str>) -> Result<Option<PrInfo>> {
-    if run_git_command(repo_path, &["rev-parse", "--is-inside-work-tree"])
-        .await
-        .is_err()
-    {
-        return Ok(None);
-    }
-
-    // A detached HEAD has no branch to look a PR up for, so skip `gh` entirely.
-    if run_git_command(repo_path, &["symbolic-ref", "--quiet", "--short", "HEAD"])
-        .await
-        .is_err()
-    {
-        return Ok(None);
-    }
-
-    match run_gh_command(
-        repo_path,
-        &[
-            "pr",
-            "view",
-            "--json",
-            "number,url,state,isDraft,baseRefName",
-        ],
-        path_env,
-    )
-    .await
-    {
-        Ok(stdout) => {
-            let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
-                .map_err(|e| anyhow!("Failed to parse gh output: {e}"))?;
-            let number = parsed["number"]
-                .as_u64()
-                .ok_or_else(|| anyhow!("Missing 'number' in gh output"))?;
-            let url = parsed["url"]
-                .as_str()
-                .ok_or_else(|| anyhow!("Missing 'url' in gh output"))?
-                .to_string();
-            let state = parsed["state"]
-                .as_str()
-                .ok_or_else(|| anyhow!("Missing 'state' in gh output"))?
-                .to_string();
-            let draft = parsed["isDraft"]
-                .as_bool()
-                .ok_or_else(|| anyhow!("Missing 'isDraft' in gh output"))?;
-            let base_branch = parsed["baseRefName"]
-                .as_str()
-                .ok_or_else(|| anyhow!("Missing 'baseRefName' in gh output"))?
-                .to_string();
-            Ok(Some(PrInfo {
-                number,
-                url,
-                state,
-                draft,
-                base_branch,
-            }))
-        }
-        Err(e) => {
-            let msg = e.to_string();
-            if is_pr_lookup_not_applicable_error(&msg) {
-                Ok(None)
-            } else {
-                Err(e)
-            }
-        }
-    }
+    shared::get_pr_for_branch(&LocalGitRunner::new(path_env), repo_path).await
 }
 
 #[cfg(not(feature = "local_fs"))]
