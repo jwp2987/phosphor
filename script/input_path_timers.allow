@@ -27,7 +27,7 @@ app/src/terminal/model/block/interaction_mode.rs	INTERACTIVE_PROMPT_QUIET_TRAILI
 app/src/terminal/model/block/interaction_mode.rs	STALL_SNAPSHOT_AFTER	hands the stalled screen to a snapshot-capable model; writes nothing to the pty
 app/src/terminal/model/typeahead_handoff.rs	CONPTY_PROMPT_HOLD_GIVE_UP	prompt-hold give-up: keys with no Enter go back to the editor as text, a segment with an Enter stays held with a toast (#1584)
 app/src/terminal/model/typeahead_handoff.rs	PROMPT_HOLD_RELEASE_IN_FLIGHT_RECHECK	re-checks the prompt hold's give-up cap while a release is in flight; writes nothing
-app/src/terminal/model/typeahead_handoff.rs	YOUNG_HOLD_GIVE_UP	10 s net of a queued young hold: hands the Enter and the keys typed after it back to the editor in order with a count toast; never discards or writes
+app/src/terminal/model/typeahead_handoff.rs	YOUNG_HOLD_GIVE_UP	10 s net of a queued young hold: discards the young Enter and what followed with a count toast (#1661)
 app/src/terminal/view.rs	AFTER_ENTER_REPLAY_PTY_WAIT	10 s net for keys typed after a deferred Enter: discards them with a count toast; never routes or writes (#1661)
 app/src/terminal/view.rs	AGENT_INTERRUPT_GRACE	after an ignored ^C, hands the agent's command to the user and leaves the agent view; writes no bytes (#899)
 app/src/terminal/view.rs	ALT_SCREEN_RESEND_GIVE_UP	logged net for an alt-screen winsize re-send; resizes the pty window, no key bytes
