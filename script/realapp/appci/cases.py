@@ -5315,10 +5315,7 @@ graph TD
 
 Closing paragraph.
 """
-# heading + table cells (lower-cased, spaces stripped). The heading needle is "mdprobe", not the whole "phosphormdprobe": in agent mode the
-# left panel shows conversation rows, and a pointer left over one of them (the harness never moves it) makes the app draw that row's hover
-# card over the viewer's top-left, covering the heading's first letters (#1824). The rest of the heading and the table still prove the render.
-MD_SMALL_TEXT = ("mdprobe", "zebraapple", "quinceberry")
+MD_SMALL_TEXT = ("phosphormdprobe", "zebraapple", "quinceberry")           # heading + table cells (lower-cased, spaces stripped)
 MD_SMALL_DIAGRAM = ("alphanodestart", "betanodemiddle", "gammanodeend")    # mermaid node labels, drawn from the SVG
 
 
@@ -5396,6 +5393,30 @@ def wait_for_text(ctx, tag, needles, timeout):
     return None, txt
 
 
+def park_pointer(ctx):
+    """Moves the pointer to the bottom-right of the app window, where nothing is hoverable. A pointer left over a list row by an earlier case makes
+    the app draw that row's hover card, and in agent mode (the left panel lists conversations) the card covered the viewer's top-left and the first
+    letters of the heading (#1824). Linux X11 / Wayland only; returns None when parked, else a note saying why not (macOS / Windows: the case runs as
+    before)."""
+    if ctx.win or ctx.be.name not in ("x11", "wayland"):
+        return "no pointer synthesis on this backend: the pointer stays where the last case left it"
+    try:
+        import cases_ui as UI
+        mouse = UI.Mouse(ctx.be)
+        if ctx.be.name == "wayland":
+            rect = UI.sway_window_rect(ctx.app.pid())
+            if not rect:
+                return "no sway window rect: pointer not parked"
+            x, y = rect[0] + rect[2] - 40, rect[1] + rect[3] - 40
+        else:
+            out = subprocess.run(["xdotool", "getdisplaygeometry"], capture_output=True, timeout=10).stdout.split()
+            x, y = int(out[0]) - 40, int(out[1]) - 40
+        mouse.move(x, y)
+        return None
+    except Exception as e:
+        return "could not park the pointer (%r)" % (e,)
+
+
 @case("md_viewer", order=80, gui=True)
 def c_md_viewer(ctx, r):
     """Opens a small .md (table + mermaid flowchart) in the app's markdown viewer pane; screenshot proof, OCR of the table text
@@ -5408,6 +5429,9 @@ def c_md_viewer(ctx, r):
     r.check(err is None, "could not hand the file to the running app: %s" % err)
     if err:
         return
+    note = park_pointer(ctx)
+    if note:
+        r.note(note)
     time.sleep(2)
     secs, txt = wait_for_text(ctx, "md_small", MD_SMALL_TEXT, 20)
     if txt is None:
