@@ -10,15 +10,26 @@
 //! subscriptions, file-context reads, git write operations) is answered with
 //! `ErrorCode::UNSUPPORTED` and the client runs it on its no-helper path. Wave H, #1804.
 
+mod agent_context;
+mod buffers;
+mod chunk;
 mod conn;
+mod diff_state;
 mod exec;
+mod file_context;
 mod fs_ops;
 mod git;
+mod git_status;
+mod git_write;
+mod github;
+mod index_store;
 mod jobs;
 pub mod logger;
 mod proxy;
+mod repo_meta;
 mod ripgrep;
 mod server;
+mod watch;
 
 use std::fs::Permissions;
 use std::os::unix::fs::PermissionsExt;
@@ -78,4 +89,23 @@ pub fn run_daemon(identity_key: &str) -> anyhow::Result<()> {
     let _ = std::fs::remove_file(&pid_path);
     log::info!("Daemon exiting");
     Ok(())
+}
+
+/// A connected in-process daemon for the backend contract tests: the returned stream is the
+/// client end; the server core runs on its own thread until the stream is dropped.
+#[cfg(test)]
+pub(crate) fn spawn_in_process_for_tests() -> std::os::unix::net::UnixStream {
+    let (client_end, server_end) =
+        std::os::unix::net::UnixStream::pair().expect("socketpair for the in-process daemon");
+    let (events_tx, events_rx) = std::sync::mpsc::channel::<server::Event>();
+    conn::spawn_connection(server_end, server::next_conn_id(), events_tx.clone());
+    std::thread::Builder::new()
+        .name("in-process-daemon".into())
+        .spawn(move || {
+            // Keep a sender alive so the core does not end before the connection registers.
+            let _keep = events_tx;
+            server::Server::new(server::GRACE_PERIOD).run(events_rx);
+        })
+        .expect("spawn the in-process daemon");
+    client_end
 }

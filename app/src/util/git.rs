@@ -433,57 +433,16 @@ pub fn looks_like_commit_sha(s: &str) -> bool {
 
 /// Whether a shell command probably moves HEAD (switch/checkout/worktree/rebase/
 /// merge/pull/reset/stash/cherry-pick/bisect), so a branch read right after it must
-/// not trust a cached value. Handles `git -C dir ...`, `git -c k=v ...` and
-/// `&&`/`||`/`;`/`|`-joined commands. Deliberately over-approximate: a false
-/// positive costs one cheap file read.
+/// not trust a cached value. Over-approximate by design. The pure predicate lives in
+/// `remote_server::shellcmd::predicates` so the remote refresh shares it.
 pub fn command_may_change_head(command: &str) -> bool {
-    const HEAD_CHANGING: &[&str] = &[
-        "switch",
-        "checkout",
-        "worktree",
-        "rebase",
-        "merge",
-        "pull",
-        "reset",
-        "stash",
-        "cherry-pick",
-        "bisect",
-    ];
-    let spaced = command.replace(['&', '|', ';', '\n', '(', ')'], " \u{0} ");
-    let mut tokens = spaced.split_whitespace().peekable();
-    while let Some(tok) = tokens.next() {
-        if tok != "git" {
-            continue;
-        }
-        // Skip global options to reach the subcommand.
-        while let Some(&next) = tokens.peek() {
-            if next == "-C" || next == "-c" || next == "--git-dir" || next == "--work-tree" {
-                tokens.next();
-                tokens.next();
-            } else if next.starts_with('-') {
-                tokens.next();
-            } else {
-                break;
-            }
-        }
-        if let Some(&sub) = tokens.peek()
-            && HEAD_CHANGING.contains(&sub)
-        {
-            return true;
-        }
-    }
-    false
+    remote_server::shellcmd::predicates::command_may_change_head(command)
 }
 
 /// Whether a shell command probably changes the shell's working directory (`cd`,
-/// `pushd`, `popd`), so the cwd/branch the agent is told about after it must not
-/// trust a value cached before it ran. Over-approximate by design: a false positive
-/// costs one cheap file read.
+/// `pushd`, `popd`). Over-approximate by design; see [`command_may_change_head`].
 pub fn command_may_change_cwd(command: &str) -> bool {
-    command
-        .replace(['&', '|', ';', '\n', '(', ')', '{', '}'], " ")
-        .split_whitespace()
-        .any(|tok| matches!(tok, "cd" | "pushd" | "popd"))
+    remote_server::shellcmd::predicates::command_may_change_cwd(command)
 }
 
 /// Reads the current branch for the repo containing `dir` straight from `.git/HEAD`,

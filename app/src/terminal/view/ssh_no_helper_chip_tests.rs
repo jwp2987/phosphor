@@ -5,7 +5,7 @@ use super::*;
 
 #[test]
 fn label_is_the_agreed_wording() {
-    assert_eq!(CHIP_LABEL, "limited: no remote helper");
+    assert_eq!(CHIP_LABEL, "shell mode");
 }
 
 #[test]

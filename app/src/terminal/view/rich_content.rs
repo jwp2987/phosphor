@@ -218,7 +218,7 @@ pub enum RichContentMetadata {
     SshRemoteServerFailedBanner {
         handle: ViewHandle<SshRemoteServerFailedBanner>,
     },
-    /// The subtle "limited: no remote helper" chip of a no-helper ssh session.
+    /// The subtle "shell mode" chip of a no-helper ssh session.
     SshNoHelperChip {
         handle: ViewHandle<SshNoHelperChip>,
     },

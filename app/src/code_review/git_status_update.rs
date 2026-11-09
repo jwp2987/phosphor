@@ -357,15 +357,7 @@ fn refresh_always_env() -> bool {
 /// for (or depend on) the file watcher. Plain file edits and build output are the watcher's job.
 #[cfg(all(test, feature = "local_fs"))]
 pub(super) fn command_may_change_git_state(command: &str) -> bool {
-    const VCS: &[&str] = &[
-        "git", "gh", "gt", "hub", "jj", "hg", "sl", "svn", "stg", "lazygit", "pijul",
-    ];
-    command
-        .split(|c: char| !(c.is_alphanumeric() || c == '-' || c == '_' || c == '.'))
-        .any(|tok| {
-            let tok = tok.trim_end_matches(".exe");
-            VCS.contains(&tok) || tok.starts_with("git-")
-        })
+    remote_server::shellcmd::predicates::command_may_change_git_state(command)
 }
 
 /// Pure bookkeeping behind metadata refreshes, kept free of the app context so it can be unit-tested.

@@ -874,6 +874,8 @@ pub struct RemoteServerManager {
     /// (including reconnects) and pushed to already-connected daemons by
     /// [`RemoteServerManager::update_client_preferences`].
     client_preferences: crate::client::ClientPreferences,
+    /// The one decision point for helper vs shell per feature family (Wave H parity, P0).
+    router: crate::backend::FeatureRouter,
 }
 
 impl Entity for RemoteServerManager {
@@ -901,6 +903,7 @@ impl RemoteServerManager {
             next_speculative_attempt: 0,
             remote_agent_context_snapshots: HashMap::new(),
             client_preferences: crate::client::ClientPreferences::default(),
+            router: crate::backend::FeatureRouter::from_env(),
         }
     }
 
@@ -953,22 +956,60 @@ impl RemoteServerManager {
     }
 
     /// [`Self::client_for_host`], but only when that client's server supports `capability`
-    /// ([`crate::capability`]). A feature family uses this instead of `client_for_host` so that
-    /// with the limited `phosphor-remote` helper connected it behaves EXACTLY as if no remote
-    /// server were connected and takes its no-helper path, instead of offering something the
-    /// helper can only refuse. A legacy full daemon (no capability list) supports everything.
+    /// ([`crate::capability`]). Legacy gate, kept for call sites that still need the raw client:
+    /// new code asks [`Self::backend_for_host`] instead, which also serves the family on the shell
+    /// when the helper cannot. With the limited `phosphor-remote` helper connected this behaves
+    /// EXACTLY as if no remote server were connected for a capability it lacks. A legacy full
+    /// daemon (no capability list) supports everything. The rule itself lives in
+    /// [`crate::backend::decide`].
     pub fn client_for_host_with(
         &self,
         host_id: &HostId,
         capability: &str,
     ) -> Option<&Arc<RemoteServerClient>> {
-        self.client_for_host(host_id)
-            .filter(|client| client.capabilities().supports(capability))
+        let client = self.client_for_host(host_id)?;
+        let family_supported = match crate::backend::Family::from_capability(capability) {
+            Some(family) => {
+                // The legacy gate never looked at the connection flag (the session state is
+                // the authority), so keep `connected` true here.
+                crate::backend::decide(
+                    Some(&crate::backend::HelperProbe {
+                        connected: true,
+                        ..crate::backend::HelperProbe::of(client)
+                    }),
+                    family,
+                    false,
+                    false,
+                ) == crate::backend::BackendKind::Helper
+            }
+            // A capability name no family owns: the plain capability rule.
+            None => client.capabilities().supports(capability),
+        };
+        family_supported.then_some(client)
     }
 
     /// Whether the server for `host_id` is connected and supports `capability`.
     pub fn host_supports(&self, host_id: &HostId, capability: &str) -> bool {
         self.client_for_host_with(host_id, capability).is_some()
+    }
+
+    /// The router that decides helper vs shell for every feature family.
+    pub fn router(&self) -> &crate::backend::FeatureRouter {
+        &self.router
+    }
+
+    /// The backend serving `host_id`: each call goes to the helper when it is connected and
+    /// supports the family, otherwise to the shell backend over the host's out-of-band channel
+    /// (see [`crate::backend`]). Cheap; take one per operation. Call sites never fall back or
+    /// retry themselves.
+    pub fn backend_for_host(&self, host_id: &HostId) -> crate::backend::RoutedBackend {
+        let sessions: Vec<SessionId> = self
+            .host_to_sessions
+            .get(host_id)
+            .map(|s| s.iter().copied().collect())
+            .unwrap_or_default();
+        self.router
+            .backend(host_id, self.client_for_host(host_id).cloned(), sessions)
     }
 
     /// Checks if the remote server binary is installed and executable.
@@ -1665,6 +1706,7 @@ impl RemoteServerManager {
         ctx: &mut ModelContext<Self>,
     ) {
         self.last_navigated_path.remove(&session_id);
+        self.router.unregister_out_of_band(session_id);
         self.session_bootstrap_info.remove(&session_id);
         self.session_platforms.remove(&session_id);
         self.session_labels.remove(&session_id);

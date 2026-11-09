@@ -552,10 +552,10 @@ def c_helper_install(ctx, r, arm):
     ctx.shot("lab_helper_install_%s" % mode)
     finish_remote(ctx, r)
 
-# ------------------------------------------------------------------ 9. The "limited: no remote helper" chip (Wave 1.5)
+# ------------------------------------------------------------------ 9. The "shell mode" chip (Wave 1.5, wording changed by Wave H parity P0)
 @lab_case("no_helper_chip", shells=("bash", "zsh"), lat=("lan",), helper=("nohelper",), modes=("terminal",))
 def c_no_helper_chip(ctx, r, arm):
-    """A Phosphorized ssh session WITHOUT the remote helper shows the small, informational chip "limited: no remote helper" (OCR). It never blocks: a command
+    """A Phosphorized ssh session WITHOUT the remote helper shows the small, informational chip "shell mode" (OCR). It never blocks: a command
     typed right after connecting still runs once, and the chip is not an error banner (no 'ERROR' text next to it)."""
     import cases_caseagent as CAG
     if connect_or_fail(ctx, r, arm) is None:
@@ -567,7 +567,7 @@ def c_no_helper_chip(ctx, r, arm):
         r.unverifiable("no OCR on this machine (tesseract): the chip on screen is not checked")
     else:
         flat = " ".join(txt.split())
-        r.check(CAG.fuzzy_has(flat, "no remote helper"), "no 'limited: no remote helper' chip on screen in a no-helper ssh session")
+        r.check(CAG.fuzzy_has(flat, "shell mode"), "no 'shell mode' chip on screen in a no-helper ssh session")
         r.check("ERROR" not in flat, "an ERROR text is on screen next to the no-helper chip: it must stay informational")
     tok = unique(ctx)
     ctx.be.type("echo chip%s" % tok, type_pace(ctx), enter=True)

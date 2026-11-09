@@ -88,7 +88,7 @@ define_settings_group!(InputSettings,
             sync_to_cloud: SyncToCloud::Never,
             private: false,
             toml_path: "terminal.remote.show_no_helper_chip",
-            description: "Whether a small 'limited: no remote helper' chip is shown in Phosphorized ssh sessions that run without the remote helper.",
+            description: "Whether a small 'shell mode' chip is shown in Phosphorized ssh sessions that run without the remote helper.",
         },
         no_helper_chip_dismissed_hosts: NoHelperChipDismissedHosts {
             type: Vec<String>,
@@ -328,7 +328,7 @@ mod completions_while_typing_tests {
     }
 }
 
-/// Whether the "limited: no remote helper" chip shows for a session on `host`: the global
+/// Whether the "shell mode" chip shows for a session on `host`: the global
 /// setting is on and the host was not dismissed. Host names compare case-insensitively.
 pub fn no_helper_chip_visible(show: bool, dismissed_hosts: &[String], host: &str) -> bool {
     show && !dismissed_hosts

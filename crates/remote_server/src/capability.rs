@@ -36,8 +36,13 @@ pub const CODEBASE_INDEX: &str = "codebase_index";
 pub const GIT_STATUS: &str = "git_status";
 /// GitHub PR and repository info (`UpdateGitHubPrInfo`, `UpdateGitHubRepoInfo` and their pushes).
 pub const GITHUB: &str = "github";
-/// The agent-context snapshot push: the host's skills and global rule files.
-pub const SKILLS: &str = "skills";
+/// The agent-context snapshot push: the host's skills and global rule files. This is the one
+/// name for what the earlier `SKILLS` constant (never referenced outside this module) meant;
+/// bundled skills are never part of it, the app supplies its own.
+pub const AGENT_CONTEXT: &str = "agent_context";
+/// Codebase chunking for indexing: the host scans, chunks and hashes, the app embeds. Distinct
+/// from the legacy [`CODEBASE_INDEX`] (host-side embedding), which the helper never implements.
+pub const CODEBASE_CHUNKS: &str = "codebase_chunks";
 
 /// The families above that only the legacy full daemon implements, for documentation and for
 /// tests that pin the helper's list against them.
@@ -50,7 +55,8 @@ pub const LEGACY_ONLY_CAPABILITIES: &[&str] = &[
     CODEBASE_INDEX,
     GIT_STATUS,
     GITHUB,
-    SKILLS,
+    AGENT_CONTEXT,
+    CODEBASE_CHUNKS,
 ];
 
 /// Every capability the helper in this build implements.
@@ -122,6 +128,14 @@ mod tests {
                 "{legacy_only} is not implemented by the helper"
             );
         }
+    }
+
+    #[test]
+    fn the_new_family_capabilities_have_stable_wire_names_and_are_reserved() {
+        assert_eq!(AGENT_CONTEXT, "agent_context");
+        assert_eq!(CODEBASE_CHUNKS, "codebase_chunks");
+        assert!(LEGACY_ONLY_CAPABILITIES.contains(&AGENT_CONTEXT));
+        assert!(LEGACY_ONLY_CAPABILITIES.contains(&CODEBASE_CHUNKS));
     }
 
     #[test]

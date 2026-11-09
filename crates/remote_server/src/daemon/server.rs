@@ -21,7 +21,10 @@ use crate::protocol::RequestId;
 
 use super::exec::{self, SessionShell, ShellKind};
 use super::jobs::{Inflight, Reply};
-use super::{fs_ops, git, ripgrep};
+use super::{
+    buffers, diff_state, file_context, fs_ops, git, git_status, git_write, github, repo_meta,
+    ripgrep,
+};
 
 /// How long the daemon waits with no connections before exiting.
 pub(super) const GRACE_PERIOD: Duration = Duration::from_secs(10 * 60);
@@ -227,13 +230,18 @@ impl Server {
                     }),
                 }
             }
-            other => reply.error(
-                ErrorCode::Unsupported,
-                format!(
-                    "phosphor-remote does not support {}; the client uses its own path",
-                    host_scoped_name(&other)
-                ),
-            ),
+            // Reserved family modules (P0): each answers UNSUPPORTED until its package lands.
+            M::ReadFileContext(_) => file_context::handle(&reply, "ReadFileContext"),
+            M::SaveBuffer(_) => buffers::handle(&reply, "SaveBuffer"),
+            M::ResolveConflict(_) => buffers::handle(&reply, "ResolveConflict"),
+            M::GitCommitChain(_) => git_write::handle(&reply, "GitCommitChain"),
+            M::GitPush(_) => git_write::handle(&reply, "GitPush"),
+            M::GitPull(_) => git_write::handle(&reply, "GitPull"),
+            M::GitCreatePr(_) => git_write::handle(&reply, "GitCreatePr"),
+            M::DiscardFiles(_) => git_write::handle(&reply, "DiscardFiles"),
+            M::GitStage(_) => git_write::handle(&reply, "GitStage"),
+            // Legacy host-side indexing: never implemented by the helper (see CODEBASE_CHUNKS).
+            other => unsupported(&reply, host_scoped_name(&other)),
         }
     }
 
@@ -263,10 +271,12 @@ impl Server {
                 self.inflight
                     .spawn(reply, move |cancel| exec::run_command(&shell, req, cancel));
             }
-            M::NavigatedToDirectory(_) => unsupported(&reply, "NavigatedToDirectory"),
-            M::LoadRepoMetadataDirectory(_) => unsupported(&reply, "LoadRepoMetadataDirectory"),
-            M::OpenBuffer(_) => unsupported(&reply, "OpenBuffer"),
-            M::GetDiffState(_) => unsupported(&reply, "GetDiffState"),
+            M::NavigatedToDirectory(_) => repo_meta::handle(&reply, "NavigatedToDirectory"),
+            M::LoadRepoMetadataDirectory(_) => {
+                repo_meta::handle(&reply, "LoadRepoMetadataDirectory")
+            }
+            M::OpenBuffer(_) => buffers::handle(&reply, "OpenBuffer"),
+            M::GetDiffState(_) => diff_state::handle(&reply, "GetDiffState"),
         }
     }
 
@@ -315,6 +325,9 @@ impl Server {
                 }
             }
             Some(N::SessionBootstrapped(msg)) => self.handle_session_bootstrapped(msg),
+            Some(N::UpdateGitStatus(_)) => git_status::ignore("UpdateGitStatus"),
+            Some(N::UpdateGithubPrInfo(_)) => github::ignore("UpdateGitHubPrInfo"),
+            Some(N::UpdateGithubRepoInfo(_)) => github::ignore("UpdateGitHubRepoInfo"),
             // Notifications carry no response contract. The ones the helper cannot act on
             // (buffer sync, diff-state and git-status subscriptions, preferences) are dropped;
             // the client does not wait on a response, it waits on pushes that never come, and
@@ -364,7 +377,7 @@ impl Server {
     }
 }
 
-fn unsupported(reply: &Reply, what: &str) {
+pub(super) fn unsupported(reply: &Reply, what: &str) {
     reply.error(
         ErrorCode::Unsupported,
         format!("phosphor-remote does not support {what}; the client uses its own path"),
