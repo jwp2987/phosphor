@@ -2722,3 +2722,19 @@ error, not a warning). Tests (`persistence/sqlite_tests.rs`):
 timeout: the probe returns in under 500 ms and `busy_timeout` reads 1000 afterwards), plus the existing
 `writable_probe_tolerates_a_held_write_lock`, `read_only_connection_fails_the_writable_probe` and
 `deliberately_read_only_file_is_not_failed_or_retried`.
+
+## #1129: the typed-input wrapper is folded (no 190 KB readline line)
+
+A bash WITHOUT bracketed paste (macOS 3.2 over ssh) gets a large command as the base64 wrapper, typed key by key. One
+190 KB line took 86 s (~2 KB/s): readline redisplays the whole line per key, so the cost is the square of the line's
+length. `posix_long_command::wrapper_lines_for_typed_input` folds the base64 onto lines of at most 960 characters inside
+the same open single quote (continuation lines; nothing runs until the closing quote; `base64 -d`/`-D` ignore the
+newlines), under macOS's 1024-byte `MAX_CANON` too. With bracketed paste the one-line `wrapper_line` is kept (measured
+fast, #1255). Unit tests (`writeable_pty/posix_long_command_tests.rs`):
+`the_typed_input_wrapper_folds_the_base64_and_carries_the_command_byte_for_byte`,
+`the_typed_input_wrapper_has_the_same_decode_and_cleanup_shell_as_the_one_line_form`,
+`the_typed_input_wrapper_redisplay_work_scales_linearly` (sum of squared line lengths: 100 KB to 1 MB grows ~10x folded,
+~100x as one line). The real-app proof is the existing `remote_heredoc_paste` (byte-exact 2,000-line here-doc, 10 KB
+line, ~600 KB here-doc over the `fake` ssh host); on a bash 3.2 remote its 2k here-doc step's time is the metric to
+compare with the 86 s of r18u22. Unverified until the box runs it: the block header's display override is keyed by the
+exact wrapper text the shell's preexec reports, which now contains newlines (bash keeps them inside an open quote).
