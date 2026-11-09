@@ -1015,6 +1015,14 @@ timeout, so a regression fails instead of hanging), `should_insert_text_on_paste
 unkillable by design: the `>` in `abandon_pending_reads` and the `!=` / `>=` in `tracked_reader_with` (lines 233, 312, 321) only change a
 `log::warn!`, and `warpui_core` cannot install a capture logger (`src/test.rs` `#[ctor]`, see `report_error.rs`).
 
+**Clipboard mutants, what is left (#1778 follow-up).** The remaining survivors, with the reason each is equivalent (cargo-mutants cannot tell a changed log line or an
+unreachable OS failure from a changed behaviour): the `>` in `abandon_pending_reads` (`blocked > 0` only chooses whether a `warn!` is written), the `!=` in
+`tracked_reader_with` (the abandon-epoch check only writes a `warn!`; the result is handed back either way), the `>=` in `tracked_reader_with` (the slow-read `warn!`),
+and the failure arms of `std::thread::Builder::spawn` in `start_reader`, `write_in_background` and `serial_writer` (`!spawned`, the `Err(err)` log): a thread spawn cannot be
+made to fail in a unit test. Killed since: `ReadKind::target` (`a_read_kind_targets_the_clipboard_it_reads`), `ReaderTracker::default` / `new` / the epoch bump
+(`a_new_tracker_*`, `abandoning_bumps_the_epoch_once_per_call`) and the default `InMemoryClipboard` (`the_default_in_memory_clipboard_*`). The job's mutant list itself was not re-run
+(no cargo here): the next `mutants-warpui-core` run (release tier) is the measurement.
+
 ### 2.10 Markdown and Mermaid readers (#1460)
 
 What is covered, where, and how to update it. Nothing here runs cargo on the laptop; the box does (section 1).
