@@ -432,6 +432,7 @@ pub(super) async fn assert_contract(subject: &Subject) {
     assert_read_file_context(subject).await;
     assert_file_write(subject).await;
     assert_repo_metadata(subject).await;
+    assert_codebase_index(subject).await;
 }
 
 // ---- repo metadata / file tree (P3) ----------------------------------------------------------
@@ -731,10 +732,23 @@ async fn a_shell_refresh_queues_only_what_changed_and_never_before_it_is_asked()
     assert!(shell.take_pushes().is_empty());
 }
 
+/// A shell backend whose app-side index store lives in a scratch directory that is never
+/// cleaned up before the test process exits.
+fn shell_with_index() -> (ShellBackend, std::path::PathBuf) {
+    let root = Box::leak(Box::new(tempfile::tempdir().unwrap()))
+        .path()
+        .to_path_buf();
+    let index = Arc::new(ShellIndex::new(root.clone(), "contract-host".into()));
+    (
+        ShellBackend::new(Some(Arc::new(LocalShExecutor))).with_index(index),
+        root,
+    )
+}
+
 fn shell_subject() -> Subject {
     Subject {
         name: "shell(local sh)",
-        backend: Arc::new(ShellBackend::new(Some(Arc::new(LocalShExecutor)))),
+        backend: Arc::new(shell_with_index().0),
     }
 }
 
@@ -913,4 +927,318 @@ async fn unsupported_from_the_helper_is_served_by_the_shell_and_sticks() {
     assert_eq!(requests.load(Ordering::SeqCst), 1);
     // Other families are untouched.
     assert_eq!(backend.kind(Family::GitRead), BackendKind::Helper);
+}
+
+// ---- codebase indexing (P9b) -------------------------------------------------------------------
+
+use crate::proto::{
+    CodebaseVector, GetChunks, QueryVectors, ScanCodebaseSuccess, StoreVectors,
+    get_chunks_response, query_vectors_response, scan_codebase_response, store_vectors_response,
+};
+
+fn sha256_of(bytes: &[u8]) -> String {
+    crate::index::types::sha256_hex(bytes)
+}
+
+async fn scan_ok(subject: &Subject, repo: &str) -> ScanCodebaseSuccess {
+    match subject
+        .backend
+        .scan_codebase(repo.to_string())
+        .await
+        .unwrap_or_else(|e| panic!("{}: {e:?}", subject.name))
+        .result
+    {
+        Some(scan_codebase_response::Result::Success(s)) => s,
+        other => panic!("{}: scan failed: {other:?}", subject.name),
+    }
+}
+
+async fn chunks_ok(
+    subject: &Subject,
+    repo: &str,
+    key: &str,
+    hashes: Vec<String>,
+) -> crate::proto::GetChunksSuccess {
+    match subject
+        .backend
+        .get_chunks(GetChunks {
+            repo_path: repo.to_string(),
+            storage_key: key.to_string(),
+            content_hashes: hashes,
+        })
+        .await
+        .unwrap_or_else(|e| panic!("{}: {e:?}", subject.name))
+        .result
+    {
+        Some(get_chunks_response::Result::Success(s)) => s,
+        other => panic!("{}: get_chunks failed: {other:?}", subject.name),
+    }
+}
+
+/// Scan, fetch text, store vectors, query, edit, rescan: literal expectations shared by the
+/// helper and the shell arm. The repository has no ignore files and no pruned directory names
+/// (the shell arm has no ignore-file reader), so both arms see the same tree.
+pub(super) async fn assert_codebase_index(subject: &Subject) {
+    let name = subject.name;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let put = |rel: &str, bytes: &[u8]| {
+        let p = root.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, bytes).unwrap();
+    };
+    put("a.txt", b"alpha\nbeta\n");
+    put("src/b.rs", b"fn b() {}\n");
+    put("it's here.txt", b"quoted\n");
+    put("empty.txt", b"");
+    put("bin.dat", &[0, 1, 2, 255]);
+    let repo = root.to_string_lossy().into_owned();
+
+    // The scan: only text files with a fragment, hashes of the bytes, spans as the chunker gives.
+    let scan = scan_ok(subject, &repo).await;
+    let paths: Vec<_> = scan.manifest.iter().map(|m| m.path.as_str()).collect();
+    assert_eq!(paths, ["a.txt", "it's here.txt", "src/b.rs"], "{name}");
+    assert_eq!(
+        scan.manifest[0].file_hash,
+        sha256_of(b"alpha\nbeta\n"),
+        "{name}"
+    );
+    assert_eq!(scan.chunks.len(), 3, "{name}");
+    let a = &scan.chunks[0];
+    assert_eq!(a.path, "a.txt", "{name}");
+    assert_eq!(
+        (a.start_line, a.end_line, a.byte_start, a.byte_end),
+        (0, 1, 0, 10),
+        "{name}"
+    );
+    assert_eq!(a.content_hash, sha256_of(b"alpha\nbeta"), "{name}");
+    assert_eq!(scan.root_hash.len(), 64, "{name}");
+    assert_eq!(
+        scan,
+        scan_ok(subject, &repo).await,
+        "{name}: a scan is stable"
+    );
+
+    // Text for every fragment, since none has a vector yet.
+    let hash_of = |scan: &ScanCodebaseSuccess, path: &str| {
+        scan.chunks
+            .iter()
+            .find(|c| c.path == path)
+            .unwrap()
+            .content_hash
+            .clone()
+    };
+    let all: Vec<String> = scan.chunks.iter().map(|c| c.content_hash.clone()).collect();
+    let got = chunks_ok(subject, &repo, "m:2", all.clone()).await;
+    assert_eq!(got.already_embedded, 0, "{name}");
+    assert!(got.missing_hashes.is_empty(), "{name}");
+    let mut texts: Vec<_> = got.chunks.iter().map(|c| c.text.as_str()).collect();
+    texts.sort();
+    assert_eq!(texts, ["alpha\nbeta", "fn b() {}", "quoted"], "{name}");
+
+    // Store vectors; they are not offered again, and another storage key starts empty.
+    let vector = |hash: String, values: Vec<f32>| CodebaseVector {
+        content_hash: hash,
+        values,
+    };
+    let stored = subject
+        .backend
+        .store_vectors(StoreVectors {
+            repo_path: repo.clone(),
+            storage_key: "m:2".into(),
+            vectors: vec![
+                vector(hash_of(&scan, "a.txt"), vec![1.0, 0.0]),
+                vector(hash_of(&scan, "src/b.rs"), vec![0.0, 1.0]),
+                vector(hash_of(&scan, "it's here.txt"), vec![0.6, 0.8]),
+            ],
+        })
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            stored.result,
+            Some(store_vectors_response::Result::Success(ref s)) if s.stored == 3
+        ),
+        "{name}: {stored:?}"
+    );
+    let again = chunks_ok(subject, &repo, "m:2", all.clone()).await;
+    assert_eq!(
+        (again.already_embedded, again.chunks.len()),
+        (3, 0),
+        "{name}"
+    );
+    let other = chunks_ok(subject, &repo, "other:2", all.clone()).await;
+    assert_eq!(
+        (other.already_embedded, other.chunks.len()),
+        (0, 3),
+        "{name}"
+    );
+
+    // Brute-force ranking.
+    let ranked = |q: Vec<f32>, k: u32| {
+        let backend = Arc::clone(&subject.backend);
+        let repo = repo.clone();
+        async move {
+            backend
+                .query_vectors(QueryVectors {
+                    repo_path: repo,
+                    storage_key: "m:2".into(),
+                    query_vector: q,
+                    top_k: k,
+                })
+                .await
+                .unwrap()
+                .result
+        }
+    };
+    let Some(query_vectors_response::Result::Success(hits)) = ranked(vec![0.0, 1.0], 2).await
+    else {
+        panic!("{name}: query failed");
+    };
+    let order: Vec<_> = hits.fragments.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(order, ["src/b.rs", "it's here.txt"], "{name}");
+    assert!((hits.fragments[0].score - 1.0).abs() < 1e-5, "{name}");
+    assert!((hits.fragments[1].score - 0.8).abs() < 1e-5, "{name}");
+    // A query of the wrong size is an error response, not a crash.
+    assert!(
+        matches!(
+            ranked(vec![1.0, 0.0, 0.0], 2).await,
+            Some(query_vectors_response::Result::Error(_))
+        ),
+        "{name}"
+    );
+
+    // An edit changes one file: only its new fragment needs text, the root hash moves, and the
+    // untouched files keep their vectors.
+    put("a.txt", b"alpha\nbeta\ngamma\n");
+    let edited = scan_ok(subject, &repo).await;
+    assert_ne!(edited.root_hash, scan.root_hash, "{name}");
+    let fresh = chunks_ok(
+        subject,
+        &repo,
+        "m:2",
+        edited
+            .chunks
+            .iter()
+            .map(|c| c.content_hash.clone())
+            .collect(),
+    )
+    .await;
+    assert_eq!(fresh.already_embedded, 2, "{name}");
+    assert_eq!(fresh.chunks.len(), 1, "{name}");
+    assert_eq!(fresh.chunks[0].text, "alpha\nbeta\ngamma", "{name}");
+
+    // A deleted file leaves the manifest.
+    std::fs::remove_file(root.join("src/b.rs")).unwrap();
+    let removed = scan_ok(subject, &repo).await;
+    let paths: Vec<_> = removed.manifest.iter().map(|m| m.path.as_str()).collect();
+    assert_eq!(paths, ["a.txt", "it's here.txt"], "{name}");
+
+    // A directory that is not there is an error response from either arm.
+    let missing = root.join("nope").to_string_lossy().into_owned();
+    let response = subject.backend.scan_codebase(missing).await.unwrap();
+    assert!(
+        matches!(
+            response.result,
+            Some(scan_codebase_response::Result::Error(_))
+        ),
+        "{name}"
+    );
+}
+
+/// Shell arm only: the text cached by a scan is a shortcut, not a dependency. A backend that
+/// never scanned in this process (the app restarted between scan and fetch) reads the host again
+/// and checks each fragment against its hash.
+#[tokio::test]
+async fn the_shell_arm_rereads_fragments_when_its_text_cache_is_cold() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "alpha\nbeta\n").unwrap();
+    let repo = dir.path().to_string_lossy().into_owned();
+    let (first, root) = shell_with_index();
+    let scan = scan_ok(
+        &Subject {
+            name: "first",
+            backend: Arc::new(first),
+        },
+        &repo,
+    )
+    .await;
+    let cold = ShellBackend::new(Some(Arc::new(LocalShExecutor)))
+        .with_index(Arc::new(ShellIndex::new(root, "contract-host".into())));
+    let subject = Subject {
+        name: "cold",
+        backend: Arc::new(cold),
+    };
+    let got = chunks_ok(
+        &subject,
+        &repo,
+        "m:2",
+        scan.chunks.iter().map(|c| c.content_hash.clone()).collect(),
+    )
+    .await;
+    assert_eq!(got.chunks.len(), 1);
+    assert_eq!(got.chunks[0].text, "alpha\nbeta");
+    // The file changed after the scan: the fragment is reported missing, never served stale.
+    std::fs::write(dir.path().join("a.txt"), "different\n").unwrap();
+    let got = chunks_ok(
+        &subject,
+        &repo,
+        "m:2",
+        scan.chunks.iter().map(|c| c.content_hash.clone()).collect(),
+    )
+    .await;
+    assert!(got.chunks.is_empty());
+    assert_eq!(got.missing_hashes.len(), 1);
+}
+
+/// Shell arm only: a second scan of an unchanged tree reads no file (it only lists and hashes),
+/// and a file found binary is not read again either.
+#[tokio::test]
+async fn the_shell_arm_reads_only_files_whose_hash_is_new() {
+    #[derive(Debug)]
+    struct Counting(std::sync::atomic::AtomicUsize);
+    impl OutOfBandExecutor for Counting {
+        fn channel_kind(&self) -> ChannelKind {
+            ChannelKind::LocalSh
+        }
+        fn shell_kind(&self) -> ShellKind {
+            ShellKind::Posix
+        }
+        fn execute(&self, request: ExecRequest) -> BoxFuture<'_, Result<ExecOutput, ExecError>> {
+            if request.command.contains("head -c") {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+            Box::pin(async move { run_local_sh(request, None) })
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "alpha\n").unwrap();
+    std::fs::write(dir.path().join("bin.dat"), [0u8, 1, 2]).unwrap();
+    let repo = dir.path().to_string_lossy().into_owned();
+    let root = Box::leak(Box::new(tempfile::tempdir().unwrap()))
+        .path()
+        .to_path_buf();
+    let counting = Arc::new(Counting(Default::default()));
+    let shell = ShellBackend::new(Some(counting.clone()))
+        .with_index(Arc::new(ShellIndex::new(root, "h".into())));
+    shell.scan_codebase(repo.clone()).await.unwrap();
+    let after_first = counting.0.load(Ordering::SeqCst);
+    assert_eq!(after_first, 1, "one batched read for the two new files");
+    shell.scan_codebase(repo.clone()).await.unwrap();
+    assert_eq!(
+        counting.0.load(Ordering::SeqCst),
+        after_first,
+        "nothing new: no file is read"
+    );
+    std::fs::write(dir.path().join("a.txt"), "alpha changed\n").unwrap();
+    shell.scan_codebase(repo).await.unwrap();
+    assert_eq!(counting.0.load(Ordering::SeqCst), after_first + 1);
+}
+
+/// Without index storage configured the shell arm says so (Unavailable), it does not pretend.
+#[tokio::test]
+async fn the_shell_arm_without_index_storage_is_unavailable() {
+    let shell = ShellBackend::new(Some(Arc::new(LocalShExecutor)));
+    let err = shell.scan_codebase("/".into()).await.unwrap_err();
+    assert!(matches!(err, BackendError::Unavailable(_)), "{err:?}");
 }

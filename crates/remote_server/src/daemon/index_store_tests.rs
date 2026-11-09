@@ -2,7 +2,9 @@ use std::fs;
 use std::path::Path;
 
 use super::*;
-use crate::proto::CodebaseVector;
+use crate::proto::{
+    CodebaseVector, StoreVectorsSuccess, query_vectors_response, store_vectors_response,
+};
 
 fn write(root: &Path, rel: &str, body: &str) {
     let p = root.join(rel);

@@ -16,7 +16,7 @@ use super::Family;
 use super::executor::OutOfBandExecutor;
 use super::helper::client_id;
 use super::refresh::RemoteRefreshEvent;
-use super::shell::{ShellBackend, ShellPush, TreeCache};
+use super::shell::{ShellBackend, ShellIndex, ShellPush, TreeCache};
 use crate::HostId;
 use crate::capability::ServerCapabilities;
 use crate::client::RemoteServerClient;
@@ -146,6 +146,12 @@ struct State {
     fallbacks: HashMap<HostId, Fallbacks>,
     /// Per-host shell-mode file trees, shared by every backend built for the host.
     tree_caches: HashMap<HostId, Arc<TreeCache>>,
+    /// Where the shell arm keeps its codebase indexes; `None` leaves indexing unconfigured.
+    index_root: Option<std::path::PathBuf>,
+    /// A stable name for the machine behind a session (`user@host`), which keys its shell-arm
+    /// index across reconnects. A session with none is keyed by its host id.
+    identities: HashMap<SessionId, String>,
+    indexes: HashMap<String, Arc<ShellIndex>>,
     refresh_listeners: Vec<RefreshListener>,
 }
 
@@ -193,7 +199,37 @@ impl FeatureRouter {
     }
 
     pub fn unregister_out_of_band(&self, session: SessionId) {
-        self.lock().executors.remove(&session);
+        let mut state = self.lock();
+        state.executors.remove(&session);
+        state.identities.remove(&session);
+    }
+
+    /// Where the shell arm keeps the codebase indexes it builds (the app's data directory).
+    pub fn set_index_root(&self, root: std::path::PathBuf) {
+        self.lock().index_root = Some(root);
+    }
+
+    /// Names the machine behind `session` stably (`user@host`), so its shell-arm index outlives
+    /// the session.
+    pub fn set_session_identity(&self, session: SessionId, identity: String) {
+        self.lock().identities.insert(session, identity);
+    }
+
+    /// The shell-arm index state for `host` reached through `sessions`, if storage is
+    /// configured.
+    fn index_for(&self, host: &HostId, sessions: &[SessionId]) -> Option<Arc<ShellIndex>> {
+        let mut state = self.lock();
+        let root = state.index_root.clone()?;
+        let identity = sessions
+            .iter()
+            .find_map(|s| state.identities.get(s).cloned())
+            .unwrap_or_else(|| host.as_str().to_string());
+        Some(Arc::clone(
+            state
+                .indexes
+                .entry(identity.clone())
+                .or_insert_with(|| Arc::new(ShellIndex::new(root, identity))),
+        ))
     }
 
     /// Registers a listener for [`RemoteRefreshEvent`]s the backend itself raises: today
@@ -311,12 +347,17 @@ impl FeatureRouter {
         helper: Option<Arc<RemoteServerClient>>,
         sessions: impl IntoIterator<Item = SessionId>,
     ) -> RoutedBackend {
+        let sessions: Vec<SessionId> = sessions.into_iter().collect();
+        let mut shell = ShellBackend::new(self.executor_for(sessions.iter().copied()))
+            .with_tree_cache(self.tree_cache_for(host));
+        if let Some(index) = self.index_for(host, &sessions) {
+            shell = shell.with_index(index);
+        }
         RoutedBackend {
             router: self.clone(),
             host: host.clone(),
             helper,
-            shell: ShellBackend::new(self.executor_for(sessions))
-                .with_tree_cache(self.tree_cache_for(host)),
+            shell,
         }
     }
 

@@ -5,12 +5,14 @@
 //! probe. Every family's request methods answer `Unsupported` until its package fills them in
 //! (P1..P9), or `Unavailable` when the session has no out-of-band channel.
 
+mod index;
 mod read;
 mod tree;
 mod write;
 
 use std::sync::{Arc, Mutex};
 
+pub use index::ShellIndex;
 pub use tree::{ShellPush, TreeCache};
 
 use super::executor::{ChannelKind, ExecRequest, MAX_EXEC_OUTPUT_BYTES, OutOfBandExecutor};
@@ -36,6 +38,9 @@ pub struct ShellBackend {
     pushes: Arc<Mutex<Vec<ShellPush>>>,
     /// The host's base64 decoder (for writes), probed once like the encoder.
     decode_tool: Arc<Mutex<Option<Option<DecodeTool>>>>,
+    /// The host's app-side codebase index state; `None` when no storage is configured (tests,
+    /// callers that never index).
+    index: Option<Arc<ShellIndex>>,
 }
 
 impl std::fmt::Debug for ShellBackend {
@@ -56,12 +61,19 @@ impl ShellBackend {
             tree_cache: Arc::default(),
             pushes: Arc::default(),
             decode_tool: Arc::default(),
+            index: None,
         }
     }
 
     /// Shares `cache` (the host's file-tree state) with this backend.
     pub fn with_tree_cache(mut self, cache: Arc<TreeCache>) -> Self {
         self.tree_cache = cache;
+        self
+    }
+
+    /// Gives this backend the host's codebase-index state (its store root and text cache).
+    pub fn with_index(mut self, index: Arc<ShellIndex>) -> Self {
+        self.index = Some(index);
         self
     }
 

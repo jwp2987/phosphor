@@ -5,6 +5,7 @@
 //! same facts by running commands and keeps the store app-side. The app embeds the text through
 //! `crates/network_gate` in both cases, so the user's embedding key never reaches a host.
 
+pub mod ops;
 pub mod proto;
 pub mod store;
 pub mod types;

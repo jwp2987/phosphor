@@ -117,7 +117,10 @@ pub(crate) fn spawn_in_process_for_tests() -> std::os::unix::net::UnixStream {
     std::thread::Builder::new()
         .name("in-process-daemon".into())
         .spawn(move || {
+            // The index stores go to a scratch directory, never the real home.
+            let index_root = tempfile::tempdir().expect("scratch index directory");
             server::Server::new(server::GRACE_PERIOD)
+                .with_index_root(index_root.path().to_path_buf())
                 .with_events(events_tx)
                 .run(events_rx);
         })

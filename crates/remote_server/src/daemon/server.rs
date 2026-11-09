@@ -123,6 +123,8 @@ pub(super) struct Server {
     watches: WatchSet,
     /// Indexed repository roots and their live trees (`repo_meta.rs`).
     repos: repo_meta::RepoTrees,
+    /// Where `ScanCodebase` and friends keep their flat-file stores.
+    index_root: PathBuf,
 }
 
 impl Server {
@@ -144,7 +146,15 @@ impl Server {
             events_tx: None,
             watches: WatchSet::disabled(),
             repos: repo_meta::RepoTrees::default(),
+            index_root: index_store::default_root(),
         }
+    }
+
+    /// Keeps the codebase indexes under `root` instead of `~/.phosphor/index` (tests).
+    #[cfg(test)]
+    pub(super) fn with_index_root(mut self, root: PathBuf) -> Self {
+        self.index_root = root;
+        self
     }
 
     /// Gives the core a sender to its own event channel, which turns filesystem watching on and
@@ -315,37 +325,35 @@ impl Server {
             // Codebase indexing (`codebase_chunks`): the host scans and stores, the app embeds.
             M::ScanCodebase(msg) => {
                 log::info!("Handling ScanCodebase");
+                let root = self.index_root.clone();
                 self.inflight.spawn(reply, move |_| {
                     server_message::Message::ScanCodebaseResponse(index_store::scan_codebase(
-                        &index_store::default_root(),
-                        msg,
+                        &root, msg,
                     ))
                 });
             }
             M::GetChunks(msg) => {
                 log::info!("Handling GetChunks ({} hashes)", msg.content_hashes.len());
+                let root = self.index_root.clone();
                 self.inflight.spawn(reply, move |_| {
-                    server_message::Message::GetChunksResponse(index_store::get_chunks(
-                        &index_store::default_root(),
-                        msg,
-                    ))
+                    server_message::Message::GetChunksResponse(index_store::get_chunks(&root, msg))
                 });
             }
             M::StoreVectors(msg) => {
                 log::info!("Handling StoreVectors ({} vectors)", msg.vectors.len());
+                let root = self.index_root.clone();
                 self.inflight.spawn(reply, move |_| {
                     server_message::Message::StoreVectorsResponse(index_store::store_vectors(
-                        &index_store::default_root(),
-                        msg,
+                        &root, msg,
                     ))
                 });
             }
             M::QueryVectors(msg) => {
                 log::info!("Handling QueryVectors (top_k={})", msg.top_k);
+                let root = self.index_root.clone();
                 self.inflight.spawn(reply, move |_| {
                     server_message::Message::QueryVectorsResponse(index_store::query_vectors(
-                        &index_store::default_root(),
-                        msg,
+                        &root, msg,
                     ))
                 });
             }

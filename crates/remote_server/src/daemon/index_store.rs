@@ -12,17 +12,16 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use super::chunk;
+use crate::index::ops;
 use crate::index::proto::{
-    MAX_CHUNKS_PER_REQUEST, MAX_TOP_K, chunks_error, query_error, ranked_to_proto, scan_error,
-    scan_to_proto, store_error,
+    MAX_CHUNKS_PER_REQUEST, chunks_error, query_error, scan_error, scan_to_proto, store_error,
 };
 use crate::index::store::IndexStore;
 use crate::index::types::{ChunkEntry, sha256_hex};
 use crate::proto::{
     CodebaseChunkText, GetChunks, GetChunksResponse, GetChunksSuccess, QueryVectors,
     QueryVectorsResponse, ScanCodebase, ScanCodebaseResponse, StoreVectors, StoreVectorsResponse,
-    StoreVectorsSuccess, get_chunks_response, query_vectors_response, scan_codebase_response,
-    store_vectors_response,
+    get_chunks_response, scan_codebase_response,
 };
 
 /// Where the helper keeps its indexes.
@@ -162,51 +161,16 @@ pub(super) fn get_chunks(root: &Path, msg: GetChunks) -> GetChunksResponse {
 }
 
 pub(super) fn store_vectors(root: &Path, msg: StoreVectors) -> StoreVectorsResponse {
-    if msg.storage_key.is_empty() {
-        return store_error("storage_key is empty");
-    }
-    let repo = match repo_dir(&msg.repo_path) {
-        Ok(repo) => repo,
-        Err(e) => return store_error(e),
-    };
-    let store = store_for(root, &repo);
-    let vectors: Vec<(String, Vec<f32>)> = msg
-        .vectors
-        .into_iter()
-        .map(|v| (v.content_hash, v.values))
-        .collect();
-    match store.append_vectors(&msg.storage_key, &vectors) {
-        Ok(stored) => {
-            // A changed embedding model makes every older space unusable.
-            store.drop_other_spaces(&msg.storage_key);
-            StoreVectorsResponse {
-                result: Some(store_vectors_response::Result::Success(
-                    StoreVectorsSuccess {
-                        stored: stored as u64,
-                    },
-                )),
-            }
-        }
-        Err(e) => store_error(format!("{e:#}")),
+    match repo_dir(&msg.repo_path) {
+        Ok(repo) => ops::store_vectors(&store_for(root, &repo), msg),
+        Err(e) => store_error(e),
     }
 }
 
 pub(super) fn query_vectors(root: &Path, msg: QueryVectors) -> QueryVectorsResponse {
-    let repo = match repo_dir(&msg.repo_path) {
-        Ok(repo) => repo,
-        Err(e) => return query_error(e),
-    };
-    if msg.query_vector.is_empty() {
-        return query_error("the query vector is empty");
-    }
-    let top_k = msg.top_k.clamp(1, MAX_TOP_K) as usize;
-    match store_for(root, &repo).query(&msg.storage_key, &msg.query_vector, top_k) {
-        Ok(hits) => QueryVectorsResponse {
-            result: Some(query_vectors_response::Result::Success(ranked_to_proto(
-                hits,
-            ))),
-        },
-        Err(e) => query_error(format!("{e:#}")),
+    match repo_dir(&msg.repo_path) {
+        Ok(repo) => ops::query_vectors(&store_for(root, &repo), msg),
+        Err(e) => query_error(e),
     }
 }
 

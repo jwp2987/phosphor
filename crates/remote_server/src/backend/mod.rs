@@ -32,7 +32,7 @@ pub use executor::{
 pub use features::{METHODS, RemoteFeatures};
 pub use helper::HelperBackend;
 pub use router::{AlwaysShell, BackendKind, FeatureRouter, HelperProbe, RoutedBackend, decide};
-pub use shell::{ShellBackend, ShellPush, TreeCache};
+pub use shell::{ShellBackend, ShellIndex, ShellPush, TreeCache};
 pub use shell_git_runner::ShellGitRunner;
 
 use crate::capability;

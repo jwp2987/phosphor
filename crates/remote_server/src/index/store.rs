@@ -31,7 +31,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use anyhow::{Context as _, anyhow, bail};
 use serde::{Deserialize, Serialize};
 
-use super::types::{ChunkEntry, Scan, hex, sha256_hex};
+use super::types::{ChunkEntry, ManifestEntry, Scan, hex, sha256_hex};
 
 /// Version of `meta.json` and of the vector file header.
 pub const FORMAT: u32 = 1;
@@ -48,6 +48,10 @@ pub struct StoredScan {
     pub format: u32,
     pub repo_path: String,
     pub scan: Scan,
+    /// Files the shell arm read and found not indexable (binary, no fragments), by hash, so the
+    /// next scan does not read them again. Always empty for the helper, which walks its own tree.
+    #[serde(default)]
+    pub skipped: Vec<ManifestEntry>,
 }
 
 /// One search hit: a fragment and its cosine similarity to the query.
@@ -151,11 +155,22 @@ impl IndexStore {
 
     /// Stores `scan` as the repository's current manifest and fragment table.
     pub fn save_scan(&self, repo_path: &str, scan: &Scan) -> anyhow::Result<()> {
+        self.save_scan_and_skipped(repo_path, scan, &[])
+    }
+
+    /// [`Self::save_scan`] plus the files that were read and not indexed.
+    pub fn save_scan_and_skipped(
+        &self,
+        repo_path: &str,
+        scan: &Scan,
+        skipped: &[ManifestEntry],
+    ) -> anyhow::Result<()> {
         let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let stored = StoredScan {
             format: FORMAT,
             repo_path: repo_path.to_string(),
             scan: scan.clone(),
+            skipped: skipped.to_vec(),
         };
         self.write_atomic(&self.meta_path(), &serde_json::to_vec(&stored)?)
     }

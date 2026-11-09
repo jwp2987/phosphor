@@ -151,8 +151,8 @@ remote_features! {
     FsBasic, false: fn list_directory(path: String) -> ListDirectoryResponse => list_directory_shell;
     FsBasic, false: fn resolve_path(path: String) -> ResolvePathResponse => unimplemented;
     FsBasic, true: fn create_directory(path: String) -> CreateDirectoryResponse => unimplemented;
-    CodebaseChunks, false: fn scan_codebase(repo_path: String) -> ScanCodebaseResponse => unimplemented;
-    CodebaseChunks, false: fn get_chunks(request: GetChunks) -> GetChunksResponse => unimplemented;
-    CodebaseChunks, false: fn store_vectors(request: StoreVectors) -> StoreVectorsResponse => unimplemented;
-    CodebaseChunks, false: fn query_vectors(request: QueryVectors) -> QueryVectorsResponse => unimplemented;
+    CodebaseChunks, false: fn scan_codebase(repo_path: String) -> ScanCodebaseResponse => scan_codebase_shell;
+    CodebaseChunks, false: fn get_chunks(request: GetChunks) -> GetChunksResponse => get_chunks_shell;
+    CodebaseChunks, false: fn store_vectors(request: StoreVectors) -> StoreVectorsResponse => store_vectors_shell;
+    CodebaseChunks, false: fn query_vectors(request: QueryVectors) -> QueryVectorsResponse => query_vectors_shell;
 }
