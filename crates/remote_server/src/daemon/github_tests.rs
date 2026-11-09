@@ -178,6 +178,7 @@ fn the_branch_changing_refreshes_the_pr_and_a_plain_edit_does_not() {
     ask_pr(&mut live, &wire);
     live.expect_where(pr_push);
     assert_eq!(calls(), 1);
+    live.next(Duration::from_millis(300));
 
     // An edit and a commit on the same branch: no new gh lookup.
     std::fs::write(root.join("a.txt"), "1\n2\n").unwrap();

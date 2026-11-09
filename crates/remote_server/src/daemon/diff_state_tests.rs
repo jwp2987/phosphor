@@ -97,6 +97,8 @@ fn an_edit_is_pushed_as_a_file_delta_with_fresh_metadata_and_an_ignored_file_is_
     live.send_session("r", get(&wire, &Mode::Head));
     let snap = snapshot_of(live.expect()).unwrap();
     assert!(paths(&snap).is_empty(), "a clean repo has no diff");
+    // Let the watch plan land before touching files.
+    assert!(live.stays_quiet(Duration::from_millis(300)));
 
     // An ignored file changes: nothing is pushed for it. Then a tracked file in a subdirectory.
     std::fs::write(root.join("noise.log"), "x").unwrap();
@@ -133,6 +135,7 @@ fn a_commit_moves_head_and_pushes_a_whole_snapshot() {
     let mut live = Live::new();
     live.send_session("r", get(&wire, &Mode::Head));
     assert_eq!(paths(&snapshot_of(live.expect()).unwrap()), vec!["a.txt"]);
+    assert!(live.stays_quiet(Duration::from_millis(300)));
 
     git(root, &["commit", "-q", "-am", "second"]);
     let snap = live.expect_where(|m| match &m.message {
@@ -159,6 +162,7 @@ fn unsubscribing_stops_the_pushes() {
     let mut live = Live::new();
     live.send_session("r", get(&wire, &Mode::Head));
     snapshot_of(live.expect()).unwrap();
+    assert!(live.stays_quiet(Duration::from_millis(300)));
     live.notify(notification::Message::UnsubscribeDiffState(
         UnsubscribeDiffState {
             repo_path: wire,
@@ -184,6 +188,6 @@ fn a_dropped_connection_releases_the_repo() {
     snapshot_of(live.expect()).unwrap();
     let conn = live.conn;
     live.server
-        .handle_event(super::server::Event::Disconnected { conn });
+        .handle_event(crate::daemon::server::Event::Disconnected { conn });
     assert!(live.server.is_repo_watch_free_for_tests());
 }

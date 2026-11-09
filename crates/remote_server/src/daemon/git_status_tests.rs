@@ -53,6 +53,7 @@ fn an_edit_and_a_branch_change_are_pushed_without_being_asked_and_a_non_change_i
     let mut live = Live::new();
     ask(&mut live, &wire);
     live.expect_where(push);
+    assert!(live.stays_quiet(Duration::from_millis(300)));
 
     std::fs::write(root.join("a.txt"), "1\nchange\n").unwrap();
     let edited = live.expect_where(|m| {
@@ -76,12 +77,13 @@ fn an_edit_and_a_branch_change_are_pushed_without_being_asked_and_a_non_change_i
     assert_eq!(moved.repo_path, wire);
 
     // Rewriting the same bytes changes nothing the chip shows: no new push.
-    std::fs::write(root.join("a.txt"), "1\nchange\n").unwrap();
-    while live
-        .next(Duration::from_millis(800))
-        .is_some_and(|m| push(&m).is_none())
-    {}
     assert!(live.stays_quiet(Duration::from_millis(500)));
+    std::fs::write(root.join("a.txt"), "1\nchange\n").unwrap();
+    let extra = live.next(Duration::from_millis(1500));
+    assert!(
+        extra.is_none(),
+        "an unchanged status was pushed again: {extra:?}"
+    );
 }
 
 #[test]
