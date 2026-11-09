@@ -2712,3 +2712,13 @@ directory listings from the cache only (#1295), so without a recent Tab nothing 
 bounded cwd listing in the remote precmd payload when the cwd changes, cached per session; its case would type
 `cd <remote dir>` without Tab and assert the decoration from the app's input trace.
 
+
+## #1772: the startup writable probe is bounded by the setup deadline
+
+`probe_writable` shares the setup's `LockDeadline` and waits on a held write lock for at most one busy slice (a busy
+result already proves the connection is not read-only), then restores the normal 1 s busy timeout (a failed restore is an
+error, not a warning). Tests (`persistence/sqlite_tests.rs`):
+`writable_probe_is_bounded_by_the_setup_deadline_and_restores_the_timeout` (a held `BEGIN IMMEDIATE` and a 1 s writer
+timeout: the probe returns in under 500 ms and `busy_timeout` reads 1000 afterwards), plus the existing
+`writable_probe_tolerates_a_held_write_lock`, `read_only_connection_fails_the_writable_probe` and
+`deliberately_read_only_file_is_not_failed_or_retried`.

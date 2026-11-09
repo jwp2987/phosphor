@@ -1962,8 +1962,11 @@ fn setup_database_or_quarantine_inner(db_path: &Path) -> Result<SqliteConnection
             // The probe is a header write, so it runs only on this startup open
             // (where the read-only fallback happens), not in `setup_database`,
             // which reconstruct-after-logout and tests also call.
-            let mut conn = setup_database(db_path)?;
-            probe_writable(&mut conn, db_path)?;
+            // One deadline for setup AND the probe, so the UI thread that joins this is held
+            // for at most `MIGRATION_LOCK_BUDGET` in total (#1772).
+            let deadline = LockDeadline::new();
+            let mut conn = setup_database_with_deadline(db_path, deadline)?;
+            probe_writable(&mut conn, db_path, deadline)?;
             Ok(conn)
         },
         std::thread::sleep,
@@ -1987,11 +1990,17 @@ fn setup_database_or_quarantine_inner(db_path: &Path) -> Result<SqliteConnection
 }
 
 fn setup_database(database_path: &Path) -> Result<SqliteConnection> {
+    setup_database_with_deadline(database_path, LockDeadline::new())
+}
+
+fn setup_database_with_deadline(
+    database_path: &Path,
+    deadline: LockDeadline,
+) -> Result<SqliteConnection> {
     let db_url = database_path
         .to_str()
         .ok_or_else(|| anyhow!("Failed to convert db path to a string"))?;
     // One budget for the WAL switch, the pending check and the migration transaction together.
-    let deadline = LockDeadline::new();
     let mut conn = establish_connection_with_deadline(db_url, false, deadline)?;
 
     safe_info!(
@@ -2008,7 +2017,16 @@ fn setup_database(database_path: &Path) -> Result<SqliteConnection> {
 /// write of the session fails (#1118). The probe rewrites `user_version` with its current value: a real
 /// header write that changes no data. (An empty `BEGIN IMMEDIATE; COMMIT` did
 /// not reliably fail on a read-only connection.)
-fn probe_writable(conn: &mut SqliteConnection, db_path: &Path) -> Result<()> {
+///
+/// The probe never waits on a lock longer than one setup slice, bounded by what is left of
+/// `deadline` (#1772): a busy or locked result already proves the connection is not read-only,
+/// so waiting out another process's write lock at the normal 1 s timeout (1.8 s on Windows) would
+/// only hold the main thread past the setup budget. The normal timeout is restored afterwards.
+fn probe_writable(
+    conn: &mut SqliteConnection,
+    db_path: &Path,
+    deadline: LockDeadline,
+) -> Result<()> {
     #[derive(diesel::QueryableByName)]
     struct UserVersion {
         #[diesel(sql_type = diesel::sql_types::Integer)]
@@ -2023,7 +2041,13 @@ fn probe_writable(conn: &mut SqliteConnection, db_path: &Path) -> Result<()> {
             .user_version;
         conn.batch_execute(&format!("PRAGMA user_version = {current};"))
     };
-    match probe(conn) {
+    deadline
+        .apply_busy_timeout(conn)
+        .context("Failed to bound the writable probe's busy timeout")?;
+    let outcome = probe(conn);
+    conn.batch_execute("PRAGMA busy_timeout = 1000;")
+        .context("Failed to restore SQLite busy_timeout after the writable probe")?;
+    match outcome {
         Ok(()) => Ok(()),
         Err(err) => {
             let message = format!("{} {err}", diesel_database_error_message(&err)).to_lowercase();
@@ -2198,9 +2222,9 @@ fn run_migrations_single_writer(conn: &mut SqliteConnection, deadline: LockDeadl
     let finished_elsewhere = result.is_err() && !pending(conn).unwrap_or(true);
     // Restore the normal timeout for the writer's lifetime: setup's short slices (#1650) are for
     // setup only, and a writer left with one would give up on a lock after 25 ms.
-    if let Err(err) = conn.batch_execute("PRAGMA busy_timeout = 1000;") {
-        log::warn!("Failed to restore SQLite busy_timeout: {err:#}");
-    }
+    // A failed restore is an error, not a warning (#1772 LOW-1): the writer would keep 25 ms.
+    conn.batch_execute("PRAGMA busy_timeout = 1000;")
+        .context("Failed to restore SQLite busy_timeout")?;
     if finished_elsewhere {
         return Ok(());
     }
