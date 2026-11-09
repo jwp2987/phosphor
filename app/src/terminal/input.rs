@@ -12687,6 +12687,24 @@ impl Input {
                     && native_completions::remote_native_completions_enabled(),
             },
         );
+        if completions_trigger == CompletionsTrigger::Keybinding
+            && !completion_context.session.is_local()
+        {
+            // #1801 (r18w6): which input of the in-band decision said no, so a Tab that did not
+            // take the in-band path names why. Booleans and the session id only.
+            log::info!(
+                "Tab on remote session {:?}: native use {:?} (shell supports native: {}, remote without helper: {}, allowed: {}, ai input: {})",
+                completion_context.session.id(),
+                native_use,
+                completion_context
+                    .session
+                    .shell()
+                    .supports_native_shell_completions(),
+                completion_context.session.is_remote_without_helper(),
+                allow_native_first && native_completions::remote_native_completions_enabled(),
+                input_type.is_ai(),
+            );
+        }
         let use_native_shell_completions =
             native_use != native_completions::NativeCompletionsUse::None;
         let native_completions_options =

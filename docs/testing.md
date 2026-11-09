@@ -3340,7 +3340,7 @@ What changed and what pins it:
 
 App case `remote_tab_no_helper` (`appci/cases_caseremote.py`, full tier, both modes; Git Bash pane on Windows): the
 harness default `ssh_extension_install_mode = never_install` IS the helper-missing setup. Creates `~/phxtab_<tok>/` on
-the remote side only (and `phxtab_local_only/` locally), `ssh fake`, types `cd phxtab_<3 chars>`, Tab, waits 1.5 s
+the remote side only (and `phxtab_local_only/` locally), `ssh fake`, types `cd phxtab_<counter>_<1 char>` (`tok_prefix`: unique per trial; the old 3-char prefix `t12` was shared by t126-t128 and made Tab ambiguous, r18w6), Tab, waits 1.5 s
 (3 s with a delay applied), Enter. Pass: the REMOTE rec.log's command is `cd phxtab_<tok>/`, the next remote `pwd` ends in
 `/phxtab_<tok>`, nothing reached the local shell, and the app log has `candidates from the remote shell in N ms`
 (metric `remote_tab_in_band_ms`). `remote_tab_enter_no_helper` (same setup, ctx.count(3) trials): Tab, Enter 30 ms later;

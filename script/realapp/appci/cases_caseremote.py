@@ -947,6 +947,12 @@ def need_in_band_remote_shell(r):
         r.skip("the macOS test host's remote shell is /bin/bash 3.2: no in-band Tab below bash 4.0 (by design, #1801 review B3)")
 
 
+def tok_prefix(tok):
+    """The typed prefix of a fixture directory name: the case counter AND the first random char of ctx.tok ("t126_x" of "t126_xbfizx"). The old `tok[:3]` was
+    "t12" for t126, t127 and t128, so the trials' directories shared the prefix, Tab was AMBIGUOUS and the visible line ran, as a real shell does (r18w6)."""
+    return tok[:tok.index("_") + 2]
+
+
 @case("remote_tab_no_helper", order=61)
 def c_remote_tab_no_helper(ctx, r):
     """#1801: ssh WITHOUT the remote helper (the harness default, ssh_extension_install_mode = never_install, which is the owner's primary remote
@@ -972,8 +978,12 @@ def c_remote_tab_no_helper(ctx, r):
         ctx.reset()
         return
     time.sleep(1.0)
+    if ctx.where_now() != "remote":      # precondition: never judge Tab against a local shell
+        r.check(False, "precondition: the pane is not provably in the REMOTE shell after `ssh fake` (probe ran in: %s); Tab not judged" % ctx.where_now())
+        ctx.reset()
+        return
     rmark, lmark = len(ctx.prof.commands(remote=True)), ctx.cmd_mark()
-    prefix = "cd phxtab_" + tok[:3]
+    prefix = "cd phxtab_" + tok_prefix(tok)
     ctx.be.type(prefix, 15)
     ctx.be.key("Tab")
     time.sleep(3.0 if netem else 1.5)        # remote Tab has no Tab+Enter wait (local only, owner decision): let the in-band answer land first
@@ -1023,10 +1033,14 @@ def c_remote_tab_enter_no_helper(ctx, r):
         ctx.reset()
         return
     time.sleep(1.0)
+    if ctx.where_now() != "remote":      # precondition: never judge Tab+Enter against a local shell
+        r.check(False, "precondition: the pane is not provably in the REMOTE shell after `ssh fake` (probe ran in: %s); Tab+Enter not judged" % ctx.where_now())
+        ctx.reset()
+        return
     lmark = ctx.cmd_mark()
     for tok in trials:
         rmark = len(ctx.prof.commands(remote=True))
-        prefix = "cd phxte_" + tok[:3]
+        prefix = "cd phxte_" + tok_prefix(tok)
         ctx.be.type(prefix, ctx.rng.randint(10, 25))
         ctx.be.key("Tab")
         time.sleep(0.03)

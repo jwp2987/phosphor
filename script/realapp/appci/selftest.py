@@ -2911,6 +2911,19 @@ def lab_matrix_expansion():
 
 
 @check
+def remote_tab_trial_prefixes_are_unique():
+    """r18w6: ctx.tok is T<counter>_<random>; three consecutive trials once typed the same `t12` prefix, so Tab was ambiguous and the visible line ran (correct for a shell, a harness bug).
+    The typed prefix must separate any two tokens of one case."""
+    import cases_caseremote as CR
+    toks = ["t126_xbfizx", "t127_pgvra6", "t128_uhwirz", "t9_abc", "t99_abc", "t100_abc"]
+    pre = [CR.tok_prefix(t) for t in toks]
+    assert pre[0] == "t126_x" and len(set(pre)) == len(pre), pre
+    for i, a in enumerate(pre):
+        for j, b in enumerate(pre):
+            assert i == j or not b.startswith(a), (a, b)
+
+
+@check
 def lab_path_detect_hook_lines_match_the_apps_log_format():
     """The #1801 lab case reads two app log lines; pin the regexes to the exact text app/src/completer/pushed_listing.rs writes (ids and counts only)."""
     import cases_lab as CL
