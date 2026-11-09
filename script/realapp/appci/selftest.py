@@ -2793,7 +2793,7 @@ def lab_matrix_expansion():
     assert next(a for a in arms if a["shell"] == "nu")["user"] == "u_nu"
     quick = L.matrix_selection("quick")
     q = [a["name"] for a in arms if L.arm_selected(a, quick)]
-    assert q and all(".nohelper" in n and ".300." not in n and "nu" not in n.split(".")[1] and "p_banner" not in n and n.count(".") == 3 for n in q), q
+    assert q and all((".nohelper" in n or ".helper" in n) and ".300." not in n and "p_banner" not in n and n.count(".") == 3 for n in q), q
     full = L.matrix_selection("full")
     assert all(L.arm_selected(a, full) for a in arms)
     sp = L.matrix_selection("shells=zsh;lat=150;helper=nohelper,helper;faults=1")
@@ -2834,7 +2834,8 @@ def lab_cases_registry_and_selection():
     assert run.unknown_case_names("mode_proof,typo_case", reg) == ["typo_case"]       # exact names are still checked exactly
     # winmap: a lab case is never 'unclassified'; PowerShell pane skips with a reason; p_onesess is skipped on Windows
     base = {n.split(".")[0] for n in names}
-    assert base == {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i", "lab_no_helper_chip", "lab_replay", "lab_password_prompt", "lab_helper_install", "lab_nu_agent_pager_env"}, base
+    old = {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i", "lab_no_helper_chip", "lab_replay", "lab_password_prompt", "lab_helper_install", "lab_nu_agent_pager_env"}
+    assert old <= base and all(n.startswith(("lab_fam_", "lab_helper_", "lab_nohelper_")) for n in base - old), base
     assert all(c["modes"] == ("terminal",) for c in labs if c["name"].startswith("lab_ssh_drop_reconnect")), "the drop case is terminal-only"
     pw = [c["arm"] for c in labs if c["name"].startswith("lab_password_prompt")]
     assert {a["user"] for a in pw} == {"p_password", "p_kbdint"} and all(a["helper"] == "nohelper" and a["fault"] is None for a in pw), pw     # #1535
@@ -2843,6 +2844,34 @@ def lab_cases_registry_and_selection():
     assert winmap.unclassified(sorted(reg)) == []
     assert winmap.skip_reason("lab_x.u_bash.lan.nohelper", "powershell") and winmap.skip_reason("lab_x.u_bash.lan.nohelper", "gitbash") is None
     assert "ControlMaster" in winmap.skip_reason("lab_x.p_onesess.lan.nohelper", "gitbash")
+
+
+@check
+def lab_helper_coverage_guard():
+    """P10: every capability in capability.rs HELPER_CAPABILITIES maps to a registered lab case with a helper arm, and every backend Family (but the legacy-only
+    codebase_index) to one with a nohelper arm; the parse of the Rust source and the skip rules are pinned."""
+    import cases_lab_helper as H
+    info = H.parse_rust()
+    assert info["helper"] and set(info["helper"]) <= set(info["consts"].values()), info["helper"]
+    assert len(info["families"]) >= 15 and "RunCommand" in info["families"] and info["families"]["FsBasic"] == "fs_basic", info["families"]
+    assert info["stubbed"] and info["stubbed"] <= set(info["families"]), info["stubbed"]
+    miss_h, miss_n = H.coverage(info)
+    assert not miss_h, "helper capabilities with no lab case that has a helper arm (add one to cases_lab_helper.py): %s" % miss_h
+    assert not miss_n, "backend families with no lab case that has a nohelper arm: %s" % miss_n
+    assert H.shell_arm_implemented("RunCommand", info) and not H.shell_arm_implemented("FsBasic", dict(info, stubbed={"FsBasic"}))
+    assert H.shell_arm_implemented("GitStatus", dict(info, stubbed=set(), shell_text="Family::GitStatus"))
+    # a capability nobody covers must be reported
+    saved = dict(H.COVERS)
+    try:
+        H.COVERS.clear()
+        mh, mn = H.coverage(info)
+        assert set(mh) == set(info["helper"]) and mn, (mh, mn)
+    finally:
+        H.COVERS.update(saved)
+    skips = [c for c in cases.CASES if c.get("lab") and c["arm"]["case"].startswith("fam_") and c["arm"]["helper"] == "helper"]
+    assert skips and {c["arm"]["case"] for c in skips} >= {"fam_" + k for k in info["helper"]}
+    import lab as L
+    assert L.matrix_selection("quick")["shells"] == {"bash", "zsh", "fish", "nu"}
 
 
 @check
