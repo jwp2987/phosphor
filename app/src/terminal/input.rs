@@ -2762,14 +2762,29 @@ struct PendingRemoteListing {
 /// handed back when the job ends.
 struct RemoteListingFlight<T> {
     job: Option<u64>,
+    /// The input generation the running job started at (for the log line only).
+    job_generation: u64,
     next_job: u64,
     pending: Option<(u64, T)>,
+}
+
+/// The detail of the `hop=listing_inflight` input-order line: the flight event and the input
+/// generation, never any buffer text. `event` is start, held, replay, drop or abort.
+fn listing_inflight_detail(event: &str, generation: u64) -> String {
+    format!("event={event} gen={generation}")
+}
+
+fn log_listing_inflight(event: &str, generation: u64) {
+    warpui::input_order::log_hop("listing_inflight", || {
+        listing_inflight_detail(event, generation)
+    });
 }
 
 impl<T> RemoteListingFlight<T> {
     fn new() -> Self {
         Self {
             job: None,
+            job_generation: 0,
             next_job: 0,
             pending: None,
         }
@@ -2782,11 +2797,14 @@ impl<T> RemoteListingFlight<T> {
 
     /// Holds `request` (made at `generation`) behind the running job; only the newest is kept.
     fn hold(&mut self, generation: u64, request: T) {
+        log_listing_inflight("held", generation);
         self.pending = Some((generation, request));
     }
 
     /// Takes the flight for a new job and returns its id.
-    fn start(&mut self) -> u64 {
+    fn start(&mut self, generation: u64) -> u64 {
+        log_listing_inflight("start", generation);
+        self.job_generation = generation;
         self.next_job += 1;
         self.job = Some(self.next_job);
         self.next_job
@@ -2799,10 +2817,14 @@ impl<T> RemoteListingFlight<T> {
             return None;
         }
         self.job = None;
-        self.pending
-            .take()
-            .filter(|(generation, _)| *generation == current_generation)
-            .map(|(_, request)| request)
+        let (generation, request) = self.pending.take()?;
+        if generation == current_generation {
+            log_listing_inflight("replay", generation);
+            Some(request)
+        } else {
+            log_listing_inflight("drop", generation);
+            None
+        }
     }
 
     /// Job `job` was superseded (an explicit Tab): frees the flight, replays nothing.
@@ -2816,8 +2838,14 @@ impl<T> RemoteListingFlight<T> {
     /// connection erroring, a cwd change): frees the flight and drops the held request. Returns
     /// whether a job was running (the caller aborts it). The next request starts fresh.
     fn abandon(&mut self) -> bool {
-        self.pending = None;
-        self.job.take().is_some()
+        if let Some((generation, _)) = self.pending.take() {
+            log_listing_inflight("drop", generation);
+        }
+        let running = self.job.take().is_some();
+        if running {
+            log_listing_inflight("abort", self.job_generation);
+        }
+        running
     }
 }
 
@@ -12804,7 +12832,8 @@ impl Input {
         }
 
         // The single flight is taken only here, where the completer job really starts.
-        let listing_job = remote_as_you_type.then(|| self.remote_listing.start());
+        let listing_job =
+            remote_as_you_type.then(|| self.remote_listing.start(self.input_generation));
         let abort_handle = ctx
             .spawn_abortable(
                 async move {
