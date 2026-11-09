@@ -580,45 +580,57 @@ fn r2_only_an_empty_or_answering_line_re_arms() {
     // Empty: always a ReArm.
     for kind in [Secret, LineReader, Cooked, Relay, Unknown] {
         assert_eq!(
-            on_user_line_ended(false, kind, false, Tail::ShellPrompt),
+            on_user_line_ended(false, kind, false, Tail::ShellPrompt, false),
             LineEndVerdict::ReArm
         );
     }
     // Non-empty answers.
     assert_eq!(
-        on_user_line_ended(true, Secret, false, Tail::None),
+        on_user_line_ended(true, Secret, false, Tail::None, false),
         LineEndVerdict::ReArm
     );
     assert_eq!(
-        on_user_line_ended(true, Cooked, true, Tail::None),
+        on_user_line_ended(true, Cooked, true, Tail::None, false),
         LineEndVerdict::ReArm,
         "a cooked shell keeping up with its reads: a read builtin"
     );
     for kind in [LineReader, Relay, Unknown, Cooked] {
         assert_eq!(
-            on_user_line_ended(true, kind, false, Tail::InputPrompt),
+            on_user_line_ended(true, kind, false, Tail::InputPrompt, false),
             LineEndVerdict::ReArm,
             "{kind:?} at an input prompt"
         );
     }
     // Non-empty lines that drove the shell.
     assert_eq!(
-        on_user_line_ended(true, LineReader, false, Tail::ShellPrompt),
+        on_user_line_ended(true, LineReader, false, Tail::ShellPrompt, false),
         LineEndVerdict::Cancel
     );
     assert_eq!(
-        on_user_line_ended(true, Relay, false, Tail::ShellPrompt),
+        on_user_line_ended(true, Relay, false, Tail::ShellPrompt, false),
         LineEndVerdict::Cancel
     );
     assert_eq!(
-        on_user_line_ended(true, Unknown, false, Tail::None),
+        on_user_line_ended(true, Unknown, false, Tail::None, false),
         LineEndVerdict::Cancel
     );
     assert_eq!(
-        on_user_line_ended(true, Cooked, false, Tail::ShellPrompt),
+        on_user_line_ended(true, Cooked, false, Tail::ShellPrompt, false),
         LineEndVerdict::Cancel,
         "a cooked shell NOT keeping up: typeahead for its next prompt, the user drove"
     );
+}
+
+#[test]
+fn r2_a_line_typed_into_a_program_that_owns_the_tty_re_arms() {
+    use SubshellTtyKind::*;
+    // vim's `:wq` + Enter: the line is the program's, the setup waits for the prompt after it.
+    for tail in [Tail::None, Tail::ShellPrompt] {
+        assert_eq!(
+            on_user_line_ended(true, Unknown, false, tail, true),
+            LineEndVerdict::ReArm
+        );
+    }
 }
 
 #[test]

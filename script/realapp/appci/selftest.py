@@ -810,7 +810,15 @@ def shell_depth_probe_pure_parts():
     # the subshell leak (Mac round 6): the PID probe, its parser and which cases get the post-case depth check
     assert cases.depth_probe_cmd("cmd", "pX") is None
     assert cases.depth_probe_cmd("powershell", "pX") == "Add-Content ~/.appci_pid pX:$PID"
-    assert cases.depth_probe_cmd(None, "pX") == "echo pX:$$ >> ~/.appci_pid" and cases.depth_probe_cmd("gitbash", "pX").endswith(">> ~/.appci_pid")
+    assert cases.depth_probe_cmd(None, "pX") == "sh -c 'echo pX:$PPID >> ~/.appci_pid'" and cases.depth_probe_cmd("gitbash", "pX").endswith(">> ~/.appci_pid'")
+    import shutil as _sh, subprocess as _sp, tempfile as _tf
+    for _shell, _ in (("sh", 0), ("bash", 0), ("zsh", 0), ("fish", 0), ("dash", 0)):      # the probe records the PID of the shell it was typed into, in every shell installed here
+        if not _sh.which(_shell):
+            continue
+        with _tf.TemporaryDirectory() as _d:
+            _out = _sp.run([_shell, "-c", cases.depth_probe_cmd(None, "pS") + "; echo $0 >/dev/null"], env=dict(os.environ, HOME=_d), capture_output=True, text=True, timeout=20)
+            _toks = open(os.path.join(_d, ".appci_pid")).read().split()
+            assert cases.parse_depth_probe(_toks, "pS") is not None, (_shell, _out.stderr, _toks)
     assert cases.parse_depth_probe(["pA:11", "pX:4242", "pX:77"], "pX") == "77"        # the newest line of this probe
     assert cases.parse_depth_probe(["pA:11"], "pX") is None and cases.parse_depth_probe(["pX:"], "pX") is None
     assert cases.parse_depth_probe(["pX:12ab"], "pX") is None

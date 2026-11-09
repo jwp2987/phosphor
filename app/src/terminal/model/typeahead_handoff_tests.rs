@@ -283,6 +283,40 @@ fn deferred_enter_writes_report_then_command_then_held_keys() {
     );
 }
 
+/// Mac round 7: the user's command was written to a shell the hand-off does not engage for, with an
+/// Enter deferred behind a report. The gate must end and the held keys follow the command.
+#[test]
+fn an_unengaged_user_command_releases_the_deferred_gate_and_its_held_keys() {
+    let mut handoff = awaiting_report();
+    assert!(handoff.defer_enter());
+    let gate = handoff.deferred_gate().expect("the Enter holds a gate");
+    assert_eq!(handoff.on_report(), ReportDisposition::InsertThenSubmit);
+
+    handoff.on_unengaged_user_command_written();
+    handoff.on_uncounted_command_written();
+
+    assert_eq!(handoff.deferred_gate(), None, "the gate is not left open");
+    assert_eq!(
+        handoff.take_young_hold_ends(),
+        vec![(gate, YoungHoldEnd::FollowCommand)],
+        "the held keys follow the command, never dropped"
+    );
+    assert_eq!(handoff.state(), &HandoffState::EditorOwned);
+}
+
+/// The young hold's keys follow an unengaged user command instead of being dropped.
+#[test]
+fn an_unengaged_user_command_makes_a_young_hold_follow_not_drop() {
+    let mut handoff = young_after_submit();
+    let (id, _) = hold_young_enter(&mut handoff, b"\r");
+    handoff.on_unengaged_user_command_written();
+    handoff.on_uncounted_command_written();
+    assert_eq!(
+        handoff.take_young_hold_ends(),
+        vec![(id, YoungHoldEnd::FollowCommand)]
+    );
+}
+
 #[test]
 fn a_report_after_the_deferred_command_was_written_is_stashed() {
     let mut handoff = awaiting_report();

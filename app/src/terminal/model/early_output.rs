@@ -109,6 +109,15 @@ impl EarlyOutput {
         log::info!("Configured typeahead mode as {:?}", self.mode);
     }
 
+    /// Puts back the mode a session configured when it bootstrapped (its prompt is in front again).
+    pub fn set_typeahead_mode(&mut self, mode: TypeaheadMode) {
+        self.mode = mode;
+        log::info!(
+            "Typeahead mode back to {:?} for the session in front",
+            self.mode
+        );
+    }
+
     pub fn typeahead_mode(&self) -> TypeaheadMode {
         self.mode
     }

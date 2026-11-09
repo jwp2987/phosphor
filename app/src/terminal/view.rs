@@ -23240,6 +23240,10 @@ impl TerminalView {
                     )
                 });
         let tail_at_enter = armed.last_tail;
+        // A program (vim, less, a REPL) in front at the last look owns the line the user ends now.
+        let program_owns_tty = armed.last_tty.as_ref().is_some_and(|tty| {
+            tty.leader == crate::terminal::model::subshell_tty::LeaderKind::Other
+        });
         let mut cancel = false;
         for end in ends {
             armed.ledger.lines_ended = armed.ledger.lines_ended.saturating_add(1);
@@ -23248,6 +23252,7 @@ impl TerminalView {
                 fact_at_enter,
                 cooked_reading,
                 tail_at_enter,
+                program_owns_tty,
             );
             warpui::input_order::log_hop("subshell_ready_line_end", || {
                 format!(
