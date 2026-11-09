@@ -236,7 +236,7 @@ impl AgentContext {
         push: &Pusher<'_>,
     ) {
         self.scanning = false;
-        self.update_watches(&scan.watch_dirs, watches);
+        let newly_watched = self.update_watches(&scan.watch_dirs, watches);
         let mut snapshot = spec::assemble(&scan.home_dir, scan.skills, scan.rules, 0);
         let changed = self
             .current
@@ -256,12 +256,17 @@ impl AgentContext {
                 snapshot,
             ));
         }
-        if std::mem::take(&mut self.dirty) {
+        // A directory that was not watched when the scan read it may have changed in between:
+        // one more scan, now that it is watched, closes that gap (and finds nothing new, so
+        // the chain ends).
+        if std::mem::take(&mut self.dirty) || newly_watched {
             self.request_scan(events, watches, push);
         }
     }
 
-    fn update_watches(&mut self, wanted: &BTreeSet<PathBuf>, watches: &mut WatchSet) {
+    /// Follows `wanted`; returns whether any directory was newly watched.
+    fn update_watches(&mut self, wanted: &BTreeSet<PathBuf>, watches: &mut WatchSet) -> bool {
+        let mut newly = false;
         for gone in self.held.difference(wanted).cloned().collect::<Vec<_>>() {
             watches.release(&gone);
             self.held.remove(&gone);
@@ -274,6 +279,7 @@ impl AgentContext {
             match watches.acquire(dir) {
                 Ok(()) => {
                     self.held.insert(dir.clone());
+                    newly = true;
                 }
                 Err(e) => {
                     if self.watched || self.current.is_none() {
@@ -284,6 +290,7 @@ impl AgentContext {
             }
         }
         self.watched = all;
+        newly
     }
 }
 

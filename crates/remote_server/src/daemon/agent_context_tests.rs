@@ -12,7 +12,10 @@ use crate::daemon::server::{ConnId, Server, next_conn_id};
 fn write(home: &Path, rel: &str, body: &str) {
     let path = home.join(rel);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(path, body).unwrap();
+    // Atomic, so a scan between the create and the write never reads an empty file.
+    let tmp = path.with_extension("tmp-fixture");
+    std::fs::write(&tmp, body).unwrap();
+    std::fs::rename(tmp, path).unwrap();
 }
 
 #[test]
