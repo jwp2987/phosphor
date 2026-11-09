@@ -5,6 +5,9 @@
 //! probe. Every family's request methods answer `Unsupported` until its package fills them in
 //! (P1..P9), or `Unavailable` when the session has no out-of-band channel.
 
+mod agent_context;
+mod buffer;
+mod git_write;
 mod index;
 mod read;
 mod tree;
@@ -12,6 +15,8 @@ mod write;
 
 use std::sync::{Arc, Mutex};
 
+pub use agent_context::AgentContextCache;
+pub use buffer::ShellBuffers;
 pub use index::ShellIndex;
 pub use tree::{ShellPush, TreeCache};
 
@@ -41,6 +46,12 @@ pub struct ShellBackend {
     /// The host's app-side codebase index state; `None` when no storage is configured (tests,
     /// callers that never index).
     index: Option<Arc<ShellIndex>>,
+    /// The agent context this host's shell backend last published, with its revision. Shared by
+    /// every backend the router builds for the host.
+    agent_cache: Arc<AgentContextCache>,
+    /// What the buffers this host's editors opened looked like, for the guarded save (family c).
+    /// Shared by every backend the router builds for the host.
+    buffers: Arc<ShellBuffers>,
 }
 
 impl std::fmt::Debug for ShellBackend {
@@ -62,7 +73,21 @@ impl ShellBackend {
             pushes: Arc::default(),
             decode_tool: Arc::default(),
             index: None,
+            agent_cache: Arc::default(),
+            buffers: Arc::default(),
         }
+    }
+
+    /// Shares `cache` (the host's agent-context state) with this backend.
+    pub fn with_agent_cache(mut self, cache: Arc<AgentContextCache>) -> Self {
+        self.agent_cache = cache;
+        self
+    }
+
+    /// Shares `buffers` (the host's remembered buffer states) with this backend.
+    pub fn with_buffers(mut self, buffers: Arc<ShellBuffers>) -> Self {
+        self.buffers = buffers;
+        self
     }
 
     /// Shares `cache` (the host's file-tree state) with this backend.

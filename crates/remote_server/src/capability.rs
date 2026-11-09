@@ -47,15 +47,7 @@ pub const CODEBASE_CHUNKS: &str = "codebase_chunks";
 
 /// The families above that only the legacy full daemon implements, for documentation and for
 /// tests that pin the helper's list against them.
-pub const LEGACY_ONLY_CAPABILITIES: &[&str] = &[
-    BUFFERS,
-    DIFF_STATE,
-    GIT_WRITE,
-    CODEBASE_INDEX,
-    GIT_STATUS,
-    GITHUB,
-    AGENT_CONTEXT,
-];
+pub const LEGACY_ONLY_CAPABILITIES: &[&str] = &[DIFF_STATE, CODEBASE_INDEX, GIT_STATUS, GITHUB];
 
 /// Every capability the helper in this build implements.
 pub const HELPER_CAPABILITIES: &[&str] = &[
@@ -66,6 +58,9 @@ pub const HELPER_CAPABILITIES: &[&str] = &[
     RIPGREP_SEARCH,
     REPO_METADATA,
     FILE_CONTEXT,
+    AGENT_CONTEXT,
+    BUFFERS,
+    GIT_WRITE,
     CODEBASE_CHUNKS,
 ];
 
@@ -140,7 +135,9 @@ mod tests {
     fn the_new_family_capabilities_have_stable_wire_names_and_are_reserved() {
         assert_eq!(AGENT_CONTEXT, "agent_context");
         assert_eq!(CODEBASE_CHUNKS, "codebase_chunks");
-        assert!(LEGACY_ONLY_CAPABILITIES.contains(&AGENT_CONTEXT));
+        // The helper implements the agent context since P8.
+        assert!(HELPER_CAPABILITIES.contains(&AGENT_CONTEXT));
+        assert!(!LEGACY_ONLY_CAPABILITIES.contains(&AGENT_CONTEXT));
         // P9b: the helper serves codebase chunks; only the legacy host-side index stays legacy.
         assert!(HELPER_CAPABILITIES.contains(&CODEBASE_CHUNKS));
         assert!(!LEGACY_ONLY_CAPABILITIES.contains(&CODEBASE_CHUNKS));

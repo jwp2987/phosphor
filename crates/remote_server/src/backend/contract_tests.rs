@@ -19,9 +19,16 @@ use warpui::r#async::executor;
 
 use super::*;
 use crate::HostId;
+use crate::client::ClientError;
 use crate::client::RemoteServerClient;
-use crate::proto::{ErrorCode, ErrorResponse, GitStageRequest, ServerMessage, server_message};
+use crate::proto::{
+    DiscardFilesRequest, ErrorCode, ErrorResponse, FileStatusInfo, GitCommitChainMode,
+    GitCommitChainRequest, GitCreatePrRequest, GitFileStatus, GitPullRequest, GitPushRequest,
+    GitStageRequest, ReadFileContextRequest, ServerMessage, git_commit_chain_response,
+    git_create_pr_response, git_file_status, git_pull_response, git_push_response, server_message,
+};
 use crate::protocol;
+use crate::rt::FutureExt as _;
 use crate::shellcmd::{Script, ShellKind, StderrMode};
 
 /// Runs commands with a local `sh -c`: the stand-in for the ControlMaster executor.
@@ -38,13 +45,14 @@ impl OutOfBandExecutor for LocalShExecutor {
     }
 
     fn execute(&self, request: ExecRequest) -> BoxFuture<'_, Result<ExecOutput, ExecError>> {
-        Box::pin(async move { run_local_sh(request, None) })
+        Box::pin(async move { run_local_sh(request, None, None) })
     }
 }
 
 fn run_local_sh(
     request: ExecRequest,
     path: Option<&std::ffi::OsStr>,
+    home: Option<&std::path::Path>,
 ) -> Result<ExecOutput, ExecError> {
     use std::io::Write as _;
     use std::process::{Command, Stdio};
@@ -57,6 +65,9 @@ fn run_local_sh(
         .stderr(Stdio::piped());
     if let Some(path) = path {
         command.env("PATH", path);
+    }
+    if let Some(home) = home {
+        command.env("HOME", home);
     }
     let mut child = command
         .spawn()
@@ -118,7 +129,7 @@ impl OutOfBandExecutor for NoDecoderShExecutor {
     }
 
     fn execute(&self, request: ExecRequest) -> BoxFuture<'_, Result<ExecOutput, ExecError>> {
-        Box::pin(async move { run_local_sh(request, Some(self.bin.path().as_os_str())) })
+        Box::pin(async move { run_local_sh(request, Some(self.bin.path().as_os_str()), None) })
     }
 }
 
@@ -134,9 +145,9 @@ pub(super) struct Subject {
 pub(super) async fn assert_unimplemented_is_unsupported(subject: &Subject) {
     let err = subject
         .backend
-        .git_stage(GitStageRequest::default())
+        .read_file_context(ReadFileContextRequest::default())
         .await
-        .expect_err("git_stage is not implemented by any backend in P0");
+        .expect_err("read_file_context is not implemented by any backend yet");
     assert!(
         err.is_unsupported(),
         "{}: expected Unsupported, got {err:?}",
@@ -432,7 +443,320 @@ pub(super) async fn assert_contract(subject: &Subject) {
     assert_read_file_context(subject).await;
     assert_file_write(subject).await;
     assert_repo_metadata(subject).await;
+    assert_git_write_contract(subject).await;
     assert_codebase_index(subject).await;
+}
+
+// ---- family f: git writes --------------------------------------------------------------
+
+fn have_git() -> bool {
+    std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .is_ok()
+}
+
+fn git(repo: &std::path::Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// The message of a discard/stage failure (the helper and the shell backend must agree on it).
+fn op_failure(result: Result<(), BackendError>, what: &str) -> String {
+    match result {
+        Err(BackendError::Client(ClientError::FileOperationFailed(message))) => message,
+        other => panic!("{what}: expected a FileOperationFailed error, got {other:?}"),
+    }
+}
+
+/// An HTTP server that demands credentials from everyone, for the no-prompt assertion.
+fn spawn_credentials_required_server() -> u16 {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf);
+            let _ = stream.write_all(
+                b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"lab\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+        }
+    });
+    port
+}
+
+/// Git writes behave the same on every backend: commit chain, push, pull, stage (paths and a
+/// hunk), discard, the in-progress guard, validation errors, and credentials that fail fast.
+pub(super) async fn assert_git_write_contract(subject: &Subject) {
+    if !have_git() {
+        return;
+    }
+    let name = subject.name;
+    let b = &subject.backend;
+    let dir = tempfile::tempdir().unwrap();
+    let origin = dir.path().join("origin.git");
+    let work = dir.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    git(
+        dir.path(),
+        &[
+            "init",
+            "-q",
+            "--bare",
+            "-b",
+            "main",
+            origin.to_str().unwrap(),
+        ],
+    );
+    git(&work, &["init", "-q", "-b", "main"]);
+    git(&work, &["config", "user.email", "t@example.com"]);
+    git(&work, &["config", "user.name", "t"]);
+    git(
+        &work,
+        &["remote", "add", "origin", origin.to_str().unwrap()],
+    );
+    std::fs::write(work.join("a.txt"), "one\n").unwrap();
+    let repo_path = work.to_string_lossy().into_owned();
+
+    // Commit chain: commit + push in one request.
+    let resp = b
+        .git_commit_chain(GitCommitChainRequest {
+            repo_path: repo_path.clone(),
+            message: "first".into(),
+            include_unstaged: true,
+            branch: "main".into(),
+            mode: GitCommitChainMode::CommitAndPush as i32,
+            autogenerate_pr_content: false,
+        })
+        .await
+        .unwrap();
+    let Some(git_commit_chain_response::Result::Success(ok)) = resp.result else {
+        panic!("{name}: {resp:?}");
+    };
+    assert!(ok.delta.unwrap().unpushed_commits.is_empty(), "{name}");
+    assert_eq!(
+        git(&origin, &["log", "--format=%s", "main"]).trim(),
+        "first",
+        "{name}"
+    );
+
+    // Stage: one target only, repo-relative, paths and hunks, both directions.
+    let stage = |paths: Vec<&str>, patch: Option<&str>, reverse: bool| GitStageRequest {
+        repo_path: repo_path.clone(),
+        paths: paths.into_iter().map(String::from).collect(),
+        patch: patch.map(String::from),
+        reverse,
+        mode: None,
+    };
+    assert_eq!(
+        op_failure(b.git_stage(stage(vec![], None, false)).await, name),
+        "GitStageRequest set neither paths nor patch"
+    );
+    assert_eq!(
+        op_failure(
+            b.git_stage(stage(vec!["a.txt"], Some("x"), false)).await,
+            name
+        ),
+        "GitStageRequest set both paths and patch"
+    );
+    assert_eq!(
+        op_failure(
+            b.git_stage(stage(vec!["/etc/passwd"], None, false)).await,
+            name
+        ),
+        "GitStageRequest path must be repo-relative, got '/etc/passwd'"
+    );
+    std::fs::write(work.join("a.txt"), "one\ntwo\n").unwrap();
+    b.git_stage(stage(vec!["a.txt"], None, false))
+        .await
+        .unwrap();
+    assert!(git(&work, &["diff", "--cached"]).contains("+two"), "{name}");
+    b.git_stage(stage(vec!["a.txt"], None, true)).await.unwrap();
+    assert!(git(&work, &["diff", "--cached"]).is_empty(), "{name}");
+    let patch = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1,2 @@\n one\n+two\n";
+    b.git_stage(stage(vec![], Some(patch), false))
+        .await
+        .unwrap();
+    assert!(git(&work, &["diff", "--cached"]).contains("+two"), "{name}");
+    b.git_stage(stage(vec![], Some(patch), true)).await.unwrap();
+    assert!(git(&work, &["diff", "--cached"]).is_empty(), "{name}");
+
+    // Discard: validation, then a real restore and an untracked removal.
+    let discard = |files: Vec<(String, git_file_status::Status)>| DiscardFilesRequest {
+        repo_path: repo_path.clone(),
+        files: files
+            .into_iter()
+            .map(|(path, status)| FileStatusInfo {
+                path,
+                status: Some(GitFileStatus {
+                    status: Some(status),
+                }),
+            })
+            .collect(),
+        ..Default::default()
+    };
+    assert_eq!(
+        op_failure(b.discard_files(discard(vec![])).await, name),
+        "No files specified in DiscardFilesRequest"
+    );
+    assert_eq!(
+        op_failure(
+            b.discard_files(discard(vec![(
+                "a.txt".into(),
+                git_file_status::Status::Modified(Default::default())
+            )]))
+            .await,
+            name
+        ),
+        "Invalid file entry in DiscardFilesRequest: FileStatusInfo path is not absolute: a.txt"
+    );
+    std::fs::write(work.join("new.txt"), "untracked\n").unwrap();
+    let canonical = std::fs::canonicalize(&work).unwrap();
+    b.discard_files(discard(vec![
+        (
+            canonical.join("a.txt").to_string_lossy().into(),
+            git_file_status::Status::Modified(Default::default()),
+        ),
+        (
+            canonical.join("new.txt").to_string_lossy().into(),
+            git_file_status::Status::Untracked(Default::default()),
+        ),
+    ]))
+    .await
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(work.join("a.txt")).unwrap(),
+        "one\n",
+        "{name}"
+    );
+    assert!(!work.join("new.txt").exists(), "{name}");
+
+    // Push a local commit, then pull one made elsewhere (fast-forward).
+    std::fs::write(work.join("b.txt"), "b\n").unwrap();
+    git(&work, &["add", "-A"]);
+    git(&work, &["commit", "-q", "-m", "second"]);
+    let resp = b
+        .git_push(GitPushRequest {
+            repo_path: repo_path.clone(),
+            branch: "main".into(),
+        })
+        .await
+        .unwrap();
+    let Some(git_push_response::Result::Success(delta)) = resp.result else {
+        panic!("{name}: {resp:?}");
+    };
+    assert!(delta.unpushed_commits.is_empty(), "{name}");
+    let other = dir.path().join("other");
+    git(
+        dir.path(),
+        &[
+            "clone",
+            "-q",
+            origin.to_str().unwrap(),
+            other.to_str().unwrap(),
+        ],
+    );
+    git(&other, &["config", "user.email", "t@example.com"]);
+    git(&other, &["config", "user.name", "t"]);
+    std::fs::write(other.join("c.txt"), "c\n").unwrap();
+    git(&other, &["add", "-A"]);
+    git(&other, &["commit", "-q", "-m", "third"]);
+    git(&other, &["push", "-q", "origin", "main"]);
+    let resp = b
+        .git_pull(GitPullRequest {
+            repo_path: repo_path.clone(),
+            branch: "main".into(),
+        })
+        .await
+        .unwrap();
+    assert!(
+        matches!(resp.result, Some(git_pull_response::Result::Success(_))),
+        "{name}: {resp:?}"
+    );
+    assert!(work.join("c.txt").exists(), "{name}");
+
+    // The guard: mid-merge, every write is refused and nothing changes.
+    std::fs::write(work.join(".git").join("MERGE_HEAD"), "x\n").unwrap();
+    let refused = op_failure(b.git_stage(stage(vec!["a.txt"], None, false)).await, name);
+    assert!(
+        refused.starts_with("another git operation is in progress"),
+        "{name}: {refused}"
+    );
+    let resp = b
+        .git_push(GitPushRequest {
+            repo_path: repo_path.clone(),
+            branch: "main".into(),
+        })
+        .await
+        .unwrap();
+    assert!(
+        matches!(&resp.result, Some(git_push_response::Result::Error(e)) if e.message.starts_with("another git operation is in progress")),
+        "{name}: {resp:?}"
+    );
+    std::fs::remove_file(work.join(".git").join("MERGE_HEAD")).unwrap();
+
+    // Credentials never prompt: a remote that wants a login fails fast with git's own words.
+    let port = spawn_credentials_required_server();
+    git(
+        &work,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            &format!("http://127.0.0.1:{port}/r.git"),
+        ],
+    );
+    std::fs::write(work.join("d.txt"), "d\n").unwrap();
+    git(&work, &["add", "-A"]);
+    git(&work, &["commit", "-q", "-m", "fourth"]);
+    let resp = b
+        .git_push(GitPushRequest {
+            repo_path: repo_path.clone(),
+            branch: "main".into(),
+        })
+        .with_timeout(std::time::Duration::from_secs(60))
+        .await
+        .unwrap_or_else(|_| panic!("{name}: push to a remote that wants credentials hung"))
+        .unwrap();
+    let Some(git_push_response::Result::Error(e)) = resp.result else {
+        panic!("{name}: expected an auth failure, got {resp:?}");
+    };
+    let lower = e.message.to_lowercase();
+    assert!(
+        [
+            "terminal prompts disabled",
+            "could not read username",
+            "authentication failed"
+        ]
+        .iter()
+        .any(|w| lower.contains(w)),
+        "{name}: {}",
+        e.message
+    );
+
+    // A PR cannot be made here (a throwaway repo): an error response, never a hang or a prompt.
+    let resp = b
+        .git_create_pr(GitCreatePrRequest {
+            repo_path,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(
+        matches!(resp.result, Some(git_create_pr_response::Result::Error(_))),
+        "{name}: {resp:?}"
+    );
 }
 
 // ---- repo metadata / file tree (P3) ----------------------------------------------------------
@@ -908,12 +1232,12 @@ async fn unsupported_from_the_helper_is_served_by_the_shell_and_sticks() {
     let backend = router.backend(&host, Some(Arc::new(client)), [session]);
 
     // No capability list was sent, so the router starts out trusting the helper.
-    assert_eq!(backend.kind(Family::GitWrite), BackendKind::Helper);
+    assert_eq!(backend.kind(Family::FileContext), BackendKind::Helper);
 
     let err = backend
-        .git_stage(GitStageRequest::default())
+        .read_file_context(ReadFileContextRequest::default())
         .await
-        .expect_err("neither backend implements it in P0");
+        .expect_err("neither backend implements it yet");
     assert!(err.is_unsupported(), "{err:?}");
     assert_eq!(
         requests.load(Ordering::SeqCst),
@@ -922,11 +1246,505 @@ async fn unsupported_from_the_helper_is_served_by_the_shell_and_sticks() {
     );
 
     // From now on the family goes straight to the shell: the helper is not asked again.
-    assert_eq!(backend.kind(Family::GitWrite), BackendKind::Shell);
-    let _ = backend.git_stage(GitStageRequest::default()).await;
+    assert_eq!(backend.kind(Family::FileContext), BackendKind::Shell);
+    let _ = backend
+        .read_file_context(ReadFileContextRequest::default())
+        .await;
     assert_eq!(requests.load(Ordering::SeqCst), 1);
     // Other families are untouched.
     assert_eq!(backend.kind(Family::GitRead), BackendKind::Helper);
+}
+
+// ---- buffers (P4, family c) ------------------------------------------------------------------
+
+/// A routed backend plus, for the helper, the channel its pushes arrive on.
+pub(super) struct BufferSubject {
+    pub name: &'static str,
+    pub backend: RoutedBackend,
+    pub pushes: Option<async_channel::Receiver<crate::client::ClientEvent>>,
+}
+
+fn text_edit(start: u64, end: u64, text: &str) -> crate::proto::TextEdit {
+    crate::proto::TextEdit {
+        start_offset: start,
+        end_offset: end,
+        text: text.to_owned(),
+    }
+}
+
+/// Family c: open, edit and save, an outside change, discard and keep-mine. The two arms differ
+/// in exactly the way design ruling R4 says: the helper PUSHES a conflict when the file changes
+/// under unsaved edits, the shell arm finds it when the user saves. Everything else is held to
+/// the same literal answers.
+pub(super) async fn assert_buffers(subject: &BufferSubject) {
+    let name = subject.name;
+    let backend = &subject.backend;
+    let helper = backend.kind(Family::Buffers) == BackendKind::Helper;
+    let dir = tempfile::tempdir().unwrap();
+    // A space and an apostrophe in the name (the shell arm quotes), non-ASCII text.
+    let file = dir.path().join("my it's.txt");
+    std::fs::write(&file, "héllo\n").unwrap();
+    let path = s(&file);
+
+    // Open.
+    let opened = backend.open_buffer(path.clone(), false).await.unwrap();
+    assert_eq!(opened.content, "héllo\n", "{name}");
+    assert!(opened.server_version >= 1, "{name}");
+    let sv = opened.server_version;
+
+    // Edit (1-indexed character offsets: after the "o") and save: the file has the new text, and
+    // no temp file is left behind.
+    backend
+        .buffer_edit(path.clone(), sv, 10, vec![text_edit(6, 6, " there")])
+        .unwrap();
+    let outcome = backend
+        .save_buffer_content(path.clone(), "héllo there\n".to_owned())
+        .await
+        .unwrap();
+    assert_eq!(outcome, BufferSaveOutcome::Saved, "{name}");
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "héllo there\n",
+        "{name}"
+    );
+    let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.contains("phosphor-tmp"))
+        .collect();
+    assert!(leftovers.is_empty(), "{name}: {leftovers:?}");
+    // A second save of the same text is still a save (the saved state is the new base).
+    assert_eq!(
+        backend
+            .save_buffer_content(path.clone(), "héllo there\n".to_owned())
+            .await
+            .unwrap(),
+        BufferSaveOutcome::Saved,
+        "{name}"
+    );
+
+    // An unsaved edit, then somebody else changes the file.
+    backend
+        .buffer_edit(path.clone(), sv, 11, vec![text_edit(1, 1, "X")])
+        .unwrap();
+    // On the helper a round trip makes sure the edit was applied before the file changes.
+    backend.open_buffer(path.clone(), false).await.unwrap();
+    std::fs::write(&file, "outside\n").unwrap();
+    if helper {
+        let pushes = subject
+            .pushes
+            .as_ref()
+            .expect("the helper subject has pushes");
+        loop {
+            use crate::rt::FutureExt as _;
+            let event = pushes
+                .recv()
+                .with_timeout(std::time::Duration::from_secs(20))
+                .await
+                .unwrap_or_else(|_| panic!("{name}: no conflict push"))
+                .unwrap();
+            if let crate::client::ClientEvent::BufferConflictDetected { path: p } = event {
+                assert_eq!(p, path, "{name}");
+                break;
+            }
+        }
+    } else {
+        let outcome = backend
+            .save_buffer_content(path.clone(), "Xhéllo there\n".to_owned())
+            .await
+            .unwrap();
+        assert_eq!(outcome, BufferSaveOutcome::Conflict, "{name}");
+    }
+    // Either way nothing of the editor's text reached the disk.
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "outside\n",
+        "{name}"
+    );
+
+    // Discard: take the disk's copy.
+    let reloaded = backend.open_buffer(path.clone(), true).await.unwrap();
+    assert_eq!(reloaded.content, "outside\n", "{name}");
+    let sv = reloaded.server_version;
+    if helper {
+        assert!(
+            sv > opened.server_version,
+            "{name}: the reload bumps the version"
+        );
+    }
+
+    // Edit, outside change again, and this time keep the editor's text.
+    backend
+        .buffer_edit(path.clone(), sv, 12, vec![text_edit(1, 1, "mine ")])
+        .unwrap();
+    backend.open_buffer(path.clone(), false).await.unwrap();
+    std::fs::write(&file, "outside again\n").unwrap();
+    let resolved = backend
+        .resolve_conflict(path.clone(), sv, "mine outside\n".to_owned(), 12)
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            resolved.result,
+            Some(crate::proto::resolve_conflict_response::Result::Success(_))
+        ),
+        "{name}: {resolved:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "mine outside\n",
+        "{name}"
+    );
+
+    // Closing is silent, and saving a file that is not open is an error on the helper only: the
+    // shell arm has no buffer to be missing.
+    backend.close_buffer(path.clone());
+
+    // A file that is not there, or is not text, does not open.
+    assert!(
+        backend
+            .open_buffer(s(&dir.path().join("nope")), false)
+            .await
+            .is_err(),
+        "{name}"
+    );
+    let bin = dir.path().join("b.bin");
+    std::fs::write(&bin, [0xff, 0xfe, 0x00, 0x01]).unwrap();
+    assert!(backend.open_buffer(s(&bin), false).await.is_err(), "{name}");
+}
+
+#[tokio::test]
+async fn the_shell_arm_meets_the_buffer_contract() {
+    let router = FeatureRouter::new();
+    let host = HostId::new("buffer-contract-shell".to_string());
+    let session = warp_core::SessionId::from(2u64);
+    router.register_out_of_band(session, Arc::new(LocalShExecutor));
+    let subject = BufferSubject {
+        name: "shell(local sh)",
+        backend: router.backend(&host, None, [session]),
+        pushes: None,
+    };
+    assert_eq!(subject.backend.kind(Family::Buffers), BackendKind::Shell);
+    assert_buffers(&subject).await;
+}
+
+#[tokio::test]
+async fn the_shell_arm_finds_a_same_size_same_second_change_with_the_hash() {
+    // The stamp alone cannot see this change (same size, same second); the hash does.
+    let router = FeatureRouter::new();
+    let host = HostId::new("buffer-contract-hash".to_string());
+    let session = warp_core::SessionId::from(3u64);
+    router.register_out_of_band(session, Arc::new(LocalShExecutor));
+    let backend = router.backend(&host, None, [session]);
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("f.txt");
+    std::fs::write(&file, "aaaa").unwrap();
+    backend.open_buffer(s(&file), false).await.unwrap();
+    let mtime = std::fs::metadata(&file).unwrap().modified().unwrap();
+    std::fs::write(&file, "bbbb").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(mtime)
+        .unwrap();
+    let outcome = backend
+        .save_buffer_content(s(&file), "cccc".to_owned())
+        .await
+        .unwrap();
+    assert_eq!(outcome, BufferSaveOutcome::Conflict);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "bbbb");
+    // The user then chooses to overwrite: the next save goes through.
+    assert_eq!(
+        backend
+            .save_buffer_content(s(&file), "cccc".to_owned())
+            .await
+            .unwrap(),
+        BufferSaveOutcome::Saved
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "cccc");
+    // And a mere `touch` of an unchanged file is not a conflict.
+    backend.open_buffer(s(&file), true).await.unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5))
+        .unwrap();
+    assert_eq!(
+        backend
+            .save_buffer_content(s(&file), "dddd".to_owned())
+            .await
+            .unwrap(),
+        BufferSaveOutcome::Saved
+    );
+}
+
+#[cfg(all(feature = "daemon", unix))]
+#[tokio::test]
+async fn the_helper_arm_over_an_in_process_daemon_meets_the_buffer_contract() {
+    let stream = crate::daemon::spawn_in_process_for_tests();
+    let stream = async_io::Async::new(stream).unwrap();
+    let (reader, writer) = futures::io::AsyncReadExt::split(stream);
+    let executor = executor::Background::default();
+    let (client, events, _host_responses) = RemoteServerClient::new(reader, writer, &executor);
+    // No capability list was asked for, so the router trusts the helper (as in the other tests).
+    let router = FeatureRouter::new();
+    let host = HostId::new("buffer-contract-helper".to_string());
+    let session = warp_core::SessionId::from(4u64);
+    router.register_out_of_band(session, Arc::new(LocalShExecutor));
+    let subject = BufferSubject {
+        name: "helper(in-process daemon)",
+        backend: router.backend(&host, Some(Arc::new(client)), [session]),
+        pushes: Some(events),
+    };
+    assert_eq!(subject.backend.kind(Family::Buffers), BackendKind::Helper);
+    assert_buffers(&subject).await;
+}
+
+// ---- agent context: host skills and global rules (P8, family h) -------------------------------
+
+/// A local `sh` whose `$HOME` is a fixture directory: the host whose skills the shell arm reads.
+#[derive(Debug)]
+struct HomeShExecutor {
+    home: std::path::PathBuf,
+}
+
+impl OutOfBandExecutor for HomeShExecutor {
+    fn channel_kind(&self) -> ChannelKind {
+        ChannelKind::LocalSh
+    }
+
+    fn shell_kind(&self) -> ShellKind {
+        ShellKind::Posix
+    }
+
+    fn execute(&self, request: ExecRequest) -> BoxFuture<'_, Result<ExecOutput, ExecError>> {
+        Box::pin(async move { run_local_sh(request, None, Some(&self.home)) })
+    }
+}
+
+/// Where a backend's agent-context snapshots come from: the shell arm reads on demand and queues
+/// a push when the context changed; the helper pushes on connect and when a watched directory
+/// changes.
+enum ContextSource {
+    Shell(ShellBackend),
+    #[cfg(all(feature = "daemon", unix))]
+    Helper {
+        events: async_channel::Receiver<crate::client::ClientEvent>,
+        _client: Arc<RemoteServerClient>,
+    },
+}
+
+impl ContextSource {
+    /// The next snapshot (a changed context): the shell arm reads now, the helper's arrives by
+    /// itself.
+    async fn next(&mut self) -> crate::proto::RemoteAgentContextSnapshot {
+        match self {
+            ContextSource::Shell(shell) => {
+                assert!(
+                    shell.refresh_agent_context().await.unwrap(),
+                    "the context changed, so the read must queue a snapshot"
+                );
+                let mut pushes = shell.take_pushes();
+                assert_eq!(pushes.len(), 1, "{pushes:?}");
+                let Some(ShellPush::AgentContext(snapshot)) = pushes.pop() else {
+                    panic!("expected an agent context push");
+                };
+                snapshot
+            }
+            #[cfg(all(feature = "daemon", unix))]
+            ContextSource::Helper { events, .. } => {
+                use crate::rt::FutureExt as _;
+                loop {
+                    let event = events
+                        .recv()
+                        .with_timeout(std::time::Duration::from_secs(20))
+                        .await
+                        .expect("no agent context snapshot within 20 s")
+                        .expect("the connection ended");
+                    if let crate::client::ClientEvent::RemoteAgentContextSnapshotReceived {
+                        snapshot,
+                    } = event
+                    {
+                        return snapshot;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Writes `rel` under `home` atomically (a temp file renamed into place), so a scan that runs
+/// between the create and the write never sees an empty file.
+fn put(home: &std::path::Path, rel: &str, body: &[u8]) {
+    let path = home.join(rel);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let tmp = path.with_extension("tmp-fixture");
+    std::fs::write(&tmp, body).unwrap();
+    std::fs::rename(tmp, path).unwrap();
+}
+
+/// The files both backends are expected to read: two skills and a rule file, plus four that
+/// are left out (not UTF-8, over the size cap, wrong depth, hidden).
+fn write_agent_context_fixture(home: &std::path::Path) {
+    put(home, ".agents/skills/alpha/SKILL.md", b"alpha body");
+    put(home, ".claude/skills/beta/SKILL.md", b"beta body");
+    put(home, ".agents/AGENTS.md", b"be kind");
+    put(home, ".agents/skills/bad/SKILL.md", &[0xff, 0xfe, 0x00]);
+    put(
+        home,
+        ".agents/skills/huge/SKILL.md",
+        &vec![b'a'; crate::shellcmd::agent_context::MAX_FILE_BYTES + 1],
+    );
+    put(home, ".agents/skills/deep/er/SKILL.md", b"no");
+    put(home, ".agents/skills/.hidden/SKILL.md", b"no");
+}
+
+/// The agent-context contract: both backends report the same skills (from `~/.agents/skills` and
+/// `~/.claude/skills`, one level down, UTF-8 only, size-capped), the same global rule file, never
+/// bundled skills, and a higher revision when something changed.
+///
+/// The caller wrote [`write_agent_context_fixture`] before the first snapshot was requested.
+async fn assert_agent_context(name: &str, home: &std::path::Path, source: &mut ContextSource) {
+    use crate::proto::remote_skill_proto::Source;
+
+    let one = source.next().await;
+    let h = home.to_string_lossy().into_owned();
+    assert!(one.revision >= 1, "{name}");
+    assert_eq!(one.home_dir, h, "{name}");
+    let skills: Vec<(String, String)> = one
+        .skills
+        .iter()
+        .map(|s| (s.path.clone(), s.content.clone()))
+        .collect();
+    assert_eq!(
+        skills,
+        vec![
+            (
+                format!("{h}/.agents/skills/alpha/SKILL.md"),
+                "alpha body".into()
+            ),
+            (
+                format!("{h}/.claude/skills/beta/SKILL.md"),
+                "beta body".into()
+            ),
+        ],
+        "{name}"
+    );
+    assert!(
+        one.skills
+            .iter()
+            .all(|s| matches!(s.source, Some(Source::Home(_)))),
+        "{name}: host skills only, never bundled"
+    );
+    assert_eq!(one.global_rules.len(), 1, "{name}");
+    assert_eq!(one.global_rules[0].path, format!("{h}/.agents/AGENTS.md"));
+    assert_eq!(one.global_rules[0].content, "be kind", "{name}");
+
+    // A skill is added: a new, higher revision with all three.
+    put(home, ".agents/skills/gamma/SKILL.md", b"gamma body");
+    let two = source.next().await;
+    assert!(two.revision > one.revision, "{name}");
+    assert_eq!(two.skills.len(), 3, "{name}");
+    assert!(
+        two.skills
+            .iter()
+            .any(|s| s.path == format!("{h}/.agents/skills/gamma/SKILL.md")),
+        "{name}"
+    );
+
+    // The rules file goes away.
+    std::fs::remove_file(home.join(".agents/AGENTS.md")).unwrap();
+    let three = source.next().await;
+    assert!(three.revision > two.revision, "{name}");
+    assert!(three.global_rules.is_empty(), "{name}");
+    assert_eq!(three.skills.len(), 3, "{name}");
+}
+
+#[tokio::test]
+async fn the_shell_backend_reports_the_host_agent_context() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().canonicalize().unwrap();
+    write_agent_context_fixture(&home);
+    let shell = ShellBackend::new(Some(Arc::new(HomeShExecutor { home: home.clone() })));
+    assert_agent_context("shell(local sh)", &home, &mut ContextSource::Shell(shell)).await;
+}
+
+#[cfg(all(feature = "daemon", unix))]
+#[tokio::test]
+async fn the_helper_pushes_the_host_agent_context_on_connect_and_on_change() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().canonicalize().unwrap();
+    let stream = crate::daemon::spawn_in_process_with_home_for_tests(&home);
+    let stream = async_io::Async::new(stream).unwrap();
+    let (reader, writer) = futures::io::AsyncReadExt::split(stream);
+    let executor = executor::Background::default();
+    let (client, events, _host_responses) = RemoteServerClient::new(reader, writer, &executor);
+    let client = Arc::new(client);
+    // The fixture is complete before initialize, which is what triggers the first scan.
+    write_agent_context_fixture(&home);
+    client
+        .initialize(None, crate::client::ClientPreferences::default())
+        .await
+        .unwrap();
+    let mut source = ContextSource::Helper {
+        events,
+        _client: client,
+    };
+    assert_agent_context("helper(in-process daemon)", &home, &mut source).await;
+}
+
+#[tokio::test]
+async fn an_unchanged_host_context_is_not_published_again_and_revisions_only_grow() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().canonicalize().unwrap();
+    put(&home, ".agents/skills/alpha/SKILL.md", b"alpha");
+    let shell = ShellBackend::new(Some(Arc::new(HomeShExecutor { home: home.clone() })));
+    assert!(shell.refresh_agent_context().await.unwrap());
+    let first = match shell.take_pushes().pop() {
+        Some(ShellPush::AgentContext(s)) => s,
+        other => panic!("{other:?}"),
+    };
+    // Same files: nothing queued.
+    assert!(!shell.refresh_agent_context().await.unwrap());
+    assert!(shell.take_pushes().is_empty());
+    // Touching a file that is not a skill or rule changes nothing either.
+    put(&home, ".agents/notes.txt", b"x");
+    assert!(!shell.refresh_agent_context().await.unwrap());
+    // A change: higher revision.
+    put(&home, ".agents/skills/alpha/SKILL.md", b"alpha v2");
+    assert!(shell.refresh_agent_context().await.unwrap());
+    let second = match shell.take_pushes().pop() {
+        Some(ShellPush::AgentContext(s)) => s,
+        other => panic!("{other:?}"),
+    };
+    assert!(second.revision > first.revision);
+}
+
+#[tokio::test]
+async fn the_agent_context_over_every_posix_family_login_shell_wrapper_is_one_script() {
+    // fish and nushell reach `sh -c`; the same section commands must render for all three.
+    for kind in [ShellKind::Posix, ShellKind::Fish, ShellKind::Nu] {
+        let script = Script::new("n0nce")
+            .unwrap()
+            .section(
+                "skills",
+                crate::shellcmd::agent_context::skills_command(kind).unwrap(),
+                StderrMode::Discard,
+            )
+            .unwrap();
+        let rendered = script.render(kind);
+        assert!(rendered.contains("SKILL.md"), "{kind:?}");
+    }
+}
+
+#[tokio::test]
+async fn without_a_channel_the_agent_context_is_unavailable() {
+    let shell = ShellBackend::new(None);
+    let err = shell.refresh_agent_context().await.unwrap_err();
+    assert!(matches!(err, BackendError::Unavailable(_)), "{err:?}");
 }
 
 // ---- codebase indexing (P9b) -------------------------------------------------------------------

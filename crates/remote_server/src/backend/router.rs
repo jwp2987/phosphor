@@ -12,11 +12,14 @@ use std::sync::{Arc, Mutex};
 
 use warp_core::SessionId;
 
+use super::BufferSaveOutcome;
 use super::Family;
 use super::executor::OutOfBandExecutor;
 use super::helper::client_id;
 use super::refresh::RemoteRefreshEvent;
-use super::shell::{ShellBackend, ShellIndex, ShellPush, TreeCache};
+use super::shell::{
+    AgentContextCache, ShellBackend, ShellBuffers, ShellIndex, ShellPush, TreeCache,
+};
 use crate::HostId;
 use crate::capability::ServerCapabilities;
 use crate::client::RemoteServerClient;
@@ -152,6 +155,10 @@ struct State {
     /// index across reconnects. A session with none is keyed by its host id.
     identities: HashMap<SessionId, String>,
     indexes: HashMap<String, Arc<ShellIndex>>,
+    /// Per-host shell-mode agent context (last snapshot and revision).
+    agent_caches: HashMap<HostId, Arc<AgentContextCache>>,
+    /// Per-host shell-mode buffer states (family c), shared likewise.
+    buffer_states: HashMap<HostId, Arc<ShellBuffers>>,
     refresh_listeners: Vec<RefreshListener>,
 }
 
@@ -349,7 +356,9 @@ impl FeatureRouter {
     ) -> RoutedBackend {
         let sessions: Vec<SessionId> = sessions.into_iter().collect();
         let mut shell = ShellBackend::new(self.executor_for(sessions.iter().copied()))
-            .with_tree_cache(self.tree_cache_for(host));
+            .with_tree_cache(self.tree_cache_for(host))
+            .with_agent_cache(self.agent_cache_for(host))
+            .with_buffers(self.buffers_for(host));
         if let Some(index) = self.index_for(host, &sessions) {
             shell = shell.with_index(index);
         }
@@ -361,9 +370,27 @@ impl FeatureRouter {
         }
     }
 
+    /// The shell-mode agent context of `host` (created on first use).
+    pub fn agent_cache_for(&self, host: &HostId) -> Arc<AgentContextCache> {
+        Arc::clone(self.lock().agent_caches.entry(host.clone()).or_default())
+    }
+
+    /// Forgets `host`'s shell-mode agent context (the host disconnected). The revision counter
+    /// survives so a later context for the same host id never goes backwards.
+    pub fn forget_agent_context(&self, host: &HostId) {
+        if let Some(cache) = self.lock().agent_caches.get(host) {
+            cache.clear();
+        }
+    }
+
     /// The shell-mode file-tree state of `host` (created on first use).
     pub fn tree_cache_for(&self, host: &HostId) -> Arc<TreeCache> {
         Arc::clone(self.lock().tree_caches.entry(host.clone()).or_default())
+    }
+
+    /// The shell-mode buffer states of `host` (created on first use).
+    pub fn buffers_for(&self, host: &HostId) -> Arc<ShellBuffers> {
+        Arc::clone(self.lock().buffer_states.entry(host.clone()).or_default())
     }
 
     /// Forgets `host`'s shell-mode file trees (the host disconnected).
@@ -429,6 +456,17 @@ impl RoutedBackend {
         self.router.choose(&self.host, family, probe.as_ref())
     }
 
+    /// Reads the host's agent context (skills and global rules) when the shell serves
+    /// `AgentContext` (a helper that has the capability pushes it by itself, so this is then a
+    /// no-op) and returns the pushes produced, ready to emit: the snapshot when it changed.
+    /// Drive it at session start and on an explicit refresh; it never runs on a timer.
+    pub async fn refresh_agent_context(&self) -> Result<Vec<ShellPush>, super::BackendError> {
+        if self.kind(Family::AgentContext) == BackendKind::Shell {
+            self.shell.refresh_agent_context().await?;
+        }
+        Ok(self.shell.take_pushes())
+    }
+
     /// Re-reads the file tree of the indexed root `repo_path` when the shell serves
     /// `RepoMetadata` (the helper pushes its own updates, so this is then a no-op) and returns
     /// the pushes this backend produced, ready to emit. Drive it from `RefreshCoordinator`
@@ -470,6 +508,67 @@ impl RoutedBackend {
                 .emit_refresh(&self.host, &RemoteRefreshEvent::AfterOwnWrite);
         }
         result
+    }
+
+    /// Tells the host a `BufferEdit`. The helper keeps a copy of the buffer, so the edit goes
+    /// there; with the shell serving buffers there is no server copy, the editor's text is the
+    /// only one and this does nothing. An `Err` means the edit could not be delivered (the
+    /// helper connection is gone): the caller must treat the buffer as out of sync.
+    pub fn buffer_edit(
+        &self,
+        path: String,
+        expected_server_version: u64,
+        new_client_version: u64,
+        edits: Vec<crate::proto::TextEdit>,
+    ) -> Result<(), super::BackendError> {
+        match self.helper_for(Family::Buffers) {
+            Some(client) => client
+                .send_buffer_edit(path, expected_server_version, new_client_version, edits)
+                .map_err(super::BackendError::from),
+            None => Ok(()),
+        }
+    }
+
+    /// Tells the host the editor closed `path`.
+    pub fn close_buffer(&self, path: String) {
+        match self.helper_for(Family::Buffers) {
+            Some(client) => client.close_buffer(path),
+            None => self.shell.close_buffer_shell(&path),
+        }
+    }
+
+    /// Saves the editor's `content` of the open buffer `path`. With a helper the buffer is on the
+    /// host already (the edits were sent as they were made), so this asks it to write it; with
+    /// the shell serving buffers the text is written through a guarded write that refuses a file
+    /// that changed since it was opened or last saved ([`BufferSaveOutcome::Conflict`]).
+    /// Emits `AfterOwnWrite` on success.
+    pub async fn save_buffer_content(
+        &self,
+        path: String,
+        content: String,
+    ) -> Result<BufferSaveOutcome, super::BackendError> {
+        use super::RemoteFeatures as _;
+        let outcome = if self.helper_for(Family::Buffers).is_some() {
+            use crate::proto::save_buffer_response::Result as SaveResult;
+            match self.save_buffer(path).await?.result {
+                Some(SaveResult::Error(e)) => BufferSaveOutcome::Failed(e.message),
+                Some(SaveResult::Success(_)) | None => BufferSaveOutcome::Saved,
+            }
+        } else {
+            self.shell.save_buffer_content(path, content).await?
+        };
+        if outcome == BufferSaveOutcome::Saved {
+            self.router
+                .emit_refresh(&self.host, &RemoteRefreshEvent::AfterOwnWrite);
+        }
+        Ok(outcome)
+    }
+
+    /// The helper client, if it is the one that serves `family` now.
+    fn helper_for(&self, family: Family) -> Option<&Arc<RemoteServerClient>> {
+        (self.kind(family) == BackendKind::Helper)
+            .then(|| self.helper.as_ref())
+            .flatten()
     }
 
     /// Whether a call for `family` could work at all right now: the helper serves it, or the

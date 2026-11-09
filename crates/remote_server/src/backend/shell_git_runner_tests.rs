@@ -56,7 +56,7 @@ fn script_quotes_cwd_args_and_sets_the_shared_env() {
     );
     assert_eq!(
         s,
-        "cd '/my repo' && GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0 git '-c' 'diff.autoRefreshIndex=false' 'log' '--format=a b' 'it'\\''s' </dev/null"
+        "cd '/my repo' && env -u GIT_ASKPASS -u SSH_ASKPASS GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0 SSH_ASKPASS_REQUIRE=never GIT_SSH_COMMAND=\"${GIT_SSH_COMMAND:-ssh} -o BatchMode=yes\" git '-c' 'diff.autoRefreshIndex=false' 'log' '--format=a b' 'it'\\''s' </dev/null"
     );
 }
 
@@ -137,4 +137,49 @@ fn patch_over_stdin_reaches_git_apply() {
     ));
     assert!(out.is_ok(), "{out:?}");
     assert!(g(&["diff", "--cached"]).unwrap().contains("+two"));
+}
+
+/// Same probe as the helper's test, but with the host's login environment offering askpass
+/// helpers and an ssh command of its own: the script must drop the helpers and keep the command.
+#[test]
+fn the_shell_runner_never_lets_git_prompt() {
+    if std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let (r, _) = runner();
+    let script = r.git_script(&["-c", "alias.penv=!env", "penv"], None, dir.path());
+    let out = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&script)
+        .env("GIT_ASKPASS", "/bin/false")
+        .env("SSH_ASKPASS", "/bin/false")
+        .env("GIT_SSH_COMMAND", "ssh -i /k")
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    for want in [
+        "GIT_TERMINAL_PROMPT=0",
+        "SSH_ASKPASS_REQUIRE=never",
+        "GIT_SSH_COMMAND=ssh -i /k -o BatchMode=yes",
+    ] {
+        assert!(text.lines().any(|l| l == want), "missing {want}: {text}");
+    }
+    assert!(
+        !text.lines().any(|l| l.starts_with("GIT_ASKPASS=")),
+        "{text}"
+    );
+    assert!(
+        !text.lines().any(|l| l.starts_with("SSH_ASKPASS=")),
+        "{text}"
+    );
 }

@@ -24,7 +24,7 @@ use crate::{
         git_dialog::{
             GitDialog, GitDialogAction, GitDialogEvent, GitDialogMode, interactive_path_future,
             pr::show_pr_created_toast, render_branch_section, render_file_changes_box,
-            should_send_git_ops_ai_request, show_toast, user_facing_git_error,
+            should_send_git_ops_ai_request, show_git_failure, show_toast, user_facing_git_error,
         },
     },
     editor::{
@@ -432,6 +432,10 @@ pub(super) fn start_confirm(me: &mut GitDialog, ctx: &mut ViewContext<GitDialog>
     }
 
     let path_future = interactive_path_future(ctx);
+    let local_push_command = git_command_line(
+        &repo_path.to_string_lossy(),
+        &["push", "--set-upstream", "origin", &branch_name],
+    );
 
     ctx.spawn(
         async move {
@@ -465,7 +469,14 @@ pub(super) fn start_confirm(me: &mut GitDialog, ctx: &mut ViewContext<GitDialog>
                 }
                 Err(err) => {
                     log::error!("Commit failed: {err}");
-                    show_toast(user_facing_git_error(&err.to_string()), ctx);
+                    show_git_failure(
+                        &err.to_string(),
+                        Some(commit_chain_terminal_command(
+                            &err.to_string(),
+                            local_push_command,
+                        )),
+                        ctx,
+                    );
                 }
             }
             // Success or failure, the dialog is done and the parent should
@@ -473,6 +484,18 @@ pub(super) fn start_confirm(me: &mut GitDialog, ctx: &mut ViewContext<GitDialog>
             ctx.emit(GitDialogEvent::Completed);
         },
     );
+}
+
+/// What "Run in terminal" puts in the input editor after a failed commit chain: the `gh` stage
+/// failing means the PR step needs the login, anything else is the push.
+fn commit_chain_terminal_command(raw_error: &str, push_command: String) -> String {
+    if raw_error.to_lowercase().contains("gh command failed")
+        || crate::util::git::is_gh_auth_error(raw_error)
+    {
+        super::pr::PR_TERMINAL_COMMAND.to_string()
+    } else {
+        push_command
+    }
 }
 
 /// Sends the commit chain to the remote host's daemon and surfaces the same
@@ -486,19 +509,21 @@ fn start_confirm_remote(
     branch: String,
     ctx: &mut ViewContext<GitDialog>,
 ) {
-    use crate::code_review::git_dialog::remote_client_for;
+    use crate::code_review::git_dialog::{git_command_line, remote_backend_for};
     use crate::remote_server::proto;
+    use remote_server::backend::RemoteFeatures as _;
 
     let mode = match intent {
         CommitIntent::CommitOnly => proto::GitCommitChainMode::CommitOnly,
         CommitIntent::CommitAndPush => proto::GitCommitChainMode::CommitAndPush,
         CommitIntent::CommitAndCreatePr => proto::GitCommitChainMode::CommitAndCreatePr,
     };
-    let Some(client) = remote_client_for(&remote, ctx) else {
-        show_toast(user_facing_git_error("could not resolve host"), ctx);
-        ctx.emit(GitDialogEvent::Completed);
-        return;
-    };
+    // Helper when it serves git writes, otherwise the shell backend; no helper is required.
+    let backend = remote_backend_for(&remote, ctx);
+    let push_command = git_command_line(
+        &remote.path.to_string(),
+        &["push", "--set-upstream", "origin", &branch],
+    );
     let request = proto::GitCommitChainRequest {
         repo_path: remote.path.to_string(),
         message,
@@ -510,7 +535,7 @@ fn start_confirm_remote(
         autogenerate_pr_content: false,
     };
     ctx.spawn(
-        async move { client.git_commit_chain(request).await },
+        async move { backend.git_commit_chain(request).await },
         move |me, result, ctx| {
             match result {
                 Ok(response) => match response.result {
@@ -537,7 +562,11 @@ fn start_confirm_remote(
                     }
                     Some(proto::git_commit_chain_response::Result::Error(e)) => {
                         log::error!("Remote commit chain failed: {}", e.message);
-                        show_toast(user_facing_git_error(&e.message), ctx);
+                        show_git_failure(
+                            &e.message,
+                            Some(commit_chain_terminal_command(&e.message, push_command)),
+                            ctx,
+                        );
                     }
                     None => show_toast(user_facing_git_error(""), ctx),
                 },

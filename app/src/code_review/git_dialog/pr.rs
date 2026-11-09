@@ -17,7 +17,8 @@ use warpui::{
 use crate::{
     code_review::git_dialog::{
         GitDialog, GitDialogAction, GitDialogEvent, GitDialogMode, interactive_path_future,
-        render_branch_section, render_file_changes_box, show_toast, user_facing_git_error,
+        render_branch_section, render_file_changes_box, show_git_failure, show_toast,
+        user_facing_git_error,
     },
     ui_components::icons::Icon,
     util::git::{FileChangeEntry, PrInfo, create_pr, get_branch_diff_entries},
@@ -26,6 +27,9 @@ use crate::{
 };
 
 use crate::code::buffer_location::RemotePath;
+
+/// What "Run in terminal" puts in the input editor when creating the PR needs a login.
+pub(super) const PR_TERMINAL_COMMAND: &str = "gh pr create --fill";
 
 /// PR-mode sub-actions, dispatched wrapped in `GitDialogAction::Pr`.
 #[derive(Clone, Debug, PartialEq)]
@@ -123,7 +127,7 @@ pub(super) fn start_confirm(me: &mut GitDialog, ctx: &mut ViewContext<GitDialog>
                 }
                 Err(err) => {
                     log::error!("Failed to create PR: {err}");
-                    show_toast(user_facing_git_error(&err.to_string()), ctx);
+                    show_git_failure(&err.to_string(), Some(PR_TERMINAL_COMMAND.to_string()), ctx);
                 }
             }
             ctx.emit(GitDialogEvent::Completed);
@@ -135,21 +139,19 @@ pub(super) fn start_confirm(me: &mut GitDialog, ctx: &mut ViewContext<GitDialog>
 /// same toast as the local path. The daemon runs `gh pr create --fill` (BYOP:
 /// no daemon-side autogen, #116).
 fn start_confirm_remote(remote: RemotePath, branch: String, ctx: &mut ViewContext<GitDialog>) {
-    use crate::code_review::git_dialog::remote_client_for;
+    use crate::code_review::git_dialog::remote_backend_for;
     use crate::remote_server::proto;
+    use remote_server::backend::RemoteFeatures as _;
 
-    let Some(client) = remote_client_for(&remote, ctx) else {
-        show_toast(user_facing_git_error("could not resolve host"), ctx);
-        ctx.emit(GitDialogEvent::Completed);
-        return;
-    };
+    // Helper when it serves git writes, otherwise the shell backend; no helper is required.
+    let backend = remote_backend_for(&remote, ctx);
     let request = proto::GitCreatePrRequest {
         repo_path: remote.path.to_string(),
         branch,
         autogenerate_content: false,
     };
     ctx.spawn(
-        async move { client.git_create_pr(request).await },
+        async move { backend.git_create_pr(request).await },
         move |_me, result, ctx| {
             match result {
                 Ok(response) => match response.result {
@@ -159,7 +161,7 @@ fn start_confirm_remote(remote: RemotePath, branch: String, ctx: &mut ViewContex
                     }
                     Some(proto::git_create_pr_response::Result::Error(e)) => {
                         log::error!("Remote create PR failed: {}", e.message);
-                        show_toast(user_facing_git_error(&e.message), ctx);
+                        show_git_failure(&e.message, Some(PR_TERMINAL_COMMAND.to_string()), ctx);
                     }
                     None => show_toast(user_facing_git_error(""), ctx),
                 },

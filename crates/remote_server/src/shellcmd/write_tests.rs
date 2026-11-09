@@ -179,3 +179,41 @@ fn without_a_decoder_bytes_travel_as_printf_octal_escapes_in_small_chunks() {
     );
     assert!(mid.contains("printf 'b' >> \"$tmp\""));
 }
+
+#[test]
+fn a_hex_digest_is_exactly_sixty_four_hex_characters_lowercased() {
+    let upper = "ABCDEF0123456789".repeat(4);
+    let digest = HexDigest::parse(&format!("  {upper}\n")).unwrap();
+    assert_eq!(digest.as_str(), upper.to_lowercase());
+    assert!(HexDigest::parse("abc").is_none());
+    assert!(HexDigest::parse(&"g".repeat(64)).is_none());
+    assert!(HexDigest::parse(&"a".repeat(65)).is_none());
+}
+
+#[test]
+fn a_hash_guarded_write_compares_the_files_sha256_before_the_rename() {
+    let digest = HexDigest::parse(&"ab".repeat(32)).unwrap();
+    let c = posix_write_command(
+        "/x",
+        "n",
+        b"a",
+        FIRST_AND_LAST,
+        DecodeTool::Lower,
+        Some(Expect::Sha256(digest)),
+    );
+    assert!(c.contains("sha256sum") && c.contains("shasum -a 256"));
+    let check = c
+        .find(&format!("[ \"$cur\" = '{}' ]", "ab".repeat(32)))
+        .expect("check present");
+    assert!(check < c.find("mv -f").unwrap());
+    assert!(c.contains("exit 5"));
+    let p = pwsh_write_command(
+        "C:\\x",
+        "n",
+        b"a",
+        FIRST_AND_LAST,
+        Some(Expect::Sha256(digest)),
+    );
+    assert!(p.contains("Get-FileHash"));
+    assert!(p.find("-ne '").unwrap() < p.find("Move-Item").unwrap());
+}

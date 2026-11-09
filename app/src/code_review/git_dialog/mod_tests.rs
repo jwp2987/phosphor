@@ -352,3 +352,43 @@ fn unrecognized_errors_fall_back_to_the_generic_message() {
         "Git operation failed."
     );
 }
+
+/// Owner ruling: credentials never prompt. Every way git says "I needed a login" is recognised,
+/// so the failure toast can offer "Run in terminal" (the command goes into the input editor,
+/// not run).
+#[test]
+fn credential_failures_are_recognised_whichever_words_git_or_ssh_use() {
+    use super::is_git_auth_failure;
+    for raw in [
+        "fatal: could not read Username for 'https://example.com': terminal prompts disabled",
+        "fatal: could not read Password for 'https://u@example.com': terminal prompts disabled",
+        "git@example.com: Permission denied (publickey).",
+        "remote: Invalid username or password.\nfatal: Authentication failed for 'https://x/'",
+        "Host key verification failed.",
+    ] {
+        assert!(is_git_auth_failure(raw), "{raw}");
+    }
+    for raw in [
+        "",
+        "Updates were rejected because the remote contains work",
+        "Could not resolve host: example.com",
+    ] {
+        assert!(!is_git_auth_failure(raw), "{raw}");
+    }
+}
+
+#[test]
+fn the_run_in_terminal_command_is_one_pasteable_line_for_any_shell() {
+    use super::git_command_line;
+    assert_eq!(
+        git_command_line(
+            "/home/u/repo",
+            &["push", "--set-upstream", "origin", "main"]
+        ),
+        "git -C /home/u/repo push --set-upstream origin main"
+    );
+    assert_eq!(
+        git_command_line("/home/u/my repo", &["pull", "--ff-only", "origin", "it's"]),
+        "git -C '/home/u/my repo' pull --ff-only origin 'it'\\''s'"
+    );
+}

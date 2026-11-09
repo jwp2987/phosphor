@@ -29,8 +29,10 @@
 //! Every indexed root is recorded ([`RepoTrees::roots`]) for the code review and link
 //! validation features the old server registered them with.
 //!
-//! Standing-query results (project skills and rules discovered inside the repo) are NOT computed
-//! here; they belong to the agent-context package.
+//! Standing-query results: the project skill files found in the loaded tree ride along with the
+//! snapshot and with updates ([`crate::shellcmd::agent_context::project_skill_files`]), as the old
+//! server's did; the app reads their content through the file-context family. Project RULE files
+//! are not reported: the app has no consumer for them yet.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::io;
@@ -42,6 +44,7 @@ use crate::proto::{
     NavigatedToDirectoryResponse, RepoMetadataEntryUpdate, RepoMetadataSnapshot,
     RepoMetadataUpdatePush, server_message,
 };
+use crate::shellcmd::agent_context;
 use crate::shellcmd::tree::{
     TreeChild, diff_dir, dir_update, is_within, parent_of, snapshot_entries,
 };
@@ -168,6 +171,9 @@ struct Repo {
     subscribers: HashSet<ConnId>,
     dirty: BTreeSet<String>,
     in_flight: bool,
+    /// Project skill files of the tree as last reported (standing-query results), so an update
+    /// can carry only what changed.
+    skill_files: BTreeSet<String>,
 }
 
 impl Repo {
@@ -348,9 +354,11 @@ impl RepoTrees {
             subscribers = old.subscribers;
         }
         subscribers.insert(conn);
+        let skill_files = agent_context::project_skill_files(&dirs);
         let mut repo = Repo {
             is_git,
             dirs,
+            skill_files,
             held: BTreeSet::new(),
             watched: true,
             subscribers,
@@ -531,12 +539,15 @@ impl RepoTrees {
         }
         // A directory removed together with an ancestor needs no separate removal.
         let removed: Vec<String> = removed.into_iter().collect();
+        let skill_files = agent_context::project_skill_files(&repo.dirs);
+        let standing = agent_context::standing_delta(&repo.skill_files, &skill_files);
+        repo.skill_files = skill_files;
         if !removed.is_empty() || !updates.is_empty() {
             let message = server_message::Message::RepoMetadataUpdate(RepoMetadataUpdatePush {
                 repo_path: done.root.clone(),
                 remove_entries: removed,
                 update_entries: updates,
-                standing_results_delta: None,
+                standing_results_delta: standing,
             });
             for conn in &repo.subscribers {
                 push.send(*conn, message.clone());
@@ -572,7 +583,9 @@ fn snapshot_message(
         repo_path: root.to_owned(),
         entries: snapshot_entries(root, dirs),
         sync_complete: true,
-        standing_results: None,
+        standing_results: agent_context::standing_snapshot(&agent_context::project_skill_files(
+            dirs,
+        )),
     })
 }
 
