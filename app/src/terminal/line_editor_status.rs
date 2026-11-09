@@ -1,6 +1,7 @@
+use std::collections::HashSet;
 use std::time::Duration;
 
-use crate::terminal::model::session::Sessions;
+use crate::terminal::model::session::{SessionId, Sessions};
 use crate::terminal::model_events::AnsiHandlerEvent;
 use warpui::{Entity, ModelContext, ModelHandle, r#async::SpawnedFutureHandle};
 
@@ -8,7 +9,7 @@ use super::{ModelEvent, ModelEventDispatcher, shell::ShellType};
 
 /// The give-up net for a shell whose line editor is expected to signal that it is reading
 /// (bracketed-paste enable, #1208, or the `LineEditorReading` marker, #1390; tracked by
-/// `ready_signal_seen`, or a ConPTY prompt hold that waits for the signal).
+/// `ready_signal_seen` for the ACTIVE SESSION, or a ConPTY prompt hold that waits for the signal).
 ///
 /// Owner rule (two weeks of timer bugs, #1672/#1798): the input pipeline is event-driven, and a
 /// timer may only hand text back or exit -- it never opens the write gate, never writes to the pty
@@ -37,7 +38,7 @@ pub struct LineEditorStatus {
     proven_reading: bool,
     /// This session's shell has signalled at least once, so its readiness comes from the signal:
     /// the prompt hook arms the give-up net instead of opening the gate.
-    ready_signal_seen: bool,
+    ready_signal_seen: HashSet<Option<SessionId>>,
     /// A prompt hook armed the wait for the shell's ready signal and nothing has ended it: the
     /// signal (even after the give-up net fired) opens the gate.
     awaiting_signal: bool,
@@ -79,7 +80,7 @@ impl LineEditorStatus {
             model_event_dispatcher,
             is_line_editor_active: false,
             proven_reading: false,
-            ready_signal_seen: false,
+            ready_signal_seen: HashSet::new(),
             awaiting_signal: false,
             signal_activation_pending: false,
             mark_line_editor_active_abort_handle: None,
@@ -102,8 +103,16 @@ impl LineEditorStatus {
 
     /// Whether this shell is expected to signal that its line editor is reading: it has before,
     /// or the ConPTY prompt hold waits for it.
-    fn expects_ready_signal(&self) -> bool {
-        self.ready_signal_seen || self.signal_wait.is_some()
+    fn expects_ready_signal(&self, ctx: &ModelContext<Self>) -> bool {
+        self.ready_signal_seen.contains(&self.active_session(ctx)) || self.signal_wait.is_some()
+    }
+
+    /// The session whose prompt this is. The ready signal is learned PER SESSION (#1823): the
+    /// local shell signalling says nothing about the fake / remote / sub shell an `ssh` or `su`
+    /// then starts in the same pane, and a session that has not signalled yet opens the gate on
+    /// its prompt event like any non-signalling shell.
+    fn active_session(&self, ctx: &ModelContext<Self>) -> Option<SessionId> {
+        self.model_event_dispatcher.as_ref(ctx).active_session_id()
     }
 
     /// How long the wait for the shell's signal runs before the net hands the held keys back.
@@ -147,7 +156,8 @@ impl LineEditorStatus {
             // Declared active on the prompt event before the signal came: the signal proves the
             // editor reads now (only a prompt cycle is ever active; a command's start made it
             // inactive), and later prompts wait for the signal.
-            self.ready_signal_seen = true;
+            let session = self.active_session(ctx);
+            self.ready_signal_seen.insert(session);
             self.proven_reading = true;
             return;
         }
@@ -162,7 +172,8 @@ impl LineEditorStatus {
         abort_if_running(self.mark_line_editor_active_abort_handle.take());
         self.awaiting_signal = false;
         self.signal_activation_pending = false;
-        self.ready_signal_seen = true;
+        let session = self.active_session(ctx);
+        self.ready_signal_seen.insert(session);
         self.proven_reading = true;
         self.is_line_editor_active = true;
         ctx.emit(LineEditorStatusEvent::Active);
@@ -213,8 +224,19 @@ impl LineEditorStatus {
 
     /// Marks the shell as one that has signalled before.
     #[cfg(test)]
-    pub(crate) fn set_ready_signal_seen_for_test(&mut self, seen: bool) {
-        self.ready_signal_seen = seen;
+    pub(crate) fn set_ready_signal_seen_for_test(&mut self, seen: bool, ctx: &ModelContext<Self>) {
+        let session = self.active_session(ctx);
+        if seen {
+            self.ready_signal_seen.insert(session);
+        } else {
+            self.ready_signal_seen.remove(&session);
+        }
+    }
+
+    /// Test: whether the active session is a learned signalling shell.
+    #[cfg(test)]
+    pub(crate) fn active_session_signals_for_test(&self, ctx: &ModelContext<Self>) -> bool {
+        self.ready_signal_seen.contains(&self.active_session(ctx))
     }
 
     fn handle_model_event(&mut self, event: &ModelEvent, ctx: &mut ModelContext<Self>) {
@@ -256,7 +278,7 @@ impl LineEditorStatus {
     /// event decides, never a timer: a shell that signals waits for its signal (the net only hands
     /// keys back); a shell that never has opens the gate on this event.
     fn on_prompt_hook(&mut self, ctx: &mut ModelContext<Self>) {
-        if self.expects_ready_signal() {
+        if self.expects_ready_signal(ctx) {
             let delay = self.give_up_delay();
             self.arm_signal_give_up(delay, ctx);
             return;
@@ -280,6 +302,7 @@ impl LineEditorStatus {
         self.proven_reading = false;
         self.awaiting_signal = true;
         self.signal_activation_pending = false;
+        let session = self.active_session(ctx);
 
         let abort_handle = ctx.spawn_abortable(
             // give-up-net: arms the line-editor ready-signal give-up; only reports SignalGaveUp (keys go back to the editor)
@@ -297,6 +320,11 @@ impl LineEditorStatus {
                     );
                     me.signal_wait = None;
                 }
+                // This session did not signal for this prompt: it is not (or no longer) a
+                // signalling shell, so its next prompt event opens the gate itself (unproven)
+                // instead of waiting for a signal that may never come; a late signal learns it
+                // again.
+                me.ready_signal_seen.remove(&session);
                 ctx.emit(LineEditorStatusEvent::SignalGaveUp);
             },
             |_, _| (),
