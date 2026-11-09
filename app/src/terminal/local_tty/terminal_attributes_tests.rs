@@ -226,6 +226,13 @@ fn the_slave_input_queue_proof_and_the_flush_read_a_real_pty() {
         assert_eq!(libc::ptsname_r(master, name.as_mut_ptr(), name.len()), 0);
         let slave = libc::open(name.as_ptr(), libc::O_RDWR | libc::O_NOCTTY);
         assert!(slave >= 0, "open slave");
+        // A fresh slave is canonical, and the kernel counts only COMPLETE lines for FIONREAD there
+        // (the bytes a `read` would get). The readiness proof matters for a raw line editor, so
+        // the slave is made raw like readline's tty.
+        let mut attrs: libc::termios = std::mem::zeroed();
+        assert_eq!(libc::tcgetattr(slave, &mut attrs), 0);
+        libc::cfmakeraw(&mut attrs);
+        assert_eq!(libc::tcsetattr(slave, libc::TCSANOW, &attrs), 0);
         (master, slave)
     };
     assert_eq!(slave_input_queue_empty(master), Some(true), "fresh pty");

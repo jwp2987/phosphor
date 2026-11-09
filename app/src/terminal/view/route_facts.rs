@@ -187,6 +187,15 @@ impl TerminalView {
             SubshellPhase::BootstrapWriting
         } else if queue.gates.has(GateKind::SubshellSetup) {
             SubshellPhase::SetupHeld
+        } else if announced_age.is_some() && self.powershell_setup_hold == PowerShellSetupHold::Off
+        {
+            // An announced setup that governs input holds every non-signal key, whatever it is:
+            // the legacy writer opens the setup gate with the first key
+            // (`prepare_subshell_gates`, `setup_governs`), so the table reads that as the gate
+            // already held (the same holds in `table` mode, which opens the gate before it
+            // builds its facts). Without this a sequence (an arrow) read `Announced`, which no
+            // row holds, and went to the pty where the legacy chain held it (#1679 step 4).
+            SubshellPhase::SetupHeld
         } else if self.subshell_bootstrap_announced.is_some() {
             SubshellPhase::Announced
         } else {
