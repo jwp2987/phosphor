@@ -839,6 +839,9 @@ pub struct TypeaheadHandoff {
     /// Whether the line the user is typing began while the Precmd could be in flight, i.e. at the last
     /// activity, i.e. before the app could know the shell was at its prompt (#933).
     young_line: bool,
+    /// Test only: the barrier in place was installed by `age_last_activity_for_test` (settled).
+    #[cfg(test)]
+    aged_barrier_for_test: bool,
     /// #1614: the block latch (`block::interactive_latch`) said the running command is interactive:
     /// a program other than the shell owns the foreground, the tty is raw or reading a password,
     /// the shell itself is blocked in a builtin such as `read x`, or (ConPTY, where nothing can be
@@ -1217,6 +1220,7 @@ impl TypeaheadHandoff {
         };
         self.young_line = false;
         self.last_activity_at = Some(Instant::now());
+        self.note_fresh_activity_for_test();
         self.line_empty_at_writes = None;
         self.ssh_line_start_at_writes = Some(writes.saturating_add(1));
         SshEscapeLineStart::AddCr
@@ -2497,16 +2501,6 @@ impl TypeaheadHandoff {
     /// counts them ([`Self::count_followed_young_hold`]).
     pub fn on_command_written(&mut self) {
         self.end_keys_follow_editor("command_written");
-        // Tests model "a command was written just now" as a stream with unparsed output (the
-        // state #933's race needs) unless the test installed its own barrier or probe. Never in
-        // production: there the pty reader's barrier is the only authority.
-        #[cfg(test)]
-        if !self.foreground_probe.samples_shell()
-            && self.foreground_probe.stream_drained.is_none()
-            && self.foreground_probe.stream_drained_or_unknown.is_none()
-        {
-            self.foreground_probe.stream_drained = Some(Arc::new(|| false));
-        }
         self.forget_untracked_line_bytes();
         // #1574: the command's kill prefix and Enter end whatever line it lands on.
         self.committed_delivery = false;
@@ -2578,6 +2572,7 @@ impl TypeaheadHandoff {
             self.enter_window_since = Some(now);
         }
         self.last_activity_at = Some(now);
+        self.note_fresh_activity_for_test();
         self.command_written_at = Some(now);
         self.keys_follow_editor = false;
         self.state = HandoffState::PtyOwned {
@@ -2688,6 +2683,7 @@ impl TypeaheadHandoff {
         self.activity_generation = self.activity_generation.wrapping_add(1);
         let now = Instant::now();
         self.last_activity_at = Some(now);
+        self.note_fresh_activity_for_test();
         self.last_precmd_at = Some(now);
         if self.prompt_hold_armed() {
             self.awaiting_line_editor_since = Some(now);
@@ -2769,6 +2765,7 @@ impl TypeaheadHandoff {
         // The shell took a line: its line editor is not about to start.
         self.awaiting_line_editor_since = None;
         self.last_activity_at = Some(now);
+        self.note_fresh_activity_for_test();
         // #1573: an enter window whose command started is not overdue while it runs.
         self.last_preexec_at = Some(now);
         self.follow_unsampled_enter_on_preexec(shell_started, now);
@@ -3542,14 +3539,21 @@ impl TypeaheadHandoff {
     ///   still unread): the Precmd may be in it. Held until the barrier's publish decides again
     ///   ([`Self::on_stream_applied`]): a Precmd in that output makes the request due, none makes
     ///   it typeahead for the running command. [`YoungHoldEvidence::PrecmdInFlight`].
-    /// * the stream is fully applied: a command is running (or the counts say the prompt is back,
-    ///   the request is due): the plain-terminal default is to deliver it to the command.
+    /// * the stream is fully applied: nothing is in flight. Either a command is running (deliver
+    ///   it to the command, the plain-terminal default) or the prompt is SETTLED (the counts say
+    ///   it is back and nothing is unparsed): a settled prompt is not unsettled, so no young
+    ///   evidence -- the Enter follows the normal non-young path, exactly as before the window
+    ///   was removed (owner ruling 2026-11-09, round 2; #1574: a committed delivery is never
+    ///   asked for its line).
     /// * no barrier, or its look at the pipe failed (ConPTY peek unavailable): the plain terminal
-    ///   again -- delivered (#933's cost accepted), unless the counts say the prompt is back.
-    fn unsettled_evidence(&self, counts_say_prompt: bool) -> Option<YoungHoldEvidence> {
+    ///   again -- delivered (#933's cost accepted).
+    ///
+    /// A hold waiting on the barrier is decided again by [`Self::on_stream_applied`], which makes
+    /// the request due when a Precmd arrived in the output it waited for.
+    fn unsettled_evidence(&self, _counts_say_prompt: bool) -> Option<YoungHoldEvidence> {
         match self.foreground_probe.stream_drained() {
             Some(false) => Some(YoungHoldEvidence::PrecmdInFlight),
-            Some(true) | None => counts_say_prompt.then_some(YoungHoldEvidence::RequestDue),
+            Some(true) | None => None,
         }
     }
 
@@ -3609,6 +3613,28 @@ impl TypeaheadHandoff {
         }
     }
 
+    /// Tests model "activity just now" (a command written, a prompt or a preexec seen) as a pty
+    /// stream with unparsed output -- the state #933's race needs -- unless the test installed its
+    /// own barrier or probe. Never in production: there the pty reader's barrier is the only
+    /// authority. `age_last_activity_for_test` is the opposite: settled.
+    #[cfg(test)]
+    fn note_fresh_activity_for_test(&mut self) {
+        if self.aged_barrier_for_test {
+            // A barrier the test's `age_last_activity_for_test` installed: new activity makes the
+            // stream unsettled again, as it reopened the window.
+            self.aged_barrier_for_test = false;
+            self.foreground_probe.stream_drained = Some(Arc::new(|| false));
+        } else if !self.foreground_probe.samples_shell()
+            && self.foreground_probe.stream_drained.is_none()
+            && self.foreground_probe.stream_drained_or_unknown.is_none()
+        {
+            self.foreground_probe.stream_drained = Some(Arc::new(|| false));
+        }
+    }
+
+    #[cfg(not(test))]
+    fn note_fresh_activity_for_test(&mut self) {}
+
     /// Models a command that has been running a while: no activity, and (where nothing samples
     /// the shell) a stream barrier that says everything is applied, so an Enter is typeahead for
     /// the command, not a line at an unnoticed prompt.
@@ -3618,6 +3644,7 @@ impl TypeaheadHandoff {
         if !self.foreground_probe.samples_shell() {
             self.foreground_probe.stream_drained_or_unknown = None;
             self.foreground_probe.stream_drained = Some(Arc::new(|| true));
+            self.aged_barrier_for_test = true;
         }
     }
 
@@ -3738,7 +3765,18 @@ impl TypeaheadHandoff {
         else {
             return StreamApplied::Nothing;
         };
-        match self.young_evidence(enters_written, precmds_seen, Instant::now()) {
+        let mut evidence = self.young_evidence(enters_written, precmds_seen, Instant::now());
+        // Where no sample decides (no prompt sequence numbers, `unsettled_evidence`), a Precmd in
+        // the output the hold waited for settles the prompt: the request is due. At the Enter
+        // itself a settled prompt is no young evidence; after a hold it is the hold's answer.
+        if evidence.is_none()
+            && !self.prompt_seq_mode()
+            && precmds_seen >= enters_written
+            && !self.foreground_probe.foreground_is_plain_program()
+        {
+            evidence = Some(YoungHoldEvidence::RequestDue);
+        }
+        match evidence {
             // Still something unapplied: the next publish asks again.
             Some(YoungHoldEvidence::PrecmdInFlight) => StreamApplied::Nothing,
             Some(YoungHoldEvidence::RequestDue) => {
