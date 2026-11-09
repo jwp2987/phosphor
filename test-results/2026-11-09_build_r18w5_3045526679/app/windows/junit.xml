@@ -1,0 +1,160 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-windows" tests="66" failures="1" skipped="17">
+<testcase classname="terminal" name="mode_proof" time="1.20">
+</testcase>
+<testcase classname="terminal" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="terminal" name="cadence" time="6.00">
+</testcase>
+<testcase classname="terminal" name="enter_loss_control" time="96.70">
+</testcase>
+<testcase classname="terminal" name="fast_typing" time="53.50">
+</testcase>
+<testcase classname="terminal" name="paste_instant_enter" time="5.40">
+</testcase>
+<testcase classname="terminal" name="tab_enter" time="21.70">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_d" time="329.80">
+</testcase>
+<testcase classname="terminal" name="ssh_connect_typing" time="55.40">
+</testcase>
+<testcase classname="terminal" name="ssh_enter_then_immediate_command" time="14.90">
+</testcase>
+<testcase classname="terminal" name="ssh_nested_typeahead" time="22.10">
+</testcase>
+<testcase classname="terminal" name="latency_enter" time="286.90">
+<skipped message="NO-REFERENCE (not a pass): app share of Enter-&gt;start: enter_begin -&gt; pty_write median 1.65 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side"/>
+</testcase>
+<testcase classname="terminal" name="latency_key_log" time="0.00">
+<skipped message="not run in the PowerShell pane: types into a running `cat &gt; /dev/null`: no equivalent stdin-echo program in PowerShell: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="latency_paint" time="0.70">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only; no key-&gt;paint read-back exists on this platform, so there is nothing to compare"/>
+</testcase>
+<testcase classname="terminal" name="routing_table" time="0.00">
+<skipped message="not run in the PowerShell pane: asserts what the shell received from rec.log: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="agent_mode_switch" time="0.00">
+<skipped message="not run in the PowerShell pane: asserts the exact shell line from rec.log after each view switch: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="shell_fish" time="0.00">
+<skipped message="not run in the PowerShell pane: fish as a subshell of bash: Git Bash pane only (skips itself when not installed)"/>
+</testcase>
+<testcase classname="terminal" name="shell_nu" time="0.00">
+<skipped message="not run in the PowerShell pane: nu as a subshell of bash: Git Bash pane only (skips itself when not installed)"/>
+</testcase>
+<testcase classname="terminal" name="md_viewer" time="2.90">
+</testcase>
+<testcase classname="terminal@gitbash" name="mode_proof" time="1.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="cadence" time="6.10">
+</testcase>
+<testcase classname="terminal@gitbash" name="key_loss_control" time="33.50">
+</testcase>
+<testcase classname="terminal@gitbash" name="enter_loss_control" time="56.50">
+</testcase>
+<testcase classname="terminal@gitbash" name="fast_typing" time="49.10">
+</testcase>
+<testcase classname="terminal@gitbash" name="paste_instant_enter" time="14.30">
+</testcase>
+<testcase classname="terminal@gitbash" name="tab_enter" time="17.50">
+</testcase>
+<testcase classname="terminal@gitbash" name="ctrl_c_d" time="176.00">
+<skipped message="NO-REFERENCE (not a pass): #1570: the harness process ignores Ctrl-C (inherited from the runner's process group); the app inherits it and must clear it for its shells"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="ssh_connect_typing" time="39.70">
+</testcase>
+<testcase classname="terminal@gitbash" name="ssh_enter_then_immediate_command" time="10.10">
+</testcase>
+<testcase classname="terminal@gitbash" name="ssh_nested_typeahead" time="19.70">
+</testcase>
+<testcase classname="terminal@gitbash" name="latency_enter" time="184.00">
+<skipped message="NO-REFERENCE (not a pass): G1: Git Bash fork+exec costs 44.2 ms per process on this host (outside the app); every forking shell hook adds about that"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="latency_key_log" time="12.00">
+<skipped message="NO-REFERENCE (not a pass): #1176 key -&gt; pty write median 0.61 ms (p95 0.75, n=60): within the 1 ms target"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="latency_paint" time="0.60">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only; no key-&gt;paint read-back exists on this platform, so there is nothing to compare"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="routing_table" time="58.40">
+</testcase>
+<testcase classname="terminal@gitbash" name="agent_mode_switch" time="9.30">
+</testcase>
+<testcase classname="terminal@gitbash" name="shell_fish" time="0.70">
+<skipped message="package fish (apt install fish) not installed (looked on PATH and in ~/.local/bin, /home/<user>/.local/bin, /opt/homebrew/bin, /usr/local/bin, ~/.cargo/bin, /snap/bin)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="shell_nu" time="0.60">
+<skipped message="package nushell (not in Ubuntu repos: github.com/nushell/nushell release tarball, or `cargo install nu --locked`; Mac: brew install nushell) not installed (looked on PATH and in ~/.local/bin, /home/<user>"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="md_viewer" time="2.90">
+</testcase>
+<testcase classname="agent" name="mode_proof" time="0.20">
+</testcase>
+<testcase classname="agent" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent" name="fast_typing" time="22.20">
+</testcase>
+<testcase classname="agent" name="paste_instant_enter" time="5.30">
+</testcase>
+<testcase classname="agent" name="tab_enter" time="20.80">
+</testcase>
+<testcase classname="agent" name="ctrl_c_d" time="179.40">
+</testcase>
+<testcase classname="agent" name="ssh_connect_typing" time="37.00">
+<failure message='ssh_connect_typing (gap 0.1 s): T58_j8mrtq never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 07:42:29 auth publickey user=Winters key=ssh-ed25519 4b7880db9e519b5a90fce69fa10073ca -&gt; ok | 07:42:29 auth publickey user=Winters key=ssh-ed25519 4b7880db9e519b5a90fce69fa10073ca -&gt; ok | 07:42:29 session shell None pty | 07:42:29 conpty shell pid 7388 | 07:42:30 conpty first output after 0.66 s: 68 bytes | 07:42:32 conpty output ended: 202 bytes sent to the client in total | 07:42:34 client input ended: 104 bytes in 93 chunks, 104 written to the pseudo console | 07:42:34 connection closed: authenticated=False channels=1; fakesshd.stderr: Traceback (most recent call last): |   File "C:\Users\<user>\AppData\Local\phosphor-ci\python312\Lib\site-packages\paramiko\transport.py", line 2043, in run |     self._check_banner() |   File "C:\Users\<user>\AppData\Local\phosphor-ci\python312\Lib\site-packages\paramiko\transport.py", line 2231, in _check_banner |     raise SSHException( | paramiko.ssh_exception.SSHException: Error reading SSH protocol banner[WinError 10054] An existing connection was forcibly closed by the remote host | Socket exception: An existing connection was forcibly closed by the remote host (10054) | Socket exception: An existing connection was forcibly closed by the remote host (10054); test sshd (fakesshd-win) listening on 127.0.0.1:64082; app ssh hops: [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=true enters_writte | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=true enters_writte | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=true enters_writte | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=true enters_writte | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=true enters_writte | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=true enters_writte | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794238954822.269 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=true still_pty_owned=false t=1794238954822.331 | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794238955146.062 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=true still_pty_owned=false t=1794238955146.111'>ssh_connect_typing (gap 0.1 s): T58_j8mrtq never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 07:42:29 auth publickey user=Winters key=ssh-ed25519 4b7880db9e519b5a90fce69fa10073ca -&gt; ok | 07:42:29 auth publickey user=Winters key=ssh-ed25519 4b7880db9e519b5a90fce69fa10073ca -&gt; ok | 07:42:29 session shell None pty | 07:42:29 conpty shell pid 7388 | 07:42:30 conpty first output after 0.66 s: 68 bytes | 07:42:32 conpty output ended: 202 bytes sent to the client in total | 07:42:34 client input ended: 104 bytes in 93 chunks, 104 written to the pseudo console | 07:42:34 connection closed: authenticated=False channels=1; fakesshd.stderr: Traceback (most recent call last): |   File "C:\Users\<user>\AppData\Local\phosphor-ci\python312\Lib\site-packages\paramiko\transport.py", line 2043, in run |     self._check_banner() |   File "C:\Users\<user>\AppData\Local\phosphor-ci\python312\Lib\site-packages\paramiko\transport.py", line 2231, in _check_banner |     raise SSHException( | paramiko.ssh_exception.SSHException: Error reading SSH protocol banner[WinError 10054] An existing connection was forcibly closed by the remote host | Socket exception: An existing connection was forcibly closed by the remote host (10054) | Socket exception: An existing connection was forcibly closed by the remote host (10054); test sshd (fakesshd-win) listening on 127.0.0.1:64082; app ssh hops: [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=true enters_writte | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=true enters_writte | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=true enters_writte | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=true enters_writte | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=true enters_writte | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=true enters_writte | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794238954822.269 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=true still_pty_owned=false t=1794238954822.331 | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794238955146.062 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=true still_pty_owned=false t=1794238955146.111
+remote shell received 3/4 typed-ahead commands exactly (missing 1)
+remote rec.log lacks the exact typed command for some trials
+ssh_connect_typing gap 0.0 s trial 1: #1292: no ssh hold was seen and the remote shell logged nothing for the line; held 0 key(s)/0 byte(s), hand-over none, finish none; the app saw every key of the line; remote got None
+ssh_connect_typing gap 0.0 s trial 3: #1292: no ssh hold was seen and the remote shell logged nothing for the line; held 0 key(s)/0 byte(s), hand-over none, finish none; the app saw every key of the line; remote got None
+ssh_connect_typing gap 0.1 s trial 1: #1292: no ssh hold was seen and the remote shell logged nothing for the line; held 0 key(s)/0 byte(s), hand-over none, finish none; the app saw every key of the line; remote got None
+ssh_connect_typing loss: 1 of 4 typed-ahead commands lost (observed 25.0 %); 95 % upper confidence bound 75.1 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials
+ssh trial verdicts: #1292=3, exact=1</failure>
+</testcase>
+<testcase classname="agent" name="ssh_enter_then_immediate_command" time="14.90">
+</testcase>
+<testcase classname="agent" name="ssh_nested_typeahead" time="21.30">
+</testcase>
+<testcase classname="agent" name="agent_stream_cancel" time="0.00">
+<skipped message="not run in the PowerShell pane: uses rec.log to prove nothing reached the shell: runs in the Git Bash pane (needs the CI model)"/>
+</testcase>
+<testcase classname="agent" name="agent_input_exact" time="0.00">
+<skipped message="not run in the PowerShell pane: reads the agent input from the app log and uses rec.log to prove nothing reached the shell: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent" name="routing_table" time="0.00">
+<skipped message="not run in the PowerShell pane: asserts what the shell received from rec.log: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent" name="agent_mode_switch" time="0.00">
+<skipped message="not run in the PowerShell pane: asserts the exact shell line from rec.log after each view switch: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent@gitbash" name="mode_proof" time="0.20">
+</testcase>
+<testcase classname="agent@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent@gitbash" name="fast_typing" time="19.10">
+</testcase>
+<testcase classname="agent@gitbash" name="paste_instant_enter" time="8.90">
+</testcase>
+<testcase classname="agent@gitbash" name="tab_enter" time="16.60">
+</testcase>
+<testcase classname="agent@gitbash" name="ctrl_c_d" time="84.00">
+</testcase>
+<testcase classname="agent@gitbash" name="ssh_connect_typing" time="37.50">
+</testcase>
+<testcase classname="agent@gitbash" name="ssh_enter_then_immediate_command" time="10.00">
+</testcase>
+<testcase classname="agent@gitbash" name="ssh_nested_typeahead" time="7.60">
+</testcase>
+<testcase classname="agent@gitbash" name="agent_stream_cancel" time="18.70">
+</testcase>
+<testcase classname="agent@gitbash" name="agent_input_exact" time="5.80">
+</testcase>
+<testcase classname="agent@gitbash" name="routing_table" time="58.20">
+</testcase>
+<testcase classname="agent@gitbash" name="agent_mode_switch" time="9.50">
+</testcase>
+<testcase classname="-" name="restore" time="0.00">
+</testcase>
+</testsuite>

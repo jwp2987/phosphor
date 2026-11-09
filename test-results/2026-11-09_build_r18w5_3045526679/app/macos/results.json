@@ -1,0 +1,4408 @@
+{
+ "meta": {
+  "platform": "macos",
+  "backend": "mac",
+  "app_display": "macos",
+  "seed": "1",
+  "commit": "2ac9f757",
+  "sha": "2ac9f757a52596968ac1d0c6569a360037bd562b",
+  "owner_settings": "sha256 a0613b641a27",
+  "tier": "smoke",
+  "scale": "1"
+ },
+ "generated": "2026-11-09T09:52:10-0600",
+ "summary": {
+  "pass": 32,
+  "fail": 2,
+  "skip": 0,
+  "noref": 4
+ },
+ "cases": [
+  {
+   "name": "mode_proof",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 3.4,
+   "evidence": [
+    "mode_proof: log_view_mode=terminal ocr_agent_markers=False ocr_terminal_hint=True queue_destination=table"
+   ],
+   "tainted": false,
+   "wall": [
+    1794235939.836,
+    1794235943.236
+   ],
+   "detail": [
+    "injector accounting: injector sent 1 keys (0 Enter); app key trace not available, so nothing to compare"
+   ],
+   "metrics": {
+    "log_view_mode": "terminal",
+    "queue_destination": "table",
+    "ocr_agent_markers": false,
+    "ocr_terminal_hint": true,
+    "injector": {
+     "sent": 1,
+     "enters_sent": 0,
+     "seen": null,
+     "lost": null,
+     "extra": null,
+     "enters_seen": null,
+     "errs": 0,
+     "pastes": 0
+    },
+    "enter_taint": {
+     "taps": 0,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_mode_proof.png"
+   ]
+  },
+  {
+   "name": "cadence",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 7.7,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794235943.315,
+    1794235951.004
+   ],
+   "detail": [
+    "injector accounting: WARN loss case: injector sent 179; app saw 175; lost-before-app 4 (Enter: sent 1, app saw 1)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "gap_ms": {
+     "n": 59,
+     "p50": 17.91,
+     "p95": 21.36,
+     "max": 23.29
+    },
+    "injector": {
+     "sent": 179,
+     "enters_sent": 1,
+     "seen": 175,
+     "lost": 4,
+     "extra": 0,
+     "enters_seen": 1,
+     "errs": 0,
+     "pastes": 0
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 1
+    },
+    "enter_taint": {
+     "taps": 1,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_cadence.png"
+   ]
+  },
+  {
+   "name": "key_loss_control",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 54.1,
+   "evidence": [
+    "enter_route: 13 Enter(s) reached the input editor: Shell=13 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794235951.083,
+    1794236005.223
+   ],
+   "detail": [
+    "injector mode: None (persistent = one session-long virtual keyboard, so 'unprimed' measures Phosphor itself; percall = a keyboard per wtype call, the #1414 artifact)",
+    "phosphor / perline: first char lost on 0/12 lines, other bad 0, missing 0",
+    "reference / perline: first char lost on 0/12 lines, other bad 0, missing 0",
+    "injector accounting: WARN loss case: injector sent 532; app saw 528; lost-before-app 4 (Enter: sent 13, app saw 13)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 13 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "key_loss": {
+     "variants": [
+      {
+       "target": "phosphor",
+       "inject": "perline",
+       "n": 12,
+       "lost_first": 0,
+       "other_bad": 0,
+       "missing": 0
+      },
+      {
+       "target": "reference",
+       "inject": "perline",
+       "n": 12,
+       "lost_first": 0,
+       "other_bad": 0,
+       "missing": 0
+      }
+     ],
+     "reference": "Terminal.app (.command via open)",
+     "injector_mode": null
+    },
+    "injector": {
+     "sent": 532,
+     "enters_sent": 13,
+     "seen": 528,
+     "lost": 4,
+     "extra": 0,
+     "enters_seen": 13,
+     "errs": 0,
+     "pastes": 0
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 13
+    },
+    "enter_taint": {
+     "taps": 26,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 13
+    }
+   },
+   "shots": [
+    "shots/terminal_key_loss_control.png"
+   ]
+  },
+  {
+   "name": "enter_loss_control",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 89.8,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794236005.302,
+    1794236095.107
+   ],
+   "detail": [
+    "reference Terminal.app (.command via open) gap 0.00s: 0/30 lines missing (merged/lost Enter), 0 lines not received exactly, injector posted 30 Enters",
+    "reference Terminal.app (.command via open) gap 0.25s: 0/30 lines missing (merged/lost Enter), 0 lines not received exactly, injector posted 30 Enters",
+    "injector accounting: WARN loss case: injector sent 2; app saw 0; lost-before-app 2 (Enter: sent 0, app saw 0)"
+   ],
+   "metrics": {
+    "enter_control": {
+     "reference": "Terminal.app (.command via open)",
+     "runs": {
+      "0.0": {
+       "ref": "Terminal.app (.command via open)",
+       "n": 30,
+       "bad": 0,
+       "posted": 30,
+       "lines": 30,
+       "exact_bad": 0
+      },
+      "0.25": {
+       "ref": "Terminal.app (.command via open)",
+       "n": 30,
+       "bad": 0,
+       "posted": 30,
+       "lines": 30,
+       "exact_bad": 0
+      }
+     }
+    },
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "seen": 0,
+     "lost": 2,
+     "extra": 0,
+     "enters_seen": 0,
+     "errs": 0,
+     "pastes": 0
+    },
+    "enter_taint": {
+     "taps": 61,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 61
+    }
+   },
+   "shots": [
+    "shots/terminal_enter_loss_control.png"
+   ]
+  },
+  {
+   "name": "fast_typing",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 68.2,
+   "evidence": [
+    "enter_route: 60 Enter(s) reached the input editor: Shell=60 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,...]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794236095.185,
+    1794236163.355
+   ],
+   "detail": [
+    "injector accounting: WARN loss case: injector sent 2057; app saw 2055; lost-before-app 2 (Enter: sent 60, app saw 60)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 60 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2057,
+     "enters_sent": 60,
+     "seen": 2055,
+     "lost": 2,
+     "extra": 0,
+     "enters_seen": 60,
+     "errs": 0,
+     "pastes": 0
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 60
+    },
+    "enter_taint": {
+     "taps": 60,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_fast_typing.png"
+   ]
+  },
+  {
+   "name": "paste_instant_enter",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 7.9,
+   "evidence": [
+    "enter_route: 7 Enter(s) reached the input editor: Shell=7 [Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794236163.433,
+    1794236171.337
+   ],
+   "detail": [
+    "injector accounting: injector sent 14; app saw 6; lost-before-app 8 (Enter: sent 0, app saw 6)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 6 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 14,
+     "enters_sent": 0,
+     "seen": 6,
+     "lost": 8,
+     "extra": 0,
+     "enters_seen": 6,
+     "errs": 0,
+     "pastes": 0
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 6
+    },
+    "enter_taint": {
+     "taps": 6,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_paste_instant_enter.png"
+   ]
+  },
+  {
+   "name": "tab_enter",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 27.2,
+   "evidence": [
+    "enter_route: 12 Enter(s) reached the input editor: Shell=12 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794236171.415,
+    1794236198.663
+   ],
+   "detail": [
+    "injector accounting: injector sent 482; app saw 468; lost-before-app 14 (Enter: sent 0, app saw 12)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "completion_give_ups": 0,
+    "injector": {
+     "sent": 482,
+     "enters_sent": 0,
+     "seen": 468,
+     "lost": 14,
+     "extra": 0,
+     "enters_seen": 12,
+     "errs": 0,
+     "pastes": 0
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 12
+    },
+    "enter_taint": {
+     "taps": 12,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_tab_enter.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_d",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 597.1,
+   "evidence": [
+    "enter_route: 77 Enter(s) reached the input editor: Shell=77 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,...]",
+    "host load after the case: loadavg1=13.57 cpus=8"
+   ],
+   "tainted": false,
+   "wall": [
+    1794236198.741,
+    1794236795.802
+   ],
+   "detail": [
+    "REGRESSION Ctrl-C under flood: median 289.67 vs baseline build +22.56 ms (+8.4%)",
+    "Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 197.97 ms includes the input-tool spawn (harness floor 144.0527499653399 ms)",
+    "measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 12 blocks",
+    "Ctrl-C under flood, app side (#1606): ctrl_event_age p50 9.01 max 24.29 (n=51); key_to_write p50 0.24 max 0.33 (n=39); drawable_wait p50 15.72 max 108.35 (n=6147)",
+    "Ctrl-C under flood budget 45 ms: ACCEPTED_FOR_RELEASE v0.1.17 (#1606); the owner budget is 20 ms",
+    "KNOWN: Ctrl-C under flood: Phosphor overhead 102.65 +/- 9.09 ms (SE) over Terminal.app (.command via open) exceeds the 45 ms budget [ACCEPTED_FOR_RELEASE #1653 v0.1.17: owner 2026-11-04: Ctrl-C under flood over 45 ms accepted for this release (#1653 / #1606)]",
+    "Ctrl-C under flood: Ctrl-C while `yes` floods the terminal; the plain-sleep ctrl_c measurement is the control; reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session)",
+    "injector accounting: injector sent 9081; app saw 8989; lost-before-app 92 (Enter: sent 79, app saw 79)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 77 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "ctrl_c_ms": {
+     "n": 30,
+     "p50": 197.97,
+     "p95": 206.28,
+     "max": 216.13
+    },
+    "ctrl_c_app_segments": {
+     "n": 30,
+     "keydown->ctrl_c_keydown": {
+      "n": 0,
+      "p50": null,
+      "p95": null,
+      "max": null
+     },
+     "ctrl_c_keydown->ctrl_c_to_event_loop": {
+      "n": 30,
+      "p50": 0.41,
+      "p95": 0.54,
+      "max": 0.57
+     },
+     "ctrl_c_to_event_loop->ctrl_c_received": {
+      "n": 30,
+      "p50": 0.04,
+      "p95": 0.62,
+      "max": 1.07
+     },
+     "ctrl_c_received->ctrl_c_pty_write": {
+      "n": 30,
+      "p50": 0.07,
+      "p95": 0.12,
+      "max": 0.18
+     },
+     "keydown_to_write": {
+      "n": 0,
+      "p50": null,
+      "p95": null,
+      "max": null
+     }
+    },
+    "harness_floor_ms": 144.053,
+    "reference_ctrl_c_ms": {
+     "n": 30,
+     "p50": 206.74,
+     "p95": 217.47,
+     "max": 228.73
+    },
+    "reference": "Terminal.app (.command via open)",
+    "lat": {
+     "ctrl_c": {
+      "measurement_mode": "sequential",
+      "phosphor": {
+       "n": 30,
+       "p50": 197.97,
+       "p95": 206.28,
+       "max": 216.13
+      },
+      "reference": {
+       "n": 30,
+       "p50": 206.74,
+       "p95": 217.47,
+       "max": 228.73
+      },
+      "reference_name": "Terminal.app (.command via open)",
+      "budget_ms": 20.0,
+      "budget_kind": "overhead",
+      "floor_ms": 144.0527499653399,
+      "notes": [
+       "same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 197.97 ms includes the input-tool spawn (harness floor 144.0527499653399 ms)"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 30,
+        "se_median_ms": 0.46
+       },
+       "reference": {
+        "n": 30,
+        "se_median_ms": 0.66
+       }
+      },
+      "overhead_ms": -8.77,
+      "overhead_se_ms": 0.89,
+      "pane_shell": null,
+      "reference_shell": null,
+      "drift_ms": {
+       "phosphor": -0.16,
+       "reference": -0.17
+      },
+      "budget_verdict": "pass",
+      "prev": null,
+      "baseline": {
+       "status": "ok",
+       "p50": 211.52,
+       "p95": 223.47,
+       "delta_ms": -13.55,
+       "delta_pct": -6.4,
+       "verdict": "pass"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "pass",
+      "verdict": "pass"
+     },
+     "ctrl_c_flood": {
+      "measurement_mode": "interleaved",
+      "phosphor": {
+       "n": 30,
+       "p50": 289.67,
+       "p95": 314.22,
+       "max": 326.34
+      },
+      "reference": {
+       "n": 30,
+       "p50": 187.02,
+       "p95": 277.7,
+       "max": 299.08
+      },
+      "reference_name": "Terminal.app (.command via open)",
+      "budget_ms": 45.0,
+      "budget_kind": "overhead",
+      "floor_ms": 144.0527499653399,
+      "notes": [
+       "Ctrl-C while `yes` floods the terminal; the plain-sleep ctrl_c measurement is the control; reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session)"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 30,
+        "se_median_ms": 7.94
+       },
+       "reference": {
+        "n": 30,
+        "se_median_ms": 4.24
+       }
+      },
+      "overhead_ms": 102.65,
+      "overhead_se_ms": 9.09,
+      "pane_shell": "/bin/zsh",
+      "reference_shell": "/bin/zsh",
+      "drift_ms": {
+       "phosphor": 11.28,
+       "reference": -9.7
+      },
+      "budget_verdict": "fail",
+      "prev": null,
+      "baseline": {
+       "status": "ok",
+       "p50": 267.11,
+       "p95": 294.23,
+       "delta_ms": 22.56,
+       "delta_pct": 8.4,
+       "verdict": "fail"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "fail",
+      "verdict": "fail"
+     }
+    },
+    "measurement_mode": "interleaved",
+    "interleave_block": 5,
+    "block_medians_ms": [
+     [
+      "phosphor",
+      283.72
+     ],
+     [
+      "reference",
+      200.81
+     ],
+     [
+      "phosphor",
+      297.08
+     ],
+     [
+      "reference",
+      198.15
+     ],
+     [
+      "phosphor",
+      273.17
+     ],
+     [
+      "reference",
+      184.85
+     ],
+     [
+      "phosphor",
+      295.0
+     ],
+     [
+      "reference",
+      183.12
+     ],
+     [
+      "phosphor",
+      276.03
+     ],
+     [
+      "reference",
+      191.49
+     ],
+     [
+      "phosphor",
+      309.34
+     ],
+     [
+      "reference",
+      178.3
+     ]
+    ],
+    "ctrl_c_flood_ms": {
+     "n": 30,
+     "p50": 289.67,
+     "p95": 314.22,
+     "max": 326.34
+    },
+    "ctrl_c_flood_app_split": {
+     "ctrl_event_age_ms": {
+      "n": 51,
+      "p50": 9.01,
+      "p95": 24.2,
+      "max": 24.29
+     },
+     "key_to_write_ms": {
+      "n": 39,
+      "p50": 0.24,
+      "p95": 0.29,
+      "max": 0.33
+     },
+     "drawable_wait_ms": {
+      "n": 6147,
+      "p50": 15.72,
+      "p95": 23.35,
+      "max": 108.35
+     }
+    },
+    "reference_ctrl_c_flood_ms": {
+     "n": 30,
+     "p50": 187.02,
+     "p95": 277.7,
+     "max": 299.08
+    },
+    "ctrl_c_line_integrity": {
+     "phosphor": {
+      "n": 33,
+      "got": 33,
+      "bad": 0,
+      "examples": []
+     },
+     "reference": {
+      "n": 33,
+      "got": 33,
+      "bad": 0,
+      "examples": []
+     }
+    },
+    "injector": {
+     "sent": 9081,
+     "enters_sent": 79,
+     "seen": 8989,
+     "lost": 92,
+     "extra": 0,
+     "enters_seen": 79,
+     "errs": 0,
+     "pastes": 0
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 77
+    },
+    "enter_taint": {
+     "taps": 153,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 74
+    },
+    "host_load": "loadavg1=13.57 cpus=8"
+   },
+   "shots": [
+    "shots/terminal_ctrl_c_d_FAIL.png"
+   ]
+  },
+  {
+   "name": "ssh_connect_typing",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 37.7,
+   "evidence": [
+    "enter_route: 48 Enter(s) reached the input editor: Shell=48 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,...]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794236795.879,
+    1794236833.608
+   ],
+   "detail": [
+    "ssh_connect_typing loss: 0 of 12 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 22.1 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+    "ssh trial verdicts: exact=12",
+    "injector accounting: WARN loss case: injector sent 976; app saw 972; lost-before-app 4 (Enter: sent 48, app saw 48)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 48 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "trials": 12,
+    "loss": {
+     "lost": 0,
+     "n": 12,
+     "rate": 0.0,
+     "upper_bound": 0.2209,
+     "conf": 0.95,
+     "text": "0 of 12 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 22.1 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials"
+    },
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 8,
+      "held_bytes": 8,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        8
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 6,
+      "held_bytes": 6,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        6
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 7,
+      "held_bytes": 7,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        7
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "injector": {
+     "sent": 976,
+     "enters_sent": 48,
+     "seen": 972,
+     "lost": 4,
+     "extra": 0,
+     "enters_seen": 48,
+     "errs": 0,
+     "pastes": 0
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 48
+    },
+    "enter_taint": {
+     "taps": 48,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_ssh_connect_typing.png"
+   ]
+  },
+  {
+   "name": "ssh_enter_then_immediate_command",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 10.5,
+   "evidence": [
+    "enter_route: 12 Enter(s) reached the input editor: Shell=12 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": true,
+   "wall": [
+    1794236834.43,
+    1794236844.928
+   ],
+   "detail": [
+    "ssh trial verdicts: exact=3",
+    "injector accounting: injector sent 247; app saw 263; lost-before-app 0 (Enter: sent 12, app saw 13); app logged 16 more than were injected (keys from an earlier case or another source)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)",
+    "TAINTED (not a clean app signal): 1 of 13 Return(s) macOS targeted at Phosphor have no app_send_event in the case's app log: 1 LOST (the log has neighbouring Returns within 3 s, this one is missing: delivery loss) and 0 UNCOVERED (no app_send_event near it at all: app-log gap or stall, cause NOT established; r18e9 saw 437 of these where the saved log simply ended). Each is in logs/enter_taint.jsonl; any Enter-dependent failure of this case is suspect."
+   ],
+   "metrics": {
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 8,
+      "held_bytes": 8,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        8
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 7,
+      "held_bytes": 7,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        7
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 9,
+      "held_bytes": 9,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        9
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "injector": {
+     "sent": 247,
+     "enters_sent": 12,
+     "seen": 263,
+     "lost": 0,
+     "extra": 16,
+     "enters_seen": 13,
+     "errs": 0,
+     "pastes": 0
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 12
+    },
+    "enter_taint": {
+     "taps": 13,
+     "lost": 1,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_ssh_enter_then_immediate_command.png"
+   ]
+  },
+  {
+   "name": "ssh_nested_typeahead",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 7.8,
+   "evidence": [
+    "enter_route: 4 Enter(s) reached the input editor: Shell=4 [Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": true,
+   "wall": [
+    1794236845.796,
+    1794236853.631
+   ],
+   "detail": [
+    "ssh trial verdicts: exact=1",
+    "injector accounting: injector sent 137; app saw 149; lost-before-app 0 (Enter: sent 7, app saw 8); app logged 12 more than were injected (keys from an earlier case or another source)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)",
+    "TAINTED (not a clean app signal): 1 of 8 Return(s) macOS targeted at Phosphor have no app_send_event in the case's app log: 1 LOST (the log has neighbouring Returns within 3 s, this one is missing: delivery loss) and 0 UNCOVERED (no app_send_event near it at all: app-log gap or stall, cause NOT established; r18e9 saw 437 of these where the saved log simply ended). Each is in logs/enter_taint.jsonl; any Enter-dependent failure of this case is suspect."
+   ],
+   "metrics": {
+    "verdict_give_up_retries": 0,
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 8,
+      "held_bytes": 8,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        9
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "injector": {
+     "sent": 137,
+     "enters_sent": 7,
+     "seen": 149,
+     "lost": 0,
+     "extra": 12,
+     "enters_seen": 8,
+     "errs": 0,
+     "pastes": 0
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 4
+    },
+    "enter_taint": {
+     "taps": 8,
+     "lost": 1,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_ssh_nested_typeahead.png"
+   ]
+  },
+  {
+   "name": "latency_enter",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 513.1,
+   "evidence": [
+    "enter_route: 111 Enter(s) reached the input editor: Shell=111 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,...]",
+    "host load after the case: loadavg1=4.17 cpus=8"
+   ],
+   "tainted": true,
+   "wall": [
+    1794236854.459,
+    1794237367.584
+   ],
+   "detail": [
+    "measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 24 blocks",
+    "app share of Enter->start: enter_begin -> pty_write median 0.79 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side",
+    "shell side: pty_write -> first pty_read median 1.30 ms (n=75)",
+    "M3: Enter -> start with zle_bracketed_paste unset 91.7 ms vs default 98.4 ms (-6.7 ms; 36 app Enters): what zle's bracketed-paste mode costs as a whole (the mode switches around each prompt and, for a wrapped line, the paste widget; ~0 means the mode is not the gap)",
+    "Enter split (Phosphor - reference, medians ms, #1606): t0_to_inj +4.80, inj_to_post +0.14, t0_to_post +5.73, post_to_lf +18.98, lf_to_px +1.03, px_to_stamp -0.02, post_to_stamp +19.94, post_to_px +19.98, t0_to_lf +26.33, lf_to_stamp +1.02; Phosphor app: event_age 0.91, event_to_enter 0.78, enter_to_write 0.79, submit_bookkeeping 0.02, effect_flush 0.21, pty_lock_wait 0.00",
+    "OS split (#1606, medians ms on the OS event clock): phosphor  75, n_matc 75, post_to_evts 66.32, evts_to_tap 0.21, evts_to_app 0.91, evts_to_lf 3.99; reference  75, n_matc 75, post_to_evts 47.21, evts_to_tap 0.34, evts_to_lf 5.07; delta post_to_evts 19.11, evts_to_tap -0.13, evts_to_lf -1.08",
+    "REPORT-ONLY: Enter to command start: Phosphor overhead 20.73 +/- 1.88 ms (SE) over Terminal.app (.command via open) vs the 2 ms budget, NOT judged (macOS-bound; #1606 closed by owner 2026-11-05); the app's own share and the OS split are in the notes/metrics",
+    "WARN Enter to command start: median 98.39 vs baseline build +2.30 ms (+2.4%)",
+    "Enter to command start: reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines",
+    "injector accounting: injector sent 9529; app saw 9514; lost-before-app 15 (Enter: sent 2, app saw 111)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 110 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)",
+    "TAINTED (not a clean app signal): 1 of 187 Return(s) macOS targeted at Phosphor have no app_send_event in the case's app log: 0 LOST (the log has neighbouring Returns within 3 s, this one is missing: delivery loss) and 1 UNCOVERED (no app_send_event near it at all: app-log gap or stall, cause NOT established; r18e9 saw 437 of these where the saved log simply ended). Each is in logs/enter_taint.jsonl; any Enter-dependent failure of this case is suspect."
+   ],
+   "metrics": {
+    "pane_shell": "/bin/zsh",
+    "stamp_line": "zmodload zsh/datetime; print -r -- $EPOCHREALTIME ${__pa_px:-0} ${__pa_lf:-0} > lat_%d",
+    "enter_sample_start": "injector_spawn",
+    "host_load": "loadavg1=4.17 cpus=8",
+    "measurement_mode": "interleaved",
+    "interleave_block": 5,
+    "block_medians_ms": [
+     [
+      "phosphor",
+      91.13
+     ],
+     [
+      "reference",
+      77.74
+     ],
+     [
+      "phosphor",
+      95.66
+     ],
+     [
+      "reference",
+      77.58
+     ],
+     [
+      "phosphor",
+      106.12
+     ],
+     [
+      "reference",
+      78.06
+     ],
+     [
+      "phosphor",
+      101.2
+     ],
+     [
+      "reference",
+      77.01
+     ],
+     [
+      "phosphor",
+      98.87
+     ],
+     [
+      "reference",
+      77.64
+     ],
+     [
+      "phosphor",
+      98.04
+     ],
+     [
+      "reference",
+      76.92
+     ],
+     [
+      "phosphor",
+      91.03
+     ],
+     [
+      "reference",
+      76.74
+     ],
+     [
+      "phosphor",
+      95.22
+     ],
+     [
+      "reference",
+      76.96
+     ],
+     [
+      "phosphor",
+      102.87
+     ],
+     [
+      "reference",
+      77.34
+     ],
+     [
+      "phosphor",
+      101.98
+     ],
+     [
+      "reference",
+      77.75
+     ],
+     [
+      "phosphor",
+      96.06
+     ],
+     [
+      "reference",
+      77.96
+     ],
+     [
+      "phosphor",
+      104.59
+     ],
+     [
+      "reference",
+      78.14
+     ]
+    ],
+    "enter_to_start_ms": {
+     "n": 60,
+     "p50": 98.39,
+     "p95": 118.71,
+     "max": 131.55
+    },
+    "app_enter_to_pty_write_ms": 0.79,
+    "app_segments_ms": {
+     "event_age_ms": 0.91,
+     "event_age_n": 75,
+     "event_to_enter_ms": 0.78,
+     "event_to_enter_n": 75,
+     "enter_to_write_ms": 0.79,
+     "enter_to_write_n": 75,
+     "submit_bookkeeping_ms": 0.02,
+     "submit_bookkeeping_n": 75,
+     "effect_flush_ms": 0.21,
+     "effect_flush_n": 75,
+     "write_to_first_read_ms": 1.3,
+     "write_to_first_read_n": 75,
+     "write_to_preexec_ms": 2.86,
+     "write_to_preexec_n": 75,
+     "pty_lock_wait_ms": 0.0,
+     "pty_lock_wait_n": 75,
+     "platform": "macos"
+    },
+    "harness_floor_ms": 144.053,
+    "unset_bracketed_paste_app_enters": 36,
+    "unset_bracketed_paste_enter_to_start_ms": {
+     "n": 30,
+     "p50": 91.7,
+     "p95": 114.88,
+     "max": 117.72
+    },
+    "unset_bracketed_paste_minus_default_ms": -6.69,
+    "reference_enter_to_start_ms": {
+     "n": 60,
+     "p50": 77.66,
+     "p95": 83.76,
+     "max": 87.35
+    },
+    "reference": "Terminal.app (.command via open)",
+    "reference_shell": "/bin/zsh",
+    "enter_split_ms": {
+     "phosphor": {
+      "n": 75,
+      "t0_to_inj_ms": 132.74,
+      "inj_to_post_ms": 24.83,
+      "t0_to_post_ms": 158.54,
+      "post_to_lf_ms": 71.21,
+      "lf_to_px_ms": 1.7,
+      "px_to_stamp_ms": 0.03,
+      "post_to_stamp_ms": 72.98,
+      "post_to_px_ms": 72.96,
+      "t0_to_lf_ms": 230.79,
+      "lf_to_stamp_ms": 1.74
+     },
+     "reference": {
+      "n": 75,
+      "t0_to_inj_ms": 127.94,
+      "inj_to_post_ms": 24.69,
+      "t0_to_post_ms": 152.81,
+      "post_to_lf_ms": 52.23,
+      "lf_to_px_ms": 0.67,
+      "px_to_stamp_ms": 0.05,
+      "post_to_stamp_ms": 53.04,
+      "post_to_px_ms": 52.98,
+      "t0_to_lf_ms": 204.46,
+      "lf_to_stamp_ms": 0.72
+     },
+     "delta": {
+      "t0_to_inj_ms": 4.8,
+      "inj_to_post_ms": 0.14,
+      "t0_to_post_ms": 5.73,
+      "post_to_lf_ms": 18.98,
+      "lf_to_px_ms": 1.03,
+      "px_to_stamp_ms": -0.02,
+      "post_to_stamp_ms": 19.94,
+      "post_to_px_ms": 19.98,
+      "t0_to_lf_ms": 26.33,
+      "lf_to_stamp_ms": 1.02
+     },
+     "phosphor_app": {
+      "event_age_ms": 0.91,
+      "event_to_enter_ms": 0.78,
+      "enter_to_write_ms": 0.79,
+      "submit_bookkeeping_ms": 0.02,
+      "effect_flush_ms": 0.21,
+      "pty_lock_wait_ms": 0.0
+     }
+    },
+    "enter_os_split_ms": {
+     "phosphor": {
+      "n": 75,
+      "n_matched": 75,
+      "post_to_evts_ms": 66.32,
+      "evts_to_tap_ms": 0.21,
+      "evts_to_app_ms": 0.91,
+      "evts_to_lf_ms": 3.99
+     },
+     "reference": {
+      "n": 75,
+      "n_matched": 75,
+      "post_to_evts_ms": 47.21,
+      "evts_to_tap_ms": 0.34,
+      "evts_to_lf_ms": 5.07
+     },
+     "delta": {
+      "post_to_evts_ms": 19.11,
+      "evts_to_tap_ms": -0.13,
+      "evts_to_lf_ms": -1.08
+     }
+    },
+    "lat": {
+     "enter_to_start": {
+      "measurement_mode": "interleaved",
+      "phosphor": {
+       "n": 60,
+       "p50": 98.39,
+       "p95": 118.71,
+       "max": 131.55
+      },
+      "reference": {
+       "n": 60,
+       "p50": 77.66,
+       "p95": 83.76,
+       "max": 87.35
+      },
+      "reference_name": "Terminal.app (.command via open)",
+      "budget_ms": 2.0,
+      "budget_kind": "overhead",
+      "floor_ms": 144.0527499653399,
+      "notes": [
+       "reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 60,
+        "se_median_ms": 1.83
+       },
+       "reference": {
+        "n": 60,
+        "se_median_ms": 0.14
+       }
+      },
+      "overhead_ms": 20.73,
+      "overhead_se_ms": 1.88,
+      "pane_shell": "/bin/zsh",
+      "reference_shell": "/bin/zsh",
+      "drift_ms": {
+       "phosphor": 3.31,
+       "reference": 0.19
+      },
+      "budget_verdict": "fail",
+      "prev": null,
+      "baseline": {
+       "status": "ok",
+       "p50": 96.09,
+       "p95": 110.22,
+       "delta_ms": 2.3,
+       "delta_pct": 2.4,
+       "verdict": "warn"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "warn",
+      "verdict": "fail"
+     }
+    },
+    "injector": {
+     "sent": 9529,
+     "enters_sent": 2,
+     "seen": 9514,
+     "lost": 15,
+     "extra": 0,
+     "enters_seen": 111,
+     "errs": 0,
+     "pastes": 0
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 110
+    },
+    "enter_taint": {
+     "taps": 187,
+     "lost": 0,
+     "uncovered": 1,
+     "elsewhere": 76
+    }
+   },
+   "shots": [
+    "shots/terminal_latency_enter.png"
+   ]
+  },
+  {
+   "name": "latency_key_log",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 29.6,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]",
+    "host load after the case: loadavg1=3.44 cpus=8"
+   ],
+   "tainted": false,
+   "wall": [
+    1794237367.662,
+    1794237397.283
+   ],
+   "detail": [
+    "#1176 key -> pty write median 0.39 ms (p95 1.04, n=60): within the 1 ms target",
+    "NO-REFERENCE: key to frame: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)",
+    "key to frame: Phosphor-side keydown to first frame; no same-method reference exists",
+    "injector accounting: injector sent 85; app saw 79; lost-before-app 6 (Enter: sent 1, app saw 1)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "key_to_frame_ms": {
+     "n": 60,
+     "p50": 6.39,
+     "p95": 9.38,
+     "max": 13.69
+    },
+    "key_to_pty_write_ms": {
+     "n": 60,
+     "p50": 0.39,
+     "p95": 1.04,
+     "max": 12.24
+    },
+    "typing_ui_items": {
+     "over_4ms": 0,
+     "over_16ms": 0,
+     "max_ms": 0.0,
+     "by_kind": {}
+    },
+    "typing_lock_holds": {},
+    "lat": {
+     "key_to_frame": {
+      "measurement_mode": "sequential",
+      "phosphor": {
+       "n": 60,
+       "p50": 6.39,
+       "p95": 9.38,
+       "max": 13.69
+      },
+      "reference": null,
+      "reference_name": null,
+      "budget_ms": 2.0,
+      "budget_kind": "overhead",
+      "floor_ms": null,
+      "notes": [
+       "Phosphor-side keydown to first frame; no same-method reference exists"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 60,
+        "se_median_ms": 0.72
+       }
+      },
+      "overhead_ms": null,
+      "budget_verdict": "no-reference",
+      "prev": null,
+      "baseline": {
+       "status": "ok",
+       "p50": 6.23,
+       "p95": 9.32,
+       "delta_ms": 0.16,
+       "delta_pct": 2.6,
+       "verdict": "pass"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "pass",
+      "verdict": "no-reference"
+     },
+     "ui_work": {
+      "phosphor": {
+       "n": 0,
+       "p50": null,
+       "p95": null,
+       "max": 0.0
+      },
+      "reference": null,
+      "budget_ms": 4,
+      "budget_kind": "ui-item-log",
+      "overhead_ms": null,
+      "prev": null,
+      "baseline": {
+       "status": "n/a"
+      },
+      "budget_verdict": "pass",
+      "verdict": "pass",
+      "notes": [
+       "hop=ui_item logs every main-thread item >= 4 ms: pass = none while typing; warn = frame items (raster-bound on software GL) or a few logic items; fail = more than max(2, 5 %% of the keys) event/action items; >= 16 ms is a dropped frame"
+      ]
+     }
+    },
+    "ui_slow_ops": {
+     "count": 0,
+     "worst_ms": 0,
+     "ops": []
+    },
+    "ui_items_over_4ms": {
+     "logic_count": 0,
+     "logic_max_ms": 0.0,
+     "frame_count": 0,
+     "frame_max_ms": 0.0,
+     "allowed": 3,
+     "source": "none logged (nothing over 4 ms, or a build older than #1191)"
+    },
+    "injector": {
+     "sent": 85,
+     "enters_sent": 1,
+     "seen": 79,
+     "lost": 6,
+     "extra": 0,
+     "enters_seen": 1,
+     "errs": 0,
+     "pastes": 0
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 1
+    },
+    "enter_taint": {
+     "taps": 1,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    },
+    "host_load": "loadavg1=3.44 cpus=8"
+   },
+   "shots": [
+    "shots/terminal_latency_key_log.png"
+   ]
+  },
+  {
+   "name": "latency_paint",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 178.7,
+   "evidence": [
+    "host load after the case: loadavg1=8.34 cpus=8"
+   ],
+   "tainted": false,
+   "wall": [
+    1794237397.361,
+    1794237576.048
+   ],
+   "detail": [
+    "measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 12 blocks",
+    "WARN Key to paint: median 50.67 vs baseline build +6.68 ms (+15.2%); re-measured once: median 34.0 (pass)",
+    "NO-REFERENCE: Key to paint: overhead 4.12 +/- 3.44 ms (SE) vs budget 2 ms is within noise: INCONCLUSIVE/NO-COMPARE, the overhead budget was NOT judged (not a pass)",
+    "Key to paint: kl3 measures post-to-first-changed-pixel at 240 Hz in each terminal's own window; reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session)",
+    "Key to paint: overhead 4.12 +/- 3.44 ms (SE of the median difference) vs budget 2 ms: neither within nor over budget at 2 SE; more samples needed",
+    "injector accounting: injector sent 14; app saw 20; lost-before-app 0 (Enter: sent 0, app saw 0); app logged 6 more than were injected (keys from an earlier case or another source)"
+   ],
+   "metrics": {
+    "measurement_mode": "interleaved",
+    "interleave_block": 5,
+    "block_medians_ms": [
+     [
+      "phosphor",
+      55.14
+     ],
+     [
+      "reference",
+      57.23
+     ],
+     [
+      "phosphor",
+      46.94
+     ],
+     [
+      "reference",
+      37.58
+     ],
+     [
+      "phosphor",
+      50.6
+     ],
+     [
+      "reference",
+      50.85
+     ],
+     [
+      "phosphor",
+      50.44
+     ],
+     [
+      "reference",
+      42.6
+     ],
+     [
+      "phosphor",
+      50.22
+     ],
+     [
+      "reference",
+      49.62
+     ],
+     [
+      "phosphor",
+      50.74
+     ],
+     [
+      "reference",
+      53.23
+     ]
+    ],
+    "key_to_paint_ms": {
+     "n": 30,
+     "p50": 50.67,
+     "p95": 56.26,
+     "max": 56.89
+    },
+    "key_event_age_ms": {
+     "n": 39,
+     "p50": 3.4,
+     "p95": 5.48,
+     "max": 14.3
+    },
+    "drawable_wait_ms": {
+     "n": 13,
+     "p50": 3.14,
+     "p95": 11.23,
+     "max": 11.23
+    },
+    "reference_key_to_paint_ms": {
+     "n": 30,
+     "p50": 46.55,
+     "p95": 84.99,
+     "max": 85.36
+    },
+    "reference": "Terminal.app (.command via open)",
+    "lat": {
+     "key_to_paint": {
+      "measurement_mode": "interleaved",
+      "phosphor": {
+       "n": 30,
+       "p50": 50.67,
+       "p95": 56.26,
+       "max": 56.89
+      },
+      "reference": {
+       "n": 30,
+       "p50": 46.55,
+       "p95": 84.99,
+       "max": 85.36
+      },
+      "reference_name": "Terminal.app (.command via open)",
+      "budget_ms": 2.0,
+      "budget_kind": "overhead",
+      "floor_ms": 144.0527499653399,
+      "notes": [
+       "kl3 measures post-to-first-changed-pixel at 240 Hz in each terminal's own window; reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session)",
+       "overhead 4.12 +/- 3.44 ms (SE of the median difference) vs budget 2 ms: neither within nor over budget at 2 SE; more samples needed"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 30,
+        "se_median_ms": 0.54
+       },
+       "reference": {
+        "n": 30,
+        "se_median_ms": 3.19
+       }
+      },
+      "overhead_ms": 4.12,
+      "overhead_se_ms": 3.44,
+      "pane_shell": null,
+      "reference_shell": null,
+      "resolution_ms": 4.17,
+      "drift_ms": {
+       "phosphor": -0.5,
+       "reference": -4.04
+      },
+      "budget_verdict": "inconclusive",
+      "prev": null,
+      "baseline": {
+       "status": "ok",
+       "p50": 43.99,
+       "p95": 53.71,
+       "delta_ms": 6.68,
+       "delta_pct": 15.2,
+       "verdict": "warn"
+      },
+      "remeasure": {
+       "phosphor": {
+        "n": 30,
+        "p50": 34.0,
+        "p95": 38.44,
+        "max": 40.13
+       },
+       "prev": {
+        "verdict": "none",
+        "delta_ms": null,
+        "delta_pct": null
+       },
+       "baseline": {
+        "verdict": "pass",
+        "delta_ms": -9.99,
+        "delta_pct": -22.7
+       }
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "warn",
+      "verdict": "warn"
+     }
+    },
+    "injector": {
+     "sent": 14,
+     "enters_sent": 0,
+     "seen": 20,
+     "lost": 0,
+     "extra": 6,
+     "enters_seen": 0,
+     "errs": 0,
+     "pastes": 0
+    },
+    "enter_taint": {
+     "taps": 1,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 1
+    },
+    "host_load": "loadavg1=8.34 cpus=8"
+   },
+   "shots": [
+    "shots/terminal_latency_paint.png"
+   ]
+  },
+  {
+   "name": "routing_table",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 77.6,
+   "evidence": [
+    "enter_route: 28 Enter(s) reached the input editor: AI=12 Shell=16 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,AI,AI,AI,AI,AI,AI,AI,AI,AI,AI,Shell,AI,AI,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794237576.127,
+    1794237653.736
+   ],
+   "detail": [
+    "injector accounting: injector sent 644; app saw 575; lost-before-app 69 (Enter: sent 27, app saw 27)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 27 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "settings_nld_in_terminal": true,
+    "settings_ai_auto_detection": true,
+    "routing_rows": [
+     {
+      "line": "ls -la",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "command-shape (#808/#1203)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "git status",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "command-shape (#808/#1203)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "grep foo foo.txt",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "command-shape (#808/#1203)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "echo hello world",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "installed-head (#906/#964)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "pwd",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "installed-head (#906/#964)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "cat foo.txt",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "command-shape (#808/#1203)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "wc -l foo.txt",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "command-shape (#808/#1203)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "uname -a",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "command-shape (#808/#1203)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "ls the",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "installed-head (#906/#964)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "date",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "installed-head (#906/#964)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "print -r -- $EPOCHREALTIME > lat_0",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "installed-head (#906/#964)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "notacmd_x $HOME/x",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "shell-structure-unknown-head (#1560)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "xyz_nocmd > out_nc.txt",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "shell-structure-unknown-head (#1560)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "foo_nocmd --bar | grep x",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "shell-structure-unknown-head (#1560)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "what does this error mean",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "PlainTerminal",
+      "rule": "request-shape (#834/#965)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "how do I undo my last git commit",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "sentence-shape (#1234)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "explain why the build is failing",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "request-shape (#834/#965)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "why is my disk full",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "sentence-shape (#1234)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "can you summarize the changes in this repo",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "request-shape (#834/#965)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "please walk me through the failing test",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "request-shape (#834/#965)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "is five bigger than three",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "no-evidence-in-conversation (#1183)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "can you show me how to use --verbose?",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "model",
+      "verdict_give_up": false
+     },
+     {
+      "line": "explain $PATH to me",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "sentence-shape (#1234)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "find the bug in main.rs",
+      "kind": "ambiguous",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "evidence-in-conversation (#1183)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "make a PR",
+      "kind": "ambiguous",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "no-evidence-in-conversation (#1183)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "cat the error log and tell me what is wrong",
+      "kind": "ambiguous",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "request-shape (#834/#965)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "what is 5 > 3",
+      "kind": "ambiguous",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "evidence-in-conversation (#1183)",
+      "verdict_give_up": false
+     }
+    ],
+    "misroutes": 0,
+    "verdict_give_ups": 0,
+    "injector": {
+     "sent": 644,
+     "enters_sent": 27,
+     "seen": 575,
+     "lost": 69,
+     "extra": 0,
+     "enters_seen": 27,
+     "errs": 0,
+     "pastes": 0
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 27
+    },
+    "enter_taint": {
+     "taps": 27,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_routing_table.png"
+   ]
+  },
+  {
+   "name": "agent_mode_switch",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 15.8,
+   "evidence": [
+    "enter_route: 6 Enter(s) reached the input editor: AI=4 Shell=2 [Shell,AI,AI,Shell,AI,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794237653.812,
+    1794237669.597
+   ],
+   "detail": [
+    "injector accounting: injector sent 222; app saw 204; lost-before-app 18 (Enter: sent 4, app saw 4)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "view_mode_trail": [
+     "agent",
+     "terminal",
+     "agent",
+     "terminal",
+     "agent"
+    ],
+    "injector": {
+     "sent": 222,
+     "enters_sent": 4,
+     "seen": 204,
+     "lost": 18,
+     "extra": 0,
+     "enters_seen": 4,
+     "errs": 0,
+     "pastes": 0
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 4
+    },
+    "enter_taint": {
+     "taps": 6,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_agent_mode_switch.png"
+   ]
+  },
+  {
+   "name": "shell_fish",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 34.9,
+   "evidence": [
+    "enter_route: 2 Enter(s) reached the input editor: AI=1 Shell=1 [AI,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794237669.675,
+    1794237704.586
+   ],
+   "detail": [
+    "injector accounting: injector sent 755; app saw 746; lost-before-app 9 (Enter: sent 21, app saw 25)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 2 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 755,
+     "enters_sent": 21,
+     "seen": 746,
+     "lost": 9,
+     "extra": 0,
+     "enters_seen": 25,
+     "errs": 0,
+     "pastes": 0
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 2
+    },
+    "enter_taint": {
+     "taps": 25,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_shell_fish.png"
+   ]
+  },
+  {
+   "name": "shell_nu",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 44.3,
+   "evidence": [
+    "enter_route: 2 Enter(s) reached the input editor: Shell=2 [Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794237704.665,
+    1794237748.922
+   ],
+   "detail": [
+    "nu app log: 2026-11-09T15:21:40Z [DEBUG] frame 1: updated=[\"Input\", \"ActionButton\", \"ActionButton\", \"Menu\", \"ActionButton\", \"ActionButton\", \"UseAgentToolbar\", \"Terminal\", \"Workspace\", \"PaneView\", \"PaneHeader\", \"W",
+    "injector accounting: injector sent 901; app saw 892; lost-before-app 9 (Enter: sent 23, app saw 27)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 2 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "app_log_nu_bootstrap_lines": 1,
+    "injector": {
+     "sent": 901,
+     "enters_sent": 23,
+     "seen": 892,
+     "lost": 9,
+     "extra": 0,
+     "enters_seen": 27,
+     "errs": 0,
+     "pastes": 0
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 2
+    },
+    "enter_taint": {
+     "taps": 27,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_shell_nu.png"
+   ]
+  },
+  {
+   "name": "md_viewer",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 5.8,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794237748.999,
+    1794237754.811
+   ],
+   "detail": [
+    "no pointer synthesis on this backend: the pointer stays where the last case left it",
+    "injector accounting: injector sent 2; app saw 0; lost-before-app 2 (Enter: sent 0, app saw 0)"
+   ],
+   "metrics": {
+    "md_small_text_visible_s": 1.19,
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "seen": 0,
+     "lost": 2,
+     "extra": 0,
+     "enters_seen": 0,
+     "errs": 0,
+     "pastes": 0
+    },
+    "enter_taint": {
+     "taps": 0,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_md_viewer.png"
+   ]
+  },
+  {
+   "name": "mode_proof",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 2.3,
+   "evidence": [
+    "mode_proof: log_view_mode=agent ocr_agent_markers=True ocr_terminal_hint=False queue_destination=table"
+   ],
+   "tainted": false,
+   "wall": [
+    1794237764.358,
+    1794237766.652
+   ],
+   "detail": [],
+   "metrics": {
+    "log_view_mode": "agent",
+    "queue_destination": "table",
+    "ocr_agent_markers": true,
+    "ocr_terminal_hint": false,
+    "ocr_model_chip_gpt_oss": true,
+    "enter_taint": {
+     "taps": 0,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_mode_proof.png"
+   ]
+  },
+  {
+   "name": "cadence",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 7.5,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794237766.73,
+    1794237774.271
+   ],
+   "detail": [
+    "injector accounting: WARN loss case: injector sent 179; app saw 175; lost-before-app 4 (Enter: sent 1, app saw 1)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "gap_ms": {
+     "n": 59,
+     "p50": 18.28,
+     "p95": 21.16,
+     "max": 33.31
+    },
+    "injector": {
+     "sent": 179,
+     "enters_sent": 1,
+     "seen": 175,
+     "lost": 4,
+     "extra": 0,
+     "enters_seen": 1,
+     "errs": 0,
+     "pastes": 0
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 1
+    },
+    "enter_taint": {
+     "taps": 1,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_cadence.png"
+   ]
+  },
+  {
+   "name": "fast_typing",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 67.2,
+   "evidence": [
+    "enter_route: 60 Enter(s) reached the input editor: Shell=60 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,...]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794237774.355,
+    1794237841.559
+   ],
+   "detail": [
+    "injector accounting: WARN loss case: injector sent 2003; app saw 2001; lost-before-app 2 (Enter: sent 60, app saw 60)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 60 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2003,
+     "enters_sent": 60,
+     "seen": 2001,
+     "lost": 2,
+     "extra": 0,
+     "enters_seen": 60,
+     "errs": 0,
+     "pastes": 0
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 60
+    },
+    "enter_taint": {
+     "taps": 60,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_fast_typing.png"
+   ]
+  },
+  {
+   "name": "paste_instant_enter",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 7.9,
+   "evidence": [
+    "enter_route: 7 Enter(s) reached the input editor: Shell=7 [Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794237841.647,
+    1794237849.536
+   ],
+   "detail": [
+    "injector accounting: injector sent 14; app saw 6; lost-before-app 8 (Enter: sent 0, app saw 6)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 6 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 14,
+     "enters_sent": 0,
+     "seen": 6,
+     "lost": 8,
+     "extra": 0,
+     "enters_seen": 6,
+     "errs": 0,
+     "pastes": 0
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 6
+    },
+    "enter_taint": {
+     "taps": 6,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_paste_instant_enter.png"
+   ]
+  },
+  {
+   "name": "tab_enter",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 26.9,
+   "evidence": [
+    "enter_route: 12 Enter(s) reached the input editor: Shell=12 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794237849.623,
+    1794237876.509
+   ],
+   "detail": [
+    "injector accounting: injector sent 470; app saw 456; lost-before-app 14 (Enter: sent 0, app saw 12)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "completion_give_ups": 0,
+    "injector": {
+     "sent": 470,
+     "enters_sent": 0,
+     "seen": 456,
+     "lost": 14,
+     "extra": 0,
+     "enters_seen": 12,
+     "errs": 0,
+     "pastes": 0
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 12
+    },
+    "enter_taint": {
+     "taps": 12,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_tab_enter.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_d",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 584.3,
+   "evidence": [
+    "enter_route: 78 Enter(s) reached the input editor: AI=1 Shell=77 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,...]",
+    "host load after the case: loadavg1=3.34 cpus=8"
+   ],
+   "tainted": false,
+   "wall": [
+    1794237876.597,
+    1794238460.884
+   ],
+   "detail": [
+    "REGRESSION Ctrl-C under flood: median 287.57 vs baseline build +42.64 ms (+17.4%)",
+    "Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 199.95 ms includes the input-tool spawn (harness floor 141.1236673593521 ms)",
+    "measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 12 blocks",
+    "Ctrl-C under flood, app side (#1606): ctrl_event_age p50 19.45 max 24.17 (n=45); key_to_write p50 0.24 max 0.32 (n=39); drawable_wait p50 15.75 max 48.53 (n=6061)",
+    "Ctrl-C under flood budget 45 ms: ACCEPTED_FOR_RELEASE v0.1.17 (#1606); the owner budget is 20 ms",
+    "KNOWN: Ctrl-C under flood: Phosphor overhead 98.92 +/- 4.94 ms (SE) over Terminal.app (.command via open) exceeds the 45 ms budget [ACCEPTED_FOR_RELEASE #1653 v0.1.17: owner 2026-11-04: Ctrl-C under flood over 45 ms accepted for this release (#1653 / #1606)]",
+    "Ctrl-C under flood: Ctrl-C while `yes` floods the terminal; the plain-sleep ctrl_c measurement is the control; reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session)",
+    "injector accounting: injector sent 9107; app saw 9022; lost-before-app 85 (Enter: sent 80, app saw 80)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 78 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "ctrl_c_ms": {
+     "n": 30,
+     "p50": 199.95,
+     "p95": 207.58,
+     "max": 209.68
+    },
+    "ctrl_c_app_segments": {
+     "n": 30,
+     "keydown->ctrl_c_keydown": {
+      "n": 0,
+      "p50": null,
+      "p95": null,
+      "max": null
+     },
+     "ctrl_c_keydown->ctrl_c_to_event_loop": {
+      "n": 30,
+      "p50": 0.42,
+      "p95": 0.48,
+      "max": 0.49
+     },
+     "ctrl_c_to_event_loop->ctrl_c_received": {
+      "n": 30,
+      "p50": 0.03,
+      "p95": 0.05,
+      "max": 0.08
+     },
+     "ctrl_c_received->ctrl_c_pty_write": {
+      "n": 30,
+      "p50": 0.06,
+      "p95": 0.12,
+      "max": 0.12
+     },
+     "keydown_to_write": {
+      "n": 0,
+      "p50": null,
+      "p95": null,
+      "max": null
+     }
+    },
+    "harness_floor_ms": 141.124,
+    "reference_ctrl_c_ms": {
+     "n": 30,
+     "p50": 210.96,
+     "p95": 244.08,
+     "max": 1890.97
+    },
+    "reference": "Terminal.app (.command via open)",
+    "lat": {
+     "ctrl_c": {
+      "measurement_mode": "sequential",
+      "phosphor": {
+       "n": 30,
+       "p50": 199.95,
+       "p95": 207.58,
+       "max": 209.68
+      },
+      "reference": {
+       "n": 30,
+       "p50": 210.96,
+       "p95": 244.08,
+       "max": 1890.97
+      },
+      "reference_name": "Terminal.app (.command via open)",
+      "budget_ms": 20.0,
+      "budget_kind": "overhead",
+      "floor_ms": 141.1236673593521,
+      "notes": [
+       "same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 199.95 ms includes the input-tool spawn (harness floor 141.1236673593521 ms)"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 30,
+        "se_median_ms": 0.63
+       },
+       "reference": {
+        "n": 30,
+        "se_median_ms": 1.28
+       }
+      },
+      "overhead_ms": -11.01,
+      "overhead_se_ms": 1.52,
+      "pane_shell": null,
+      "reference_shell": null,
+      "drift_ms": {
+       "phosphor": 1.61,
+       "reference": -3.11
+      },
+      "budget_verdict": "pass",
+      "prev": null,
+      "baseline": {
+       "status": "ok",
+       "p50": 212.26,
+       "p95": 224.95,
+       "delta_ms": -12.31,
+       "delta_pct": -5.8,
+       "verdict": "pass"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "pass",
+      "verdict": "pass"
+     },
+     "ctrl_c_flood": {
+      "measurement_mode": "interleaved",
+      "phosphor": {
+       "n": 30,
+       "p50": 287.57,
+       "p95": 328.16,
+       "max": 334.31
+      },
+      "reference": {
+       "n": 30,
+       "p50": 188.65,
+       "p95": 256.82,
+       "max": 264.36
+      },
+      "reference_name": "Terminal.app (.command via open)",
+      "budget_ms": 45.0,
+      "budget_kind": "overhead",
+      "floor_ms": 141.1236673593521,
+      "notes": [
+       "Ctrl-C while `yes` floods the terminal; the plain-sleep ctrl_c measurement is the control; reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session)"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 30,
+        "se_median_ms": 3.29
+       },
+       "reference": {
+        "n": 30,
+        "se_median_ms": 3.83
+       }
+      },
+      "overhead_ms": 98.92,
+      "overhead_se_ms": 4.94,
+      "pane_shell": "/bin/zsh",
+      "reference_shell": "/bin/zsh",
+      "drift_ms": {
+       "phosphor": 6.4,
+       "reference": -4.31
+      },
+      "budget_verdict": "fail",
+      "prev": null,
+      "baseline": {
+       "status": "ok",
+       "p50": 244.93,
+       "p95": 259.76,
+       "delta_ms": 42.64,
+       "delta_pct": 17.4,
+       "verdict": "fail"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "fail",
+      "verdict": "fail"
+     }
+    },
+    "measurement_mode": "interleaved",
+    "interleave_block": 5,
+    "block_medians_ms": [
+     [
+      "phosphor",
+      286.68
+     ],
+     [
+      "reference",
+      189.05
+     ],
+     [
+      "phosphor",
+      280.94
+     ],
+     [
+      "reference",
+      188.26
+     ],
+     [
+      "phosphor",
+      287.68
+     ],
+     [
+      "reference",
+      198.18
+     ],
+     [
+      "phosphor",
+      295.9
+     ],
+     [
+      "reference",
+      198.7
+     ],
+     [
+      "phosphor",
+      287.51
+     ],
+     [
+      "reference",
+      184.74
+     ],
+     [
+      "phosphor",
+      290.19
+     ],
+     [
+      "reference",
+      182.97
+     ]
+    ],
+    "ctrl_c_flood_ms": {
+     "n": 30,
+     "p50": 287.57,
+     "p95": 328.16,
+     "max": 334.31
+    },
+    "ctrl_c_flood_app_split": {
+     "ctrl_event_age_ms": {
+      "n": 45,
+      "p50": 19.45,
+      "p95": 23.98,
+      "max": 24.17
+     },
+     "key_to_write_ms": {
+      "n": 39,
+      "p50": 0.24,
+      "p95": 0.3,
+      "max": 0.32
+     },
+     "drawable_wait_ms": {
+      "n": 6061,
+      "p50": 15.75,
+      "p95": 23.62,
+      "max": 48.53
+     }
+    },
+    "reference_ctrl_c_flood_ms": {
+     "n": 30,
+     "p50": 188.65,
+     "p95": 256.82,
+     "max": 264.36
+    },
+    "ctrl_c_line_integrity": {
+     "phosphor": {
+      "n": 33,
+      "got": 33,
+      "bad": 0,
+      "examples": []
+     },
+     "reference": {
+      "n": 33,
+      "got": 33,
+      "bad": 0,
+      "examples": []
+     }
+    },
+    "injector": {
+     "sent": 9107,
+     "enters_sent": 80,
+     "seen": 9022,
+     "lost": 85,
+     "extra": 0,
+     "enters_seen": 80,
+     "errs": 0,
+     "pastes": 0
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 78
+    },
+    "enter_taint": {
+     "taps": 154,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 74
+    },
+    "host_load": "loadavg1=3.34 cpus=8"
+   },
+   "shots": [
+    "shots/agent_ctrl_c_d_FAIL.png"
+   ]
+  },
+  {
+   "name": "ssh_connect_typing",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 37.2,
+   "evidence": [
+    "enter_route: 48 Enter(s) reached the input editor: AI=9 Shell=39 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,AI,Shell,Shell,Shell,AI,Shell,Shell,Shell,Shell,Shell,Shell,Shell,AI,Shell,Shell,Shell,AI,Shell,Shell,Shell,AI,Shell,Shell,Shell,AI,Shell,Shell,Shell,AI,Shell,Shell,Shell,Shell,...]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794238461.043,
+    1794238498.244
+   ],
+   "detail": [
+    "ssh_connect_typing loss: 0 of 12 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 22.1 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+    "ssh trial verdicts: exact=12",
+    "injector accounting: WARN loss case: injector sent 955; app saw 951; lost-before-app 4 (Enter: sent 48, app saw 48)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 48 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "trials": 12,
+    "loss": {
+     "lost": 0,
+     "n": 12,
+     "rate": 0.0,
+     "upper_bound": 0.2209,
+     "conf": 0.95,
+     "text": "0 of 12 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 22.1 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials"
+    },
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 7,
+      "held_bytes": 7,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        7
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 7,
+      "held_bytes": 7,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        7
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 6,
+      "held_bytes": 6,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        6
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "injector": {
+     "sent": 955,
+     "enters_sent": 48,
+     "seen": 951,
+     "lost": 4,
+     "extra": 0,
+     "enters_seen": 48,
+     "errs": 0,
+     "pastes": 0
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 48
+    },
+    "enter_taint": {
+     "taps": 48,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_ssh_connect_typing.png"
+   ]
+  },
+  {
+   "name": "ssh_enter_then_immediate_command",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 10.4,
+   "evidence": [
+    "enter_route: 12 Enter(s) reached the input editor: AI=1 Shell=11 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,AI]"
+   ],
+   "tainted": true,
+   "wall": [
+    1794238499.161,
+    1794238509.559
+   ],
+   "detail": [
+    "ssh trial verdicts: exact=3",
+    "injector accounting: injector sent 247; app saw 259; lost-before-app 0 (Enter: sent 12, app saw 13); app logged 12 more than were injected (keys from an earlier case or another source)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)",
+    "TAINTED (not a clean app signal): 1 of 13 Return(s) macOS targeted at Phosphor have no app_send_event in the case's app log: 1 LOST (the log has neighbouring Returns within 3 s, this one is missing: delivery loss) and 0 UNCOVERED (no app_send_event near it at all: app-log gap or stall, cause NOT established; r18e9 saw 437 of these where the saved log simply ended). Each is in logs/enter_taint.jsonl; any Enter-dependent failure of this case is suspect."
+   ],
+   "metrics": {
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 7,
+      "held_bytes": 7,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        7
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 8,
+      "held_bytes": 8,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        8
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 8,
+      "held_bytes": 8,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        8
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "injector": {
+     "sent": 247,
+     "enters_sent": 12,
+     "seen": 259,
+     "lost": 0,
+     "extra": 12,
+     "enters_seen": 13,
+     "errs": 0,
+     "pastes": 0
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 12
+    },
+    "enter_taint": {
+     "taps": 13,
+     "lost": 1,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_ssh_enter_then_immediate_command.png"
+   ]
+  },
+  {
+   "name": "ssh_nested_typeahead",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 7.8,
+   "evidence": [
+    "enter_route: 4 Enter(s) reached the input editor: Shell=4 [Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": true,
+   "wall": [
+    1794238510.429,
+    1794238518.263
+   ],
+   "detail": [
+    "ssh trial verdicts: exact=1",
+    "injector accounting: injector sent 137; app saw 151; lost-before-app 0 (Enter: sent 7, app saw 8); app logged 14 more than were injected (keys from an earlier case or another source)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)",
+    "TAINTED (not a clean app signal): 1 of 8 Return(s) macOS targeted at Phosphor have no app_send_event in the case's app log: 1 LOST (the log has neighbouring Returns within 3 s, this one is missing: delivery loss) and 0 UNCOVERED (no app_send_event near it at all: app-log gap or stall, cause NOT established; r18e9 saw 437 of these where the saved log simply ended). Each is in logs/enter_taint.jsonl; any Enter-dependent failure of this case is suspect."
+   ],
+   "metrics": {
+    "verdict_give_up_retries": 0,
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 7,
+      "held_bytes": 7,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        7
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "injector": {
+     "sent": 137,
+     "enters_sent": 7,
+     "seen": 151,
+     "lost": 0,
+     "extra": 14,
+     "enters_seen": 8,
+     "errs": 0,
+     "pastes": 0
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 4
+    },
+    "enter_taint": {
+     "taps": 8,
+     "lost": 1,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_ssh_nested_typeahead.png"
+   ]
+  },
+  {
+   "name": "latency_enter",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 578.6,
+   "evidence": [
+    "enter_route: 138 Enter(s) reached the input editor: Shell=138 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,...]",
+    "host load after the case: loadavg1=3.49 cpus=8"
+   ],
+   "tainted": true,
+   "wall": [
+    1794238519.132,
+    1794239097.766
+   ],
+   "detail": [
+    "measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 24 blocks",
+    "app share of Enter->start: enter_begin -> pty_write median 1.35 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side",
+    "shell side: pty_write -> first pty_read median 1.60 ms (n=75)",
+    "Enter split (Phosphor - reference, medians ms, #1606): t0_to_inj +4.66, inj_to_post +0.19, t0_to_post +5.93, post_to_lf +20.29, lf_to_px +0.96, px_to_stamp -0.03, post_to_stamp +20.85, post_to_px +20.88, t0_to_lf +25.29, lf_to_stamp +0.93; Phosphor app: event_age 0.90, event_to_enter 0.80, enter_to_write 1.35, submit_bookkeeping 0.03, effect_flush 0.82, pty_lock_wait 0.00",
+    "OS split (#1606, medians ms on the OS event clock): phosphor  75, n_matc 75, post_to_evts 65.93, evts_to_tap 0.21, evts_to_app 0.9, evts_to_lf 4.19; reference  75, n_matc 75, post_to_evts 46.6, evts_to_tap 0.34, evts_to_lf 4.66; delta post_to_evts 19.33, evts_to_tap -0.13, evts_to_lf -0.47",
+    "REPORT-ONLY: Enter to command start: Phosphor overhead 25.43 +/- 2.15 ms (SE) over Terminal.app (.command via open) vs the 2 ms budget, NOT judged (macOS-bound; #1606 closed by owner 2026-11-05); the app's own share and the OS split are in the notes/metrics",
+    "WARN Enter to command start: median 102.46 vs baseline build +9.14 ms (+9.8%); re-measured once: median 78.51 (pass)",
+    "Enter to command start: reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines",
+    "injector accounting: injector sent 11952; app saw 11939; lost-before-app 13 (Enter: sent 0, app saw 139)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 138 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)",
+    "TAINTED (not a clean app signal): 1 of 215 Return(s) macOS targeted at Phosphor have no app_send_event in the case's app log: 0 LOST (the log has neighbouring Returns within 3 s, this one is missing: delivery loss) and 1 UNCOVERED (no app_send_event near it at all: app-log gap or stall, cause NOT established; r18e9 saw 437 of these where the saved log simply ended). Each is in logs/enter_taint.jsonl; any Enter-dependent failure of this case is suspect."
+   ],
+   "metrics": {
+    "pane_shell": "/bin/zsh",
+    "stamp_line": "zmodload zsh/datetime; print -r -- $EPOCHREALTIME ${__pa_px:-0} ${__pa_lf:-0} > lat_%d",
+    "enter_sample_start": "injector_spawn",
+    "host_load": "loadavg1=3.49 cpus=8",
+    "measurement_mode": "interleaved",
+    "interleave_block": 5,
+    "block_medians_ms": [
+     [
+      "phosphor",
+      117.55
+     ],
+     [
+      "reference",
+      77.26
+     ],
+     [
+      "phosphor",
+      106.12
+     ],
+     [
+      "reference",
+      78.91
+     ],
+     [
+      "phosphor",
+      98.01
+     ],
+     [
+      "reference",
+      76.79
+     ],
+     [
+      "phosphor",
+      103.61
+     ],
+     [
+      "reference",
+      77.06
+     ],
+     [
+      "phosphor",
+      96.4
+     ],
+     [
+      "reference",
+      76.78
+     ],
+     [
+      "phosphor",
+      102.77
+     ],
+     [
+      "reference",
+      76.89
+     ],
+     [
+      "phosphor",
+      82.84
+     ],
+     [
+      "reference",
+      76.74
+     ],
+     [
+      "phosphor",
+      105.74
+     ],
+     [
+      "reference",
+      76.69
+     ],
+     [
+      "phosphor",
+      106.88
+     ],
+     [
+      "reference",
+      77.53
+     ],
+     [
+      "phosphor",
+      82.7
+     ],
+     [
+      "reference",
+      77.48
+     ],
+     [
+      "phosphor",
+      100.96
+     ],
+     [
+      "reference",
+      77.41
+     ],
+     [
+      "phosphor",
+      106.25
+     ],
+     [
+      "reference",
+      78.36
+     ]
+    ],
+    "enter_to_start_ms": {
+     "n": 60,
+     "p50": 102.46,
+     "p95": 124.26,
+     "max": 128.61
+    },
+    "app_enter_to_pty_write_ms": 1.35,
+    "app_segments_ms": {
+     "event_age_ms": 0.9,
+     "event_age_n": 75,
+     "event_to_enter_ms": 0.8,
+     "event_to_enter_n": 75,
+     "enter_to_write_ms": 1.35,
+     "enter_to_write_n": 75,
+     "submit_bookkeeping_ms": 0.03,
+     "submit_bookkeeping_n": 75,
+     "effect_flush_ms": 0.82,
+     "effect_flush_n": 75,
+     "write_to_first_read_ms": 1.6,
+     "write_to_first_read_n": 75,
+     "write_to_preexec_ms": 2.72,
+     "write_to_preexec_n": 75,
+     "pty_lock_wait_ms": 0.0,
+     "pty_lock_wait_n": 75,
+     "platform": "macos"
+    },
+    "harness_floor_ms": 141.124,
+    "reference_enter_to_start_ms": {
+     "n": 60,
+     "p50": 77.03,
+     "p95": 81.85,
+     "max": 88.1
+    },
+    "reference": "Terminal.app (.command via open)",
+    "reference_shell": "/bin/zsh",
+    "enter_split_ms": {
+     "phosphor": {
+      "n": 75,
+      "t0_to_inj_ms": 132.76,
+      "inj_to_post_ms": 24.97,
+      "t0_to_post_ms": 158.75,
+      "post_to_lf_ms": 71.97,
+      "lf_to_px_ms": 1.67,
+      "px_to_stamp_ms": 0.02,
+      "post_to_stamp_ms": 73.22,
+      "post_to_px_ms": 73.2,
+      "t0_to_lf_ms": 229.64,
+      "lf_to_stamp_ms": 1.7
+     },
+     "reference": {
+      "n": 75,
+      "t0_to_inj_ms": 128.1,
+      "inj_to_post_ms": 24.78,
+      "t0_to_post_ms": 152.82,
+      "post_to_lf_ms": 51.68,
+      "lf_to_px_ms": 0.71,
+      "px_to_stamp_ms": 0.05,
+      "post_to_stamp_ms": 52.37,
+      "post_to_px_ms": 52.32,
+      "t0_to_lf_ms": 204.35,
+      "lf_to_stamp_ms": 0.77
+     },
+     "delta": {
+      "t0_to_inj_ms": 4.66,
+      "inj_to_post_ms": 0.19,
+      "t0_to_post_ms": 5.93,
+      "post_to_lf_ms": 20.29,
+      "lf_to_px_ms": 0.96,
+      "px_to_stamp_ms": -0.03,
+      "post_to_stamp_ms": 20.85,
+      "post_to_px_ms": 20.88,
+      "t0_to_lf_ms": 25.29,
+      "lf_to_stamp_ms": 0.93
+     },
+     "phosphor_app": {
+      "event_age_ms": 0.9,
+      "event_to_enter_ms": 0.8,
+      "enter_to_write_ms": 1.35,
+      "submit_bookkeeping_ms": 0.03,
+      "effect_flush_ms": 0.82,
+      "pty_lock_wait_ms": 0.0
+     }
+    },
+    "enter_os_split_ms": {
+     "phosphor": {
+      "n": 75,
+      "n_matched": 75,
+      "post_to_evts_ms": 65.93,
+      "evts_to_tap_ms": 0.21,
+      "evts_to_app_ms": 0.9,
+      "evts_to_lf_ms": 4.19
+     },
+     "reference": {
+      "n": 75,
+      "n_matched": 75,
+      "post_to_evts_ms": 46.6,
+      "evts_to_tap_ms": 0.34,
+      "evts_to_lf_ms": 4.66
+     },
+     "delta": {
+      "post_to_evts_ms": 19.33,
+      "evts_to_tap_ms": -0.13,
+      "evts_to_lf_ms": -0.47
+     }
+    },
+    "lat": {
+     "enter_to_start": {
+      "measurement_mode": "interleaved",
+      "phosphor": {
+       "n": 60,
+       "p50": 102.46,
+       "p95": 124.26,
+       "max": 128.61
+      },
+      "reference": {
+       "n": 60,
+       "p50": 77.03,
+       "p95": 81.85,
+       "max": 88.1
+      },
+      "reference_name": "Terminal.app (.command via open)",
+      "budget_ms": 2.0,
+      "budget_kind": "overhead",
+      "floor_ms": 141.1236673593521,
+      "notes": [
+       "reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 60,
+        "se_median_ms": 2.32
+       },
+       "reference": {
+        "n": 60,
+        "se_median_ms": 0.17
+       }
+      },
+      "overhead_ms": 25.43,
+      "overhead_se_ms": 2.15,
+      "pane_shell": "/bin/zsh",
+      "reference_shell": "/bin/zsh",
+      "drift_ms": {
+       "phosphor": 0.89,
+       "reference": 0.18
+      },
+      "budget_verdict": "fail",
+      "prev": null,
+      "baseline": {
+       "status": "ok",
+       "p50": 93.32,
+       "p95": 109.68,
+       "delta_ms": 9.14,
+       "delta_pct": 9.8,
+       "verdict": "warn"
+      },
+      "remeasure": {
+       "phosphor": {
+        "n": 60,
+        "p50": 78.51,
+        "p95": 84.53,
+        "max": 85.22
+       },
+       "prev": {
+        "verdict": "none",
+        "delta_ms": null,
+        "delta_pct": null
+       },
+       "baseline": {
+        "verdict": "pass",
+        "delta_ms": -14.81,
+        "delta_pct": -15.9
+       }
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "warn",
+      "verdict": "fail"
+     }
+    },
+    "injector": {
+     "sent": 11952,
+     "enters_sent": 0,
+     "seen": 11939,
+     "lost": 13,
+     "extra": 0,
+     "enters_seen": 139,
+     "errs": 0,
+     "pastes": 0
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 138
+    },
+    "enter_taint": {
+     "taps": 215,
+     "lost": 0,
+     "uncovered": 1,
+     "elsewhere": 76
+    }
+   },
+   "shots": [
+    "shots/agent_latency_enter.png"
+   ]
+  },
+  {
+   "name": "latency_key_log",
+   "mode": "agent",
+   "status": "noref",
+   "seconds": 29.9,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]",
+    "host load after the case: loadavg1=3.68 cpus=8"
+   ],
+   "tainted": false,
+   "wall": [
+    1794239097.885,
+    1794239127.761
+   ],
+   "detail": [
+    "#1176 key -> pty write median 0.38 ms (p95 0.76, n=60): within the 1 ms target",
+    "NO-REFERENCE: key to frame: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)",
+    "key to frame: Phosphor-side keydown to first frame; no same-method reference exists",
+    "injector accounting: injector sent 84; app saw 79; lost-before-app 5 (Enter: sent 1, app saw 1)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "key_to_frame_ms": {
+     "n": 60,
+     "p50": 6.0,
+     "p95": 9.29,
+     "max": 9.33
+    },
+    "key_to_pty_write_ms": {
+     "n": 60,
+     "p50": 0.38,
+     "p95": 0.76,
+     "max": 1.37
+    },
+    "typing_ui_items": {
+     "over_4ms": 0,
+     "over_16ms": 0,
+     "max_ms": 0.0,
+     "by_kind": {}
+    },
+    "typing_lock_holds": {},
+    "lat": {
+     "key_to_frame": {
+      "measurement_mode": "sequential",
+      "phosphor": {
+       "n": 60,
+       "p50": 6.0,
+       "p95": 9.29,
+       "max": 9.33
+      },
+      "reference": null,
+      "reference_name": null,
+      "budget_ms": 2.0,
+      "budget_kind": "overhead",
+      "floor_ms": null,
+      "notes": [
+       "Phosphor-side keydown to first frame; no same-method reference exists"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 60,
+        "se_median_ms": 0.66
+       }
+      },
+      "overhead_ms": null,
+      "budget_verdict": "no-reference",
+      "prev": null,
+      "baseline": {
+       "status": "ok",
+       "p50": 6.7,
+       "p95": 9.28,
+       "delta_ms": -0.7,
+       "delta_pct": -10.4,
+       "verdict": "pass"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "pass",
+      "verdict": "no-reference"
+     },
+     "ui_work": {
+      "phosphor": {
+       "n": 0,
+       "p50": null,
+       "p95": null,
+       "max": 0.0
+      },
+      "reference": null,
+      "budget_ms": 4,
+      "budget_kind": "ui-item-log",
+      "overhead_ms": null,
+      "prev": null,
+      "baseline": {
+       "status": "n/a"
+      },
+      "budget_verdict": "pass",
+      "verdict": "pass",
+      "notes": [
+       "hop=ui_item logs every main-thread item >= 4 ms: pass = none while typing; warn = frame items (raster-bound on software GL) or a few logic items; fail = more than max(2, 5 %% of the keys) event/action items; >= 16 ms is a dropped frame"
+      ]
+     }
+    },
+    "ui_slow_ops": {
+     "count": 0,
+     "worst_ms": 0,
+     "ops": []
+    },
+    "ui_items_over_4ms": {
+     "logic_count": 0,
+     "logic_max_ms": 0.0,
+     "frame_count": 0,
+     "frame_max_ms": 0.0,
+     "allowed": 3,
+     "source": "none logged (nothing over 4 ms, or a build older than #1191)"
+    },
+    "injector": {
+     "sent": 84,
+     "enters_sent": 1,
+     "seen": 79,
+     "lost": 5,
+     "extra": 0,
+     "enters_seen": 1,
+     "errs": 0,
+     "pastes": 0
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 1
+    },
+    "enter_taint": {
+     "taps": 1,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    },
+    "host_load": "loadavg1=3.68 cpus=8"
+   },
+   "shots": [
+    "shots/agent_latency_key_log.png"
+   ]
+  },
+  {
+   "name": "latency_paint",
+   "mode": "agent",
+   "status": "noref",
+   "seconds": 171.6,
+   "evidence": [
+    "host load after the case: loadavg1=2.67 cpus=8"
+   ],
+   "tainted": false,
+   "wall": [
+    1794239127.882,
+    1794239299.448
+   ],
+   "detail": [
+    "measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 12 blocks",
+    "WARN Key to paint: median 51.62 vs baseline build +5.15 ms (+11.1%); re-measured once: median 33.45 (pass)",
+    "NO-REFERENCE: Key to paint: overhead -0.81 +/- 8.54 ms (SE) vs budget 2 ms is within noise: INCONCLUSIVE/NO-COMPARE, the overhead budget was NOT judged (not a pass)",
+    "Key to paint: kl3 measures post-to-first-changed-pixel at 240 Hz in each terminal's own window; reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session)",
+    "Key to paint: overhead -0.81 +/- 8.54 ms (SE of the median difference) vs budget 2 ms: neither within nor over budget at 2 SE; more samples needed",
+    "injector accounting: injector sent 14; app saw 20; lost-before-app 0 (Enter: sent 0, app saw 0); app logged 6 more than were injected (keys from an earlier case or another source)"
+   ],
+   "metrics": {
+    "measurement_mode": "interleaved",
+    "interleave_block": 5,
+    "block_medians_ms": [
+     [
+      "phosphor",
+      53.53
+     ],
+     [
+      "reference",
+      57.69
+     ],
+     [
+      "phosphor",
+      54.44
+     ],
+     [
+      "reference",
+      43.59
+     ],
+     [
+      "phosphor",
+      53.28
+     ],
+     [
+      "reference",
+      43.65
+     ],
+     [
+      "phosphor",
+      50.57
+     ],
+     [
+      "reference",
+      50.14
+     ],
+     [
+      "phosphor",
+      50.78
+     ],
+     [
+      "reference",
+      45.83
+     ],
+     [
+      "phosphor",
+      50.31
+     ],
+     [
+      "reference",
+      74.82
+     ]
+    ],
+    "key_to_paint_ms": {
+     "n": 30,
+     "p50": 51.62,
+     "p95": 58.93,
+     "max": 61.06
+    },
+    "key_event_age_ms": {
+     "n": 39,
+     "p50": 3.32,
+     "p95": 5.12,
+     "max": 5.28
+    },
+    "drawable_wait_ms": {
+     "n": 9,
+     "p50": 8.61,
+     "p95": 49.68,
+     "max": 49.68
+    },
+    "reference_key_to_paint_ms": {
+     "n": 30,
+     "p50": 52.43,
+     "p95": 92.61,
+     "max": 100.36
+    },
+    "reference": "Terminal.app (.command via open)",
+    "lat": {
+     "key_to_paint": {
+      "measurement_mode": "interleaved",
+      "phosphor": {
+       "n": 30,
+       "p50": 51.62,
+       "p95": 58.93,
+       "max": 61.06
+      },
+      "reference": {
+       "n": 30,
+       "p50": 52.43,
+       "p95": 92.61,
+       "max": 100.36
+      },
+      "reference_name": "Terminal.app (.command via open)",
+      "budget_ms": 2.0,
+      "budget_kind": "overhead",
+      "floor_ms": 141.1236673593521,
+      "notes": [
+       "kl3 measures post-to-first-changed-pixel at 240 Hz in each terminal's own window; reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session)",
+       "overhead -0.81 +/- 8.54 ms (SE of the median difference) vs budget 2 ms: neither within nor over budget at 2 SE; more samples needed"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 30,
+        "se_median_ms": 0.71
+       },
+       "reference": {
+        "n": 30,
+        "se_median_ms": 9.2
+       }
+      },
+      "overhead_ms": -0.81,
+      "overhead_se_ms": 8.54,
+      "pane_shell": null,
+      "reference_shell": null,
+      "resolution_ms": 4.17,
+      "drift_ms": {
+       "phosphor": -2.97,
+       "reference": 4.6
+      },
+      "budget_verdict": "inconclusive",
+      "prev": null,
+      "baseline": {
+       "status": "ok",
+       "p50": 46.47,
+       "p95": 53.97,
+       "delta_ms": 5.15,
+       "delta_pct": 11.1,
+       "verdict": "warn"
+      },
+      "remeasure": {
+       "phosphor": {
+        "n": 30,
+        "p50": 33.45,
+        "p95": 37.31,
+        "max": 40.42
+       },
+       "prev": {
+        "verdict": "none",
+        "delta_ms": null,
+        "delta_pct": null
+       },
+       "baseline": {
+        "verdict": "pass",
+        "delta_ms": -13.02,
+        "delta_pct": -28.0
+       }
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "warn",
+      "verdict": "warn"
+     }
+    },
+    "injector": {
+     "sent": 14,
+     "enters_sent": 0,
+     "seen": 20,
+     "lost": 0,
+     "extra": 6,
+     "enters_seen": 0,
+     "errs": 0,
+     "pastes": 0
+    },
+    "enter_taint": {
+     "taps": 1,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 1
+    },
+    "host_load": "loadavg1=2.67 cpus=8"
+   },
+   "shots": [
+    "shots/agent_latency_paint.png"
+   ]
+  },
+  {
+   "name": "agent_stream_cancel",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 44.4,
+   "evidence": [
+    "enter_route: 2 Enter(s) reached the input editor: AI=1 Shell=1 [Shell,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794239299.569,
+    1794239344.009
+   ],
+   "detail": [
+    "a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context",
+    "Ctrl-C #1: stream stopped (4 distinct frames in 5), typed text still in the input, app route cancel_conversation",
+    "Ctrl-C #2: stream stopped (5 distinct frames in 5), typed text gone, app route not logged",
+    "injector accounting: injector sent 143; app saw 137; lost-before-app 6 (Enter: sent 2, app saw 2)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 2 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "request_start_s": 2.12,
+    "stream_opened_s": 5.7,
+    "first_visible_change_s": 9.78,
+    "distinct_frames_after_cancel": 5,
+    "ctrl_c_routes": [
+     [
+      "cancel_conversation"
+     ],
+     []
+    ],
+    "injector": {
+     "sent": 143,
+     "enters_sent": 2,
+     "seen": 137,
+     "lost": 6,
+     "extra": 0,
+     "enters_seen": 2,
+     "errs": 0,
+     "pastes": 0
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 2
+    },
+    "enter_taint": {
+     "taps": 2,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_agent_stream_cancel.png"
+   ]
+  },
+  {
+   "name": "agent_input_exact",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 9.3,
+   "evidence": [
+    "enter_route: 3 Enter(s) reached the input editor: AI=3 [AI,AI,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794239344.131,
+    1794239353.466
+   ],
+   "detail": [
+    "injector accounting: injector sent 159; app saw 153; lost-before-app 6 (Enter: sent 2, app saw 2)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 2 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 159,
+     "enters_sent": 2,
+     "seen": 153,
+     "lost": 6,
+     "extra": 0,
+     "enters_seen": 2,
+     "errs": 0,
+     "pastes": 0
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 2
+    },
+    "enter_taint": {
+     "taps": 2,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_agent_input_exact.png"
+   ]
+  },
+  {
+   "name": "routing_table",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 74.7,
+   "evidence": [
+    "enter_route: 28 Enter(s) reached the input editor: AI=16 Shell=12 [Shell,AI,Shell,Shell,AI,Shell,Shell,Shell,Shell,AI,Shell,Shell,Shell,Shell,AI,AI,AI,AI,AI,AI,AI,AI,AI,AI,Shell,AI,AI,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794239353.586,
+    1794239428.299
+   ],
+   "detail": [
+    "injector accounting: injector sent 631; app saw 575; lost-before-app 56 (Enter: sent 27, app saw 27)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 27 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "settings_nld_in_terminal": true,
+    "settings_ai_auto_detection": true,
+    "routing_rows": [
+     {
+      "line": "ls -la",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "command-shape (#808/#1203)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "git status",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "command-shape (#808/#1203)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "grep foo foo.txt",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "command-shape (#808/#1203)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "echo hello world",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "evidence-in-conversation (#1183)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "pwd",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "evidence-in-conversation (#1183)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "cat foo.txt",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "command-shape (#808/#1203)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "wc -l foo.txt",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "command-shape (#808/#1203)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "uname -a",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "command-shape (#808/#1203)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "ls the",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "evidence-in-conversation (#1183)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "date",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "evidence-in-conversation (#1183)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "print -r -- $EPOCHREALTIME > lat_0",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "evidence-in-conversation (#1183)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "notacmd_x $HOME/x",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "shell-structure-unknown-head (#1560)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "xyz_nocmd > out_nc.txt",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "shell-structure-unknown-head (#1560)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "foo_nocmd --bar | grep x",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "shell-structure-unknown-head (#1560)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "what does this error mean",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "request-shape (#834/#965)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "how do I undo my last git commit",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "sentence-shape (#1234)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "explain why the build is failing",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "request-shape (#834/#965)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "why is my disk full",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "sentence-shape (#1234)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "can you summarize the changes in this repo",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "request-shape (#834/#965)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "please walk me through the failing test",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "request-shape (#834/#965)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "is five bigger than three",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "no-evidence-in-conversation (#1183)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "can you show me how to use --verbose?",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "model",
+      "verdict_give_up": false
+     },
+     {
+      "line": "explain $PATH to me",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "sentence-shape (#1234)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "find the bug in main.rs",
+      "kind": "ambiguous",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "evidence-in-conversation (#1183)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "make a PR",
+      "kind": "ambiguous",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "no-evidence-in-conversation (#1183)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "cat the error log and tell me what is wrong",
+      "kind": "ambiguous",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "request-shape (#834/#965)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "what is 5 > 3",
+      "kind": "ambiguous",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "evidence-in-conversation (#1183)",
+      "verdict_give_up": false
+     }
+    ],
+    "misroutes": 0,
+    "verdict_give_ups": 0,
+    "injector": {
+     "sent": 631,
+     "enters_sent": 27,
+     "seen": 575,
+     "lost": 56,
+     "extra": 0,
+     "enters_seen": 27,
+     "errs": 0,
+     "pastes": 0
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 27
+    },
+    "enter_taint": {
+     "taps": 27,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_routing_table.png"
+   ]
+  },
+  {
+   "name": "agent_mode_switch",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 15.5,
+   "evidence": [
+    "enter_route: 6 Enter(s) reached the input editor: AI=4 Shell=2 [Shell,AI,AI,Shell,AI,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794239428.421,
+    1794239443.908
+   ],
+   "detail": [
+    "injector accounting: injector sent 220; app saw 204; lost-before-app 16 (Enter: sent 4, app saw 4)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "view_mode_trail": [
+     "agent",
+     "terminal",
+     "agent",
+     "terminal",
+     "agent"
+    ],
+    "injector": {
+     "sent": 220,
+     "enters_sent": 4,
+     "seen": 204,
+     "lost": 16,
+     "extra": 0,
+     "enters_seen": 4,
+     "errs": 0,
+     "pastes": 0
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 4
+    },
+    "enter_taint": {
+     "taps": 6,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_agent_mode_switch.png"
+   ]
+  },
+  {
+   "name": "shell_fish",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 34.4,
+   "evidence": [
+    "enter_route: 2 Enter(s) reached the input editor: AI=1 Shell=1 [AI,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794239444.03,
+    1794239478.421
+   ],
+   "detail": [
+    "injector accounting: injector sent 755; app saw 746; lost-before-app 9 (Enter: sent 21, app saw 25)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 2 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 755,
+     "enters_sent": 21,
+     "seen": 746,
+     "lost": 9,
+     "extra": 0,
+     "enters_seen": 25,
+     "errs": 0,
+     "pastes": 0
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 2
+    },
+    "enter_taint": {
+     "taps": 25,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_shell_fish.png"
+   ]
+  },
+  {
+   "name": "shell_nu",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 45.6,
+   "evidence": [
+    "enter_route: 2 Enter(s) reached the input editor: Shell=2 [Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794239478.544,
+    1794239524.134
+   ],
+   "detail": [
+    "nu app log: 2026-11-09T15:45:25Z [DEBUG] frame 1: updated=[\"ActionButton\", \"UseAgentToolbar\", \"Menu\", \"RightPanelView\", \"PaneHeader\", \"Workspace\", \"WarpifyFooterView\", \"Input\", \"Terminal\", \"PaneView\"] removed=0 r",
+    "nu app log: 2026-11-09T15:49:16Z [DEBUG] frame 1: updated=[\"RightPanelView\", \"Workspace\", \"Terminal\", \"UseAgentToolbar\", \"WarpifyFooterView\", \"PaneView\", \"ActionButton\", \"ActionButton\", \"ActionButton\", \"ActionBut",
+    "nu app log: 2026-11-09T15:49:16Z [DEBUG] frame 1: updated=[\"PaneHeader\", \"PaneView\", \"Terminal\", \"Menu\", \"UseAgentToolbar\", \"Workspace\", \"WarpifyFooterView\", \"Input\"] removed=0 redraw=true paint_only=true",
+    "nu app log: 2026-11-09T15:51:14Z [DEBUG] frame 1: updated=[\"AIBlock\", \"AIBlock\", \"ActionButton\", \"ActionButton\", \"Input\", \"WarpifyFooterView\", \"AIBlock\", \"ActionButton\", \"ActionButton\", \"ActionButton\", \"AIBlock\",",
+    "injector accounting: injector sent 901; app saw 892; lost-before-app 9 (Enter: sent 23, app saw 27)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 2 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "app_log_nu_bootstrap_lines": 5,
+    "injector": {
+     "sent": 901,
+     "enters_sent": 23,
+     "seen": 892,
+     "lost": 9,
+     "extra": 0,
+     "enters_seen": 27,
+     "errs": 0,
+     "pastes": 0
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 2
+    },
+    "enter_taint": {
+     "taps": 27,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_shell_nu.png"
+   ]
+  },
+  {
+   "name": "md_viewer",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 5.7,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794239524.262,
+    1794239530.001
+   ],
+   "detail": [
+    "no pointer synthesis on this backend: the pointer stays where the last case left it",
+    "injector accounting: injector sent 2; app saw 0; lost-before-app 2 (Enter: sent 0, app saw 0)"
+   ],
+   "metrics": {
+    "md_small_text_visible_s": 1.11,
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "seen": 0,
+     "lost": 2,
+     "extra": 0,
+     "enters_seen": 0,
+     "errs": 0,
+     "pastes": 0
+    },
+    "enter_taint": {
+     "taps": 0,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_md_viewer.png"
+   ]
+  }
+ ]
+}

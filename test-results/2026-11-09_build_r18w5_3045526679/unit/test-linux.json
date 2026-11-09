@@ -1,0 +1,19 @@
+{
+ "summary_line": "Summary [  55.368s] 1643 tests run: 1643 passed, 8990 skipped",
+ "duration_s": 55.368,
+ "run": 1643,
+ "passed": 1643,
+ "failed": 0,
+ "timed_out": 0,
+ "skipped": 8990,
+ "slow": 0,
+ "flaky": 0,
+ "failures": [],
+ "regressions": [],
+ "notes": [
+  "tests: ok (0 known failure(s), no regressions)"
+ ],
+ "job": "test-linux",
+ "status": "success",
+ "duration": 362.136069
+}

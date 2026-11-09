@@ -1,0 +1,6 @@
+{"case": "ssh_enter_then_immediate_command", "mode": "terminal", "kind": "LOST", "ts": 2138900.380429208, "wall": 1794236834.360469, "target_pid": 57183, "app_alive": true, "app_slice_chars": 543344}
+{"case": "ssh_nested_typeahead", "mode": "terminal", "kind": "LOST", "ts": 2138911.697176708, "wall": 1794236845.677669, "target_pid": 57183, "app_alive": true, "app_slice_chars": 330866}
+{"case": "latency_enter", "mode": "terminal", "kind": "UNCOVERED", "ts": 2138920.402455666, "wall": 1794236854.385509, "target_pid": 57183, "app_alive": true, "app_slice_chars": 15120220}
+{"case": "ssh_enter_then_immediate_command", "mode": "agent", "kind": "LOST", "ts": 2140565.035285916, "wall": 1794238499.001098, "target_pid": 7605, "app_alive": true, "app_slice_chars": 555528}
+{"case": "ssh_nested_typeahead", "mode": "agent", "kind": "LOST", "ts": 2140576.335701458, "wall": 1794238510.301076, "target_pid": 7605, "app_alive": true, "app_slice_chars": 331045}
+{"case": "latency_enter", "mode": "agent", "kind": "UNCOVERED", "ts": 2140585.030945666, "wall": 1794238518.996703, "target_pid": 7605, "app_alive": true, "app_slice_chars": 19528364}

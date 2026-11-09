@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-linux-wayland" tests="38" failures="0" skipped="6">
+<testcase classname="terminal" name="mode_proof" time="1.60">
+</testcase>
+<testcase classname="terminal" name="cadence" time="6.30">
+</testcase>
+<testcase classname="terminal" name="key_loss_control" time="88.60">
+</testcase>
+<testcase classname="terminal" name="enter_loss_control" time="62.70">
+</testcase>
+<testcase classname="terminal" name="fast_typing" time="56.60">
+</testcase>
+<testcase classname="terminal" name="paste_instant_enter" time="6.50">
+</testcase>
+<testcase classname="terminal" name="tab_enter" time="19.40">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_d" time="432.90">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: Ctrl-C: insufficient evidence (reference series drifted -12.00 ms between its halves (sequential A-then-B measurement)): INCONCLUSIVE/NO-COMPARE, the overhead budget "/>
+</testcase>
+<testcase classname="terminal" name="ssh_connect_typing" time="31.00">
+</testcase>
+<testcase classname="terminal" name="ssh_enter_then_immediate_command" time="7.90">
+</testcase>
+<testcase classname="terminal" name="ssh_nested_typeahead" time="5.80">
+</testcase>
+<testcase classname="terminal" name="latency_enter" time="163.80">
+<skipped message="NO-REFERENCE (not a pass): measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 24 blocks"/>
+</testcase>
+<testcase classname="terminal" name="latency_key_log" time="15.10">
+<skipped message="NO-REFERENCE (not a pass): #1176 key -&gt; pty write median 15.72 ms (p95 16.00, n=60): OVER the 1 ms target"/>
+</testcase>
+<testcase classname="terminal" name="latency_paint" time="0.60">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only; no key-&gt;paint read-back exists on this platform, so there is nothing to compare"/>
+</testcase>
+<testcase classname="terminal" name="routing_table" time="57.30">
+</testcase>
+<testcase classname="terminal" name="agent_mode_switch" time="11.00">
+</testcase>
+<testcase classname="terminal" name="shell_fish" time="29.20">
+</testcase>
+<testcase classname="terminal" name="shell_nu" time="39.10">
+</testcase>
+<testcase classname="terminal" name="md_viewer" time="3.60">
+</testcase>
+<testcase classname="agent" name="mode_proof" time="0.80">
+</testcase>
+<testcase classname="agent" name="cadence" time="6.30">
+</testcase>
+<testcase classname="agent" name="fast_typing" time="57.20">
+</testcase>
+<testcase classname="agent" name="paste_instant_enter" time="6.40">
+</testcase>
+<testcase classname="agent" name="tab_enter" time="18.70">
+</testcase>
+<testcase classname="agent" name="ctrl_c_d" time="435.80">
+</testcase>
+<testcase classname="agent" name="ssh_connect_typing" time="30.00">
+</testcase>
+<testcase classname="agent" name="ssh_enter_then_immediate_command" time="7.90">
+</testcase>
+<testcase classname="agent" name="ssh_nested_typeahead" time="5.80">
+</testcase>
+<testcase classname="agent" name="latency_enter" time="164.00">
+</testcase>
+<testcase classname="agent" name="latency_key_log" time="15.40">
+<skipped message="NO-REFERENCE (not a pass): #1176 key -&gt; pty write median 16.03 ms (p95 16.42, n=60): OVER the 1 ms target"/>
+</testcase>
+<testcase classname="agent" name="latency_paint" time="0.60">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only; no key-&gt;paint read-back exists on this platform, so there is nothing to compare"/>
+</testcase>
+<testcase classname="agent" name="agent_stream_cancel" time="33.80">
+</testcase>
+<testcase classname="agent" name="agent_input_exact" time="6.80">
+</testcase>
+<testcase classname="agent" name="routing_table" time="59.80">
+</testcase>
+<testcase classname="agent" name="agent_mode_switch" time="9.60">
+</testcase>
+<testcase classname="agent" name="shell_fish" time="29.50">
+</testcase>
+<testcase classname="agent" name="shell_nu" time="41.10">
+</testcase>
+<testcase classname="agent" name="md_viewer" time="3.60">
+</testcase>
+</testsuite>
