@@ -1172,6 +1172,17 @@ impl TerminalView {
     /// rows only (D1, D2, D5-D7): the paste read takes its own place in the queue (a
     /// `PasteReading` gate), so no queue fact is passed, and nothing blocks on the model's lock.
     pub(super) fn paste_routing_via_table(&mut self, ctx: &mut ViewContext<Self>) -> (bool, bool) {
+        let (plan, bracketed) = self.paste_plan_via_table(ctx);
+        (
+            matches!(plan.outcome, Outcome::EditorInsert | Outcome::AgentInput),
+            bracketed,
+        )
+    }
+
+    /// The table's whole plan for a paste made now (#1853), and whether a pty paste is bracketed.
+    /// `paste()` branches on the outcome: an ssh hold, the setup dialog's swallow, the choice
+    /// card's hint and a drop are not pty pastes.
+    pub(super) fn paste_plan_via_table(&mut self, ctx: &mut ViewContext<Self>) -> (Plan, bool) {
         let facts = self.build_route_facts(QueueFacts::default(), ctx);
         // The focus of THIS moment (a paste is not a key of the pane sink, so the focus the last
         // key noted may be stale).
@@ -1189,8 +1200,7 @@ impl TerminalView {
                 plan.effects
             )
         });
-        let into_input = matches!(plan.outcome, Outcome::EditorInsert | Outcome::AgentInput);
-        (into_input, facts.needs_bracketed_paste)
+        (plan, facts.needs_bracketed_paste)
     }
 }
 

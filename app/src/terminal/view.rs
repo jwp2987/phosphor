@@ -81,7 +81,7 @@ use window_footer_bar::render_window_footer_bar;
 use super::CLIAgent;
 use super::cli_agent;
 use super::input_queue::shadow::{DestClass, note_leaf as note_shadow_leaf};
-use super::input_queue::table::Class;
+use super::input_queue::table::{Class, Outcome};
 use super::input_queue::{self, GateKeysThen, PowershellKeysThen};
 use super::paste_sequencer::{PasteFailure, paste_backstop};
 #[cfg(feature = "local_fs")]
@@ -25881,31 +25881,83 @@ impl TerminalView {
     }
 
     fn paste(&mut self, middle_click: bool, ctx: &mut ViewContext<Self>) {
-        // A paste is typed text: it is held exactly when typing would be (#1292).
-        if self.swallow_input_during_ssh_setup(None, ctx) {
-            if std::mem::take(&mut self.ssh_paste_to_hold) {
-                self.hold_ssh_paste(middle_click, ctx);
-            } else {
-                // Only the setup dialog drops a paste now; say why nothing happened (#1255).
-                self.show_error_toast(
-                    "Paste ignored \u{2014} the ssh setup prompt is open".to_string(),
-                    ctx,
-                );
+        let table_mode = input_queue::destination_mode() == input_queue::DestinationMode::Table;
+        // #1853: in `table` mode ONE phase source decides the paste and the keys around it, the
+        // ssh edge machine through the table's plan; the legacy probe (and the legacy refreshers
+        // it runs) is not consulted, or a paste could be judged "open" while the keys typed just
+        // before it are held and reach the pty ahead of them.
+        let table_plan = if table_mode {
+            let routing_shadow = self.shadow_begin(Class::Paste, ctx);
+            let planned = self.paste_plan_via_table(ctx);
+            match planned.0.outcome {
+                // Held behind the ssh connect, in typed order with the held keys.
+                Outcome::Hold(input_queue::GateKind::SshConnect) => {
+                    self.shadow_end(routing_shadow);
+                    self.ssh_ensure_window_for_hold(ctx);
+                    self.set_ssh_typeahead_holding(true);
+                    self.schedule_ssh_typeahead_give_up(ctx);
+                    self.hold_ssh_paste(middle_click, ctx);
+                    return;
+                }
+                Outcome::Swallow(_) => {
+                    self.shadow_end(routing_shadow);
+                    self.redetermine_global_focus(ctx);
+                    self.show_error_toast(
+                        "Paste ignored \u{2014} the ssh setup prompt is open".to_string(),
+                        ctx,
+                    );
+                    return;
+                }
+                Outcome::Hint => {
+                    self.shadow_end(routing_shadow);
+                    if let Some(choice_card) = self.ssh_choice_card_holding_keys(ctx) {
+                        choice_card.update(ctx, |card, ctx| card.note_typed_before_choice(ctx));
+                    }
+                    return;
+                }
+                Outcome::Drop(why) => {
+                    self.shadow_end(routing_shadow);
+                    log::info!("input queue: a paste was dropped: why={why:?}");
+                    return;
+                }
+                // A PowerShell / subshell setup hold: the paste is a queue entry behind the
+                // setup's gate and the keys held before it, delivered in order.
+                _ => Some((planned, routing_shadow)),
             }
-            return;
-        }
+        } else {
+            // A paste is typed text: it is held exactly when typing would be (#1292).
+            if self.swallow_input_during_ssh_setup(None, ctx) {
+                if std::mem::take(&mut self.ssh_paste_to_hold) {
+                    self.hold_ssh_paste(middle_click, ctx);
+                } else {
+                    // Only the setup dialog drops a paste now; say why nothing happened (#1255).
+                    self.show_error_toast(
+                        "Paste ignored \u{2014} the ssh setup prompt is open".to_string(),
+                        ctx,
+                    );
+                }
+                return;
+            }
+            None
+        };
         // #1179: an agent-driven command's pty takes no user bytes, so a paste is steer text for
         // the agent's input, exactly as typed characters are. Computed before the model lock.
         let agent_owns_pty = self.agent_owns_command_pty();
         // #1424 (step 6): in `table` mode the table routes a paste (the destination rows, on facts
         // that take no blocking model lock); in `shadow` mode it is compared with the legacy route.
-        let routing_shadow = self.shadow_begin(Class::Paste, ctx);
-        let (should_paste_in_input, needs_bracketed_paste) =
-            if input_queue::destination_mode() == input_queue::DestinationMode::Table {
-                self.paste_routing_via_table(ctx)
-            } else {
-                self.paste_routing(agent_owns_pty, ctx)
-            };
+        let (routing_shadow, (should_paste_in_input, needs_bracketed_paste)) = match table_plan {
+            Some(((plan, bracketed), routing_shadow)) => (
+                routing_shadow,
+                (
+                    matches!(plan.outcome, Outcome::EditorInsert | Outcome::AgentInput),
+                    bracketed,
+                ),
+            ),
+            None => (
+                self.shadow_begin(Class::Paste, ctx),
+                self.paste_routing(agent_owns_pty, ctx),
+            ),
+        };
         // A paste made while the pane queue holds input waits behind it, whichever way it routes.
         let queue_holds = self
             .paste_queue
