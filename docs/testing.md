@@ -3210,3 +3210,15 @@ Not covered by unit tests: a real `aws login` / SSO / IMDS endpoint. **Owner ver
 
 ## Line-editor activation is event-driven (#1672/#1798, owner rule: timers never route)
 `LINE_EDITOR_ACTIVATION_DELAY` (50 ms) is gone. A shell that has never sent the ready signal (bracketed-paste enable, PowerShell `LineEditorReading`) opens the write gate on the Precmd/EndPrompt event itself, unproven; a signalling shell opens it only on the signal. `LINE_EDITOR_SIGNAL_GIVE_UP` (1 s, or the ConPTY hold's wait) is only a net: it emits `LineEditorStatusEvent::SignalGaveUp`, the controller emits `PtyControllerEvent::LineEditorSignalGaveUp`, and the view runs the prompt hold's existing give-up (`on_line_editor_signal_gave_up`: keys back to the editor, or kept with the waiting toast); it never opens the gate or writes. A signal that could not open the gate (unanswered typeahead line, released keys not counted yet) is remembered and the next hand-off retry (`retry_typeahead_handoff_request`) opens it. Tests: `line_editor_status_tests::{a_shell_that_never_signals_opens_the_gate_on_the_prompt_event, a_signalling_shell_opens_the_gate_only_on_its_signal, the_give_up_net_hands_back_and_never_opens_the_gate, a_remembered_signal_opens_the_gate_only_when_asked, only_the_ready_signal_proves_the_line_editor_reads}`, `pty_controller_tests::the_signal_give_up_net_writes_nothing_and_leaves_the_gate_shut`, and (Legacy and Table) `view_test::the_line_editor_signal_give_up_hands_the_held_keys_to_the_editor_and_writes_nothing`. Behaviour change to know: an editor command queued for the gate waits for the signal for a signalling shell (it is no longer released by a timer); the first prompt of a session opens unproven, so it gets no ESC i request.
+
+## Remote ssh holds are event-driven (#1808, #1809, #1810; owner rule: timers never route)
+
+### #1808: the bootstrap hold has no 15 s clock
+`SSH_BOOTSTRAP_SWALLOW_CEILING` is gone. Keys typed while the remote bootstrap is pending are held
+(never dropped) until `Bootstrapped`/`InitShell` ends the session or the bootstrap-failed give-up
+(a hand-back net, already compliant) marks it failed. Tests in `terminal/view_test.rs`:
+`ssh_bootstrap_swallow_is_ended_by_events_only` (replaces `ssh_bootstrap_swallow_is_bounded`),
+`ssh_bootstrap_interrupt_route_holds_then_forwards` (only `failed` flips Hold to Forward),
+`ssh_keys_typed_during_a_pending_bootstrap_stay_held_in_order_and_unwritten` (byte trace, Legacy and
+Table: held bytes exact, nothing written, nothing in the editor); `input_queue/ssh_phase_tests.rs`
+`the_bootstrap_hold_has_no_clock` replaces `the_swallow_give_up_ends_the_swallow`.

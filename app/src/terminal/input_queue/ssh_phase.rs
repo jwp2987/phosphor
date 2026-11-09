@@ -1,7 +1,7 @@
 //! The edge-driven ssh phase (#1424, design step 7; owner decision OD-6).
 //!
 //! Steps 1-6 DERIVE [`SshPhase`] at the moment a key is decided, from the legacy view fields,
-//! after running the legacy refreshers (`refresh_ssh_connect_gate`, the swallow clock) on the key
+//! after running the legacy refreshers (`refresh_ssh_connect_gate`) on the key
 //! path. This machine replaces that derivation: it is fed EDGES, each by the event that is the
 //! edge, and a key reads its phase without refreshing anything. It is pure (no view, no clock, no
 //! lock), so every transition is a unit test.
@@ -17,7 +17,6 @@
 //! | [`SshEdge::Observed`] | the published facts at a model event or output wakeup: a remote session announced (InitShell) or gone (Bootstrapped / exit), the ssh hook, the setup dialog and the remote-setup state (`SessionsEvent`) |
 //! | [`SshEdge::BlockCompleted`] | the ssh block ended (the remote shell's first precmd, or a failed connect) |
 //! | [`SshEdge::BootstrapFailed`] | the bootstrap-failed timer of the pending session (#1494's path) |
-//! | [`SshEdge::SwallowGiveUp`] | the give-up of the bootstrap swallow window |
 //! | [`SshEdge::HoldStarted`] / [`SshEdge::HoldEnded`] | the first key held / the hold over (delivered, discarded, handed back) |
 //! | [`SshEdge::Released`] | the window ended: by an event ([`SshRelease::FirstPrompt`], [`SshRelease::Failed`], [`SshRelease::OtherCommand`]) or by a logged GIVE-UP ([`SshRelease::is_give_up`]) |
 //!
@@ -137,8 +136,6 @@ pub enum SshEdge {
     BlockCompleted { clean: bool },
     /// The pending session's bootstrap-failed timer fired: it no longer swallows keys.
     BootstrapFailed,
-    /// The bootstrap swallow window passed its ceiling (a logged give-up).
-    SwallowGiveUp,
     /// The first key of the connect was held.
     HoldStarted,
     /// The hold is over.
@@ -171,8 +168,6 @@ pub struct SshPhaseMachine {
     bootstrap_done: bool,
     /// The pending session's bootstrap-failed timer fired.
     bootstrap_failed: bool,
-    /// The bootstrap swallow window gave up.
-    swallow_expired: bool,
     dialog_up: bool,
     setup_in_flight: bool,
     /// The managed-ssh hold's secret-read pass-through ([`SshObservation::secret_pass_through`]).
@@ -226,7 +221,6 @@ impl SshPhaseMachine {
                         // The remote shell announced itself (InitShell).
                         if !self.pending {
                             self.bootstrap_failed = false;
-                            self.swallow_expired = false;
                         }
                         self.saw_pending = true;
                         self.managed = true;
@@ -248,7 +242,6 @@ impl SshPhaseMachine {
                 }
             }
             SshEdge::BootstrapFailed => self.bootstrap_failed = true,
-            SshEdge::SwallowGiveUp => self.swallow_expired = true,
             SshEdge::HoldStarted => self.holding = true,
             SshEdge::HoldEnded => self.holding = false,
             SshEdge::Released(how) => {
@@ -319,10 +312,9 @@ impl SshPhaseMachine {
             && (self.block_done || !self.tty_owned || self.bootstrap_done)
     }
 
-    /// Typing is held for the pending session's bootstrap (until its failure timer or the swallow
-    /// give-up).
+    /// Typing is held for the pending session's bootstrap (until its failure give-up).
     fn bootstrapping(&self) -> bool {
-        self.armed && self.pending && !self.bootstrap_failed && !self.swallow_expired
+        self.armed && self.pending && !self.bootstrap_failed
     }
 
     /// Keys are dropped by the gate with nothing held yet: the setup is in flight, the remote

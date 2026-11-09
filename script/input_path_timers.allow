@@ -96,7 +96,6 @@ app/src/terminal/model/typeahead_handoff.rs	YOUNG_ENTER_WINDOW	owner-named: 600 
 app/src/terminal/view.rs	AUTO_WARPIFY_DELAY	FOUND: fixed delay then writes the subshell bootstrap (only with PHOSPHOR_BOOTSTRAP_TIMED=1)
 app/src/terminal/view.rs	EXECUTE_PENDING_COMMAND_DELAY	FOUND: 100 ms timer runs the pending command / ssh split cd (only with PHOSPHOR_BOOTSTRAP_TIMED=1)
 app/src/terminal/view.rs	INTERRUPT_SETTLE	owner-named: 250 ms after ^C commits the typeahead hand-off at the prompt (commits on a timer)
-app/src/terminal/view.rs	SSH_BOOTSTRAP_SWALLOW_CEILING	FOUND: typing is DROPPED while an ssh bootstrap is pending and keys pass through after 15 s (age-based route/drop)
 app/src/terminal/view.rs	SSH_CONNECT_SILENCE_CEILING	FOUND: age < 15 s decides whether the ssh connect window arms and keys are held; after it every key goes to the pty (age-based route); also the gate's give-up ceiling
 app/src/terminal/view.rs	SSH_LOGIN_RECHECK_GIVE_UP	FOUND: 3 s of quiet output after non-prompt ssh output is taken as 'login done' (state decision on a timer; warpify follows)
 app/src/terminal/view.rs	SUBSHELL_FIRST_PROMPT_GIVE_UP	FOUND: 5 s 'give-up timer' fires the awaiting subshell bootstrap, i.e. writes it (legacy path when subshell_ready_path() is off)

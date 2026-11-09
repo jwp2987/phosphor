@@ -25,13 +25,11 @@
 //! building: a build that waited for it would deadlock, and `model_lock_trace` must not count a
 //! key-path lock.
 
-use instant::Instant;
-
 use warpui::ViewContext;
 use warpui::pane_key::PaneKeyContext;
 
 use super::{
-    PowerShellSetupHold, SSH_BOOTSTRAP_SWALLOW_CEILING, SshBootstrapInterruptRoute, TerminalView,
+    PowerShellSetupHold, SshBootstrapInterruptRoute, TerminalView, ssh_bootstrap_swallow_active,
     ssh_pre_init_abort_bytes, subshell_bootstrap_key_forwarded,
 };
 use crate::features::FeatureFlag;
@@ -42,30 +40,6 @@ use crate::terminal::input_queue::{
 use crate::terminal::model::key_facts::{
     ConsistentRead, KeyFacts, KeyModelSnapshot, load_consistent,
 };
-use crate::terminal::model::session::SessionId;
-
-/// [`super::ssh_bootstrap_swallow_active`] without the side effect on the tracked start: whether
-/// typing would still be dropped for the pending ssh bootstrap. A session not tracked yet counts
-/// as starting now (the legacy function starts the clock on its first call).
-fn ssh_bootstrap_swallow_would_be_active(
-    pending: Option<SessionId>,
-    failed: Option<SessionId>,
-    started: Option<(SessionId, Instant)>,
-    now: Instant,
-) -> bool {
-    let Some(sid) = pending else {
-        return false;
-    };
-    if failed == Some(sid) {
-        return false;
-    }
-    match started {
-        Some((tracked, at)) if tracked == sid => {
-            now.saturating_duration_since(at) < SSH_BOOTSTRAP_SWALLOW_CEILING
-        }
-        _ => true,
-    }
-}
 
 impl TerminalView {
     /// What the terminal model says, without waiting for the pty reader and without
@@ -183,7 +157,6 @@ impl TerminalView {
         let route_state = self.paste_queue.queue.route_state();
         let model = self.model_facts_nonblocking();
         let snapshot = &model.snapshot;
-        let now = Instant::now();
 
         // ---- the typeahead hand-off (try_read: busy means the last value read) ----
         let (handoff_routes, handoff_known, editor_takeover_open) =
@@ -228,12 +201,8 @@ impl TerminalView {
         } else {
             None
         };
-        let ssh_bootstrapping = ssh_bootstrap_swallow_would_be_active(
-            pending_sid,
-            self.ssh_bootstrap_failed_session,
-            self.ssh_bootstrap_swallow_started,
-            now,
-        );
+        let ssh_bootstrapping =
+            ssh_bootstrap_swallow_active(pending_sid, self.ssh_bootstrap_failed_session);
         let ssh_connecting_silently = pending_now.is_none() && drops_keys;
         let ssh_dialog_up = self.ssh_dialog_up_in(pending_now, ctx);
         let ssh_setup_in_flight = self.ssh_setup_in_flight_in(pending_now, ctx);

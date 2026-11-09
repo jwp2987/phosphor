@@ -1013,9 +1013,6 @@ const BOOTSTRAP_FAILED_DURATION: Duration = Duration::from_secs(7);
 /// is outstanding. A logged give-up net; `Bootstrapped` itself ends the wait.
 // give-up-net: one-off extension of the bootstrap-failed give-up; the failure hands held ssh keys back as text
 const BOOTSTRAP_PROGRESS_GRACE: Duration = Duration::from_secs(3);
-/// Longest typing is dropped on behalf of one pending ssh bootstrap (#983). A healthy
-/// bootstrap finishes well inside this; a stuck or stale one must not own the keyboard.
-const SSH_BOOTSTRAP_SWALLOW_CEILING: Duration = Duration::from_secs(15);
 /// How long after an ssh command starts the silent connect phase (nothing printed yet, so no
 /// prompt can be waiting) drops typing instead of writing it to the tty, where it would be
 /// split between ssh, the remote tty and the injected bootstrap (#983). Later than this the
@@ -3675,9 +3672,6 @@ pub struct TerminalView {
     bootstrap_timer_generation: u64,
     /// The arm of the timer callback currently running, so the grace re-arm keeps its identity.
     bootstrap_timer_arm_in_flight: Option<BootstrapTimerArm>,
-    /// First time input was swallowed for a pending ssh session, to bound the swallow window
-    /// by `SSH_BOOTSTRAP_SWALLOW_CEILING` even if no failure timer ever fires for it.
-    ssh_bootstrap_swallow_started: Option<(SessionId, Instant)>,
     /// The edge-driven ssh phase (#1424 step 7): fed by the events that are its edges
     /// (`view/ssh_edges.rs`); in `table` mode the facts carry its phase and the key path no longer
     /// refreshes the connect gate.
@@ -5589,7 +5583,6 @@ impl TerminalView {
             bootstrap_grace_used_session: None,
             bootstrap_timer_generation: 0,
             bootstrap_timer_arm_in_flight: None,
-            ssh_bootstrap_swallow_started: None,
             ssh_phase: input_queue::SshPhaseMachine::default(),
             ssh_give_ups: 0,
             ssh_hold_block_id: None,
@@ -11683,9 +11676,10 @@ impl TerminalView {
         // shell). Drop the whole run instead. Passwords and host-key prompts happen before the
         // pending session exists, so they are unaffected.
         //
-        // Bounded: a pending session that already hit its bootstrap-failed timer, or has been
-        // swallowing for `SSH_BOOTSTRAP_SWALLOW_CEILING`, no longer swallows (a stale pending
-        // session left by a failed su/sudo -i must not eat a later plain ssh's typing).
+        // Bounded by an event, not by age (#1808): the held keys stay held while the session is
+        // pending, and a pending session whose bootstrap-failed give-up fired no longer holds
+        // (that net hands the keys back to the editor as text; a stale pending session left by
+        // a failed su/sudo -i must not eat a later plain ssh's typing).
         let gate_armed = self.refresh_ssh_connect_gate();
         // #1348: the gate released since the last event (a ceiling passed, a failed connect):
         // hand over what is held before this key is judged, so it lands behind the held ones.
@@ -11697,12 +11691,8 @@ impl TerminalView {
         } else {
             None
         };
-        let ssh_bootstrapping = ssh_bootstrap_swallow_active(
-            pending_sid,
-            self.ssh_bootstrap_failed_session,
-            &mut self.ssh_bootstrap_swallow_started,
-            Instant::now(),
-        );
+        let ssh_bootstrapping =
+            ssh_bootstrap_swallow_active(pending_sid, self.ssh_bootstrap_failed_session);
         // #983 / #976: before the remote shell announces itself there is no pending session. Until
         // ssh OWNS the tty (`CommandBecameInteractive` for the window's block, #1611, #1612,
         // #1621) a key written to the pty could reach the local shell's line editor, so the whole
@@ -12915,13 +12905,8 @@ impl TerminalView {
             return None;
         }
         let sid = pending?;
-        let age = match self.ssh_bootstrap_swallow_started {
-            Some((tracked, at)) if tracked == sid => Some(at.elapsed()),
-            _ => None,
-        };
         Some(ssh_bootstrap_interrupt_route(
             self.ssh_bootstrap_failed_session == Some(sid),
-            age,
         ))
     }
 
@@ -40835,13 +40820,10 @@ enum SshBootstrapInterruptRoute {
     Forward,
 }
 
-/// Pure rule for [`SshBootstrapInterruptRoute`]. `age` is how long this pending session has been
-/// tracked; unknown (`None`) means it only just started.
-fn ssh_bootstrap_interrupt_route(
-    failed: bool,
-    age: Option<Duration>,
-) -> SshBootstrapInterruptRoute {
-    if failed || age.is_some_and(|age| age >= SSH_BOOTSTRAP_SWALLOW_CEILING) {
+/// Pure rule for [`SshBootstrapInterruptRoute`]: Hold until the session's bootstrap-failed
+/// give-up fired (an event-armed net, #1808), never on the session's age.
+fn ssh_bootstrap_interrupt_route(failed: bool) -> SshBootstrapInterruptRoute {
+    if failed {
         SshBootstrapInterruptRoute::Forward
     } else {
         SshBootstrapInterruptRoute::Hold
@@ -41187,30 +41169,11 @@ fn is_ssh_interrupt_key(characters: &str) -> bool {
     matches!(characters, "\u{3}" | "\u{4}" | "\u{1a}" | "\u{1c}")
 }
 
-/// Whether typing is still dropped for a pending ssh bootstrap (#983). Pure so the bounds are
-/// testable: no pending session, a session whose failure timer fired, or one that has already
-/// swallowed for `SSH_BOOTSTRAP_SWALLOW_CEILING`, all let keys through.
-fn ssh_bootstrap_swallow_active(
-    pending: Option<SessionId>,
-    failed: Option<SessionId>,
-    started: &mut Option<(SessionId, Instant)>,
-    now: Instant,
-) -> bool {
-    let Some(sid) = pending else {
-        *started = None;
-        return false;
-    };
-    if failed == Some(sid) {
-        return false;
-    }
-    let first = match *started {
-        Some((tracked, at)) if tracked == sid => at,
-        _ => {
-            *started = Some((sid, now));
-            now
-        }
-    };
-    now.duration_since(first) < SSH_BOOTSTRAP_SWALLOW_CEILING
+/// Whether typing is still held for a pending ssh bootstrap (#983, #1808). Pure: held while a
+/// remote session is pending, until `Bootstrapped`/`InitShell` ends it or its bootstrap-failed
+/// give-up marked it failed. No age decides anything.
+fn ssh_bootstrap_swallow_active(pending: Option<SessionId>, failed: Option<SessionId>) -> bool {
+    pending.is_some() && failed != pending
 }
 
 fn command_first_word_and_suffix(command: &str) -> Option<(&str, &str)> {

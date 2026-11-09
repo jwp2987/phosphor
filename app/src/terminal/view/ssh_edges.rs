@@ -12,7 +12,6 @@
 //! | `Observed` | [`TerminalView::ssh_observe`]: every model event and output wakeup while a window is open or a session is pending, the remote-setup `SessionsEvent`, and the choice dialog being added or removed |
 //! | `BlockCompleted` | `apply_block_completed_to_ssh_gate` |
 //! | `BootstrapFailed` | `on_bootstrap_failed_timer_complete` (#1494's path) |
-//! | `SwallowGiveUp` | the one-shot swallow ceiling timer ([`TerminalView::ssh_swallow_give_up`]) |
 //! | `HoldStarted` / `HoldEnded` | `set_ssh_typeahead_holding`, the one place the hold flag changes |
 //! | `Released` | `refresh_ssh_connect_gate` releasing the gate (an event, or a logged give-up), and a non-ssh command starting |
 //!
@@ -20,7 +19,7 @@
 //! as `kh_ssh_phase_disagree` (debug, `input_order` target) and counted. In `table` mode the
 //! machine's phase is the one the facts carry, and the key path no longer refreshes the connect
 //! gate: the work those refreshers did on a key (arming the gate lazily, releasing it past its
-//! ceiling, starting the swallow clock, handing over a hold whose gate is gone) is done by the
+//! ceiling, handing over a hold whose gate is gone) is done by the
 //! events above and by the give-up timers, each of which is LOGGED ([`TerminalView::
 //! note_ssh_give_up`]).
 //!
@@ -28,7 +27,6 @@
 //!  * the connect gate's ceiling and its post-bootstrap / post-block graces
 //!    (`schedule_ssh_typeahead_give_up`, armed from events): a remote that never prints, never
 //!    bootstraps or never shows a prompt must not own the keyboard;
-//!  * the bootstrap swallow ceiling ([`TerminalView::ssh_swallow_give_up`]);
 //!  * the bootstrap-failed timer (`on_bootstrap_failed_timer_complete`, #1494);
 //!  * the first-Precmd wait cap (`SSH_TYPEAHEAD_PRECMD_WAIT_CAP`).
 //! Never logged: the text of a key. Counts and reasons only.
@@ -42,12 +40,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use chrono::Local;
 use instant::Instant;
 use warpui::ViewContext;
-use warpui::r#async::Timer;
 
-use super::{
-    SSH_BOOTSTRAP_SWALLOW_CEILING, SSH_CONNECT_SILENCE_CEILING, TerminalView,
-    choice_block_owns_input, ssh_bootstrap_swallow_active,
-};
+use super::{SSH_CONNECT_SILENCE_CEILING, TerminalView, choice_block_owns_input};
 use crate::features::FeatureFlag;
 use crate::terminal::input_queue::{
     DestinationMode, SshEdge, SshObservation, SshPhase, SshRelease, destination_mode,
@@ -83,10 +77,7 @@ impl TerminalView {
         if Self::ssh_machine_runs() {
             self.ssh_phase.apply(edge);
             // The ssh phase moved: the line pinned to a destination is over.
-            if !matches!(
-                edge,
-                SshEdge::Observed(_) | SshEdge::BootstrapFailed | SshEdge::SwallowGiveUp
-            ) {
+            if !matches!(edge, SshEdge::Observed(_) | SshEdge::BootstrapFailed) {
                 self.request_queue_pin_clear();
             }
         }
@@ -186,9 +177,6 @@ impl TerminalView {
             secret_pass_through: self.ssh_wrapper_secret_pass_through(),
         };
         self.ssh_phase.apply(SshEdge::Observed(observation));
-        if Self::ssh_events_own_the_gate() {
-            self.ssh_note_swallow_clock(pending, ctx);
-        }
     }
 
     /// The remote-setup `SessionsEvent` (and the choice dialog being added or removed): the
@@ -214,50 +202,6 @@ impl TerminalView {
         if self.ssh_connect_gate.is_some() {
             self.schedule_ssh_typeahead_give_up(ctx);
         }
-    }
-
-    /// The bootstrap swallow clock starts when the remote session is announced (an event), not at
-    /// the first key, and its ceiling is a one-shot give-up (table mode).
-    fn ssh_note_swallow_clock(&mut self, pending: Option<SessionId>, ctx: &mut ViewContext<Self>) {
-        let tracked_before = self.ssh_bootstrap_swallow_started.map(|(sid, _)| sid);
-        let for_swallow = if self.ssh_phase.armed() {
-            pending
-        } else {
-            None
-        };
-        let _ = ssh_bootstrap_swallow_active(
-            for_swallow,
-            self.ssh_bootstrap_failed_session,
-            &mut self.ssh_bootstrap_swallow_started,
-            Instant::now(),
-        );
-        let tracked_now = self.ssh_bootstrap_swallow_started.map(|(sid, _)| sid);
-        if let Some(sid) = tracked_now
-            && tracked_before != Some(sid)
-        {
-            ctx.spawn(
-                Timer::after(SSH_BOOTSTRAP_SWALLOW_CEILING),
-                move |me, _, _| {
-                    me.ssh_swallow_give_up(sid);
-                },
-            );
-        }
-    }
-
-    /// The swallow ceiling of `sid` passed with the session still pending: keys are no longer
-    /// dropped on its behalf. A logged give-up.
-    fn ssh_swallow_give_up(&mut self, sid: SessionId) {
-        let still_swallowing = self
-            .ssh_bootstrap_swallow_started
-            .map(|(tracked, _)| tracked)
-            == Some(sid)
-            && self.ssh_bootstrap_failed_session != Some(sid)
-            && self.model_facts_nonblocking().snapshot.pending_session_id == Some(sid);
-        if !still_swallowing {
-            return;
-        }
-        self.note_ssh_give_up("swallow_ceiling");
-        self.ssh_edge(SshEdge::SwallowGiveUp);
     }
 
     /// A safety net fired where an event should have: counted and logged with its reason (the

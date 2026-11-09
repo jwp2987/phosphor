@@ -18426,59 +18426,65 @@ fn abort_keys_are_exactly_ctrl_c_and_ctrl_d() {
     assert!(!is_abort_key(b""));
 }
 
-/// #983: typing is dropped while an ssh bootstrap is pending, but only within bounds. A stale
-/// pending session (failed su/sudo -i) whose failure timer fired, or one that has swallowed past
-/// the ceiling, must let typed characters reach the pty again.
+/// #983, #1808: typing is held while an ssh bootstrap is pending, and only an EVENT ends that: the
+/// pending session going away, or its bootstrap-failed give-up marking it failed. No age does:
+/// the same answer however long the session has been pending.
 #[test]
-fn ssh_bootstrap_swallow_is_bounded() {
+fn ssh_bootstrap_swallow_is_ended_by_events_only() {
     let sid = SessionId::from(4242);
     let other = SessionId::from(4343);
-    let t0 = Instant::now();
-    let mut started = None;
 
-    // No pending session: never swallows, and forgets any tracking.
-    assert!(!ssh_bootstrap_swallow_active(None, None, &mut started, t0));
-    assert!(started.is_none());
+    // No pending session: nothing is held on its behalf.
+    assert!(!ssh_bootstrap_swallow_active(None, None));
+    assert!(!ssh_bootstrap_swallow_active(None, Some(sid)));
 
-    // Fresh pending session: swallows.
-    assert!(ssh_bootstrap_swallow_active(
-        Some(sid),
-        None,
-        &mut started,
-        t0
-    ));
-    assert!(ssh_bootstrap_swallow_active(
-        Some(sid),
-        None,
-        &mut started,
-        t0 + Duration::from_secs(5)
-    ));
+    // A pending session holds, however long it has been pending (the function takes no time).
+    assert!(ssh_bootstrap_swallow_active(Some(sid), None));
+    assert!(ssh_bootstrap_swallow_active(Some(sid), Some(other)));
 
-    // Ceiling elapsed: keys reach the pty although the session is still pending.
-    assert!(!ssh_bootstrap_swallow_active(
-        Some(sid),
-        None,
-        &mut started,
-        t0 + SSH_BOOTSTRAP_SWALLOW_CEILING
-    ));
+    // Its failure give-up fired: it no longer holds.
+    assert!(!ssh_bootstrap_swallow_active(Some(sid), Some(sid)));
 
-    // Failure timer fired for this stale session: no swallowing at all, even on first sight.
-    let mut fresh = None;
-    assert!(!ssh_bootstrap_swallow_active(
-        Some(sid),
-        Some(sid),
-        &mut fresh,
-        t0
-    ));
+    // A different (new) pending session is not covered by the old failure mark.
+    assert!(ssh_bootstrap_swallow_active(Some(other), Some(sid)));
+}
 
-    // A different (new) pending session is not covered by the old failure mark and restarts
-    // its own window.
-    assert!(ssh_bootstrap_swallow_active(
-        Some(other),
-        Some(sid),
-        &mut started,
-        t0 + Duration::from_secs(60)
-    ));
+/// #1808 (byte trace for the removed 15 s swallow ceiling): while the remote bootstrap is pending
+/// the typed line is held byte for byte, in order, with every later key joining it; nothing
+/// reaches the pty and nothing reaches the editor. Only the bootstrap-failed hand-back (or the
+/// remote prompt) ends the hold. Legacy and Table.
+#[test]
+fn ssh_keys_typed_during_a_pending_bootstrap_stay_held_in_order_and_unwritten() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_all_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                ssh_pane_with_held_typeahead_for_test(view, ctx);
+                assert_eq!(view.ssh_held_bytes(), "echo hi\r".len(), "{mode:?}");
+                // Keep typing while the bootstrap is still pending: each key joins the hold.
+                for key in "ls".chars() {
+                    view.typed_characters_on_terminal(&key.to_string(), ctx);
+                }
+                assert!(view.ssh_typeahead_holding, "{mode:?}");
+                assert_eq!(
+                    view.ssh_held_bytes(),
+                    "echo hi\rls".len(),
+                    "{mode:?}: no key lost, none doubled"
+                );
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{mode:?}");
+            });
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{mode:?}: nothing was written mid-bootstrap: {:?}",
+                pty_writes.borrow()
+            );
+        })
+    }
 }
 
 /// #988: with a command (e.g. `ksu`) running, clicking an earlier agent response must not be
@@ -22376,16 +22382,9 @@ fn ssh_ctrl_c_while_silently_connecting_aborts_with_sigint() {
 #[test]
 fn ssh_bootstrap_interrupt_route_holds_then_forwards() {
     use SshBootstrapInterruptRoute::{Forward, Hold};
-    assert_eq!(ssh_bootstrap_interrupt_route(false, None), Hold);
-    assert_eq!(
-        ssh_bootstrap_interrupt_route(false, Some(std::time::Duration::from_secs(1))),
-        Hold
-    );
-    assert_eq!(ssh_bootstrap_interrupt_route(true, None), Forward);
-    assert_eq!(
-        ssh_bootstrap_interrupt_route(false, Some(SSH_BOOTSTRAP_SWALLOW_CEILING)),
-        Forward
-    );
+    // #1808: only the bootstrap-failed give-up flips Hold to Forward, never the session's age.
+    assert_eq!(ssh_bootstrap_interrupt_route(false), Hold);
+    assert_eq!(ssh_bootstrap_interrupt_route(true), Forward);
 }
 
 /// #1001: between the SSH hook and the remote InitShell the local tty is raw, so a Ctrl-C byte
