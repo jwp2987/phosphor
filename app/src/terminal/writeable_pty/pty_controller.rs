@@ -166,16 +166,17 @@ const NATIVE_COMPLETIONS_UNAVAILABLE_MESSAGE: &str = "Tab completions aren't ava
 /// would already suspect something is wrong, so the log line is there before they go looking.
 const PTY_WRITE_GATE_STALL_LOG_THRESHOLD: Duration = Duration::from_secs(3);
 
-/// How long a typeahead hand-off request may wait on lines the counts consider queued, with no
-/// precmd or preexec arriving, before those lines are taken as consumed by something other than
-/// the shell (a program reading stdin, an empty or continued line) and the counts are reset.
-const TYPEAHEAD_HANDOFF_STALE_COUNT_RESET: Duration = Duration::from_millis(250);
-
-/// #1353 phase 6 (PTY-3): with the prompt-sequence path the stale line counts are reset by events
-/// -- the sampled shell state at decision time (a program owns the terminal), the finished
-/// command having been interactive (see `TypeaheadHandoff::note_interactive_command_finished`),
-/// and the prompt's Precmd -- so this is only the one logged give-up for a continued line (PS2) or
-/// a shell that reports nothing, which no event can tell from "still working through the queue".
+/// #1353 phase 6 (PTY-3): the stale line counts are reset by EVENTS only -- the sampled shell
+/// state at decision time (a program owns the terminal), the finished command having been
+/// interactive (see `TypeaheadHandoff::note_interactive_command_finished`), a continuation
+/// prompt, the shell's line editor reading again (the unix probe + stream barrier, or
+/// PowerShell's `LineEditorReading` marker on ConPTY), and the prompt's Precmd.
+///
+/// Owner rule (2026-11-08, a timer never writes, routes, commits or re-asks): this is only the
+/// one logged give-up (`handoff_stale_counts_kept`) for a wait no event can tell from "still
+/// working through the queue". It changes no count and no state and asks for no decision; the pty
+/// keeps input (a plain terminal) until the next event. The 250 ms reset of the non-seq path was
+/// deleted: that path now waits for the same events.
 const TYPEAHEAD_HANDOFF_STALE_COUNT_GIVE_UP: Duration = Duration::from_secs(5);
 
 /// Represents a single call to write bytes to the PTY asynchronously.
@@ -966,6 +967,12 @@ impl<T: EventLoopSender> PtyController<T> {
             .as_ref(ctx)
             .get(session_id)
             .is_some_and(|session| session.shell().shell_type() == ShellType::PowerShell);
+        // The marker is also the stale-count proof where nothing samples the shell (ConPTY),
+        // under the same kill switch.
+        self.terminal_model
+            .lock()
+            .typeahead_handoff_mut()
+            .set_conpty_marker_proof(is_powershell && line_editor_reading_activates());
         if is_powershell && line_editor_reading_activates() {
             warpui::input_order::log_hop("line_editor_reading_activates", || {
                 format!("released_queued_hold={released_queued_hold}")
@@ -991,7 +998,7 @@ impl<T: EventLoopSender> PtyController<T> {
                 .terminal_model
                 .lock()
                 .typeahead_handoff()
-                .has_unanswered_lines()
+                .has_unanswered_lines_for_activation()
         {
             self.line_editor_status
                 .update(ctx, |status, ctx| status.note_shell_reading_line(ctx));
@@ -1056,7 +1063,7 @@ impl<T: EventLoopSender> PtyController<T> {
                 .terminal_model
                 .lock()
                 .typeahead_handoff()
-                .has_unanswered_lines()
+                .has_unanswered_lines_for_activation()
         {
             return false;
         }
@@ -1096,60 +1103,33 @@ impl<T: EventLoopSender> PtyController<T> {
                 return;
             }
         }
-        let wait = if seq_mode {
-            TYPEAHEAD_HANDOFF_STALE_COUNT_GIVE_UP
-        } else {
-            TYPEAHEAD_HANDOFF_STALE_COUNT_RESET
-        };
+        let _ = seq_mode;
         ctx.spawn(
             async move {
-                Timer::after(wait).await;
+                Timer::after(TYPEAHEAD_HANDOFF_STALE_COUNT_GIVE_UP).await;
             },
-            move |me, _, ctx| {
-                let (did_reset, diverged, young_hold_live, activity, markers_live) = {
-                    let mut model = me.terminal_model.lock();
-                    let mut handoff = model.typeahead_handoff_mut();
-                    let diverged = handoff.counts_diverged();
-                    let young_hold_live = handoff.young_hold_queued();
-                    let activity = handoff.shell_activity();
-                    let markers_live = handoff.line_editor_markers_live();
+            move |me, _, _ctx| {
+                // A logged give-up only: no reset, no retry, no toast, no write.
+                let (still_waiting, activity, markers_live) = {
+                    let model = me.terminal_model.lock();
+                    let handoff = model.typeahead_handoff();
                     (
-                        handoff.reset_stale_counts(activity_generation),
-                        diverged,
-                        young_hold_live,
-                        activity,
-                        markers_live,
+                        handoff.counts_diverged()
+                            && handoff.activity_generation() == activity_generation,
+                        handoff.shell_activity(),
+                        handoff.line_editor_markers_live(),
                     )
                 };
-                if seq_mode && did_reset && diverged {
-                    // The give-up of the wait fired: nothing said the queued lines were answered
-                    // or consumed. Counts and the wait only, never bytes. The shell's last
-                    // line-editor marker says which case it was (#1391): `Reading` with live
-                    // markers is a line continued inside the editor with no continuation event
-                    // (PowerShell on ConPTY), `Unknown` a bootstrap that sends no markers.
+                if still_waiting {
                     log::warn!(
                         "typeahead hand-off: no prompt, command start or terminal-owner change \
-                         within {} s for lines the counts consider queued; treating them as consumed",
+                         within {} s for lines the counts consider queued; keeping them (the pty \
+                         keeps input until the next event)",
                         TYPEAHEAD_HANDOFF_STALE_COUNT_GIVE_UP.as_secs()
                     );
-                    warpui::input_order::log_hop("handoff_stale_counts_reset", || {
-                        format!(
-                            "by=give_up shell_activity={activity:?} markers_live={markers_live}"
-                        )
+                    warpui::input_order::log_hop("handoff_stale_counts_kept", || {
+                        format!("shell_activity={activity:?} markers_live={markers_live}")
                     });
-                }
-                // Decide again whether or not a request was waiting: after a `DrainAndWait` the
-                // reset is what hands input back to the editor.
-                // (In the prompt-sequence path other events retry a wait that is not about the counts.)
-                if did_reset && (diverged || !seq_mode) {
-                    if young_hold_live {
-                        // #1614: not now (a timer must not end the hold as typeahead: the
-                        // decision's no-binding and committed-delivery branches would); decide on
-                        // the next flushed write, or when the hold's own end asks for it.
-                        me.handoff_request_waiting = true;
-                    } else {
-                        me.retry_typeahead_handoff_request(ctx);
-                    }
                 }
             },
         );

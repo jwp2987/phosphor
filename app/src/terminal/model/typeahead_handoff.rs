@@ -766,6 +766,15 @@ pub struct TypeaheadHandoff {
     /// The prompt sequence number of the last `LineEditorReading` applied, so a second marker for
     /// the same prompt changes nothing.
     reading_seq: Option<u64>,
+    /// A `LineEditorReading` marker was parsed AFTER the last Enter the hand-off counted (model
+    /// thread, stream order). Cleared whenever an Enter is counted. Where the platform samples
+    /// nothing and has no stream barrier (ConPTY), this is the PowerShell proof that its line
+    /// editor reads again: see [`Self::counts_provably_stale`].
+    reading_marker_since_enter: bool,
+    /// PowerShell on ConPTY: the marker is its line editor's ready signal (set by the controller
+    /// from the shell type and the `PHOSPHOR_LINE_EDITOR_READING_ACTIVATES` kill switch). Other
+    /// shells print the marker with their prompt, where the tty may still be cooked.
+    conpty_marker_proof: bool,
     /// A line-editor marker has been seen this session: the bootstrap sends them, so the
     /// events (not the logged give-ups, which stay as the net) account for the shell's line
     /// editor.
@@ -1709,6 +1718,7 @@ impl TypeaheadHandoff {
     pub fn on_line_editor_reading(&mut self, session: Option<u64>, seq: Option<u64>) -> bool {
         warpui::input_order::note_shell_signal(warpui::input_order::ShellSignal::LineEditorReady);
         self.line_editor_markers_live = true;
+        self.reading_marker_since_enter = true;
         let stale = match (seq, self.prompt_seq) {
             (Some(seq), Some(prompt)) => prompt.session == session && seq < prompt.seq,
             _ => false,
@@ -2416,6 +2426,29 @@ impl TypeaheadHandoff {
         )
     }
 
+    /// As [`Self::has_unanswered_lines`], for deciding whether the line editor's ready signal may
+    /// activate it: lines PowerShell's own marker proves answered (a stuck PS2, a consumed
+    /// `Read-Host`; see `counts_provably_stale`) do not hold the activation back, so the
+    /// decision it runs re-baselines the counts on that event.
+    pub fn has_unanswered_lines_for_activation(&self) -> bool {
+        match self.owner() {
+            Owner::Pty {
+                enters_written,
+                precmds_seen,
+                ..
+            } if enters_written > precmds_seen => {
+                !(self.powershell_marker_proves_reading()
+                    && self.counts_provably_stale(enters_written, precmds_seen))
+            }
+            _ => false,
+        }
+    }
+
+    /// The generation `reset_stale_counts` is guarded by.
+    pub fn activity_generation(&self) -> u64 {
+        self.activity_generation
+    }
+
     pub fn held_agent_command(&self) -> Option<&HeldAgentCommand> {
         self.held_agent_command.as_ref()
     }
@@ -2532,6 +2565,7 @@ impl TypeaheadHandoff {
             enters_written: enters_before.saturating_add(1),
             precmds_seen,
         };
+        self.reading_marker_since_enter = false;
         if queued_hold {
             let id = self.young_hold_id;
             if queued_hold_follows {
@@ -2568,6 +2602,7 @@ impl TypeaheadHandoff {
             *enters_written = enters_written.saturating_add(enters);
             *wrote_user_bytes = dirty;
             if enters > 0 {
+                self.reading_marker_since_enter = false;
                 self.activity_generation = self.activity_generation.wrapping_add(1);
             }
         }
@@ -2596,6 +2631,7 @@ impl TypeaheadHandoff {
         {
             *enters_written = enters_written.saturating_add(1);
             *wrote_user_bytes = false;
+            self.reading_marker_since_enter = false;
         }
     }
 
@@ -3678,12 +3714,43 @@ impl TypeaheadHandoff {
     /// up to a moment after that sample (so every Precmd the shell wrote is counted), and the raw
     /// tty is not a running command's read ([`Self::raw_tty_is_a_running_commands_read`]). The
     /// barrier is asked last, after the sample.
+    ///
+    /// Where nothing samples the shell (ConPTY: no probe, no barrier), PowerShell's own
+    /// `LineEditorReading` marker is the proof ([`Self::powershell_marker_proves_reading`]): a
+    /// stuck PS2 or a consumed `Read-Host` re-baselines on that event, not on a timer.
     fn counts_provably_stale(&self, enters_written: u32, precmds_seen: u32) -> bool {
-        precmds_seen < enters_written
-            && !self.own_preexec_pending
-            && self.foreground_probe.prompt_fact() == ShellPromptFact::LineEditorReading
-            && !self.raw_tty_is_a_running_commands_read()
-            && self.foreground_probe.stream_drained() == Some(true)
+        if precmds_seen >= enters_written
+            || self.own_preexec_pending
+            || self.raw_tty_is_a_running_commands_read()
+        {
+            return false;
+        }
+        if self.foreground_probe.samples_shell() {
+            return self.foreground_probe.prompt_fact() == ShellPromptFact::LineEditorReading
+                && self.foreground_probe.stream_drained() == Some(true);
+        }
+        self.powershell_marker_proves_reading()
+    }
+
+    /// The marker is parsed in stream order after everything the shell wrote before it (the
+    /// wrapper sends it as the last thing before the line editor reads), so a marker parsed after
+    /// the last counted Enter, with no Preexec/Precmd since (`shell_activity` is still
+    /// `Reading`), says the editor reads again with every earlier Precmd already counted. Only
+    /// for PowerShell with the marker kill switch on (`conpty_marker_proof`) and on a platform
+    /// that samples nothing; residual risk: a marker emitted for the prompt before the Enter but
+    /// parsed after it (no barrier on ConPTY to exclude it).
+    fn powershell_marker_proves_reading(&self) -> bool {
+        self.conpty_marker_proof
+            && !self.foreground_probe.samples_shell()
+            && self.line_editor_markers_live
+            && self.reading_marker_since_enter
+            && self.shell_activity == ShellActivity::Reading
+    }
+
+    /// The controller says this session's marker is a PowerShell ready signal (see
+    /// `conpty_marker_proof`).
+    pub fn set_conpty_marker_proof(&mut self, on: bool) {
+        self.conpty_marker_proof = on;
     }
 
     /// Whether, with the stream applied up to now, the last thing the shell's hooks said is that
@@ -3752,6 +3819,9 @@ impl TypeaheadHandoff {
                     *enters_written = enters_written.saturating_add(enters);
                     *wrote_user_bytes = dirty;
                     wrote_an_enter = enters > 0;
+                    if enters > 0 {
+                        self.reading_marker_since_enter = false;
+                    }
                 }
                 // An Enter is activity too: a quiet-period reset armed before it must not
                 // treat the line it ends as answered (a password typed after the timer was

@@ -5876,3 +5876,71 @@ fn a_report_is_pending_before_editor_text_until_it_lands() {
     // Keys the pty owns are not the editor's text at all.
     assert!(!after_submit().report_pending_before_editor_text());
 }
+
+/// `read x` finished on a platform that samples nothing (ConPTY): no probe, no barrier.
+fn read_x_finished_unsampled() -> TypeaheadHandoff {
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.set_prompt_seq_enabled(true);
+    handoff.note_shell_hook_parsed(ParsedShellHook::Precmd);
+    handoff.on_precmd_seq(Some(7), Some(1));
+    handoff.on_command_written();
+    handoff.note_shell_hook_parsed(ParsedShellHook::Preexec);
+    handoff.on_preexec(false);
+    assert_eq!(
+        type_and_flush(&mut handoff, b"tok\r"),
+        UserBytesRoute::WriteCounted
+    );
+    handoff.note_shell_hook_parsed(ParsedShellHook::CommandFinished);
+    handoff.note_shell_hook_parsed(ParsedShellHook::Precmd);
+    handoff.on_precmd();
+    handoff.on_precmd_seq(Some(7), Some(3));
+    assert!(handoff.counts_diverged());
+    handoff
+}
+
+/// Owner rule (a timer never resets counts or decides): on ConPTY (no probe, no barrier)
+/// PowerShell's `LineEditorReading` marker, parsed after the last counted Enter, is the proof that
+/// its line editor reads again, so a consumed `read`/stuck PS2 re-baselines on that EVENT; with
+/// no marker, a marker from before the Enter, another shell, or the kill switch off, nothing is
+/// proven and the pty keeps input.
+#[test]
+fn a_powershell_marker_after_the_last_enter_proves_stale_counts_without_a_probe() {
+    // No marker yet: not provable; and the proof flag alone is not enough.
+    let mut handoff = read_x_finished_unsampled();
+    handoff.set_conpty_marker_proof(true);
+    assert!(handoff.has_unanswered_lines_for_activation());
+    assert!(matches!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::DrainAndWait { .. }
+    ));
+
+    // The marker after the Enter, PowerShell, switch on: proven, the editor takes input.
+    let mut handoff = read_x_finished_unsampled();
+    handoff.set_conpty_marker_proof(true);
+    handoff.on_line_editor_reading(None, None);
+    assert!(!handoff.has_unanswered_lines_for_activation());
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::Committed
+    );
+    assert_eq!(handoff.state(), &HandoffState::EditorOwned);
+
+    // Not PowerShell (or the kill switch off): the marker proves nothing.
+    let mut handoff = read_x_finished_unsampled();
+    handoff.on_line_editor_reading(None, None);
+    assert!(handoff.has_unanswered_lines_for_activation());
+    assert!(matches!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::DrainAndWait { .. }
+    ));
+
+    // An Enter counted after the marker clears it: the marker may predate that Enter.
+    let mut handoff = read_x_finished_unsampled();
+    handoff.set_conpty_marker_proof(true);
+    handoff.on_line_editor_reading(None, None);
+    assert_eq!(
+        type_and_flush(&mut handoff, b"z\r"),
+        UserBytesRoute::WriteCounted
+    );
+    assert!(handoff.has_unanswered_lines_for_activation());
+}
