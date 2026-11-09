@@ -1150,7 +1150,7 @@ impl View for AIBlock {
                     .model
                     .is_latest_non_passive_exchange_in_root_task(app)
                     && self.has_imported_comments_in_current_thread(app),
-                ask_user_question_view: self.ask_user_question_view.as_ref(),
+                ask_user_question_views: &self.ask_user_question_views,
             },
             app,
         ));
