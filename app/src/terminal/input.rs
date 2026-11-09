@@ -1249,6 +1249,9 @@ pub enum Event {
     /// Enter was deferred until the shell's typeahead report arrives; keys typed meanwhile must
     /// reach the terminal so they are held behind the command (`FeatureFlag::TypeaheadHandoff`).
     TypeaheadHandoffEnterDeferred,
+    /// The Tab that waited for the shell's line report and then ran on the merged line has been
+    /// answered (#1659); an Enter deferred behind the report may run now.
+    ReportTabSettled,
     /// Input the user typed after an Enter that waited for its classification verdict (#1016).
     /// The Enter has now run; its gate on the pane queue holds the keys typed behind it until the
     /// pty route is settled (`TerminalView::settle_enter_queue`).
@@ -2353,6 +2356,13 @@ pub struct Input {
     /// The waiting Enter is being run right now (#1016): its own `input_enter` is the submit, not
     /// an Enter typed behind a pending replay, so it must not queue itself.
     running_deferred_enter: bool,
+    /// A Tab (`CompletionsTrigger::Keybinding`) pressed while the shell's line report is pending
+    /// waits for it (#1659): the editor holds only the fragment typed since, and the report lands
+    /// in front of it. It runs on the merged line when the report is in.
+    tab_waits_for_report: bool,
+    /// The Tab resumed after the report carries a deferred Enter behind it (#1659): when its
+    /// completion settles the view runs that Enter (`Event::ReportTabSettled`).
+    announce_report_tab_settled: bool,
     /// #1348 / owner rule: text typed while an ssh connect was in progress was handed back to this
     /// editor (the connect ended without a remote shell), so the line may be one the user meant
     /// for the remote machine. The first Enter after that hand-back is not executed (it may have
@@ -4134,6 +4144,8 @@ impl Input {
             deferred_enter_activity: DeferredEnterActivity::default(),
             handoff_enter_started: None,
             running_deferred_enter: false,
+            tab_waits_for_report: false,
+            announce_report_tab_settled: false,
             ssh_handover_enter_guard: None,
             last_enter_submitted_shell_command: false,
             editor_submission: None,
@@ -4245,6 +4257,48 @@ impl Input {
             .update(ctx, |button_bar, ctx| {
                 button_bar.set_slash_button_disabled(should_disable, ctx);
             });
+    }
+
+    /// The filter text of the open @ picker as the editor's buffer holds it now: the text between
+    /// the `@` and the cursor. The editor's event for the edit that produced it may not have
+    /// reached the menu yet (#1645).
+    fn ai_context_filter_text_now(&self, ctx: &AppContext) -> Option<String> {
+        let InputSuggestionsMode::AIContextMenu {
+            at_symbol_position, ..
+        } = self.suggestions_mode_model.as_ref(ctx).mode()
+        else {
+            return None;
+        };
+        let first_char_pos = at_symbol_position + 1;
+        let cursor_position = self
+            .editor
+            .as_ref(ctx)
+            .start_byte_index_of_last_selection(ctx)
+            .as_usize();
+        let num_chars = cursor_position.saturating_sub(first_char_pos);
+        Some(
+            self.editor
+                .as_ref(ctx)
+                .buffer_text(ctx)
+                .chars()
+                .skip(first_char_pos)
+                .take(num_chars)
+                .collect(),
+        )
+    }
+
+    /// An Enter (or Tab, Right) accepts the @ picker's row. It carries the filter the buffer holds
+    /// now, so an Enter that follows an edit whose event is still queued waits for that edit's
+    /// query instead of being cancelled by it (#1645).
+    fn accept_ai_context_menu_item(&mut self, ctx: &mut ViewContext<Self>) {
+        let typed = self.ai_context_filter_text_now(ctx);
+        self.editor.update(ctx, |editor, ctx| {
+            if let Some(ai_context_menu) = editor.ai_context_menu() {
+                ai_context_menu.update(ctx, |ai_context_menu, ctx| {
+                    ai_context_menu.select_current_item_after_typing(typed, ctx);
+                });
+            }
+        });
     }
 
     fn handle_ai_context_menu_search(&mut self, is_navigation: bool, ctx: &mut ViewContext<Self>) {
@@ -11075,13 +11129,7 @@ impl Input {
                 // If the AI context menu is open and we're at the end of the buffer,
                 // make right arrow act like enter and select the current item
                 if self.suggestions_mode_model.as_ref(ctx).is_ai_context_menu() {
-                    self.editor.update(ctx, |editor, ctx| {
-                        if let Some(ai_context_menu) = editor.ai_context_menu() {
-                            ai_context_menu.update(ctx, |menu, ctx| {
-                                menu.select_current_item(ctx);
-                            });
-                        }
-                    });
+                    self.accept_ai_context_menu_item(ctx);
                 }
             }
             EditorEvent::Enter => self.input_enter(ctx),
@@ -11093,6 +11141,7 @@ impl Input {
                 self.disarm_glue_enter_guard();
                 // #1571: ^C voids an Enter held for an unready shell (never run later).
                 self.cancel_unready_enter("editor_interrupt", ctx);
+                self.cancel_report_tab();
                 // #1652: and one waiting for the multi-line dialog (the dialog closes).
                 self.cancel_multiline_dialog("editor_interrupt", ctx);
                 self.close_input_suggestions(/*should_focus_input=*/ true, ctx);
@@ -12392,6 +12441,9 @@ impl Input {
         completions_trigger: CompletionsTrigger,
         ctx: &mut ViewContext<Self>,
     ) {
+        if self.defer_tab_for_report(completions_trigger, ctx) {
+            return;
+        }
         if self.suggestions_mode_model.as_ref(ctx).is_slash_commands() {
             self.close_slash_commands_menu(ctx);
         }
@@ -12846,9 +12898,115 @@ impl Input {
         generation != self.input_generation
     }
 
+    /// #1659: an explicit Tab while the shell's line report is pending would complete only the
+    /// editor's fragment (the report lands in front of it), and an Enter after it would run the
+    /// merged line uncompleted. The Tab waits for the report instead and runs on the merged line
+    /// ([`Self::resume_tab_after_report`]). Returns whether it was deferred. No timer is involved:
+    /// the report landing, or the hand-off leaving the state that awaits it, resumes it.
+    fn defer_tab_for_report(
+        &mut self,
+        completions_trigger: CompletionsTrigger,
+        _ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        if completions_trigger != CompletionsTrigger::Keybinding
+            || !FeatureFlag::TypeaheadHandoff.is_enabled()
+        {
+            return false;
+        }
+        let pending = self
+            .model
+            .lock()
+            .typeahead_handoff()
+            .report_pending_before_editor_text();
+        if !pending {
+            return false;
+        }
+        if !self.tab_waits_for_report {
+            warpui::input_order::log_hop("tab_deferred_for_report", String::new);
+        }
+        self.tab_waits_for_report = true;
+        true
+    }
+
+    /// Whether a Tab is waiting for the shell's line report (#1659).
+    pub(crate) fn tab_waits_for_report(&self) -> bool {
+        self.tab_waits_for_report
+    }
+
+    /// Runs the Tab that waited for the report, now on the merged line (#1659). With
+    /// `announce_settled`, [`Event::ReportTabSettled`] is emitted when its completion has been
+    /// answered (a deferred Enter behind the report runs then). Returns whether a completion is
+    /// in flight and the caller must wait for that event.
+    pub(crate) fn resume_tab_after_report(
+        &mut self,
+        announce_settled: bool,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        if !std::mem::take(&mut self.tab_waits_for_report) {
+            return false;
+        }
+        if self.editor.as_ref(ctx).is_empty(ctx) {
+            // The line was cleared while the Tab waited (^C, a submit): nothing to complete.
+            return false;
+        }
+        warpui::input_order::log_hop("tab_resumed_after_report", String::new);
+        self.open_completion_suggestions(CompletionsTrigger::Keybinding, ctx);
+        let in_flight = announce_settled && self.tab_completion_request.is_some();
+        self.announce_report_tab_settled = in_flight;
+        in_flight
+    }
+
+    /// Ends the wait of a Tab that will not be answered (Ctrl-C voided the line, the request was
+    /// superseded): a Tab nobody can run is dropped, the line is as the user left it.
+    pub(crate) fn cancel_report_tab(&mut self) {
+        self.tab_waits_for_report = false;
+        self.announce_report_tab_settled = false;
+    }
+
+    /// Closes the completion menu a Tab left open, before the Enter that waited behind that Tab
+    /// runs the visible line (#1659).
+    pub(crate) fn close_completion_menu_for_deferred_enter(&mut self, ctx: &mut ViewContext<Self>) {
+        if matches!(
+            self.suggestions_mode_model.as_ref(ctx).mode(),
+            InputSuggestionsMode::CompletionSuggestions { .. }
+        ) {
+            self.close_input_suggestions(false, ctx);
+        }
+    }
+
+    /// The completion of the resumed Tab was answered (or superseded): tells the view.
+    fn settle_report_tab(&mut self, ctx: &mut ViewContext<Self>) {
+        if std::mem::take(&mut self.announce_report_tab_settled) {
+            ctx.emit(Event::ReportTabSettled);
+        }
+    }
+
+    /// Delivers a completion result to [`Self::handle_completion_suggestions_results`] unless an
+    /// Esc, submit, clear or block completion happened since the request started. A Tab resumed
+    /// after the shell's line report tells the view when it is answered (#1659).
+    fn deliver_completion_suggestions_results(
+        &mut self,
+        generation: u64,
+        results: Option<SuggestionResults>,
+        completions_trigger: CompletionsTrigger,
+        editor_snapshot_when_completer_was_ran: EditorSnapshot,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.deliver_completion_suggestions_results_inner(
+            generation,
+            results,
+            completions_trigger,
+            editor_snapshot_when_completer_was_ran,
+            ctx,
+        );
+        if completions_trigger == CompletionsTrigger::Keybinding {
+            self.settle_report_tab(ctx);
+        }
+    }
+
     /// Delivers a completion result to [`Self::handle_completion_suggestions_results`] unless an
     /// Esc, submit, clear or block completion happened since the request started.
-    fn deliver_completion_suggestions_results(
+    fn deliver_completion_suggestions_results_inner(
         &mut self,
         generation: u64,
         results: Option<SuggestionResults>,
@@ -13596,13 +13754,7 @@ impl Input {
             self.suggestions_mode_model.as_ref(ctx).mode(),
             InputSuggestionsMode::AIContextMenu { .. }
         ) {
-            self.editor.update(ctx, |editor, ctx| {
-                if let Some(ai_context_menu) = editor.ai_context_menu() {
-                    ai_context_menu.update(ctx, |ai_context_menu, ctx| {
-                        ai_context_menu.select_current_item(ctx);
-                    });
-                }
-            });
+            self.accept_ai_context_menu_item(ctx);
             return;
         }
         // We have to manually check if "tab" is bound to
@@ -14138,13 +14290,7 @@ impl Input {
                 warpui::input_order::log_hop("enter_menu_accept", || {
                     self.ai_context_menu_enter_detail(true, ctx)
                 });
-                self.editor.update(ctx, |editor, ctx| {
-                    if let Some(ai_context_menu) = editor.ai_context_menu() {
-                        ai_context_menu.update(ctx, |ai_context_menu, ctx| {
-                            ai_context_menu.select_current_item(ctx);
-                        });
-                    }
-                });
+                self.accept_ai_context_menu_item(ctx);
                 return;
             }
 
@@ -14274,13 +14420,7 @@ impl Input {
             warpui::input_order::log_hop("enter_menu_accept", || {
                 self.ai_context_menu_enter_detail(false, ctx)
             });
-            self.editor.update(ctx, |editor, ctx| {
-                if let Some(ai_context_menu) = editor.ai_context_menu() {
-                    ai_context_menu.update(ctx, |ai_context_menu, ctx| {
-                        ai_context_menu.select_current_item(ctx);
-                    });
-                }
-            });
+            self.accept_ai_context_menu_item(ctx);
             return;
         } else if self
             .suggestions_mode_model

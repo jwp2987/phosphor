@@ -15339,6 +15339,69 @@ fn typeahead_handoff_ctrl_c_with_no_prompt_cycle_decides_at_once() {
     })
 }
 
+/// #1703 (busy-machine M10): the give-up of the hand-back after a Ctrl-C never commits. On a slow
+/// machine the report or prompt cycle may only be late; the editor must not take the line on the
+/// timer. The give-up stops waiting for that one signal and asks the controller to decide again
+/// (which needs the shell's line-editor evidence); the pty keeps input meanwhile.
+#[test]
+fn typeahead_handoff_ctrl_c_give_up_does_not_commit() {
+    for prompt_cycle_expected in [false, true] {
+        App::test((), |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let retries = Rc::new(RefCell::new(0));
+            let retries_seen = retries.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                    if let Event::RetryTypeaheadHandoffRequest = event {
+                        *retries_seen.borrow_mut() += 1;
+                    }
+                });
+            });
+
+            terminal.update(&mut app, |view, ctx| {
+                {
+                    let mut model = view.model.lock();
+                    let mut handoff = model.typeahead_handoff_mut();
+                    handoff.set_prompt_seq_enabled(true);
+                    handoff.on_precmd_seq(Some(1), Some(1));
+                    handoff.on_command_written();
+                    handoff.on_precmd();
+                }
+                view.handle_typeahead_handoff_interrupt_for_shell(prompt_cycle_expected, ctx);
+                assert!(matches!(
+                    view.model.lock().typeahead_handoff().state(),
+                    HandoffState::PtyOwned { .. }
+                ));
+                view.interrupt_give_up_fired(std::time::Duration::from_secs(2), ctx);
+                let handoff_is_waiting = {
+                    let model = view.model.lock();
+                    let handoff = model.typeahead_handoff();
+                    handoff.interrupt_barrier_pending() || handoff.interrupt_awaiting_cycle()
+                };
+                assert!(
+                    !handoff_is_waiting,
+                    "the give-up stops waiting for the signal"
+                );
+                assert!(
+                    matches!(
+                        view.model.lock().typeahead_handoff().state(),
+                        HandoffState::PtyOwned { .. }
+                    ),
+                    "a timer must not hand the line to the editor"
+                );
+            });
+            let expected = if prompt_cycle_expected { 1 } else { 2 };
+            assert_eq!(
+                *retries.borrow(),
+                expected,
+                "the give-up asks the controller to decide again (the interrupt's own retry counts for zsh)"
+            );
+        })
+    }
+}
+
 /// A shell that does run a prompt cycle hands input back on the cycle's Precmd: nothing is asked of
 /// the controller at the interrupt, and the Precmd commits.
 #[test]

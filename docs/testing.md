@@ -2968,3 +2968,31 @@ text exactly inside one bracketed paste, and the 1 MB write is within 40x the 10
 confirms the freeze is gone, since these unit tests cannot render.
 
 #1777 (ConPTY Ctrl-C and queued lines): a Ctrl-C does not flush the lines written behind a running command under ConPTY with an msys program, so on a ConPTY session the hand-off keeps its Enter count across the interrupt (`interrupt_enters_written`) and the pty owns input until a prompt has answered each queued line (the stale-count reset covers lines that were in fact discarded); POSIX keeps the flush rule. Unit tests in `terminal/model/typeahead_handoff_tests.rs`: `conpty_ctrl_c_keeps_the_queued_lines_counted_until_their_prompts_arrive`, `the_interrupt_enter_count_is_kept_only_on_conpty` (pure function; the existing POSIX cases `ctrl_c_during_a_command_hands_back_at_its_prompt` and `ctrl_c_at_the_prompt_discards_the_line` are the controls). No appci case yet: the Windows `big_paste` / `tab_enter` cases already relaunch the app around a paste backlog (r18u23), so they do not exercise this path; a case that types a line behind `cat`, sends Ctrl-C, and checks each line ran once and in order needs a Windows run.
+
+## Round g2: input and editor fixes (#1635, #1643, #1645, #1659, #1703)
+
+- #1635: `editor/view/mod_test.rs` `test_queue_editor_host_gates_every_map_reading_key_not_only_layout_ones` (the editor's
+  own queue host opens the display-map gate for a cursor key and a typed closer, as the input's host does; it used to
+  gate only layout-reading keys and applied the rest against the pre-paste map).
+- #1643: no unit test (GlobalSearchView has no view-test harness; building one needs the full workspace singletons).
+  Covered by the existing macOS appci cases `flood_scrollback_find` and `remote_heredoc_paste`, which press Cmd-Shift-F,
+  Escape, then type a command: before the fix the command was searched, now Escape emits `Event::Close`, the left panel
+  closes and the active tab takes focus. Check on the Mac box in the next candidate run.
+- #1645: `search/ai_context_menu/query_gate_tests.rs` `an_enter_typed_after_a_pending_edit_survives_that_edits_query`,
+  `a_different_query_still_cancels_an_enter_waiting_for_a_pending_edit`, `no_edit_is_pending_for_the_newest_query_or_a_fresh_gate`.
+  The Enter carries the filter the buffer holds (`Input::accept_ai_context_menu_item`); an edit event handled after it
+  is that Enter's own query and keeps it. Both input modes share this path (the picker is above the queue).
+- #1659: `terminal/model/typeahead_handoff_tests.rs` `a_report_is_pending_before_editor_text_until_it_lands`. A Tab with
+  the shell's line report pending is held (`Input::defer_tab_for_report`, hop `tab_deferred_for_report`) and runs on the
+  merged line when the report lands (hop `tab_resumed_after_report`); a deferred Enter behind the report waits for that
+  completion (`Event::ReportTabSettled`, hop `enter_waits_for_report_tab`, give-up net `REPORT_TAB_GIVE_UP` that hands the
+  line back and never writes). Run `script/test_native_completions` after this change (the remote Tab goes through
+  `open_completion_suggestions`, which now returns early for a pending report only). The Windows `tab_enter` appci cascade
+  (r18u22) is the real-app check: Tab on the fragment while the report is in flight must complete the whole line and
+  Enter must run the completed line. No view-level unit test: the report/Tab interleave needs the pty-backed
+  `TerminalView` fixtures that only run on the box.
+- #1703: `terminal/view_test.rs` `typeahead_handoff_ctrl_c_give_up_does_not_commit` (both the zsh barrier and the
+  prompt-cycle wait). The 2 s `INTERRUPT_GIVE_UP` now only stops waiting for that one signal and asks the controller to
+  decide again; the editor takes the line on the shell's own line-editor-active evidence (or the late Precmd/report), never
+  on the timer. The older settle path for bootstraps without prompt sequence numbers (`INTERRUPT_SETTLE`, 250 ms) is not
+  part of M10 and is unchanged.

@@ -106,6 +106,8 @@ pub enum GlobalSearchAction {
     FocusResultsList,
     ToggleRegexSearch,
     ToggleCaseSensitivity,
+    /// Escape: close the search and give focus back to the terminal (#1643).
+    Close,
 }
 
 pub enum GlobalSearchEvent {
@@ -146,6 +148,10 @@ pub enum Event {
         line_number: u32,
         column_num: Option<usize>,
     },
+    /// The user pressed Escape in the search: the owner closes the panel and returns focus to the
+    /// terminal input (#1643). Before, focus stayed in the query editor and the next typed command
+    /// became a search.
+    Close,
 }
 
 enum SelectionDirection {
@@ -391,6 +397,7 @@ impl TypedActionView for GlobalSearchView {
                 });
                 self.enter_query_mode(ctx);
             }
+            GlobalSearchAction::Close => ctx.emit(Event::Close),
             GlobalSearchAction::ResultsDown => {
                 if !matches!(self.focus_mode, FocusMode::ResultsList) {
                     return;
@@ -635,6 +642,11 @@ impl GlobalSearchView {
                 GlobalSearchAction::ResultsEnter,
                 id!(GlobalSearchView::ui_name()),
             ),
+            FixedBinding::new(
+                "escape",
+                GlobalSearchAction::Close,
+                id!(GlobalSearchView::ui_name()),
+            ),
         ]);
     }
 
@@ -873,6 +885,7 @@ impl GlobalSearchView {
             EditorEvent::Enter => {
                 self.rerun_search_from_query(ctx, true);
             }
+            EditorEvent::Escape => ctx.emit(Event::Close),
             _ => {}
         }
     }

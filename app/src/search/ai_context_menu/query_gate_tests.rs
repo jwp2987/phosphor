@@ -131,3 +131,51 @@ fn a_reset_forgets_the_latest_query() {
     gate.request("fo".into());
     assert!(gate.is_stale());
 }
+
+/// #1645: an Enter typed after an edit whose event had not reached the menu yet waits for that
+/// edit's query; the query's arrival does not cancel it, and it fires once its results come.
+#[test]
+fn an_enter_typed_after_a_pending_edit_survives_that_edits_query() {
+    let mut gate = QueryGate::default();
+    gate.request("fo".into());
+    gate.applied("fo", true);
+    gate.results_reported();
+    // The buffer holds "foo" but its edit event is still queued.
+    assert!(gate.edit_pending_for(Some("foo")));
+    gate.defer_select_after(Some("foo".into()));
+    gate.request("foo".into());
+    assert!(
+        gate.select_waiting(),
+        "the Enter followed this edit and was cancelled"
+    );
+    assert!(
+        !gate.take_ready_select(false),
+        "the old results must not accept it"
+    );
+    gate.applied("foo", true);
+    gate.results_reported();
+    assert!(gate.take_ready_select(false));
+}
+
+/// Typing on after the Enter is still typing: a different query cancels the waiting Enter.
+#[test]
+fn a_different_query_still_cancels_an_enter_waiting_for_a_pending_edit() {
+    let mut gate = QueryGate::default();
+    gate.request("fo".into());
+    gate.applied("fo", true);
+    gate.results_reported();
+    gate.defer_select_after(Some("foo".into()));
+    gate.request("foob".into());
+    assert!(!gate.select_waiting());
+}
+
+/// No pending edit when the buffer's filter is the newest query, or the gate is fresh (nothing
+/// was ever requested, so there is nothing an event could be late behind).
+#[test]
+fn no_edit_is_pending_for_the_newest_query_or_a_fresh_gate() {
+    let mut gate = QueryGate::default();
+    assert!(!gate.edit_pending_for(Some("x")));
+    gate.request("fo".into());
+    assert!(!gate.edit_pending_for(Some("fo")));
+    assert!(!gate.edit_pending_for(None));
+}

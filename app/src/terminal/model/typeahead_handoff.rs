@@ -2009,6 +2009,20 @@ impl TypeaheadHandoff {
         )
     }
 
+    /// The shell's report of its line is still on its way and will land in FRONT of whatever the
+    /// editor holds now (#1659): the editor owns input but waits for the report, or it owns input
+    /// with a request outstanding that must also report bytes it did not adopt, or an Enter is
+    /// deferred behind the report (the report is still to come). A Tab pressed now
+    /// would complete only the editor's fragment; it waits for the report instead.
+    pub fn report_pending_before_editor_text(&self) -> bool {
+        matches!(
+            self.owner(),
+            Owner::AwaitingReport | Owner::Hold { released: false }
+        ) || (self.state == HandoffState::EditorOwned
+            && self.untracked_line_bytes
+            && self.requests_outstanding > 0)
+    }
+
     /// Whether text the editor receives now will be followed by the shell's report in front of
     /// it (or never reaches the editor at all), i.e. the editor cannot know the quote or bracket
     /// context of what it is given (#949). The editor must insert typed symbols literally: an
