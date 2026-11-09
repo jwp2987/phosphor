@@ -45,7 +45,7 @@ impl NetworkGateNotice {
     pub fn new(ctx: &mut ModelContext<Self>) -> Self {
         ctx.subscribe_to_model(
             &NetworkGateLog::handle(ctx),
-            |_me: &mut Self, _log, event, ctx| {
+            |_me: &mut Self, event, ctx| {
                 if let NetworkGateLogEvent::Denied(denied) = event {
                     Self::show(denied, ctx);
                 }
