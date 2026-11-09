@@ -1,0 +1,49 @@
+{
+  "v": 1,
+  "name": "wave0_1797_ask_valid",
+  "seed": 1798,
+  "turns": [
+    {
+      "when": {
+        "kind": "nth",
+        "n": 0
+      },
+      "reply": {
+        "kind": "tool_calls",
+        "calls": [
+          {
+            "id": {
+              "kind": "fresh"
+            },
+            "name": "ask_user_question",
+            "args": {
+              "kind": "valid"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "when": {
+        "kind": "nth",
+        "n": 1
+      },
+      "reply": {
+        "kind": "text",
+        "text": "thanks for the answer"
+      }
+    }
+  ],
+  "env": {
+    "commands": {}
+  },
+  "actor": [
+    {
+      "op": {
+        "kind": "answer_question",
+        "choice": 1
+      },
+      "timing": "on_card"
+    }
+  ]
+}

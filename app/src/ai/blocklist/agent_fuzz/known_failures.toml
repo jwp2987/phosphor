@@ -1,0 +1,16 @@
+# Corpus scenarios that are KNOWN to fail, mapped to the issue that tracks them.
+#
+# `corpus_replay_tests` replays every corpus/*.json on every run. A scenario listed here must
+# still fail, with the SAME invariant: if it starts passing the run fails until the entry is
+# removed (a fixed bug must not stay on a list); if it fails with a different invariant the run
+# fails too (a different bug must be filed, not hidden behind this one). A scenario not listed
+# must pass.
+#
+# It starts empty: #1796, #1797 and #1799 are fixed on this branch. To check that the four
+# wave0 scenarios catch their bugs, run them on the pre-fix base (ffdaa4536); see
+# docs/testing.md "Agent fuzzer and fake model".
+#
+# [[known]]
+# scenario  = "corpus_file_stem"
+# invariant = "I1"
+# issue     = 1234

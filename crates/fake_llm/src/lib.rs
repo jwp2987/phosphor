@@ -15,3 +15,6 @@ pub mod llm;
 pub mod scenario;
 pub mod strategies;
 pub mod wire;
+
+#[cfg(test)]
+mod genai_decode_tests;

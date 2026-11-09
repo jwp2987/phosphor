@@ -2,7 +2,8 @@
 //! server and a byte-level chaos proxy.
 //!
 //! Every test name starts with `genai_decode` so `script/agent_fuzz` selects them with
-//! `-E 'test(genai_decode)'`.
+//! `-E 'test(genai_decode)'`. (A unit-test module, not a `tests/` binary, so that the `--lib`
+//! runs the repo's scripts use pick it up.)
 //!
 //! What is pinned:
 //! * text and reasoning survive any cut of the byte stream (inside UTF-8, inside a JSON string,
@@ -16,11 +17,11 @@
 
 use std::time::Duration;
 
-use fake_llm::decode::{Decoded, decode};
-use fake_llm::llm;
-use fake_llm::scenario::*;
-use fake_llm::strategies::{arb_split, arb_text};
-use fake_llm::wire::{ChaosProxy, Piece, WireCall, WireResponse, WireServer, cut, openai_frames};
+use crate::decode::{Decoded, decode};
+use crate::llm;
+use crate::scenario::*;
+use crate::strategies::{arb_split, arb_text};
+use crate::wire::{ChaosProxy, Piece, WireCall, WireResponse, WireServer, cut, openai_frames};
 use proptest::prelude::*;
 use serde_json::{Value, json};
 

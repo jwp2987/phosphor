@@ -16,6 +16,7 @@
 //!   `prompt_tests` (I5)
 
 mod actor;
+mod coverage;
 mod env;
 mod log_capture;
 mod oracle;
@@ -23,6 +24,10 @@ mod player;
 mod rig;
 mod runner;
 
+#[cfg(test)]
+mod corpus_replay_tests;
+#[cfg(test)]
+mod fuzz_tests;
 #[cfg(test)]
 mod prompt_tests;
 #[cfg(test)]

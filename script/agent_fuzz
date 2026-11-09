@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Run the agent fuzzer and the fake-model wire tests: layers L0 and L1 of
+# docs/testing.md "Agent fuzzer and fake model".
+#
+#   L0  crates/fake_llm genai_decode*     the real genai client against llmposter,
+#                                         a scripted raw server and a byte-level chaos proxy
+#   L1  app agent_fuzz::*                 smoke cases, the corpus replay (+ known_failures.toml),
+#                                         I5 prompt tests, and the proptest conversations
+#
+# Runs through script/check_test_failures, so a test that fails and is not on
+# script/known_test_failures.txt is a regression and a listed test that passes is a stale
+# entry. Do not list fuzz tests there: a fuzz failure is a bug, file it (AGENTS.md 5.6), and
+# if it must stay red for a while put the corpus scenario in
+# app/src/ai/blocklist/agent_fuzz/known_failures.toml with its issue instead.
+#
+# Knobs (all optional):
+#   PROPTEST_CASES=N        random conversations per run (default 24; a case takes seconds)
+#   AGENT_FUZZ_MINUTES=M    additionally run fresh random rounds for M minutes (the "find it
+#                           unseeded" mode; the acceptance check is 10)
+#   AGENT_FUZZ_SAVE=DIR     write each failing scenario there as schema JSON (never into the repo)
+#   AGENT_FUZZ_TIME_SCALE=F stretch every wait for a slow machine (default 1.0)
+#   AGENT_FUZZ_COVERAGE=1   print the (tool x op x timing) and (chaos x phase) hit table
+#
+# Check that the Wave 0 scenarios catch their bugs (they must FAIL on the pre-fix base): see
+# docs/testing.md "Agent fuzzer and fake model", "Acceptance on the pre-fix base".
+#
+# No cargo is run by the agents that write this; the build box runs it.
+
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+# A stalled provider must end in test time: the app's idle timeouts, shortened.
+export PHOSPHOR_BYOP_STREAM_IDLE_TIMEOUT_SECS="${PHOSPHOR_BYOP_STREAM_IDLE_TIMEOUT_SECS:-1}"
+export PHOSPHOR_BYOP_STREAM_FIRST_EVENT_TIMEOUT_SECS="${PHOSPHOR_BYOP_STREAM_FIRST_EVENT_TIMEOUT_SECS:-1}"
+
+exec ./script/check_test_failures \
+    -p fake_llm -p warp --lib --features warp/gui \
+    -E 'test(agent_fuzz) | test(genai_decode)' "$@"

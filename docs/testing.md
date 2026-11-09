@@ -2407,4 +2407,19 @@ I5 (`prompt_tests.rs`): the rig has no pty, so I5 drives the real `PromptDetecto
 
 Environment knobs: `AGENT_FUZZ_TIME_SCALE` (default 1.0), `AGENT_FUZZ_HUMAN_SCALE` (default 0.05, scales the actor's 400-2500 ms "human" delays). `stall` chaos needs `PHOSPHOR_BYOP_STREAM_IDLE_TIMEOUT_SECS` and `PHOSPHOR_BYOP_STREAM_FIRST_EVENT_TIMEOUT_SECS` at 3 or less (`script/agent_fuzz` sets them to 1).
 
+### Corpus, known failures, coverage, entry point
+
+* `agent_fuzz/corpus/*.json` is replayed on every run by `corpus_replay_tests.rs`. Each file is a schema-v1 scenario named by its stem. The four Wave 0 scenarios are there as ordinary entries (they pass on this branch, where #1796, #1797 and #1799 are fixed): `wave0_1799_reject_then_transfer` (a held command and a hand-over behind it, a follow-up queued while blocked, then Reject), `wave0_1797_ask_empty_args` (`questions: []`), `wave0_1797_ask_valid` (a real question, answered), `wave0_1796_silent_then_handoff` (a silent, prompt-shaped command; L1 has no pty, so its detector half is `prompt_tests.rs`). Also `dup_call_ids`, `unknown_and_not_offered_tools`, `ctrl_c_during_never_ending_command`.
+* Adding a case: copy the JSON a failure prints (or the file `AGENT_FUZZ_SAVE=<dir>` wrote) into `corpus/`. Never put a scenario in the repo that you have not seen pass or listed.
+* `known_failures.toml` maps a corpus scenario to the issue that tracks it. A listed scenario must still fail with the same invariant; it fails the run the day it passes (remove the entry) or fails with another invariant (file that one). Empty today.
+* `coverage.rs` counts (tool x op x timing) for performed user steps and (chaos x phase) for the model's turns. `WAVE0_FLOOR` lists cells the corpus must reach on its own (reject / approve / answer / follow-up on a card, Ctrl-C), checked in the corpus replay (nextest runs each test in its own process, so the floor cannot live in a separate test). `AGENT_FUZZ_COVERAGE=1` prints the table.
+* `script/agent_fuzz` runs L0 + L1 through `script/check_test_failures -p fake_llm -p warp --lib --features warp/gui -E 'test(agent_fuzz) | test(genai_decode)'`, with `PHOSPHOR_BYOP_STREAM_IDLE_TIMEOUT_SECS` / `..._FIRST_EVENT_TIMEOUT_SECS` at 1 so a `stall` turn ends in test time. Knobs: `PROPTEST_CASES` (24), `AGENT_FUZZ_MINUTES` (time-boxed fresh rounds), `AGENT_FUZZ_SAVE`, `AGENT_FUZZ_TIME_SCALE`, `AGENT_FUZZ_COVERAGE`. Proptest never writes `proptest-regressions` into the tree (the corpus is the memory), and shrinks to a minimal (script, user) pair printed as schema JSON.
+* CI jobs: none yet (manual, on the build box).
+
+#### Acceptance on the pre-fix base (to run on the box, not done)
+
+On `ffdaa4536` (before #1796 / #1797 / #1799) the seeded `wave0_1799_reject_then_transfer`, `wave0_1797_ask_empty_args` and `wave0_1797_ask_valid` must FAIL with I1 / I2a, and unseeded `AGENT_FUZZ_MINUTES=10` must find each class. Method: branch from `ffdaa4536`, cherry-pick this branch's commits (the seam and probes touch `chat_stream.rs`, `action_model.rs`, `block.rs`, `terminal/view.rs`, `shell_command.rs`, `mock_provider`; expect trivial conflicts only in `action_model.rs`), drop `mod prompt_tests;` from `agent_fuzz/mod.rs` (it needs the #1796 `observe` probe argument and does not compile on the base, which is itself the signal for #1796), run `script/agent_fuzz`. On this branch all of them pass.
+
+Question scenarios tolerate either `ask_user_question` flow: the card appearing without an approval step (an owner decision in flight in another change), or after one. The actor answers whatever question is at the front by staging the answers and executing by id; `OnCard` triggers on any actionable card.
+
 Run: `script/agent_fuzz` (L0 + L1). Nothing in this section has been compiled yet.

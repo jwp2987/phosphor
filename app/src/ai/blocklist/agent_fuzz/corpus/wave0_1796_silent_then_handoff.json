@@ -1,0 +1,54 @@
+{
+  "v": 1,
+  "name": "wave0_1796_silent_then_handoff",
+  "seed": 1796,
+  "turns": [
+    {
+      "when": {
+        "kind": "nth",
+        "n": 0
+      },
+      "reply": {
+        "kind": "tool_calls",
+        "calls": [
+          {
+            "id": {
+              "kind": "fresh"
+            },
+            "name": "run_shell_command",
+            "args": {
+              "kind": "command",
+              "cmd": "c0"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "when": {
+        "kind": "nth",
+        "n": 1
+      },
+      "reply": {
+        "kind": "text",
+        "text": "the command is still running"
+      }
+    }
+  ],
+  "env": {
+    "commands": {
+      "c0": {
+        "kind": "trailing_colon",
+        "s": "Waiting for DB:"
+      }
+    }
+  },
+  "actor": [
+    {
+      "op": {
+        "kind": "approve"
+      },
+      "timing": "on_card"
+    }
+  ]
+}
