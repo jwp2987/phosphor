@@ -26,6 +26,7 @@ use crate::proto::{
     ListDirectorySuccess, LoadRepoMetadataDirectoryResponse, NavigatedToDirectoryResponse,
     RepoMetadataSnapshot, RepoMetadataUpdatePush, list_directory_response,
 };
+use crate::shellcmd::agent_context;
 use crate::shellcmd::tree::{
     MAX_IGNORED_LIST_BYTES, MAX_REPO_LIST_BYTES, TreeChild, apply_refresh, canonical_dir_command,
     dir_is_ignored, dir_update, finish_children, git_root_command, ignored_children_command,
@@ -46,6 +47,8 @@ pub enum ShellPush {
 
 struct CachedRepo {
     is_git: bool,
+    /// Project skill files as last reported (standing-query results).
+    skill_files: BTreeSet<String>,
     dirs: BTreeMap<String, Vec<TreeChild>>,
 }
 
@@ -200,16 +203,21 @@ pub(super) async fn navigate_to_directory(
     } else {
         lazy_root(shell, &root, false).await?
     };
+    let skill_files = agent_context::project_skill_files(&dirs);
     shell.push(ShellPush::RepoMetadataSnapshot(RepoMetadataSnapshot {
         repo_path: root.clone(),
         entries: snapshot_entries(&root, &dirs),
         sync_complete: true,
-        standing_results: None,
+        standing_results: agent_context::standing_snapshot(&skill_files),
     }));
-    shell
-        .tree_cache
-        .lock()
-        .insert(root.clone(), CachedRepo { is_git, dirs });
+    shell.tree_cache.lock().insert(
+        root.clone(),
+        CachedRepo {
+            is_git,
+            skill_files,
+            dirs,
+        },
+    );
     Ok(NavigatedToDirectoryResponse {
         indexed_path: root,
         is_git,
@@ -387,13 +395,16 @@ pub(super) async fn refresh_repo_tree(
         return Ok(());
     };
     let (removed, updates) = apply_refresh(&mut cached.dirs, &fresh);
+    let skill_files = agent_context::project_skill_files(&cached.dirs);
+    let standing = agent_context::standing_delta(&cached.skill_files, &skill_files);
+    cached.skill_files = skill_files;
     drop(cache);
     if !removed.is_empty() || !updates.is_empty() {
         shell.push(ShellPush::RepoMetadataUpdate(RepoMetadataUpdatePush {
             repo_path: repo_path.to_owned(),
             remove_entries: removed,
             update_entries: updates,
-            standing_results_delta: None,
+            standing_results_delta: standing,
         }));
     }
     Ok(())
