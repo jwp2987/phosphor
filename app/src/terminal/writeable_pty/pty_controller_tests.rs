@@ -3253,6 +3253,57 @@ mod typeahead_handoff {
         });
     }
 
+    /// #1672/#1798: the activation's give-up net is a hand-back, not a release. When a
+    /// signalling shell's signal does not come the gate stays shut, nothing is written to the pty,
+    /// the controller tells the view to hand the held keys back, and a late signal then opens the
+    /// gate normally. The controller and its gate are shared by the Legacy and Table input modes.
+    #[test]
+    fn the_signal_give_up_net_writes_nothing_and_leaves_the_gate_shut() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            let gave_up = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            {
+                let gave_up = gave_up.clone();
+                let controller = harness.controller.clone();
+                app.update(|ctx| {
+                    ctx.subscribe_to_model(&controller, move |_, event, _| {
+                        if matches!(event, PtyControllerEvent::LineEditorSignalGaveUp) {
+                            gave_up.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        }
+                    });
+                });
+            }
+            let before = written(&harness).len();
+            harness.line_editor_status.update(&mut app, |status, ctx| {
+                status.set_line_editor_active_for_test(false);
+                status.set_ready_signal_seen_for_test(true);
+                status.set_signal_wait(Some(std::time::Duration::from_millis(5)));
+                status.prompt_hook_for_test(ctx);
+            });
+            warpui::r#async::Timer::after(std::time::Duration::from_millis(150)).await;
+            assert_eq!(
+                gave_up.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "the view is told to hand the keys back"
+            );
+            harness.line_editor_status.read(&app, |status, _| {
+                assert!(
+                    !status.is_line_editor_active(),
+                    "the net never opens the gate"
+                )
+            });
+            assert_eq!(written(&harness).len(), before, "the net wrote nothing");
+            // The next signal re-arms normally.
+            harness
+                .line_editor_status
+                .update(&mut app, |status, ctx| status.note_shell_reading_line(ctx));
+            harness.line_editor_status.read(&app, |status, _| {
+                assert!(status.is_line_editor_active() && status.is_proven_reading())
+            });
+        });
+    }
+
     /// The other shells print the marker with their prompt, where the tty may still be cooked,
     /// and have the bracketed-paste signal: for them the marker leaves the activation alone.
     #[test]

@@ -27047,6 +27047,45 @@ fn a_prompt_hold_past_its_cap_hands_its_keys_back_to_the_editor_and_writes_nothi
     }
 }
 
+/// Owner rule (#1672/#1798, event-driven pipeline): the line-editor activation's give-up net
+/// (`LineEditorSignalGaveUp`) only hands text back. The keys held for a signalling shell's ready
+/// signal go back to the editor in typed order and nothing is written to the pty. Legacy and
+/// Table.
+#[test]
+fn the_line_editor_signal_give_up_hands_the_held_keys_to_the_editor_and_writes_nothing() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                conpty_prompt_hold_setup(view);
+                for key in b"ls -l" {
+                    view.write_user_bytes_to_pty(vec![*key], ctx);
+                }
+                assert!(prompt_gate_open(view), "{mode:?}");
+                view.on_line_editor_signal_gave_up(ctx);
+                assert!(!prompt_gate_open(view), "{mode:?}");
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "ls -l",
+                    "{mode:?}: every key, in order, in the editor"
+                );
+                // No hold left: a second give-up changes nothing.
+                view.on_line_editor_signal_gave_up(ctx);
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls -l", "{mode:?}");
+            });
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{mode:?}: the net wrote nothing to the pty"
+            );
+        })
+    }
+}
+
 /// #1584: a held segment with an Enter past the cap is never run or written by the timer: it stays
 /// held (the cap is armed again), and the line editor's signal releases it once, in typed order.
 /// The signal shows the shell does signal, so the next prompt is held for again. Legacy and Table.
