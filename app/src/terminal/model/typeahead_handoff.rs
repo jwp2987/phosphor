@@ -996,9 +996,17 @@ pub enum YoungHoldEvidence {
 }
 
 /// #1661 (owner decision 2026-11-05): whether a young hold standing on `evidence` ends at its cap
-/// by design: only the no-barrier hold (`PrecmdMaybeInFlight`, fish).
-fn cap_is_normal_end(evidence: YoungHoldEvidence) -> bool {
-    matches!(evidence, YoungHoldEvidence::PrecmdMaybeInFlight)
+/// by design: the no-barrier hold (`PrecmdMaybeInFlight`, fish), and the barrier hold of a session
+/// that sends no prompt sequence numbers (`PrecmdInFlight` with `prompt_seq_mode` false) -- what
+/// the window hold of such a session was before the window was removed (run 4, 2026-11-09: it
+/// keeps the hand-back, the owner's #1661 decision for that class). Every other hold's cap is a
+/// give-up.
+fn cap_is_normal_end(evidence: YoungHoldEvidence, prompt_seq_mode: bool) -> bool {
+    match evidence {
+        YoungHoldEvidence::PrecmdMaybeInFlight => true,
+        YoungHoldEvidence::PrecmdInFlight => !prompt_seq_mode,
+        _ => false,
+    }
 }
 
 /// What [`TypeaheadHandoff::on_stream_applied`] decided for a hold waiting on the barrier.
@@ -1828,10 +1836,10 @@ impl TypeaheadHandoff {
     }
 
     /// Owner decision 2026-11-05 (#1661): whether the current young hold's cap is its NORMAL end,
-    /// not a give-up. One hold ends at its cap by design: the no-barrier hold
-    /// ([`YoungHoldEvidence::PrecmdMaybeInFlight`], 2 s). It keeps its short cap and its hand-back
-    /// of the keys to the editor. Every other hold's cap is a real give-up: the 10 s net, which
-    /// drops the keys (#1661).
+    /// not a give-up. Two holds end at their cap by design: the no-barrier hold
+    /// ([`YoungHoldEvidence::PrecmdMaybeInFlight`]) and the barrier hold of a session without
+    /// prompt sequence numbers; 2 s, with the hand-back of the keys to the editor. Every other
+    /// hold's cap is a real give-up: the 10 s net, which drops the keys (#1661).
     ///
     /// Classified when the hold starts (`young_hold_normal_end`), never recomputed at the
     /// cap (#1661 review).
@@ -1856,7 +1864,7 @@ impl TypeaheadHandoff {
     #[cfg(test)]
     pub(crate) fn force_young_hold_evidence_for_test(&mut self, evidence: YoungHoldEvidence) {
         self.young_hold_evidence = Some(evidence);
-        self.young_hold_normal_end = cap_is_normal_end(evidence);
+        self.young_hold_normal_end = cap_is_normal_end(evidence, self.prompt_seq_mode());
     }
 
     #[cfg(test)]
@@ -3091,7 +3099,7 @@ impl TypeaheadHandoff {
             self.should_hold_young_enter_sampled(bytes, reaches_shell_line, Instant::now());
         if let Some(evidence) = young_evidence {
             self.young_hold_evidence = Some(evidence);
-            self.young_hold_normal_end = cap_is_normal_end(evidence);
+            self.young_hold_normal_end = cap_is_normal_end(evidence, self.prompt_seq_mode());
             self.young_hold_id = self.young_hold_id.wrapping_add(1);
             self.young_hold_started = true;
             // #1353 phase 5b: the bytes are not stored here; the view puts this key at the front
