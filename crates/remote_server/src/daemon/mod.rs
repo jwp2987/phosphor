@@ -90,3 +90,22 @@ pub fn run_daemon(identity_key: &str) -> anyhow::Result<()> {
     log::info!("Daemon exiting");
     Ok(())
 }
+
+/// A connected in-process daemon for the backend contract tests: the returned stream is the
+/// client end; the server core runs on its own thread until the stream is dropped.
+#[cfg(test)]
+pub(crate) fn spawn_in_process_for_tests() -> std::os::unix::net::UnixStream {
+    let (client_end, server_end) =
+        std::os::unix::net::UnixStream::pair().expect("socketpair for the in-process daemon");
+    let (events_tx, events_rx) = std::sync::mpsc::channel::<server::Event>();
+    conn::spawn_connection(server_end, server::next_conn_id(), events_tx.clone());
+    std::thread::Builder::new()
+        .name("in-process-daemon".into())
+        .spawn(move || {
+            // Keep a sender alive so the core does not end before the connection registers.
+            let _keep = events_tx;
+            server::Server::new(server::GRACE_PERIOD).run(events_rx);
+        })
+        .expect("spawn the in-process daemon");
+    client_end
+}

@@ -25,7 +25,7 @@ use crate::settings::{InputSettings, no_helper_chip_visible};
 use crate::{Appearance, terminal::model::session::SessionId};
 
 /// The chip's label.
-pub(crate) const CHIP_LABEL: &str = "limited: no remote helper";
+pub(crate) const CHIP_LABEL: &str = "shell mode";
 
 /// What the helper adds, and how it is offered. Shown when the chip is clicked.
 pub(crate) const CHIP_EXPLANATION: &str = "This ssh session works without the optional remote \
