@@ -1416,9 +1416,16 @@ where
                         surface.on_stalled_interactive_prompt(ctx);
                     });
                 }
+                // #1796: a notice, never a hand-over; polling goes on so a later `Reading`
+                // probe or an explicit marker still hands the command over.
+                PromptDetection::MayBeWaiting => {
+                    surface.update(ctx, |surface, ctx| {
+                        surface.on_command_may_be_waiting_for_input(ctx);
+                    });
+                }
             }
-            let keeps_polling =
-                surface.read(ctx, |surface, _ctx| surface.keeps_polling_after_prompt());
+            let keeps_polling = detection == PromptDetection::MayBeWaiting
+                || surface.read(ctx, |surface, _ctx| surface.keeps_polling_after_prompt());
             if !keeps_polling {
                 self.active.set(false);
                 self.epoch.set(self.epoch.get().wrapping_add(1));

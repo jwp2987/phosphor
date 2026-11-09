@@ -5220,6 +5220,8 @@ impl TuiTerminalSessionView {
                     mode: *mode,
                 });
             }
+            // UI notice for the GUI; the TUI has no take-over affordance for it.
+            ShellCommandExecutorEvent::BackstopReached { .. } => {}
             ShellCommandExecutorEvent::CancelExecution { action_id } => {
                 // Re-check, as the GUI does (#850/#875): only interrupt while the agent still
                 // holds this action's in-flight command, and mark it a non-resuming Stop so

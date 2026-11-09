@@ -700,6 +700,12 @@ impl<T: EventLoopSender> PtyController<T> {
         });
 
         ctx.subscribe_to_model(&line_editor_status, |me, event, ctx| {
+            if let LineEditorStatusEvent::SignalGaveUp = event {
+                // #1672/#1798: a timer only hands text back. The gate stays shut and nothing is
+                // written; the view hands the keys it holds for the signal back to the editor.
+                ctx.emit(PtyControllerEvent::LineEditorSignalGaveUp);
+                return;
+            }
             if let LineEditorStatusEvent::Active = event {
                 me.log_ctrl_c_to_next_command("line_editor_active_after_ctrl_c", false);
                 if FeatureFlag::TypeaheadHandoff.is_enabled() {
@@ -1023,9 +1029,39 @@ impl<T: EventLoopSender> PtyController<T> {
     /// Re-runs a typeahead hand-off request decision that had to wait, if the shell's line
     /// editor is still active.
     pub fn retry_typeahead_handoff_request(&mut self, ctx: &mut ModelContext<Self>) {
+        // A ready signal that could not open the gate when it came (keys released but not counted
+        // yet, a line queued ahead) opens it on this event, not on a timer; the activation runs
+        // the decision itself.
+        if self.activate_remembered_ready_signal(ctx) {
+            return;
+        }
         if self.line_editor_status.as_ref(ctx).is_line_editor_active() {
             self.decide_typeahead_handoff_request(true, ctx);
         }
+    }
+
+    /// Opens the gate for a ready signal remembered by `expedite_pending_activation`, once the
+    /// hand-off can vouch that no typeahead line is queued ahead of a write. Returns whether the
+    /// line editor was activated (its `Active` event ran the decision).
+    fn activate_remembered_ready_signal(&mut self, ctx: &mut ModelContext<Self>) -> bool {
+        if !self
+            .line_editor_status
+            .as_ref(ctx)
+            .signal_activation_pending()
+        {
+            return false;
+        }
+        if FeatureFlag::TypeaheadHandoff.is_enabled()
+            && self
+                .terminal_model
+                .lock()
+                .typeahead_handoff()
+                .has_unanswered_lines()
+        {
+            return false;
+        }
+        self.line_editor_status
+            .update(ctx, |status, ctx| status.activate_pending_signal(ctx))
     }
 
     fn arm_typeahead_handoff_stale_count_reset(
@@ -3005,6 +3041,9 @@ pub enum PtyControllerEvent {
     /// hold, and the hand-off ended that hold (#1353 phase 5b): the view takes or drops the
     /// gate's entries.
     YoungHoldEnded,
+    /// A signalling shell's line-editor ready signal did not come within the give-up net
+    /// (#1672/#1798): the view hands the keys it holds for the signal back to the editor.
+    LineEditorSignalGaveUp,
     /// Input was dropped because a buffer on the way to the pty was full (#1442): the surface
     /// tells the user.
     InputBufferOverflow,

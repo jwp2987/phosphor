@@ -774,13 +774,17 @@ pub const INTERACTIVE_PROMPT_QUIET_EXPLICIT: std::time::Duration =
 /// that cannot be told it waits for [`INTERACTIVE_PROMPT_QUIET_TRAILING_UNKNOWN_READ`].
 pub const INTERACTIVE_PROMPT_QUIET_TRAILING: std::time::Duration =
     std::time::Duration::from_secs(15);
-/// How long a bare trailing `?` / `:` must sit unchanged when the OS cannot say whether the
+/// How long a bare trailing `?` / `:` must sit unchanged, when the OS cannot say whether the
 /// foreground reads the tty ([`ForegroundTtyRead::Unknown`]: no probe on this platform, e.g.
-/// macOS; ptrace restrictions; a member owned by another user, e.g. root under `sudo`).
-/// "Unknown" must not mean "never" -- a real `read -p 'Name: '` would otherwise hang for the
-/// 30-minute backstop -- but silence alone is weak evidence (#1796: a slow, silent step of a
-/// long command), so it waits far longer than a probed prompt. A probe that says
-/// [`ForegroundTtyRead::NotReading`] never hands over on silence, however long.
+/// macOS; ptrace restrictions; a member owned by another user, e.g. root under `sudo`), before
+/// a NOTICE is shown on the command ("This command may be waiting for input -- Take over",
+/// [`PromptDetection::MayBeWaiting`]).
+///
+/// Owner rule (#1796, two weeks of timer bugs): a timer never decides routing. Silence is weak
+/// evidence (a slow, silent step of a long command), so on `Unknown` the command is NEVER handed
+/// over on a timer: the notice is UI only, and one click takes over. The command stays with the
+/// agent until the user acts, the probe says [`ForegroundTtyRead::Reading`], an explicit marker
+/// appears, or it completes. A probe that says [`ForegroundTtyRead::NotReading`] shows nothing.
 pub const INTERACTIVE_PROMPT_QUIET_TRAILING_UNKNOWN_READ: std::time::Duration =
     std::time::Duration::from_secs(90);
 
@@ -872,8 +876,8 @@ pub enum ForegroundTtyRead {
     /// A trailing `?`/`:` is then never handed over on silence.
     NotReading,
     /// The OS cannot tell (no probe on this platform, an unreadable `/proc/<pid>/syscall`).
-    /// A trailing `?`/`:` is then handed over only after
-    /// [`INTERACTIVE_PROMPT_QUIET_TRAILING_UNKNOWN_READ`].
+    /// A trailing `?`/`:` then only gets a notice, after
+    /// [`INTERACTIVE_PROMPT_QUIET_TRAILING_UNKNOWN_READ`] -- never a hand-over.
     Unknown,
 }
 
@@ -885,6 +889,11 @@ pub enum PromptDetection {
     /// A prompt-shaped line that has sat unchanged for its shape's quiet duration (and, for a
     /// bare trailing `?`/`:`, with the foreground blocked reading the tty).
     Interactive,
+    /// A bare trailing `?`/`:` stayed quiet past
+    /// [`INTERACTIVE_PROMPT_QUIET_TRAILING_UNKNOWN_READ`] and the OS cannot say whether the
+    /// foreground reads the tty: show the "may be waiting for input -- Take over" notice. Not a
+    /// hand-over (#1796); fires once per episode, and a later `Reading` still hands over.
+    MayBeWaiting,
 }
 
 /// Turns the stream of termios observations for one block into prompt detections.
@@ -903,6 +912,8 @@ pub struct PromptDetector {
     /// When `last_candidate` was first observed in its current form.
     candidate_since: Option<instant::Instant>,
     interactive_latched: bool,
+    /// The "may be waiting" notice was already offered for the current candidate.
+    may_be_waiting_noticed: bool,
     /// The candidate's quiet window has passed but the foreground was not seen reading the
     /// tty: the probe's last answer (`NotReading` or `Unknown`). For `NotReading` no quiet
     /// timer is armed any more (it would fire at once, forever); the 1 Hz termios poll keeps
@@ -960,6 +971,7 @@ impl PromptDetector {
         if self.last_candidate.as_ref() != Some(&candidate) {
             self.candidate_since = Some(now);
             self.interactive_latched = false;
+            self.may_be_waiting_noticed = false;
             self.awaiting_tty_read = None;
             self.last_candidate = Some(candidate);
         }
@@ -984,7 +996,19 @@ impl PromptDetector {
                 ForegroundTtyRead::Unknown
                     if quiet_for >= INTERACTIVE_PROMPT_QUIET_TRAILING_UNKNOWN_READ =>
                 {
-                    evidence = ", tty read unknown, long silence";
+                    // #1796 owner rule: silence is not routing evidence. A notice, once; the
+                    // command stays with the agent, and a later `Reading` still hands over.
+                    self.awaiting_tty_read = Some(ForegroundTtyRead::Unknown);
+                    if self.may_be_waiting_noticed {
+                        return None;
+                    }
+                    self.may_be_waiting_noticed = true;
+                    log::info!(
+                        "prompt-shaped line {:?} unchanged for {quiet_for:?}, tty read unknown; \
+                         showing a take-over notice (the command stays with the agent)",
+                        self.last_candidate.as_ref().map(|c| c.text.as_str())
+                    );
+                    return Some(PromptDetection::MayBeWaiting);
                 }
                 verdict => {
                     if self.awaiting_tty_read != Some(verdict) {
@@ -1021,6 +1045,7 @@ impl PromptDetector {
         let since = self.candidate_since?;
         match self.awaiting_tty_read {
             None => Some(since + candidate.shape.required_quiet()),
+            Some(ForegroundTtyRead::Unknown) if self.may_be_waiting_noticed => None,
             Some(ForegroundTtyRead::Unknown) => {
                 Some(since + INTERACTIVE_PROMPT_QUIET_TRAILING_UNKNOWN_READ)
             }
@@ -1032,6 +1057,7 @@ impl PromptDetector {
         self.last_candidate = None;
         self.candidate_since = None;
         self.interactive_latched = false;
+        self.may_be_waiting_noticed = false;
         self.awaiting_tty_read = None;
     }
 }

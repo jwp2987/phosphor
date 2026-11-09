@@ -2407,12 +2407,14 @@ fn a_silent_command_after_a_trailing_colon_is_not_handed_to_the_user() {
     assert_eq!(detector.next_wake(), None);
 }
 
-/// #1796 review: where the OS cannot tell whether the foreground reads the tty (no probe on
-/// macOS, a Yama-restricted or root-owned `/proc/<pid>/syscall`), "unknown" must not mean
-/// "never": a real `read -p 'Name: '` would hang for the 30-minute backstop. Silence alone is
-/// still not enough at 15-20 s; it hands over after the longer unknown-read window.
+/// #1796 owner rule (a timer never decides routing): after the longer unknown-read window only a
+/// take-over NOTICE is offered (`MayBeWaiting`, once), never a hand-over; a later `Reading`
+/// probe still hands the command over. (Original review text: where the OS cannot tell whether
+/// the foreground reads the tty (no probe on macOS, a Yama-restricted or root-owned
+/// `/proc/<pid>/syscall`), a real `read -p 'Name: '` must not be missed forever. Silence alone is
+/// still not enough at 15-20 s; after the longer window it only offers the notice.
 #[test]
-fn a_trailing_colon_with_an_unknown_tty_read_is_handed_over_after_the_longer_window() {
+fn a_trailing_colon_with_an_unknown_tty_read_gets_a_notice_not_a_hand_over() {
     let t0 = instant::Instant::now();
     let s = Duration::from_secs;
     let name = || Some(candidate("Name: ", 6));
@@ -2457,9 +2459,28 @@ fn a_trailing_colon_with_an_unknown_tty_read_is_handed_over_after_the_longer_win
             name(),
             ForegroundTtyRead::Unknown
         ),
-        Some(PromptDetection::Interactive)
+        Some(PromptDetection::MayBeWaiting),
+        "a notice, not a hand-over"
     );
     assert_eq!(detector.next_wake(), None, "once per episode");
+    for later in [unknown + s(1), unknown * 3, s(30 * 60)] {
+        assert_eq!(
+            poll_with_tty(&mut detector, t0, later, name(), ForegroundTtyRead::Unknown),
+            None,
+            "{later:?}: silence never hands the command over, and the notice is not repeated"
+        );
+    }
+    // The probe later says the foreground reads the tty: that is evidence, and it hands over.
+    assert_eq!(
+        poll_with_tty(
+            &mut detector,
+            t0,
+            unknown * 4,
+            name(),
+            ForegroundTtyRead::Reading
+        ),
+        Some(PromptDetection::Interactive)
+    );
 }
 
 /// #1796 review: once a candidate is waiting for a tty read (no timer armed), a different

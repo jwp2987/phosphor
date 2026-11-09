@@ -15341,12 +15341,18 @@ fn typeahead_handoff_ctrl_c_with_no_prompt_cycle_decides_at_once() {
 
 /// #1703 (busy-machine M10): the give-up of the hand-back after a Ctrl-C never commits. On a slow
 /// machine the report or prompt cycle may only be late; the editor must not take the line on the
-/// timer. The give-up stops waiting for that one signal and asks the controller to decide again
-/// (which needs the shell's line-editor evidence); the pty keeps input meanwhile.
+/// timer. The give-up only clears the wait for that one signal; owner rule (2026-11-08, a timer
+/// never writes, routes or re-asks): it asks the controller for nothing (`RetryTypeaheadHandoffRequest`
+/// is emitted by events only: the Precmd, the line editor's ready signal, a report); the pty keeps
+/// input meanwhile. Legacy and Table share this hand-off.
 #[test]
 fn typeahead_handoff_ctrl_c_give_up_does_not_commit() {
-    for prompt_cycle_expected in [false, true] {
-        App::test((), |mut app| async move {
+    use crate::terminal::input_queue::DestinationMode;
+    for (prompt_cycle_expected, mode) in [false, true].into_iter().flat_map(|cycle| {
+        [DestinationMode::Legacy, DestinationMode::Table].map(move |mode| (cycle, mode))
+    }) {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
             initialize_app_for_terminal_view(&mut app);
             let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
             let terminal = add_window_with_terminal(&mut app, None);
@@ -15392,11 +15398,13 @@ fn typeahead_handoff_ctrl_c_give_up_does_not_commit() {
                     "a timer must not hand the line to the editor"
                 );
             });
-            let expected = if prompt_cycle_expected { 1 } else { 2 };
+            // Only the interrupt's own event-driven retry (zsh, no prompt cycle) counts: the
+            // timer's give-up adds none.
+            let expected = if prompt_cycle_expected { 0 } else { 1 };
             assert_eq!(
                 *retries.borrow(),
                 expected,
-                "the give-up asks the controller to decide again (the interrupt's own retry counts for zsh)"
+                "the give-up asks the controller for nothing (the interrupt's own retry counts for zsh)"
             );
         })
     }
@@ -27042,6 +27050,78 @@ fn a_prompt_hold_past_its_cap_hands_its_keys_back_to_the_editor_and_writes_nothi
                 pty_writes.borrow().is_empty(),
                 "{mode:?}: zero pty writes from the timer: {:?}",
                 pty_writes.borrow()
+            );
+        })
+    }
+}
+
+/// Owner rule (#1672/#1798, event-driven pipeline): the line-editor activation's give-up net
+/// (`LineEditorSignalGaveUp`) only hands text back. The keys held for a signalling shell's ready
+/// signal go back to the editor in typed order and nothing is written to the pty. Legacy and
+/// Table.
+#[test]
+fn the_line_editor_signal_give_up_hands_the_held_keys_to_the_editor_and_writes_nothing() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                conpty_prompt_hold_setup(view);
+                for key in b"ls -l" {
+                    view.write_user_bytes_to_pty(vec![*key], ctx);
+                }
+                assert!(prompt_gate_open(view), "{mode:?}");
+                view.on_line_editor_signal_gave_up(ctx);
+                assert!(!prompt_gate_open(view), "{mode:?}");
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "ls -l",
+                    "{mode:?}: every key, in order, in the editor"
+                );
+                // No hold left: a second give-up changes nothing.
+                view.on_line_editor_signal_gave_up(ctx);
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls -l", "{mode:?}");
+            });
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{mode:?}: the net wrote nothing to the pty"
+            );
+        })
+    }
+}
+
+/// #1796 (owner rule: timers never decide routing): the "may be waiting for input" notice is UI
+/// only. It writes nothing to the pty, does not touch the typeahead hand-off, and shows nothing
+/// at all unless the agent drives the active block; typing keeps routing as before. Legacy and
+/// Table.
+#[cfg(unix)]
+#[test]
+fn the_may_be_waiting_notice_writes_nothing_and_changes_no_routing() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                view.model.lock().start_command_execution();
+                let state_before = format!("{:?}", view.model.lock().typeahead_handoff().state());
+                view.on_command_may_be_waiting_for_input(ctx);
+                assert_eq!(
+                    format!("{:?}", view.model.lock().typeahead_handoff().state()),
+                    state_before,
+                    "{mode:?}: the notice decides no routing"
+                );
+            });
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{mode:?}: the notice wrote nothing"
             );
         })
     }

@@ -613,12 +613,34 @@ impl ShellCommandExecutor {
                         let mut pager_closed = false;
                         // Remove the senders from the maps.
                         if let Some(handle) = handle.upgrade(ctx) {
-                            handle.update(ctx, |me, _| {
+                            handle.update(ctx, |me, ctx| {
                                 me.block_finished_senders.remove(&block_selector);
-                                me.force_refresh_senders.remove(&block_selector);
+                                // A force refresh consumes its sender, so a sender still here
+                                // means the snapshot came from the backstop timer.
+                                let refresh_pending =
+                                    me.force_refresh_senders.remove(&block_selector).is_some();
                                 me.output_watchers.remove(&block_selector);
-                                me.awaiting_completion_action_ids.remove(&action_id);
+                                let was_awaited =
+                                    me.awaiting_completion_action_ids.remove(&action_id);
                                 pager_closed = me.pager_closed_action_ids.remove(&action_id);
+                                // #1796 (owner): the 30-minute backstop only gives the agent its
+                                // result so the turn is not stuck. It never switches terminal
+                                // control; the view shows a "may be waiting for input -- Take
+                                // over" notice and the command stays with the agent.
+                                if was_awaited
+                                    && refresh_pending
+                                    && matches!(
+                                        result,
+                                        ActionResult::LongRunningCommandSnapshot {
+                                            is_preempted: true,
+                                            ..
+                                        }
+                                    )
+                                {
+                                    ctx.emit(ShellCommandExecutorEvent::BackstopReached {
+                                        action_id: action_id.clone(),
+                                    });
+                                }
                             });
                         }
 
@@ -2081,6 +2103,11 @@ pub enum ShellCommandExecutorEvent {
         action_id: AIAgentActionId,
         reason: String,
     },
+    /// `MAX_UNTIL_COMPLETION_DURATION` ran out for a command the agent waits on: the agent got
+    /// its (preempted) snapshot, and the command is still running with the agent. UI only (#1796):
+    /// the view shows a "may be waiting for input -- Take over" notice; terminal control does
+    /// not move.
+    BackstopReached { action_id: AIAgentActionId },
 }
 
 impl Entity for ShellCommandExecutor {
