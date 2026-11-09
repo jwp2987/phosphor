@@ -3545,6 +3545,10 @@ pub struct TerminalView {
     /// When the last gate was released. A command that started before this never re-arms the
     /// gate lazily from the warpify pending-ssh state.
     ssh_connect_gate_released_at: Option<DateTime<Local>>,
+    /// #1809: the hash of the block whose `CommandBecameInteractive` (ssh owns the tty) arrived
+    /// while no connect window existed. That ssh is an established session: a window is never
+    /// armed lazily for it afterwards (no ownership event would ever end it).
+    ssh_owned_block_without_window: Option<u64>,
     /// The connect window was released (by a path with no event handler of its own) while keys
     /// are held: the next key or turn hands them over before judging anything else. Cleared by
     /// any hand-over run (`deliver_ssh_typeahead_if_ready`).
@@ -5482,6 +5486,7 @@ impl TerminalView {
             ssh_interrupt_held_gate_notified: false,
             ssh_interrupt_held_notified: None,
             ssh_connect_gate_released_at: None,
+            ssh_owned_block_without_window: None,
             ssh_handover_after_release: false,
             ssh_submit_user_origin: None,
             enter_command_block: None,
@@ -11757,6 +11762,10 @@ impl TerminalView {
     /// and hand over at the first prompt, not here. Both destination modes run this (the gate's
     /// flag is the legacy fact, the edge is the machine's).
     fn ssh_on_tty_owned(&mut self, block_id: &BlockId, ctx: &mut ViewContext<Self>) {
+        if self.ssh_connect_gate.is_none() {
+            self.ssh_owned_block_without_window =
+                Some(crate::terminal::model::key_facts::block_id_hash(block_id));
+        }
         let applies = self.ssh_connect_gate.as_ref().is_some_and(|gate| {
             !gate.tty_owned && gate.block_id.as_ref().is_none_or(|id| id == block_id)
         });
@@ -12584,12 +12593,10 @@ impl TerminalView {
             };
             // #1809: armed by the EVENT that proves the window is open, not by the block's age: a
             // command that started after the last release and whose ssh does not own the tty yet.
-            // A block whose interactive latch already fired (ssh owned the tty before any window
-            // existed) is an established session: plain terminal, no window.
-            let already_owned = facts
-                .interactive_latch
-                .as_ref()
-                .is_some_and(|latch| latch.is_latched());
+            // A block whose ownership event (`CommandBecameInteractive`) arrived before any window
+            // existed is an established session: plain terminal, no window.
+            let already_owned =
+                self.ssh_owned_block_without_window == Some(facts.active_block_hash);
             if started_after_release && !already_owned {
                 let now = Instant::now();
                 let armed_at = now.checked_sub(age.unwrap_or_default()).unwrap_or(now);
