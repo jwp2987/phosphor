@@ -34,6 +34,12 @@ if ($outFull) {
     }
   }
 }
+# fake ssh lab (docs/testing.md 2.15): stop the container named in run\lab.json by its exact id (the forced-command key stays in the job environment)
+if ($outFull -and (Test-Path "$outFull\run\lab.json")) {
+  $labpy = Join-Path $env:LOCALAPPDATA "phosphor-ci\python312\python.exe"
+  if (Test-Path $labpy) { & $labpy (Join-Path $PSScriptRoot "..\..\appci\lab.py") stop "$outFull\run" 2>&1 | ForEach-Object { Write-Output "after_job: $_" } }
+  else { Write-Output "after_job: run\lab.json exists but the VM python is missing: the lab container ends at its TTL" }
+}
 # audit: processes (other than this script) whose executable path or command line names this job's out dir, and the leftover scratch dirs
 if ($outFull) {
   $left = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessId -ne $PID -and "$($_.ExecutablePath) $($_.CommandLine)" -like "*$outFull*" -and "$($_.CommandLine)" -notlike "*after_job.ps1*" })

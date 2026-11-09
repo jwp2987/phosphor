@@ -84,7 +84,8 @@ try {
   $env:PYTHONUNBUFFERED = "1"
   $env:PYTHONUTF8 = "1"   # r18e4: open()/print default to cp1252 here; a U+FFFD in a case log crashed save_case_log and its crash handler, ending the run after the PowerShell pane
   $ErrorActionPreference = "Continue"       # native stderr text is output, not an error; the exit code is what counts
-  & $Py (Join-Path $AppciDir "run.py") --run $Run --bin "$App\phosphor-oss.exe" --backend windows --platform windows --modes $Modes
+  $CaseArgs = @(); if ($env:APPCI_CASES) { $CaseArgs = @("--cases", $env:APPCI_CASES) }   # app-test-lab-windows passes 'lab_*' (docs/testing.md 2.15); unset = the ordinary run
+  & $Py (Join-Path $AppciDir "run.py") --run $Run --bin "$App\phosphor-oss.exe" --backend windows --platform windows --modes $Modes @CaseArgs
   $pyrc = $LASTEXITCODE
   $ErrorActionPreference = "Stop"
   "run.py exit code: $pyrc"

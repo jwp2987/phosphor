@@ -46,6 +46,10 @@ fi
 for out in "$@"; do
   [ -d "$out" ] || continue
   out=$(cd "$out" && pwd)
+  # fake ssh lab (docs/testing.md 2.15): stop the container recorded in lab.json by its exact id (labctl.py stop --id); the TTL label is the net behind this
+  for lj in "$out/lab.json" "$out/run/lab.json"; do
+    [ -f "$lj" ] && { python3 "$(dirname "$0")/appci/lab.py" stop "$(dirname "$lj")" 2>&1 | sed 's/^/teardown: lab: /'; }
+  done
   pids=""; termpids=""
   for f in "$out/pids" "$out/run/pids"; do
     [ -f "$f" ] && pids="$pids $(awk '{for(i=1;i<=NF;i++) if ($i ~ /^[0-9]+$/) {print $i; break}}' "$f")"

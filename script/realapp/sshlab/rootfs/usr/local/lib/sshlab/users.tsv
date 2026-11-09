@@ -1,0 +1,32 @@
+# sshlab users: user<TAB>shell<TAB>profile<TAB>sshd Match fragment
+# shell: bash zsh fish nu pwsh dash ash rbash. profile: a name labd.py knows (default, banner, rcerr, ..., see usersdb.PROFILES).
+# sshd fragment: directives separated by ';' placed in `Match User <user>`; '-' = none. Parsed by usersdb.py (harness selftest too).
+# Never put keys, passwords or hostnames here: labd.py generates them per lease.
+u_bash	bash	default	-
+u_zsh	zsh	default	-
+u_fish	fish	default	-
+u_nu	nu	default	-
+u_pwsh	pwsh	default	-
+u_dash	dash	default	-
+u_ash	ash	default	-
+u_rbash	rbash	default	-
+p_banner	bash	banner	Banner /run/sshlab/banner.txt
+p_rcerr	bash	rcerr	-
+p_rcprompt	bash	rcprompt	-
+p_slowrc	bash	slowrc	-
+p_colon	bash	colon	-
+p_question	bash	question	-
+p_sete	bash	sete	-
+p_exec	bash	exec	-
+p_rohome	bash	rohome	-
+p_nohome	bash	nohome	-
+p_tinypath	bash	tinypath	-
+p_password	bash	default	PasswordAuthentication yes;AuthenticationMethods password
+p_kbdint	bash	default	KbdInteractiveAuthentication yes;AuthenticationMethods keyboard-interactive
+p_mfa	bash	default	KbdInteractiveAuthentication yes;AuthenticationMethods publickey,keyboard-interactive
+p_slowauth	bash	default	-
+p_force	bash	default	ForceCommand /usr/local/lib/sshlab/forced.sh
+p_nopty	bash	default	PermitTTY no
+p_onesess	bash	default	MaxSessions 1
+p_noinstall	bash	noinstall	ForceCommand /usr/local/lib/sshlab/forced-noinstall.sh
+p_sudo	bash	sudo	-

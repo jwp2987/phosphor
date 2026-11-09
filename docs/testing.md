@@ -298,6 +298,11 @@ claims (#1353, #1404); only a doc comment in `app/src/terminal/input_queue/mod.r
 | `PHOSPHOR_SSH_SPECULATIVE_CONNECT=0`, `PHOSPHOR_SSH_EARLY_BOOTSTRAP=0` | old probe-then-connect / bootstrap-after-connect order (#1266) |
 | `PHOSPHOR_SSH_EARLY_FLUSH_KNOWN=0` | stash the bootstrap until `check_binary` returns even for a host already known to have the extension (#1172) |
 | `WARP_SSH_PROBE_TTL=<seconds>` | lifetime of the cached non-POSIX probe verdict (default 600; 0 disables the cache); the cache file is shared by bash, zsh and fish tabs (#1172) |
+| `APPCI_LAB=off\|local\|remote` | harness, fake ssh lab (2.15): `local` runs labctl on this machine (default when podman exists, i.e. the box), `remote` uses the box through the forced-command key, `off` makes the `lab_*` cases SKIP with the reason |
+| `APPCI_LAB_BOX`, `APPCI_LAB_KEY` (`SSHLAB_BOX` is the CI variable that feeds the first) | harness, remote lab: `user@host` of the box account whose `authorized_keys` carries the forced-command key, and the path of that machine-local private key. Never in the repo |
+| `APPCI_LAB_MATRIX=quick\|full\|<spec>` | which arms of a lab case run: `quick` = {bash, zsh, fish} x {LAN, 150 ms} x nohelper; `full` = all 8 shells x {LAN, 150, 300} x {nohelper, helper} + the fault arms (bash/zsh) + the scenario users; or `shells=bash,zsh;lat=lan,150;helper=nohelper;faults=1;scenarios=0` (a typo is an error, not an empty selection) |
+| `APPCI_LAB_HELPER_BIN` | path of a built remote-server binary for the `helper` arms (pre-installed in the lab user's `~/.phosphor/remote-server`; the lab blocks outbound network). Without it the helper arms are UNVERIFIABLE |
+| `APPCI_LAB_CTL` | override of the labctl.py path (default: the checkout's `script/realapp/sshlab/labctl.py`) |
 | `WARP_SSH_VERIFY_MASTER=1` | run the `-O check` after the owned master starts instead of trusting the socket test (#1172) |
 | `PHOSPHOR_SSH_CHUNKED_RESPONSES=0` (client), `PHOSPHOR_REMOTE_SERVER_CHUNKED_RESPONSES` (daemon) | whole-frame responses as from an older daemon |
 | `PHOSPHOR_SSH_LEGACY_MAX_INFLIGHT`, `PHOSPHOR_SSH_LEGACY_COMMAND_TIMEOUT_SECS`, `PHOSPHOR_SSH_HISTORY_MAX_LINES` | tuning of the legacy (no remote extension) ssh executor and history fetch |
@@ -1345,6 +1350,76 @@ line inside their editor with no hook, so on ConPTY the 5 s logged give-up is st
 `hop=handoff_stale_counts_reset by=give_up shell_activity=.. markers_live=..` -- `Reading` with `markers_live=true` is a line continued
 inside the editor (pwsh on ConPTY); `Unknown` is a bootstrap without markers.
 
+### 2.15 Fake ssh lab (`script/realapp/sshlab`, `appci/lab.py`, `appci/cases_lab.py`; Wave 0.5b)
+
+The harness's ssh server used to be the same machine (`sshd.py`: `ctx.lines(remote=True)` reads `prof.rhome` directly), so latency, a second
+login shell, a missing helper, a read-only home, MFA, a banner or a dropped link could not be tested. The lab is a podman container that is a
+fake REMOTE: two sshds, a user per shell, scenario users, a network fault shaper and an HTTP control port. Everything is code that runs later
+in CI; nothing in it is pinned to a machine, and no key, hostname or IP is in the repo.
+
+**Pieces.**
+
+| piece | what it does |
+|---|---|
+| `sshlab/Containerfile`, `versions.env` | debian trixie-slim by digest, apt from a snapshot.debian.org timestamp, nu and pwsh tarballs by sha256. Targets `full` (bash, zsh, fish, nu, pwsh, dash, busybox ash, rbash, git, bash-completion, sudo, iproute2, nftables, libpam-google-authenticator) and `bare` (bash + coreutils minus od/tr/base64; no scp/sftp/curl/wget; read-only rootfs; noexec /tmp). `versions.env` pins the image (`name:tag@sha256:digest`), the snapshot timestamp and the nu/pwsh tarballs (URL + sha256); **`labctl.py build` refuses any value that is missing, still says PLACEHOLDER or is not a digest/sha256/date**. `full` has the sftp subsystem (so the installer's scp/sftp fallback is testable); `bare` and `p_noinstall` remove it |
+| `sshlab/rootfs/usr/local/lib/sshlab/users.tsv` + `usersdb.py` | `user | shell | profile | sshd Match fragment`. Drives `useradd`, `/etc/shells`, the `Match User` blocks and labd. Per-shell users `u_bash u_zsh u_fish u_nu u_pwsh u_dash u_ash u_rbash`; scenario users `p_banner p_rcerr p_rcprompt p_slowrc(4 s) p_colon(PS1 'lab:') p_question(PS1 'ok? ') p_sete p_exec(bash_profile execs zsh -l) p_rohome p_nohome p_tinypath p_password p_kbdint p_mfa(publickey + TOTP) p_slowauth(PAM sleeps 5 s) p_force p_nopty p_onesess(MaxSessions 1) p_noinstall(read-only ~/.phosphor, no outbound, no scp/sftp) p_sudo` |
+| `sshlab/rootfs/usr/local/sbin/labd.py` | the daemon (run under `podman --init`): sshd :22 (host key A) and :2222 (host key B, the changed-host-key case), an echo probe on :7, and a stdlib HTTP server on :7000 with a per-start bearer token. `GET /health`, `POST /lease` (keys + the shell hook templates; resets every home; returns host keys A/B, the password, the TOTP secret), `POST/DELETE /fault`, `POST /drop {rst\|blackhole\|stall}`, `GET/DELETE /file` and `GET /ctl` (path-jailed to /work, /home, the ctl dir), `PUT /tree` (a directory or git fixture), `POST/DELETE /helper`, `POST /complete` (the SHELL's own candidates: bash-completion, zsh zpty, fish `complete -C`, pwsh `TabExpansion2`, nu `--ide-complete`), `GET /sshdlog?since=` (LogLevel VERBOSE: counts exec channels). 8 h TTL |
+| `sshlab/rootfs/usr/local/lib/sshlab/netem.py` | the fault commands as pure data (unit-tested in selftest). Egress: `prio` qdisc + a u32 filter on the source ports 22/2222/7 into a `netem` band; ingress: `mirred` to `ifb0` with netem; the RTT is split half and half; delay, jitter, loss, rate. nftables refuses NEW outbound connections of the lab users. **Port 7000 is never shaped** |
+| `sshlab/labctl.py` | the ONLY caller of podman. `build` (tag = sha256 of the sshlab tree, skipped if present, 3 tags kept, pruned by label), `start --run --flavor --ttl` (gc first; netavark bridge network `sshlab`; cap-drop all + NET_ADMIN SETUID SETGID CHOWN DAC_OVERRIDE FOWNER SYS_CHROOT AUDIT_WRITE KILL NET_BIND_SERVICE; pids/memory limits; labels incl. `expires`; random published ports), `stop --id <exact cid>` (must carry the sshlab label), `gc` (expired label, exact ids), `list`, `selftest`, and `remote` (the forced-command verb: only start/stop/list/gc, strictly shaped, the client's sshlab tree arrives as a tar on stdin) |
+| `appci/lab.py` | the client: `Lab.start(local\|remote)`, lease/fault/drop/file/ctl/tree/helper/complete/sshd_since/stop, `write_ssh()` (the `Host lab-<user>` entries, forward slashes so the Windows clients read them, plus `lab-changedkey`), `PlainSsh` (the pty control), and the pure parts: matrix expansion, TOTP, the RTT gate, the paired verdict, sshd channel counts, `LocalRemote`/`LabRemote` |
+
+**Why a bridge network and an RTT gate.** Rootless pasta can splice loopback traffic AROUND the container's tc, so a "150 ms" arm could silently run at
+0 ms. The container sits on a netavark bridge, and before every arm the harness shapes the network, MEASURES the echo RTT (median of 15, port 7) and
+compares it with the target +-15 ms (LAN: <= 15 ms). A mismatch makes the arm UNVERIFIABLE (status `noref`, never a pass).
+
+**Safety.** The control token is passed to podman through the environment (never on the command line); at most 3 lab containers run at once; `stop --id` takes 12-64 hex characters and only touches containers carrying the sshlab label; the image tag hashes a normalised tree (LF line endings, a `#!` flag instead of file modes) so a Windows client's tar selects the same image. Loss in a `/fault` is applied per direction at half the given rate (the rate you give is the round-trip figure). Drops use one nft table each (`sshlab_drop_<n>`, chains `drop_in`/`drop_out`); connections are matched to a user through the sshd log's `Accepted ... port N` lines because sshd's processes are not readable inside the container. CI collection files lab job results under `lab-<platform>` so they never replace the ordinary app-test rows.
+
+**Remote reads.** `ctx.remote` is `LocalRemote` (today: `prof.rhome`, `prof.rctl`) unless a lab arm swaps in `LabRemote` (HTTP: `/work/<user>` effect
+files with a fallback to the home, the ctl dir's `rec.log`/`prompt.log`/`fish_rec.log`). `ctx.lines(remote=True)`, `prof.read(remote=True)` and
+`CR.rm_remote` go through it; every existing `remote=True` case is untouched because `LocalRemote` is the default.
+
+**The cases** (`appci/cases_lab.py`, `@lab_case(name, shells=, lat=, helper=, faults=, scenarios=, flavor=, modes=)` expands one body into one case per
+arm, named `lab_<case>.<shell|scenario user>.<lan|150|300>.<nohelper|helper>[.<fault>]`, ordered helper-major so the app relaunches only when the
+helper mode changes). They run ONLY when `--cases` names them (`--cases` now takes comma-separated fnmatch globs; the app-test-lab-* jobs pass
+`'lab_*'`) and only the arms `APPCI_LAB_MATRIX` selects. `nohelper` is always the default and the first arm; the `helper` arm pre-installs
+`APPCI_LAB_HELPER_BIN`. **[hook]** marks a check resting on an app log line the Wave 0 code adds (`hop=tab_insert`, `hop=tab_menu items=[..]`,
+`hop=path_detect path=..`); until the app logs it the check is UNVERIFIABLE, never a pass.
+
+| case | arms | what it proves |
+|---|---|---|
+| `lab_tab_remote_dir` | bash zsh fish x LAN/150/300 x helper + 5 scenario users | a unique prefix + Tab completes a REMOTE directory (`&& pwd >> /work/u/tab.txt` writes the exact directory); an ambiguous prefix: the lab's own `/complete` candidates contain both, the app's menu [hook] equals them; Tab -> insert <= 1 RTT + 100 ms [hook]; Enter 30 ms after Tab runs the COMPLETED line |
+| `lab_path_detect` | bash zsh fish x LAN/150/300 x helper + p_exec, p_tinypath | a typed remote directory is detected [hook] and typing it opens ZERO new exec channels (sshd log) |
+| `lab_chips` | bash zsh x LAN/150 x helper | the branch chip is on screen (OCR); at most one batched side call per prompt (exec channels per prompt in the sshd log; with no helper at least one) |
+| `lab_enter_start` | 7 shells x LAN/150/300 x helper + p_sete, p_colon | 20 lines at 10-25 ms/key with an instant Enter, interleaved with a plain `ssh -tt` session of the same user: median(app) <= median(plain) + max(15 ms, 10 %) (owner 2026-11-08); the remote `rec.log` equals the typed lines exactly and the effect file has every line once in order. Time = the shell's own record (remote clock mapped by `/health`'s clock) minus the Enter. fish (whole-second stamps), dash and ash (no hook) are exactness-only |
+| `lab_ssh_drop_reconnect` (terminal) | bash zsh x LAN/150 x helper, + `rst` and `stall10` arms | the `ssh_drop_reconnect` body (now `ssh_drop_body(ctx, r, host, variants)`) against `lab-<user>`; `rst`: the lab resets the connection and the pane returns to a local prompt, a reconnect works; `stall10`: the server session is SIGSTOPped for 10 s, the pane stays remote and the lines typed meanwhile arrive exactly, in order |
+| `lab_ctrl_c_no_esc_i` | bash zsh fish x LAN/150 x helper | #1798/#1672: `sleep 30`, then Ctrl-C x1/x2/x3 at gaps 0/50/200 ms, then a typed echo: effect file exact; the shell received exactly [sleep 30, echo]; prompt.log grew one per command (bash exact); no ESC-i in rec.log; no "Session abandoned before bootstrap" in the app log; no visible `^[i` (OCR) |
+
+The quick matrix is {bash, zsh, fish} x {LAN, 150} x nohelper (32 arms across the six cases, each in the modes the case declares); `full` is 176 arms and is for a candidate/release run, not a fix round (docs 2.9).
+
+**Jobs** (all manual, never part of the ordinary app-test jobs): `sshlab-image` (box runner, `resource_group: little-thing-sshlab`; play it after a change under
+`script/realapp/sshlab/**`) runs `labctl.py build && labctl.py selftest` and then installs `labctl.py` into
+`~gitlab-runner/.phosphor-sshlab/`; `app-test-lab-linux`, `app-test-lab-macos`, `app-test-lab-windows` run `--cases 'lab_*'` and share their platform's GUI
+resource_group. Linux uses `APPCI_LAB=local`; Mac and Windows use `APPCI_LAB=remote`. The jobs select the cases with the existing `APPCI_CASES` variable (`mac/ci/app_test.sh` and `wayland_session.sh` already passed it; `windows/ci/app_test.ps1` now does too, and an unset `APPCI_CASES` changes nothing there). The run directory records `lab.json` (container id, run, expiry; no token, no
+address); `run.py`'s `finally`, `teardown.sh` and `after_job.ps1` call `labctl stop --id` from it, and the `expires` label plus `labctl gc` (run at every
+`start`) are the net behind that. `ssh_diag()` appends the lab's `/health` and the tail of its sshd log. Win32-OpenSSH has no ControlMaster, so
+`winmap.py` skips `p_onesess` arms on Windows; the lab cases run in the Git Bash pane only.
+
+`labctl.py selftest` (in `sshlab-image`): per user a login and shell identity, the RTT gate at 150 ms, the MFA login (SSH_ASKPASS gives the TOTP) and the
+`p_onesess` refusal of a second session, then it asserts ZERO lab containers are left. Offline, `run.py --self-test` covers the pure pieces: matrix expansion
+and selection, the `users.tsv` parse, tc/ifb/nft command generation, the TOTP vector, the RTT-gate and paired-verdict maths, the pin check, the forced-command
+whitelist, the tar jail, the container argv, expiry/prune planning and labd's helpers.
+
+**Owner setup checklist** (nothing here is done by the harness or by an agent):
+
+1. [x] **Pins.** Done in `versions.env` (re-check them when the image is rebuilt; `labctl.py build` refuses a missing, placeholder or malformed value). Moving a pin changes the tree hash, so the next `sshlab-image` rebuilds.
+2. [ ] **The forced-command key.** On a Mac/Windows runner create a machine-local key (`ssh-keygen -t ed25519`, no passphrase, mode 600, outside any repo). In `~gitlab-runner/.ssh/authorized_keys` on the box add one line: `restrict,command="python3 /home/gitlab-runner/.phosphor-sshlab/labctl.py remote" ssh-ed25519 AAAA...` (the forced command reads the allowed verb from `SSH_ORIGINAL_COMMAND`: only start, stop, list, gc). Put the private key's path in that runner's environment as `APPCI_LAB_KEY`.
+3. [ ] **The box's host key.** Put the box's ssh host key line (`box.example ssh-ed25519 AAAA...`) in a machine-local file on each Mac/Windows runner and export its path as `APPCI_LAB_KNOWN_HOSTS`. Remote mode fails closed (the lab cases SKIP with that reason) when it is unset: the harness never trusts a host key on first use.
+3b. [ ] **The `SSHLAB_BOX` CI variable** (the box account, `user@host`, as the Mac/Windows jobs reach it). Allowed by the owner as a project variable; it is never written in the repo. The jobs map it to `APPCI_LAB_BOX`.
+4. [ ] **Kernel modules, only if the first `sshlab-image` selftest says `tc/ifb unavailable`.** labd's startup probe and the RTT gate show it in the job log. The modules (`sch_netem sch_prio cls_u32 sch_ingress act_mirred ifb sch_tbf`) exist but were not loaded on the box; a rootless container normally gets them auto-loaded. If it does not, add one file `/etc/modules-load.d/sshlab.conf` listing those modules (needs sudo; **not done by anyone but the owner**).
+5. [ ] Run `sshlab-image` once by hand (manual job), then `app-test-lab-linux` with `APPCI_LAB_MATRIX=quick`.
+6. [ ] Helper arms: set `APPCI_LAB_HELPER_BIN` on the runner to a built remote-server binary (otherwise those arms report UNVERIFIABLE).
+7. [ ] ksu / a KDC are phase 2 and are not in this lab.
+
 ## 3. Real-app testing
 
 Automated tests do not catch lag, lost keys or broken flows; the owner feels those. Every release candidate
@@ -1593,6 +1668,8 @@ fallback for builds that predate the line.
     `yes | head`); 30-min mixed soak; `leaks` (Mac) / heaptrack (Linux); Ctrl-C under flood; new tab to prompt;
     raw-input latency vs running-block size (fresh, 10k, 100k, 1M lines) local and remote.
 11. **Kill switches**: on any failure run the case once with the relevant switch from 2.6 for A/B and record the result.
+12. **Fake ssh lab** (box and, via the forced-command key, Mac and Windows; separate manual jobs `app-test-lab-*`, 2.15): Tab on a remote directory, path detection with zero
+    exec channels, git chips, Enter -> start paired with plain ssh at 150/300 ms, ssh drop/reset/stall, Ctrl-C bursts - per shell, with and without the remote helper.
 
 #### 3.5.1 International input cases (`appci/cases_caseintl.py`, #1466; the Windows ones moved from `cases_caseintl.ps1` into the shared harness in #1488)
 
@@ -2300,6 +2377,21 @@ in-process tests, no app test yet (the app cases are Wave 0.5's, below).
 | `ctrl_c_cancels_a_turn_blocked_on_pending_actions` | same | Ctrl-C on a `Blocked` turn with no unfinished AI block (it matched no Ctrl-C route before and did nothing) cancels the whole turn, same end state |
 | `ctrl_c_on_a_blocked_turn_in_the_agent_view_releases_the_queued_follow_up` | same | in the agent view the queued follow-up comes back into the input after the Ctrl-C (one Enter sends it). A cancelled turn never auto-sends a queued row (#690, #1026), so "sent" means released, not fired |
 | `a_question_finishes_only_with_its_cards_answer`, `a_question_with_nothing_to_show_resolves_with_an_error` | same | through the action model: an accept with no answer leaves the question blocked (the card stays up), the card's submit finishes it with its answers; an empty question list resolves itself with an error |
+
+**Owner decision 2026-11-08: a question has no approval step.** Its card shows as soon as it is queued and blocks; answering it IS the
+approval. The executor decides a question by `AskUserQuestionExecutor::waits_for_answer` alone (answer staged or not), not by the generic
+confirmation policy (initiator, autonomy mode, the conversation's auto-execute override). A skip (the card's "Skip all") or a cancel
+(Reject / Stop / Ctrl-C) resolves it with one result; nothing else does.
+
+| test | file | what it proves |
+|---|---|---|
+| `a_question_waits_for_its_answer_and_only_for_its_answer` | `action_model/execute/ask_user_question_tests.rs` | with auto-approve on, a question waits until answers are staged for it, then runs; another question's answer does not release it |
+| `a_question_with_nothing_to_ask_does_not_wait` | same | an empty question list and a `Never ask` profile do not wait (error result / skipped result), so nothing is left pending without a card |
+| `a_question_shows_its_card_with_no_approval_step_and_a_skip_resolves_it_once` | `terminal/view_test.rs` | queued through the real pipeline, the question blocks with no accept and its `AskUserQuestionView` renders at once (no generic Run drawn); the card's Skip all gives one `Success` result, every question skipped |
+| `cancelling_a_question_resolves_it_once` | same | a `ManuallyCancelled` cancel gives exactly one `Cancelled` result; a late accept finds nothing to run |
+| `autonomy_max_still_waits_for_the_answer` | same | run-to-completion plus an always-allow profile (questions "unless auto-approve"): the agent drain, the accept by id and the plain accept leave it blocked with no result; the staged answer completes it |
+| `a_plain_accept_does_not_complete_a_question_its_card_stays_up` | `crates/warp_tui/src/tui_ask_question_view_tests.rs` | TUI parity: the TUI card is up on a blocked question; the accept by id and the plain accept leave it blocked and awaiting answers |
+| `a_blocked_question_awaits_an_answer_not_an_approval` | `crates/warp_tui/src/tool_call_labels_tests.rs` | the TUI transcript label of a blocked question says "(awaiting your answer)", never "(awaiting approval)"; other tools keep "(awaiting approval)" |
 
 ### Wave 0.5 fake-model scenarios for these issues (to build; scripted BYOP stand-in)
 

@@ -643,9 +643,21 @@ impl BlocklistAIActionExecutor {
         // The agent cannot auto execute and either:
         // - the agent is interactive, OR
         // - the agent is autonomous and the action was not requesting command output
-        let needs_confirmation = !(confirmation_stood_in_for
-            || can_auto_execute
-            || (is_agent_autonomous && action.action.is_request_command_output()));
+        //
+        // Not for `ask_user_question` (owner decision 2026-11-08, #1797): a question has no
+        // approval step. Its card IS its confirmation and answering it IS the approval, so it is
+        // not decided by the generic policy (who initiated it, the autonomy mode, the
+        // conversation's auto-execute override). It waits on its card until an answer is staged
+        // for it (`AskUserQuestionExecutor::waits_for_answer`), and runs as soon as one is.
+        let needs_confirmation =
+            if matches!(action.action, AIAgentActionType::AskUserQuestion { .. }) {
+                self.ask_user_question_executor
+                    .update(ctx, |executor, ctx| executor.waits_for_answer(input, ctx))
+            } else {
+                !(confirmation_stood_in_for
+                    || can_auto_execute
+                    || (is_agent_autonomous && action.action.is_request_command_output()))
+            };
         if needs_confirmation {
             log::info!(
                 "[byop-diag] executor: NotExecuted (NeedsConfirmation) action_id={:?} \

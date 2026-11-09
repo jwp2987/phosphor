@@ -30231,3 +30231,285 @@ fn a_question_with_nothing_to_show_resolves_with_an_error() {
         });
     })
 }
+
+// ---------------------------------------------------------------------------------------------
+// Owner decision 2026-11-08 (#1797): an `ask_user_question` shows its card with NO separate
+// approval step. Answering it IS the approval; a skip or a cancel resolves it; nothing else does.
+// ---------------------------------------------------------------------------------------------
+
+/// Queues the one-question turn on `terminal` and waits until the question is blocked on its
+/// card. Returns the action model, the question's id and a counter of the `FinishedAction`
+/// events emitted for it.
+async fn queue_one_question(
+    app: &mut App,
+    terminal: &ViewHandle<TerminalView>,
+    conversation_id: AIConversationId,
+) -> (
+    ModelHandle<BlocklistAIActionModel>,
+    AIAgentActionId,
+    Rc<RefCell<usize>>,
+) {
+    use crate::ai::blocklist::BlocklistAIActionEvent;
+
+    let action_model = terminal.read(app, |view, _| view.ai_action_model.clone());
+    let question_id = AIAgentActionId::from("question".to_owned());
+    let finished = Rc::new(RefCell::new(0));
+    let finished_sub = finished.clone();
+    let watched_id = question_id.clone();
+    app.update(|ctx| {
+        ctx.subscribe_to_model(&action_model, move |_, event, _| {
+            if let BlocklistAIActionEvent::FinishedAction { action_id, .. } = event {
+                if *action_id == watched_id {
+                    *finished_sub.borrow_mut() += 1;
+                }
+            }
+        });
+    });
+    action_model.update(app, |action_model, ctx| {
+        action_model.queue_actions_for_test(
+            vec![stuck_turn_action("question", ask_one_question())],
+            conversation_id,
+            ctx,
+        );
+    });
+    let blocked = pump_until(app, |app| {
+        action_model.read(app, |action_model, _| {
+            action_model
+                .get_action_status(&question_id)
+                .is_some_and(|status| status.is_blocked())
+        })
+    })
+    .await;
+    assert!(
+        blocked,
+        "the question goes straight to its blocked state, with nothing approved first"
+    );
+    (action_model, question_id, finished)
+}
+
+fn question_card(
+    app: &mut App,
+    terminal: &ViewHandle<TerminalView>,
+    action_model: &ModelHandle<BlocklistAIActionModel>,
+    conversation_id: AIConversationId,
+    question_id: &AIAgentActionId,
+) -> ViewHandle<crate::ai::blocklist::inline_action::ask_user_question_view::AskUserQuestionView> {
+    use crate::ai::blocklist::inline_action::ask_user_question_view::AskUserQuestionView;
+
+    let crate::ai::agent::AIAgentActionType::AskUserQuestion { questions } = ask_one_question()
+    else {
+        unreachable!("ask_one_question builds an ask_user_question");
+    };
+    let window_id = app.read(|ctx| terminal.window_id(ctx));
+    let action_model = action_model.clone();
+    let question_id = question_id.clone();
+    app.add_typed_action_view(window_id, move |ctx| {
+        AskUserQuestionView::new(action_model, conversation_id, question_id, questions, ctx)
+    })
+}
+
+/// The card is drawn the moment the question is queued and blocks: no accept, approval or
+/// autonomy decision comes first. Its own "Skip all" (Ctrl-C on the card) resolves the question
+/// with one result, every question skipped.
+#[test]
+fn a_question_shows_its_card_with_no_approval_step_and_a_skip_resolves_it_once() {
+    use crate::ai::agent::AIAgentActionResultType;
+    use crate::ai::blocklist::inline_action::ask_user_question_view::AskUserQuestionViewAction;
+    use ai::agent::action_result::{AskUserQuestionAnswerItem, AskUserQuestionResult};
+    use warpui::TypedActionView as _;
+
+    App::test((), |mut app| async move {
+        let (terminal, conversation_id) = terminal_asking_questions(&mut app);
+        let (action_model, question_id, finished) =
+            queue_one_question(&mut app, &terminal, conversation_id).await;
+
+        action_model.read(&app, |action_model, _| {
+            let question = action_model
+                .get_pending_action_by_id(&question_id)
+                .expect("the question is pending on its card");
+            assert!(
+                !question.action.can_be_accepted_without_its_own_ui(),
+                "no generic Run / Cancel is drawn for it: its card is the only UI"
+            );
+        });
+        let card = question_card(
+            &mut app,
+            &terminal,
+            &action_model,
+            conversation_id,
+            &question_id,
+        );
+        card.read(&app, |card, ctx| {
+            assert!(
+                card.should_render_inline(ctx),
+                "the card renders at once, with no approve step before it"
+            );
+        });
+
+        card.update(&mut app, |card, ctx| {
+            card.handle_action(&AskUserQuestionViewAction::SkipAll, ctx)
+        });
+        let_subscribers_run().await;
+
+        action_model.read(&app, |action_model, _| {
+            assert!(
+                matches!(
+                    action_model
+                        .get_action_result(&question_id)
+                        .map(|result| &result.result),
+                    Some(AIAgentActionResultType::AskUserQuestion(
+                        AskUserQuestionResult::Success { answers }
+                    )) if *answers == vec![AskUserQuestionAnswerItem::Skipped {
+                        question_id: "q1".to_owned(),
+                    }]
+                ),
+                "a skip is the user's answer: every question skipped, {:?}",
+                action_model.get_action_status(&question_id)
+            );
+        });
+        assert_eq!(*finished.borrow(), 1, "one result, no more");
+        card.read(&app, |card, ctx| {
+            assert!(
+                card.should_render_inline(ctx),
+                "the card now shows the finished (skipped) summary"
+            );
+        });
+    })
+}
+
+/// A cancel (the card's Reject / Stop: `ManuallyCancelled`) resolves the question with exactly
+/// one cancelled result, and a later accept of it does nothing.
+#[test]
+fn cancelling_a_question_resolves_it_once() {
+    use crate::ai::agent::AIAgentActionResultType;
+    use ai::agent::action_result::AskUserQuestionResult;
+
+    App::test((), |mut app| async move {
+        let (terminal, conversation_id) = terminal_asking_questions(&mut app);
+        let (action_model, question_id, finished) =
+            queue_one_question(&mut app, &terminal, conversation_id).await;
+
+        action_model.update(&mut app, |action_model, ctx| {
+            action_model.cancel_action_with_id(
+                conversation_id,
+                &question_id,
+                CancellationReason::ManuallyCancelled,
+                ctx,
+            );
+        });
+        let_subscribers_run().await;
+        // A late accept of the cancelled question (a stale Enter) finds nothing to run.
+        action_model.update(&mut app, |action_model, ctx| {
+            action_model.execute_action(&question_id, conversation_id, ctx);
+        });
+        let_subscribers_run().await;
+
+        action_model.read(&app, |action_model, _| {
+            assert!(matches!(
+                action_model
+                    .get_action_result(&question_id)
+                    .map(|result| &result.result),
+                Some(AIAgentActionResultType::AskUserQuestion(
+                    AskUserQuestionResult::Cancelled
+                ))
+            ));
+            assert!(!action_model.has_unfinished_actions_for_conversation(conversation_id));
+        });
+        assert_eq!(*finished.borrow(), 1, "one cancelled result, no more");
+    })
+}
+
+/// Autonomy at its maximum -- the conversation on "run to completion" (auto-approve), and a
+/// profile that always allows commands, reads and edits and asks questions "unless
+/// auto-approve" -- still waits for the answer. Neither the agent's own drain nor any plain
+/// accept completes the question with no answer; the answer does.
+#[test]
+fn autonomy_max_still_waits_for_the_answer() {
+    use crate::ai::agent::AIAgentActionResultType;
+    use crate::ai::execution_profiles::{
+        ActionPermission, AskUserQuestionPermission, profiles::AIExecutionProfilesModel,
+    };
+    use ai::agent::action_result::{AskUserQuestionAnswerItem, AskUserQuestionResult};
+
+    App::test((), |mut app| async move {
+        let (terminal, conversation_id) = terminal_asking_questions(&mut app);
+        let terminal_view_id = terminal.read(&app, |view, _| view.view_id);
+        AIExecutionProfilesModel::handle(&app).update(&mut app, |profiles, ctx| {
+            let profile_id = *profiles.active_profile(Some(terminal_view_id), ctx).id();
+            profiles.set_execute_commands(profile_id, &ActionPermission::AlwaysAllow, ctx);
+            profiles.set_read_files(profile_id, &ActionPermission::AlwaysAllow, ctx);
+            profiles.set_apply_code_diffs(profile_id, &ActionPermission::AlwaysAllow, ctx);
+            profiles.set_ask_user_question(
+                profile_id,
+                AskUserQuestionPermission::AskExceptInAutoApprove,
+                ctx,
+            );
+        });
+        BlocklistAIHistoryModel::handle(&app).update(&mut app, |history, ctx| {
+            history.toggle_autoexecute_override(&conversation_id, terminal_view_id, ctx);
+        });
+        assert!(
+            BlocklistAIHistoryModel::handle(&app).read(&app, |history, _| {
+                history
+                    .conversation(&conversation_id)
+                    .is_some_and(|conversation| conversation.autoexecute_any_action())
+            }),
+            "precondition: the conversation runs to completion (auto-approve)"
+        );
+
+        let (action_model, question_id, finished) =
+            queue_one_question(&mut app, &terminal, conversation_id).await;
+
+        // Every accept that carries no answer: the generic Run / Enter by id, and the plain
+        // "accept the next action" that Enter, the CLI subagent's Allow and auto-approve use.
+        action_model.update(&mut app, |action_model, ctx| {
+            action_model.execute_action(&question_id, conversation_id, ctx);
+            action_model.execute_next_action_for_user(conversation_id, ctx);
+        });
+        for _ in 0..8 {
+            futures_lite::future::yield_now().await;
+        }
+        action_model.read(&app, |action_model, _| {
+            assert!(
+                action_model
+                    .get_action_status(&question_id)
+                    .is_some_and(|status| status.is_blocked()),
+                "still blocked on its card, waiting for the answer"
+            );
+            assert!(action_model.get_action_result(&question_id).is_none());
+        });
+        assert_eq!(*finished.borrow(), 0, "no result without an answer");
+
+        // The answer, as the card submits it.
+        let answers = vec![AskUserQuestionAnswerItem::Answered {
+            question_id: "q1".to_owned(),
+            selected_options: vec!["main".to_owned()],
+            other_text: String::new(),
+        }];
+        action_model.update(&mut app, |action_model, ctx| {
+            action_model
+                .ask_user_question_executor(ctx)
+                .update(ctx, |executor, _| {
+                    executor.stage_answers(question_id.clone(), answers.clone())
+                });
+            action_model.execute_action(&question_id, conversation_id, ctx);
+        });
+        let_subscribers_run().await;
+
+        action_model.read(&app, |action_model, _| {
+            assert!(
+                matches!(
+                    action_model
+                        .get_action_result(&question_id)
+                        .map(|result| &result.result),
+                    Some(AIAgentActionResultType::AskUserQuestion(
+                        AskUserQuestionResult::Success { answers: got }
+                    )) if *got == answers
+                ),
+                "the answer completes it: {:?}",
+                action_model.get_action_status(&question_id)
+            );
+        });
+        assert_eq!(*finished.borrow(), 1);
+    })
+}

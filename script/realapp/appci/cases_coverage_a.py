@@ -385,7 +385,13 @@ def c_ssh_drop(ctx, r):
     CR.need_ssh(ctx, r)
     if ctx.win:
         r.skip("not yet ported to the Windows panes: the `~.` escape and kill -9 $$ need the msys ssh client (unverified there)")
-    for variant in ("escape", "escape_connect_enter", "escape_connect_bare", "kill"):
+    ssh_drop_body(ctx, r, "fake", ("escape", "escape_connect_enter", "escape_connect_bare", "kill"))
+
+
+def ssh_drop_body(ctx, r, host, variants):
+    """the arms of ssh_drop_reconnect against ssh host alias `host` (the lab cases, cases_lab.py, run the same body against lab-<user>). Variants: the four above,
+    plus 'rst' (lab only: the lab server resets the live connection, as a dropped link does; ctx.arm names the user)."""
+    for variant in variants:
         escape = variant.startswith("escape")
         at_connect = variant.startswith("escape_connect")
         if escape and os.environ.get("APPCI_SSH_ESCAPE_THROUGH", "1") == "0":
@@ -393,8 +399,8 @@ def c_ssh_drop(ctx, r):
             # escape arm runs by default. APPCI_SSH_ESCAPE_THROUGH=0 is the opt-out (a build from before #1638): the arm is then UNVERIFIABLE (noref).
             r.unverifiable("ssh_drop_reconnect [%s]: skipped by APPCI_SSH_ESCAPE_THROUGH=0 (a build without #1638's ssh escape pass-through)" % variant)
             continue
-        secs = CR.connect(ctx, "fake", 90)
-        r.check(secs is not None, "[%s] no remote prompt after `ssh fake`. Test host: %s" % (variant, ctx.ssh_diag() if secs is None else ""))
+        secs = CR.connect(ctx, host, 90)
+        r.check(secs is not None, "[%s] no remote prompt after `ssh %s`. Test host: %s" % (variant, host, ctx.ssh_diag() if secs is None else ""))
         if secs is None:
             ctx.reset()
             return
@@ -415,6 +421,8 @@ def c_ssh_drop(ctx, r):
         elif variant == "escape_connect_bare":
             # #1793: at the first remote prompt, `~.` with no Enter before it.
             ctx.be.type("~.", 40)
+        elif variant == "rst":
+            ctx.lab.drop(ctx.arm["user"], "rst")
         else:
             ctx.be.type("kill -9 $$", 15, enter=True)
         up = ctx.until(lambda: ctx.prompts() > before, 20, step=0.1)
@@ -444,8 +452,8 @@ def c_ssh_drop(ctx, r):
         if at_connect:
             # The arm itself began with a fresh connect: that was its reconnect.
             continue
-        secs = CR.connect(ctx, "fake", 90)
-        r.check(secs is not None, "[%s] reconnect: no remote prompt after `ssh fake`" % variant)
+        secs = CR.connect(ctx, host, 90)
+        r.check(secs is not None, "[%s] reconnect: no remote prompt after `ssh %s`" % (variant, host))
         if secs is None:
             ctx.reset()
             return
