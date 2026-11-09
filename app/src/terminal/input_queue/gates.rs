@@ -233,8 +233,10 @@ pub enum GateSignalPlan {
     WaitInOrder,
     /// The keys held at a prompt hold are void (the tty flushes them), then the signal goes.
     VoidHeldThenSignal,
-    /// The signal is stashed (`pending_aborts`) and sent after the last bootstrap line: it must
-    /// not cut a half-run script.
+    /// A signal meeting the bootstrap-write gate as a queue ENTRY (a ^Z / ^\ in `table` mode,
+    /// `SubshellPrep::HeldInOrder`): it waits for the last bootstrap line, so it does not cut a
+    /// half-run script. A Ctrl-C / Ctrl-D never reaches the gate this way since #1711 review F1:
+    /// the writer ends the setup and writes it at once (`abort_in_flight_subshell_setup`).
     StashUntilBootstrapDone,
 }
 

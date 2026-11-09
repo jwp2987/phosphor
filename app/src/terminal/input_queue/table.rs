@@ -226,7 +226,10 @@ pub enum Outcome {
     Queue,
     /// A signal meets open gates: the queue applies [`signal_plan`] for each.
     SignalAtGates,
-    /// Stashed until the last subshell bootstrap line is written (`pending_aborts`).
+    /// A signal during the paced subshell bootstrap lines (P1d): the writer's
+    /// `prepare_subshell_gates` applies the rule (#1711 review F1): a Ctrl-C / Ctrl-D ends the
+    /// setup at once (unwritten lines dropped, the signal written, the held keys behind it); a
+    /// ^Z / ^\ waits as an ordinary entry and goes out after the last line.
     Stash,
     /// ^C during a PowerShell setup (`ctrl_c_during_powershell_setup`).
     PowershellAbort,
@@ -1037,8 +1040,10 @@ fn decide_signal(i: &Intent, f: &RouteFacts, signal: SignalKind) -> Plan {
             }
         }
     }
-    // P1d: during the paced subshell bootstrap lines every signal is stashed and goes out after
-    // the last line (a ^Z in the middle would suspend a half-run script).
+    // P1d: during the paced subshell bootstrap lines the signal goes to the writer's own rule
+    // (`prepare_subshell_gates`, #1711 review F1): a Ctrl-C / Ctrl-D ends the setup at once and
+    // goes out with the held keys behind it; a ^Z / ^\ waits in order for the last line (a
+    // suspend in the middle would leave a half-run script).
     if f.subshell == SubshellPhase::BootstrapWriting {
         return Plan::new(
             Outcome::Stash,

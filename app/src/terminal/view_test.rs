@@ -16518,7 +16518,9 @@ fn start_subshell_bootstrap(view: &mut TerminalView, announce: bool) {
 /// line (`a ^C b` with no setup to skip, `^C a b` when announced), which a stuck shell never
 /// wrote. Now the user's abort is the EVENT that ends the setup: the unwritten lines are dropped,
 /// the ^C goes out at once and the keys held behind it follow in order (`^C a b`), announced or
-/// not. Same bytes in both input modes.
+/// not. Same bytes in both input modes, through the REAL key path (the terminal's typed characters
+/// and keydown, which `table` mode decides with the table: row P1d hands the signal to the
+/// writer's rule).
 #[test]
 fn ctrl_c_during_the_subshell_bootstrap_ends_it_and_goes_out_first() {
     use crate::terminal::input_queue::DestinationMode;
@@ -16534,33 +16536,147 @@ fn ctrl_c_during_the_subshell_bootstrap_ends_it_and_goes_out_first() {
             let terminal = add_window_with_terminal(&mut app, None);
             let written = subshell_pty_writes(&mut app, &terminal);
             terminal.update(&mut app, |view, ctx| {
+                view.model.lock().simulate_long_running_block("bash", "");
                 start_subshell_bootstrap(view, announce);
-                assert!(view.write_user_bytes_to_pty(b"a".to_vec(), ctx));
-                assert!(
-                    written.borrow().is_empty(),
-                    "{mode:?} announce={announce}: nothing lands among the bootstrap lines"
+                view.typed_characters_on_terminal("a", ctx);
+                assert_eq!(
+                    held_for_subshell_setup(view).0,
+                    1,
+                    "{mode:?} announce={announce}: held, not written among the bootstrap lines"
                 );
-                assert!(view.write_user_bytes_to_pty(vec![0x03], ctx));
+                view.keydown_on_terminal("\u{3}", ctx);
                 assert!(
                     view.subshell_bootstrap_in_flight.is_none(),
                     "{mode:?} announce={announce}: the abort ended the in-flight write"
                 );
                 assert!(view.subshell_bootstrap_announced.is_none());
-                assert_eq!(
-                    *written.borrow(),
-                    b"\x03a".to_vec(),
-                    "{mode:?} announce={announce}: the ^C at once, the held key behind it"
-                );
-                assert!(view.write_user_bytes_to_pty(b"b".to_vec(), ctx));
+                assert_eq!(held_for_subshell_setup(view), (0, 0), "{mode:?}");
+                view.typed_characters_on_terminal("b", ctx);
             });
             assert_eq!(
                 *written.borrow(),
                 b"\x03ab".to_vec(),
-                "{mode:?} announce={announce}"
+                "{mode:?} announce={announce}: the ^C at once, the held key behind it, then the rest"
             );
             terminal.read(&app, |view, _| {
                 assert!(view.paste_queue.queue.borrow().is_idle());
-                assert!(view.paste_queue.pending_aborts.is_empty());
+            });
+        })
+    }
+}
+
+/// #1711 review F-a: in `table` mode ^Z is a queue signal (P1d), but NOT an abort key: typed
+/// during the in-flight bootstrap write it leaves the setup live and waits as an ordinary entry,
+/// in typed order, for the last line (a suspend in the middle would leave the script half run).
+#[test]
+fn table_mode_ctrl_z_during_the_bootstrap_lines_waits_in_order_and_does_not_end_the_setup() {
+    use crate::terminal::input_queue::DestinationMode;
+    App::test((), |mut app| async move {
+        let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(
+            DestinationMode::Table,
+        );
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let written = subshell_pty_writes(&mut app, &terminal);
+        let token = terminal.update(&mut app, |view, ctx| {
+            view.model.lock().simulate_long_running_block("sudo -s", "");
+            view.write_init_subshell_bytes_to_pty(None, ctx);
+            let token = view
+                .subshell_bootstrap_in_flight
+                .as_ref()
+                .and_then(|f| f.marker_token)
+                .expect("marker-paced");
+            view.typed_characters_on_terminal("a", ctx);
+            view.keydown_on_terminal("\u{1a}", ctx);
+            assert!(
+                view.subshell_bootstrap_in_flight.is_some(),
+                "^Z is not an abort: the setup is still in flight"
+            );
+            assert!(view.subshell_bootstrap_announced.is_some());
+            assert!(view.subshell_setup_net.is_some());
+            assert_eq!(
+                held_for_subshell_setup(view).0,
+                2,
+                "`a` and the ^Z wait in order"
+            );
+            token
+        });
+        let after_setup = written.borrow().len();
+        // The marker releases the probe line (the last one): the held entries follow it in order.
+        terminal.update(&mut app, |view, ctx| {
+            view.model
+                .lock()
+                .process_bytes(format!("\x1b]7771;{token};0\x07").as_str());
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            assert!(view.subshell_bootstrap_in_flight.is_none());
+        });
+        let all = written.borrow();
+        let tail = String::from_utf8_lossy(&all[after_setup..]).into_owned();
+        assert!(
+            tail.contains("InitSubshell") && tail.ends_with("\ra\u{1a}"),
+            "the probe line, then `a` and the ^Z in typed order: {tail:?}"
+        );
+    })
+}
+
+/// #1711 re-review B-1: a Ctrl-C on a stuck marker-paced POWERSHELL setup must not lose the held
+/// keys. Through the key path the ^C skips the setup (the notice is up): the signal goes out at
+/// once and the hold becomes `AfterAbort`; the keys held behind the bootstrap-write gate meet that
+/// hold and STAY held for the shell's read marker (the Windows console flushes its input while it
+/// processes the ^C, #1372 / #1438), never written raw behind it. Legacy and Table.
+#[test]
+fn a_ctrl_c_on_a_stuck_powershell_setup_keeps_the_held_keys_for_the_read_marker() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let delivered = collect_delivered_input(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                view.model.lock().simulate_long_running_block("pwsh", "");
+                view.write_init_subshell_bytes_to_pty(Some(ShellType::PowerShell), ctx);
+                assert_eq!(view.powershell_setup_hold, PowerShellSetupHold::Setup);
+                assert!(
+                    view.subshell_bootstrap_in_flight
+                        .as_ref()
+                        .is_some_and(|f| f.marker_token.is_some()),
+                    "{mode:?}: marker-paced"
+                );
+                view.typed_characters_on_terminal("ls", ctx);
+            });
+            let after_setup = delivered.borrow().len();
+            terminal.update(&mut app, |view, ctx| {
+                // Stuck: no marker; the notice is up ("Ctrl-C skips setup").
+                stall_powershell_setup(view);
+                view.keydown_on_terminal("\u{3}", ctx);
+                assert!(
+                    matches!(
+                        view.powershell_setup_hold,
+                        PowerShellSetupHold::AfterAbort { .. }
+                    ),
+                    "{mode:?}: the ^C skipped the setup: {:?}",
+                    view.powershell_setup_hold
+                );
+                assert!(view.subshell_bootstrap_in_flight.is_none(), "{mode:?}");
+                assert!(view.subshell_bootstrap_announced.is_none(), "{mode:?}");
+                assert_eq!(
+                    powershell_held(view),
+                    vec![b"ls".to_vec()],
+                    "{mode:?}: the held keys wait for the read marker"
+                );
+            });
+            let all = delivered.borrow();
+            assert_eq!(
+                &all[after_setup..],
+                b"\x03",
+                "{mode:?}: only the ^C went out; the held keys were not written raw: {:?}",
+                String::from_utf8_lossy(&all[after_setup..])
+            );
+            terminal.read(&app, |view, ctx| {
+                view.input
+                    .read(ctx, |input, ctx| assert_eq!(input.buffer_text(ctx), ""));
             });
         })
     }
@@ -24878,12 +24994,13 @@ fn ctrl_c_during_a_stuck_marker_paced_setup_goes_out_at_once_and_ends_it() {
             app.add_singleton_model(|_| crate::ToastStack);
             let terminal = add_window_with_terminal(&mut app, None);
             let written = subshell_pty_writes(&mut app, &terminal);
-            terminal.update(&mut app, |view, ctx| {
+            let probe = terminal.update(&mut app, |view, ctx| {
                 view.model.lock().simulate_long_running_block("sudo -s", "");
                 view.write_init_subshell_bytes_to_pty(None, ctx);
-                for key in [b"ec".to_vec(), b"ho".to_vec()] {
-                    assert!(view.write_user_bytes_to_pty(key, ctx), "{mode:?}");
-                }
+                // The real arrival path: typed characters (held), as the terminal receives them.
+                view.typed_characters_on_terminal("ec", ctx);
+                view.typed_characters_on_terminal("ho", ctx);
+                view.subshell_probe_session_id.expect("the probe's ID")
             });
             // The prelude is out (its write is observed once the update ended); the keys are not.
             let after_setup = written.borrow().len();
@@ -24899,13 +25016,19 @@ fn ctrl_c_during_a_stuck_marker_paced_setup_goes_out_at_once_and_ends_it() {
                 view.subshell_setup_quiet_notice(generation, seq, ctx);
                 assert!(view.subshell_setup_waiting_toast_id.is_some(), "{mode:?}");
                 assert_eq!(held_for_subshell_setup(view).0, 2, "{mode:?}: keys held");
-                // The user takes the notice up on it.
-                assert!(view.write_user_bytes_to_pty(vec![0x03], ctx), "{mode:?}");
+                // The user takes the notice up on it: the ^C through the key path.
+                view.keydown_on_terminal("\u{3}", ctx);
                 assert!(view.subshell_bootstrap_in_flight.is_none(), "{mode:?}");
                 assert!(view.subshell_bootstrap_announced.is_none(), "{mode:?}");
                 assert!(view.subshell_setup_net.is_none(), "{mode:?}");
                 assert!(view.subshell_setup_waiting_toast_id.is_none(), "{mode:?}");
                 assert_eq!(held_for_subshell_setup(view), (0, 0), "{mode:?}");
+                // Review F-b: the attempt's probe ID went with it.
+                assert!(view.subshell_probe_session_id.is_none(), "{mode:?}");
+                assert!(
+                    !ansi::Handler::is_registered_session(&*view.model.lock(), probe),
+                    "{mode:?}"
+                );
             });
             let all = written.borrow();
             assert_eq!(
@@ -25117,12 +25240,13 @@ fn a_notice_timer_of_an_earlier_setup_does_not_toast_during_a_later_one() {
     })
 }
 
-/// #1711 review N1: the keys held behind a PowerShell held line (`LineRunning`) have the net too.
-/// No prompt for the quiet net and they come back to the input with the hold `Off`, nothing
-/// written, under the `held_line` notice (the setup succeeded; the command is slow). Legacy and
-/// Table.
+/// #1711 review N1 (coordinator decision): the keys held behind a PowerShell held line
+/// (`LineRunning`) have the net too, but a quietly running command must not have the typeahead
+/// bounced at 30 s (output is not progress): the quiet net leaves them held, and only the 120 s
+/// ceiling hands them back to the input, hold `Off`, nothing written, under the `held_line`
+/// notice (the setup succeeded; the command is slow). Legacy and Table.
 #[test]
-fn a_powershell_held_line_is_watched_by_the_net_and_handed_back() {
+fn a_powershell_held_line_is_watched_by_the_net_and_handed_back_only_at_the_ceiling() {
     use crate::terminal::input_queue::DestinationMode;
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
@@ -25141,9 +25265,27 @@ fn a_powershell_held_line_is_watched_by_the_net_and_handed_back() {
                     powershell_held(view),
                     vec![b"Get-".to_vec(), b"Date".to_vec()]
                 );
+                // 30 s of quiet: the command is still running; the keys stay held.
                 backdate_subshell_setup_net(view, false);
                 let (generation, seq) = subshell_setup_net_id(view);
                 view.subshell_setup_quiet_net_fired(generation, seq, ctx);
+                assert_eq!(
+                    view.powershell_setup_hold,
+                    PowerShellSetupHold::LineRunning { generation: 1 },
+                    "{mode:?}: a quiet command does not bounce the typeahead"
+                );
+                assert_eq!(
+                    powershell_held(view),
+                    vec![b"Get-".to_vec(), b"Date".to_vec()],
+                    "{mode:?}"
+                );
+                assert!(
+                    view.subshell_setup_net.is_some(),
+                    "{mode:?}: the net stays armed"
+                );
+                // The ceiling: handed back.
+                backdate_subshell_setup_net(view, true);
+                view.subshell_setup_ceiling_fired(generation, ctx);
                 assert_eq!(
                     view.powershell_setup_hold,
                     PowerShellSetupHold::Off,

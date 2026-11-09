@@ -66,11 +66,7 @@ const GATE_GIVE_UP_TOAST: &str = "Input was waiting too long, so it was not sent
 /// or not keys were held through the setup, so a failed Phosphorize is never silent; it also
 /// covers the held keys with their COUNT (never their text), which is why the hand-back itself
 /// shows no second toast for it.
-pub(super) fn subshell_setup_given_up_toast(
-    why: &str,
-    held_chunks: usize,
-    dropped_aborts: usize,
-) -> String {
+pub(super) fn subshell_setup_given_up_toast(why: &str, held_chunks: usize) -> String {
     let (what, when) = if why == "held_line" {
         // Review N1: the setup succeeded; the command run from the held input is slow.
         (
@@ -89,13 +85,7 @@ pub(super) fn subshell_setup_given_up_toast(
         1 => format!("1 key typed {when} is in the input, not run."),
         n => format!("{n} keys typed {when} are in the input, not run."),
     };
-    // Review F1: a stashed abort cannot come back as text and a timer never sends it; say so.
-    let aborts = if dropped_aborts > 0 {
-        " Ctrl-C was not sent: press it again."
-    } else {
-        ""
-    };
-    format!("{what}. {held}{aborts}")
+    format!("{what}. {held}")
 }
 
 /// #1661: the reason of a young Enter's hold that gave up (its toast gives the discarded count).
@@ -186,11 +176,6 @@ pub(super) struct PasteQueueState {
     /// The subset of `routed_pastes` read for the ssh hold: cancelled with the hold (a prompt,
     /// ^C, a new command) so a late answer is never pasted anywhere.
     pub(super) ssh_pastes: std::collections::HashSet<u64>,
-    /// Ctrl-C / Ctrl-D typed while the paced bootstrap lines are being written. Like the buffer it
-    /// replaces they wait for the last line (an interrupt in the middle of the setup script would
-    /// leave a half-run bootstrap); [`TerminalView::settle_subshell_bootstrap_gate`] sends them
-    /// first, ahead of everything held, when the bootstrap ends.
-    pub(super) pending_aborts: Vec<(Vec<u8>, bool)>,
     /// The key of the gate the CLI-agent submit in progress holds, if one is.
     cli_submit_gate: Option<u64>,
     next_cli_submit_key: u64,
@@ -264,7 +249,6 @@ impl PasteQueueState {
             refused: Default::default(),
             routed_pastes: Default::default(),
             ssh_pastes: Default::default(),
-            pending_aborts: Vec::new(),
             cli_submit_gate: None,
             next_cli_submit_key: 0,
             requeueable_delivery: false,
@@ -1185,9 +1169,7 @@ impl TerminalView {
             return;
         }
         if kind == Some(GateKind::SubshellBootstrapWrite) {
-            // The paced lines are out: the aborts typed meanwhile go first (protocol), then the
-            // keys typed behind the write come back to the editor.
-            self.send_pending_subshell_aborts(ctx);
+            // The paced lines are out: the keys typed behind the write come back to the editor.
             self.hand_back_gate_keys(
                 GateKind::SubshellBootstrapWrite,
                 gate_key,
@@ -2763,12 +2745,16 @@ impl TerminalView {
             // The rest of a chunked line-clear write is dropped (#1354, now a writer job #1384).
             ctx.emit(super::Event::CancelPacedSetupWrites);
             self.note_input_for_deferred_subshell_setup(bytes);
-            // Review F1 (#1711): the user's abort ENDS the in-flight setup now: unwritten lines
-            // dropped, the signal written at once, the held keys behind it in order. It used to
-            // be stashed until the last line was written, which a stuck shell never did.
-            self.abort_in_flight_subshell_setup(bytes, ctx);
-            note_shadow_leaf(DestClass::Pty);
-            return SubshellPrep::AbortHandled;
+            // Review F1 (#1711): the user's ABORT (^C / ^D) ENDS the in-flight setup now:
+            // unwritten lines dropped, the signal written at once, the held keys behind it in
+            // order. It used to be stashed until the last line was written, which a stuck shell
+            // never did. ^Z / ^\ (signals in `table` mode only, review F-a) are not aborts: they
+            // wait as ordinary entries, in typed order (`HeldInOrder` below), as in `legacy`.
+            if super::is_abort_key(bytes) {
+                self.abort_in_flight_subshell_setup(bytes, ctx);
+                note_shadow_leaf(DestClass::Pty);
+                return SubshellPrep::AbortHandled;
+            }
         }
         let powershell_off = self.powershell_setup_hold == super::PowerShellSetupHold::Off;
         // The setup is over (`Bootstrapped`, abandoned, ...) while keys are still held, released
@@ -2844,10 +2830,10 @@ impl TerminalView {
         guard.on_gate_event(&mut host, GateKind::SubshellSetup, 0);
     }
 
-    /// The bootstrap's last line is out (or it was abandoned): the aborts typed meanwhile go
-    /// first, then the gate closes and what was typed is delivered, in order.
+    /// The bootstrap's last line is out (or it was abandoned): the gate closes and what was typed
+    /// is delivered, in order. (An abort typed meanwhile ended the setup at once, review F1; it
+    /// is never stashed for this moment any more.)
     pub(super) fn settle_subshell_bootstrap_gate(&mut self, ctx: &mut ViewContext<Self>) {
-        self.send_pending_subshell_aborts(ctx);
         let queue = self.paste_queue.queue.clone();
         let Some(mut guard) = queue.try_lock() else {
             queue.defer(Deferred::GateEvent {
@@ -2864,31 +2850,6 @@ impl TerminalView {
         let mut host = PtyQueueHost::new(self, ctx);
         guard.on_gate_event(&mut host, GateKind::SubshellBootstrapWrite, 0);
     }
-
-    /// Sends the stashed aborts as signals: they meet the gates still open (setup: the abort goes
-    /// first and releases the held keys behind it; bootstrap: same).
-    fn send_pending_subshell_aborts(&mut self, ctx: &mut ViewContext<Self>) {
-        let aborts = std::mem::take(&mut self.paste_queue.pending_aborts);
-        for (bytes, _takes_over) in aborts {
-            let Some(signal) = queue_signal_of(&bytes) else {
-                continue;
-            };
-            if self.subshell_setup_gate_open() {
-                self.subshell_bootstrap_announced = None;
-            }
-            let queue = self.paste_queue.queue.clone();
-            let Some(mut guard) = queue.try_lock() else {
-                queue.defer(Deferred::Offer {
-                    kind: EntryKind::Signal(signal),
-                    origin: Origin::Keyboard,
-                    stamp: queue.stamp_now(),
-                });
-                continue;
-            };
-            let mut host = PtyQueueHost::new(self, ctx);
-            guard.offer(&mut host, EntryKind::Signal(signal));
-        }
-    }
 }
 
 /// What [`TerminalView::prepare_subshell_gates`] decided for a key.
@@ -2898,12 +2859,12 @@ pub(super) enum SubshellPrep {
     Normal,
     /// A shell prompt is asking for an answer: the key goes straight to the pty.
     Bypass,
-    /// An abort typed during the bootstrap lines: it ended the setup and was written here
-    /// (`abort_in_flight_subshell_setup`, review F1); nothing more to do with it.
+    /// A Ctrl-C / Ctrl-D typed during the bootstrap lines: it ended the setup and was written
+    /// here (`abort_in_flight_subshell_setup`, review F1); nothing more to do with it.
     AbortHandled,
-    /// An abort that waits as an ordinary entry, at its place in what was typed. (No path
-    /// produces it since review F1: an abort during the bootstrap lines ends the setup instead.
-    /// Kept for the table's row and its tests.)
+    /// A ^Z / ^\ (a queue signal in `table` mode) typed during the bootstrap lines: not an abort,
+    /// so it waits as an ordinary entry, at its place in what was typed, and goes out after the
+    /// last line (a suspend in the middle of the setup script would leave it half run).
     HeldInOrder,
 }
 

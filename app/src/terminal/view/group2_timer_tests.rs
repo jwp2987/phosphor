@@ -906,25 +906,23 @@ fn setup_net_hand_back_defers_to_its_own_counted_notice() {
     assert_eq!(paste_queue::gate_give_up_toast("ceiling"), None);
     assert!(paste_queue::gate_give_up_toast("subshell_setup_cap").is_some());
     assert!(paste_queue::gate_give_up_toast("bootstrap_write_cap").is_some());
-    let notice = paste_queue::subshell_setup_given_up_toast("quiet_net", 3, 0);
+    let notice = paste_queue::subshell_setup_given_up_toast("quiet_net", 3);
     assert!(notice.contains("Phosphorize failed"), "{notice}");
     assert!(
         notice.contains("3 keys typed during the setup are in the input, not run"),
         "{notice}"
     );
-    assert!(!notice.contains("Ctrl-C"), "{notice}");
-    let none = paste_queue::subshell_setup_given_up_toast("ceiling", 0, 0);
+    let none = paste_queue::subshell_setup_given_up_toast("ceiling", 0);
     assert!(
         none.contains("Nothing was typed during the setup"),
         "{none}"
     );
-    let one = paste_queue::subshell_setup_given_up_toast("quiet_net", 1, 2);
+    let one = paste_queue::subshell_setup_given_up_toast("quiet_net", 1);
     assert!(
         one.contains("1 key typed during the setup is in the input"),
         "{one}"
     );
-    assert!(one.contains("Ctrl-C was not sent: press it again"), "{one}");
-    let held_line = paste_queue::subshell_setup_given_up_toast("held_line", 2, 0);
+    let held_line = paste_queue::subshell_setup_given_up_toast("held_line", 2);
     assert!(
         held_line.contains("has not shown its prompt"),
         "{held_line}"

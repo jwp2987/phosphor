@@ -22512,6 +22512,22 @@ impl TerminalView {
             self.arm_subshell_setup_quiet_timers(generation, progress_seq, ctx);
             return;
         }
+        if matches!(
+            self.powershell_setup_hold,
+            PowerShellSetupHold::LineRunning { .. }
+        ) {
+            // Coordinator decision (N1): the keys held behind a PowerShell held line are NOT handed
+            // back at 30 s of quiet: output is not progress, so a command that quietly runs for
+            // 31 s would bounce the user's typeahead. The notice showed at 10 s; the 120 s ceiling
+            // is the only give-up, and the command's prompt (`Precmd`) ends the hold as before.
+            log::info!(
+                "PowerShell held line still running after {} s of quiet; the keys typed after \
+                 it stay held for its prompt or the {} s ceiling",
+                SUBSHELL_SETUP_QUIET_NET.as_secs(),
+                SUBSHELL_SETUP_CEILING.as_secs()
+            );
+            return;
+        }
         self.give_up_subshell_setup("quiet_net", ctx);
     }
 
@@ -22576,12 +22592,10 @@ impl TerminalView {
             .queue
             .try_peek()
             .map_or((0, 0), |queue| queue.queued_summary());
-        let stashed_aborts = self.paste_queue.pending_aborts.len();
         log::warn!(
             "subshell setup given up ({why}) after {} s, {} s since the last progress: \
              continuing as a plain shell; {} held key chunk(s) ({} bytes) handed back to the \
-             input, {stashed_aborts} stashed abort(s) dropped; nothing written to the pty \
-             (#1711/#1712)",
+             input; nothing written to the pty (#1711/#1712)",
             net.started.elapsed().as_secs(),
             net.last_progress.elapsed().as_secs(),
             held.0,
@@ -22589,7 +22603,7 @@ impl TerminalView {
         );
         warpui::input_order::log_hop("subshell_setup_given_up", || {
             format!(
-                "why={why} gen={} chunks={} bytes={} aborts_dropped={stashed_aborts}",
+                "why={why} gen={} chunks={} bytes={}",
                 net.generation, held.0, held.1
             )
         });
@@ -22597,7 +22611,6 @@ impl TerminalView {
         // is cut (#1354/#1384). Nothing of the setup goes out from here on.
         self.subshell_bootstrap_in_flight = None;
         ctx.emit(Event::CancelPacedSetupWrites);
-        self.paste_queue.pending_aborts.clear();
         self.cancel_bootstrap_failed_timer();
         {
             let mut model = self.model.lock();
@@ -22617,10 +22630,7 @@ impl TerminalView {
         self.update_long_running_ssh_block_with_lock(|block| {
             block.unhide();
         });
-        self.show_error_toast(
-            paste_queue::subshell_setup_given_up_toast(why, held.0, stashed_aborts),
-            ctx,
-        );
+        self.show_error_toast(paste_queue::subshell_setup_given_up_toast(why, held.0), ctx);
         ctx.notify();
     }
 
@@ -22676,13 +22686,18 @@ impl TerminalView {
         self.note_subshell_setup_progress(SubshellSetupProgress::InitShell, ctx);
     }
 
-    /// Review F1: a Ctrl-C / Ctrl-D typed while the setup lines are still being written. The
-    /// user's abort is the EVENT that ends the setup, at once: the unwritten lines are dropped
-    /// (a late marker releases nothing), the signal is written now (a user event, not a timer;
-    /// a canonical tty flushes the unread setup line with it), and the setup ends the way a
-    /// PowerShell skip does: announcement, net and hold over, every gate closed, so the keys held
-    /// behind them follow the signal in order. Before, the abort was stashed until the last line
-    /// was written, which a stuck shell never did, while the notice said "Ctrl-C skips setup".
+    /// Review F1: a Ctrl-C / Ctrl-D (the abort keys; ^Z and ^\ wait in order as before) typed
+    /// while the setup lines are still being written. The user's abort is the EVENT that ends the
+    /// setup, at once: the unwritten lines are dropped (a late marker releases nothing), this
+    /// attempt's probe ID is unregistered, the signal is written now (a user event, not a timer;
+    /// a canonical tty flushes the unread setup line with it), and the setup ends. For a generic
+    /// shell the announcement, net and gates go and the keys held behind them follow the signal
+    /// in order. For a PowerShell setup the write itself turns the hold into `AfterAbort` (#1372,
+    /// #1438: the Windows console flushes its input while it processes the ^C), so ONLY the
+    /// bootstrap-write gate settles: the keys it held meet the `AfterAbort` hold and wait for the
+    /// shell's read marker, or the abort wait's own give-up, never written raw behind the ^C.
+    /// Before, the abort was stashed until the last line was written, which a stuck shell never
+    /// did, while the notice said "Ctrl-C skips setup".
     pub(super) fn abort_in_flight_subshell_setup(
         &mut self,
         bytes: &[u8],
@@ -22700,10 +22715,25 @@ impl TerminalView {
             format!("unwritten_lines={pending_lines}")
         });
         self.subshell_bootstrap_in_flight = None;
-        self.model.lock().clear_setup_echo();
-        // The abort first, as the user's event.
+        {
+            let mut model = self.model.lock();
+            model.clear_setup_echo();
+            // Review F-b: the attempt is over with its probe (as at a give-up).
+            if let Some(probe_id) = self.subshell_probe_session_id.take() {
+                model.unregister_session_id(probe_id);
+            }
+        }
+        let powershell = self.powershell_setup_hold != PowerShellSetupHold::Off;
+        // The abort first, as the user's event. (PowerShell: this turns the hold into AfterAbort.)
         let _ =
             self.write_user_bytes_to_pty_after_paste_stage(Cow::Owned(bytes.to_vec()), true, ctx);
+        if powershell {
+            // Review B-1: the held keys stay held behind the AfterAbort hold (the bootstrap-write
+            // gate's entries are re-held by it as they are delivered); only the marker or the abort
+            // wait's give-up moves them.
+            self.settle_subshell_bootstrap_gate(ctx);
+            return;
+        }
         // Then the setup is over: the gates close in queue order and what they held follows.
         self.release_subshell_setup_held_bytes(ctx);
         self.settle_subshell_bootstrap_gate(ctx);
