@@ -35,6 +35,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 
 /// How a request relates to the user.
@@ -93,6 +94,52 @@ pub fn hash_host(host: &str) -> u64 {
     }
     h
 }
+
+/// What the gate decided for one request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    Allowed,
+    Denied,
+    /// The rules would have refused it; the user turned the gate off, so it went through.
+    AllowedGateOff,
+}
+
+/// One gate decision, for the Settings > Network log. `host` is for the local UI only (so the
+/// user can press Allow); `Debug` and `Display` never print it, and it is never logged,
+/// serialised or uploaded. Only loopback-free allowed requests and denials are recorded.
+#[derive(Clone, PartialEq, Eq)]
+pub struct GateEvent {
+    pub seq: u64,
+    pub purpose: &'static str,
+    /// Empty when the request had no usable host (unparseable URL, redirect cap).
+    pub host: String,
+    pub port: Option<u16>,
+    pub host_hash: u64,
+    pub outcome: Outcome,
+}
+
+impl fmt::Debug for GateEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GateEvent")
+            .field("seq", &self.seq)
+            .field("purpose", &self.purpose)
+            .field("host_hash", &format_args!("{:016x}", self.host_hash))
+            .field("outcome", &self.outcome)
+            .finish_non_exhaustive()
+    }
+}
+
+impl fmt::Display for GateEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "#{} {:?} \"{}\" (host {:016x})",
+            self.seq, self.outcome, self.purpose, self.host_hash
+        )
+    }
+}
+
+type EventListener = Arc<dyn Fn(&GateEvent) + Send + Sync>;
 
 /// `host` (lowercased, no brackets) plus an optional port. `port: None` matches any port.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -170,15 +217,112 @@ fn is_non_public_ip(ip: IpAddr) -> bool {
 }
 
 /// The allowlist. A process has one ([`global`]); tests make their own.
-#[derive(Default)]
 pub struct Gate {
     configured: RwLock<BTreeSet<Origin>>,
     user_allowed: RwLock<BTreeSet<Origin>>,
+    /// The user's master switch (Settings > Network). On by default.
+    enabled: AtomicBool,
+    seq: AtomicU64,
+    events: RwLock<Option<EventListener>>,
+}
+
+impl Default for Gate {
+    fn default() -> Self {
+        Self {
+            configured: RwLock::default(),
+            user_allowed: RwLock::default(),
+            enabled: AtomicBool::new(true),
+            seq: AtomicU64::new(0),
+            events: RwLock::default(),
+        }
+    }
 }
 
 impl Gate {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Turns the gate on or off. Off: every check returns `Ok` (the redirect hop cap stays).
+    /// Proxy rules are not affected. The change is logged once.
+    pub fn set_enabled(&self, on: bool) {
+        if self.enabled.swap(on, Ordering::SeqCst) != on {
+            log::warn!("network gate: turned {}", if on { "ON" } else { "OFF" });
+        }
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.load(Ordering::SeqCst)
+    }
+
+    /// Installs the function told about every recorded decision on this gate.
+    pub fn set_event_listener(&self, listener: impl Fn(&GateEvent) + Send + Sync + 'static) {
+        if let Ok(mut g) = self.events.write() {
+            *g = Some(Arc::new(listener));
+        }
+    }
+
+    fn emit(&self, url: &str, purpose: &'static str, outcome: Outcome, denied: Option<&Denied>) {
+        let (host, port) = match reqwest::Url::parse(url) {
+            Ok(u) => (
+                u.host_str()
+                    .map(|h| h.trim_matches(['[', ']']).to_ascii_lowercase())
+                    .unwrap_or_default(),
+                u.port_or_known_default(),
+            ),
+            Err(_) => (String::new(), None),
+        };
+        // The redirect cap says nothing about the target: keep the host out of the event so
+        // the UI offers no Allow for it.
+        let (host, port) = match denied {
+            Some(d) if d.host_hash == 0 => (String::new(), None),
+            _ => (host, port),
+        };
+        // Loopback traffic that was allowed is not interesting (the app talks to itself).
+        let loopback = host_literal_ip(&host).is_some_and(|ip| ip.is_loopback());
+        if outcome == Outcome::Allowed && (loopback || is_loopback_name(&host)) {
+            return;
+        }
+        let host_hash = denied.map_or_else(|| hash_host(&host), |d| d.host_hash);
+        let listener = self.events.read().ok().and_then(|g| g.clone());
+        if let Some(l) = listener {
+            l(&GateEvent {
+                seq: self.seq.fetch_add(1, Ordering::SeqCst),
+                purpose,
+                host,
+                port,
+                host_hash,
+                outcome,
+            });
+        }
+    }
+
+    /// Applies the switch and records the decision.
+    fn finish(
+        &self,
+        url: &str,
+        purpose: &'static Purpose,
+        result: Result<(), Denied>,
+    ) -> Result<(), Denied> {
+        match result {
+            Ok(()) => {
+                self.emit(url, purpose.name, Outcome::Allowed, None);
+                Ok(())
+            }
+            Err(d) if !self.is_enabled() && d.host_hash != 0 => {
+                log::debug!(
+                    "network gate (off): passed \"{}\" (host hash {:016x})",
+                    d.purpose,
+                    d.host_hash
+                );
+                self.emit(url, purpose.name, Outcome::AllowedGateOff, Some(&d));
+                Ok(())
+            }
+            Err(d) => {
+                self.emit(url, purpose.name, Outcome::Denied, Some(&d));
+                Err(d)
+            }
+        }
     }
 
     /// Replaces the origins the user configured as endpoints (providers, proxy, MCP, URLs).
@@ -226,6 +370,15 @@ impl Gate {
 
     /// The single decision. The URL is only ever parsed here; it is never stored or echoed.
     pub fn check_url(&self, url: &str, purpose: &'static Purpose) -> Result<(), Denied> {
+        if purpose.kind == Kind::Unrestricted {
+            return Ok(());
+        }
+        let result = self.decide_url(url, purpose);
+        self.finish(url, purpose, result)
+    }
+
+    /// The rules, without the switch or the event.
+    fn decide_url(&self, url: &str, purpose: &'static Purpose) -> Result<(), Denied> {
         if purpose.kind == Kind::Unrestricted {
             return Ok(());
         }
@@ -290,20 +443,28 @@ impl Gate {
         purpose: &'static Purpose,
     ) -> Result<(), Denied> {
         if hops_so_far >= MAX_REDIRECT_HOPS {
-            return Err(Denied {
+            // The cap stays even with the gate off.
+            let d = Denied {
                 purpose: purpose.name,
                 host_hash: 0,
-            });
+            };
+            self.emit(url, purpose.name, Outcome::Denied, Some(&d));
+            return Err(d);
         }
-        if purpose.kind == Kind::UserConfigured {
+        if purpose.kind == Kind::Unrestricted {
+            return Ok(());
+        }
+        let result = if purpose.kind == Kind::UserConfigured {
             let strict = Purpose {
                 name: purpose.name,
                 kind: Kind::Automatic,
             };
             // `Purpose` is not 'static here, so decide by hand with the Automatic rules.
-            return self.check_url_kind_automatic(url, &strict);
-        }
-        self.check_url(url, purpose)
+            self.check_url_kind_automatic(url, &strict)
+        } else {
+            self.decide_url(url, purpose)
+        };
+        self.finish(url, purpose, result)
     }
 
     fn check_url_kind_automatic(&self, url: &str, p: &Purpose) -> Result<(), Denied> {
@@ -330,6 +491,9 @@ impl Gate {
     /// Resolver-side rule: a name that resolved to loopback (or an unspecified address) is
     /// refused unless the user configured that host.
     pub fn resolved_ok(&self, host: &str, addrs: &[IpAddr]) -> bool {
+        if !self.is_enabled() {
+            return true;
+        }
         let loopbacky = addrs
             .iter()
             .any(|ip| ip.is_loopback() || ip.is_unspecified());
@@ -355,6 +519,20 @@ pub fn check_url(url: &str, purpose: &'static Purpose) -> Result<(), Denied> {
         report_denial(d);
     }
     result
+}
+
+/// [`Gate::set_enabled`] on the process-wide gate.
+pub fn set_enabled(on: bool) {
+    global().set_enabled(on);
+}
+
+pub fn is_enabled() -> bool {
+    global().is_enabled()
+}
+
+/// Installs the function told about every recorded decision (the Settings > Network log).
+pub fn set_event_listener(listener: impl Fn(&GateEvent) + Send + Sync + 'static) {
+    global().set_event_listener(listener);
 }
 
 pub fn set_configured_origins<I, S>(urls: I)

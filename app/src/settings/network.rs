@@ -136,6 +136,17 @@ define_settings_group!(NetworkSettings, settings: [
         toml_path: "network.proxy_no_proxy",
         description: "Comma-separated list of host exceptions, e.g. localhost,127.0.0.1,.internal.",
     },
+    // The network gate's master switch. Off lets every request through (the proxy rules still
+    // apply). Absent in settings.toml means on, which is what v0.1.17 did.
+    gate_enabled: GateEnabledSetting {
+        type: bool,
+        default: true,
+        supported_platforms: SupportedPlatforms::DESKTOP,
+        sync_to_cloud: SyncToCloud::Never,
+        private: false,
+        toml_path: "network.gate_enabled",
+        description: "Whether the network gate checks outbound requests. Turn it off only to diagnose a blocked request: every request is then allowed.",
+    },
     // The network gate's user allowlist (crates/network_gate). Background requests may only
     // reach loopback, the user's configured AI endpoints and these origins.
     allowed_origins: AllowedOriginsSetting {

@@ -319,7 +319,17 @@ A request to anything else is refused before it is sent, and a redirect to a
 host that is not on that list stops where it is. The log says `network gate:
 denied "<purpose>" (host hash ...)`; the URL is never logged. To allow an
 origin, add it to `network.allowed_origins` (for example
-`https://api.example.com`). A name that resolves to a loopback address (a
+`https://api.example.com`), or use the buttons below.
+
+When the gate refuses a request a toast names the purpose and the host, with an
+**Allow this origin** link that adds it to the list. Settings > Network > Gate
+log shows the last 200 refused requests, requests that passed while the gate
+was off, and requests to other computers, with an **Allow** button on each
+refused row and a **Clear** button. The log lives in memory only (it holds hosts,
+so it is never written to the app log, saved or uploaded) and is empty after a
+restart. To rule the gate out while diagnosing, turn **Network gate** off on the
+same page: every request is then allowed and the page shows a warning until you
+turn it back on. A name that resolves to a loopback address (a
 rebinding trick) is refused unless you configured that host; `localhost` works
 for a provider whose URL says `localhost`. Remote images in markdown, avatars and
 changelog images load only from allowed origins.

@@ -22323,6 +22323,13 @@ impl TypedActionView for Workspace {
                 }
                 self.dismiss_older_toasts(toast_object_id, ctx);
             }
+            AllowNetworkOrigin {
+                origin,
+                toast_object_id,
+            } => {
+                crate::settings_view::allow_network_origin(origin, ctx);
+                self.dismiss_older_toasts(toast_object_id, ctx);
+            }
             TabConfigSidecarMakeDefault {
                 mode,
                 tab_config_path,

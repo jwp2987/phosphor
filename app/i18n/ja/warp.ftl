@@ -816,6 +816,29 @@ settings-network-test-success-tcp = ✅ プロキシ到達可能 ({$latency} ms)
 settings-network-test-success-http = ✅ インターネット到達可能 ({$latency} ms)
 settings-network-test-failed-tcp = ❌ プロキシに到達できません: {$error}
 settings-network-test-failed-http = ❌ 接続失敗: {$error}
+settings-network-gate-header = ネットワークゲート
+settings-network-gate-description = ゲートは Phosphor が自分で行うすべてのリクエストを確認します。このコンピューター、設定済みの AI エンドポイント、ここに登録したオリジンは許可し、それ以外は拒否します。
+settings-network-gate-mode-note = Phosphor の設定のみ使用します。System と Off はどちらもプロキシなしです
+settings-network-gate-toggle-label = ネットワークゲート
+settings-network-gate-toggle-description = オン: 未登録のリクエストを拒否します。オフ: すべて許可します。下のプロキシ設定には影響しません。
+settings-network-gate-off-warning = ネットワークゲートはオフです。Phosphor は任意のホストに接続できます。診断が終わったらオンに戻してください。
+settings-network-origins-label = 許可するオリジン
+settings-network-origins-description = Phosphor が自分で接続してよい追加のオリジン (例: https://api.example.com)。設定済みの AI エンドポイントは常に許可されます。
+settings-network-origins-placeholder = https://api.example.com
+settings-network-origins-add = 追加
+settings-network-origins-remove = 削除
+settings-network-origins-empty = 追加のオリジンはありません。
+settings-network-gate-log-label = ゲートログ
+settings-network-gate-log-description = 最近拒否されたリクエスト、ゲートがオフの間に通過したリクエスト、他のコンピューターへのリクエスト。メモリ内にのみ保持され、Phosphor の終了時に消えます。
+settings-network-gate-log-empty = まだありません。
+settings-network-gate-log-clear = クリア
+settings-network-gate-log-allow = 許可
+settings-network-gate-outcome-allowed = 許可
+settings-network-gate-outcome-denied = 拒否
+settings-network-gate-outcome-gate-off = 通過 (ゲートオフ)
+settings-network-gate-denied-toast = 「{$purpose}」の {$host} へのリクエストをブロックしました。
+settings-network-gate-denied-toast-no-host = 「{$purpose}」のリクエストをブロックしました。
+settings-network-gate-allow-link = このオリジンを許可
 
 # クラウド同期設定ページ
 

@@ -60,6 +60,7 @@ ROWS = [
         "crates/http_client/src/proxy.rs:set_global_proxy_config, crates/network_gate/src/lib.rs", [("network", "proxy_mode"), ("network", "proxy_url"), ("network", "proxy_username"), ("network", "proxy_no_proxy")],
         note="values are kept; only a user whose proxy_mode is system/unset and who needs the OS proxy sees a change (their provider calls go direct). Seeded: custom, which the gate uses"),
     row("U21", "network", "network.allowed_origins", NEW, "(absent)", 'default "" (loopback + configured AI endpoints always allowed)', NEW, C_ABSENT, "app/src/settings/network.rs:139", None, '""'),
+    row("U21a", "network", "network.gate_enabled", NEW, "(absent)", "default true (the gate stays ON, as in v0.1.17)", NEW, C_ABSENT, "app/src/settings/network.rs:gate_enabled", None, "true"),
     row("U22", "keyring", "ProxyPassword (keyring item)", "unchanged key; read moved off the UI thread (#1805)", "stored in the OS keyring", "same item, read on the secure-storage worker", KEEP, C_SECRET,
         "app/src/settings/network_secrets.rs", note="the case seeds it with secret-tool and reads it back after both launches; needs secret-tool on the runner"),
     row("U23", "keyring", "AgentProviderSecrets (keyring item: per-provider API keys, JSON)", "unchanged", "stored in the OS keyring", "same item", KEEP, C_SECRET,

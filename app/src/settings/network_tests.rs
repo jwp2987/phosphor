@@ -76,3 +76,13 @@ fn allowed_origins_defaults_empty_and_v0_1_17_proxy_modes_still_map() {
         http_client::ProxyMode::System
     );
 }
+
+/// The gate switch defaults to on, and a settings file without the key (every v0.1.17 file)
+/// reads as on: no migration is needed and the default behaviour is unchanged.
+#[test]
+fn gate_enabled_defaults_true_and_absent_means_true() {
+    assert!(GateEnabledSetting::default_value());
+    let setting = GateEnabledSetting::new(None);
+    assert!(*setting.value());
+    assert!(!setting.is_value_explicitly_set());
+}

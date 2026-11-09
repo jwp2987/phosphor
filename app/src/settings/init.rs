@@ -397,6 +397,7 @@ pub(crate) fn apply_network_settings_to_global_slots(ctx: &mut AppContext, passw
 
     // The network gate's user allowlist rides on the same push (and the same subscription).
     http_client::gate::set_user_allowed_origins(net.allowed_origins.value());
+    http_client::gate::set_enabled(*net.gate_enabled.value());
     apply_network_gate_configured_origins(ctx);
 
     http_client::set_global_proxy_config(http_client::ProxyConfig {
