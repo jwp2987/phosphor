@@ -16388,42 +16388,46 @@ fn text_typed_during_a_stalled_subshell_setup_is_held_then_delivered_in_order() 
     })
 }
 
-/// #1014: the typed-input hold must not swallow an answer to a prompt the shell is showing. With
-/// `Password: ` as the last visible output, typing reaches the pty at once; with silent output it
-/// is held. Not compiled/run when written (no builds in the fix pass).
+/// #1679 step 4 (owner decision 2026-11-08; the expectation of #1014's
+/// `typed_input_during_stalled_setup_passes_through_to_a_visible_prompt` is reversed): typing during
+/// an announced setup is HELD whether or not the output shows a prompt for input. The bypass that let
+/// it through to a `Password: ` ran keys inside the hidden setup block (macOS) and is gone; a
+/// question or secret read while the setup is written is the readiness judge's E-QUESTION /
+/// E-SECRET, which hand the held keys back. Legacy and Table hold the same way.
 #[test]
-fn typed_input_during_stalled_setup_passes_through_to_a_visible_prompt() {
-    for (output, expect_written) in [("Password: ", true), ("", false)] {
-        App::test((), move |mut app| async move {
-            initialize_app_for_terminal_view(&mut app);
-            let terminal = add_window_with_terminal(&mut app, None);
-            let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
-            let writes = pty_writes.clone();
-            app.update(|ctx| {
-                ctx.subscribe_to_view(&terminal, move |_, event, _| {
-                    if let Event::WriteBytesToPty { bytes } = event {
-                        writes.borrow_mut().push(bytes.to_vec());
-                    }
+fn typed_input_during_an_announced_setup_is_held_whatever_the_output_shows() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        for output in ["Password: ", "Continue? [y/N] ", ""] {
+            App::test((), move |mut app| async move {
+                let _mode =
+                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+                initialize_app_for_terminal_view(&mut app);
+                let terminal = add_window_with_terminal(&mut app, None);
+                let pty_writes = collect_pty_writes(&mut app, &terminal);
+                terminal.update(&mut app, |view, ctx| {
+                    view.model
+                        .lock()
+                        .simulate_long_running_block("su -", output);
+                    let block_id = view.model.lock().block_list().active_block().id().clone();
+                    view.subshell_bootstrap_announced = Some((block_id, Instant::now()));
+                    assert!(view.write_user_bytes_to_pty(b"secret".to_vec(), ctx));
                 });
-            });
-            terminal.update(&mut app, |view, ctx| {
-                view.model
-                    .lock()
-                    .simulate_long_running_block("su -", output);
-                let block_id = view.model.lock().block_list().active_block().id().clone();
-                view.subshell_bootstrap_announced = Some((block_id, Instant::now()));
-                assert!(view.write_user_bytes_to_pty(b"secret".to_vec(), ctx));
-            });
-            let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
-            if expect_written {
-                assert_eq!(written, b"secret".to_vec(), "answer to a visible prompt");
-            } else {
-                assert!(written.is_empty(), "silent shell: typing is held");
+                assert!(
+                    pty_writes.borrow().is_empty(),
+                    "{mode:?} {output:?}: held, never written into the setup block"
+                );
                 terminal.read(&app, |view, _| {
-                    assert_eq!(held_for_subshell_setup(view), (1, 6));
+                    assert_eq!(held_for_subshell_setup(view), (1, 6), "{mode:?} {output:?}");
                 });
-            }
-        })
+                // The setup's end delivers them, once, in order.
+                terminal.update(&mut app, |view, ctx| {
+                    view.release_subshell_setup_held_bytes(ctx)
+                });
+                let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+                assert_eq!(written, b"secret".to_vec(), "{mode:?} {output:?}");
+            })
+        }
     }
 }
 
@@ -29821,6 +29825,22 @@ fn scenario_powershell_setup_keys(view: &mut TerminalView, ctx: &mut ViewContext
     view.keydown_on_terminal("\r", ctx);
 }
 
+/// #1679 step 4: an announced subshell setup whose output asks for an answer. Legacy holds (no
+/// bypass any more) and the table holds (row H7, no H7b): zero disagreements.
+fn scenario_announced_subshell_setup_asking(
+    view: &mut TerminalView,
+    ctx: &mut ViewContext<TerminalView>,
+) {
+    view.model
+        .lock()
+        .simulate_long_running_block("su -", "Password: ");
+    let block_id = view.model.lock().block_list().active_block().id().clone();
+    view.subshell_bootstrap_announced = Some((block_id, Instant::now()));
+    view.typed_characters_on_terminal("s", ctx);
+    view.keydown_on_terminal("\r", ctx);
+    view.control_sequence_on_terminal(b"\x1b[A", ctx);
+}
+
 fn scenario_written_by_other_origins(view: &mut TerminalView, ctx: &mut ViewContext<TerminalView>) {
     view.model.lock().simulate_long_running_block("claude", "");
     view.write_to_pty_for_syncing_long_running_commands(b"ab".to_vec(), ctx);
@@ -30273,7 +30293,7 @@ fn table_mode_a_control_key_behind_a_gate_is_delivered_at_the_gates_event() {
 /// the real view code.
 #[test]
 fn shadow_mode_reports_no_untagged_disagreement_over_the_arrival_scenarios() {
-    let scenarios: [(&str, Scenario); 9] = [
+    let scenarios: [(&str, Scenario); 10] = [
         ("running command", scenario_running_command_keys),
         (
             "block started, not yet long running",
@@ -30289,6 +30309,10 @@ fn shadow_mode_reports_no_untagged_disagreement_over_the_arrival_scenarios() {
         ("agent writes", scenario_agent_writes),
         ("navigation keys", scenario_navigation_keys),
         ("text behind a gate", scenario_text_behind_a_cli_submit_gate),
+        (
+            "announced subshell setup asking for an answer",
+            scenario_announced_subshell_setup_asking,
+        ),
     ];
     for (name, scenario) in scenarios {
         let lines = run_shadow_scenario(scenario);

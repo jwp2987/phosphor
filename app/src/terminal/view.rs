@@ -13826,13 +13826,6 @@ impl TerminalView {
             paste_queue::SubshellPrep::Normal => {}
             paste_queue::SubshellPrep::HeldInOrder => abort_as_entry = true,
             paste_queue::SubshellPrep::AbortHandled => return true,
-            paste_queue::SubshellPrep::Bypass => {
-                return self.write_user_bytes_to_pty_after_paste_stage(
-                    bytes,
-                    takes_over_agent_control,
-                    ctx,
-                );
-            }
         }
         if let Some(written) =
             self.offer_to_paste_queue(&bytes, takes_over_agent_control, abort_as_entry, ctx)

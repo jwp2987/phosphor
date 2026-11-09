@@ -34,7 +34,7 @@ use crate::terminal::input_queue::{
 };
 
 /// Every row of the table, in declaration order.
-const ALL_ROWS: [Row; 35] = [
+const ALL_ROWS: [Row; 34] = [
     Row::OSynced,
     Row::OCliSubmit,
     Row::H1,
@@ -44,7 +44,6 @@ const ALL_ROWS: [Row; 35] = [
     Row::H5,
     Row::H6,
     Row::H7,
-    Row::H7b,
     Row::H8,
     Row::H8Queue,
     Row::H10,
@@ -251,9 +250,7 @@ fn check(intent: &Intent, facts: &RouteFacts, pin: Option<Destination>) -> Plan 
                     not_held,
                     "the idle CLI-agent submit was held: {plan:?} for {intent:?} / {facts:?}"
                 );
-            } else if !facts.subshell_awaiting_answer
-                && ((!facts.gates.is_empty() && !ssh_only) || setup_held)
-            {
+            } else if (!facts.gates.is_empty() && !ssh_only) || setup_held {
                 assert!(
                     plan.outcome.is_hold(),
                     "the unpaced CLI-agent submit passed a gate: {plan:?} for {intent:?} / {facts:?}"
@@ -343,8 +340,6 @@ fn random_facts(rng: &mut Rng) -> RouteFacts {
     f.subshell = subshell_of(rng.below(4));
     f.forwards_subshell_key = rng.flag();
     f.forwards_subshell_abort = rng.flag();
-    f.subshell_awaiting_answer = rng.flag();
-    f.subshell_bootstrap_stalled = rng.flag();
     f.ps = ps_of(rng.below(5));
     f.ssh = match rng.below(2) {
         0 => SshPhase::Idle,
@@ -514,9 +509,10 @@ fn decide_is_total_and_consistent_over_the_enumerated_facts() {
 }
 
 /// The rows of the matrix that are effects or bypasses on another row's plan, never the row of a
-/// plan themselves (the table's own doc comment and `table_tests.rs` say so): `H3b` and `H7b` are
-/// skipped holds, `P1b` an effect of the interrupt rows, `D4` the take-over effect of D5/D6.
-const EFFECT_ONLY_ROWS: [Row; 4] = [Row::H3b, Row::H7b, Row::P1b, Row::D4];
+/// plan themselves (the table's own doc comment and `table_tests.rs` say so): `H3b` is a skipped
+/// hold, `P1b` an effect of the interrupt rows, `D4` the take-over effect of D5/D6. (`H7b`, the
+/// bypass, is gone: #1679 step 4.)
+const EFFECT_ONLY_ROWS: [Row; 3] = [Row::H3b, Row::P1b, Row::D4];
 
 /// Every row of the table is decided by some sample, except the effect-only rows, which no sample
 /// may ever decide. A row nothing can reach is dead: either the row is unreachable by
@@ -568,32 +564,31 @@ fn row_names_are_unique_and_the_list_is_complete() {
             Row::H5 => 6,
             Row::H6 => 7,
             Row::H7 => 8,
-            Row::H7b => 9,
-            Row::H8 => 10,
-            Row::H8Queue => 11,
-            Row::H10 => 12,
-            Row::P1a => 13,
-            Row::P1b => 14,
-            Row::P1c => 15,
-            Row::P1d => 16,
-            Row::P1e => 17,
-            Row::P1f => 18,
-            Row::P2 => 19,
-            Row::D1 => 20,
-            Row::D1Replay => 21,
-            Row::D2 => 22,
-            Row::D2b => 23,
-            Row::D3 => 24,
-            Row::D4 => 25,
-            Row::D5 => 26,
-            Row::D6 => 27,
-            Row::D7 => 28,
-            Row::D9 => 29,
-            Row::D10 => 30,
-            Row::D11 => 31,
-            Row::D12 => 32,
-            Row::D13 => 33,
-            Row::Pin => 34,
+            Row::H8 => 9,
+            Row::H8Queue => 10,
+            Row::H10 => 11,
+            Row::P1a => 12,
+            Row::P1b => 13,
+            Row::P1c => 14,
+            Row::P1d => 15,
+            Row::P1e => 16,
+            Row::P1f => 17,
+            Row::P2 => 18,
+            Row::D1 => 19,
+            Row::D1Replay => 20,
+            Row::D2 => 21,
+            Row::D2b => 22,
+            Row::D3 => 23,
+            Row::D4 => 24,
+            Row::D5 => 25,
+            Row::D6 => 26,
+            Row::D7 => 27,
+            Row::D9 => 28,
+            Row::D10 => 29,
+            Row::D11 => 30,
+            Row::D12 => 31,
+            Row::D13 => 32,
+            Row::Pin => 33,
         }
     }
     for (position, row) in ALL_ROWS.iter().enumerate() {
@@ -662,7 +657,7 @@ fn stamp_of(index: usize) -> Stamp {
     }
 }
 
-/// Every dimension the table can branch on: all 42 boolean facts, the four enum facts, the 12 gate
+/// Every dimension the table can branch on: all 40 boolean facts, the four enum facts, the 12 gate
 /// bits, the five intent flags and the stamp.
 fn all_dims() -> Vec<Dim> {
     let mut dims: Vec<Dim> = Vec::new();
@@ -684,8 +679,6 @@ fn all_dims() -> Vec<Dim> {
         handoff_known,
         forwards_subshell_key,
         forwards_subshell_abort,
-        subshell_awaiting_answer,
-        subshell_bootstrap_stalled,
         ssh_dialog_up,
         ssh_setup_in_flight,
         ssh_bootstrapping,
@@ -954,7 +947,7 @@ fn exhaustive_enumeration_is_total_and_never_decides_an_effect_only_row() {
     );
 }
 
-/// Every row except the effect-only ones (H3b, H7b, P1b, D4) is decided by the exhaustive blocks
+/// Every row except the effect-only ones (H3b, P1b, D4) is decided by the exhaustive blocks
 /// together with the existing enumerated samples: no row is unreachable.
 #[test]
 fn exhaustive_enumeration_reaches_every_row_but_the_effect_only_ones() {

@@ -245,8 +245,8 @@ pub struct KeyModelSnapshot {
     pub needs_bracketed_paste: bool,
     /// The gen at which the active block's output last BECAME unterminated text (visible text
     /// with the cursor parked after it on its row: the shape of a line waiting for an answer),
-    /// `None` while it is not. Read by the subshell setup's "the shell asks for an answer" rule
-    /// (#1032, `subshell_awaiting_answer`) and the ssh ^D rule (#1111); the ssh connect itself
+    /// `None` while it is not. Read by the ssh ^D rule (#1111; the subshell setup's bypass that
+    /// read it is gone, #1679 step 4); the ssh connect itself
     /// reads nothing from the screen (#1611, #1612, #1621). Exact for the last `OUTPUT_TAIL_ROWS`
     /// rows, like the view's own `active_output_ends_in_unterminated_text`.
     pub unterminated_since_gen: Option<u64>,

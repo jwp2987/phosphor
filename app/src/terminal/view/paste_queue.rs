@@ -2723,22 +2723,13 @@ impl TerminalView {
         ctx: &mut ViewContext<Self>,
     ) -> SubshellPrep {
         // A queue that is mid-drain: this write is part of delivering an entry.
-        let (setup_gate, bootstrap_gate, only_subshell_gates) =
-            match self.paste_queue.queue.try_peek() {
-                Some(queue) => (
-                    queue.has_gate_kind(GateKind::SubshellSetup),
-                    queue.has_gate_kind(GateKind::SubshellBootstrapWrite),
-                    queue.gates().iter().all(|gate| {
-                        matches!(
-                            gate.kind,
-                            GateKind::SubshellSetup
-                                | GateKind::SubshellBootstrapWrite
-                                | GateKind::PowershellSetup
-                        )
-                    }),
-                ),
-                None => return SubshellPrep::Normal,
-            };
+        let (setup_gate, bootstrap_gate) = match self.paste_queue.queue.try_peek() {
+            Some(queue) => (
+                queue.has_gate_kind(GateKind::SubshellSetup),
+                queue.has_gate_kind(GateKind::SubshellBootstrapWrite),
+            ),
+            None => return SubshellPrep::Normal,
+        };
         let in_flight = self
             .subshell_bootstrap_in_flight
             .as_ref()
@@ -2778,20 +2769,12 @@ impl TerminalView {
             self.release_subshell_setup_held_bytes(ctx);
             return self.prepare_subshell_gates(bytes, ctx);
         }
-        // Not while the shell is asking for something: typing is the answer to it.
-        let awaits_answer = !abort
-            && in_flight.is_none()
-            && !bootstrap_gate
-            && powershell_off
-            && age.is_some()
-            && self.active_output_awaits_an_answer();
-        if awaits_answer && only_subshell_gates {
-            return SubshellPrep::Bypass;
-        }
-        let setup_governs = !abort
-            && !awaits_answer
-            && powershell_off
-            && super::subshell_setup_should_hold_typed_bytes(age, abort);
+        // #1679 step 4 (owner decision 2026-11-08): no bypass for a shell that asks for something.
+        // A question or a secret read while a setup is written is the readiness judge's
+        // E-QUESTION / E-SECRET: the setup is cancelled and the held keys come back, so the answer
+        // typed next passes through with no gate open. Until then every key is held, in order.
+        let setup_governs =
+            !abort && powershell_off && super::subshell_setup_should_hold_typed_bytes(age, abort);
         let queue = self.paste_queue.queue.clone();
         if setup_governs && !setup_gate {
             // No cap of its own (#1711): the setup's events close it, or the one setup net
@@ -2871,8 +2854,6 @@ impl TerminalView {
 pub(super) enum SubshellPrep {
     /// Offer it to the queue like any key (which delivers it now if nothing is held).
     Normal,
-    /// A shell prompt is asking for an answer: the key goes straight to the pty.
-    Bypass,
     /// A Ctrl-C / Ctrl-D typed during the bootstrap lines: it ended the setup and was written
     /// here (`abort_in_flight_subshell_setup`, review F1); nothing more to do with it.
     AbortHandled,

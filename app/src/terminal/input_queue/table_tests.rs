@@ -289,26 +289,13 @@ fn h7_a_subshell_setup_holds_and_h7b_lets_the_answer_to_a_prompt_through() {
             Row::H7,
         ),
     ]);
-    // H7b: the shell asks for something; only subshell gates are open; no lines in flight.
-    let asked = RouteFacts {
-        subshell_awaiting_answer: true,
-        ..setup
-    };
-    let p = plan(kb(Class::Typed), asked);
-    assert_eq!(p.outcome, Outcome::Pty(PtyWrite::Typed), "{p:?}");
-    // ... but never while the bootstrap lines are being written, nor with another gate open.
-    let asked_writing = RouteFacts {
-        subshell_awaiting_answer: true,
-        ..writing
-    };
-    assert_eq!(plan(kb(Class::Typed), asked_writing).row, Row::H7);
-    let asked_with_paste = RouteFacts {
-        subshell_awaiting_answer: true,
+    // #1679 step 4: there is no bypass. A setup gate with another gate open is the matrix (H8).
+    let with_paste = RouteFacts {
         subshell: SubshellPhase::Announced,
         gates: GateMask::of(&[GateKind::SubshellSetup, GateKind::PasteReading]),
         ..setup
     };
-    assert_eq!(plan(kb(Class::Typed), asked_with_paste).row, Row::H8);
+    assert_eq!(plan(kb(Class::Typed), with_paste).row, Row::H8);
 }
 
 #[test]
@@ -1028,8 +1015,8 @@ fn an_unpaced_cli_submit_is_held_behind_the_gates_any_key_is_held_behind() {
 }
 
 /// The subshell setup: `prepare_subshell_gates` holds the unpaced submit behind the setup gate and
-/// the paced bootstrap write (row H7), unless the shell asks for an answer (the bypass, H7b), which
-/// writes it through; the paced submit ignores the setup.
+/// the paced bootstrap write (row H7); the paced submit ignores the setup. (The bypass for a shell
+/// asking an answer is gone, #1679 step 4.)
 #[test]
 fn an_unpaced_cli_submit_is_held_behind_a_subshell_setup_like_a_key() {
     for (phase, gate) in [
@@ -1066,17 +1053,6 @@ fn an_unpaced_cli_submit_is_held_behind_a_subshell_setup_like_a_key() {
             "{phase:?} paced"
         );
     }
-    // The shell asks for an answer behind a setup gate: typing is the answer, the submit passes.
-    let asked = RouteFacts {
-        subshell: SubshellPhase::SetupHeld,
-        subshell_awaiting_answer: true,
-        gates: GateMask::of(&[GateKind::SubshellSetup]),
-        ..running()
-    };
-    assert_eq!(
-        plan(from(Class::Raw, Origin::CliSubmit), asked).outcome,
-        Outcome::Pty(PtyWrite::CliSubmit)
-    );
 }
 
 /// Only the ssh connect gate open: a pass-through (the ssh hold holds its own keys). Entries
@@ -1213,13 +1189,8 @@ fn the_four_predicates_differ_where_legacy_does() {
         ..RouteFacts::default()
     };
     assert!(pty_typed(&executor));
-    // (d) a stalled subshell bootstrap takes typed text; its abort keys are forwarded at once.
-    let stalled = RouteFacts {
-        active_block_started: true,
-        subshell_bootstrap_stalled: true,
-        ..RouteFacts::default()
-    };
-    assert!(pty_typed(&stalled));
+    // (d) a pending subshell bootstrap forwards its abort keys at once (and nothing else: the
+    // stalled-by-age door is gone, #1711 / #1679 step 4).
     let forwarding = RouteFacts {
         forwards_subshell_abort: true,
         ..RouteFacts::default()
@@ -1776,8 +1747,6 @@ fn arb_facts() -> impl Strategy<Value = RouteFacts> {
             ][subshell],
             forwards_subshell_key: a[15],
             forwards_subshell_abort: a[16],
-            subshell_awaiting_answer: a[17],
-            subshell_bootstrap_stalled: a[18],
             ps: [
                 PsPhase::Off,
                 PsPhase::Setup { holds_keys: true },
@@ -1977,12 +1946,11 @@ proptest! {
                 prop_assert!(!plan.outcome.is_hold() && plan.outcome != Outcome::Hint
                     && !matches!(plan.outcome, Outcome::Swallow(_)), "{:?}", plan);
             } else {
-                // The shell asking for an answer lets a key past the setup gates (H7b).
-                if !f.subshell_awaiting_answer
-                    && ((!f.gates.is_empty() && !f.gates.all_within(&[GateKind::SshConnect]))
-                        || setup_held
-                        // A delivering entry is never held behind the queue it is being drained from.
-                        || (!i.delivering && (f.mailbox_non_empty || (f.queued && f.gates.is_empty()))))
+                // No fact lets a key past the setup gates (#1679 step 4 removed the bypass).
+                if (!f.gates.is_empty() && !f.gates.all_within(&[GateKind::SshConnect]))
+                    || setup_held
+                    // A delivering entry is never held behind the queue it is being drained from.
+                    || (!i.delivering && (f.mailbox_non_empty || (f.queued && f.gates.is_empty())))
                 {
                     prop_assert!(plan.outcome.is_hold(), "{:?}", plan);
                 }
@@ -2008,9 +1976,7 @@ proptest! {
             Class::Typed | Class::Enter | Class::Control | Class::Seq | Class::Paste | Class::Raw
         ) && matches!(i.origin, Origin::Keyboard | Origin::Replay(_) | Origin::Synthesized);
         let f = RouteFacts { ssh: SshPhase::Idle, ps: PsPhase::Off, subshell: SubshellPhase::Idle, ssh_dialog_up: false, queue_has_ssh_gate: false, ..f };
-        if plain && !f.gates.is_empty() && !f.gates.all_within(&[GateKind::SshConnect])
-            && !f.subshell_awaiting_answer
-        {
+        if plain && !f.gates.is_empty() && !f.gates.all_within(&[GateKind::SshConnect]) {
             let plan = decide(&i, &f, None);
             prop_assert!(
                 matches!(plan.outcome, Outcome::Hold(_) | Outcome::Hint | Outcome::Drop(_)),
@@ -2198,8 +2164,8 @@ fn enumerated_facts_make_decide_total_and_reach_every_row_and_outcome() {
         }
     }
 
-    // The rows that are effects or bypasses, never the row of a plan.
-    let effects_only = ["H3b", "H7b", "P1b", "D4"];
+    // The rows that are effects, never the row of a plan (H7b, the bypass, is gone: #1679 step 4).
+    let effects_only = ["H3b", "P1b", "D4"];
     for row in [
         Row::OSynced,
         Row::OCliSubmit,
@@ -2210,7 +2176,6 @@ fn enumerated_facts_make_decide_total_and_reach_every_row_and_outcome() {
         Row::H5,
         Row::H6,
         Row::H7,
-        Row::H7b,
         Row::H8,
         Row::H8Queue,
         Row::H10,

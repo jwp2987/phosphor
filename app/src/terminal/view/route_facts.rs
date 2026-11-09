@@ -314,13 +314,6 @@ impl TerminalView {
                 true,
                 announced_age,
             ),
-            subshell_awaiting_answer: announced_age.is_some()
-                && self.subshell_bootstrap_in_flight.is_none()
-                && awaits_an_answer,
-            // #1711: no age stalls a setup any more (the setup net hands back instead), so the
-            // table's `pty_typed` door for it never opens; the field stays until the readiness
-            // rework (step 3) removes the row condition with its tests.
-            subshell_bootstrap_stalled: false,
             ps,
             ssh,
             ssh_dialog_up,
