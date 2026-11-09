@@ -1,0 +1,43 @@
+<!-- Fable 5.2 read-only pre-build review, 2026-11-09: git diff a10b7c89e..merge/w0 (production code). Saved verbatim by the coordinator. -->
+
+Review of `git diff a10b7c89e..merge/w0` (production code only). Repo /home/winters/git/phosphor-merge.
+
+RANKED FINDINGS
+
+1. misroute — app/src/terminal/view/dest_table.rs:326-328 (`decide_delivery`) and :436-440 (`execute_typed`). The #1855 fix does not reach queued (delivered) input, and introduces a new wrong-direction case.
+   - `decide_delivery` makes the intent passive only when `origin == Origin::Synced`, but every delivery caller passes `Origin::Held` (dest_table.rs:275) or `Origin::Replay(entry.id)` (paste_queue.rs:420/426/482). Synced-ness is not recorded in the entry, so this branch is dead for deliveries: a synced key held behind a young-Enter / ssh / subshell gate is delivered with `takes_over_agent = true`. The claim "passive in both modes (it never takes over an agent's command)" is false for held synced input.
+   - `execute_typed` now writes with `!arrival_is_synced()` (was hard-coded `true`). `arrival_is_synced()` reads the thread-local `ARRIVAL_ORIGIN`, which during a queue drain is the ENCLOSING arrival's origin, not the entry's. Trigger: synced text arrives (view.rs:14339 sets the guard to Synced) -> `arrive_via_table` -> `flush_deferred_queue_ops` drains the user's own held keyboard entries -> `execute_typed` -> `takes_over_agent_control = false` -> the user's keys no longer take over an agent-run alt-screen program (regression vs. the old `true`). Reverse trigger: a held synced entry drained from a pty event (thread-local = Keyboard) takes over.
+   - Fix: carry origin into `execute_table_plan`/`execute_typed` (use the plan's intent `takes_over_agent`, or pass `origin`), and keep synced-ness in the queue entry (or map it into `Origin::Replay`). Do not read the thread-local in delivery executors.
+
+2. hang / missing tool result — #1859, app/src/ai/blocklist/action_model.rs:1400-1416 (`queue_actions`), :1689-1704 (`cancel_all_pending_actions`), preprocess.rs:73-86 and :66-69.
+   - Coordinator's question: stale DONE (parked) actions really never execute: `release_ready` pops them, `record_stale_cancelled` only pushes results; the abandoned batch marker is removed, so its late `handle_preprocess_actions_result` hits "not found" -> `vec![]`. Their results do ride on the next request (`drain_finished_action_results`; on BYOP `append_byop_action_result_messages` dedupes against a synthesized placeholder via `has_persisted_tool_result`, so no duplicate tool_result). OK.
+   - Gap: the still-PENDING batch's actions get NO result anywhere. `abandon_pending` returns ids only (a Pending batch stores no actions), `abandon_all` returns only `Done` actions, and the late preprocess result for a removed/abandoned batch drops `actions` on the floor. Concrete trigger: RequestFileEdits diff-apply in flight, user presses Stop or sends a follow-up -> `cancel_all` -> `abandon_all` + `cancel_preprocessing` -> apply resolves `Err` -> `on_diffs_applied` records the failure -> preprocess completes -> batch not found -> action never gets a cancelled/failed result from the action model. BYOP is rescued at request time by `synthesize_byop_missing_cancellation_results`; the server path has no such net ("a turn always ends in an answerable card or a visible error" is not guaranteed).
+   - Also: the `queue_actions` abandon branch does not call `executor.cancel_preprocessing(conversation_id)`, so a hung apply stays hung and its `preprocess_cancels` sender leaks until a conversation cancel.
+   - Fix: in `handle_preprocess_actions_results`, when the batch is missing or `Abandoned`, pass the `actions` (in hand at that moment) to `record_stale_cancelled` instead of returning `vec![]`; call `cancel_preprocessing` from the `queue_actions` abandon branch too.
+
+3. minor / check — app/src/terminal/view.rs:25877-25925 (`paste()` table branch, #1853). Unlike `arrive_via_table` (dest_table.rs:787-791), the paste plan is decided without first running `deliver_ssh_typeahead_if_ready("released_before_key")` when `ssh_handover_after_release` is set. After a gate release without hand-over, the table judges the paste open; the paste then only queues behind held keys if `queue_holds` (view.rs:25955-25961, which excludes `only_ssh_gates_open()`), otherwise `start_background_paste` writes it ahead of the still-held keys. Fix: run the same hand-over pre-step before `paste_plan_via_table`. (Not traced to the end; verify with an ssh-release-then-paste test.)
+
+4. minor / check — #1861, controller.rs:5669-5687 -> `cancel_discarded_actions` -> `cancel_pending_action` -> `handle_action_result` emits `FinishedAction { cancellation_reason: FollowUpSubmitted{same:true} }` for actions never queued. `handle_action_result` skips the status write for that reason (action_model.rs:2016), but confirm the controller's `FinishedAction` subscriber does not schedule its own follow-up request off these events while the user's follow-up is being sent (double request). `executor.discard_action_state` on an unknown id is harmless.
+
+5. minor leak — app/src/terminal/model/terminal_model.rs:605 `typeahead_mode_by_session` is inserted per `init_session` and never removed; grows with every bootstrapped session for the pane's life. Harmless size-wise; remove on session end if there is a hook.
+
+6. minor — chat_stream.rs:7626-7628: the first non-Start event being an EMPTY chunk sets `received_real_event = true` while `last_progress` is still the loop start, so the window silently shrinks from the first-event timeout to `idle_timeout - elapsed`. Keep `received_real_event` tied to `stream_event_is_progress` if that is not intended.
+
+No build-break found. Checked: let-chains are fine (edition 2024); `armed.baseline = armed.last_position` after the `if cancel { ...return }` block is NLL-clean; `futures::future::select(apply_future, cancel_rx)` compiles (`apply_diffs` returns `BoxFuture`, both Unpin; `oneshot`, `vec1!`, `DiffApplicationError::ReadFailed{file,message}` all present); `PtyQueueHost` already passes `self.ctx` the same way; `Replayed::text()` is exhaustive; `Outcome::{Hint,Swallow(_),Drop(_),Hold(GateKind),Queue,HoldSignal}`, `Intent::passive`, `SignalKind::{Interrupt,Eof}`, `redetermine_global_focus`, `ssh_held_bytes`, `model_facts`, `refresh_ssh_connect_gate`, `secret_read_on_key_path_cancels_written_setup`, `cleanup_stream`, `conversation_mut`, `cleanup_completed_response_stream`, `status().is_in_progress()`, `update_conversation_status`, `AgentStopped`, `FinishedReceivingOutput`, `get_async_running_action(app)`, `is_follow_up_for_same_conversation` (reason is Copy) all exist with matching signatures; no leftover `rebaseline_pending` references.
+
+NO-FINDING AREAS
+- #1847 ReArm from `last_position` + `idle_at_prompt_untouched`: correct; `last_position` is written at every look before the judge; `bytes_since_arm` is not reset on ReArm so the idle rule only fires with nothing typed since arming (intended). `program_owns_tty` uses `LeaderKind::Other` only, matching the doc.
+- #1854 secret-read + `prepare_subshell_gates` on the delivered path and in `PtyQueueHost`: reaches the stated paths; signal entries excluded correctly.
+- #1852 `abort_enter_queue` only for Interrupt/Eof: matches legacy `is_abort_key`.
+- #1856/#1857: measurement/arming only; `refresh_ssh_connect_gate` return ignored as before.
+- #1844: `on_unengaged_user_command_written` runs before `on_uncounted_command_written`, which then sees `young_hold_queued == false` (no `Dropped` push); `announce_young_hold_end` emits `YoungHoldEnded` regardless of engagement, so the view drains; `count_followed_young_hold` clears `young_hold_follow_pending` even with empty bytes. Keys are not lost.
+- #1860 `finish_stream_without_exchanges`: single emission path (early return before the normal emit), Cancelled only when InProgress, unsubscribes in both branches.
+- #1858, api_error/response_stream log levels: pure predicates, correct.
+- #1838/step A warpui: `warp_frame_presented` arity matches (5 params both sides); block captures `submitNs`/`syncEnabled` by value (MRC-safe, no self capture); atomics only; `take_key_skipped` before `finish` is measurement-only; wgpu `last_present_time` reset per frame; Wayland log-level change harmless.
+
+Critical files for any follow-up:
+- /home/winters/git/phosphor-merge/app/src/terminal/view/dest_table.rs
+- /home/winters/git/phosphor-merge/app/src/ai/blocklist/action_model.rs
+- /home/winters/git/phosphor-merge/app/src/ai/blocklist/action_model/preprocess.rs
+- /home/winters/git/phosphor-merge/app/src/terminal/view.rs
+- /home/winters/git/phosphor-merge/app/src/terminal/view/paste_queue.rs
