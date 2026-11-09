@@ -1248,7 +1248,7 @@ Pure helpers (`legacy_settings`, `corrupt_settings`, `startup_log_problems`, `au
 
 **Already covered, so not duplicated here.** #1460 (markdown/mermaid): sections 2.10 (parser corpus + snapshots, mermaid corpus, bench, fuzz targets) and the `md_viewer*` cases. #1463: `agent_stream_cancel`, `agent_approval`, `routing_table`, `agent_input_exact`, `agent_mode_switch` in `cases_caseagent.py`. #1543 is the same gap as #1460 (pixel-level diagram rendering stays the documented gap in 2.10). #1544 Linux and Windows: `editor_edit_save`, `editor_paste`, `editor_memory_7mb` (Windows hand-over: the app's named-pipe single-instance forward); macOS: `cb_editor_mac`.
 
-**Recorded gaps (need an owner decision or a fixture, not code):** uninstall and a `phosphor://` URL end to end (#1546): need a clean-VM step, today manual (5.4). Upgrade over a previous build's DATA (#1546 option a) is a case now, `upgrade_over_previous` (order 90, full tier, `cases_coverage_b.py`): the new build starts on the previous release's data directory; the data comes from `APPCI_PREV_FIXTURE=<state tarball>` or from `APPCI_PREV_BIN=<previous release binary>` (macOS also `APPCI_PREV_BUNDLE=<.app>`), which the case launches on the scratch profile, uses, stops and packs to `<run>/fixtures/prev-state.tar.gz` (keep it as a CI artifact; not on Windows, where the state is in the known folders). Verdict: the new build reaches a prompt, types exactly, logs no failed start/migration, keeps every database file (not moved aside, not shrunk), and has not fewer applied `__diesel_schema_migrations` than the old build left (metric `migrations_before_after`). Without either variable it SKIPS with that reason: where CI gets the previous release's artifact (the generic package registry has the CLI tarballs and the installers per version) and which Windows/Mac machine may keep it is the owner's decision. The installer-over-installer step itself stays manual. Auto-update against a real release (#1547): the GUI updater is off by decision; its `SHA256SUMS` verification is unit-tested in `app/src/autoupdate/gitlab_tests.rs` and cannot meet a real release until the release pipeline has run end to end. Key-to-paint on Linux/Windows (#1548): still no pixel read-back tool there (Linux needs a 240 Hz capture; Windows needs Desktop Duplication through an installed tool: an environment decision), so a pixel-level key-to-paint verdict is NOT-FIXED; the app-side key to first frame (`latency_key_log`, both platforms) remains the proxy. The 4 ms UI-work line IS covered now: the app's `hop=ui_item` line (`input_order::log_ui_item_if_over_budget`, floor 4 ms, #1191) is read by `latency_key_log` (`metrics.ui_items_over_4ms`, `lat.ui_work`: event/action items over 4 ms beyond max(2, 5 % of the typed keys) FAIL; `frame` items WARN because software GL rasterises over 4 ms; an item >= 16 ms is a WARN note) and by `cb_ui_action_latency` (`new_tab_ui_work`, `tab_switch_ui_work`).
+**Recorded gaps (need an owner decision or a fixture, not code):** uninstall and a `phosphor://` URL end to end (#1546): need a clean-VM step, today manual (5.4). Upgrade over a previous build's DATA (#1546 option a) is a case now, `upgrade_over_previous` (and, for v0.1.17 specifically with every changed setting asserted, `upgrade_from_v0_1_17`, section 2.18) (order 90, full tier, `cases_coverage_b.py`): the new build starts on the previous release's data directory; the data comes from `APPCI_PREV_FIXTURE=<state tarball>` or from `APPCI_PREV_BIN=<previous release binary>` (macOS also `APPCI_PREV_BUNDLE=<.app>`), which the case launches on the scratch profile, uses, stops and packs to `<run>/fixtures/prev-state.tar.gz` (keep it as a CI artifact; not on Windows, where the state is in the known folders). Verdict: the new build reaches a prompt, types exactly, logs no failed start/migration, keeps every database file (not moved aside, not shrunk), and has not fewer applied `__diesel_schema_migrations` than the old build left (metric `migrations_before_after`). Without either variable it SKIPS with that reason: where CI gets the previous release's artifact (the generic package registry has the CLI tarballs and the installers per version) and which Windows/Mac machine may keep it is the owner's decision. The installer-over-installer step itself stays manual. Auto-update against a real release (#1547): the GUI updater is off by decision; its `SHA256SUMS` verification is unit-tested in `app/src/autoupdate/gitlab_tests.rs` and cannot meet a real release until the release pipeline has run end to end. Key-to-paint on Linux/Windows (#1548): still no pixel read-back tool there (Linux needs a 240 Hz capture; Windows needs Desktop Duplication through an installed tool: an environment decision), so a pixel-level key-to-paint verdict is NOT-FIXED; the app-side key to first frame (`latency_key_log`, both platforms) remains the proxy. The 4 ms UI-work line IS covered now: the app's `hop=ui_item` line (`input_order::log_ui_item_if_over_budget`, floor 4 ms, #1191) is read by `latency_key_log` (`metrics.ui_items_over_4ms`, `lat.ui_work`: event/action items over 4 ms beyond max(2, 5 % of the typed keys) FAIL; `frame` items WARN because software GL rasterises over 4 ms; an item >= 16 ms is a WARN note) and by `cb_ui_action_latency` (`new_tab_ui_work`, `tab_switch_ui_work`).
 
 **#1617 (Windows session-end gate).** Every handled shell exit asks the gate once (`exited_shell_keeps_pane`), a shell that never
 bootstrapped included, so its counted session-end exit is consumed and a later ordinary `exit` closes its pane.
@@ -1847,6 +1847,98 @@ unless the lab supplies another address.
 
 `run.py --self-test` runs `wn_zero_network_trace_and_offline_plugin`: the strace parser on sample lines (and its allowlist argument), `fakeclaude.py` refusing a remote source, and the same
 install + hook run (without a network namespace) against the checkout's plugin folder.
+
+### 2.18 Upgrade from v0.1.17 (`appci/cases_upgrade.py`, `upgrade_table.py`, `prev_release.py`, `fixtures/upgrade_v0_1_17/`; #1546)
+
+App case `upgrade_from_v0_1_17` (terminal mode, **full tier**: played by the candidate and release tiers' full app matrix on Linux, not in SMOKE/fix; no CI
+schedule was added; `ci_seq.py` needs no entry because the tiers play every non-SMOKE case). Linux only for now: the seed paths (`~/.config/phosphor`,
+`~/.local/share/phosphor`, `~/.claude`), the `secret-tool` keyring helper and the AppImage fetch are the Linux ones; macOS and Windows skip with that
+reason (`winmap.py`), and the table and fixture are platform-neutral so the port is the seeding only.
+
+**What it does.** It stops the app, wipes the profile's state directories, writes the fixture (`fixtures/upgrade_v0_1_17/`: `settings.toml` in the v0.1.17 shape
+and owner-like (agent mode default, autodetect + natural-language detection on, a local model provider plus a local Claude proxy, vertical tabs, bash, a custom
+proxy, redaction patterns set but redaction OFF, a keybinding, a user theme, the removed tmux key, an explicit `models_dev_fetch = true`), a Claude Code plugin
+registered from Warp's GitHub, and two keyring items), then:
+
+1. **Old profile.** The real v0.1.17 build is launched on it so it writes its own state (SQLite, config) and is stopped. The build is `APPCI_PREV_RELEASE_BIN`
+   (an executable), else the cache `APPCI_PREV_RELEASE_DIR` (default `~/.cache/phosphor-ci/prev-release/v0.1.17/`, an extracted AppImage's `squashfs-root/AppRun`),
+   else a download of the release's `Phosphor-x86_64.AppImage` from the GitLab generic package registry, checked against the release's `SHA256SUMS` and
+   extracted with `--appimage-extract` (no FUSE, no `/tmp`; `APPCI_PREV_RELEASE_FETCH=0` turns the download off). Without a build the case runs from the fixture alone
+   (metric `old_profile_source` says which) and SKIPS only when the fixture directory is missing. Rows are judged against what the OLD build left in `settings.toml`
+   (a key v0.1.17 itself dropped is the metric `seed_keys_dropped_by_v0_1_17_itself`, not an upgrade failure).
+2. **Launch 1 (current build).** Reaches a prompt, takes 4 exact typed lines, the app log has no panic / migration / database / settings / keybinding / theme /
+   plugin / keyring / provider ERROR (`upgrade_log_problems`; a loopback model server that is not running is not one), and every `kept`, `unknown_kept`,
+   `absent_or_default`, `file_same` and `db_migrations` row below holds. The keyring items are read back with `secret-tool` after the stop.
+3. **Launch 2** with `PHOSPHOR_BOOTSTRAP_TIMED=1`, `PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS=1`, `PHOSPHOR_SUBSHELL_READY=0` set (rows U70-U72): it starts, logs no
+   failure, and **changes nothing**: `settings.toml` byte for byte, every file under the config dir and `~/.claude`, the keyring items.
+4. **Downgrade note.** With the real v0.1.17 build: v0.1.17 is opened on the migrated profile and what it did is RECORDED (metric
+   `downgrade_v0_1_17_on_migrated_profile`: reached a prompt, seeded keys it lost, problem lines; a `DOWNGRADE (recorded)` note). Never a failure.
+
+The case leaves the harness profile as it found it (settings.toml restored, `~/.claude` put back, state directories wiped like `upgrade_over_previous` does,
+a fresh app started). New environment variables: `APPCI_PREV_RELEASE_BIN`, `APPCI_PREV_RELEASE_DIR`, `APPCI_PREV_RELEASE_FETCH`, `APPCI_KEYRING_SERVICE`
+(default `dev.phosphor.Phosphor`, the `service` attribute the app's Secret Service items carry). Without `secret-tool` + `dbus-run-session` +
+`gnome-keyring-daemon` the keyring rows are a note, not a pass.
+
+**The table.** One list, `upgrade_table.py` `ROWS` (generated here with `python3 script/realapp/appci/upgrade_table.py --markdown`); selftest
+`upgrade_table_matches_fixture_and_docs` fails when a row, the fixture, this table or the tree's `toml_path`s drift apart. Every key between the tag
+`v0.1.17` and merge/w0 that was added, removed, or whose default or meaning changed is here; unchanged owner-shape keys (U01-U11) are there too, as the "no
+settings reset" half. "upgrade must" is `keep` (survives byte for byte), `drop silently` (the app stops reading it, the line stays: unknown keys are preserved,
+#1545), or `new key` (the upgrade must not invent a value). No row needs `migrate` or `drop with a notice`: the only real migration code between the tags is the
+Claude/Codex/Gemini/OpenCode plugin source move, which is a user action offered by the plugin manager, not a launch-time rewrite (U83).
+
+| id | area | key | change | v0.1.17 | now | upgrade must | check |
+|---|---|---|---|---|---|---|---|
+| U01 | general | `general.default_session_mode` | unchanged | "agent" | same | **keep** | kept |
+| U02 | agent input | `agents.warp_agent.input.ai_auto_detection_enabled / nld_in_terminal_enabled` | unchanged | true / true | same | **keep** | kept |
+| U03 | agent providers | `agents.warp_agent.providers` | unchanged shape; now also feeds the network gate | two inline-table providers (local model, local Claude proxy) | same list; each provider's base_url is a configured origin of the gate | **keep** | kept |
+| U04 | agent providers | `agents.byop.last_used_model_id` | unchanged | "byop:upg-ollama:probe-model" | same | **keep** | kept |
+| U05 | appearance | `appearance.vertical_tabs.enabled` | unchanged | true | same | **keep** | kept |
+| U06 | appearance | `appearance.themes.theme / appearance.text.font_size` | unchanged | "tokyo_night" / 14.0 | same | **keep** | kept |
+| U07 | shell | `session.startup_shell_override` | unchanged | "<bash>" | same | **keep** | kept |
+| U08 | privacy | `privacy.custom_secret_regex_list` | unchanged | two patterns (one named) | same | **keep** | kept |
+| U09 | privacy | `privacy.secret_redaction.enabled` | unchanged | false | same | **keep** | kept |
+| U10 | privacy | `privacy.telemetry_enabled` | unchanged | false | same | **keep** | kept |
+| U11 | general | `general.restore_session` | unchanged | false | same | **keep** | kept |
+| U20 | network | `network.proxy_mode / proxy_url / proxy_username / proxy_no_proxy` | meaning changed for system and off | "custom" + http://127.0.0.1:3128 + user + no_proxy list (the default "system" followed OS/env proxies) | custom is used as before; system and off now both mean NO proxy (the gate ignores system and environment proxies) | **keep** | kept |
+| U21 | network | `network.allowed_origins` | new key | (absent) | default "" (loopback + configured AI endpoints always allowed) | **new key** | absent_or_default |
+| U22 | keyring | `ProxyPassword (keyring item)` | unchanged key; read moved off the UI thread (#1805) | stored in the OS keyring | same item, read on the secure-storage worker | **keep** | secret_same |
+| U23 | keyring | `AgentProviderSecrets (keyring item: per-provider API keys, JSON)` | unchanged | stored in the OS keyring | same item | **keep** | secret_same |
+| U30 | agent providers | `agents.warp_agent.models_dev_fetch` | default changed true -> false | true (explicit in the seed) | explicit true is honoured (auto-download when the Providers page opens); UNSET is now false (built-in catalog, Refresh button only) | **keep** | kept |
+| U31 | agent providers | `agents.warp_agent.models_dev_url` | meaning changed (a configured origin of the gate) | a mirror URL (loopback) | same URL, added to the gate's configured origins | **keep** | kept |
+| U40 | ssh | `warpify.ssh.use_ssh_tmux_wrapper` | REMOVED (the tmux option is deleted, DECLINED.md) | true (explicit) | no setting by that name; the key is unknown | **drop silently** | unknown_kept |
+| U41 | ssh | `warpify.ssh.ssh_extension_install_mode` | meaning changed (the app-wide default for a host with no own decision) | "always_install" (what "don't ask again" + Install wrote in v0.1.17) | same value; a host in neither list still follows it, so the old global choice keeps applying to every host | **keep** | kept |
+| U42 | ssh | `warpify.ssh.remote_helper_allowed_hosts` | new key | (absent) | default [] | **new key** | absent_or_default |
+| U43 | ssh | `warpify.ssh.remote_helper_denied_hosts` | new key | (absent) | default [] | **new key** | absent_or_default |
+| U44 | ssh | `terminal.remote.show_no_helper_chip / no_helper_chip_dismissed_hosts` | new key | (absent) | default true / [] | **new key** | absent_or_default |
+| U50 | input | `terminal.input.completions_open_while_typing` | default changed false -> true (local sessions only unless set) | false (explicit in the seed) | explicit false wins everywhere; UNSET is now on for local sessions, off for remote | **keep** | kept |
+| U51 | profile | `appearance.profile.display_name / appearance.profile.avatar` | new key | (absent) | default "" / "" | **new key** | absent_or_default |
+| U60 | agent permissions | `agents.warp_agent.permissions.safe_command_allowlist_enabled / safe_command_allowlist` | new key | (absent) | default false / the built-in read-only list (no git) | **new key** | absent_or_default |
+| U70 | env switch | `PHOSPHOR_BOOTSTRAP_TIMED` | REMOVED (the events-not-timers rework, #1354/#1815) | =1 selected the old fixed-delay ssh bootstrap | ignored | **drop silently** | env_inert |
+| U71 | env switch | `PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS` | REMOVED (#1815) | =1 delivered typed text after a give-up | ignored (a give-up drops the keys with a count toast, #1661) | **drop silently** | env_inert |
+| U72 | env switch | `PHOSPHOR_SUBSHELL_READY` | never in a release (added and removed between the tags) | (not in v0.1.17) | ignored | **drop silently** | env_inert |
+| U80 | state | `warp.sqlite (and every other SQLite file in the data/state dirs)` | schema migrations run at open | the v0.1.17 schema | same file, migrations applied in place | **keep** | db_migrations |
+| U81 | state | `keybindings.yaml` | unchanged | one custom binding | same file | **keep** | file_same |
+| U82 | state | `themes/<user theme>.yaml` | unchanged | one user theme | same file | **keep** | file_same |
+| U83 | state | `~/.claude/plugins/known_marketplaces.json + installed_plugins.json (Claude Code plugin registered from Warp's GitHub)` | bundled plugin replaces remote registrations (Wave N) | marketplace registered from a remote repository | NOT touched at launch: the app offers a 'move to the bundled copy' action (needs_source_migration) and never fetches the plugin | **keep** | file_same |
+
+**Verified only on the box (not by the case, not by anything runnable on the laptop).** (a) The case itself: nothing here has run (no app, no display on the laptop;
+`selftest.py` runs the pure parts offline). (b) The settings UI is not read (no stable pointer path, the same gap `ui_settings_live` records); the rows are judged on
+the settings FILE the UI writes, and on behaviour only where the table says so. (c) U22/U23 need `secret-tool` on the runner. (d) Behaviour behind a kept value
+(the gate really admitting the seeded loopback providers, an unset `completions_open_while_typing` completing in a local pane, `models_dev_fetch` really off when
+unset, the plugin manager really offering the move for U83) is covered by `zero_network_startup`, `claude_plugin_offline` and the Rust unit tests, not by this case.
+(e) The removed env switches are proven inert only as far as "the app starts and logs no failure". (f) The Rust tests below were written without a compiler.
+
+**Unit tests added with this case** (Rust, beside the code; not run on the laptop): `models_dev_fetch_defaults_off_and_a_v0_1_17_provider_list_still_parses`
+(`app/src/settings/ai_tests.rs`), `allowed_origins_defaults_empty_and_v0_1_17_proxy_modes_still_map` (`app/src/settings/network_tests.rs`),
+`a_v0_1_17_profile_keeps_its_app_wide_choice_until_a_host_decides` (`crates/remote_server/src/policy_tests.rs`), and for the shared plugin-source helpers that had none:
+`a_recorded_folder_is_the_bundle_only_when_it_is_that_folder`, `a_path_looks_like_a_bundle_at_this_or_an_older_install_location`,
+`the_bundled_plugin_folder_needs_its_marker_file`, `a_missing_bundle_says_phosphor_does_not_download_it`
+(`app/src/terminal/cli_agent_sessions/plugin_manager/mod_tests.rs`). Python: selftest `upgrade_table_matches_fixture_and_docs`, `upgrade_case_pure_helpers`.
+
+**Findings from writing it.** #1816: the network-mode description string and the manual still describe the removed behaviour (a user upgrading with the default
+`system` proxy mode is told it follows the OS proxy; it does not). Owner decision recorded, not a defect: a v0.1.17 `ssh_extension_install_mode = "always_install"`
+(what "don't ask again" + Install wrote) keeps applying to EVERY host that has no own decision; no per-host list is filled from it because a v0.1.17 profile holds no
+host names.
 
 ## 3. Real-app testing
 

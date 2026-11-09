@@ -3331,6 +3331,120 @@ def wn_agent_plugins_offline():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+@check
+def upgrade_table_matches_fixture_and_docs():
+    """#1546: upgrade_table.py, fixtures/upgrade_v0_1_17/settings.toml and docs/testing.md 2.18 say the same thing, and every key the table names is a real
+    toml_path of the tree (a removed key only in the v0.1.17 source is marked REMOVED in its `kind`)"""
+    import upgrade_table as U
+    root = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
+    fx = open(os.path.join(U.FIXTURE_DIR, "settings.toml"), encoding="utf-8").read()
+    assert U.fixture_problems(fx) == [], U.fixture_problems(fx)
+    doc = open(os.path.join(root, "docs", "testing.md"), encoding="utf-8").read()
+    assert U.doc_problems(doc) == [], U.doc_problems(doc)
+    assert len({r["id"] for r in U.ROWS}) == len(U.ROWS)
+    for r in U.ROWS:
+        assert r["action"] in (U.KEEP, U.MIGRATE, U.DROP_SILENTLY, U.DROP_NOTICE, U.NEW), r["id"]
+        assert r["check"] in (U.C_KEPT, U.C_UNKNOWN_KEPT, U.C_ABSENT, U.C_FILE_SAME, U.C_SECRET, U.C_ENV, U.C_DB, U.C_UNIT), r["id"]
+        if r["check"] in (U.C_KEPT, U.C_UNKNOWN_KEPT):
+            assert U.seeds_of(r), "%s is a kept-key row with no seed line" % r["id"]
+        if r["check"] == U.C_ABSENT:
+            assert not U.seeds_of(r) and r["default"] is not None, r["id"]
+    # every key a TOML row names exists as a toml_path (current tree), except the removed one
+    tomls = []
+    for base in ("app/src", "crates"):
+        for d, _s, files in os.walk(os.path.join(root, base)):
+            for f in files:
+                if f.endswith(".rs") and "_test" not in f:
+                    try:
+                        tomls.append(open(os.path.join(d, f), encoding="utf-8", errors="replace").read())
+                    except OSError:
+                        pass
+    blob = "\n".join(tomls)
+    for r in U.ROWS:
+        if r["check"] not in (U.C_KEPT, U.C_UNKNOWN_KEPT, U.C_ABSENT):
+            continue
+        keys = [t + "." + k if t else k for t, k in (U.seeds_of(r) or U._absent_keys(r))]
+        for k in keys:
+            has = ('toml_path: "%s"' % k) in blob
+            if "REMOVED" in r["kind"]:
+                assert not has, "%s: %s is marked REMOVED but is still a toml_path" % (r["id"], k)
+            else:
+                assert has, "%s: %s is not a toml_path of this tree (renamed or removed?)" % (r["id"], k)
+
+
+@check
+def upgrade_case_pure_helpers():
+    """#1546 upgrade_from_v0_1_17: the seed renderer, tree hashing, keyring output framing, log verdict, downgrade report, the previous-release locator"""
+    import cases_upgrade as CU, prev_release as PR, upgrade_table as U, toml_text as T
+    assert CU.render_seed("a=@BASH@ b=@HOME@", "/bin/bash", "/h") == "a=/bin/bash b=/h"
+    tmp = tempfile.mkdtemp()
+    try:
+        os.makedirs(os.path.join(tmp, "d"))
+        open(os.path.join(tmp, "d", "a.yaml"), "w").write("x")
+        open(os.path.join(tmp, "d", "phosphor.log"), "w").write("noise")
+        open(os.path.join(tmp, "b.toml"), "w").write("y")
+        h = CU.tree_hashes(tmp)
+        assert sorted(h) == ["b.toml", "d/a.yaml"], h
+        h2 = dict(h)
+        del h2["b.toml"]
+        assert CU.lost_files(h, h2) == ["b.toml"] and CU.lost_files(h2, h) == []
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    out = "KEY:ProxyPassword\nsecret-1\nEND\nKEY:AgentProviderSecrets\n\nEND\n"
+    assert CU.parse_lookups(out) == {"ProxyPassword": "secret-1", "AgentProviderSecrets": None}
+    assert CU.secrets_equal("AgentProviderSecrets", '{"a":"1","b":"2"}', '{"b": "2", "a": "1"}')
+    assert not CU.secrets_equal("ProxyPassword", "a", None)
+    assert CU.shell_q("it's") == "'it'\\''s'"
+    # the log verdict: a panic and a settings/keyring ERROR count; an unrelated connection error does not
+    assert CU.upgrade_log_problems("2026 INFO warp started\n2026 ERROR Failed to connect to 127.0.0.1:11434: refused\n") == []
+    assert CU.upgrade_log_problems("thread 'main' panicked at app/src/x.rs:1\n")
+    assert CU.upgrade_log_problems("2026 ERROR failed to read the proxy password from the keyring\n")
+    assert CU.upgrade_log_problems("2026 ERROR Failed to migrate settings.toml\n")
+    # rows against a settings text: a kept key that changes, a removed key, and a new key written non-default are each named
+    fx = open(os.path.join(U.FIXTURE_DIR, "settings.toml"), encoding="utf-8").read()
+    pre = CU.render_seed(fx, "/bin/bash", "/h")
+    assert U.after_problems(pre, pre, T) == []
+    bad = T.del_key(pre, "network", "proxy_url")
+    assert [x[0] for x in U.after_problems(pre, bad, T)] == ["U20"]
+    bad = T.set_key(pre, "warpify.ssh", "remote_helper_allowed_hosts", '["u@h"]')
+    assert [x[0] for x in U.after_problems(pre, bad, T)] == ["U42"]
+    bad = T.set_key(pre, "privacy.secret_redaction", "enabled", "true")
+    assert [x[0] for x in U.after_problems(pre, bad, T)] == ["U09"]
+    reformatted = pre.replace("providers = [", "providers = [  # same list").replace("},\n]", "}\n]")
+    assert U.after_problems(pre, reformatted, T) == [], U.after_problems(pre, reformatted, T)
+    rep = CU.downgrade_report(pre, T.del_key(pre, "network", "allowed_origins"), True, "")
+    assert rep["reached_prompt"] and rep["seeded_keys_lost"] == []
+    rep = CU.downgrade_report(pre, T.del_key(pre, "warpify.ssh", "use_ssh_tmux_wrapper"), False, "panicked at x")
+    assert rep["seeded_keys_lost"] == ["warpify.ssh.use_ssh_tmux_wrapper"] and not rep["reached_prompt"] and rep["problem_lines"]
+    # prev_release: an explicit path wins; a bad path / a disabled fetch say why; SHA256SUMS lookup
+    assert PR.expected_sha("abc123  Phosphor-x86_64.AppImage\ndef456 *other\n", "Phosphor-x86_64.AppImage") == "abc123"
+    assert PR.expected_sha("abc123  x\n", "y") is None
+    tmp = tempfile.mkdtemp()
+    try:
+        exe = os.path.join(tmp, "phosphor")
+        open(exe, "w").write("#!/bin/sh\n")
+        os.chmod(exe, 0o755)
+        assert PR.locate(environ={"APPCI_PREV_RELEASE_BIN": exe}) == (exe, "APPCI_PREV_RELEASE_BIN")
+        got, why = PR.locate(environ={"APPCI_PREV_RELEASE_BIN": os.path.join(tmp, "missing")})
+        assert got is None and "not an executable" in why
+        got, why = PR.locate(environ={"APPCI_PREV_RELEASE_DIR": tmp, "APPCI_PREV_RELEASE_FETCH": "0"})
+        assert got is None and "APPCI_PREV_RELEASE_FETCH=0" in why
+        called = []
+        got, why = PR.locate(environ={"APPCI_PREV_RELEASE_DIR": tmp}, fetch=lambda tag, d: called.append(d) or (_ for _ in ()).throw(OSError("offline")))
+        assert got is None and ("offline" in why or "Linux" in why), why
+        app = os.path.join(PR.cache_dir("v0.1.17", {"APPCI_PREV_RELEASE_DIR": tmp}), "squashfs-root")
+        os.makedirs(app)
+        run = os.path.join(app, "AppRun")
+        open(run, "w").write("#!/bin/sh\n")
+        os.chmod(run, 0o755)
+        assert PR.locate(environ={"APPCI_PREV_RELEASE_DIR": tmp})[0] == run
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    reg = {c["name"]: c for c in cases.CASES}
+    assert "upgrade_from_v0_1_17" in reg and "upgrade_from_v0_1_17" not in cases.SMOKE
+    assert winmap.skip_reason("upgrade_from_v0_1_17", "gitbash"), "the Windows reason must be stated"
+
+
 def main():
     failed = 0
     for f in CHECKS:

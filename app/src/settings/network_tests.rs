@@ -55,3 +55,24 @@ fn proxy_url_username_and_no_proxy_default_to_empty() {
     assert_eq!(ProxyUsernameSetting::default_value(), String::new());
     assert_eq!(ProxyNoProxySetting::default_value(), String::new());
 }
+
+/// #1546 (upgrade from v0.1.17): the gate's allowlist is a NEW key. A v0.1.17 settings file has none, so the default must be
+/// empty (nothing is allowed beyond loopback and the user's configured AI endpoints), and the proxy modes a v0.1.17 file can hold
+/// still map to the same transports (`custom` is the only one the gate uses; `system` and `off` both mean no proxy there).
+/// Written without a compiler; run on the build box.
+#[test]
+fn allowed_origins_defaults_empty_and_v0_1_17_proxy_modes_still_map() {
+    assert_eq!(AllowedOriginsSetting::default_value(), String::new());
+    assert_eq!(
+        ProxyMode::Custom.to_http_client_mode(),
+        http_client::ProxyMode::Custom
+    );
+    assert_eq!(
+        ProxyMode::Off.to_http_client_mode(),
+        http_client::ProxyMode::Off
+    );
+    assert_eq!(
+        ProxyMode::System.to_http_client_mode(),
+        http_client::ProxyMode::System
+    );
+}
