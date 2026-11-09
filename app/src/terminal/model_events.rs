@@ -416,6 +416,15 @@ impl ModelEventDispatcher {
             Event::ContinuationPrompt { session_id, seq } => {
                 ModelEvent::ContinuationPrompt { session_id, seq }
             }
+            Event::TtyRead {
+                session_id,
+                seq,
+                secret,
+            } => ModelEvent::TtyRead {
+                session_id,
+                seq,
+                secret,
+            },
             Event::YoungHoldReevaluated => ModelEvent::YoungHoldReevaluated,
             Event::CommandFileFailed { session_id } => ModelEvent::CommandFileFailed { session_id },
             _ => return,
@@ -639,6 +648,14 @@ pub enum ModelEvent {
     LineEditorReading {
         session_id: SessionId,
         seq: Option<u64>,
+    },
+    /// A running command announced it reads the tty itself (#1882): PowerShell's `Read-Host` /
+    /// `Get-Credential` (the bootstrap's wrappers). `secret`: the input is not echoed. The view
+    /// hands an agent command over to the user.
+    TtyRead {
+        session_id: SessionId,
+        seq: Option<u64>,
+        secret: bool,
     },
     /// The shell is about to read a continuation line (#1391; bash PS2, zsh PS2). `seq` is the
     /// last Precmd's. fish, nushell and PowerShell keep an unfinished command in the same editor

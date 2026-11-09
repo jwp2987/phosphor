@@ -759,6 +759,16 @@ pub struct TypeaheadHandoff {
     /// nothing and has no stream barrier (ConPTY), this is the PowerShell proof that its line
     /// editor reads again: see [`Self::counts_provably_stale`].
     reading_marker_since_enter: bool,
+    /// #1891: the prompt sequence number (the last Precmd parsed) as of the last Enter counted. A
+    /// `LineEditorReading` marker whose `seq` is not past it belongs to a prompt the Enter already
+    /// answered (it was emitted before the Enter and only parsed after it): it proves nothing about
+    /// the NEXT read, which may be `Read-Host -AsSecureString` reading a secret.
+    enter_prompt_seq: Option<u64>,
+    /// #1882: a command announced that it reads the tty itself (`TtyRead` marker, e.g.
+    /// `Read-Host`; `Some(secret)`), until its `TtyReadEnd` or the next Precmd/Preexec. While set,
+    /// the counts are never proven stale: the line editor is not the reader, so no later key may
+    /// be re-baselined into it.
+    tty_read_marker: Option<bool>,
     /// PowerShell on ConPTY: the marker is its line editor's ready signal (set by the controller
     /// from the shell type and the `PHOSPHOR_LINE_EDITOR_READING_ACTIVATES` kill switch). Other
     /// shells print the marker with their prompt, where the tty may still be cooked.
@@ -1573,10 +1583,18 @@ impl TypeaheadHandoff {
     /// window whose Enter the shell never acted on, a line that already holds typed keys) the
     /// shell's state is unknown and handing back would split the line, so the keys stay held for
     /// the events.
+    ///
+    /// #1883 (secret): only for a shell that has NEVER signalled this session. One that has
+    /// signalled before and is silent now is not slow: something else holds the tty (a
+    /// `PROMPT_COMMAND` that runs `read -s`, a pinentry, a vault unlock), and keys handed back to
+    /// the editor there would show a secret as editor text. Those keys stay held
+    /// ([`Self::keep_overdue_prompt_hold`]) until the prompt's own signal, then go to the pty in
+    /// typed order.
     pub fn prompt_hold_can_hand_back(&self, id: u64) -> bool {
         id == self.prompt_hold_id
             && self.prompt_hold_queued
             && self.awaiting_line_editor_since.is_some()
+            && !self.line_editor_signal_seen
             && matches!(
                 self.owner(),
                 Owner::Pty {
@@ -1718,7 +1736,15 @@ impl TypeaheadHandoff {
     pub fn on_line_editor_reading(&mut self, session: Option<u64>, seq: Option<u64>) -> bool {
         warpui::input_order::note_shell_signal(warpui::input_order::ShellSignal::LineEditorReady);
         self.line_editor_markers_live = true;
-        self.reading_marker_since_enter = true;
+        // #1891: a marker not newer than the prompt the last Enter answered is that prompt's own,
+        // parsed late: it is not "the editor reads again".
+        let predates_enter = matches!(
+            (seq, self.enter_prompt_seq),
+            (Some(seq), Some(entered_at)) if seq <= entered_at
+        );
+        if !predates_enter {
+            self.reading_marker_since_enter = true;
+        }
         let stale = match (seq, self.prompt_seq) {
             (Some(seq), Some(prompt)) => prompt.session == session && seq < prompt.seq,
             _ => false,
@@ -1729,6 +1755,30 @@ impl TypeaheadHandoff {
         self.shell_activity = ShellActivity::Reading;
         self.reading_seq = seq;
         true
+    }
+
+    /// An Enter was counted: the marker proof starts over, and the prompt it answered is
+    /// remembered (#1891).
+    fn clear_reading_marker_for_enter(&mut self) {
+        self.reading_marker_since_enter = false;
+        self.enter_prompt_seq = self.prompt_seq.map(|prompt| prompt.seq);
+    }
+
+    /// #1882 (model thread, stream order): a running command announced it reads the tty itself
+    /// (`secret`: input is not echoed). Where nothing samples the tty (ConPTY) this is the only
+    /// "termios" the hand-off has.
+    pub fn on_tty_read(&mut self, secret: bool) {
+        self.tty_read_marker = Some(secret);
+    }
+
+    /// #1882: the announced read ended (the command's `TtyReadEnd` marker).
+    pub fn on_tty_read_end(&mut self) {
+        self.tty_read_marker = None;
+    }
+
+    /// Whether a command announced a tty read that has not ended (see [`Self::on_tty_read`]).
+    pub fn tty_read_marker(&self) -> Option<bool> {
+        self.tty_read_marker
     }
 
     /// The shell showed a continuation prompt (PS2): it consumed the Enter that ended the line
@@ -1768,6 +1818,8 @@ impl TypeaheadHandoff {
     /// decides whether to apply it), see [`ParsedShellHook`].
     pub fn note_shell_hook_parsed(&mut self, hook: ParsedShellHook) {
         self.last_parsed_hook = Some(hook);
+        // #1882: a Precmd/Preexec ends any announced tty read (the command moved on).
+        self.tty_read_marker = None;
     }
 
     /// The command that just finished was interactive (a program read the keys typed into it)
@@ -1907,6 +1959,8 @@ impl TypeaheadHandoff {
         // ... and may not send line-editor markers either.
         self.shell_activity = ShellActivity::Unknown;
         self.reading_seq = None;
+        self.enter_prompt_seq = None;
+        self.tty_read_marker = None;
         self.line_editor_markers_live = false;
         self.last_parsed_hook = None;
         // ... and the latch of the command that handed the pty over is the old session's.
@@ -2595,7 +2649,7 @@ impl TypeaheadHandoff {
             enters_written: enters_before.saturating_add(1),
             precmds_seen,
         };
-        self.reading_marker_since_enter = false;
+        self.clear_reading_marker_for_enter();
         if queued_hold {
             let id = self.young_hold_id;
             if queued_hold_follows {
@@ -2632,7 +2686,7 @@ impl TypeaheadHandoff {
             *enters_written = enters_written.saturating_add(enters);
             *wrote_user_bytes = dirty;
             if enters > 0 {
-                self.reading_marker_since_enter = false;
+                self.clear_reading_marker_for_enter();
                 self.activity_generation = self.activity_generation.wrapping_add(1);
             }
         }
@@ -2687,7 +2741,7 @@ impl TypeaheadHandoff {
         {
             *enters_written = enters_written.saturating_add(1);
             *wrote_user_bytes = false;
-            self.reading_marker_since_enter = false;
+            self.clear_reading_marker_for_enter();
         }
     }
 
@@ -3875,6 +3929,7 @@ impl TypeaheadHandoff {
     fn counts_provably_stale(&self, enters_written: u32, precmds_seen: u32) -> bool {
         if precmds_seen >= enters_written
             || self.own_preexec_pending
+            || self.tty_read_marker.is_some()
             || self.raw_tty_is_a_running_commands_read()
         {
             return false;
@@ -3971,7 +4026,7 @@ impl TypeaheadHandoff {
                     *wrote_user_bytes = dirty;
                     wrote_an_enter = enters > 0;
                     if enters > 0 {
-                        self.reading_marker_since_enter = false;
+                        self.clear_reading_marker_for_enter();
                     }
                 }
                 // An Enter is activity too: a quiet-period reset armed before it must not

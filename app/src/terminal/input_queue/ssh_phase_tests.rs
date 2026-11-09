@@ -307,6 +307,21 @@ fn a_secret_read_under_the_wrapper_hold_passes_and_only_while_it_lasts() {
     );
 }
 
+/// #1885 (Windows audit finding 4): a window born owned (ConPTY has no tcgetpgrp, so ssh ownership
+/// is assumed at arm time) passes keys straight to whatever reads the tty, exactly like a plain
+/// terminal, and stays a pass-through when a secret read is observed (a `TtyRead` marker from a
+/// local PowerShell `Read-Host` counts as the observation; a remote login script's `read -s` has no
+/// marker and is the plain-terminal path). The pass-through never depends on screen text.
+#[test]
+fn an_owned_window_passes_keys_like_a_plain_terminal_secret_read_or_not() {
+    let mut m = owned();
+    assert_eq!(m.phase(false), SshPhase::Idle);
+    m.apply(observed(|o| o.secret_pass_through = true));
+    assert_eq!(m.phase(false), SshPhase::Idle);
+    m.apply(observed(|_| {}));
+    assert_eq!(m.phase(false), SshPhase::Idle);
+}
+
 /// #1641: the ownership edge overtook the wrapper's announcement; the announcement takes the tty
 /// back (the master login owns it), so keys are held again until the verdict.
 #[test]

@@ -274,6 +274,15 @@ impl Handler for MockHandler {
             .push(DProtoHook::ContinuationPrompt { value: data })
     }
 
+    fn tty_read(&mut self, data: TtyReadValue) {
+        self.d_proto_hooks.push(DProtoHook::TtyRead { value: data })
+    }
+
+    fn tty_read_end(&mut self, data: TtyReadValue) {
+        self.d_proto_hooks
+            .push(DProtoHook::TtyReadEnd { value: data })
+    }
+
     fn command_file_failed(&mut self, data: CommandFileFailedValue) {
         self.d_proto_hooks
             .push(DProtoHook::CommandFileFailed { value: data })

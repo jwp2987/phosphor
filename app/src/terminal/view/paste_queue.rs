@@ -1072,6 +1072,10 @@ impl TerminalView {
                     handoff.prompt_hold_shell_never_signalled(key),
                 )
             };
+            // #1883: `clean_prompt` (`prompt_hold_can_hand_back`) now implies `never_signalled`: a
+            // shell that has signalled before and is silent now has something else reading the
+            // tty (maybe a secret), so its keys are never handed to the editor as visible text;
+            // they stay held for the prompt's signal and go to the pty in typed order.
             let can_hand_back =
                 clean_prompt && (never_signalled || !self.prompt_hold_segment_has_enter(key));
             if can_hand_back {

@@ -3672,6 +3672,73 @@ fn line_editor_markers_become_terminal_events_in_order() {
     );
 }
 
+/// #1882: the `TtyRead` marker (PowerShell's `Read-Host`) reaches the event channel and is the
+/// secret-read fact on a platform with no termios: the model's probe answers true for a secret
+/// read until `TtyReadEnd` or the next Precmd/Preexec; a non-secret read never claims a secret.
+#[test]
+fn tty_read_markers_are_events_and_the_secret_fact_without_termios() {
+    use crate::terminal::model::ansi::TtyReadValue;
+    let (event_tx, event_rx) = async_channel::unbounded();
+    let event_proxy = ChannelEventListener::builder_for_test()
+        .with_terminal_events_tx(event_tx)
+        .build();
+    let mut terminal = TerminalModel::mock(None, Some(event_proxy));
+    while event_rx.try_recv().is_ok() {}
+    let probe = terminal.secret_read_probe().expect("a combined probe");
+    assert!(!terminal.tty_reading_secret());
+    assert!(!probe());
+
+    terminal.tty_read(TtyReadValue {
+        session_id: Some(5),
+        seq: Some(3),
+        secret: false,
+    });
+    assert!(
+        !terminal.tty_reading_secret(),
+        "an echoing read is no secret"
+    );
+    terminal.tty_read(TtyReadValue {
+        session_id: Some(5),
+        seq: Some(3),
+        secret: true,
+    });
+    assert!(terminal.tty_reading_secret());
+    assert!(probe(), "the probe taken earlier sees the marker too");
+    terminal.tty_read_end(TtyReadValue {
+        session_id: Some(5),
+        seq: Some(3),
+        secret: true,
+    });
+    assert!(!terminal.tty_reading_secret());
+
+    // A Precmd/Preexec ends it as well (the command was killed without saying so).
+    terminal.tty_read(TtyReadValue {
+        session_id: Some(5),
+        seq: None,
+        secret: true,
+    });
+    terminal.note_shell_hook_parsed(ParsedShellHook::Precmd);
+    assert!(!terminal.tty_reading_secret());
+    // No session: nothing attributable.
+    terminal.tty_read(TtyReadValue {
+        session_id: None,
+        seq: None,
+        secret: true,
+    });
+    assert!(!terminal.tty_reading_secret());
+
+    let events: Vec<_> = std::iter::from_fn(|| event_rx.try_recv().ok()).collect();
+    assert_eq!(events.len(), 3, "{events:?}");
+    assert!(
+        matches!(
+            &events[1],
+            Event::TtyRead { session_id, seq: Some(3), secret: true } if *session_id == SessionId::from(5)
+        ),
+        "{:?}",
+        events[1]
+    );
+}
+
 /// #1390, #1391: the markers also update the typeahead hand-off's own account of the shell, on the
 /// thread that parses them and in the order the shell sent them. A marker without a session is
 /// not attributable and changes nothing.

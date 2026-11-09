@@ -17,6 +17,7 @@ BOTH = {
     "upgrade_over_previous",                 # #1546: skips itself without APPCI_PREV_FIXTURE / APPCI_PREV_BIN
     "startup_shell_pane",                    # #1534: itself skips outside a startup_shell_override pass
     "ctrl_c_no_esc_i_local",                 # #1798: itself skips on Windows with its reason
+    "agent_lrc_no_false_takeover",           # #1882: PowerShell / Git Bash commands in both panes; ConPTY has no tty-read probe, so a printed prompt gets the notice only (the Read-Host marker is the hand-over, agent_interactive_password)
     # #1831/#1832: the fake model runs on the host (127.0.0.1); effect files and the sqlite store, no rc hook needed. The quit variants skip themselves on Windows (no quit key).
     "agent_fault_429", "agent_fault_500", "agent_fault_disconnect", "agent_fault_down", "agent_fault_slow_cancel", "agent_fault_queued_rows",
     "agent_restart_quit_stream", "agent_restart_quit_queued", "agent_restart_quit_blocked", "agent_restart_kill_stream", "agent_restart_kill_queued", "agent_restart_kill_blocked",
@@ -49,6 +50,7 @@ GITBASH_ONLY = {
     "shell_fish": "fish as a subshell of bash: Git Bash pane only (skips itself when not installed)",
     "shell_nu": "nu as a subshell of bash: Git Bash pane only (skips itself when not installed)",
     "shell_pwsh": "pwsh as a subshell of bash: Git Bash pane only (skips itself when not installed)",
+    "gitbash_precmd_secret": "bash precmd_functions with `read -s` after the prompt's Precmd, rec.log to prove the PIN was not run as a command (#1883): runs in the Git Bash pane",
     "ui_tab_menu": "asserts the exact line from rec.log: runs in the Git Bash pane",
     "ui_ghost_accept": "asserts the exact line from rec.log: runs in the Git Bash pane",
     "ui_ctrl_r": "asserts the exact line from rec.log: runs in the Git Bash pane",
@@ -67,10 +69,12 @@ GITBASH_ONLY = {
     "agent_approval": "uses rec.log and effect files in bash syntax: runs in the Git Bash pane (needs the CI model)",
 }
 # PowerShell-only: the same idea as a case that already exists for the other pane
-PS_ONLY = {}
+PS_ONLY = {
+    "agent_interactive_password": "#1882: the hand-over on ConPTY is the PowerShell bootstrap's Read-Host marker; bash `read -s` in a Git Bash pane announces nothing (no termios), so the POSIX form of the case does not apply there",
+    "ps_read_host_secure": "#1882/#1891: Read-Host -AsSecureString is PowerShell; the Git Bash twin is gitbash_precmd_secret",
+}
 # not on Windows at all, with the reason
 NOT_WINDOWS = {
-    "agent_interactive_password": "#1829: POSIX read/vim/less/ssh programs under the agent hand-over (and the unix-only tty-read probe); not run in a Windows pane",
     "agent_interactive_vim": "#1829: POSIX read/vim/less/ssh programs under the agent hand-over (and the unix-only tty-read probe); not run in a Windows pane",
     "agent_interactive_ssh": "#1829: POSIX read/vim/less/ssh programs under the agent hand-over (and the unix-only tty-read probe); not run in a Windows pane",
     "agent_interactive_less": "#1829: POSIX read/vim/less/ssh programs under the agent hand-over (and the unix-only tty-read probe); not run in a Windows pane",
@@ -82,14 +86,13 @@ NOT_WINDOWS = {
     "agent_multitab_streaming": "#1833: needs the rc-hook received-command proof and the pty-echo frame pairing, neither verified for a Windows pane; Linux and macOS run it",
     "agent_mcp_faults": "#1834: the fake MCP servers are configured through the HOME-relative ~/.warp/.mcp.json, which the Windows profile does not use in this harness",
     "agent_edit_touch_only": "#1835: same as agent_edit_accept",
-    "agent_lrc_no_false_takeover": "#1796: the interactive-prompt take-over it tests (PromptWatch, termios + /proc tty-read probe) is unix-only; ConPTY has no termios",
     "subshells": "uses `sh -c 'ps -o comm= -p $PPID'` to prove the subshell's parent; msys ps output differs. Not yet ported (gitbash_subshell and ctrl_c_d cover bash inside the pane)",
     "ctrl_c_flood_ab": "#1838: the blocked-frame gate it A/Bs exists only in the macOS renderer",
     "subshell_sh_probe": "dash / busybox ash / su do not exist in a Windows pane; the sh probe path is POSIX (#1710)",
     "subshell_ready_rc_questions": "bash --rcfile with read -p questions on a real pty; the readiness judge's OS facts are POSIX (#1679 step 3)",
     "subshell_ready_vim_typeahead": "bash --rcfile + vim on a real pty (#1679 step 3)",
     "subshell_ready_unsupported_tcsh": "tcsh does not exist in a Windows pane (#1679 step 3)",
-    "subshell_ready_secret_after_prompt": "bash PROMPT_COMMAND read -s on a real pty (#1679 step 3)",
+    "subshell_ready_secret_after_prompt": "bash --rcfile + Phosphorize (ctrl+i) with a PROMPT_COMMAND read -s, on the subshell readiness judge, which has no OS facts on ConPTY (#1679 step 3, audit finding 5); the ConPTY prompt-hold half of the same secret is gitbash_precmd_secret (#1883)",
     "subshell_ready_relay_shape": "sudo -s with use_pty does not exist on Windows (#1679 step 3)",
     "subshell_ready_exec_fish_rc": "fish exec'd from a bash rc on a real pty (#1679 step 3)",
     "subshell_ready_docker_t_without_i": "docker -t without -i against a Linux pty (#1679 step 3)",
@@ -169,7 +172,7 @@ def skip_reason(name, pane):
         return "not run in the PowerShell pane: " + GITBASH_ONLY[name]
     if name in PS_ONLY and pane == "gitbash":
         return "not run in the Git Bash pane: " + PS_ONLY[name]
-    if name in BOTH or name in GITBASH_ONLY:
+    if name in BOTH or name in GITBASH_ONLY or name in PS_ONLY:
         return None
     return "not yet classified for Windows (winmap.py): add it to BOTH, GITBASH_ONLY or NOT_WINDOWS"
 

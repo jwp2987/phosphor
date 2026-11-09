@@ -454,6 +454,31 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         }
     }
 
+    # Phosphor (#1882): a running command is about to read the tty itself (`Read-Host`,
+    # `Get-Credential`): tells the app, which then hands an agent command to the user and routes
+    # the keys to the pty. `secret`: the input is not echoed. Carries the seq of the last Precmd
+    # or Preexec (the Preexec of the command running the read). One console write, no process;
+    # a marker must never keep the read from happening.
+    function Warp-Send-TtyRead {
+        [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingEmptyCatchBlock', '', Justification = 'A marker must never keep the read from happening')]
+        param([bool]$secret)
+        try {
+            Warp-Write-Osc ("$([char]0x1b)" + ']9278;f;{"hook": "TtyRead", "value": {"session_id": ' + [uint64]$global:_warpSessionId + ', "seq": ' + [int64]$script:warpSeq + ', "secret": ' + $(if ($secret) { 'true' } else { 'false' }) + '}}' + $oscEnd)
+        } catch {
+        }
+    }
+
+    # The read `Warp-Send-TtyRead` announced ended (best effort: ^C skips it, and the next Precmd
+    # ends the announcement in the app anyway).
+    function Warp-Send-TtyReadEnd {
+        [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingEmptyCatchBlock', '', Justification = 'A marker must never keep the read from ending')]
+        param()
+        try {
+            Warp-Write-Osc ("$([char]0x1b)" + ']9278;f;{"hook": "TtyReadEnd", "value": {"session_id": ' + [uint64]$global:_warpSessionId + ', "seq": ' + [int64]$script:warpSeq + ', "secret": false}}' + $oscEnd)
+        } catch {
+        }
+    }
+
     function Warp-Finish-Update([string]$updateId) {
         $updateMsg = @{
             hook = 'FinishUpdate'
@@ -1417,6 +1442,47 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
             Warp-Preexec "$line"
 
             $line
+        }
+
+        # Phosphor (#1882): announce a command that reads the tty itself. ConPTY has no termios, so
+        # nothing else tells the app that a running `Read-Host` / `Get-Credential` (not PSReadLine)
+        # is the reader: the agent's command is handed to the user on the marker, a secret read
+        # (`-AsSecureString`, `-MaskInput`, Get-Credential) never has its keys routed to the line
+        # editor, and the hand-off does not re-baseline into the editor while the read lasts (#1891).
+        # The wrappers shadow the cmdlets with functions of the same name and call the real cmdlet
+        # by its module-qualified name with the caller's own arguments. `$Host.UI.ReadLineAsSecureString`
+        # called directly is a .NET method and cannot be wrapped. Kill switch:
+        # PHOSPHOR_TTY_READ_MARKERS=0 (read once, here).
+        if ($env:PHOSPHOR_TTY_READ_MARKERS -ne '0') {
+            ${function:global:Read-Host} = {
+                [CmdletBinding()]
+                param(
+                    [Parameter(Position = 0)] [object]$Prompt,
+                    [switch]$AsSecureString,
+                    [switch]$MaskInput
+                )
+                Warp-Send-TtyRead ($AsSecureString.IsPresent -or $MaskInput.IsPresent)
+                try {
+                    Microsoft.PowerShell.Utility\Read-Host @PSBoundParameters
+                } finally {
+                    Warp-Send-TtyReadEnd
+                }
+            }
+            ${function:global:Get-Credential} = {
+                [CmdletBinding(DefaultParameterSetName = 'CredentialSet')]
+                param(
+                    [Parameter(ParameterSetName = 'CredentialSet', Position = 0)] [System.Management.Automation.PSCredential]$Credential,
+                    [Parameter(ParameterSetName = 'MessageSet')] [string]$UserName,
+                    [Parameter(ParameterSetName = 'MessageSet')] [string]$Message,
+                    [Parameter(ParameterSetName = 'MessageSet')] [string]$Title
+                )
+                Warp-Send-TtyRead $true
+                try {
+                    Microsoft.PowerShell.Security\Get-Credential @PSBoundParameters
+                } finally {
+                    Warp-Send-TtyReadEnd
+                }
+            }
         }
 
         # This handles the case when a command is not found (ex "ehco foo"). As long as it is a

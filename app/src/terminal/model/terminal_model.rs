@@ -72,7 +72,7 @@ use crate::terminal::model::ansi::{
     ClearValue, CommandFileFailedValue, CommandFinishedValue, CompletionMetadata, ExitShellValue,
     InitShellValue, InitSshValue, InitSubshellValue, LineEditorMarkerValue,
     PreInteractiveSSHSessionValue, PrecmdValue, PreexecValue, PromptMetadata, SSHValue,
-    SourcedRcFileForWarpValue,
+    SourcedRcFileForWarpValue, TtyReadValue,
 };
 use crate::terminal::model::grid::IndexRegion;
 use crate::terminal::model::grid::text_snapshot::{BoundedSelection, SelectionParts};
@@ -99,7 +99,7 @@ use std::ops::{Range, RangeInclusive};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use warp_core::features::FeatureFlag;
 use warp_core::semantic_selection::SemanticSelection;
 pub use warp_terminal::model::BlockIndex;
@@ -528,6 +528,11 @@ pub struct TerminalModel {
     /// ssh typeahead release (#1611, #1612, #1621). None where the platform has no termios
     /// (ConPTY) and in tests that install none.
     secret_read_probe: Option<super::block::interactive_latch::SecretReadProbe>,
+    /// #1882: a running command announced a tty read that does not echo (the `TtyRead` marker with
+    /// `secret`: PowerShell's `Read-Host -AsSecureString`, `Get-Credential`). The "termios" of a
+    /// platform that has none (ConPTY); cleared by `TtyReadEnd` and by the next Precmd/Preexec.
+    /// Shared so a lock-free reader of [`Self::secret_read_probe`] sees it.
+    tty_read_secret_marker: Arc<AtomicBool>,
     /// #1641: whether the foreground program is blocked reading the tty (an OS fact).
     tty_read_probe: Option<super::block::interactive_latch::SecretReadProbe>,
     /// #1679 step 3: the pty sample behind [`Self::subshell_tty_sample`] (unix local ptys,
@@ -1302,6 +1307,7 @@ impl TerminalModel {
             alt_screen_active: false,
             interactive_probe: None,
             secret_read_probe: None,
+            tty_read_secret_marker: Arc::new(AtomicBool::new(false)),
             tty_read_probe: None,
             subshell_tty_probe: None,
             subshell_tty_flush: None,
@@ -2024,7 +2030,8 @@ impl TerminalModel {
     /// without a probe. Read at the ssh typeahead's ownership release (#1611, #1612, #1621), never
     /// on a timer.
     pub fn tty_reading_secret(&self) -> bool {
-        self.secret_read_probe.as_ref().is_some_and(|probe| probe())
+        self.tty_read_secret_marker.load(Ordering::Relaxed)
+            || self.secret_read_probe.as_ref().is_some_and(|probe| probe())
     }
 
     /// #1641: installs the probe behind [`Self::tty_read_probe`] (unix local ptys,
@@ -2042,7 +2049,13 @@ impl TerminalModel {
     /// The termios probe itself, for a holder that must sample it without this model's lock (the
     /// managed-ssh hold's secret-read pass-through reads it on the key path, #1641).
     pub fn secret_read_probe(&self) -> Option<super::block::interactive_latch::SecretReadProbe> {
-        self.secret_read_probe.clone()
+        // #1882: the probe also answers for a read a command announced with the `TtyRead` marker,
+        // so ConPTY (no termios) has the same guard.
+        let marker = self.tty_read_secret_marker.clone();
+        let inner = self.secret_read_probe.clone();
+        Some(Arc::new(move || {
+            marker.load(Ordering::Relaxed) || inner.as_ref().is_some_and(|probe| probe())
+        }))
     }
 
     /// #1679 step 3: installs the pty sample behind [`Self::subshell_tty_sample`] and the input
@@ -3309,6 +3322,8 @@ impl TerminalModel {
     /// prompt). On this thread, in stream order, so it is applied before the pty reader publishes
     /// these bytes as applied.
     fn note_shell_hook_parsed(&mut self, hook: ParsedShellHook) {
+        // #1882: a Precmd/Preexec/CommandFinished ends any announced tty read.
+        self.tty_read_secret_marker.store(false, Ordering::Relaxed);
         if FeatureFlag::TypeaheadHandoff.is_enabled() {
             self.typeahead_handoff.write().note_shell_hook_parsed(hook);
         }
@@ -4173,6 +4188,34 @@ impl ansi::Handler for TerminalModel {
                     session_id: SessionId::from(session_id),
                     seq: data.seq,
                 });
+        }
+    }
+
+    fn tty_read(&mut self, data: TtyReadValue) {
+        let Some(session_id) = data.session_id else {
+            return;
+        };
+        // In stream order with the hooks that frame it, on this thread (like the line-editor
+        // markers): the secret flag is visible to the key path before any later key is routed.
+        self.tty_read_secret_marker
+            .store(data.secret, Ordering::Relaxed);
+        if FeatureFlag::TypeaheadHandoff.is_enabled() {
+            self.typeahead_handoff.write().on_tty_read(data.secret);
+        }
+        self.event_proxy.send_terminal_event(Event::TtyRead {
+            session_id: SessionId::from(session_id),
+            seq: data.seq,
+            secret: data.secret,
+        });
+    }
+
+    fn tty_read_end(&mut self, data: TtyReadValue) {
+        if data.session_id.is_none() {
+            return;
+        }
+        self.tty_read_secret_marker.store(false, Ordering::Relaxed);
+        if FeatureFlag::TypeaheadHandoff.is_enabled() {
+            self.typeahead_handoff.write().on_tty_read_end();
         }
     }
 

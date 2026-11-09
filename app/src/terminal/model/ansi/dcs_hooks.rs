@@ -122,6 +122,16 @@ pub(super) enum DProtoHook {
     ContinuationPrompt {
         value: LineEditorMarkerValue,
     },
+    /// A running command is about to read the tty itself, not the line editor (#1882): PowerShell's
+    /// `Read-Host` / `Get-Credential`, announced by the bootstrap's wrappers. `secret` says the
+    /// input is not echoed. Sent unencoded (OSC `f` form), like the line-editor markers.
+    TtyRead {
+        value: TtyReadValue,
+    },
+    /// The read `TtyRead` announced ended (#1882). Sent unencoded (OSC `f` form).
+    TtyReadEnd {
+        value: TtyReadValue,
+    },
     /// The PowerShell insert chord (`ESC 3`, #1581) could not read the command pipe, so it inserted
     /// nothing and the buffer is empty: the app retypes the command the old way.
     CommandFileFailed {
@@ -155,6 +165,8 @@ impl DProtoHook {
             DProtoHook::ExitShell { .. } => "ExitShell",
             DProtoHook::LineEditorReading { .. } => "LineEditorReading",
             DProtoHook::ContinuationPrompt { .. } => "ContinuationPrompt",
+            DProtoHook::TtyRead { .. } => "TtyRead",
+            DProtoHook::TtyReadEnd { .. } => "TtyReadEnd",
             DProtoHook::CommandFileFailed { .. } => "CommandFileFailed",
         }
     }
@@ -175,6 +187,9 @@ impl DProtoHook {
             DProtoHook::Precmd { value } => value.session_id().map(SessionId::from),
             DProtoHook::ExitShell { value } => Some(value.session_id),
             DProtoHook::LineEditorReading { value } | DProtoHook::ContinuationPrompt { value } => {
+                value.session_id.map(SessionId::from)
+            }
+            DProtoHook::TtyRead { value } | DProtoHook::TtyReadEnd { value } => {
                 value.session_id.map(SessionId::from)
             }
             DProtoHook::CommandFileFailed { value } => value.session_id.map(SessionId::from),
@@ -227,6 +242,8 @@ impl DProtoHook {
             | DProtoHook::ExitShell { .. }
             | DProtoHook::LineEditorReading { .. }
             | DProtoHook::ContinuationPrompt { .. }
+            | DProtoHook::TtyRead { .. }
+            | DProtoHook::TtyReadEnd { .. }
             | DProtoHook::InitSsh { .. }
             | DProtoHook::RemoteWarpificationIsUnavailable { .. }
             | DProtoHook::SshTmuxInstaller { .. }
@@ -1195,6 +1212,21 @@ pub struct LineEditorMarkerValue {
     pub session_id: HookSessionId,
     #[serde(default)]
     pub seq: Option<u64>,
+}
+
+/// Payload of the tty-read markers (`TtyRead`, `TtyReadEnd`; #1882). Sent unencoded:
+/// `ESC ] 9278 ; f ; {"hook": "TtyRead", "value": {"session_id": N, "seq": M, "secret": true}} BEL`.
+/// `seq` is the shell's per-session counter as of its last Precmd or Preexec (as for
+/// [`LineEditorMarkerValue`]); `secret` is true when the read does not echo (`-AsSecureString`,
+/// `Get-Credential`).
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct TtyReadValue {
+    #[serde(default)]
+    pub session_id: HookSessionId,
+    #[serde(default)]
+    pub seq: Option<u64>,
+    #[serde(default)]
+    pub secret: bool,
 }
 
 /// Custom serde deserializer that trims trailing null bytes.

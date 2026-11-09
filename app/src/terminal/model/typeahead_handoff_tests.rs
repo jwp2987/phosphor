@@ -4121,6 +4121,36 @@ fn only_a_hold_at_a_clean_prompt_can_go_back_to_the_editor() {
     assert!(!handoff.prompt_hold_can_hand_back(id));
 }
 
+/// #1883: Git Bash's `PROMPT_COMMAND` runs `read -s` after the prompt's precmd. The shell has
+/// signalled at earlier prompts and is silent now, so the typed secret must NOT go back to the
+/// editor as visible text at the give-up: the hold is kept for the prompt's signal and the keys go
+/// to the pty in typed order when it comes. A shell that has never signalled still hands back.
+#[test]
+fn a_hold_in_a_shell_that_has_signalled_is_kept_never_handed_to_the_editor() {
+    let mut handoff = conpty_awaiting_line_editor();
+    handoff.line_editor_signal_seen = true;
+    assert_eq!(handoff.on_user_bytes(b"p"), UserBytesRoute::Held);
+    let id = handoff.take_prompt_hold_started().unwrap();
+    assert!(
+        !handoff.prompt_hold_can_hand_back(id),
+        "a secret read must not become editor text"
+    );
+    assert!(!handoff.prompt_hold_shell_never_signalled(id));
+    assert!(handoff.keep_overdue_prompt_hold(id));
+    assert_eq!(
+        handoff.release_queued_prompt_hold_on_signal(),
+        Some(id),
+        "the prompt's own signal releases the kept keys"
+    );
+    assert!(handoff.route_released_chunk(b"p"));
+    handoff.finish_queued_prompt_hold(id);
+
+    let mut never = conpty_awaiting_line_editor();
+    assert_eq!(never.on_user_bytes(b"a"), UserBytesRoute::Held);
+    let id = never.take_prompt_hold_started().unwrap();
+    assert!(never.prompt_hold_can_hand_back(id));
+}
+
 /// A hold kept past its cap (an Enter among its keys) keeps its wait, so the line editor's signal
 /// still releases it; a shell that had never signalled is switched off meanwhile, and back on when
 /// the signal shows it does signal.
@@ -6030,6 +6060,53 @@ fn a_powershell_marker_after_the_last_enter_proves_stale_counts_without_a_probe(
         UserBytesRoute::WriteCounted
     );
     assert!(handoff.has_unanswered_lines_for_activation());
+}
+
+/// #1891 (secret): `Read-Host -AsSecureString` typed as the command. The prompt's own
+/// `LineEditorReading` marker (stamped with that prompt's sequence number) is parsed AFTER the
+/// Enter was counted. It must not re-baseline the counts: the editor does not read, `Read-Host`
+/// does, and the next keys are the secret. Only a marker past the answered prompt proves it.
+#[test]
+fn a_powershell_marker_stamped_with_the_answered_prompt_proves_nothing() {
+    let mut handoff = read_x_finished_unsampled();
+    handoff.set_conpty_marker_proof(true);
+    // The marker of the prompt the Enter answered (seq 1), parsed late.
+    handoff.on_line_editor_reading(Some(7), Some(1));
+    assert!(
+        handoff.has_unanswered_lines_for_activation(),
+        "a late marker of the answered prompt must not re-baseline"
+    );
+    assert!(matches!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::DrainAndWait { .. }
+    ));
+
+    // The next prompt's marker (seq 3) proves it.
+    let mut handoff = read_x_finished_unsampled();
+    handoff.set_conpty_marker_proof(true);
+    handoff.on_line_editor_reading(Some(7), Some(3));
+    assert!(!handoff.has_unanswered_lines_for_activation());
+}
+
+/// #1882: a command that announced a tty read (`Read-Host`) is the reader until it says it ended
+/// or the next Precmd/Preexec: the counts are not proven stale meanwhile, whatever markers arrive.
+#[test]
+fn an_announced_tty_read_keeps_the_pty_the_owner_until_it_ends() {
+    let mut handoff = read_x_finished_unsampled();
+    handoff.set_conpty_marker_proof(true);
+    handoff.on_tty_read(true);
+    assert_eq!(handoff.tty_read_marker(), Some(true));
+    handoff.on_line_editor_reading(Some(7), Some(3));
+    assert!(handoff.has_unanswered_lines_for_activation());
+    handoff.on_tty_read_end();
+    assert_eq!(handoff.tty_read_marker(), None);
+    assert!(!handoff.has_unanswered_lines_for_activation());
+
+    // A Precmd/Preexec ends the announcement too (the command moved on or was killed).
+    let mut handoff = read_x_finished_unsampled();
+    handoff.on_tty_read(false);
+    handoff.note_shell_hook_parsed(ParsedShellHook::Precmd);
+    assert_eq!(handoff.tty_read_marker(), None);
 }
 
 /// The outcome set of `young_submit_decision_for`, read in full (2026-11-09): no classifier ->
