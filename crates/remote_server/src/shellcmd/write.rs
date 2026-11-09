@@ -35,6 +35,9 @@ pub const EXIT_RENAME: i32 = 4;
 /// changed. Distinct from [`EXIT_CONFLICT`]: the file did NOT change as far as anyone knows, the
 /// host just cannot say, so the message must not claim it did (#1837 follow-up).
 pub const EXIT_NO_HASH: i32 = 6;
+/// The exit code when the target path is a directory (a write must not move the temp file INTO
+/// it, #1866). Nothing was changed; the temp file is removed.
+pub const EXIT_ISDIR: i32 = 7;
 
 /// What the target must look like for a guarded write to go ahead.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -138,7 +141,12 @@ impl Expect {
     /// takes (`absent` when there is no file).
     fn posix_current(self) -> &'static str {
         match self {
-            Expect::Absent | Expect::Stamp(_) => {
+            Expect::Absent => {
+                // A dangling symlink is PRESENT (the helper's `symlink_metadata` says so too,
+                // #1879): `p` is the path as given, before the link was followed.
+                "if [ -e \"$f\" ] || [ -L \"${p:-$f}\" ]; then cur=present; else cur=absent; fi\n"
+            }
+            Expect::Stamp(_) => {
                 "if [ -e \"$f\" ]; then cur=\"$(wc -c < \"$f\" | tr -d ' \\t')|$(stat -c %Y -- \"$f\" 2>/dev/null || stat -f %m -- \"$f\" 2>/dev/null)\"; else cur=absent; fi\n"
             }
             Expect::Sha256(_) => {
@@ -150,7 +158,10 @@ impl Expect {
     /// The PowerShell statement that sets `$cur` the same way.
     fn pwsh_current(self) -> &'static str {
         match self {
-            Expect::Absent | Expect::Stamp(_) => {
+            Expect::Absent => {
+                "if ((Test-Path -LiteralPath $f) -or (Get-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue)) { $cur = 'present' } else { $cur = 'absent' }\n"
+            }
+            Expect::Stamp(_) => {
                 "if (Test-Path -LiteralPath $f) { $i = Get-Item -LiteralPath $f; $cur = '' + $i.Length + '|' + [DateTimeOffset]::new($i.LastWriteTimeUtc).ToUnixTimeSeconds() } else { $cur = 'absent' }\n"
             }
             Expect::Sha256(_) => {
@@ -197,7 +208,11 @@ pub fn pwsh_write_payload(chunk: &[u8]) -> Vec<u8> {
     out
 }
 
-/// `f=...` for `path`, resolving a symlink target so the write goes through it. `~` expands on
+/// `f=...` for `path`, following a symlink chain by hand so the write goes THROUGH the link
+/// (like `std::fs::write`) and never replaces it. This needs only `readlink` and `dirname`, not
+/// `readlink -f` (absent on macOS before 12.3, where the old form fell back to replacing the
+/// link, #1879), and it also resolves a dangling link to its (missing) target. `p` keeps the
+/// path as given, for the "is anything at the path" check of [`Expect::Absent`]. `~` expands on
 /// the host.
 pub(super) fn posix_target(path: &str) -> String {
     let assign = if path == "~" {
@@ -209,8 +224,16 @@ pub(super) fn posix_target(path: &str) -> String {
     };
     format!(
         "{assign}\n\
-         if [ -L \"$f\" ]; then t=$(readlink -f -- \"$f\" 2>/dev/null); [ -n \"$t\" ] && f=$t; fi"
+         p=$f\n\
+         n=0\n\
+         while [ -L \"$f\" ] && [ \"$n\" -lt 40 ]; do l=$(readlink -- \"$f\") || break; case $l in /*) f=$l;; *) f=$(dirname -- \"$f\")/$l;; esac; n=$((n+1)); done"
     )
+}
+
+/// The temp file's name: hidden (`.<name>.phosphor-tmp-<nonce>`) beside the target, so a file
+/// tree, `git status` and a watcher do not list it (#1868).
+fn posix_tmp_assign(nonce: &str) -> String {
+    format!("tmp=\"$(dirname -- \"$f\")/.$(basename -- \"$f\").phosphor-tmp-{nonce}\"\n")
 }
 
 /// The POSIX command for one chunk of a write. The chunk itself is the command's stdin
@@ -223,10 +246,12 @@ pub fn posix_write_command(
     expect: Option<Expect>,
 ) -> String {
     let mut out = posix_target(path);
-    out.push_str(&format!("\ntmp=\"$f.phosphor-tmp-{nonce}\"\n"));
+    out.push('\n');
+    out.push_str(&posix_tmp_assign(nonce));
     if position.first {
         out.push_str(&format!(
-            "mkdir -p -- \"$(dirname -- \"$f\")\" || exit {EXIT_MKDIR}\n"
+            "mkdir -p -- \"$(dirname -- \"$f\")\" || exit {EXIT_MKDIR}\n\
+             if [ -d \"$f\" ]; then echo ISDIR; exit {EXIT_ISDIR}; fi\n"
         ));
     }
     let redirect = if position.first { ">" } else { ">>" };
@@ -242,8 +267,12 @@ pub fn posix_write_command(
         if let Some(expect) = expect {
             out.push_str(&expect.posix_check("rm -f -- \"$tmp\"; "));
         }
+        // Replacing the file replaces its inode (#1876): hard links to it are not followed and
+        // ACLs/xattrs are not copied. Mode, owner and group are kept as far as the user may
+        // (`chown` needs root, `chgrp` a group the user is in; each failure is ignored).
         out.push_str(&format!(
-            "if [ -e \"$f\" ]; then m=$(stat -c %a -- \"$f\" 2>/dev/null || stat -f %Lp -- \"$f\" 2>/dev/null); [ -n \"$m\" ] && chmod \"$m\" \"$tmp\" 2>/dev/null; fi\n\
+            "if [ -d \"$f\" ]; then rm -f -- \"$tmp\"; echo ISDIR; exit {EXIT_ISDIR}; fi\n\
+             if [ -e \"$f\" ]; then m=$(stat -c %a -- \"$f\" 2>/dev/null || stat -f %Lp -- \"$f\" 2>/dev/null); [ -n \"$m\" ] && chmod \"$m\" \"$tmp\" 2>/dev/null; o=$(stat -c '%u %g' -- \"$f\" 2>/dev/null || stat -f '%u %g' -- \"$f\" 2>/dev/null); if [ -n \"$o\" ]; then chown \"${{o% *}}\" \"$tmp\" 2>/dev/null; chgrp \"${{o#* }}\" \"$tmp\" 2>/dev/null; fi; fi\n\
              mv -f -- \"$tmp\" \"$f\" || {{ rm -f -- \"$tmp\"; exit {EXIT_RENAME}; }}\n"
         ));
     }
@@ -273,12 +302,15 @@ pub fn pwsh_write_command(
     expect: Option<Expect>,
 ) -> String {
     let mut out = pwsh_target(path);
-    out.push_str(&format!("\n$tmp = $f + '.phosphor-tmp-{nonce}'\n"));
+    out.push_str(&format!(
+        "\n$tmp = [IO.Path]::Combine((Split-Path -Parent $f), '.' + (Split-Path -Leaf $f) + '.phosphor-tmp-{nonce}')\n"
+    ));
     out.push_str("$ErrorActionPreference = 'Stop'\n");
     let read = "$m = New-Object IO.MemoryStream; [Console]::OpenStandardInput().CopyTo($m); $b = [Convert]::FromBase64String([Text.Encoding]::ASCII.GetString($m.ToArray()))";
     if position.first {
         out.push_str(&format!(
             "try {{ New-Item -ItemType Directory -Force -Path (Split-Path -Parent $f) | Out-Null }} catch {{ $global:LASTEXITCODE = {EXIT_MKDIR}; return }}\n\
+             if (Test-Path -LiteralPath $f -PathType Container) {{ 'ISDIR'; $global:LASTEXITCODE = {EXIT_ISDIR}; return }}\n\
              try {{ {read}; [IO.File]::WriteAllBytes($tmp, $b) }} catch {{ $global:LASTEXITCODE = {EXIT_APPEND}; return }}\n"
         ));
     } else {
@@ -287,6 +319,9 @@ pub fn pwsh_write_command(
         ));
     }
     if position.last {
+        out.push_str(&format!(
+            "if (Test-Path -LiteralPath $f -PathType Container) {{ Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue; 'ISDIR'; $global:LASTEXITCODE = {EXIT_ISDIR}; return }}\n"
+        ));
         if let Some(expect) = expect {
             out.push_str(&expect.pwsh_check(
                 "Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue; ",
@@ -297,6 +332,24 @@ pub fn pwsh_write_command(
         ));
     }
     out
+}
+
+/// The POSIX command that removes a write's temp file: sent after a chunk failed or the write
+/// was refused, so an abandoned multi-chunk write leaves nothing beside the target (#1868).
+pub fn posix_cleanup_command(path: &str, nonce: &str) -> String {
+    format!(
+        "{}\n{}rm -f -- \"$tmp\"\n",
+        posix_target(path),
+        posix_tmp_assign(nonce)
+    )
+}
+
+/// The PowerShell counterpart of [`posix_cleanup_command`].
+pub fn pwsh_cleanup_command(path: &str, nonce: &str) -> String {
+    format!(
+        "{}\n$tmp = [IO.Path]::Combine((Split-Path -Parent $f), '.' + (Split-Path -Leaf $f) + '.phosphor-tmp-{nonce}')\nRemove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue\n",
+        pwsh_target(path)
+    )
 }
 
 /// The POSIX command that deletes a file (an error, like `std::fs::remove_file`, when it does not
@@ -362,6 +415,7 @@ pub fn write_failure_message(path: &str, exit: i32, output: &str) -> String {
                  (no sha256 tool), so nothing was written."
             );
         }
+        EXIT_ISDIR => "the path is a directory",
         EXIT_MKDIR => "could not create the directory",
         EXIT_APPEND => "could not write the temporary file",
         EXIT_RENAME => "could not move the temporary file into place",

@@ -23,7 +23,7 @@ use crate::proto::{OpenBufferResponse, ResolveConflictResponse, SaveBufferRespon
 use crate::proto::{ResolveConflictSuccess, resolve_conflict_response};
 use crate::shellcmd::buffer::{parse_sha, parse_stamp, sha_command, stamp_command};
 use crate::shellcmd::read::{self, FileProbe, GatherPlan};
-use crate::shellcmd::write::Expect;
+use crate::shellcmd::write::{Expect, HexDigest};
 use crate::shellcmd::{Frame, Script, StderrMode};
 
 /// The `server_version` every shell-mode open reports.
@@ -33,7 +33,7 @@ const SHELL_SERVER_VERSION: u64 = 1;
 const READ_BYTES_CAP: usize = 7 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug)]
-struct Base {
+pub(in crate::backend) struct Base {
     /// What the file looked like when the editor last loaded or saved it; `None` when the host
     /// would not say (the save is then unguarded).
     expect: Option<Expect>,
@@ -234,9 +234,16 @@ impl ShellBackend {
                 conflicted: true, ..
             }) => None,
             Some(Base { expect, .. }) => expect,
+            // No record of how the file looked when the editor loaded it: the buffer was opened
+            // by a helper that is gone now (or never opened here). An unguarded write could
+            // overwrite another editor's change, so refuse; re-opening the file starts over
+            // (#1865).
             None => {
-                log::warn!("shell buffer saved without a remembered state: unguarded");
-                None
+                return Err(op_failed(format!(
+                    "Failed to save {path}: this editor has no record of the file as it was \
+                     loaded (the connection to the host's helper changed since), so nothing was \
+                     written. Reload the file, then save again."
+                )));
             }
         };
         match self
@@ -290,6 +297,48 @@ impl ShellBackend {
                 ResolveConflictSuccess {},
             )),
         })
+    }
+
+    /// Called by the router around an `open_buffer` that EITHER arm may serve: forgets what the
+    /// shell remembered of `path` and returns it, so [`Self::finish_open`] can tell whether the
+    /// shell arm served this open (it stores a fresh state) or the helper did (#1865).
+    pub(in crate::backend) fn begin_open(&self, path: &str) -> Option<Base> {
+        let before = self.buffers.get(path);
+        self.buffers.forget(path);
+        before
+    }
+
+    /// The other half of [`Self::begin_open`]. A failed open restores the old state. A
+    /// successful open that the shell arm did not serve (the helper did) seeds the state from
+    /// the content the editor was given, as its SHA-256, so that a later save that falls back to
+    /// the shell arm is guarded exactly like a shell-opened buffer: it conflicts when the file
+    /// changed since, instead of overwriting it.
+    pub(in crate::backend) fn finish_open(
+        &self,
+        path: &str,
+        before: Option<Base>,
+        opened: Option<&str>,
+    ) {
+        match opened {
+            None => {
+                if let Some(base) = before {
+                    self.buffers.set(path, base);
+                }
+            }
+            Some(content) => {
+                if self.buffers.get(path).is_none() {
+                    let digest =
+                        HexDigest::parse(&crate::index::types::sha256_hex(content.as_bytes()));
+                    self.buffers.set(
+                        path,
+                        Base {
+                            expect: digest.map(Expect::Sha256),
+                            conflicted: false,
+                        },
+                    );
+                }
+            }
+        }
     }
 
     /// The editor closed `path`.

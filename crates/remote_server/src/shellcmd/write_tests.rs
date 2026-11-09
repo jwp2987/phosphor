@@ -25,7 +25,10 @@ fn a_single_chunk_write_is_dir_temp_decode_mode_rename_in_one_command() {
         None,
     );
     assert!(c.starts_with("f='/a/b c.txt'\n"), "{c}");
-    assert!(c.contains("tmp=\"$f.phosphor-tmp-n0nce\""));
+    assert!(
+        c.contains(".$(basename -- \"$f\").phosphor-tmp-n0nce\""),
+        "the temp file is hidden: {c}"
+    );
     assert!(c.contains("mkdir -p -- \"$(dirname -- \"$f\")\""));
     // The bytes are the command's stdin, not part of it (#1864).
     assert!(c.contains("base64 -d > \"$tmp\""));
@@ -284,4 +287,64 @@ fn a_guarded_delete_checks_before_it_removes_and_the_plain_one_stays_plain() {
         delete_failure_message("/x", EXIT_CONFLICT, "CONFLICT\n").contains("changed on the host")
     );
     assert!(delete_failure_message("/x", 1, "rm: nope").ends_with("rm: nope"));
+}
+
+#[test]
+fn a_directory_target_is_refused_before_and_after_the_chunks() {
+    let c = posix_write_command("/x", "n", FIRST_AND_LAST, Some(DecodeTool::Lower), None);
+    assert!(
+        c.contains("if [ -d \"$f\" ]; then echo ISDIR; exit 7; fi"),
+        "{c}"
+    );
+    assert!(
+        c.contains("if [ -d \"$f\" ]; then rm -f -- \"$tmp\"; echo ISDIR; exit 7; fi"),
+        "{c}"
+    );
+    assert!(c.find("ISDIR").unwrap() < c.find("mv -f").unwrap());
+    let p = pwsh_write_command("C:\\x", "n", FIRST_AND_LAST, None);
+    assert!(
+        p.contains("-PathType Container") && p.contains("= 7;"),
+        "{p}"
+    );
+    assert!(write_failure_message("/x", EXIT_ISDIR, "ISDIR").contains("is a directory"));
+}
+
+#[test]
+fn a_symlink_is_followed_by_hand_without_readlink_f_and_a_dangling_one_is_present() {
+    let c = posix_write_command("/x", "n", FIRST_AND_LAST, Some(DecodeTool::Lower), None);
+    assert!(!c.contains("readlink -f"), "{c}");
+    assert!(c.contains("readlink -- \"$f\""), "{c}");
+    let g = posix_write_command(
+        "/x",
+        "n",
+        FIRST_AND_LAST,
+        Some(DecodeTool::Lower),
+        Some(Expect::Absent),
+    );
+    assert!(g.contains("[ -L \"${p:-$f}\" ]"), "{g}");
+}
+
+#[test]
+fn the_write_keeps_owner_and_group_as_far_as_the_user_may() {
+    let c = posix_write_command("/x", "n", FIRST_AND_LAST, Some(DecodeTool::Lower), None);
+    assert!(c.contains("chown ") && c.contains("chgrp "), "{c}");
+    assert!(c.find("chgrp").unwrap() < c.find("mv -f").unwrap());
+}
+
+#[test]
+fn the_cleanup_command_names_the_same_hidden_temp_file() {
+    let w = posix_write_command("/d/x", "n7", FIRST_AND_LAST, Some(DecodeTool::Lower), None);
+    let c = posix_cleanup_command("/d/x", "n7");
+    assert!(
+        c.contains(".phosphor-tmp-n7") && c.contains("rm -f -- \"$tmp\""),
+        "{c}"
+    );
+    let tmp_line = |s: &str| {
+        s.lines()
+            .find(|l| l.starts_with("tmp="))
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(tmp_line(&w), tmp_line(&c));
+    assert!(pwsh_cleanup_command("C:\\d\\x", "n7").contains(".phosphor-tmp-n7"));
 }

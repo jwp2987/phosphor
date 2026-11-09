@@ -209,11 +209,12 @@ fn write_expectation_holds(path: &std::path::Path, expect: &crate::proto::WriteE
     }
 }
 
-/// `WriteFile`: write the whole content, creating parent directories. The path is used as sent
-/// (no `~` expansion), like the app daemon's `FileModel`-backed handler.
+/// `WriteFile`: write the whole content, creating parent directories. A leading `~` expands on
+/// the host, as on the shell arm (#1877). The write is atomic (hidden temp file + rename, mode
+/// kept, symlink written through; see [`super::buffers::write_bytes_atomically`]).
 pub(super) fn write_file(msg: WriteFile) -> server_message::Message {
     log::info!("Handling WriteFile path={}", msg.path);
-    let path = PathBuf::from(&msg.path);
+    let path = expand_tilde(&msg.path);
     if let Some(expect) = &msg.expect {
         if !write_expectation_holds(&path, expect) {
             return server_message::Message::WriteFileResponse(WriteFileResponse {
@@ -228,12 +229,13 @@ pub(super) fn write_file(msg: WriteFile) -> server_message::Message {
         }
     }
     let result = (|| -> std::io::Result<()> {
-        if let Some(parent) = path.parent() {
+        let target = super::buffers::resolve_symlinks(&path);
+        if let Some(parent) = target.parent() {
             if !parent.as_os_str().is_empty() {
                 std::fs::create_dir_all(parent)?;
             }
         }
-        std::fs::write(&path, msg.content.as_bytes())
+        super::buffers::write_bytes_atomically(&path, msg.content.as_bytes())
     })();
     let result = match result {
         Ok(()) => write_file_response::Result::Success(WriteFileSuccess {}),
@@ -249,8 +251,7 @@ pub(super) fn write_file(msg: WriteFile) -> server_message::Message {
 pub(super) fn delete_file(msg: DeleteFile) -> server_message::Message {
     log::info!("Handling DeleteFile path={}", msg.path);
     if let Some(expect) = &msg.expect {
-        if !crate::shellcmd::write::wire_expectation_holds(std::path::Path::new(&msg.path), expect)
-        {
+        if !crate::shellcmd::write::wire_expectation_holds(&expand_tilde(&msg.path), expect) {
             return server_message::Message::DeleteFileResponse(DeleteFileResponse {
                 result: Some(delete_file_response::Result::Error(FileOperationError {
                     message: crate::shellcmd::write::delete_failure_message(
@@ -262,7 +263,7 @@ pub(super) fn delete_file(msg: DeleteFile) -> server_message::Message {
             });
         }
     }
-    let result = match std::fs::remove_file(&msg.path) {
+    let result = match std::fs::remove_file(expand_tilde(&msg.path)) {
         Ok(()) => delete_file_response::Result::Success(DeleteFileSuccess {}),
         Err(err) => delete_file_response::Result::Error(FileOperationError {
             message: format!("Failed to delete {}: {err}", msg.path),

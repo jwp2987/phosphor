@@ -53,6 +53,19 @@ pub fn sh_quote(s: &str) -> String {
     out
 }
 
+/// Quotes a PATH as one POSIX word, with a leading `~` or `~/` expanding to the host's `$HOME`
+/// (so `cd ~/repo` works as it does for file writes and for the helper, #1877). Any other `~`
+/// stays literal.
+pub fn sh_quote_path(path: &str) -> String {
+    if path == "~" {
+        "\"$HOME\"".to_string()
+    } else if let Some(rest) = path.strip_prefix("~/") {
+        format!("\"$HOME\"{}", sh_quote(&format!("/{rest}")))
+    } else {
+        sh_quote(path)
+    }
+}
+
 #[cfg(test)]
 #[path = "mod_tests.rs"]
 mod tests;
