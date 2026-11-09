@@ -422,6 +422,42 @@ impl Pty {
     pub fn get_pid(&self) -> u32 {
         self.handle.pid()
     }
+
+    /// The raw handle of the ConPTY output pipe, for `conpty_output_has_unread`. Taken before the
+    /// pty moves into the event loop; it is only ever peeked, never read or closed through this
+    /// value, and a peek on a handle closed since fails (the hand-off then falls back).
+    pub fn output_pipe_handle(&self) -> isize {
+        use std::os::windows::io::AsRawHandle;
+        self.pipe.as_raw_handle() as isize
+    }
+}
+
+/// Whether the ConPTY output pipe holds bytes the event loop has not read: the Windows equivalent
+/// of `pty_master_has_unread`, the unread half of the pty stream barrier (`PeekNamedPipe`, which
+/// reads nothing). `None` when the peek fails (a closed or unsuitable handle): the caller falls
+/// back to plain-terminal behaviour.
+///
+/// Caveat, to be verified on the Windows VM: this sees only bytes still in the pipe. Bytes the
+/// async pipe wrapper has already completed into its own buffer but not yet handed to the event
+/// loop, and bytes conhost has not yet written into the pipe, are invisible to it. The barrier's
+/// read epoch covers a read in flight, not those two gaps.
+pub fn conpty_output_has_unread(handle: isize) -> Option<bool> {
+    use windows::Win32::System::Pipes::PeekNamedPipe;
+    let handle = HANDLE(handle as *mut core::ffi::c_void);
+    let mut available: u32 = 0;
+    // SAFETY: one valid out-pointer to a local `u32`; no buffer is passed, so nothing is read from
+    // the pipe; `PeekNamedPipe` only reports sizes.
+    let peeked = unsafe {
+        PeekNamedPipe(
+            handle,
+            None,
+            0,
+            None,
+            Some(&mut available as *mut u32),
+            None,
+        )
+    };
+    peeked.ok().map(|()| available > 0)
 }
 
 impl EventedReadWrite for Pty {

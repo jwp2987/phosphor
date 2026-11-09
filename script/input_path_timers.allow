@@ -80,6 +80,7 @@ app/assets/bundled/bootstrap/zsh_body.sh	__warp_nc_read_frame_body	read -t bound
 app/assets/bundled/bootstrap/zsh_body.sh	__warp_nc_give_back_escape	read -t bounded by the overall deadline only; replies dropped whole, keys handed back to zle
 app/assets/bundled/bootstrap/zsh_body.sh	warp_read_completion_buffer	first-byte read -t within PHOSPHOR_NC_DEADLINE; a non-frame byte or expiry hands back to zle, nothing is written
 app/src/terminal/writeable_pty/pty_controller.rs	NATIVE_COMPLETIONS_PROMPT_TIMEOUT	2 s prompt timeout only gives up: closes the requester's channel, marks the cancel frame owed and writes nothing (43f2c9a91)
+app/src/terminal/model/typeahead_handoff.rs	EVENT_HOLD_GIVE_UP	2 s net of a queued young hold: the no-barrier hold hands its keys back to the editor at its cap; events release it first
 
 # PENDING-CONVERSION (must be gone before v0.1.18)
 # Timers that break the rule (write, release, route, commit or re-ask on a clock). The default run
@@ -90,9 +91,6 @@ app/src/terminal/model/block/interaction_mode.rs	INTERACTIVE_PROMPT_QUIET_TRAILI
 app/src/terminal/model/block/interaction_mode.rs	STALL_CLOSE_PAGER_AFTER	FOUND: 3 s unchanged screen makes Phosphor SEND q to a pager (a timer writes to the pty)
 app/src/terminal/model/block/interaction_mode.rs	STALL_HAND_TO_USER_AFTER	FOUND: 5 s unchanged full-screen program hands the agent's command to the user (hand-over on a clock)
 app/src/terminal/model/block/interaction_mode.rs	STALL_PAGER_UNRESPONSIVE_AFTER	FOUND: 8 s after sending q hands the command to the user (hand-over on a clock)
-app/src/terminal/model/typeahead_handoff.rs	EVENT_HOLD_GIVE_UP	FOUND: 2 s cap that is the NORMAL end of the fish no-barrier young hold (hands back, but a timer is how it ends)
-app/src/terminal/model/typeahead_handoff.rs	YOUNG_ENTER_MIN_HOLD	FOUND: 150 ms floor of the young-Enter hold (part of the YOUNG_ENTER_WINDOW clock)
-app/src/terminal/model/typeahead_handoff.rs	YOUNG_ENTER_WINDOW	owner-named: 600 ms window deciding whether an Enter is a young line (routes on a clock)
 app/src/terminal/view.rs	AUTO_WARPIFY_DELAY	FOUND: fixed delay then writes the subshell bootstrap (only with PHOSPHOR_BOOTSTRAP_TIMED=1)
 app/src/terminal/view.rs	EXECUTE_PENDING_COMMAND_DELAY	FOUND: 100 ms timer runs the pending command / ssh split cd (only with PHOSPHOR_BOOTSTRAP_TIMED=1)
 app/src/terminal/view.rs	SSH_BOOTSTRAP_SWALLOW_CEILING	FOUND: typing is DROPPED while an ssh bootstrap is pending and keys pass through after 15 s (age-based route/drop)

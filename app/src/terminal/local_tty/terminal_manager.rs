@@ -985,6 +985,8 @@ fn on_shell_determined<S: TerminalSurface>(
     let pid = pty.get_pid();
     #[cfg(unix)]
     let fd = pty.get_fd();
+    #[cfg(windows)]
+    let conpty_output_handle = pty.output_pipe_handle();
 
     // Create the channel above and pass the receving side to the event loop.
     let event_loop_handle = match TerminalManager::<S>::start_pty_event_loop(
@@ -1129,6 +1131,37 @@ fn on_shell_determined<S: TerminalSurface>(
     {
         let mut model = model.lock();
         model.typeahead_handoff_mut().set_conpty_input(true);
+        // The pty stream barrier's unread half on ConPTY (owner ruling 2026-11-09): a peek of the
+        // output pipe. An Enter typed while a line is unanswered is held only while output is
+        // unparsed (a Precmd may be in it); with everything applied the command is running and the
+        // Enter is delivered. If the peek is unavailable the hand-off behaves as a plain terminal
+        // (delivers the Enter, #933's cost accepted); logged once per session. Caveat in
+        // `conpty_output_has_unread`: conhost-side and pipe-wrapper buffers are not visible.
+        {
+            let barrier = model.pty_stream_barrier();
+            let logged = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let probe = crate::terminal::model::typeahead_handoff::ForegroundProbe::default()
+                .with_stream_drained_or_unknown(Arc::new(move || {
+                    let mut unavailable = false;
+                    let drained = barrier.drained_with(|| {
+                        let unread = super::windows::conpty_output_has_unread(conpty_output_handle);
+                        unavailable = unread.is_none();
+                        unread
+                    });
+                    if unavailable {
+                        if !logged.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                            log::warn!(
+                                "ConPTY output peek unavailable: the typeahead hand-off falls \
+                                 back to plain-terminal Enter delivery for this session"
+                            );
+                        }
+                        None
+                    } else {
+                        Some(drained)
+                    }
+                }));
+            model.typeahead_handoff_mut().set_foreground_probe(probe);
+        }
         // #1162: raw keys typed between a prompt and its line editor are held (bounded);
         // PHOSPHOR_CONPTY_PROMPT_HOLD=0 turns it off.
         let hold_enabled =
