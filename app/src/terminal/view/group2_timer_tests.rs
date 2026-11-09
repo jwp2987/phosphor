@@ -679,7 +679,7 @@ fn ssh_give_up_with_the_remote_prompt_seen_hands_back_instead_of_delivering() {
                 first_precmd_processed_for_test(view, ctx);
                 let gate = view.ssh_connect_gate.as_mut().unwrap();
                 gate.armed_at =
-                    Instant::now() - SSH_CONNECT_SILENCE_CEILING - Duration::from_secs(1);
+                    Instant::now() - SSH_CONNECT_NO_PROBE_GIVE_UP - Duration::from_secs(1);
                 view.ssh_give_up_fired(ctx);
                 assert!(!view.ssh_typeahead_holding);
                 assert!(!view.ssh_give_up_in_progress);

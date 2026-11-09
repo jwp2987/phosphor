@@ -1013,11 +1013,13 @@ const BOOTSTRAP_FAILED_DURATION: Duration = Duration::from_secs(7);
 /// is outstanding. A logged give-up net; `Bootstrapped` itself ends the wait.
 // give-up-net: one-off extension of the bootstrap-failed give-up; the failure hands held ssh keys back as text
 const BOOTSTRAP_PROGRESS_GRACE: Duration = Duration::from_secs(3);
-/// How long after an ssh command starts the silent connect phase (nothing printed yet, so no
-/// prompt can be waiting) drops typing instead of writing it to the tty, where it would be
-/// split between ssh, the remote tty and the injected bootstrap (#983). Later than this the
-/// command is a plain interactive session and every key goes to the pty.
-const SSH_CONNECT_SILENCE_CEILING: Duration = Duration::from_secs(15);
+/// #1809: the give-up net of an ssh connect window on a pty WITHOUT a tty-read probe (macOS,
+/// others), where no event tells that ssh is reading an echoing answer. After this long the
+/// window is released and the held keys are HANDED BACK to the editor as text (never written to
+/// the pty); the next key then reaches ssh as in a plain terminal. Where the probe works the
+/// window has no clock at all.
+// give-up-net: probe-less platforms only; hands held ssh keys back as text, never writes them
+const SSH_CONNECT_NO_PROBE_GIVE_UP: Duration = Duration::from_secs(15);
 /// The ONE give-up net of a subshell setup (#1711, #1712; owner decision 2026-11-08): this long
 /// with no setup PROGRESS and the setup is given up. Progress is an event that proves the shell
 /// is working through the setup ([`SubshellSetupProgress`]: a setup-line marker, `InitSubshell`,
@@ -12020,6 +12022,7 @@ impl TerminalView {
             return;
         }
         let mut gate = SshConnectGate::new(Instant::now());
+        gate.tty_read_detectable = self.model.lock().tty_read_probe().is_some();
         gate.block_id = Some(announcement.block_id);
         gate.wrapper = SshWrapperHold::Managed;
         gate.wrapper_session = announcement.session;
@@ -12574,6 +12577,7 @@ impl TerminalView {
         if parse_interactive_ssh_command(command).is_some() {
             let block_id = self.model.lock().active_block_id().clone();
             let mut gate = SshConnectGate::new(Instant::now());
+            gate.tty_read_detectable = self.model.lock().tty_read_probe().is_some();
             gate.block_id = Some(block_id);
             gate.user_submitted = user_submitted;
             self.ssh_connect_gate = Some(gate);
@@ -12658,10 +12662,19 @@ impl TerminalView {
                 (Some(start), Some(released)) => start > released,
                 _ => true,
             };
-            if started_after_release && age.is_some_and(|age| age < SSH_CONNECT_SILENCE_CEILING) {
+            // #1809: armed by the EVENT that proves the window is open, not by the block's age: a
+            // command that started after the last release and whose ssh does not own the tty yet.
+            // A block whose interactive latch already fired (ssh owned the tty before any window
+            // existed) is an established session: plain terminal, no window.
+            let already_owned = facts
+                .interactive_latch
+                .as_ref()
+                .is_some_and(|latch| latch.is_latched());
+            if started_after_release && !already_owned {
                 let now = Instant::now();
                 let armed_at = now.checked_sub(age.unwrap_or_default()).unwrap_or(now);
                 let mut gate = SshConnectGate::new(armed_at);
+                gate.tty_read_detectable = self.model.lock().tty_read_probe().is_some();
                 // The id is cloned only when a gate is armed (once per ssh connect), which is why
                 // this one read keeps the model's lock.
                 gate.block_id = Some(self.model.lock().active_block_id().clone());
@@ -41103,7 +41116,9 @@ impl SshConnectGate {
         if self.awaits_verdict_without_clock() {
             return None;
         }
-        let ceiling = self.armed_at + SSH_CONNECT_SILENCE_CEILING;
+        let ceiling = self
+            .has_no_probe_net()
+            .then(|| self.armed_at + SSH_CONNECT_NO_PROBE_GIVE_UP);
         let by_state = if self.saw_pending && !pending {
             Some(
                 self.bootstrap_done_at.unwrap_or_else(Instant::now)
@@ -41115,7 +41130,10 @@ impl SshConnectGate {
         } else {
             None
         };
-        Some(by_state.map_or(ceiling, |at| at.min(ceiling)))
+        match (by_state, ceiling) {
+            (Some(state), Some(ceiling)) => Some(state.min(ceiling)),
+            (state, ceiling) => state.or(ceiling),
+        }
     }
 
     /// The silence ceiling passed. #1641: never while the wrapper's master login runs
@@ -41127,7 +41145,16 @@ impl SshConnectGate {
     /// reaches ssh as in a plain terminal. The managed verdict restarts the clock (`armed_at`).
     fn past_ceiling(&self, now: Instant) -> bool {
         !self.awaits_verdict_without_clock()
-            && now.saturating_duration_since(self.armed_at) >= SSH_CONNECT_SILENCE_CEILING
+            && self.has_no_probe_net()
+            && now.saturating_duration_since(self.armed_at) >= SSH_CONNECT_NO_PROBE_GIVE_UP
+    }
+
+    /// #1809: the hand-back-only net exists only where no tty-read probe tells that ssh is
+    /// blocked reading the tty (macOS, others). Where the probe works (Linux with `/proc`) the
+    /// window ends by events alone: the ownership event, the managed verdict, the first prompt,
+    /// the block's end, a Ctrl-C.
+    fn has_no_probe_net(&self) -> bool {
+        !self.tty_read_detectable
     }
 
     /// #1641: waiting for the wrapper's verdict where a tty read is detectable (no clock).

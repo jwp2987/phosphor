@@ -3222,3 +3222,17 @@ Not covered by unit tests: a real `aws login` / SSO / IMDS endpoint. **Owner ver
 `ssh_keys_typed_during_a_pending_bootstrap_stay_held_in_order_and_unwritten` (byte trace, Legacy and
 Table: held bytes exact, nothing written, nothing in the editor); `input_queue/ssh_phase_tests.rs`
 `the_bootstrap_hold_has_no_clock` replaces `the_swallow_give_up_ends_the_swallow`.
+
+### #1809: the ssh connect window arms and ends on events
+`SSH_CONNECT_SILENCE_CEILING` is replaced. The window no longer arms on `block age < 15 s` (a first
+key typed late still finds the window open); it arms on the preexec/submit event, and not at all
+for a block whose interactive latch already fired (ssh owned the tty before any window existed: an
+established session is a plain terminal). Where the tty-read probe works there is no clock; on
+probe-less platforms `SSH_CONNECT_NO_PROBE_GIVE_UP` (15 s) remains as a hand-back-only net (compliant
+section of `script/input_path_timers.allow`). Tests (`terminal/view_test.rs`):
+`ssh_gate_with_a_tty_read_probe_has_no_clock` (new); the existing ceiling cases
+(`ssh_no_prompt_ever_gives_the_text_back_to_the_input`, the table-mode give-up cases,
+`managed_ssh_without_a_tty_read_probe_keeps_the_ceiling_and_hands_back`,
+`managed_ssh_verdict_after_the_old_ceiling_still_delivers_once`) now name the renamed constant and
+run unchanged. Not covered at view level: arming with an old block start (needs a clock-injected
+model); the gate-level test covers the clockless release.

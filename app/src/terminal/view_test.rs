@@ -19132,7 +19132,37 @@ fn ssh_connect_gate_transitions() {
     gate.note_block_completed(t0, false);
     assert!(gate.should_release(t0, false));
     let mut gate = SshConnectGate::new(t0);
-    assert!(gate.should_release(t0 + SSH_CONNECT_SILENCE_CEILING, false));
+    assert!(gate.should_release(t0 + SSH_CONNECT_NO_PROBE_GIVE_UP, false));
+}
+
+/// #1809: where the tty-read probe works there is no clock on the connect window at all: no
+/// ceiling release and no ceiling deadline, however old the window is. Only events (and the
+/// event-armed post-bootstrap / post-block graces) end it. Without a probe the hand-back-only net
+/// stays (`SSH_CONNECT_NO_PROBE_GIVE_UP`).
+#[test]
+fn ssh_gate_with_a_tty_read_probe_has_no_clock() {
+    let t0 = Instant::now();
+    let long_after = t0 + Duration::from_secs(3600);
+    let mut gate = SshConnectGate::new(t0);
+    gate.tty_read_detectable = true;
+    assert!(!gate.past_ceiling(long_after));
+    assert!(!gate.should_release(long_after, false));
+    assert_eq!(gate.give_up_deadline(false), None);
+    assert_eq!(gate.give_up_deadline(true), None);
+    // The graces are armed by events and still bound the window.
+    gate.block_done_at = Some(t0 + Duration::from_secs(1));
+    assert_eq!(
+        gate.give_up_deadline(false),
+        Some(t0 + Duration::from_secs(1) + SSH_CONNECT_POST_BLOCK_GRACE)
+    );
+    // The same window without a probe keeps the net.
+    let mut gate = SshConnectGate::new(t0);
+    gate.tty_read_detectable = false;
+    assert!(gate.past_ceiling(t0 + SSH_CONNECT_NO_PROBE_GIVE_UP));
+    assert_eq!(
+        gate.give_up_deadline(false),
+        Some(t0 + SSH_CONNECT_NO_PROBE_GIVE_UP)
+    );
 }
 
 #[test]
@@ -21265,7 +21295,7 @@ fn managed_ssh_verdict_after_the_old_ceiling_still_delivers_once() {
                 let armed = managed_ssh_held_through_the_master_login_for_test(view, ctx);
                 let gate = view.ssh_connect_gate.as_mut().unwrap();
                 gate.armed_at =
-                    Instant::now() - SSH_CONNECT_SILENCE_CEILING - Duration::from_secs(5);
+                    Instant::now() - SSH_CONNECT_NO_PROBE_GIVE_UP - Duration::from_secs(5);
                 assert_eq!(gate.give_up_deadline(false), None, "{mode:?}: no clock");
                 assert!(view.refresh_ssh_connect_gate(), "{mode:?}: still open");
                 assert!(view.ssh_typeahead_holding, "{mode:?}");
@@ -21307,7 +21337,7 @@ fn managed_ssh_without_a_tty_read_probe_keeps_the_ceiling_and_hands_back() {
                 assert_eq!(gate.wrapper, SshWrapperHold::AwaitingVerdict, "{mode:?}");
                 assert!(!gate.tty_read_detectable, "{mode:?}: no probe installed");
                 gate.armed_at =
-                    Instant::now() - SSH_CONNECT_SILENCE_CEILING - Duration::from_secs(1);
+                    Instant::now() - SSH_CONNECT_NO_PROBE_GIVE_UP - Duration::from_secs(1);
                 assert!(
                     gate.give_up_deadline(false).is_some(),
                     "{mode:?}: the ceiling's give-up is armed"
@@ -22885,7 +22915,7 @@ fn ssh_no_prompt_ever_gives_the_text_back_to_the_input() {
                 "the one-shot safety net is armed"
             );
             let gate = view.ssh_connect_gate.as_mut().unwrap();
-            gate.armed_at = Instant::now() - SSH_CONNECT_SILENCE_CEILING - Duration::from_secs(1);
+            gate.armed_at = Instant::now() - SSH_CONNECT_NO_PROBE_GIVE_UP - Duration::from_secs(1);
             view.deliver_ssh_typeahead_if_ready("give_up", ctx);
             assert!(!view.ssh_typeahead_holding);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo lost");
@@ -22899,7 +22929,7 @@ fn ssh_no_prompt_ever_gives_the_text_back_to_the_input() {
 fn ssh_gate_give_up_deadline_mirrors_its_time_conditions() {
     let t0 = Instant::now();
     let mut gate = SshConnectGate::new(t0);
-    let ceiling = t0 + SSH_CONNECT_SILENCE_CEILING;
+    let ceiling = t0 + SSH_CONNECT_NO_PROBE_GIVE_UP;
     assert_eq!(gate.give_up_deadline(false), Some(ceiling));
     assert_eq!(gate.give_up_deadline(true), Some(ceiling));
     gate.block_done_at = Some(t0 + Duration::from_secs(1));
@@ -31109,7 +31139,7 @@ fn table_mode_a_gate_past_its_ceiling_is_released_by_a_logged_give_up() {
             submit_command(view, "ssh host", ctx);
             view.typed_characters_on_terminal("echo lost", ctx);
             let gate = view.ssh_connect_gate.as_mut().unwrap();
-            gate.armed_at = Instant::now() - SSH_CONNECT_SILENCE_CEILING - Duration::from_secs(1);
+            gate.armed_at = Instant::now() - SSH_CONNECT_NO_PROBE_GIVE_UP - Duration::from_secs(1);
             view.ssh_give_up_fired(ctx);
             assert!(!view.ssh_typeahead_holding);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo lost");
@@ -31136,7 +31166,7 @@ fn table_mode_the_give_up_ends_a_window_nothing_is_held_behind() {
             submit_command(view, "ssh host", ctx);
             assert!(view.ssh_phase.armed());
             view.ssh_connect_gate.as_mut().unwrap().armed_at =
-                Instant::now() - SSH_CONNECT_SILENCE_CEILING - Duration::from_secs(1);
+                Instant::now() - SSH_CONNECT_NO_PROBE_GIVE_UP - Duration::from_secs(1);
             view.ssh_give_up_fired(ctx);
             assert!(view.ssh_connect_gate.is_none());
             assert!(!view.ssh_phase.armed());

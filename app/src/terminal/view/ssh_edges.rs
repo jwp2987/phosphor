@@ -41,7 +41,7 @@ use chrono::Local;
 use instant::Instant;
 use warpui::ViewContext;
 
-use super::{SSH_CONNECT_SILENCE_CEILING, TerminalView, choice_block_owns_input};
+use super::{TerminalView, choice_block_owns_input};
 use crate::features::FeatureFlag;
 use crate::terminal::input_queue::{
     DestinationMode, SshEdge, SshObservation, SshPhase, SshRelease, destination_mode,
@@ -286,9 +286,6 @@ impl TerminalView {
         {
             return false;
         }
-        let age = snapshot
-            .active_block_start
-            .and_then(|start| Local::now().signed_duration_since(start).to_std().ok());
         let started_after_release = match (
             snapshot.active_block_start,
             self.ssh_connect_gate_released_at,
@@ -296,7 +293,13 @@ impl TerminalView {
             (Some(start), Some(released)) => start > released,
             _ => true,
         };
-        started_after_release && age.is_some_and(|age| age < SSH_CONNECT_SILENCE_CEILING)
+        // #1809: event-based, as in `refresh_ssh_connect_gate`: not for a block whose ssh already
+        // owns the tty (its interactive latch fired before any window existed).
+        let already_owned = snapshot
+            .interactive_latch
+            .as_ref()
+            .is_some_and(|latch| latch.is_latched());
+        started_after_release && !already_owned
     }
 
     /// The phase the facts carry. The machine owns the lifecycle (the window, the hold, the
