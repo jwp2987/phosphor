@@ -3464,6 +3464,107 @@ def fake_model_replies():
 
 
 @check
+def fake_model_fault_injection():
+    """#1831: status (with Retry-After), disconnect, delay (+ hang-up detection), drip, down/up, and the request / fresh-prompt accounting"""
+    import fake_model as FM, urllib.request, urllib.error, http.client
+    f = FM.FakeModel().start()
+    try:
+        def post(text, timeout=5):
+            rq = urllib.request.Request(f.url + "/api/chat", json.dumps({"model": "m", "messages": [{"role": "user", "content": text}]}).encode())
+            return urllib.request.urlopen(rq, timeout=timeout)
+        f.inject("status", times=2, match="TOK1", code=429, retry_after=3)
+        for _ in range(2):
+            try:
+                post("hello TOK1")
+                raise AssertionError("expected 429")
+            except urllib.error.HTTPError as e:
+                assert e.code == 429 and e.headers.get("Retry-After") == "3", (e.code, dict(e.headers))
+        assert json.loads(post("hello TOK1").read().decode().splitlines()[-1])["done"]        # the fault ran out
+        f.inject("status", times=1, match="ONLY", code=500)
+        assert json.loads(post("something else").read().decode().splitlines()[-1])["done"]    # no match: untouched
+        try:
+            post("ONLY this")
+            raise AssertionError("expected 500")
+        except urllib.error.HTTPError as e:
+            assert e.code == 500
+        f.inject("disconnect", times=1, after=2)
+        try:
+            body = post("cut me").read()
+            raise AssertionError("a cut stream must raise, got %r" % body[:40])
+        except (http.client.IncompleteRead, http.client.HTTPException, OSError):
+            pass
+        f.inject("delay", times=1, match="SLOWTOK", secs=3)
+        a0 = f.aborted
+        try:
+            post("SLOWTOK", timeout=0.6)
+            raise AssertionError("expected a client timeout")
+        except OSError:
+            pass
+        time.sleep(0.6)
+        assert f.aborted == a0 + 1, "the hang-up during the delay was not counted"
+        f.inject("drip", times=1, interval=0.01, words=5)
+        txt = "".join(json.loads(x)["message"]["content"] for x in post("drip it").read().decode().splitlines())
+        assert txt == FM.drip_text(5), txt
+        f.go_down()
+        try:
+            post("x", timeout=1)
+            raise AssertionError("expected connection refused")
+        except urllib.error.URLError:
+            pass
+        f.come_up()
+        assert json.loads(post("back up").read().decode().splitlines()[-1])["done"]
+        assert f.fresh_with("TOK1") == 3 and f.fresh_with("ONLY") == 1 and f.fresh[-1] == "back up", f.fresh
+        assert f.fired.count("status") == 3 and "disconnect" in f.fired and "drip" in f.fired, f.fired
+        assert FM.FakeModel.ACTIVE is f
+    finally:
+        f.stop()
+    assert FM.FakeModel.ACTIVE is None
+
+
+@check
+def agent_resilience_pure_parts():
+    """#1831/#1832: hop parsers, the pending / running accounting, the ERROR allowance, the queued-row ledger, the sqlite reader, and the case registration"""
+    import cases_agent_resilience as ar
+    log = ("hop=turn conv=c1 state=in_progress\nhop=turn conv=c1 state=error\n"
+           "hop=agent_action id=a1 kind=run_shell_command status=queued\nhop=agent_action id=a1 kind=run_shell_command status=blocked\n"
+           "hop=agent_action id=a2 kind=read_files status=running\nhop=agent_action id=a2 kind=read_files status=done\n")
+    assert ar.last_turn_state(log) == "error" and ar.last_turn_state("") is None
+    assert ar.open_actions(log) == ["a1"] and ar.running_actions(log) == ["a2"]
+    errs = "2026 [ERROR] [byop] open stream failed: 429\n2026 INFO fine\n2026 [ERROR] something else broke\n"
+    exp, unexp = ar.byop_errors(errs)
+    assert len(exp) == 1 and len(unexp) == 1, (exp, unexp)
+    assert len(ar.judge_errors(errs)) == 1 and ar.judge_errors("2026 [ERROR] [byop] open stream failed: x\n" * 2) == []
+    assert len(ar.judge_errors("[ERROR] [byop] stream chunk error: x\n" * 3)) == 1
+    hops = [("r1", "queued"), ("r2", "queued"), ("r1", "fired")]
+    assert ar.judge_rows(["A1", "B1"], ["Reply A1"], hops, ["B1"]) == []                                    # A1 sent once, B1 held
+    assert any("lost" in p for p in ar.judge_rows(["A1", "B1"], ["Reply A1"], hops, []))
+    assert any("2 times" in p for p in ar.judge_rows(["A1", "B1"], ["A1", "A1"], hops, ["B1"]))
+    assert any("AND is still held" in p for p in ar.judge_rows(["A1", "B1"], ["A1"], hops, ["A1 B1", "B1"]))
+    assert any("fired" in p for p in ar.judge_rows(["A1", "B1"], [], [("r1", "queued"), ("r2", "queued"), ("r1", "fired")], ["A1", "B1"]))
+    assert ar.row_hops("hop=queued_row id=x state=popped\n") == [("x", "popped")]
+    import sqlite3
+    d = tempfile.mkdtemp()
+    try:
+        db = os.path.join(d, "warp.sqlite")
+        con = sqlite3.connect(db)
+        con.execute("CREATE TABLE queued_prompts (id TEXT, conversation_id TEXT, position INTEGER, kind TEXT, text TEXT, origin TEXT, created_at TEXT)")
+        con.execute("CREATE TABLE ai_queries (id INTEGER, input TEXT)")
+        con.execute("INSERT INTO queued_prompts VALUES ('1','c',0,'Prompt','answer QA1','x','t')")
+        con.execute("INSERT INTO ai_queries VALUES (1,'Reply with the word P9')")
+        con.commit()
+        con.close()
+        rows, blobs = ar.read_stored([db, os.path.join(d, "missing.sqlite")])
+        assert rows == ["answer QA1"] and blobs == ["Reply with the word P9"], (rows, blobs)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    names = {c["name"] for c in cases.CASES}
+    want = {"agent_fault_429", "agent_fault_500", "agent_fault_disconnect", "agent_fault_down", "agent_fault_slow_cancel", "agent_fault_queued_rows"}
+    want |= {"agent_restart_%s_%s" % (h, s) for h in ("quit", "kill") for s in ("stream", "queued", "blocked")}
+    assert want <= names, want - names
+    assert all(c["modes"] == ("agent",) for c in cases.CASES if c["name"] in want)
+
+
+@check
 def replay_cases_registered_but_not_swept_by_lab_glob():
     names = [c["name"] for c in cases.CASES if c["name"].startswith("lab_replay")]
     assert names == ["lab_replay.bash.150.nohelper"], names
