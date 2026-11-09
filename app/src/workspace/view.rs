@@ -21520,10 +21520,6 @@ impl Workspace {
                 .insert(flags::SSH_REUSE_CONTROL_MASTER_CONTEXT_FLAG);
         }
 
-        if *warpify_settings.use_ssh_tmux_wrapper.value() {
-            context.set.insert(flags::SSH_TMUX_WRAPPER_CONTEXT_FLAG);
-        }
-
         if keys_settings.extra_meta_keys.left_alt {
             context.set.insert(flags::EXTRA_META_KEYS_LEFT_CONTEXT_FLAG);
         }

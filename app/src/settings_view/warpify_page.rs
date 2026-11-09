@@ -23,7 +23,7 @@ use warpui::{
 use crate::settings::{ReuseExistingSshControlMaster, SplitInheritsSshSetting, SshSettings};
 use crate::terminal::warpify::settings::{
     EnableSshWarpification, SshExtensionInstallMode, SshExtensionInstallModeSetting,
-    UseSshTmuxWrapper, WarpifySettingsChangedEvent,
+    WarpifySettingsChangedEvent,
 };
 use crate::ui_components::blended_colors;
 use crate::util::links;
@@ -37,12 +37,11 @@ use crate::{
 
 use super::SettingsSection;
 use super::settings_page::{
-    AdditionalInfo, Category, HEADER_PADDING, LocalOnlyIconState, MatchData, PageType,
-    SettingsPageEvent, SettingsWidget, ToggleState, render_body_item, render_dropdown_item,
-    render_page_title,
+    Category, HEADER_PADDING, LocalOnlyIconState, MatchData, PageType, SettingsPageEvent,
+    SettingsWidget, ToggleState, render_body_item, render_dropdown_item, render_page_title,
 };
 use super::{
-    SettingsAction, ToggleSettingActionPair, flags,
+    SettingsAction,
     settings_page::{
         SettingsPageMeta, SettingsPageViewHandle, add_setting, render_alternating_color_list,
     },
@@ -50,25 +49,12 @@ use super::{
 use crate::view_components::dropdown::{Dropdown, DropdownItem};
 
 pub fn init_actions_from_parent_view<T: Action + Clone>(
-    app: &mut AppContext,
-    context: &ContextPredicate,
-    builder: fn(SettingsAction) -> T,
+    _app: &mut AppContext,
+    _context: &ContextPredicate,
+    _builder: fn(SettingsAction) -> T,
 ) {
-    // Add all of the toggle settings from the Warpify Page that you want to show up on the Command Palette here.
-    let mut toggle_binding_pairs = vec![];
-
-    if FeatureFlag::SSHTmuxWrapper.is_enabled() {
-        toggle_binding_pairs.push(ToggleSettingActionPair::new(
-            &crate::t!("settings-warpify-ssh-tmux-toggle-binding-label"),
-            builder(SettingsAction::WarpifyPageToggle(
-                WarpifyPageAction::ToggleTmuxWarpification,
-            )),
-            context,
-            flags::SSH_TMUX_WRAPPER_CONTEXT_FLAG,
-        ));
-    }
-
-    ToggleSettingActionPair::add_toggle_setting_action_pairs_as_bindings(toggle_binding_pairs, app);
+    // The Warpify page has no command-palette toggles: the tmux ssh-wrapper toggle that
+    // used to live here was removed with its option.
 }
 
 const ITEM_VERTICAL_SPACING: f32 = 24.;
@@ -179,10 +165,9 @@ impl WarpifyPageView {
         ];
 
         let warpify_settings = WarpifySettings::as_ref(ctx);
-        if FeatureFlag::SSHTmuxWrapper.is_enabled()
-            && warpify_settings
-                .enable_ssh_warpification
-                .is_supported_on_current_platform()
+        if warpify_settings
+            .enable_ssh_warpification
+            .is_supported_on_current_platform()
         {
             categories.push(
                 Category::new(
@@ -439,7 +424,6 @@ pub enum WarpifyPageAction {
     RemoveDenylistedCommand(usize),
     RemoveDenylistedSshHost(usize),
     /// If disabled, auto-Warpification and the SSH Warpification prompt will be disabled.
-    ToggleTmuxWarpification,
     ToggleSshWarpification,
     /// Toggles whether the legacy SSH wrapper attaches to an existing
     /// ControlMaster for the destination host instead of creating its own.
@@ -483,17 +467,6 @@ impl TypedActionView for WarpifyPageView {
                             dropdown.set_disabled(ctx);
                         }
                     });
-            }
-            ToggleTmuxWarpification => {
-                WarpifySettings::handle(ctx).update(ctx, |ssh_settings, ctx| {
-                    report_if_error!(ssh_settings.use_ssh_tmux_wrapper.toggle_and_save_value(ctx));
-                    send_telemetry_from_ctx!(
-                        TelemetryEvent::ToggleSshTmuxWrapper {
-                            enabled: *ssh_settings.use_ssh_tmux_wrapper.value(),
-                        },
-                        ctx
-                    );
-                });
             }
             ToggleReuseSshControlMaster => {
                 SshSettings::handle(ctx).update(ctx, |ssh_settings, ctx| {
@@ -698,11 +671,9 @@ impl SettingsWidget for SubshellsWidget {
 
 #[derive(Default)]
 struct SSHWidget {
-    tmux_warpification_switch_state: SwitchStateHandle,
     enable_ssh_warpification_switch_state: SwitchStateHandle,
     reuse_control_master_switch_state: SwitchStateHandle,
     split_inherits_ssh_switch_state: SwitchStateHandle,
-    additional_info_mouse_state: MouseStateHandle,
     local_only_icon_tooltip_states: RefCell<HashMap<String, MouseStateHandle>>,
 }
 
@@ -728,9 +699,6 @@ impl SettingsWidget for SSHWidget {
         let enable_ssh_warpification = *WarpifySettings::as_ref(app)
             .enable_ssh_warpification
             .value();
-
-        let should_prompt_ssh_tmux_wrapper =
-            *WarpifySettings::as_ref(app).use_ssh_tmux_wrapper.value();
 
         add_setting(
             &mut column,
@@ -791,9 +759,7 @@ impl SettingsWidget for SSHWidget {
             );
         }
 
-        // Reuse-ControlMaster only applies to the legacy (ControlMaster)
-        // SSH wrapper, which is bypassed while the tmux wrapper is in use.
-        if !should_prompt_ssh_tmux_wrapper {
+        {
             let reuse_existing_control_master = *SshSettings::as_ref(app)
                 .reuse_existing_control_master
                 .value();
@@ -901,89 +867,6 @@ impl SettingsWidget for SSHWidget {
             },
         );
 
-        add_setting(
-            &mut column,
-            &WarpifySettings::as_ref(app).use_ssh_tmux_wrapper,
-            move || {
-                let mut column = Flex::column();
-
-                column.add_child(render_body_item::<WarpifyPageAction>(
-                    crate::t!("settings-warpify-use-tmux"),
-                    Some(AdditionalInfo {
-                        mouse_state: self.additional_info_mouse_state.clone(),
-                        // Was an empty string, i.e. an info icon that opened
-                        // nothing (issue #632).
-                        on_click_action: Some(WarpifyPageAction::OpenUrl(links::manual_url(
-                            links::MANUAL_SHELL_INTEGRATION,
-                        ))),
-                        secondary_text: None,
-                        tooltip_override_text: None,
-                    }),
-                    LocalOnlyIconState::for_setting(
-                        UseSshTmuxWrapper::storage_key(),
-                        &mut self.local_only_icon_tooltip_states.borrow_mut(),
-                        app,
-                    ),
-                    enable_ssh_warpification.into(),
-                    appearance,
-                    ui_builder
-                        .switch(self.tmux_warpification_switch_state.clone())
-                        .check(should_prompt_ssh_tmux_wrapper)
-                        .with_disabled(!enable_ssh_warpification)
-                        .build()
-                        .on_click(move |ctx, _, _| {
-                            if !enable_ssh_warpification {
-                                return;
-                            }
-
-                            ctx.dispatch_typed_action(WarpifyPageAction::ToggleTmuxWarpification);
-                        })
-                        .finish(),
-                    None,
-                ));
-
-                column.add_child(
-                    ui_builder
-                        .paragraph(crate::t!("settings-warpify-tmux-description"))
-                        .with_style(UiComponentStyles {
-                            font_color: Some(description_text_color.into_solid()),
-                            margin: Some(
-                                Coords::default()
-                                    .top(styles::DESCRIPTION_NEGATIVE_MARGIN_OFFSET)
-                                    .bottom(styles::DESCRIPTION_LINE_MARGIN_BOTTOM),
-                            ),
-                            ..Default::default()
-                        })
-                        .build()
-                        .finish(),
-                );
-
-                if enable_ssh_warpification && should_prompt_ssh_tmux_wrapper {
-                    let warpify_settings = WarpifySettings::as_ref(app);
-                    column.add_child(
-                        view.build_input_list(
-                            crate::t!("settings-warpify-denylisted-hosts"),
-                            &warpify_settings.ssh_hosts_denylist,
-                            &view.remove_denylisted_ssh_button_states,
-                            WarpifyPageAction::RemoveDenylistedSshHost,
-                            &view.add_denylisted_ssh_editor,
-                            appearance,
-                        )
-                        .finish(),
-                    );
-                } else {
-                    // Add margin to hint the user should scroll to see more.
-                    column.add_child(
-                        Container::new(Flex::column().finish())
-                            .with_margin_bottom(styles::MINIMUM_SCROLL_OFFSET_AFTER_SSH)
-                            .finish(),
-                    );
-                }
-
-                column.finish()
-            },
-        );
-
         column.finish()
     }
 }
@@ -995,10 +878,4 @@ mod styles {
 
     /// The space after a description.
     pub const DESCRIPTION_LINE_MARGIN_BOTTOM: f32 = 18.;
-
-    /// Because we hide the SSH settings if the SSH wrapper is disabled, we need to add a margin
-    /// to the bottom to make it clear that toggling this item will reveal more settings,
-    /// even at smaller window sizes. We picked an offset that cuts off the first item
-    /// to imply the user should scroll to see more.
-    pub const MINIMUM_SCROLL_OFFSET_AFTER_SSH: f32 = 40.;
 }
