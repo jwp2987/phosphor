@@ -117,7 +117,19 @@ pub fn parse_event(title: Option<&str>, body: &str) -> Option<CLIAgentEvent> {
 
     let index = (version as usize).checked_sub(1)?;
     match VERSIONED_PARSERS.get(index) {
-        Some(parser) => parser(body),
+        Some(parser) => {
+            let parsed = parser(body);
+            if let Some(event) = &parsed {
+                // Type and size only: the body holds the user's prompt text and paths.
+                log::info!(
+                    "CLI agent event received: agent={:?} event={:?} body_bytes={}",
+                    event.agent,
+                    event.event,
+                    body.len()
+                );
+            }
+            parsed
+        }
         None => {
             log::error!(
                 "Received CLI agent event with unsupported schema version \

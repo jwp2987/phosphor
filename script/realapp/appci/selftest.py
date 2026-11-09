@@ -2996,6 +2996,42 @@ def lab_ctl_and_daemon_pure_pieces():
     assert D.split_candidates("fish", "a/\tdirectory\nb/\tdirectory\n", "x") == ["a/", "b/"]
     assert D.totp_file_text("ABC") == 'ABC\n" TOTP_AUTH\n'
 
+
+@check
+def wn_zero_network_trace_and_offline_plugin():
+    """Wave N: outbound_attempts reads strace lines (loopback / unix / netlink ignored, remote inet kept); fakeclaude refuses a remote source and installs the shipped
+    bundle; the shipped hook scripts produce the four events with no network step"""
+    import cases_netless as nl
+    trace = (
+        'connect(3, {sa_family=AF_UNIX, sun_path="/run/user/1/bus"}, 110) = 0\n'
+        'connect(4, {sa_family=AF_NETLINK, nl_pid=0, nl_groups=00000000}, 12) = 0\n'
+        'connect(5, {sa_family=AF_INET, sin_port=htons(7000), sin_addr=inet_addr("127.0.0.1")}, 16) = 0\n'
+        'connect(6, {sa_family=AF_INET6, sin6_port=htons(11434), sin6_flowinfo=htonl(0), inet_pton(AF_INET6, "::1", &sin6_addr), sin6_scope_id=0}, 28) = 0\n'
+        'connect(7, {sa_family=AF_INET, sin_port=htons(443), sin_addr=inet_addr("203.0.113.9")}, 16) = -1 EINPROGRESS\n'
+        '[pid 12] sendto(8, "x", 1, MSG_NOSIGNAL, {sa_family=AF_INET6, sin6_port=htons(53), sin6_flowinfo=htonl(0), inet_pton(AF_INET6, "2001:db8::1", &sin6_addr), sin6_scope_id=0}, 28) = 1\n')
+    assert nl.outbound_attempts(trace) == [("connect", "203.0.113.9", 443), ("sendto", "2001:db8::1", 53)], nl.outbound_attempts(trace)
+    assert nl.outbound_attempts("") == []
+    bundle = os.path.join(nl.REPO, "resources", "bundled", "claude_plugin")
+    assert os.path.isfile(os.path.join(bundle, ".claude-plugin", "marketplace.json"))
+    if not (shutil.which("jq") and shutil.which("bash")):
+        return
+    tmp = tempfile.mkdtemp()
+    try:
+        env = dict(os.environ, CLAUDE_CONFIG_DIR=os.path.join(tmp, "cfg"))
+        fake = [sys.executable, "-I", os.path.join(HERE, "fakeclaude.py")]
+        bad = subprocess.run(fake + ["plugin", "marketplace", "add", "https://example.invalid/x.git"], env=env, capture_output=True, text=True)
+        assert bad.returncode != 0 and "local" in bad.stderr
+        problems, events = nl.run_plugin_offline(tmp, bundle, os.path.join(tmp, "cfg2"), [])
+        assert problems == [], problems
+        data = open(events, "rb").read().decode("utf-8")
+        for ev in ("prompt_submit", "tool_complete", "permission_request", '"event":"stop"'):
+            assert ev in data, (ev, data[:300])
+        assert data.count("\x1b]777;notify;warp://cli-agent;") == 4
+        assert "..." in data and "x" * 250 not in data      # the 300-character prompt was cut by characters
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main():
     failed = 0
     for f in CHECKS:

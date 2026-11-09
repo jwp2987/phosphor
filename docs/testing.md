@@ -1513,6 +1513,38 @@ whitelist, the tar jail, the container argv, expiry/prune planning and labd's he
 6. [ ] Helper arms: set `APPCI_LAB_HELPER_BIN` on the runner to a built remote-server binary (otherwise those arms report UNVERIFIABLE).
 7. [ ] ksu / a KDC are phase 2 and are not in this lab.
 
+### 2.16 No network at startup, bundled Claude plugin (`appci/cases_netless.py`, `appci/fakeclaude.py`; Wave N)
+
+Owner rule: a default Phosphor makes no outbound connection by itself. What the app does for each source:
+
+| source | behaviour |
+|---|---|
+| models.dev catalog | built-in catalog (gzip in the binary); `agents.warp_agent.models_dev_fetch` defaults to `false`; only the Providers page's "Refresh model list" button downloads, from `models_dev_url` (default the repo copy `https://gitlab.com/winters-phosphor/phosphor/-/raw/main/assets/models_dev/api.json`). The load starts in `on_page_selected`, not when the widget is built. |
+| Claude Code plugin | shipped in `resources/bundled/claude_plugin` and registered as a local-folder marketplace; no GitHub or GitLab fetch |
+| remote helper download | only after the user opens an ssh session (`RemoteServerController::on_session_connected`), and by default only after the modal prompt (`ssh_extension_install_mode = AlwaysAsk`); nothing at launch |
+| MCP servers | only servers in a config file the user (or their tools) wrote; see `docs/manual/06-mcp-skills-and-rules.md` |
+
+Unit tests: `models_dev_bundle_tests.rs` (Refresh fetches from the one URL whatever `models_dev_fetch` says; startup path never fetches when off; this replaces
+`disabled_refresh_path_never_fetches_even_with_a_custom_url`, an expectation the owner changed in Wave N), `plugin_manager/claude_tests.rs` (every command Phosphor
+runs is local, the shipped plugin has no oz part / Warp metadata / network call and its version equals `MINIMUM_PLUGIN_VERSION`, `truncate_chars` cuts by characters
+under `LC_ALL=C`), `model/ansi/mod_test.rs` (`osc_777_*`: a `;` in the body, a non-UTF-8 byte is replaced and the param kept), `cli_agent_sessions/mod_tests.rs`
+(the WARN for a malformed event carries sizes only).
+
+App cases (Linux only, `--cases 'zero_network_startup,claude_plugin_offline'`, terminal mode):
+
+- **`zero_network_startup`**: relaunches the app under `strace -f -e trace=network` (`App.wrap`), idles `APPCI_ZNS_IDLE_S` seconds (default 120), and fails on any
+  `connect`/`sendto`/`sendmsg` to a non-loopback inet address (`outbound_attempts`). The harness profile has no cloud account or provider key. SKIPS (not passes)
+  when `strace -f` does not work on the runner (ptrace denied); a `unshare -rn` launch was rejected because the app's D-Bus and X11 sockets are abstract and
+  a new network namespace cannot reach them.
+- **`claude_plugin_offline`**: inside `unshare -rn` (network blocked; without it the case is `noref`, not a pass), `fakeclaude.py` registers the bundled folder and
+  installs `warp@claude-code-warp` (it refuses a non-local source and checks the hook scripts exist and are executable), then the plugin's real hook scripts run on
+  synthetic Claude Code inputs (a prompt with `;`, multi-byte characters and 300+ characters; tool; permission request; stop). A fake `claude` in a pane prints the
+  sequences; the app log must show one `CLI agent event received: agent=Claude event=<Type> body_bytes=<n>` line per event, no `Dropped a CLI agent event` line, and
+  none of the prompt text. Needs `bash` and `jq`. The binary's `resources/bundled/claude_plugin` is used (else the checkout's; `APPCI_PLUGIN_DIR` overrides).
+
+`run.py --self-test` runs `wn_zero_network_trace_and_offline_plugin`: the strace parser on sample lines, `fakeclaude.py` refusing a remote source, and the same
+install + hook run (without a network namespace) against the checkout's plugin folder.
+
 ## 3. Real-app testing
 
 Automated tests do not catch lag, lost keys or broken flows; the owner feels those. Every release candidate
@@ -2449,7 +2481,7 @@ Harness only; `run.py --self-test` covers both (`app_log_readers`, `mac_close_ke
 
 ## models.dev option (#1791)
 
-Unit tests in `app/src/ai/agent_providers/models_dev_bundle_tests.rs` cover `models_dev_fetch`/`models_dev_url` on both entry points (startup `ensure_loaded`, Refresh `refresh_catalog`), the cache -> bundled fallback, response validation, and that the bundled gzip matches `app/resources/models_dev/PROVENANCE.txt` and `assets/models_dev/api.json`. They share one catalog singleton and serialize on a mutex. No app test.
+Unit tests in `app/src/ai/agent_providers/models_dev_bundle_tests.rs` cover `models_dev_fetch`/`models_dev_url` on both entry points (startup `ensure_loaded`, Refresh `refresh_catalog`), the cache -> bundled fallback, response validation, and that the bundled gzip matches `app/resources/models_dev/PROVENANCE.txt` and `assets/models_dev/api.json`. They share one catalog singleton and serialize on a mutex. Wave N changed the defaults (`models_dev_fetch = false`, Refresh always fetches); see 2.16.
 
 ## Stuck agent actions: a pending or running action with no usable UI (#1797, #1799)
 

@@ -7,7 +7,7 @@ if [ "$APPCI_APP_DISPLAY" = x11 ]; then unset WAYLAND_DISPLAY; fi
 if [ "$APPCI_APP_DISPLAY" = wayland ] && [ -z "$APPCI_KEEP_DISPLAY" ]; then unset DISPLAY; fi
 export HOME="%(home)s" XDG_CONFIG_HOME="%(home)s/.config" XDG_STATE_HOME="%(home)s/.local/state" XDG_DATA_HOME="%(home)s/.local/share"
 export SHELL=/bin/bash ZDOTDIR="%(home)s"
-export RUST_LOG=warp::input_order=debug,warp::terminal::model_lock_trace=debug,warpui::frame_cause=debug,phosphor::routing=debug,editor_memory=debug
+export RUST_LOG=warp::input_order=debug,warp::terminal::model_lock_trace=debug,warpui::frame_cause=debug,phosphor::routing=debug,editor_memory=debug,warp::terminal::cli_agent_sessions::event=info
 export WARP_INPUT_ORDER_LOG_TEXT=1
 mkdir -p "$XDG_STATE_HOME" "$XDG_DATA_HOME"
 if [ -z "$APPCI_NO_KEYRING" ]; then
@@ -15,7 +15,7 @@ if [ -z "$APPCI_NO_KEYRING" ]; then
 fi
 echo $$ > "%(run)s/app.pid"
 cd "%(home)s/w"
-exec "%(bin)s" >> "%(run)s/app.stdout" 2>&1
+exec %(wrap)s"%(bin)s" >> "%(run)s/app.stdout" 2>&1
 '''
 
 
@@ -99,11 +99,12 @@ class App:
     def __init__(self, run, home, binary, display="wayland"):
         self.run, self.home, self.bin, self.display = run, home, binary, display
         self.proc = None
+        self.wrap = ""                 # words put before the binary in the launcher's final exec (zero_network_startup: strace), "" otherwise; ends in a space
         self.keyring = "unlocked"      # #1805: a case sets another KEYRING_VARIANTS entry before start() and puts it back after
 
     def start(self):
         inner = os.path.join(self.run, "inner.sh")
-        open(inner, "w").write(INNER % {"home": self.home, "run": self.run, "bin": self.bin})
+        open(inner, "w").write(INNER % {"home": self.home, "run": self.run, "bin": self.bin, "wrap": self.wrap})
         os.chmod(inner, 0o755)
         # r18u22 (Wayland agent shell_nu): the r18cz fix below lived only in WindowsApp.env (its `os.name != "nt"` branch never ran), so on
         # Linux nu stayed off the app's PATH and the agent pass sent `nu` to the agent: "nu never executed a probe line".
