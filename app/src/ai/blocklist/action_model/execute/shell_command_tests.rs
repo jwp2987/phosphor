@@ -1114,3 +1114,97 @@ fn stall_detection_is_driven_by_output_wakeups() {
         });
     });
 }
+
+/// #1799: a hand-over waits for approval only while there is a running command to hand over;
+/// with none, it resolves on its own (its execution is a `BlockNotFound` error) instead of
+/// sitting pending with no card. The predicate both ways.
+#[test]
+fn transfer_asks_for_approval_only_over_a_running_command() {
+    assert!(!transfer_resolves_without_approval(true));
+    assert!(transfer_resolves_without_approval(false));
+}
+
+/// #1799, the wiring: the model returned `run_shell_command` + `transfer_shell_command_control_
+/// to_user`, the user rejected the command, and the hand-over was left pending with no card --
+/// its only approval UI is the CLI subagent view over a running command, and none ran. With no
+/// running command the executor now runs it without approval, and it resolves with the error.
+#[test]
+fn transfer_with_no_running_command_resolves_without_approval() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+
+        let terminal_view_id = EntityId::new();
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let (_model_events_tx, model_events_rx) = unbounded();
+        let model_event_dispatcher =
+            app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
+        let active_session = app.add_model(|ctx| {
+            ActiveSession::new(sessions.clone(), model_event_dispatcher.clone(), ctx)
+        });
+        let terminal_model = Arc::new(FairMutex::new(TerminalModel::mock(None, None)));
+        assert!(
+            !terminal_model
+                .lock()
+                .block_list()
+                .active_block()
+                .is_active_and_long_running(),
+            "fixture precondition: no command is running"
+        );
+        let executor = app.add_model(|ctx| {
+            ShellCommandExecutor::new(
+                active_session,
+                terminal_model.clone(),
+                &model_event_dispatcher,
+                terminal_view_id,
+                ctx,
+            )
+        });
+
+        let action = AIAgentAction {
+            id: AIAgentActionId::from("hand-over".to_owned()),
+            task_id: TaskId::new("task".to_owned()),
+            action: AIAgentActionType::TransferShellCommandControlToUser {
+                reason: "needs a password".to_owned(),
+            },
+            requires_result: true,
+        };
+        let conversation_id = AIConversationId::new();
+        let input = ExecuteActionInput {
+            action: &action,
+            conversation_id,
+        };
+
+        let autoexecuted = executor.update(&mut app, |executor, ctx| {
+            executor.should_autoexecute(input, ctx)
+        });
+        assert!(
+            autoexecuted,
+            "nothing to hand over: no approval to wait for"
+        );
+
+        let execution: AnyActionExecution = executor.update(&mut app, |executor, ctx| {
+            executor
+                .execute(
+                    ExecuteActionInput {
+                        action: &action,
+                        conversation_id,
+                    },
+                    ctx,
+                )
+                .into()
+        });
+        assert!(
+            matches!(
+                execution,
+                AnyActionExecution::Sync(
+                    AIAgentActionResultType::TransferShellCommandControlToUser(
+                        TransferShellCommandControlToUserResult::Error(
+                            ShellCommandError::BlockNotFound
+                        ),
+                    )
+                )
+            ),
+            "{execution:?}"
+        );
+    });
+}

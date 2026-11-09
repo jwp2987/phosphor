@@ -993,8 +993,8 @@ impl BlocklistAIActionExecutor {
     ///
     /// Participation is per-executor opt-in: an executor may only be added
     /// here if its per-action state is never read after the action's terminal
-    /// result. Prepared file edits qualify (consumed by execute, dead
-    /// otherwise). Do NOT add state that outlives completion, e.g. the
+    /// result. Prepared file edits and staged question answers qualify
+    /// (consumed by execute, dead otherwise). Do NOT add state that outlives completion, e.g. the
     /// long-running-command state (the command outlives its action's snapshot
     /// result).
     pub(super) fn discard_action_state(
@@ -1004,6 +1004,11 @@ impl BlocklistAIActionExecutor {
     ) {
         self.request_file_edits_executor.update(ctx, |executor, _| {
             executor.discard_pending(action_id);
+        });
+        // A question answer staged for an action that finished some other way (rejected,
+        // cancelled) must not outlive it (#1797).
+        self.ask_user_question_executor.update(ctx, |executor, _| {
+            executor.discard_staged_answers(action_id);
         });
     }
 

@@ -1194,15 +1194,30 @@ impl AskUserQuestionView {
         self.abort_auto_advance();
         let action_id = self.action_id().clone();
         let conversation_id = self.conversation_id;
-        // Completing the executor only stages the result; execute_action drives the action model
-        // to publish final status/events for this inline block.
+        // Stage the answers for this action, then execute it by id: the executor returns the
+        // staged answers as the result at once, and the action model publishes the final
+        // status/events for this inline block. Staged per action rather than written to the
+        // executor's shared decision channel, which `execute` drains on entry (#1278) and so
+        // used to discard this very answer, leaving the card on "Preparing question..." (#1797).
+        //
+        // Only while the question is still blocked on this card: after a cancel, or on a second
+        // submit, there is nothing to execute and a staged answer would only linger.
         self.action_model.update(ctx, |action_model, ctx| {
-            action_model
-                .ask_user_question_executor(ctx)
-                .update(ctx, |executor, _| {
-                    executor.complete(answers.clone());
-                });
+            if !action_model
+                .get_action_status(&action_id)
+                .is_some_and(|status| status.is_blocked())
+            {
+                return;
+            }
+            let executor = action_model.ask_user_question_executor(ctx);
+            executor.update(ctx, |executor, _| {
+                executor.stage_answers(action_id.clone(), answers.clone());
+            });
             action_model.execute_action(&action_id, conversation_id, ctx);
+            // Taken by the execution unless it was refused; never left behind.
+            executor.update(ctx, |executor, _| {
+                executor.discard_staged_answers(&action_id)
+            });
         });
     }
 

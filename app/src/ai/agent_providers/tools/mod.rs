@@ -225,6 +225,13 @@ pub fn serialize_action_result(action: &AIAgentActionResult) -> Option<String> {
     )?))
 }
 
+/// The tool-result text for a result [`serialize_action_result`] cannot render: one with no API
+/// form, such as a cancelled `transfer_shell_command_control_to_user` (#1799). The model reads
+/// the result's `Display`, so that is where such a result's explanation lives.
+pub fn display_fallback_result(action: &AIAgentActionResult) -> String {
+    serde_json::json!({ "result": action.result.to_string() }).to_string()
+}
+
 /// Converts an `AIAgentActionResult` that finished client-side execution this round into an
 /// `api::message::tool_call_result::Result` enum, for BYOP to persist as task.message.
 ///

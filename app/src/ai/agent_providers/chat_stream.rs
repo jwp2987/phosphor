@@ -2868,9 +2868,7 @@ fn build_chat_request_unredacted(
                     );
                     Some(tools::stringify_result_value(&value))
                 });
-                let content = serialized.unwrap_or_else(|| {
-                    serde_json::json!({ "result": result.result.to_string() }).to_string()
-                });
+                let content = serialized.unwrap_or_else(|| tools::display_fallback_result(result));
                 messages.push(ChatMessage::from(ToolResponse::new(
                     tool_call_id,
                     cap_tool_result_for(msg_side.as_ref(), content),
@@ -7115,9 +7113,8 @@ pub async fn generate_byop_output(
                     ));
                 }
                 AIAgentInput::ActionResult { result, .. } => {
-                    let content = tools::serialize_action_result(result).unwrap_or_else(|| {
-                        serde_json::json!({ "result": result.result.to_string() }).to_string()
-                    });
+                    let content = tools::serialize_action_result(result)
+                        .unwrap_or_else(|| tools::display_fallback_result(result));
                     log::info!(
                         "[byop-diag] persistence input[{input_idx}]: task_id={} \
                          kind=ActionResult call_id={} content_len={} content={:?}",

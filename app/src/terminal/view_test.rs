@@ -29760,3 +29760,474 @@ fn shell_exited_banner_offers_restart_and_one_click_requests_one_restart() {
         assert_eq!(*restart_requests.borrow(), 1);
     })
 }
+
+// ---------------------------------------------------------------------------------------------
+// #1797 / #1799: an agent action pending or running with no usable UI must not hang the turn.
+// ---------------------------------------------------------------------------------------------
+
+fn stuck_turn_action(
+    id: &str,
+    action: crate::ai::agent::AIAgentActionType,
+) -> crate::ai::agent::AIAgentAction {
+    crate::ai::agent::AIAgentAction {
+        id: AIAgentActionId::from(id.to_owned()),
+        task_id: TaskId::new("task".to_owned()),
+        action,
+        requires_result: false,
+    }
+}
+
+fn stuck_turn_command() -> crate::ai::agent::AIAgentActionType {
+    crate::ai::agent::AIAgentActionType::RequestCommandOutput {
+        command: "free -h".to_owned(),
+        is_read_only: None,
+        is_risky: None,
+        rationale: None,
+        uses_pager: None,
+        wait_until_completion: false,
+        citations: vec![],
+    }
+}
+
+/// Pumps the foreground executor until `done` holds (or gives up), then returns `done`'s value.
+async fn pump_until(app: &App, done: impl Fn(&App) -> bool) -> bool {
+    for _ in 0..64 {
+        if done(app) {
+            return true;
+        }
+        futures_lite::future::yield_now().await;
+    }
+    done(app)
+}
+
+/// The #1799 turn: the model returned `run_shell_command` (held for approval) and then
+/// `transfer_shell_command_control_to_user` for that command, in one turn. A follow-up typed
+/// meanwhile is queued until the pending action resolves.
+struct BlockedTwoActionTurn {
+    terminal: ViewHandle<TerminalView>,
+    conversation_id: AIConversationId,
+    action_model: ModelHandle<BlocklistAIActionModel>,
+    command_id: AIAgentActionId,
+    hand_over_id: AIAgentActionId,
+    sent_requests: Rc<RefCell<usize>>,
+}
+
+async fn blocked_two_action_turn(app: &mut App) -> BlockedTwoActionTurn {
+    use crate::ai::blocklist::{QueuedQuery, QueuedQueryModel, QueuedQueryOrigin};
+
+    initialize_app_for_terminal_view(app);
+    register_global_resource_handles(app);
+    let terminal = add_window_with_terminal(app, None);
+
+    let sent_requests = Rc::new(RefCell::new(0));
+    let controller = terminal.read(app, |view, _| view.ai_controller().clone());
+    let sent_requests_sub = sent_requests.clone();
+    app.update(|ctx| {
+        ctx.subscribe_to_model(&controller, move |_, event, _| {
+            if matches!(event, BlocklistAIControllerEvent::SentRequest { .. }) {
+                *sent_requests_sub.borrow_mut() += 1;
+            }
+        });
+    });
+
+    let conversation_id = terminal.update(app, |view, ctx| {
+        start_running_conversation_for_close(view, ctx)
+    });
+    let action_model = terminal.read(app, |view, _| view.ai_action_model.clone());
+    let command_id = AIAgentActionId::from("run-command".to_owned());
+    let hand_over_id = AIAgentActionId::from("hand-over".to_owned());
+    action_model.update(app, |action_model, ctx| {
+        action_model.queue_actions_for_test(
+            vec![
+                stuck_turn_action("run-command", stuck_turn_command()),
+                stuck_turn_action(
+                    "hand-over",
+                    crate::ai::agent::AIAgentActionType::TransferShellCommandControlToUser {
+                        reason: "the command asks for a password".to_owned(),
+                    },
+                ),
+            ],
+            conversation_id,
+            ctx,
+        );
+    });
+
+    let blocked = pump_until(app, |app| {
+        action_model.read(app, |action_model, _| {
+            action_model
+                .get_action_status(&command_id)
+                .is_some_and(|status| status.is_blocked())
+        })
+    })
+    .await;
+    assert!(blocked, "precondition: the command is held for approval");
+    action_model.read(app, |action_model, _| {
+        assert!(
+            action_model
+                .get_action_status(&hand_over_id)
+                .is_some_and(|status| status.is_queued()),
+            "precondition: the hand-over waits behind the command, as in #1799"
+        );
+    });
+    assert!(
+        BlocklistAIHistoryModel::handle(app).read(app, |history, _| {
+            history
+                .conversation(&conversation_id)
+                .is_some_and(|conversation| conversation.status().is_blocked())
+        }),
+        "precondition: the turn is blocked on the command"
+    );
+
+    QueuedQueryModel::handle(app).update(app, |model, ctx| {
+        model.append(
+            conversation_id,
+            QueuedQuery::new(
+                "the follow-up typed while it was blocked".to_owned(),
+                QueuedQueryOrigin::PendingApprovalFollowUp,
+            ),
+            ctx,
+        );
+    });
+
+    BlockedTwoActionTurn {
+        terminal,
+        conversation_id,
+        action_model,
+        command_id,
+        hand_over_id,
+        sent_requests,
+    }
+}
+
+impl BlockedTwoActionTurn {
+    /// Nothing of the turn is left pending or running, both actions finished cancelled (results
+    /// in tool-call order), the conversation ended `Cancelled`, and the queued follow-up is no
+    /// longer locked behind a pending action.
+    fn assert_turn_resolved(&self, app: &App) {
+        use crate::ai::agent::{AIAgentActionResultType, TransferShellCommandControlToUserResult};
+        use crate::ai::blocklist::{QueuedQueryModel, QueuedQueryOrigin};
+
+        let conversation_id = self.conversation_id;
+        self.action_model.read(app, |action_model, _| {
+            assert!(
+                action_model
+                    .get_pending_actions_for_conversation(&conversation_id)
+                    .next()
+                    .is_none(),
+                "no action of the turn is left pending (with or without a card)"
+            );
+            assert!(!action_model.has_unfinished_actions_for_conversation(conversation_id));
+            assert!(
+                action_model
+                    .get_action_status(&self.command_id)
+                    .is_some_and(|status| status.is_cancelled()),
+                "the command did not run"
+            );
+            assert!(
+                matches!(
+                    action_model
+                        .get_action_result(&self.hand_over_id)
+                        .map(|result| &result.result),
+                    Some(AIAgentActionResultType::TransferShellCommandControlToUser(
+                        TransferShellCommandControlToUserResult::Cancelled
+                    ))
+                ),
+                "the hand-over of the command that never ran is cancelled with it"
+            );
+            let order = action_model
+                .get_finished_action_results(conversation_id)
+                .map(|results| results.iter().map(|r| r.id.clone()).collect::<Vec<_>>())
+                .unwrap_or_default();
+            assert_eq!(
+                order,
+                vec![self.command_id.clone(), self.hand_over_id.clone()],
+                "both results go to the model, in tool-call order"
+            );
+        });
+        assert_eq!(
+            BlocklistAIHistoryModel::handle(app).read(app, |history, _| {
+                history
+                    .conversation(&conversation_id)
+                    .map(|conversation| conversation.status().clone())
+            }),
+            Some(ConversationStatus::Cancelled),
+            "the turn ended; it is not left Blocked"
+        );
+        QueuedQueryModel::handle(app).read(app, |model, _| {
+            let queue = model.queue(conversation_id);
+            assert_eq!(queue.len(), 1, "released, not dropped");
+            assert_eq!(queue[0].origin(), QueuedQueryOrigin::ApprovalFollowUp);
+            assert!(
+                !queue[0].is_locked(),
+                "the follow-up is no longer held until the pending action resolves"
+            );
+        });
+    }
+}
+
+/// #1799: rejecting the command cancels the hand-over queued behind it in the same turn, instead
+/// of leaving it pending with no card (it has none in the AI block: its only approval UI is the
+/// CLI subagent view over a running command) and the follow-up queued behind it forever.
+#[test]
+fn rejecting_a_command_cancels_the_rest_of_its_turn() {
+    App::test((), |mut app| async move {
+        let turn = blocked_two_action_turn(&mut app).await;
+        let (conversation_id, command_id) = (turn.conversation_id, turn.command_id.clone());
+
+        // What the command card's Reject does.
+        turn.action_model.update(&mut app, |action_model, ctx| {
+            action_model.cancel_action_with_id(
+                conversation_id,
+                &command_id,
+                CancellationReason::ManuallyCancelled,
+                ctx,
+            );
+        });
+        let_subscribers_run().await;
+
+        turn.assert_turn_resolved(&app);
+        assert_eq!(
+            *turn.sent_requests.borrow(),
+            0,
+            "a reject sends nothing on its own; the results go with the user's next message"
+        );
+    })
+}
+
+/// #1799: Ctrl-C on a turn blocked on pending actions cancels it. Before, a `Blocked` turn with
+/// no unfinished AI block to route through matched none of the Ctrl-C routes (it is not
+/// `InProgress`), so the key did nothing and left no trace.
+#[test]
+fn ctrl_c_cancels_a_turn_blocked_on_pending_actions() {
+    App::test((), |mut app| async move {
+        let turn = blocked_two_action_turn(&mut app).await;
+        let conversation_id = turn.conversation_id;
+
+        turn.terminal.update(&mut app, |view, ctx| {
+            assert_eq!(
+                view.blocked_agent_turn_to_cancel(ctx),
+                Some(conversation_id),
+                "Ctrl-C finds the blocked turn"
+            );
+            view.ctrl_c(ctx);
+        });
+        let_subscribers_run().await;
+
+        turn.assert_turn_resolved(&app);
+        turn.terminal.read(&app, |view, ctx| {
+            assert_eq!(
+                view.blocked_agent_turn_to_cancel(ctx),
+                None,
+                "a second Ctrl-C has no blocked turn left to cancel"
+            );
+        });
+    })
+}
+
+/// #1799, the Ctrl-C in the agent view: the follow-up queued behind the blocked turn is
+/// released into the input once the turn is cancelled. It is not sent on the user's behalf --
+/// a cancelled turn never auto-sends a queued row (#690, #1026) -- but it is no longer stuck:
+/// one Enter sends it.
+#[test]
+fn ctrl_c_on_a_blocked_turn_in_the_agent_view_releases_the_queued_follow_up() {
+    use crate::ai::blocklist::QueuedQueryModel;
+
+    App::test((), |mut app| async move {
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+        let turn = blocked_two_action_turn(&mut app).await;
+        let conversation_id = turn.conversation_id;
+        turn.terminal.update(&mut app, |view, ctx| {
+            view.agent_view_controller().update(ctx, |controller, ctx| {
+                controller
+                    .try_enter_agent_view(
+                        Some(conversation_id),
+                        AgentViewEntryOrigin::Input {
+                            was_prompt_autodetected: false,
+                        },
+                        ctx,
+                    )
+                    .expect("enter the agent view for the blocked conversation");
+            });
+            assert!(
+                !view.should_ctrl_c_exit_agent_view(ctx),
+                "a blocked turn is not exited"
+            );
+            view.handle_ctrl_c_input_event(0, ctx);
+        });
+        let_subscribers_run().await;
+
+        assert_eq!(
+            BlocklistAIHistoryModel::handle(&app).read(&app, |history, _| {
+                history
+                    .conversation(&conversation_id)
+                    .map(|conversation| conversation.status().clone())
+            }),
+            Some(ConversationStatus::Cancelled)
+        );
+        turn.terminal.read(&app, |view, ctx| {
+            assert_eq!(
+                view.input.as_ref(ctx).buffer_text(ctx),
+                "the follow-up typed while it was blocked",
+                "the queued follow-up is back in the input, ready to send"
+            );
+        });
+        QueuedQueryModel::handle(&app).read(&app, |model, _| {
+            assert!(model.queue(conversation_id).is_empty());
+        });
+    })
+}
+
+fn ask_one_question() -> crate::ai::agent::AIAgentActionType {
+    use ai::agent::action::{AskUserQuestionItem, AskUserQuestionOption, AskUserQuestionType};
+    crate::ai::agent::AIAgentActionType::AskUserQuestion {
+        questions: vec![AskUserQuestionItem {
+            question_id: "q1".to_owned(),
+            question: "Which branch?".to_owned(),
+            question_type: AskUserQuestionType::MultipleChoice {
+                is_multiselect: false,
+                options: vec![AskUserQuestionOption {
+                    label: "main".to_owned(),
+                    recommended: true,
+                }],
+                supports_other: true,
+            },
+        }],
+    }
+}
+
+/// A terminal whose running conversation's profile always asks before an `ask_user_question`.
+fn terminal_asking_questions(app: &mut App) -> (ViewHandle<TerminalView>, AIConversationId) {
+    use crate::ai::execution_profiles::{
+        AskUserQuestionPermission, profiles::AIExecutionProfilesModel,
+    };
+
+    initialize_app_for_terminal_view(app);
+    register_global_resource_handles(app);
+    let terminal = add_window_with_terminal(app, None);
+    let terminal_view_id = terminal.read(app, |view, _| view.view_id);
+    AIExecutionProfilesModel::handle(app).update(app, |profiles, ctx| {
+        let profile_id = *profiles.active_profile(Some(terminal_view_id), ctx).id();
+        profiles.set_ask_user_question(profile_id, AskUserQuestionPermission::AlwaysAsk, ctx);
+    });
+    let conversation_id = terminal.update(app, |view, ctx| {
+        start_running_conversation_for_close(view, ctx)
+    });
+    (terminal, conversation_id)
+}
+
+/// #1797: an accept that carries no answer (the generic Run / Enter: `execute_action` by id)
+/// leaves the question blocked on its card. Before, it ran the question with no answer: the
+/// action went `RunningAsync`, the card (drawn only while blocked) disappeared and the turn
+/// hung on "Preparing question...". The card's own submit -- answers staged, then executed by
+/// id -- finishes it with those answers.
+#[test]
+fn a_question_finishes_only_with_its_cards_answer() {
+    use crate::ai::agent::AIAgentActionResultType;
+    use ai::agent::action_result::{AskUserQuestionAnswerItem, AskUserQuestionResult};
+
+    App::test((), |mut app| async move {
+        let (terminal, conversation_id) = terminal_asking_questions(&mut app);
+        let action_model = terminal.read(&app, |view, _| view.ai_action_model.clone());
+        let question_id = AIAgentActionId::from("question".to_owned());
+        action_model.update(&mut app, |action_model, ctx| {
+            action_model.queue_actions_for_test(
+                vec![stuck_turn_action("question", ask_one_question())],
+                conversation_id,
+                ctx,
+            );
+        });
+        let blocked = pump_until(&app, |app| {
+            action_model.read(app, |action_model, _| {
+                action_model
+                    .get_action_status(&question_id)
+                    .is_some_and(|status| status.is_blocked())
+            })
+        })
+        .await;
+        assert!(blocked, "precondition: the question waits for the user");
+
+        // The generic Run / Enter: an accept by id with no answer.
+        action_model.update(&mut app, |action_model, ctx| {
+            action_model.execute_action(&question_id, conversation_id, ctx);
+        });
+        action_model.read(&app, |action_model, _| {
+            assert!(
+                action_model
+                    .get_action_status(&question_id)
+                    .is_some_and(|status| status.is_blocked()),
+                "refused: the question stays blocked on its card, not running with no answer"
+            );
+        });
+
+        // The card's submit.
+        let answers = vec![AskUserQuestionAnswerItem::Skipped {
+            question_id: "q1".to_owned(),
+        }];
+        action_model.update(&mut app, |action_model, ctx| {
+            action_model
+                .ask_user_question_executor(ctx)
+                .update(ctx, |executor, _| {
+                    executor.stage_answers(question_id.clone(), answers.clone())
+                });
+            action_model.execute_action(&question_id, conversation_id, ctx);
+        });
+        action_model.read(&app, |action_model, _| {
+            assert!(
+                matches!(
+                    action_model
+                        .get_action_result(&question_id)
+                        .map(|result| &result.result),
+                    Some(AIAgentActionResultType::AskUserQuestion(
+                        AskUserQuestionResult::Success { answers: got }
+                    )) if *got == answers
+                ),
+                "the card's answers are the result, at once: {:?}",
+                action_model.get_action_status(&question_id)
+            );
+        });
+    })
+}
+
+/// #1797: an `ask_user_question` whose questions were all dropped (only multiple choice is
+/// supported) has nothing to show. It never waits: it resolves at once with an error result,
+/// instead of a pending action with no card.
+#[test]
+fn a_question_with_nothing_to_show_resolves_with_an_error() {
+    use crate::ai::agent::AIAgentActionResultType;
+    use ai::agent::action_result::AskUserQuestionResult;
+
+    App::test((), |mut app| async move {
+        let (terminal, conversation_id) = terminal_asking_questions(&mut app);
+        let action_model = terminal.read(&app, |view, _| view.ai_action_model.clone());
+        let question_id = AIAgentActionId::from("empty-question".to_owned());
+        action_model.update(&mut app, |action_model, ctx| {
+            action_model.queue_actions_for_test(
+                vec![stuck_turn_action(
+                    "empty-question",
+                    crate::ai::agent::AIAgentActionType::AskUserQuestion { questions: vec![] },
+                )],
+                conversation_id,
+                ctx,
+            );
+        });
+        let finished = pump_until(&app, |app| {
+            action_model.read(app, |action_model, _| {
+                action_model
+                    .get_action_status(&question_id)
+                    .is_some_and(|status| status.is_done())
+            })
+        })
+        .await;
+        assert!(finished, "it resolves on its own");
+        action_model.read(&app, |action_model, _| {
+            assert!(matches!(
+                action_model
+                    .get_action_result(&question_id)
+                    .map(|result| &result.result),
+                Some(AIAgentActionResultType::AskUserQuestion(
+                    AskUserQuestionResult::Error(_)
+                ))
+            ));
+        });
+    })
+}

@@ -116,11 +116,23 @@ fn transfer_result_to_json(result: &api::message::tool_call_result::Result) -> O
             "exit_code": f.exit_code,
             "output": f.output,
         }),
-        Some(TR::Error(_)) => json!({ "status": "error", "message": "block_not_found" }),
+        // #1799: say why nothing was handed over, so the model does not retry blindly.
+        Some(TR::Error(_)) => json!({
+            "status": "error",
+            "message": "block_not_found",
+            "detail": TRANSFER_NOTHING_RUNNING_DETAIL,
+        }),
+        // Not what the model reads for a cancel: a cancelled transfer has no API form
+        // (`convert.rs` ignores it), so its text comes from the result's `Display`, which
+        // carries the reason (`TRANSFER_CANCELLED_REASON`, #1799).
         None => json!({ "status": "cancelled" }),
     };
     Some(value)
 }
+
+/// The `detail` of a hand-over that found no running command (#1799).
+const TRANSFER_NOTHING_RUNNING_DETAIL: &str = "No command was running, so nothing was handed \
+     to the user. If the command this was for was rejected or has not started, it never ran.";
 
 pub static TRANSFER_SHELL_CONTROL: OpenAiTool = OpenAiTool {
     name: "transfer_shell_command_control_to_user",
@@ -133,3 +145,63 @@ pub static TRANSFER_SHELL_CONTROL: OpenAiTool = OpenAiTool {
     from_args: transfer_from_args,
     result_to_json: transfer_result_to_json,
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn transfer_result(
+        result: Option<api::transfer_shell_command_control_to_user_result::Result>,
+    ) -> api::message::tool_call_result::Result {
+        api::message::tool_call_result::Result::TransferShellCommandControlToUser(
+            api::TransferShellCommandControlToUserResult { result },
+        )
+    }
+
+    /// #1799: a hand-over cancelled with its turn (the command it was for was rejected) tells
+    /// the model why. Through the real serialization: a cancelled transfer has no API form, so
+    /// `serialize_action_result` gives nothing and the live request (`chat_stream`) and the
+    /// persisted message both send `display_fallback_result`, the result's `Display`.
+    #[test]
+    fn cancelled_transfer_reason_reaches_the_model() {
+        use crate::ai::agent::task::TaskId;
+        use crate::ai::agent::{
+            AIAgentActionId, AIAgentActionResult, AIAgentActionResultType,
+            TransferShellCommandControlToUserResult,
+        };
+
+        let result = AIAgentActionResult {
+            id: AIAgentActionId::from("hand-over".to_owned()),
+            task_id: TaskId::new("task".to_owned()),
+            result: AIAgentActionResultType::TransferShellCommandControlToUser(
+                TransferShellCommandControlToUserResult::Cancelled,
+            ),
+        };
+        assert_eq!(
+            super::super::serialize_action_result(&result),
+            None,
+            "no API form: the Display fallback is what the model reads"
+        );
+        let text = super::super::display_fallback_result(&result);
+        assert!(text.contains("cancelled"), "{text}");
+        assert!(text.contains("rejected an earlier tool call"), "{text}");
+    }
+
+    /// #1799: a hand-over with no running command (it resolves without approval) says that
+    /// nothing was handed over; the `block_not_found` code is kept for anything matching on it.
+    #[test]
+    fn transfer_with_nothing_running_says_why() {
+        let value = transfer_result_to_json(&transfer_result(Some(
+            api::transfer_shell_command_control_to_user_result::Result::Error(Default::default()),
+        )))
+        .expect("transfer result");
+        assert_eq!(value["status"], "error");
+        assert_eq!(value["message"], "block_not_found");
+        assert!(
+            value["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.contains("nothing was handed")),
+            "{value}"
+        );
+    }
+}

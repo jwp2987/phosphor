@@ -258,3 +258,70 @@ fn hidden_command_blocks_user_accept_until_that_exact_text_is_shown() {
         &shown_edit
     ));
 }
+
+fn one_question() -> AIAgentActionType {
+    use ai::agent::action::{AskUserQuestionItem, AskUserQuestionOption, AskUserQuestionType};
+    AIAgentActionType::AskUserQuestion {
+        questions: vec![AskUserQuestionItem {
+            question_id: "q1".to_owned(),
+            question: "Which branch?".to_owned(),
+            question_type: AskUserQuestionType::MultipleChoice {
+                is_multiselect: false,
+                options: vec![AskUserQuestionOption {
+                    label: "main".to_owned(),
+                    recommended: true,
+                }],
+                supports_other: true,
+            },
+        }],
+    }
+}
+
+/// #1797: `execute_action` (every by-id accept: the generic Run / Enter, the cards, the TUI
+/// views) refuses a question whose answer the card has not staged. Red if the guard is removed:
+/// the generic Run then ran the question with no answer and the turn hung on "Preparing
+/// question...".
+#[test]
+fn user_accept_of_a_question_needs_its_staged_answer() {
+    assert!(user_accept_lacks_question_answer(&one_question(), false));
+    assert!(!user_accept_lacks_question_answer(&one_question(), true));
+}
+
+/// The guard is narrow: other actions are unaffected, and a question with nothing to show is
+/// not refused -- it never waits for an answer (its execution is an error result).
+#[test]
+fn question_answer_guard_leaves_other_actions_alone() {
+    assert!(!user_accept_lacks_question_answer(&shell_command(), false));
+    assert!(!user_accept_lacks_question_answer(
+        &AIAgentActionType::TransferShellCommandControlToUser {
+            reason: "needs a password".to_owned(),
+        },
+        false
+    ));
+    assert!(!user_accept_lacks_question_answer(
+        &AIAgentActionType::AskUserQuestion { questions: vec![] },
+        false
+    ));
+}
+
+/// #1799: only the user's own reject / stop cancels the rest of the turn. Other reasons have
+/// their own paths (a follow-up or a revert cancels everything pending already; an optimistic
+/// completion is not a reject) and must not be widened by this.
+#[test]
+fn only_a_user_reject_cancels_the_rest_of_the_turn() {
+    assert!(rejection_cancels_rest_of_turn(
+        CancellationReason::ManuallyCancelled
+    ));
+    for reason in [
+        CancellationReason::FollowUpSubmitted {
+            is_for_same_conversation: true,
+        },
+        CancellationReason::UserCommandExecuted,
+        CancellationReason::Reverted,
+        CancellationReason::Deleted,
+        CancellationReason::OptimisticCLISubagentCompletion,
+        CancellationReason::AgentExitedShell,
+    ] {
+        assert!(!rejection_cancels_rest_of_turn(reason), "{reason:?}");
+    }
+}

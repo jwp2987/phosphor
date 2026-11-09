@@ -3198,3 +3198,38 @@ mod parked_query_sends {
         });
     }
 }
+
+/// #1799: the persisted BYOP tool-result message for a cancelled hand-over carries the reason.
+/// A cancelled transfer has no API form, so the message has no structured result and its
+/// `server_message_data` is the `Display` fallback, which names the reject that cancelled it.
+#[test]
+fn byop_message_for_a_cancelled_transfer_says_why() {
+    use crate::ai::agent::{
+        AIAgentActionResult, AIAgentActionResultType, TransferShellCommandControlToUserResult,
+    };
+    use agent_proto::message;
+
+    let result = AIAgentActionResult {
+        id: AIAgentActionId::from("hand-over".to_owned()),
+        task_id: TaskId::new("task".to_owned()),
+        result: AIAgentActionResultType::TransferShellCommandControlToUser(
+            TransferShellCommandControlToUserResult::Cancelled,
+        ),
+    };
+    let message = super::BlocklistAIController::byop_action_result_message("request", &result);
+
+    assert!(
+        matches!(
+            &message.message,
+            Some(message::Message::ToolCallResult(tool_result)) if tool_result.result.is_none()
+        ),
+        "a cancelled transfer has no structured result"
+    );
+    assert!(
+        message
+            .server_message_data
+            .contains("rejected an earlier tool call"),
+        "{}",
+        message.server_message_data
+    );
+}
