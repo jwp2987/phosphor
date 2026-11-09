@@ -914,3 +914,251 @@ async fn unsupported_from_the_helper_is_served_by_the_shell_and_sticks() {
     // Other families are untouched.
     assert_eq!(backend.kind(Family::GitRead), BackendKind::Helper);
 }
+
+// ---- buffers (P4, family c) ------------------------------------------------------------------
+
+/// A routed backend plus, for the helper, the channel its pushes arrive on.
+pub(super) struct BufferSubject {
+    pub name: &'static str,
+    pub backend: RoutedBackend,
+    pub pushes: Option<async_channel::Receiver<crate::client::ClientEvent>>,
+}
+
+fn text_edit(start: u64, end: u64, text: &str) -> crate::proto::TextEdit {
+    crate::proto::TextEdit {
+        start_offset: start,
+        end_offset: end,
+        text: text.to_owned(),
+    }
+}
+
+/// Family c: open, edit and save, an outside change, discard and keep-mine. The two arms differ
+/// in exactly the way design ruling R4 says: the helper PUSHES a conflict when the file changes
+/// under unsaved edits, the shell arm finds it when the user saves. Everything else is held to
+/// the same literal answers.
+pub(super) async fn assert_buffers(subject: &BufferSubject) {
+    let name = subject.name;
+    let backend = &subject.backend;
+    let helper = backend.kind(Family::Buffers) == BackendKind::Helper;
+    let dir = tempfile::tempdir().unwrap();
+    // A space and an apostrophe in the name (the shell arm quotes), non-ASCII text.
+    let file = dir.path().join("my it's.txt");
+    std::fs::write(&file, "héllo\n").unwrap();
+    let path = s(&file);
+
+    // Open.
+    let opened = backend.open_buffer(path.clone(), false).await.unwrap();
+    assert_eq!(opened.content, "héllo\n", "{name}");
+    assert!(opened.server_version >= 1, "{name}");
+    let sv = opened.server_version;
+
+    // Edit (1-indexed character offsets: after the "o") and save: the file has the new text, and
+    // no temp file is left behind.
+    backend
+        .buffer_edit(path.clone(), sv, 10, vec![text_edit(6, 6, " there")])
+        .unwrap();
+    let outcome = backend
+        .save_buffer_content(path.clone(), "héllo there\n".to_owned())
+        .await
+        .unwrap();
+    assert_eq!(outcome, BufferSaveOutcome::Saved, "{name}");
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "héllo there\n",
+        "{name}"
+    );
+    let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.contains("phosphor-tmp"))
+        .collect();
+    assert!(leftovers.is_empty(), "{name}: {leftovers:?}");
+    // A second save of the same text is still a save (the saved state is the new base).
+    assert_eq!(
+        backend
+            .save_buffer_content(path.clone(), "héllo there\n".to_owned())
+            .await
+            .unwrap(),
+        BufferSaveOutcome::Saved,
+        "{name}"
+    );
+
+    // An unsaved edit, then somebody else changes the file.
+    backend
+        .buffer_edit(path.clone(), sv, 11, vec![text_edit(1, 1, "X")])
+        .unwrap();
+    // On the helper a round trip makes sure the edit was applied before the file changes.
+    backend.open_buffer(path.clone(), false).await.unwrap();
+    std::fs::write(&file, "outside\n").unwrap();
+    if helper {
+        let pushes = subject
+            .pushes
+            .as_ref()
+            .expect("the helper subject has pushes");
+        loop {
+            use crate::rt::FutureExt as _;
+            let event = pushes
+                .recv()
+                .with_timeout(std::time::Duration::from_secs(20))
+                .await
+                .unwrap_or_else(|_| panic!("{name}: no conflict push"))
+                .unwrap();
+            if let crate::client::ClientEvent::BufferConflictDetected { path: p } = event {
+                assert_eq!(p, path, "{name}");
+                break;
+            }
+        }
+    } else {
+        let outcome = backend
+            .save_buffer_content(path.clone(), "Xhéllo there\n".to_owned())
+            .await
+            .unwrap();
+        assert_eq!(outcome, BufferSaveOutcome::Conflict, "{name}");
+    }
+    // Either way nothing of the editor's text reached the disk.
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "outside\n",
+        "{name}"
+    );
+
+    // Discard: take the disk's copy.
+    let reloaded = backend.open_buffer(path.clone(), true).await.unwrap();
+    assert_eq!(reloaded.content, "outside\n", "{name}");
+    let sv = reloaded.server_version;
+    if helper {
+        assert!(
+            sv > opened.server_version,
+            "{name}: the reload bumps the version"
+        );
+    }
+
+    // Edit, outside change again, and this time keep the editor's text.
+    backend
+        .buffer_edit(path.clone(), sv, 12, vec![text_edit(1, 1, "mine ")])
+        .unwrap();
+    backend.open_buffer(path.clone(), false).await.unwrap();
+    std::fs::write(&file, "outside again\n").unwrap();
+    let resolved = backend
+        .resolve_conflict(path.clone(), sv, "mine outside\n".to_owned(), 12)
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            resolved.result,
+            Some(crate::proto::resolve_conflict_response::Result::Success(_))
+        ),
+        "{name}: {resolved:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "mine outside\n",
+        "{name}"
+    );
+
+    // Closing is silent, and saving a file that is not open is an error on the helper only: the
+    // shell arm has no buffer to be missing.
+    backend.close_buffer(path.clone());
+
+    // A file that is not there, or is not text, does not open.
+    assert!(
+        backend
+            .open_buffer(s(&dir.path().join("nope")), false)
+            .await
+            .is_err(),
+        "{name}"
+    );
+    let bin = dir.path().join("b.bin");
+    std::fs::write(&bin, [0xff, 0xfe, 0x00, 0x01]).unwrap();
+    assert!(backend.open_buffer(s(&bin), false).await.is_err(), "{name}");
+}
+
+#[tokio::test]
+async fn the_shell_arm_meets_the_buffer_contract() {
+    let router = FeatureRouter::new();
+    let host = HostId::new("buffer-contract-shell".to_string());
+    let session = warp_core::SessionId::from(2u64);
+    router.register_out_of_band(session, Arc::new(LocalShExecutor));
+    let subject = BufferSubject {
+        name: "shell(local sh)",
+        backend: router.backend(&host, None, [session]),
+        pushes: None,
+    };
+    assert_eq!(subject.backend.kind(Family::Buffers), BackendKind::Shell);
+    assert_buffers(&subject).await;
+}
+
+#[tokio::test]
+async fn the_shell_arm_finds_a_same_size_same_second_change_with_the_hash() {
+    // The stamp alone cannot see this change (same size, same second); the hash does.
+    let router = FeatureRouter::new();
+    let host = HostId::new("buffer-contract-hash".to_string());
+    let session = warp_core::SessionId::from(3u64);
+    router.register_out_of_band(session, Arc::new(LocalShExecutor));
+    let backend = router.backend(&host, None, [session]);
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("f.txt");
+    std::fs::write(&file, "aaaa").unwrap();
+    backend.open_buffer(s(&file), false).await.unwrap();
+    let mtime = std::fs::metadata(&file).unwrap().modified().unwrap();
+    std::fs::write(&file, "bbbb").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(mtime)
+        .unwrap();
+    let outcome = backend
+        .save_buffer_content(s(&file), "cccc".to_owned())
+        .await
+        .unwrap();
+    assert_eq!(outcome, BufferSaveOutcome::Conflict);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "bbbb");
+    // The user then chooses to overwrite: the next save goes through.
+    assert_eq!(
+        backend
+            .save_buffer_content(s(&file), "cccc".to_owned())
+            .await
+            .unwrap(),
+        BufferSaveOutcome::Saved
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "cccc");
+    // And a mere `touch` of an unchanged file is not a conflict.
+    backend.open_buffer(s(&file), true).await.unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5))
+        .unwrap();
+    assert_eq!(
+        backend
+            .save_buffer_content(s(&file), "dddd".to_owned())
+            .await
+            .unwrap(),
+        BufferSaveOutcome::Saved
+    );
+}
+
+#[cfg(all(feature = "daemon", unix))]
+#[tokio::test]
+async fn the_helper_arm_over_an_in_process_daemon_meets_the_buffer_contract() {
+    let stream = crate::daemon::spawn_in_process_for_tests();
+    let stream = async_io::Async::new(stream).unwrap();
+    let (reader, writer) = futures::io::AsyncReadExt::split(stream);
+    let executor = executor::Background::default();
+    let (client, events, _host_responses) = RemoteServerClient::new(reader, writer, &executor);
+    // No capability list was asked for, so the router trusts the helper (as in the other tests).
+    let router = FeatureRouter::new();
+    let host = HostId::new("buffer-contract-helper".to_string());
+    let session = warp_core::SessionId::from(4u64);
+    router.register_out_of_band(session, Arc::new(LocalShExecutor));
+    let subject = BufferSubject {
+        name: "helper(in-process daemon)",
+        backend: router.backend(&host, Some(Arc::new(client)), [session]),
+        pushes: Some(events),
+    };
+    assert_eq!(subject.backend.kind(Family::Buffers), BackendKind::Helper);
+    assert_buffers(&subject).await;
+}
