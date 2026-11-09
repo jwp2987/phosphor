@@ -43,6 +43,8 @@ use super::super::BackendError;
 pub enum ShellPush {
     RepoMetadataSnapshot(RepoMetadataSnapshot),
     RepoMetadataUpdate(RepoMetadataUpdatePush),
+    /// The host's skills and global rules changed (or were read for the first time).
+    AgentContext(crate::proto::RemoteAgentContextSnapshot),
 }
 
 struct CachedRepo {

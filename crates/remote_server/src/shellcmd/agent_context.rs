@@ -92,6 +92,15 @@ pub fn is_relevant_change(home: &str, path: &str) -> bool {
     }
 }
 
+/// Whether a finished command can have changed the skills or rules on the host, judged from its
+/// text: it names a skill root's provider directory (`.claude`, `.agents`, ...), `SKILL.md` or
+/// `AGENTS.md`. The shell arm has no watcher, so this decides which prompts re-read the context.
+pub fn command_may_change_agent_context(command: &str) -> bool {
+    command.contains("SKILL.md")
+        || command.contains("AGENTS.md")
+        || top_level_names().iter().any(|name| command.contains(name))
+}
+
 /// Builds the snapshot (at `revision`) from the files read. Non-UTF-8 files are dropped, as the
 /// app's `read_to_string` drops them; the rest is sorted by path and capped.
 pub fn assemble(

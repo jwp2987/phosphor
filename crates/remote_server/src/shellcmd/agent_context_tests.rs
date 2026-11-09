@@ -195,3 +195,18 @@ fn the_standing_delta_reports_added_and_removed_skills_and_nothing_when_equal() 
         1
     );
 }
+
+#[test]
+fn only_commands_naming_a_skill_or_rule_location_may_change_the_context() {
+    for yes in [
+        "mkdir -p ~/.claude/skills/x",
+        "git clone u ~/.agents/skills/y",
+        "vim SKILL.md",
+        "echo hi >> ~/.agents/AGENTS.md",
+    ] {
+        assert!(command_may_change_agent_context(yes), "{yes}");
+    }
+    for no in ["ls -la", "git status", "cargo build", ""] {
+        assert!(!command_may_change_agent_context(no), "{no}");
+    }
+}

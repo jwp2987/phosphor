@@ -5,12 +5,14 @@
 //! probe. Every family's request methods answer `Unsupported` until its package fills them in
 //! (P1..P9), or `Unavailable` when the session has no out-of-band channel.
 
+mod agent_context;
 mod read;
 mod tree;
 mod write;
 
 use std::sync::{Arc, Mutex};
 
+pub use agent_context::AgentContextCache;
 pub use tree::{ShellPush, TreeCache};
 
 use super::executor::{ChannelKind, ExecRequest, MAX_EXEC_OUTPUT_BYTES, OutOfBandExecutor};
@@ -36,6 +38,9 @@ pub struct ShellBackend {
     pushes: Arc<Mutex<Vec<ShellPush>>>,
     /// The host's base64 decoder (for writes), probed once like the encoder.
     decode_tool: Arc<Mutex<Option<Option<DecodeTool>>>>,
+    /// The agent context this host's shell backend last published, with its revision. Shared by
+    /// every backend the router builds for the host.
+    agent_cache: Arc<AgentContextCache>,
 }
 
 impl std::fmt::Debug for ShellBackend {
@@ -56,7 +61,14 @@ impl ShellBackend {
             tree_cache: Arc::default(),
             pushes: Arc::default(),
             decode_tool: Arc::default(),
+            agent_cache: Arc::default(),
         }
+    }
+
+    /// Shares `cache` (the host's agent-context state) with this backend.
+    pub fn with_agent_cache(mut self, cache: Arc<AgentContextCache>) -> Self {
+        self.agent_cache = cache;
+        self
     }
 
     /// Shares `cache` (the host's file-tree state) with this backend.
