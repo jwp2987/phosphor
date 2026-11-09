@@ -3146,6 +3146,10 @@ def lab_tc_nft_command_generation():
     for p in (22, 2222, 7):
         assert any("match ip sport %d 0xffff flowid 1:1" % p in c for c in flat) and any("match ip dport %d 0xffff action mirred egress redirect dev ifb0" % p in c for c in flat), p
     assert not any("7000" in c for c in flat), "the control port is never faulted"
+    assert any(c.startswith("tc qdisc add dev lo root") for c in flat) and any(c.startswith("tc qdisc add dev lo parent 3:1") and "delay 75ms" in c for c in flat), "rootlessport reaches the lab over lo: lo is shaped too"
+    for p in (22, 2222, 7):
+        assert all(any("dev lo parent 3: " in c and "match ip %s %d 0xffff flowid 3:1" % (side, p) in c for c in flat) for side in ("sport", "dport")), p
+    assert "tc qdisc del dev lo root" in [" ".join(c) for c in N.clear_commands()]
     assert any("priomap" in c and c.endswith("2 " * 15 + "2") for c in flat), "unmatched traffic defaults to band 3"
     assert N.apply_commands({}) == N.clear_commands() and N.is_noop({"rtt_ms": 0})
     assert N.netem_args({"rtt_ms": 300}) == ["netem", "delay", "150ms"]
@@ -3322,6 +3326,7 @@ def lab_ctl_and_daemon_pure_pieces():
           {"Id": "cc", "Labels": {}}, {"Id": "dd", "Labels": {"phosphor.sshlab": "1", "phosphor.sshlab.expires": "junk"}}]
     assert C.expired_ids(cs, 1000) == ["aa", "dd"], "only lab containers, only expired ones, by exact id"
     assert sorted(C.prune_plan([(5, "f5", "full"), (4, "f4", "full"), (3, "f3", "full"), (2, "f2", "full"), (1, "f1", "full"), (9, "b9", "bare")])) == ["f1", "f2"]
+    assert C.prune_plan([(3, "b3", "bare"), (3, "b3", "bare"), (3, "b2", "bare"), (3, "b2", "bare"), (2, "b1", "bare")]) == [], "duplicate rows of a multi-tag image are not extra tags"
     # the forced command accepts exactly start/stop/list/gc
     assert C.parse_remote_command("start --run r1.x --flavor bare --ttl 3600") == ("start", dict(run="r1.x", flavor="bare", ttl=3600))
     assert C.parse_remote_command("stop --id " + "ab" * 6) == ("stop", dict(id="ab" * 6)) and C.parse_remote_command("list") == ("list", {}) and C.parse_remote_command("gc") == ("gc", {})

@@ -291,6 +291,13 @@ def write_home(row, hooks, home_mode_override=None):
             sh(["chown", "-R", "root:root", d]); sh(["chmod", "-R", "a-w", d])
 
 
+def rootfs_readonly(path="/etc"):
+    try:
+        return bool(os.statvfs(path).f_flag & os.ST_RDONLY)
+    except OSError:
+        return False
+
+
 def lease(req):
     """POST /lease {run, pubkeys: [..], hooks: {shell: template}}: reset every user's home, install the keys, set secrets"""
     with LOCK:
@@ -312,7 +319,10 @@ def lease(req):
             else:
                 open(ak, "w").write("\n".join(pubkeys) + "\n")
             os.chmod(ak, 0o644)
-        for u in usersdb.PASSWORD_USERS:
+        pw_users = list(usersdb.PASSWORD_USERS)
+        if rootfs_readonly():
+            pw_users = []         # the `bare` flavor has a read-only root: /etc/shadow cannot change, so it offers no password users (the cases that need them use `full`)
+        for u in pw_users:
             sh(["chpasswd"], input="%s:%s\n" % (u, pw), check=True)
         for u in usersdb.MFA_USERS:
             f = RUN + "/totp/" + u
@@ -327,7 +337,7 @@ def lease(req):
             except OSError:
                 pass
         return dict(run=STATE["run"], users=[dict(user=r.user, shell=r.shell, profile=r.profile, home=usersdb.PROFILES[r.profile]["home"]) for r in STATE["rows"]],
-                    hostkeys=STATE["hostkeys"], password=pw, mfa_secret=mfa, password_users=list(usersdb.PASSWORD_USERS), mfa_users=list(usersdb.MFA_USERS))
+                    hostkeys=STATE["hostkeys"], password=pw, mfa_secret=mfa, password_users=pw_users, mfa_users=list(usersdb.MFA_USERS))
 
 
 def release(req):

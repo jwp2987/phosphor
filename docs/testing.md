@@ -1710,6 +1710,13 @@ Setup, standalone use, CI wiring, rebuild and troubleshooting are written up in 
 | `sshlab/labctl.py` | the ONLY caller of podman. `build` (tag = sha256 of the sshlab tree, skipped if present, 3 tags kept, pruned by label), `start --run --flavor --ttl` (gc first; netavark bridge network `sshlab`; cap-drop all + NET_ADMIN SETUID SETGID CHOWN DAC_OVERRIDE FOWNER SYS_CHROOT AUDIT_WRITE KILL NET_BIND_SERVICE; pids/memory limits; labels incl. `expires`; random published ports), `stop --id <exact cid>` (must carry the sshlab label), `gc` (expired label, exact ids), `list`, `selftest`, and `remote` (the forced-command verb: only start/stop/list/gc, strictly shaped, the client's sshlab tree arrives as a tar on stdin) |
 | `appci/lab.py` | the client: `Lab.start(local\|remote)`, lease/fault/drop/file/ctl/tree/helper/complete/sshd_since/stop, `write_ssh()` (the `Host lab-<user>` entries, forward slashes so the Windows clients read them, plus `lab-changedkey`), `PlainSsh` (the pty control), and the pure parts: matrix expansion, TOTP, the RTT gate, the paired verdict, sshd channel counts, `LocalRemote`/`LabRemote` |
 
+**Loopback shaping (found on the box 2026-11-09).** podman's rootlessport forwards a published port by connecting to the lab ports over the container's LOOPBACK,
+not through eth0, so a fault on eth0/ifb alone measured 0.2 ms at a requested 150 ms. `netem.py` therefore also shapes `lo` (a `prio` + the same u32 port filters on
+sport and dport, half the RTT per crossing; a connection uses lo or eth0, never both). The `bare` flavor (read-only root) cannot change `/etc/shadow`, so its lease
+reports `password_users: []`; the password cases use `full`. `u_pwsh` needs ICU (`libicu76` in the `full` image; the env switch is not inherited through sshd).
+`onesess_refuses` takes ssh's "Session open refused by peer" on stderr as the evidence, because ssh then retries on a fresh connection that MaxSessions does not limit.
+`prune_plan` dedupes rows (podman lists a multi-tag image once per tag, which used to prune a live tag).
+
 **Why a bridge network and an RTT gate.** Rootless pasta can splice loopback traffic AROUND the container's tc, so a "150 ms" arm could silently run at
 0 ms. The container sits on a netavark bridge, and before every arm the harness shapes the network, MEASURES the echo RTT (median of 15, port 7) and
 compares it with the target +-15 ms (LAN: <= 15 ms). A mismatch makes the arm UNVERIFIABLE (status `noref`, never a pass).

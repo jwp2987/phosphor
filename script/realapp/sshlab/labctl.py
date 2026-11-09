@@ -131,6 +131,7 @@ def expired_ids(containers, now):
 
 def prune_plan(images, keep=KEEP_TAGS):
     """images: [(created_epoch, tag, flavor)] -> tags to remove: all but the newest `keep` per flavor"""
+    images = sorted(set(images))          # the same (created, tag) listed twice (podman lists a multi-tag image once per tag) must not count twice
     out = []
     for fl in {i[2] for i in images}:
         mine = sorted((i for i in images if i[2] == fl), reverse=True)
@@ -317,7 +318,7 @@ def prune_images():
         for t in i.get("Names") or []:
             fl = "bare" if ":bare-" in t else "full"
             rows.append((i.get("Created", 0), t, fl))
-    for t in prune_plan(rows):
+    for t in prune_plan(sorted(set(rows))):      # podman lists an image once per tag when tags share an image id (an unchanged `bare` layer set): dedupe, or a live tag looks like a 4th
         podman("rmi", t, check=False)
 
 

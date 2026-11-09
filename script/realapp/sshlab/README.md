@@ -109,6 +109,7 @@ lab cases SKIP with the reason. `APPCI_LAB_SLOT` (default mac on macOS, windows 
 ## Troubleshooting
 
 - **"tc/ifb unavailable"** in the job log / `/health` `tc:false`: the kernel modules are not loaded; do step 4 above.
+- **RTT gate mismatch with a median near 0.2 ms**: the published port reaches the container over its loopback; `netem.py` shapes `lo` as well as eth0 (see docs/testing.md 2.15). If it reappears, check `tc qdisc show` inside the container for a `lo` prio qdisc.
 - **RTT gate UNVERIFIABLE** (the arm's status is `noref`, never a pass): the measured echo RTT is not within 15 ms of the target. Usually the container is on the rootless `pasta` network instead of the `sshlab` bridge (`podman network ls`), or the ifb/netem modules are missing.
 - **409 on lease / "slot is busy"**: another client holds the slot (`GET /health` shows `leased` and `lease_left`). The case SKIPs rather than share the container. The lease ends on `POST /release`, at teardown, or after 3 h; `labctl.py stop --id` of the slot container (or `serve` after its TTL) also frees it.
 - **401 "bad token" / "SSHLAB_TOKEN ... rejected"**: the project variable and `~/.phosphor-sshlab/token` hold different values. Re-set one from the other; the running slot containers must be recreated to pick up a changed file (`labctl.py stop --id <slot cid>`, then `serve --once`).
