@@ -21,7 +21,7 @@ NSRect warp_ime_position(WarpHostView *, NSRect *);
 id warp_get_accessibility_contents(WarpHostView *);
 void warp_marked_text_updated(WarpHostView *, NSString *, NSRange);
 void warp_marked_text_cleared(WarpHostView *);
-void warp_frame_presented(uint64_t, uint64_t, BOOL);
+void warp_frame_presented(uint64_t, uint64_t, BOOL, uint64_t, BOOL);
 
 // Draw-latency instrumentation (#1148). Intervals/events show up in Instruments under
 // "Points of Interest": keyDown -> displayLayer -> nextDrawable -> presented.
@@ -51,6 +51,24 @@ static _Atomic uint64_t warpPendingKeyNs = 0;
 // the tag stays set until the next frame, which then presents unsynced once: harmless and bounded.
 // Main thread only; atomic just to match the other statics.
 static _Atomic BOOL warpNextFrameFromKey = NO;
+
+// Measurement-only twin of `warpNextFrameFromKey` (render-latency step A). The original is only
+// consumed when display-sync-off-while-typing is enabled; these two are maintained regardless so
+// `hop=key_frame_sched` and `key_frame_skipped` work with that switch off. Nothing reads them to
+// decide behaviour. `warpKeyFrameTag`: a key invalidated the next frame (set by keyDownImpl,
+// consumed by displayLayer). `warpCurrentFrameFromKey`: the frame displayLayer is drawing now.
+static _Atomic BOOL warpKeyFrameTag = NO;
+static _Atomic BOOL warpCurrentFrameFromKey = NO;
+
+// For window.rs request_redraw: is the frame about to be requested key-driven?
+BOOL warp_key_frame_tag_pending(void) {
+    return atomic_load(&warpKeyFrameTag);
+}
+
+// For the renderer's frame gate: is the frame being drawn right now key-driven?
+BOOL warp_current_frame_from_key(void) {
+    return atomic_load(&warpCurrentFrameFromKey);
+}
 
 // While the user is typing, present without waiting for vsync (`CAMetalLayer.displaySyncEnabled =
 // NO`), so the frame carrying a keystroke is not held to the next refresh; idle output and
@@ -154,11 +172,17 @@ BOOL warp_frame_gate_arm(CAMetalLayer *layer) {
 // drawable's presented handler. `waitNs` is how long nextDrawable blocked.
 void warp_frame_track_drawable(id<MTLDrawable> drawable, uint64_t waitNs) {
     uint64_t keyNs = atomic_exchange(&warpPendingKeyNs, 0);
+    // Step A measurement: when this frame is handed to the compositor (a little before the encode
+    // and commit, so submit -> presented slightly over-counts by the encode time) and whether the
+    // layer presents synced.
+    uint64_t submitNs = warpNowNs();
+    BOOL syncEnabled = YES;
     os_signpost_event_emit(warpDrawLog(), OS_SIGNPOST_ID_EXCLUSIVE, "nextDrawable", "wait_us=%llu",
                            waitNs / 1000);
     if (@available(macOS 10.15.4, *)) {
         if ([drawable respondsToSelector:@selector(addPresentedHandler:)]) {
             CAMetalLayer *drawableLayer = [(id<CAMetalDrawable>)drawable layer];
+            if (drawableLayer) syncEnabled = drawableLayer.displaySyncEnabled;
             WarpFrameGate *gate = drawableLayer ? warpFrameGateFor(drawableLayer) : nil;
             if (gate) atomic_fetch_add(&gate->unpresented, 1);
             [drawable addPresentedHandler:^(id<MTLDrawable> presented) {
@@ -178,7 +202,10 @@ void warp_frame_track_drawable(id<MTLDrawable> drawable, uint64_t waitNs) {
                   (wasPresented && keyNs > 0 && presentedNs > keyNs) ? presentedNs - keyNs : 0;
               os_signpost_event_emit(warpDrawLog(), OS_SIGNPOST_ID_EXCLUSIVE, "presented",
                                      "key_to_presented_us=%llu", keyToPresentedNs / 1000);
-              warp_frame_presented(keyToPresentedNs, waitNs, wasPresented);
+              uint64_t submitToPresentedNs =
+                  (wasPresented && presentedNs > submitNs) ? presentedNs - submitNs : 0;
+              warp_frame_presented(keyToPresentedNs, waitNs, wasPresented, submitToPresentedNs,
+                                   syncEnabled);
             }];
         }
     }
@@ -323,6 +350,7 @@ void warp_frame_track_drawable(id<MTLDrawable> drawable, uint64_t waitNs) {
 
 - (void)displayLayer:(CALayer *)layer {
     if (!testMode && self.readyForWarp) {
+        atomic_store(&warpCurrentFrameFromKey, atomic_exchange(&warpKeyFrameTag, NO));
         if (warpDisplaySyncOffWhileTyping() && [layer isKindOfClass:[CAMetalLayer class]]) {
             CAMetalLayer *metalLayer = (CAMetalLayer *)layer;
             // This frame's cause: consumed here so it applies to this frame only.
@@ -378,6 +406,7 @@ void warp_frame_track_drawable(id<MTLDrawable> drawable, uint64_t waitNs) {
     // Tag the frame this key invalidates (see `warpNextFrameFromKey`). Return starts command
     // output that scrolls: only its own frame is tagged, the output frames after it are not.
     atomic_store(&warpNextFrameFromKey, YES);
+    atomic_store(&warpKeyFrameTag, YES);
     uint64_t pendingKeyNs = atomic_load(&warpPendingKeyNs);
     if (pendingKeyNs == 0 || keyNowNs - pendingKeyNs > 500000000ull) {
         atomic_store(&warpPendingKeyNs, keyNowNs);

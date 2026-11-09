@@ -138,3 +138,32 @@ fn a_skip_run_counts_frames_and_ends_when_a_frame_is_drawn() {
     run.note_skip(60);
     assert_eq!(run.finish(61), Some((1, 1)));
 }
+
+#[test]
+fn a_skip_run_counts_the_key_driven_frames_it_skipped() {
+    let run = SkipRun::default();
+    run.note_skip(1);
+    run.note_skip(2);
+    run.note_key_skip();
+    run.note_skip(3);
+    assert_eq!(run.take_key_skipped(), 1);
+    assert_eq!(run.finish(10), Some((3, 9)));
+    // the next run starts at zero
+    run.note_skip(20);
+    assert_eq!(run.take_key_skipped(), 0);
+}
+
+#[test]
+fn key_presented_detail_has_the_fields_the_harness_parses() {
+    assert_eq!(
+        key_presented_detail(8_300_000, 34_500_000, false, 2_250_000),
+        "submit_to_presented_ms=8.30 key_to_presented_ms=34.50 sync=0 wait_ms=2.25"
+    );
+    assert!(key_presented_detail(0, 1, true, 0).contains("sync=1"));
+}
+
+#[test]
+fn key_frame_sched_detail_is_milliseconds() {
+    assert_eq!(key_frame_sched_detail(1_234_000), "ms=1.23");
+    assert_eq!(key_frame_sched_detail(0), "ms=0.00");
+}

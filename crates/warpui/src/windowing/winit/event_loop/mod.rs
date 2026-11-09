@@ -1353,14 +1353,16 @@ impl EventLoop {
 
         let redraw_elapsed = redraw_start.elapsed();
         let acquire_wait = window.last_acquire_wait();
+        let present_time = window.last_present_time();
         // #1225: one timestamped line per frame so a key's `keydown` line and the frame that shows
         // it can be put on one clock without a profiler (the `Frame drawn` line below has no
         // millisecond timestamp). Costs one atomic load when input-order logging is off.
         crate::input_order::log_hop("frame_drawn", || {
             format!(
-                "total_ms={:.1} acquire_ms={:.1}",
+                "total_ms={:.1} acquire_ms={:.1} present_ms={:.1}",
                 redraw_elapsed.as_secs_f64() * 1e3,
-                acquire_wait.map_or(0., |wait| wait.as_secs_f64() * 1e3)
+                acquire_wait.map_or(0., |wait| wait.as_secs_f64() * 1e3),
+                present_time.map_or(0., |time| time.as_secs_f64() * 1e3)
             )
         });
         log::debug!(

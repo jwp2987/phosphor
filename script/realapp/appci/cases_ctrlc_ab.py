@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cases  # noqa: E402  (cases.py imports this module as its last line)
 from cases import case, stats  # noqa: E402
 import lat  # noqa: E402
+import render_hops  # noqa: E402
 
 GATE_ENV = "PHOSPHOR_MAC_SKIP_BLOCKED_FRAMES"
 THROUGHPUT_WARN_PCT = 10.0          # ON arm's flood throughput this far below OFF = WARN
@@ -129,6 +130,7 @@ def c_ctrl_c_flood_ab(ctx, r):
         r.skip("this app launcher cannot pass an extra environment to a relaunch")
     n, warm = ctx.count_lat(30), lat.warmup()
     samples, raws, oks, seq = {"on": [], "off": []}, {"on": [], "off": []}, [], 0
+    hop_lines = {"on": [], "off": []}
     try:
         for arm, cnt, disc in ab_schedule(n, warm):
             ctx.app.extra_env = _arm_env(arm)
@@ -143,7 +145,9 @@ def c_ctrl_c_flood_ab(ctx, r):
             got, ok = cases.ctrlc_samples(ctx, cnt, "ccab_%s_%d.txt" % (arm, seq), budget_s=max(120, cnt * 5), flood=True)
             oks.append(ok)
             samples[arm] += got[disc:]
-            raws[arm].append(ab_arm_log_metrics(ctx.app_log_lines(), t0))       # this launch's log: the next relaunch overwrites it
+            lines = ctx.app_log_lines()
+            raws[arm].append(ab_arm_log_metrics(lines, t0))       # this launch's log: the next relaunch overwrites it
+            hop_lines[arm] += render_hops.window_lines(lines, t0)
             ctx.reset()
     finally:
         ctx.app.extra_env = {}
@@ -152,6 +156,8 @@ def c_ctrl_c_flood_ab(ctx, r):
     on, off = (ab_summary(samples[a], ab_merge(raws[a])) for a in ("on", "off"))
     r.metric("ctrl_c_flood_gate_on", on)
     r.metric("ctrl_c_flood_gate_off", off)
+    for arm in ("on", "off"):
+        render_hops.record(r, hop_lines[arm], prefix="ctrl_c_flood_gate_%s_" % arm)        # render-latency step A hops per arm (key_frames_skipped, key_presented); metrics only
     d, warns = ab_verdict(on, off)
     r.metric("ctrl_c_flood_gate_delta_p50_ms", d)
     r.note("gate on vs off: Δp50 = %s ms (on %s / off %s; p95 %s / %s; n %d / %d; blocks of %d, relaunch per block)" % (

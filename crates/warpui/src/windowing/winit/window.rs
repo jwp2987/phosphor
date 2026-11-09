@@ -900,6 +900,13 @@ impl Window {
         Some(resources.last_acquire_wait())
     }
 
+    /// How long the last `present()` call took (zero when the frame did not present).
+    pub(super) fn last_present_time(&self) -> Option<std::time::Duration> {
+        let inner = self.inner.borrow();
+        let resources = &inner.as_ref()?.rendering_resources.as_ref()?.resources;
+        Some(resources.last_present_time())
+    }
+
     pub fn render(
         &self,
         new_scene: Option<Rc<Scene>>,

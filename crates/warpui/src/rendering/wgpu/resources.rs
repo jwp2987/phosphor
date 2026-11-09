@@ -75,6 +75,9 @@ pub struct Resources {
     /// How long the most recent [`Self::get_surface_texture`] call took, success or not. Read by
     /// the event loop for slow-frame diagnostics.
     last_acquire_wait: Cell<Duration>,
+    /// How long `surface_texture.present()` took in the most recent frame (zero when the frame did
+    /// not present). Diagnostic only (render-latency step A).
+    last_present_time: Cell<Duration>,
 }
 
 impl Resources {
@@ -152,6 +155,7 @@ impl Resources {
                 uniforms,
                 quad,
                 last_acquire_wait: Cell::new(Duration::ZERO),
+                last_present_time: Cell::new(Duration::ZERO),
             })
         })
     }
@@ -159,6 +163,16 @@ impl Resources {
     /// How long the most recent surface texture acquire took.
     pub fn last_acquire_wait(&self) -> Duration {
         self.last_acquire_wait.get()
+    }
+
+    /// How long the most recent `present()` call took; zero when the frame did not present.
+    pub fn last_present_time(&self) -> Duration {
+        self.last_present_time.get()
+    }
+
+    /// Records the duration of this frame's `present()` call.
+    pub fn set_last_present_time(&self, elapsed: Duration) {
+        self.last_present_time.set(elapsed);
     }
 
     pub fn uniform_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
@@ -196,6 +210,8 @@ impl Resources {
             ..
         } = self;
 
+        // A frame that fails before presenting must not report the previous frame's present.
+        self.last_present_time.set(Duration::ZERO);
         let acquire_start = Instant::now();
         let result = get_surface_texture(surface);
         self.last_acquire_wait.set(acquire_start.elapsed());

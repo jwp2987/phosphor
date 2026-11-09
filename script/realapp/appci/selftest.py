@@ -555,6 +555,42 @@ def ctrl_c_flood_ab_pure_parts_1838():
 
 
 @check
+def render_latency_step_a_hops_parse():
+    """render-latency step A: the new hop fields parse (key_presented, key_frame_sched, frame_skip_run key_frame_skipped, frame_drawn present_ms), the
+    old frame_drawn line without present_ms still parses, a window filters by t=, an old build gives {}, and the present-mode arm helpers are right"""
+    import render_hops as rh
+    import cases_agent_latency as al
+    L = ["input_order hop=key_presented submit_to_presented_ms=8.30 key_to_presented_ms=34.50 sync=0 wait_ms=2.25 t=1000000.0",
+         "input_order hop=key_presented submit_to_presented_ms=16.70 key_to_presented_ms=40.00 sync=1 wait_ms=0.00 t=1000100.0",
+         "input_order hop=key_frame_sched ms=1.50 t=1000001.0", "input_order hop=key_frame_sched ms=0.50 t=1000101.0",
+         "input_order hop=frame_skip_run skipped=3 held_ms=12.0 key_frame_skipped=2 t=1000002.0",
+         "input_order hop=frame_skip_run skipped=1 held_ms=5.0 t=1000003.0",                       # a build before the field: counts as 0
+         "input_order hop=frame_drawn total_ms=4.0 acquire_ms=0.5 present_ms=9.0 t=1000004.0",
+         "input_order hop=frame_drawn total_ms=4.0 acquire_ms=0.5 t=1000005.0",                    # old line: no present_ms
+         "input_order hop=key_presented submit_to_presented_ms=99.00 key_to_presented_ms=99.00 sync=1 wait_ms=0.00 t=5.0"]   # before t0
+    m = rh.render_hop_metrics(L, 1000.0)
+    assert m["key_submit_to_presented_ms"]["p50"] == 12.5 and m["key_to_presented_ms_hop"]["n"] == 2 and m["key_presented_wait_ms"]["max"] == 2.25, m
+    assert m["key_presented_sync_on"] == 1 and m["key_presented_sync_off"] == 1, m
+    assert m["key_frame_sched_ms"]["p50"] == 1.0 and m["key_frames_skipped"] == 2 and m["skip_runs"] == 2, m
+    assert m["frame_present_ms"] == dict(n=1, p50=9.0, p95=9.0, max=9.0) and m["frame_acquire_ms"]["n"] == 2, m
+    assert rh.render_hop_metrics(["input_order hop=frame_drawn total_ms=4.0 acquire_ms=0.5 t=1.0"]) .get("frame_present_ms") is None
+    assert rh.render_hop_metrics("input_order hop=ui_item kind=frame ms=5.0 t=1.0\n") == {}
+    assert rh.render_hop_metrics("\n".join(L), 1000.0, 1000.0 + 0.0002)["key_submit_to_presented_ms"]["n"] == 1    # t1 window (t is epoch ms / 1000)
+    # the keyed frame regex of the paced analysis still matches both frame_drawn shapes
+    assert al.FRAME_DRAWN_RE.search("input_order hop=frame_drawn total_ms=4.0 acquire_ms=0.5 present_ms=9.0 t=10.0") and al.FRAME_DRAWN_RE.search(
+        "input_order hop=frame_drawn total_ms=4.0 acquire_ms=0.5 t=10.0")
+    # arms: A/B/C order, kept samples per arm, env, deltas
+    sch = rh.arm_schedule(rh.ARMS, 30, 2, 3)
+    assert [a for a, _c, _d in sch] == ["default", "mailbox", "lat1"] * 2 and all(c == 18 and d == 3 for _a, c, d in sch), sch
+    assert rh.arm_env("mailbox") == {"PHOSPHOR_PRESENT_MODE": "mailbox"} and rh.arm_env("lat1") == {"PHOSPHOR_FRAME_LATENCY": "1"} and rh.arm_env("default") == {}
+    base = rh.arm_summary([10.0, 12.0, 14.0], [8.0, 9.0, 10.0], "input_order hop=frame_drawn total_ms=4.0 acquire_ms=0.5 present_ms=9.0 t=1.0")
+    mb = rh.arm_summary([6.0, 7.0, 8.0], [5.0, 6.0, 7.0], "")
+    d = rh.arm_deltas(dict(default=base, mailbox=mb, lat1=rh.arm_summary([], [], "")))
+    assert d["mailbox"] == dict(raw_p50_delta=-5.0, adjusted_p50_delta=-3.0) and d["lat1"] == dict(raw_p50_delta=None, adjusted_p50_delta=None), d
+    assert base["present_ms"]["p50"] == 9.0 and mb["present_ms"] is None
+
+
+@check
 def injector_failures_are_errors():
     import backend
     assert backend.is_injector(["wtype", "-k", "a"]) and backend.is_injector(["xdotool", "type", "x"]) and not backend.is_injector(["xdotool", "windowfocus", "1"])
