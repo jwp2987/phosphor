@@ -90,6 +90,8 @@ impl Obs {
 /// Wires the app and sends nothing yet.
 pub fn setup(app: &mut App, scenario: &Scenario, safe_allowlist: bool) -> Rig {
     initialize_app_for_terminal_view(app);
+    // The agent turn persists conversation state through this provider.
+    crate::test_util::settings::initialize_history_persistence_for_tests(app);
     if safe_allowlist {
         enable_safe_allowlist(app);
     }

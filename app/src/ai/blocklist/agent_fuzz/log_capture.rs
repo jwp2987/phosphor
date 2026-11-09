@@ -127,6 +127,11 @@ impl PanicWatch {
 
 impl Drop for PanicWatch {
     fn drop(&mut self) {
+        // `set_hook` aborts when called from a panicking thread; the process is ending the case
+        // anyway, so the hook is restored on the normal path only.
+        if std::thread::panicking() {
+            return;
+        }
         if let Some(previous) = self.previous.take() {
             std::panic::set_hook(previous);
         }
