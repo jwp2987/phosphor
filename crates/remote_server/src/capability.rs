@@ -47,7 +47,6 @@ pub const CODEBASE_CHUNKS: &str = "codebase_chunks";
 /// The families above that only the legacy full daemon implements, for documentation and for
 /// tests that pin the helper's list against them.
 pub const LEGACY_ONLY_CAPABILITIES: &[&str] = &[
-    BUFFERS,
     DIFF_STATE,
     GIT_WRITE,
     CODEBASE_INDEX,
@@ -66,6 +65,7 @@ pub const HELPER_CAPABILITIES: &[&str] = &[
     RIPGREP_SEARCH,
     REPO_METADATA,
     FILE_CONTEXT,
+    BUFFERS,
 ];
 
 /// What the server on the other end of a session supports.
