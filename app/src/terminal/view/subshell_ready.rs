@@ -19,6 +19,7 @@ use crate::terminal::shell::ShellType;
 
 /// How long an armed setup waits for a sample that proves the shell ready before it is given up
 /// (owner decision 2026-11-08, Q7: 60 s). A "click Phosphorize to try again" toast follows.
+// give-up-net: 60 s ceiling for a setup waiting for the reader-ready proof: gives the setup up, keys return to the editor, a 'try again' toast follows
 pub const PRE_READY_CEILING: Duration = Duration::from_secs(60);
 
 /// What the end of the active block's output looks like.

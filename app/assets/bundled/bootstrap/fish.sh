@@ -1199,6 +1199,7 @@ esac
             if not kill -0 $probe_pid 2>/dev/null
                 break
             end
+            # give-up-net: polls then kills an ssh probe (<=5 s); never touches the tty or typed keys
             command sleep 0.1
         end
         kill $probe_pid 2>/dev/null
@@ -1335,6 +1336,7 @@ esac
             p=$!
             (
                 trap "kill \$s; exit 0" TERM
+                # give-up-net: kills a stuck ssh control-master probe after 5 s; never touches the tty or typed keys
                 sleep 5 &
                 s=$!
                 wait "$s"

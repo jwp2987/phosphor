@@ -1,0 +1,349 @@
+#!/usr/bin/env python3
+"""Guard: timers on the input path are give-up nets, nothing else (owner rule, 2026-11-08).
+
+THE RULE. A timer on the key path may only be a GIVE-UP NET: it hands text back to the editor, or
+keeps it held (or shows a notice). A timer NEVER writes to the pty, releases held keys, routes,
+commits, or re-asks. Decisions come from EVENTS (the shell announced itself, the program owns the
+tty, the block ended); a timer is the last resort that stops a missing event from losing keys.
+
+WHAT THIS CHECKS. It scans the input-path files in INPUT_PATH_FILES below and finds timers:
+  Rust   `Timer::after` / `Timer::interval` / `spawn_after` / `tokio::time::sleep|timeout` /
+         `thread::sleep` call sites, and Duration constants named like *_GIVE_UP, *_DELAY,
+         *_WINDOW, *_QUIET, *_SETTLE, *_BUDGET, *_RESET, *_NET, *_CEILING, *_TIMEOUT, *_GRACE,
+         *_PATIENCE, *_HOLD, *_CAP, *_BACKSTOP, *_WAIT, *_PACING, *_POLL, *_RECHECK, *_NOTICE, *_AFTER,
+         (each as a whole underscore-delimited token anywhere in the name)
+         (or any Duration constant a timer call site uses).
+  shell  `read -t`, `sleep N`, `zselect -t`, $SECONDS / $EPOCHREALTIME arithmetic, TMOUT,
+         pwsh `Start-Sleep` / `Wait-Event -Timeout`.
+Test files (*_test.rs, *_tests.rs, tests/ dirs) are exempt.
+
+EACH timer must (1) sit within 5 lines of a comment `give-up-net: <what it hands back / keeps held>`
+(Rust `//`, shell `#`), and (2) have its identifier in script/input_path_timers.allow
+(`path<TAB>identifier<TAB>what it does`). The identifier is the constant's name; for a call site
+with no constant (`Timer::after(delay)`, `sleep 5`) it is the enclosing function's name. A use of a
+constant is covered by the constant's own definition. Allowlist entries that no longer match code
+are STALE and fail too (delete the entry when the timer goes).
+
+PENDING-CONVERSION. The allowlist's last section holds timers known to break the rule that are being
+converted to events. The default run prints a WARNING per entry; `--strict` (release tier) FAILS on
+any. Moving an entry into the compliant section needs the code to really be a give-up net.
+
+ADDING A TIMER. Prefer an event. If a give-up net is truly needed: add the constant (or call), put
+`// give-up-net: <what it hands back / keeps held>` next to it, and add one line to
+script/input_path_timers.allow. If you cannot honestly write that comment, the timer is not allowed.
+Adding a file: append it to INPUT_PATH_FILES.
+
+Usage: script/check_input_path_timers [--strict] | --self-test
+Exit 0: clean. Exit 1: offending timers, stale entries (or pending entries with --strict).
+"""
+import os
+import re
+import sys
+import tempfile
+from pathlib import Path
+
+# The single list of input-path files. Entries are files, directories (scanned recursively) or globs,
+# relative to the repo root. Extend here.
+INPUT_PATH_FILES = [
+    "app/src/terminal/writeable_pty",
+    "app/src/terminal/view/paste_queue.rs",
+    "app/src/terminal/view/subshell_ready.rs",
+    "app/src/terminal/model/typeahead_handoff.rs",
+    "app/src/terminal/line_editor_status.rs",
+    "app/src/terminal/input.rs",
+    "app/src/terminal/view.rs",
+    "app/src/terminal/model/block/interaction_mode.rs",
+    # the hand-over machinery the files above delegate to
+    "app/src/terminal/view/ssh_edges.rs",
+    "app/src/terminal/view/ssh_typeahead.rs",
+    "app/src/terminal/view/ssh_queue.rs",
+    "app/src/terminal/view/route_facts.rs",
+    "app/src/terminal/input/enter_queue.rs",
+    "app/src/terminal/input/paste_queue.rs",
+    "app/src/terminal/input/native_completions.rs",
+    "app/src/terminal/input_queue",
+    # bundled shell bootstrap / integration scripts (the in-band completion exchange lives here)
+    "app/assets/bundled/bootstrap",
+    "app/assets/bundled/ssh",
+]
+ALLOW_FILE = "script/input_path_timers.allow"
+PENDING_MARK = "# PENDING-CONVERSION"
+NOTE_RE = re.compile(r"give-up-net:\s*\S")
+WINDOW = 5
+
+# A whole underscore-delimited token anywhere in the name (so THRESHOLD never matches HOLD).
+NAME_RE = re.compile(
+    r"(?:^|_)(?:GIVE_UP|DELAY|WINDOW|QUIET|SETTLE|BUDGET|RESET|NET|CEILING|TIMEOUT|GRACE|PATIENCE|HOLD|"
+    r"CAP|BACKSTOP|WAIT|PACING|POLL|RECHECK|NOTICE|AFTER)(?:_|$)"
+)
+CONST_RE = re.compile(r"\b(?:const|static\s+ref|static)\s+([A-Z][A-Z0-9_]+)\s*:")
+DUR_RE = re.compile(r"Duration")
+DURFROM_RE = re.compile(r"from_(?:millis|secs|micros|nanos|secs_f32|secs_f64)")
+CALL_RE = re.compile(
+    r"(?:\bTimer::(?:after|interval)|\bspawn_after|\btokio::time::(?:sleep|timeout)|\bthread::sleep)\s*\("
+)
+FN_RE = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+(\w+)")
+UPPER_RE = re.compile(r"\b([A-Z][A-Z0-9]*_[A-Z0-9_]+|[A-Z]{4,})\b")
+
+SHELL_FN_RES = [
+    re.compile(r"^\s*function\s+([\w-]+)"),
+    re.compile(r"^\s*([A-Za-z_][\w-]*)\s*\(\)\s*\{?"),
+    re.compile(r"^\s*([A-Za-z_][\w-]*)\s+\(\)\s*\{?"),
+]
+SHELL_PATTERNS = [
+    re.compile(r"\bread\b[^#\n]*\s-[A-Za-z]*t[A-Za-z]*\s"),
+    re.compile(r"(?:^|[\s;(&|])sleep\s+[0-9$]"),
+    re.compile(r"\bzselect\s+-t\b"),
+    re.compile(r"\(\(.*\b(?:SECONDS|EPOCHREALTIME)\b"),
+    re.compile(r"\bTMOUT\b"),
+    re.compile(r"\bStart-Sleep\b"),
+    re.compile(r"\bWait-Event\b.*-Timeout"),
+]
+SHELL_SUFFIXES = (".sh", ".ps1", ".nu", ".fish", ".zsh", ".bash")
+
+
+def is_test_file(rel):
+    name = os.path.basename(rel)
+    parts = rel.split("/")
+    return name.endswith(("_test.rs", "_tests.rs")) or name in ("tests.rs",) or "tests" in parts[:-1]
+
+
+def expand(root, entries):
+    out = []
+    for e in entries:
+        p = root / e
+        if p.is_dir():
+            for q in sorted(p.rglob("*")):
+                if q.is_file():
+                    out.append(str(q.relative_to(root)))
+        elif p.is_file():
+            out.append(e)
+        else:
+            for q in sorted(root.glob(e)):
+                if q.is_file():
+                    out.append(str(q.relative_to(root)))
+    seen, res = set(), []
+    for f in out:
+        if f in seen or is_test_file(f):
+            continue
+        if not (f.endswith(".rs") or f.endswith(SHELL_SUFFIXES)):
+            continue
+        seen.add(f)
+        res.append(f)
+    return res
+
+
+def comment_near(lines, idx, prefix):
+    lo, hi = max(0, idx - WINDOW), min(len(lines), idx + WINDOW + 1)
+    for j in range(lo, hi):
+        s = lines[j].lstrip()
+        if s.startswith(prefix) and NOTE_RE.search(s):
+            return True
+        # a trailing comment on a code line counts too
+        k = lines[j].find(prefix + " give-up-net:")
+        if k >= 0 and NOTE_RE.search(lines[j][k:]):
+            return True
+    return False
+
+
+def call_arg(lines, idx, m):
+    """Text of the call's argument list (balanced parens, may span lines)."""
+    text = "\n".join(lines[idx:idx + 8])
+    s = text[m.end():]
+    depth, buf = 1, []
+    for ch in s:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                break
+        buf.append(ch)
+    return "".join(buf)
+
+
+def scan_rust(rel, lines):
+    """Returns (consts{name: line}, sites[(line, ident_or_None, enclosing_fn)])."""
+    consts, sites = {}, []
+    cur_fn = ""
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith("//"):
+            continue
+        mf = FN_RE.match(line)
+        if mf:
+            cur_fn = mf.group(1)
+        mc = CONST_RE.search(line)
+        if mc:
+            chunk = "\n".join(lines[i:i + 4])
+            chunk = chunk.split(";")[0]
+            if DUR_RE.search(chunk) and DURFROM_RE.search(chunk):
+                consts.setdefault(mc.group(1), i)
+        mcall = CALL_RE.search(line)
+        if mcall:
+            arg = call_arg(lines, i, mcall)
+            mu = UPPER_RE.search(arg)
+            sites.append((i, mu.group(1) if mu else None, cur_fn))
+    return consts, sites
+
+
+def scan_shell(rel, lines):
+    sites, cur_fn = [], ""
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith("#"):
+            continue
+        for r in SHELL_FN_RES:
+            m = r.match(line)
+            if m and m.group(1) not in ("if", "while", "for", "case", "function"):
+                cur_fn = m.group(1)
+                break
+        if any(p.search(line) for p in SHELL_PATTERNS):
+            sites.append((i, cur_fn or "<top>"))
+    return sites
+
+
+def parse_allow(text):
+    ok, pending = {}, {}
+    cur = ok
+    for n, raw in enumerate(text.splitlines(), 1):
+        if raw.startswith(PENDING_MARK):
+            cur = pending
+            continue
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        parts = raw.split("\t")
+        if len(parts) < 3 or not all(p.strip() for p in parts[:3]):
+            raise SystemExit(f"{ALLOW_FILE}:{n}: want path<TAB>identifier<TAB>what it does")
+        cur[(parts[0].strip(), parts[1].strip())] = (n, parts[2].strip())
+    return ok, pending
+
+
+def run(root, files, allow_text, strict):
+    allow_ok, allow_pending = parse_allow(allow_text)
+    allowed = {**allow_ok, **allow_pending}
+    errors, warnings = [], []
+    missing_note = []  # (key, message): waived for PENDING entries, which are not nets
+    found = set()
+    all_consts = {}   # name -> (file, line)
+    per_file = {}
+    for rel in files:
+        lines = (root / rel).read_text(errors="replace").split("\n")
+        per_file[rel] = lines
+        if rel.endswith(".rs"):
+            consts, sites = scan_rust(rel, lines)
+            for c, ln in consts.items():
+                all_consts.setdefault(c, (rel, ln))
+            per_file[rel] = (lines, consts, sites)
+        else:
+            per_file[rel] = (lines, None, scan_shell(rel, lines))
+    used = set()
+    for rel, (lines, consts, sites) in per_file.items():
+        if consts is None:
+            for ln, fn in sites:
+                key = (rel, fn)
+                found.add(key)
+                if not comment_near(lines, ln, "#"):
+                    missing_note.append((key, f"{rel}:{ln + 1}: shell timer in `{fn}` has no `# give-up-net: <what it hands back / keeps held>` comment within {WINDOW} lines"))
+            continue
+        for ln, ident, fn in sites:
+            if ident and ident in all_consts:
+                used.add(ident)
+                continue  # covered by the constant's definition
+            key = (rel, ident or fn)
+            found.add(key)
+            if not comment_near(lines, ln, "//"):
+                missing_note.append((key, f"{rel}:{ln + 1}: timer call in `{fn}` has no `// give-up-net: <what it hands back / keeps held>` comment within {WINDOW} lines"))
+    for name, (rel, ln) in sorted(all_consts.items()):
+        if not (NAME_RE.search(name) or name in used):
+            continue
+        found.add((rel, name))
+        if not comment_near(per_file[rel][0], ln, "//"):
+            missing_note.append(((rel, name), f"{rel}:{ln + 1}: timer constant {name} has no `// give-up-net: <what it hands back / keeps held>` comment within {WINDOW} lines"))
+    errors.extend(m for k, m in missing_note if k not in allow_pending)
+    for key in sorted(found):
+        if key not in allowed:
+            errors.append(f"{key[0]}: timer `{key[1]}` is not in {ALLOW_FILE} (add `path<TAB>identifier<TAB>what it does` only if it is a give-up net)")
+    for key, (n, _) in sorted(allowed.items()):
+        if key not in found:
+            errors.append(f"{ALLOW_FILE}:{n}: STALE entry {key[0]} {key[1]} matches no timer in the code; delete it")
+    for key, (n, what) in sorted(allow_pending.items()):
+        msg = f"{ALLOW_FILE}:{n}: PENDING-CONVERSION {key[0]} {key[1]}: {what}"
+        (errors if strict else warnings).append(msg)
+    return errors, warnings
+
+
+RULE = (
+    "Rule: a timer on the input path may only be a give-up net that hands text back to the editor or keeps\n"
+    "it held. It never writes to the pty, releases held keys, routes, commits or re-asks. Annotate it with\n"
+    "`give-up-net: <what it hands back / keeps held>` and add it to script/input_path_timers.allow."
+)
+
+
+def self_test():
+    ok = True
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "f.rs").write_text(
+            "const A_GIVE_UP: Duration = Duration::from_secs(3);\n"
+            "fn go() {\n    ctx.spawn(Timer::after(A_GIVE_UP), |m| {});\n}\n"
+        )
+        (root / "g.rs").write_text(
+            "fn go2() {\n    // give-up-net: hands the text back\n    ctx.spawn(Timer::after(delay), |m| {});\n}\n"
+        )
+        (root / "s.sh").write_text("f () {\n  # give-up-net: hands the byte back\n  read -t 0.1 x\n}\n")
+        files = ["f.rs", "g.rs", "s.sh"]
+        good_allow = "g.rs\tgo2\tx\ns.sh\tf\ty\n"
+
+        def expect(label, allow, needle, strict=False, fs=files, want_fail=True):
+            nonlocal ok
+            errs, _ = run(root, fs, allow, strict)
+            hit = any(needle in e for e in errs)
+            if want_fail != bool(errs) or (needle and want_fail and not hit):
+                print(f"self-test FAIL: {label}: errors={errs}")
+                ok = False
+            else:
+                print(f"self-test ok: {label}")
+
+        # unannotated timer (constant without a comment) is caught, even though it is allowlisted
+        expect("unannotated timer", good_allow + "f.rs\tA_GIVE_UP\tz\n", "A_GIVE_UP has no")
+        # annotated but missing from the allowlist
+        (root / "f.rs").write_text(
+            "// give-up-net: hands the line back\nconst A_GIVE_UP: Duration = Duration::from_secs(3);\n"
+        )
+        expect("missing allowlist entry", good_allow, "not in script/input_path_timers.allow")
+        # allowlisted + annotated is clean; a stale entry is caught
+        expect("clean", good_allow + "f.rs\tA_GIVE_UP\tz\n", "", want_fail=False)
+        expect("stale entry", good_allow + "f.rs\tA_GIVE_UP\tz\nf.rs\tGONE_NET\tz\n", "STALE")
+        # pending: warning by default, failure with --strict
+        pend = good_allow + "f.rs\tA_GIVE_UP\tz\n" + PENDING_MARK + "\ng.rs\tgo2\tz\n"
+        pend = "s.sh\tf\ty\nf.rs\tA_GIVE_UP\tz\n" + PENDING_MARK + "\ng.rs\tgo2\tz\n"
+        expect("pending warns", pend, "", want_fail=False)
+        expect("pending fails under --strict", pend, "PENDING-CONVERSION", strict=True)
+    print("self-test: " + ("ok" if ok else "FAILED"))
+    return 0 if ok else 1
+
+
+def main():
+    args = sys.argv[1:]
+    if "--self-test" in args:
+        return self_test()
+    strict = "--strict" in args
+    root = Path(__file__).resolve().parent.parent
+    files = expand(root, INPUT_PATH_FILES)
+    if not files:
+        print("check_input_path_timers: no input-path files found (INPUT_PATH_FILES stale?)", file=sys.stderr)
+        return 1
+    allow_text = (root / ALLOW_FILE).read_text()
+    errors, warnings = run(root, files, allow_text, strict)
+    for w in warnings:
+        print("WARNING " + w, file=sys.stderr)
+    if errors:
+        for e in errors:
+            print(e, file=sys.stderr)
+        print("\ncheck_input_path_timers: FAILED\n" + RULE, file=sys.stderr)
+        return 1
+    print(f"check_input_path_timers: ok ({len(files)} files, {len(warnings)} pending)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

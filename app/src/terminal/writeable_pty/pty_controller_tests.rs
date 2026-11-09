@@ -3744,7 +3744,9 @@ fn a_reused_or_missing_prompt_token_is_cancelled() {
                 Some(&native_completions_cancel()),
                 "{second_token:?}: {out:?}"
             );
-            assert!(second.recv().await.is_err(), "{second_token:?}");
+            // The cancel is an answer of nothing (owner decision: an Enter held for the Tab then
+            // runs the typed line); only a give-up is "no answer" (a closed channel).
+            assert_eq!(second.recv().await.ok(), Some(vec![]), "{second_token:?}");
         });
     }
 }
@@ -3762,13 +3764,77 @@ fn prompt_timeout_cancels_without_a_toast_for_a_remote_first_request() {
         Timer::after(NATIVE_COMPLETIONS_PROMPT_TIMEOUT + Duration::from_millis(300)).await;
         assert_eq!(
             written(&sender),
-            vec![vec![0x19], native_completions_cancel()]
+            vec![vec![0x19]],
+            "the give-up timer writes nothing"
         );
         assert!(results_rx.recv().await.is_err(), "the requester falls back");
         controller.read(&app, |controller, _| {
             assert!(controller.in_flight_native_completions_state.is_none());
+            assert!(controller.native_cancel_owed);
             assert!(!controller.last_native_cancel_toasted);
         });
+    });
+}
+
+/// The cancel owed after a prompt timeout goes out exactly once, in front of the next real
+/// write; a second write has no cancel in front of it.
+#[test]
+fn the_cancel_owed_after_a_timeout_precedes_the_next_write_exactly_once() {
+    App::test((), |mut app| async move {
+        let (controller, _model_events, _status, sender, _tx) =
+            native_completions_controller(&mut app);
+        let _rx = controller.update(&mut app, |controller, ctx| {
+            start_exchange(controller, "cd pro", ctx)
+        });
+        Timer::after(NATIVE_COMPLETIONS_PROMPT_TIMEOUT + Duration::from_millis(300)).await;
+        controller.update(&mut app, |controller, ctx| {
+            controller.write_bytes(&b"k"[..], ctx);
+            controller.write_bytes(&b"j"[..], ctx);
+        });
+        let out = written(&sender);
+        assert_eq!(
+            out,
+            vec![
+                vec![0x19],
+                native_completions_cancel(),
+                b"k".to_vec(),
+                b"j".to_vec()
+            ]
+        );
+        controller.read(&app, |controller, _| {
+            assert!(!controller.native_cancel_owed);
+        });
+    });
+}
+
+/// A late prompt after the timeout (no write in between) gets the cancel frame then, once; a
+/// following write adds no second cancel.
+#[test]
+fn a_late_prompt_after_the_timeout_gets_the_cancel_once() {
+    App::test((), |mut app| async move {
+        let (controller, model_events, _status, sender, _tx) =
+            native_completions_controller(&mut app);
+        let _rx = controller.update(&mut app, |controller, ctx| {
+            start_exchange(controller, "cd pro", ctx)
+        });
+        Timer::after(NATIVE_COMPLETIONS_PROMPT_TIMEOUT + Duration::from_millis(300)).await;
+        model_events.update(&mut app, |_dispatcher, ctx| {
+            ctx.emit(ModelEvent::SendCompletionsPrompt {
+                token: Some("91".to_owned()),
+            });
+        });
+        assert_eq!(
+            written(&sender),
+            vec![vec![0x19], native_completions_cancel()]
+        );
+        controller.update(&mut app, |controller, ctx| {
+            controller.write_bytes(&b"k"[..], ctx);
+        });
+        assert_eq!(
+            written(&sender),
+            vec![vec![0x19], native_completions_cancel(), b"k".to_vec()],
+            "no double cancel"
+        );
     });
 }
 
@@ -3853,6 +3919,71 @@ fn prompt_timeout_of_a_fallback_request_asks_for_the_toast() {
         controller.read(&app, |controller, _| {
             assert!(controller.last_native_cancel_toasted);
         });
+    });
+}
+
+/// A fast Tab, Tab, Enter (20 ms gaps): the second Tab, for the same text, attaches to the
+/// exchange in flight and gets ITS answer, so an Enter held for it runs the completed line. Only
+/// one `^Y` goes out. The pty layer is shared by Legacy and Table input.
+#[test]
+fn a_second_tab_for_the_same_text_gets_the_first_exchanges_answer() {
+    App::test((), |mut app| async move {
+        let (controller, model_events, _status, sender, _tx) =
+            native_completions_controller(&mut app);
+        let first = controller.update(&mut app, |c, ctx| start_exchange(c, "cd pro", ctx));
+        Timer::after(Duration::from_millis(20)).await;
+        let second = controller.update(&mut app, |c, ctx| start_exchange(c, "cd pro", ctx));
+        Timer::after(Duration::from_millis(20)).await;
+        assert!(!second.is_closed(), "attached, not refused");
+        model_events.update(&mut app, |_d, ctx| {
+            ctx.emit(ModelEvent::SendCompletionsPrompt {
+                token: Some("5".to_owned()),
+            });
+        });
+        model_events.update(&mut app, |_d, ctx| {
+            ctx.emit(ModelEvent::CompletionsFinished(vec![]));
+        });
+        assert_eq!(first.recv().await.ok(), Some(vec![]));
+        assert_eq!(second.recv().await.ok(), Some(vec![]));
+        assert_eq!(written(&sender)[0], vec![0x19], "one ^Y only");
+        assert_eq!(
+            written(&sender)
+                .iter()
+                .filter(|b| b.contains(&0x19))
+                .count(),
+            1
+        );
+    });
+}
+
+/// Tab, Tab where the first exchange is cancelled: the attached Tab gets the empty answer (an
+/// Enter held for it runs the typed line). A different text is a real refusal; a give-up closes
+/// both channels (no answer: the held Enter's line is handed back).
+#[test]
+fn an_attached_tab_follows_the_cancel_and_the_give_up_of_the_exchange() {
+    App::test((), |mut app| async move {
+        let (controller, model_events, _status, _sender, _tx) =
+            native_completions_controller(&mut app);
+        let _first = controller.update(&mut app, |c, ctx| start_exchange(c, "cd pro", ctx));
+        let other = controller.update(&mut app, |c, ctx| start_exchange(c, "cd pr", ctx));
+        assert!(other.is_closed(), "a different text is refused");
+        let second = controller.update(&mut app, |c, ctx| start_exchange(c, "cd pro", ctx));
+        model_events.update(&mut app, |_d, ctx| {
+            ctx.emit(ModelEvent::SendCompletionsPrompt { token: None });
+        });
+        assert_eq!(
+            second.recv().await.ok(),
+            Some(vec![]),
+            "cancel: empty answer"
+        );
+    });
+    App::test((), |mut app| async move {
+        let (controller, _model_events, _status, _sender, _tx) =
+            native_completions_controller(&mut app);
+        let _first = controller.update(&mut app, |c, ctx| start_exchange(c, "cd pro", ctx));
+        let second = controller.update(&mut app, |c, ctx| start_exchange(c, "cd pro", ctx));
+        Timer::after(NATIVE_COMPLETIONS_PROMPT_TIMEOUT + Duration::from_millis(300)).await;
+        assert!(second.recv().await.is_err(), "give-up: no answer");
     });
 }
 

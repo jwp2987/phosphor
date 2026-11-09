@@ -785,6 +785,7 @@ pub const INTERACTIVE_PROMPT_QUIET_TRAILING: std::time::Duration =
 /// over on a timer: the notice is UI only, and one click takes over. The command stays with the
 /// agent until the user acts, the probe says [`ForegroundTtyRead::Reading`], an explicit marker
 /// appears, or it completes. A probe that says [`ForegroundTtyRead::NotReading`] shows nothing.
+// give-up-net: shows a 'may be waiting for input -- Take over' notice only; never hands the command over (#1796)
 pub const INTERACTIVE_PROMPT_QUIET_TRAILING_UNKNOWN_READ: std::time::Duration =
     std::time::Duration::from_secs(90);
 
@@ -1068,6 +1069,7 @@ impl PromptDetector {
 
 /// How long a screen must sit unchanged before a snapshot-capable model is handed it
 /// (the model, not Phosphor, then decides what to do).
+// give-up-net: hands the stalled screen to a snapshot-capable model; writes nothing to the pty
 pub const STALL_SNAPSHOT_AFTER: std::time::Duration = std::time::Duration::from_secs(3);
 /// How long a waited agent command's screen must sit unchanged, with a known pager in the
 /// foreground, before Phosphor sends it `q`.

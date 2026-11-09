@@ -227,15 +227,19 @@ enum PtyWrite {
 //    `RS <token> : <%HH bytes of the text> US` (RS = 0x1e, US = 0x1f), or the cancel frame
 //    `RS - : US`.
 // 4. A frame is safe wherever it lands. The hook reads it byte by byte and accepts only the
-//    frame's exact shape (a token of letters and digits, or `-`; `:`; `%HH` pairs; US) with at
-//    most 0.1 s between bytes; it checks the token, and any other token, or the cancel, ends the
-//    exchange with nothing. At the shell's prompt (the hook already gave up), RS is bound to a
-//    widget that reads the rest the same way and drops it. US itself is not bound (it stays the
-//    line editor's undo); a frame's tail cut short by a stall is text that the next command's
-//    line-clear key removes. A frame never contains an EOT or a newline.
-// 5. The hook and the widget consume nothing outside a frame: the first byte must be RS, and any
-//    other byte, or a gap, ends the read and everything read goes back to the line editor, an
-//    Enter included (a terminal reply is dropped whole instead).
+//    frame's exact shape, by CONTENT only: `RS (token | -) ':' (%HH)* US`, the token being the
+//    shell's own `${RANDOM}x${seq}x${RANDOM}`. There is no inter-byte timing: a frame may arrive
+//    in pieces with any pauses. It consumes bytes while they still form a valid frame prefix;
+//    the first byte that cannot continue one ends the read and everything read so far plus that
+//    byte goes back to the line editor. A complete frame with the matching token is the answer;
+//    one with another token, or the cancel, is consumed with nothing. At the shell's prompt (the
+//    hook already gave up), RS is bound to a widget that reads the rest the same way. US itself
+//    is not bound (it stays the line editor's undo). A frame never contains an EOT or a newline.
+// 5. The hook and the widget consume nothing outside a valid frame prefix: the first byte must be
+//    RS, and any byte that cannot continue the frame ends the read and everything read goes
+//    back to the line editor, an Enter included (a terminal reply is dropped whole instead).
+//    The only clock is the hook's overall read deadline, a give-up net: on expiry it hands back
+//    what it read and exits, writing nothing and inventing no input.
 //
 // The app side. NOTHING ever sits in the write queue behind `^Y`:
 // a. An exchange starts only when the write queue is empty, no command is executing, the line
@@ -247,7 +251,18 @@ enum PtyWrite {
 //    An Enter right after the Tab is held by the editor (the remote-native Enter wait) until the
 //    answer lands, so it runs the completed line.
 // c. The prompt arriving writes the answer frame (the hook consumes exactly the frame; later
-//    bytes wait in the tty for the line editor). No prompt in time: the cancel frame.
+//    bytes wait in the tty for the line editor). No prompt in time (2 s): the app GIVES UP. It
+//    stops waiting, closes the requester's channel (no answer: the completer answers, and an
+//    Enter held for the Tab is handed back with its line, never run) and marks the
+//    cancel frame OWED; it writes NOTHING. The owed cancel goes in front of the next real write
+//    (rule b), or when the shell's own late prompt arrives (a response to the shell's event);
+//    either clears the debt, so there is never a second cancel. If neither ever happens, the
+//    hook's own read deadline ends it. A timer is only a give-up net: it never writes and
+//    never decides routing.
+// e. A second Tab for the SAME text while an exchange is in flight (a fast Tab, Tab, Enter) is
+//    attached to it: it gets the same answer (candidates, or an empty one for a cancel) and is
+//    closed (no answer) if the exchange ends without one. No second `^Y` goes out. A different
+//    text is refused (the completer answers).
 // d. The shell leaving first (a Precmd, ExitShell or Exit while the prompt is awaited) just ends
 //    the exchange: no frame (the shell that would read it is not the one asked).
 //
@@ -399,6 +414,16 @@ pub struct PtyController<T: EventLoopSender> {
     /// tests (#1801: never for a remote-first request).
     #[cfg_attr(not(test), allow(dead_code))]
     last_native_cancel_toasted: bool,
+    /// The prompt timeout gave up on an exchange and wrote nothing: the cancel frame is owed. It
+    /// goes out in front of the next real write, or when the shell's own late prompt arrives,
+    /// and a Precmd/exit of the shell clears it. A give-up timer never writes.
+    native_cancel_owed: bool,
+    /// The text the in-flight exchange asks about, so a second Tab for the same text can attach.
+    native_inflight_buffer: String,
+    /// Requesters of later Tabs for the SAME text, attached to the in-flight exchange (a fast
+    /// Tab, Tab, Enter): they get its answer (candidates, or an empty one for a cancel) and are
+    /// dropped (no answer) whenever the exchange ends without one. No new exchange is started.
+    native_attached_waiters: Vec<async_channel::Sender<Vec<ShellCompletion>>>,
     /// The prompt tokens taken in this pane (#1801 review M3).
     seen_native_prompt_tokens: std::collections::HashSet<String>,
     /// Delivers SIGINT to the pty's foreground process group (local ptys on Unix only); `None`
@@ -647,6 +672,9 @@ impl<T: EventLoopSender> PtyController<T> {
                     unreachable!("checked above");
                 };
                 let _ = block_on(results_tx.send(data.clone()));
+                for waiter in me.native_attached_waiters.drain(..) {
+                    let _ = block_on(waiter.send(data.clone()));
+                }
             }
             ModelEvent::SendCompletionsPrompt { token } => {
                 // Same peek-before-take reasoning as `CompletionsFinished` above. With no live
@@ -657,6 +685,13 @@ impl<T: EventLoopSender> PtyController<T> {
                     me.in_flight_native_completions_state,
                     Some(NativeShellCompletionsState::AwaitingPrompt { .. })
                 ) {
+                    // A late prompt after the give-up: the cancel frame is owed, and this is
+                    // the shell's own event, so it is written now (once) and the debt cleared.
+                    if me.native_cancel_owed {
+                        me.cancel_native_exchange_before_write(ctx);
+                        me.execute_next_queued_write(ctx);
+                        return;
+                    }
                     log::warn!(
                         "Received SendCompletionsPrompt event but wasn't awaiting a prompt \
                          (generation {}); ignoring it without touching the in-flight state.",
@@ -785,6 +820,9 @@ impl<T: EventLoopSender> PtyController<T> {
             native_completions_generation: 0,
             has_reported_native_completions_unavailable: false,
             last_native_cancel_toasted: false,
+            native_cancel_owed: false,
+            native_inflight_buffer: String::new(),
+            native_attached_waiters: Vec::new(),
             seen_native_prompt_tokens: Default::default(),
             foreground_sigint: None,
             pty_write_gate_blocked_since: None,
@@ -1372,15 +1410,14 @@ impl<T: EventLoopSender> PtyController<T> {
                     return;
                 }
                 if expect_awaiting_prompt {
-                    // No prompt in time (a slow link, a VPN stall, or no hooks): end the
-                    // exchange with the cancel frame, which is safe wherever it lands (see "The
-                    // in-band native-completions exchange"). Nothing is held behind the `^Y`,
-                    // so there is nothing to release.
+                    // No prompt in time (a slow link, a VPN stall, or no hooks): GIVE UP. Stop
+                    // waiting and write nothing; the cancel frame is owed and goes in front of
+                    // the next real write (see "The in-band native-completions exchange").
                     log::warn!(
-                        "Native shell completions prompt not seen after {timeout:?}; cancelling \
-                         the exchange (the Tab falls back to the completer)"
+                        "Native shell completions prompt not seen after {timeout:?}; giving up \
+                         (the Tab falls back to the completer, the cancel frame is owed)"
                     );
-                    me.last_native_cancel_toasted = me.end_native_exchange_with_cancel(true, ctx);
+                    me.last_native_cancel_toasted = me.abandon_native_exchange(ctx);
                     return;
                 }
                 // Never log the buffer text -- it is whatever the user was typing.
@@ -1389,9 +1426,29 @@ impl<T: EventLoopSender> PtyController<T> {
                      the request."
                 );
                 me.in_flight_native_completions_state = None;
+                me.native_attached_waiters.clear();
                 me.execute_next_queued_write(ctx);
             },
         );
+    }
+
+    /// The prompt timeout: stops waiting for the prompt, WRITES NOTHING. Dropping the state
+    /// closes the requester's channel (it falls back to the completer) and the cancel frame
+    /// becomes owed. Returns whether the "no shell integration" toast was asked for (never for a
+    /// remote-first request).
+    fn abandon_native_exchange(&mut self, ctx: &mut ModelContext<Self>) -> bool {
+        let Some(NativeShellCompletionsState::AwaitingPrompt { remote_first, .. }) =
+            self.in_flight_native_completions_state.take()
+        else {
+            return false;
+        };
+        self.native_attached_waiters.clear();
+        self.native_cancel_owed = true;
+        if remote_first {
+            return false;
+        }
+        self.report_native_completions_unavailable(ctx);
+        true
     }
 
     /// Ends an exchange still waiting for its prompt: writes the cancel frame (the one frame this
@@ -1407,11 +1464,22 @@ impl<T: EventLoopSender> PtyController<T> {
         report: bool,
         ctx: &mut ModelContext<Self>,
     ) -> bool {
-        let Some(NativeShellCompletionsState::AwaitingPrompt { remote_first, .. }) =
-            self.in_flight_native_completions_state.take()
+        let Some(NativeShellCompletionsState::AwaitingPrompt {
+            remote_first,
+            results_tx,
+            ..
+        }) = self.in_flight_native_completions_state.take()
         else {
             return false;
         };
+        // The cancel IS an answer (of nothing): the requester then runs an Enter held for it on
+        // the typed line. A give-up (`abandon_native_exchange`) sends nothing: the channel just
+        // closes, "no answer", and the held Enter is handed back instead.
+        let _ = results_tx.try_send(Vec::new());
+        for waiter in self.native_attached_waiters.drain(..) {
+            let _ = waiter.try_send(Vec::new());
+        }
+        self.native_cancel_owed = false;
         self.send_write_to_event_loop(
             PtyWrite::Bytes {
                 bytes: native_completions_cancel().into(),
@@ -1438,6 +1506,9 @@ impl<T: EventLoopSender> PtyController<T> {
                 | ModelEvent::ExitShell { .. }
                 | ModelEvent::Exit { .. }
         );
+        if shell_left {
+            self.native_cancel_owed = false;
+        }
         if shell_left
             && self
                 .in_flight_native_completions_state
@@ -1446,6 +1517,7 @@ impl<T: EventLoopSender> PtyController<T> {
         {
             log::warn!("The shell asked for native completions left before answering; ending it");
             self.in_flight_native_completions_state = None;
+            self.native_attached_waiters.clear();
         }
     }
 
@@ -1457,15 +1529,18 @@ impl<T: EventLoopSender> PtyController<T> {
             .in_flight_native_completions_state
             .as_ref()
             .is_some_and(NativeShellCompletionsState::is_awaiting_prompt)
+            && !self.native_cancel_owed
         {
             return;
         }
+        self.native_cancel_owed = false;
         log::info!(
             "A write during a native-completions exchange cancels it first (the Tab falls back \
              to the completer)"
         );
         // Taken first, so the cancel frame's own write below does not come back here.
         self.in_flight_native_completions_state = None;
+        self.native_attached_waiters.clear();
         self.send_write_to_event_loop(
             PtyWrite::Bytes {
                 bytes: native_completions_cancel().into(),
@@ -1479,6 +1554,9 @@ impl<T: EventLoopSender> PtyController<T> {
     fn native_exchange_may_start(&self, ctx: &ModelContext<Self>) -> Result<(), &'static str> {
         if self.in_flight_native_completions_state.is_some() {
             return Err("an exchange is already in flight");
+        }
+        if self.native_cancel_owed {
+            return Err("a given-up exchange still owes its cancel frame");
         }
         if !self.pending_writes.is_empty() {
             return Err("writes are queued");
@@ -1680,6 +1758,7 @@ impl<T: EventLoopSender> PtyController<T> {
             // looks dead. Arm a one-shot timer, once per stall, so the log line fires on its own.
             ctx.spawn(
                 async move {
+                    // give-up-net: one-shot timer that only logs a stuck write gate
                     Timer::after(threshold).await;
                 },
                 move |me, _, ctx| {
@@ -2835,6 +2914,10 @@ impl<T: EventLoopSender> PtyController<T> {
                 (command.into_bytes().into(), false, None, true)
             }
             PtyWrite::RunNativeShellCompletions(state) => {
+                if let NativeShellCompletionsState::AwaitingPrompt { buffer_text, .. } = &state {
+                    self.native_inflight_buffer = buffer_text.clone();
+                }
+                self.native_attached_waiters.clear();
                 self.in_flight_native_completions_state = Some(state);
                 self.arm_native_completions_watchdog(NATIVE_COMPLETIONS_PROMPT_TIMEOUT, true, ctx);
 
@@ -3013,6 +3096,18 @@ impl<T: EventLoopSender> PtyController<T> {
         //
         // #1801 (design point a): the exchange also starts only when nothing else is queued or
         // engaged, and then at once: the `^Y` is never queued, so nothing can sit behind it.
+        // A fast Tab, Tab, Enter: a second request for the SAME text while an exchange is in
+        // flight is attached to it and gets its answer, instead of being refused as "no answer"
+        // (which would hand a waiting Enter's line back). A different text, or a given-up
+        // exchange that owes its cancel, is a real refusal.
+        if self.in_flight_native_completions_state.is_some()
+            && !self.native_cancel_owed
+            && self.native_inflight_buffer == buffer_text
+        {
+            log::info!("Native completions request attached to the exchange in flight");
+            self.native_attached_waiters.push(results_tx);
+            return;
+        }
         if let Err(why) = self.native_exchange_may_start(ctx) {
             log::info!("Native completions not started ({why}); the Tab uses the completer");
             return;

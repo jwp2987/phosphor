@@ -97,6 +97,9 @@ guards:
     - ./script/check_pty_doors
     - ./script/check_outbound_redaction
     - ./script/check_queue_access
+    # Owner rule (2026-11-08): timers on the input path are give-up nets only. PENDING-CONVERSION entries warn here; the release tier runs it --strict (job input-timers-strict).
+    - ./script/check_input_path_timers
+    - ./script/check_input_path_timers --self-test
     # The tree is rustfmt-clean since the Rust 1.99 upgrade; this keeps it that way (whole tree, ~25 s).
     # rustfmt comes from the pinned toolchain through the maintainer's rustup proxy (read-only,
     # as in check-linux); runner shells have no toolchain on PATH.
@@ -771,6 +774,18 @@ integration-linux-pwsh:
 # rest of the suite uses real primitives outside a model): a model test lives in a module named
 # `model_tests` or `*_model_tests` and is named `model_*`. `model_tests::` alone also matched the
 # ordinary `file_search_model_tests::test_*`, which crashes under loom outside a model (r18u22).
+# Release-tier gate (script/ci/ci_seq.py plays it): the input-path timer guard in --strict mode, which fails on any
+# PENDING-CONVERSION entry in script/input_path_timers.allow (docs/testing.md 2.3).
+input-timers-strict:
+  extends: .shim_github_env
+  stage: test
+  tags: [little-thing]
+  timeout: 10m
+  when: manual
+  script:
+    - command -v python3 >/dev/null || { echo "ERROR python3 missing" >&2; exit 1; }
+    - ./script/check_input_path_timers --strict
+
 test-shuttle-loom:
   extends: .box_job
   timeout: 150m

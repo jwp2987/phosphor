@@ -272,6 +272,7 @@ pub const EVENT_HOLD_GIVE_UP: Duration = Duration::from_secs(2);
 /// events (the report, the barrier's publish, a Preexec, a program taking the tty, a command, a
 /// signal); its give-up discards the young Enter and the keys typed after it, so it is a long
 /// safety net (a busy machine must not drop typeahead whose release event is merely late).
+// give-up-net: 10 s net of a queued young hold: discards the young Enter and what followed with a count toast (#1661)
 pub const YOUNG_HOLD_GIVE_UP: Duration = Duration::from_secs(10);
 
 /// Tags the ids of a deferred Enter's `HandoffReport` gate; a young hold's ids never carry it.
@@ -326,6 +327,7 @@ pub struct PromptSeq {
 /// (The cap itself stays short: a miss only hands keys with no Enter back to the editor as text,
 /// so its cost is a visible hand-back for that prompt, while a longer cap would make every prompt
 /// of a shell that truly never signals wait longer.)
+// give-up-net: prompt-hold give-up: keys with no Enter go back to the editor as text, a segment with an Enter stays held with a toast (#1584)
 pub const CONPTY_PROMPT_HOLD_GIVE_UP: Duration = Duration::from_millis(1500);
 
 /// #1697: how many precmd waits in a row must give up, with no ready signal ever seen this
@@ -336,6 +338,7 @@ pub const CONPTY_PROMPT_HOLD_MISSES_BEFORE_OFF: u32 = 3;
 /// #1573: when the prompt hold's cap fires after an event already ended both of its waits (the
 /// release is in flight, e.g. deferred behind a busy queue), it is checked again after this; it
 /// never gives up a hold whose release is under way.
+// give-up-net: re-checks the prompt hold's give-up cap while a release is in flight; writes nothing
 const PROMPT_HOLD_RELEASE_IN_FLIGHT_RECHECK: Duration = Duration::from_millis(100);
 
 /// Environment variable that turns the ConPTY prompt hold off when set to `0` (#1162).

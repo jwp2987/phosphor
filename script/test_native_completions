@@ -25,7 +25,7 @@ This runs the REAL assembled bootstraps (the way `app/src/terminal/bootstrap.rs`
 are what is exercised. Needs only python3 and the shells (no cargo); a missing shell is SKIPPED.
 fish is not exercised: the app never sends fish ^Y and its bootstrap has no handler.
 
-WHAT IT CHECKS, per shell (PHOSPHOR_NC_DEADLINE=2 keeps the hook's own deadline short)
+WHAT IT CHECKS, per shell (PHOSPHOR_NC_DEADLINE=5 keeps the hook's own deadline short)
   * the Bootstrapped hook advertises the protocol;
   * candidates: `cd pro` offers `projects/` and `proto/`; `cat dir/fi` the WHOLE token
     `dir/file1`; `echo a;ec` keeps the `a;` lead (bash: its own `complete -F`/`-W` specs, with
@@ -37,8 +37,12 @@ WHAT IT CHECKS, per shell (PHOSPHOR_NC_DEADLINE=2 keeps the hook's own deadline 
   * a frame landing after the hook gave up is dropped at the prompt and nothing of it runs;
   * a frame's start alone at the prompt, then the app's command bytes: the command runs whole
     (the discard widget stops at the first byte outside the frame alphabet);
-  * a frame cut short, with its tail (and US) arriving after a 5 s stall, followed by the app's
-    real command bytes: the command runs whole (the tail is never run);
+  * a frame cut short, with its tail (and US) arriving after the read deadline, followed by the
+    app's real command bytes: the command runs whole (the tail is never run);
+  * NO inter-byte timing (the frame is judged by content): a frame split into pieces with a 0.5 s
+    and a 3 s pause between them is consumed whole and answered, leaving no junk in the line;
+    a bare RS then `ls` + Enter, and RS + letters + Ctrl-C, hand back by content; a stale-token
+    frame is consumed silently;
   * ^Y + cancel + command in one batch, before the hook starts: the command runs;
   * a DA-reply-shaped sequence after ^Y is dropped whole: a raw command after it runs clean;
   * a bare RS (Ctrl-6) then a word and Enter at the prompt: the word runs (the discard widget
@@ -72,7 +76,7 @@ ASSETS = os.path.join(ROOT, "app", "assets")
 BOOTSTRAP = os.path.join(ASSETS, "bundled", "bootstrap")
 HOOK_RE = re.compile(rb"\x1bP\$d([0-9a-f]*)\x9c")
 CANDIDATE_RE = re.compile(rb"\x1b\]9280;C;([^\x07]*)\x07")
-PROMPT_RE = re.compile(rb"\x1b\]9280;P;([0-9A-Za-z]+)\x07")
+PROMPT_RE = re.compile(rb"\x1b\]9280;P;([0-9A-Za-z]+)\x07")  # the token is <digits>x<digits>x<digits>
 RS, US = b"\x1e", b"\x1f"
 ADVERTISED = "!phosphor_nc_frames_v1"
 failures = []
@@ -296,7 +300,7 @@ def protocol_checks(sh, shell, full=True):
 
     token = ask(sh, shell, "late frame")
     if token is not None:
-        sh.drain(2.6)
+        sh.drain(5.6)
         text, want = command()
         sh.write(frame(token, "cd pro") + app_command(text))
         expect_runs(sh, shell, "a frame landing at the prompt is dropped; the command behind it runs", want)
@@ -305,10 +309,61 @@ def protocol_checks(sh, shell, full=True):
     # discard widget stops at the first byte outside the frame alphabet and hands it back.
     token = ask(sh, shell, "frame start alone")
     if token is not None:
-        sh.drain(2.6)
+        sh.drain(5.6)
         text, want = command()
         sh.write(RS + token + b":%63" + app_command(text))
         expect_runs(sh, shell, "a frame's start alone at the prompt stops at the next real key; the command runs whole", want)
+
+    # No inter-byte timing: pauses of 0.5 s and 3 s inside one frame change nothing.
+    token = ask(sh, shell, "slow frame")
+    if token is not None:
+        data = frame(token, "cd pro")
+        a, b, c = len(token) // 2 + 1, len(token) + 3, len(data)
+        sh.write(data[:a])
+        time.sleep(0.5)
+        sh.write(data[a:b])
+        time.sleep(3)
+        sh.write(data[b:c])
+        got = sh.read_until(rb"\x1b\]9280;B\x07")
+        cands = [x.decode() for x in CANDIDATE_RE.findall(got)]
+        check(shell, "a frame split with 0.5 s and 3 s pauses is consumed whole and answered", "projects/" in cands, f"(got {got[-200:]!r})")
+        text, want = command()
+        sh.write(text.encode() + b"\r")
+        expect_runs(sh, shell, "a slow frame leaves no junk in the line: the raw command after it runs", want)
+
+    # RS + letters + Ctrl-C: the first letter is not frame alphabet, so it all goes back by content.
+    sh.write(b"\x1e" + b"ab" + b"\x03")
+    sh.drain(0.5)
+    text, want = command()
+    sh.write(text.encode() + b"\r")
+    expect_runs(sh, shell, "RS + letters + Ctrl-C hands back by content: the next raw command runs", want)
+
+    # ESC after RS is classified by content (the NEXT byte decides): terminal replies of every kind
+    # are dropped whole, keys and a lone ESC + Enter are handed back, nothing is eaten or hung.
+    for what, data in (
+        ("a DA reply", b"\x1b[?62;22c"),
+        ("an OSC reply", b"\x1b]11;rgb:0000/0000/0000\x07"),
+        ("a DCS XTVERSION reply", b"\x1bP>|phosphor 1\x1b\\"),
+    ):
+        sh.write(RS + data)
+        sh.drain(0.3)
+        text, want = command()
+        sh.write(text.encode() + b"\r")
+        expect_runs(sh, shell, f"RS + {what} is dropped whole: the raw command after it runs clean", want)
+    # Handed back intact, so zsh acts on them as typed (Alt-x opens its minibuffer, ESC + Enter is
+    # a key too); a Ctrl-C then resets the editor and a raw command proves nothing hung or was eaten.
+    for what, data in (
+        ("ESC [ A (an arrow)", b"\x1b[A"),
+        ("ESC + a letter (Alt-x)", b"\x1bx"),
+        ("a lone ESC then Enter", b"\x1b\r"),
+    ):
+        sh.write(RS + data)
+        sh.drain(0.4)
+        sh.write(b"\x03")
+        sh.drain(0.4)
+        text, want = command()
+        sh.write(text.encode() + b"\r")
+        expect_runs(sh, shell, f"RS + {what} is handed back: nothing hangs, the next command runs", want)
 
     token = ask(sh, shell, "cut-short frame")
     if token is not None:
@@ -316,7 +371,7 @@ def protocol_checks(sh, shell, full=True):
         sh.drain(5.8)
         text, want = command()
         sh.write(b"%20%70" + US + app_command(text))
-        expect_runs(sh, shell, "a frame's tail after a 5 s stall is never run; the real command after it runs whole", want)
+        expect_runs(sh, shell, "a frame's tail after the read deadline is never run; the real command after it runs whole", want)
 
     # US (^_) is not taken over: it is still the line editor's undo.
     text, want = command()
@@ -342,7 +397,7 @@ def start_bash(base, lab):
     env = {
         "HOME": base, "USER": os.environ.get("USER", "user"), "PATH": "/usr/local/bin:/usr/bin:/bin",
         "TERM": "xterm-256color", "LANG": "C.UTF-8", "WARP_IS_LOCAL_SHELL_SESSION": "1",
-        "INPUTRC": "/dev/null", "PHOSPHOR_NC_DEADLINE": "2",
+        "INPUTRC": "/dev/null", "PHOSPHOR_NC_DEADLINE": "5",
     }
     return Pty([bash, "--noprofile", "--rcfile", rc, "-i"], env, lab)
 
@@ -365,7 +420,7 @@ def start_zsh(base, lab):
     env = {
         "HOME": base, "ZDOTDIR": zd, "USER": os.environ.get("USER", "user"), "PATH": "/usr/local/bin:/usr/bin:/bin",
         "TERM": "xterm-256color", "LANG": "C.UTF-8", "WARP_IS_LOCAL_SHELL_SESSION": "1", "PS1": "%# ",
-        "PHOSPHOR_NC_DEADLINE": "2",
+        "PHOSPHOR_NC_DEADLINE": "5",
     }
     sh = Pty([zsh, "-g", "--no-rcs", "-i"], env, lab)
     sh.drain(1.5)
