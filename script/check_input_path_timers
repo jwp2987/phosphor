@@ -47,6 +47,14 @@ that never touches input (animation, telemetry, network retry, shutdown, renderi
 list. A new input-relevant timer in a listed file is NOT detected until its identifier is added, so
 add the file to INPUT_PATH_FILES when it grows several.
 
+OTHER OWNER-EXEMPT CLASSES (2026-11-09), each its own allowlist section, its own required comment tag
+(instead of give-up-net:), and not counted by --strict:
+  # UI-CONFIRM   `ui-confirm:`   double-press confirmation windows and question auto-advance; no keys at risk.
+  # SAMPLING     `sampling:`     timers that only schedule a probe sample; the probe result or an event
+                               decides, never elapsed time alone (a timer that decides alone is PENDING).
+  # REPLY-PACING `reply-pacing:` our own terminal-query replies, never user keys; like PACING, the guard fails
+                               if its code path mentions a user-key API.
+
 ADDING A TIMER. Prefer an event. If a give-up net is truly needed: add the constant (or call), put
 `// give-up-net: <what it hands back / keeps held>` next to it, and add one line to
 script/input_path_timers.allow. If you cannot honestly write that comment, the timer is not allowed.
@@ -113,6 +121,13 @@ INPUT_PATH_LISTED_FILES = [
 ALLOW_FILE = "script/input_path_timers.allow"
 PENDING_MARK = "# PENDING-CONVERSION"
 PACING_MARK = "# PACING"
+# Owner-exempt labelled classes: section marker -> the comment tag its entries need instead of give-up-net.
+EXEMPT_SECTIONS = {
+    "# PACING": "pacing",
+    "# UI-CONFIRM": "ui-confirm",
+    "# SAMPLING": "sampling",
+    "# REPLY-PACING": "reply-pacing",
+}
 USER_KEY_RE = re.compile(
     r"\b(?:write_user_bytes\w*|user_bytes\w*|UserInput\w*|user_input\w*|held_keys\w*|"
     r"release_held_keys|typeahead\w*|PtyIntent)\b"
@@ -182,11 +197,8 @@ def expand(root, entries):
     return res
 
 
-PACING_NOTE_RE = re.compile(r"pacing:\s*\S")
-
-
 def comment_near(lines, idx, prefix, tag="give-up-net"):
-    note = NOTE_RE if tag == "give-up-net" else PACING_NOTE_RE
+    note = NOTE_RE if tag == "give-up-net" else re.compile(r"(?<![\w-])" + re.escape(tag) + r":\s*\S")
     lo, hi = max(0, idx - WINDOW), min(len(lines), idx + WINDOW + 1)
     for j in range(lo, hi):
         s = lines[j].lstrip()
@@ -256,13 +268,16 @@ def scan_shell(rel, lines):
 
 def parse_allow(text):
     ok, pending, pacing = {}, {}, {}
+    exempt_tags = {}  # key -> tag, for every owner-exempt class entry
     cur = ok
+    cur_tag = None
     for n, raw in enumerate(text.splitlines(), 1):
         if raw.startswith(PENDING_MARK):
-            cur = pending
+            cur, cur_tag = pending, None
             continue
-        if raw.startswith(PACING_MARK):
-            cur = pacing
+        hit = next((m for m in EXEMPT_SECTIONS if raw.startswith(m)), None)
+        if hit:
+            cur, cur_tag = pacing, EXEMPT_SECTIONS[hit]
             continue
         if not raw.strip() or raw.lstrip().startswith("#"):
             continue
@@ -270,7 +285,9 @@ def parse_allow(text):
         if len(parts) < 3 or not all(p.strip() for p in parts[:3]):
             raise SystemExit(f"{ALLOW_FILE}:{n}: want path<TAB>identifier<TAB>what it does")
         cur[(parts[0].strip(), parts[1].strip())] = (n, parts[2].strip())
-    return ok, pending, pacing
+        if cur_tag:
+            exempt_tags[(parts[0].strip(), parts[1].strip())] = cur_tag
+    return ok, pending, pacing, exempt_tags
 
 
 def strip_code(text):
@@ -328,7 +345,7 @@ def pacing_user_key_errors(root, allow_pacing):
 
 
 def run(root, files, allow_text, strict, listed=()):
-    allow_ok, allow_pending, allow_pacing = parse_allow(allow_text)
+    allow_ok, allow_pending, allow_pacing, exempt_tags = parse_allow(allow_text)
     allowed = {**allow_ok, **allow_pending, **allow_pacing}
     errors, warnings = [], []
     missing_note = []  # (key, message): waived for PENDING entries, which are not nets
@@ -351,7 +368,7 @@ def run(root, files, allow_text, strict, listed=()):
             for ln, fn in sites:
                 key = (rel, fn)
                 found.add(key)
-                tag = "pacing" if key in allow_pacing else "give-up-net"
+                tag = exempt_tags.get(key, "give-up-net")
                 if not comment_near(lines, ln, "#", tag):
                     missing_note.append((key, f"{rel}:{ln + 1}: shell timer in `{fn}` has no `# {tag}: <why>` comment within {WINDOW} lines"))
             continue
@@ -361,17 +378,17 @@ def run(root, files, allow_text, strict, listed=()):
                 continue  # covered by the constant's definition
             key = (rel, ident or fn)
             found.add(key)
-            tag = "pacing" if key in allow_pacing else "give-up-net"
+            tag = exempt_tags.get(key, "give-up-net")
             if not comment_near(lines, ln, "//", tag):
                 missing_note.append((key, f"{rel}:{ln + 1}: timer call in `{fn}` has no `// {tag}: <why>` comment within {WINDOW} lines"))
     for name, (rel, ln) in sorted(all_consts.items()):
         if not (NAME_RE.search(name) or name in used):
             continue
         found.add((rel, name))
-        tag = "pacing" if (rel, name) in allow_pacing else "give-up-net"
+        tag = exempt_tags.get((rel, name), "give-up-net")
         if not comment_near(per_file[rel][0], ln, "//", tag):
             missing_note.append(((rel, name), f"{rel}:{ln + 1}: timer constant {name} has no `// {tag}: <why>` comment within {WINDOW} lines"))
-    errors.extend(pacing_user_key_errors(root, allow_pacing))
+    errors.extend(pacing_user_key_errors(root, {k: v for k, v in allow_pacing.items() if exempt_tags.get(k) in ("pacing", "reply-pacing")}))
     # Listed (mostly-non-input) files: only identifiers named in the allowlist are enforced.
     found = {k for k in found if k[0] not in listed or k in allowed}
     missing_note = [(k, m) for k, m in missing_note if k[0] not in listed or k in allowed]
@@ -449,6 +466,13 @@ def self_test():
             ok = False
         else:
             print("self-test ok: listed file stale entry caught")
+        # The other exempt classes: each needs its OWN tag, none is pending under --strict.
+        for sec, tag in (("# UI-CONFIRM", "ui-confirm"), ("# SAMPLING", "sampling"), ("# REPLY-PACING", "reply-pacing")):
+            body = "const X_PACING: Duration = Duration::from_millis(5);\nfn go() {\n    ctx.spawn(Timer::after(X_PACING), |m| {});\n}\n"
+            (root / "c.rs").write_text("// pacing: wrong tag\n" + body)
+            expect(f"{tag} needs its own tag", sec + "\nc.rs\tX_PACING\tz\n", f"{tag}: <why>", fs=["c.rs"])
+            (root / "c.rs").write_text(f"// {tag}: fine\n" + body)
+            expect(f"{tag} with its tag is clean and not strict-pending", sec + "\nc.rs\tX_PACING\tz\n", "", fs=["c.rs"], strict=True, want_fail=False)
         # PACING rule: needs a `pacing:` comment (give-up-net does not do), is not pending under
         # --strict, and fails when its code path mentions a user-key API.
         PAC = PACING_MARK + "\n"

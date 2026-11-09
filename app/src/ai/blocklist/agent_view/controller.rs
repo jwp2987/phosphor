@@ -65,6 +65,7 @@ impl AgentViewDisplayMode {
 ///
 /// We intentionally keep enter/exit/new-conversation keybinding confirmation windows aligned so
 /// users only learn one confirmation cadence.
+// ui-confirm: 1 s double-press window for entering/exiting the agent view; lapsing only clears the pending confirmation, no key is lost
 pub const ENTER_OR_EXIT_CONFIRMATION_WINDOW: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

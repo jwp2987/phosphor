@@ -1484,18 +1484,18 @@ where
         self.epoch.set(epoch);
         if let Some(at) = wake {
             let me = self.clone();
-            let _ =
-                ctx.spawn(
-                    async move {
-                        warpui::r#async::Timer::after(at.saturating_duration_since(now)).await
-                    },
-                    move |_, _, ctx| {
-                        if me.epoch.get() == epoch {
-                            me.armed_for.set(None);
-                            me.on_output(ctx);
-                        }
-                    },
-                );
+            let _ = ctx.spawn(
+                async move {
+                    // sampling: prompt-detector quiet timer; clock gives a NOTICE only, hand-over needs the probe
+                    warpui::r#async::Timer::after(at.saturating_duration_since(now)).await
+                },
+                move |_, _, ctx| {
+                    if me.epoch.get() == epoch {
+                        me.armed_for.set(None);
+                        me.on_output(ctx);
+                    }
+                },
+            );
         }
     }
 }
@@ -1573,18 +1573,18 @@ where
         self.epoch.set(epoch);
         if let Some(at) = wake {
             let me = self.clone();
-            let _ =
-                ctx.spawn(
-                    async move {
-                        warpui::r#async::Timer::after(at.saturating_duration_since(now)).await
-                    },
-                    move |_, _, ctx| {
-                        if me.epoch.get() == epoch {
-                            me.armed_for.set(None);
-                            me.observe(ctx);
-                        }
-                    },
-                );
+            let _ = ctx.spawn(
+                async move {
+                    // sampling: stall-detector quiet timer; clock gives a NOTICE only, nothing is sent
+                    warpui::r#async::Timer::after(at.saturating_duration_since(now)).await
+                },
+                move |_, _, ctx| {
+                    if me.epoch.get() == epoch {
+                        me.armed_for.set(None);
+                        me.observe(ctx);
+                    }
+                },
+            );
         }
     }
 }
