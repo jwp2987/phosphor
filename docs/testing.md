@@ -2842,3 +2842,12 @@ must collect the "before" with the switch at `0` and the "after" with it unset, 
   existing latency case (terminal mode, typing at 10-25 ms/key). A flood (`yes`) must still show `since_prev_us` near
   16700 for non-urgent wakeups.
 - Unit: `wave_p_switch_values` (model_lock_trace.rs).
+
+### P2 agent-mode key path under an output flood (`PHOSPHOR_PERF_AGENT_KEY`, `0` = old behaviour)
+- Found: every typed key in agent mode ran `typed_on_settled_ai_target`, which built a Vec of the view ids of every AI
+  block and every settled action card (O(blocks) allocations and card walks per key). It now asks the non-allocating
+  `focused_settled_ai_target`, the same answer.
+- Collect: `hop=perf_agent_key_probe settled_target_us=U ai_blocks=N on_target=B` (probe cost against block count, with
+  the switch on and `0`), and key / Ctrl-C to pty-write p50/p95 in agent mode under `yes` / a flood, against terminal
+  mode, with a conversation of 50+ AI blocks. The remaining agent-mode gap, if any, is main-thread time spent in
+  flood-driven re-layout (P3); read `model lock held` lines for `BlockListElement::layout` at the same time.

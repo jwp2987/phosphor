@@ -10558,10 +10558,29 @@ impl TerminalView {
 
     /// Whether the window's focus is exactly on one of [`Self::settled_ai_focus_view_ids`].
     fn typed_on_settled_ai_target(&self, ctx: &mut ViewContext<Self>) -> bool {
+        let started = log::log_enabled!(log::Level::Debug).then(std::time::Instant::now);
         let Some(focused) = ctx.focused_view_id(ctx.window_id()) else {
             return false;
         };
-        self.settled_ai_focus_view_ids(ctx).contains(&focused)
+        // Wave P: no Vec over every block and card per key; the same answer as the list's
+        // `contains` (see `focused_settled_ai_target`).
+        let on_target = if crate::terminal::model_lock_trace::perf_agent_key_enabled() {
+            self.focused_settled_ai_target(ctx) == Some(focused)
+        } else {
+            self.settled_ai_focus_view_ids(ctx).contains(&focused)
+        };
+        if let Some(started) = started {
+            log::debug!(
+                "hop=perf_agent_key_probe settled_target_us={} ai_blocks={} on_target={}",
+                started.elapsed().as_micros(),
+                self.rich_content_views
+                    .iter()
+                    .filter(|view| view.ai_block_metadata().is_some())
+                    .count(),
+                on_target as u8
+            );
+        }
+        on_target
     }
 
     /// Whether the window's focus is exactly on an AI block (the block itself, not a child of
