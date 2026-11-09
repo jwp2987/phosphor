@@ -2760,6 +2760,13 @@ Harness changes plus two small app changes. `run.py --self-test` covers the harn
   clears: an earlier run's copy of that token was found. `exit` was not typed, the pane stayed remote, and the wedge probe's
   `Add-Content` lines ran in the remote bash (remote rec.log). `Ctx.local_where` now reads only what was appended to each
   `.appci_where` after the pass started (`Ctx.where_skip`, `where_tokens`).
+- **`ssh_nested_typeahead` (agent mode, PowerShell pane, round 7): harness race, not the app.** The outer probe's chars were typed while the inner ssh client was
+  still tearing down (the app log shows plain pass-through, `ssh_hold` routing unheld, every key written to the pty in order). The remote rec.log shows
+  the outer shell ran `tac >> ~/.appci_where` (the probe's last `t` plus `ac >> ...`: the rest was swallowed by the dying client), and `tac` then read the next two
+  probes from stdin. Cause: `leave_remote(level=True)` sampled `before = prompts(remote)` the moment the probe's effect file appeared, a few ms before the
+  rc hook logged the probe's own prompt, so that prompt counted as the `exit`'s, the wait ended at once and the 0.5 s settle was shorter than the
+  Windows teardown (~0.7 s). `leave_remote` now waits for the probe's own prompt (up to 5 s, level only) before sampling `before`
+  (selftest `leave_remote_level_waits_for_the_probes_own_prompt_before_exit`).
 - **`remote_session_legacy` (Git Bash pane): harness race.** The local command after `exit` ran exactly (effect file right) and is in
   the local rec.log; the check read rec.log once, but the rc hook writes the line at the NEXT prompt (`PROMPT_COMMAND` forks
   `history 1`, slow under msys). The check now waits up to 5 s for the exact line, as `local_cmd_exact` does. The clean-env step stays
