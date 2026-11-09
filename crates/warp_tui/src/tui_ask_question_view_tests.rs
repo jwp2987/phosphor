@@ -759,3 +759,63 @@ fn completed_answers_render_deterministic_question_and_answer_rows() {
         );
     });
 }
+
+/// Owner decision 2026-11-08 (#1797), TUI parity with the GUI card: a blocked question shows its
+/// card with no approval step, and an accept that carries no answer -- the generic accept by id
+/// and the plain "accept the next action" that Enter, the CLI subagent's Allow and auto-approve
+/// use -- is not an approval of it. The question stays blocked and its card stays up, awaiting
+/// the answer; only the card's own submit (answers staged, then executed) completes it.
+#[test]
+fn a_plain_accept_does_not_complete_a_question_its_card_stays_up() {
+    App::test((), |mut app| async move {
+        let (_, view) = add_view(
+            &mut app,
+            vec![question(
+                "single",
+                "Which shell?",
+                false,
+                false,
+                &["zsh", "fish"],
+            )],
+        );
+        queue_question_action(&mut app, &view);
+        let (action_model, conversation_id, action_id) = app.read(|ctx| {
+            let view = view.as_ref(ctx);
+            (
+                view.action_model.clone(),
+                view.conversation_id,
+                view.action_id.clone(),
+            )
+        });
+        assert!(
+            app.read(|ctx| view.as_ref(ctx).is_awaiting_answers(ctx)),
+            "the card is up as soon as the question blocks, with no approve step before it"
+        );
+
+        action_model.update(&mut app, |model, ctx| {
+            model.execute_action(&action_id, conversation_id, ctx);
+            model.execute_next_action_for_user(conversation_id, ctx);
+        });
+
+        app.read(|ctx| {
+            assert!(
+                action_model
+                    .as_ref(ctx)
+                    .get_action_status(&action_id)
+                    .is_some_and(|status| status.is_blocked()),
+                "neither accept ran the question without an answer"
+            );
+            assert!(
+                action_model
+                    .as_ref(ctx)
+                    .get_action_result(&action_id)
+                    .is_none(),
+                "no result was produced for it"
+            );
+            assert!(
+                view.as_ref(ctx).is_awaiting_answers(ctx),
+                "the card stays up until it is answered, skipped or cancelled"
+            );
+        });
+    });
+}

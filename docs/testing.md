@@ -2301,6 +2301,21 @@ in-process tests, no app test yet (the app cases are Wave 0.5's, below).
 | `ctrl_c_on_a_blocked_turn_in_the_agent_view_releases_the_queued_follow_up` | same | in the agent view the queued follow-up comes back into the input after the Ctrl-C (one Enter sends it). A cancelled turn never auto-sends a queued row (#690, #1026), so "sent" means released, not fired |
 | `a_question_finishes_only_with_its_cards_answer`, `a_question_with_nothing_to_show_resolves_with_an_error` | same | through the action model: an accept with no answer leaves the question blocked (the card stays up), the card's submit finishes it with its answers; an empty question list resolves itself with an error |
 
+**Owner decision 2026-11-08: a question has no approval step.** Its card shows as soon as it is queued and blocks; answering it IS the
+approval. The executor decides a question by `AskUserQuestionExecutor::waits_for_answer` alone (answer staged or not), not by the generic
+confirmation policy (initiator, autonomy mode, the conversation's auto-execute override). A skip (the card's "Skip all") or a cancel
+(Reject / Stop / Ctrl-C) resolves it with one result; nothing else does.
+
+| test | file | what it proves |
+|---|---|---|
+| `a_question_waits_for_its_answer_and_only_for_its_answer` | `action_model/execute/ask_user_question_tests.rs` | with auto-approve on, a question waits until answers are staged for it, then runs; another question's answer does not release it |
+| `a_question_with_nothing_to_ask_does_not_wait` | same | an empty question list and a `Never ask` profile do not wait (error result / skipped result), so nothing is left pending without a card |
+| `a_question_shows_its_card_with_no_approval_step_and_a_skip_resolves_it_once` | `terminal/view_test.rs` | queued through the real pipeline, the question blocks with no accept and its `AskUserQuestionView` renders at once (no generic Run drawn); the card's Skip all gives one `Success` result, every question skipped |
+| `cancelling_a_question_resolves_it_once` | same | a `ManuallyCancelled` cancel gives exactly one `Cancelled` result; a late accept finds nothing to run |
+| `autonomy_max_still_waits_for_the_answer` | same | run-to-completion plus an always-allow profile (questions "unless auto-approve"): the agent drain, the accept by id and the plain accept leave it blocked with no result; the staged answer completes it |
+| `a_plain_accept_does_not_complete_a_question_its_card_stays_up` | `crates/warp_tui/src/tui_ask_question_view_tests.rs` | TUI parity: the TUI card is up on a blocked question; the accept by id and the plain accept leave it blocked and awaiting answers |
+| `a_blocked_question_awaits_an_answer_not_an_approval` | `crates/warp_tui/src/tool_call_labels_tests.rs` | the TUI transcript label of a blocked question says "(awaiting your answer)", never "(awaiting approval)"; other tools keep "(awaiting approval)" |
+
 ### Wave 0.5 fake-model scenarios for these issues (to build; scripted BYOP stand-in)
 
 Each scenario runs in agent mode and terminal mode, on the owner setup, with a screenshot per step and the exact text the model receives
