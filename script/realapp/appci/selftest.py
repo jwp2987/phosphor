@@ -1679,7 +1679,7 @@ def editor_memory_breakdown_close_and_cycles():
         # heap trims: the UI items that ended during [end - ms, end + 0.25 s]
         trim_log = "z input_order hop=heap_trim why=open ms=500.00 t=%.3f\nz input_order hop=heap_trim why=close ms=10.00 t=%.3f\n" % ((t + 2.1) * 1000, (t + 8.0) * 1000)
         trims = cases.heap_trims(trim_log)
-        assert trims == [(t + 2.1, 500.0, "open"), (t + 8.0, 10.0, "close")], trims
+        assert trims == [(t + 2.1, 500.0, "open", None), (t + 8.0, 10.0, "close", None)], trims      # old format: no start=
         assert cases.ui_trim_max(items, trims, "open") == 6.5            # the 6.5 ms frame at t+2.0 ended inside the open trim
         assert cases.ui_trim_max(items, trims, "close") == 9.0           # the 9 ms action at t+8.0 ended at the close trim's end
         assert cases.ui_trim_max(items, [], "open") == 0.0
@@ -1688,10 +1688,42 @@ def editor_memory_breakdown_close_and_cycles():
         load = cases.ui_load_frame(items, t)
         assert load == (t + 0.5, 250.0, "frame"), load
         assert cases.ui_load_frame(later, t, t_end=t + 5.5) == load and cases.ui_load_frame([], t) is None
-        spawned = [(t + 0.5, 0.01, "open")]
+        spawned = [(t + 0.5, 0.01, "open", None)]
         assert cases.ui_trim_max(items, spawned, "open") == 250.0
         assert cases.ui_trim_max(items, spawned, "open", exclude=(load,)) == 0.0
         assert cases.ui_trim_max(items, trims, "open", exclude=(load,)) == 6.5      # a real item during the trim still counts
+        # #1340: the new line format carries the trim's start; an item that began before it is not the trim's, and a load frame that ends
+        # after the 5 s window is still found when the window is as long as the open phase
+        new_log = "z input_order hop=heap_trim why=open ms=500.00 freed_estimate=1 start=%d t=%d\n" % ((t + 1.6) * 1000, (t + 2.1) * 1000)
+        ntr = cases.heap_trims(new_log)
+        assert ntr == [(t + 2.1, 500.0, "open", t + 1.6)], ntr
+        # a 40 ms item ending at t+1.7 began at t+1.66 (inside the trim): counts; the 250 ms frame ended at t+0.5; a 150 ms item ending at
+        # t+1.7 began at t+1.55, before the trim started: not the trim's
+        its = [(t + 1.7, 40.0, "frame")]
+        assert cases.ui_trim_max(its, ntr, "open") == 40.0
+        assert cases.ui_trim_max([(t + 1.7, 150.0, "frame")], ntr, "open") == 0.0
+        assert cases.ui_trim_max([(t + 1.7, 150.0, "frame")], [(t + 2.1, 500.0, "open", None)], "open") == 150.0      # old format: as before
+        slow = [(t + 7.0, 300.0, "frame")]
+        assert cases.ui_load_frame(slow, t) is None and cases.ui_load_frame(slow, t, seconds=9.0) == slow[0]
+        # load_stage lines: old (rss_kb only, -1 off Linux) and new (Windows ws/private, macOS footprint) formats; chunk lines thinned
+        st_log = ("a DEBUG editor_memory editor_memory load_stage stage=start rss_kb=-1\n"
+                  "b DEBUG editor_memory editor_memory load_stage stage=layout_tasks_created rss_kb=2048 ws_kb=2048 private_kb=1024 t=5\n"
+                  "c editor_memory load_stage stage=layout_chunk_done start=10 rss_kb=1 phys_footprint_kb=2 t=6\n"
+                  "d editor_memory load_stage stage=layout_chunk_done start=20 rss_kb=1 t=7\n"
+                  "e editor_memory load_stage stage=layout_chunk_done start=30 rss_kb=1 t=8\n")
+        sg = cases.load_stages(st_log)
+        assert [d["stage"] for d in sg] == ["start", "layout_tasks_created", "layout_chunk_done", "layout_chunk_done"], sg
+        assert sg[0]["rss_kb"] == -1 and sg[1]["private_kb"] == 1024 and sg[1]["ws_kb"] == 2048 and sg[2]["phys_footprint_kb"] == 2, sg
+        assert sg[-1]["start"] == 30
+        # Windows (#1340): private bytes are judged, the working set is only a note
+        rw = cases.Result("t", "terminal")
+        assert cases.mem_judge(rw, {"rss": 400.0, "private": 40.0}, {"rss": 0.0, "private": 0.0}, 100, "cost %.0f MB of %s") and not rw.fails
+        assert any("not judged on Windows" in n for n in rw.notes), rw.notes
+        rw2 = cases.Result("t", "terminal")
+        assert not cases.mem_judge(rw2, {"rss": 40.0, "private": 140.0}, {"rss": 0.0, "private": 0.0}, 100, "cost %.0f MB of %s")
+        assert rw2.fails == ["cost 140 MB of private"], rw2.fails
+        rw3 = cases.Result("t", "terminal")
+        assert cases.mem_judge_closed(rw3, {"rss": 500.0, "private": 10.0}, {"rss": 0.0, "private": 0.0}, 60, "held %.0f MB of %s") and not rw3.fails
         # macOS: the reusable share of RSS at the close trim is a note, never a verdict
         assert cases.reusable_note("txt", {"why": "close", "freed_estimate": 0}) is None
         n = cases.reusable_note("txt", {"why": "close", "resident": 1800 * 1048576, "reusable": 460 * 1048576})
@@ -1743,7 +1775,7 @@ def editor_memory_close_trim_and_accepted_open_cost():
         assert [t["freed_estimate"] for t in br["trim"]] == [-4096, 104857600], br["trim"]
         assert br["trim"][0]["why"] == "close" and br["trim"][0]["ms"] == "3.25", br["trim"]
         assert cases.editor_wait_close_trim(c, 0, timeout=0)[-1]["freed_estimate"] == 104857600
-        assert cases.heap_trims(open(log).read()) == [(1.0, 1.0, "close")]     # the hop regex still reads the line with freed_estimate
+        assert cases.heap_trims(open(log).read()) == [(1.0, 1.0, "close", None)]     # the hop regex still reads the line with freed_estimate
         assert not cases.editor_opened(-5.5, []) and cases.editor_opened(-5.5, [{"text_bytes": 1}]) and cases.editor_opened(9.0, [])
         # versions and the acceptance window
         assert cases.version_tuple("v0.1.17") == (0, 1, 17) and cases.version_tuple("0.1.9") < cases.version_tuple("0.1.17")

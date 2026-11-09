@@ -736,6 +736,13 @@ pub fn run() -> Result<()> {
     // Perform any necessary platform-specific initialization.
     platform::init();
 
+    // #1340: the editor's `editor_memory load_stage` lines report working set / private bytes
+    // (Windows) or footprint (macOS) through this reader.
+    #[cfg(not(target_family = "wasm"))]
+    warp_editor::content::buffer::set_load_stage_probe(
+        crate::system::memory_footprint::load_stage_fields,
+    );
+
     // i18n must be initialized before any UI `t!()` call; it starts with the system
     // locale, then gets overridden by LanguageSettings once settings finish loading.
     // Safe against OnceLock re-entrancy.

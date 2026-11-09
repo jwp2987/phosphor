@@ -205,8 +205,32 @@ def focus_window(h):
             user32.AttachThreadInput(cur, t, False)
 
 
+class PMCEX(ctypes.Structure):
+    """PROCESS_MEMORY_COUNTERS_EX: PMC plus PrivateUsage (private committed bytes: the heap and other non-shared memory, the figure the app's own
+    memory_footprint reports on Windows)"""
+    _fields_ = [("cb", wt.DWORD), ("PageFaultCount", wt.DWORD), ("PeakWorkingSetSize", ctypes.c_size_t), ("WorkingSetSize", ctypes.c_size_t),
+                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t), ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t), ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                ("PagefileUsage", ctypes.c_size_t), ("PeakPagefileUsage", ctypes.c_size_t), ("PrivateUsage", ctypes.c_size_t)]
+
+
+def _memory_counters(h):
+    """(working_set_kib, private_kib) of an open process handle; (0, 0) when GetProcessMemoryInfo fails"""
+    pm = PMCEX()
+    pm.cb = ctypes.sizeof(PMCEX)
+    psapi.GetProcessMemoryInfo.argtypes = [ctypes.c_void_p, ctypes.POINTER(PMCEX), wt.DWORD]
+    if not psapi.GetProcessMemoryInfo(h, ctypes.byref(pm), pm.cb):
+        return 0, 0
+    return pm.WorkingSetSize // 1024, pm.PrivateUsage // 1024
+
+
 def process_times(pid):
     """(cpu_100ns, working_set_kib) of one process; raises OSError when it cannot be opened"""
+    return process_times_private(pid)[:2]
+
+
+def process_times_private(pid):
+    """(cpu_100ns, working_set_kib, private_kib) of one process; raises OSError when it cannot be opened"""
     h = kernel32.OpenProcess(0x1000, False, pid)
     if not h:
         raise OSError("OpenProcess(%d) failed: %d" % (pid, ctypes.get_last_error()))
@@ -215,17 +239,8 @@ def process_times(pid):
         if not kernel32.GetProcessTimes(h, ctypes.byref(c), ctypes.byref(e), ctypes.byref(k), ctypes.byref(u)):
             raise OSError("GetProcessTimes failed: %d" % ctypes.get_last_error())
         cpu = ((k.dwHighDateTime << 32) | k.dwLowDateTime) + ((u.dwHighDateTime << 32) | u.dwLowDateTime)
-
-        class PMC(ctypes.Structure):
-            _fields_ = [("cb", wt.DWORD), ("PageFaultCount", wt.DWORD), ("PeakWorkingSetSize", ctypes.c_size_t), ("WorkingSetSize", ctypes.c_size_t),
-                        ("QuotaPeakPagedPoolUsage", ctypes.c_size_t), ("QuotaPagedPoolUsage", ctypes.c_size_t),
-                        ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t), ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
-                        ("PagefileUsage", ctypes.c_size_t), ("PeakPagefileUsage", ctypes.c_size_t)]
-        pm = PMC()
-        pm.cb = ctypes.sizeof(PMC)
-        psapi.GetProcessMemoryInfo.argtypes = [ctypes.c_void_p, ctypes.POINTER(PMC), wt.DWORD]
-        ok = psapi.GetProcessMemoryInfo(h, ctypes.byref(pm), pm.cb)
-        return cpu, (pm.WorkingSetSize // 1024 if ok else 0)
+        ws, private = _memory_counters(h)
+        return cpu, ws, private
     finally:
         kernel32.CloseHandle(h)
 

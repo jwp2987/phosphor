@@ -2174,9 +2174,18 @@ impl CodeEditorModel {
     }
 
     pub fn reset_content(&mut self, state: InitialBufferState, ctx: &mut ModelContext<Self>) {
+        // #1340 measurement: the file's text has been read when it gets here.
+        let stage_log = state.text.len() >= 1_000_000
+            && warp_editor::content::buffer::load_stage_logging_enabled();
+        if stage_log {
+            warp_editor::content::buffer::log_load_stage("file_read_done");
+        }
         self.set_base(state.text, false, ctx);
         // Line ending is now inferred automatically by Buffer::reset.
         self.reset(state, ctx);
+        if stage_log {
+            warp_editor::content::buffer::log_load_stage("reset_content_done");
+        }
     }
 
     pub fn jump_to_line_column(
