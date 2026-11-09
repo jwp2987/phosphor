@@ -2531,3 +2531,12 @@ Info-level, written only when a state CHANGES, ids / kinds / states only, never 
 | `hop=turn conv= state=` | `AIConversation::update_status_with_error_message` | `in_progress`, `success`, `error`, `transient_error`, `cancelled`, `blocked`, `waiting_for_events` |
 
 Run: `script/agent_fuzz` (L0 + L1). Nothing in this section has been compiled yet.
+
+## #1801: prompt chips re-run when the block's session registers
+
+A remote session's blocks carry its id before its bootstrap completes (the ssh setup holds the bootstrap while it checks
+for the remote helper, longer over a slow link), so shell-command chips refreshed in that window found no session and
+failed with "could not prepare execution context". The refresh that follows the bootstrap often has the same block, cwd
+and environment, and the #1167 unchanged-context skip then left the chips failed until the next block. The dedupe key
+(`PromptContextKey`) now includes whether the session is registered, and the failure is logged at debug while it is
+not. Pinned by `test_chips_rerun_when_the_blocks_session_registers` (`app/src/context_chips/current_prompt_test.rs`).
