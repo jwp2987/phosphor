@@ -2725,7 +2725,7 @@ def lab_cases_registry_and_selection():
     assert run.unknown_case_names("mode_proof,typo_case", reg) == ["typo_case"]       # exact names are still checked exactly
     # winmap: a lab case is never 'unclassified'; PowerShell pane skips with a reason; p_onesess is skipped on Windows
     base = {n.split(".")[0] for n in names}
-    assert base == {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i"}, base
+    assert base == {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i", "lab_replay"}, base
     assert all(c["modes"] == ("terminal",) for c in labs if c["name"].startswith("lab_ssh_drop_reconnect")), "the drop case is terminal-only"
     ordered = sorted(labs, key=lambda c: c["order"])
     assert [c["arm"]["helper"] for c in ordered] == sorted((c["arm"]["helper"] for c in labs), key=lambda h: L.HELPERS.index(h)), "nohelper arms sort before helper arms"
@@ -2995,6 +2995,99 @@ def lab_ctl_and_daemon_pure_pieces():
     assert D.split_candidates("zsh", "\x1b[1m> \x1b[0mcd tabfx/\r\nambx_a/  ambx_b/\r\n", "cd tabfx/") == ["ambx_a/", "ambx_b/"]
     assert D.split_candidates("fish", "a/\tdirectory\nb/\tdirectory\n", "x") == ["a/", "b/"]
     assert D.totp_file_text("ABC") == 'ABC\n" TOTP_AUTH\n'
+
+# ---- the real-use replay (replay.py, fake_model.py, cases_replay.py)
+@check
+def replay_scenario_is_deterministic_and_sized():
+    import replay as RP
+    a, b = RP.gen_scenario(7, 15, "terminal"), RP.gen_scenario(7, 15, "terminal")
+    assert a == b and a != RP.gen_scenario(8, 15, "terminal")
+    assert sum(RP.est_seconds(s) for s in a) >= 15 * 60 and len(RP.gen_scenario(7, 60, "terminal")) > len(a)
+    assert len(RP.gen_scenario(1, 0.01, "agent")) >= 3
+    kinds = {s["kind"] for s in RP.flatten(RP.gen_scenario(3, 120, "terminal"))}
+    assert {"local_cmd", "cd", "tab", "ssh_session", "ctrlc", "big_seq", "big_cat", "subshell", "sudo", "remote_cmd", "remote_big"} <= kinds, kinds
+    ak = {s["kind"] for s in RP.gen_scenario(3, 120, "agent")}
+    assert ak == {"agent_approve", "agent_reject", "agent_prose", "agent_ctrlc"}, ak
+    idx = [s["idx"] for s in RP.flatten(RP.gen_scenario(3, 30, "terminal"))]
+    assert len(idx) == len(set(map(str, idx)))
+    assert len({s["eff"] for s in RP.flatten(a)}) == len(RP.flatten(a))
+
+
+@check
+def replay_effects_oracle():
+    import replay as RP
+    steps = [dict(kind="local_cmd", idx=0, tok="A", eff="e0"), dict(kind="ctrlc", idx=1, tok="B", eff="e1"), dict(kind="agent_reject", idx=2, tok="C", eff="e2"),
+             dict(kind="ssh_session", idx=3, tok="D", eff="e3", inner=[dict(kind="remote_cmd", idx="3_0", tok="E", eff="e30")])]
+    exp = RP.expected_effects(steps)
+    assert exp == {"e0": ["A"], "e2": [], "e30": ["E"]}, exp
+    assert RP.expected_effects(steps, {0}) == {"e0": ["A"]}
+    assert RP.judge_effects(exp, {"e0": ["A"], "e30": ["E"]}) == []
+    bad = RP.judge_effects(exp, {"e0": [], "e2": ["C"], "e30": ["E", "E"]})
+    assert len(bad) == 3, bad
+
+
+@check
+def replay_error_allowlist_and_hops():
+    import replay as RP
+    log = "2026 INFO ok\n2026 [ERROR] boom here\n2026 ERROR Settings file cannot be used: x\nthread panicked at a.rs:1\n2026 ERROR keyring locked\n"
+    got = RP.error_lines(log)
+    assert got == ["2026 [ERROR] boom here", "thread panicked at a.rs:1"], got
+    assert RP.error_lines(log, extra_allow=["boom"]) == [got[1]]
+    h = RP.agent_hops('hop=enter_begin deferred=false buffer="Reply with the word R1abc" input_type=AI\nhop=view_mode mode=agent pane=1\n[byop] opening stream\nqueue_actions\n')
+    assert h["enters"] == [("Reply with the word R1abc", "AI")] and h["streams"] == 1 and h["cards"] == 1 and h["views"] == ["agent"], h
+    st = [dict(idx=0, tok="R1abc", ask="Reply with the word R1abc")]
+    assert RP.judge_agent(h, st) == []
+    h2 = dict(h, enters=[("Reply with the word R1abc", "Shell")], views=["agent", "terminal"], streams=0)
+    assert len(RP.judge_agent(h2, st)) == 4, RP.judge_agent(h2, st)
+
+
+@check
+def replay_latency_and_config():
+    import replay as RP
+    s = RP.latency_stats([("a", 1.0), ("a", 3.0), ("b", 0.5)])
+    assert s["a"]["n"] == 2 and s["a"]["max"] == 3.0 and s["b"]["p50"] == 0.5, s
+    assert RP.replay_minutes({}) == 15 and RP.replay_minutes({"APPCI_REPLAY_MINUTES": "60"}) == 60
+    for v in ("x", "0", "-1"):
+        try:
+            RP.replay_minutes({"APPCI_REPLAY_MINUTES": v})
+        except ValueError:
+            continue
+        raise AssertionError(v)
+    import cases_replay as CRP
+    assert CRP.first_divergence(["cd a/ && x"], ["cd a && x"]) is None
+    assert "typed 'a'" in CRP.first_divergence(["a", "b"], ["c", "b"])
+    assert "typed 2 lines" in CRP.first_divergence(["a", "b"], ["a"])
+
+
+@check
+def fake_model_replies():
+    import fake_model as FM
+    r = FM.reply_for([{"role": "user", "content": "Please run exactly this shell command and nothing else: echo T >> /x/f.txt"}])
+    assert r["tool"]["name"] == "run_shell_command" and r["tool"]["arguments"]["command"] == "echo T >> /x/f.txt", r
+    assert FM.reply_for([{"role": "user", "content": "x"}, {"role": "tool", "content": "ok"}]) == {"text": "Done.", "tool": None}
+    assert FM.reply_for([{"role": "user", "content": "Reply with the word Q1"}])["text"] == "OK Q1"
+    assert FM.reply_for([{"role": "user", "content": "Answer slowly SLOW R1"}]).get("slow")
+    lines = [json.loads(x) for x in FM.stream_lines("m", r)]
+    assert lines[-1]["done"] and lines[-2]["message"]["tool_calls"][0]["function"]["name"] == "run_shell_command"
+    assert "".join(json.loads(x)["message"]["content"] for x in FM.stream_lines("m", {"text": "hello world", "tool": None})) == "hello world"
+    f = FM.FakeModel().start()
+    try:
+        import urllib.request
+        rq = urllib.request.Request(f.url + "/api/chat", json.dumps({"model": "m", "messages": [{"role": "user", "content": "Reply with the word Z"}]}).encode())
+        body = urllib.request.urlopen(rq, timeout=5).read().decode().splitlines()
+        assert json.loads(body[-1])["done"] and f.requests == 1
+    finally:
+        f.stop()
+
+
+@check
+def replay_cases_registered_but_not_swept_by_lab_glob():
+    names = [c["name"] for c in cases.CASES if c["name"].startswith("lab_replay")]
+    assert names == ["lab_replay.bash.150.nohelper"], names
+    c = [c for c in cases.CASES if c["name"] == names[0]][0]
+    assert c["modes"] == ("terminal", "agent") and c["lab"]
+
+
 
 def main():
     failed = 0
