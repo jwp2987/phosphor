@@ -2440,6 +2440,7 @@ def c_sub_sh_probe(ctx, r):
         f = "shp_%s.txt" % label
         ctx.rm(f)
         tok = ctx.tok(6)
+        off = ctx.log_size()
         ctx.be.type(cmd, 12, enter=True)
         time.sleep(1.6)                    # the Phosphorize banner comes 1 s after the command starts
         ctx.shot("%s_banner" % label)
@@ -2454,7 +2455,14 @@ def c_sub_sh_probe(ctx, r):
         r.metric("first_inner_line_after_phosphorize_s_%s" % label, round(dt_trigger, 3))
         r.check(got, "%s: the first inner line ran at all (file %r)" % (label, ctx.lines(f)))
         r.check(dt_enter < 2.0, "%s: the first inner line ran %.2f s after its Enter (budget 2 s, #1710)" % (label, dt_enter))
-        ctx.be.type("sh -c 'ps -o comm= -p $PPID' >> " + f, 12, enter=True)
+        # #1679 step 3: a cooked editor-less shell (dash) is written to only at an IDLE prompt it proved ready (the user's line runs in
+        # it first, never held). Typing line after line with no pause starves the judge, so leave the idle prompt the judge needs and
+        # wait for the unsupported event before the rest; the probe then answers while the following lines are typed behind it.
+        t_idle = time.time()
+        ctx.until(lambda: any("subshell_setup_unsupported" in ln for ln in ctx.log_since(off).splitlines()), 6)
+        r.metric("unsupported_event_after_first_line_s_%s" % label, round(time.time() - t_idle, 3))
+        # busybox ps has no -p: read the parent's comm from /proc where it exists, else ps (macOS)
+        ctx.be.type("sh -c 'cat /proc/$PPID/comm 2>/dev/null || ps -o comm= -p $PPID' >> " + f, 12, enter=True)
         ctx.until(lambda: len(ctx.lines(f)) >= 2, 6)
         toks = [ctx.tok(6) for _ in range(4)]
         for t in toks:
@@ -2469,7 +2477,7 @@ def c_sub_sh_probe(ctx, r):
         ok = (len(l) == len(want) and l[0] == tok and any(l[1].startswith(p) for p in comm_prefixes)
               and l[2:2 + len(toks)] == toks and l[-1] == "back_" + tok)
         r.check(ok, "%s: exact lines in the inner shell, then the pane's bash: got %r, wanted %r" % (label, l, want))
-        log = ctx.app_log_lines()
+        log = ctx.log_since(off).splitlines()
         if log:
             # The EVENT ended the setup (hop subshell_setup_unsupported); no net or give-up timer wrote or handed back.
             r.check(any("subshell_setup_unsupported" in ln for ln in log),
