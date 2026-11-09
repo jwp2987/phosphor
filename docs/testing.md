@@ -920,6 +920,17 @@ test that never ran because its build failed counts as FAIL. `skipped by tier` (
 | `candidate` | `check-linux`; all three suites unfiltered; all three builds; the FULL app matrix on every platform (both Linux passes); on macOS and Windows also the three unit suites (`test-<plat>`, `test-warpui-core-<plat>`, `test-workspace-rest-<plat>`), played BEFORE that platform's app tests, one at a time on the same machine (owner 2026-11-05: unit tests first); on the Linux box the Wayland/X11 app tests likewise wait for the box's three unit suites, and in the release tier every machine's heavy suites (loom, fuzz, bench, mutants) follow its app tests, so compile and mutation load never overlaps the latency and typing cases (r18u31) | ~6 h (Mac/Windows suites unmeasured) | a batch of fixes is ready; nothing is "done" until a candidate passes |
 | `release` | candidate + `test-shuttle-loom`, `fuzz-smoke`, `bench`, `mutants`, `mutants-warpui-core` on the box, and the same five with the `-macos` and `-windows` suffix after each platform's unit suites (`fuzz-smoke-windows` is reported `unsupported on platform`, never played) | ~16 h (estimate; the first run records it) | before a numbered release (then also the manual checklist of section 5) |
 
+**Which manual suites a tier plays (#1502).** Before this, `integration-linux`, `integration-linux-pwsh`, `usage-test-*`, `insta-snapshots`, `check-macos` and
+`check-windows` were manual in every pipeline and no tier played them, so the ~300 GUI scenarios (typeahead, ssh, subshell, bootstrapping, ctrl_d, session
+restoration) never ran. Now `candidate` and `release` play, on the box and after its three unit suites (and before the Wayland/X11 app tests, which wait for
+them): `integration-linux: [1]`..`[3]` (the matrix shards, one after the other), `integration-linux-pwsh`, `usage-test-linux`; and on the Mac, with its unit suites
+and before its app tests, `usage-test-macos`. They stay `manual` + `allow_failure` in GitLab (owner rule: heavy suites are manual or tag-only, no schedules):
+`ci_seq.py` plays them, and its verdict counts them (FAIL on a red job). The integration suite has no known-good baseline yet (`.gitlab-ci.yml` says so): the
+first candidate run records one, and a red scenario there is a finding to triage, not noise to ignore. Deliberately in NO tier: `insta-snapshots` (it writes
+snapshot files for a human to review and commit), `check-macos` / `check-windows` (the build jobs compile the same code under the stricter installer profile;
+`guards-windows` already runs as the first step of every Windows app test). Shuttle/loom, fuzz, bench and the two mutants jobs were already `release` (above).
+`ci_seq.py --self-test` pins the suite lists and that a matrix job name resolves to its template's `timeout:`.
+
 **Every suite on every platform (2026-11-03, owner: "the tests need to be the same on all boxes").** Each box suite has a `-macos` and
 a `-windows` twin (names in the table in 2.7; `test-macos` / `test-windows` are the `test-linux` lib suite). All are manual and
 `allow_failure`, never automatic on a push. They share ONE definition: `script/ci/run_suite.sh <macos|windows> <suite>` runs the same command
