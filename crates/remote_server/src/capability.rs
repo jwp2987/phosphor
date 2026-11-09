@@ -53,7 +53,6 @@ pub const LEGACY_ONLY_CAPABILITIES: &[&str] = &[
     CODEBASE_INDEX,
     GIT_STATUS,
     GITHUB,
-    AGENT_CONTEXT,
     CODEBASE_CHUNKS,
 ];
 
@@ -66,6 +65,7 @@ pub const HELPER_CAPABILITIES: &[&str] = &[
     RIPGREP_SEARCH,
     REPO_METADATA,
     FILE_CONTEXT,
+    AGENT_CONTEXT,
 ];
 
 /// What the server on the other end of a session supports.
@@ -139,7 +139,9 @@ mod tests {
     fn the_new_family_capabilities_have_stable_wire_names_and_are_reserved() {
         assert_eq!(AGENT_CONTEXT, "agent_context");
         assert_eq!(CODEBASE_CHUNKS, "codebase_chunks");
-        assert!(LEGACY_ONLY_CAPABILITIES.contains(&AGENT_CONTEXT));
+        // The helper implements the agent context since P8; only chunking stays reserved.
+        assert!(HELPER_CAPABILITIES.contains(&AGENT_CONTEXT));
+        assert!(!LEGACY_ONLY_CAPABILITIES.contains(&AGENT_CONTEXT));
         assert!(LEGACY_ONLY_CAPABILITIES.contains(&CODEBASE_CHUNKS));
     }
 

@@ -13,9 +13,11 @@
 //! * [`git`]: git argv builders, parsers and algorithms over a `GitRunner` (P5).
 //! * [`predicates`]: "may this command change HEAD / the cwd", the refresh-coordinator inputs.
 //! * [`read`]: batch file reads (`ReadFileContext`), shared by the helper and the shell backend.
+//! * [`agent_context`]: the host skills and global rules snapshot, shared by the helper and the shell backend.
 //!
 //! Wave H, P0.
 
+pub mod agent_context;
 pub mod base64;
 pub mod chunk;
 pub mod frame;

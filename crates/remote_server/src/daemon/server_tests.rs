@@ -89,11 +89,14 @@ fn initialize_advertises_the_helper_capabilities_and_version() {
             "git_read",
             "ripgrep_search",
             "repo_metadata",
-            "file_context"
+            "file_context",
+            "agent_context"
         ]
     );
     // Parity family a: batch file reads are served by the helper.
     assert!(caps.supports(crate::capability::FILE_CONTEXT));
+    // Parity family h: the host's skills and rules are pushed by the helper.
+    assert!(caps.supports(crate::capability::AGENT_CONTEXT));
     assert!(!caps.supports(crate::capability::BUFFERS));
 }
 
