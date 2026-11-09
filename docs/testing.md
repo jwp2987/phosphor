@@ -2324,3 +2324,34 @@ turn ends (app log), on any turn that does not end within 10 s of the last user 
 Fuzzer oracle (the Wave 0.5 grammar generator): after every generated user step, each `pending_actions` entry is the front action with a
 rendered card or is behind one; nothing is `RunningAsync` for an `ask_user_question`; a turn whose actions are all finished leaves the
 conversation not `Blocked`. #1797 and #1799 are the acceptance cases: the fuzzer must find both from scratch on the pre-fix build.
+
+## Agent fuzzer and fake model
+
+A fake AI model plus a fuzzer that drives whole agent conversations. Three layers, one scenario schema (`"v": 1`, `crates/fake_llm/src/scenario.rs`); a failing case from any layer is a JSON file any other layer can replay. Nothing here ships in a release build: `fake_llm` is a dev-dependency of `app` only, and the app-side seam is `cfg(any(test, feature = "test-util"))`.
+
+| layer | what it drives | where | state |
+|---|---|---|---|
+| **L0 wire** | the real genai client (`lib/rust-genai`, the BYOP decoder) against llmposter, a scripted raw server and a byte-level chaos proxy | `crates/fake_llm/tests/genai_decode.rs` | in this build |
+| **L1 in-process** | the real controller / action model / queue in `App::test`, fed scripted turns through the stream seam, an actor stepping the user's side, an oracle checking I1-I7 after every step | `app/src/ai/blocklist/agent_fuzz/` | in this build (see below) |
+| **L2 real app** | appci + llmposter as the provider, real PTY | `script/realapp/appci` | later |
+
+**llmposter** (crates.io, AGPL-3.0-or-later, test-only; Phosphor is AGPL-3.0-only so the licences are compatible, and `AGPL-3.0-or-later` is on the `deny.toml` / `about.toml` lists for it) supplies the HTTP mock: OpenAI SSE, character-chunked text, HTTP error statuses, frame truncation. `crates/fake_llm` writes only the gaps: the in-process seam, byte-level cuts (inside UTF-8, a JSON string, between `data:` and `\n\n`), tool-call arguments streamed as many deltas, malformed arguments, chosen call ids, and the scenario schema.
+
+### L0 (`genai_decode*`)
+
+| test | what it proves |
+|---|---|
+| `genai_decode_llmposter_text_reassembles` (proptest) | text of any shape (multi-byte, quotes, newlines) chunked any way reassembles byte-exact |
+| `genai_decode_llmposter_tool_call_arguments_parse` | every known tool's valid arguments arrive as the call's name and parsed arguments; the chunk the app accumulates by id carries the raw text |
+| `genai_decode_llmposter_turns_follow_request_order` | the nth request gets the nth turn; past the script the fake answers `END` |
+| `genai_decode_proxy_cuts_keep_text_exact` (proptest) | the stream cut at arbitrary bytes by `ChaosProxy` still decodes exactly |
+| `genai_decode_wire_split_arguments_are_byte_exact` (proptest) | arguments streamed as 1-11 deltas, frames cut at arbitrary bytes, accumulate byte-exact |
+| `genai_decode_wire_invalid_json_arguments_arrive_as_the_raw_text` | malformed / empty arguments reach the app as the exact text (the app parses and rejects them) |
+| `genai_decode_wire_two_calls_keep_their_ids_and_order` | two calls keep ids and order |
+| `genai_decode_disconnect_mid_stream_is_an_error_not_a_short_reply` | a connection dropped mid-stream is an error |
+| `genai_decode_clean_close_before_done_is_a_visibly_missing_end` | a clean close before `[DONE]` is a plain end with no End event; the only defence is the app's "ended without a terminal End event" guard (`chat_stream.rs`) |
+| `genai_decode_stall_is_catchable_with_a_timeout` | a silent connection can be timed out by the caller (the app has its idle timeouts) |
+| `genai_decode_llmposter_truncation_never_looks_complete` | llmposter's frame truncation never yields an End |
+| `genai_decode_llmposter_http_statuses_reach_the_caller`, `genai_decode_wire_html_error_page_is_an_error_with_its_status`, `genai_decode_llmposter_context_overflow_keeps_the_providers_wording`, `genai_decode_in_stream_error_event_is_an_error` | 429 / 529 / 503 / 500, an HTML 502, a context-overflow 400 and an in-stream error event reach the caller with the status or the provider's wording the app's classifiers match on |
+
+Run: `script/agent_fuzz` (L0 + L1). Nothing in this section has been compiled yet.
