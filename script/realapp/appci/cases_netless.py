@@ -479,6 +479,8 @@ def c_network_gate_switch(ctx, r):
         import cases_agent_netgate as NG
         off = ctx.log_size()
         NG.open_network_kb(ctx, r)
+        # round 6: the page showed "No extra origins" here, so there was no Remove stop to Tab to. Say whether the file still held the origin.
+        r.check(NG.origin_count(ctx, marker_host) == 1, "before the keyboard Remove, settings.toml no longer holds the allowed origin the case wrote (the page then has no Remove stop)")
         ctx.be.key("Tab")
         time.sleep(0.5)
         ctx.shot("ngs_kb_remove_focus")

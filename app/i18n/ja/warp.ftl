@@ -786,7 +786,7 @@ settings-warpify-split-inherits-ssh-description = SSH セッションのペイ�
 # グローバル HTTP プロキシ設定ページ (Issue #72)。
 settings-network-page-title = ネットワーク
 settings-network-header = HTTP プロキシ
-settings-network-description = すべての送信 HTTP / WebSocket リクエストにグローバルプロキシを設定します。フィールドを編集後に Enter を押して保存。\n新規リクエスト(BYOP モデル一覧 / 接続テスト / 会話ロード など)は即時に反映されます;autoupdate / changelog など起動時に構築される長期 Client はアプリの再起動が必要です。
+settings-network-description = すべての送信 HTTP / WebSocket リクエストにグローバルプロキシを設定します。フィールドを編集後に Enter を押して保存。 新規リクエスト(BYOP モデル一覧 / 接続テスト / 会話ロード など)は即時に反映されます;autoupdate / changelog など起動時に構築される長期 Client はアプリの再起動が必要です。
 settings-network-mode-label = プロキシモード
 settings-network-mode-description = ここで設定したプロキシのみ使用します:Custom は下の URL を使用。System と Off はどちらもプロキシなしです(Phosphor は OS と環境変数のプロキシ設定を無視します)。
 settings-network-mode-system = システム

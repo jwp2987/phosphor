@@ -11,6 +11,15 @@ export RUST_LOG=warp::input_order=debug,warp::terminal::model_lock_trace=debug,w
 export WARP_INPUT_ORDER_LOG_TEXT=1
 mkdir -p "$XDG_STATE_HOME" "$XDG_DATA_HOME"
 if [ -z "$APPCI_NO_KEYRING" ]; then
+  # A fresh HOME has no default collection and gnome-keyring cannot create one without a prompt, so the "unlocked" keyring was never usable
+  # (round 6: "Failed to acquire default Secret Service collection: unknown error" on every launch). Seed an unencrypted login keyring: the
+  # daemon then answers Unlock without a prompt.
+  KR="$XDG_DATA_HOME/keyrings"
+  if [ ! -e "$KR/default" ]; then
+    mkdir -p "$KR" && chmod 700 "$KR"
+    printf '[keyring]\ndisplay-name=Login\nctime=0\nmtime=0\nlock-on-idle=false\nlock-after=false\n' > "$KR/login.keyring"
+    printf login > "$KR/default"
+  fi
   printf "" | gnome-keyring-daemon --unlock --components=secrets >/dev/null 2>&1 || echo "WARNING: gnome-keyring-daemon unavailable" >&2
 fi
 echo $$ > "%(run)s/app.pid"

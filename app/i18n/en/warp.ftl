@@ -894,7 +894,7 @@ settings-warpify-split-inherits-ssh-description = Splitting a pane whose session
 # Global HTTP proxy settings page (see Issue #72).
 settings-network-page-title = Network
 settings-network-header = HTTP proxy
-settings-network-description = Configure a global proxy for all outbound HTTP / WebSocket requests. Press Enter after editing a field to save.\nNew requests (BYOP model list, test connection, conversation loading, etc.) take effect immediately; long-lived clients constructed at startup (autoupdate, changelog) require an app restart.
+settings-network-description = Configure a global proxy for all outbound HTTP / WebSocket requests. Press Enter after editing a field to save. New requests (BYOP model list, test connection, conversation loading, etc.) take effect immediately; long-lived clients constructed at startup (autoupdate, changelog) require an app restart.
 settings-network-mode-label = Proxy mode
 settings-network-mode-description = Only a proxy set here is used: Custom uses the URL below. System and Off both mean no proxy (Phosphor ignores the OS and environment proxy settings).
 settings-network-mode-system = System

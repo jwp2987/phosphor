@@ -20544,6 +20544,15 @@ impl TerminalView {
         body: &str,
         ctx: &mut ViewContext<Self>,
     ) {
+        // Once a listener is registered its own subscription parses and applies every later
+        // event; parsing here too only logged each event twice (and registration below refuses
+        // when a listener exists), so leave it to the listener.
+        let has_listener = CLIAgentSessionsModel::as_ref(ctx)
+            .session(self.view_id)
+            .is_some_and(|s| s.listener.is_some());
+        if has_listener {
+            return;
+        }
         let Some(notification) = parse_event(title, body) else {
             return;
         };
