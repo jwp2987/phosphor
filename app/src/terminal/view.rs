@@ -25697,7 +25697,6 @@ impl TerminalView {
     /// Locking the terminal model here is safe: both callers reach this from a model-event or
     /// poller subscription that takes the same lock itself immediately afterwards, so it is
     /// never held across the call.
-    #[cfg(unix)]
     fn is_agent_driving_active_block(&self) -> bool {
         let model = self.model.lock();
         let active_block = model.block_list().active_block();

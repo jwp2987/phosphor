@@ -45,7 +45,8 @@ linux)
     # install-in-a-scratch-root: unpack as the current user, then check the binary and its desktop entry landed
     root="$scratch/root-$(basename "$deb")"; mkdir -p "$root"
     dpkg -x "$deb" "$root" || { bad "dpkg -x failed for $deb"; continue; }
-    bin=$(find "$root" -type f -perm -u+x \( -path '*/usr/bin/*' -o -path '*/opt/*' \) \( -name 'phosphor*' -o -name 'zap*' -o -name 'warp*' \) | head -1)
+    # bundled resources (e.g. the agent plugins' hook scripts named warp-*.sh) are executable too; never pick them
+    bin=$(find "$root" -type f -perm -u+x \( -path '*/usr/bin/*' -o -path '*/opt/*' \) -not -path '*/resources/*' -not -name '*.sh' \( -name 'phosphor*' -o -name 'zap*' -o -name 'warp*' \) | head -1)
     if [ -z "$bin" ]; then bad "no executable app binary under usr/bin or opt in $deb"
     else
       note "deb payload binary: ${bin#"$root"}"
