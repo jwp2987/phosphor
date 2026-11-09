@@ -501,10 +501,12 @@ impl RoutedBackend {
     }
 
     /// [`RemoteFeatures::write_file`](super::RemoteFeatures::write_file) that, when `expect` is
-    /// given, writes only if the file is still in that state. The check needs the shell arm: a
-    /// helper write has no precondition (the helper's conflict detection is its buffer
-    /// protocol), so with a helper serving the family the write goes through unguarded and the
-    /// caller relies on that protocol. Emits `AfterOwnWrite` like any write.
+    /// given, writes only if the file is still in that state; on a mismatch nothing is written
+    /// and the error says the file changed (#1837). A helper that lists `file_write_expect`
+    /// checks it itself (`WriteFile.expect`, `Sha256` and `Absent` only); any other helper, or a
+    /// legacy daemon, ignores the field, so the write goes through the shell arm instead (the
+    /// guarded script), and with no shell arm it is REFUSED, never sent unguarded. Emits
+    /// `AfterOwnWrite` like any write.
     pub async fn write_file_expecting(
         &self,
         path: String,
@@ -512,11 +514,30 @@ impl RoutedBackend {
         expect: Option<crate::shellcmd::write::Expect>,
     ) -> Result<(), super::BackendError> {
         use super::RemoteFeatures as _;
-        if expect.is_none() || self.kind(Family::FileWrite) == BackendKind::Helper {
+        let Some(expect) = expect else {
             return self.write_file(path, content).await;
-        }
+        };
         self.log_route(Family::FileWrite);
-        let result = self.shell.write_file_expecting(path, content, expect).await;
+        let helper_guard = self.helper_for(Family::FileWrite).filter(|client| {
+            client
+                .capabilities()
+                .supports_listed(crate::capability::FILE_WRITE_EXPECT)
+        });
+        let result = match (helper_guard, expect.to_wire()) {
+            (Some(client), Some(wire)) => client
+                .write_file_expecting(path, content, Some(wire))
+                .await
+                .map_err(super::BackendError::from),
+            _ if self.shell.is_available() => {
+                self.shell
+                    .write_file_expecting(path, content, Some(expect))
+                    .await
+            }
+            _ => Err(super::BackendError::Unavailable(format!(
+                "cannot write {path} safely: the host cannot check that it is unchanged \
+                 (no helper with write checks and no shell channel), so nothing was written"
+            ))),
+        };
         if result.is_ok() {
             self.router
                 .emit_refresh(&self.host, &RemoteRefreshEvent::AfterOwnWrite);

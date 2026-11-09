@@ -1348,3 +1348,35 @@ fn guarded_rename_reports_both_files_when_the_source_cannot_be_removed() {
         );
     });
 }
+
+/// #1837: the remote write carries what the content check approved, so the host can refuse a
+/// write over a file that changed after that read.
+#[test]
+fn remote_write_expectation_names_the_exact_bytes_that_were_read() {
+    use remote_server::shellcmd::write::Expect;
+    let content = ExpectedDiskState::Content("a\nb".to_string());
+    // A CRLF file the LF-normalised content check accepts is guarded by its REAL bytes.
+    let read: Result<Vec<u8>, String> = Ok(b"a\r\nb".to_vec());
+    let Some(Expect::Sha256(digest)) = remote_write_expectation(&content, &read) else {
+        panic!("a successful read of an expected-content file must be guarded by a hash");
+    };
+    assert_eq!(digest.as_str(), remote_server::index::sha256_hex(b"a\r\nb"));
+    // The hash changes when the bytes do (a user edit after the proposal).
+    let edited: Result<Vec<u8>, String> = Ok(b"a\r\nb edited".to_vec());
+    assert_ne!(
+        remote_write_expectation(&content, &edited),
+        remote_write_expectation(&content, &read)
+    );
+    // Creating a file whose probe failed: the host must still find nothing there.
+    let failed: Result<Vec<u8>, String> = Err("no route".to_string());
+    assert_eq!(
+        remote_write_expectation(&ExpectedDiskState::Absent, &failed),
+        Some(Expect::Absent)
+    );
+    // The documented exception: an empty read cannot tell missing from empty.
+    let empty: Result<Vec<u8>, String> = Ok(Vec::new());
+    assert_eq!(
+        remote_write_expectation(&ExpectedDiskState::Absent, &empty),
+        None
+    );
+}

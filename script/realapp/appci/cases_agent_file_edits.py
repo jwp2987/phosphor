@@ -8,8 +8,10 @@
 #   agent_edit_endings         CRLF file / LF file with no trailing newline / CRLF with none: after an accepted edit (including an edit of the LAST line) every line
 #                              ending and the missing-or-present final newline are exactly what they were
 #   lab_fam_agent_edit_conflict   the accept + conflict pair on a REMOTE host (lab, arms nohelper = the shell backend over the ControlMaster, the primary design; upload =
-#                              the helper). The no-helper write carries an optional size+mtime Expect (crates/remote_server/src/shellcmd/write.rs): the conflict is
-#                              detected at save, the host's file keeps the user's change
+#                              the helper). The accept re-reads the file, checks it against the proposal, and writes with a SHA-256 of the bytes it read
+#                              (#1837): the shell script (nohelper) or the helper (`WriteFile.expect`, capability file_write_expect) compares atomically with the write
+#                              and refuses with "the file changed on the host after it was read, so it was not overwritten" (matched by SAVE_FAILED); the host's
+#                              file keeps the user's change
 #   lab_fam_agent_edit_endings    CRLF and no-final-newline preserved over the same two arms
 #   agent_edit_touch_only      mtime moved, bytes identical, then accept: succeeds, no false conflict (local: content compare in warp_files; remote leg in the lab pair)
 # Remote writes must log hop=backend_route family=file_write (nohelper -> shell, upload -> helper); no line fails the lab cases (crates/remote_server router.rs).

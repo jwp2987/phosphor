@@ -487,10 +487,27 @@ impl RemoteServerClient {
     /// Writes content to a file on the remote host.
     /// Creates parent directories if they don't exist.
     pub async fn write_file(&self, path: String, content: String) -> Result<(), ClientError> {
+        self.write_file_expecting(path, content, None).await
+    }
+
+    /// [`Self::write_file`] that, when `expect` is given, makes the server write only if the file
+    /// is still in that state (a mismatch is a `FileOperationFailed` and nothing is written).
+    /// Only for a server that lists the `file_write_expect` capability: an older one ignores the
+    /// field and would write unguarded.
+    pub async fn write_file_expecting(
+        &self,
+        path: String,
+        content: String,
+        expect: Option<crate::proto::WriteExpect>,
+    ) -> Result<(), ClientError> {
         let request_id = RequestId::new();
         let msg = ClientMessage::host_scoped(
             request_id.to_string(),
-            host_scoped_request::Message::WriteFile(WriteFile { path, content }),
+            host_scoped_request::Message::WriteFile(WriteFile {
+                path,
+                content,
+                expect,
+            }),
         );
         let response = self.send_request(request_id, msg).await?;
         match response.message {

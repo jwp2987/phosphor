@@ -401,6 +401,28 @@ fn check_pre_image(
 /// to lose — but the file's existence, mode and inode are not preserved.
 ///
 /// Every other case — and every local case — refuses on an unreadable file.
+/// The host-side precondition for the remote write that follows [`remote_pre_image_refusal`]
+/// approving `read_result`: the SHA-256 of the exact bytes that were read (so the content check,
+/// which tolerates line-ending normalisation, and the write act on the same file), or `Absent`
+/// when the read failed on an absent-expected write (a file that exists but could not be read is
+/// then refused by the host rather than overwritten). `None` when there is nothing exact to
+/// compare: an empty read cannot tell a missing file from an empty one, so that case stays as
+/// documented above.
+pub(crate) fn remote_write_expectation<E>(
+    expected: &ExpectedDiskState,
+    read_result: &Result<Vec<u8>, E>,
+) -> Option<remote_server::shellcmd::write::Expect> {
+    use remote_server::shellcmd::write::{Expect, HexDigest};
+    match (expected, read_result) {
+        (ExpectedDiskState::Absent, Err(_)) => Some(Expect::Absent),
+        (ExpectedDiskState::Absent, Ok(_)) => None,
+        (ExpectedDiskState::Content(_), Ok(bytes)) => {
+            HexDigest::parse(&remote_server::index::sha256_hex(bytes)).map(Expect::Sha256)
+        }
+        (ExpectedDiskState::Content(_), Err(_)) => None,
+    }
+}
+
 fn remote_pre_image_refusal<E: std::fmt::Display>(
     path: &str,
     expected: &ExpectedDiskState,
@@ -1382,6 +1404,10 @@ impl FileModel {
                 let path = path.as_str().to_string();
                 let future = async move {
                     let read_result = backend.read_file_bytes(path.clone()).await;
+                    // What the host must still hold at write time: the exact bytes the check
+                    // below approves (#1837). The host re-verifies it atomically with the
+                    // write, so a change between this read and the write is a refusal too.
+                    let host_expect = remote_write_expectation(&expected, &read_result);
                     if let Some(message) = remote_pre_image_refusal(
                         &path,
                         &expected,
@@ -1391,7 +1417,7 @@ impl FileModel {
                         return Err(message);
                     }
                     backend
-                        .write_file(path, content)
+                        .write_file_expecting(path, content, host_expect)
                         .await
                         .map_err(|e| e.to_string())
                 };

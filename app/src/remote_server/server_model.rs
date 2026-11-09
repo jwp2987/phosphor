@@ -4463,6 +4463,35 @@ impl ServerModel {
         );
         let path = Path::new(&msg.path);
 
+        // #1837: a write that names the state it expects is refused (nothing written) when the
+        // file is no longer in it. The client only sends this to a server that advertises it.
+        if let Some(expect) = &msg.expect {
+            use super::proto::write_expect::State;
+            let holds = match &expect.state {
+                Some(State::Absent(true)) => std::fs::symlink_metadata(path)
+                    .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound),
+                Some(State::Sha256(want)) => std::fs::read(path)
+                    .map(|bytes| {
+                        remote_server::index::sha256_hex(&bytes).eq_ignore_ascii_case(want.trim())
+                    })
+                    .unwrap_or(false),
+                _ => false,
+            };
+            if !holds {
+                return HandlerOutcome::Sync(server_message::Message::WriteFileResponse(
+                    WriteFileResponse {
+                        result: Some(write_file_response::Result::Error(FileOperationError {
+                            message: remote_server::shellcmd::write::write_failure_message(
+                                &msg.path,
+                                remote_server::shellcmd::write::EXIT_CONFLICT,
+                                "",
+                            ),
+                        })),
+                    },
+                ));
+            }
+        }
+
         let (file_id, version) =
             self.pending_file_ops
                 .insert(path, request_id.clone(), conn_id, FileOpKind::Write, ctx);

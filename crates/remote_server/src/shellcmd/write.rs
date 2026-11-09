@@ -78,6 +78,18 @@ pub struct FileStamp {
 }
 
 impl Expect {
+    /// The `WriteFile.expect` form a helper can check: `Absent` and `Sha256`. A stamp has no wire
+    /// form (the helper does not compare size+mtime), so it is `None`.
+    pub fn to_wire(self) -> Option<crate::proto::WriteExpect> {
+        use crate::proto::write_expect::State;
+        let state = match self {
+            Expect::Absent => State::Absent(true),
+            Expect::Sha256(d) => State::Sha256(d.as_str().to_string()),
+            Expect::Stamp(_) => return None,
+        };
+        Some(crate::proto::WriteExpect { state: Some(state) })
+    }
+
     /// What the final command compares against: `absent` or `<size>|<mtime>`.
     fn token(self) -> String {
         match self {

@@ -194,11 +194,39 @@ pub(super) fn write_file_chunk(msg: WriteFileChunk) -> server_message::Message {
     })
 }
 
+/// Whether the file at `path` is in the state `expect` names (#1837). An unreadable file, an
+/// unreadable-as-bytes file or an empty `WriteExpect` do not match: the write is refused.
+fn write_expectation_holds(path: &std::path::Path, expect: &crate::proto::WriteExpect) -> bool {
+    use crate::proto::write_expect::State;
+    match &expect.state {
+        Some(State::Absent(true)) => {
+            std::fs::symlink_metadata(path).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+        }
+        Some(State::Sha256(want)) => std::fs::read(path)
+            .map(|bytes| crate::index::sha256_hex(&bytes).eq_ignore_ascii_case(want.trim()))
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
 /// `WriteFile`: write the whole content, creating parent directories. The path is used as sent
 /// (no `~` expansion), like the app daemon's `FileModel`-backed handler.
 pub(super) fn write_file(msg: WriteFile) -> server_message::Message {
     log::info!("Handling WriteFile path={}", msg.path);
     let path = PathBuf::from(&msg.path);
+    if let Some(expect) = &msg.expect {
+        if !write_expectation_holds(&path, expect) {
+            return server_message::Message::WriteFileResponse(WriteFileResponse {
+                result: Some(write_file_response::Result::Error(FileOperationError {
+                    message: crate::shellcmd::write::write_failure_message(
+                        &msg.path,
+                        crate::shellcmd::write::EXIT_CONFLICT,
+                        "",
+                    ),
+                })),
+            });
+        }
+    }
     let result = (|| -> std::io::Result<()> {
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
