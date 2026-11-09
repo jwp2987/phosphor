@@ -108,6 +108,7 @@ app/src/terminal/input.rs	DEBOUNCE_INPUT_DECORATION_PERIOD	debounces the editor'
 app/src/terminal/input.rs	DEBOUNCE_AI_QUERY_PREDICTION_PERIOD	debounces AI query prediction; UI suggestion only
 app/src/terminal/view.rs	DEBOUNCE_PERIOD	debounces link detection (find-link) after output; no input effect
 app/src/terminal/view.rs	SLOW_BOOTSTRAP_BANNER_AUTO_DISMISS_DURATION	auto-dismisses the slow-bootstrap banner; notice only
+app/src/terminal/view.rs	win_prompt_notice_observe	ONE quiet timer that only shows the 'may be waiting for input -- Take over' notice on Windows; never hands the command over or writes a byte (#1882, #1796)
 
 # PENDING-CONVERSION (must be gone before v0.1.18)
 # Timers that break the rule (write, release, route, commit or re-ask on a clock). The default run

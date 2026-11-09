@@ -80,3 +80,11 @@ Fail safe (pass-through like a plain terminal): ConPTY peek unavailable; no secr
 - /home/winters/git/phosphor-merge/app/src/terminal/view/subshell_ready.rs (Unknown → Wait, 130-164)
 - /home/winters/git/phosphor-merge/app/src/terminal/local_tty/event_loop.rs (discard/abort 810-880; coalescer 434-465) and /home/winters/git/phosphor-merge/app/src/terminal/local_tty/windows/mod.rs (PeekNamedPipe barrier 426-449)
 - /home/winters/git/phosphor-merge/script/realapp/appci/winmap.py (NOT_WINDOWS 72-132: the cases to port)
+
+## Implementation status (2026-11-09, branch fix/windows-handover-secret)
+
+- Finding 1 (#1882): the #1796 notice path runs on Windows (`view/prompt_notice.rs`, driven by output; notice only, never a hand-over). The hand-over is event-driven: the PowerShell bootstrap shadows `Read-Host` / `Get-Credential` and writes `TtyRead` / `TtyReadEnd` markers; the app logs `hop=tty_read_marker`, switches a waited agent command to the user (`BlockedOnInput`), and answers `tty_reading_secret()` for a secret read. Not covered: `$Host.UI.ReadLineAsSecureString` called directly (a .NET method), bash `read -s` in a Git Bash pane (no marker; plain-terminal pass-through).
+- Finding 2 (#1883): `prompt_hold_can_hand_back` requires a shell that never signalled; the hold of a shell that has signalled stays until the prompt's signal and is released to the pty in typed order.
+- Finding 4 (#1885): the secret guard at ssh ownership now sees a `TtyRead` secret marker (the model's secret-read probe includes it). A REMOTE login script's `read -s` has no marker: the keys pass through to the tty like a plain terminal (documented, `an_owned_window_passes_keys_like_a_plain_terminal_secret_read_or_not`).
+- Finding 10 (#1891): `LineEditorReading` markers carry the prompt sequence; one not past the prompt the last counted Enter answered no longer re-baselines the hand-off.
+- Findings 3, 5, 6, 7, 8, 9, 11 are not part of this change.

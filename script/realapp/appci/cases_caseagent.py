@@ -900,6 +900,16 @@ def lrc_run_command(ctx, r, off, command, label):
     return False
 
 
+def lrc_cmds(shell, tok):
+    """pure: (part 1, part 2) shell lines of agent_lrc_no_false_takeover for the pane's shell ('pwsh' = Windows PowerShell pane, else POSIX). Part 1 prints a bare
+    `Waiting:` and sits silent 20 s; part 2 prints `Continue? [y/N] ` and reads a line. Neither announces itself to the app, which is the point."""
+    if shell == "pwsh":
+        return ("Write-Host -NoNewline 'Waiting:'; Start-Sleep 20; Add-Content lrc_wait.txt %s" % tok,
+                "Write-Host -NoNewline 'Continue? [y/N] '; $ans = [Console]::ReadLine(); Add-Content lrc_yn.txt %s" % tok)
+    return ("printf 'Waiting:'; sleep 20; echo %s >> lrc_wait.txt" % tok,
+            "printf 'Continue? [y/N] '; read ans; echo %s >> lrc_yn.txt" % tok)
+
+
 @case("agent_lrc_no_false_takeover", modes=("agent",), order=51, gui=True)
 def c_agent_lrc_no_false_takeover(ctx, r):
     """#1796 (owner report 2026-11-06): an agent command that is merely slow and silent after printing a line ending in `:` was handed to the user
@@ -912,7 +922,9 @@ def c_agent_lrc_no_false_takeover(ctx, r):
     command (its tool call returns a snapshot) never arms the detector: the app logs `agent_command_wait awaited=false` for it, and then a missing
     hand-over is a NOTE even when the command is still at its prompt after 60 s. A missing hand-over with `awaited=true` (or no such line) and the command
     still stuck after 60 s FAILS (the 30-minute hang). After a confirmed hand-over the typed `y` + Enter must reach the command (its effect file).
-    Across the whole case: no 'Failed to enter inline agent view for LRC handoff' line (the agent view is full-screen in this pass). Needs the CI model."""
+    Across the whole case: no 'Failed to enter inline agent view for LRC handoff' line (the agent view is full-screen in this pass). Needs the CI model.
+    Windows (#1882): runs in the PowerShell and Git Bash panes with the pane's own commands (lrc_cmds). ConPTY has no tty-read probe, so part 2 gets the take-over
+    NOTICE (the shared detector's `showing a take-over notice` line) and stays with the agent; the hand-over on Windows is the Read-Host marker (agent_interactive_password)."""
     need_provider(ctx, r)
     fresh_conversation(ctx, r)
     try:
@@ -921,7 +933,7 @@ def c_agent_lrc_no_false_takeover(ctx, r):
         ctx.rm("lrc_wait.txt")
         off = ctx.log_size()
         t0 = time.time()
-        if not lrc_run_command(ctx, r, off, "printf 'Waiting:'; sleep 20; echo %s >> lrc_wait.txt" % tok_w, "lrc_wait"):
+        if not lrc_run_command(ctx, r, off, lrc_cmds(ctx.pane_shell(), tok_w)[0], "lrc_wait"):
             if not ctx.until(lambda: ctx.lines("lrc_wait.txt"), 5):
                 ctx.shot("lrc_wait_no_card")
                 r.skip("no approval card within 120 s and the command did not run (the model did not propose it)")
@@ -943,7 +955,7 @@ def c_agent_lrc_no_false_takeover(ctx, r):
         tok_y = "LRCYN" + ctx.tok(6).upper()
         ctx.rm("lrc_yn.txt")
         off2 = ctx.log_size()
-        if not lrc_run_command(ctx, r, off2, "printf 'Continue? [y/N] '; read ans; echo %s >> lrc_yn.txt" % tok_y, "lrc_yn"):
+        if not lrc_run_command(ctx, r, off2, lrc_cmds(ctx.pane_shell(), tok_y)[1], "lrc_yn"):
             r.note("part 2: no approval card within 120 s (the model did not propose the [y/N] command); the explicit hand-over is NOT verified")
             return
         handed = ctx.until(lambda: lrc_takeover_verdict(ctx.log_since(off2))[0], 60, step=0.5)

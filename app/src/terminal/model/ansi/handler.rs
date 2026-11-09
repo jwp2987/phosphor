@@ -338,6 +338,12 @@ pub trait Handler {
     /// The PowerShell insert chord could not read its command pipe (#1581); the app retypes.
     fn command_file_failed(&mut self, _data: CommandFileFailedValue) {}
 
+    /// A running command announced that it reads the tty itself (#1882).
+    fn tty_read(&mut self, _data: TtyReadValue) {}
+
+    /// The read `tty_read` announced ended (#1882).
+    fn tty_read_end(&mut self, _data: TtyReadValue) {}
+
     /// Callback for the terminal to when user executes `clear` command.
     fn clear(&mut self, _data: ClearValue) {}
 

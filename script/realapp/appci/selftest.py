@@ -2461,7 +2461,12 @@ def agent_lrc_takeover_log_parse():
     notice = ("x [INFO] prompt-shaped line Some(\"Continue? [y/N] \") unchanged for 3s, tty read unknown; "
               "showing a take-over notice (the command stays with the agent)\n")
     assert ca.LRC_NOTICE in notice and ca.lrc_takeover_verdict(notice) == (False, False, 0), ca.lrc_takeover_verdict(notice)
-    assert "agent_lrc_no_false_takeover" in winmap.NOT_WINDOWS
+    # #1882 (owner decision: Windows gets the #1796 notice path and the PowerShell Read-Host marker): the case runs in both Windows panes now, with PowerShell
+    # commands in the PowerShell pane; it was NOT_WINDOWS because ConPTY has no termios, which only removes the hand-over-on-proof, not the notice
+    assert "agent_lrc_no_false_takeover" in winmap.BOTH and "agent_lrc_no_false_takeover" not in winmap.NOT_WINDOWS
+    assert ca.lrc_cmds("pwsh", "T")[0].startswith("Write-Host -NoNewline 'Waiting:'") and ca.lrc_cmds("bash", "T")[0].startswith("printf 'Waiting:'")
+    assert "Add-Content lrc_wait.txt T" in ca.lrc_cmds("pwsh", "T")[0] and "echo T >> lrc_wait.txt" in ca.lrc_cmds("bash", "T")[0]
+    assert "[Console]::ReadLine()" in ca.lrc_cmds("pwsh", "Y")[1] and "read ans" in ca.lrc_cmds("bash", "Y")[1]
 
 
 @check
@@ -3797,6 +3802,32 @@ def agent_interactive_oracles():
     assert not AI.handover_seen("x [INFO] prompt-shaped line Some(\"Waiting:\") unchanged for 0ns, but the foreground is not reading the tty; leaving the command with the agent\n")
     assert not AI.handover_seen("") and not AI.handover_seen(None)
     assert {"agent_interactive_password", "agent_interactive_vim", "agent_interactive_ssh", "agent_interactive_less", "agent_noninteractive_no_takeover"} <= names
+
+
+@check
+def windows_handover_secret_cases_pure_parts():
+    """#1882/#1883/#1891: the Windows secret / hand-over cases (cases_win_handover.py): the marker hop reader, the PowerShell Read-Host line and the digest it records,
+    the leak finder, the pane-aware agent password command, their Windows classification, and that the app logs the hop the cases read"""
+    import cases_win_handover as WH, cases_agent_interactive as AI
+    log = "x [INFO] hop=tty_read_marker secret=false\ny [INFO] input_order hop=tty_read_marker secret=true t=2\nz hop=other secret=true\n"
+    assert WH.tty_read_markers(log) == ["false", "true"] and WH.tty_read_markers("") == [] and WH.tty_read_markers(None) == []
+    line = WH.read_host_line("f.txt")
+    assert "Read-Host -AsSecureString" in line and "Add-Content f.txt" in line and "$s.Length" in line
+    assert "ConvertFrom-SecureString" not in line, "the case must never write the secret itself"
+    assert WH.secret_digest("abc") == "len=3 sum=294"
+    assert WH.secret_leaks([("a", "has hunter2 inside"), ("b", "clean"), ("c", None)], "hunter2") == ["a"]
+    assert AI.password_cmd("powershell") == AI.PW_CMD_PS and AI.password_cmd("gitbash") == AI.PW_CMD and AI.password_cmd(None) == AI.PW_CMD
+    assert "Read-Host -AsSecureString" in AI.PW_CMD_PS and "got:" in AI.PW_CMD_PS
+    assert winmap.skip_reason("ps_read_host_secure", "powershell") is None and winmap.skip_reason("ps_read_host_secure", "gitbash")
+    assert winmap.skip_reason("agent_interactive_password", "powershell") is None and "Read-Host" in winmap.skip_reason("agent_interactive_password", "gitbash")
+    assert winmap.skip_reason("gitbash_precmd_secret", "gitbash") is None and winmap.skip_reason("gitbash_precmd_secret", "powershell")
+    assert winmap.skip_reason("agent_lrc_no_false_takeover", "powershell") is None and winmap.skip_reason("agent_lrc_no_false_takeover", "gitbash") is None
+    assert {"ps_read_host_secure", "gitbash_precmd_secret"} <= set(cases.PROVING) and not {"ps_read_host_secure", "gitbash_precmd_secret"} & set(cases.SMOKE)
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    src = lambda p: open(os.path.join(root, p), encoding="utf-8").read()
+    assert 'log_hop("tty_read_marker"' in src("app/src/terminal/view.rs"), "the hop the cases read must exist in the app"
+    ps = src("app/assets/bundled/bootstrap/pwsh.ps1")
+    assert '"hook": "TtyRead"' in ps and "Microsoft.PowerShell.Utility\\Read-Host @PSBoundParameters" in ps
 
 
 @check

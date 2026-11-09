@@ -102,6 +102,13 @@ pub enum Event {
         session_id: SessionId,
         seq: Option<u64>,
     },
+    /// A running command announced it reads the tty itself (#1882): PowerShell's `Read-Host` /
+    /// `Get-Credential`. `secret`: the input is not echoed.
+    TtyRead {
+        session_id: SessionId,
+        seq: Option<u64>,
+        secret: bool,
+    },
     /// The shell is about to read a continuation line, PS2 (#1391). Same `seq` as above.
     ContinuationPrompt {
         session_id: SessionId,
@@ -722,6 +729,16 @@ impl Debug for Event {
                 write!(
                     f,
                     "LineEditorReading(session: {session_id:?}, seq: {seq:?})"
+                )
+            }
+            Event::TtyRead {
+                session_id,
+                seq,
+                secret,
+            } => {
+                write!(
+                    f,
+                    "TtyRead(session: {session_id:?}, seq: {seq:?}, secret: {secret})"
                 )
             }
             Event::ContinuationPrompt { session_id, seq } => {

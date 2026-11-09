@@ -7,7 +7,8 @@
 # Oracles (never a screenshot alone): the file the program wrote (vim/less/ssh), the command's own echoed output in the model's NEXT request (password), the
 # model's request log (no typed token in any user message; the follow-up prose arrives exact), the app log (no hand-over of the negative control, no
 # 'Failed to enter inline agent view for LRC handoff', the secret never logged). A step that cannot prove its precondition is unverifiable/skip, never a pass.
-# Platforms: Linux yes; Mac yes (bash/vim/less/ssh exist; the fake ssh host needs sshd or fakesshd); Windows no (skips: POSIX read/vim/less/ssh programs).
+# Platforms: Linux yes; Mac yes (bash/vim/less/ssh exist; the fake ssh host needs sshd or fakesshd); Windows: agent_interactive_password only, in the PowerShell pane
+# (#1882: Read-Host -AsSecureString, handed over by the bootstrap's marker); the rest skip (POSIX vim/less/ssh programs).
 import os, re, time
 
 import cases
@@ -16,17 +17,24 @@ import cases_caseagent as AG
 import fake_model as FM
 
 PW_CMD = "bash -c 'read -s -p \"pw: \" x; echo; echo got:$x'"        # a real tty read with echo off; bash -c keeps it shell-independent (zsh/fish `read` differ)
+# #1882: the Windows PowerShell pane has no termios; its hand-over is the bootstrap's Read-Host marker (TtyRead, secret=true). Same shape: a prompt, echo off, `got:<secret>`.
+PW_CMD_PS = "$s = Read-Host -AsSecureString -Prompt 'pw: '; $x = [System.Net.NetworkCredential]::new('', $s).Password; Write-Output \"got:$x\""
+
+
+def password_cmd(pane):
+    """pure: the agent-run secret-read command for the pane ('powershell' = the Windows PowerShell pane, anything else the POSIX bash -c form)"""
+    return PW_CMD_PS if pane == "powershell" else PW_CMD
 
 
 def model_log():
     return os.environ.get("APPCI_FAKE_MODEL_LOG") or ""
 
 
-def need_fake(ctx, r):
+def need_fake(ctx, r, windows_powershell_ok=False):
     if os.environ.get("APPCI_FAKE_MODEL_ACTIVE") != "1" or not model_log():
         r.skip("the scripted fake model is not running (APPCI_FAKE_MODEL=1): its request log is the oracle for what the model was sent next")
     AG.need_provider(ctx, r)
-    if ctx.win or os.name == "nt":
+    if (ctx.win or os.name == "nt") and not (windows_powershell_ok and ctx.pane == "powershell"):
         r.skip("POSIX read/vim/less/ssh programs: not run in a Windows pane")
 
 
@@ -141,12 +149,13 @@ def after_checks(ctx, r, label, off, n0, secret, want_tool=None):
 @case("agent_interactive_password", modes=("agent",), order=52, gui=True)
 def c_agent_password(ctx, r):
     """#1829 (a): the agent runs a password prompt (`read -s -p 'pw: '`, not sudo). The hand-over must come (echo off = at once), the typed secret + Enter must reach the
-    program exactly: the command echoes `got:<secret>` and that text is in the model's NEXT request. The secret is in no user message and not in the app log."""
-    need_fake(ctx, r)
+    program exactly: the command echoes `got:<secret>` and that text is in the model's NEXT request. The secret is in no user message and not in the app log.
+    Windows PowerShell pane (#1882): `Read-Host -AsSecureString` (PW_CMD_PS); the hand-over is the bootstrap's TtyRead marker, an event, not a probe."""
+    need_fake(ctx, r, windows_powershell_ok=True)
     AG.fresh_conversation(ctx, r)
     try:
         secret = "PW" + ctx.tok(8).upper().replace("_", "")
-        off, n0 = ask_run(ctx, r, PW_CMD, "ai_pw")
+        off, n0 = ask_run(ctx, r, password_cmd(ctx.pane), "ai_pw")
         if not ctx.until(lambda: handed(ctx, off), 45, step=0.5):
             ctx.shot("ai_pw_nohandover")
             aw = AG.lrc_awaited(ctx.log_since(off))

@@ -484,7 +484,6 @@ use crate::terminal::find::{BlockGridMatch, BlockListMatch, TerminalFindModel};
 use crate::terminal::input::{EnterDiscard, InputState, MenuPositioning, MenuPositioningProvider};
 use crate::terminal::keys::TerminalKeybindings;
 use crate::terminal::meta_shortcuts::handle_keystroke_despite_composing;
-#[cfg(unix)]
 use crate::terminal::model::block::InteractivePromptCandidate;
 use crate::terminal::model::block::interactive_prompt_candidate;
 use crate::terminal::model::block::{AgentInteractionMetadata, BlockMetadata};
@@ -3523,6 +3522,10 @@ pub struct TerminalView {
     fork_restore_persist: fork_restore_persist::ForkRestorePersist,
     /// Signalled on terminal output while a waited agent command exists (#1365).
     fullscreen_output_signal: Option<async_channel::Sender<()>>,
+    /// #1882: the take-over notice watch for a waited agent command left on a prompt-shaped line,
+    /// where nothing samples termios (ConPTY). Notice only; never a hand-over.
+    #[cfg(windows)]
+    win_prompt_notice: prompt_notice::PromptNoticeWatch,
     /// Listeners woken on every terminal output wakeup (one coalesced signal each). Used by the
     /// agent driver's harness output monitor (#1381).
     output_listeners: Vec<async_channel::Sender<()>>,
@@ -5479,6 +5482,8 @@ impl TerminalView {
             ssh_typeahead_holding: false,
             fork_restore_persist: Default::default(),
             fullscreen_output_signal: None,
+            #[cfg(windows)]
+            win_prompt_notice: prompt_notice::PromptNoticeWatch::default(),
             output_listeners: Vec::new(),
             ssh_iq: ssh_queue::SshQueueState::new(),
             ssh_paste_to_hold: false,
@@ -15716,6 +15721,9 @@ impl TerminalView {
         if let Some(tx) = &self.fullscreen_output_signal {
             let _ = tx.try_send(());
         }
+        // #1882: ConPTY has no termios poller; output is what the prompt-notice watch runs on.
+        #[cfg(windows)]
+        self.win_prompt_notice_observe(ctx);
         // #1679 step 3: output is an event the readiness judge samples on (one look, one model
         // lock); a tmux control-mode setup waiting for the alt screen / the line is re-judged too.
         self.judge_subshell_setup_on_event("output", ctx);
@@ -19995,6 +20003,8 @@ impl TerminalView {
             ModelEvent::LineEditorReading { .. }
             | ModelEvent::ContinuationPrompt { .. }
             | ModelEvent::YoungHoldReevaluated => {}
+            // #1882: a command reads the tty itself (PowerShell `Read-Host`): hand over.
+            ModelEvent::TtyRead { secret, .. } => self.on_tty_read_marker(*secret, ctx),
             // Consumed by the pty controller (#1581).
             ModelEvent::CommandFileFailed { .. } => {}
             ModelEvent::RemoteServerBlockRequested { session_id } => {
@@ -25709,6 +25719,85 @@ impl TerminalView {
             || warpify_settings.is_compatible_subshell_command(warpify_command, shell_family);
 
         !is_compatible_subshell_command
+    }
+
+    /// The prompt-shaped, newline-less line a waited agent command left the cursor on, if the
+    /// command is one an agent tool call is blocked on and the agent still drives. Shared by the
+    /// unix termios poller ([`TerminalSurface::pending_interactive_prompt`]) and the Windows
+    /// output-driven notice watch (#1882).
+    fn agent_interactive_prompt_candidate(
+        &self,
+        ctx: &AppContext,
+    ) -> Option<InteractivePromptCandidate> {
+        // Only a tool call that is blocked waiting for this command to *complete* can hang on
+        // a prompt. Any other agent command gets a snapshot within seconds and can answer the
+        // prompt itself with `write_to_long_running_shell_command`; taking the PTY away from
+        // it there would be stealing, not unwedging.
+        //
+        // This runs once a second for every polled block, including the user's own commands,
+        // so the executor -- which needs no terminal-model lock -- is asked first, and the
+        // model is only locked while some agent tool call is actually waiting.
+        let executor = self.ai_action_model.as_ref(ctx).shell_command_executor(ctx);
+        let executor = executor.as_ref(ctx);
+        if !executor.has_any_awaiting_completion() {
+            return None;
+        }
+
+        let model = self.model.lock();
+        if model.is_alt_screen_active() {
+            return None;
+        }
+        let active_block = model.block_list().active_block();
+        // While the user holds the command this is `false`, so no candidate is reported and
+        // the manager's `PromptDetector` re-arms for when control comes back to the agent.
+        if !(active_block.is_agent_requested_command() && active_block.is_agent_driving_command()) {
+            return None;
+        }
+        let action_id = active_block.requested_command_action_id()?;
+        if !executor.is_awaiting_completion(action_id) {
+            return None;
+        }
+        interactive_prompt_candidate(active_block.output_grid().grid_handler())
+    }
+
+    /// #1882 (Windows): output arrived (or the quiet timer fired): look at the waited agent
+    /// command's prompt-shaped line. A notice only; the hand-over is the `TtyRead` marker's.
+    #[cfg(windows)]
+    fn win_prompt_notice_observe(&mut self, ctx: &mut ViewContext<Self>) {
+        let candidate = self.agent_interactive_prompt_candidate(ctx);
+        if candidate.is_none() && !self.win_prompt_notice.is_observing() {
+            return;
+        }
+        let block = self.model.lock().block_list().active_block_index();
+        let now = instant::Instant::now();
+        let step = self.win_prompt_notice.observe(block, now, candidate);
+        if step.show_notice {
+            self.show_may_be_waiting_for_input_notice(ctx);
+        }
+        if let Some((at, epoch)) = step.arm {
+            let wait = at.saturating_duration_since(now);
+            // give-up-net: ONE quiet timer that only shows the 'may be waiting for input -- Take over' notice; never hands the command over or writes a byte (#1882, #1796)
+            ctx.spawn(Timer::after(wait), move |me, _, ctx| {
+                if me.win_prompt_notice.timer_fired(epoch) {
+                    me.win_prompt_notice_observe(ctx);
+                }
+            });
+        }
+    }
+
+    /// #1882: a running command announced that it reads the tty itself (the PowerShell
+    /// bootstrap's `Read-Host` / `Get-Credential` wrappers send a `TtyRead` marker). The marker is
+    /// the event ConPTY lacks termios for: a waited agent command is handed to the user at once
+    /// (the same `BlockedOnInput` take-over a password prompt does on unix), and keys follow the
+    /// pty, never the editor. The secret flag itself is the model's (`tty_reading_secret`).
+    fn on_tty_read_marker(&mut self, secret: bool, ctx: &mut ViewContext<Self>) {
+        warpui::input_order::log_hop("tty_read_marker", || format!("secret={secret}"));
+        self.end_keys_follow_editor("tty_read_marker", ctx);
+        if self.is_agent_driving_active_block() {
+            self.cli_subagent_controller.update(ctx, |controller, ctx| {
+                controller.switch_control_to_user(UserTakeOverReason::BlockedOnInput, ctx);
+            });
+        }
     }
 
     /// Whether the active block is a command the agent executed and still drives.
@@ -37221,35 +37310,7 @@ impl TerminalSurface for TerminalView {
 
     #[cfg(unix)]
     fn pending_interactive_prompt(&self, ctx: &AppContext) -> Option<InteractivePromptCandidate> {
-        // Only a tool call that is blocked waiting for this command to *complete* can hang on
-        // a prompt. Any other agent command gets a snapshot within seconds and can answer the
-        // prompt itself with `write_to_long_running_shell_command`; taking the PTY away from
-        // it there would be stealing, not unwedging.
-        //
-        // This runs once a second for every polled block, including the user's own commands,
-        // so the executor -- which needs no terminal-model lock -- is asked first, and the
-        // model is only locked while some agent tool call is actually waiting.
-        let executor = self.ai_action_model.as_ref(ctx).shell_command_executor(ctx);
-        let executor = executor.as_ref(ctx);
-        if !executor.has_any_awaiting_completion() {
-            return None;
-        }
-
-        let model = self.model.lock();
-        if model.is_alt_screen_active() {
-            return None;
-        }
-        let active_block = model.block_list().active_block();
-        // While the user holds the command this is `false`, so no candidate is reported and
-        // the manager's `PromptDetector` re-arms for when control comes back to the agent.
-        if !(active_block.is_agent_requested_command() && active_block.is_agent_driving_command()) {
-            return None;
-        }
-        let action_id = active_block.requested_command_action_id()?;
-        if !executor.is_awaiting_completion(action_id) {
-            return None;
-        }
-        interactive_prompt_candidate(active_block.output_grid().grid_handler())
+        self.agent_interactive_prompt_candidate(ctx)
     }
 
     #[cfg(unix)]
@@ -40850,6 +40911,7 @@ fn shift_block_index_map<V>(map: &mut HashMap<BlockIndex, V>, count: usize) {
 
 mod dest_table;
 mod paste_queue;
+mod prompt_notice;
 mod route_facts;
 mod ssh_edges;
 mod ssh_queue;

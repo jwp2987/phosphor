@@ -51,6 +51,8 @@ PROVING = (
     "agent_question_ctrl_c", "agent_question_steer", "agent_question_after_command", "agent_question_steer_at_end",
     # Windows input parity (docs/design/windows-input-parity-audit.md): each skips itself off its Windows pane
     "ssh_connect_typing_wrapper", "ssh_nested_typeahead_wrapper", "ps_ctrl_break", "ps_fast_command_young_enter",
+    # Windows handover and secrets (#1882, #1883, #1891): Read-Host marker, Git Bash precmd `read -s`
+    "ps_read_host_secure", "gitbash_precmd_secret",
     "subshell_ready_relay_shape", "subshell_ready_exec_fish_rc", "subshell_ready_docker_t_without_i", "subshell_ready_zsh_newuser_install", "subshell_ready_rc_clear",
 )
 # The PROVING cases that need the scripted fake model (fake_model.py): the fix tier runs them in their own app launch, the "agent@fake" pass (run.py
@@ -5681,3 +5683,4 @@ import cases_agent_resilience  # noqa: E402,F401  (#1831/#1832: agent_fault_* mo
 import cases_agent_multitab  # noqa: E402,F401  (#1833: agent_multitab_streaming, N hidden streaming agent tabs while typing elsewhere)
 import cases_agent_mcp  # noqa: E402,F401  (#1834: agent_mcp_faults, misbehaving fake MCP servers)
 import cases_agent_latency  # noqa: E402,F401  (#1828: agent_latency_key, agent_latency_enter, agent_steer_fast; needs APPCI_FAKE_MODEL=1)
+import cases_win_handover  # noqa: E402,F401  (#1882/#1883/#1891: ps_read_host_secure, gitbash_precmd_secret; Windows secrets and interactive reads on ConPTY)
