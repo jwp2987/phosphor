@@ -6,6 +6,7 @@
 //! (P1..P9), or `Unavailable` when the session has no out-of-band channel.
 
 mod agent_context;
+mod buffer;
 mod git_write;
 mod read;
 mod tree;
@@ -14,6 +15,7 @@ mod write;
 use std::sync::{Arc, Mutex};
 
 pub use agent_context::AgentContextCache;
+pub use buffer::ShellBuffers;
 pub use tree::{ShellPush, TreeCache};
 
 use super::executor::{ChannelKind, ExecRequest, MAX_EXEC_OUTPUT_BYTES, OutOfBandExecutor};
@@ -42,6 +44,9 @@ pub struct ShellBackend {
     /// The agent context this host's shell backend last published, with its revision. Shared by
     /// every backend the router builds for the host.
     agent_cache: Arc<AgentContextCache>,
+    /// What the buffers this host's editors opened looked like, for the guarded save (family c).
+    /// Shared by every backend the router builds for the host.
+    buffers: Arc<ShellBuffers>,
 }
 
 impl std::fmt::Debug for ShellBackend {
@@ -63,12 +68,19 @@ impl ShellBackend {
             pushes: Arc::default(),
             decode_tool: Arc::default(),
             agent_cache: Arc::default(),
+            buffers: Arc::default(),
         }
     }
 
     /// Shares `cache` (the host's agent-context state) with this backend.
     pub fn with_agent_cache(mut self, cache: Arc<AgentContextCache>) -> Self {
         self.agent_cache = cache;
+        self
+    }
+
+    /// Shares `buffers` (the host's remembered buffer states) with this backend.
+    pub fn with_buffers(mut self, buffers: Arc<ShellBuffers>) -> Self {
+        self.buffers = buffers;
         self
     }
 

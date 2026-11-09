@@ -565,3 +565,5 @@ import cases_lab_remote as _CLR  # noqa: E402  (P1/P2 coverage declarations; see
 _CLR.declare_coverage()
 import cases_lab_skills as _CLS  # noqa: E402  (P8 coverage declaration; see cases_lab_skills.declare_coverage)
 _CLS.declare_coverage()
+import cases_lab_buffers as _CLB  # noqa: E402  (P4 coverage declaration)
+_CLB.declare_coverage()

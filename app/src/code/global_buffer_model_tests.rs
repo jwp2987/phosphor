@@ -9,7 +9,9 @@ use repo_metadata::repositories::DetectedRepositories;
 use repo_metadata::watcher::DirectoryWatcher;
 use warp_files::FileModel;
 
-use super::{BufferSource, CharOffsetEdit, GlobalBufferModel, PendingEditBatch};
+use super::{
+    BufferSource, CharOffsetEdit, GlobalBufferModel, GlobalBufferModelEvent, PendingEditBatch,
+};
 use crate::test_util::settings::initialize_settings_for_tests;
 
 // ── Test-only helpers on GlobalBufferModel ────────────────────────
@@ -548,5 +550,40 @@ fn dropping_the_last_buffer_handle_lets_the_model_release_it() {
         app.read(|ctx| assert!(!handle.as_ref(ctx).buffers.contains_key(&file_id)));
 
         let _ = std::fs::remove_dir_all(&dir);
+    })
+}
+
+// ── Remote buffers through the backend router (parity P4) ─────────
+
+/// With neither a helper nor an out-of-band channel for the host, saving a remote buffer fails
+/// at once and says so, instead of looking saved (the shell arm needs a channel; the helper
+/// arm needs a connection).
+#[cfg(feature = "local_tty")]
+#[test]
+fn save_remote_buffer_fails_when_the_host_has_no_helper_and_no_channel() {
+    App::test((), |mut app| async move {
+        init_app(&mut app);
+        app.add_singleton_model(GlobalBufferModel::new);
+        app.add_singleton_model(remote_server::manager::RemoteServerManager::new);
+
+        let buffer_state = gbm(&app).update(&mut app, |gbm, ctx| {
+            gbm.seed_remote_buffer_for_test(test_host_id(), test_path(), "hello", 1, ctx)
+        });
+        let file_id = buffer_state.file_id;
+
+        let (event_tx, event_rx) = async_channel::unbounded::<bool>();
+        let gbm_handle = gbm(&app);
+        app.update(|ctx| {
+            ctx.subscribe_to_model(&gbm_handle, move |_, event, _| {
+                if matches!(event, GlobalBufferModelEvent::FailedToSave { .. }) {
+                    let _ = event_tx.try_send(true);
+                }
+            });
+        });
+
+        gbm(&app).update(&mut app, |gbm, ctx| gbm.save_remote_buffer(file_id, ctx));
+        assert!(event_rx.try_recv().is_ok());
+        // The buffer is untouched.
+        assert_eq!(content(&app, file_id), "hello");
     })
 }

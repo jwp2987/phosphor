@@ -32,7 +32,7 @@ pub use executor::{
 pub use features::{METHODS, RemoteFeatures};
 pub use helper::HelperBackend;
 pub use router::{AlwaysShell, BackendKind, FeatureRouter, HelperProbe, RoutedBackend, decide};
-pub use shell::{AgentContextCache, ShellBackend, ShellPush, TreeCache};
+pub use shell::{AgentContextCache, ShellBackend, ShellBuffers, ShellPush, TreeCache};
 pub use shell_git_runner::ShellGitRunner;
 
 use crate::capability;
@@ -119,6 +119,17 @@ impl Family {
     pub fn from_capability(name: &str) -> Option<Family> {
         Self::ALL.iter().copied().find(|f| f.capability() == name)
     }
+}
+
+/// How saving a buffer's text went (see `RoutedBackend::save_buffer_content`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BufferSaveOutcome {
+    Saved,
+    /// The file changed on the host since the editor loaded or last saved it; nothing was
+    /// written. The app shows the conflict banner (the helper's `BufferConflictDetected` path).
+    Conflict,
+    /// The host refused the write.
+    Failed(String),
 }
 
 /// Why a [`RemoteFeatures`] call failed.
