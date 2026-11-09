@@ -471,7 +471,7 @@ def c_network_gate_switch(ctx, r):
         # 2. gate_enabled = false: the next launch turns the gate off and says so once.
         q = R.stop_for_restart(ctx, r, 20, "ngs_off")
         r.check(q["exited"], "ngs_off: the app did not exit within 20 s")
-        open(p, "w", encoding="utf-8").write(R.T.set_key(open(p, encoding="utf-8", errors="replace").read(), "network", "gate_enabled", "false"))
+        R.T.edit_file(p, "network", "gate_enabled", "false")
         _, up = R.start_app(ctx, r, "ngs_off")
         if not up:
             return
@@ -482,7 +482,7 @@ def c_network_gate_switch(ctx, r):
         # 3. back to true: no OFF line on the next launch.
         q = R.stop_for_restart(ctx, r, 20, "ngs_on")
         r.check(q["exited"], "ngs_on: the app did not exit within 20 s")
-        open(p, "w", encoding="utf-8").write(R.T.set_key(open(p, encoding="utf-8", errors="replace").read(), "network", "gate_enabled", "true"))
+        R.T.edit_file(p, "network", "gate_enabled", "true")
         _, up = R.start_app(ctx, r, "ngs_on")
         if not up:
             return

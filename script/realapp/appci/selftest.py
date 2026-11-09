@@ -2858,6 +2858,28 @@ def windows_app_runs_under_a_kill_on_close_job():
 
 
 @check
+def toml_edit_file_keeps_the_other_keys():
+    """round 7: network_gate_switch wrote `open(p, "w").write(set_key(open(p).read(), ...))`, which truncated settings.toml first, so the allowed origin the case had
+    written (and every other key) vanished before the page opened. edit_file reads first; no case may carry the truncating shape again."""
+    import toml_text as T
+    d = tempfile.mkdtemp(dir=os.environ.get("TMPDIR"))
+    try:
+        p = os.path.join(d, "settings.toml")
+        open(p, "w").write('[appearance]\ntheme = "auto"\n\n[network]\nallowed_origins = "h.example.invalid"\n')
+        T.edit_file(p, "network", "gate_enabled", "false")
+        t = open(p).read()
+        assert 'allowed_origins = "h.example.invalid"' in t and 'theme = "auto"' in t and T.get_key(t, "network", "gate_enabled") == "gate_enabled = false", t
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    import re
+    bad = re.compile(r'open\([^)]*["\']w["\'][^)]*\)\.write\(.*open\(')
+    for fn in sorted(os.listdir(HERE)):
+        if fn.endswith(".py") and fn != "selftest.py":
+            for i, line in enumerate(open(os.path.join(HERE, fn), encoding="utf-8", errors="replace"), 1):
+                assert not bad.search(line), "%s:%d truncates the file before reading it: %s" % (fn, i, line.strip()[:120])
+
+
+@check
 def keyring_unavailable_startup_pure_pieces():
     """#1805: the launcher's keyring variants and the per-launch log judgement of keyring_unavailable_startup"""
     import app as _app
