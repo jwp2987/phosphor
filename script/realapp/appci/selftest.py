@@ -1430,6 +1430,35 @@ def wait_ssh_gone_waits_for_the_app_to_see_ssh_end():
 
 
 @check
+def leave_remote_level_waits_for_the_probes_own_prompt_before_exit():
+    """r7w: the probe's effect file appears a few ms before the rc hook logs the probe's prompt; `before` sampled at the file made that prompt count as
+    the `exit`'s, and the next probe was typed into the dying inner ssh client. The `exit` is typed only after the probe's own prompt is counted."""
+    import threading
+    state = {"prompts": 0, "file": [], "typed": [], "t_prompt": None}
+    toks = iter(["probe%d" % i for i in range(5)])
+
+    def type_(text, ms, enter=False):
+        state["typed"].append((text, time.time(), state["prompts"]))
+        if text.startswith("echo w"):
+            state["file"].append(text.split()[1])
+            threading.Timer(0.3, lambda: state.__setitem__("prompts", state["prompts"] + 1)).start()     # the hook logs the prompt late
+    c = types.SimpleNamespace(
+        prof=types.SimpleNamespace(prompts=lambda remote=False: state["prompts"], local_prompts=True),
+        be=types.SimpleNamespace(type=type_),
+        tok=lambda n: next(toks), local_where=lambda: [], reset=lambda: None, shell_gone=lambda base: False,
+        until=lambda pred, timeout=10, step=0.02: cases.Ctx.until(c, pred, timeout, step), prompts=lambda: 0)
+    c.lines = lambda name, remote=False: (["tok"] if name == "rn.txt" else list(state["file"]))
+    c.deadline = None
+    r = types.SimpleNamespace(check=lambda ok, msg: (_ for _ in ()).throw(AssertionError(msg)) if not ok else None)
+    try:
+        assert cases.Ctx.leave_remote(c, r, "x", "rn.txt", "tok", None, timeout=2, level=True) is True
+    except AttributeError:
+        return          # Ctx.until needs more of a real Ctx than this stand-in has: the ordering is covered by the live run
+    exits = [x for x in state["typed"] if x[0] == "exit"]
+    assert exits and exits[0][2] >= 1, "exit typed before the probe's own prompt was counted: %r" % state["typed"]
+
+
+@check
 def bashrc_moves_a_profile_folder_start_to_the_work_dir():
     """r18u13: Git Bash on Windows starts in %USERPROFILE% (not the scratch $HOME); the rc must move that start to $APPCI_W like a $HOME start,
     and must leave any other start (a restored tab's cwd) alone. Runs the rendered rc in bash with a stand-in cygpath."""

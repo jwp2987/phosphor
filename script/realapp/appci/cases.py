@@ -863,6 +863,8 @@ class Ctx:
         # `timeout` to come back, so the first probe ran in "no shell" and the case refused to type the outer `exit`. A probe that went nowhere is retried (fresh
         # token, longer wait, up to 3 tries); only a probe that lands in the LOCAL home stops at once. Never a pass without the proof: no proof, no `exit`.
         probe, where = None, "no shell"
+        count = (lambda: self.prof.prompts(remote=True)) if level else self.prompts
+        prompts_before_probe = count()
         for attempt in range(3):
             probe = "w" + self.tok(8)
             self.be.type("echo %s >> ~/.appci_where" % probe, 12, enter=True)
@@ -877,7 +879,12 @@ class Ctx:
             r.check(False, "%s: before `exit`, a fresh probe ran in %s, not the remote one: `exit` NOT typed; stopping" % (label, where))
             self.reset()
             return False
-        count = (lambda: self.prof.prompts(remote=True)) if level else self.prompts
+        # r7w (Windows agent, ssh_nested_typeahead outer): the probe's own prompt is logged by the rc hook a few ms AFTER the probe's effect file is written, so a
+        # `before` sampled the moment the file showed up could miss it; the prompt then counted as the prompt of the `exit`, the 0.5 s settle ended while the inner
+        # ssh client was still tearing down (~0.7 s on the Windows fake sshd), and the outer probe's first chars were swallowed by the dying client (`t` + `ac >> ..`
+        # ran `tac`, which then read the next two probes). Wait for the probe's own prompt first (a pane without a prompt hook never counts up: proceed after 5 s).
+        if level:
+            self.until(lambda: count() > prompts_before_probe, 5)
         before = count()
         self.be.type("exit", 12, enter=True)
         if not level and not self.prof.local_prompts:
