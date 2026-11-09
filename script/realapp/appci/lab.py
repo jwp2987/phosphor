@@ -552,7 +552,13 @@ class PlainSsh:
                 os._exit(127)
         self.pid, self.fd = pid, fd
         fcntl.fcntl(fd, fcntl.F_SETFL, fcntl.fcntl(fd, fcntl.F_GETFL) | os.O_NONBLOCK)
-        return self.wait_for(b"$", timeout) is not None or self.wait_for(b"#", 1) is not None
+        end = time.perf_counter() + timeout
+        while time.perf_counter() < end:          # the first prompt is "whatever the shell prints, then quiet for 0.7 s" (bash $, zsh %, fish >, nu, pwsh)
+            n = len(self.buf)
+            self._pump(0.7)
+            if len(self.buf) == n and n:
+                return True
+        return False
 
     def _pump(self, dur):
         import select

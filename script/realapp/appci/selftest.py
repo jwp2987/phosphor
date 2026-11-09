@@ -2716,13 +2716,19 @@ def lab_matrix_expansion():
 def lab_cases_registry_and_selection():
     import lab as L, run
     labs = [c for c in cases.CASES if c.get("lab")]
+    assert labs, "no lab cases registered"
     names = [c["name"] for c in labs]
     assert len(names) == len(set(names)) and all(n.startswith("lab_") for n in names)
     assert all(c["arm"]["name"] == c["name"] for c in labs)
     reg = {c["name"] for c in cases.CASES}
-    assert (run.unknown_case_names("lab_*", reg) == []) == bool(labs) and run.unknown_case_names("lab_nonexistent*,ssh_drop_reconnect", reg) == ["lab_nonexistent*"]
+    assert run.unknown_case_names("lab_*", reg) == [] and run.unknown_case_names("lab_nonexistent*,ssh_drop_reconnect", reg) == ["lab_nonexistent*"]
     assert run.unknown_case_names("mode_proof,typo_case", reg) == ["typo_case"]       # exact names are still checked exactly
     # winmap: a lab case is never 'unclassified'; PowerShell pane skips with a reason; p_onesess is skipped on Windows
+    base = {n.split(".")[0] for n in names}
+    assert base == {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i"}, base
+    assert all(c["modes"] == ("terminal",) for c in labs if c["name"].startswith("lab_ssh_drop_reconnect")), "the drop case is terminal-only"
+    ordered = sorted(labs, key=lambda c: c["order"])
+    assert [c["arm"]["helper"] for c in ordered] == sorted((c["arm"]["helper"] for c in labs), key=lambda h: L.HELPERS.index(h)), "nohelper arms sort before helper arms"
     assert winmap.unclassified(sorted(reg)) == []
     assert winmap.skip_reason("lab_x.u_bash.lan.nohelper", "powershell") and winmap.skip_reason("lab_x.u_bash.lan.nohelper", "gitbash") is None
     assert "ControlMaster" in winmap.skip_reason("lab_x.p_onesess.lan.nohelper", "gitbash")
