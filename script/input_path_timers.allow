@@ -49,7 +49,6 @@ app/src/terminal/view.rs	STALE_REFLOW_CHUNK_BUDGET	model-lock budget of one defe
 app/src/terminal/view.rs	STALE_REFLOW_CHUNK_INTERVAL	paces the deferred block reflow after a resize; no input effect
 app/src/terminal/view.rs	SUBSHELL_BANNER_DELAY_DURATION	delays showing the warpify banner; notice only
 app/src/terminal/view.rs	SUBSHELL_SETUP_CEILING	absolute subshell-setup net: held keys come back to the editor with a count toast; writes nothing (#1711)
-app/src/terminal/view.rs	SUBSHELL_SETUP_DEFER_NOTICE	tells the user a deferred setup is waiting, once; notice only
 app/src/terminal/view.rs	SUBSHELL_SETUP_QUIET_NET	the one subshell-setup net: held keys come back to the editor with a count toast; writes nothing (#1711)
 app/src/terminal/view.rs	SUBSHELL_SETUP_QUIET_NOTICE	shows the 'setup is waiting' toast; notice only
 app/src/terminal/view.rs	TYPEAHEAD_REPORT_PATIENCE	report-patience give-up: the Enter does not run, keys held behind it go back to the editor/are discarded with a toast
@@ -97,8 +96,6 @@ app/src/terminal/view.rs	INTERRUPT_SETTLE	owner-named: 250 ms after ^C commits t
 app/src/terminal/view.rs	SSH_BOOTSTRAP_SWALLOW_CEILING	FOUND: typing is DROPPED while an ssh bootstrap is pending and keys pass through after 15 s (age-based route/drop)
 app/src/terminal/view.rs	SSH_CONNECT_SILENCE_CEILING	FOUND: age < 15 s decides whether the ssh connect window arms and keys are held; after it every key goes to the pty (age-based route); also the gate's give-up ceiling
 app/src/terminal/view.rs	SSH_LOGIN_RECHECK_GIVE_UP	FOUND: 3 s of quiet output after non-prompt ssh output is taken as 'login done' (state decision on a timer; warpify follows)
-app/src/terminal/view.rs	SUBSHELL_SETUP_DEFER_POLL	FOUND: 250 ms poll re-asking whether the prompt a deferred setup waits behind was answered
-app/src/terminal/view.rs	SUBSHELL_SETUP_DEFER_QUIET	FOUND: 600 ms unchanged-output clock before the deferred subshell setup is written
 app/src/terminal/view.rs	arm_young_timer	FOUND: young-detection timer; on a reached compute cap it finishes the wait and submits the deferred Enter by the Enter-time rules (commits on a timer)
 app/src/terminal/writeable_pty/pty_controller.rs	CONTAINER_BOOTSTRAP_PACING	FOUND: 50 ms timer paces bootstrap chunk WRITES into a container subshell (#960); owner to rule whether pacing is exempt
 app/src/terminal/writeable_pty/pty_controller.rs	MAC_TTY_INPUT_QUEUE_PACING	FOUND: 10 ms timer paces the ssh-warpify payload WRITES on a cooked tty (#1384); owner to rule whether pacing is exempt

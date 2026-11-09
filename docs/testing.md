@@ -1248,8 +1248,8 @@ It replaces: `SUBSHELL_BOOTSTRAP_STALL_CEILING`'s key forwarding (`subshell_boot
 (the generic hold and the PowerShell hold hold for as long as the setup is announced), the gates' own caps (`default_cap` is `None`
 for the three setup gates; `POWERSHELL_GATE_LEAK_NET` is gone), and `SUBSHELL_SETUP_MARKER_GIVE_UP`'s timed writes (a marker that
 never comes is no progress; nothing is written on a timer). `BOOTSTRAP_FAILED_DURATION` (7 s) is re-armed on every progress, so a
-slow but healthy marker-paced setup does not trip it. The deferred-setup notice keeps a 20 s timer (`SUBSHELL_SETUP_DEFER_NOTICE`,
-a notice only). "Stalled" for the PowerShell Ctrl-C route (#1051) is the net's notice having fired. Expectation changes, each
+slow but healthy marker-paced setup does not trip it. The #1032 deferral and its 20 s notice timer (`SUBSHELL_SETUP_DEFER_NOTICE`) are
+deleted (#1814); the judge's Wait and the setup net's notice replace them. "Stalled" for the PowerShell Ctrl-C route (#1051) is the net's notice having fired. Expectation changes, each
 by the owner decision: typing is held however old the announcement (`subshell_announcement_applies_to_the_bootstrapped_parent_block_before_initshell`,
 `subshell_bootstrap_announcement_survives_the_initshell_block_change`), a stalled bootstrap never forwards typing
 (`a_stalled_subshell_bootstrap_still_holds_typing_the_net_hands_it_back` replaces `stalled_subshell_bootstrap_stops_holding_input`),
@@ -1355,8 +1355,8 @@ non-empty line is UserDrove and cancels on the key path). Judging runs on EVENTS
 (`judge_subshell_setup_on_event("output")`), the hand-off's change (`"handoff"`) and the click, ONE model lock per look
 (`take_subshell_pane_look`: block id, cursor position, the tail classified None / ShellPrompt / InputPrompt, alt screen, the tty
 sample through the model's probe, echo state, marker count; R10). A Write runs the trigger's write NOW
-(`write_armed_subshell_setup` -> `trigger_subshell_bootstrap_now`, which on this path skips the old deferral checks: the judge
-made them) and the attempt becomes Written with the minted ID / token (`note_subshell_setup_written`; a stage-2 write after
+(`write_armed_subshell_setup` -> `trigger_subshell_bootstrap_now`, which no longer has the old deferral checks, deleted in #1814: the judge
+makes them) and the attempt becomes Written with the minted ID / token (`note_subshell_setup_written`; a stage-2 write after
 `InitSubshell` refreshes the same attempt with a fresh token and fresh counts). Written: `judge_written_subshell_setup` at every
 look: E-GONE, E-SECRET, E-QUESTION, and the stream-ordered E-UNSUPPORTED (our echo ended per the echo filter's new
 `lines_ended`, then a fresh prompt-shaped line counted in `fresh_prompts_after_echo`, no token-matched marker between;
@@ -1391,6 +1391,8 @@ the look that finds the alt screen off and the line clean. In an appci log the h
 | view | `view_test.rs`: `an_rc_file_trigger_writes_for_its_shell_once_ready` | a cooked bash (the rc running) waits; zle reading writes the rc trigger's zsh setup, Written with `shell_type` zsh |
 | view | `view_test.rs`: `tmux_control_mode_setup_waits_for_the_alt_screen_to_close` | alt screen on: `tmux_setup_pending`, nothing written; the look after it closes writes directly, no judged attempt |
 | view, Legacy and Table | `view_test.rs`: `a_password_prompt_gets_none_of_the_setup_and_the_prompt_after_it_does` | a `Password: ` prompt with a Secret fact writes nothing; the typed answer reaches the pty untouched; the answer and a Ctrl-C keep the attempt armed; the setup is written at the prompt that follows when the line editor reads (replaces the deleted #1032 deferral tests `subshell_setup_waits_behind_a_password_prompt_until_it_is_answered`, `ctrl_c_skips_a_deferred_subshell_setup`, `deferred_subshell_setup_is_released_by_the_output_after_the_answer`, and the deleted `the_rollback_switch_restores_the_deferral_and_the_first_prompt_path`) |
+| view | `view_test.rs`: `the_readiness_look_reads_only_the_tail_of_the_output`, `input_prompt_detection` | a 5000-line output ending in `Password: ` is classified `InputPrompt` from the last `OUTPUT_TAIL_ROWS` rows; the prompt shapes (replace `deferred_subshell_setup_reads_only_the_tail_of_the_output` and `input_prompt_detection_and_deferred_setup_readiness`, whose `subshell_setup_defer_ready` asserts went with the 600 ms quiet clock) |
+| view, Legacy and Table | `view/group4_prompt_tests.rs`: `subshell_bootstrap_waits_for_a_line_holding_delivered_keys` | an armed setup on a dirty line (Enter or ^U ends it) is a Wait, writes nothing, then writes once on the hand-off change event; ported from the deleted deferral (`subshell_setup_deferred`) form of the same test |
 | view | `view_test.rs`: `subshell_bootstrap_waits_for_the_shells_proof_however_long_it_takes` | an auto-warpify attempt waits past the old 1 s with nothing written, a finished banner line is no proof, the proof writes exactly once (replaces `subshell_bootstrap_waits_for_the_first_prompt_however_long_it_takes`) |
 | view (pure) | `view_test.rs`: `readiness_toasts_carry_counts_never_text` | the hand-back toast names a count and "not run", never the text |
 | appci | `cases_subshell_ready.py`: `subshell_ready_rc_questions`, `subshell_ready_vim_typeahead`, `subshell_ready_unsupported_tcsh`, `subshell_ready_secret_after_prompt`, `subshell_ready_relay_shape`, `subshell_ready_exec_fish_rc`, `subshell_ready_docker_t_without_i`, `subshell_ready_zsh_newuser_install`, `subshell_ready_rc_clear` (see the cases list) | real shells on a real pty: the write happens only on the proof, after the answers / vim / the menu, never on a shape; what was typed runs once in the right shell; the unsupported and relay-cooked cases write nothing |

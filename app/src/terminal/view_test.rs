@@ -17375,9 +17375,9 @@ fn split_first_held_line_cuts_at_the_first_enter() {
     );
 }
 
-/// #1032: what counts as a prompt for input, and when a deferred setup may go out.
+/// #1032: what counts as a prompt for input (the judge's `InputPrompt` tail).
 #[test]
-fn input_prompt_detection_and_deferred_setup_readiness() {
+fn input_prompt_detection() {
     for prompt in [
         "Password: ",
         "[sudo] password for me: ",
@@ -17402,15 +17402,6 @@ fn input_prompt_detection_and_deferred_setup_readiness() {
     }
     // (The #1561 shell-prompt shape test is gone with the ssh prompt latch, #1611/#1612/#1621:
     // the ssh connect reads nothing from the screen. This helper serves the subshell setup only.)
-    let quiet = SUBSHELL_SETUP_DEFER_QUIET;
-    assert!(
-        !subshell_setup_defer_ready(true, false, quiet * 10),
-        "never without an answer"
-    );
-    assert!(!subshell_setup_defer_ready(false, false, quiet * 10));
-    assert!(!subshell_setup_defer_ready(true, true, Duration::ZERO));
-    assert!(subshell_setup_defer_ready(true, true, quiet));
-    assert!(subshell_setup_defer_ready(false, true, Duration::ZERO));
 }
 
 /// #1014: the setup-waiting notice and the typed-input hold key off the announcement, which must
@@ -25700,10 +25691,11 @@ fn a_password_prompt_gets_none_of_the_setup_and_the_prompt_after_it_does() {
     }
 }
 
-/// #1354: the deferred-setup checks read only the end of the output; they used to copy all of it
-/// (under the model lock, on the UI thread) on every poll.
+/// #1354 (ported to the judge, #1814): the readiness look reads only the end of the output (it
+/// used to copy all of it, under the model lock, on the UI thread), and still sees a prompt for
+/// input at the end of a long output.
 #[test]
-fn deferred_subshell_setup_reads_only_the_tail_of_the_output() {
+fn the_readiness_look_reads_only_the_tail_of_the_output() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         let terminal = add_window_with_terminal(&mut app, None);
@@ -25716,14 +25708,10 @@ fn deferred_subshell_setup_reads_only_the_tail_of_the_output() {
             view.model
                 .lock()
                 .simulate_long_running_block("zsh", output.as_str());
-            let snapshot = view.active_output_snapshot();
-            assert!(
-                snapshot.lines().count() <= OUTPUT_TAIL_ROWS + 1,
-                "{} lines copied",
-                snapshot.lines().count()
+            assert_eq!(
+                view.take_subshell_pane_look().tail,
+                subshell_ready::Tail::InputPrompt
             );
-            assert!(snapshot.trim_end().ends_with("Password:"));
-            assert!(view.active_output_input_prompt_line().is_some());
         });
     })
 }
