@@ -1965,6 +1965,7 @@ Claude/Codex/Gemini/OpenCode plugin source move, which is a user action offered 
 | U11 | general | `general.restore_session` | unchanged | false | same | **keep** | kept |
 | U20 | network | `network.proxy_mode / proxy_url / proxy_username / proxy_no_proxy` | meaning changed for system and off | "custom" + http://127.0.0.1:3128 + user + no_proxy list (the default "system" followed OS/env proxies) | custom is used as before; system and off now both mean NO proxy (the gate ignores system and environment proxies) | **keep** | kept |
 | U21 | network | `network.allowed_origins` | new key | (absent) | default "" (loopback + configured AI endpoints always allowed) | **new key** | absent_or_default |
+| U21a | network | `network.gate_enabled` | new key | (absent) | default true (the gate stays ON, as in v0.1.17) | **new key** | absent_or_default |
 | U22 | keyring | `ProxyPassword (keyring item)` | unchanged key; read moved off the UI thread (#1805) | stored in the OS keyring | same item, read on the secure-storage worker | **keep** | secret_same |
 | U23 | keyring | `AgentProviderSecrets (keyring item: per-provider API keys, JSON)` | unchanged | stored in the OS keyring | same item | **keep** | secret_same |
 | U30 | agent providers | `agents.warp_agent.models_dev_fetch` | default changed true -> false | true (explicit in the seed) | explicit true is honoured (auto-download when the Providers page opens); UNSET is now false (built-in catalog, Refresh button only) | **keep** | kept |
