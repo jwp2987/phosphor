@@ -1,6 +1,7 @@
 use warpui::App;
 
 use super::*;
+use crate::terminal::model::session::SessionId;
 
 /// #1208: the shell enabling bracketed paste means its line editor is reading, so an activation
 /// pending from the prompt's hook completes at once instead of at the end of the 50 ms delay.
@@ -83,12 +84,12 @@ fn only_the_ready_signal_proves_the_line_editor_reads() {
         let status = app.add_model(|ctx| LineEditorStatus::new(model_events, sessions, ctx));
 
         status.update(&mut app, |status, ctx| {
-            assert!(!status.expects_ready_signal());
+            assert!(!status.expects_ready_signal(ctx));
             status.arm_activation_for_test(ctx);
             status.note_shell_reading_line(ctx);
             assert!(status.is_proven_reading());
             // Once the shell has signalled, its prompt hooks wait for the signal.
-            assert!(status.expects_ready_signal());
+            assert!(status.expects_ready_signal(ctx));
             // A command start (Ctrl-C included) drops the proof.
             status.did_execute_command(ctx);
             assert!(!status.is_proven_reading());
@@ -170,7 +171,7 @@ fn a_signalling_shell_opens_the_gate_only_on_its_signal() {
         let log = event_log(&mut app, &status);
 
         status.update(&mut app, |status, ctx| {
-            status.set_ready_signal_seen_for_test(true);
+            status.set_ready_signal_seen_for_test(true, ctx);
             status.prompt_hook_for_test(ctx);
             assert!(
                 !status.is_line_editor_active(),
@@ -198,7 +199,7 @@ fn the_give_up_net_hands_back_and_never_opens_the_gate() {
         let log = event_log(&mut app, &status);
 
         status.update(&mut app, |status, ctx| {
-            status.set_ready_signal_seen_for_test(true);
+            status.set_ready_signal_seen_for_test(true, ctx);
             status.set_signal_wait(Some(Duration::from_millis(5)));
             status.prompt_hook_for_test(ctx);
         });
@@ -255,5 +256,97 @@ fn a_remembered_signal_opens_the_gate_only_when_asked() {
             assert!(status.is_proven_reading());
         });
         assert_eq!(counts(&log, &app), (1, 0));
+    });
+}
+
+/// #1823: the ready signal is learned PER SESSION. The local shell signalled; the session an `ssh`
+/// or `su` then starts in the same pane (a different active session id) has not, so its prompt
+/// event opens the gate itself (unproven) -- it is not waited for as a signalling shell, which
+/// parked the editor's command forever when the remote never signals. Returning to the local
+/// session keeps what it learned: its prompt waits for the signal again. A session whose wait
+/// gave up is demoted, and its next prompt opens on the event.
+#[test]
+fn the_ready_signal_is_learned_per_session() {
+    App::test((), |mut app| async move {
+        let (_model_events_tx, model_events_rx) = async_channel::unbounded();
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let model_events =
+            app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
+        let status =
+            app.add_model(|ctx| LineEditorStatus::new(model_events.clone(), sessions.clone(), ctx));
+        let local = SessionId::from(0);
+        let remote = SessionId::from(1);
+
+        // The local shell signals.
+        model_events.update(&mut app, |dispatcher, _| {
+            dispatcher.set_active_session_id(local)
+        });
+        status.update(&mut app, |status, ctx| {
+            status.arm_activation_for_test(ctx);
+            status.note_shell_reading_line(ctx);
+            assert!(status.is_proven_reading());
+            assert!(status.active_session_signals_for_test(ctx));
+            status.did_execute_command(ctx);
+        });
+
+        // The nested session (a different shell) has not: its prompt opens the gate on the event.
+        model_events.update(&mut app, |dispatcher, _| {
+            dispatcher.set_active_session_id(remote)
+        });
+        status.update(&mut app, |status, ctx| {
+            assert!(!status.active_session_signals_for_test(ctx));
+            status.prompt_hook_for_test(ctx);
+            assert!(status.is_line_editor_active(), "opened on the prompt event");
+            assert!(!status.is_proven_reading());
+            status.did_execute_command(ctx);
+        });
+
+        // Back in the local shell: what it learned is kept, its prompt waits for the signal.
+        model_events.update(&mut app, |dispatcher, _| {
+            dispatcher.set_active_session_id(local)
+        });
+        status.update(&mut app, |status, ctx| {
+            assert!(status.active_session_signals_for_test(ctx));
+            status.prompt_hook_for_test(ctx);
+            assert!(
+                !status.is_line_editor_active(),
+                "waits for the local signal"
+            );
+        });
+    });
+}
+
+/// #1823: a signalling session whose wait gives up is demoted; its next prompt event opens the
+/// gate (unproven) instead of parking the editor's command behind a signal that is not coming.
+#[test]
+fn a_session_whose_signal_wait_gave_up_opens_on_its_next_prompt() {
+    App::test((), |mut app| async move {
+        let (_model_events_tx, model_events_rx) = async_channel::unbounded();
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let model_events =
+            app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
+        let status = app.add_model(|ctx| LineEditorStatus::new(model_events, sessions, ctx));
+        let log = event_log(&mut app, &status);
+
+        status.update(&mut app, |status, ctx| {
+            status.set_ready_signal_seen_for_test(true, ctx);
+            status.set_signal_wait(Some(Duration::from_millis(5)));
+            status.prompt_hook_for_test(ctx);
+        });
+        warpui::r#async::Timer::after(Duration::from_millis(150)).await;
+        assert_eq!(
+            counts(&log, &app),
+            (0, 1),
+            "the net reported, nothing opened"
+        );
+        status.update(&mut app, |status, ctx| {
+            assert!(!status.active_session_signals_for_test(ctx), "demoted");
+            status.did_execute_command(ctx);
+            status.prompt_hook_for_test(ctx);
+            assert!(
+                status.is_line_editor_active(),
+                "the next prompt opens on its event"
+            );
+        });
     });
 }

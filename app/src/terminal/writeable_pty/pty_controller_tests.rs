@@ -2950,7 +2950,7 @@ mod typeahead_handoff {
             let before = written(&harness).len();
             harness.line_editor_status.update(&mut app, |status, ctx| {
                 status.set_line_editor_active_for_test(false);
-                status.set_ready_signal_seen_for_test(true);
+                status.set_ready_signal_seen_for_test(true, ctx);
                 status.set_signal_wait(Some(std::time::Duration::from_millis(5)));
                 status.prompt_hook_for_test(ctx);
             });
@@ -3040,6 +3040,52 @@ mod typeahead_handoff {
                 &HandoffState::EditorOwned,
                 "the ready signal handed input back"
             );
+        });
+    }
+
+    /// #1823: the local shell signals its line editor; the editor then submits a command that
+    /// starts a nested session (`ssh fake`) in the same pane, and the NEW session's first prompt
+    /// event must open the gate so the command parked "until the line editor is active" is written
+    /// -- the remote has not signalled, so it is not waited for. Returning to the local shell
+    /// keeps its learned signalling. The controller and status are shared by Legacy and Table.
+    #[test]
+    fn a_nested_session_that_never_signalled_gets_the_parked_command_at_its_prompt() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            // The local shell (session 0) signalled earlier.
+            harness.line_editor_status.update(&mut app, |status, ctx| {
+                status.set_ready_signal_seen_for_test(true, ctx);
+                status.set_line_editor_active_for_test(false);
+            });
+            // The editor submits the nested ssh: parked until a line editor is active.
+            submit(&mut app, &harness, "ssh fake");
+            assert!(
+                !written(&harness)
+                    .iter()
+                    .any(|w| w == &bytes_to_execute_command("ssh fake", SHELL, false)),
+                "parked behind the closed gate"
+            );
+            // ... a different active session (the nested shell) reaches its first prompt.
+            harness.model_events.update(&mut app, |dispatcher, _| {
+                dispatcher.set_active_session_id(SessionId::from(1))
+            });
+            harness
+                .line_editor_status
+                .update(&mut app, |status, ctx| status.prompt_hook_for_test(ctx));
+            assert!(
+                written(&harness)
+                    .iter()
+                    .any(|w| w == &bytes_to_execute_command("ssh fake", SHELL, false)),
+                "the nested session's prompt event opened the gate and the command went out"
+            );
+            // The local session keeps what it learned.
+            harness.model_events.update(&mut app, |dispatcher, _| {
+                dispatcher.set_active_session_id(SessionId::from(0))
+            });
+            harness.line_editor_status.update(&mut app, |status, ctx| {
+                assert!(status.active_session_signals_for_test(ctx));
+            });
         });
     }
 
