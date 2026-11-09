@@ -120,7 +120,7 @@ async fn drive(
     // The input queues a follow-up behind a running or blocked turn only with these on.
     let _queue_slash = FeatureFlag::QueueSlashCommand.override_enabled(true);
     let _queue_v2 = FeatureFlag::QueuedPromptsV2.override_enabled(true);
-    let watch = log_capture::PanicWatch::start();
+    let panic_watch = log_capture::PanicWatch::start();
     let knobs = Knobs::from_env();
     let capture = log_capture::install();
     let mark = log_capture::mark();
@@ -207,7 +207,7 @@ async fn drive(
     let requests = rig.seam.requests();
     let emitted = rig.player.emitted();
     oracle::check_tool_messages(&requests, &emitted)?;
-    oracle::check_logs(mark, &emitted, capture, &watch.panics())?;
+    oracle::check_logs(mark, &emitted, capture, &panic_watch.panics())?;
 
     report.requests = requests.len();
     report.final_status = rig.observe(app).status;

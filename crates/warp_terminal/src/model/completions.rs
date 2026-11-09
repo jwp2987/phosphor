@@ -16,7 +16,7 @@ pub enum ShellData {
 }
 
 /// A completion result that was produced natively by the shell.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ShellCompletion {
     name: String,
     description: Option<String>,

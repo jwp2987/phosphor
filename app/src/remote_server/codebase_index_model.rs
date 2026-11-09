@@ -523,6 +523,7 @@ impl RemoteCodebaseIndexModel {
             | RemoteServerManagerEvent::SessionConnectionFailed { .. }
             | RemoteServerManagerEvent::HostConnected { .. }
             | RemoteServerManagerEvent::RemoteAgentContextSnapshot { .. }
+            | RemoteServerManagerEvent::ShellRefresh { .. }
             | RemoteServerManagerEvent::RepoMetadataSnapshot { .. }
             | RemoteServerManagerEvent::RepoMetadataUpdated { .. }
             | RemoteServerManagerEvent::RepoMetadataDirectoryLoaded { .. }

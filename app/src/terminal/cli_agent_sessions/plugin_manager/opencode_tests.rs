@@ -254,7 +254,7 @@ fn migration_keeps_other_plugins_comments_and_formatting() {
   "model": "anthropic/claude-sonnet-4-5"
 }
 "#;
-    let expected = text.replace("@warp-dot-dev/opencode-warp@0.1.5", &spec);
+    let expected = text.replace("@warp-dot-dev/opencode-warp@0.1.5", &spec());
     assert_eq!(
         migrate_plugin_entries(text, &test_bundle()).unwrap(),
         expected

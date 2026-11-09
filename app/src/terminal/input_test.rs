@@ -7770,6 +7770,9 @@ fn test_enter_waiting_for_verdict_queues_input_typed_behind_it() {
 #[test]
 fn test_slow_verdict_cap_hands_the_line_back_and_drops_keys_behind_the_enter() {
     use crate::ai::blocklist::input_model::VERDICT_HANDBACK_CPU_CAP;
+    use crate::terminal::input::enter_queue::{
+        VERDICT_GIVE_UP_TOAST, typed_after_enter_discarded_toast,
+    };
 
     App::test((), |mut app| async move {
         let _am_flag = FeatureFlag::AgentMode.override_enabled(true);

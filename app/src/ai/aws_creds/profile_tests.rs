@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use fake_llm::aws_stub::{HttpStub, SigV4Expectation, StubResponse, verify_sigv4};
 
 use super::*;

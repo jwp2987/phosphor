@@ -273,6 +273,7 @@ impl Sessions {
                 | RemoteServerManagerEvent::HostConnected { .. }
                 | RemoteServerManagerEvent::HostDisconnected { .. }
                 | RemoteServerManagerEvent::RemoteAgentContextSnapshot { .. }
+                | RemoteServerManagerEvent::ShellRefresh { .. }
                 | RemoteServerManagerEvent::NavigatedToDirectory { .. }
                 | RemoteServerManagerEvent::RepoMetadataSnapshot { .. }
                 | RemoteServerManagerEvent::RepoMetadataUpdated { .. }

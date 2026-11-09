@@ -22,9 +22,10 @@ use crate::{
     code_review::{
         commit_message_gen,
         git_dialog::{
-            GitDialog, GitDialogAction, GitDialogEvent, GitDialogMode, interactive_path_future,
-            pr::show_pr_created_toast, render_branch_section, render_file_changes_box,
-            should_send_git_ops_ai_request, show_git_failure, show_toast, user_facing_git_error,
+            GitDialog, GitDialogAction, GitDialogEvent, GitDialogMode, git_command_line,
+            interactive_path_future, pr::show_pr_created_toast, render_branch_section,
+            render_file_changes_box, should_send_git_ops_ai_request, show_git_failure, show_toast,
+            user_facing_git_error,
         },
     },
     editor::{
@@ -509,7 +510,7 @@ fn start_confirm_remote(
     branch: String,
     ctx: &mut ViewContext<GitDialog>,
 ) {
-    use crate::code_review::git_dialog::{git_command_line, remote_backend_for};
+    use crate::code_review::git_dialog::remote_backend_for;
     use crate::remote_server::proto;
     use remote_server::backend::RemoteFeatures as _;
 

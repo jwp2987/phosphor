@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
+use remote_server::backend::refresh::{PrecmdPolicy, RefreshCoordinator};
 use remote_server::manager::RemoteServerManagerEvent;
 use warp_core::{HostId, SessionId};
 use warp_util::standardized_path::StandardizedPath;
@@ -46,6 +47,7 @@ impl RemoteDiffStateModel {
             mode,
             state,
             metadata,
+            refresh: RefreshCoordinator::new(PrecmdPolicy::EveryPrompt),
         }
     }
 

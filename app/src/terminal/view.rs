@@ -5980,6 +5980,7 @@ impl TerminalView {
                     | RemoteServerManagerEvent::HostConnected { .. }
                     | RemoteServerManagerEvent::HostDisconnected { .. }
                     | RemoteServerManagerEvent::RemoteAgentContextSnapshot { .. }
+                    | RemoteServerManagerEvent::ShellRefresh { .. }
                     | RemoteServerManagerEvent::RepoMetadataSnapshot { .. }
                     | RemoteServerManagerEvent::RepoMetadataUpdated { .. }
                     | RemoteServerManagerEvent::BufferUpdated { .. }
@@ -37235,6 +37236,10 @@ impl TerminalSurface for TerminalView {
 
     fn on_young_hold_ended(&mut self, ctx: &mut ViewContext<Self>) {
         self.drain_young_hold_ends(ctx);
+    }
+
+    fn on_line_editor_signal_gave_up(&mut self, ctx: &mut ViewContext<Self>) {
+        TerminalView::on_line_editor_signal_gave_up(self, ctx);
     }
 
     fn on_input_buffer_overflow(&mut self, ctx: &mut ViewContext<Self>) {

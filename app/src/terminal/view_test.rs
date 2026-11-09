@@ -16482,7 +16482,6 @@ fn keys_held_behind_the_subshell_bootstrap_reach_the_pty_in_order() {
                 pending_lines: VecDeque::new(),
                 marker_token: None,
                 awaiting_marker: 0,
-                line_delay: Duration::from_millis(30),
             });
             for key in [b"e".to_vec(), b"c".to_vec(), b"\r".to_vec()] {
                 assert!(view.write_user_bytes_to_pty(key, ctx));
@@ -16699,7 +16698,6 @@ fn start_subshell_bootstrap(view: &mut TerminalView, announce: bool) {
         pending_lines: VecDeque::new(),
         marker_token: None,
         awaiting_marker: 0,
-        line_delay: Duration::from_millis(30),
     });
 }
 
