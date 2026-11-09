@@ -3936,6 +3936,65 @@ fn prompt_timeout_cancels_without_a_toast_for_a_remote_first_request() {
     });
 }
 
+/// #1674 (busy-machine H14): the prompt timeout must never cost a key. Timeline of a slow shell:
+/// the `^Y` goes out, the 2 s timeout passes (the cancel frame is written), the user's keys and a
+/// command follow, and only THEN does the shell's hook answer with its prompt. The tty must read
+/// `^Y`, cancel, keys, command in that order, the late prompt must write nothing (an answer
+/// frame landing among the keys), and no write may have been held or reordered. Event-driven
+/// reading of the tests above: the timer only ends the Tab's own answer; it holds nothing.
+/// The pty layer is shared by Legacy and Table input, so this covers both.
+#[test]
+fn keys_after_the_prompt_timeout_and_a_late_prompt_lose_nothing() {
+    App::test((), |mut app| async move {
+        let (controller, model_events, _status, sender, _tx) =
+            native_completions_controller(&mut app);
+        let results_rx = controller.update(&mut app, |controller, ctx| {
+            start_exchange(controller, "cd pro", ctx)
+        });
+        Timer::after(NATIVE_COMPLETIONS_PROMPT_TIMEOUT + Duration::from_millis(300)).await;
+        controller.update(&mut app, |controller, ctx| {
+            controller.write_bytes(&b"k"[..], ctx);
+            let outcome = controller.write_command(
+                "echo one",
+                ShellType::Zsh,
+                CommandExecutionSource::User,
+                ctx,
+            );
+            assert_eq!(outcome, StartCommandOutcome::Accepted);
+            assert!(controller.pending_writes.is_empty(), "nothing is held");
+        });
+        let before_late_prompt = written(&sender);
+        model_events.update(&mut app, |_dispatcher, ctx| {
+            ctx.emit(ModelEvent::SendCompletionsPrompt {
+                token: Some("88".to_owned()),
+            });
+        });
+        let out = written(&sender);
+        assert_eq!(
+            out, before_late_prompt,
+            "the late prompt writes nothing among the user's keys"
+        );
+        assert_eq!(out[0], vec![0x19], "{out:?}");
+        assert_eq!(out[1], native_completions_cancel(), "{out:?}");
+        assert_eq!(out[2], b"k".to_vec(), "the key follows the cancel: {out:?}");
+        assert!(
+            position_of(&out[3..].concat(), b"echo one").is_some(),
+            "the command follows the key: {out:?}"
+        );
+        assert_eq!(
+            out.iter()
+                .filter(|bytes| bytes.contains(&NATIVE_COMPLETIONS_FRAME_START))
+                .count(),
+            1,
+            "exactly one frame (the cancel)"
+        );
+        assert!(results_rx.recv().await.is_err(), "the Tab falls back");
+        controller.read(&app, |controller, _| {
+            assert!(controller.in_flight_native_completions_state.is_none());
+        });
+    });
+}
+
 /// The same timeout for a request that is not remote-first (upstream's flag path) asks for the
 /// toast: there a prompt that never comes means no shell integration.
 #[test]

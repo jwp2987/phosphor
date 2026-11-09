@@ -2662,7 +2662,10 @@ What changed and what pins it:
   stays empty), `a_direct_byte_write_during_an_exchange_is_preceded_by_the_cancel_frame` (bytes, paste, ^C),
   `the_prompt_is_answered_with_one_frame_and_later_writes_follow_it`, `a_reused_or_missing_prompt_token_is_cancelled`,
   `prompt_timeout_cancels_without_a_toast_for_a_remote_first_request`,
-  `prompt_timeout_of_a_fallback_request_asks_for_the_toast`, `a_second_request_while_one_is_in_flight_is_refused`,
+  `prompt_timeout_of_a_fallback_request_asks_for_the_toast`,
+  `keys_after_the_prompt_timeout_and_a_late_prompt_lose_nothing` (#1674/H14: `^Y`, timeout cancel, keys, command, then a
+  late prompt: the tty order is kept and the late prompt writes nothing; same for Legacy and Table, the pty layer is
+  shared), `a_second_request_while_one_is_in_flight_is_refused`,
   `the_shell_leaving_ends_the_exchange_without_a_frame`,
   `an_exchange_does_not_start_while_the_writer_holds_a_setup_job`,
   `a_setup_write_during_an_exchange_is_preceded_by_the_cancel_frame`; terminal-query replies and a resize do not pass
