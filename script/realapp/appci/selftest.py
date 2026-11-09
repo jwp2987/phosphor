@@ -2998,6 +2998,21 @@ def lab_ctl_and_daemon_pure_pieces():
     assert D.split_candidates("fish", "a/\tdirectory\nb/\tdirectory\n", "x") == ["a/", "b/"]
     assert D.totp_file_text("ABC") == 'ABC\n" TOTP_AUTH\n'
 
+@check
+def soak_diff_names_a_single_lost_command():
+    """#1780: one lost command used to read as 295/660 (a positional count); soak_diff reports it as ONE missing item and keeps order/unexpected apart."""
+    import cases_robust as cr
+    exp = ["s%d" % i for i in range(660)]
+    got = exp[:295] + exp[296:]
+    d = cr.soak_diff(exp, got)
+    assert d["missing"] == ["s295"] and d["arrived"] == 659 and d["unexpected"] == [] and d["order_ok"], d
+    assert sum(a == b for a, b in zip(got, exp)) == 295            # the old figure, for the record
+    d = cr.soak_diff(["a", "b", "c"], ["b", "a", "c", "x"])
+    assert d["missing"] == [] and d["unexpected"] == ["x"] and not d["order_ok"] and d["arrived"] == 3, d
+    d = cr.soak_diff(["a", "a"], ["a"])
+    assert d["missing"] == ["a"] and d["arrived"] == 1, d         # duplicates count as a multiset
+    assert cr.SOAK_ALERT.search("thread 'main' panicked at") and cr.SOAK_ALERT.search("terminal-server exited") and not cr.SOAK_ALERT.search("echo ok")
+
 def main():
     failed = 0
     for f in CHECKS:

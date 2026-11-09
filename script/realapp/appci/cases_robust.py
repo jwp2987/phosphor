@@ -887,12 +887,39 @@ def idle_cpu(ctx, secs=30):
     return (b - a) / os.sysconf("SC_CLK_TCK") / (time.time() - t) * 100
 
 
+SOAK_ALERT = re.compile(r"panic|SIGSEGV|SIGBUS|crash|terminal.?server[^\n]*(exit|died|restart|respawn|lost)|Session abandoned", re.I)
+
+
+def soak_diff(exp, got):
+    """#1780: what a position-by-position comparison hides. One missing item shifts every later one, so 'sum(a == b)' read 295/660 for a soak that lost
+    exactly ONE command (minute 27's tab token) and delivered the rest. Returns dict(missing=[..], unexpected=[..], order_ok=bool, arrived=n): `missing` are
+    expected items absent from `got` (counted as a multiset), `unexpected` are items in `got` nobody typed, `order_ok` says the common items kept their order."""
+    left = {}
+    for g in got:
+        left[g] = left.get(g, 0) + 1
+    missing, kept = [], []
+    for e in exp:
+        if left.get(e, 0) > 0:
+            left[e] -= 1
+            kept.append(e)
+        else:
+            missing.append(e)
+    want = set(exp)
+    unexpected = [g for g in got if g not in want]
+    order = [g for g in got if g in want]
+    ref = [e for e in exp if e in set(order)]
+    return dict(missing=missing, unexpected=unexpected, order_ok=(order == ref), arrived=len(kept))
+
+
 @case("soak", order=89, gui=True)
 def c_soak(ctx, r):
     """FULL TIER ONLY. ~APPCI_SOAK_MIN (60) minutes of mixed use: every minute typed commands (10-25 ms/key), an instant-Enter paste, a
     tab opened/used/closed, every 5th minute a 300k-line flood, every 10th (agent mode with a CI Ollama only) an agent prompt in a throw-away
     tab. Every minute the RSS and CPU of the app's processes are sampled; the effect file proves every typed command arrived exactly.
-    Verdicts: RSS growth rule (growth_verdict docstring), idle CPU at the end <= max(5 %, start + 3 points), all commands exact."""
+    Verdicts: RSS growth rule (growth_verdict docstring), idle CPU at the end <= max(5 %, start + 3 points), all commands exact.
+    #1780: every minute also records the app's process set (a helper that respawns shows as a pid change and a memory drop), scans that minute's app-log
+    lines for panics/crashes (soak_alerts.log), waits for the throw-away tab's shell prompt before typing (a missing token then names its cause), and the
+    final report names the MISSING commands instead of a position count that one lost command turns into 295/660."""
     if os.environ.get("APPCI_TIER") == "smoke":
         raise cases.Skip("soak is full-tier only")
     if ctx.app is None or not hasattr(ctx.app, "pid"):
@@ -910,6 +937,9 @@ def c_soak(ctx, r):
     csv.write("minute,rss_mb,cpu_pct\n")
     last_t, last_ticks = time.time(), sample(ctx)[1]
     tclk = os.sysconf("SC_CLK_TCK")
+    pids0 = sorted(proc_set(ctx))
+    pid_changes, lost_tab, alerts = [], [], []
+    alert_log = os.path.join(ctx.run, "soak_alerts.log")
     m = 0
     t_start = time.time()
     while time.time() - t_start < mins * 60:
@@ -918,6 +948,7 @@ def c_soak(ctx, r):
         if not ctx.app.alive():
             r.check(False, "soak: the app died in minute %d" % m)
             break
+        log_off = ctx.log_size()
         ctx.be.guard()
         for i in range(8):                              # typed commands, exact
             tok = "s%d_%d_%s" % (m, i, ctx.tok(4).lower())
@@ -930,12 +961,20 @@ def c_soak(ctx, r):
         ctx.be.paste(enter=True)
         time.sleep(1.0)
         ctx.be.guard()
+        prompts0 = ctx.prof.prompts()
         ctx.be.key(NEWTAB)                                  # a tab opened, used, closed
         time.sleep(0.8)
+        # #1780: say whether the new tab's shell was up when the command was typed. Typing goes ahead either way (a key typed into a starting shell must
+        # still arrive), but a missing token is then attributable: "no prompt in 10 s" is a slow tab start, "prompt was up" is a lost key.
+        prompt_up = bool(ctx.until(lambda: ctx.prof.prompts() > prompts0, 10, step=0.1))
         tok = "t%d_%s" % (m, ctx.tok(4).lower())
         exp.append(tok)
         ctx.be.type("echo %s >> soak.txt" % tok, 12, enter=True)
-        ctx.until(lambda: tok in ctx.lines("soak.txt"), 8)
+        if not ctx.until(lambda: tok in ctx.lines("soak.txt"), 8):
+            lost_tab.append((m, tok, prompt_up))
+            ctx.shot("soak_min%d_tab_token_missing" % m)
+            r.note("soak minute %d: the throw-away tab's command %s did not reach soak.txt in 8 s (the tab's shell had %s when it was typed)" % (
+                m, tok, "shown a prompt" if prompt_up else "NOT shown a prompt within 10 s of the new-tab key"))
         if m % 10 == 0 and ctx.mode == "agent" and ctx.ollama:
             ctx.be.type("reply with just the word ok", 15, enter=True)      # agent prompt, in this throw-away tab only
             time.sleep(25)
@@ -954,6 +993,16 @@ def c_soak(ctx, r):
             r.check(False, "soak minute %d: sentinel %s never reached the shell (a dialog or a stuck tab ate the keys)" % (m, tok))
             break
         # sample at the end of the activity, then idle to the minute boundary
+        pids = sorted(proc_set(ctx))
+        if pids != pids0:
+            pid_changes.append((m, pids0, pids))
+            r.note("soak minute %d: the app's process set changed %s -> %s (a helper restarted or exited: that is what a sudden RSS drop is)" % (m, pids0, pids))
+            pids0 = pids
+        hits = [l for l in ctx.log_since(log_off).splitlines() if SOAK_ALERT.search(l)]
+        if hits:
+            alerts.append((m, len(hits)))
+            with open(alert_log, "a") as af:
+                af.write("== minute %d: %d line(s)\n%s\n" % (m, len(hits), "\n".join(hits[:40])))
         rss, ticks = sample(ctx)
         t = time.time()
         cpu = (ticks - last_ticks) / tclk / (t - last_t) * 100
@@ -969,8 +1018,14 @@ def c_soak(ctx, r):
     r.metric("cpu_pct_p50_p95_max", [round(statistics.median(cpu_s), 1), round(cases.pct(cpu_s, 0.95), 1), round(max(cpu_s), 1)] if cpu_s else None)
     ctx.reset()
     got = ctx.lines("soak.txt")
-    r.check(got == exp, "soak: %d/%d typed/pasted commands arrived exactly (first difference %r)" % (
-        sum(a == b for a, b in zip(got, exp)), len(exp), next(((a, b) for a, b in zip(exp + [None], got + [None]) if a != b), None)))
+    d = soak_diff(exp, got)
+    r.metric("soak_pid_changes", [c[0] for c in pid_changes])
+    r.metric("soak_log_alert_minutes", alerts)
+    r.metric("soak_lost_tab_tokens", [(a, c) for a, _, c in lost_tab])
+    r.check(got == exp, "soak: %d/%d typed/pasted commands arrived (%d missing %s, %d unexpected, order %s); app process set changed in minutes %s; "
+                        "panic/crash lines in minutes %s; missing throw-away-tab tokens (minute, prompt was up) %s" % (
+        d["arrived"], len(exp), len(d["missing"]), d["missing"][:5], len(d["unexpected"]), "kept" if d["order_ok"] else "BROKEN",
+        [c[0] for c in pid_changes] or "none", [a[0] for a in alerts] or "none", [(a, c) for a, _, c in lost_tab] or "none"))
     v, text = growth_verdict(rss_s)
     r.metric("rss_growth_verdict", v)
     if v == "fail":

@@ -653,6 +653,15 @@ SKIP on macOS/Windows (Cmd-Q is forbidden by the Mac safety rules; the editor op
   decreases by more than 2% between windows AND grows by more than max(`APPCI_SOAK_GROW_MB` 150, 25% of the first window) MB, or any
   sample exceeds `APPCI_SOAK_RSS_MAX_MB` (4096); fewer than 3 windows = noted, no verdict; idle CPU over 30 s at the end must be <=
   max(`APPCI_SOAK_IDLE_CPU_PCT` 5, start + 3) %.
+  **#1780 (r18u23 Wayland terminal soak: "295/660 commands arrived exactly", RSS 365 -> 157 MB).** The 295 was a harness artefact: the check compared the
+  effect file position by position, so ONE lost command (minute 27's throw-away-tab token; 26 minutes x 11 + 8 typed + 1 pasted = 295) shifted all 365 later ones.
+  The case now reports `soak_diff` (arrived as a multiset, the MISSING commands by name, unexpected lines, whether order held). The RSS drop is the part that
+  could be an app fault (a restarted `terminal-server` helper looks exactly like it) and the evidence cannot tell: the job timed out and uploaded no logs. So each
+  minute `soak` now records the app's process set (a change is a note and the `soak_pid_changes` metric), scans that minute's app-log lines for panic / SIGSEGV /
+  crash / helper-exit / "Session abandoned" (`soak_alerts.log` in the run directory, metric `soak_log_alert_minutes`), waits up to 10 s for the throw-away tab's shell
+  prompt before typing (typing still happens either way) and, when its token is missing, notes whether the prompt was up (`soak_lost_tab_tokens`) and keeps a
+  screenshot. The next Wayland soak decides it: a pid change plus a log line = an app restart bug to file; a missing token with the prompt up = a lost key in a new
+  tab (owner rule: never), with no pid change = the harness was not at fault and the app is. Unresolved until then: the cause of the single lost token and of the RSS drop.
 
 #### r18e0 macOS validation follow-up: test-accuracy rules
 
