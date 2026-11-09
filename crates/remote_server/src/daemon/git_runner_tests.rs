@@ -51,3 +51,25 @@ fn a_missing_program_is_a_spawn_error_not_an_exit_code() {
         .to_string();
     assert!(e.starts_with("Failed to execute git command: "), "{e}");
 }
+
+/// The git child never gets a way to prompt (owner ruling): `git` aliases starting with `!`
+/// run `env`, which shows exactly what the child was given.
+#[test]
+fn the_helper_runner_never_lets_git_prompt() {
+    if !have_git() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let r = HelperGitRunner::default();
+    let out = block(git_text(&r, dir.path(), &["-c", "alias.penv=!env", "penv"])).unwrap();
+    for want in ["GIT_TERMINAL_PROMPT=0", "SSH_ASKPASS_REQUIRE=never"] {
+        assert!(out.lines().any(|l| l == want), "missing {want}: {out}");
+    }
+    assert!(
+        out.lines()
+            .any(|l| l.starts_with("GIT_SSH_COMMAND=") && l.ends_with("-o BatchMode=yes")),
+        "{out}"
+    );
+    assert!(!out.lines().any(|l| l.starts_with("GIT_ASKPASS=")), "{out}");
+    assert!(!out.lines().any(|l| l.starts_with("SSH_ASKPASS=")), "{out}");
+}

@@ -13,6 +13,30 @@ pub const GIT_BASE_ARGS: [&str; 2] = ["-c", "diff.autoRefreshIndex=false"];
 /// of hanging a spinner).
 pub const GIT_ENV: [(&str, &str); 2] = [("GIT_OPTIONAL_LOCKS", "0"), ("GIT_TERMINAL_PROMPT", "0")];
 
+/// Variables the HOST-SIDE runners (helper, shell backend) remove from the git child so nothing
+/// can open a credential prompt: there is no terminal to answer it, and the user's own askpass
+/// helper is for their interactive session. See [`git_ssh_command`].
+pub const GIT_UNSET_ENV: [&str; 2] = ["GIT_ASKPASS", "SSH_ASKPASS"];
+
+/// Variables the host-side runners set on top of [`GIT_ENV`] (owner ruling: credentials never
+/// prompt; the UI offers "Run in terminal" instead).
+pub const GIT_NOPROMPT_ENV: [(&str, &str); 1] = [("SSH_ASKPASS_REQUIRE", "never")];
+
+/// The `GIT_SSH_COMMAND` for a host-side git child: ssh in batch mode (it fails instead of asking
+/// for a password or passphrase). A command the user already configured is kept and `-o
+/// BatchMode=yes` appended; with none it is plain `ssh`.
+pub fn git_ssh_command(existing: Option<&str>) -> String {
+    match existing.map(str::trim).filter(|c| !c.is_empty()) {
+        Some(command) => format!("{command} -o BatchMode=yes"),
+        None => "ssh -o BatchMode=yes".to_string(),
+    }
+}
+
+/// [`git_ssh_command`] as a POSIX shell assignment that reads the host's own `GIT_SSH_COMMAND`
+/// when the script runs, so the shell backend builds exactly the same value as the helper.
+pub const GIT_SSH_COMMAND_SH_ASSIGNMENT: &str =
+    "GIT_SSH_COMMAND=\"${GIT_SSH_COMMAND:-ssh} -o BatchMode=yes\"";
+
 /// What a finished command printed.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GitOutput {

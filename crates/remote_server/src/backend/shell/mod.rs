@@ -6,6 +6,7 @@
 //! (P1..P9), or `Unavailable` when the session has no out-of-band channel.
 
 mod buffer;
+mod git_write;
 mod read;
 mod tree;
 mod write;

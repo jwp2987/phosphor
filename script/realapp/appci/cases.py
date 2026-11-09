@@ -5485,6 +5485,7 @@ import cases_coverage_b  # noqa: E402,F401  (g10: CI-review coverage gaps #1542-
 import cases_shells  # noqa: E402,F401  (#1534: startup_shell_override passes: cmd.exe and pwsh 7 as the pane shell)
 import cases_lab_helper  # noqa: E402,F401  (P10: helper lifecycle / capability / routing and no-helper lab cases)
 import cases_lab  # noqa: E402,F401  (Wave 0.5b: the fake ssh lab cases, lab_*; run only by --cases lab_*)
+import cases_lab_git  # noqa: E402,F401  (wave H parity P7: lab_git_write_remote, git writes over ssh with a bare repo as the remote)
 import cases_lab_remote  # noqa: E402,F401  (Wave H parity: per-family helper vs no-helper lab cases, lab_file_tree_remote.*)
 import cases_lab_buffers  # noqa: E402,F401  (Wave H parity P4: lab_remote_edit.*, remote buffer editing)
 import cases_subshell_ready  # noqa: E402,F401  (#1679 step 3/4: the subshell readiness lab: rc questions, vim typeahead, tcsh, secret after the prompt, relays, exec fish, docker -t, zsh-newuser-install, clear)

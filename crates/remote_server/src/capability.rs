@@ -48,7 +48,6 @@ pub const CODEBASE_CHUNKS: &str = "codebase_chunks";
 /// tests that pin the helper's list against them.
 pub const LEGACY_ONLY_CAPABILITIES: &[&str] = &[
     DIFF_STATE,
-    GIT_WRITE,
     CODEBASE_INDEX,
     GIT_STATUS,
     GITHUB,
@@ -66,6 +65,7 @@ pub const HELPER_CAPABILITIES: &[&str] = &[
     REPO_METADATA,
     FILE_CONTEXT,
     BUFFERS,
+    GIT_WRITE,
 ];
 
 /// What the server on the other end of a session supports.
