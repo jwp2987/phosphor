@@ -26,8 +26,11 @@ status=0
 allowed=$(printf '%s\n' "$SENDERS" | cut -f1)
 
 # 1. Wire calls outside the allowed files (tests, mocks and the genai fork are exempt).
+#    crates/fake_llm/ is exempt too: a test-only crate (dev-dependency of app) whose genai
+#    client talks to a loopback fake model with a fixed prompt; it never carries user content.
 hits=$(grep -rnE '\.exec_chat(_stream)?\(' app/src crates --include=*.rs 2>/dev/null \
     | grep -vE '(_tests?\.rs|/tests?/|/tests\.rs|integration_testing/)' \
+    | grep -vE '^crates/fake_llm/' \
     | grep -vE ':[0-9]+:\s*//' )
 while IFS= read -r line; do
     [ -z "$line" ] && continue

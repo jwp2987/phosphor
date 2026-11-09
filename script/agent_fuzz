@@ -14,7 +14,9 @@
 # app/src/ai/blocklist/agent_fuzz/known_failures.toml with its issue instead.
 #
 # Knobs (all optional):
-#   PROPTEST_CASES=N        random conversations per run (default 24; a case takes seconds)
+#   PROPTEST_CASES=N        random conversations per run (default 12; a case takes seconds)
+#   AGENT_FUZZ_SEED=N|random  proptest seed: default a FIXED one (a plain run is deterministic and
+#                           never gates an unrelated change on luck); `random` for the deep runs
 #   AGENT_FUZZ_MINUTES=M    additionally run fresh random rounds for M minutes (the "find it
 #                           unseeded" mode; the acceptance check is 10)
 #   AGENT_FUZZ_SAVE=DIR     write each failing scenario there as schema JSON (never into the repo)

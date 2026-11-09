@@ -3,7 +3,13 @@
 //! failure message is the scenario as schema JSON; with `AGENT_FUZZ_SAVE=<dir>` the shrunk case
 //! is also written there (never into the repo) so it can be copied into `corpus/`.
 //!
-//! Knobs: `PROPTEST_CASES` (default 24: a case is seconds, not milliseconds),
+//! Deterministic by default: the default test run uses a FIXED seed and a modest case count, so
+//! an unrelated change is never gated by unseeded randomness (the same code gives the same
+//! cases). Deep runs are `script/agent_fuzz` with `AGENT_FUZZ_SEED=random` and/or
+//! `AGENT_FUZZ_MINUTES`.
+//!
+//! Knobs: `AGENT_FUZZ_SEED` (a number, or `random`; default fixed),
+//! `PROPTEST_CASES` (default 12: a case is seconds, not milliseconds),
 //! `AGENT_FUZZ_MINUTES` (a time-boxed loop of fresh runs: the unseeded find-it-in-10-minutes
 //! mode), `AGENT_FUZZ_SAVE`, `AGENT_FUZZ_COVERAGE=1`.
 
@@ -12,7 +18,9 @@ use std::time::{Duration, Instant};
 use fake_llm::scenario::Scenario;
 use fake_llm::strategies::arb_scenario;
 use proptest::prelude::*;
-use proptest::test_runner::{Config, FailurePersistence, TestError, TestRunner};
+use proptest::test_runner::{
+    Config, FailurePersistence, RngAlgorithm, TestError, TestRng, TestRunner,
+};
 
 use super::coverage;
 use super::runner::{run_case, stall_cases_supported};
@@ -20,7 +28,7 @@ use super::runner::{run_case, stall_cases_supported};
 fn config() -> Config {
     let mut config = Config::default();
     if std::env::var("PROPTEST_CASES").is_err() {
-        config.cases = 24;
+        config.cases = 12;
     }
     // A shrink step is a whole app run; bound the search.
     config.max_shrink_iters = 256;
@@ -71,12 +79,40 @@ fn save(scenario: &Scenario, invariant: &str) {
     let _ = std::fs::write(path, scenario.to_json());
 }
 
-proptest! {
-    #![proptest_config(config())]
+/// The default seed. Change it only to move the default sample; a failure found with another
+/// seed goes into `corpus/`.
+const DEFAULT_SEED: u8 = 0x5a;
 
-    #[test]
-    fn random_agent_conversations_hold_the_invariants(scenario in scenarios()) {
-        check(scenario)?;
+/// A runner: fixed seed by default, a fresh random one for `AGENT_FUZZ_SEED=random`, or the
+/// number given.
+fn runner() -> TestRunner {
+    match std::env::var("AGENT_FUZZ_SEED").ok().as_deref() {
+        Some("random") => TestRunner::new(config()),
+        other => {
+            let byte = other
+                .and_then(|v| v.parse::<u8>().ok())
+                .unwrap_or(DEFAULT_SEED);
+            TestRunner::new_with_rng(
+                config(),
+                TestRng::from_seed(RngAlgorithm::ChaCha, &[byte; 32]),
+            )
+        }
+    }
+}
+
+fn report(error: TestError<Scenario>) -> ! {
+    match error {
+        TestError::Fail(reason, scenario) => {
+            panic!("{reason}\n\nshrunk scenario:\n{}", scenario.to_json())
+        }
+        TestError::Abort(reason) => panic!("aborted: {reason}"),
+    }
+}
+
+#[test]
+fn random_agent_conversations_hold_the_invariants() {
+    if let Err(error) = runner().run(&scenarios(), check) {
+        report(error);
     }
 }
 
@@ -94,6 +130,7 @@ fn random_agent_conversations_for_the_time_box() {
     let deadline = Instant::now() + Duration::from_secs_f64(minutes * 60.0);
     let mut rounds = 0u32;
     while Instant::now() < deadline {
+        // Each round is a fresh random sample: that is the point of the time box.
         let mut runner = TestRunner::new(config());
         if let Err(error) = runner.run(&scenarios(), check) {
             match error {

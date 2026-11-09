@@ -6,8 +6,9 @@
 //! | Reject | `cancel_action_with_id(.., ManuallyCancelled)` (the Reject button, `controller_tests.rs`) |
 //! | Edit | `set_pending_command_text` then Approve |
 //! | AnswerQuestion / SkipQuestion | stage the answers on `AskUserQuestionExecutor`, then `execute_action` by id (the question card) |
-//! | CtrlC / Stop | `cancel_conversation_progress(.., ManuallyCancelled)` (the status bar's Ctrl-C / Stop) |
-//! | FollowUp | `QueuedQueryModel::append(PendingApprovalFollowUp)` while blocked, else a plain submit |
+//! | CtrlC | the view's real Ctrl-C key handling (`TerminalView::press_ctrl_c_for_test` -> `handle_ctrl_c_input_event`) |
+//! | Stop | `cancel_conversation_progress(.., ManuallyCancelled)` (the status bar's Stop button) |
+//! | FollowUp | typed into the input, `maybe_queue_input_for_in_progress_conversation` decides; if it does not queue, a plain submit |
 //! | ModeSwitch / Escape | no controller entry point exists in a pty-less rig; recorded as no-ops |
 //! | TakeOver / GiveBack | `TerminalModel` hand-over, covered by `prompt_tests.rs` (needs a pty block) |
 //! | CloseTab | `discard_pending_work_for_close` |
@@ -20,11 +21,10 @@ use fake_llm::scenario::{Op, Timing};
 use warpui::App;
 
 use crate::ai::agent::{AIAgentActionType, CancellationReason};
-use crate::ai::blocklist::{QueuedQuery, QueuedQueryModel, QueuedQueryOrigin};
+use crate::ai::blocklist::action_model::PendingStage;
 
 use super::oracle::Knobs;
 use super::rig::{Rig, pump_for, settle_until};
-use warpui::SingletonEntity;
 
 /// What a step did, for the coverage table and the failure message.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -157,7 +157,14 @@ pub fn perform(app: &mut App, rig: &mut Rig, op: &Op) -> Option<&'static str> {
         }
         Op::AnswerQuestion { choice } => answer(app, rig, Some(*choice)),
         Op::SkipQuestion => answer(app, rig, None),
-        Op::CtrlC | Op::Stop => {
+        // Ctrl-C goes through the view's real key handling (blocked-turn cancel, running-command
+        // interrupt, agent-view exit rules); Stop is the status bar's button, which calls the
+        // controller directly.
+        Op::CtrlC => {
+            let terminal = rig.terminal.clone();
+            terminal.update(app, |view, ctx| view.press_ctrl_c_for_test(ctx));
+        }
+        Op::Stop => {
             rig.controller.update(app, |controller, ctx| {
                 controller.cancel_conversation_progress(
                     conversation_id,
@@ -167,19 +174,14 @@ pub fn perform(app: &mut App, rig: &mut Rig, op: &Op) -> Option<&'static str> {
             });
         }
         Op::FollowUp { text } => {
-            let blocked = rig
-                .observe(app)
-                .status
-                .as_ref()
-                .is_some_and(|status| status.is_blocked());
-            if blocked {
-                let row =
-                    QueuedQuery::new(text.clone(), QueuedQueryOrigin::PendingApprovalFollowUp);
-                QueuedQueryModel::handle(app).update(app, |model, ctx| {
-                    model.append(conversation_id, row, ctx);
-                });
-            } else {
-                rig.send(app, text);
+            // The input decides: queue behind a running or blocked turn, else submit.
+            let terminal = rig.terminal.clone();
+            let text = text.clone();
+            let queued = terminal.update(app, |view, ctx| {
+                view.type_and_try_queue_for_test(&text, ctx)
+            });
+            if !queued {
+                rig.send(app, &text);
             }
         }
         Op::CloseTab => {
@@ -204,6 +206,17 @@ fn answer(app: &mut App, rig: &mut Rig, choice: Option<usize>) {
     let AIAgentActionType::AskUserQuestion { questions } = &action.action else {
         return;
     };
+    // Like the real card: it only takes answers while the question is blocked AND its card is
+    // up. Staging an answer on a queued (or cardless) question would let the drain complete it
+    // without a card and mask an I1 violation.
+    let obs = rig.observe(app);
+    let blocked = obs
+        .snapshot
+        .iter()
+        .any(|s| s.action_id == action.id && s.stage == PendingStage::Blocked);
+    if !blocked || !obs.cards.contains(&action.id) {
+        return;
+    }
     let answers: Vec<AskUserQuestionAnswerItem> = questions
         .iter()
         .map(|question| match choice {
@@ -234,4 +247,7 @@ fn answer(app: &mut App, rig: &mut Rig, choice: Option<usize>) {
     rig.action_model.update(app, |model, ctx| {
         model.execute_action(&id, conversation_id, ctx);
     });
+    // As the card does after a submit (`ask_user_question_view.rs`): drop whatever the
+    // execution did not take, so a refused or cancelled question leaves nothing staged.
+    executor.update(app, |executor, _| executor.discard_staged_answers(&id));
 }

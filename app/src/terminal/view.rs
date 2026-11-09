@@ -32464,6 +32464,43 @@ impl TerminalView {
         ai_block
     }
 
+    /// Test-only (agent fuzzer): the real Ctrl-C key handling of this view (agent-view exit
+    /// confirmation, blocked-turn cancel, `ctrl_c`), as `handle_ctrl_c_input_event` runs it from
+    /// the input with an empty buffer.
+    #[cfg(test)]
+    pub(crate) fn press_ctrl_c_for_test(&mut self, ctx: &mut ViewContext<Self>) {
+        self.handle_ctrl_c_input_event(0, ctx);
+    }
+
+    /// Test-only (agent fuzzer): types `text` into the input and presses Enter's queue decision.
+    /// True = queued behind the turn; false = nothing was queued and the caller submits it.
+    #[cfg(test)]
+    pub(crate) fn type_and_try_queue_for_test(
+        &mut self,
+        text: &str,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        self.input.update(ctx, |input, ctx| {
+            input.type_and_try_queue_for_test(text, ctx)
+        })
+    }
+
+    /// Test-only (agent fuzzer, I7): the actions whose card any AI block would route accept keys
+    /// to ([`AIBlock::key_routed_card_action_for_test`]).
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn key_routed_card_actions_for_test(&self, ctx: &AppContext) -> Vec<AIAgentActionId> {
+        self.rich_content_views
+            .iter()
+            .filter_map(|rich_content| rich_content.ai_block_metadata())
+            .filter_map(|metadata| {
+                metadata
+                    .ai_block_handle
+                    .as_ref(ctx)
+                    .key_routed_card_action_for_test(ctx)
+            })
+            .collect()
+    }
+
     /// Test-only (agent fuzzer, I1/I7): the actions any AI block in this view shows an actionable
     /// card for ([`AIBlock::actionable_card_ids_for_test`]).
     #[cfg(any(test, feature = "test-util"))]

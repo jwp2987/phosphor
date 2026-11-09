@@ -6,15 +6,18 @@
 //! first test to ask wins and the other would fail its assertion. [`install`] therefore reports
 //! whether capture is available instead of asserting, and the oracle then skips I6 loudly.
 //!
-//! Records are filed with the thread that logged them and queried by thread: `App::test` runs the
-//! app on the test thread, so a case sees its own lines even when tests share a process.
+//! Records are NOT filtered by thread: the app spawns futures onto other threads, and their
+//! ERRORs belong to the case too. The cost is that under plain `cargo test` (several tests in
+//! one process) a case also sees other tests' lines; nextest gives each test its own process,
+//! which is how this suite runs.
+//!
+//! [`PanicWatch`] does the same for panics: a panic in a background future never reaches
+//! `catch_unwind` around the case, so a hook records it and the oracle reports it as I6.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, Once, PoisonError};
-use std::thread::ThreadId;
 
 struct Record {
-    thread: ThreadId,
     level: log::Level,
     message: String,
 }
@@ -29,7 +32,6 @@ fn records() -> MutexGuard<'static, Vec<Record>> {
 fn tap(record: &log::Record<'_>) {
     if record.level() <= log::Level::Warn {
         records().push(Record {
-            thread: std::thread::current().id(),
             level: record.level(),
             message: record.args().to_string(),
         });
@@ -66,11 +68,61 @@ pub fn warnings_since(mark: Mark) -> Vec<String> {
 }
 
 fn lines_since(mark: Mark, level: log::Level) -> Vec<String> {
-    let me = std::thread::current().id();
     records()
         .iter()
         .skip(mark.0)
-        .filter(|r| r.thread == me && r.level == level)
+        .filter(|r| r.level == level)
         .map(|r| r.message.clone())
         .collect()
+}
+
+static PANICS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Records every panic (on any thread) while alive; restores the previous hook on drop.
+pub struct PanicWatch {
+    previous: Option<Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Sync + Send + 'static>>,
+}
+
+impl PanicWatch {
+    pub fn start() -> Self {
+        PANICS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|info| {
+            let message = info
+                .payload()
+                .downcast_ref::<&str>()
+                .map(|s| (*s).to_owned())
+                .or_else(|| info.payload().downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "<non-string panic>".to_owned());
+            let at = info
+                .location()
+                .map_or_else(String::new, |l| format!(" at {}:{}", l.file(), l.line()));
+            PANICS
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(format!("{message}{at}"));
+        }));
+        Self {
+            previous: Some(previous),
+        }
+    }
+
+    /// The panics recorded since [`Self::start`].
+    pub fn panics(&self) -> Vec<String> {
+        PANICS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+}
+
+impl Drop for PanicWatch {
+    fn drop(&mut self) {
+        if let Some(previous) = self.previous.take() {
+            std::panic::set_hook(previous);
+        }
+    }
 }

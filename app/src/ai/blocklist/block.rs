@@ -3890,6 +3890,12 @@ impl AIBlock {
             Some(view) => !view.as_ref(ctx).matches_action(action_id, questions),
             None => true,
         };
+        // The view is rebuilt as the arguments stream in; the card is the same card, so the
+        // `hop=action_card` line is written only when it is a different action's.
+        let new_card = self
+            .ask_user_question_view
+            .as_ref()
+            .is_none_or(|view| view.as_ref(ctx).action_id() != action_id);
         if !needs_init {
             return;
         }
@@ -3913,7 +3919,9 @@ impl AIBlock {
         });
 
         self.ask_user_question_view = Some(view.clone());
-        log_card_shown(action_id, "ask_user_question");
+        if new_card {
+            log_card_shown(action_id, "ask_user_question");
+        }
         if self
             .action_model
             .as_ref(ctx)
@@ -4585,6 +4593,21 @@ impl AIBlock {
         ids.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
         ids.dedup();
         ids
+    }
+
+    /// Test-only (agent fuzzer, I7): the action whose card this block would route accept keys
+    /// to right now (`pending_command_card_view_id`). That is the card's own key-routing state,
+    /// read from the front of the pending queue and the card's edit flag, not from the
+    /// blocked / finished status the other probes use: a card that still takes Enter for an
+    /// action that is done or cancelled shows up here.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn key_routed_card_action_for_test(&self, app: &AppContext) -> Option<AIAgentActionId> {
+        let routed_view = self.pending_command_card_view_id(app)?;
+        self.requested_commands
+            .iter()
+            .chain(self.requested_mcp_tools.iter())
+            .find(|(_, card)| card.view.id() == routed_view)
+            .map(|(id, _)| id.clone())
     }
 
     /// Test-only (agent fuzzer, I7): the ids of every action this block holds a card for, whether

@@ -9,8 +9,8 @@
 //! | I3 | when the conversation is terminal, locked queued rows unlock within 2 s; unlocked rows of a conversation that succeeded are sent within 3 s (a cancel restores rows to the input instead: #690 / #1026, kept by #1799) |
 //! | I4 | each request carries exactly one tool message per emitted call id, in order, none extra and none orphaned (duplicates renamed `id#2`) |
 //! | I5 | `prompt_tests.rs`: a command is handed to the user only if it reads the tty |
-//! | I6 | no panic and no ERROR log outside the per-chaos allowance |
-//! | I7 | no card is actionable for an action that is not blocked (weak: the card probe is itself keyed on the action's status, so this guards the probe's own consistency; a card that stays interactive after its action finished needs a probe on the card's state) |
+//! | I6 | no panic (any thread) and no ERROR log beyond the allowance per chaos kind and count (`error_allowance`) |
+//! | I7 | no card takes accept keys for an action that is done or cancelled (read from the card's own key routing, `AIBlock::pending_command_card_view_id`, not from the action status) |
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -146,15 +146,16 @@ impl Oracle {
                 PendingStage::Running => {}
             }
         }
-        for card in &obs.cards {
-            let blocked = obs
-                .snapshot
-                .iter()
-                .any(|s| &s.action_id == card && s.stage == PendingStage::Blocked);
-            if !blocked {
+        // I7, on the card's own key routing: a card may take accept keys only for an action the
+        // model still holds. Once nothing is held, no card routes keys at all.
+        for routed in &obs.routed {
+            if !obs.snapshot.iter().any(|s| &s.action_id == routed) {
                 return Err(violation(
                     "I7",
-                    format!("a card is actionable for {card:?}, which is not blocked"),
+                    format!(
+                        "a card still takes accept keys for {routed:?}, which is no longer pending (held: {:?})",
+                        obs.snapshot
+                    ),
                 ));
             }
         }
@@ -355,35 +356,55 @@ fn uniquify(ids: &[String]) -> Vec<String> {
     seen
 }
 
-/// I6: ERROR lines since `mark`, against the per-chaos allowance. A turn that failed on purpose
-/// (status, overflow, drop, stall, missing End) may log up to three; a run with none may log none.
+/// The ERROR lines one occurrence of a chaos kind may log, keyed by kind. A turn that fails on
+/// purpose logs the open / stream failure and the recovery bookkeeping; anything beyond this is
+/// a new ERROR and must be looked at (then either fixed or added here with its reason).
+///
+/// * `status`, `context_overflow`: "open stream failed" (+ one for the retry that hits it again)
+/// * `disconnect`: the mid-stream failure, and the "ended without a terminal End" guard
+/// * `stall`: the idle-timeout line, and the same guard
+/// * `never_end`: the "ended without a terminal End" guard
+/// * `split`, `delay`: not failures, no ERROR allowed
+pub fn error_allowance(kind: &str) -> usize {
+    match kind {
+        "status" | "context_overflow" => 2,
+        "disconnect" | "stall" => 2,
+        "never_end" => 1,
+        _ => 0,
+    }
+}
+
+/// I6: ERROR lines since `mark`, against the per-chaos-kind allowance (kind x count of turns it
+/// was in force for). A run with no failing chaos may log none. `panics` are panics seen on any
+/// thread (`log_capture::PanicWatch`): never allowed.
 pub fn check_logs(
     mark: Mark,
     emitted: &[EmittedTurn],
     capture_available: bool,
+    panics: &[String],
 ) -> Result<(), Violation> {
+    if !panics.is_empty() {
+        return Err(violation("I6", format!("panic: {}", panics.join("; "))));
+    }
     if !capture_available {
         return Ok(());
     }
-    const FAILING: [&str; 5] = [
-        "status",
-        "context_overflow",
-        "disconnect",
-        "stall",
-        "never_end",
-    ];
     let allowance: usize = emitted
         .iter()
-        .filter(|t| t.chaos.iter().any(|c| FAILING.contains(c)))
-        .count()
-        * 3;
+        .flat_map(|turn| turn.chaos.iter())
+        .map(|kind| error_allowance(kind))
+        .sum();
     let errors = log_capture::errors_since(mark);
     if errors.len() > allowance {
         return Err(violation(
             "I6",
             format!(
-                "{} ERROR log line(s), {allowance} allowed by the chaos in play:\n  {}",
+                "{} ERROR log line(s), {allowance} allowed by the chaos kinds in play ({:?}):\n  {}",
                 errors.len(),
+                emitted
+                    .iter()
+                    .flat_map(|t| t.chaos.iter())
+                    .collect::<Vec<_>>(),
                 errors.join("\n  ")
             ),
         ));

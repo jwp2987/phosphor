@@ -11,7 +11,9 @@ use fake_llm::scenario::{Op, Scenario};
 use warpui::App;
 
 use crate::ai::agent::AIAgentActionType;
+use crate::ai::agent::conversation::ConversationStatus;
 use crate::ai::blocklist::action_model::{PendingStage, fuzz_action_kind};
+use crate::features::FeatureFlag;
 
 use super::actor::{self, StepRecord, op_name, timing_name};
 use super::log_capture;
@@ -25,6 +27,10 @@ pub struct CaseReport {
     /// Chaos kinds of the turns that answered a request, with the index of that request.
     pub chaos: Vec<(&'static str, usize)>,
     pub requests: usize,
+    /// The conversation's status when the case ended.
+    pub final_status: Option<ConversationStatus>,
+    /// Tool messages (one per answered call) in the last request the model received.
+    pub tool_messages_in_last_request: usize,
 }
 
 /// A failed case: the broken invariant and the scenario that breaks it, as schema JSON so the
@@ -100,6 +106,10 @@ fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
 }
 
 async fn drive(app: &mut App, scenario: &Scenario) -> Result<CaseReport, Violation> {
+    // The input queues a follow-up behind a running or blocked turn only with these on.
+    let _queue_slash = FeatureFlag::QueueSlashCommand.override_enabled(true);
+    let _queue_v2 = FeatureFlag::QueuedPromptsV2.override_enabled(true);
+    let watch = log_capture::PanicWatch::start();
     let knobs = Knobs::from_env();
     let capture = log_capture::install();
     let mark = log_capture::mark();
@@ -186,9 +196,12 @@ async fn drive(app: &mut App, scenario: &Scenario) -> Result<CaseReport, Violati
     let requests = rig.seam.requests();
     let emitted = rig.player.emitted();
     oracle::check_tool_messages(&requests, &emitted)?;
-    oracle::check_logs(mark, &emitted, capture)?;
+    oracle::check_logs(mark, &emitted, capture, &watch.panics())?;
 
     report.requests = requests.len();
+    report.final_status = rig.observe(app).status;
+    report.tool_messages_in_last_request =
+        requests.last().map_or(0, |r| r.tool_response_ids().len());
     for turn in &emitted {
         for kind in &turn.chaos {
             report.chaos.push((*kind, turn.request_index));

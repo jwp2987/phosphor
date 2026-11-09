@@ -1,10 +1,12 @@
 //! The smallest end-to-end cases: the rig comes up, a plain reply ends the conversation, a tool
 //! call that needs approval shows a card and finishes once approved. If these fail the rest of
-//! the fuzzer is meaningless, so they run first (alphabetically `smoke_tests`).
+//! the fuzzer is meaningless: look at them first (they are the smallest cases, so their failure
+//! message is the easiest to read; nothing orders them before the others).
 
 use fake_llm::scenario::*;
 
 use super::runner::run_case;
+use crate::ai::agent::conversation::ConversationStatus;
 
 fn text_turn(n: u32, text: &str) -> Turn {
     Turn {
@@ -20,9 +22,10 @@ fn text_turn(n: u32, text: &str) -> Turn {
 fn a_plain_reply_ends_the_conversation() {
     let mut scenario = Scenario::new(1);
     scenario.turns.push(text_turn(0, "hello there"));
-    if let Err(failure) = run_case(&scenario) {
-        panic!("{failure}");
-    }
+    let report = run_case(&scenario).unwrap_or_else(|failure| panic!("{failure}"));
+    assert_eq!(report.final_status, Some(ConversationStatus::Success));
+    assert_eq!(report.requests, 1, "one request, one reply");
+    assert_eq!(report.tool_messages_in_last_request, 0);
 }
 
 #[test]
@@ -52,7 +55,19 @@ fn a_command_waits_for_approval_then_runs() {
         op: Op::Approve,
         timing: Timing::OnCard,
     });
-    if let Err(failure) = run_case(&scenario) {
-        panic!("{failure}");
-    }
+    let report = run_case(&scenario).unwrap_or_else(|failure| panic!("{failure}"));
+    assert_eq!(report.final_status, Some(ConversationStatus::Success));
+    assert!(
+        report.steps[0].performed,
+        "the card appeared and the user acted on it"
+    );
+    assert_eq!(report.steps[0].tool, Some("run_shell_command"));
+    assert_eq!(
+        report.requests, 2,
+        "the request, then the follow-up carrying the result"
+    );
+    assert_eq!(
+        report.tool_messages_in_last_request, 1,
+        "exactly one tool message for the one call"
+    );
 }

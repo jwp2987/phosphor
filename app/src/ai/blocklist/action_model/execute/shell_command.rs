@@ -1117,26 +1117,12 @@ impl ShellCommandExecutor {
                 None => {
                     // Agent fuzzer: a scripted command has no block (see `test_outcomes`).
                     #[cfg(any(test, feature = "test-util"))]
-                    let scripted = match &block_selector {
-                        BlockSelector::RequestedCommandId(action_id) => test_outcomes
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .get(action_id)
-                            .cloned(),
-                        BlockSelector::Id(_) => None,
-                    };
+                    {
+                        scripted_command_result(&test_outcomes, &block_selector)
+                    }
                     #[cfg(not(any(test, feature = "test-util")))]
-                    let scripted: Option<(String, i32)> = None;
-                    match scripted {
-                        Some((output, exit_code)) => ActionResult::CommandFinished {
-                            block_id: BlockId::new(),
-                            output,
-                            exit_code: ExitCode::from(exit_code),
-                            start_ts: None,
-                            completed_ts: None,
-                            interrupted: false,
-                        },
-                        None => ActionResult::BlockNotFound,
+                    {
+                        ActionResult::BlockNotFound
                     }
                 }
             };
@@ -2106,6 +2092,34 @@ enum TransferControlResult {
     ControlHandedBack,
     BlockFinished,
     Cancelled,
+}
+
+/// Test-only (agent fuzzer): the result of a scripted command (`complete_command_for_test`), or
+/// `BlockNotFound` when none was scripted for this action.
+#[cfg(any(test, feature = "test-util"))]
+fn scripted_command_result(
+    outcomes: &std::sync::Mutex<HashMap<AIAgentActionId, (String, i32)>>,
+    selector: &BlockSelector,
+) -> ActionResult {
+    let BlockSelector::RequestedCommandId(action_id) = selector else {
+        return ActionResult::BlockNotFound;
+    };
+    let scripted = outcomes
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(action_id)
+        .cloned();
+    match scripted {
+        Some((output, exit_code)) => ActionResult::CommandFinished {
+            block_id: BlockId::new(),
+            output,
+            exit_code: ExitCode::from(exit_code),
+            start_ts: None,
+            completed_ts: None,
+            interrupted: false,
+        },
+        None => ActionResult::BlockNotFound,
+    }
 }
 
 /// The possible results of taking an action.

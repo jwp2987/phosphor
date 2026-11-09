@@ -59,6 +59,8 @@ pub struct Obs {
     pub stream_in_flight: bool,
     pub snapshot: Vec<PendingActionSnapshot>,
     pub cards: Vec<AIAgentActionId>,
+    /// Actions whose card would take accept keys now (the card's own key routing).
+    pub routed: Vec<AIAgentActionId>,
     pub rows: Vec<Row>,
 }
 
@@ -152,6 +154,10 @@ impl Rig {
                 .filter(|s| s.conversation_id == conversation_id)
                 .collect();
             let cards = self.terminal.as_ref(ctx).actionable_card_ids_for_test(ctx);
+            let routed = self
+                .terminal
+                .as_ref(ctx)
+                .key_routed_card_actions_for_test(ctx);
             let rows = QueuedQueryModel::as_ref(ctx)
                 .queue(conversation_id)
                 .iter()
@@ -165,6 +171,7 @@ impl Rig {
                 stream_in_flight,
                 snapshot,
                 cards,
+                routed,
                 rows,
             }
         })

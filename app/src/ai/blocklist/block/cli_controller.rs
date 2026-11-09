@@ -755,12 +755,6 @@ impl CLISubagentController {
         let action_id = active_block.requested_command_action_id().cloned();
         let conversation_id = active_block.ai_conversation_id();
         let agent_has_control = active_block.is_agent_in_control();
-        log::info!(
-            "hop=handover action={} reason={reason_name}",
-            action_id
-                .as_ref()
-                .map_or_else(|| "-".to_owned(), ToString::to_string)
-        );
         // The key path reads "agent in control" from the published copy when the pty reader
         // holds the model: publish the change under the lock that made it (#1411).
         terminal_model.publish_key_facts();
@@ -768,6 +762,13 @@ impl CLISubagentController {
         // cancelled action is a shell command action, so we have to drop the terminal
         // model lock before actually cancelling the conversation.
         drop(terminal_model);
+        // Off the Ctrl-C lock path: after the model lock is released.
+        log::info!(
+            "hop=handover action={} reason={reason_name}",
+            action_id
+                .as_ref()
+                .map_or_else(|| "-".to_owned(), ToString::to_string)
+        );
 
         // Only cancel the conversation if the user initiated the take-over. An agent-driven
         // transfer, or a hand-over forced by a password prompt, needs the conversation alive.

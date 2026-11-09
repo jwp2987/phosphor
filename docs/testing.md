@@ -2467,11 +2467,11 @@ Seam unit tests: `fake_stream_seam_tests.rs` (unregistered ids fall through to t
 |---|---|
 | `player.rs` | scenario -> `SeamTurn` per request (`Match`: nth request / last tool result / user token / default; an unmatched request gets `END`); records the call ids each reply emitted. `Missing` id = the id genai assigns (`call_<index>`), `DuplicateOf` = a repeated id, chaos = open error / mid-stream error / stall / no `End` |
 | `rig.rs` | setup, `observe` (conversation status, stream in flight, action snapshot, actionable cards, queue rows), `drive_commands` (finishes `Quick`/`SetE` commands through `complete_command_for_test`; reports a never-ending one to the agent after a short wait, as the executor's stall snapshot does), `settle_until` |
-| `actor.rs` | the scripted user, through the UI's entry points (table in the file header). `AnswerQuestion` stages the answers and executes by id whatever the front action is, so it works whether or not `ask_user_question` shows its card before approval |
+| `actor.rs` | the scripted user, through the UI's entry points (table in the file header): Ctrl-C is the view's real key handling (`press_ctrl_c_for_test`), a follow-up is typed into the input and `maybe_queue_input_for_in_progress_conversation` decides queue-or-submit (`type_and_try_queue_for_test`), Stop is the status bar's controller call. `AnswerQuestion` acts only on a question that is Blocked and has a card up, stages the answers, executes by id and then discards what was not taken (as `ask_user_question_view.rs` does), so it never completes a cardless question and works whether or not `ask_user_question` needs an approval step first |
 | `oracle.rs` | I1-I4, I6, I7 (I5 is `prompt_tests.rs`) |
 | `runner.rs` | one case end to end; a panic becomes an I6 violation; a failure prints the scenario as schema JSON |
 | `log_capture.rs` | ERROR-log tap on the unit-test logger (one tap per process: run under nextest) |
-| `smoke_tests.rs` | a plain reply, and a command that waits for approval then runs: if these fail nothing else is meaningful |
+| `smoke_tests.rs` | a plain reply (status `Success`, one request, no tool message), and a command that waits for approval then runs (the step was performed on a `run_shell_command` card, two requests, exactly one tool message, `Success`): the smallest cases, so read their failure first; nothing orders them before the others |
 
 Invariants (checked after every step; delta = 2 s, all waits scale with `AGENT_FUZZ_TIME_SCALE`):
 
@@ -2482,8 +2482,8 @@ Invariants (checked after every step; delta = 2 s, all waits scale with `AGENT_F
 | I2b | Ctrl-C / Stop -> terminal within 2 s, nothing pending or running, no stream in flight |
 | I3 | when terminal, locked queued rows unlock within 2 s; after a success, unlocked rows are sent within 3 s. After a cancel rows are restored to the input, not sent (#690 / #1026, kept by #1799) |
 | I4 | each request carries exactly one tool message per emitted call id, in order, none extra, none orphaned; duplicates renamed `id#2` |
-| I6 | no panic, no ERROR log beyond 3 per chaos-failed turn |
-| I7 | no actionable card for an action that is not blocked (weak today: see `oracle.rs`) |
+| I6 | no panic on any thread (a hook records panics in background futures), no ERROR log beyond the allowance per chaos kind and count: `status` / `context_overflow` / `disconnect` / `stall` 2 each, `never_end` 1, `split` / `delay` 0 (`oracle::error_allowance`). Log lines are not filtered by thread, so ERRORs from spawned futures count (run under nextest: one process per test) |
+| I7 | no card takes accept keys for an action the model no longer holds (read from the card's own key routing, `AIBlock::key_routed_card_action_for_test` over `pending_command_card_view_id`, not from the action status) |
 
 I5 (`prompt_tests.rs`): the rig has no pty, so I5 drives the real `PromptDetector::observe` (now, termios shape, screen candidate and the #1796 `foreground_tty_read` probe) at the executor's 1 Hz poll with synthetic observations built from each command behaviour, plus the real hand-over on a `TerminalModel` block (`take_over_control_for_user` / `handoff_control_to_agent`, the calls `CLISubagentController` wraps and logs ERROR on failure).
 
@@ -2497,6 +2497,8 @@ I5 (`prompt_tests.rs`): the rig has no pty, so I5 drives the real `PromptDetecto
 | `handing_over_and_back_logs_no_error_and_leaves_the_agent_in_control` | the real block hand-over round trip: no ERROR logged, agent in control afterwards |
 | `a_second_hand_back_is_refused_without_a_panic` | a repeated hand-back is an `Err` (the controller logs it at ERROR): the executor must hand back once per take-over |
 
+Determinism: the default run uses a FIXED proptest seed and 12 cases (`AGENT_FUZZ_SEED=<0-255>` picks another, `AGENT_FUZZ_SEED=random` a fresh one), so an unrelated change is never gated by unseeded randomness. Deep runs are `script/agent_fuzz` with `AGENT_FUZZ_SEED=random PROPTEST_CASES=200` and/or `AGENT_FUZZ_MINUTES`. `.config/nextest.toml` gives `test(agent_fuzz)` a 120 s slow period (terminate after 5) because one test is many whole conversations with real waits.
+
 Environment knobs: `AGENT_FUZZ_TIME_SCALE` (default 1.0), `AGENT_FUZZ_HUMAN_SCALE` (default 0.05, scales the actor's 400-2500 ms "human" delays). `stall` chaos needs `PHOSPHOR_BYOP_STREAM_IDLE_TIMEOUT_SECS` and `PHOSPHOR_BYOP_STREAM_FIRST_EVENT_TIMEOUT_SECS` at 3 or less (`script/agent_fuzz` sets them to 1).
 
 ### Corpus, known failures, coverage, entry point
@@ -2505,8 +2507,10 @@ Environment knobs: `AGENT_FUZZ_TIME_SCALE` (default 1.0), `AGENT_FUZZ_HUMAN_SCAL
 * Adding a case: copy the JSON a failure prints (or the file `AGENT_FUZZ_SAVE=<dir>` wrote) into `corpus/`. Never put a scenario in the repo that you have not seen pass or listed.
 * `known_failures.toml` maps a corpus scenario to the issue that tracks it. A listed scenario must still fail with the same invariant; it fails the run the day it passes (remove the entry) or fails with another invariant (file that one). Empty today.
 * `coverage.rs` counts (tool x op x timing) for performed user steps and (chaos x phase) for the model's turns. `WAVE0_FLOOR` lists cells the corpus must reach on its own (reject / approve / answer / follow-up on a card, Ctrl-C), checked in the corpus replay (nextest runs each test in its own process, so the floor cannot live in a separate test). `AGENT_FUZZ_COVERAGE=1` prints the table.
-* `script/agent_fuzz` runs L0 + L1 through `script/check_test_failures -p fake_llm -p warp --lib --features warp/gui -E 'test(agent_fuzz) | test(genai_decode)'`, with `PHOSPHOR_BYOP_STREAM_IDLE_TIMEOUT_SECS` / `..._FIRST_EVENT_TIMEOUT_SECS` at 1 so a `stall` turn ends in test time. Knobs: `PROPTEST_CASES` (24), `AGENT_FUZZ_MINUTES` (time-boxed fresh rounds), `AGENT_FUZZ_SAVE`, `AGENT_FUZZ_TIME_SCALE`, `AGENT_FUZZ_COVERAGE`. Proptest never writes `proptest-regressions` into the tree (the corpus is the memory), and shrinks to a minimal (script, user) pair printed as schema JSON.
+* `script/agent_fuzz` runs L0 + L1 through `script/check_test_failures -p fake_llm -p warp --lib --features warp/gui -E 'test(agent_fuzz) | test(genai_decode)'`, with `PHOSPHOR_BYOP_STREAM_IDLE_TIMEOUT_SECS` / `..._FIRST_EVENT_TIMEOUT_SECS` at 1 so a `stall` turn ends in test time. Knobs: `PROPTEST_CASES` (12), `AGENT_FUZZ_SEED`, `AGENT_FUZZ_MINUTES` (time-boxed fresh rounds), `AGENT_FUZZ_SAVE`, `AGENT_FUZZ_TIME_SCALE`, `AGENT_FUZZ_COVERAGE`. Proptest never writes `proptest-regressions` into the tree (the corpus is the memory), and shrinks to a minimal (script, user) pair printed as schema JSON.
 * CI jobs: none yet (manual, on the build box).
+* **Cargo.lock:** `crates/fake_llm` adds llmposter (and its axum 0.8 tree). The first box build updates `Cargo.lock`; the coordinator commits it (do not build with `--locked` before that).
+* **cargo-about:** `crates/fake_llm` is a workspace member, so `cargo about` lists llmposter in the third-party notices even though it is dev-only and never in a release binary. Over-attribution; acceptable.
 
 #### Acceptance on the pre-fix base (to run on the box, not done)
 
