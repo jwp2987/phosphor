@@ -6016,3 +6016,109 @@ fn the_young_submit_decision_has_exactly_four_outcomes() {
         );
     }
 }
+
+// ---- #1658: keys follow the editor's unsent text while the pty still owns input ----
+
+#[test]
+fn a_kept_line_makes_keys_follow_the_editor_not_the_pty() {
+    let mut handoff = after_submit();
+    assert!(handoff.is_pty_owned());
+    assert!(handoff.routes_keys_to_pty());
+    assert!(handoff.note_keys_follow_editor());
+    assert!(handoff.is_pty_owned(), "ownership is unchanged");
+    assert!(!handoff.routes_keys_to_pty(), "a typed key is the editor's");
+    assert!(!handoff.wants_terminal_focus());
+    assert!(handoff.editor_takeover_would_be_open());
+    assert!(handoff.editor_takeover_open(Duration::from_secs(10), Instant::now()));
+}
+
+#[test]
+fn keys_follow_the_editor_only_where_the_pty_owns_input_and_the_switch_is_on() {
+    // Nothing kept (the editor already owns input): plain routing, nothing set.
+    let mut editor_owned = TypeaheadHandoff::default();
+    assert!(!editor_owned.note_keys_follow_editor());
+    assert!(!editor_owned.keys_follow_editor_active());
+    // Kill switch off: today's behaviour, keys keep going to the pty.
+    let mut handoff = after_submit();
+    assert!(!handoff.note_keys_follow_editor_if(false));
+    assert!(handoff.routes_keys_to_pty());
+    assert!(!handoff.editor_takeover_would_be_open());
+}
+
+#[test]
+fn the_ten_second_takeover_give_up_never_clears_keys_follow_editor() {
+    let start = Instant::now();
+    let mut handoff = after_submit();
+    handoff.note_keys_follow_editor();
+    handoff.note_editor_took_over(start);
+    let give_up = Duration::from_secs(10);
+    assert!(handoff.editor_takeover_open(give_up, start + Duration::from_secs(11)));
+    assert!(handoff.editor_takeover_open(give_up, start + Duration::from_secs(3600)));
+    assert!(!handoff.routes_keys_to_pty());
+    // The focus event ends the window only, not the fact.
+    handoff.on_editor_focused();
+    assert!(handoff.keys_follow_editor_active());
+}
+
+#[test]
+fn every_event_returns_the_keys_to_the_pty() {
+    fn set() -> TypeaheadHandoff {
+        let mut handoff = after_submit();
+        assert!(handoff.note_keys_follow_editor());
+        handoff
+    }
+    type Event = (&'static str, fn(&mut TypeaheadHandoff));
+    let events: [Event; 7] = [
+        ("preexec", |h| {
+            h.on_preexec(false);
+        }),
+        (
+            "command became interactive (a program, alt screen or ssh owns the tty)",
+            |h| h.note_command_interactive(),
+        ),
+        ("interrupt", |h| {
+            h.on_interrupt();
+        }),
+        ("click or selection", |h| h.end_editor_takeover_window()),
+        ("a command written", |h| h.on_command_written()),
+        (
+            "the view ends it (editor empty, alt screen, password)",
+            |h| {
+                assert!(h.end_keys_follow_editor("test"));
+            },
+        ),
+        ("session end", |h| h.reset_on_exit()),
+    ];
+    for (name, event) in events {
+        let mut handoff = set();
+        event(&mut handoff);
+        assert!(!handoff.keys_follow_editor_active(), "{name}");
+        if !matches!(name, "session end") {
+            assert!(
+                handoff.is_pty_owned() || handoff.editor_owns_input(),
+                "{name}"
+            );
+        }
+    }
+    // A preexec leaves the pty owning input and routing keys to it.
+    let mut handoff = set();
+    handoff.on_preexec(false);
+    assert!(handoff.routes_keys_to_pty());
+}
+
+#[test]
+fn a_state_change_ends_keys_follow_editor_and_a_new_pty_owned_state_does_not_inherit_it() {
+    let mut handoff = after_submit();
+    handoff.note_keys_follow_editor();
+    handoff.on_precmd();
+    // The request is written (AwaitingReport) or the prompt commits (EditorOwned): both leave
+    // `PtyOwned`, and the fact with it.
+    let _ = handoff.on_line_editor_active(true, true);
+    assert!(!handoff.keys_follow_editor_active());
+    handoff.on_command_written();
+    assert!(handoff.is_pty_owned());
+    assert!(
+        handoff.routes_keys_to_pty(),
+        "a new command's pty-owned state starts clean"
+    );
+}
