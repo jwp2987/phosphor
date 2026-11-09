@@ -3323,6 +3323,7 @@ impl TuiTerminalSessionView {
             // First ctrl-c: arm the kill window with the child-specific hint.
             self.child_kill_armed_conversation = Some(child_id);
             let window_expires_at = self.exit_confirmation.arm(now);
+            // ui-confirm: double-^C exit/kill confirmation window; lapsing only disarms the confirmation
             ctx.spawn(Timer::after(CTRL_C_EXIT_WINDOW), move |view, _, ctx| {
                 if view.exit_confirmation.disarm_expired(window_expires_at) {
                     view.child_kill_armed_conversation = None;
@@ -3350,6 +3351,7 @@ impl TuiTerminalSessionView {
         // window lapses. A re-arm supersedes this (now stale) timer, making
         // its `disarm_expired` a no-op rather than clearing the newer window.
         let window_expires_at = self.exit_confirmation.arm(now);
+        // ui-confirm: double-^C exit/kill confirmation window; lapsing only disarms the confirmation
         ctx.spawn(Timer::after(CTRL_C_EXIT_WINDOW), move |view, _, ctx| {
             if view.exit_confirmation.disarm_expired(window_expires_at) {
                 ctx.notify();

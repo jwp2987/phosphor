@@ -67,6 +67,7 @@ use crate::{
 
 const ASK_USER_QUESTION_ACTIVE: &str = "AskUserQuestionActive";
 
+// ui-confirm: auto-advances a single-select question after an answer unless the user navigates; no keys at risk
 pub(crate) const ASK_USER_QUESTION_AUTO_ADVANCE_DELAY: Duration = Duration::from_millis(300);
 pub(crate) const ASK_USER_QUESTION_MAX_CONTAINER_HEIGHT: f32 = 320.;
 pub(crate) const ASK_USER_QUESTION_OPTION_BUTTON_VERTICAL_SPACING: f32 = 4.;

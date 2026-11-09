@@ -110,19 +110,9 @@ app/src/terminal/view.rs	SLOW_BOOTSTRAP_BANNER_AUTO_DISMISS_DURATION	auto-dismis
 # warns for each; `--strict` (release tier) fails on any. Delete a line when its timer is gone.
 app/src/ai/blocklist/input_model.rs	ENTER_VERDICT_BUDGET	FOUND: 50 ms classifier compute cap; when reached the waiting Enter is SUBMITTED on the Enter-time rules (commits on a clock, SubmitWithoutVerdict)
 app/src/ai/blocklist/input_model.rs	ENTER_VERDICT_WALL_CEILING	FOUND: 1 s wall ceiling of the same wait; reaching it submits the Enter on the Enter-time rules (commits on a clock)
-app/src/ai/blocklist/agent_view/controller.rs	ENTER_OR_EXIT_CONFIRMATION_WINDOW	FOUND: 1 s double-press window; once it lapses the pending enter/exit-agent-view confirmation is cleared, so the clock decides what the second key does (UI confirmation; owner may exempt)
-app/src/ai/blocklist/inline_action/ask_user_question_view.rs	ASK_USER_QUESTION_AUTO_ADVANCE_DELAY	FOUND: after a single-select answer a timer CONFIRMS it (AskUserQuestionAction::Confirm) unless the user navigates (commits on a clock)
-crates/warp_tui/src/tui_ask_question_view.rs	AUTO_ADVANCE_DELAY	FOUND: 300 ms timer auto-confirms a single-select answer in the TUI (commits on a clock)
-crates/warp_tui/src/terminal_session_view.rs	CTRL_C_EXIT_WINDOW	FOUND: double-^C window; the clock decides whether a second ^C exits / kills the child agent (UI confirmation; owner may exempt)
 crates/warpui_core/src/runtime/terminal_probe.rs	PROBE_DEADLINE	FOUND (#1748): 100 ms startup probe deadline; a late terminal reply then leaks into stdin as typed bytes, and user bytes typed in the window are swallowed
 crates/warpui_core/src/runtime/terminal_probe.rs	DA1_DRAIN_GRACE	FOUND (#1749): 20 ms drain after the OSC 11 reply; a DA1 reply arriving later leaks into stdin as typed bytes
-app/src/terminal/local_tty/terminal_attributes.rs	POLL_INTERVAL	FOUND: 1 Hz termios poll (a re-ask on a clock) feeding the password / interactive-prompt detector that hands the command to the user
-app/src/terminal/local_tty/terminal_manager.rs	judge	FOUND: quiet timer armed from PromptDetector::next_wake; firing runs the prompt detection that hands the command over (INTERACTIVE_PROMPT_QUIET_*)
-app/src/terminal/local_tty/terminal_manager.rs	observe	FOUND: quiet timer armed from the stall detector; firing can send q to a pager or hand the command over (STALL_*)
-app/src/terminal/model/block.rs	wakeup_after_delay	UNVERIFIED: delay after preexec, then the interactive latch settles and the probe is consulted about who owns the terminal (input state decided after a clock; the probe decides, the timer schedules)
-app/src/terminal/local_tty/event_loop.rs	REPLY_GATE_POLL	FOUND: 10 ms poll that re-checks the pty mode and then WRITES withheld terminal-query replies (app protocol bytes, not user keys)
-app/src/terminal/local_tty/event_loop.rs	REPLY_GATE_POLL_SLOW	FOUND: 100 ms back-off of the same reply-gate poll
-app/src/terminal/local_tty/event_loop.rs	REPLY_GATE_SLOW_AFTER	FOUND: 1 s after which the reply-gate poll slows down
+app/src/terminal/model/block.rs	wakeup_after_delay	FOUND: after the debounce the interactive latch asks the probe, but with NO probe (ConPTY) it latches on elapsed time alone (LatchReason::NoProbeFallback): input state decided by a clock; convert or exempt for ConPTY
 
 # PACING (owner-exempt 2026-11-09: our own bootstrap bytes into a relay/container/cooked tty whose consumption is unobservable, #960 #1384; never user keys)
 # Each needs a `pacing: <why>` comment next to it; the guard fails if its code path mentions a user-key API. Not counted by --strict.
@@ -130,3 +120,22 @@ app/src/terminal/writeable_pty/pty_controller.rs	RELAY_BOOTSTRAP_PACING	25 ms ga
 app/src/terminal/writeable_pty/pty_controller.rs	CONTAINER_BOOTSTRAP_PACING	50 ms gap between chunks of our own bootstrap into a container exec proxy (#960)
 app/src/terminal/writeable_pty/pty_controller.rs	MAC_TTY_INPUT_QUEUE_PACING	10 ms gap between chunks of our own ssh-warpify payload on a cooked tty (#1384)
 app/src/terminal/writeable_pty/pty_controller.rs	write_next_paced_chunk	timer chain writing the next chunk of an app-built paced payload (bootstrap / warpify), never user keys
+
+# UI-CONFIRM (owner-exempt 2026-11-09: double-press confirmation windows and question auto-advance; no keys at risk)
+# Each needs a `ui-confirm: <why>` comment next to it. Not counted by --strict.
+app/src/ai/blocklist/agent_view/controller.rs	ENTER_OR_EXIT_CONFIRMATION_WINDOW	1 s double-press window for entering/exiting the agent view; lapsing only clears the pending confirmation, no key is lost
+crates/warp_tui/src/terminal_session_view.rs	CTRL_C_EXIT_WINDOW	double-^C exit/kill confirmation window; lapsing only disarms the confirmation
+app/src/ai/blocklist/inline_action/ask_user_question_view.rs	ASK_USER_QUESTION_AUTO_ADVANCE_DELAY	auto-advances a single-select question after an answer unless the user navigates; no keys at risk
+crates/warp_tui/src/tui_ask_question_view.rs	AUTO_ADVANCE_DELAY	auto-advances a single-select question after an answer; no keys at risk
+
+# SAMPLING (owner-exempt 2026-11-09: timers that only schedule a probe sample; the probe result or an event decides, never elapsed time alone)
+# Each needs a `sampling: <why>` comment next to it. Not counted by --strict.
+app/src/terminal/local_tty/terminal_attributes.rs	POLL_INTERVAL	1 Hz termios sample; the sample feeds the prompt detector, which hands over only on a password termios state or a Reading probe
+app/src/terminal/local_tty/terminal_manager.rs	judge	arms the one quiet timer of the prompt detector; on a clock it yields a take-over NOTICE only (#1811), hand-over needs the Reading probe
+app/src/terminal/local_tty/terminal_manager.rs	observe	arms the one quiet timer of the stall detector; on a clock it shows a take-over NOTICE only, nothing is sent (#1811)
+
+# REPLY-PACING (owner-exempt 2026-11-09: our own terminal-query replies, never user keys)
+# Each needs a `reply-pacing: <why>` comment; the guard also fails if its code path mentions a user-key API. Not counted by --strict.
+app/src/terminal/local_tty/event_loop.rs	REPLY_GATE_POLL	10 ms re-check of the pty mode before writing a withheld terminal-query reply (our own reply, never user keys)
+app/src/terminal/local_tty/event_loop.rs	REPLY_GATE_POLL_SLOW	100 ms back-off of the reply-gate re-check; our own replies only
+app/src/terminal/local_tty/event_loop.rs	REPLY_GATE_SLOW_AFTER	after 1 s the reply-gate re-check slows down; our own replies only
