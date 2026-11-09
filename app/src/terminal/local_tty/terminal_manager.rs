@@ -75,7 +75,7 @@ use {
     crate::terminal::local_tty::terminal_attributes::Event as TerminalAttributesPollerEvent,
     crate::terminal::model::block::{
         ForegroundTtyRead, FullscreenStall, FullscreenStallDetector, PromptDetection,
-        PromptDetector, is_closable_pager_group,
+        PromptDetector,
     },
     crate::terminal::model::terminal_model::BlockIndex,
     crate::terminal::model_events::ModelEvent as TerminalModelEvent,
@@ -1509,9 +1509,9 @@ where
             return;
         };
         // A full-screen program (pager, editor, TUI) under an agent command that is waiting
-        // for it to finish: close a known pager, otherwise give the command to the user.
-        // Only the foreground process NAME decides whether a key is sent; an unknown or
-        // unidentifiable process never gets one.
+        // for it to finish: after STALL_NOTICE_AFTER of an unchanged screen show the "may be
+        // waiting for input -- Take over" notice. Nothing is sent to the program and the command
+        // is never handed over on the clock (#1811).
         let is_raw_mode = poller
             .as_ref(ctx)
             .current_attributes()
@@ -1520,18 +1520,12 @@ where
             surface.fullscreen_stall_fingerprint(is_raw_mode, ctx)
         });
         let now = instant::Instant::now();
-        let stall = self.detector.borrow_mut().observe(fingerprint, now, || {
-            poller
-                .as_ref(ctx)
-                .foreground_process_names()
-                .map(|names| is_closable_pager_group(&names))
-        });
+        let stall = self.detector.borrow_mut().observe(fingerprint, now);
         match stall {
-            Some(FullscreenStall::ClosePager) => {
-                surface.update(ctx, |surface, ctx| surface.on_stalled_pager(ctx));
-            }
-            Some(FullscreenStall::HandToUser) => {
-                surface.update(ctx, |surface, ctx| surface.on_stalled_fullscreen_app(ctx));
+            Some(FullscreenStall::MayBeWaiting) => {
+                surface.update(ctx, |surface, ctx| {
+                    surface.on_command_may_be_waiting_for_input(ctx)
+                });
             }
             None => {}
         }

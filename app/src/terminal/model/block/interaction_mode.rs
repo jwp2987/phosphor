@@ -1063,60 +1063,12 @@ impl PromptDetector {
 /// (the model, not Phosphor, then decides what to do).
 // give-up-net: hands the stalled screen to a snapshot-capable model; writes nothing to the pty
 pub const STALL_SNAPSHOT_AFTER: std::time::Duration = std::time::Duration::from_secs(3);
-/// How long a waited agent command's screen must sit unchanged, with a known pager in the
-/// foreground, before Phosphor sends it `q`.
-pub const STALL_CLOSE_PAGER_AFTER: std::time::Duration = std::time::Duration::from_secs(3);
-/// How long it must sit unchanged, with anything else full-screen in the foreground (or
-/// nothing identifiable), before the command is handed to the user.
-pub const STALL_HAND_TO_USER_AFTER: std::time::Duration = std::time::Duration::from_secs(5);
-/// How long after sending `q` to a pager that did not react the command is handed to the
-/// user anyway.
-pub const STALL_PAGER_UNRESPONSIVE_AFTER: std::time::Duration = std::time::Duration::from_secs(8);
-
-/// Process names (`/proc/<pid>/comm`, or the basename of `proc_pidpath`) that are pagers
-/// where `q` quits. Exact match only: `lessfilter`, `vim` and `man` are deliberately not
-/// here (`man` hands its output to a pager that IS one of these).
-pub fn is_known_pager_name(name: &str) -> bool {
-    matches!(name.trim(), "less" | "more" | "most" | "pager")
-}
-
-/// Process names that routinely sit in a pager's process group and hand it their output:
-/// the command that spawned the pager (`git log`, `man`, `psql`, ...), a pager, or a shell
-/// wrapper around either.
-pub fn is_pager_spawner_name(name: &str) -> bool {
-    is_known_pager_name(name)
-        || matches!(
-            name.trim(),
-            "git"
-                | "man"
-                | "systemctl"
-                | "journalctl"
-                | "psql"
-                | "aws"
-                | "gh"
-                | "bat"
-                | "sh"
-                | "bash"
-                | "zsh"
-                | "fish"
-        )
-}
-
-/// Whether the foreground process group is a known pager that Phosphor may send `q` to:
-/// EXACTLY one member is a known pager and every other member is a known pager spawner. A
-/// pager is rarely the group leader (`git log` is, `less` is a member), so the whole group
-/// is judged. Anything else -- an editor, `ssh`, an unknown program next to a `less` -- is
-/// not ours to close.
-pub fn is_closable_pager_group<S: AsRef<str>>(names: &[S]) -> bool {
-    let pagers = names
-        .iter()
-        .filter(|name| is_known_pager_name(name.as_ref()))
-        .count();
-    pagers == 1
-        && names
-            .iter()
-            .all(|name| is_pager_spawner_name(name.as_ref()))
-}
+/// How long a waited agent command's full-screen program (a pager that opened anyway, an
+/// editor, a TUI) must sit unchanged before the "may be waiting for input -- Take over" NOTICE
+/// is shown. Owner decision 2026-11-09 (#1811): no timer hands the command over and Phosphor
+/// never writes `q` (or anything else) to the pty on a timer; the user's click takes over.
+// give-up-net: shows a 'may be waiting for input -- Take over' notice only; never hands the command over or writes to the pty (#1811)
+pub const STALL_NOTICE_AFTER: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// A stable fingerprint of whatever is on screen, for [`StallTracker`].
 pub fn screen_fingerprint(parts: impl std::hash::Hash) -> u64 {
@@ -1172,21 +1124,17 @@ impl StallTracker {
 /// program.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FullscreenStall {
-    /// The foreground process is a known pager: send it `q`.
-    ClosePager,
-    /// Anything else (or an unidentifiable process): do not touch the program, give the
-    /// command to the user.
-    HandToUser,
+    /// Show the take-over notice. Whatever the program is -- a pager, an editor, a TUI -- the
+    /// command stays with the agent and no key is sent (#1811).
+    MayBeWaiting,
 }
 
 /// Turns once-a-second observations of a waited agent command into [`FullscreenStall`]s.
-/// Each kind fires once per unchanged-screen episode; a new screen re-arms it (the pager
-/// redraws or exits after `q`).
+/// Fires once per unchanged-screen episode; a new screen re-arms it.
 #[derive(Debug, Default)]
 pub struct FullscreenStallDetector {
     tracker: StallTracker,
-    pager_closed: bool,
-    handed: bool,
+    noticed: bool,
 }
 
 impl FullscreenStallDetector {
@@ -1196,60 +1144,34 @@ impl FullscreenStallDetector {
 
     /// When the detector next has something to decide if the screen stays unchanged: the
     /// instant to arm ONE quiet timer for, or `None` when no stall-eligible screen is tracked
-    /// or nothing is left to decide (everything already fired). Derived from the tracked
-    /// screen's first-seen timestamp, so repeated calls for an unchanged screen return the
-    /// same instant (#1365).
+    /// or the notice already fired. Derived from the tracked screen's first-seen timestamp, so
+    /// repeated calls for an unchanged screen return the same instant (#1365).
     pub fn next_wake(&self, now: instant::Instant) -> Option<instant::Instant> {
         let (_, since) = self.tracker.current?;
-        if self.handed {
+        if self.noticed {
             return None;
         }
-        let at = if self.pager_closed {
-            since + STALL_PAGER_UNRESPONSIVE_AFTER
-        } else if now < since + STALL_CLOSE_PAGER_AFTER {
-            since + STALL_CLOSE_PAGER_AFTER
-        } else {
-            since + STALL_HAND_TO_USER_AFTER
-        };
+        let at = since + STALL_NOTICE_AFTER;
         (at > now).then_some(at)
     }
 
     /// `fingerprint` is `Some` only while a stall-eligible screen exists (raw mode or alt
-    /// screen, on a command an agent tool call is blocked on). `is_pager` is asked only once
-    /// the screen has been quiet long enough to act, and answers `None` when the foreground
-    /// process cannot be determined -- which is never treated as a pager.
+    /// screen, on a command an agent tool call is blocked on).
     pub fn observe(
         &mut self,
         fingerprint: Option<u64>,
         now: instant::Instant,
-        is_pager: impl FnOnce() -> Option<bool>,
     ) -> Option<FullscreenStall> {
         let stalled_for = self.tracker.observe(fingerprint, now);
         if stalled_for.is_zero() {
             // New screen, or nothing eligible: start over.
-            self.pager_closed = false;
-            self.handed = false;
+            self.noticed = false;
             return None;
         }
-        if self.handed || stalled_for < STALL_CLOSE_PAGER_AFTER {
+        if self.noticed || stalled_for < STALL_NOTICE_AFTER {
             return None;
         }
-        if self.pager_closed {
-            // `q` was sent and the screen did not change: the pager is not listening.
-            if stalled_for >= STALL_PAGER_UNRESPONSIVE_AFTER {
-                self.handed = true;
-                return Some(FullscreenStall::HandToUser);
-            }
-            return None;
-        }
-        if is_pager() == Some(true) {
-            self.pager_closed = true;
-            return Some(FullscreenStall::ClosePager);
-        }
-        if stalled_for >= STALL_HAND_TO_USER_AFTER {
-            self.handed = true;
-            return Some(FullscreenStall::HandToUser);
-        }
-        None
+        self.noticed = true;
+        Some(FullscreenStall::MayBeWaiting)
     }
 }

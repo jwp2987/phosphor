@@ -23,7 +23,9 @@ app/src/terminal/input/paste_queue.rs	arm_give_up	queue gate cap: a give-up that
 app/src/terminal/input/paste_queue.rs	start_queued_read	delays a Pasting... progress toast; notice only
 app/src/terminal/line_editor_status.rs	LINE_EDITOR_SIGNAL_GIVE_UP	reports SignalGaveUp so held keys go back to the editor; never opens the gate or writes
 app/src/terminal/line_editor_status.rs	arm_signal_give_up	arms the line-editor ready-signal give-up; only reports SignalGaveUp (keys go back to the editor)
+app/src/terminal/model/block/interaction_mode.rs	INTERACTIVE_PROMPT_NOTICE_EXPLICIT	shows a 'may be waiting for input -- Take over' notice only (probe unknown); never hands the command over (#1811)
 app/src/terminal/model/block/interaction_mode.rs	INTERACTIVE_PROMPT_QUIET_TRAILING_UNKNOWN_READ	shows a 'may be waiting for input -- Take over' notice only; never hands the command over (#1796)
+app/src/terminal/model/block/interaction_mode.rs	STALL_NOTICE_AFTER	shows a 'may be waiting for input -- Take over' notice for an unchanged full-screen program; never hands over, never writes to the pty (#1811)
 app/src/terminal/model/block/interaction_mode.rs	STALL_SNAPSHOT_AFTER	hands the stalled screen to a snapshot-capable model; writes nothing to the pty
 app/src/terminal/model/typeahead_handoff.rs	CONPTY_PROMPT_HOLD_GIVE_UP	prompt-hold give-up: keys with no Enter go back to the editor as text, a segment with an Enter stays held with a toast (#1584)
 app/src/terminal/model/typeahead_handoff.rs	PROMPT_HOLD_RELEASE_IN_FLIGHT_RECHECK	re-checks the prompt hold's give-up cap while a release is in flight; writes nothing
@@ -84,11 +86,6 @@ app/src/terminal/writeable_pty/pty_controller.rs	NATIVE_COMPLETIONS_PROMPT_TIMEO
 # Timers that break the rule (write, release, route, commit or re-ask on a clock). The default run
 # warns for each; `--strict` (release tier) fails on any. Delete a line when its timer is gone.
 app/src/terminal/input.rs	run_completions_async	FOUND: REMOTE_AS_YOU_TYPE_DEBOUNCE (150 ms) delays the in-band completion request, i.e. a timer decides when ^Y is written
-app/src/terminal/model/block/interaction_mode.rs	INTERACTIVE_PROMPT_QUIET_EXPLICIT	FOUND: 3 s of silence on a [y/N]-style marker hands the agent's command to the user (hand-over on a clock, with evidence)
-app/src/terminal/model/block/interaction_mode.rs	INTERACTIVE_PROMPT_QUIET_TRAILING	FOUND: 15 s of silence on a trailing ?/: (plus the tty-read probe) hands the command to the user
-app/src/terminal/model/block/interaction_mode.rs	STALL_CLOSE_PAGER_AFTER	FOUND: 3 s unchanged screen makes Phosphor SEND q to a pager (a timer writes to the pty)
-app/src/terminal/model/block/interaction_mode.rs	STALL_HAND_TO_USER_AFTER	FOUND: 5 s unchanged full-screen program hands the agent's command to the user (hand-over on a clock)
-app/src/terminal/model/block/interaction_mode.rs	STALL_PAGER_UNRESPONSIVE_AFTER	FOUND: 8 s after sending q hands the command to the user (hand-over on a clock)
 app/src/terminal/model/typeahead_handoff.rs	CONPTY_MIDLINE_QUIET	owner-named: 120 ms typing-quiet gate before the hand-off asks the shell for the line (ConPTY; re-asks on a clock)
 app/src/terminal/model/typeahead_handoff.rs	EVENT_HOLD_GIVE_UP	FOUND: 2 s cap that is the NORMAL end of the fish no-barrier young hold (hands back, but a timer is how it ends)
 app/src/terminal/model/typeahead_handoff.rs	YOUNG_ENTER_MIN_HOLD	FOUND: 150 ms floor of the young-Enter hold (part of the YOUNG_ENTER_WINDOW clock)

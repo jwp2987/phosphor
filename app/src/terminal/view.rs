@@ -37922,37 +37922,6 @@ impl TerminalSurface for TerminalView {
     }
 
     #[cfg(unix)]
-    fn on_stalled_pager(&mut self, ctx: &mut ViewContext<Self>) {
-        // The poller identified the foreground process as `less` / `more` / `most` / `pager`
-        // on this machine's own pty, so `q` quits it. Tell the executor first: the output the
-        // model gets is then only the pager's first screen, and its result says so.
-        let Some(action_id) = self
-            .model
-            .lock()
-            .block_list()
-            .active_block()
-            .requested_command_action_id()
-            .cloned()
-        else {
-            return;
-        };
-        let executor = self.ai_action_model.as_ref(ctx).shell_command_executor(ctx);
-        executor.update(ctx, |executor, _| executor.note_pager_closed(&action_id));
-        self.write_agent_bytes_to_pty(&b"q"[..], &AIAgentPtyWriteMode::Raw, ctx);
-    }
-
-    #[cfg(unix)]
-    fn on_stalled_fullscreen_app(&mut self, ctx: &mut ViewContext<Self>) {
-        // Not a known pager: no keys are sent. Same hand-over as a stalled prompt; the agent's
-        // tool call keeps waiting and gets the command's real result once the user is done.
-        if self.is_agent_driving_active_block() {
-            self.cli_subagent_controller.update(ctx, |controller, ctx| {
-                controller.switch_control_to_user(UserTakeOverReason::BlockedOnInput, ctx);
-            });
-        }
-    }
-
-    #[cfg(unix)]
     fn should_stop_password_prompt_polling(&self, completed: &AfterBlockCompletedEvent) -> bool {
         matches!(
             &completed.block_type,
