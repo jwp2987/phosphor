@@ -74,6 +74,20 @@ fn bootstrap_setup_lines_nu() {
     );
 }
 
+/// The shell-agnostic probe's first line (#1710): the history prelude, and with the marker the
+/// plain `printf` (no `builtin`, `\033` not `\e`) that makes the probe marker-paced. The second
+/// line is the probe script from the assets, covered by `bootstrap_test.rs`.
+#[test]
+fn bootstrap_setup_lines_sh_probe() {
+    snap!(
+        "bootstrap_setup_lines_sh_probe",
+        both(
+            &[unknown_shell_prelude_line(None)],
+            &[unknown_shell_prelude_line(Some(TOKEN))],
+        )
+    );
+}
+
 /// PowerShell's first two lines (the third is the whole script, covered elsewhere).
 #[test]
 fn bootstrap_setup_lines_pwsh() {

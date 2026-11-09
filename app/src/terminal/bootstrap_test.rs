@@ -1265,6 +1265,54 @@ fn test_probe_and_known_stage_leave_at_most_the_prelude_in_history() {
 }
 
 /// #967: no bootstrap line deletes a history entry by number (the entry could be the user's own
+/// #1710: the shell-agnostic probe is marker-paced like the known shells. Marked, its prelude line
+/// ends in the line-0 marker as a plain `printf` with `\033` (dash, ash and ksh have no `builtin`;
+/// macOS dash's printf has no `\e`), and the probe line itself carries no marker: its own
+/// `InitSubshell` hook is what says it was consumed. Unmarked (`PHOSPHOR_BOOTSTRAP_TIMED=1`) the
+/// lines are what they were.
+#[test]
+fn test_sh_probe_is_marker_paced_on_its_prelude_line() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        app.read(|ctx| {
+            let session_id = SessionId::from(4242u64);
+            let marked = init_subshell_command_lines_with_markers(None, &[], session_id, true, ctx);
+            let unmarked =
+                init_subshell_command_lines_with_markers(None, &[], session_id, false, ctx);
+            assert_eq!(marked.len(), 2, "{marked:?}");
+            assert_eq!(unmarked.len(), 2, "{unmarked:?}");
+            assert_eq!(unmarked[0], UNKNOWN_SHELL_HISTORY_PRELUDE);
+            assert_eq!(
+                marked[0],
+                format!("{UNKNOWN_SHELL_HISTORY_PRELUDE}; printf '\\033]7771;4242;0\\a'")
+            );
+            assert!(
+                !marked[0].contains("builtin") && !marked[0].contains("\\e"),
+                "a POSIX sh has no `builtin` and macOS dash's printf no `\\e`: {}",
+                marked[0]
+            );
+            assert!(
+                !marked[0].contains('\u{1b}'),
+                "the typed text holds no escape byte: {:?}",
+                marked[0]
+            );
+            // The probe line is the same marked or not, and is the one that reports InitSubshell.
+            assert_eq!(marked[1], unmarked[1]);
+            assert!(marked[1].contains("InitSubshell") && marked[1].contains("4242"));
+            assert!(
+                !marked[1].contains(SETUP_LINE_MARKER_OSC),
+                "the probe's InitSubshell is its consumed event: {}",
+                marked[1]
+            );
+            assert!(
+                marked[0].len() <= MAX_SUBSHELL_BOOTSTRAP_LINE_BYTES,
+                "{}",
+                marked[0].len()
+            );
+        });
+    });
+}
+
 /// when the shell never recorded our space-led line), and PowerShell keeps the big line out of
 /// PSReadLine's history with a chained AddToHistoryHandler instead of rewriting the history file.
 #[test]

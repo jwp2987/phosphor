@@ -1001,28 +1001,34 @@ const SSH_BOOTSTRAP_SWALLOW_CEILING: Duration = Duration::from_secs(15);
 /// split between ssh, the remote tty and the injected bootstrap (#983). Later than this the
 /// command is a plain interactive session and every key goes to the pty.
 const SSH_CONNECT_SILENCE_CEILING: Duration = Duration::from_secs(15);
-/// After this long without a finished subshell bootstrap, input is no longer held back (#960).
-/// #1577: when a stalled setup is abandoned at the ceiling, the keys held through it are handed
-/// back to the editor as text, not written to the abandoned shell.
-const SUBSHELL_BOOTSTRAP_STALL_CEILING: Duration = Duration::from_secs(20);
+/// The ONE give-up net of a subshell setup (#1711, #1712; owner decision 2026-11-08): this long
+/// with no setup PROGRESS and the setup is given up. Progress is an event that proves the shell
+/// is working through the setup ([`SubshellSetupProgress`]: a setup-line marker, `InitSubshell`,
+/// `InitShell`, a stage-2 chunk written, `Bootstrapped`), never an arbitrary output byte (review
+/// H4: an rc file that prints forever is not progress). Firing HANDS BACK: the held keys return
+/// to the editor as text with a count toast, the announcement ends and the pane continues as a
+/// plain shell; nothing is ever written to the pty by the net (#1577). A late `Bootstrapped` is
+/// still accepted as success (review H6, option (a)): the session ID stays registered. It
+/// replaces the 20 s stall ceiling's routing, the 90 s typed-input hold limit (the generic and
+/// the PowerShell hold), the gates' own caps and the 5 s marker give-up's timed writes.
+const SUBSHELL_SETUP_QUIET_NET: Duration = Duration::from_secs(30);
+/// The absolute ceiling of a subshell setup (#1711): however steady the progress, a setup older
+/// than this is given up the same way. Stage 1 (the probe) and stage 2 share one clock.
+const SUBSHELL_SETUP_CEILING: Duration = Duration::from_secs(120);
+/// After this long with no setup progress the user is told the setup is waiting (the persistent
+/// "Phosphor setup is waiting..." toast, #1014) and that Ctrl-C skips it. Dismissed by the next
+/// progress, shown again after another quiet stretch. Also what makes a PowerShell setup
+/// "stalled" for its Ctrl-C route (#1051: after the notice, a ^C goes to the shell).
+const SUBSHELL_SETUP_QUIET_NOTICE: Duration = Duration::from_secs(10);
+/// A subshell setup deferred behind a prompt for input (#1032) that has waited this long tells
+/// the user so, once. A notice only: nothing is routed or written on it (the stall ceiling it
+/// descends from no longer routes keys, #1711).
+const SUBSHELL_SETUP_DEFER_NOTICE: Duration = Duration::from_secs(20);
 /// How often a deferred subshell setup (#1032) re-checks whether the prompt it is waiting behind
 /// has been answered.
 const SUBSHELL_SETUP_DEFER_POLL: Duration = Duration::from_millis(250);
 /// How many rows from the end of the active block's output the deferred-setup checks look at.
 const OUTPUT_TAIL_ROWS: usize = 16;
-/// Give-up net for the event-driven subshell bootstrap (#1354): a typed setup line whose
-/// setup-line marker has not arrived this long after it was written is treated as lost, and the
-/// rest of the lines fall back to the timed pacing. Logged when it fires. Not what sequences
-/// the lines: the marker is.
-const SUBSHELL_SETUP_MARKER_GIVE_UP: Duration = Duration::from_secs(5);
-/// Give-up net for the input queue's bootstrap-write gate (#1399): typed keys wait behind the
-/// setup lines until the last one is written. Every setup line may wait the whole marker give-up
-/// before the timed fallback takes over, so the net must outlast `lines` of those plus one more;
-/// a shorter one (it was 2 s per line) released the keys in the middle of the fallback's writes
-/// and interleaved them with the setup script.
-fn subshell_bootstrap_gate_cap(lines: usize) -> Duration {
-    SUBSHELL_SETUP_MARKER_GIVE_UP * (lines as u32 + 1) + Duration::from_secs(2)
-}
 /// Give-up net for a bootstrap trigger waiting for the subshell's first prompt (#1354): a prompt
 /// that never reads as one (an empty PS1, one ending in a newline) still gets the bootstrap.
 /// Logged when it fires.
@@ -1035,10 +1041,6 @@ const PENDING_COMMAND_PRECMD_GIVE_UP: Duration = Duration::from_secs(2);
 /// this long (the shell took the answer and went quiet) before setup is written, when the
 /// answer left no visible newline behind (#1032).
 const SUBSHELL_SETUP_DEFER_QUIET: Duration = Duration::from_millis(600);
-/// Text typed while an announced subshell setup is unfinished is held by the app (not written to
-/// the tty, where the late bootstrap reads it as part of itself) for at most this long, then
-/// delivered anyway so a setup that never finishes cannot swallow it (#1014).
-const SUBSHELL_SETUP_TYPED_HOLD_LIMIT: Duration = Duration::from_secs(90);
 /// How long the keys typed during a PowerShell subshell setup after a complete line stay held
 /// behind the command that line ran, waiting for its prompt (#1048). A command still running
 /// then is slow or interactive. #1577: firing only tells the user the input waits (log + toast);
@@ -3019,8 +3021,74 @@ struct SubshellBootstrapInFlight {
     marker_token: Option<u64>,
     /// Index of the line whose marker releases the next one.
     awaiting_marker: usize,
-    /// Pacing used if the markers turn out not to come (the give-up net).
+    /// Pacing of the timed setup (`PHOSPHOR_BOOTSTRAP_TIMED=1`); unused while the markers pace.
     line_delay: Duration,
+}
+
+/// An event that proves the shell is working through a subshell setup (#1711). The one thing
+/// that re-arms [`SUBSHELL_SETUP_QUIET_NET`]; output bytes of any shape do not (review H4).
+/// Step 3 (readiness) adds the OS-fact change here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SubshellSetupProgress {
+    /// The shell printed the setup-line marker of a line of this setup.
+    Marker,
+    /// The probe named the shell.
+    InitSubshell,
+    /// The shell ran the setup script's head.
+    InitShell,
+    /// A stage-2 line was written (on its predecessor's marker, or the timed pacing).
+    StageTwoChunk,
+    /// The setup finished; the prompt after it ends the hold.
+    Bootstrapped,
+}
+
+/// What the subshell setup net says at `now` (#1711): pure, so the rule is a truth table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SubshellSetupNetVerdict {
+    /// Progress is recent enough and the setup young enough: keep holding.
+    Waiting,
+    /// No progress for [`SUBSHELL_SETUP_QUIET_NET`].
+    Quiet,
+    /// The setup is older than [`SUBSHELL_SETUP_CEILING`], whatever its progress.
+    Ceiling,
+}
+
+fn subshell_setup_net_verdict(
+    now: Instant,
+    started: Instant,
+    last_progress: Instant,
+) -> SubshellSetupNetVerdict {
+    if now.saturating_duration_since(started) >= SUBSHELL_SETUP_CEILING {
+        SubshellSetupNetVerdict::Ceiling
+    } else if now.saturating_duration_since(last_progress) >= SUBSHELL_SETUP_QUIET_NET {
+        SubshellSetupNetVerdict::Quiet
+    } else {
+        SubshellSetupNetVerdict::Waiting
+    }
+}
+
+/// The one give-up net of the subshell setup in progress (#1711, #1712): armed when the first
+/// setup line is written, re-armed by [`SubshellSetupProgress`] only, cleared when the setup
+/// ends by any event (the prompt after `Bootstrapped`, E-UNSUPPORTED, a Ctrl-C that skips it, the
+/// net itself). Its timers carry `generation` and `progress_seq` and do nothing when either moved
+/// on, so a timer of an earlier setup or an earlier quiet stretch never acts on a later one.
+struct SubshellSetupNet {
+    generation: u64,
+    /// When the first line of this setup went out. Stage 2 keeps stage 1's start: one setup, one
+    /// ceiling.
+    started: Instant,
+    last_progress: Instant,
+    /// Bumped on every progress; the quiet-net and notice timers fire only for the value they
+    /// were armed with.
+    progress_seq: u64,
+    /// The waiting notice is showing for the current quiet stretch.
+    noticed: bool,
+    /// The model's setup-marker count at the last look: each new marker of this setup's token
+    /// is progress once.
+    marker_count_seen: u64,
+    /// The bootstrap give-up (`start_bootstrap_timer`: 7 s, 60 s with env vars) armed for this
+    /// setup, re-armed on progress so a slow but healthy marker-paced setup does not trip it.
+    bootstrap_failed_after: Option<Duration>,
 }
 
 /// How the keys typed during a PowerShell subshell setup are held (#1048). See
@@ -3509,14 +3577,23 @@ pub struct TerminalView {
     /// The active block and the time at which this view last typed a subshell bootstrap stage
     /// into it. Unlike the model's pending subshell session (which only exists once the shell
     /// answered with `InitShell`), this exists even when the script never ran, so a stalled
-    /// stage still lets Ctrl-C / Ctrl-D through at once and everything after
-    /// `SUBSHELL_BOOTSTRAP_STALL_CEILING` (#960).
+    /// stage still lets Ctrl-C / Ctrl-D through at once (#960). Typing is held for as long as
+    /// this is set: no age ends the hold, only an event or the net (#1711).
     subshell_bootstrap_announced: Option<(BlockId, Instant)>,
     subshell_bootstrap_generation: u64,
-    /// Keystrokes typed while an announced subshell setup is unfinished (#1014), in order. They
-    /// are delivered once setup completes, is abandoned or aborted, or after
-    /// `SUBSHELL_SETUP_TYPED_HOLD_LIMIT`; never dropped.
-    /// Where a PowerShell subshell setup is in holding the user's keys (#1048).
+    /// The one give-up net of the setup in progress (#1711, #1712); `None` when no setup is.
+    subshell_setup_net: Option<SubshellSetupNet>,
+    /// Monotonic over the view's life (review F4): every net armed gets the next value, so a
+    /// timer of setup A can never match setup B's net, however many setups ended in between.
+    subshell_setup_net_generation: u64,
+    /// The session ID the shell-agnostic probe (`write_init_subshell_bytes_to_pty(None)`) was
+    /// minted with (#1710, review H9). Its `InitSubshell` hook is the last thing that carries it:
+    /// the handler unregisters it then, so only this attempt's ID goes, never the parent's or
+    /// the stage-2 ID minted for the shell it names.
+    subshell_probe_session_id: Option<SessionId>,
+    /// Where a PowerShell subshell setup is in holding the user's keys (#1048). The keys typed
+    /// while it is not `Off` are entries of the pane queue behind the PowerShell gate, in order,
+    /// delivered by the setup's events or handed back by the net; never dropped.
     powershell_setup_hold: PowerShellSetupHold,
     /// Tags each held line submitted under [`PowerShellSetupHold::LineRunning`], so a grace
     /// timer of an earlier line never ends the hold of a later one.
@@ -5356,6 +5433,9 @@ impl TerminalView {
             pending_command_awaits_precmd: false,
             ssh_split_cd_awaits_precmd: false,
             subshell_bootstrap_generation: 0,
+            subshell_setup_net: None,
+            subshell_setup_net_generation: 0,
+            subshell_probe_session_id: None,
             show_snackbar: true,
             hover_near_snackbar_area: false,
             ai_controller,
@@ -12584,9 +12664,9 @@ impl TerminalView {
     }
 
     /// True while a subshell bootstrap (`su -`, `sudo -i`, ...) has been announced by the shell
-    /// but has not finished. Input is normally held for that whole window so the user cannot
-    /// interleave with the script (#960). Only Ctrl-C / Ctrl-D are exempt, see
-    /// `forwards_keys_during_subshell_bootstrap`.
+    /// but has not finished. Input is held for that whole window so the user cannot interleave
+    /// with the script (#960); the window ends by an event or the setup net (#1711), never by an
+    /// age. Only Ctrl-C / Ctrl-D are exempt, see `forwards_keys_during_subshell_bootstrap`.
     fn subshell_bootstrap_pending(&self) -> bool {
         let facts = self.model_facts();
         !facts.read_only && facts.has_pending_subshell && !facts.active_block_bootstrapped
@@ -12645,11 +12725,9 @@ impl TerminalView {
             PowerShellSetupHold::Setup
             | PowerShellSetupHold::ScriptRunning
             | PowerShellSetupHold::AwaitingPrompt => {
-                !self.model_facts().read_only
-                    && self
-                        .subshell_bootstrap_announced
-                        .as_ref()
-                        .is_some_and(|(_, at)| at.elapsed() < SUBSHELL_SETUP_TYPED_HOLD_LIMIT)
+                // #1711: for as long as the setup is announced, however old. The setup net is
+                // what ends a setup that stops progressing (a hand-back), not an age.
+                !self.model_facts().read_only && self.subshell_bootstrap_announced.is_some()
             }
         }
     }
@@ -12677,9 +12755,6 @@ impl TerminalView {
     fn should_write_typed_chars_to_pty(&self, ctx: &mut ViewContext<Self>) -> bool {
         // Read without waiting for the pty reader (#1404): see `model_facts`.
         let facts = self.model_facts();
-        let subshell_bootstrap_stalled = self
-            .subshell_bootstrap_announced_age_in(&facts)
-            .is_some_and(|age| age >= SUBSHELL_BOOTSTRAP_STALL_CEILING);
 
         // If the active block hasn't started yet, we don't want to write to the pty.
         // Note that we check block started and NOT block.is_long_running(), because
@@ -12697,7 +12772,9 @@ impl TerminalView {
             .as_ref(ctx)
             .has_pending_or_bootstrapped_session();
 
-        was_bootstrap_script_echoed || facts.shared_session_executor || subshell_bootstrap_stalled
+        // (#1711: a stalled subshell setup no longer opens this door by age; the net hands the
+        // held keys back instead, and the parent session is bootstrapped in every subshell case.)
+        was_bootstrap_script_echoed || facts.shared_session_executor
     }
 
     /// What has focus, read from the live focus chain of the key being routed (no render
@@ -13655,7 +13732,7 @@ impl TerminalView {
         match self.prepare_subshell_gates(&bytes, ctx) {
             paste_queue::SubshellPrep::Normal => {}
             paste_queue::SubshellPrep::HeldInOrder => abort_as_entry = true,
-            paste_queue::SubshellPrep::Stashed => return true,
+            paste_queue::SubshellPrep::AbortHandled => return true,
             paste_queue::SubshellPrep::Bypass => {
                 return self.write_user_bytes_to_pty_after_paste_stage(
                     bytes,
@@ -13807,6 +13884,8 @@ impl TerminalView {
             // #1048: the user skips a PowerShell setup. The abort goes first; what they typed
             // meanwhile stays held until the console has processed it (it would be flushed).
             self.subshell_bootstrap_announced = None;
+            // The setup is skipped: its net is over; the abort wait has nets of its own (#1711).
+            self.subshell_setup_net = None;
             self.powershell_setup_hold = PowerShellSetupHold::Off;
             // The keys held meanwhile stay in the PowerShell gate (an abort meets it with
             // `SignalThenKeepGate`): they are not released right behind the ^C, which is written
@@ -15281,6 +15360,11 @@ impl TerminalView {
         if self.subshell_bootstrap_in_flight.is_some() {
             self.advance_subshell_bootstrap_on_marker(ctx);
         }
+        if self.subshell_setup_net.is_some() {
+            // #1711: a marker of this setup is progress for its net (whatever line it is for, and
+            // PowerShell's "reading again" marker too); plain output is not.
+            self.note_subshell_setup_marker_progress(ctx);
+        }
         if let PowerShellSetupHold::AfterAbort { generation } = self.powershell_setup_hold {
             if let Some(token) = self.powershell_setup_marker_token {
                 let acknowledged = {
@@ -15784,11 +15868,18 @@ impl TerminalView {
 
         self.write_init_subshell_bytes_to_pty(shell_type, ctx);
 
-        if !self.env_vars.is_empty() {
-            self.start_bootstrap_timer(ENV_VAR_BOOTSTRAP_FAILED_DURATION, ctx);
+        let bootstrap_failed_after = if !self.env_vars.is_empty() {
             self.env_vars = Vec::new();
+            ENV_VAR_BOOTSTRAP_FAILED_DURATION
         } else {
-            self.start_bootstrap_timer(BOOTSTRAP_FAILED_DURATION, ctx);
+            BOOTSTRAP_FAILED_DURATION
+        };
+        self.start_bootstrap_timer(bootstrap_failed_after, ctx);
+        // #1711: the give-up is re-armed on every setup progress, so a slow but healthy
+        // marker-paced setup (each line acknowledged, the whole longer than 7 s) does not trip it;
+        // a setup that stops progressing still does, 7 s after its last progress.
+        if let Some(net) = self.subshell_setup_net.as_mut() {
+            net.bootstrap_failed_after = Some(bootstrap_failed_after);
         }
 
         send_telemetry_from_ctx!(
@@ -18752,6 +18843,8 @@ impl TerminalView {
                 {
                     self.awaiting_subshell_prompt = None;
                 }
+                // Review F2: a subshell that exited during its setup ends the setup and its net.
+                self.end_subshell_setup_if_block_gone(ctx);
 
                 // #1069: a user block completing before the replayed ssh bootstrapped means that
                 // ssh failed or exited; nothing armed by the split may outlive it. The bootstrap
@@ -19520,8 +19613,24 @@ impl TerminalView {
                 }
             }
             ModelEvent::InitSubshell(event) => {
+                // #1710 (review H9): the probe's hook is in; nothing else carries its ID. Only
+                // this attempt's ID goes: the stage 2 written below mints its own. Review N3: no
+                // probe of this view is outstanding (the attempt was given up, or ended): a late
+                // answer starts nothing.
+                let Some(probe_id) = self.subshell_probe_session_id.take() else {
+                    log::warn!(
+                        "InitSubshell ({:?}) with no probe outstanding: ignored (#1710)",
+                        event.shell_type
+                    );
+                    return;
+                };
+                self.model.lock().unregister_session_id(probe_id);
+                self.note_subshell_setup_progress(SubshellSetupProgress::InitSubshell, ctx);
                 let shell_type = event.shell_type;
                 self.trigger_subshell_bootstrap(Some(shell_type), false, ctx);
+            }
+            ModelEvent::SubshellNotPhosphorizable { shell_name } => {
+                self.end_subshell_setup_unsupported(shell_name, ctx);
             }
             ModelEvent::InitSsh(event) => {
                 let shell_type = event.shell_type;
@@ -19597,17 +19706,11 @@ impl TerminalView {
                     if !show_debug_block {
                         self.update_long_running_ssh_block_with_lock(|block| block.hide());
                     }
-                    // #1014: a bootstrap that dies half-way (the shell exits, or its script
-                    // fails) never reports `Bootstrapped`; give up after the stall ceiling so the
-                    // pane does not stay on "Starting shell..." for good.
-                    let expected_session = pending_session_info.session_id;
-                    let _ = ctx.spawn(
-                        async move {
-                            warpui::r#async::Timer::after(SUBSHELL_BOOTSTRAP_STALL_CEILING).await;
-                            expected_session
-                        },
-                        Self::abandon_stalled_subshell_bootstrap,
-                    );
+                    // #1014/#1711: a bootstrap that dies half-way (the shell exits, or its script
+                    // fails) never reports `Bootstrapped`. The setup net gives it up after
+                    // `SUBSHELL_SETUP_QUIET_NET` without further progress (it used to be a fixed
+                    // 20 s from here), so the pane does not stay on "Starting shell..." for good.
+                    self.on_subshell_init_shell(ctx);
                 }
             }
             ModelEvent::Handler(AnsiHandlerEvent::Precmd) => {
@@ -19656,6 +19759,9 @@ impl TerminalView {
                 if !self.subshell_bootstrap_pending() {
                     self.dismiss_subshell_setup_waiting_toast(ctx);
                 }
+                // Review F2: the prompt after `Bootstrapped` (or after the subshell exited) ends
+                // the setup net whether or not a gate still holds keys for this prompt.
+                self.clear_subshell_setup_net_if_setup_over(ctx);
                 // #1354: the prompt after a completed block releases the remote `cd` of an ssh
                 // split and the pending command (queued behind the line editor becoming active).
                 if self.ssh_split_cd_awaits_precmd {
@@ -19670,6 +19776,8 @@ impl TerminalView {
             ModelEvent::Handler(AnsiHandlerEvent::Bootstrapped {
                 is_subshell: true, ..
             }) => {
+                // #1711: the setup finished; the prompt that follows ends the hold and the net.
+                self.note_subshell_setup_progress(SubshellSetupProgress::Bootstrapped, ctx);
                 // #1048: the subshell is set up; its keys go out at the prompt that follows.
                 if matches!(
                     self.powershell_setup_hold,
@@ -22103,7 +22211,7 @@ impl TerminalView {
             return;
         }
         let notify = !deferred.notified
-            && now.saturating_duration_since(deferred.since) >= SUBSHELL_BOOTSTRAP_STALL_CEILING;
+            && now.saturating_duration_since(deferred.since) >= SUBSHELL_SETUP_DEFER_NOTICE;
         if notify {
             deferred.notified = true;
             if ctx.has_singleton_model::<ToastStack>() {
@@ -22157,25 +22265,20 @@ impl TerminalView {
         // short pace so a shell that has not started reading yet is never handed more than its
         // tty input queue holds.
         let line_delay = crate::terminal::bootstrap::subshell_bootstrap_line_delay(shell_type);
-        // #1354/#1372: bash, zsh, fish, nushell and PowerShell print a marker once they ran a line
-        // (PowerShell: once PSReadLine is about to read again); the next line is written when it
-        // arrives, not after `line_delay`, which stays as the give-up pacing. Other shells (and
-        // PHOSPHOR_BOOTSTRAP_TIMED=1) keep the timer pacing.
-        // PowerShell (#1372): its marker is printed when PSReadLine is about to read, i.e. after
-        // the redraw that a marker at the end of the line would race (#1047).
-        let marked = !crate::terminal::bootstrap::bootstrap_timed()
-            && matches!(
-                shell_type,
-                Some(
-                    ShellType::Bash
-                        | ShellType::Zsh
-                        | ShellType::Fish
-                        | ShellType::Nu
-                        | ShellType::PowerShell
-                )
-            );
+        // #1354/#1372/#1710: every setup is paced by the shell's markers: bash, zsh, fish, nushell
+        // and PowerShell print one once they ran a line (PowerShell: once PSReadLine is about to
+        // read again, i.e. after the redraw that a marker at the end of the line would race,
+        // #1047), and the shell-agnostic `sh` probe (`None`: sudo -s, su, ksu, docker exec, a
+        // nested bash from the banner) prints one with a plain `printf` after its prelude. The
+        // next line is written when the marker arrives, not after `line_delay`, which stays as
+        // the give-up pacing. Only PHOSPHOR_BOOTSTRAP_TIMED=1 keeps the timer pacing. The marker
+        // also survives the tmux control-mode path: `%output` carries the pane's raw bytes
+        // (octal-escaped), the same way the DCS hooks reach us there (review H8).
+        let marked = !crate::terminal::bootstrap::bootstrap_timed();
         self.powershell_setup_marker_token =
             (marked && shell_type == Some(ShellType::PowerShell)).then(|| session_id.as_u64());
+        // #1710 (review H9): the probe's ID is this attempt's alone; its `InitSubshell` ends it.
+        self.subshell_probe_session_id = shell_type.is_none().then_some(session_id);
         let all_lines = init_subshell_command_lines_with_markers(
             shell_type,
             &self.env_vars,
@@ -22229,35 +22332,12 @@ impl TerminalView {
         }
         self.write_to_pty(vec![escape_sequences::C0::CR], ctx);
         // The lines sit in the tty (and are echoed by it) until the shell reads them, which an rc
-        // file that sleeps delays. Once the ceiling passes with setup still unfinished, say so
-        // instead of leaving raw script text unexplained in the pane (#1014).
-        let announced_at = self
-            .subshell_bootstrap_announced
-            .as_ref()
-            .map(|(_, at)| *at);
-        ctx.spawn(
-            Timer::after(SUBSHELL_BOOTSTRAP_STALL_CEILING),
-            move |me, _, ctx| me.note_subshell_setup_waiting(announced_at, ctx),
-        );
-        // Whatever the user typed meanwhile is HANDED BACK to the input when the hold limit passes: a
-        // timer never writes held keys to the pty (#1577, owner rule).
-        ctx.spawn(
-            Timer::after(SUBSHELL_SETUP_TYPED_HOLD_LIMIT),
-            move |me, _, ctx| {
-                let current = me.subshell_bootstrap_announced.as_ref().map(|(_, at)| *at);
-                if subshell_setup_hold_limit_releases(
-                    current,
-                    announced_at,
-                    me.subshell_setup_gate_open() || me.powershell_gate_open(),
-                ) {
-                    log::warn!(
-                        "subshell setup did not finish within the typed-input hold limit; \
-                         handing the held keys back to the input"
-                    );
-                    me.give_up_setup_gates_to_editor("hold_limit", ctx);
-                }
-            },
-        );
+        // file that sleeps delays. The ONE net of the setup (#1711, #1712): after
+        // `SUBSHELL_SETUP_QUIET_NOTICE` without progress the user is told the setup is waiting
+        // (#1014), after `SUBSHELL_SETUP_QUIET_NET` without progress, or `SUBSHELL_SETUP_CEILING`
+        // in all, the setup is given up: the held keys come back to the editor as text and the
+        // pane continues as a plain shell. A timer never writes held keys to the pty (#1577).
+        self.arm_subshell_setup_net(ctx);
         let rest: Vec<String> = lines.collect();
         if rest.is_empty() {
             // The setup gate opens now, not at the first key: whatever is queued from here on
@@ -22284,8 +22364,9 @@ impl TerminalView {
         // them) and every key typed from here on wait for the bootstrap's last line.
         self.open_subshell_gates_for_setup(ctx);
         if marked {
-            // The first line is out; the shell's marker for it releases the second.
-            self.arm_subshell_marker_give_up(generation, 0, ctx);
+            // The first line is out; the shell's marker for it releases the second. A marker that
+            // never comes is no progress, and the setup net hands the held keys back (#1711); the
+            // rest of the lines are never written on a timer.
             return;
         }
         for (index, line) in rest.into_iter().enumerate() {
@@ -22296,51 +22377,404 @@ impl TerminalView {
         }
     }
 
-    /// The give-up net behind the setup-line markers: if the marker of line `awaiting` has not
-    /// come by `SUBSHELL_SETUP_MARKER_GIVE_UP`, it is not coming (the shell swallowed it, or never
-    /// ran the line) and the remaining lines are written on the timed pacing instead.
-    fn arm_subshell_marker_give_up(
-        &mut self,
+    /// Arms the setup net (#1711) for the setup whose first line just went out. A net already
+    /// armed means this is stage 2 of the same setup (the probe named the shell): the ceiling
+    /// keeps stage 1's start, the quiet stretch starts over (the write is progress).
+    fn arm_subshell_setup_net(&mut self, ctx: &mut ViewContext<Self>) {
+        let now = Instant::now();
+        let started = self
+            .subshell_setup_net
+            .as_ref()
+            .map_or(now, |net| net.started);
+        // Review F4: view-level and monotonic, never per setup.
+        self.subshell_setup_net_generation = self.subshell_setup_net_generation.wrapping_add(1);
+        let generation = self.subshell_setup_net_generation;
+        let marker_count_seen = self.model.lock().setup_line_marker_count();
+        self.dismiss_subshell_setup_waiting_toast(ctx);
+        self.subshell_setup_net = Some(SubshellSetupNet {
+            generation,
+            started,
+            last_progress: now,
+            progress_seq: 0,
+            noticed: false,
+            marker_count_seen,
+            bootstrap_failed_after: None,
+        });
+        warpui::input_order::log_hop("subshell_setup_net_armed", || {
+            format!(
+                "gen={generation} age_ms={}",
+                now.saturating_duration_since(started).as_millis()
+            )
+        });
+        ctx.spawn(
+            Timer::after(
+                SUBSHELL_SETUP_CEILING.saturating_sub(now.saturating_duration_since(started)),
+            ),
+            move |me, _, ctx| me.subshell_setup_ceiling_fired(generation, ctx),
+        );
+        self.arm_subshell_setup_quiet_timers(generation, 0, ctx);
+    }
+
+    /// The notice and the quiet net for the quiet stretch `progress_seq` of setup `generation`.
+    fn arm_subshell_setup_quiet_timers(
+        &self,
         generation: u64,
-        awaiting: usize,
+        progress_seq: u64,
         ctx: &mut ViewContext<Self>,
     ) {
         ctx.spawn(
-            Timer::after(SUBSHELL_SETUP_MARKER_GIVE_UP),
-            move |me, _, ctx| me.subshell_marker_given_up(generation, awaiting, ctx),
+            Timer::after(SUBSHELL_SETUP_QUIET_NOTICE),
+            move |me, _, ctx| me.subshell_setup_quiet_notice(generation, progress_seq, ctx),
         );
+        ctx.spawn(Timer::after(SUBSHELL_SETUP_QUIET_NET), move |me, _, ctx| {
+            me.subshell_setup_quiet_net_fired(generation, progress_seq, ctx)
+        });
     }
 
-    fn subshell_marker_given_up(
+    /// Setup progress (#1711): the quiet stretch starts over, a showing notice is withdrawn and
+    /// the bootstrap give-up is re-armed. The ONLY thing that re-arms the net; output bytes never
+    /// reach here (review H4).
+    fn note_subshell_setup_progress(
         &mut self,
-        generation: u64,
-        awaiting: usize,
+        kind: SubshellSetupProgress,
         ctx: &mut ViewContext<Self>,
     ) {
-        let Some(in_flight) = self.subshell_bootstrap_in_flight.as_mut() else {
+        let Some(net) = self.subshell_setup_net.as_mut() else {
             return;
         };
-        if in_flight.generation != generation
-            || in_flight.marker_token.is_none()
-            || in_flight.awaiting_marker != awaiting
+        let now = Instant::now();
+        net.last_progress = now;
+        net.progress_seq = net.progress_seq.wrapping_add(1);
+        let (generation, progress_seq, started) = (net.generation, net.progress_seq, net.started);
+        let noticed = std::mem::take(&mut net.noticed);
+        let bootstrap_failed_after = net.bootstrap_failed_after;
+        warpui::input_order::log_hop("subshell_setup_progress", || {
+            format!(
+                "kind={kind:?} gen={generation} seq={progress_seq} age_ms={}",
+                now.saturating_duration_since(started).as_millis()
+            )
+        });
+        if noticed {
+            self.dismiss_subshell_setup_waiting_toast(ctx);
+        }
+        if let Some(after) = bootstrap_failed_after
+            && kind != SubshellSetupProgress::Bootstrapped
+        {
+            self.start_bootstrap_timer(after, ctx);
+        }
+        self.arm_subshell_setup_quiet_timers(generation, progress_seq, ctx);
+    }
+
+    /// Output arrived while a setup net is armed: a NEW setup-line marker of this setup's token
+    /// is progress (one per marker; a wakeup for output already judged is not).
+    fn note_subshell_setup_marker_progress(&mut self, ctx: &mut ViewContext<Self>) {
+        let (count, last) = {
+            let model = self.model.lock();
+            (
+                model.setup_line_marker_count(),
+                model.last_setup_line_marker(),
+            )
+        };
+        let Some(net) = self.subshell_setup_net.as_mut() else {
+            return;
+        };
+        if count <= net.marker_count_seen {
+            return;
+        }
+        net.marker_count_seen = count;
+        let ours = last.is_some_and(|(token, _)| {
+            self.subshell_bootstrap_in_flight
+                .as_ref()
+                .and_then(|in_flight| in_flight.marker_token)
+                == Some(token)
+                || self.powershell_setup_marker_token == Some(token)
+                || self.subshell_probe_session_id == Some(SessionId::from(token))
+        });
+        if ours {
+            self.note_subshell_setup_progress(SubshellSetupProgress::Marker, ctx);
+        }
+    }
+
+    /// `SUBSHELL_SETUP_QUIET_NOTICE` passed with no progress in stretch `progress_seq` of setup
+    /// `generation`: the waiting notice (#1014). Nothing else; a notice routes nothing.
+    fn subshell_setup_quiet_notice(
+        &mut self,
+        generation: u64,
+        progress_seq: u64,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(net) = self.subshell_setup_net.as_mut() else {
+            return;
+        };
+        if net.generation != generation || net.progress_seq != progress_seq || net.noticed {
+            return;
+        }
+        // Review F4: judged by the rule, not by the timer having fired.
+        if Instant::now().saturating_duration_since(net.last_progress) < SUBSHELL_SETUP_QUIET_NOTICE
         {
             return;
         }
-        log::warn!(
-            "Setup line {awaiting} was not acknowledged by the shell; writing the rest of the \
-             subshell setup on timers"
+        net.noticed = true;
+        log::info!(
+            "subshell setup: no progress for {} s; telling the user it is waiting (#1711)",
+            SUBSHELL_SETUP_QUIET_NOTICE.as_secs()
         );
-        in_flight.marker_token = None;
-        // A PowerShell whose markers do not come will not answer a Ctrl-C with one either.
-        self.powershell_setup_marker_token = None;
-        let line_delay = in_flight.line_delay;
-        let lines: Vec<String> = in_flight.pending_lines.drain(..).collect();
-        for (index, line) in lines.into_iter().enumerate() {
-            ctx.spawn(
-                Timer::after(line_delay * (index as u32 + 1)),
-                move |me, _, ctx| me.write_subshell_bootstrap_line(generation, line, ctx),
-            );
+        self.note_subshell_setup_waiting(ctx);
+    }
+
+    /// Whether the setup net's waiting notice is showing: the setup is "stalled" for the
+    /// PowerShell Ctrl-C route (#1051; it was an age against the 20 s ceiling).
+    fn subshell_setup_net_noticed(&self) -> bool {
+        self.subshell_setup_net
+            .as_ref()
+            .is_some_and(|net| net.noticed)
+    }
+
+    /// `SUBSHELL_SETUP_QUIET_NET` passed with no progress in stretch `progress_seq` of setup
+    /// `generation`: the setup is given up (#1711).
+    fn subshell_setup_quiet_net_fired(
+        &mut self,
+        generation: u64,
+        progress_seq: u64,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(net) = self.subshell_setup_net.as_ref() else {
+            return;
+        };
+        if net.generation != generation || net.progress_seq != progress_seq {
+            return;
         }
+        let verdict = subshell_setup_net_verdict(Instant::now(), net.started, net.last_progress);
+        if verdict == SubshellSetupNetVerdict::Waiting {
+            // The timer ran early (a clock step): judged by the rule, not the timer.
+            self.arm_subshell_setup_quiet_timers(generation, progress_seq, ctx);
+            return;
+        }
+        if matches!(
+            self.powershell_setup_hold,
+            PowerShellSetupHold::LineRunning { .. }
+        ) {
+            // Coordinator decision (N1): the keys held behind a PowerShell held line are NOT handed
+            // back at 30 s of quiet: output is not progress, so a command that quietly runs for
+            // 31 s would bounce the user's typeahead. The notice showed at 10 s; the 120 s ceiling
+            // is the only give-up, and the command's prompt (`Precmd`) ends the hold as before.
+            log::info!(
+                "PowerShell held line still running after {} s of quiet; the keys typed after \
+                 it stay held for its prompt or the {} s ceiling",
+                SUBSHELL_SETUP_QUIET_NET.as_secs(),
+                SUBSHELL_SETUP_CEILING.as_secs()
+            );
+            return;
+        }
+        self.give_up_subshell_setup("quiet_net", ctx);
+    }
+
+    /// `SUBSHELL_SETUP_CEILING` passed since the first line of setup `generation` went out: given
+    /// up whatever its progress (#1711).
+    fn subshell_setup_ceiling_fired(&mut self, generation: u64, ctx: &mut ViewContext<Self>) {
+        let Some(net) = self.subshell_setup_net.as_ref() else {
+            return;
+        };
+        if net.generation != generation {
+            return;
+        }
+        if subshell_setup_net_verdict(Instant::now(), net.started, net.last_progress)
+            != SubshellSetupNetVerdict::Ceiling
+        {
+            return;
+        }
+        self.give_up_subshell_setup("ceiling", ctx);
+    }
+
+    /// The setup net fired (#1711, #1712): the setup is over, as a failure. Nothing is written:
+    /// the lines not yet written are dropped (a late marker releases nothing), the keys held
+    /// behind every setup gate come back to the editor as text, in order, with a toast that gives
+    /// their count (never their text), a pending subshell session (after `InitShell`) is
+    /// abandoned so the pane leaves "Starting shell..." and continues as a plain shell, and the
+    /// hidden block is shown again. The session ID stays registered (review H6, option (a)): a
+    /// `Bootstrapped` that arrives after all is accepted as success by the model
+    /// (`abandoned_subshell_session`). Stashed abort keys (a ^C typed during the write) are
+    /// signals, which cannot come back as text and which a timer never sends: dropped, counted
+    /// in the log.
+    fn give_up_subshell_setup(&mut self, why: &'static str, ctx: &mut ViewContext<Self>) {
+        let Some(net) = self.subshell_setup_net.take() else {
+            return;
+        };
+        // Review F2: the announcement must still APPLY (the block it was typed into is active,
+        // or the subshell's session is pending): a bare `is_some()` outlived finished setups.
+        let setup_live = self.subshell_bootstrap_announced_age().is_some()
+            || self.subshell_bootstrap_in_flight.is_some()
+            || self.subshell_bootstrap_pending()
+            || self.subshell_setup_gate_open()
+            || self.powershell_gate_open()
+            || self.powershell_setup_hold != PowerShellSetupHold::Off;
+        if !setup_live {
+            // Ended by an event already (the block changed and the prompt released the keys).
+            self.dismiss_subshell_setup_waiting_toast(ctx);
+            return;
+        }
+        // Review N1: a PowerShell held line that never showed its prompt is the setup's success
+        // and the command's slowness; the toast says so, not "Phosphorize failed".
+        let why = if matches!(
+            self.powershell_setup_hold,
+            PowerShellSetupHold::LineRunning { .. }
+        ) && !self.subshell_bootstrap_pending()
+            && self.subshell_bootstrap_announced_age().is_none()
+        {
+            "held_line"
+        } else {
+            why
+        };
+        let held = self
+            .paste_queue
+            .queue
+            .try_peek()
+            .map_or((0, 0), |queue| queue.queued_summary());
+        log::warn!(
+            "subshell setup given up ({why}) after {} s, {} s since the last progress: \
+             continuing as a plain shell; {} held key chunk(s) ({} bytes) handed back to the \
+             input; nothing written to the pty (#1711/#1712)",
+            net.started.elapsed().as_secs(),
+            net.last_progress.elapsed().as_secs(),
+            held.0,
+            held.1,
+        );
+        warpui::input_order::log_hop("subshell_setup_given_up", || {
+            format!(
+                "why={why} gen={} chunks={} bytes={}",
+                net.generation, held.0, held.1
+            )
+        });
+        // The lines not yet written are abandoned; a paced line-clear write still in the writer
+        // is cut (#1354/#1384). Nothing of the setup goes out from here on.
+        self.subshell_bootstrap_in_flight = None;
+        ctx.emit(Event::CancelPacedSetupWrites);
+        self.cancel_bootstrap_failed_timer();
+        {
+            let mut model = self.model.lock();
+            model.clear_setup_echo();
+            // Review N3: this attempt's probe ID is over with the attempt (a late probe answer is
+            // rejected by the hook validation); the SESSION ID of a pending stage stays (H6 (a)).
+            if let Some(probe_id) = self.subshell_probe_session_id.take() {
+                model.unregister_session_id(probe_id);
+            }
+            // After `InitShell`: the pane is on "Starting shell...". The model drops the pending
+            // session (keeping it for a late `Bootstrapped`) and continues in a visible block.
+            model.abandon_stalled_subshell_bootstrap();
+        }
+        // #1577: every setup gate closes and what it held comes back as text; the announcement,
+        // the PowerShell hold and the waiting notice go with it. Never written.
+        self.give_up_setup_gates_to_editor(why, ctx);
+        self.update_long_running_ssh_block_with_lock(|block| {
+            block.unhide();
+        });
+        self.show_error_toast(paste_queue::subshell_setup_given_up_toast(why, held.0), ctx);
+        ctx.notify();
+    }
+
+    /// Review F2: a setup that ended by its events leaves no net behind. Called at every Precmd
+    /// and block completion: when the announcement no longer applies (the block it was typed into
+    /// is gone, or the subshell's session finished bootstrapping), nothing is pending or in
+    /// flight and no PowerShell hold is on, the net is over, gate open or not. Without this a
+    /// finished setup with a key still held for the prompt, or a subshell that exited, tripped
+    /// the net 30 s later with a false "Phosphorize failed".
+    fn clear_subshell_setup_net_if_setup_over(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.subshell_setup_net.is_none() {
+            return;
+        }
+        let over = self.subshell_bootstrap_announced_age().is_none()
+            && !self.subshell_bootstrap_pending()
+            && self.subshell_bootstrap_in_flight.is_none()
+            && self.powershell_setup_hold == PowerShellSetupHold::Off;
+        if over {
+            warpui::input_order::log_hop("subshell_setup_net_cleared", || "setup over".to_owned());
+            self.subshell_setup_net = None;
+            self.dismiss_subshell_setup_waiting_toast(ctx);
+        }
+    }
+
+    /// Review F2: a block completed. If it was the one a subshell setup was typed into and no
+    /// session of that subshell is pending, the shell is gone (it exited, or the command failed):
+    /// the lines not yet written can never reach it and are dropped (they must never reach the
+    /// parent), the bootstrap-write gate settles as the block-change check of a paced write does,
+    /// and the net is over.
+    fn end_subshell_setup_if_block_gone(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.subshell_bootstrap_in_flight.is_some()
+            && self.subshell_bootstrap_announced_age().is_none()
+            && !self.subshell_bootstrap_pending()
+        {
+            log::info!(
+                "subshell setup: the shell's block ended before the setup did; dropping the \
+                 unwritten lines"
+            );
+            self.model.lock().clear_setup_echo();
+            self.finish_subshell_bootstrap(ctx);
+        }
+        self.clear_subshell_setup_net_if_setup_over(ctx);
+    }
+
+    /// Review F3: a subshell's `InitShell`. Progress for the net, and a net is armed first if none
+    /// is: after a PowerShell Ctrl-C skip, a timed setup's give-up or a late `InitShell` of an
+    /// abandoned attempt (H6 (a)) no net was watching, and a `Bootstrapped` that never comes left
+    /// the pane on "Starting shell..." for good.
+    fn on_subshell_init_shell(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.subshell_setup_net.is_none() {
+            self.arm_subshell_setup_net(ctx);
+        }
+        self.note_subshell_setup_progress(SubshellSetupProgress::InitShell, ctx);
+    }
+
+    /// Review F1: a Ctrl-C / Ctrl-D (the abort keys; ^Z and ^\ wait in order as before) typed
+    /// while the setup lines are still being written. The user's abort is the EVENT that ends the
+    /// setup, at once: the unwritten lines are dropped (a late marker releases nothing), this
+    /// attempt's probe ID is unregistered, the signal is written now (a user event, not a timer;
+    /// a canonical tty flushes the unread setup line with it), and the setup ends. For a generic
+    /// shell the announcement, net and gates go and the keys held behind them follow the signal
+    /// in order. For a PowerShell setup the write itself turns the hold into `AfterAbort` (#1372,
+    /// #1438: the Windows console flushes its input while it processes the ^C), so ONLY the
+    /// bootstrap-write gate settles: the keys it held meet the `AfterAbort` hold and wait for the
+    /// shell's read marker, or the abort wait's own give-up, never written raw behind the ^C.
+    /// Before, the abort was stashed until the last line was written, which a stuck shell never
+    /// did, while the notice said "Ctrl-C skips setup".
+    pub(super) fn abort_in_flight_subshell_setup(
+        &mut self,
+        bytes: &[u8],
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let pending_lines = self
+            .subshell_bootstrap_in_flight
+            .as_ref()
+            .map_or(0, |in_flight| in_flight.remaining_lines);
+        log::info!(
+            "subshell setup skipped by the user's abort with {pending_lines} line(s) unwritten; \
+             the signal goes out now and the held keys follow it (#1711 review F1)"
+        );
+        warpui::input_order::log_hop("subshell_setup_aborted_by_user", || {
+            format!("unwritten_lines={pending_lines}")
+        });
+        self.subshell_bootstrap_in_flight = None;
+        {
+            let mut model = self.model.lock();
+            model.clear_setup_echo();
+            // Review F-b: the attempt is over with its probe (as at a give-up).
+            if let Some(probe_id) = self.subshell_probe_session_id.take() {
+                model.unregister_session_id(probe_id);
+            }
+        }
+        let powershell = self.powershell_setup_hold != PowerShellSetupHold::Off;
+        // The abort first, as the user's event. (PowerShell: this turns the hold into AfterAbort.)
+        let _ =
+            self.write_user_bytes_to_pty_after_paste_stage(Cow::Owned(bytes.to_vec()), true, ctx);
+        if powershell {
+            // Review B-1: the held keys stay held behind the AfterAbort hold (the bootstrap-write
+            // gate's entries are re-held by it as they are delivered); only the marker or the abort
+            // wait's give-up moves them.
+            self.settle_subshell_bootstrap_gate(ctx);
+            return;
+        }
+        // Then the setup is over: the gates close in queue order and what they held follows.
+        self.release_subshell_setup_held_bytes(ctx);
+        self.settle_subshell_bootstrap_gate(ctx);
     }
 
     /// Output arrived during an event-paced subshell setup: when the shell printed the marker of
@@ -22370,32 +22804,16 @@ impl TerminalView {
         };
         in_flight.awaiting_marker += 1;
         let generation = in_flight.generation;
-        let awaiting = in_flight.awaiting_marker;
-        let more = !in_flight.pending_lines.is_empty();
-        // Also ends the bootstrap (releasing held keys) when this was the last line.
+        // Also ends the bootstrap (releasing held keys) when this was the last line. The next
+        // line waits for this one's marker; a marker that never comes is the net's business.
         self.write_subshell_bootstrap_line(generation, line, ctx);
-        if more {
-            self.arm_subshell_marker_give_up(generation, awaiting, ctx);
-        }
     }
 
-    /// Tells the user, once per bootstrap, that setup is still waiting for the shell after the
-    /// stall ceiling. Keys typed from now on are delivered in order but sit behind the setup
-    /// script in the tty, so they run once the shell gets to it; the shell is never aborted.
-    fn note_subshell_setup_waiting(
-        &mut self,
-        announced_at: Option<Instant>,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        let still_waiting = announced_at.is_some()
-            && self
-                .subshell_bootstrap_announced
-                .as_ref()
-                .is_some_and(|(_, at)| Some(*at) == announced_at)
-            && self.subshell_bootstrap_announced_age().is_some();
-        if !still_waiting {
-            return;
-        }
+    /// Tells the user that setup is still waiting for the shell (#1014): the setup net saw no
+    /// progress for `SUBSHELL_SETUP_QUIET_NOTICE`. Keys typed meanwhile are held, in order, for
+    /// the setup's end: delivered to the shell if it finishes, back in the input if the net gives
+    /// up. The shell is never aborted by the app; Ctrl-C skips the setup.
+    fn note_subshell_setup_waiting(&mut self, ctx: &mut ViewContext<Self>) {
         if !ctx.has_singleton_model::<ToastStack>() {
             return;
         }
@@ -22404,8 +22822,9 @@ impl TerminalView {
         self.subshell_setup_waiting_toast_id = Some(toast_id.clone());
         ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
             let toast = DismissibleToast::new(
-                "Phosphor setup is waiting for the shell to finish starting. Your input will run \
-                 after it (Ctrl-C skips setup)."
+                "Phosphor setup is waiting for the shell to finish starting. Your input is held \
+                 and runs after it, or comes back to the input if setup gives up (Ctrl-C skips \
+                 setup)."
                     .to_string(),
                 ToastFlavor::Default,
             )
@@ -22454,12 +22873,75 @@ impl TerminalView {
         }
         self.write_to_pty(line.into_bytes(), ctx);
         self.write_to_pty(vec![escape_sequences::C0::CR], ctx);
+        // #1711: a chunk written (on its predecessor's marker, or the timed pacing) is progress.
+        self.note_subshell_setup_progress(SubshellSetupProgress::StageTwoChunk, ctx);
         if let Some(in_flight) = self.subshell_bootstrap_in_flight.as_mut() {
             in_flight.remaining_lines -= 1;
             if in_flight.remaining_lines == 0 {
                 self.finish_subshell_bootstrap(ctx);
             }
         }
+    }
+
+    /// E-UNSUPPORTED (#1710): the probe reported a shell the bootstrap has no script for (dash,
+    /// ash, ksh, a bash started as `sh`). There is no setup to wait for, so the setup ends HERE,
+    /// on this event: the announcement is cleared, the gates close and every key held since the
+    /// probe's first line goes to the shell, in typed order (the shell is at its prompt reading
+    /// them, which is what makes this a delivery and not a timer's write), and a small toast says
+    /// the pane runs a plain shell. Before, nothing ended the setup: keys stayed held until a net
+    /// fired, which is why `ksu`/`su` to an sh-shelled user felt stuck (#1679).
+    fn end_subshell_setup_unsupported(&mut self, shell_name: &str, ctx: &mut ViewContext<Self>) {
+        // Review N3: only a live attempt (its probe outstanding, its announcement applying or
+        // its lines in flight) is ended; a late answer of a given-up attempt changes nothing.
+        let live = self.subshell_probe_session_id.is_some()
+            || self.subshell_bootstrap_announced_age().is_some()
+            || self.subshell_bootstrap_in_flight.is_some();
+        if !live {
+            log::warn!(
+                "SubshellNotPhosphorizable ({shell_name:?}) with no setup live: ignored (#1710)"
+            );
+            return;
+        }
+        log::info!(
+            "subshell setup skipped: {shell_name:?} is not a shell Phosphor can set up; the pane \
+             continues as a plain shell (#1710)"
+        );
+        warpui::input_order::log_hop("subshell_setup_unsupported", || {
+            format!("shell={shell_name}")
+        });
+        // The probe's ID is of no further use (its hook came), and the 7 s bootstrap give-up
+        // armed for this attempt has nothing left to judge.
+        if let Some(probe_id) = self.subshell_probe_session_id.take() {
+            self.model.lock().unregister_session_id(probe_id);
+        }
+        self.cancel_bootstrap_failed_timer();
+        self.model.lock().clear_setup_echo();
+        // The probe's lines are all out (its `InitSubshell` came from the last one). An in-flight
+        // left by the timed pacing is abandoned, and the bootstrap-write gate settles: the aborts
+        // typed meanwhile first, then the keys behind them, in order.
+        self.finish_subshell_bootstrap(ctx);
+        // The announcement ends now, not at a prompt: there is no `Bootstrapped` to wait for.
+        // What the SubshellSetup gate holds follows, in order.
+        self.release_subshell_setup_held_bytes(ctx);
+        if ctx.has_singleton_model::<ToastStack>() {
+            let window_id = ctx.window_id();
+            let text = format!(
+                "Phosphor setup skipped: {shell_name} is a plain shell here. Your typing was \
+                 passed through."
+            );
+            ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                let toast = DismissibleToast::new(text, ToastFlavor::Default);
+                toast_stack.add_ephemeral_toast(toast, window_id, ctx);
+            });
+        }
+    }
+
+    /// Supersedes the bootstrap give-up timer armed by `start_bootstrap_timer` (#1566 carries a
+    /// generation: a timer whose generation is behind does nothing when it fires). For a setup
+    /// that ended by an event that is not `Bootstrapped` (#1710), where the timer has nothing to
+    /// judge any more.
+    fn cancel_bootstrap_failed_timer(&mut self) {
+        self.bootstrap_timer_generation = self.bootstrap_timer_generation.wrapping_add(1);
     }
 
     /// Ends the in-flight subshell bootstrap and delivers the keystrokes held behind it.
@@ -22487,6 +22969,8 @@ impl TerminalView {
     fn release_subshell_setup_held_bytes(&mut self, ctx: &mut ViewContext<Self>) {
         self.powershell_setup_hold = PowerShellSetupHold::Off;
         self.subshell_bootstrap_announced = None;
+        // The setup ended by its event: its net has nothing left to judge (#1711).
+        self.subshell_setup_net = None;
         self.dismiss_subshell_setup_waiting_toast(ctx);
         // Setup is over: the keys held on the input queue follow, in order (#1353 phase 2): the
         // PowerShell gate's first (its hold is a state of its own), then the generic setup gate.
@@ -22507,6 +22991,7 @@ impl TerminalView {
     /// `POWERSHELL_HELD_LINE_GRACE`, are written to the pty in order instead, as typeahead.
     fn deliver_powershell_setup_keys(&mut self, ctx: &mut ViewContext<Self>) {
         self.subshell_bootstrap_announced = None;
+        self.subshell_setup_net = None;
         self.dismiss_subshell_setup_waiting_toast(ctx);
         self.take_powershell_held_then(PowershellKeysThen::Deliver, ctx);
     }
@@ -22547,6 +23032,10 @@ impl TerminalView {
             self.powershell_setup_hold_generation += 1;
             let generation = self.powershell_setup_hold_generation;
             self.powershell_setup_hold = PowerShellSetupHold::LineRunning { generation };
+            // Review N1: the keys held behind this line have a net too (nets everywhere, never a
+            // write): no prompt for `SUBSHELL_SETUP_QUIET_NET` and they come back to the input
+            // (`held_line`). Its events (the prompt's `Precmd`) end it.
+            self.arm_subshell_setup_net(ctx);
             if !held.is_empty() {
                 // What was typed after the line waits behind it, as entries of the queue.
                 self.hold_powershell_keys(held, true, ctx);
@@ -22571,10 +23060,9 @@ impl TerminalView {
     /// `pwsh.ps1` still finishes setup, so the held keys stay held for the prompt after
     /// `Bootstrapped`; earlier it skips setup as before, the held keys following the ^C.
     fn ctrl_c_during_powershell_setup(&mut self, ctx: &mut ViewContext<Self>) {
-        let stalled = self
-            .subshell_bootstrap_announced
-            .as_ref()
-            .is_some_and(|(_, at)| at.elapsed() >= SUBSHELL_BOOTSTRAP_STALL_CEILING);
+        // #1711: "stalled" is the setup net's waiting notice (10 s without progress), the notice
+        // that offers "Ctrl-C skips setup"; it was an age against the 20 s ceiling.
+        let stalled = self.subshell_setup_net_noticed();
         match powershell_setup_ctrl_c_route(self.powershell_setup_hold, stalled) {
             PowerShellSetupCtrlC::CancelHeldLine => {
                 self.take_powershell_held_then(PowershellKeysThen::CancelHeldLine, ctx);
@@ -23900,44 +24388,6 @@ impl TerminalView {
         self.bootstrap_timer_arm_in_flight = None;
     }
 
-    /// Timer callback for [`SUBSHELL_BOOTSTRAP_STALL_CEILING`] after a subshell's `InitShell`
-    /// (#1014): if that same session is still waiting for `Bootstrapped`, abandon it so the pane
-    /// returns to a usable state (the model drops the pending session and marks the block list
-    /// bootstrapped), reveal the hidden block again and stop holding input.
-    fn abandon_stalled_subshell_bootstrap(
-        &mut self,
-        expected_session: SessionId,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        let abandoned = {
-            let mut model = self.model.lock();
-            model.pending_session_id() == Some(expected_session)
-                && model.abandon_stalled_subshell_bootstrap()
-        };
-        if !abandoned {
-            return;
-        }
-        // #1577: the ceiling is a timer, and a timer never writes the keys held through the stalled
-        // setup into the abandoned shell: they come back to the editor as text (the Precmd EVENT
-        // of a setup that does finish still releases them in order). Both setup gates close,
-        // the setup state and the waiting notice go, and a toast says so.
-        self.give_up_setup_gates_to_editor("stall_ceiling", ctx);
-        self.update_long_running_ssh_block_with_lock(|block| {
-            block.unhide();
-        });
-        // #1119: the tab now runs the shell raw; say so, held keys or not (the hand-back above
-        // shows no toast of its own for the ceiling, this notice covers the held keys too).
-        log::warn!(
-            "subshell bootstrap abandoned at the stall ceiling: continuing as a plain shell \
-             (#1014/#1119)"
-        );
-        self.show_error_toast(
-            paste_queue::SUBSHELL_BOOTSTRAP_ABANDONED_TOAST.to_string(),
-            ctx,
-        );
-        ctx.notify();
-    }
-
     /// #1494: the ssh bootstrap timed out with keys held. The remote shell is alive at a usable,
     /// non-bootstrapped prompt, but its tty is still raw because the bootstrap's `stty sane` never
     /// ran. Plain ssh would have delivered the typing to that shell, so it is delivered there: a
@@ -24102,6 +24552,11 @@ impl TerminalView {
         }
 
         log::warn!("Bootstrapping failed for shell {shell:?} on ssh {is_ssh}");
+        // Review N5: once per setup. Progress after this must not arm the give-up again (a second
+        // expiry would repeat the telemetry, the unhide and the ssh edge).
+        if let Some(net) = self.subshell_setup_net.as_mut() {
+            net.bootstrap_failed_after = None;
+        }
 
         // #983: this pending session is stuck; stop swallowing typing on its behalf.
         let failed_session = self.model.lock().pending_session_id();
@@ -39087,29 +39542,13 @@ fn subshell_bootstrap_announcement_applies(
 }
 
 /// Whether a keystroke typed now is held by the app instead of written to the tty (#1014): an
-/// announced setup is unfinished and younger than `SUBSHELL_SETUP_TYPED_HOLD_LIMIT`. Abort keys
-/// always go through.
+/// announced setup is unfinished, however old (#1711: the setup net, not an age, ends a hold that
+/// stops progressing, by handing the keys back). Abort keys always go through.
 fn subshell_setup_should_hold_typed_bytes(
     announced_age: Option<Duration>,
     abort_key: bool,
 ) -> bool {
-    !abort_key && announced_age.is_some_and(|age| age < SUBSHELL_SETUP_TYPED_HOLD_LIMIT)
-}
-
-/// Whether the hold-limit timer of the setup announced at `timer_announced_at` delivers the held
-/// keys now (#1014). Only its own setup's keys: a timer outliving its setup (the subshell was
-/// Phosphorized and exited, and another one is starting) must not release, and so un-hold, the
-/// keys typed during the next setup's stall, which then ran inside that hidden setup. Keys held
-/// with no setup announced at all (never expected) are delivered rather than kept.
-fn subshell_setup_hold_limit_releases(
-    current_announced_at: Option<Instant>,
-    timer_announced_at: Option<Instant>,
-    keys_held: bool,
-) -> bool {
-    match current_announced_at {
-        Some(current) => timer_announced_at == Some(current),
-        None => keys_held,
-    }
+    !abort_key && announced_age.is_some()
 }
 
 /// What a Ctrl-C does during a PowerShell subshell setup (#1051); see
@@ -39229,15 +39668,16 @@ fn is_queue_signal_key(bytes: &[u8]) -> bool {
 ///
 /// `announced_age` is the time since a bootstrap stage was typed into the block (see
 /// `subshell_bootstrap_announced_age`). It does not need the shell to have answered: a stage
-/// whose script never ran (no `InitShell`, so `pending` stays false) must still never leave the
-/// pane swallowing input -- abort keys pass at once and every key after the ceiling (#960).
+/// whose script never ran (no `InitShell`, so `pending` stays false) still lets abort keys pass
+/// at once. #1711 (owner decision 2026-11-08, #1679): no age forwards typing any more. Keys
+/// forwarded after a ceiling landed in a tty that still held the setup lines, so the late
+/// bootstrap read them as part of itself; the setup net hands them back to the editor instead.
 fn subshell_bootstrap_key_forwarded(
     pending: bool,
     abort_key: bool,
     announced_age: Option<Duration>,
 ) -> bool {
-    (pending && abort_key)
-        || announced_age.is_some_and(|age| abort_key || age >= SUBSHELL_BOOTSTRAP_STALL_CEILING)
+    abort_key && (pending || announced_age.is_some())
 }
 
 /// What a user key that the hand-off held started, read under the key path's one model lock.

@@ -690,10 +690,10 @@ pub fn init_subshell_command_lines(
 }
 
 /// [`init_subshell_command_lines`], optionally with a setup-line marker after every line but the
-/// last (bash, zsh, fish, nushell and PowerShell; other shells ignore `marked`). The marker is an OSC the shell
-/// prints once it has *executed* that line (`ESC ] 7771 ; <session id> ; <line index> BEL`, see
-/// [`setup_line_marker`]), so the app can write line N+1 when line N is known to be consumed
-/// instead of after a fixed delay.
+/// last (bash, zsh, fish, nushell, PowerShell, and the shell-agnostic `sh` probe, #1710). The
+/// marker is an OSC the shell prints once it has *executed* that line (`ESC ] 7771 ; <session id>
+/// ; <line index> BEL`, see [`setup_line_marker`]), so the app can write line N+1 when line N is
+/// known to be consumed instead of after a fixed delay.
 pub fn init_subshell_command_lines_with_markers(
     shell_type: Option<ShellType>,
     vars: &[EnvVar],
@@ -747,11 +747,42 @@ pub fn init_subshell_command_lines_with_markers(
                 init_subshell_raw_script(ShellType::Nu, &crate::ASSETS, vars, session_id, ctx);
             nu_subshell_lines_with_markers(&raw_script, session_id, marked)
         }
-        None => vec![
-            UNKNOWN_SHELL_HISTORY_PRELUDE.to_owned(),
-            init_subshell_script_for_unknown_shell(&crate::ASSETS, session_id),
-        ],
+        None => unknown_shell_setup_lines(session_id, marked.then(|| session_id.as_u64())),
     }
+}
+
+/// The two lines of the shell-agnostic probe (`sudo -s`, `su`, `ksu`, `docker exec`, a nested
+/// bash started from the banner: everything `pending_subshell_shell_type` cannot name): the
+/// history prelude, then the one-line probe that reports `InitSubshell`. With `marker_token` the
+/// prelude ends in a setup-line marker (#1710), so the probe is paced like the known shells: line
+/// 1 is written when the shell proved it ran line 0, not 30 ms after it. The probe line itself
+/// needs no marker: its `InitSubshell` hook is the event that says it was consumed.
+fn unknown_shell_setup_lines(session_id: SessionId, marker_token: Option<u64>) -> Vec<String> {
+    vec![
+        unknown_shell_prelude_line(marker_token),
+        init_subshell_script_for_unknown_shell(&crate::ASSETS, session_id),
+    ]
+}
+
+/// Line 0 of the probe: [`UNKNOWN_SHELL_HISTORY_PRELUDE`], followed by [`probe_setup_line_marker`]
+/// for line 0 when the probe is marker-paced.
+fn unknown_shell_prelude_line(marker_token: Option<u64>) -> String {
+    match marker_token {
+        Some(token) => format!(
+            "{UNKNOWN_SHELL_HISTORY_PRELUDE}; {}",
+            probe_setup_line_marker(token, 0)
+        ),
+        None => UNKNOWN_SHELL_HISTORY_PRELUDE.to_owned(),
+    }
+}
+
+/// The setup-line marker of the shell-agnostic probe (#1710): a plain `printf`, never `builtin`
+/// (bash/zsh only; dash, ash and ksh have no such word) and `\033`, never `\e` (macOS `/bin/dash`'s
+/// printf does not know it, as `unknown_init_subshell.sh` already notes). The whole format is a
+/// single-quoted word, so the text typed into the shell holds no escape byte; fish's printf reads
+/// the same octal escape, and its single quotes leave `\0` alone.
+fn probe_setup_line_marker(token: u64, index: usize) -> String {
+    format!("printf '\\033]{SETUP_LINE_MARKER_OSC};{token};{index}\\a'")
 }
 
 /// First line of the PowerShell subshell bootstrap (#967): installs an `AddToHistoryHandler`,

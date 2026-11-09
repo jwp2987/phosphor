@@ -16514,31 +16514,169 @@ fn start_subshell_bootstrap(view: &mut TerminalView, announce: bool) {
     });
 }
 
-/// #1353 phase 2: Ctrl-C during the paced bootstrap waits for its last line, in typed order when
-/// there is no setup to skip (`a ^C b`), and goes first, releasing the setup's held keys behind it,
-/// when the setup is announced (`^C a b`). Same bytes on the legacy buffers (the kill switch).
+/// #1353 phase 2 -> #1711 review F1: Ctrl-C during the paced bootstrap used to wait for the last
+/// line (`a ^C b` with no setup to skip, `^C a b` when announced), which a stuck shell never
+/// wrote. Now the user's abort is the EVENT that ends the setup: the unwritten lines are dropped,
+/// the ^C goes out at once and the keys held behind it follow in order (`^C a b`), announced or
+/// not. Same bytes in both input modes, through the REAL key path (the terminal's typed characters
+/// and keydown, which `table` mode decides with the table: row P1d hands the signal to the
+/// writer's rule).
 #[test]
-fn ctrl_c_during_the_subshell_bootstrap_waits_for_its_last_line() {
-    for (announce, expected) in [(false, b"a\x03b".to_vec()), (true, b"\x03ab".to_vec())] {
+fn ctrl_c_during_the_subshell_bootstrap_ends_it_and_goes_out_first() {
+    use crate::terminal::input_queue::DestinationMode;
+    for (mode, announce) in [
+        (DestinationMode::Legacy, false),
+        (DestinationMode::Legacy, true),
+        (DestinationMode::Table, false),
+        (DestinationMode::Table, true),
+    ] {
         App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
             initialize_app_for_terminal_view(&mut app);
             let terminal = add_window_with_terminal(&mut app, None);
             let written = subshell_pty_writes(&mut app, &terminal);
             terminal.update(&mut app, |view, ctx| {
+                view.model.lock().simulate_long_running_block("bash", "");
                 start_subshell_bootstrap(view, announce);
-                for key in [b"a".to_vec(), vec![0x03], b"b".to_vec()] {
-                    assert!(view.write_user_bytes_to_pty(key, ctx));
-                }
-                assert!(
-                    written.borrow().is_empty(),
-                    "nothing, the ^C included, lands among the bootstrap lines"
+                view.typed_characters_on_terminal("a", ctx);
+                assert_eq!(
+                    held_for_subshell_setup(view).0,
+                    1,
+                    "{mode:?} announce={announce}: held, not written among the bootstrap lines"
                 );
-                view.finish_subshell_bootstrap(ctx);
+                view.keydown_on_terminal("\u{3}", ctx);
+                assert!(
+                    view.subshell_bootstrap_in_flight.is_none(),
+                    "{mode:?} announce={announce}: the abort ended the in-flight write"
+                );
+                assert!(view.subshell_bootstrap_announced.is_none());
+                assert_eq!(held_for_subshell_setup(view), (0, 0), "{mode:?}");
+                view.typed_characters_on_terminal("b", ctx);
             });
-            assert_eq!(*written.borrow(), expected, "announce={announce}");
+            assert_eq!(
+                *written.borrow(),
+                b"\x03ab".to_vec(),
+                "{mode:?} announce={announce}: the ^C at once, the held key behind it, then the rest"
+            );
             terminal.read(&app, |view, _| {
                 assert!(view.paste_queue.queue.borrow().is_idle());
-                assert!(view.paste_queue.pending_aborts.is_empty());
+            });
+        })
+    }
+}
+
+/// #1711 review F-a: in `table` mode ^Z is a queue signal (P1d), but NOT an abort key: typed
+/// during the in-flight bootstrap write it leaves the setup live and waits as an ordinary entry,
+/// in typed order, for the last line (a suspend in the middle would leave the script half run).
+#[test]
+fn table_mode_ctrl_z_during_the_bootstrap_lines_waits_in_order_and_does_not_end_the_setup() {
+    use crate::terminal::input_queue::DestinationMode;
+    App::test((), |mut app| async move {
+        let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(
+            DestinationMode::Table,
+        );
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let written = subshell_pty_writes(&mut app, &terminal);
+        let token = terminal.update(&mut app, |view, ctx| {
+            view.model.lock().simulate_long_running_block("sudo -s", "");
+            view.write_init_subshell_bytes_to_pty(None, ctx);
+            let token = view
+                .subshell_bootstrap_in_flight
+                .as_ref()
+                .and_then(|f| f.marker_token)
+                .expect("marker-paced");
+            view.typed_characters_on_terminal("a", ctx);
+            view.keydown_on_terminal("\u{1a}", ctx);
+            assert!(
+                view.subshell_bootstrap_in_flight.is_some(),
+                "^Z is not an abort: the setup is still in flight"
+            );
+            assert!(view.subshell_bootstrap_announced.is_some());
+            assert!(view.subshell_setup_net.is_some());
+            assert_eq!(
+                held_for_subshell_setup(view).0,
+                2,
+                "`a` and the ^Z wait in order"
+            );
+            token
+        });
+        let after_setup = written.borrow().len();
+        // The marker releases the probe line (the last one): the held entries follow it in order.
+        terminal.update(&mut app, |view, ctx| {
+            view.model
+                .lock()
+                .process_bytes(format!("\x1b]7771;{token};0\x07").as_str());
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            assert!(view.subshell_bootstrap_in_flight.is_none());
+        });
+        let all = written.borrow();
+        let tail = String::from_utf8_lossy(&all[after_setup..]).into_owned();
+        assert!(
+            tail.contains("InitSubshell") && tail.ends_with("\ra\u{1a}"),
+            "the probe line, then `a` and the ^Z in typed order: {tail:?}"
+        );
+    })
+}
+
+/// #1711 re-review B-1: a Ctrl-C on a stuck marker-paced POWERSHELL setup must not lose the held
+/// keys. Through the key path the ^C skips the setup (the notice is up): the signal goes out at
+/// once and the hold becomes `AfterAbort`; the keys held behind the bootstrap-write gate meet that
+/// hold and STAY held for the shell's read marker (the Windows console flushes its input while it
+/// processes the ^C, #1372 / #1438), never written raw behind it. Legacy and Table.
+#[test]
+fn a_ctrl_c_on_a_stuck_powershell_setup_keeps_the_held_keys_for_the_read_marker() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let delivered = collect_delivered_input(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                view.model.lock().simulate_long_running_block("pwsh", "");
+                view.write_init_subshell_bytes_to_pty(Some(ShellType::PowerShell), ctx);
+                assert_eq!(view.powershell_setup_hold, PowerShellSetupHold::Setup);
+                assert!(
+                    view.subshell_bootstrap_in_flight
+                        .as_ref()
+                        .is_some_and(|f| f.marker_token.is_some()),
+                    "{mode:?}: marker-paced"
+                );
+                view.typed_characters_on_terminal("ls", ctx);
+            });
+            let after_setup = delivered.borrow().len();
+            terminal.update(&mut app, |view, ctx| {
+                // Stuck: no marker; the notice is up ("Ctrl-C skips setup").
+                stall_powershell_setup(view);
+                view.keydown_on_terminal("\u{3}", ctx);
+                assert!(
+                    matches!(
+                        view.powershell_setup_hold,
+                        PowerShellSetupHold::AfterAbort { .. }
+                    ),
+                    "{mode:?}: the ^C skipped the setup: {:?}",
+                    view.powershell_setup_hold
+                );
+                assert!(view.subshell_bootstrap_in_flight.is_none(), "{mode:?}");
+                assert!(view.subshell_bootstrap_announced.is_none(), "{mode:?}");
+                assert_eq!(
+                    powershell_held(view),
+                    vec![b"ls".to_vec()],
+                    "{mode:?}: the held keys wait for the read marker"
+                );
+            });
+            let all = delivered.borrow();
+            assert_eq!(
+                &all[after_setup..],
+                b"\x03",
+                "{mode:?}: only the ^C went out; the held keys were not written raw: {:?}",
+                String::from_utf8_lossy(&all[after_setup..])
+            );
+            terminal.read(&app, |view, ctx| {
+                view.input
+                    .read(ctx, |input, ctx| assert_eq!(input.buffer_text(ctx), ""));
             });
         })
     }
@@ -16738,13 +16876,51 @@ fn announce_powershell_setup(view: &mut TerminalView) {
     view.powershell_setup_hold = PowerShellSetupHold::Setup;
 }
 
-/// Backdates the PowerShell setup announcement past the stall ceiling (#1051).
+/// Puts the PowerShell setup in the state the setup net's waiting notice leaves it in (#1051,
+/// #1711): "stalled" for the Ctrl-C route is the notice having fired (10 s without progress),
+/// no longer an age against the deleted 20 s ceiling.
 fn stall_powershell_setup(view: &mut TerminalView) {
-    let block_id = view.model.lock().block_list().active_block().id().clone();
-    let long_ago = Instant::now()
-        .checked_sub(SUBSHELL_BOOTSTRAP_STALL_CEILING + Duration::from_secs(1))
+    let now = Instant::now();
+    view.subshell_setup_net = Some(SubshellSetupNet {
+        generation: 1,
+        started: now,
+        last_progress: now,
+        progress_seq: 0,
+        noticed: true,
+        marker_count_seen: 0,
+        bootstrap_failed_after: None,
+    });
+}
+
+/// Backdates the setup net so that its quiet net is due (`by_ceiling` false) or its ceiling
+/// (`by_ceiling` true) without waiting: the timers' callbacks judge by the rule, not by having
+/// fired (#1711).
+fn backdate_subshell_setup_net(view: &mut TerminalView, by_ceiling: bool) {
+    let net = view
+        .subshell_setup_net
+        .as_mut()
+        .expect("a setup net is armed");
+    let back = if by_ceiling {
+        SUBSHELL_SETUP_CEILING
+    } else {
+        SUBSHELL_SETUP_QUIET_NET
+    };
+    let then = Instant::now()
+        .checked_sub(back + Duration::from_secs(1))
         .expect("the clock goes back far enough");
-    view.subshell_bootstrap_announced = Some((block_id, long_ago));
+    net.last_progress = then;
+    if by_ceiling {
+        net.started = then;
+    }
+}
+
+/// The setup net's (generation, progress sequence), what its timers carry.
+fn subshell_setup_net_id(view: &TerminalView) -> (u64, u64) {
+    let net = view
+        .subshell_setup_net
+        .as_ref()
+        .expect("a setup net is armed");
+    (net.generation, net.progress_seq)
 }
 
 /// #1048: PSReadLine draws the bootstrap lines it reads and the prompt before each, so during a
@@ -17272,49 +17448,103 @@ fn subshell_announcement_applies_to_the_bootstrapped_parent_block_before_initshe
     assert!(!subshell_bootstrap_announcement_applies(
         false, true, false, false
     ));
-    // Hold rule: young announcements hold typing, abort keys never, expired ones release.
+    // Hold rule: an announcement holds typing however old it is (#1711, owner decision
+    // 2026-11-08: the setup net hands the keys back, no age releases them), abort keys never.
     let young = Some(Duration::from_secs(7));
     assert!(subshell_setup_should_hold_typed_bytes(young, false));
     assert!(!subshell_setup_should_hold_typed_bytes(young, true));
     assert!(!subshell_setup_should_hold_typed_bytes(None, false));
-    assert!(!subshell_setup_should_hold_typed_bytes(
-        Some(SUBSHELL_SETUP_TYPED_HOLD_LIMIT),
+    assert!(subshell_setup_should_hold_typed_bytes(
+        Some(Duration::from_secs(600)),
         false
     ));
 }
 
-/// #1014 (Mac, third stalled subshell in a row): the 90 s hold-limit timer of the first setup
-/// fired during the third setup's stall, released the keys typed so far and cleared the third
+/// #1014 (Mac, third stalled subshell in a row): the hold-limit timer of the first setup fired
+/// during the third setup's stall, released the keys typed so far and cleared the third
 /// announcement, so the rest of the line went straight to the tty and ran inside the hidden
-/// setup. A timer releases only its own setup's keys.
+/// setup. #1711: the setup net's timers carry the generation and the progress sequence they were
+/// armed with, and a timer of an earlier setup, or of an earlier quiet stretch of this one, does
+/// nothing; only the current pair hands back.
 #[test]
-fn a_stale_hold_limit_timer_does_not_release_a_later_setups_keys() {
-    let first = Instant::now();
-    let third = first + Duration::from_secs(82);
-    // The first setup's timer, the third setup announced and keys held for it.
-    assert!(!subshell_setup_hold_limit_releases(
-        Some(third),
-        Some(first),
-        true
-    ));
-    // Its own timer releases them, held or not (the announcement is cleared either way).
-    assert!(subshell_setup_hold_limit_releases(
-        Some(third),
-        Some(third),
-        true
-    ));
-    assert!(subshell_setup_hold_limit_releases(
-        Some(third),
-        Some(third),
-        false
-    ));
-    // No setup announced any more: keys still held are delivered, nothing else happens.
-    assert!(subshell_setup_hold_limit_releases(None, Some(first), true));
-    assert!(!subshell_setup_hold_limit_releases(
-        None,
-        Some(first),
-        false
-    ));
+fn a_stale_net_timer_does_not_release_a_later_setups_keys() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let written = subshell_pty_writes(&mut app, &terminal);
+        let (first, token) = terminal.update(&mut app, |view, ctx| {
+            view.model.lock().simulate_long_running_block("su", "");
+            view.write_init_subshell_bytes_to_pty(None, ctx);
+            assert!(view.write_user_bytes_to_pty(b"ls".to_vec(), ctx));
+            let token = view
+                .subshell_bootstrap_in_flight
+                .as_ref()
+                .and_then(|f| f.marker_token)
+                .expect("marker-paced");
+            (subshell_setup_net_id(view), token)
+        });
+        let after_setup = written.borrow().len();
+        // Progress moves the sequence on: the first stretch's timers are stale.
+        let second = terminal.update(&mut app, |view, ctx| {
+            view.model
+                .lock()
+                .process_bytes(format!("\x1b]7771;{token};0\x07").as_str());
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            let second = subshell_setup_net_id(view);
+            assert_eq!(second.0, first.0, "same setup");
+            assert!(second.1 > first.1, "the marker was progress");
+            backdate_subshell_setup_net(view, false);
+            view.subshell_setup_quiet_net_fired(first.0, first.1, ctx);
+            assert!(
+                view.subshell_bootstrap_announced.is_some(),
+                "a stale stretch's timer does nothing"
+            );
+            assert!(view.subshell_setup_net.is_some());
+            second
+        });
+        // The probe named the shell: stage 2 is a new generation of the same setup.
+        let third = terminal.update(&mut app, |view, ctx| {
+            view.handle_terminal_event(
+                &ModelEvent::InitSubshell(crate::terminal::event::InitSubshellEvent {
+                    shell_type: ShellType::Bash,
+                    uname: None,
+                }),
+                ctx,
+            );
+            let third = subshell_setup_net_id(view);
+            assert!(third.0 > second.0, "stage 2 is a new generation");
+            backdate_subshell_setup_net(view, false);
+            view.subshell_setup_quiet_net_fired(second.0, second.1, ctx);
+            view.subshell_setup_ceiling_fired(second.0, ctx);
+            assert!(
+                view.subshell_bootstrap_announced.is_some(),
+                "an earlier generation's timers do nothing"
+            );
+            third
+        });
+        terminal.read(&app, |view, ctx| {
+            view.input
+                .read(ctx, |input, ctx| assert_eq!(input.buffer_text(ctx), ""));
+        });
+        // Its own timer hands back.
+        terminal.update(&mut app, |view, ctx| {
+            view.subshell_setup_quiet_net_fired(third.0, third.1, ctx);
+            assert!(view.subshell_bootstrap_announced.is_none());
+            assert!(view.subshell_setup_net.is_none());
+        });
+        terminal.read(&app, |view, ctx| {
+            view.input.read(ctx, |input, ctx| {
+                assert_eq!(input.buffer_text(ctx), "ls", "handed back once");
+            });
+        });
+        let all = written.borrow();
+        assert!(
+            !String::from_utf8_lossy(&all[after_setup..]).contains("ls"),
+            "the net wrote nothing of the held keys: {:?}",
+            String::from_utf8_lossy(&all[after_setup..])
+        );
+    })
 }
 
 #[test]
@@ -18038,19 +18268,30 @@ fn pending_subshell_bootstrap_forwards_only_abort_keys() {
     assert!(!subshell_bootstrap_key_forwarded(true, false, young));
 }
 
+/// #1711 (owner decision 2026-11-08, #1679): a stalled subshell bootstrap never stops holding
+/// typing by age. The old rule forwarded every key once the 20 s ceiling passed, into a tty that
+/// still held the setup lines, so the late bootstrap read the keys as part of itself; now the
+/// setup net hands the held keys back to the editor instead, and the routing rule forwards abort
+/// keys only, however old the announcement.
 #[test]
-fn stalled_subshell_bootstrap_stops_holding_input() {
-    let stalled = Some(SUBSHELL_BOOTSTRAP_STALL_CEILING);
-    assert!(subshell_bootstrap_key_forwarded(false, false, stalled));
-    assert!(subshell_bootstrap_key_forwarded(true, false, stalled));
-    let almost = Some(SUBSHELL_BOOTSTRAP_STALL_CEILING - Duration::from_millis(1));
-    assert!(!subshell_bootstrap_key_forwarded(false, false, almost));
+fn a_stalled_subshell_bootstrap_still_holds_typing_the_net_hands_it_back() {
+    for age in [
+        Duration::from_secs(20),
+        Duration::from_secs(90),
+        Duration::from_secs(600),
+    ] {
+        assert!(!subshell_bootstrap_key_forwarded(false, false, Some(age)));
+        assert!(!subshell_bootstrap_key_forwarded(true, false, Some(age)));
+        assert!(subshell_bootstrap_key_forwarded(false, true, Some(age)));
+        assert!(subshell_bootstrap_key_forwarded(true, true, Some(age)));
+    }
 }
 
 /// #960: `InitShell` finishes the block the first stage was typed into, so a stall after it has
-/// a different active block. The fail-safe (abort keys always pass, typing released after the
-/// ceiling) must stay armed for as long as the subshell session is pending, and disarm once the
-/// session is bootstrapped, the pane is read-only, or the pending session is gone with the block.
+/// a different active block. The fail-safe (abort keys always pass, typing held for the setup's
+/// events or the net) must stay armed for as long as the subshell session is pending, and disarm
+/// once the session is bootstrapped, the pane is read-only, or the pending session is gone with
+/// the block.
 #[test]
 fn subshell_bootstrap_announcement_survives_the_initshell_block_change() {
     // Same block, nothing pending yet: armed (script typed, shell never answered).
@@ -18073,10 +18314,12 @@ fn subshell_bootstrap_announcement_survives_the_initshell_block_change() {
     assert!(!subshell_bootstrap_announcement_applies(
         true, false, true, true
     ));
-    // Composed with the key rule: after the ceiling, typing flows even with a changed block.
+    // Composed with the key rule (#1711): with a changed block and the session pending, typing is
+    // still held however old the announcement; only abort keys pass.
     let applies = subshell_bootstrap_announcement_applies(false, false, false, true);
-    let age = applies.then_some(SUBSHELL_BOOTSTRAP_STALL_CEILING);
-    assert!(subshell_bootstrap_key_forwarded(true, false, age));
+    let age = applies.then_some(Duration::from_secs(120));
+    assert!(!subshell_bootstrap_key_forwarded(true, false, age));
+    assert!(subshell_bootstrap_key_forwarded(true, true, age));
     assert!(subshell_bootstrap_key_forwarded(
         true,
         true,
@@ -24062,6 +24305,1144 @@ fn subshell_setup_lines_follow_the_shells_markers_not_the_clock() {
     })
 }
 
+/// #1710: the shell-agnostic `sh` probe (sudo -s, su, ksu, docker exec, a nested bash from the
+/// banner: `shell_type == None`) is paced by its marker like the known shells. Line 1 (the probe)
+/// is written on the marker of line 0 (the prelude) and never because 30 ms passed; the probe is
+/// then the last line, so the in-flight write is over (its `InitSubshell` is the consumed event).
+/// The probe's own session ID is remembered for the unregister at `InitSubshell` (review H9).
+#[test]
+fn the_sh_probe_is_marker_paced_not_timed() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        let token = terminal.update(&mut app, |view, ctx| {
+            view.model.lock().simulate_long_running_block("sudo -s", "");
+            view.write_init_subshell_bytes_to_pty(None, ctx);
+            let token = view
+                .subshell_bootstrap_in_flight
+                .as_ref()
+                .and_then(|in_flight| in_flight.marker_token)
+                .expect("the probe is paced by its marker");
+            assert_eq!(
+                view.subshell_probe_session_id,
+                Some(SessionId::from(token)),
+                "the probe's ID is remembered for the unregister at InitSubshell"
+            );
+            token
+        });
+        assert_eq!(setup_lines_written(&pty_writes), 1, "only the prelude");
+        let prelude: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+        let marker_text = format!("printf '\\033]7771;{token};0\\a'");
+        assert!(
+            prelude
+                .windows(marker_text.len())
+                .any(|w| w == marker_text.as_bytes()),
+            "the prelude carries the plain-printf marker: {:?}",
+            String::from_utf8_lossy(&prelude)
+        );
+
+        // Longer than the old 30 ms gap, output of any shape: still only the prelude.
+        warpui::r#async::Timer::after(Duration::from_millis(300)).await;
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().process_bytes("$ ");
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+        });
+        assert_eq!(
+            setup_lines_written(&pty_writes),
+            1,
+            "no marker, no probe line"
+        );
+
+        // The marker of line 0 releases the probe line, and that was the last one.
+        terminal.update(&mut app, |view, ctx| {
+            let marker = format!("\x1b]7771;{token};0\x07");
+            view.model.lock().process_bytes(marker.as_str());
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            assert!(
+                view.subshell_bootstrap_in_flight.is_none(),
+                "the probe is the last line: nothing more to write"
+            );
+            assert!(
+                view.subshell_bootstrap_announced.is_some(),
+                "the setup stays announced until the probe answers"
+            );
+        });
+        assert_eq!(setup_lines_written(&pty_writes), 2);
+        let all: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+        let text = String::from_utf8_lossy(&all);
+        assert!(
+            text.contains("InitSubshell"),
+            "the probe line went out: {text}"
+        );
+    })
+}
+
+/// #1710 (E-UNSUPPORTED): the probe names a shell the bootstrap has no script for (dash). The
+/// event ends the setup: the announcement goes, the gates close and every key typed since the
+/// first probe line reaches the shell once, in order, right behind the probe (never before it,
+/// never into the middle of it); a plain-shell toast is shown. Legacy and Table. Before, nothing
+/// ended the setup and the keys stayed held for a net (#1679).
+#[test]
+fn an_unsupported_subshell_ends_the_setup_and_delivers_the_held_keys_in_order() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let written = subshell_pty_writes(&mut app, &terminal);
+            let token = terminal.update(&mut app, |view, ctx| {
+                view.model.lock().simulate_long_running_block("dash", "");
+                view.write_init_subshell_bytes_to_pty(None, ctx);
+                let token = view
+                    .subshell_bootstrap_in_flight
+                    .as_ref()
+                    .and_then(|in_flight| in_flight.marker_token)
+                    .expect("the probe is paced by its marker");
+                // Typed while the prelude is out and the probe line is not: held, in order.
+                for key in [b"ec".to_vec(), b"ho".to_vec(), b"\r".to_vec()] {
+                    assert!(view.write_user_bytes_to_pty(key, ctx), "{mode:?}");
+                }
+                token
+            });
+            let before = written.borrow().clone();
+            assert!(
+                !String::from_utf8_lossy(&before).contains("echo"),
+                "{mode:?}: typed keys reached the pty during the probe: {:?}",
+                String::from_utf8_lossy(&before)
+            );
+            // The shell ran the prelude: the probe line goes out; the keys stay held.
+            terminal.update(&mut app, |view, ctx| {
+                let marker = format!("\x1b]7771;{token};0\x07");
+                view.model.lock().process_bytes(marker.as_str());
+                view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            });
+            let after_probe = written.borrow().clone();
+            assert!(
+                !String::from_utf8_lossy(&after_probe).contains("echo"),
+                "{mode:?}: typed keys reached the pty with the probe line"
+            );
+            assert!(
+                terminal.read(&app, |view, _| held_for_subshell_setup(view).0 > 0),
+                "{mode:?}: the keys are held"
+            );
+            // The probe's answer: not a shell we can set up. The EVENT ends the setup.
+            terminal.update(&mut app, |view, ctx| {
+                view.handle_terminal_event(
+                    &ModelEvent::SubshellNotPhosphorizable {
+                        shell_name: "dash".to_owned(),
+                    },
+                    ctx,
+                );
+                assert!(view.subshell_bootstrap_announced.is_none(), "{mode:?}");
+                assert!(view.subshell_bootstrap_in_flight.is_none(), "{mode:?}");
+                assert!(view.subshell_probe_session_id.is_none(), "{mode:?}");
+                assert_eq!(held_for_subshell_setup(view), (0, 0), "{mode:?}");
+            });
+            let all = written.borrow().clone();
+            assert_eq!(
+                &all[after_probe.len()..],
+                b"echo\r",
+                "{mode:?}: the held keys follow the probe once, in order: {:?}",
+                String::from_utf8_lossy(&all)
+            );
+            terminal.read(&app, |view, ctx| {
+                view.input.read(ctx, |input, ctx| {
+                    assert_eq!(
+                        input.buffer_text(ctx),
+                        "",
+                        "{mode:?}: delivered to the shell, not handed back"
+                    );
+                });
+            });
+        })
+    }
+}
+
+/// #1710 (review H9): the probe's session ID is this attempt's alone. Once its `InitSubshell`
+/// named the shell, that ID is unregistered, and the stage 2 written for the shell mints and
+/// registers its own; the parent's registration is untouched.
+#[test]
+fn the_probe_id_is_unregistered_when_init_subshell_names_the_shell() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let _pty_writes = collect_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            let parent = SessionId::from(77u64);
+            view.model.lock().register_session_id(parent);
+            view.model.lock().simulate_long_running_block("su", "");
+            view.write_init_subshell_bytes_to_pty(None, ctx);
+            let probe = view
+                .subshell_probe_session_id
+                .expect("the probe's ID is remembered");
+            assert!(ansi::Handler::is_registered_session(
+                &*view.model.lock(),
+                probe
+            ));
+            // The probe reported bash; the shell gets its bash stage 2.
+            view.handle_terminal_event(
+                &ModelEvent::InitSubshell(crate::terminal::event::InitSubshellEvent {
+                    shell_type: ShellType::Bash,
+                    uname: None,
+                }),
+                ctx,
+            );
+            assert!(view.subshell_probe_session_id.is_none());
+            let model = view.model.lock();
+            assert!(
+                !ansi::Handler::is_registered_session(&*model, probe),
+                "the probe's ID is gone"
+            );
+            assert!(
+                ansi::Handler::is_registered_session(&*model, parent),
+                "another ID is never touched"
+            );
+            drop(model);
+            let stage2 = view
+                .subshell_bootstrap_in_flight
+                .as_ref()
+                .and_then(|in_flight| in_flight.marker_token)
+                .map(SessionId::from)
+                .expect("stage 2 is in flight, marker-paced");
+            assert_ne!(stage2, probe);
+            assert!(ansi::Handler::is_registered_session(
+                &*view.model.lock(),
+                stage2
+            ));
+        });
+    })
+}
+
+/// #1711: the setup net's rule as a truth table. Quiet at 30 s without progress, the ceiling at
+/// 120 s whatever the progress, waiting otherwise.
+#[test]
+fn subshell_setup_net_verdict_is_quiet_at_30_s_and_ceiling_at_120_s() {
+    use SubshellSetupNetVerdict::*;
+    let t0 = Instant::now();
+    let s = Duration::from_secs;
+    assert_eq!(subshell_setup_net_verdict(t0, t0, t0), Waiting);
+    assert_eq!(subshell_setup_net_verdict(t0 + s(29), t0, t0), Waiting);
+    assert_eq!(subshell_setup_net_verdict(t0 + s(30), t0, t0), Quiet);
+    // Progress 1 s ago, 100 s in: waiting. Progress 1 s ago, 120 s in: the ceiling.
+    assert_eq!(
+        subshell_setup_net_verdict(t0 + s(100), t0, t0 + s(99)),
+        Waiting
+    );
+    assert_eq!(
+        subshell_setup_net_verdict(t0 + s(120), t0, t0 + s(119)),
+        Ceiling
+    );
+    // Both due: the ceiling names it.
+    assert_eq!(
+        subshell_setup_net_verdict(t0 + s(200), t0, t0 + s(100)),
+        Ceiling
+    );
+    // A quiet stretch inside the ceiling.
+    assert_eq!(
+        subshell_setup_net_verdict(t0 + s(80), t0, t0 + s(50)),
+        Quiet
+    );
+    assert_eq!(
+        subshell_setup_net_verdict(t0 + s(80), t0, t0 + s(51)),
+        Waiting
+    );
+}
+
+/// #1711 (review H4): the setup net re-arms on setup PROGRESS only: a marker of this setup, the
+/// probe's `InitSubshell`, `InitShell`, a stage-2 chunk written, `Bootstrapped`. Output of any
+/// shape (an rc file printing), a marker of another setup, a wakeup for output already judged:
+/// none of them. Stage 2 is a new generation of the same setup and keeps its start.
+#[test]
+fn the_setup_net_re_arms_only_on_progress_not_on_output() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let _pty_writes = collect_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().simulate_long_running_block("sudo -s", "");
+            view.write_init_subshell_bytes_to_pty(None, ctx);
+            let token = view
+                .subshell_bootstrap_in_flight
+                .as_ref()
+                .and_then(|f| f.marker_token)
+                .expect("marker-paced");
+            let (generation, seq) = subshell_setup_net_id(view);
+            let started = view.subshell_setup_net.as_ref().unwrap().started;
+            let last = view.subshell_setup_net.as_ref().unwrap().last_progress;
+            assert_eq!(seq, 0);
+
+            // Output, a prompt shape, a stale marker: no progress.
+            view.model
+                .lock()
+                .process_bytes("rc file says hello\r\nmore\r\n");
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            view.model
+                .lock()
+                .process_bytes(format!("\x1b]7771;{};0\x07", token + 1).as_str());
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            assert_eq!(
+                subshell_setup_net_id(view),
+                (generation, 0),
+                "output is not progress"
+            );
+            assert_eq!(
+                view.subshell_setup_net.as_ref().unwrap().last_progress,
+                last
+            );
+
+            // The notice comes with no progress, and progress withdraws it.
+            view.subshell_setup_quiet_notice(generation, 0, ctx);
+            assert!(view.subshell_setup_net.as_ref().unwrap().noticed);
+            assert!(
+                view.subshell_setup_waiting_toast_id.is_some(),
+                "the waiting notice"
+            );
+
+            // Our marker: progress, once (a second wakeup for the same marker is not).
+            view.model
+                .lock()
+                .process_bytes(format!("\x1b]7771;{token};0\x07").as_str());
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            // (The marker also wrote the probe line, itself a chunk: two progress events.)
+            let (gen1, seq1) = subshell_setup_net_id(view);
+            assert_eq!(gen1, generation);
+            assert!(seq1 >= 1, "the marker is progress");
+            assert!(!view.subshell_setup_net.as_ref().unwrap().noticed);
+            assert!(view.subshell_setup_waiting_toast_id.is_none(), "withdrawn");
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            assert_eq!(
+                subshell_setup_net_id(view),
+                (generation, seq1),
+                "judged once"
+            );
+
+            // InitSubshell: progress, then stage 2 arms a new generation with the same start.
+            view.handle_terminal_event(
+                &ModelEvent::InitSubshell(crate::terminal::event::InitSubshellEvent {
+                    shell_type: ShellType::Bash,
+                    uname: None,
+                }),
+                ctx,
+            );
+            let (gen2, seq2) = subshell_setup_net_id(view);
+            assert!(gen2 > generation, "stage 2 is a new generation");
+            assert_eq!(seq2, 0);
+            assert_eq!(
+                view.subshell_setup_net.as_ref().unwrap().started,
+                started,
+                "one setup, one ceiling"
+            );
+
+            // InitShell and Bootstrapped are progress of stage 2.
+            view.note_subshell_setup_progress(SubshellSetupProgress::InitShell, ctx);
+            assert_eq!(subshell_setup_net_id(view), (gen2, 1));
+            view.handle_terminal_event(
+                &ModelEvent::Handler(AnsiHandlerEvent::Bootstrapped {
+                    session_id: SessionId::from(1711u64),
+                    is_subshell: true,
+                }),
+                ctx,
+            );
+            assert_eq!(subshell_setup_net_id(view), (gen2, 2));
+            // Output again: still nothing.
+            view.model.lock().process_bytes("more output\r\n");
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            assert_eq!(subshell_setup_net_id(view), (gen2, 2));
+        });
+    })
+}
+
+/// #1711/#1712 (owner: hand back, 30 s / 120 s): the quiet net fires after 30 s without progress
+/// however chatty the output, and the ceiling after 120 s however steady the progress. Firing
+/// HANDS BACK: the keys held behind the setup gates come back to the editor as text, in order and
+/// complete, with the Enter guard armed and a counted toast; nothing is written to the pty; the
+/// announcement, the in-flight write and the net are over. Legacy and Table.
+#[test]
+fn the_setup_net_hands_the_held_keys_back_at_30_s_quiet_and_at_the_120_s_ceiling() {
+    use crate::terminal::input_queue::DestinationMode;
+    for (mode, by_ceiling) in [
+        (DestinationMode::Legacy, false),
+        (DestinationMode::Table, false),
+        (DestinationMode::Legacy, true),
+        (DestinationMode::Table, true),
+    ] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let written = subshell_pty_writes(&mut app, &terminal);
+            let why = if by_ceiling { "ceiling" } else { "quiet_net" };
+            let before_fire = std::cell::Cell::new(0usize);
+            let (id, token) = terminal.update(&mut app, |view, ctx| {
+                view.model.lock().simulate_long_running_block("sudo -s", "");
+                view.write_init_subshell_bytes_to_pty(None, ctx);
+                let token = view
+                    .subshell_bootstrap_in_flight
+                    .as_ref()
+                    .and_then(|f| f.marker_token)
+                    .expect("marker-paced");
+                for key in [b"ls".to_vec(), b" -la".to_vec(), b"x".to_vec()] {
+                    assert!(view.write_user_bytes_to_pty(key, ctx), "{mode:?} {why}");
+                }
+                (subshell_setup_net_id(view), token)
+            });
+            let after_setup = written.borrow().len();
+            terminal.update(&mut app, |view, ctx| {
+                // Chatty output does not re-arm; for the ceiling, even a marker (progress) does
+                // not save a setup older than 120 s.
+                for _ in 0..5 {
+                    view.model.lock().process_bytes("still sourcing...\r\n");
+                    view.handle_terminal_wakeup(
+                        crate::terminal::event_listener::Wakeup::Output,
+                        ctx,
+                    );
+                }
+                backdate_subshell_setup_net(view, by_ceiling);
+                if by_ceiling {
+                    // Progress (the marker; it also writes the probe line) does not save a setup
+                    // older than the ceiling.
+                    view.model
+                        .lock()
+                        .process_bytes(format!("\x1b]7771;{token};0\x07").as_str());
+                    view.handle_terminal_wakeup(
+                        crate::terminal::event_listener::Wakeup::Output,
+                        ctx,
+                    );
+                } else {
+                    assert_eq!(subshell_setup_net_id(view), id, "{mode:?}: output re-armed");
+                }
+            });
+            // The pty writes are events, observed once the update that emitted them ended: what
+            // is written from here on is the net's doing.
+            before_fire.set(written.borrow().len());
+            terminal.update(&mut app, |view, ctx| {
+                if by_ceiling {
+                    let (generation, _) = subshell_setup_net_id(view);
+                    view.subshell_setup_ceiling_fired(generation, ctx);
+                } else {
+                    view.subshell_setup_quiet_net_fired(id.0, id.1, ctx);
+                }
+                assert!(view.subshell_setup_net.is_none(), "{mode:?} {why}");
+                assert!(
+                    view.subshell_bootstrap_announced.is_none(),
+                    "{mode:?} {why}"
+                );
+                assert!(
+                    view.subshell_bootstrap_in_flight.is_none(),
+                    "{mode:?} {why}"
+                );
+                assert_eq!(held_for_subshell_setup(view), (0, 0), "{mode:?} {why}");
+                assert!(view.subshell_setup_waiting_toast_id.is_none());
+            });
+            terminal.read(&app, |view, ctx| {
+                view.input.read(ctx, |input, ctx| {
+                    assert_eq!(
+                        input.buffer_text(ctx),
+                        "ls -lax",
+                        "{mode:?} {why}: handed back, in order, nothing lost"
+                    );
+                    assert!(input.ssh_handover_enter_guard_armed(), "{mode:?} {why}");
+                });
+            });
+            let all = written.borrow();
+            // Review B2: the setup's own lines (the probe line the ceiling case's marker released)
+            // are not the net's writes; the net wrote NOTHING from the moment it fired.
+            let tail = String::from_utf8_lossy(&all[before_fire.get()..]).into_owned();
+            assert!(
+                tail.is_empty(),
+                "{mode:?} {why}: the net wrote to the pty: {tail:?}"
+            );
+            assert!(
+                !String::from_utf8_lossy(&all[after_setup..]).contains("ls -la"),
+                "{mode:?} {why}: the user's keys reached the pty"
+            );
+            // A late timer of the finished net does nothing.
+            terminal.update(&mut app, |view, ctx| {
+                view.subshell_setup_quiet_net_fired(id.0, id.1, ctx);
+                view.subshell_setup_ceiling_fired(id.0, ctx);
+            });
+            terminal.read(&app, |view, ctx| {
+                view.input.read(ctx, |input, ctx| {
+                    assert_eq!(input.buffer_text(ctx), "ls -lax")
+                });
+            });
+        })
+    }
+}
+
+/// #1711 (review H6, option (a)): the net gives up a setup after `InitShell` (the pane is on
+/// "Starting shell..."): the model abandons the pending session and continues in a visible block,
+/// the session ID STAYS registered and a `Bootstrapped` that arrives after all is accepted as
+/// success (the abandoned session is consumed, not dropped as "no pending session").
+#[test]
+fn a_late_bootstrapped_after_the_net_is_accepted() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let _pty_writes = collect_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().simulate_long_running_block("su -", "");
+            view.write_init_subshell_bytes_to_pty(Some(ShellType::Bash), ctx);
+            let sid = view
+                .subshell_bootstrap_in_flight
+                .as_ref()
+                .and_then(|f| f.marker_token)
+                .map(SessionId::from)
+                .expect("marker-paced");
+            // The shell ran the script's head: the subshell session is pending.
+            view.model.lock().init_shell(InitShellValue {
+                shell: "bash".into(),
+                user: "u".to_owned(),
+                hostname: "h".to_owned(),
+                session_id: sid,
+                is_subshell: true,
+                ..Default::default()
+            });
+            view.note_subshell_setup_progress(SubshellSetupProgress::InitShell, ctx);
+            assert!(view.model.lock().pending_subshell_session().is_some());
+            assert!(view.write_user_bytes_to_pty(b"ok".to_vec(), ctx));
+
+            // Nothing more for 30 s.
+            backdate_subshell_setup_net(view, false);
+            let (generation, seq) = subshell_setup_net_id(view);
+            view.subshell_setup_quiet_net_fired(generation, seq, ctx);
+            {
+                let model = view.model.lock();
+                assert!(model.pending_session_id().is_none(), "abandoned");
+                assert!(
+                    model.has_abandoned_subshell_session(),
+                    "kept for a late Bootstrapped"
+                );
+                assert!(
+                    model.block_list().is_bootstrapped(),
+                    "left 'Starting shell...'"
+                );
+                assert!(
+                    ansi::Handler::is_registered_session(&*model, sid),
+                    "the ID stays registered (H6 option (a))"
+                );
+            }
+            // The late Bootstrapped: success.
+            view.model.lock().bootstrapped(BootstrappedValue {
+                shell: "bash".to_owned(),
+                session_id: Some(sid.as_u64()),
+                ..Default::default()
+            });
+            let model = view.model.lock();
+            assert!(
+                !model.has_abandoned_subshell_session(),
+                "the late Bootstrapped consumed the abandoned session"
+            );
+            assert!(model.pending_session_id().is_none());
+        });
+        terminal.read(&app, |view, ctx| {
+            view.input.read(ctx, |input, ctx| {
+                assert_eq!(input.buffer_text(ctx), "ok", "the held key came back");
+            });
+        });
+    })
+}
+
+/// #1711: `BOOTSTRAP_FAILED_DURATION` (7 s) reconciled with a marker-paced setup: each progress
+/// re-arms the bootstrap give-up (a new generation supersedes the old timer), so a slow but
+/// healthy setup whose markers keep coming never trips it; a setup written without the trigger
+/// (no give-up armed) re-arms nothing.
+#[test]
+fn a_healthy_marker_paced_setup_re_arms_the_bootstrap_give_up() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let _pty_writes = collect_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().simulate_long_running_block("bash", "");
+            view.trigger_subshell_bootstrap_now(Some(ShellType::Bash), false, ctx);
+            let token = view
+                .subshell_bootstrap_in_flight
+                .as_ref()
+                .and_then(|f| f.marker_token)
+                .expect("marker-paced");
+            assert_eq!(
+                view.subshell_setup_net
+                    .as_ref()
+                    .unwrap()
+                    .bootstrap_failed_after,
+                Some(BOOTSTRAP_FAILED_DURATION)
+            );
+            let armed = view.bootstrap_timer_generation;
+            view.model
+                .lock()
+                .process_bytes(format!("\x1b]7771;{token};0\x07").as_str());
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            assert!(
+                view.bootstrap_timer_generation > armed,
+                "the marker re-armed the 7 s give-up"
+            );
+            let re_armed = view.bootstrap_timer_generation;
+            view.model.lock().process_bytes("output only\r\n");
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            assert_eq!(
+                view.bootstrap_timer_generation, re_armed,
+                "output is not progress"
+            );
+        });
+        // Written without the trigger: no give-up to re-arm.
+        terminal.update(&mut app, |view, ctx| {
+            view.release_subshell_setup_held_bytes(ctx);
+            view.model.lock().simulate_long_running_block("zsh", "");
+            view.write_init_subshell_bytes_to_pty(Some(ShellType::Zsh), ctx);
+            assert!(
+                view.subshell_setup_net
+                    .as_ref()
+                    .unwrap()
+                    .bootstrap_failed_after
+                    .is_none()
+            );
+            let armed = view.bootstrap_timer_generation;
+            view.note_subshell_setup_progress(SubshellSetupProgress::Marker, ctx);
+            assert_eq!(view.bootstrap_timer_generation, armed);
+        });
+    })
+}
+
+/// #1711 (review H7): the PowerShell hold states keep their behaviour without the 90 s hold
+/// limit. `Setup`, `ScriptRunning` and `AwaitingPrompt` hold keys for as long as the setup is
+/// announced, however old the announcement; the net's give-up hands them back (hold `Off`,
+/// gate closed, text in the editor, nothing written). `LineRunning` and `AfterAbort` hold as
+/// before. Legacy and Table.
+#[test]
+fn powershell_setup_holds_keys_however_old_the_announcement_is_until_the_net() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let delivered = collect_delivered_input(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                announce_powershell_setup(view);
+                let block_id = view.model.lock().block_list().active_block().id().clone();
+                let long_ago = Instant::now()
+                    .checked_sub(Duration::from_secs(1000))
+                    .expect("the clock goes back far enough");
+                view.subshell_bootstrap_announced = Some((block_id, long_ago));
+                for hold in [
+                    PowerShellSetupHold::Setup,
+                    PowerShellSetupHold::ScriptRunning,
+                    PowerShellSetupHold::AwaitingPrompt,
+                    PowerShellSetupHold::LineRunning { generation: 1 },
+                    PowerShellSetupHold::AfterAbort { generation: 1 },
+                ] {
+                    view.powershell_setup_hold = hold;
+                    assert!(
+                        view.holds_keys_for_powershell_subshell_setup(),
+                        "{mode:?} {hold:?}: held however old (it lapsed at 90 s before #1711)"
+                    );
+                }
+                view.powershell_setup_hold = PowerShellSetupHold::ScriptRunning;
+                assert!(view.write_user_bytes_to_pty(b"Get-".to_vec(), ctx));
+                assert!(view.write_user_bytes_to_pty(b"Date".to_vec(), ctx));
+                assert_eq!(
+                    powershell_held(view),
+                    vec![b"Get-".to_vec(), b"Date".to_vec()]
+                );
+                // The net, armed as a real setup arms it, gives up: hand-back.
+                view.arm_subshell_setup_net(ctx);
+                backdate_subshell_setup_net(view, false);
+                let (generation, seq) = subshell_setup_net_id(view);
+                view.subshell_setup_quiet_net_fired(generation, seq, ctx);
+                assert_eq!(
+                    view.powershell_setup_hold,
+                    PowerShellSetupHold::Off,
+                    "{mode:?}"
+                );
+                assert!(view.subshell_bootstrap_announced.is_none(), "{mode:?}");
+                assert!(powershell_held(view).is_empty(), "{mode:?}");
+            });
+            assert!(
+                delivered.borrow().is_empty(),
+                "{mode:?}: the net wrote to the shell: {:?}",
+                delivered.borrow()
+            );
+            terminal.read(&app, |view, ctx| {
+                view.input.read(ctx, |input, ctx| {
+                    assert_eq!(input.buffer_text(ctx), "Get-Date", "{mode:?}");
+                });
+            });
+        })
+    }
+}
+
+/// #1711 review F1: a Ctrl-C during a STUCK marker-paced setup (the shell never printed the
+/// marker of the prelude, so the probe line is unwritten and the net's notice says "Ctrl-C skips
+/// setup") is the event that ends the setup: the signal goes out at once, the unwritten line is
+/// dropped, the setup and its net are over, and the keys held since the first line follow the
+/// signal in order. Nothing waits for a give-up. Legacy and Table.
+#[test]
+fn ctrl_c_during_a_stuck_marker_paced_setup_goes_out_at_once_and_ends_it() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let written = subshell_pty_writes(&mut app, &terminal);
+            let probe = terminal.update(&mut app, |view, ctx| {
+                view.model.lock().simulate_long_running_block("sudo -s", "");
+                view.write_init_subshell_bytes_to_pty(None, ctx);
+                // The real arrival path: typed characters (held), as the terminal receives them.
+                view.typed_characters_on_terminal("ec", ctx);
+                view.typed_characters_on_terminal("ho", ctx);
+                view.subshell_probe_session_id.expect("the probe's ID")
+            });
+            // The prelude is out (its write is observed once the update ended); the keys are not.
+            let after_setup = written.borrow().len();
+            terminal.update(&mut app, |view, ctx| {
+                // The shell is stuck: output, no marker; the notice fires.
+                view.model.lock().process_bytes("still starting\r\n");
+                view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+                let (generation, seq) = subshell_setup_net_id(view);
+                let net = view.subshell_setup_net.as_mut().unwrap();
+                net.last_progress = Instant::now()
+                    .checked_sub(SUBSHELL_SETUP_QUIET_NOTICE + Duration::from_secs(1))
+                    .expect("the clock goes back far enough");
+                view.subshell_setup_quiet_notice(generation, seq, ctx);
+                assert!(view.subshell_setup_waiting_toast_id.is_some(), "{mode:?}");
+                assert_eq!(held_for_subshell_setup(view).0, 2, "{mode:?}: keys held");
+                // The user takes the notice up on it: the ^C through the key path.
+                view.keydown_on_terminal("\u{3}", ctx);
+                assert!(view.subshell_bootstrap_in_flight.is_none(), "{mode:?}");
+                assert!(view.subshell_bootstrap_announced.is_none(), "{mode:?}");
+                assert!(view.subshell_setup_net.is_none(), "{mode:?}");
+                assert!(view.subshell_setup_waiting_toast_id.is_none(), "{mode:?}");
+                assert_eq!(held_for_subshell_setup(view), (0, 0), "{mode:?}");
+                // Review F-b: the attempt's probe ID went with it.
+                assert!(view.subshell_probe_session_id.is_none(), "{mode:?}");
+                assert!(
+                    !ansi::Handler::is_registered_session(&*view.model.lock(), probe),
+                    "{mode:?}"
+                );
+            });
+            let all = written.borrow();
+            assert_eq!(
+                &all[after_setup..],
+                b"\x03echo",
+                "{mode:?}: the signal at once, the held keys behind it, nothing of the probe line: {:?}",
+                String::from_utf8_lossy(&all[after_setup..])
+            );
+            assert!(
+                !String::from_utf8_lossy(&all).contains("InitSubshell"),
+                "{mode:?}: the unwritten probe line was dropped"
+            );
+            terminal.read(&app, |view, ctx| {
+                view.input.read(ctx, |input, ctx| {
+                    assert_eq!(
+                        input.buffer_text(ctx),
+                        "",
+                        "{mode:?}: delivered, not handed back"
+                    );
+                });
+            });
+        })
+    }
+}
+
+/// #1711 review F2: a setup that FINISHED (Bootstrapped, then its prompt) leaves no net behind,
+/// even when a key is still held for that prompt: the Precmd clears the net, the key is delivered,
+/// and the net's stale timers do nothing 30 s later (no "Phosphorize failed", nothing handed back).
+#[test]
+fn a_finished_setup_does_not_trip_the_net_later() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let written = subshell_pty_writes(&mut app, &terminal);
+        let id = terminal.update(&mut app, |view, ctx| {
+            view.model.lock().simulate_long_running_block("su -", "");
+            view.write_init_subshell_bytes_to_pty(Some(ShellType::Bash), ctx);
+            let sid = view
+                .subshell_bootstrap_in_flight
+                .as_ref()
+                .and_then(|f| f.marker_token)
+                .map(SessionId::from)
+                .expect("marker-paced");
+            assert!(view.write_user_bytes_to_pty(b"ok".to_vec(), ctx));
+            view.model.lock().init_shell(InitShellValue {
+                shell: "bash".into(),
+                user: "u".to_owned(),
+                hostname: "h".to_owned(),
+                session_id: sid,
+                is_subshell: true,
+                ..Default::default()
+            });
+            view.on_subshell_init_shell(ctx);
+            // All lines out, the script finished.
+            view.finish_subshell_bootstrap(ctx);
+            view.model.lock().bootstrapped(BootstrappedValue {
+                shell: "bash".to_owned(),
+                session_id: Some(sid.as_u64()),
+                ..Default::default()
+            });
+            view.handle_terminal_event(
+                &ModelEvent::Handler(AnsiHandlerEvent::Bootstrapped {
+                    session_id: sid,
+                    is_subshell: true,
+                }),
+                ctx,
+            );
+            let id = subshell_setup_net_id(view);
+            assert!(view.subshell_setup_net.is_some(), "until the prompt");
+            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+            assert!(
+                view.subshell_setup_net.is_none(),
+                "the prompt after Bootstrapped ends the net"
+            );
+            assert!(view.subshell_bootstrap_announced.is_none());
+            id
+        });
+        let all = written.borrow().clone();
+        assert!(
+            String::from_utf8_lossy(&all).ends_with("ok"),
+            "the held key was delivered at the prompt: {:?}",
+            String::from_utf8_lossy(&all)
+        );
+        // 30 s later: the finished net's timers find nothing.
+        terminal.update(&mut app, |view, ctx| {
+            view.subshell_setup_quiet_net_fired(id.0, id.1, ctx);
+            view.subshell_setup_ceiling_fired(id.0, ctx);
+            view.subshell_setup_quiet_notice(id.0, id.1, ctx);
+            assert!(view.subshell_setup_waiting_toast_id.is_none());
+            assert!(view.subshell_setup_net.is_none());
+        });
+        assert_eq!(*written.borrow(), all, "nothing more was written");
+        terminal.read(&app, |view, ctx| {
+            view.input
+                .read(ctx, |input, ctx| assert_eq!(input.buffer_text(ctx), ""));
+        });
+    })
+}
+
+/// #1711 review F2: the subshell EXITS while its setup is in flight (the user's `exit`, or the
+/// command failed): its block completes, the unwritten lines are dropped (they must never reach
+/// the parent) and the net is over; no "Phosphorize failed" 30 s later.
+#[test]
+fn a_subshell_that_exits_during_the_setup_ends_the_net() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let written = subshell_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().simulate_long_running_block("dash", "");
+            view.write_init_subshell_bytes_to_pty(None, ctx);
+            assert!(view.subshell_bootstrap_in_flight.is_some());
+            let before = written.borrow().len();
+            // The shell is gone: its block completed (a new block is active), nothing pending.
+            view.model.lock().finish_block();
+            assert!(view.subshell_bootstrap_announced_age().is_none());
+            let id = subshell_setup_net_id(view);
+            view.end_subshell_setup_if_block_gone(ctx);
+            assert!(view.subshell_bootstrap_in_flight.is_none(), "lines dropped");
+            assert!(view.subshell_setup_net.is_none(), "the net is over");
+            assert_eq!(
+                written.borrow().len(),
+                before,
+                "nothing of the setup went out"
+            );
+            view.subshell_setup_quiet_net_fired(id.0, id.1, ctx);
+            assert!(view.subshell_setup_waiting_toast_id.is_none());
+        });
+        terminal.read(&app, |view, ctx| {
+            view.input
+                .read(ctx, |input, ctx| assert_eq!(input.buffer_text(ctx), ""));
+        });
+    })
+}
+
+/// #1711 review F3: a subshell `InitShell` with no net armed (after a PowerShell Ctrl-C skip, a
+/// timed setup's give-up, a late `InitShell` of an abandoned attempt) arms one, so a
+/// `Bootstrapped` that never comes cannot leave the pane on "Starting shell..." for good; with a
+/// net armed it is progress of that net.
+#[test]
+fn an_init_shell_with_no_net_armed_arms_one() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            assert!(view.subshell_setup_net.is_none());
+            view.on_subshell_init_shell(ctx);
+            let (first, seq) = subshell_setup_net_id(view);
+            assert_eq!(seq, 1, "armed, then the InitShell counted as progress");
+            view.on_subshell_init_shell(ctx);
+            assert_eq!(
+                subshell_setup_net_id(view),
+                (first, 2),
+                "the same net, more progress"
+            );
+        });
+    })
+}
+
+/// #1711 review F4: the net's generation is the view's, monotonic: setup A's notice timer, fired
+/// during setup B, toasts nothing, and B's generation is never A's again.
+#[test]
+fn a_notice_timer_of_an_earlier_setup_does_not_toast_during_a_later_one() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let _pty_writes = collect_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().simulate_long_running_block("zsh", "");
+            view.write_init_subshell_bytes_to_pty(Some(ShellType::Zsh), ctx);
+            let a = subshell_setup_net_id(view);
+            // Setup A ends (its prompt released the keys); setup B starts.
+            view.release_subshell_setup_held_bytes(ctx);
+            assert!(view.subshell_setup_net.is_none());
+            view.model.lock().simulate_long_running_block("bash", "");
+            view.write_init_subshell_bytes_to_pty(Some(ShellType::Bash), ctx);
+            let b = subshell_setup_net_id(view);
+            assert!(b.0 > a.0, "monotonic across setups: {a:?} then {b:?}");
+            assert!(b.0 >= 2, "never reset per setup");
+            // B has been quiet long enough for a notice; A's timer must not be the one to show it.
+            view.subshell_setup_net.as_mut().unwrap().last_progress = Instant::now()
+                .checked_sub(SUBSHELL_SETUP_QUIET_NOTICE + Duration::from_secs(1))
+                .expect("the clock goes back far enough");
+            view.subshell_setup_quiet_notice(a.0, a.1, ctx);
+            assert!(
+                view.subshell_setup_waiting_toast_id.is_none(),
+                "A's timer: no toast"
+            );
+            assert!(!view.subshell_setup_net.as_ref().unwrap().noticed);
+            // A notice timer that fires before its quiet stretch is due does nothing either.
+            view.subshell_setup_net.as_mut().unwrap().last_progress = Instant::now();
+            view.subshell_setup_quiet_notice(b.0, b.1, ctx);
+            assert!(
+                view.subshell_setup_waiting_toast_id.is_none(),
+                "not due: no toast"
+            );
+            view.subshell_setup_net.as_mut().unwrap().last_progress = Instant::now()
+                .checked_sub(SUBSHELL_SETUP_QUIET_NOTICE + Duration::from_secs(1))
+                .expect("the clock goes back far enough");
+            view.subshell_setup_quiet_notice(b.0, b.1, ctx);
+            assert!(
+                view.subshell_setup_waiting_toast_id.is_some(),
+                "B's own timer toasts"
+            );
+        });
+    })
+}
+
+/// #1711 review N1 (coordinator decision): the keys held behind a PowerShell held line
+/// (`LineRunning`) have the net too, but a quietly running command must not have the typeahead
+/// bounced at 30 s (output is not progress): the quiet net leaves them held, and only the 120 s
+/// ceiling hands them back to the input, hold `Off`, nothing written, under the `held_line`
+/// notice (the setup succeeded; the command is slow). Legacy and Table.
+#[test]
+fn a_powershell_held_line_is_watched_by_the_net_and_handed_back_only_at_the_ceiling() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let delivered = collect_delivered_input(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                // What `deliver_powershell_held_bytes` leaves behind for a submitted line.
+                view.powershell_setup_hold = PowerShellSetupHold::LineRunning { generation: 1 };
+                view.arm_subshell_setup_net(ctx);
+                view.hold_powershell_keys(b"Get-".to_vec(), true, ctx);
+                view.hold_powershell_keys(b"Date".to_vec(), true, ctx);
+                assert_eq!(
+                    powershell_held(view),
+                    vec![b"Get-".to_vec(), b"Date".to_vec()]
+                );
+                // 30 s of quiet: the command is still running; the keys stay held.
+                backdate_subshell_setup_net(view, false);
+                let (generation, seq) = subshell_setup_net_id(view);
+                view.subshell_setup_quiet_net_fired(generation, seq, ctx);
+                assert_eq!(
+                    view.powershell_setup_hold,
+                    PowerShellSetupHold::LineRunning { generation: 1 },
+                    "{mode:?}: a quiet command does not bounce the typeahead"
+                );
+                assert_eq!(
+                    powershell_held(view),
+                    vec![b"Get-".to_vec(), b"Date".to_vec()],
+                    "{mode:?}"
+                );
+                assert!(
+                    view.subshell_setup_net.is_some(),
+                    "{mode:?}: the net stays armed"
+                );
+                // The ceiling: handed back.
+                backdate_subshell_setup_net(view, true);
+                view.subshell_setup_ceiling_fired(generation, ctx);
+                assert_eq!(
+                    view.powershell_setup_hold,
+                    PowerShellSetupHold::Off,
+                    "{mode:?}"
+                );
+                assert!(powershell_held(view).is_empty(), "{mode:?}");
+                assert!(view.subshell_setup_net.is_none(), "{mode:?}");
+            });
+            assert!(delivered.borrow().is_empty(), "{mode:?}: nothing written");
+            terminal.read(&app, |view, ctx| {
+                view.input.read(ctx, |input, ctx| {
+                    assert_eq!(input.buffer_text(ctx), "Get-Date", "{mode:?}");
+                });
+            });
+        })
+    }
+}
+
+/// #1711 review N2: a give-up hands the setup gates back in the QUEUE's order (oldest gate first),
+/// so the text behind an older gate comes before the text behind a newer one, as typed. Here the
+/// bootstrap-write gate is older than the setup gate.
+#[test]
+fn setup_gates_are_handed_back_in_queue_order() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let written = subshell_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            // The paced write alone: `a` behind the bootstrap-write gate.
+            start_subshell_bootstrap(view, false);
+            assert!(view.write_user_bytes_to_pty(b"a".to_vec(), ctx));
+            assert!(!view.subshell_setup_gate_open());
+            // Then the setup is announced: `b` behind the (newer) setup gate too.
+            let block_id = view.model.lock().block_list().active_block().id().clone();
+            view.subshell_bootstrap_announced = Some((block_id, Instant::now()));
+            assert!(view.write_user_bytes_to_pty(b"b".to_vec(), ctx));
+            assert!(view.subshell_setup_gate_open());
+            view.give_up_setup_gates_to_editor("quiet_net", ctx);
+            assert_eq!(held_for_subshell_setup(view), (0, 0));
+        });
+        assert!(written.borrow().is_empty(), "nothing written");
+        terminal.read(&app, |view, ctx| {
+            view.input.read(ctx, |input, ctx| {
+                assert_eq!(input.buffer_text(ctx), "ab", "as typed, oldest gate first");
+            });
+        });
+    })
+}
+
+/// #1711 review N3: the net's give-up unregisters this attempt's probe ID, so a late probe answer
+/// is rejected by the hook validation, and the view ignores a late `InitSubshell` /
+/// `SubshellNotPhosphorizable` with no probe outstanding: no stage 2 is written, nothing changes.
+#[test]
+fn a_give_up_unregisters_the_probe_id_and_a_late_probe_answer_is_ignored() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let written = subshell_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().simulate_long_running_block("su", "");
+            view.write_init_subshell_bytes_to_pty(None, ctx);
+            let probe = view.subshell_probe_session_id.expect("the probe's ID");
+            assert!(ansi::Handler::is_registered_session(
+                &*view.model.lock(),
+                probe
+            ));
+            backdate_subshell_setup_net(view, false);
+            let (generation, seq) = subshell_setup_net_id(view);
+            view.subshell_setup_quiet_net_fired(generation, seq, ctx);
+            assert!(view.subshell_probe_session_id.is_none());
+            assert!(
+                !ansi::Handler::is_registered_session(&*view.model.lock(), probe),
+                "the given-up attempt's probe ID is gone"
+            );
+            let before = written.borrow().len();
+            view.handle_terminal_event(
+                &ModelEvent::InitSubshell(crate::terminal::event::InitSubshellEvent {
+                    shell_type: ShellType::Bash,
+                    uname: None,
+                }),
+                ctx,
+            );
+            assert!(view.subshell_bootstrap_in_flight.is_none(), "no stage 2");
+            assert!(view.subshell_bootstrap_announced.is_none());
+            assert!(view.subshell_setup_net.is_none());
+            view.handle_terminal_event(
+                &ModelEvent::SubshellNotPhosphorizable {
+                    shell_name: "dash".to_owned(),
+                },
+                ctx,
+            );
+            assert_eq!(
+                written.borrow().len(),
+                before,
+                "a late answer writes nothing"
+            );
+        });
+    })
+}
+
+/// #1711 review N5: the bootstrap give-up (`BOOTSTRAP_FAILED_DURATION`) fires at most once per
+/// setup: once it failed the setup, later progress no longer re-arms it, so the telemetry, the
+/// unhide and the ssh edge are never repeated.
+#[test]
+fn the_bootstrap_give_up_fires_at_most_once_per_setup() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let _pty_writes = collect_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().simulate_long_running_block("su -", "");
+            view.trigger_subshell_bootstrap_now(Some(ShellType::Bash), false, ctx);
+            let sid = view
+                .subshell_bootstrap_in_flight
+                .as_ref()
+                .and_then(|f| f.marker_token)
+                .map(SessionId::from)
+                .expect("marker-paced");
+            view.model.lock().init_shell(InitShellValue {
+                shell: "bash".into(),
+                user: "u".to_owned(),
+                hostname: "h".to_owned(),
+                session_id: sid,
+                is_subshell: true,
+                ..Default::default()
+            });
+            view.on_subshell_init_shell(ctx);
+            assert_eq!(
+                view.subshell_setup_net
+                    .as_ref()
+                    .unwrap()
+                    .bootstrap_failed_after,
+                Some(BOOTSTRAP_FAILED_DURATION)
+            );
+            // The give-up fires (no bootstrap prompt was seen: no grace).
+            view.on_bootstrap_failed_timer_complete((), ctx);
+            assert!(
+                view.subshell_setup_net
+                    .as_ref()
+                    .unwrap()
+                    .bootstrap_failed_after
+                    .is_none(),
+                "fired once: never re-armed for this setup"
+            );
+            let armed = view.bootstrap_timer_generation;
+            view.note_subshell_setup_progress(SubshellSetupProgress::Marker, ctx);
+            view.note_subshell_setup_progress(SubshellSetupProgress::StageTwoChunk, ctx);
+            assert_eq!(
+                view.bootstrap_timer_generation, armed,
+                "progress re-arms nothing"
+            );
+        });
+    })
+}
+
 /// #1372: a PowerShell setup is paced by markers too (printed when PSReadLine is about to read, so
 /// after its redraw): line N+1 is written on line N's marker only. The kill switch keeps timers.
 #[test]
@@ -27100,18 +28481,22 @@ fn a_key_after_a_young_hold_ended_is_not_swallowed() {
     }
 }
 
-/// #1399: the bootstrap-write gate holds typed keys until the last setup line is written. Each
-/// marked line may wait the whole marker give-up before the timed fallback writes the rest, so the
-/// gate's net must outlast that; the old 2 s per line released keys into the middle of the
-/// fallback's writes (the script interleaved with the typed bytes).
+/// #1399 -> #1711: the bootstrap-write gate holds typed keys until the last setup line is written,
+/// and used to need a cap that outlasted every line's marker give-up (2 s per line released keys
+/// into the middle of the fallback's writes). There is no timed fallback any more and the setup
+/// gates have no cap of their own: the one setup net (30 s without progress, 120 s in all) is
+/// what ends a setup that stops, by handing the keys back.
 #[test]
-fn bootstrap_gate_cap_outlasts_every_line_waiting_out_the_marker_give_up() {
-    for lines in 1..40usize {
-        assert!(
-            subshell_bootstrap_gate_cap(lines) > SUBSHELL_SETUP_MARKER_GIVE_UP * lines as u32,
-            "{lines} lines"
-        );
+fn setup_gates_have_no_cap_of_their_own_the_net_is_the_one_net() {
+    for kind in [
+        input_queue::GateKind::SubshellSetup,
+        input_queue::GateKind::PowershellSetup,
+        input_queue::GateKind::SubshellBootstrapWrite,
+    ] {
+        assert!(kind.default_cap().is_none(), "{kind:?}");
     }
+    assert!(SUBSHELL_SETUP_QUIET_NET < SUBSHELL_SETUP_CEILING);
+    assert!(SUBSHELL_SETUP_QUIET_NOTICE < SUBSHELL_SETUP_QUIET_NET);
 }
 
 /// Opens a `PromptSeen` gate (key 77) on the pane queue and offers `text` behind it, the way keys

@@ -1820,6 +1820,13 @@ impl TerminalModel {
             .and_then(|session_info| session_info.subshell_info.as_ref())
     }
 
+    /// Whether an abandoned subshell session is kept for a late `Bootstrapped` (#1014, #1711
+    /// review H6 option (a)); for tests outside this module.
+    #[cfg(test)]
+    pub fn has_abandoned_subshell_session(&self) -> bool {
+        self.abandoned_subshell_session.is_some()
+    }
+
     pub fn block_list(&self) -> &BlockList {
         &self.block_list
     }
@@ -3049,6 +3056,16 @@ impl TerminalModel {
         self.registered_session_ids.insert(session_id);
     }
 
+    /// Forgets ONE client-generated session ID (#1710, review H6/H9): the one a finished or
+    /// abandoned subshell attempt minted (the probe's, once its `InitSubshell` came), so a hook
+    /// carrying it later is rejected like any unknown ID. It never touches another ID: the
+    /// parent's, a stage-2 ID minted for the same shell, an ssh one. A setup that stalls keeps its
+    /// ID registered (option (a) of the review): a late `Bootstrapped` is then still accepted as
+    /// success.
+    pub fn unregister_session_id(&mut self, session_id: SessionId) {
+        self.registered_session_ids.remove(&session_id);
+    }
+
     pub fn needs_bracketed_paste(&mut self) -> bool {
         delegate!(self.needs_bracketed_paste())
     }
@@ -4214,18 +4231,28 @@ impl ansi::Handler for TerminalModel {
                     uname: data.uname,
                 }));
         } else {
-            log::error!(
-                "Received invalid shell name in init_subshell: {} | is_tmux_ssh: {}",
+            log::warn!(
+                "init_subshell: {:?} is not a shell the bootstrap has a script for | is_tmux_ssh: {}",
                 data.shell,
                 is_tmux_ssh
             );
             if is_tmux_ssh {
+                // The tmux-ssh path has its own verdict (an ssh error block); not doubled.
                 self.event_proxy
                     .send_terminal_event(Event::RemoteWarpificationIsUnavailable(
                         WarpificationUnavailableReason::UnsupportedShell {
                             shell_name: data.shell,
                         },
                     ))
+            } else {
+                // #1710 (E-UNSUPPORTED): dash, ash, ksh, bash started as `sh`, ... The view ends
+                // the setup on this event: the held keys go to the shell in order and the pane
+                // runs it as a plain shell. Before, nothing was sent and the setup stayed
+                // "announced" with the keys held until a net fired.
+                self.event_proxy
+                    .send_terminal_event(Event::SubshellNotPhosphorizable {
+                        shell_name: data.shell,
+                    })
             }
         }
     }

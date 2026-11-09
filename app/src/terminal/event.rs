@@ -136,6 +136,12 @@ pub enum Event {
     },
     InitSsh(InitSshEvent),
     InitSubshell(InitSubshellEvent),
+    /// The subshell probe reported a shell the bootstrap has no script for (dash, ash, ksh, ...),
+    /// #1710: the setup is over, the held keys go to the shell and it runs as a plain shell. Not
+    /// sent on the tmux-ssh path, which reports `RemoteWarpificationIsUnavailable` instead.
+    SubshellNotPhosphorizable {
+        shell_name: String,
+    },
     /// Emitted when the user's RC file has been executed in a subshell.
     SourcedRcFileInSubshell(SourcedRcFileInSubshellEvent),
     /// Emitted when the active block's prompt has been updated.
@@ -668,6 +674,9 @@ impl Debug for Event {
             ),
             Event::InitSubshell(event) => {
                 write!(f, "InitSubshell({event:?})")
+            }
+            Event::SubshellNotPhosphorizable { shell_name } => {
+                write!(f, "SubshellNotPhosphorizable({shell_name:?})")
             }
             Event::SourcedRcFileInSubshell(event) => {
                 write!(f, "SourcedRcFileInSubshell({event:?})")

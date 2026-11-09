@@ -183,7 +183,9 @@ impl GateKind {
     }
 
     /// The give-up cap proposed by the design (existing values kept as caps only). `None` means
-    /// the opener must supply one (the bootstrap gate's cap is N lines x 2 s).
+    /// the gate has no cap of its own: the subshell / PowerShell setup gates are ended by the
+    /// setup's events or by the ONE setup net in the view (`SUBSHELL_SETUP_QUIET_NET`, 30 s of no
+    /// progress; `SUBSHELL_SETUP_CEILING`, 120 s; #1711), which hands their keys back.
     pub fn default_cap(self) -> Option<Duration> {
         match self {
             GateKind::PasteReading => Some(Duration::from_secs(3)),
@@ -194,8 +196,9 @@ impl GateKind {
             GateKind::PromptSeen => Some(Duration::from_millis(600)),
             // The hand-off's give-up cap since #1349 (the line editor's own signal opens it).
             GateKind::LineEditorActive => Some(Duration::from_millis(1500)),
-            GateKind::SubshellSetup | GateKind::PowershellSetup => Some(Duration::from_secs(90)),
-            GateKind::SubshellBootstrapWrite => None,
+            GateKind::SubshellSetup
+            | GateKind::PowershellSetup
+            | GateKind::SubshellBootstrapWrite => None,
             GateKind::SshConnect => Some(Duration::from_secs(5)),
             // The deferred replay step runs as soon as this update's effects have flushed; this
             // only guards a step that never runs (logged when it fires).
@@ -230,8 +233,10 @@ pub enum GateSignalPlan {
     WaitInOrder,
     /// The keys held at a prompt hold are void (the tty flushes them), then the signal goes.
     VoidHeldThenSignal,
-    /// The signal is stashed (`pending_aborts`) and sent after the last bootstrap line: it must
-    /// not cut a half-run script.
+    /// A signal meeting the bootstrap-write gate as a queue ENTRY (a ^Z / ^\ in `table` mode,
+    /// `SubshellPrep::HeldInOrder`): it waits for the last bootstrap line, so it does not cut a
+    /// half-run script. A Ctrl-C / Ctrl-D never reaches the gate this way since #1711 review F1:
+    /// the writer ends the setup and writes it at once (`abort_in_flight_subshell_setup`).
     StashUntilBootstrapDone,
 }
 

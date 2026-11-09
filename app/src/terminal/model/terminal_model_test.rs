@@ -3828,3 +3828,95 @@ fn full_reset_clears_app_cursor_and_kitty_flags_and_publishes_them_1599() {
     assert_eq!(eager, PublishedKeyModes::from_model(&terminal));
     assert!(!eager.app_cursor);
 }
+
+/// Every event the model sent so far, drained.
+fn drain_events(event_rx: &async_channel::Receiver<Event>) -> Vec<Event> {
+    let mut events = Vec::new();
+    while let Ok(event) = event_rx.try_recv() {
+        events.push(event);
+    }
+    events
+}
+
+/// #1710 (E-UNSUPPORTED): the probe names a shell the bootstrap has no script for. Off the
+/// tmux-ssh path that is `SubshellNotPhosphorizable` with the shell's name, and nothing else (no
+/// `RemoteWarpificationIsUnavailable`, which the tmux-ssh path keeps as its own verdict); a known
+/// shell is `InitSubshell` as before, with no unsupported event.
+#[test]
+fn init_subshell_with_an_unknown_shell_reports_not_phosphorizable() {
+    let (mut model, event_rx) = model_with_title_events();
+    Handler::init_subshell(
+        &mut model,
+        InitSubshellValue {
+            shell: "dash".to_owned(),
+            uname: Some("Linux".to_owned()),
+            session_id: None,
+        },
+    );
+    let events = drain_events(&event_rx);
+    let unsupported: Vec<&String> = events
+        .iter()
+        .filter_map(|event| match event {
+            Event::SubshellNotPhosphorizable { shell_name } => Some(shell_name),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(unsupported, vec![&"dash".to_owned()], "{events:?}");
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, Event::RemoteWarpificationIsUnavailable(_))),
+        "the tmux-ssh verdict is not doubled off that path: {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, Event::InitSubshell(_))),
+        "{events:?}"
+    );
+
+    Handler::init_subshell(
+        &mut model,
+        InitSubshellValue {
+            shell: "zsh".to_owned(),
+            uname: None,
+            session_id: None,
+        },
+    );
+    let events = drain_events(&event_rx);
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, Event::InitSubshell(e) if e.shell_type == ShellType::Zsh)),
+        "{events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, Event::SubshellNotPhosphorizable { .. })),
+        "{events:?}"
+    );
+}
+
+/// #1710 (review H6/H9): `unregister_session_id` forgets exactly the ID it is given. The others
+/// (the parent's, a stage-2 ID) stay registered, and a forgotten ID can be registered again.
+#[test]
+fn unregister_session_id_forgets_only_that_id() {
+    let mut terminal = TerminalModel::mock(None, None);
+    let parent = SessionId::from(1u64);
+    let probe = SessionId::from(2u64);
+    let stage2 = SessionId::from(3u64);
+    for id in [parent, probe, stage2] {
+        terminal.register_session_id(id);
+    }
+    terminal.unregister_session_id(probe);
+    assert!(!terminal.is_registered_session(probe));
+    assert!(terminal.is_registered_session(parent));
+    assert!(terminal.is_registered_session(stage2));
+    // Idempotent, and never an error for an ID that was never registered.
+    terminal.unregister_session_id(probe);
+    terminal.unregister_session_id(SessionId::from(99u64));
+    assert!(terminal.is_registered_session(parent));
+    terminal.register_session_id(probe);
+    assert!(terminal.is_registered_session(probe));
+}
