@@ -46,6 +46,60 @@ def registry_consistency():
 
 
 @check
+def proving_in_the_fix_tier():
+    """owner rule 2026-11-09: every new case runs in the fix tier until the owner graduates it. PROVING is registered and disjoint from SMOKE, the fix tier
+    (SMOKE + PROVING) selects every PROVING case on Linux / macOS (one fake-model pass for the ones that need it) and plans it on every Windows pane (run or
+    SKIP with its reason, never absent); the lab globs match lab arms; the report lists them for the owner and moves nothing."""
+    import run as runmod, winmap as wm
+    reg = {c["name"]: c for c in cases.CASES}
+    assert cases.PROVING and len(set(cases.PROVING)) == len(cases.PROVING), "PROVING is empty or lists a case twice"
+    assert not [n for n in cases.PROVING if n not in reg], "PROVING names no registered case: %s" % [n for n in cases.PROVING if n not in reg]
+    assert not set(cases.PROVING) & set(cases.SMOKE), "PROVING and SMOKE overlap: %s" % sorted(set(cases.PROVING) & set(cases.SMOKE))
+    assert not [n for n in cases.PROVING if reg[n].get("lab")], "PROVING lists a lab arm: lab cases are PROVING_LAB globs"
+    # Linux / macOS: the fix selection (table mode) holds every PROVING case; legacy (kill switch) is the narrowed list and may not
+    sel = wm.smoke_for("table", cases.SMOKE + cases.PROVING)
+    assert set(cases.PROVING) <= set(sel) and set(cases.SMOKE) <= set(sel)
+    assert not set(wm.smoke_for("legacy", cases.SMOKE + cases.PROVING)) - set(wm.KILL_SWITCH_SMOKE)
+    # the fake pass: PROVING_FAKE are agent-only PROVING cases; each runs in exactly one pass, the fake one; everything else only in the ordinary passes
+    assert set(cases.PROVING_FAKE) <= set(cases.PROVING) and all(reg[n]["modes"] == ("agent",) for n in cases.PROVING_FAKE), "PROVING_FAKE: not agent-only PROVING cases"
+    csv = ",".join(sel)
+    assert runmod.fake_pass_plan(csv, ["terminal", "agent"], False) and not runmod.fake_pass_plan(csv, ["terminal"], False)
+    assert not runmod.fake_pass_plan(csv, ["agent"], True), "already the fake globally: no second pass"
+    assert not runmod.fake_pass_plan(None, ["agent"], False), "outside the fix tier / with explicit --cases: no fake pass"
+    assert not runmod.fake_pass_plan(",".join(wm.smoke_for("legacy", cases.SMOKE + cases.PROVING)), ["agent"], False), "kill-switch run: no PROVING case, no fake pass"
+    for n in sel:
+        assert [runmod.fake_pass_ok(n, f, True) for f in (False, True)] == ([False, True] if n in cases.PROVING_FAKE else [True, False]), n
+    assert all(runmod.fake_pass_ok(n, f, False) for n in sel for f in (False, True)), "no plan: every pass runs every case (unchanged behaviour)"
+    # Windows: every PROVING case is in every pass's plan, and either runs in that pane or SKIPs with a reason
+    for mode in ("terminal", "agent"):
+        for pane in ("powershell", "gitbash"):
+            names, _o = wm.tier_plan("windows", "smoke", mode, pane, cases.SMOKE, cases.PROVING)
+            assert set(cases.PROVING) <= set(names), (mode, pane, sorted(set(cases.PROVING) - set(names)))
+            for n in cases.PROVING:
+                if mode in reg[n]["modes"]:
+                    assert wm.skip_reason(n, pane) is None or isinstance(wm.skip_reason(n, pane), str)
+    runnable = [n for n in cases.PROVING if "agent" in reg[n]["modes"] and not wm.skip_reason(n, "gitbash")]
+    assert {"agent_latency_key", "agent_latency_enter", "agent_steer_fast", "agent_fault_429"} <= set(runnable), "the Windows-capable PROVING agent cases must run there"
+    # the lab: every glob matches at least one lab arm, none matches a SMOKE case
+    import lab as labmod
+    for g in cases.PROVING_LAB:
+        assert any(c.get("lab") and labmod.name_matches(g, c["name"]) for c in cases.CASES), "PROVING_LAB glob %s matches no lab arm" % g
+        assert not any(labmod.name_matches(g, n) for n in cases.SMOKE)
+    # the report: a PROVING section with the status per mode, deciding nothing
+    d = tempfile.mkdtemp()
+    ok_name, bad_name = cases.PROVING[0], cases.PROVING[1]
+    with open(os.path.join(d, "results.jsonl"), "w") as f:
+        f.write(json.dumps(dict(name=ok_name, mode="agent@fake", status="pass", seconds=1, detail=[])) + "\n")
+        f.write(json.dumps(dict(name=bad_name, mode="agent@fake", status="skip", seconds=0, detail=["no model"])) + "\n")
+        f.write(json.dumps(dict(name="mode_proof", mode="agent", status="pass", seconds=1, detail=[])) + "\n")
+    subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "report.py"), d, "platform=linux"], check=False, capture_output=True)
+    md = open(os.path.join(d, "summary.md")).read()
+    assert "## PROVING cases (owner decides graduation)" in md and "| %s | agent@fake | PASS |" % ok_name in md and "| %s | agent@fake | SKIP |" % bad_name in md
+    assert "| agent | mode_proof | PASS" in md and "| mode_proof | agent@fake" not in md
+    shutil.rmtree(d)
+
+
+@check
 def destination_mode_metric_and_kill_switch_smoke():
     """#1532 / #1528: the destination mode is recorded in the results metrics, the legacy smoke pass is a subset of SMOKE, and the shadow
     disagreement counter reads the app log."""

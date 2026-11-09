@@ -101,6 +101,32 @@ if ec:
     for md, d in ec:
         for g, v in d.get("runs", {}).items():
             m.append("| %s | %s | %s | %s | %s |" % (md, d.get("reference"), g, v["bad"], v["n"]))
+# Owner rule (2026-11-09): every new case runs in the fix tier (cases.PROVING) until the OWNER moves it out. Graduation is never automatic: this section is the
+# list the coordinator puts to the owner after each fix-tier run (status per platform and mode). Rows whose case is in PROVING; absent when none ran.
+def proving_names():
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import cases as _cases
+        return set(_cases.PROVING)
+    except Exception:
+        return set()
+
+
+_pv = proving_names()
+_pr = [r for r in rows if r["name"] in _pv]
+if _pr:
+    _by = {}
+    for r in _pr:
+        _by.setdefault(r["name"], []).append(r)
+    m += ["", "## PROVING cases (owner decides graduation)", "",
+          "Platform %s. Nothing here moves a case: a passed case graduates only when the owner says so (docs/testing.md, 'New tests run in the fix tier first')." % meta.get("platform", "?"), "",
+          "| case | mode | status | detail |", "|---|---|---|---|"]
+    for n in sorted(_by):
+        for r in _by[n]:
+            m.append("| %s | %s | %s | %s |" % (n, r.get("mode", ""), r["status"].upper(), row_detail_cell(r.get("detail", []))[:160]))
+    _ok = sorted(n for n, rs in _by.items() if all(x["status"] == "pass" for x in rs))
+    m += ["", "passed in every pass it ran in on this platform (candidates for the owner's graduation decision, %d): %s" % (len(_ok), ", ".join(_ok) or "none"),
+          "not passed (fail / skip / no-reference): %s" % (", ".join(sorted(set(_by) - set(_ok))) or "none")]
 # #1513: case status changes against the previous finished build (APPCI_PREV_RESULTS, fetched by prev.py). Informational: no exit-code effect.
 # Appended AFTER every other section so existing parsers of the earlier sections are unaffected.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
