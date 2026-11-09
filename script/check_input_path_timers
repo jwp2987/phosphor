@@ -28,6 +28,17 @@ PENDING-CONVERSION. The allowlist's last section holds timers known to break the
 converted to events. The default run prints a WARNING per entry; `--strict` (release tier) FAILS on
 any. Moving an entry into the compliant section needs the code to really be a give-up net.
 
+PACING (owner-exempt 2026-11-09). A third allowlist section, `# PACING`, holds timers that pace OUR OWN
+bootstrap bytes into a user-space pty relay, a container proxy or a cooked tty whose consumption is
+unobservable (#960, #1384). They never carry user keys. They need a `pacing: <why>` comment (instead of
+`give-up-net:`), they are not pending under `--strict`, and the guard FAILS if the code path of a pacing
+timer can carry user keystrokes. How that is checked: for every pacing entry the guard takes each Rust
+function that references the pacing constant (or is the pacing function), plus the other pacing
+functions of the file, strips comments and strings, and fails when the body mentions a user-key API
+(write_user_bytes*, user_bytes*, UserInput*, user_input*, held_keys*, release_held_keys, typeahead*,
+PtyIntent). The pacing path may only move bytes the app itself built. This is a name-based check: a new
+user-key entry point with a different name must be added to USER_KEY_RE.
+
 ADDING A TIMER. Prefer an event. If a give-up net is truly needed: add the constant (or call), put
 `// give-up-net: <what it hands back / keeps held>` next to it, and add one line to
 script/input_path_timers.allow. If you cannot honestly write that comment, the timer is not allowed.
@@ -68,6 +79,11 @@ INPUT_PATH_FILES = [
 ]
 ALLOW_FILE = "script/input_path_timers.allow"
 PENDING_MARK = "# PENDING-CONVERSION"
+PACING_MARK = "# PACING"
+USER_KEY_RE = re.compile(
+    r"\b(?:write_user_bytes\w*|user_bytes\w*|UserInput\w*|user_input\w*|held_keys\w*|"
+    r"release_held_keys|typeahead\w*|PtyIntent)\b"
+)
 NOTE_RE = re.compile(r"give-up-net:\s*\S")
 WINDOW = 5
 
@@ -133,15 +149,19 @@ def expand(root, entries):
     return res
 
 
-def comment_near(lines, idx, prefix):
+PACING_NOTE_RE = re.compile(r"pacing:\s*\S")
+
+
+def comment_near(lines, idx, prefix, tag="give-up-net"):
+    note = NOTE_RE if tag == "give-up-net" else PACING_NOTE_RE
     lo, hi = max(0, idx - WINDOW), min(len(lines), idx + WINDOW + 1)
     for j in range(lo, hi):
         s = lines[j].lstrip()
-        if s.startswith(prefix) and NOTE_RE.search(s):
+        if s.startswith(prefix) and note.search(s):
             return True
         # a trailing comment on a code line counts too
-        k = lines[j].find(prefix + " give-up-net:")
-        if k >= 0 and NOTE_RE.search(lines[j][k:]):
+        k = lines[j].find(prefix + " " + tag + ":")
+        if k >= 0 and note.search(lines[j][k:]):
             return True
     return False
 
@@ -202,11 +222,14 @@ def scan_shell(rel, lines):
 
 
 def parse_allow(text):
-    ok, pending = {}, {}
+    ok, pending, pacing = {}, {}, {}
     cur = ok
     for n, raw in enumerate(text.splitlines(), 1):
         if raw.startswith(PENDING_MARK):
             cur = pending
+            continue
+        if raw.startswith(PACING_MARK):
+            cur = pacing
             continue
         if not raw.strip() or raw.lstrip().startswith("#"):
             continue
@@ -214,12 +237,66 @@ def parse_allow(text):
         if len(parts) < 3 or not all(p.strip() for p in parts[:3]):
             raise SystemExit(f"{ALLOW_FILE}:{n}: want path<TAB>identifier<TAB>what it does")
         cur[(parts[0].strip(), parts[1].strip())] = (n, parts[2].strip())
-    return ok, pending
+    return ok, pending, pacing
+
+
+def strip_code(text):
+    text = re.sub(r"//[^\n]*", "", text)
+    return re.sub(r'"(?:\\.|[^"\\])*"', '""', text)
+
+
+def fn_bodies(lines):
+    """{fn name: body text} for every fn in a Rust file (brace-balanced, comments and strings stripped)."""
+    out = {}
+    i = 0
+    while i < len(lines):
+        m = FN_RE.match(lines[i])
+        if not m:
+            i += 1
+            continue
+        depth, started, j, buf = 0, False, i, []
+        while j < len(lines):
+            code = strip_code(lines[j])
+            buf.append(code)
+            depth += code.count("{") - code.count("}")
+            if "{" in code:
+                started = True
+            if started and depth <= 0:
+                break
+            if not started and code.rstrip().endswith(";"):
+                break
+            j += 1
+        out.setdefault(m.group(1), "\n".join(buf))
+        i = i + 1
+    return out
+
+
+def pacing_user_key_errors(root, allow_pacing):
+    errs = []
+    by_file = {}
+    for (rel, ident), (n, _) in allow_pacing.items():
+        by_file.setdefault(rel, []).append((ident, n))
+    for rel, idents in by_file.items():
+        if not rel.endswith(".rs"):
+            errs.append(f"{ALLOW_FILE}: PACING entries must be Rust timers; {rel} is not")
+            continue
+        bodies = fn_bodies((root / rel).read_text(errors="replace").split("\n"))
+        names = {i for i, _ in idents}
+        checked = set()
+        for fn, body in bodies.items():
+            refs = any(re.search(r"\b" + re.escape(i) + r"\b", body) for i in names)
+            if fn in names or refs or (fn == "start_paced_writes" and refs):
+                checked.add(fn)
+        for fn in sorted(checked):
+            hit = USER_KEY_RE.search(bodies[fn])
+            if hit:
+                errs.append(f"{rel}: PACING path `{fn}` mentions user-key API `{hit.group(0)}`; a pacing timer must only carry bytes the app built (move it to the give-up-net or PENDING section)")
+    return errs
 
 
 def run(root, files, allow_text, strict):
-    allow_ok, allow_pending = parse_allow(allow_text)
-    allowed = {**allow_ok, **allow_pending}
+    allow_ok, allow_pending, allow_pacing = parse_allow(allow_text)
+    allowed = {**allow_ok, **allow_pending, **allow_pacing}
     errors, warnings = [], []
     missing_note = []  # (key, message): waived for PENDING entries, which are not nets
     found = set()
@@ -241,8 +318,9 @@ def run(root, files, allow_text, strict):
             for ln, fn in sites:
                 key = (rel, fn)
                 found.add(key)
-                if not comment_near(lines, ln, "#"):
-                    missing_note.append((key, f"{rel}:{ln + 1}: shell timer in `{fn}` has no `# give-up-net: <what it hands back / keeps held>` comment within {WINDOW} lines"))
+                tag = "pacing" if key in allow_pacing else "give-up-net"
+                if not comment_near(lines, ln, "#", tag):
+                    missing_note.append((key, f"{rel}:{ln + 1}: shell timer in `{fn}` has no `# {tag}: <why>` comment within {WINDOW} lines"))
             continue
         for ln, ident, fn in sites:
             if ident and ident in all_consts:
@@ -250,14 +328,17 @@ def run(root, files, allow_text, strict):
                 continue  # covered by the constant's definition
             key = (rel, ident or fn)
             found.add(key)
-            if not comment_near(lines, ln, "//"):
-                missing_note.append((key, f"{rel}:{ln + 1}: timer call in `{fn}` has no `// give-up-net: <what it hands back / keeps held>` comment within {WINDOW} lines"))
+            tag = "pacing" if key in allow_pacing else "give-up-net"
+            if not comment_near(lines, ln, "//", tag):
+                missing_note.append((key, f"{rel}:{ln + 1}: timer call in `{fn}` has no `// {tag}: <why>` comment within {WINDOW} lines"))
     for name, (rel, ln) in sorted(all_consts.items()):
         if not (NAME_RE.search(name) or name in used):
             continue
         found.add((rel, name))
-        if not comment_near(per_file[rel][0], ln, "//"):
-            missing_note.append(((rel, name), f"{rel}:{ln + 1}: timer constant {name} has no `// give-up-net: <what it hands back / keeps held>` comment within {WINDOW} lines"))
+        tag = "pacing" if (rel, name) in allow_pacing else "give-up-net"
+        if not comment_near(per_file[rel][0], ln, "//", tag):
+            missing_note.append(((rel, name), f"{rel}:{ln + 1}: timer constant {name} has no `// {tag}: <why>` comment within {WINDOW} lines"))
+    errors.extend(pacing_user_key_errors(root, allow_pacing))
     errors.extend(m for k, m in missing_note if k not in allow_pending)
     for key in sorted(found):
         if key not in allowed:
@@ -318,6 +399,26 @@ def self_test():
         pend = "s.sh\tf\ty\nf.rs\tA_GIVE_UP\tz\n" + PENDING_MARK + "\ng.rs\tgo2\tz\n"
         expect("pending warns", pend, "", want_fail=False)
         expect("pending fails under --strict", pend, "PENDING-CONVERSION", strict=True)
+        # PACING rule: needs a `pacing:` comment (give-up-net does not do), is not pending under
+        # --strict, and fails when its code path mentions a user-key API.
+        PAC = PACING_MARK + "\n"
+        (root / "p.rs").write_text(
+            "// give-up-net: wrong tag\nconst X_PACING: Duration = Duration::from_millis(5);\n"
+            "fn go() {\n    ctx.spawn(Timer::after(X_PACING), |m| {});\n}\n"
+        )
+        pal = "p.rs\tX_PACING\tz\n"
+        expect("pacing needs a pacing: comment", PAC + pal, "pacing: <why>", fs=["p.rs"])
+        (root / "p.rs").write_text(
+            "// pacing: our own bootstrap chunks\nconst X_PACING: Duration = Duration::from_millis(5);\n"
+            "fn go() {\n    ctx.spawn(Timer::after(X_PACING), |m| {});\n}\n"
+        )
+        expect("pacing with comment is clean", PAC + pal, "", fs=["p.rs"], want_fail=False)
+        expect("pacing is not pending under --strict", PAC + pal, "", fs=["p.rs"], strict=True, want_fail=False)
+        (root / "p.rs").write_text(
+            "// pacing: our own bootstrap chunks\nconst X_PACING: Duration = Duration::from_millis(5);\n"
+            "fn go(&mut self) {\n    self.write_user_bytes_to_pty(b, ctx);\n    ctx.spawn(Timer::after(X_PACING), |m| {});\n}\n"
+        )
+        expect("pacing path with a user-key API fails", PAC + pal, "user-key API", fs=["p.rs"])
     print("self-test: " + ("ok" if ok else "FAILED"))
     return 0 if ok else 1
 
