@@ -39,6 +39,12 @@ WHAT IT CHECKS, per shell (PHOSPHOR_NC_DEADLINE=2 keeps the hook's own deadline 
     (the discard widget stops at the first byte outside the frame alphabet);
   * a frame cut short, with its tail (and US) arriving after a 5 s stall, followed by the app's
     real command bytes: the command runs whole (the tail is never run);
+  * ^Y + cancel + command in one batch, before the hook starts: the command runs;
+  * a DA-reply-shaped sequence after ^Y is dropped whole: a raw command after it runs clean;
+  * a bare RS (Ctrl-6) then a word and Enter at the prompt: the word runs (the discard widget
+    hands everything back, the Enter included);
+  * a SIGWINCH during the hook: the command after it runs;
+  * US (^_) is still the line editor's undo;
   * vi mode (bash `set -o vi`, zsh `bindkey -v`): the exchange still answers;
   * zsh without zsh/datetime (no $EPOCHREALTIME): the cancel, the late frame and the cut-short
     frame still behave.
@@ -242,6 +248,36 @@ def protocol_checks(sh, shell, full=True):
         sh.write(b"\x19" + b"\x1b[200~" + text.encode() + b"\x1b[201~\r")
         expect_runs(sh, shell, "a bracketed paste (ESC first) right after ^Y runs whole", want)
 
+    # ^Y, the cancel frame and a command in ONE batch, before the hook has even started.
+    text, want = command()
+    sh.write(b"\x19" + CANCEL + app_command(text))
+    out = sh.read_until(re.escape(want))
+    check(shell, "^Y + cancel + command in one batch: no candidates, the command runs", want in out and CANDIDATE_RE.search(out) is None, f"(got {out[-200:]!r})")
+
+    # A terminal reply (a DA report) where the frame was expected: dropped whole, the line stays
+    # clean (the next command is typed raw, without the app's ^P).
+    if ask(sh, shell, "DA reply") is not None:
+        text, want = command()
+        sh.write(b"\x1b[?62;22c")
+        time.sleep(0.3)
+        sh.write(text.encode() + b"\r")
+        expect_runs(sh, shell, "a DA reply after ^Y leaves the line clean; the raw command after it runs", want)
+
+    # A bare RS typed at the prompt (Ctrl-6), then a word and Enter: the discard widget hands it
+    # all back, the Enter included, so the command runs.
+    sh.write(app_command("ranls() { echo ran-$((40+2))ls; }"))
+    sh.drain(0.5)
+    sh.write(b"\x1e" + b"ranls\r")
+    expect_runs(sh, shell, "a bare RS then `ranls` + Enter runs ranls (nothing eaten, the Enter kept)", b"ran-42ls")
+
+    # A resize (SIGWINCH) while the hook waits: a lost answer is fine, a lost key is not.
+    if ask(sh, shell, "resize") is not None:
+        os.kill(sh.pid, signal.SIGWINCH)
+        time.sleep(0.2)
+        text, want = command()
+        sh.write(CANCEL + app_command(text))
+        expect_runs(sh, shell, "a SIGWINCH during the hook loses no key: the command after it runs", want)
+
     if ask(sh, shell, "cancel") is not None:
         text, want = command()
         sh.write(CANCEL + app_command(text))
@@ -281,6 +317,13 @@ def protocol_checks(sh, shell, full=True):
         text, want = command()
         sh.write(b"%20%70" + US + app_command(text))
         expect_runs(sh, shell, "a frame's tail after a 5 s stall is never run; the real command after it runs whole", want)
+
+    # US (^_) is not taken over: it is still the line editor's undo.
+    text, want = command()
+    undo = "bind -q undo" if shell.startswith("bash") else "bindkey '^_'"
+    sh.write(app_command(f"{undo}; {text}"))
+    out = sh.read_until(re.escape(want))
+    check(shell, "US (^_) is still the line editor's undo", (b'\\C-_' in out or b'"^_" undo' in out) and want in out, f"(got {out[-240:]!r})")
 
     text, want = command()
     sh.write(app_command(text))

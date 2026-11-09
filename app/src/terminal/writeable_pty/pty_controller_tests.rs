@@ -780,7 +780,7 @@ fn queued_container_bootstrap_is_one_setup_job_with_the_pacing_named() {
         });
         let messages = sender.messages.lock();
         assert_eq!(messages.len(), 1, "one job, no timers: {messages:?}");
-        let Message::SetupChunked { chunks, pacing } = &messages[0] else {
+        let Message::SetupChunked { chunks, pacing, .. } = &messages[0] else {
             panic!("expected a setup job: {:?}", messages[0]);
         };
         assert!(matches!(
@@ -3493,7 +3493,7 @@ fn line_clear_payload_is_one_setup_job_paced_by_tty_mode() {
         });
         let messages = sender.messages.lock();
         assert_eq!(messages.len(), 1, "one job, no timers: {messages:?}");
-        let Message::SetupChunked { chunks, pacing } = &messages[0] else {
+        let Message::SetupChunked { chunks, pacing, .. } = &messages[0] else {
             panic!("expected a setup job: {:?}", messages[0]);
         };
         assert!(matches!(
@@ -4012,4 +4012,69 @@ fn the_shell_leaving_ends_the_exchange_without_a_frame() {
             );
         });
     }
+}
+
+/// #1801 review M1: on the write-queue path a setup script is ONE `SetupChunked` job the writer
+/// holds (`paced_write_queue` stays empty), so the start gate reads the job's liveness count: no
+/// exchange starts while the writer still holds the job, and one may once it has dropped it.
+#[test]
+fn an_exchange_does_not_start_while_the_writer_holds_a_setup_job() {
+    App::test((), |mut app| async move {
+        let (controller, _model_events, _status, sender, _tx) =
+            native_completions_controller(&mut app);
+        controller.update(&mut app, |controller, ctx| {
+            controller.force_write_queue(true);
+            controller.write_line_clear_setup(b"setup".to_vec(), ctx);
+            assert!(controller.paced_write_queue.is_empty());
+        });
+        let refused = controller.update(&mut app, |controller, ctx| {
+            start_exchange(controller, "cd pro", ctx)
+        });
+        assert!(refused.is_closed(), "not while the setup job is alive");
+        assert!(
+            !written(&sender).iter().any(|bytes| bytes == &[0x19]),
+            "no ^Y behind the setup job"
+        );
+
+        // The writer drops the job (here: the test sender's copy of the message).
+        sender.messages.lock().clear();
+        let started = controller.update(&mut app, |controller, ctx| {
+            start_exchange(controller, "cd pro", ctx)
+        });
+        assert!(
+            !started.is_closed(),
+            "the exchange starts once the job is gone"
+        );
+        assert_eq!(written(&sender), vec![vec![0x19]]);
+    });
+}
+
+/// #1801 review M1: a setup job is a write like any other: one started while an exchange waits
+/// for its prompt first sends the cancel frame.
+#[test]
+fn a_setup_write_during_an_exchange_is_preceded_by_the_cancel_frame() {
+    App::test((), |mut app| async move {
+        let (controller, _model_events, _status, sender, _tx) =
+            native_completions_controller(&mut app);
+        controller.update(&mut app, |controller, ctx| {
+            let _results = start_exchange(controller, "cd pro", ctx);
+            controller.force_write_queue(true);
+            controller.write_line_clear_setup(b"setup".to_vec(), ctx);
+        });
+        let messages = sender.messages.lock();
+        assert!(
+            matches!(&messages[0], Message::Input(b) if &b[..] == [0x19]),
+            "{messages:?}"
+        );
+        assert!(
+            matches!(&messages[1], Message::Input(b) if b.to_vec() == native_completions_cancel()),
+            "the cancel frame before the setup job: {messages:?}"
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|message| matches!(message, Message::SetupChunked { .. })),
+            "{messages:?}"
+        );
+    });
 }

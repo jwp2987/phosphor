@@ -474,12 +474,11 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
 
       # Phosphor (#1801): the native-completions keys on every standard keymap, for the same
       # reason as ^P above: ^Y asks this shell for its completions, RS (^^) opens an answer frame
-      # (dropped whole at the prompt), US (^_) closes one (a no-op alone). The widgets exist once
-      # the completion widgets below are defined; until then `bindkey` fails quietly.
+      # (dropped whole at the prompt). US (^_) is left alone: it stays zle's undo; the discard
+      # widget consumes a frame's own US.
       for warp_keymap in main emacs viins vicmd; do
         bindkey -M "$warp_keymap" '^Y' warp_complete_via_compadd_override 2>/dev/null || :
         bindkey -M "$warp_keymap" '^^' warp_native_discard 2>/dev/null || :
-        bindkey -M "$warp_keymap" '^_' warp_native_frame_end 2>/dev/null || :
       done
 
       # Introduce keybinding to switch prompt modes (PS1 vs built-in Warp prompt).
@@ -2382,31 +2381,80 @@ esac
     unset COMPADD_OVERRIDE
   }
 
-  # Phosphor (#1801): reads the rest of a native-completions frame after its RS into
-  # __warp_nc_body: frame-alphabet bytes (letters, digits, `:`, `%`, `-`) up to US (0x1f),
-  # byte by byte against a 5 s total deadline ($EPOCHREALTIME; without zsh/datetime, 5 s per
-  # byte). Returns 1 when it ended early; a byte outside the alphabet goes back to zle.
+  # Phosphor (#1801): ESC read where a native-completions frame byte was expected (__c is ESC,
+  # __warp_nc_body the frame-alphabet text read before it). Reads the rest of the escape sequence
+  # (at most 0.1 s between bytes). A terminal reply (a CSI report ending in c, R, n, t or y, or
+  # an OSC) is dropped whole, so none of it is left in the line; anything else (a bracketed
+  # paste, a key) goes back to zle intact with the text before it.
+  function __warp_nc_give_back_escape() {
+    setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal extendedglob
+    local __seq=$'\e' __b
+    if IFS= builtin read -s -r -k 1 -t 0.1 __b </dev/tty; then
+      __seq+=$__b
+      case $__b in
+        ('[')
+          while IFS= builtin read -s -r -k 1 -t 0.1 __b </dev/tty; do
+            __seq+=$__b
+            [[ $__b == [@-~] ]] && break
+            (( ${#__seq} <= 64 )) || break
+          done ;;
+        (']')
+          while IFS= builtin read -s -r -k 1 -t 0.1 __b </dev/tty; do
+            __seq+=$__b
+            [[ $__b == $'\a' || $__seq == *$'\e\\' ]] && break
+            (( ${#__seq} <= 4096 )) || break
+          done ;;
+        (O)
+          IFS= builtin read -s -r -k 1 -t 0.1 __b </dev/tty && __seq+=$__b ;;
+      esac
+    fi
+    if [[ $__seq == $'\e]'* || $__seq == $'\e['[0-9\;\?\>\<=]#[cRnty] ]]; then
+      zle -U "$__warp_nc_body"
+    else
+      zle -U "$__warp_nc_body$__seq"
+    fi
+  }
+
+  # Phosphor (#1801): reads the rest of a native-completions frame after its RS. Returns 0 with
+  # __warp_nc_body set to "<token>:<%HH...>" when the bytes have the frame's exact shape (a token
+  # of letters and digits, or `-`; `:`; `%HH` pairs; US = 0x1f) with at most 0.1 s between bytes
+  # and 5 s in all. Otherwise everything read goes back to zle (`zle -U`, control bytes and an
+  # Enter included, so they act as typed) and it returns 1.
   function __warp_nc_read_frame_body() {
     setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noksharrays nowarncreateglobal
     typeset -g __warp_nc_body=
-    local __c __left=5
+    local __c __phase=start __ok
     local -F __deadline=0
     (( ${+EPOCHREALTIME} )) && __deadline=$(( EPOCHREALTIME + 5 ))
     while :; do
-      if (( ${+EPOCHREALTIME} )); then
-        __left=$(( __deadline - EPOCHREALTIME ))
-        (( __left > 0 )) || return 1
-      fi
-      IFS= builtin read -s -r -k 1 -t $__left __c </dev/tty || return 1
-      if [[ $__c == $'\x1f' ]]; then
-        return 0
-      elif [[ $__c == [A-Za-z0-9:%-] ]]; then
-        __warp_nc_body+=$__c
-      else
-        zle -U "$__c"
+      if ! IFS= builtin read -s -r -k 1 -t 0.1 __c </dev/tty; then
+        zle -U "$__warp_nc_body"
         return 1
       fi
-      (( ${#__warp_nc_body} <= 3000000 )) || return 1
+      __ok=
+      case $__phase:$__c in
+        (start:-) __phase=dash __ok=1 ;;
+        (start:[A-Za-z0-9]|tok:[A-Za-z0-9]) __phase=tok __ok=1 ;;
+        (tok::|dash::) __phase=hex __ok=1 ;;
+        (hex:%) __phase=h1 __ok=1 ;;
+        (h1:[0-9A-Fa-f]) __phase=h2 __ok=1 ;;
+        (h2:[0-9A-Fa-f]) __phase=hex __ok=1 ;;
+        (hex:$'\x1f') return 0 ;;
+      esac
+      if [[ -z $__ok ]]; then
+        if [[ $__c == $'\e' ]]; then
+          __warp_nc_give_back_escape
+        else
+          zle -U "$__warp_nc_body$__c"
+        fi
+        return 1
+      fi
+      __warp_nc_body+=$__c
+      # 0.1 s bounds each byte; 5 s (with zsh/datetime) or the length bounds the frame.
+      if (( ${#__warp_nc_body} > 3000000 )) || { (( ${+EPOCHREALTIME} )) && (( EPOCHREALTIME > __deadline )) }; then
+        zle -U "$__warp_nc_body"
+        return 1
+      fi
     done
   }
 
@@ -2417,19 +2465,18 @@ esac
     # Phosphor (#1801): the exchange is self-identifying (design in pty_controller.rs, "The
     # in-band native-completions exchange"). Name it with a fresh token, then read the app's ONE
     # frame for it: RS <token> : <%HH bytes of the text> US (RS = 0x1e, US = 0x1f), or the cancel
-    # frame RS - : US. Nothing outside a frame is consumed: the first byte must be RS (anything
-    # else goes back to zle with `zle -U` and the exchange ends), and every later byte must be in
-    # the frame alphabet (__warp_nc_read_frame_body). Every byte is read with `read -k 1` against
-    # a TOTAL deadline ($EPOCHREALTIME; per byte without zsh/datetime), so a frame cut short can
-    # never hold this shell: PHOSPHOR_NC_DEADLINE seconds (default 20) for the frame to start, 5
-    # more for the rest, which the app writes in one piece. A frame with another token, the
-    # cancel, or a deadline ends the exchange with nothing. A frame that arrives after that lands
-    # at the prompt, where RS is bound to warp_native_discard (same rules, dropped) and US to a
-    # no-op, so a frame, or the tail of one cut short, is never run.
+    # frame RS - : US, written in one piece. Nothing outside a frame is consumed: the first byte
+    # must be RS (anything else goes back to zle with `zle -U` and the exchange ends), and then
+    # the frame's exact shape, with at most 0.1 s between bytes (__warp_nc_read_frame_body: on
+    # any other byte, or a gap, everything read goes back to zle). The first byte waits
+    # PHOSPHOR_NC_DEADLINE seconds (default 20; against $EPOCHREALTIME when zsh/datetime is
+    # loaded). A frame with another token, the cancel, or a deadline ends the exchange with
+    # nothing. A frame that arrives after that lands at the prompt, where RS is bound to
+    # warp_native_discard (same rules, dropped), so a frame is never run.
     local __c __hex __left __tok __start=${PHOSPHOR_NC_DEADLINE:-20}
     [[ $__start == <-> ]] || __start=20
     __warp_nc_seq=$(( ${__warp_nc_seq:-0} + 1 ))
-    __tok="$RANDOM${__warp_nc_seq}$RANDOM"
+    __tok="${RANDOM}x${__warp_nc_seq}x${RANDOM}"
     builtin printf '\e]9280;P;%s\a' "$__tok"
     __left=$__start
     if (( ${+EPOCHREALTIME} )); then
@@ -2439,8 +2486,14 @@ esac
     fi
     IFS= builtin read -s -r -k 1 -t $__left __c </dev/tty || return 1
     if [[ $__c != $'\x1e' ]]; then
-      # Not a frame: it is the user's (or another write's) first byte. Give it back to zle.
-      zle -U "$__c"
+      # Not a frame: it is the user's (or another write's) first byte. Give it back to zle (a
+      # terminal reply is dropped whole instead, see __warp_nc_give_back_escape).
+      typeset -g __warp_nc_body=
+      if [[ $__c == $'\e' ]]; then
+        __warp_nc_give_back_escape
+      else
+        zle -U "$__c"
+      fi
       return 1
     fi
     __warp_nc_read_frame_body || return 1
@@ -2465,16 +2518,12 @@ esac
   }
   # Phosphor (#1801): RS at the prompt opens a native-completions frame whose exchange already
   # ended (the hook gave up, or was interrupted): read the rest by the hook's rules and drop it.
-  # US alone (the tail of a frame cut short) does nothing. A frame is never run.
+  # Anything that is not a frame goes back to zle. A frame is never run.
   function warp_native_discard() {
     __warp_nc_read_frame_body
     return 0
   }
   zle -N warp_native_discard
-  function warp_native_frame_end() {
-    return 0
-  }
-  zle -N warp_native_frame_end
   zle -N warp_read_completion_buffer
 
   # Registers the custom completion widgets and hooks them up to
@@ -2493,13 +2542,9 @@ esac
   bindkey '^X' warp_complete_via_list_choices
   bindkey '^Y' warp_complete_via_compadd_override
   # Phosphor (#1801): RS opens a native-completions answer frame; at the prompt it is dropped.
-  # US closes one; alone (the tail of a frame cut short) it does nothing.
   bindkey '^^' warp_native_discard
   bindkey -M viins '^^' warp_native_discard 2>/dev/null
   bindkey -M vicmd '^^' warp_native_discard 2>/dev/null
-  bindkey '^_' warp_native_frame_end
-  bindkey -M viins '^_' warp_native_frame_end 2>/dev/null
-  bindkey -M vicmd '^_' warp_native_frame_end 2>/dev/null
 
   # Set style for the list-choices approach
   zstyle ':completion:warp_complete_via_list_choices:*' verbose no

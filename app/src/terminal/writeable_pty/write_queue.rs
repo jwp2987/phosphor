@@ -101,6 +101,35 @@ pub enum Pacing {
     GapIfCanonical { dur: Duration, why: &'static str },
 }
 
+/// Marks a `SetupChunked` job as alive for the controller that sent it (#1801 review M1): the
+/// shared count goes up when the controller sends the job and down when the job is dropped by the
+/// writer, whichever way that happens (written to the end, aborted, replaced by a newer setup,
+/// found empty, or the loop shutting down). So the count is "setup jobs still in flight", read by
+/// the controller without a message back from the writer thread.
+#[derive(Debug)]
+pub struct SetupLive(Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>);
+
+impl SetupLive {
+    /// Counts one more job alive on `count`.
+    pub fn new(count: std::sync::Arc<std::sync::atomic::AtomicUsize>) -> Self {
+        count.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        Self(Some(count))
+    }
+
+    /// A job nobody counts (tests, and callers that do not need the signal).
+    pub fn detached() -> Self {
+        Self(None)
+    }
+}
+
+impl Drop for SetupLive {
+    fn drop(&mut self) {
+        if let Some(count) = self.0.take() {
+            count.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        }
+    }
+}
+
 /// A `SetupChunked` job: its chunks, and where the writer is in them.
 pub struct SetupJob {
     pub id: JobId,
@@ -113,6 +142,9 @@ pub struct SetupJob {
     /// Cut by an abort: nothing more is started, and a bracketed paste left open is closed once
     /// the chunk in flight (if any) has been written.
     aborted: bool,
+    /// Counts this job alive for its sender until it is dropped (#1801 review M1). Held only for
+    /// its `Drop`.
+    _live: SetupLive,
 }
 
 impl SetupJob {
@@ -128,7 +160,14 @@ impl SetupJob {
             in_paste: false,
             next_at: None,
             aborted: false,
+            _live: SetupLive::detached(),
         }
+    }
+
+    /// Attaches the sender's liveness count to this job (#1801 review M1).
+    pub fn with_live(mut self, live: SetupLive) -> SetupJob {
+        self._live = live;
+        self
     }
 
     pub fn is_exhausted(&self) -> bool {

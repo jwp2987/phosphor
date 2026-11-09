@@ -47,7 +47,7 @@ use crate::view_components::DismissibleToast;
 use crate::workspace::ToastStack;
 
 use super::Message;
-use super::write_queue::{AbortScope, Pacing};
+use super::write_queue::{AbortScope, Pacing, SetupLive};
 
 /// Gap between the chunks of a bootstrap written into a subshell behind a user-space pty relay
 /// (`sudo -i`, `su`, `script`, `ksu`, ...). #960: such a relay deadlocks when ~120KB is flooded
@@ -225,14 +225,16 @@ enum PtyWrite {
 // 3. The app ALWAYS ends the exchange with exactly one frame, as a single write:
 //    `RS <token> : <%HH bytes of the text> US` (RS = 0x1e, US = 0x1f), or the cancel frame
 //    `RS - : US`.
-// 4. A frame is safe wherever it lands. The hook reads it byte by byte and accepts only
-//    the frame alphabet (letters, digits, `:`, `%`, `-`) between RS and US; it checks the token,
-//    and any other token, or the cancel, ends the exchange with nothing. At the shell's prompt
-//    (the hook already gave up), RS is bound to a widget that reads the rest the same way and
-//    drops it, and US to a no-op, so the tail of a frame cut short is never run. A frame never
-//    contains an EOT or a newline.
-// 5. The hook and the widget consume nothing outside a frame: the first byte must be RS, and a
-//    byte outside the alphabet ends the read and goes back to the line editor.
+// 4. A frame is safe wherever it lands. The hook reads it byte by byte and accepts only the
+//    frame's exact shape (a token of letters and digits, or `-`; `:`; `%HH` pairs; US) with at
+//    most 0.1 s between bytes; it checks the token, and any other token, or the cancel, ends the
+//    exchange with nothing. At the shell's prompt (the hook already gave up), RS is bound to a
+//    widget that reads the rest the same way and drops it. US itself is not bound (it stays the
+//    line editor's undo); a frame's tail cut short by a stall is text that the next command's
+//    line-clear key removes. A frame never contains an EOT or a newline.
+// 5. The hook and the widget consume nothing outside a frame: the first byte must be RS, and any
+//    other byte, or a gap, ends the read and everything read goes back to the line editor, an
+//    Enter included (a terminal reply is dropped whole instead).
 //
 // The app side. NOTHING ever sits in the write queue behind `^Y`:
 // a. An exchange starts only when the write queue is empty, no command is executing, the line
@@ -247,6 +249,17 @@ enum PtyWrite {
 //    bytes wait in the tty for the line editor). No prompt in time: the cancel frame.
 // d. The shell leaving first (a Precmd, ExitShell or Exit while the prompt is awaited) just ends
 //    the exchange: no frame (the shell that would read it is not the one asked).
+//
+// Two kinds of input reach the tty without going through `send_write_to_event_loop`, so the
+// cancel-first rule does not cover them; each is safe on its own terms:
+// - Terminal-query replies (DA, cursor position, colour reports), which the event loop queues
+//   itself when the shell or a program asks. The shell's hook does not ask anything, so none is
+//   due during an exchange; one that arrives anyway is an escape sequence, which breaks the
+//   frame's shape, so the hook (or the RS widget) drops the whole reply and ends the exchange
+//   with nothing, leaving the line clean.
+// - A resize (`Message::Resize`, SIGWINCH to the shell). It writes no byte. The signal may cut
+//   the hook's read short; the hook then just returns, and the frame lands at the prompt, where
+//   the RS widget drops it. Only that Tab's in-band answer is lost.
 //
 // So a late prompt, a late answer or a timeout on either side can cost only that one Tab's
 // in-band answer (the completer answers instead); never a key and never a command.
@@ -446,6 +459,9 @@ pub struct PtyController<T: EventLoopSender> {
     ctrl_c_next_command_at: Option<std::time::Instant>,
     /// A `SetupChunked` job was sent and no abort since, so a cancel has something to abort.
     setup_job_sent: bool,
+    /// How many `SetupChunked` jobs the writer still holds (#1801 review M1): raised when one is
+    /// sent, lowered by the writer when it drops the job (written, aborted, replaced, shut down).
+    setup_jobs_live: Arc<std::sync::atomic::AtomicUsize>,
     /// Test-only: whether `shutdown_pty` was called (#980 tests; the real event loop is not
     /// running under test, so the sent `Message::Shutdown` is otherwise unobservable).
     #[cfg(test)]
@@ -778,6 +794,7 @@ impl<T: EventLoopSender> PtyController<T> {
             ctrl_c_sent_at: None,
             ctrl_c_next_command_at: None,
             setup_job_sent: false,
+            setup_jobs_live: Default::default(),
             #[cfg(test)]
             shutdown_requested: false,
         }
@@ -1302,8 +1319,9 @@ impl<T: EventLoopSender> PtyController<T> {
                 }
                 if expect_awaiting_prompt {
                     // No prompt in time (a slow link, a VPN stall, or no hooks): end the
-                    // exchange with the cancel frame, which is safe wherever it lands (see the
-                    // framed exchange above), then release the held writes behind it.
+                    // exchange with the cancel frame, which is safe wherever it lands (see "The
+                    // in-band native-completions exchange"). Nothing is held behind the `^Y`,
+                    // so there is nothing to release.
                     log::warn!(
                         "Native shell completions prompt not seen after {timeout:?}; cancelling \
                          the exchange (the Tab falls back to the completer)"
@@ -1323,9 +1341,11 @@ impl<T: EventLoopSender> PtyController<T> {
     }
 
     /// Ends an exchange still waiting for its prompt: writes the cancel frame (the one frame this
-    /// exchange gets) and drops the request (its requester falls back to the completer). `report` shows the "no shell
-    /// integration" toast for a request that is not remote-first: a prompt that never came
-    /// there is what an un-phosphorized shell looks like; a remote-first session has the hooks.
+    /// exchange gets) and drops the request (its requester falls back to the completer).
+    ///
+    /// `report` shows the "no shell integration" toast for a request that is not remote-first: a
+    /// prompt that never came there is what an un-phosphorized shell looks like; a remote-first
+    /// session has the hooks.
     ///
     /// Returns whether the toast was asked for (the decision; the toast itself needs a window).
     fn end_native_exchange_with_cancel(
@@ -1421,8 +1441,15 @@ impl<T: EventLoopSender> PtyController<T> {
         {
             return Err("the typeahead hand-off is engaged");
         }
-        if self.paced_writes_remaining() > 0 {
-            return Err("paced writes are in flight");
+        // Setup writes in flight: the timer-chained chunks, or a `SetupChunked` job the writer
+        // still holds (the write-queue path never fills `paced_write_queue`).
+        if !self.paced_write_queue.is_empty()
+            || self
+                .setup_jobs_live
+                .load(std::sync::atomic::Ordering::Acquire)
+                > 0
+        {
+            return Err("setup writes are in flight");
         }
         if matches!(
             self.tmux_control_mode,
@@ -1690,13 +1717,26 @@ impl<T: EventLoopSender> PtyController<T> {
         pacing: Pacing,
         ctx: &mut ModelContext<PtyController<T>>,
     ) {
+        // #1801 (design point b): a setup write is a write like any other. A native-completions
+        // exchange cannot be waiting for its prompt here in practice (setup follows a command,
+        // which already cancelled it, and an exchange does not start while setup is in flight),
+        // but the rule is kept here too rather than relied on.
+        self.cancel_native_exchange_before_write(ctx);
         if self.write_queue && self.tmux_control_mode.is_none() {
             // One job in the event loop's own FIFO (#1384): the loop honours the gap as its poll
             // deadline, nothing a user types can land inside the script, and an abort replaces
             // the generation below.
             self.cancel_paced_writes(ctx);
             self.setup_job_sent = true;
-            self.send_message_to_event_loop(Message::SetupChunked { chunks, pacing }, ctx);
+            let live = SetupLive::new(self.setup_jobs_live.clone());
+            self.send_message_to_event_loop(
+                Message::SetupChunked {
+                    chunks,
+                    pacing,
+                    live,
+                },
+                ctx,
+            );
             return;
         }
         // The timer path cannot read the tty mode where the writer does, so it keeps the gap.
