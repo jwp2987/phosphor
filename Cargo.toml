@@ -468,7 +468,7 @@ winreg = "0.55.0"
 typed-path = "0.10.0"
 streaming-iterator = "0.1.0"
 derivative = "2.2.0"
-rmcp = { version = "2.2" }
+rmcp = { version = "3.9" }
 
 [profile.release]
 # Use line-tables-only (debug = 1) rather than full debuginfo (debug = 2 /

@@ -21,7 +21,7 @@ use axum::routing::post;
 use axum::{Json, Router};
 use futures::future::{BoxFuture, Ready, Shared, pending, ready};
 use futures::{FutureExt, StreamExt};
-use rmcp::model::{CallToolRequestParams, ClientInfo, ErrorData};
+use rmcp::model::{CallToolRequestParams, ClientConfig, ErrorData};
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::{Peer, RoleClient, ServiceError, ServiceExt};
 use serde_json::{Value, json};
@@ -523,7 +523,7 @@ async fn connect_with_progress_routing(
     server: &TestServer,
     installation_id: Uuid,
 ) -> rmcp::service::RunningService<rmcp::RoleClient, McpClientHandler> {
-    McpClientHandler::new(ClientInfo::default(), installation_id)
+    McpClientHandler::new(ClientConfig::default(), installation_id)
         .serve(StreamableHttpClientTransport::from_uri(server.uri.clone()))
         .await
         .unwrap()

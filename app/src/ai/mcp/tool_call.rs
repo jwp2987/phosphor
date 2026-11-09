@@ -34,8 +34,9 @@ use futures::future::{Either, pending, select};
 use instant::Instant;
 use parking_lot::Mutex;
 use rmcp::model::{
-    CallToolRequest, CallToolRequestParams, CallToolResult, CancelledNotificationParam, ClientInfo,
-    ClientRequest, ErrorData, ProgressNotificationParam, ProgressToken, RequestId, ServerResult,
+    CallToolRequest, CallToolRequestParams, CallToolResult, CancelledNotificationParam,
+    ClientConfig, ClientRequest, ErrorData, ProgressNotificationParam, ProgressToken, RequestId,
+    ServerResult,
 };
 use rmcp::service::{MaybeSendFuture, NotificationContext, PeerRequestOptions};
 use rmcp::{ClientHandler, Peer, RoleClient, ServiceError};
@@ -397,12 +398,12 @@ fn outcome_unknown_error(err: &ServiceError) -> ServiceError {
 /// The client side of every MCP connection: the client info sent in `initialize`, plus
 /// routing of `notifications/progress` to the tool call that owns the progress token.
 pub struct McpClientHandler {
-    info: ClientInfo,
+    info: ClientConfig,
     installation_id: Uuid,
 }
 
 impl McpClientHandler {
-    pub fn new(info: ClientInfo, installation_id: Uuid) -> Self {
+    pub fn new(info: ClientConfig, installation_id: Uuid) -> Self {
         Self {
             info,
             installation_id,
@@ -411,7 +412,7 @@ impl McpClientHandler {
 }
 
 impl ClientHandler for McpClientHandler {
-    fn get_info(&self) -> ClientInfo {
+    fn get_info(&self) -> ClientConfig {
         self.info.clone()
     }
 
