@@ -4329,13 +4329,13 @@ impl TypedActionView for AISettingsPageView {
             }
             AISettingsPageAction::RefreshModelsDev => {
                 use crate::ai::agent_providers::models_dev;
+                // An explicit click: always fetches, whatever `models_dev_fetch` says.
                 let client = http_client::Client::new();
-                let enabled = *AISettings::as_ref(ctx).models_dev_fetch;
                 let url =
                     models_dev::resolve_url(&(*AISettings::as_ref(ctx).models_dev_url).clone());
                 ctx.spawn(
                     async move {
-                        models_dev::refresh_catalog(enabled, url, |url| {
+                        models_dev::refresh_catalog(url, |url| {
                             models_dev::fetch_and_cache(client, url, models_dev::cache_path())
                         })
                         .await
@@ -4701,6 +4701,9 @@ impl SettingsPageMeta for AISettingsPageView {
     }
 
     fn on_page_selected(&mut self, _: bool, ctx: &mut ViewContext<Self>) {
+        // Load the model catalog when the page is opened (cache or built-in; a download only
+        // when `models_dev_fetch` is on), not when the widget is constructed.
+        ctx.dispatch_typed_action_deferred(AISettingsPageAction::EnsureModelsDevLoaded);
         if UserWorkspaces::as_ref(ctx).is_byo_api_key_enabled() {
             return;
         }

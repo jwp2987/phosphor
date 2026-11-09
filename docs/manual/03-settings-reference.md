@@ -331,33 +331,34 @@ These are what stand between the agent and your shell. Read them carefully.
 
 ### models.dev catalog download
 
-Set this in `settings.toml` (there is no GUI toggle):
+Phosphor makes **no network request for the model catalog at startup**. It uses the catalog built into the app (a snapshot of models.dev dated 2026-11-06). To update it, press **Refresh model list** on the Providers settings page; that downloads the catalog once, on demand.
+
+The one URL the Refresh button fetches (unless you change it below) is:
+
+`https://gitlab.com/winters-phosphor/phosphor/-/raw/main/assets/models_dev/api.json`
+
+That is a copy of models.dev's catalog kept in the Phosphor repo. Phosphor does not contact `models.dev` itself unless you set `models_dev_url` to it.
+
+Both settings are in `settings.toml` (there is no GUI toggle):
 
 ```toml
 [agents.warp_agent]
-models_dev_fetch = true
-models_dev_url = "https://gitlab.com/winters-phosphor/phosphor/-/raw/main/assets/models_dev/api.json"
+models_dev_fetch = false
+models_dev_url = ""
 ```
 
 | TOML path | Type | Default | What it does |
 |---|---|---|---|
-| `agents.warp_agent.models_dev_fetch` | boolean | `true` | Download the model catalog used by the provider "Quick add" row and attachment capabilities. With `false`, nothing is ever requested, whatever `models_dev_url` says (not at startup, not from the Refresh button). |
-| `agents.warp_agent.models_dev_url` | string | the repo copy on main (above) | Where the catalog is downloaded from. Settings file only, no GUI. A blank value means the default. |
+| `agents.warp_agent.models_dev_fetch` | boolean | `false` | Also download the catalog automatically when the Providers page opens and the cache is older than 24 hours. The Refresh button works whatever this is. |
+| `agents.warp_agent.models_dev_url` | string | the URL above | Where the catalog is downloaded from. Settings file only. A blank value means the default. |
 
-The catalog is loaded in this order: a fresh download from `models_dev_url` (only when `models_dev_fetch` is `true`), then the on-disk cache, then the catalog built into Phosphor. With `models_dev_fetch = false` and no cache, Phosphor uses the built-in catalog (a snapshot of models.dev dated 2026-11-06), so the model list is never empty. A download that is not valid catalog JSON is discarded and never cached.
+The catalog is loaded in this order: a fresh on-disk cache, then (only when `models_dev_fetch` is `true`) a download, then the stale cache, then the built-in catalog, so the model list is never empty. A download that is not valid catalog JSON is discarded and never cached. The catalog loads when you open the settings page, not when the app starts.
 
 To read models.dev itself, or your own mirror:
 
 ```toml
 [agents.warp_agent]
 models_dev_url = "https://models.dev/api.json"
-```
-
-To stop all downloads and use only the cache or the built-in catalog:
-
-```toml
-[agents.warp_agent]
-models_dev_fetch = false
 ```
 
 The repo copy and the built-in catalog are refreshed together by `python3 -I script/update_models_dev.py`.
