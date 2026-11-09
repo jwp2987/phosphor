@@ -153,3 +153,26 @@ fn abandon_all_returns_parked_actions() {
     assert_eq!(parked[0].id, ask_id);
     assert_eq!(actions.0.len(), 0);
 }
+
+/// Owner decision 2026-11-09: an earlier-turn command that finished preprocessing but was parked
+/// behind a hung batch is handed back by `release_ready` after `abandon_pending` so the caller can
+/// cancel it; it is never part of what a later batch returns to run.
+#[test]
+fn stale_parked_command_is_released_for_cancel_not_queued_with_new_turn() {
+    let mut actions = PendingPreprocessedActions::default();
+    let (_hung_id, _hung) = batch_of(&mut actions);
+    let (stale_id, stale_batch) = batch_of(&mut actions);
+    actions
+        .handle_preprocess_actions_result(stale_batch, vec![create_test_action(stale_id.clone())]);
+
+    actions.abandon_pending();
+    let stale = actions.release_ready();
+    assert_eq!(stale.len(), 1);
+    assert_eq!(stale[0].id, stale_id);
+
+    let (new_id, new_batch) = batch_of(&mut actions);
+    let out = actions
+        .handle_preprocess_actions_result(new_batch, vec![create_test_action(new_id.clone())]);
+    let ids: Vec<_> = out.iter().map(|a| a.id.clone()).collect();
+    assert_eq!(ids, vec![new_id], "only the new turn's action runs");
+}

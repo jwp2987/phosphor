@@ -1406,13 +1406,11 @@ impl BlocklistAIActionModel {
                 log::warn!(
                     "hop=agent_action status=parked abandoned unresolved preprocess batches ids={abandoned:?} at new turn"
                 );
-                // Batches that had finished but were parked behind an abandoned one are
-                // released now rather than at the next batch's completion.
-                let released = batches.release_ready();
-                if !released.is_empty() {
-                    self.enqueue_preprocessed_actions(conversation_id, released, ctx);
-                    self.try_to_execute_available_actions(conversation_id, ctx);
-                }
+                // Owner decision 2026-11-09: leftovers of an earlier turn that had finished
+                // preprocessing but were parked behind an abandoned batch are CANCELLED, never
+                // executed. Nothing from an old turn runs on its own.
+                let stale = batches.release_ready();
+                self.record_stale_cancelled(conversation_id, stale);
             }
         }
         self.queue_actions_without_abandoning(actions, conversation_id, ctx);
@@ -1478,6 +1476,32 @@ impl BlocklistAIActionModel {
         ctx.emit(BlocklistAIActionEvent::ActionBlockedOnUserConfirmation(
             action_id,
         ));
+    }
+
+    /// Gives stale earlier-turn actions a `cancelled` result without executing them. The result
+    /// is recorded directly (no `FinishedAction` event, no status write): the new turn is
+    /// starting, and these results ride on the next request like any other cancelled call.
+    fn record_stale_cancelled(
+        &mut self,
+        conversation_id: AIConversationId,
+        stale: Vec<AIAgentAction>,
+    ) {
+        for action in stale {
+            log::warn!(
+                "hop=agent_action id={} status=cancelled earlier-turn action parked at a new turn",
+                action.id
+            );
+            let result = Arc::new(AIAgentActionResult {
+                id: action.id.clone(),
+                task_id: action.task_id.clone(),
+                result: action.action.cancelled_result(),
+            });
+            self.hop_state.remove(&(conversation_id, action.id.clone()));
+            self.finished_action_results
+                .entry(conversation_id)
+                .or_default()
+                .push(result);
+        }
     }
 
     /// Moves preprocessed actions into the pending queue (skipping ones that already have

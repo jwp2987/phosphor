@@ -2126,6 +2126,9 @@ unit tests `preparing_question_tests` (common.rs), `abandon_pending_unparks_late
 (preprocess_tests.rs). Fuzzer oracle I1 gained `PendingStage::Parked` (a finished preprocess batch with no Pending batch ahead that never became pending/blocked) and corpus
 `hang1851c1_multi_tool_slow_command_trailing_ask`, `hang1851c2_hung_command_then_ask_stop` (the hung-diff stand-in: the fake DSL has no apply_file_diffs, a never-ending command
 plays the hung earlier action), `hang1851c4_steer_during_ask_placeholder`.
+Owner decision 2026-11-09 (#1859): earlier-turn actions that finished preprocessing but were parked behind an abandoned batch are CANCELLED at the next turn's `queue_actions`
+(a `cancelled` result each, no execution, no FinishedAction event); unit `stale_parked_command_is_released_for_cancel_not_queued_with_new_turn`. The Parked oracle and the
+corpus did not assume release, so they are unchanged.
 
 ## 3. Real-app testing
 
