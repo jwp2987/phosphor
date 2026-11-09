@@ -1,4 +1,4 @@
-use warpui::{App, assets::asset_cache::AssetSource};
+use warpui::App;
 
 use crate::{
     Assets, terminal::ssh::util::convert_script_to_one_line,
@@ -27,13 +27,6 @@ fn assert_script_is_short_enough_mac(script: &str, script_name: &str, convert_to
     );
 }
 
-fn get_script(asset_source: AssetSource, ctx: &AppContext) -> String {
-    match AssetCache::as_ref(ctx).load_asset::<String>(asset_source) {
-        AssetState::Loaded { data } => data.to_string(),
-        _ => panic!("install tmux script should be available as a string"),
-    }
-}
-
 #[cfg_attr(windows, ignore = "TODO(CORE-3626)")]
 #[test]
 /// See [assert_script_is_short_enough_mac] for more information.
@@ -47,23 +40,6 @@ fn test_mac_warpification_script_size() {
                 // measures the worst case for the macOS 1020-byte pty limit.
                 &begin_warpify_ssh_session_command(SessionId::from(u64::MAX), ctx),
                 "unknown_init_subshell.sh",
-                false,
-            );
-
-            assert_script_is_short_enough_mac(
-                &get_script(
-                    bundled_asset!("ssh/bash_zsh/install_tmux_and_warpify_brew.sh"),
-                    ctx,
-                ),
-                "install_tmux_and_warpify_brew.sh",
-                false,
-            );
-            assert_script_is_short_enough_mac(
-                &get_script(
-                    bundled_asset!("ssh/fish/install_tmux_and_warpify_brew.sh"),
-                    ctx,
-                ),
-                "fish/install_tmux_and_warpify_brew.sh",
                 false,
             );
 

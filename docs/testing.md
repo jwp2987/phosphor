@@ -143,7 +143,7 @@ Hard rules:
   The remote user and host are this machine's (`whoami`, `hostname`). Without `sshd` / `ssh-keygen` / the remote
   shell the scenario SKIPS with the reason on stderr; `PHOSPHOR_REQUIRE_SSH_FIXTURE=1` (set by the
   `integration-linux` job) turns a missing or broken sshd into a failure (a missing remote shell, e.g. `ash`, still
-  skips). The tmux-wrapper variants (`test_tmux_ssh_into_*`, `test_install_tmux_ssh_into_*`) need tmux on the remote
+  skips). The tmux-wrapper variants (`test_tmux_ssh_into_*`) need tmux on the remote
   and a package install and are not listed in `integration_tests!`; `test_ssh_into_fish` stays off (fish is not a
   supported remote shell). A scenario killed by a timeout can leave its sshd running (`ps`, stop by exact PID).
   Every scenario in `integration_tests!` must be registered in the binary's `register_tests()`

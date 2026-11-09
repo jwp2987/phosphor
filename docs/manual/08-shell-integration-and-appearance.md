@@ -240,10 +240,7 @@ you SSH into (`DECLINED.md`, "SSH tmux wrapper — kept, deprecation not ported"
 **Its limits, honestly:**
 
 - **It needs tmux ≥ 3.0 on the remote.** If tmux is missing or too old you get
-  an install block offering a bundled script (Homebrew, or apt/dnf/pacman/yum/zypper
-  with sudo, or a rootless install into `~/.warp/tmux/`). It trades installing
-  Phosphor's binary for installing tmux — it is not a "nothing to install"
-  option.
+  an error block; Phosphor no longer offers to install tmux for you.
 - **It is mutually exclusive with the legacy wrapper.** Turning it on disables
   the ControlMaster wrapper for the session, and vice versa; the choice is
   computed once, in `TerminalManager`, at PTY creation.
@@ -783,7 +780,6 @@ app/src/settings/ssh.rs:28-44 (SshSettings::reuse_existing_control_master defaul
 app/src/terminal/ssh/ssh_detection.rs:24-51 (evaluate_warpify_ssh_host gating)
 app/src/terminal/ssh/util.rs:155-215 (SshWarpifyCommand: ssh, gcloud compute ssh, eb ssh, doctl compute ssh; -T/-W non-interactive)
 app/src/terminal/local_tty/terminal_manager.rs:688-716 (tmux wrapper supersedes ControlMaster; computed at PTY creation)
-app/src/terminal/ssh/install_tmux.rs:381-383 (tmux >= 3.0), :523-604 (bundled install scripts: brew/linux/apt/dnf/pacman/yum/zypper)
 app/assets/bundled/ssh/bash_zsh/warpify_ssh_session.sh:45-60 (~/.warp/tmux/execute_tmux.sh, tmux version check)
 app/src/terminal/view/init.rs:344-371 (ctrl-i for terminal:warpify_subshell and terminal:warpify_ssh_session, context predicates)
 app/src/terminal/ssh/warpify.rs:38-45 (ctrl-c interrupts SshWarpifyBlock)

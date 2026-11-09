@@ -2909,15 +2909,6 @@ impl TerminalModel {
             Some(WarpInitiatedTmuxControlMode::new(tmux_installation));
     }
 
-    pub fn set_pending_warp_initiated_control_mode_with_install_tmux(&mut self, with_root: bool) {
-        self.pending_warp_initiated_control_mode =
-            Some(WarpInitiatedTmuxControlMode::new(Some(if with_root {
-                TmuxInstallationState::InstalledByWarpRootInThisSession
-            } else {
-                TmuxInstallationState::InstalledByWarpInThisSession
-            })));
-    }
-
     pub fn clear_pending_warp_initiated_control_mode(&mut self) {
         self.pending_warp_initiated_control_mode = None;
     }
@@ -3518,7 +3509,7 @@ impl ansi::Handler for TerminalModel {
     ///   `SshTmuxInstaller` and `TmuxInstallFailed` -- now carry one too. The 13 scripts under
     ///   `app/assets/bundled/ssh/` run on the *remote* host and cannot mint an ID, so the client
     ///   substitutes `SESSION_ID_PLACEHOLDER` into them before they reach the pty
-    ///   (`ssh/warpify.rs`, `ssh/install_tmux.rs`; minted by `TerminalView::
+    ///   (`ssh/warpify.rs`; minted by `TerminalView::
     ///   mint_registered_session_id`). All three read it from a `session_id` field that sits
     ///   *beside* `value` rather than inside it -- see the comment on the variants in
     ///   `dcs_hooks.rs` for why. The two macOS variants were shortened to pay for the 38 extra

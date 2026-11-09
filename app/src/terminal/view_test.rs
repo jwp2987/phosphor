@@ -16011,7 +16011,6 @@ enum InterruptCtrlCPath {
     /// Stop of a conversation whose running command is the user's own (not agent-requested).
     StopUserCommand,
     SshWarpifyInterrupt,
-    SshInstallTmuxInterrupt,
     Rewind,
 }
 
@@ -16027,7 +16026,6 @@ fn an_interrupt_ctrl_c_is_not_held_behind_a_deferred_enter() {
         for path in [
             InterruptCtrlCPath::StopUserCommand,
             InterruptCtrlCPath::SshWarpifyInterrupt,
-            InterruptCtrlCPath::SshInstallTmuxInterrupt,
             InterruptCtrlCPath::Rewind,
         ] {
             App::test((), move |mut app| async move {
@@ -16072,11 +16070,6 @@ fn an_interrupt_ctrl_c_is_not_held_behind_a_deferred_enter() {
                     InterruptCtrlCPath::SshWarpifyInterrupt => {
                         view.handle_ssh_warpify_block_event(&SshWarpifyBlockEvent::Interrupt, ctx)
                     }
-                    InterruptCtrlCPath::SshInstallTmuxInterrupt => view
-                        .handle_ssh_install_tmux_block_event(
-                            &SshInstallTmuxBlockEvent::Interrupt,
-                            ctx,
-                        ),
                     InterruptCtrlCPath::Rewind => view.rewind_ai_conversation(
                         EntityId::new(),
                         AIAgentExchangeId::new(),
@@ -29218,31 +29211,6 @@ fn text_for_a_cli_agent_is_held_by_an_open_gate() {
             );
         });
         assert!(seen.borrow().is_empty(), "{:?}", seen.borrow());
-    })
-}
-
-/// #1436: the ssh-warpify payload writers all use the paced SetupChunked job.
-#[test]
-fn ssh_warpify_install_payload_is_one_paced_setup_write() {
-    App::test((), |mut app| async move {
-        initialize_app_for_terminal_view(&mut app);
-        let terminal = add_window_with_terminal(&mut app, None);
-        let seen = record_pty_door_events(&mut app, &terminal);
-        terminal.update(&mut app, |view, ctx| {
-            view.install_tmux_and_warpify(
-                ctx,
-                &TmuxInstallMethod {
-                    script: "echo install".to_owned(),
-                    should_use_package_manager: false,
-                },
-            );
-        });
-        let seen = seen.borrow();
-        assert_eq!(seen.len(), 1, "{seen:?}");
-        assert!(
-            matches!(&seen[0], PtyDoorEvent::LineClearSetup(payload) if payload.starts_with(b"echo install")),
-            "{seen:?}"
-        );
     })
 }
 
