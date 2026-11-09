@@ -326,9 +326,17 @@ mio = { version = "1.1.1", features = ["os-poll", "os-ext"] }
 tokio.workspace = true
 tokio-util.workspace = true
 
-# AWS SDK (loading credentials for BYO LLM)
-aws-config = { version = "1.8.12", features = ["credentials-login"] }
-aws-credential-types = "1"
+# AWS credential resolution for BYO Bedrock is done by `ai::aws_creds` (no AWS SDK): hmac + sha2
+# for SigV4, sha1 for the SSO cache key, p256 for the `aws login` DPoP proof.
+hmac.workspace = true
+p256.workspace = true
+sha1.workspace = true
+
+# AWS SDK, used ONLY by the legacy `aws login` (login_session) path behind the `aws-sdk-login`
+# feature (default on until the owner verifies the DPoP reimplementation against a real
+# `aws login` profile). With the feature off none of these are in the build graph.
+aws-config = { version = "1.8.12", features = ["credentials-login"], optional = true }
+aws-credential-types = { version = "1", optional = true }
 # default-features = false drops the `rustls` feature, which maps to
 # aws-smithy-runtime/tls-rustls -> aws-smithy-http-client/legacy-rustls-ring:
 # the legacy hyper 0.14 / h2 0.3 / rustls 0.21 / rustls-webpki 0.101 client,
@@ -339,8 +347,8 @@ aws-sdk-sts = { version = "1", default-features = false, features = [
     "default-https-client",
     "rt-tokio",
     "sigv4a",
-] }
-aws-types = "1"
+], optional = true }
+aws-types = { version = "1", optional = true }
 
 # `transport-sse-client-reqwest` no longer exists: rmcp deleted the SSE client
 # transport in v0.11.0. `client-side-sse` (the SSE *parsing* primitives, which
@@ -515,6 +523,11 @@ embed-resource = "3.0"
 # Needs a C++ compiler (vendored Tracy client). See docs/profiling.md.
 profiling = ["warpui/profiling", "warpui_core/profiling"]
 ai_resume_button = []
+# Keeps the AWS SDK for `login_session` (`aws login`) Bedrock profiles only; every other credential
+# source is resolved by `ai::aws_creds` without it. DEFAULT ON until a real `aws login` profile has
+# been verified against the DPoP reimplementation; then turn it off to drop aws-config and the
+# aws-sdk-* crates (and deny.toml's RUSTSEC-2026-0387 ignore) from the build.
+aws-sdk-login = ["dep:aws-config", "dep:aws-credential-types", "dep:aws-sdk-sts", "dep:aws-types"]
 autoupdate = []
 # Exposes the app's test helpers (terminal/model/test_utils, model mock ctors, …)
 # to other crates' test builds (e.g. warp_tui tests). Propagates `warp_core/test-util`
@@ -550,6 +563,7 @@ crash_reporting = [
     "ai/crash_reporting",
 ]
 default = [
+    "aws-sdk-login",
     "agent_mode",
     "osc_hyperlinks",
     "render_continuous_block_selections_with_single_border",

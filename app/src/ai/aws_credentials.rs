@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use super::aws_creds::{self, CredsError};
 use crate::settings::{AISettings, AISettingsChangedEvent};
 use crate::terminal::event::{AfterBlockCompletedEvent, BlockType};
 use crate::terminal::model::terminal_model::TerminalModel;
@@ -9,12 +10,9 @@ use crate::workspaces::user_workspaces::{UserWorkspaces, UserWorkspacesEvent};
 pub use ai::api_keys::AwsCredentials;
 use ai::api_keys::{ApiKeyManager, AwsCredentialsRefreshStrategy, AwsCredentialsState};
 use anyhow::Context;
-use aws_credential_types::provider::ProvideCredentials;
-use aws_credential_types::provider::error::CredentialsError;
 use futures::channel::oneshot::channel;
 use futures::future::BoxFuture;
 use parking_lot::FairMutex;
-use tokio::sync::OnceCell;
 use vec1::vec1;
 use warp_managed_secrets::{ManagedSecretManager, client::IdentityTokenOptions};
 use warpui::{ModelContext, ModelHandle, SingletonEntity};
@@ -57,29 +55,31 @@ fn aws_profile_reference_for_message(profile: &str, capitalize_first_word: bool)
     }
 }
 
-fn user_facing_aws_credentials_error_message(err: &CredentialsError, profile: &str) -> String {
+fn user_facing_aws_credentials_error_message(err: &CredsError, profile: &str) -> String {
     match err {
-        CredentialsError::CredentialsNotLoaded(_) => format!(
+        CredsError::ProfileNotFound(_) | CredsError::NotLoaded(_) => format!(
             "AWS credentials were not found for {}. Log in with the AWS CLI or update your AWS credentials configuration, then refresh.",
             aws_profile_reference_for_message(profile, false)
         ),
-        CredentialsError::ProviderTimedOut(_) => {
+        CredsError::Timeout(_) => {
             "Timed out while loading AWS credentials. Refresh and try again.".to_string()
         }
-        CredentialsError::InvalidConfiguration(_) => format!(
+        CredsError::InvalidConfig(_) => format!(
             "{} is invalid or incomplete in your local AWS configuration. Update your AWS profile settings and credentials, then refresh.",
             aws_profile_reference_for_message(profile, true)
         ),
-        CredentialsError::ProviderError(_) => {
+        CredsError::Expired(_) | CredsError::Provider(_) => {
             "Unable to load AWS credentials from your configured provider. Refresh your AWS login and try again."
                 .to_string()
         }
-        CredentialsError::Unhandled(_) => {
+        CredsError::MfaRequired(_) => format!(
+            "{} requires an MFA code, which cannot be prompted for here. Sign in with the AWS CLI (for example `aws sts get-session-token`) or use a profile without MFA, then refresh.",
+            aws_profile_reference_for_message(profile, true)
+        ),
+        CredsError::Unhandled(_) => {
             "Unexpected error while loading AWS credentials. Refresh your AWS login and try again."
                 .to_string()
         }
-        _ => "Unable to load AWS credentials. Refresh your AWS login and try again."
-            .to_string(),
     }
 }
 
@@ -92,25 +92,6 @@ pub(crate) fn aws_role_session_name(run_id: &str) -> String {
     format!("Oz_Run_{run_id}")
 }
 
-/// Cached STS client for OIDC credential refreshes.
-///
-/// `AssumeRoleWithWebIdentity` is unauthenticated (the web identity token is the
-/// credential), so we skip the default credentials chain via `no_credentials()`
-/// and reuse a single client across refreshes.
-static STS_CLIENT: OnceCell<aws_sdk_sts::Client> = OnceCell::const_new();
-
-async fn sts_client() -> &'static aws_sdk_sts::Client {
-    STS_CLIENT
-        .get_or_init(|| async {
-            let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
-                .no_credentials()
-                .load()
-                .await;
-            aws_sdk_sts::Client::new(&config)
-        })
-        .await
-}
-
 fn aws_credentials_state_for_error(err: LoadAwsCredentialsError) -> AwsCredentialsState {
     match err {
         LoadAwsCredentialsError::NotConfigured => AwsCredentialsState::Missing,
@@ -120,45 +101,39 @@ fn aws_credentials_state_for_error(err: LoadAwsCredentialsError) -> AwsCredentia
     }
 }
 
-/// Loads AWS credentials from the AWS SDK.
+/// Loads AWS credentials with the in-app resolver (`ai::aws_creds`): environment, shared profiles,
+/// SSO, AssumeRole, web identity, `credential_process`, ECS and IMDS.
+///
+/// While the `aws-sdk-login` cargo feature is on, `aws login` (`login_session`) profiles still go
+/// through the AWS SDK; see `aws_creds::legacy_sdk`.
 ///
 /// # Arguments
-/// * `profile` - AWS profile name. If empty, uses the default AWS SDK behavior
-///   (checks AWS_PROFILE env var, then uses "default").
-pub async fn load_aws_credentials_from_sdk(
+/// * `profile` - AWS profile name. If empty, uses the default chain (environment, then the
+///   `AWS_PROFILE` profile or "default", then web identity, ECS and IMDS).
+pub async fn load_aws_credentials(
     profile: &str,
 ) -> Result<AwsCredentials, LoadAwsCredentialsError> {
-    let region_provider = aws_config::meta::region::RegionProviderChain::default_provider();
-    let loader =
-        aws_config::defaults(aws_config::BehaviorVersion::latest()).region(region_provider);
-    let loader = if profile.trim().is_empty() {
-        loader // Let AWS SDK use its default behavior
+    let ctx = aws_creds::Context::new();
+
+    #[cfg(feature = "aws-sdk-login")]
+    let result = if aws_creds::needs_legacy_login(&ctx.env, profile) {
+        aws_creds::legacy_sdk::load(profile).await
     } else {
-        loader.profile_name(profile)
+        aws_creds::resolve(&ctx, profile).await
     };
-    let config = loader.load().await;
+    #[cfg(not(feature = "aws-sdk-login"))]
+    let result = aws_creds::resolve(&ctx, profile).await;
 
-    let provider = config
-        .credentials_provider()
-        .ok_or(LoadAwsCredentialsError::NotConfigured)?;
-
-    let creds = provider.provide_credentials().await.map_err(|e| {
+    let creds = result.map_err(|e| {
         let message = user_facing_aws_credentials_error_message(&e, profile);
-        log::warn!("{e}");
-        // TODO(isaiah): turn this full SDK dump back down to debug once we've resolved
-        // the current customer-facing AWS credential issue and no longer need prod-visible
-        // provider internals for support debugging.
-        log::warn!("{e:#?}");
+        // Only the error kind at warn level; the detail (never a token or a response body) at debug.
+        log::warn!("AWS credential load failed ({})", e.kind());
+        log::debug!("AWS credential load failure detail: {}", e.detail());
         log::info!("AWS credential load failure message shown to user: {message}");
         LoadAwsCredentialsError::CredentialsLoadFailed(message)
     })?;
 
-    Ok(AwsCredentials::new(
-        creds.access_key_id().to_string(),
-        creds.secret_access_key().to_string(),
-        creds.session_token().map(|s| s.to_string()),
-        creds.expiry(),
-    ))
+    Ok(creds.into_api())
 }
 
 /// Extension trait for `ApiKeyManager` to handle AWS credential refresh.
@@ -277,7 +252,7 @@ fn refresh_aws_credentials_local_chain(
     let (tx, rx) = channel();
     // credential fetch from aws cli's disk cache
     let _ = ctx.spawn(
-        async move { load_aws_credentials_from_sdk(&profile).await },
+        async move { load_aws_credentials(&profile).await },
         move |manager, result, ctx| {
             let (new_state, tx_result) = match result {
                 Ok(credentials) => (
@@ -352,32 +327,20 @@ fn refresh_aws_credentials_oidc(
                 .await
                 .context("Failed to mint AWS Bedrock task identity token")?;
 
-            let client = sts_client().await;
             let session_name = aws_role_session_name(&task_id);
-            let credentials = client
-                .assume_role_with_web_identity()
-                .role_arn(&role_arn)
-                .role_session_name(session_name)
-                .web_identity_token(token.token)
-                .send()
-                .await
-                .map_err(|err| {
-                    // Surface the AWS service error message for a user-friendly error.
-                    let detail = err
-                        .as_service_error()
-                        .map(|e| e.to_string())
-                        .unwrap_or_else(|| err.to_string());
-                    anyhow::anyhow!("STS AssumeRoleWithWebIdentity failed: {detail}")
-                })?
-                .credentials
-                .context("STS response did not include credentials")?;
+            // `AssumeRoleWithWebIdentity` is unauthenticated (the web identity token is the
+            // credential), so no AWS credential chain is involved.
+            let aws_ctx = aws_creds::Context::new();
+            let credentials = aws_creds::assume_role_with_web_identity(
+                &aws_ctx,
+                &role_arn,
+                &session_name,
+                &token.token,
+            )
+            .await
+            .map_err(|err| anyhow::anyhow!("{}", err.detail()))?;
 
-            anyhow::Ok(AwsCredentials::new(
-                credentials.access_key_id().to_string(),
-                credentials.secret_access_key().to_string(),
-                Some(credentials.session_token().to_string()),
-                SystemTime::try_from(*credentials.expiration()).ok(),
-            ))
+            anyhow::Ok(credentials.into_api())
         },
         move |manager, result, ctx| {
             let (new_state, tx_result) = match result {

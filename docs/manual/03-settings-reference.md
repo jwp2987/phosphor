@@ -421,6 +421,10 @@ listed for completeness.
 | `cloud_platform.third_party_api_keys.aws_bedrock_auto_login` | boolean | `false` | Run the refresh command automatically when Bedrock credentials expire, instead of asking first. Desktop only. |
 | `cloud_platform.third_party_api_keys.aws_bedrock_auth_refresh_command` | string | `"aws login"` | The command run to refresh AWS credentials. Desktop only. |
 
+**Where Bedrock credentials come from.** Phosphor resolves them itself (no AWS SDK in the credential path): environment variables, `~/.aws/credentials` and `~/.aws/config` profiles (honouring `AWS_PROFILE`, `AWS_CONFIG_FILE`, `AWS_SHARED_CREDENTIALS_FILE`), IAM Identity Center / SSO (it refreshes the CLI's `~/.aws/sso/cache` token when it can; otherwise run `aws sso login`), `role_arn` with `source_profile` or `credential_source` (external ID and duration honoured; profiles that need an MFA code are reported, not prompted), web identity (`web_identity_token_file`, `AWS_WEB_IDENTITY_TOKEN_FILE`), `credential_process`, ECS container credentials, EC2 IMDSv2, and `aws login` sessions. With an empty profile the order is: environment, the `AWS_PROFILE`/`default` profile, web identity, container, IMDS; a named profile uses only that profile. Service endpoints follow `AWS_ENDPOINT_URL` / `AWS_ENDPOINT_URL_<SERVICE>`. Requests use Phosphor's own HTTP client, so proxy and CA settings apply.
+
+**`aws login` and the `aws-sdk-login` build feature.** `aws login` profiles (`login_session`) are still resolved by the AWS SDK in default builds (cargo feature `aws-sdk-login`, on by default) until the DPoP reimplementation in `ai::aws_creds::login` is verified against a real `aws login` session. Building without that feature drops `aws-config` and the `aws-sdk-*` crates entirely; the binary shrinks only then.
+
 ### TUI statusline
 
 | TOML path | Type | Default | What it does |

@@ -165,6 +165,8 @@ gloo = { version = "0.11.0", default-features = false, features = [
 ] }
 hashbrown = { version = "0.17.1", features = ["raw-entry"] }
 hex = "0.4.3"
+# AWS credential resolver (app/src/ai/aws_creds): SigV4 for STS AssumeRole, DPoP for `aws login`.
+hmac = "0.12"
 # This matches the version of hyper used by reqwest.
 hyper = "1.6.0"
 html5ever = "0.35.0"
@@ -419,6 +421,8 @@ getset = "0.1.1"
 regex = "1.11.1"
 dirs = "6.0.0"
 rayon = "1.10.0"
+p256 = "0.14"
+sha1 = "0.10"
 sha2 = "0.10"
 shell-escape = "0.1.5"
 shellexpand = "3.1.1"
