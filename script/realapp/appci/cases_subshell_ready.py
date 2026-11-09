@@ -208,8 +208,10 @@ def c_ready_secret_after_prompt(ctx, r):
     need_posix(ctx, r)
     f, pw = "lab_secret.txt", "lab_secret_pw.txt"
     ctx.rm(f, pw)
+    # The `sleep 1` keeps the secret read from starting before the typist's first key: Linux round 7 saw it start 5 ms after the setup write
+    # (cancel with 0 held chunks), so the line typed next went to the read in order and the case's "held line" premise was gone.
     rc = write_rc(ctx, "lab_secret.rc",
-                  'n=0; PROMPT_COMMAND=\'if [ "$n" = 1 ]; then read -s -p "Secret: " x; echo "$x" > ~/w/%s; echo; fi; n=$((n+1))\'; PS1="LAB$ "\n' % pw)
+                  'n=0; PROMPT_COMMAND=\'if [ "$n" = 1 ]; then sleep 1; read -s -p "Secret: " x; echo "$x" > ~/w/%s; echo; fi; n=$((n+1))\'; PS1="LAB$ "\n' % pw)
     off = ctx.log_size()
     ctx.be.type("bash --rcfile " + rc, 12, enter=True)
     time.sleep(BANNER_S)

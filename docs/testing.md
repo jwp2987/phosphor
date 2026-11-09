@@ -3826,3 +3826,4 @@ inner shell when the `exit` was eaten, and run.py's `where_now()` cannot see a l
 - `subshell_sh_probe` (dash): the failing check is the EXPECTED outcome missing (the case passes when `subshell_setup_unsupported`
   is logged). The app judged dash once (`Wait(CookedNoPrompt)`, tail none, right after the first line's Enter) and never again for
   6 s, so it never wrote the probe at the idle prompt. Open app issue; not fixed here (needs a live tty).
+- `subshell_ready_secret_after_prompt` on Linux (round 7): not an app bug. The log shows `Secret` judged 5 ms after the setup write (0 held chunks), then 41 `Pty(Typed)` keys straight to the `read -s`: the typed line (no Enter, by design) and `hunter2` reached the read in typed order as one line. The rc now sleeps 1 s before the `read -s` so the line is typed while the setup is still out and is held, then handed back.
