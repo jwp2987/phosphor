@@ -3,6 +3,7 @@ use repo_metadata::RepoMetadataModel;
 use repo_metadata::repositories::DetectedRepositories;
 use std::sync::Arc;
 use warp_core::ui::appearance::Appearance;
+use warpui::SingletonEntity as _;
 
 use crate::ai::agent_conversations_model::AgentConversationsModel;
 use crate::ai::ambient_agents::github_auth_notifier::GitHubAuthNotifier;
