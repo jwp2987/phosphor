@@ -4284,15 +4284,38 @@ def agent_latency_pure_parts():
     ds = AL.key_frame_deltas(log)
     assert ds == [6.5, 4.0, 3.0, 9.0], ds          # piled keys pair with the one frame; ctrl and Enter are not samples; a key before an unsampled key-down is not paired
     assert AL.key_frame_deltas(log, 1050.0, 1150.0) == [4.0, 3.0], AL.key_frame_deltas(log, 1050.0, 1150.0)
+    # streaming: a frame is built every 17 ms; a key just after one waits for the next slot, which is the compositor's pacing and not the app's
+    fd = lambda start, tot=4.0: "input_order hop=frame_drawn total_ms=%s acquire_ms=0.1 t=%s" % (tot, start + tot)
+    pl = [fd(1000.0 + 17 * i) for i in range(8)]                       # frames start 1000, 1017, ... 1119
+    pl += [kd('"m"', 1126.0), "input_order hop=key_frame layout=true t=1138.0"]      # last frame started 1119: slot 1136, frame at 1138 -> 2 ms over the slot
+    pl += [fd(1136.0), kd('"m"', 1141.0), "input_order hop=key_frame layout=true t=1155.5"]  # slot 1153, frame 1155.5 -> 2.5
+    pl += [kd('"m"', 1400.0), "input_order hop=key_frame layout=true t=1403.0"]     # long after the last frame: no slot wait, raw 3
+    assert AL.key_frame_deltas("\n".join(pl)) == [12.0, 14.5, 3.0]
+    assert AL.paced_key_frame_deltas("\n".join(pl), None, None) == [2.0, 2.5, 3.0], AL.paced_key_frame_deltas("\n".join(pl), None, None)
+    assert AL.paced_key_frame_deltas("\n".join(pl[8:]), None, None) == [12.0, 14.5, 3.0]   # fewer than 5 frame gaps: pacing unknown, raw
     en = "\n".join([kd("enter", 2000.0), 'input_order hop=enter_begin deferred=false buffer="ping t=5" input_type=AI t=2001.25',
                     kd("enter", 3000.0, "true"), kd("enter", 3100.0), 'input_order hop=enter_begin deferred=false buffer="x" input_type=Shell t=3103.5'])
     assert AL.enter_shares(en) == [1.25, 3.5], AL.enter_shares(en)
+    # Linux/Windows: the editor binding takes Enter, so there is NO keydown line; the window dispatch is the start (real log, round 6)
+    ce = "\n".join(['input_order hop=core_enter stage=handle_window_event key_bindings_enabled=true focused_view=EntityId(7) t=5000.0',
+                    'input_order hop=core_enter stage=dispatch_keystroke chain_len=7 composing=false ctrl=false alt=false shift=false cmd=false t=5000.1',
+                    'input_order hop=enter_begin deferred=false buffer="hi" input_type=AI t=5000.5',
+                    'input_order hop=core_enter stage=handle_window_event key_bindings_enabled=true focused_view=EntityId(7) t=6000.0',
+                    'input_order hop=core_enter stage=dispatch_keystroke chain_len=7 composing=false ctrl=true alt=false shift=false cmd=false t=6000.1',
+                    'input_order hop=enter_begin deferred=false buffer="hi" input_type=AI t=6000.5',
+                    'input_order hop=core_enter stage=handle_window_event key_bindings_enabled=true focused_view=EntityId(7) t=7000.0',
+                    kd("enter", 7000.2), 'input_order hop=enter_begin deferred=false buffer="x" input_type=Shell t=7002.0'])
+    assert AL.enter_shares(ce) == [0.5, 2.0], AL.enter_shares(ce)
     steer = AL.make_steer("abc12", 1)
     assert len(steer) >= 200 and "ls -la | grep x" in steer and "$HOME" in steer, len(steer)
     u = lambda t: {"role": "user", "content": t}
     a = {"role": "assistant", "content": "tick"}
     good = [{"t": 1.0, "messages": [u("first"), a, u(steer)]}]
     assert AL.steer_verdict(good, steer) is None
+    env = u("<environment_context>\n  Working directory: /w\n</environment_context>")     # the app appends this user message AFTER the prompt (round-6 finding)
+    assert AL.steer_verdict([{"t": 1.0, "messages": [u("first"), a, u(steer), env]}], steer) is None
+    assert "never received" in AL.steer_verdict([{"t": 1.0, "messages": [u("first"), env]}], steer)
+    assert AL.steers_in_order([u("go"), env, u("s0"), env, u("s1"), env], ["s0", "s1"]) is None
     assert "never received" in AL.steer_verdict([{"t": 1.0, "messages": [u("first")]}], steer)
     assert "2 separate" in AL.steer_verdict(good + good, steer)
     assert "not as a user turn equal" in AL.steer_verdict([{"t": 1.0, "messages": [u("first"), u(steer + " x")]}], steer)

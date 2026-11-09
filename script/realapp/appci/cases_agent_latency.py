@@ -66,25 +66,92 @@ def key_frame_deltas(txt, t_min=None, t_max=None):
     return out
 
 
-def enter_shares(txt):
-    """pure: ms from every Enter keydown to the next `hop=enter_begin` line (the app's own share of Enter before any routing)"""
-    out, pending = [], None
+FRAME_DRAWN_RE = re.compile(r"input_order hop=frame_drawn total_ms=(\d+(?:\.\d+)?) acquire_ms=\S+ t=(\d+(?:\.\d+)?)")
+
+
+def paced_key_frame_deltas(txt, t_min, t_max):
+    """pure: like key_frame_deltas, minus the compositor's frame pacing. While a reply streams the app builds a frame every refresh interval, and a key typed just
+    after one is built waits for the next slot (previous frame start + the median frame spacing) on ANY app: that wait is not Phosphor's. -> ms from
+    max(key-down, slot) to the key's frame, so the idle (no frame in flight) and streaming numbers mean the same thing. With too few frames to know the spacing
+    (< 5 gaps) the pacing is unknown and the raw delta is returned."""
+    frames = [(float(m.group(2)) - float(m.group(1)), float(m.group(2))) for m in FRAME_DRAWN_RE.finditer(txt)]
+    ts = [t for _, t in frames if (t_min is None or t >= t_min) and (t_max is None or t <= t_max)]
+    gaps = [b - a for a, b in zip(ts, ts[1:]) if b - a < 40.0]
+    interval = statistics.median(gaps) if len(gaps) >= 5 else None
+    raw = key_frame_deltas(txt, t_min, t_max)
+    if interval is None:
+        return raw
+    out, last, kd = [], None, []
     for l in txt.splitlines():
+        m = FRAME_DRAWN_RE.search(l)
+        if m:
+            last = float(m.group(2)) - float(m.group(1))        # start of the last frame built
+            continue
+        m = KEYDOWN_ANY_RE.search(l)
+        if m:
+            key = m.group(1)
+            k = (key[1:-1] if len(key) >= 3 and key[0] == key[-1] == '"' else key).lower()
+            plain = not (m.group(2) == "true" or m.group(3) == "true" or m.group(5) == "true" or k in MODIFIERS or k in ENTER_KEYS)
+            t = float(m.group(6))
+            if plain and (t_min is None or t >= t_min) and (t_max is None or t <= t_max):
+                kd.append((t, last))
+            else:
+                kd = []
+            continue
+        m = KEY_FRAME_RE.search(l)
+        if m:
+            tf = float(m.group(1))
+            for t, ls in kd:
+                slot = max(t, ls + interval) if ls is not None else t
+                if tf >= t:
+                    out.append(tf - min(slot, tf))
+            kd = []
+    return out if len(out) == len(raw) else raw
+
+
+CORE_ENTER_WINDOW_RE = re.compile(r"input_order hop=core_enter stage=handle_window_event\b.* t=(\d+(?:\.\d+)?)\s*$")
+CORE_ENTER_KEYSTROKE_RE = re.compile(r"input_order hop=core_enter stage=dispatch_keystroke\b.* ctrl=(true|false) alt=(true|false) shift=(true|false) cmd=(true|false)")
+
+
+def enter_shares(txt):
+    """pure: ms from every plain Enter to the next `hop=enter_begin` line (the app's own share of Enter before any routing). The Enter's start is the window's
+    dispatch (`hop=core_enter stage=handle_window_event`, every platform: a key an editor binding takes, which Enter is on Linux and Windows, logs NO
+    `input_order keydown` line, round-6 finding), or the `keydown` line when a platform logs that first. Counted once either way."""
+    out, pending, core_pending = [], None, False
+    for l in txt.splitlines():
+        m = CORE_ENTER_WINDOW_RE.search(l)
+        if m:
+            pending, core_pending = float(m.group(1)), True
+            continue
+        m = CORE_ENTER_KEYSTROKE_RE.search(l)
+        if m:
+            if m.group(1) == "true" or m.group(2) == "true" or m.group(4) == "true":
+                pending = None          # a modified Enter (Ctrl-Enter, Alt-Enter) is not the plain submit
+            continue
         m = KEYDOWN_ANY_RE.search(l)
         if m:
             k = (m.group(1)[1:-1] if len(m.group(1)) >= 3 and m.group(1)[0] == m.group(1)[-1] == '"' else m.group(1)).lower()
-            if k in ENTER_KEYS and m.group(2) == "false" and m.group(3) == "false" and m.group(5) == "false":
-                pending = float(m.group(6))
+            if k in ENTER_KEYS:
+                if core_pending:
+                    core_pending = False        # the same physical Enter, already anchored at its window dispatch
+                elif m.group(2) == "false" and m.group(3) == "false" and m.group(5) == "false":
+                    pending = float(m.group(6))
             continue
         m = ENTER_BEGIN_RE.search(l)
         if m and pending is not None:
             out.append(float(m.group(1)) - pending)
-            pending = None
+            pending, core_pending = None, False
     return out
 
 
+def clean(messages):
+    """the request's messages as the prompt sees them: the app's <environment_context> user message (appended after the prompt) removed (fake_model.clean_messages)"""
+    import fake_model
+    return fake_model.clean_messages(messages)
+
+
 def last_user(messages):
-    us = [m.get("content") or "" for m in messages if m.get("role") == "user"]
+    us = [m.get("content") or "" for m in clean(messages) if m.get("role") == "user"]
     return us[-1] if us else None
 
 
@@ -94,7 +161,7 @@ def steer_verdict(reqs, steer):
     mine = [q for q in reqs if last_user(q["messages"]) == steer]
     if not mine:
         near = [last_user(q["messages"]) for q in reqs if last_user(q["messages"]) is not None]
-        has = [q for q in reqs if any(steer in (m.get("content") or "") for m in q["messages"])]
+        has = [q for q in reqs if any(steer in (m.get("content") or "") for m in clean(q["messages"]))]
         if has:
             got = last_user(has[0]["messages"])
             k = next((i for i, (a, b) in enumerate(zip(got, steer)) if a != b), min(len(got), len(steer)))
@@ -102,7 +169,7 @@ def steer_verdict(reqs, steer):
         return "the model never received the steer (%d request(s) after the Enter; last user messages %r)" % (len(reqs), [x[:60] for x in near[-2:]])
     if len(mine) != 1:
         return "the steer reached the model as %d separate requests, expected exactly once" % len(mine)
-    n = sum((m.get("content") or "").count(steer) for m in mine[0]["messages"])
+    n = sum((m.get("content") or "").count(steer) for m in clean(mine[0]["messages"]))
     if n != 1:
         return "the steer text occurs %d times in the request that carried it, expected exactly once" % n
     return None
@@ -110,7 +177,7 @@ def steer_verdict(reqs, steer):
 
 def steers_in_order(final_messages, steers):
     """pure: failure text or None. In the last request each steer is present exactly once and in the order they were typed (nothing lost, duplicated or reordered)"""
-    texts = [m.get("content") or "" for m in final_messages if m.get("role") == "user"]
+    texts = [m.get("content") or "" for m in clean(final_messages) if m.get("role") == "user"]
     pos = []
     for s in steers:
         idx = [i for i, t in enumerate(texts) if t == s]
@@ -193,7 +260,7 @@ def key_batch(ctx, count, fm=None, gap=(0.08, 0.18)):
     time.sleep(0.6)
     txt = ctx.log_since(off)
     lo, hi = (t_req + 300.0, t_req + STREAM_ALIVE_S * 1000.0) if fm else (None, None)
-    return key_frame_deltas(txt, lo, hi), txt
+    return (paced_key_frame_deltas(txt, lo, hi) if fm else key_frame_deltas(txt, lo, hi)), txt
 
 
 def judge_ui_items(r, txts, n_keys, label):

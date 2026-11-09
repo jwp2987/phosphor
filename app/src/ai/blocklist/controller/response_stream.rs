@@ -1329,10 +1329,16 @@ impl ResponseStream {
                     self.has_received_client_actions,
                     is_retryable
                 );
-                report_error!(anyhow!(e.clone()).context(format!(
+                let failure = anyhow!(e.clone()).context(format!(
                     "MultiAgent request failed after {} recovery attempts",
                     self.recovery.attempts_used()
-                )));
+                ));
+                if e.is_expected_provider_failure() {
+                    // an unreachable model is the user's environment, already shown in the conversation: not an ERROR (agent_fault_down, round 6)
+                    log::warn!("{failure:#}");
+                } else {
+                    report_error!(failure);
+                }
 
                 ctx.emit(ResponseStreamEvent::ReceivedEvent(Consumable::new(event)));
             }
