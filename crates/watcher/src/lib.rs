@@ -8,6 +8,7 @@ use std::{
 };
 
 pub mod home_watcher;
+mod shared;
 pub use home_watcher::{HomeDirectoryWatcher, HomeDirectoryWatcherEvent};
 
 use anyhow::Result;
@@ -74,6 +75,36 @@ fn normalize_renames(events: Vec<DebouncedEvent>) -> Vec<DebouncedEvent> {
         .collect()
 }
 
+/// Records one raw watcher item for the open (or about to open) debounce window.
+fn absorb_raw(
+    item: notify::Result<notify::Event>,
+    events: &mut Vec<DebouncedEvent>,
+    errors: &mut Vec<notify::Error>,
+) {
+    match item {
+        Ok(event) if is_relevant_event(&event) => {
+            events.push(DebouncedEvent::new(event, Instant::now()))
+        }
+        Ok(_) => {}
+        Err(error) => errors.push(error),
+    }
+}
+
+/// Hands a closed window's events (renames normalised) and errors to the handler.
+fn deliver(
+    handler: &mut WatcherEventHandler,
+    events: Vec<DebouncedEvent>,
+    errors: Vec<notify::Error>,
+) {
+    let events = normalize_renames(events);
+    if !events.is_empty() {
+        handler.handle_event(Ok(events));
+    }
+    if !errors.is_empty() {
+        handler.handle_event(Err(errors));
+    }
+}
+
 /// Event-driven debounce loop for one watcher.
 ///
 /// Blocks on `rx` with no timer while nothing happens, so an idle watcher costs zero wakeups
@@ -91,24 +122,10 @@ fn run_debounce_loop(
         move |events: Vec<DebouncedEvent>, errors| flush(normalize_renames(events), errors);
     let mut events: Vec<DebouncedEvent> = Vec::new();
     let mut errors: Vec<notify::Error> = Vec::new();
-    fn absorb(
-        item: notify::Result<notify::Event>,
-        events: &mut Vec<DebouncedEvent>,
-        errors: &mut Vec<notify::Error>,
-    ) {
-        match item {
-            Ok(event) if is_relevant_event(&event) => {
-                events.push(DebouncedEvent::new(event, Instant::now()))
-            }
-            Ok(_) => {}
-            Err(error) => errors.push(error),
-        }
-    }
-
     'outer: loop {
         // Idle: no timer, wake only for an event.
         match rx.recv() {
-            Ok(item) => absorb(item, &mut events, &mut errors),
+            Ok(item) => absorb_raw(item, &mut events, &mut errors),
             Err(_) => break,
         }
         if events.is_empty() && errors.is_empty() {
@@ -121,7 +138,7 @@ fn run_debounce_loop(
                 break;
             }
             match rx.recv_timeout(remaining) {
-                Ok(item) => absorb(item, &mut events, &mut errors),
+                Ok(item) => absorb_raw(item, &mut events, &mut errors),
                 Err(RecvTimeoutError::Timeout) => break,
                 Err(RecvTimeoutError::Disconnected) => {
                     flush(std::mem::take(&mut events), std::mem::take(&mut errors));
@@ -331,52 +348,95 @@ fn ensure_watchable_path(path: &Path) -> Result<PathBuf> {
     Ok(path.to_path_buf())
 }
 
+/// Starts a private watcher (platform watcher, debouncer and command threads) behind the returned
+/// command channel. Dropping the sender ends it. This is the per-handle design the shared watcher
+/// replaced; it remains for `PHOSPHOR_SHARED_WATCHER=0`, non-Linux platforms, and paths that
+/// overlap a shared root.
+fn spawn_private_watcher(
+    debounce_duration: Duration,
+    handler: WatcherEventHandler,
+) -> mpsc::Sender<BackgroundFileWatcherCommand> {
+    let (bg_tx, bg_rx) = channel();
+    // Note that we keep the file watcher in the background since registering and unregistering file path
+    // involves fs calls.
+    if let Err(e) = thread::Builder::new()
+        .name("Bulk Filesystem Watcher".into())
+        .spawn(move || {
+            match BackgroundFileWatcher::new(debounce_duration, handler, bg_rx) {
+                Ok(watcher) => watcher.run(),
+                Err(e) => {
+                    // The thread exits, which drops `bg_rx` and the
+                    // event-channel sender. Subsequent `register_path` /
+                    // `unregister_path` calls will get `SendError` and
+                    // log a warning — the app continues without file
+                    // watching.
+                    log::error!(
+                        "Failed to create filesystem watcher, \
+                         file watching will be disabled: {e:?}"
+                    );
+                }
+            }
+        })
+    {
+        log::error!("Failed to spawn thread for background file watcher {e:?}");
+    }
+    bg_tx
+}
+
+/// How a handle reaches its platform watcher.
+enum WatcherBackend {
+    /// This handle's own watcher threads.
+    Private(mpsc::Sender<BackgroundFileWatcherCommand>),
+    /// A subscription into the process-wide watcher.
+    Shared(shared::Subscription),
+}
+
+impl WatcherBackend {
+    fn send(&self, command: BackgroundFileWatcherCommand) -> Result<()> {
+        match self {
+            WatcherBackend::Private(tx) => tx.send(command).map_err(anyhow::Error::new),
+            WatcherBackend::Shared(subscription) => subscription.send(command),
+        }
+    }
+}
+
 /// Model for watching for all file / folder changes under target directories.
 /// The updates are debounced with a configurable duration.
 pub struct BulkFilesystemWatcher {
-    tx: mpsc::Sender<BackgroundFileWatcherCommand>,
+    backend: WatcherBackend,
 }
 
 impl BulkFilesystemWatcher {
     pub fn new(debounce_duration: Duration, ctx: &mut ModelContext<Self>) -> Self {
         let (tx, rx) = async_channel::unbounded();
-        let (bg_tx, bg_rx) = channel();
+        let handler = WatcherEventHandler { tx };
 
-        // Note that we keep the file watcher in the background since registering and unregistering file path
-        // involves fs calls.
-        if let Err(e) = thread::Builder::new()
-            .name("Bulk Filesystem Watcher".into())
-            .spawn(move || {
-                match BackgroundFileWatcher::new(
-                    debounce_duration,
-                    WatcherEventHandler { tx },
-                    bg_rx,
-                ) {
-                    Ok(watcher) => watcher.run(),
-                    Err(e) => {
-                        // The thread exits, which drops `bg_rx` and the
-                        // event-channel sender. Subsequent `register_path` /
-                        // `unregister_path` calls will get `SendError` and
-                        // log a warning — the app continues without file
-                        // watching.
-                        log::error!(
-                            "Failed to create filesystem watcher, \
-                             file watching will be disabled: {e:?}"
-                        );
-                    }
-                }
-            })
-        {
-            log::error!("Failed to spawn thread for background file watcher {e:?}");
-        }
+        let shared_wanted = shared::shared_watcher_enabled(
+            std::env::var(shared::SHARED_WATCHER_ENV).ok().as_deref(),
+        ) && !legacy_debouncer_requested();
+        let shared = if shared_wanted {
+            shared::SharedFsWatcher::acquire()
+                .inspect_err(|e| {
+                    log::warn!("shared filesystem watcher unavailable, using a private one: {e:#}")
+                })
+                .ok()
+        } else {
+            None
+        };
+        let backend = match shared {
+            Some(shared) => WatcherBackend::Shared(shared.subscribe(debounce_duration, handler)),
+            None => WatcherBackend::Private(spawn_private_watcher(debounce_duration, handler)),
+        };
         ctx.spawn_stream_local(rx, Self::handle_watcher_event, |_, _| {});
 
-        Self { tx: bg_tx }
+        Self { backend }
     }
 
     pub fn new_for_test() -> Self {
         let (bg_tx, _) = channel();
-        Self { tx: bg_tx }
+        Self {
+            backend: WatcherBackend::Private(bg_tx),
+        }
     }
 
     /// Stop watching a path. The returned future resolves once the path is fully unregistered.
@@ -384,9 +444,8 @@ impl BulkFilesystemWatcher {
     pub fn unregister_path(&mut self, path: &Path) -> impl Future<Output = Result<()>> + use<> {
         let (tx, rx) = oneshot::channel();
         let send_result = ensure_watchable_path(path).and_then(|path| {
-            self.tx
+            self.backend
                 .send(BackgroundFileWatcherCommand::RemovePath { path, response: tx })
-                .map_err(anyhow::Error::new)
         });
 
         if let Err(error) = &send_result {
@@ -410,14 +469,12 @@ impl BulkFilesystemWatcher {
     ) -> impl Future<Output = Result<()>> + use<> {
         let (tx, rx) = oneshot::channel();
         let send_result = ensure_watchable_path(path).and_then(|path| {
-            self.tx
-                .send(BackgroundFileWatcherCommand::AddPath {
-                    path,
-                    filter: watch_filter,
-                    response: tx,
-                    recursive_mode,
-                })
-                .map_err(anyhow::Error::new)
+            self.backend.send(BackgroundFileWatcherCommand::AddPath {
+                path,
+                filter: watch_filter,
+                response: tx,
+                recursive_mode,
+            })
         });
 
         if let Err(error) = &send_result {
@@ -444,6 +501,7 @@ impl Entity for BulkFilesystemWatcher {
     type Event = BulkFilesystemWatcherEvent;
 }
 
+#[derive(Clone)]
 struct WatcherEventHandler {
     tx: async_channel::Sender<BulkFilesystemWatcherEvent>,
 }
