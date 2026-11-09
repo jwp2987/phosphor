@@ -6,9 +6,9 @@
 //!   multiple concurrent proxy connections and exits after a grace period with none.
 //!
 //! The request handlers cover the families in [`crate::capability::HELPER_CAPABILITIES`] (repo
-//! metadata and its live file tree arrived with the watch infrastructure in `watch.rs`);
-//! everything else (codebase index, buffers, diff-state and git-status
-//! subscriptions, file-context reads, git write operations) is answered with
+//! metadata and its live file tree arrived with the watch infrastructure in `watch.rs`; diff
+//! state, git status and GitHub info follow the repository through `repo_watch.rs`);
+//! everything else (codebase index, buffers, git write operations) is answered with
 //! `ErrorCode::UNSUPPORTED` and the client runs it on its no-helper path. Wave H, #1804.
 
 mod agent_context;
@@ -26,9 +26,12 @@ mod git_write;
 mod github;
 mod index_store;
 mod jobs;
+#[cfg(test)]
+mod live_tests_support;
 pub mod logger;
 mod proxy;
 mod repo_meta;
+mod repo_watch;
 mod ripgrep;
 mod server;
 mod watch;

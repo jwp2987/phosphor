@@ -7,8 +7,10 @@
 
 mod agent_context;
 mod buffer;
+mod diff;
 mod git_write;
 mod read;
+mod status;
 mod tree;
 mod write;
 
@@ -16,9 +18,11 @@ use std::sync::{Arc, Mutex};
 
 pub use agent_context::AgentContextCache;
 pub use buffer::ShellBuffers;
+pub use status::PrLookup;
 pub use tree::{ShellPush, TreeCache};
 
 use super::executor::{ChannelKind, ExecRequest, MAX_EXEC_OUTPUT_BYTES, OutOfBandExecutor};
+use super::shell_git_runner::ShellGitRunner;
 use super::{BackendError, Family};
 use crate::proto::{
     ListDirectoryResponse, LoadRepoMetadataDirectoryResponse, NavigatedToDirectoryResponse,
@@ -226,6 +230,11 @@ impl ShellBackend {
             .and_then(|s| DecodeTool::from_probe_output(&s.text()));
         *self.decode_tool.lock().unwrap_or_else(|e| e.into_inner()) = Some(tool);
         Ok(tool)
+    }
+
+    /// A [`ShellGitRunner`] over this session's channel, or `Unavailable` naming `what`.
+    pub(super) fn git_runner(&self, what: &'static str) -> Result<ShellGitRunner, BackendError> {
+        Ok(ShellGitRunner::new(self.executor_for(what)?))
     }
 
     /// The out-of-band executor, or `Unavailable` naming `what`.

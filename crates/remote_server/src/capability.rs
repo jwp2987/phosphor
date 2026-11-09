@@ -23,7 +23,9 @@ pub const RIPGREP_SEARCH: &str = "ripgrep_search";
 pub const REPO_METADATA: &str = "repo_metadata";
 /// Buffer sync: `OpenBuffer`, `BufferEdit`, `SaveBuffer`, `ResolveConflict`, `CloseBuffer`.
 pub const BUFFERS: &str = "buffers";
-/// Diff-state subscriptions and the git status and GitHub info pushes.
+/// Diff-state subscriptions: `GetDiffState`, `UnsubscribeDiffState` and the snapshot, metadata and
+/// file-delta pushes. The git status and GitHub info pushes have their own names below; a server
+/// that does one does the others (the helper implements all three).
 pub const DIFF_STATE: &str = "diff_state";
 /// Git write operations: commit chain, push, pull, create PR, discard, stage.
 pub const GIT_WRITE: &str = "git_write";
@@ -46,13 +48,7 @@ pub const CODEBASE_CHUNKS: &str = "codebase_chunks";
 
 /// The families above that only the legacy full daemon implements, for documentation and for
 /// tests that pin the helper's list against them.
-pub const LEGACY_ONLY_CAPABILITIES: &[&str] = &[
-    DIFF_STATE,
-    CODEBASE_INDEX,
-    GIT_STATUS,
-    GITHUB,
-    CODEBASE_CHUNKS,
-];
+pub const LEGACY_ONLY_CAPABILITIES: &[&str] = &[CODEBASE_INDEX, CODEBASE_CHUNKS];
 
 /// Every capability the helper in this build implements.
 pub const HELPER_CAPABILITIES: &[&str] = &[
@@ -66,6 +62,9 @@ pub const HELPER_CAPABILITIES: &[&str] = &[
     AGENT_CONTEXT,
     BUFFERS,
     GIT_WRITE,
+    DIFF_STATE,
+    GIT_STATUS,
+    GITHUB,
 ];
 
 /// What the server on the other end of a session supports.
