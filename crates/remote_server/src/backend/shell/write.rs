@@ -8,15 +8,23 @@ use super::super::{BackendError, Family, ShellBackend};
 use crate::client::ClientError;
 use crate::shellcmd::read::{self, FileProbe, GatherPlan};
 use crate::shellcmd::write::{
-    ChunkPosition, Expect, posix_delete_command, posix_write_command, pwsh_delete_command,
-    pwsh_write_command, split_chunks, write_failure_message,
+    ChunkPosition, EXIT_CONFLICT, Expect, posix_delete_command, posix_write_command,
+    pwsh_delete_command, pwsh_write_command, split_chunks, write_failure_message,
 };
 use crate::shellcmd::{Script, StderrMode};
 
 /// The most a whole-file read returns: what base64 of it still fits one command's output.
 const READ_BYTES_CAP: usize = 7 * 1024 * 1024;
 
-fn op_failed(message: impl Into<String>) -> BackendError {
+/// What a guarded write did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteOutcome {
+    Written,
+    /// The target no longer matched the expectation; nothing was changed.
+    Conflict,
+}
+
+pub(super) fn op_failed(message: impl Into<String>) -> BackendError {
     BackendError::Client(ClientError::FileOperationFailed(message.into()))
 }
 
@@ -37,6 +45,25 @@ impl ShellBackend {
         content: String,
         expect: Option<Expect>,
     ) -> Result<(), BackendError> {
+        match self
+            .write_file_outcome(path.clone(), content, expect)
+            .await?
+        {
+            WriteOutcome::Written => Ok(()),
+            WriteOutcome::Conflict => {
+                Err(op_failed(write_failure_message(&path, EXIT_CONFLICT, "")))
+            }
+        }
+    }
+
+    /// [`Self::write_file_expecting`], but a target that no longer matches `expect` is an
+    /// outcome the caller can act on (a buffer save shows its conflict banner), not an error.
+    pub async fn write_file_outcome(
+        &self,
+        path: String,
+        content: String,
+        expect: Option<Expect>,
+    ) -> Result<WriteOutcome, BackendError> {
         log::debug!("shell arm serving {:?}", Family::FileWrite);
         let executor = self.executor_for("write_file")?;
         let pwsh = executor.shell_kind().is_powershell();
@@ -68,6 +95,9 @@ impl ShellBackend {
             let section = frame.section("w").ok_or_else(|| {
                 op_failed(format!("Failed to write {path}: no answer from the host"))
             })?;
+            if section.exit == EXIT_CONFLICT {
+                return Ok(WriteOutcome::Conflict);
+            }
             if section.exit != 0 {
                 return Err(op_failed(write_failure_message(
                     &path,
@@ -76,7 +106,7 @@ impl ShellBackend {
                 )));
             }
         }
-        Ok(())
+        Ok(WriteOutcome::Written)
     }
 
     pub(in crate::backend) async fn delete_file_shell(

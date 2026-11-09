@@ -12,11 +12,13 @@
 //! * [`tree`]: the repo file tree (listing commands, parsers, proto assembly) shared with the helper.
 //! * [`git`]: git argv builders, parsers and algorithms over a `GitRunner` (P5).
 //! * [`predicates`]: "may this command change HEAD / the cwd", the refresh-coordinator inputs.
+//! * [`buffer`]: the file-state commands behind shell-mode buffer saves (size/mtime and SHA-256).
 //! * [`read`]: batch file reads (`ReadFileContext`), shared by the helper and the shell backend.
 //!
 //! Wave H, P0.
 
 pub mod base64;
+pub mod buffer;
 pub mod chunk;
 pub mod frame;
 pub mod git;

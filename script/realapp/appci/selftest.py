@@ -2857,7 +2857,7 @@ def lab_cases_registry_and_selection():
     assert run.unknown_case_names("mode_proof,typo_case", reg) == ["typo_case"]       # exact names are still checked exactly
     # winmap: a lab case is never 'unclassified'; PowerShell pane skips with a reason; p_onesess is skipped on Windows
     base = {n.split(".")[0] for n in names}
-    old = {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i", "lab_no_helper_chip", "lab_replay", "lab_password_prompt", "lab_helper_install", "lab_nu_agent_pager_env", "lab_read_files_remote", "lab_diff_apply_remote", "lab_file_tree_remote"}
+    old = {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i", "lab_no_helper_chip", "lab_replay", "lab_password_prompt", "lab_helper_install", "lab_nu_agent_pager_env", "lab_read_files_remote", "lab_diff_apply_remote", "lab_file_tree_remote", "lab_remote_edit"}
     assert old <= base and all(n.startswith(("lab_fam_", "lab_helper_", "lab_nohelper_", "lab_git_write_remote")) for n in base - old), base
     assert all(c["modes"] == ("terminal",) for c in labs if c["name"].startswith("lab_ssh_drop_reconnect")), "the drop case is terminal-only"
     pw = [c["arm"] for c in labs if c["name"].startswith("lab_password_prompt")]
@@ -2880,6 +2880,19 @@ def lab_file_tree_remote_pieces():
     assert CLR.saw_added(line, "a") and not CLR.saw_added(line, "b") and not CLR.saw_added(line, "a", event="snapshot")
     arms = [c["arm"] for c in cases.CASES if c.get("lab") and c["name"].startswith("lab_file_tree_remote.")]
     assert {(a["shell"], a["helper"]) for a in arms} == {(s, h) for s in ("bash", "zsh", "fish", "nu") for h in ("nohelper", "upload")}, arms
+
+
+@check
+def lab_remote_edit_pieces():
+    """Wave H parity P4: the buffers lab case registers exactly the nohelper and upload arms for bash, zsh, fish and nu, declares the buffers family to the coverage
+    guard on both arms, and reads the router's line the way the app writes it."""
+    import cases_lab_buffers as CLB, cases_lab_helper as H
+    line = "INFO hop=backend_route family=buffers backend=shell reason=caps\nINFO hop=backend_route family=file_context backend=helper reason=caps"
+    assert CLB.routes(line) == [("shell", "caps")] and CLB.routes(line, "file_context") == [("helper", "caps")] and CLB.routes("") == []
+    assert CLB.expected_backend(dict(helper="nohelper")) == "shell" and CLB.expected_backend(dict(helper="upload")) == "helper"
+    arms = [c["arm"] for c in cases.CASES if c.get("lab") and c["name"].startswith("lab_remote_edit.")]
+    assert {(a["shell"], a["helper"]) for a in arms} == {(s, h) for s in ("bash", "zsh", "fish", "nu") for h in ("nohelper", "upload")}, arms
+    assert H.EXTERNAL_COVERS["buffers"] == dict(helper="lab_remote_edit", nohelper="lab_remote_edit"), H.EXTERNAL_COVERS.get("buffers")
 
 
 @check

@@ -40,6 +40,35 @@ pub enum Expect {
     /// The file must have this size and modification time (seconds: the coarsest resolution the
     /// hosts' `stat` commands share).
     Stamp(FileStamp),
+    /// The file must have this SHA-256 (hex). Stronger than a stamp: a change within the same
+    /// second and size is seen, and a `touch` that leaves the bytes alone is not a change. Only
+    /// for hosts that have `sha256sum`, `shasum` or `Get-FileHash` (the caller learned the hash
+    /// from the host itself, so it knows it has).
+    Sha256(HexDigest),
+}
+
+/// A SHA-256 as 64 lowercase hex characters (the form `sha256sum` prints).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct HexDigest([u8; 64]);
+
+impl HexDigest {
+    /// Accepts exactly 64 hex characters (any case); anything else is not a digest.
+    pub fn parse(text: &str) -> Option<Self> {
+        let text = text.trim();
+        if text.len() != 64 || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        let mut out = [0u8; 64];
+        for (slot, b) in out.iter_mut().zip(text.bytes()) {
+            *slot = b.to_ascii_lowercase();
+        }
+        Some(Self(out))
+    }
+
+    pub fn as_str(&self) -> &str {
+        // Ascii by construction.
+        std::str::from_utf8(&self.0).unwrap_or_default()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,6 +83,32 @@ impl Expect {
         match self {
             Expect::Absent => "absent".to_string(),
             Expect::Stamp(s) => format!("{}|{}", s.size, s.mtime_secs),
+            Expect::Sha256(d) => d.as_str().to_string(),
+        }
+    }
+
+    /// The POSIX lines that set `cur` to what the target is now, in the form [`Self::token`]
+    /// takes (`absent` when there is no file).
+    fn posix_current(self) -> &'static str {
+        match self {
+            Expect::Absent | Expect::Stamp(_) => {
+                "if [ -e \"$f\" ]; then cur=\"$(wc -c < \"$f\" | tr -d ' \\t')|$(stat -c %Y -- \"$f\" 2>/dev/null || stat -f %m -- \"$f\" 2>/dev/null)\"; else cur=absent; fi\n"
+            }
+            Expect::Sha256(_) => {
+                "if [ -e \"$f\" ]; then cur=$( { sha256sum -- \"$f\" 2>/dev/null || shasum -a 256 -- \"$f\" 2>/dev/null; } | { read -r h _; printf '%s' \"$h\"; } ); else cur=absent; fi\n"
+            }
+        }
+    }
+
+    /// The PowerShell statement that sets `$cur` the same way.
+    fn pwsh_current(self) -> &'static str {
+        match self {
+            Expect::Absent | Expect::Stamp(_) => {
+                "if (Test-Path -LiteralPath $f) { $i = Get-Item -LiteralPath $f; $cur = '' + $i.Length + '|' + [DateTimeOffset]::new($i.LastWriteTimeUtc).ToUnixTimeSeconds() } else { $cur = 'absent' }\n"
+            }
+            Expect::Sha256(_) => {
+                "if (Test-Path -LiteralPath $f) { $cur = (Get-FileHash -Algorithm SHA256 -LiteralPath $f).Hash.ToLower() } else { $cur = 'absent' }\n"
+            }
         }
     }
 }
@@ -97,7 +152,7 @@ pub fn printf_escape(bytes: &[u8]) -> String {
 
 /// `f=...` for `path`, resolving a symlink target so the write goes through it. `~` expands on
 /// the host.
-fn posix_target(path: &str) -> String {
+pub(super) fn posix_target(path: &str) -> String {
     let assign = if path == "~" {
         "f=\"$HOME\"".to_string()
     } else if let Some(rest) = path.strip_prefix("~/") {
@@ -142,9 +197,9 @@ pub fn posix_write_command(
     ));
     if position.last {
         if let Some(expect) = expect {
+            out.push_str(expect.posix_current());
             out.push_str(&format!(
-                "if [ -e \"$f\" ]; then cur=\"$(wc -c < \"$f\" | tr -d ' \\t')|$(stat -c %Y -- \"$f\" 2>/dev/null || stat -f %m -- \"$f\" 2>/dev/null)\"; else cur=absent; fi\n\
-                 [ \"$cur\" = '{}' ] || {{ rm -f -- \"$tmp\"; echo CONFLICT; exit {EXIT_CONFLICT}; }}\n",
+                "[ \"$cur\" = '{}' ] || {{ rm -f -- \"$tmp\"; echo CONFLICT; exit {EXIT_CONFLICT}; }}\n",
                 expect.token()
             ));
         }
@@ -160,7 +215,7 @@ fn pwsh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
 }
 
-fn pwsh_target(path: &str) -> String {
+pub(super) fn pwsh_target(path: &str) -> String {
     if path == "~" {
         "$f = $HOME".to_string()
     } else if let Some(rest) = path.strip_prefix("~/") {
@@ -194,9 +249,9 @@ pub fn pwsh_write_command(
     }
     if position.last {
         if let Some(expect) = expect {
+            out.push_str(expect.pwsh_current());
             out.push_str(&format!(
-                "if (Test-Path -LiteralPath $f) {{ $i = Get-Item -LiteralPath $f; $cur = '' + $i.Length + '|' + [DateTimeOffset]::new($i.LastWriteTimeUtc).ToUnixTimeSeconds() }} else {{ $cur = 'absent' }}\n\
-                 if ($cur -ne '{}') {{ Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue; 'CONFLICT'; $global:LASTEXITCODE = {EXIT_CONFLICT}; return }}\n",
+                "if ($cur -ne '{}') {{ Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue; 'CONFLICT'; $global:LASTEXITCODE = {EXIT_CONFLICT}; return }}\n",
                 expect.token()
             ));
         }

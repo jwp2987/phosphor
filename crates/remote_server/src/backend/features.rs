@@ -131,9 +131,9 @@ remote_features! {
     FileContext, false: fn read_file_context(request: ReadFileContextRequest) -> ReadFileContextResponse => read_file_context_shell;
     RepoMetadata, false: fn navigate_to_directory(path: String) -> NavigatedToDirectoryResponse => navigate_to_directory_shell;
     RepoMetadata, false: fn load_repo_metadata_directory(repo_path: String, dir_path: String) -> LoadRepoMetadataDirectoryResponse => load_repo_metadata_directory_shell;
-    Buffers, false: fn open_buffer(path: String, force_reload: bool) -> OpenBufferResponse => unimplemented;
-    Buffers, true: fn save_buffer(path: String) -> SaveBufferResponse => unimplemented;
-    Buffers, true: fn resolve_conflict(path: String, acknowledged_server_version: u64, client_content: String, current_client_version: u64) -> ResolveConflictResponse => unimplemented;
+    Buffers, false: fn open_buffer(path: String, force_reload: bool) -> OpenBufferResponse => open_buffer_shell;
+    Buffers, true: fn save_buffer(path: String) -> SaveBufferResponse => save_buffer_shell;
+    Buffers, true: fn resolve_conflict(path: String, acknowledged_server_version: u64, client_content: String, current_client_version: u64) -> ResolveConflictResponse => resolve_conflict_shell;
     DiffState, false: fn get_diff_state(request: GetDiffState) -> GetDiffStateResponse => unimplemented;
     GitRead, false: fn get_branches(request: GetBranches) -> GetBranchesResponse => unimplemented;
     GitRead, false: fn get_committed_branch_files(request: GetCommittedBranchFilesRequest) -> GetCommittedBranchFilesResponse => unimplemented;

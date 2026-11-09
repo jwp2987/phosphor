@@ -123,6 +123,8 @@ pub(super) struct Server {
     watches: WatchSet,
     /// Indexed repository roots and their live trees (`repo_meta.rs`).
     repos: repo_meta::RepoTrees,
+    /// Open text buffers (`buffers.rs`).
+    buffers: buffers::Buffers,
 }
 
 impl Server {
@@ -144,6 +146,7 @@ impl Server {
             events_tx: None,
             watches: WatchSet::disabled(),
             repos: repo_meta::RepoTrees::default(),
+            buffers: buffers::Buffers::default(),
         }
     }
 
@@ -205,6 +208,7 @@ impl Server {
             Event::Disconnected { conn } => {
                 self.conns.remove(&conn);
                 self.repos.conn_gone(conn, &mut self.watches);
+                self.buffers.conn_gone(conn, &mut self.watches);
                 log::info!(
                     "Daemon: connection {conn} gone, {} active",
                     self.conns.len()
@@ -222,6 +226,8 @@ impl Server {
         log::trace!("Daemon: fs change {kind:?} {} path(s)", paths.len());
         self.repos
             .on_fs_change(paths, kind, self.events_tx.as_ref());
+        let push = Pusher { conns: &self.conns };
+        self.buffers.on_fs_change(paths, kind, &push);
     }
 
     fn reply_for(&self, conn: ConnId, request_id: &RequestId) -> Option<Reply> {
@@ -252,7 +258,7 @@ impl Server {
                 ),
             },
             Some(client_message::Message::Notification(n)) => {
-                self.handle_notification(n.message, &request_id)
+                self.handle_notification(conn, n.message, &request_id)
             }
             None => reply.error(
                 ErrorCode::InvalidRequest,
@@ -304,8 +310,8 @@ impl Server {
                     &request, cancel,
                 ))
             }),
-            M::SaveBuffer(_) => buffers::handle(&reply, "SaveBuffer"),
-            M::ResolveConflict(_) => buffers::handle(&reply, "ResolveConflict"),
+            M::SaveBuffer(msg) => self.buffers.save(msg, &reply),
+            M::ResolveConflict(msg) => self.buffers.resolve(msg, &reply),
             M::GitCommitChain(msg) => self
                 .inflight
                 .spawn(reply, move |_| git_write::commit_chain(msg)),
@@ -363,7 +369,11 @@ impl Server {
             M::LoadRepoMetadataDirectory(msg) => {
                 self.repos.load_directory(msg, &reply, &mut self.watches)
             }
-            M::OpenBuffer(_) => buffers::handle(&reply, "OpenBuffer"),
+            M::OpenBuffer(msg) => {
+                let push = Pusher { conns: &self.conns };
+                self.buffers
+                    .open(conn, msg, &reply, &mut self.watches, &push);
+            }
             M::GetDiffState(_) => diff_state::handle(&reply, "GetDiffState"),
         }
     }
@@ -390,6 +400,7 @@ impl Server {
 
     fn handle_notification(
         &mut self,
+        conn: ConnId,
         message: Option<notification::Message>,
         request_id: &RequestId,
     ) {
@@ -413,11 +424,13 @@ impl Server {
                 }
             }
             Some(N::SessionBootstrapped(msg)) => self.handle_session_bootstrapped(msg),
+            Some(N::BufferEdit(msg)) => self.buffers.edit(msg),
+            Some(N::CloseBuffer(msg)) => self.buffers.close(conn, &msg.path, &mut self.watches),
             Some(N::UpdateGitStatus(_)) => git_status::ignore("UpdateGitStatus"),
             Some(N::UpdateGithubPrInfo(_)) => github::ignore("UpdateGitHubPrInfo"),
             Some(N::UpdateGithubRepoInfo(_)) => github::ignore("UpdateGitHubRepoInfo"),
             // Notifications carry no response contract. The ones the helper cannot act on
-            // (buffer sync, diff-state and git-status subscriptions, preferences) are dropped;
+            // (diff-state and git-status subscriptions, preferences) are dropped;
             // the client does not wait on a response, it waits on pushes that never come, and
             // those features run on the no-helper path because the capability list says so.
             Some(other) => log::debug!(
