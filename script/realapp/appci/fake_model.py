@@ -61,9 +61,13 @@ def stream_lines(model, reply, chunk=6):
     return out
 
 
+ACTIVE = None            # the running FakeModel of this process (cases_agent_netgate reads its request headers)
+
+
 class FakeModel:
     def __init__(self, delay_s=0.0):
         self.requests, self.delay_s, self.log = 0, delay_s, []
+        self.headers = []        # lower-cased header dict of every request, for the provider-key oracle (a provider's extra_headers sentinel must arrive here)
         owner = self
 
         class H(BaseHTTPRequestHandler):
@@ -81,6 +85,7 @@ class FakeModel:
                 self._send(200, json.dumps({"models": [{"name": "fake-model", "model": "fake-model"}]}).encode())
 
             def do_POST(self):
+                owner.headers.append({k.lower(): v for k, v in self.headers.items()})
                 n = int(self.headers.get("Content-Length") or 0)
                 try:
                     req = json.loads(self.rfile.read(n) or b"{}")
@@ -103,6 +108,8 @@ class FakeModel:
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
 
     def start(self):
+        global ACTIVE
+        ACTIVE = self
         self.thread.start()
         return self
 

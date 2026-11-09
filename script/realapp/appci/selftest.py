@@ -3708,6 +3708,55 @@ def refterm_mac_bookkeeping():
         R.terminal_pids, R.os.kill, R.time.sleep, R._started_epoch = saved[1:]
 
 
+# ---- #1830: the agent network gate cases (cases_agent_netgate.py)
+@check
+def agent_netgate_pure_parts():
+    import cases_agent_netgate as NG
+    import cases_netless as NL
+    assert NG.fnv("LocalHost") == NL.fnv_host_hash("localhost")
+    assert NG.denied_line("localhost") == 'network gate: denied "remote-asset" (host hash %s)' % NL.fnv_host_hash("localhost")
+    hit = lambda path="/x", headers=None, body=b"": dict(method="GET", path=path, headers=headers or {}, body=body)
+    assert NG.leaks([hit()], "SENT") == []
+    assert len(NG.leaks([hit(headers={"x-appci-key": "SENT"})], "SENT")) == 1
+    assert len(NG.leaks([hit(path="/p?k=SENT")], "SENT")) == 1
+    assert len(NG.leaks([hit(body=b"..SENT..")], "SENT")) == 1
+    assert len(NG.leaks([hit(headers={"authorization": "Bearer z"})], "SENT")) == 1
+    log = 'a localhost:99 line\nnetwork gate: denied "remote-asset" (host hash 00ff)\nnetwork gate: denied "x" (host localhost)\n'
+    assert NG.gate_lines(log) == log.splitlines()[1:]
+    assert NG.host_leaks(log, ["localhost", "99"]) == [log.splitlines()[2]]
+    assert NG.host_leaks(log, [""]) == []
+
+
+@check
+def agent_netgate_capture_listener():
+    import urllib.request, urllib.error
+    import cases_agent_netgate as NG
+    final = NG.Capture()
+    redir = NG.Capture(redirect_to="http://127.0.0.1:%d" % final.port)
+    try:
+        body = urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:%d/a.png" % final.port, headers={"X-Appci-Key": "K9"}), timeout=5).read()
+        assert body == NG.PNG and final.paths() == ["/a.png"] and final.hits[0]["headers"]["x-appci-key"] == "K9"
+        assert len(NG.leaks(final.hits, "K9")) == 1
+        urllib.request.urlopen("http://127.0.0.1:%d/r.png" % redir.port, timeout=5).read()       # follows the 302 to `final`
+        assert redir.paths() == ["/r.png"] and final.saw("/r.png") and not final.saw("/zzz")
+    finally:
+        final.stop()
+        redir.stop()
+
+
+@check
+def fake_model_records_request_headers():
+    import fake_model as FM, urllib.request
+    f = FM.FakeModel().start()
+    try:
+        assert FM.ACTIVE is f
+        rq = urllib.request.Request(f.url + "/api/chat", json.dumps({"model": "m", "messages": [{"role": "user", "content": "Reply with the word Z"}]}).encode(), {"X-Appci-Key": "S1"})
+        urllib.request.urlopen(rq, timeout=5).read()
+        assert f.headers and f.headers[-1]["x-appci-key"] == "S1", f.headers
+    finally:
+        f.stop()
+
+
 def main():
     failed = 0
     for f in CHECKS:

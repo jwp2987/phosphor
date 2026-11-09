@@ -1930,6 +1930,22 @@ gate-off passes and non-loopback allows only; event text never has the host; the
 defaults true, absent = true), `app/src/settings_view/network_page_tests.rs` (origin add/remove normalisation, add twice adds once, the stored text parses as the gate parses it).
 Upgrade row U21a covers the new key.
 
+##### Agent network gate cases (`cases_agent_netgate.py`, #1830)
+
+Agent mode, Linux only (live edits of the Linux profile's `settings.toml`, pointer + OCR for the toast; winmap lists the reason; Mac/Windows not applicable until the same
+paths exist). They need `APPCI_FAKE_MODEL=1`. The trick that makes the gate refuse something in the real app: a provider URL is always a configured origin, but a loopback NAME
+(`localhost`) is refused unless configured, so the fake model's markdown image `http://localhost:<port>/...` (purpose `remote-asset`, allowlist only) is denied while a LOCAL
+LISTENER (`Capture`: 127.0.0.1 and ::1 on one port, records method/path/headers/body) shows whether anything left the app. Every image uses a fresh token (asset cache).
+- **`agent_gate_deny_allow`**: denied -> app log `network gate: denied "remote-asset" (host hash <fnv>)`, no host/port/URL on any gate line, listener got nothing; the toast's Allow
+  (OCR + click) -> `settings.toml` holds the origin once and the retry reaches the listener; then `allowed_origins` edited in `settings.toml` with the app RUNNING: removed ->
+  refused again and the listener silent, added -> reaches. No restart anywhere. The Settings > Network allowed-origins editor and log row are `UNVERIFIABLE` (noref): no verified keyboard path.
+- **`agent_gate_off_live`**: `network.gate_enabled=false` written live -> one `network gate: turned OFF`, the request reaches the listener, no denial; `true` -> `turned ON` and refused again, listener silent.
+- **`agent_gate_key_never_leaves`**: the fake-model provider carries an `X-Appci-Key` extra header as the stand-in provider key (the key store is not scriptable). Precondition: the
+  fake model (`fake_model.ACTIVE.headers`) received it, else `noref`. Then images from a denied origin, a live-allowed origin, an allowed `127.0.0.1` origin that 302-redirects to a denied
+  `localhost` origin (the target must get nothing), and a gate-off request: no listener may see the sentinel (header, path, body) or any Authorization/x-api-key header; the app log has
+  no sentinel and no gate line names a host, port or key.
+"Never uploaded" is not provable by a listener; `zero_network_startup` (strace) covers the idle app. Self-test rows: `agent_netgate_*`, `fake_model_records_request_headers`.
+
 `zero_network_startup` also drives a scripted session after the idle (`scripted_session`): the settings page is opened with its shortcut and walked with the keyboard
 (`APPCI_ZNS_PAGES` Down presses, default 12, the AI page among them; best effort, screenshots `zns_settings_*`), then an ssh connect to the fake host and `exit`. The
 trace must still contain no inet destination beyond loopback + the fake ssh host address (+ `APPCI_ZNS_ALLOW`, comma separated). The fake ssh host is on loopback
