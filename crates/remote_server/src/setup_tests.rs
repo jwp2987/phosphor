@@ -704,8 +704,23 @@ fn install_script_tolerates_tarball_without_resources() {
 fn run_install_with_tarball(
     with_resources: bool,
 ) -> (tempfile::TempDir, String, std::path::PathBuf) {
+    run_install_with_tarball_seeded(with_resources, |_| {})
+}
+
+/// [`run_install_with_tarball`], calling `seed` with the (not yet created) install directory
+/// first so a test can pre-populate older versions.
+#[cfg(unix)]
+fn run_install_with_tarball_seeded(
+    with_resources: bool,
+    seed: impl FnOnce(&std::path::Path),
+) -> (tempfile::TempDir, String, std::path::PathBuf) {
     let home = tempfile::tempdir().expect("failed to create temp HOME");
     let home_path = home.path().to_path_buf();
+    seed(std::path::Path::new(&remote_server_dir().replacen(
+        '~',
+        home_path.to_str().unwrap(),
+        1,
+    )));
 
     // Lay out the tarball contents: the binary the script looks for, and
     // optionally the resources tree the release pipeline ships.
@@ -1415,4 +1430,191 @@ fn install_script_failure_does_not_leave_an_empty_install_dir() {
         .map(|e| e.unwrap().file_name())
         .collect();
     assert_eq!(leftovers.len(), 1, "unexpected leftovers: {leftovers:?}");
+}
+
+// ---------------------------------------------------------------------------
+// One version only: after a verified install the host keeps exactly one version (Wave H step 1)
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+fn touch_executable(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(path, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[cfg(unix)]
+fn binaries_in(dir: &std::path::Path, prefix: &str) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with(prefix))
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn one_version_cleanup_fragment_is_safe_inside_single_quotes() {
+    // The standalone command embeds the fragment in `sh -c '...'`; one stray apostrophe in a
+    // comment would end the quoting early and run the rest of the text in the login shell.
+    assert!(
+        !ONE_VERSION_CLEANUP_FRAGMENT.contains('\''),
+        "one_version_cleanup.sh must not contain a single quote"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn one_version_cleanup_keeps_only_the_named_binary() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("remote-server");
+    std::fs::create_dir_all(dir.join("bundled_resources")).unwrap();
+    for name in [
+        "phosphor-oss",
+        "phosphor-oss-v0.1.11",
+        "phosphor-oss-v0.1.12",
+        "phosphor-oss-v0.1.13",
+    ] {
+        touch_executable(&dir.join(name));
+    }
+    std::fs::write(dir.join("unrelated-file"), "x").unwrap();
+    let cmd = one_version_cleanup_command_for(
+        dir.to_str().unwrap(),
+        "phosphor-oss",
+        "phosphor-oss-v0.1.12",
+        "aaaa1111",
+    );
+    assert_eq!(sh_status(&cmd), 0);
+    assert_eq!(
+        binaries_in(&dir, "phosphor-"),
+        vec!["phosphor-oss-v0.1.12".to_string()],
+        "exactly one phosphor-* file must remain"
+    );
+    assert!(dir.join("unrelated-file").exists());
+    assert!(dir.join("bundled_resources").is_dir());
+    // Idempotent, and a missing directory is not an error.
+    assert_eq!(sh_status(&cmd), 0);
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(sh_status(&cmd), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn one_version_cleanup_keeps_the_unversioned_dev_binary_when_it_is_the_one_kept() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("remote-server");
+    std::fs::create_dir_all(&dir).unwrap();
+    touch_executable(&dir.join("phosphor-oss"));
+    touch_executable(&dir.join("phosphor-oss-v0.1.12"));
+    let cmd =
+        one_version_cleanup_command_for(dir.to_str().unwrap(), "phosphor-oss", "phosphor-oss", "");
+    assert_eq!(sh_status(&cmd), 0);
+    assert_eq!(
+        binaries_in(&dir, "phosphor-"),
+        vec!["phosphor-oss".to_string()]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn one_version_cleanup_removes_dead_daemon_files_of_other_versions_but_not_live_ones() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("remote-server");
+    let ident = dir.join("1a2b3c4d");
+    std::fs::create_dir_all(&ident).unwrap();
+    touch_executable(&dir.join("phosphor-oss-v0.1.12"));
+    // Dead daemon of an old version: socket and pid both go.
+    std::fs::write(ident.join("server-00000001.pid"), "999999999").unwrap();
+    std::fs::write(ident.join("server-00000001.sock"), "").unwrap();
+    // Live daemon of another version (this very process): left completely alone.
+    std::fs::write(
+        ident.join("server-00000002.pid"),
+        std::process::id().to_string(),
+    )
+    .unwrap();
+    std::fs::write(ident.join("server-00000002.sock"), "").unwrap();
+    // Legacy unversioned files of a dead daemon: removed once the kept build is versioned.
+    std::fs::write(ident.join("server.pid"), "999999999").unwrap();
+    std::fs::write(ident.join("server.sock"), "").unwrap();
+    // The kept version: untouched even though nothing is running.
+    std::fs::write(ident.join("server-0badf00d.pid"), "999999999").unwrap();
+    std::fs::write(ident.join("server-0badf00d.sock"), "").unwrap();
+    // A socket with no pid file at all (crashed daemon) is litter too.
+    std::fs::write(ident.join("server-00000003.sock"), "").unwrap();
+
+    let cmd = one_version_cleanup_command_for(
+        dir.to_str().unwrap(),
+        "phosphor-oss",
+        "phosphor-oss-v0.1.12",
+        "0badf00d",
+    );
+    assert_eq!(sh_status(&cmd), 0);
+    let mut left: Vec<String> = std::fs::read_dir(&ident)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    left.sort();
+    assert_eq!(
+        left,
+        vec![
+            "server-00000002.pid",
+            "server-00000002.sock",
+            "server-0badf00d.pid",
+            "server-0badf00d.sock",
+        ]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn one_version_cleanup_with_no_hash_sweeps_no_daemon_files() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("remote-server");
+    let ident = dir.join("1a2b3c4d");
+    std::fs::create_dir_all(&ident).unwrap();
+    std::fs::write(ident.join("server.pid"), "999999999").unwrap();
+    std::fs::write(ident.join("server.sock"), "").unwrap();
+    let cmd =
+        one_version_cleanup_command_for(dir.to_str().unwrap(), "phosphor-oss", "phosphor-oss", "");
+    assert_eq!(sh_status(&cmd), 0);
+    assert!(ident.join("server.pid").exists() && ident.join("server.sock").exists());
+}
+
+/// The install script runs the same cleanup itself, after proving the new binary starts.
+#[cfg(unix)]
+#[test]
+fn install_script_leaves_exactly_one_version_installed() {
+    let (home, script, install_dir) = run_install_with_tarball_seeded(true, |install_dir| {
+        std::fs::create_dir_all(install_dir).unwrap();
+        for name in ["phosphor-oss", "phosphor-oss-v0.0.1", "phosphor-oss-v0.0.2"] {
+            // Skip a seed that collides with the version about to be installed.
+            if name != format!("{}{}", binary_name(), version_suffix()) {
+                touch_executable(&install_dir.join(name));
+            }
+        }
+    });
+    let kept = format!("{}{}", binary_name(), version_suffix());
+    assert_eq!(
+        binaries_in(&install_dir, "phosphor-"),
+        vec![kept.clone()],
+        "exactly the freshly installed version must remain (script: {script})"
+    );
+    drop(home);
+}
+
+#[test]
+fn install_script_renders_every_one_version_placeholder() {
+    let script = install_script(None);
+    for placeholder in [
+        "{one_version_cleanup}",
+        "{one_version_binaries}",
+        "{daemon_version_hash}",
+    ] {
+        assert!(
+            !script.contains(placeholder),
+            "{placeholder} left unsubstituted"
+        );
+    }
+    assert!(script.contains("ovc_keep="));
 }

@@ -507,6 +507,47 @@ pub fn install_failure_cleanup_command() -> String {
     install_failure_cleanup_command_for(&remote_server_dir(), &remote_server_binary())
 }
 
+/// Shell fragment shared by the install script and [`one_version_cleanup_command_for`]; see the
+/// header of `one_version_cleanup.sh` for its inputs and what it removes.
+const ONE_VERSION_CLEANUP_FRAGMENT: &str = include_str!("one_version_cleanup.sh");
+
+/// Base names whose files [`one_version_cleanup_command`] manages in the install directory: this
+/// channel's binary name today. The legacy unversioned binary is `<base>` itself.
+fn one_version_binaries() -> String {
+    binary_name().to_string()
+}
+
+/// Shell command (run on the remote after the new binary has been verified) that leaves exactly
+/// ONE installed version: it removes every other `<binary>` / `<binary>-*` file in `dir` (older
+/// versions and the legacy unversioned binary) and the socket and pid files of other versions
+/// whose daemon is no longer running. `keep` is the file name to keep; `hash` is the kept
+/// version's [`version_hash`] (empty for an unversioned dev build, which sweeps no daemon
+/// files). A running old daemon is left alone and exits on its idle timeout. Always exits 0.
+///
+/// Wrapped in `sh -c` so it does not depend on the remote login shell; `dir` is left unquoted
+/// so a leading `~` expands (same convention as [`prior_install_probe_command_for`]).
+pub fn one_version_cleanup_command_for(
+    dir: &str,
+    binaries: &str,
+    keep: &str,
+    hash: &str,
+) -> String {
+    format!(
+        "sh -c 'ovc_dir={dir}; ovc_binaries=\"{binaries}\"; ovc_keep=\"{keep}\"; ovc_hash=\"{hash}\"; {ONE_VERSION_CLEANUP_FRAGMENT}'"
+    )
+}
+
+/// [`one_version_cleanup_command_for`] for this channel and client version.
+pub fn one_version_cleanup_command() -> String {
+    let keep = format!("{}{}", binary_name(), version_suffix());
+    one_version_cleanup_command_for(
+        &remote_server_dir(),
+        &one_version_binaries(),
+        &keep,
+        &version_hash().unwrap_or_default(),
+    )
+}
+
 /// Returns the shell command to remove the current remote-server binary.
 ///
 /// The global bundled resources directory (see
@@ -570,6 +611,8 @@ pub fn install_script(staging_tarball_path: Option<&str>) -> String {
         .replace("{version_suffix}", &version_suffix)
         .replace("{staging_tarball_path}", staging_tarball_path.unwrap_or(""))
         .replace("{bundled_resources_dir_name}", BUNDLED_RESOURCES_DIR_NAME)
+        .replace("{one_version_binaries}", &one_version_binaries())
+        .replace("{daemon_version_hash}", &version_hash().unwrap_or_default())
         // All published platforms are substituted, not just the one we think the host is:
         // the script re-derives `uname` itself and picks the matching digest, so a host that
         // turns out to be a different platform than the client guessed still verifies rather
@@ -584,6 +627,8 @@ pub fn install_script(staging_tarball_path: Option<&str>) -> String {
             "{sha256_macos_aarch64}",
             expected_sha256("macos", "aarch64"),
         )
+        // Last, so nothing inside the fragment is ever mistaken for a placeholder.
+        .replace("{one_version_cleanup}", ONE_VERSION_CLEANUP_FRAGMENT)
 }
 
 /// Headlines the client prefixes onto an install failure when the install script refused to

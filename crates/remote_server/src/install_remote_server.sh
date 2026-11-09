@@ -299,3 +299,14 @@ if [ -n "$resources_src" ] && [ -d "$resources_src" ]; then
   mv "$staged" "$resources_dir"
   rm -rf "$previous"
 fi
+
+# One-version cleanup (setup.rs::one_version_cleanup_command is the client-side twin of this
+# block; both run the same fragment). Only once the new binary has proved it starts: deleting
+# the previous version before then could leave a host with no working install at all.
+if "$install_dir/{binary_name}{version_suffix}" --version >/dev/null 2>&1; then
+  ovc_dir="$install_dir"
+  ovc_binaries="{one_version_binaries}"
+  ovc_keep="{binary_name}{version_suffix}"
+  ovc_hash="{daemon_version_hash}"
+{one_version_cleanup}
+fi

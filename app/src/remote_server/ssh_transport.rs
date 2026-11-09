@@ -770,6 +770,29 @@ async fn install_binary_impl(socket_path: &Path) -> Result<(), String> {
     }
 }
 
+/// Best-effort: leave exactly one installed version on the host once the current binary has
+/// been verified (Wave H step 1). Removes older versions, the legacy unversioned binary, and the
+/// socket/pid files of other versions whose daemon is gone. Never fails the connect: a host
+/// where this does not run just keeps a few extra files. See `setup::one_version_cleanup_command`.
+async fn remove_other_installed_versions(socket_path: &Path) {
+    let cmd = remote_server::setup::one_version_cleanup_command();
+    match remote_server::ssh::run_ssh_command(
+        socket_path,
+        &cmd,
+        remote_server::setup::CHECK_TIMEOUT,
+    )
+    .await
+    {
+        Ok(output) if output.status.success() => {}
+        Ok(output) => log::warn!(
+            "remote-server one-version cleanup exited with {:?}: {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        ),
+        Err(error) => log::warn!("remote-server one-version cleanup failed to run: {error:#}"),
+    }
+}
+
 /// Best-effort remote cleanup after a failed install: removes the staged tarball, a partial
 /// (non-executable) binary, and the install directory iff it is empty -- never a working
 /// install. See `setup::install_failure_cleanup_command`.
@@ -894,7 +917,11 @@ impl RemoteTransport for SshTransport {
                 // 126/127 means missing or not executable; any other
                 // nonzero exit is treated as a real check failure.
                 Ok(output) => match output.status.code() {
-                    Some(0) => Ok(true),
+                    Some(0) => {
+                        // The right version is installed and runs: drop every other version.
+                        remove_other_installed_versions(&socket_path).await;
+                        Ok(true)
+                    }
                     Some(126) | Some(127) => Ok(false),
                     Some(code) => {
                         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -949,6 +976,9 @@ impl RemoteTransport for SshTransport {
             let result = install_binary_impl(&socket_path).await;
             if result.is_err() {
                 cleanup_failed_install(&socket_path).await;
+            } else {
+                // `install_binary_impl` ends with `verify_installed_binary` on every path.
+                remove_other_installed_versions(&socket_path).await;
             }
             result
         })
